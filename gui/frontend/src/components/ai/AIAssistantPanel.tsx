@@ -1519,7 +1519,9 @@ export function AIAssistantPanel(props: any) {
         setHistoryEdits({});
         setLocalDraftInputValue("");
         setDraftInputValue?.("");
-        await sendMessage(trimmed);
+        void sendMessage(trimmed).catch((err: unknown) => {
+            console.warn("[AIAssistantPanel] Voice prompt send failed", err);
+        });
     }, [inputLocked, ready, recordSubmittedPrompt, sendMessage, setDraftInputValue]);
 
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId || '');

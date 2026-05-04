@@ -34,6 +34,10 @@ export function FetchAgentInstances() {
   return window['go']['main']['App']['FetchAgentInstances']();
 }
 
+export function FetchConfigBundle() {
+  return window['go']['main']['App']['FetchConfigBundle']();
+}
+
 export function FetchGoalPushes(arg1) {
   return window['go']['main']['App']['FetchGoalPushes'](arg1);
 }

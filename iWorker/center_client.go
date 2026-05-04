@@ -224,6 +224,95 @@ type CenterInstalledTools struct {
 	CachedAt   string                    `json:"cached_at,omitempty"`
 	Stale      bool                      `json:"stale,omitempty"`
 }
+type CenterConfigBundle struct {
+	ID          string `json:"id"`
+	Version     int    `json:"version"`
+	ContentType string `json:"content_type"`
+	Payload     string `json:"payload"`
+	Status      string `json:"status"`
+	Note        string `json:"note"`
+	CreatedAt   string `json:"created_at"`
+	PublishedAt string `json:"published_at"`
+	Source      string `json:"source,omitempty"`
+	CachedAt    string `json:"cached_at,omitempty"`
+	Stale       bool   `json:"stale,omitempty"`
+}
+
+func fetchCenterConfigBundle(centerBaseURL, tenantID string, timeoutSec int) (CenterConfigBundle, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" {
+		return CenterConfigBundle{}, fmt.Errorf("iWorkerCenter base URL is required")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 10
+	}
+	req, err := http.NewRequest(http.MethodGet, centerBaseURL+"/client/config/latest", nil)
+	if err != nil {
+		return CenterConfigBundle{}, err
+	}
+	setCenterTenantHeader(req, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return CenterConfigBundle{}, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return CenterConfigBundle{}, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return CenterConfigBundle{Status: "not_published", Source: "none", CachedAt: time.Now().UTC().Format(time.RFC3339)}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return CenterConfigBundle{}, fmt.Errorf("iWorkerCenter config bundle failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var bundle CenterConfigBundle
+	if err := json.Unmarshal(body, &bundle); err != nil {
+		return CenterConfigBundle{}, err
+	}
+	bundle.Source = "center"
+	bundle.CachedAt = time.Now().UTC().Format(time.RFC3339)
+	return bundle, nil
+}
+
+func reportCenterConfigApplyResult(centerBaseURL, tenantID, departmentID, workerID string, bundle CenterConfigBundle, timeoutSec int) error {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
+	if centerBaseURL == "" || strings.TrimSpace(workerID) == "" || strings.TrimSpace(bundle.ID) == "" {
+		return nil
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 5
+	}
+	body, err := json.Marshal(map[string]any{
+		"bundle_id":     bundle.ID,
+		"version":       bundle.Version,
+		"worker_id":     strings.TrimSpace(workerID),
+		"department_id": strings.TrimSpace(departmentID),
+		"status":        "success",
+		"message":       "iWorker fetched and cached the published config bundle",
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, centerBaseURL+"/client/config/apply-result", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setCenterTenantHeader(req, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+		return fmt.Errorf("iWorkerCenter config apply report failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
 
 func fetchCenterRuntimeCapabilities(centerBaseURL string, tenantID string, colleagueID string, timeoutSec int) []CenterRuntimeCapability {
 	items, err := fetchCenterRuntimeCapabilitiesResult(centerBaseURL, tenantID, colleagueID, timeoutSec)

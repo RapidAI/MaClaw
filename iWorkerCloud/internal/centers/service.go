@@ -29,6 +29,8 @@ var (
 )
 
 type RegisterRequest struct {
+	MachineID           string `json:"machine_id,omitempty"`
+	CompanyID           string `json:"company_id,omitempty"`
 	CompanyName         string `json:"company_name"`
 	AdminEmail          string `json:"admin_email"`
 	AdminPhone          string `json:"admin_phone,omitempty"`
@@ -111,6 +113,7 @@ type RegisterResult struct {
 	Secret   string `json:"secret"`
 	Status   string `json:"status"`
 	Message  string `json:"message,omitempty"`
+	Reused   bool   `json:"reused,omitempty"`
 }
 
 type ManagementSummary struct {
@@ -218,6 +221,27 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 		return nil, fmt.Errorf("company_name and admin_email are required")
 	}
 
+	machineID := strings.TrimSpace(req.MachineID)
+	companyID := strings.TrimSpace(req.CompanyID)
+	if machineID != "" && companyID != "" {
+		if existing, err := s.centers.GetByRegistrationKey(ctx, machineID, companyID); err == nil && existing != nil {
+			existing.CompanyName = strings.TrimSpace(req.CompanyName)
+			existing.AdminEmail = strings.TrimSpace(req.AdminEmail)
+			existing.AdminPhone = strings.TrimSpace(req.AdminPhone)
+			existing.Address = strings.TrimSpace(req.Address)
+			existing.LegalPerson = strings.TrimSpace(req.LegalPerson)
+			existing.BaseURL = strings.TrimSpace(req.BaseURL)
+			existing.CloudControlMode = normalizeControlMode(req.CloudControlMode)
+			existing.SupportsMultiTenant = req.SupportsMultiTenant
+			existing.TenantCount = req.TenantCount
+			existing.LastSyncStatus = "registered"
+			if err := s.centers.UpdateRegistration(ctx, existing); err != nil {
+				return nil, err
+			}
+			return &RegisterResult{CenterID: existing.ID, Secret: existing.ManagementSecret, Status: existing.Status, Message: "registration reused by machine_id and company_id", Reused: true}, nil
+		}
+	}
+
 	now := time.Now()
 	rawSecret, err := randomToken()
 	if err != nil {
@@ -227,6 +251,8 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 	id := fmt.Sprintf("ctr_%d", now.UnixNano())
 	c := &store.Center{
 		ID:                  id,
+		MachineID:           machineID,
+		CompanyID:           companyID,
 		CompanyName:         strings.TrimSpace(req.CompanyName),
 		AdminEmail:          strings.TrimSpace(req.AdminEmail),
 		AdminPhone:          strings.TrimSpace(req.AdminPhone),

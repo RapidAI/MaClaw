@@ -5,6 +5,8 @@ import "time"
 // Center represents a registered iWorkerCenter instance.
 type Center struct {
 	ID                        string    `json:"id"`
+	MachineID                 string    `json:"machine_id"`
+	CompanyID                 string    `json:"company_id"`
 	CompanyName               string    `json:"company_name"`
 	AdminEmail                string    `json:"admin_email"`
 	AdminPhone                string    `json:"admin_phone"`

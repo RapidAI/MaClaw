@@ -3,38 +3,22 @@ import './App.css';
 import { buildNumber } from './version';
 import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
-import claudecodeIcon from './assets/images/claudecode.png';
-import codebuddyIcon from './assets/images/Codebuddy.png';
-import codexIcon from './assets/images/Codex.png';
-import geminiIcon from './assets/images/gemincli.png';
-import iflowIcon from './assets/images/iflow.png';
-import opencodeIcon from './assets/images/opencode.png';
-import kiloIcon from './assets/images/KiloCode.png';
-import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import agentnetIcon from './assets/images/agentnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetThirdPartyGatewayStatus, RestartThirdPartyGateway, StopThirdPartyGateway, GetThirdPartyGatewayLocalMode, SetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
 import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
-import { RemoteSessionList } from './components/remote/RemoteSessionList';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
-import { SkillsManagementPanel } from './components/remote/SkillsManagementPanel';
-import { MCPManagementPanel } from './components/remote/MCPManagementPanel';
 import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
 import { HubServiceRedeemPanel } from './components/remote/HubServiceRedeemPanel';
 import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
 import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
 import { TTSConfigPanel } from './components/remote/TTSConfigPanel';
 import { useAudioDevices } from './components/ai/useAudioDevices';
-import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { AgentNetPanel } from './components/remote/AgentNetPanel';
 import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
@@ -44,1638 +28,50 @@ import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
-import { GossipPanel } from './components/gossip/GossipPanel';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCreditsURL } from './utils/hubCredits';
-import { QRCodeSVG } from 'qrcode.react';
-
-const subscriptionUrls: { [key: string]: string } = {
-    "GLM": "https://bigmodel.cn/glm-coding",
-    "Kimi": "https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115",
-    "Doubao": "https://www.volcengine.com/activity/codingplan",
-    "腾讯云": "https://cloud.tencent.com/document/product/1772/128947",
-    "讯飞星辰": "https://www.xfyun.cn/doc/spark/CodingPlan.html",
-    "MiniMax": "https://platform.minimaxi.com/user-center/payment/coding-plan",
-    "百度千帆": "https://cloud.baidu.com/product/codingplan.html",
-    "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
-    "Gemini": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
-    "DeepSeek": "https://platform.deepseek.com/api_keys",
-    "ChatFire": "https://api.chatfire.cn/register?aff=jira",
-    "XiaoMi": "https://platform.xiaomimimo.com/#/console/api-keys",
-    "摩尔线程": "https://code.mthreads.com/",
-    "快手": "https://www.streamlake.com/marketing/coding-plan",
-    "阿里云": "https://coding.dashscope.aliyuncs.com/"
-};
-
-// Known provider API endpoints database
-// Organized by protocol type: anthropic (Claude), gemini, openai (Codex)
-interface ProviderEndpoint {
-    name: string;
-    url: string;
-    protocol: 'anthropic' | 'gemini' | 'openai';
-    region: 'china' | 'global';
-    description?: string;
-}
-
-interface RemoteCenterHubOption {
-    hub_id: string;
-    name: string;
-    base_url: string;
-    pwa_url?: string;
-    visibility?: string;
-    enrollment_mode?: string;
-    status?: string;
-}
-
-interface SidebarTokenUsageStat {
-    input_tokens?: number;
-    output_tokens?: number;
-    total_tokens?: number;
-    InputTokens?: number;
-    OutputTokens?: number;
-    TotalTokens?: number;
-}
-
-interface SidebarHubCreditGrant {
-    credits_total?: number;
-    credits_used?: number;
-    credits_remaining?: number;
-    expires_at?: string;
-    CreditsTotal?: number;
-    CreditsUsed?: number;
-    CreditsRemaining?: number;
-    ExpiresAt?: string;
-}
-
-interface SidebarHubServiceStatus {
-    active?: boolean;
-    Active?: boolean;
-    active_grants?: SidebarHubCreditGrant[];
-    ActiveGrants?: SidebarHubCreditGrant[];
-    credits_available?: number;
-    CreditsAvailable?: number;
-    tokens_per_credit?: number;
-    TokensPerCredit?: number;
-    nearest_expires_at?: string;
-    NearestExpiresAt?: string;
-    effective_expires_at?: string;
-    EffectiveExpiresAt?: string;
-    hub_llm_base_url?: string;
-    HubLLMBaseURL?: string;
-}
-
-interface SidebarHubCredits {
-    authorized: boolean;
-    total: number;
-    used: number;
-    remaining: number;
-    tokensPerCredit: number;
-    expiresAt: string;
-    unlimited: boolean;
-}
-
-interface SidebarLLMProviderSummary {
-    name: string;
-    url: string;
-    isHubService: boolean;
-}
-
-const sidebarProviderAliases: Record<string, string[]> = {
-    "智谱": ["GLM(智谱)", "GLM (智谱)"],
-    "GLM(智谱)": ["智谱", "GLM (智谱)"],
-    "GLM (智谱)": ["智谱", "GLM(智谱)"],
-};
-
-const PROJECT_PAGE_SIZE = 5;
-
-const knownProviderEndpoints: ProviderEndpoint[] = [
-    // Anthropic Protocol (Claude)
-    { name: "Claude Official", url: "https://api.anthropic.com/v1", protocol: "anthropic", region: "global", description: "Official Claude API" },
-    { name: "MiniMax", url: "https://api.minimaxi.com/anthropic", protocol: "anthropic", region: "china" },
-    { name: "DeepSeek", url: "https://api.deepseek.com/anthropic", protocol: "anthropic", region: "china" },
-    { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/anthropic", protocol: "anthropic", region: "china", description: "Tencent Cloud Claude-compatible endpoint" },
-    { name: "ChatFire", url: "https://api.chatfire.cn/v1", protocol: "anthropic", region: "china" },
-    { name: "OpenRouter", url: "https://openrouter.ai/api", protocol: "anthropic", region: "global" },
-
-    // Gemini Protocol
-    { name: "Google Gemini Official", url: "https://generativelanguage.googleapis.com/v1beta", protocol: "gemini", region: "global", description: "Official Google Gemini API" },
-
-    // OpenAI Protocol (Codex)
-    { name: "OpenAI Official", url: "https://api.openai.com/v1", protocol: "openai", region: "global", description: "Official OpenAI API" },
-    { name: "xAI (Grok)", url: "https://api.x.ai/v1", protocol: "openai", region: "global", description: "xAI Grok API" },
-    { name: "GLM", url: "https://open.bigmodel.cn/api/paas/v4", protocol: "openai", region: "china" },
-    { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
-    { name: "Doubao", url: "https://ark.cn-beijing.volces.com/api/coding", protocol: "openai", region: "china" },
-    { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", protocol: "openai", region: "china", description: "Tencent Cloud OpenAI-compatible endpoint" },
-    { name: "Doubao Codex", url: "https://ark.cn-beijing.volces.com/api/coding/v3", protocol: "openai", region: "china" },
-    { name: "DeepSeek Codex", url: "https://api.aicodemirror.com/api/codex/backend-api/codex", protocol: "openai", region: "china" },
-    { name: "OpenRouter", url: "https://openrouter.ai/api/v1", protocol: "openai", region: "global" },
-    { name: "Together AI", url: "https://api.together.xyz/v1", protocol: "openai", region: "global" },
-    { name: "Groq", url: "https://api.groq.com/openai/v1", protocol: "openai", region: "global" },
-    { name: "Perplexity", url: "https://api.perplexity.ai", protocol: "openai", region: "global" },
-];
+import { translations } from './i18n/appTranslations';
+import { ToolConfiguration } from './components/tools/ToolConfiguration';
+import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, sidebarProviderAliases, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
+import { TOOL_NAMES, isToolTab } from './config/toolCatalog';
+import { getSettingsTabOptions, type SettingsTabId } from './config/settingsTabs';
+import { SettingsTabsRail } from './components/settings/SettingsTabsRail';
+import { GeneralSettingsPanel } from './components/settings/GeneralSettingsPanel';
+import { UISettingsPanel } from './components/settings/UISettingsPanel';
+import { ProgrammingToolsSettingsPanel } from './components/settings/ProgrammingToolsSettingsPanel';
+import { GeneralAdvancedSettingsPanel } from './components/settings/GeneralAdvancedSettingsPanel';
+import { SystemSettingsPanel } from './components/settings/SystemSettingsPanel';
+import { ProxySettingsPanel } from './components/settings/ProxySettingsPanel';
+import { IMSettingsPanel } from './components/settings/IMSettingsPanel';
+import { AppSidebarShell } from './components/layout/AppSidebarShell';
+import { MainTopHeader } from './components/layout/MainTopHeader';
+import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
+import { TutorialPage } from './components/pages/TutorialPage';
+import { ApiStorePage } from './components/pages/ApiStorePage';
+import { ProjectManagerPage } from './components/pages/ProjectManagerPage';
+import { RemoteSessionsPage } from './components/pages/RemoteSessionsPage';
+import { SkillsPage } from './components/pages/SkillsPage';
+import { MCPPage } from './components/pages/MCPPage';
+import { GossipPage } from './components/pages/GossipPage';
+import { StartupPopup } from './components/modals/StartupPopup';
+import { ThanksModal } from './components/modals/ThanksModal';
+import { AboutPage } from './components/pages/AboutPage';
+import { ToolRepairProgressDialog } from './components/modals/ToolRepairProgressDialog';
+import { UpdateModal } from './components/modals/UpdateModal';
+import { InstallLogModal } from './components/modals/InstallLogModal';
+import { ProjectProxySettingsDialog } from './components/modals/ProjectProxySettingsDialog';
+import { InstallSkillModal } from './components/modals/InstallSkillModal';
+import { RemoteActivationDialog } from './components/modals/RemoteActivationDialog';
+import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDialog';
+import { ConfirmDialog } from './components/modals/ConfirmDialog';
+import type { RemoteCenterHubOption, SidebarHubCredits, SidebarHubServiceStatus, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 
 
 
-// Recommended model IDs per provider (used for model name suggestions)
-const recommendedModels: { [provider: string]: { id: string; note?: string }[] } = {
-    "GLM": [{ id: "glm-4.7" }],
-    "Kimi": [{ id: "kimi-k2-thinking" }, { id: "kimi-for-coding" }],
-    "Doubao": [{ id: "doubao-seed-code-preview-latest" }],
-    "MiniMax": [{ id: "MiniMax-M2.1" }],
-    "DeepSeek": [{ id: "deepseek-chat" }],
-    "ChatFire": [{ id: "sonnet" }, { id: "gpt-5.1-codex-mini" }, { id: "gpt-4o" }, { id: "gemini-2.5-pro" }],
-    "XiaoMi": [{ id: "mimo-v2-flash" }],
-    "摩尔线程": [{ id: "GLM-4.7" }],
-    "快手": [{ id: "kat-coder-pro-v1" }],
-    "腾讯云": [
-        { id: "glm-5", note: "默认" },
-        { id: "tc-code-latest", note: "Auto" },
-        { id: "hunyuan-2.0-instruct" },
-        { id: "hunyuan-2.0-thinking" },
-        { id: "hunyuan-t1" },
-        { id: "hunyuan-turbos" },
-        { id: "minimax-m2.5" },
-        { id: "kimi-k2.5" },
-    ],
-    "阿里云": [
-        { id: "qwen3.5-plus", note: "支持图片理解" },
-        { id: "kimi-k2.5", note: "支持图片理解" },
-        { id: "glm-5" },
-        { id: "MiniMax-M2.5" },
-        { id: "qwen3-max-2026-01-23" },
-        { id: "qwen3-coder-next" },
-        { id: "qwen3-coder-plus" },
-        { id: "glm-4.7" },
-    ],
-};
+
+
 const APP_VERSION = "5.4.2.9920"
 
-// Tool name constants to avoid repeated string arrays
-const TOOL_NAMES = ['claude', 'gemini', 'codex', 'opencode', 'codebuddy', 'cursor', 'iflow', 'kilo'] as const;
-const SKILL_TOOLS = ['claude', 'gemini', 'codex'] as const;
-const isToolTab = (tab: string): boolean => (TOOL_NAMES as readonly string[]).includes(tab);
-const isSkillTool = (tab: string): boolean => (SKILL_TOOLS as readonly string[]).includes(tab);
-
-// Shared badge style for model buttons
-const badgeBaseStyle: React.CSSProperties = {
-    position: 'absolute',
-    top: '-8px',
-    right: '0px',
-    color: 'white',
-    fontSize: '10px',
-    padding: '1px 6px',
-    borderRadius: '999px',
-    fontWeight: 'bold',
-    zIndex: 10,
-    transform: 'scale(0.85)',
-    boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
-    letterSpacing: '0.02em'
-};
-
-// Reusable markdown link component
-const MarkdownLink = ({ node, ...props }: any) => (
-    <a
-        {...props}
-        onClick={(e: React.MouseEvent) => {
-            e.preventDefault();
-            if (props.href) BrowserOpenURL(props.href);
-        }}
-        style={{ cursor: 'pointer', color: '#6366f1', textDecoration: 'underline' }}
-    />
-);
-
-// Localized display names for providers that use non-English ModelName identifiers
-const providerDisplayNames: { [lang: string]: { [key: string]: string } } = {
-    "en": {
-        "摩尔线程": "MooreThreads",
-        "快手": "Kuaishou"
-    },
-    "zh-Hans": {
-        "摩尔线程": "摩尔线程",
-        "快手": "快手"
-    },
-    "zh-Hant": {
-        "摩尔线程": "摩爾線程",
-        "快手": "快手"
-    }
-};
-
-// Get localized display name for a model, falling back to the raw name
-const getModelDisplayName = (modelName: string, lang: string): string => {
-    return providerDisplayNames[lang]?.[modelName] ?? providerDisplayNames["en"]?.[modelName] ?? modelName;
-};
-
-const translations: any = {
-    "en": {
-        "title": "MaClaw",
-        "about": "About",
-        "help": "Help",
-        "cs146s": "Course",
-        "introVideo": "Beginner",
-        "thanks": "Thanks",
-        "hide": "Hide",
-        "launch": "Start Coding",
-        "project": "Project",
-        "projectDir": "Project Directory",
-        "change": "Change",
-        "yoloMode": "Yolo Mode",
-        "dangerouslySkip": "(Dangerously Skip Permissions)",
-        "launchBtn": "Launch Tool",
-        "modelSettings": "PROVIDER SETTINGS",
-        "providerName": "Provider Name",
-        "modelName": "Model ID",
-        "apiKey": "API Key",
-        "personalToken": "Personal Token",
-        "getToken": "Get Token",
-        "getKey": "Get API Key",
-        "enterKey": "Enter API Key",
-        "apiEndpoint": "API Endpoint",
-        "saveChanges": "Save & Close",
-        "saving": "Saving...",
-        "saved": "Saved successfully!",
-        "close": "Close",
-        "back": "Back",
-        "manageProjects": "Projects",
-        "projectManagement": "Project Management",
-        "projectName": "Project Name",
-        "delete": "Delete",
-        "addNewProject": "+ Add New Project",
-        "projectDirError": "Please set a valid Project Directory!",
-        "initializing": "Initializing...",
-        "loadingConfig": "Loading config...",
-        "syncing": "Syncing...",
-        "switched": "Provider switched & synced!",
-        "projectSwitched": "Project switched!",
-        "dirUpdated": "Directory updated!",
-        "langName": "English",
-        "custom": "Custom",
-        "checkUpdate": "Check Update",
-        "noUpdate": "No updates available",
-        "updateAvailable": "Check for new version: ",
-        "foundNewVersion": "Check for new version",
-        "downloadNow": "Download Now",
-        "paste": "Paste",
-        "hideConfig": "Configure",
-        "editConfig": "Configure",
-        "settings": "Settings",
-        "globalSettings": "Global Settings",
-        "language": "Language",
-        "runnerStatus": "Cur",
-        "yoloModeLabel": "Yolo Mode",
-        "adminModeLabel": "As Admin",
-        "rootModeLabel": "As root",
-        "teamModeLabel": "Team Mode",
-        "pythonProjectLabel": "Python Project",
-        "pythonEnvLabel": "Env",
-        "customProviderPlaceholder": "Custom Provider Name",
-        "addCustomProvider": "Add Custom Provider",
-        "removeCustomProvider": "Remove This Provider",
-        "maxCustomProviders": "Maximum 6 custom providers allowed",
-        "cannotRemoveLastCustom": "Cannot remove the last custom provider",
-        "version": "Version",
-        "author": "Author",
-        "checkingUpdate": "Checking for updates...",
-        "downloading": "Downloading...",
-        "downloadCancelled": "Download cancelled",
-        "downloadError": "Download error: {error}",
-        "toolRepairTitle": "Installing Tool",
-        "toolRepairInstalling": "Installing {tool}...",
-        "toolRepairSuccess": "{tool} installed successfully!",
-        "toolRepairFailed": "Failed to install {tool}",
-        "toolRepairVersion": "Version: {version}",
-        "installNow": "Install Now",
-        "downloadAndUpdate": "Download and Update",
-        "cancelDownload": "Cancel",
-        "downloadComplete": "Download complete",
-        "onlineUpdate": "Online Update",
-        "retry": "Retry",
-        "opencode": "OpenCode",
-        "opencodeDesc": "OpenCode AI Programming Assistant",
-        "codebuddy": "CodeBuddy",
-        "codebuddyDesc": "CodeBuddy AI Assistant",
-        "cursor": "Cursor Agent",
-        "cursorDesc": "Cursor AI Programming Assistant",
-        "iflow": "iFlow CLI",
-        "iflowDesc": "iFlow AI Programming Assistant",
-        "kilo": "Kilo Code CLI",
-        "kiloDesc": "Kilo Code AI Programming Assistant",
-        "bugReport": "Problem Feedback",
-        "businessCooperation": "Business: WeChat znsoft",
-        "original": "Original",
-        "message": "Message",
-        "tutorial": "Tutorial",
-        "gossip": "Gossip",
-        "apiStore": "API Store",
-        "relayService": "Relay",
-        "getApiKey": "Get API Key",
-        "subscription": "Monthly",
-        "danger": "DANGER",
-        "selectAll": "Select All",
-        "copy": "Copy",
-        "cut": "Cut",
-        "contextPaste": "Paste",
-        "forward": "Relay",
-        "customized": "Custom",
-        "originalFlag": "Native",
-        "monthly": "Monthly",
-        "premium": "Paid",
-        "quickStart": "Tutorial",
-        "manual": "Materials",
-        "officialWebsite": "Official Website",
-        "dontShowAgain": "Don't show again",
-        "showWelcomePage": "Show Welcome Page",
-        "refreshMessage": "Refresh",
-        "refreshing": "🔄 Fetching latest messages...",
-        "refreshSuccess": "✅ Refresh successful!",
-        "refreshFailed": "❌ Refresh failed: ",
-        "lastUpdate": "Last Update: ",
-        "startupTitle": "Welcome to MaClaw",
-
-        "showMore": "Show More",
-        "showLess": "Show Less",
-        "installLog": "View Log",
-        "installLogTitle": "Installation Logs",
-        "sendLog": "Send Log",
-        "sendLogSubject": "MaClaw Environment Log",
-        "confirmDelete": "Confirm Delete",
-        "confirmDeleteMessage": "Are you sure you want to delete provider \"{name}\"?",
-        "confirmSendLog": "Confirm Send",
-        "confirmSendLogMessage": "No errors detected in logs. Send anyway?",
-        "cancel": "Cancel",
-        "confirm": "Confirm",
-        "slogan": "Master your code, seize the machine.",
-        "maclawLLMPopupTitle": "Let's get MaClaw ready!",
-        "maclawLLMPopupDesc": "Two quick steps to unlock remote coding.",
-        "maclawLLMStep1Title": "Configure LLM",
-        "maclawLLMStep1Desc": "Connect an LLM provider so MaClaw can think.",
-        "maclawLLMApplyLobster": "Get a free Lobster Plan",
-        "maclawLLMGoSettings": "I have an API key",
-        "maclawLLMStep2Title": "Register Remote & Bind Feishu",
-        "maclawLLMStep2Desc": "Register your device and bind Feishu to enable remote control.",
-        "maclawLLMGoRemote": "Go to Remote Settings",
-        "maclawLLMReadyHint": "The AI assistant ring (left sidebar) lights up once you're all set.",
-        "proxySettings": "Proxy",
-        "proxyHost": "Proxy Host",
-        "proxyPort": "Proxy Port",
-        "proxyUsername": "Username (Optional)",
-        "proxyPassword": "Password (Optional)",
-        "proxyMode": "Proxy",
-        "proxyNotConfigured": "Proxy not configured. Please configure proxy settings first.",
-        "useDefaultProxy": "Use default proxy settings",
-        "proxyHostPlaceholder": "e.g., 192.168.1.1 or proxy.company.com",
-        "proxyPortPlaceholder": "e.g., 8080",
-        "proxyProtocol": "Protocol",
-        "proxyBypass": "Bypass List",
-        "proxyBypassPlaceholder": "e.g., localhost;127.*;10.*;192.168.*",
-        "proxyBypassHint": "Semicolon-separated. Addresses matching these patterns will bypass the proxy.",
-        "proxyEnabled": "Enable Proxy",
-        "proxyScopeMaclaw": "MacClaw (LLM API calls)",
-        "proxyScopeCodingTools": "Coding Tools (macOS/Linux only)",
-        "proxyScopeAgent": "Agent (web_search / web_fetch)",
-        "proxyScopeTitle": "Proxy Scope",
-        "remoteControl": "Remote Control",
-        "remoteControlDesc": "Configure MaClaw remote diagnostics, Hub connection, and remote session control.",
-        "remoteRefresh": "Refresh",
-        "remoteRunReadiness": "Run Readiness",
-        "remoteRunConpty": "Run ConPTY Probe",
-        "remoteRunLaunchProbe": "Run {tool} Launch Probe",
-        "remoteRunFullSmoke": "Run Full Smoke",
-        "remoteActivation": "Registration",
-        "remoteActivated": "Registered",
-        "remoteNotActivated": "Not Registered",
-        "remoteRegister": "Register",
-        "remoteEmailNotConfigured": "Remote email not configured",
-        "remoteHub": "Hub",
-        "remoteConnected": "Connected",
-        "remoteDisconnected": "Disconnected",
-        "remoteNoHubUrl": "No hub URL",
-        "remoteReadiness": "Readiness",
-        "remoteReady": "Ready",
-        "remoteNeedsAttention": "Needs Attention",
-        "remoteNotRun": "Not Run",
-        "remoteLaunch": "Launch",
-        "remotePassed": "Passed",
-        "remoteFailed": "Failed",
-        "remoteSmoke": "Smoke",
-        "remoteRouting": "Remote Routing",
-        "remoteEnableLaunchPath": "Enable remote launch path",
-        "remoteHubUrl": "Hub URL",
-        "remoteHubCenterUrl": "Hub Center URL",
-        "remoteEmail": "Remote Email",
-        "remoteBindEmail": "Bind Email",
-        "remoteNotInstalled": "Not installed",
-        "remoteActivating": "Registering...",
-        "remoteActivate": "Register Remote",
-        "remoteStarting": "Starting...",
-        "remoteStartTool": "Start Remote",
-        "remoteStopTool": "Stop Remote",
-        "remoteUnavailable": "Unavailable: {reason}",
-        "remoteInstallingTool": "Installing {tool}...",
-        "remoteInstallTool": "Install {tool}",
-        "remoteReconnecting": "Reconnecting...",
-        "remoteReconnectHub": "Reconnect Hub",
-        "remoteClearing": "Clearing...",
-        "remoteClearActivation": "Clear Registration",
-        "remoteReRegister": "Re-register",
-        "remoteToolPath": "Tool path",
-        "remoteNextStep": "Next Step",
-        "remoteLaunchProject": "Launch project",
-        "remoteNoProjectSelected": "No project selected",
-        "remoteReadinessWarnings": "Readiness Warnings",
-        "remoteNoReadinessIssues": "No readiness issues detected.",
-        "remoteProbeNotRun": "Probe not run yet.",
-        "remoteConptyAvailable": "ConPTY available for remote {tool} sessions.",
-        "remoteConptyUnavailable": "ConPTY unavailable.",
-        "remoteLaunchProbeTitle": "{tool} Launch Probe",
-        "remoteLaunchProbePending": "{tool} launch probe pending",
-        "remoteCommandReady": "Command ready: {value}",
-        "remoteLaunchProbeFailed": "Launch probe failed",
-        "remoteFullSmoke": "Full Smoke",
-        "remoteFullSmokeNotRun": "Full smoke has not been run yet.",
-        "remoteTool": "Tool",
-        "remoteProviderLabel": "Provider",
-        "remoteProviderDefault": "Default",
-        "remotePty": "PTY",
-        "remoteSupported": "Supported",
-        "remoteUnavailableShort": "Unavailable",
-        "remoteSession": "Session",
-        "remoteHubVisibility": "Hub Visibility",
-        "remoteVerified": "Verified",
-        "remoteNotVerified": "Not verified",
-        "remoteNoImportantEvents": "No important events yet.",
-        "remoteSendInstructionPlaceholder": "Send a remote instruction...",
-        "remoteSend": "Send",
-        "remoteDiagnosticsTitle": "Diagnostics",
-        "remoteManagedSessions": "Managed Remote Sessions",
-        "remoteManagedSessionsDesc": "Desktop-hosted remote sessions ready for Hub and PWA control.",
-        "remoteActiveRecords": "{count} active record(s)",
-        "remoteNoSessions": "No remote sessions yet. Start a remote tool with remote mode enabled to populate this panel.",
-        "remoteCurrentTask": "Current Task",
-        "remoteLastResult": "Last Result",
-        "remoteProgress": "Progress",
-        "remoteRecentActivity": "Recent Activity",
-        "remoteEvent": "Event",
-        "remoteStatusUnknown": "unknown",
-        "remoteSeverityInfo": "info",
-        "remoteToolInstalled": "{tool} installed",
-        "remoteAlreadyInstalled": "{tool} is already installed",
-        "remoteOpenAICompat": "OpenAI Compat",
-        "remoteNativeProtocol": "Native Protocol",
-        "remoteSessionConfig": "Session Config",
-        "remoteStatelessLaunch": "Stateless Launch",
-        "remoteProxyAware": "Proxy Aware",
-        "remoteNoProxySupport": "No Proxy Support",
-        "remoteInterrupt": "Interrupt",
-        "remoteInterruptSent": "Interrupt sent",
-        "remoteInterruptFailed": "Interrupt failed: {error}",
-        "remoteKillSession": "Kill Session",
-        "remoteKillSent": "Kill signal sent",
-        "remoteKillFailed": "Kill failed: {error}",
-        "remoteReadinessFailed": "Remote readiness failed: {error}",
-        "remoteConptyFailed": "ConPTY probe failed: {error}",
-        "remoteLaunchProbeFailedToast": "{tool} launch probe failed: {error}",
-        "remoteSmokeCompleted": "Remote {tool} smoke completed",
-        "remoteSmokeFailed": "Remote {tool} smoke failed: {error}",
-        "remoteEmailRequired": "Remote email is required",
-        "remoteServerRequired": "Remote server is required",
-        "remoteActivateFirst": "Please register remote access first",
-        "remoteActivationDialogTitle": "Register Remote",
-        "remoteActivationDialogDesc": "Enter a Hub URL directly, or load your registered Hubs from HubCenter and choose one.",
-        "remoteActivateAndLaunch": "Register and Launch",
-        "remoteLoadRegisteredHubs": "Load Registered Hubs",
-        "remoteLoadingRegisteredHubs": "Loading Hubs...",
-        "remoteSelectRegisteredHub": "Registered Hub",
-        "remoteNoRegisteredHubs": "No registered Hubs found",
-        "remoteLoadHubListFailed": "Failed to load Hub list: {error}",
-        "remoteHubManualOrSelect": "You can paste a Hub URL directly, or pick one from the HubCenter list above.",
-        "remoteActivationCompleted": "Remote registration completed",
-        "remoteActivationFailed": "Remote registration failed: {error}",
-        "remoteReconnectFailed": "Reconnect failed: {error}",
-        "remoteSelectProjectFirst": "Please select a launch project first",
-        "remoteStartFailed": "Start failed: {error}",
-        "remoteInstallFailed": "Install failed: {error}",
-        "remoteSaveFailed": "Save failed: {error}",
-        "remoteSendFailed": "Send failed: {error}",
-        "remoteActivationCleared": "Remote registration cleared",
-        "remoteClearFailed": "Clear failed: {error}",
-        "remoteActivateStep": "Register Remote",
-        "remoteActivateStepDesc": "Register the selected email and machine before starting remote sessions.",
-        "remoteReconnectStep": "Reconnect Hub",
-        "remoteReconnectStepDesc": "Hub URL is configured but the connection is currently offline.",
-        "remoteConfigureModelStep": "Configure model",
-        "remoteConfigureModelStepDesc": "Open the provider settings and save an API key plus model before launching remotely.",
-        "remoteRunReadinessStep": "Run Readiness",
-        "remoteRunReadinessStepDesc": "Collect the latest diagnostics for the selected tool and project.",
-        "remoteRunReadinessAgain": "Run Readiness Again",
-        "remoteRunReadinessAgainDesc": "Refresh diagnostics after fixing setup issues.",
-        "remoteModeLabel": "Remote",
-        "remoteModeDesc": "Start this tool through Hub for phone control",
-        "localModeLabel": "Local",
-        "launchModeLabel": "Mode",
-        "defaultLaunchModeLabel": "Default Launch Mode",
-        "defaultLaunchModeDesc": "Choose the default working mode for the tool launch area",
-        "uiModeLabel": "Interface Mode",
-        "uiModePro": "Pro",
-        "uiModeLite": "Lite",
-        "uiModeProDesc": "Full coding toolchain for developers",
-        "uiModeLiteDesc": "AI assistant & skill extensions, coding tools hidden",
-        "freeload": "Free",
-        "bigSpender": "Big Spender",
-        "skills": "Skills",
-        "addSkill": "Add Skill",
-        "skillName": "Skill Name",
-        "skillDesc": "Description",
-        "skillType": "Type",
-        "skillAddress": "Skill ID",
-        "skillZip": "Zip Package",
-        "skillPath": "Path",
-        "skillValue": "Value/Path",
-        "browse": "Browse",
-        "skillAdded": "Skill added successfully",
-        "skillDeleted": "Skill deleted successfully",
-        "confirmDeleteSkill": "Are you sure you want to delete this skill?",
-        "noSkills": "No skills added yet.",
-        "installSkills": "Install Skills",
-        "installLocation": "Install Location:",
-        "userLocation": "User",
-        "projectLocation": "Project",
-        "selectSkillsToInstall": "Skill Installation",
-        "installDefaultMarketplace": "Install Default Marketplace",
-        "install": "Install",
-        "installed": "Installed",
-        "installing": "Installing...",
-        "installNotImplemented": "Installation functionality is not yet implemented.",
-        "pauseEnvCheck": "Skip Env Check",
-        "useWindowsTerminal": "Use Windows Terminal",
-        "envCheckIntervalPrefix": "Every",
-        "envCheckIntervalSuffix": "days, remind to check environment",
-        "envCheckDueTitle": "Environment Check Reminder",
-        "envCheckDueMessage": "It has been {days} days since the last environment check. Would you like to check now?",
-        "recheckEnv": "Manual Check & Update Environment",
-        "skillRequiredError": "Name and Address/Path are required!",
-        "skillZipOnlyError": "Gemini and Codex only support zip package skills.",
-        "skillAddError": "Error adding skill: {error}",
-        "skillDeleteError": "Error deleting skill: {error}",
-        "copyLog": "Copy Log",
-        "logsCopied": "Logs copied to clipboard",
-        "currentVersion": "Current Version",
-        "latestVersion": "Latest Version",
-        "foundNewVersionMsg": "New version found. Download and update now?",
-        "isLatestVersion": "Already up to date",
-        "billing": "Billing",
-        "placeholderName": "e.g., Frontend Design",
-        "placeholderDesc": "Description...",
-        "placeholderAddress": "@anthropics/...",
-        "placeholderZip": "Select .zip file",
-        "cannotDeleteSystemSkill": "System skill package cannot be deleted.",
-        "systemDefault": "System Default",
-        "envCheckTitle": "MaClaw Environment Setup",
-        "envCheckExitWarningTitle": "Warning: Exit During Environment Setup",
-        "envCheckExitWarningMessage": "Exiting now will result in incomplete environment setup, and the application may not function properly.\n\nOnly exit in extreme cases (such as infinite loops or unresponsive behavior).\n\nAre you sure you want to exit?",
-        "envCheckExitConfirm": "Yes, Exit",
-        "envCheckExitCancel": "No, Continue Setup",
-        "selectProvider": "Select Provider",
-        "knownProviders": "Known Providers",
-        "providerList": "Provider List",
-        "selectProviderTitle": "Select API Provider",
-        "chinaProviders": "China Providers",
-        "globalProviders": "Global Providers",
-        "allProviders": "All Providers",
-        "filterByRegion": "Filter by Region",
-        "projectSearch": "Search",
-        "projectSearchPlaceholder": "Search by name or path",
-        "projectSortDefault": "Default order",
-        "projectSortNameAsc": "Name A-Z",
-        "projectSortNameDesc": "Name Z-A",
-        "projectSortPathAsc": "Path A-Z",
-        "projectSortPathDesc": "Path Z-A",
-        "projectNoResults": "No projects matched",
-        "projectShowing": "Showing",
-        "projectTotal": "total",
-        "prevPage": "Prev",
-        "nextPage": "Next",
-        "mcpTabLocal": "Local (Stdio)",
-        "mcpTabRemote": "Remote (HTTP)",
-        "mcpLocalCount": "local MCP server(s)",
-        "mcpImportJson": "Import JSON",
-        "mcpAdd": "+ Add",
-        "mcpLoading": "Loading...",
-        "mcpNoLocalServers": "No local MCP Servers. Click \"+ Add\" or \"Import JSON\" to configure.",
-        "mcpDisabled": "Disabled",
-        "mcpRunning": "Running",
-        "mcpNotRunning": "Not running",
-        "mcpEnable": "Enable",
-        "mcpDisable": "Disable",
-        "mcpEdit": "Edit",
-        "mcpDelete": "Delete",
-        "mcpEnvVars": "Env vars",
-        "mcpConfirmDelete": "Confirm Delete",
-        "mcpConfirmDeleteLocal": "Are you sure you want to delete local MCP Server \"{name}\"?",
-        "mcpDeleting": "Deleting...",
-        "mcpImportJsonTitle": "Import JSON Config",
-        "mcpImportJsonDesc": "Paste standard MCP JSON config, format like:",
-        "mcpImportJsonPlaceholder": "Paste JSON config...",
-        "mcpJsonFormatError": "JSON format error",
-        "mcpJsonStructureError": "Invalid format, expected { mcpServers: { name: { command, args, env } } }",
-        "mcpImporting": "Importing...",
-        "mcpImport": "Import",
-        "mcpEditLocalServer": "Edit Local MCP Server",
-        "mcpAddLocalServer": "Add Local MCP Server",
-        "mcpNameLabel": "Name",
-        "mcpNameRequired": "Name is required",
-        "mcpCommandLabel": "Command",
-        "mcpCommandRequired": "Command is required",
-        "mcpArgsLabel": "Args (one per line)",
-        "mcpEnvLabel": "Environment Variables",
-        "mcpAddEnvVar": "+ Add Env Var",
-        "mcpSubmitting": "Submitting...",
-        "mcpSave": "Save",
-        "mcpServersRegistered": "registered MCP server(s)",
-        "mcpRegisterServer": "+ Register MCP Server",
-        "mcpNoRemoteServers": "No registered MCP Servers",
-        "mcpColName": "Name",
-        "mcpColEndpoint": "Endpoint URL",
-        "mcpColHealth": "Health",
-        "mcpColTools": "Tools",
-        "mcpColActions": "Actions",
-        "mcpHealthy": "Healthy",
-        "mcpSlow": "Slow",
-        "mcpUnavailable": "Unavailable",
-        "mcpCollapse": "Collapse",
-        "mcpTools": "Tools",
-        "mcpConfirmDeleteRemote": "Are you sure you want to unregister MCP Server \"{name}\"? This cannot be undone.",
-        "mcpEditServer": "Edit MCP Server",
-        "mcpRegisterServerTitle": "Register MCP Server",
-        "mcpEndpointLabel": "Endpoint URL",
-        "mcpEndpointRequired": "Endpoint URL is required",
-        "mcpAuthType": "Auth Type",
-        "mcpAuthNone": "None",
-        "mcpAuthApiKey": "API Key",
-        "mcpAuthBearer": "Bearer Token",
-        "mcpEnterApiKey": "Enter API Key",
-        "mcpEnterBearer": "Enter Bearer Token",
-        "mcpRegister": "Register",
-        "mcpHealthRecord": "Health Check Record",
-        "mcpHealthStatus": "Status",
-        "mcpFailCount": "Fail count",
-        "mcpLastCheck": "Last check",
-        "mcpCheckNow": "Check Now",
-        "mcpLoadingTools": "Loading tools...",
-        "mcpToolList": "Tool List",
-        "mcpNoDescription": "No description",
-        "mcpNoTools": "No tools"
-    },
-    "zh-Hans": {
-        "title": "码卡龙",
-        "about": "关于",
-        "help": "帮助",
-        "manual": "文档指南",
-        "cs146s": "在线课程",
-        "introVideo": "入门视频",
-        "thanks": "鸣谢",
-        "hide": "隐藏",
-        "launch": "开始编程",
-        "project": "项目",
-        "projectDir": "项目目录",
-        "change": "更改",
-        "yoloMode": "Yolo 模式",
-        "dangerouslySkip": "(危险：跳过权限检查)",
-        "launchBtn": "启动工具",
-        "modelSettings": "服务商配置",
-        "providerName": "服务商名称",
-        "modelName": "模型名称/ID",
-        "apiKey": "API Key",
-        "personalToken": "个人令牌",
-        "getToken": "获取令牌",
-        "getKey": "获取 API Key",
-        "enterKey": "输入 API Key",
-        "apiEndpoint": "API 端点",
-        "saveChanges": "保存并关闭",
-        "saving": "保存中...",
-        "saved": "保存成功！",
-        "close": "关闭",
-        "manageProjects": "项目管理",
-        "projectManagement": "项目管理",
-        "projectName": "项目名称",
-        "delete": "删除",
-        "addNewProject": "+ 添加新项目",
-        "projectDirError": "请设置有效的项目目录！",
-        "initializing": "初始化中...",
-        "loadingConfig": "加载配置中...",
-        "syncing": "正在同步...",
-        "switched": "服务商已切换并同步！",
-        "projectSwitched": "项目已切换！",
-        "dirUpdated": "目录已更新！",
-        "langName": "简体中文",
-        "custom": "自定义",
-        "checkUpdate": "检查更新",
-        "noUpdate": "无可用更新",
-        "updateAvailable": "检查新版本: ",
-        "foundNewVersion": "检查新版本",
-        "downloadNow": "立即下载",
-        "paste": "粘贴",
-        "hideConfig": "配置",
-        "editConfig": "配置",
-        "settings": "设置",
-        "globalSettings": "全局设置",
-        "language": "界面语言",
-        "runnerStatus": "环境",
-        "yoloModeLabel": "Yolo 模式",
-        "adminModeLabel": "管理员权限",
-        "rootModeLabel": "Root 权限",
-        "teamModeLabel": "团队模式",
-        "pythonProjectLabel": "Python 项目",
-        "pythonEnvLabel": "环境",
-        "customProviderPlaceholder": "自定义服务商名称",
-        "addCustomProvider": "添加自定义服务商",
-        "removeCustomProvider": "删除此服务商",
-        "maxCustomProviders": "最多只能添加6个自定义服务商",
-        "cannotRemoveLastCustom": "不能删除最后一个自定义服务商",
-        "version": "版本",
-        "author": "作者",
-        "checkingUpdate": "正在检查更新...",
-        "downloading": "正在下载...",
-        "downloadCancelled": "下载已取消",
-        "downloadError": "下载错误: {error}",
-        "toolRepairTitle": "安装工具",
-        "toolRepairInstalling": "正在安装 {tool}...",
-        "toolRepairSuccess": "{tool} 安装成功！",
-        "toolRepairFailed": "安装 {tool} 失败",
-        "toolRepairVersion": "版本: {version}",
-        "installNow": "立即安装",
-        "downloadAndUpdate": "下载并更新",
-        "cancelDownload": "取消下载",
-        "downloadComplete": "下载完成",
-        "onlineUpdate": "在线更新",
-        "retry": "重试",
-        "opencode": "OpenCode",
-        "opencodeDesc": "OpenCode AI 辅助编程",
-        "codebuddy": "CodeBuddy",
-        "codebuddyDesc": "CodeBuddy 编程助手",
-        "cursor": "Cursor Agent",
-        "cursorDesc": "Cursor AI 辅助编程",
-        "iflow": "iFlow CLI",
-        "iflowDesc": "iFlow AI 辅助编程",
-        "kilo": "Kilo Code CLI",
-        "kiloDesc": "Kilo Code AI 辅助编程",
-        "bugReport": "问题反馈",
-        "businessCooperation": "商业合作：微信 znsoft",
-        "original": "原厂",
-        "message": "消息",
-        "tutorial": "教程",
-        "gossip": "八卦",
-        "apiStore": "API商店",
-        "relayService": "转发",
-        "getApiKey": "获取API Key",
-        "subscription": "包月",
-        "danger": "危险",
-        "selectAll": "全选",
-        "copy": "复制",
-        "cut": "剪切",
-        "contextPaste": "粘贴",
-        "refreshMessage": "刷新",
-        "refreshing": "🔄 正在从服务器获取最新消息...",
-        "refreshSuccess": "✅ 获取新消息成功",
-        "refreshFailed": "❌ 刷新失败：",
-        "lastUpdate": "最后更新：",
-        "forward": "转发",
-        "customized": "定制",
-        "originalFlag": "原生",
-        "monthly": "包月",
-        "premium": "氪金",
-        "quickStart": "新手教学",
-        "officialWebsite": "官方网站",
-        "dontShowAgain": "下次不再显示",
-        "showWelcomePage": "显示欢迎页",
-        "startupTitle": "欢迎使用码卡龙",
-        "showMore": "更多",
-        "showLess": "收起",
-        "installLog": "查看日志",
-        "installLogTitle": "环境检查与安装日志",
-        "sendLog": "发送日志",
-        "sendLogSubject": "MaClaw环境安装日志",
-        "confirmDelete": "确认删除",
-        "confirmDeleteMessage": "确定要删除服务商 \"{name}\" 吗？",
-        "confirmSendLog": "确认发送",
-        "confirmSendLogMessage": "日志中没有检测到错误，是否仍要发送日志？",
-        "cancel": "取消",
-        "confirm": "确定",
-        "slogan": "让远程编程像品尝甜点一样丝滑。",
-        "maclawLLMPopupTitle": "来，配置一下 MaClaw 吧",
-        "maclawLLMPopupDesc": "两步开启远程编程。",
-        "maclawLLMStep1Title": "配置 LLM",
-        "maclawLLMStep1Desc": "连接 LLM 服务商，让 MaClaw 能思考。",
-        "maclawLLMApplyLobster": "免费领取龙虾套餐",
-        "maclawLLMGoSettings": "我已有 API Key",
-        "maclawLLMStep2Title": "移动端注册 & 绑定飞书",
-        "maclawLLMStep2Desc": "注册设备并绑定飞书，即可通过移动端操控。",
-        "maclawLLMGoRemote": "前往远程设置",
-        "maclawLLMReadyHint": "左侧 AI 助手圆圈全亮，说明一切就绪。",
-        "proxySettings": "代理设置",
-        "proxyHost": "代理主机",
-        "proxyPort": "代理端口",
-        "proxyUsername": "用户名 (可选)",
-        "proxyPassword": "密码 (可选)",
-        "proxyMode": "代理",
-        "proxyNotConfigured": "代理未配置。请先配置代理设置。",
-        "useDefaultProxy": "使用默认代理设置",
-        "proxyHostPlaceholder": "例如：192.168.1.1 或 proxy.company.com",
-        "proxyPortPlaceholder": "例如：8080",
-        "proxyProtocol": "协议",
-        "proxyBypass": "绕过地址",
-        "proxyBypassPlaceholder": "例如：localhost;127.*;10.*;192.168.*",
-        "proxyBypassHint": "分号分隔。匹配的地址将绕过代理。",
-        "proxyEnabled": "启用代理",
-        "proxyScopeMaclaw": "MacClaw（大模型 API 调用）",
-        "proxyScopeCodingTools": "编程工具（仅 macOS/Linux 生效）",
-        "proxyScopeAgent": "智能体（web_search / web_fetch）",
-        "proxyScopeTitle": "使用范围",
-        "remoteControl": "远程注册",
-        "remoteControlDesc": "配置 MaClaw 远程诊断、Hub 连接和远程会话控制。",
-        "remoteRefresh": "刷新",
-        "remoteRunReadiness": "运行就绪检查",
-        "remoteRunConpty": "运行 ConPTY 检测",
-        "remoteRunLaunchProbe": "运行 {tool} 启动探测",
-        "remoteRunFullSmoke": "运行完整冒烟测试",
-        "remoteActivation": "注册状态",
-        "remoteActivated": "已注册",
-        "remoteNotActivated": "未注册",
-        "remoteRegister": "注册",
-        "remoteEmailNotConfigured": "尚未配置远程邮箱",
-        "remoteHub": "Hub 连接",
-        "remoteConnected": "已连接",
-        "remoteDisconnected": "未连接",
-        "remoteNoHubUrl": "未配置 Hub 地址",
-        "remoteReadiness": "就绪状态",
-        "remoteReady": "已就绪",
-        "remoteNeedsAttention": "需要处理",
-        "remoteNotRun": "未运行",
-        "remoteLaunch": "启动探测",
-        "remotePassed": "通过",
-        "remoteFailed": "失败",
-        "remoteSmoke": "冒烟测试",
-        "remoteRouting": "远程路由",
-        "remoteEnableLaunchPath": "启用远程启动路径",
-        "remoteHubUrl": "Hub 地址",
-        "remoteHubCenterUrl": "Hub Center 地址",
-        "remoteEmail": "远程邮箱",
-        "remoteBindEmail": "绑定邮件",
-        "remoteNotInstalled": "未安装",
-        "remoteActivating": "注册中...",
-        "remoteActivate": "注册移动端",
-        "remoteStarting": "启动中...",
-        "remoteStartTool": "启动远程",
-        "remoteStopTool": "停止远程",
-        "remoteUnavailable": "不可用：{reason}",
-        "remoteInstallingTool": "正在安装 {tool}...",
-        "remoteInstallTool": "安装 {tool}",
-        "remoteReconnecting": "重连中...",
-        "remoteReconnectHub": "重连 Hub",
-        "remoteClearing": "清除中...",
-        "remoteClearActivation": "清除注册状态",
-        "remoteReRegister": "重新注册",
-        "remoteToolPath": "工具路径",
-        "remoteNextStep": "下一步",
-        "remoteLaunchProject": "启动项目",
-        "remoteNoProjectSelected": "未选择项目",
-        "remoteReadinessWarnings": "就绪检查提示",
-        "remoteNoReadinessIssues": "未检测到就绪问题。",
-        "remoteProbeNotRun": "尚未运行检测。",
-        "remoteConptyAvailable": "{tool} 远程会话已支持 ConPTY。",
-        "remoteConptyUnavailable": "ConPTY 不可用。",
-        "remoteLaunchProbeTitle": "{tool} 启动探测",
-        "remoteLaunchProbePending": "{tool} 启动探测尚未运行",
-        "remoteCommandReady": "命令已就绪：{value}",
-        "remoteLaunchProbeFailed": "启动探测失败",
-        "remoteFullSmoke": "完整冒烟测试",
-        "remoteFullSmokeNotRun": "尚未运行完整冒烟测试。",
-        "remoteTool": "工具",
-        "remoteProviderLabel": "服务商",
-        "remoteProviderDefault": "默认",
-        "remotePty": "PTY",
-        "remoteSupported": "支持",
-        "remoteUnavailableShort": "不可用",
-        "remoteSession": "会话",
-        "remoteHubVisibility": "Hub 可见性",
-        "remoteVerified": "已验证",
-        "remoteNotVerified": "未验证",
-        "remoteNoImportantEvents": "暂时没有重要事件。",
-        "remoteSendInstructionPlaceholder": "向远程会话发送指令...",
-        "remoteSend": "发送",
-        "remoteInterrupt": "中断",
-        "remoteInterruptSent": "已发送中断",
-        "remoteInterruptFailed": "中断失败：{error}",
-        "remoteKillSession": "结束会话",
-        "remoteKillSent": "已发送结束信号",
-        "remoteKillFailed": "结束失败：{error}",
-        "remoteReadinessFailed": "远程就绪检查失败：{error}",
-        "remoteConptyFailed": "ConPTY 检测失败：{error}",
-        "remoteLaunchProbeFailedToast": "{tool} 启动探测失败：{error}",
-        "remoteSmokeCompleted": "远程 {tool} 冒烟测试已完成",
-        "remoteSmokeFailed": "远程 {tool} 冒烟测试失败：{error}",
-        "remoteEmailRequired": "必须填写远程邮箱",
-        "remoteServerRequired": "必须先配置远程服务器地址",
-        "remoteActivateFirst": "请先完成远程注册",
-        "remoteActivationDialogTitle": "远程注册",
-        "remoteActivationDialogDesc": "你可以直接输入 Hub 地址，或者先从 HubCenter 加载已注册的 Hub 再选择一个。",
-        "remoteActivateAndLaunch": "注册并启动",
-        "remoteLoadRegisteredHubs": "加载已注册 Hub",
-        "remoteLoadingRegisteredHubs": "正在加载 Hub...",
-        "remoteSelectRegisteredHub": "已注册 Hub",
-        "remoteNoRegisteredHubs": "没有可用的已注册 Hub",
-        "remoteLoadHubListFailed": "加载 Hub 列表失败：{error}",
-        "remoteHubManualOrSelect": "你可以直接粘贴 Hub 地址，也可以从上面的 HubCenter 列表中选择。",
-        "remoteActivationCompleted": "远程注册已完成",
-        "remoteActivationFailed": "远程注册失败：{error}",
-        "remoteReconnectFailed": "重连失败：{error}",
-        "remoteSelectProjectFirst": "请先选择一个启动项目",
-        "remoteStartFailed": "启动失败：{error}",
-        "remoteInstallFailed": "安装失败：{error}",
-        "remoteSaveFailed": "保存失败：{error}",
-        "remoteSendFailed": "发送失败：{error}",
-        "remoteActivationCleared": "远程注册状态已清除",
-        "remoteClearFailed": "清除失败：{error}",
-        "remoteActivateStep": "远程注册",
-        "remoteActivateStepDesc": "启动远程会话前，先登记邮箱和设备信息。",
-        "remoteReconnectStep": "重连 Hub",
-        "remoteReconnectStepDesc": "已配置 Hub 地址，但当前连接处于离线状态。",
-        "remoteConfigureModelStep": "配置模型",
-        "remoteConfigureModelStepDesc": "先打开服务商配置，保存 API Key 和模型后再远程启动。",
-        "remoteRunReadinessStep": "运行就绪检查",
-        "remoteRunReadinessStepDesc": "为当前工具和项目采集最新诊断信息。",
-        "remoteRunReadinessAgain": "重新运行就绪检查",
-        "remoteRunReadinessAgainDesc": "修复问题后重新刷新诊断结果。",
-        "remoteModeLabel": "远程",
-        "remoteModeDesc": "通过 Hub 启动此工具，便于手机控制",
-        "localModeLabel": "本地",
-        "launchModeLabel": "方式",
-        "defaultLaunchModeLabel": "默认启动模式",
-        "defaultLaunchModeDesc": "选择工具启动区的默认工作模式",
-        "uiModeLabel": "界面模式",
-        "uiModePro": "专业模式",
-        "uiModeLite": "简洁模式",
-        "uiModeProDesc": "包含完整编程工具链，适合开发者",
-        "uiModeLiteDesc": "专注 AI 助手与技能扩展，隐藏编程工具",
-        "freeload": "白嫖中",
-        "bigSpender": "大力氪金",
-        "skills": "技能",
-        "addSkill": "添加技能",
-        "skillName": "技能名称",
-        "skillDesc": "描述",
-        "skillType": "类型",
-        "skillAddress": "Skill ID",
-        "skillZip": "Zip包",
-        "skillPath": "路径",
-        "skillValue": "值/路径",
-        "browse": "浏览",
-        "skillAdded": "技能添加成功",
-        "skillDeleted": "技能删除成功",
-        "confirmDeleteSkill": "确定要删除此技能吗？",
-        "noSkills": "暂无技能。",
-        "installSkills": "安装技能",
-        "installLocation": "安装位置:",
-        "userLocation": "用户",
-        "projectLocation": "项目",
-        "selectSkillsToInstall": "技能安装",
-        "installDefaultMarketplace": "安装默认市场",
-        "install": "安装",
-        "installed": "已安装",
-        "installing": "正在安装...",
-        "installNotImplemented": "安装功能暂未实现。",
-        "pauseEnvCheck": "跳过环境检测",
-        "useWindowsTerminal": "使用 Windows Terminal",
-        "envCheckIntervalPrefix": "每隔",
-        "envCheckIntervalSuffix": "日提醒检测环境",
-        "envCheckDueTitle": "环境检测提醒",
-        "envCheckDueMessage": "距离上次环境检测已过{days}天，是否现在检测？",
-        "recheckEnv": "手动检测更新运行环境",
-        "skillRequiredError": "名称和地址/路径是必填项！",
-        "skillZipOnlyError": "Gemini 和 Codex 仅支持 Zip 包式技能。",
-        "skillAddError": "添加技能出错: {error}",
-        "skillDeleteError": "删除技能出错: {error}",
-        "copyLog": "复制日志",
-        "logsCopied": "日志已复制到剪贴板",
-        "currentVersion": "当前版本",
-        "latestVersion": "最新版本",
-        "foundNewVersionMsg": "检查到新版本，是否立即下载更新？",
-        "isLatestVersion": "已是最新版本",
-        "billing": "计费",
-        "placeholderName": "例如：前端设计",
-        "placeholderDesc": "描述...",
-        "placeholderAddress": "@anthropics/...",
-        "placeholderZip": "选择 .zip 文件",
-        "cannotDeleteSystemSkill": "系统技能包不能删除。",
-        "systemDefault": "系统默认",
-        "envCheckTitle": "MaClaw 运行环境检测安装",
-        "envCheckExitWarningTitle": "警告：退出环境安装",
-        "envCheckExitWarningMessage": "退出将导致环境安装不完整，程序无法正常运行。\n\n只有在程序死循环等极端情况下才建议退出。\n\n确定要退出吗？",
-        "envCheckExitConfirm": "是的，退出",
-        "envCheckExitCancel": "否，继续安装",
-        "selectProvider": "选择服务商",
-        "knownProviders": "已知服务商",
-        "providerList": "服务商列表",
-        "selectProviderTitle": "选择 API 服务商",
-        "chinaProviders": "国内服务商",
-        "globalProviders": "国外服务商",
-        "allProviders": "全部服务商",
-        "filterByRegion": "按地区筛选",
-        "projectSearch": "搜索",
-        "projectSearchPlaceholder": "按名称或路径搜索",
-        "projectSortDefault": "默认顺序",
-        "projectSortNameAsc": "名称 A-Z",
-        "projectSortNameDesc": "名称 Z-A",
-        "projectSortPathAsc": "路径 A-Z",
-        "projectSortPathDesc": "路径 Z-A",
-        "projectNoResults": "没有匹配的项目",
-        "projectShowing": "显示",
-        "projectTotal": "总计",
-        "prevPage": "上一页",
-        "nextPage": "下一页",
-        "mcpTabLocal": "本地 (Stdio)",
-        "mcpTabRemote": "远程 (HTTP)",
-        "mcpLocalCount": "个本地 MCP Server",
-        "mcpImportJson": "导入 JSON",
-        "mcpAdd": "+ 添加",
-        "mcpLoading": "加载中...",
-        "mcpNoLocalServers": "暂无本地 MCP Server，点击「+ 添加」或「导入 JSON」来配置",
-        "mcpDisabled": "已禁用",
-        "mcpRunning": "运行中",
-        "mcpNotRunning": "未运行",
-        "mcpEnable": "启用",
-        "mcpDisable": "禁用",
-        "mcpEdit": "编辑",
-        "mcpDelete": "删除",
-        "mcpEnvVars": "环境变量",
-        "mcpConfirmDelete": "确认删除",
-        "mcpConfirmDeleteLocal": "确定要删除本地 MCP Server「{name}」吗？",
-        "mcpDeleting": "删除中...",
-        "mcpImportJsonTitle": "导入 JSON 配置",
-        "mcpImportJsonDesc": "粘贴标准 MCP JSON 配置，支持格式如：",
-        "mcpImportJsonPlaceholder": "粘贴 JSON 配置...",
-        "mcpJsonFormatError": "JSON 格式错误",
-        "mcpJsonStructureError": "格式不正确，需要 { mcpServers: { name: { command, args, env } } }",
-        "mcpImporting": "导入中...",
-        "mcpImport": "导入",
-        "mcpEditLocalServer": "编辑本地 MCP Server",
-        "mcpAddLocalServer": "添加本地 MCP Server",
-        "mcpNameLabel": "名称",
-        "mcpNameRequired": "名称不能为空",
-        "mcpCommandLabel": "命令 (command)",
-        "mcpCommandRequired": "命令不能为空",
-        "mcpArgsLabel": "参数 (args)，每行一个",
-        "mcpEnvLabel": "环境变量 (env)",
-        "mcpAddEnvVar": "+ 添加环境变量",
-        "mcpSubmitting": "提交中...",
-        "mcpSave": "保存",
-        "mcpServersRegistered": "个已注册 MCP Server",
-        "mcpRegisterServer": "+ 注册 MCP Server",
-        "mcpNoRemoteServers": "暂无已注册的 MCP Server",
-        "mcpColName": "名称",
-        "mcpColEndpoint": "端点 URL",
-        "mcpColHealth": "健康状态",
-        "mcpColTools": "工具数",
-        "mcpColActions": "操作",
-        "mcpHealthy": "健康",
-        "mcpSlow": "缓慢",
-        "mcpUnavailable": "不可用",
-        "mcpCollapse": "收起",
-        "mcpTools": "工具",
-        "mcpConfirmDeleteRemote": "确定要注销 MCP Server「{name}」吗？此操作不可撤销。",
-        "mcpEditServer": "编辑 MCP Server",
-        "mcpRegisterServerTitle": "注册 MCP Server",
-        "mcpEndpointLabel": "端点 URL",
-        "mcpEndpointRequired": "端点 URL 不能为空",
-        "mcpAuthType": "认证方式",
-        "mcpAuthNone": "无认证",
-        "mcpAuthApiKey": "API Key",
-        "mcpAuthBearer": "Bearer Token",
-        "mcpEnterApiKey": "输入 API Key",
-        "mcpEnterBearer": "输入 Bearer Token",
-        "mcpRegister": "注册",
-        "mcpHealthRecord": "健康检查记录",
-        "mcpHealthStatus": "状态",
-        "mcpFailCount": "失败次数",
-        "mcpLastCheck": "最近检查",
-        "mcpCheckNow": "立即检查",
-        "mcpLoadingTools": "加载工具列表...",
-        "mcpToolList": "工具列表",
-        "mcpNoDescription": "无描述",
-        "mcpNoTools": "暂无工具"
-    },
-    "zh-Hant": {
-        "title": "碼卡龍",
-        "about": "關於",
-        "help": "幫助",
-        "manual": "文檔指南",
-        "cs146s": "線上課程",
-        "introVideo": "入門視頻",
-        "thanks": "鳴謝",
-        "hide": "隱藏",
-        "launch": "開始編程",
-        "project": "專案",
-        "projectDir": "專案目錄",
-        "change": "變更",
-        "yoloMode": "Yolo 模式",
-        "dangerouslySkip": "(危險：跳過權限檢查)",
-        "launchBtn": "啟動工具",
-        "modelSettings": "服務商設定",
-        "providerName": "服務商名稱",
-        "modelName": "模型名稱/ID",
-        "apiKey": "API Key",
-        "personalToken": "個人令牌",
-        "getToken": "獲取令牌",
-        "getKey": "獲取 API Key",
-        "enterKey": "輸入 API Key",
-        "apiEndpoint": "API 端點",
-        "saveChanges": "儲存並關閉",
-        "saving": "儲存中...",
-        "saved": "儲存成功！",
-        "close": "關閉",
-        "manageProjects": "專案管理",
-        "projectManagement": "專案管理",
-        "projectName": "專案名稱",
-        "delete": "刪除",
-        "addNewProject": "+ 新增專案",
-        "projectDirError": "請設置有效的專案目錄！",
-        "initializing": "初始化中...",
-        "loadingConfig": "載入設定中...",
-        "syncing": "正在同步...",
-        "switched": "服務商已切換並同步！",
-        "langName": "繁體中文",
-        "custom": "自定義",
-        "checkUpdate": "檢查更新",
-        "noUpdate": "無可用更新",
-        "updateAvailable": "發現新版本: ",
-        "foundNewVersion": "發現新版本",
-        "downloadNow": "立即下載",
-        "paste": "貼上",
-        "hideConfig": "配置",
-        "editConfig": "配置",
-        "settings": "設置",
-        "globalSettings": "全局設置",
-        "language": "界面語言",
-        "runnerStatus": "目前環境",
-        "yoloModeLabel": "Yolo 模式",
-        "adminModeLabel": "管理員權限",
-        "rootModeLabel": "Root 權限",
-        "teamModeLabel": "團隊模式",
-        "pythonProjectLabel": "Python 項目",
-        "pythonEnvLabel": "環境",
-        "customProviderPlaceholder": "自定義服務商名稱",
-        "addCustomProvider": "添加自定義服務商",
-        "removeCustomProvider": "刪除此服務商",
-        "maxCustomProviders": "最多只能添加6個自定義服務商",
-        "cannotRemoveLastCustom": "不能刪除最後一個自定義服務商",
-        "version": "版本",
-        "author": "作者",
-        "checkingUpdate": "正在檢查更新...",
-        "downloading": "正在下載...",
-        "downloadCancelled": "下載已取消",
-        "downloadError": "下載錯誤: {error}",
-        "toolRepairTitle": "安裝工具",
-        "toolRepairInstalling": "正在安裝 {tool}...",
-        "toolRepairSuccess": "{tool} 安裝成功！",
-        "toolRepairFailed": "安裝 {tool} 失敗",
-        "toolRepairVersion": "版本: {version}",
-        "installNow": "立即安裝",
-        "downloadAndUpdate": "下載並更新",
-        "cancelDownload": "取消下載",
-        "downloadComplete": "下載完成",
-        "onlineUpdate": "線上更新",
-        "retry": "重試",
-        "opencode": "OpenCode",
-        "opencodeDesc": "OpenCode AI 輔助編程",
-        "codebuddy": "CodeBuddy",
-        "codebuddyDesc": "CodeBuddy 編程助手",
-        "cursor": "Cursor Agent",
-        "cursorDesc": "Cursor AI 輔助編程",
-        "iflow": "iFlow CLI",
-        "iflowDesc": "iFlow AI 輔助編程",
-        "kilo": "Kilo Code CLI",
-        "kiloDesc": "Kilo Code AI 輔助編程",
-        "bugReport": "問題反饋",
-        "businessCooperation": "商業合作：微信 znsoft",
-        "original": "原廠",
-        "message": "消息",
-        "tutorial": "教程",
-        "gossip": "八卦",
-        "apiStore": "API商店",
-        "relayService": "轉發",
-        "getApiKey": "獲取API Key",
-        "subscription": "包月",
-        "danger": "危險",
-        "selectAll": "全選",
-        "copy": "複製",
-        "cut": "剪切",
-        "contextPaste": "粘貼",
-        "refreshMessage": "刷新",
-        "refreshing": "🔄 正在从服务器获取最新消息...",
-        "refreshSuccess": "✅ 獲取新消息成功",
-        "refreshFailed": "❌ 刷新失敗：",
-        "lastUpdate": "最後更新：",
-        "forward": "轉發",
-        "customized": "定制",
-        "originalFlag": "原生",
-        "monthly": "包月",
-        "premium": "氪金",
-        "quickStart": "新手教學",
-        "officialWebsite": "官方網站",
-        "dontShowAgain": "下次不再顯示",
-        "showWelcomePage": "顯示歡迎頁",
-        "startupTitle": "歡迎使用碼卡龍",
-        "showMore": "更多",
-        "showLess": "收起",
-        "installLog": "查看日誌",
-        "installLogTitle": "環境檢查與安裝日誌",
-        "sendLog": "發送日誌",
-        "sendLogSubject": "MaClaw環境安裝日誌",
-        "confirmDelete": "確認刪除",
-        "confirmDeleteMessage": "確定要刪除服務商 \"{name}\" 嗎？",
-        "confirmSendLog": "確認發送",
-        "confirmSendLogMessage": "日誌中沒有檢測到錯誤，是否仍要發送日誌？",
-        "cancel": "取消",
-        "confirm": "確定",
-        "slogan": "讓遠程編程像品嚐甜點一樣絲滑。",
-        "maclawLLMPopupTitle": "來，配置一下 MaClaw 吧",
-        "maclawLLMPopupDesc": "兩步開啟遠端編程。",
-        "maclawLLMStep1Title": "配置 LLM",
-        "maclawLLMStep1Desc": "連接 LLM 服務商，讓 MaClaw 能思考。",
-        "maclawLLMApplyLobster": "免費領取龍蝦套餐",
-        "maclawLLMGoSettings": "我已有 API Key",
-        "maclawLLMStep2Title": "行動端註冊 & 綁定飛書",
-        "maclawLLMStep2Desc": "註冊裝置並綁定飛書，即可透過行動端操控。",
-        "maclawLLMGoRemote": "前往遠端設定",
-        "maclawLLMReadyHint": "左側 AI 助手圓圈全亮，說明一切就緒。",
-        "proxySettings": "代理設置",
-        "proxyHost": "代理主機",
-        "proxyPort": "代理端口",
-        "proxyUsername": "使用者名稱 (可選)",
-        "proxyPassword": "密碼 (可選)",
-        "proxyMode": "代理",
-        "proxyNotConfigured": "代理未配置。請先配置代理設置。",
-        "useDefaultProxy": "使用預設代理設置",
-        "proxyHostPlaceholder": "例如：192.168.1.1 或 proxy.company.com",
-        "proxyPortPlaceholder": "例如：8080",
-        "proxyProtocol": "協議",
-        "proxyBypass": "繞過地址",
-        "proxyBypassPlaceholder": "例如：localhost;127.*;10.*;192.168.*",
-        "proxyBypassHint": "分號分隔。匹配的地址將繞過代理。",
-        "proxyEnabled": "啟用代理",
-        "proxyScopeMaclaw": "MacClaw（大模型 API 調用）",
-        "proxyScopeCodingTools": "編程工具（僅 macOS/Linux 生效）",
-        "proxyScopeAgent": "智能體（web_search / web_fetch）",
-        "proxyScopeTitle": "使用範圍",
-        "remoteControl": "行動端註冊",
-        "remoteControlDesc": "設定 MaClaw 遠端診斷、Hub 連線與遠端會話控制。",
-        "remoteRefresh": "重新整理",
-        "remoteRunReadiness": "執行就緒檢查",
-        "remoteRunConpty": "執行 ConPTY 檢測",
-        "remoteRunLaunchProbe": "執行 {tool} 啟動探測",
-        "remoteRunFullSmoke": "執行完整冒煙測試",
-        "remoteActivation": "註冊狀態",
-        "remoteActivated": "已註冊",
-        "remoteNotActivated": "未註冊",
-        "remoteRegister": "註冊",
-        "remoteEmailNotConfigured": "尚未設定遠端信箱",
-        "remoteHub": "Hub 連線",
-        "remoteConnected": "已連線",
-        "remoteDisconnected": "未連線",
-        "remoteNoHubUrl": "未設定 Hub 位址",
-        "remoteReadiness": "就緒狀態",
-        "remoteReady": "已就緒",
-        "remoteNeedsAttention": "需要處理",
-        "remoteNotRun": "未執行",
-        "remoteLaunch": "啟動探測",
-        "remotePassed": "通過",
-        "remoteFailed": "失敗",
-        "remoteSmoke": "冒煙測試",
-        "remoteRouting": "遠端路由",
-        "remoteEnableLaunchPath": "啟用遠端啟動路徑",
-        "remoteHubUrl": "Hub 位址",
-        "remoteHubCenterUrl": "Hub Center 位址",
-        "remoteEmail": "遠端信箱",
-        "remoteBindEmail": "綁定郵件",
-        "remoteNotInstalled": "未安裝",
-        "remoteActivating": "註冊中...",
-        "remoteActivate": "註冊行動端",
-        "remoteStarting": "啟動中...",
-        "remoteStartTool": "啟動遠端",
-        "remoteStopTool": "停止遠端",
-        "remoteUnavailable": "不可用：{reason}",
-        "remoteInstallingTool": "正在安裝 {tool}...",
-        "remoteInstallTool": "安裝 {tool}",
-        "remoteReconnecting": "重新連線中...",
-        "remoteReconnectHub": "重新連線 Hub",
-        "remoteClearing": "清除中...",
-        "remoteClearActivation": "清除註冊狀態",
-        "remoteReRegister": "重新註冊",
-        "remoteToolPath": "工具路徑",
-        "remoteNextStep": "下一步",
-        "remoteLaunchProject": "啟動專案",
-        "remoteNoProjectSelected": "未選擇專案",
-        "remoteReadinessWarnings": "就緒檢查提示",
-        "remoteNoReadinessIssues": "未檢測到就緒問題。",
-        "remoteProbeNotRun": "尚未執行檢測。",
-        "remoteConptyAvailable": "{tool} 遠端會話已支援 ConPTY。",
-        "remoteConptyUnavailable": "ConPTY 不可用。",
-        "remoteLaunchProbeTitle": "{tool} 啟動探測",
-        "remoteLaunchProbePending": "{tool} 啟動探測尚未執行",
-        "remoteCommandReady": "指令已就緒：{value}",
-        "remoteLaunchProbeFailed": "啟動探測失敗",
-        "remoteFullSmoke": "完整冒煙測試",
-        "remoteFullSmokeNotRun": "尚未執行完整冒煙測試。",
-        "remoteTool": "工具",
-        "remoteProviderLabel": "服務商",
-        "remoteProviderDefault": "預設",
-        "remotePty": "PTY",
-        "remoteSupported": "支援",
-        "remoteUnavailableShort": "不可用",
-        "remoteSession": "會話",
-        "remoteHubVisibility": "Hub 可見性",
-        "remoteVerified": "已驗證",
-        "remoteNotVerified": "未驗證",
-        "remoteNoImportantEvents": "暫時沒有重要事件。",
-        "remoteSendInstructionPlaceholder": "向遠端會話傳送指令...",
-        "remoteSend": "傳送",
-        "remoteInterrupt": "中斷",
-        "remoteInterruptSent": "已送出中斷",
-        "remoteInterruptFailed": "中斷失敗：{error}",
-        "remoteKillSession": "結束會話",
-        "remoteKillSent": "已送出結束訊號",
-        "remoteKillFailed": "結束失敗：{error}",
-        "remoteReadinessFailed": "遠端就緒檢查失敗：{error}",
-        "remoteConptyFailed": "ConPTY 檢測失敗：{error}",
-        "remoteLaunchProbeFailedToast": "{tool} 啟動探測失敗：{error}",
-        "remoteSmokeCompleted": "遠端 {tool} 冒煙測試已完成",
-        "remoteSmokeFailed": "遠端 {tool} 冒煙測試失敗：{error}",
-        "remoteEmailRequired": "必須填寫遠端信箱",
-        "remoteServerRequired": "必須先設定遠端伺服器位址",
-        "remoteActivateFirst": "請先完成行動端註冊",
-        "remoteActivationDialogTitle": "行動端註冊",
-        "remoteActivationDialogDesc": "你可以直接輸入 Hub 位址，或先從 HubCenter 載入已註冊的 Hub 再選擇一個。",
-        "remoteActivateAndLaunch": "註冊並啟動",
-        "remoteLoadRegisteredHubs": "載入已註冊 Hub",
-        "remoteLoadingRegisteredHubs": "正在載入 Hub...",
-        "remoteSelectRegisteredHub": "已註冊 Hub",
-        "remoteNoRegisteredHubs": "沒有可用的已註冊 Hub",
-        "remoteLoadHubListFailed": "載入 Hub 清單失敗：{error}",
-        "remoteHubManualOrSelect": "你可以直接貼上 Hub 位址，也可以從上方的 HubCenter 清單中選擇。",
-        "remoteActivationCompleted": "行動端註冊已完成",
-        "remoteActivationFailed": "行動端註冊失敗：{error}",
-        "remoteReconnectFailed": "重新連線失敗：{error}",
-        "remoteSelectProjectFirst": "請先選擇一個啟動專案",
-        "remoteStartFailed": "啟動失敗：{error}",
-        "remoteInstallFailed": "安裝失敗：{error}",
-        "remoteSaveFailed": "儲存失敗：{error}",
-        "remoteSendFailed": "傳送失敗：{error}",
-        "remoteActivationCleared": "行動端註冊狀態已清除",
-        "remoteClearFailed": "清除失敗：{error}",
-        "remoteActivateStep": "行動端註冊",
-        "remoteActivateStepDesc": "啟動遠端會話前，先登記信箱與裝置資訊。",
-        "remoteReconnectStep": "重新連線 Hub",
-        "remoteReconnectStepDesc": "已設定 Hub 位址，但目前連線處於離線狀態。",
-        "remoteConfigureModelStep": "設定模型",
-        "remoteConfigureModelStepDesc": "先開啟服務商設定，儲存 API Key 與模型後再遠端啟動。",
-        "remoteRunReadinessStep": "執行就緒檢查",
-        "remoteRunReadinessStepDesc": "為目前工具與專案蒐集最新診斷資訊。",
-        "remoteRunReadinessAgain": "重新執行就緒檢查",
-        "remoteRunReadinessAgainDesc": "修復問題後重新整理診斷結果。",
-        "remoteModeLabel": "遠端",
-        "remoteModeDesc": "透過 Hub 啟動此工具，方便手機控制",
-        "localModeLabel": "本機",
-        "launchModeLabel": "方式",
-        "defaultLaunchModeLabel": "預設啟動模式",
-        "defaultLaunchModeDesc": "選擇工具啟動區的預設工作模式",
-        "uiModeLabel": "介面模式",
-        "uiModePro": "專業模式",
-        "uiModeLite": "簡潔模式",
-        "uiModeProDesc": "包含完整程式工具鏈，適合開發者",
-        "uiModeLiteDesc": "專注 AI 助手與技能擴展，隱藏程式工具",
-        "freeload": "白嫖中",
-        "bigSpender": "大力氪金",
-        "skills": "技能",
-        "addSkill": "新增技能",
-        "skillName": "技能名稱",
-        "skillDesc": "描述",
-        "skillType": "類型",
-        "skillAddress": "Skill ID",
-        "skillZip": "Zip包",
-        "skillPath": "路徑",
-        "skillValue": "值/路徑",
-        "browse": "瀏覽",
-        "skillAdded": "技能新增成功",
-        "skillDeleted": "技能刪除成功",
-        "confirmDeleteSkill": "確定要刪除此技能嗎？",
-        "noSkills": "暫無技能。",
-        "installSkills": "安裝技能",
-        "installLocation": "安裝位置:",
-        "userLocation": "用戶",
-        "projectLocation": "項目",
-        "selectSkillsToInstall": "技能安裝",
-        "installDefaultMarketplace": "安裝默認市場",
-        "install": "安裝",
-        "installed": "已安裝",
-        "installing": "正在安裝...",
-        "installNotImplemented": "安裝功能暫未實現。",
-        "pauseEnvCheck": "跳過環境檢測",
-        "useWindowsTerminal": "使用 Windows Terminal",
-        "envCheckIntervalPrefix": "每隔",
-        "envCheckIntervalSuffix": "日提醒檢測環境",
-        "envCheckDueTitle": "環境檢測提醒",
-        "envCheckDueMessage": "距離上次環境檢測已過{days}天，是否現在檢測？",
-        "recheckEnv": "手動檢測更新運行環境",
-        "skillRequiredError": "名稱和地址/路徑是必填項！",
-        "skillZipOnlyError": "Gemini 和 Codex 僅支持 Zip 包式技能。",
-        "skillAddError": "添加技能出錯: {error}",
-        "skillDeleteError": "刪除技能出錯: {error}",
-        "copyLog": "複製日誌",
-        "logsCopied": "日誌已複製到剪貼板",
-        "currentVersion": "當前版本",
-        "latestVersion": "最新版本",
-        "foundNewVersionMsg": "檢查到新版本，是否立即下載更新？",
-        "isLatestVersion": "已是最新版本",
-        "billing": "計費",
-        "placeholderName": "例如：前端設計",
-        "placeholderDesc": "描述...",
-        "placeholderAddress": "@anthropics/...",
-        "placeholderZip": "選擇 .zip 文件",
-        "cannotDeleteSystemSkill": "系統技能包不能刪除。",
-        "systemDefault": "系統默認",
-        "envCheckTitle": "MaClaw 運行環境檢測安裝",
-        "selectProvider": "選擇服務商",
-        "knownProviders": "已知服務商",
-        "providerList": "服務商列表",
-        "selectProviderTitle": "選擇 API 服務商",
-        "chinaProviders": "國內服務商",
-        "globalProviders": "國外服務商",
-        "allProviders": "全部服務商",
-        "filterByRegion": "按地區篩選",
-        "projectSearch": "搜尋",
-        "projectSearchPlaceholder": "按名稱或路徑搜尋",
-        "projectSortDefault": "預設順序",
-        "projectSortNameAsc": "名稱 A-Z",
-        "projectSortNameDesc": "名稱 Z-A",
-        "projectSortPathAsc": "路徑 A-Z",
-        "projectSortPathDesc": "路徑 Z-A",
-        "projectNoResults": "沒有匹配的專案",
-        "projectShowing": "顯示",
-        "projectTotal": "總計",
-        "prevPage": "上一頁",
-        "nextPage": "下一頁",
-        "mcpTabLocal": "本機 (Stdio)",
-        "mcpTabRemote": "遠端 (HTTP)",
-        "mcpLocalCount": "個本機 MCP Server",
-        "mcpImportJson": "匯入 JSON",
-        "mcpAdd": "+ 新增",
-        "mcpLoading": "載入中...",
-        "mcpNoLocalServers": "暫無本機 MCP Server，點擊「+ 新增」或「匯入 JSON」來設定",
-        "mcpDisabled": "已停用",
-        "mcpRunning": "執行中",
-        "mcpNotRunning": "未執行",
-        "mcpEnable": "啟用",
-        "mcpDisable": "停用",
-        "mcpEdit": "編輯",
-        "mcpDelete": "刪除",
-        "mcpEnvVars": "環境變數",
-        "mcpConfirmDelete": "確認刪除",
-        "mcpConfirmDeleteLocal": "確定要刪除本機 MCP Server「{name}」嗎？",
-        "mcpDeleting": "刪除中...",
-        "mcpImportJsonTitle": "匯入 JSON 設定",
-        "mcpImportJsonDesc": "貼上標準 MCP JSON 設定，支援格式如：",
-        "mcpImportJsonPlaceholder": "貼上 JSON 設定...",
-        "mcpJsonFormatError": "JSON 格式錯誤",
-        "mcpJsonStructureError": "格式不正確，需要 { mcpServers: { name: { command, args, env } } }",
-        "mcpImporting": "匯入中...",
-        "mcpImport": "匯入",
-        "mcpEditLocalServer": "編輯本機 MCP Server",
-        "mcpAddLocalServer": "新增本機 MCP Server",
-        "mcpNameLabel": "名稱",
-        "mcpNameRequired": "名稱不能為空",
-        "mcpCommandLabel": "指令 (command)",
-        "mcpCommandRequired": "指令不能為空",
-        "mcpArgsLabel": "參數 (args)，每行一個",
-        "mcpEnvLabel": "環境變數 (env)",
-        "mcpAddEnvVar": "+ 新增環境變數",
-        "mcpSubmitting": "提交中...",
-        "mcpSave": "儲存",
-        "mcpServersRegistered": "個已註冊 MCP Server",
-        "mcpRegisterServer": "+ 註冊 MCP Server",
-        "mcpNoRemoteServers": "暫無已註冊的 MCP Server",
-        "mcpColName": "名稱",
-        "mcpColEndpoint": "端點 URL",
-        "mcpColHealth": "健康狀態",
-        "mcpColTools": "工具數",
-        "mcpColActions": "操作",
-        "mcpHealthy": "健康",
-        "mcpSlow": "緩慢",
-        "mcpUnavailable": "不可用",
-        "mcpCollapse": "收起",
-        "mcpTools": "工具",
-        "mcpConfirmDeleteRemote": "確定要註銷 MCP Server「{name}」嗎？此操作不可撤銷。",
-        "mcpEditServer": "編輯 MCP Server",
-        "mcpRegisterServerTitle": "註冊 MCP Server",
-        "mcpEndpointLabel": "端點 URL",
-        "mcpEndpointRequired": "端點 URL 不能為空",
-        "mcpAuthType": "認證方式",
-        "mcpAuthNone": "無認證",
-        "mcpAuthApiKey": "API Key",
-        "mcpAuthBearer": "Bearer Token",
-        "mcpEnterApiKey": "輸入 API Key",
-        "mcpEnterBearer": "輸入 Bearer Token",
-        "mcpRegister": "註冊",
-        "mcpHealthRecord": "健康檢查記錄",
-        "mcpHealthStatus": "狀態",
-        "mcpFailCount": "失敗次數",
-        "mcpLastCheck": "最近檢查",
-        "mcpCheckNow": "立即檢查",
-        "mcpLoadingTools": "載入工具清單...",
-        "mcpToolList": "工具清單",
-        "mcpNoDescription": "無描述",
-        "mcpNoTools": "暫無工具"
-    }
-};
-
-interface ToolConfigurationProps {
-    toolName: string;
-    toolCfg: any;
-    showModelSettings: boolean;
-    setShowModelSettings: (show: boolean) => void;
-    handleModelSwitch: (name: string) => void;
-    t: (key: string) => string;
-    lang: string;
-}
-
-const ToolConfiguration = ({
-    toolName, toolCfg, showModelSettings, setShowModelSettings,
-    handleModelSwitch, t, lang
-}: ToolConfigurationProps) => {
-    if (!toolCfg || !toolCfg.models) {
-        return <div style={{ padding: '15px', color: '#6b7280' }}>Loading configuration...</div>;
-    }
-
-    const getBadge = (model: any): { bg: string; label: string } | null => {
-        const name = model.model_name.toLowerCase();
-        if (model.model_name === "Original") return { bg: '#6366f1', label: t("originalFlag") };
-        if (model.has_subscription) return { bg: '#ec4899', label: t("subscription") };
-        if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
-            return { bg: '#ec4899', label: t("monthly") };
-        if (name.includes("deepseek")) return { bg: '#f59e0b', label: t("premium") };
-        if (name.includes("xiaomi")) return { bg: '#f59e0b', label: t("bigSpender") };
-        if (model.is_custom) return { bg: '#9ca3af', label: t("customized") };
-        if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p)))
-            return { bg: '#14b8a6', label: t("forward") };
-        return null;
-    };
-
-    return (
-        <div style={{
-            backgroundColor: 'var(--theme-surface)',
-            padding: '9px 12px',
-            borderRadius: '12px',
-            border: '1px solid var(--theme-border)',
-            marginBottom: '10px',
-            color: 'var(--theme-text-primary)'
-        }}>
-            <div className="model-switcher" style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: '8px',
-                width: '100%',
-                paddingTop: '5px',
-                paddingBottom: '5px',
-                overflow: 'visible'
-            }}>
-                {toolCfg.models.map((model: any) => {
-                    const badge = getBadge(model);
-                    return (
-                        <button
-                            key={model.model_name}
-                            className={`model-btn ${toolCfg.current_model === model.model_name ? 'selected' : ''}`}
-                            onClick={() => handleModelSwitch(model.model_name)}
-                            style={{
-                                width: '100%',
-                                padding: '5px 4px',
-                                fontSize: '1.125rem',
-                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--theme-border)',
-                                position: 'relative',
-                                overflow: 'visible',
-                                color: 'var(--theme-text-primary)'
-                            }}
-                        >
-                            {model.model_name === "Original" ? t("original") : getModelDisplayName(model.model_name, lang)}
-                            {badge && (
-                                <span style={{ ...badgeBaseStyle, backgroundColor: badge.bg }}>
-                                    {badge.label}
-                                </span>
-                            )}
-                        </button>
-                    );
-                })}
-            </div>
-        </div>
-    );
-};
 
 function App() {
     const { showAlert } = useDialog();
@@ -1706,7 +102,7 @@ function App() {
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'groupDiscussion' | 'security' | 'im' | 'system'>('general');
+    const [settingsTab, setSettingsTab] = useState<SettingsTabId>('general');
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
@@ -2884,7 +1280,7 @@ function App() {
         const normalizeHubCredits = (status?: SidebarHubServiceStatus | null): SidebarHubCredits | null => {
             const active = status?.active ?? status?.Active ?? false;
             if (!active) return { authorized: false, total: 0, used: 0, remaining: 0, tokensPerCredit: 0, expiresAt: '', unlimited: false };
-            const grants = status?.active_grants ?? status?.ActiveGrants ?? [];
+            const grants = status?.credit_grants ?? status?.CreditGrants ?? status?.active_grants ?? status?.ActiveGrants ?? [];
             let total = 0;
             let used = 0;
             let remaining = 0;
@@ -2893,6 +1289,9 @@ function App() {
                 used += Number(grant.credits_used ?? grant.CreditsUsed ?? 0);
                 remaining += Number(grant.credits_remaining ?? grant.CreditsRemaining ?? 0);
             }
+            total = Number(status?.credits_total ?? status?.CreditsTotal ?? total);
+            used = Number(status?.credits_used ?? status?.CreditsUsed ?? used);
+            remaining = Number(status?.credits_remaining ?? status?.CreditsRemaining ?? remaining);
             const available = Number(status?.credits_available ?? status?.CreditsAvailable ?? 0);
             if (remaining <= 0 && available > 0) remaining = available;
             if (total <= 0 && remaining > 0) total = used + remaining;
@@ -2948,12 +1347,26 @@ function App() {
                 }
             }
         };
+        const delayedRefreshTimers = new Set<number>();
+        const queueDelayedRefresh = (delayMs: number) => {
+            const timer = window.setTimeout(() => {
+                delayedRefreshTimers.delete(timer);
+                void refreshSidebarTokenUsage();
+            }, delayMs);
+            delayedRefreshTimers.add(timer);
+        };
         void refreshSidebarTokenUsage();
-        const onTokenUsageChanged = () => { void refreshSidebarTokenUsage(); };
+        const onTokenUsageChanged = () => {
+            void refreshSidebarTokenUsage();
+            queueDelayedRefresh(2500);
+        };
         EventsOn("llm-token-usage-changed", onTokenUsageChanged);
         EventsOn("hub-llm-service-changed", onTokenUsageChanged);
+        const usageRefreshTimer = window.setInterval(() => { void refreshSidebarTokenUsage(); }, 10 * 60 * 1000);
         return () => {
             cancelled = true;
+            window.clearInterval(usageRefreshTimer);
+            delayedRefreshTimers.forEach((timer) => window.clearTimeout(timer));
             EventsOff("llm-token-usage-changed");
             EventsOff("hub-llm-service-changed");
         };
@@ -3011,9 +1424,8 @@ function App() {
     const formatSidebarHubUsedCredits = useCallback((credits: SidebarHubCredits | null) => {
         if (!credits) return '-';
         if (!credits.authorized) return noHubAuthorizationText;
-        if (credits.used === 0) return freeUseHubCreditText;
         return formatSidebarCredit(credits.used);
-    }, [formatSidebarCredit, freeUseHubCreditText, noHubAuthorizationText]);
+    }, [formatSidebarCredit, noHubAuthorizationText]);
 
     const showHubCreditAction = !!sidebarHubCredits && (!sidebarHubCredits.authorized || (sidebarHubCredits.total > 0 && sidebarHubCredits.remaining / sidebarHubCredits.total < 0.2));
 
@@ -3686,88 +2098,7 @@ ${instruction}`;
         : null;
 
     const currentProject = getCurrentProject();
-    const settingsTabOptions = [
-        {
-            id: 'general' as const,
-            label: lang === 'zh-Hans' ? '通用设置' : lang === 'zh-Hant' ? '通用設置' : 'General',
-            desc: lang === 'zh-Hans' ? '语言、项目与环境' : lang === 'zh-Hant' ? '語言、項目與環境' : 'Language, projects, and environment',
-        },
-        {
-            id: 'proxy' as const,
-            label: lang === 'zh-Hans' ? '代理设置' : lang === 'zh-Hant' ? '代理設置' : 'Proxy',
-            desc: lang === 'zh-Hans' ? '全局网络代理配置' : lang === 'zh-Hant' ? '全局網路代理配置' : 'Global network proxy configuration',
-        },
-        {
-            id: 'ui' as const,
-            label: lang === 'zh-Hans' ? 'UI配置' : lang === 'zh-Hant' ? 'UI配置' : 'UI Config',
-            desc: lang === 'zh-Hans' ? '界面缩放与整体显示行为' : lang === 'zh-Hant' ? '介面縮放與整體顯示行為' : 'UI scaling and display behavior',
-        },
-        {
-            id: 'display' as const,
-            label: lang === 'zh-Hans' ? '编程工具' : lang === 'zh-Hant' ? '編程工具' : 'Dev CLI',
-            desc: lang === 'zh-Hans' ? '工具显示与启动页行为' : lang === 'zh-Hant' ? '工具顯示與啟動頁行為' : 'Tool visibility and startup behavior',
-        },
-        {
-            id: 'pet' as const,
-            label: lang === 'zh-Hans' ? '\u5ba0\u7269' : lang === 'zh-Hant' ? '\u5bf5\u7269' : 'Pet',
-            desc: lang === 'zh-Hans' ? '\u684c\u9762\u5ba0\u7269\u5f62\u8c61\u3001\u52a8\u4f5c\u4e0e\u4ea4\u4e92\u8bbe\u7f6e' : lang === 'zh-Hant' ? '\u684c\u9762\u5bf5\u7269\u5f62\u8c61\u3001\u52d5\u4f5c\u8207\u4ea4\u4e92\u8a2d\u7f6e' : 'Desktop pet appearance, actions, and interaction settings',
-        },
-        {
-            id: 'remote' as const,
-            label: lang === 'zh-Hans' ? '远程注册' : lang === 'zh-Hant' ? '遠端註冊' : 'Remote',
-            desc: lang === 'zh-Hans' ? '仅配置远程服务器地址' : lang === 'zh-Hant' ? '僅配置遠端伺服器位址' : 'Server addresses only',
-        },
-        {
-            id: 'redeem' as const,
-            label: lang === 'zh-Hans' ? '\u670d\u52a1\u5151\u6362' : lang === 'zh-Hant' ? '\u670d\u52d9\u5151\u63db' : 'Service Redeem',
-            desc: lang === 'zh-Hans' ? '\u67e5\u770b Credits \u548c\u5151\u6362\u670d\u52a1\u7801' : lang === 'zh-Hant' ? '\u67e5\u770b Credits \u548c\u5151\u63db\u670d\u52d9\u78bc' : 'View credits and redeem service codes',
-        },
-        {
-            id: 'llm' as const,
-            label: lang === 'zh-Hans' ? 'LLM 配置' : lang === 'zh-Hant' ? 'LLM 配置' : 'LLM Config',
-            desc: lang === 'zh-Hans' ? '配置 MaClaw 代理使用的 LLM' : lang === 'zh-Hant' ? '配置 MaClaw 代理使用的 LLM' : 'Configure LLM for MaClaw agent',
-        },
-        {
-            id: 'role' as const,
-            label: lang === 'zh-Hans' ? 'MaClaw 角色' : lang === 'zh-Hant' ? 'MaClaw 角色' : 'MaClaw Role',
-            desc: lang === 'zh-Hans' ? '自定义 MaClaw Agent 的名字与角色描述' : lang === 'zh-Hant' ? '自訂 MaClaw Agent 的名字與角色描述' : 'Customize MaClaw Agent name and role description',
-        },
-        {
-            id: 'memory' as const,
-            label: lang === 'zh-Hans' ? '记忆管理' : lang === 'zh-Hant' ? '記憶管理' : 'Memory',
-            desc: lang === 'zh-Hans' ? '查看、编辑和管理 MaClaw 的长期记忆' : lang === 'zh-Hant' ? '查看、編輯和管理 MaClaw 的長期記憶' : 'View, edit and manage MaClaw long-term memory',
-        },
-        {
-            id: 'embedding' as const,
-            label: lang === 'zh-Hans' ? 'AI模型' : lang === 'zh-Hant' ? 'AI模型' : 'AI Model',
-            desc: lang === 'zh-Hans' ? '向量搜索与嵌入模型管理' : lang === 'zh-Hant' ? '向量搜索與嵌入模型管理' : 'Vector search and embedding model management',
-        },
-        {
-            id: 'agentnet' as const,
-            label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet',
-            desc: lang === 'zh-Hans' ? 'AgentNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'AgentNet P2P 去中心化 Agent 網路' : 'AgentNet decentralized P2P agent network',
-        },
-        {
-            id: 'groupDiscussion' as const,
-            label: lang === 'zh-Hans' ? 'A2A \u7fa4\u7ec4' : lang === 'zh-Hant' ? 'A2A \u7fa4\u7d44' : 'A2A Group',
-            desc: lang === 'zh-Hans' ? '\u5f53\u524d Hub \u7684\u4e13\u5bb6\u53d1\u73b0\u3001\u9080\u8bf7\u4e0e\u7fa4\u7ec4\u8ba8\u8bba\u7b56\u7565' : lang === 'zh-Hant' ? '\u76ee\u524d Hub \u7684\u5c08\u5bb6\u767c\u73fe\u3001\u9080\u8acb\u8207\u7fa4\u7d44\u8a0e\u8ad6\u7b56\u7565' : 'Current-Hub expert discovery, invites, and discussion policy',
-        },
-        {
-            id: 'im' as const,
-            label: 'IM',
-            desc: lang === 'zh-Hans' ? '配置 QQ 机器人、Telegram Bot、微信等即时通讯接入' : lang === 'zh-Hant' ? '配置 QQ 機器人、Telegram Bot、微信等即時通訊接入' : 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations',
-        },
-        {
-            id: 'security' as const,
-            label: lang === 'zh-Hans' ? '安全策略' : lang === 'zh-Hant' ? '安全策略' : 'Security',
-            desc: lang === 'zh-Hans' ? '安全策略模式与审计日志' : lang === 'zh-Hant' ? '安全策略模式與審計日誌' : 'Security policy mode and audit log',
-        },
-        {
-            id: 'system' as const,
-            label: lang === 'zh-Hans' ? '系统' : lang === 'zh-Hant' ? '系統' : 'System',
-            desc: lang === 'zh-Hans' ? '心跳、熄屏等系统级设置' : lang === 'zh-Hant' ? '心跳、熄屏等系統級設置' : 'Heartbeat, screen dimming and other system settings',
-        },
-    ];
+    const settingsTabOptions = getSettingsTabOptions(lang);
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
@@ -3780,180 +2111,56 @@ ${instruction}`;
         >
             <div className="app-scale-layer">
                 <div id="App" data-ai-theme={aiThemeMode}>
-            <div style={{
-                height: '30px',
-                width: navTab === 'ai' ? `${90 + recentTasksPaneWidth + 6}px` : '90px',
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                zIndex: 999,
-                '--wails-draggable': 'drag'
-            } as any}></div>
-
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${90 + recentTasksPaneWidth + 6}px` : '90px' } as any} data-ai-theme={aiThemeMode}>
-                {/* Restored two-column left shell: brand nav + AI recent tasks. */}
-                <div style={{
-                    width: '90px',
-                    borderRight: '1px solid var(--theme-border)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    padding: '6px 0',
-                    background: 'var(--theme-page-bg)',
-                    flexShrink: 0,
-                }}>
-                    <div className="sidebar-header" style={{ height: '86px', padding: '4px 0 6px 0', justifyContent: 'flex-start', width: '100%', flexDirection: 'column', gap: '2px' }}>
-                        {brandInfo?.id === 'qianxin' ? (
-                            <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '34px', height: '34px', objectFit: 'contain' }} />
-                        ) : (
-                            <div style={{ width: '42px', height: '34px', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
-                                <img src={currentIcon} alt="Logo" style={{ width: '74px', height: '56px', objectFit: 'contain', transform: 'translateY(-2px)' }} />
-                            </div>
-                        )}
-                        <div style={{ color: '#d94b3d', fontSize: '0.78rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
-                    </div>
-
-                    <div
-                        className={`sidebar-item left-nav-item left-nav-item--ai ${navTab === 'ai' ? 'active' : ''}`}
-                        onClick={() => { switchTool('ai'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '2.22rem', height: '2.22rem', borderRadius: '50%', padding: '4px', background: (() => { const llm = maclawLLMOnline; const net = agentNetRunning; const mob = remoteActivationStatus?.activated; return (llm && net && mob) ? 'var(--theme-primary-strong)' : (!llm && !net && !mob) ? 'var(--theme-text-muted)' : 'var(--theme-primary)'; })(), boxShadow: navTab === 'ai' ? '0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent), 0 0 14px color-mix(in srgb, var(--theme-primary) 72%, transparent), 0 0 30px color-mix(in srgb, var(--theme-primary) 48%, transparent)' : '0 0 12px color-mix(in srgb, var(--theme-primary) 24%, transparent)', transition: 'box-shadow 0.24s ease, background 0.3s ease, filter 0.24s ease', filter: navTab === 'ai' ? 'saturate(1.16)' : 'none' }}>
-                            <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', borderRadius: '50%', background: 'var(--theme-surface)', fontSize: '1.42rem', lineHeight: 1 }}>🦞</span>
-                        </span>
-                        <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}</span>
-                    </div>
-
-                    {(() => {
-                        const navItems = [
-                            { id: 'remote', configKey: 'show_nav_monitor', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem', position: 'relative' }}>📡{runningTaskCount > 0 && (<span style={{ position: 'absolute', top: '-5px', right: '-8px', minWidth: '18px', height: '18px', lineHeight: '18px', fontSize: '10px', fontWeight: 700, textAlign: 'center', padding: runningTaskCount > 99 ? '0 2px' : '0 3px', borderRadius: '999px', background: 'var(--theme-danger)', color: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', zIndex: 10 }}>{runningTaskCount > 99 ? '99+' : runningTaskCount}</span>)}</span>, label: lang === 'zh-Hans' ? '监控' : lang === 'zh-Hant' ? '監控' : 'Monitor' },
-                            { id: 'skills', configKey: 'show_nav_skills', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>🧩</span>, label: t("skills") },
-                            { id: 'mcp', configKey: 'show_nav_mcp', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>🔌</span>, label: 'MCP' },
-                            ...(gossipAllowed ? [{ id: 'gossip', configKey: 'show_nav_gossip', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>🗣️</span>, label: t("gossip") }] : []),
-                            { id: 'agentnet', configKey: 'show_nav_agentnet', icon: <img src={agentnetIcon} alt="AgentNet" style={{ width: '18px', height: '18px', margin: 0 }} />, label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet' },
-                        ];
-                        const isPinned = (item: typeof navItems[0]) => (config as any)?.[item.configKey] !== false;
-                        const pinnedItems = navItems.filter(isPinned);
-                        const collapsedItems = navItems.filter(item => !isPinned(item));
-                        const renderItem = (item: typeof navItems[0]) => (
-                            <div key={item.id} className={`sidebar-item left-nav-item ${navTab === item.id ? 'active' : ''}`} onClick={() => switchTool(item.id)} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === item.id ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center', position: item.id === 'remote' ? 'relative' as const : undefined }} title={item.label}>
-                                {item.icon}
-                                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{item.label}</span>
-                            </div>
-                        );
-                        return (<>
-                            {pinnedItems.map(renderItem)}
-                            {collapsedItems.length > 0 && (
-                                <div className="sidebar-item left-nav-item" onClick={() => setSidebarExpanded(prev => !prev)} style={{ flexDirection: 'column', padding: '4px 0', width: '100%', gap: '2px', borderLeft: 'none', borderRight: '3px solid transparent', justifyContent: 'center', cursor: 'pointer', opacity: 0.7 }} title={sidebarExpanded ? (lang === 'zh-Hans' ? '收起' : 'Collapse') : (lang === 'zh-Hans' ? '更多' : 'More')}>
-                                    <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>{sidebarExpanded ? '▴' : '···'}</span>
-                                </div>
-                            )}
-                            {sidebarExpanded && collapsedItems.map(renderItem)}
-                        </>);
-                    })()}
-
-                    <div style={{ flex: 1 }}></div>
-
-                    <div className={`sidebar-item left-nav-item ${navTab === 'settings' ? 'active' : ''}`} onClick={() => { switchTool('settings'); }} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }} title={t("settings")}>
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>⚙️</span>
-                        <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t("settings")}</span>
-                    </div>
-
-                    <div className={`sidebar-item left-nav-item ${navTab === 'about' ? 'active' : ''}`} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }} title={t("about")}>
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>ℹ️</span>
-                        <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t("about")}</span>
-                    </div>
-                </div>
-
-                {navTab === 'ai' && (
-                <>
-                <div style={{ width: `${recentTasksPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
-                    <div style={{ flexShrink: 0, borderBottom: '1px solid var(--theme-border)' }}>
-                        <div onClick={() => setToolDropdownOpen(prev => !prev)} style={{ display: 'flex', alignItems: 'center', height: '58px', padding: '0 18px', gap: '12px', cursor: 'pointer' }}>
-                            <span style={{ color: '#f97316', fontSize: '1rem', lineHeight: 1 }}>✺</span>
-                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 700, color: 'var(--theme-text-primary)', flex: 1 }}>{activeTool === 'claude' ? 'Claude Code' : activeTool === 'gemini' ? 'Gemini CLI' : activeTool === 'codex' ? 'CodeX' : activeTool === 'opencode' ? 'OpenCode' : activeTool === 'codebuddy' ? 'CodeBuddy' : activeTool === 'cursor' ? 'Cursor Agent' : activeTool === 'iflow' ? 'iFlow CLI' : activeTool === 'kilo' ? 'Kilo Code' : activeTool}</span>
-                            <span style={{ fontSize: '0.72rem', opacity: 0.55, flexShrink: 0 }}>{toolDropdownOpen ? '▲' : '▼'}</span>
-                        </div>
-                        {toolDropdownOpen && (
-                            <div style={{ padding: '0 8px 8px' }}>
-                                {([{ id: 'claude', name: 'Claude Code', icon: claudecodeIcon }, ...(config?.show_gemini !== false ? [{ id: 'gemini', name: 'Gemini CLI', icon: geminiIcon }] : []), ...(config?.show_codex !== false ? [{ id: 'codex', name: 'CodeX', icon: codexIcon }] : []), ...(config?.show_opencode !== false ? [{ id: 'opencode', name: 'OpenCode', icon: opencodeIcon }] : []), ...(config?.show_codebuddy !== false ? [{ id: 'codebuddy', name: 'CodeBuddy', icon: codebuddyIcon }] : []), ...(config?.show_iflow !== false ? [{ id: 'iflow', name: 'iFlow CLI', icon: iflowIcon }] : []), ...(config?.show_kilo !== false ? [{ id: 'kilo', name: 'Kilo Code', icon: kiloIcon }] : [])] as { id: string; name: string; icon: string }[]).map(tool => (
-                                    <div key={tool.id} onClick={() => switchTool(tool.id)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: activeTool === tool.id ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent', fontWeight: activeTool === tool.id ? 700 : 500 }}>
-                                        <img src={tool.icon} style={{ width: '16px', height: '16px' }} alt="" />
-                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
-                                        {activeTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>✓</span>}
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-
-                    <div style={{ flex: 1, overflowY: 'auto', padding: '10px 8px 8px' }}>
-                        <div style={{ padding: '2px 8px 9px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', fontWeight: 700, letterSpacing: '0.02em' }}>
-                            {lang === 'zh-Hans' ? '\u6700\u8fd1\u4efb\u52a1' : lang === 'zh-Hant' ? '\u6700\u8fd1\u4efb\u52d9' : 'Recent Tasks'}
-                        </div>
-                        {recentProjects.length === 0 ? (
-                            <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>{lang === 'zh-Hans' ? '暂无最近任务' : lang === 'zh-Hant' ? '暫無最近任務' : 'No recent tasks'}</div>
-                        ) : recentProjects.map(proj => (
-                            <div key={proj.id || proj.project_path} onClick={() => { if (!renamingTaskPath) void resumeRecentProject(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'grid', gridTemplateColumns: '20px minmax(0, 1fr)', gap: '7px', padding: '8px 8px', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.15s' }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                                <span style={{ color: '#ff3b73', fontSize: '0.92rem', lineHeight: '1.1rem' }}>{proj.pinned ? '📌' : '🚀'}</span>
-                                <span style={{ minWidth: 0 }}>
-                                    {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await RenameTask(proj.project_path, trimmed); refreshRecentProjects(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{proj.name || proj.project_path}</span>}
-                                    <span style={{ display: 'block', marginTop: '4px', color: 'var(--theme-text-muted)', fontSize: '0.68rem', lineHeight: 1.32, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{proj.preview || proj.project_path}</span>
-                                </span>
-                            </div>
-                        ))}
-
-                        {taskContextMenu && (<>
-                            <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setTaskContextMenu(null)} />
-                            <div style={{ position: 'fixed', left: taskContextMenu.x, top: taskContextMenu.y, zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '132px' }}>
-                                {[
-                                    { label: lang === 'zh-Hans' ? '重命名' : 'Rename', icon: '✏️', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
-                                    { label: taskContextMenu.pinned ? (lang === 'zh-Hans' ? '取消置顶' : 'Unpin') : (lang === 'zh-Hans' ? '置顶' : 'Pin'), icon: '📌', action: async () => { await PinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); refreshRecentProjects(); setTaskContextMenu(null); } },
-                                    { label: lang === 'zh-Hans' ? '删除' : 'Remove', icon: '🗑️', action: async () => { await HideTask(taskContextMenu.projectPath); refreshRecentProjects(); setTaskContextMenu(null); } },
-                                ].map(item => <div key={item.label} onClick={item.action} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--theme-text-primary)' }}><span>{item.icon}</span><span>{item.label}</span></div>)}
-                            </div>
-                        </>)}
-                    </div>
-
-                    <div style={{ flexShrink: 0, padding: '8px 12px 10px', borderTop: '1px solid var(--theme-border)', color: 'var(--theme-text-muted)' }}>
-                        <div style={{ display: 'flex', gap: '5px', marginBottom: '6px', alignItems: 'center', fontSize: '0.62rem', lineHeight: 1.15 }}>
-                            {[{ label: 'LLM', on: maclawLLMOnline }, { label: lang === 'zh-Hans' ? '智网' : 'Net', on: agentNetRunning }, { label: lang === 'zh-Hans' ? '移动' : 'Mob', on: !!remoteActivationStatus?.activated }, { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' }].map(({ label, on }) => <span key={label}><span style={{ color: on ? 'var(--theme-primary)' : 'var(--theme-text-muted)' }}>●</span> {label}</span>)}
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '0.72rem', alignItems: 'center' }}>
-                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sidebarCurrentProviderTokenUsage.provider || (lang === 'zh-Hans' ? '智谱编程' : lang === 'zh-Hant' ? '智譜編程' : 'Provider')}</span>
-                            <span style={{ flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{formatSidebarTokens(sidebarCurrentProviderTokenUsage.total)} tokens</span>
-                        </div>
-                        {sidebarCurrentProviderTokenUsage.isHubService && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '5px', fontSize: '0.66rem', minWidth: 0 }}>
-                                <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }} title={sidebarHubCredits ? `Expires: ${formatSidebarHubExpiry(sidebarHubCredits)}, total ${formatSidebarHubTotalCredits(sidebarHubCredits)}, used ${formatSidebarHubUsedCredits(sidebarHubCredits)}, remaining ${sidebarHubCredits.authorized ? (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining)) : noHubAuthorizationText}` : 'Credits unavailable'}>
-                                    {lang === 'zh-Hans' ? '\u6709\u6548\u671f' : lang === 'zh-Hant' ? '\u6709\u6548\u671f' : 'Exp'} {formatSidebarHubExpiry(sidebarHubCredits)} · {lang === 'zh-Hans' ? '\u603b' : 'Total'} {formatSidebarHubTotalCredits(sidebarHubCredits)} · {lang === 'zh-Hans' ? '\u5df2\u7528' : 'Used'} {formatSidebarHubUsedCredits(sidebarHubCredits)}
-                                </span>
-                                {showHubCreditAction && (
-                                    <button type="button" onClick={openHubCreditsPage} style={{ flexShrink: 0, border: '1px solid var(--theme-danger)', background: 'color-mix(in srgb, var(--theme-danger) 12%, transparent)', color: 'var(--theme-danger)', borderRadius: '999px', padding: '2px 7px', fontSize: '0.64rem', fontWeight: 800, cursor: 'pointer' }}>
-                                        {lang === 'zh-Hans' ? '\u8d2d\u4e70' : lang === 'zh-Hant' ? '\u8cfc\u8cb7' : 'Buy'}
-                                    </button>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                </div>
-                <div
-                    onMouseDown={handleRecentTasksResizeStart}
-                    title={lang === 'zh-Hans' ? '拖动调整最近任务宽度' : lang === 'zh-Hant' ? '拖動調整最近任務寬度' : 'Drag to resize recent tasks'}
-                    style={{
-                        width: '6px',
-                        flexShrink: 0,
-                        cursor: 'col-resize',
-                        background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent',
-                        borderRight: '1px solid var(--theme-border)',
-                        transition: 'background 120ms ease',
-                        ['--wails-draggable' as any]: 'no-drag',
-                    }}
-                />
-                </>
-                )}
-            </div>
+            <AppSidebarShell
+                navTab={navTab}
+                recentTasksPaneWidth={recentTasksPaneWidth}
+                aiThemeMode={aiThemeMode}
+                brandInfo={brandInfo}
+                currentIcon={currentIcon}
+                brandSidebarName={brandSidebarName}
+                switchTool={switchTool}
+                lang={lang}
+                maclawLLMOnline={maclawLLMOnline}
+                agentNetRunning={agentNetRunning}
+                remoteActivationStatus={remoteActivationStatus}
+                qqBotStatus={qqBotStatus}
+                telegramStatus={telegramStatus}
+                weixinStatus={weixinStatus}
+                runningTaskCount={runningTaskCount}
+                t={t}
+                gossipAllowed={gossipAllowed}
+                config={config}
+                sidebarExpanded={sidebarExpanded}
+                setSidebarExpanded={setSidebarExpanded}
+                activeTool={activeTool}
+                toolDropdownOpen={toolDropdownOpen}
+                setToolDropdownOpen={setToolDropdownOpen}
+                recentProjects={recentProjects}
+                renamingTaskPath={renamingTaskPath}
+                setRenamingTaskPath={setRenamingTaskPath}
+                renameValue={renameValue}
+                setRenameValue={setRenameValue}
+                resumeRecentProject={resumeRecentProject}
+                refreshRecentProjects={refreshRecentProjects}
+                taskContextMenu={taskContextMenu}
+                setTaskContextMenu={setTaskContextMenu}
+                renameTask={RenameTask}
+                pinTask={PinTask}
+                hideTask={HideTask}
+                sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
+                sidebarHubCredits={sidebarHubCredits}
+                formatSidebarTokens={formatSidebarTokens}
+                formatSidebarHubExpiry={formatSidebarHubExpiry}
+                formatSidebarHubTotalCredits={formatSidebarHubTotalCredits}
+                formatSidebarHubUsedCredits={formatSidebarHubUsedCredits}
+                formatSidebarCredit={formatSidebarCredit}
+                unlimitedHubCreditText={unlimitedHubCreditText}
+                noHubAuthorizationText={noHubAuthorizationText}
+                showHubCreditAction={showHubCreditAction}
+                openHubCreditsPage={openHubCreditsPage}
+                handleRecentTasksResizeStart={handleRecentTasksResizeStart}
+                isRecentTasksResizing={isRecentTasksResizing}
+            />
             <div className="main-container" data-ai-theme={aiThemeMode}>
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
@@ -4013,386 +2220,58 @@ ${instruction}`;
                         />
                     </div>
                 ) : (
-                <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                        <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--theme-text-primary)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
-                            <span>
-                                {navTab === 'claude' ? 'Claude Code' :
-                                        navTab === 'gemini' ? 'Gemini CLI' :
-                                            navTab === 'codex' ? 'OpenAI Codex' :
-                                                navTab === 'opencode' ? 'OpenCode AI' :
-                                                    navTab === 'codebuddy' ? 'CodeBuddy AI' :
-                                                        navTab === 'cursor' ? 'Cursor Agent' :
-                                                                            navTab === 'iflow' ? 'iFlow CLI' :
-                                                                navTab === 'kilo' ? 'Kilo Code CLI' :
-                                                                        navTab === 'projects' ? t("projectManagement") :
-                                                                    navTab === 'skills' ? t("skills") :
-                                                                        navTab === 'tutorial' ? t("tutorial") :
-                                                                            navTab === 'gossip' ? t("gossip") :
-                                                                            navTab === 'remote' ? (lang === 'zh-Hans' ? '任务管理' : lang === 'zh-Hant' ? '任務管理' : 'Task Management') :
-                                                                                navTab === 'api-store' ? t("apiStore") :
-                                                                                    navTab === 'mcp' ? 'MCP' :
-                                                                                        navTab === 'settings' ? t("globalSettings") :
-                                                                                            navTab === 'agentnet' ? (lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet') : t("about")}
-                            </span>
-                            {navTab === 'projects' && (
-                                <>
-                                    <button
-                                        onClick={() => switchTool(activeTool)}
-                                        className="btn-link"
-                                        style={{
-                                            marginLeft: '10px',
-                                            fontSize: '0.8rem',
-                                            padding: '4px 12px'
-                                        }}
-                                        title="Back"
-                                    >&lt;&lt; {t("back") || "返回"}</button>
-                                    <button
-                                        className="btn-primary"
-                                        style={{ marginLeft: '10px', padding: '4px 12px', fontSize: '0.8rem' }}
-                                        onClick={handleAddNewProject}
-                                    >{t("addNewProject")}</button>
-                                </>
-                            )}
-                            {navTab === 'tutorial' && (
-                                <button
-                                    className="btn-link"
-                                    style={{ marginLeft: '10px', fontSize: '0.8rem', padding: '4px 12px' }}
-                                    onClick={async () => {
-                                        try {
-                                            setRefreshStatus(t("refreshing"));
-                                            setTutorialContent('');
-                                            const content = await ReadTutorial();
-                                            setRefreshStatus(t("refreshSuccess"));
-                                            setTutorialContent(content);
-                                            setRefreshKey(prev => prev + 1);
-                                            setTimeout(() => setRefreshStatus(''), 5000);
-                                        } catch (err) {
-                                            setRefreshStatus(t("refreshFailed") + err);
-                                            setTimeout(() => setRefreshStatus(''), 5000);
-                                        }
-                                    }}
-                                >
-                                    {t("refreshMessage")}
-                                </button>
-                            )}
-                            {isToolTab(navTab) && (
-                                <>
-                                    <button
-                                        className="btn-link"
-                                        onClick={() => setShowModelSettings(true)}
-                                        style={{
-                                            marginLeft: '10px',
-                                            padding: '2px 8px',
-                                            fontSize: '0.8rem',
-                                            borderColor: '#6366f1',
-                                            color: '#6366f1',
-                                            '--wails-draggable': 'no-drag'
-                                        } as any}
-                                    >
-                                        {lang === 'zh-Hans' || lang === 'zh-Hant' ? '服务商配置' : 'Provider Config'}
-                                    </button>
-                                    {isSkillTool(navTab) && (
-                                        <button
-                                            className="btn-link"
-                                            onClick={() => {
-                                                setSelectedSkillsToInstall([]);
-                                                setShowInstallSkillModal(true);
-                                            }}
-                                            style={{
-                                                marginLeft: '10px',
-                                                padding: '2px 8px',
-                                                fontSize: '0.8rem',
-                                                borderColor: '#10b981',
-                                                color: '#10b981',
-                                                '--wails-draggable': 'no-drag'
-                                            } as any}
-                                        >
-                                            {t("installSkills")}
-                                        </button>
-                                    )}
-                                    <button
-                                        className="btn-link"
-                                        onClick={() => switchTool('api-store')}
-                                        style={{
-                                            marginLeft: '10px',
-                                            padding: '2px 8px',
-                                            fontSize: '0.8rem',
-                                            borderColor: '#c65c37',
-                                            color: '#c65c37',
-                                            '--wails-draggable': 'no-drag'
-                                        } as any}
-                                    >
-                                        {t("apiStore")}
-                                    </button>
-                                </>
-                            )}
-                        </h2>
-                        <div style={{ display: 'flex', gap: '10px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
-                            <button
-                                onMouseDown={handleWindowHide}
-                                aria-label={lang === 'en' ? 'Minimize window' : '\u6700\u5c0f\u5316\u7a97\u53e3'}
-                                title={lang === 'en' ? 'Minimize window' : '\u6700\u5c0f\u5316\u7a97\u53e3'}
-                                style={{
-                                    '--wails-draggable': 'no-drag',
-                                    pointerEvents: 'auto',
-                                    cursor: 'pointer',
-                                    position: 'relative',
-                                    zIndex: 10001,
-                                    width: '36px',
-                                    height: '28px',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    background: 'transparent',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    padding: 0,
-                                    lineHeight: 1,
-                                    flexShrink: 0,
-                                    color: 'var(--theme-text-secondary)',
-                                    transition: 'background 120ms ease, color 120ms ease',
-                                } as any}
-                            >
-                                <span style={{ width: '10px', borderTop: '1.5px solid currentColor', transform: 'translateY(4px)' }} />
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <>
+                <MainTopHeader
+                    navTab={navTab}
+                    lang={lang}
+                    t={t}
+                    activeTool={activeTool}
+                    switchTool={switchTool}
+                    handleAddNewProject={handleAddNewProject}
+                    setRefreshStatus={setRefreshStatus}
+                    setTutorialContent={setTutorialContent}
+                    setRefreshKey={setRefreshKey}
+                    setShowModelSettings={setShowModelSettings}
+                    setSelectedSkillsToInstall={setSelectedSkillsToInstall}
+                    setShowInstallSkillModal={setShowInstallSkillModal}
+                    handleWindowHide={handleWindowHide}
+                />
 
                 <div className="main-content elegant-scrollbar" style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
                     {navTab === 'tutorial' && (
-                        <div style={{
-                            width: '100%',
-                            padding: '0 15px',
-                            boxSizing: 'border-box'
-                        }}>
-                            <div style={{ marginBottom: '8px' }}>
-                                <button
-                                    className="btn-link"
-                                    onClick={() => switchTool('ai')}
-                                    style={{
-                                        fontSize: '0.8rem',
-                                        padding: '4px 12px',
-                                        cursor: 'pointer',
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '4px',
-                                    }}
-                                >
-                                    ← {lang === 'en' ? 'Back to AI Assistant' : lang === 'zh-Hant' ? '返回 AI 助手' : '返回 AI 助手'}
-                                </button>
-                            </div>
-                            <div style={{
-                                position: 'relative',
-                                marginBottom: '5px'
-                            }}>
-                                {refreshStatus && (
-                                    <div style={{
-                                        position: 'absolute',
-                                        top: '0',
-                                        right: '0',
-                                        zIndex: 100,
-                                        padding: '4px 12px',
-                                        backgroundColor: 'rgba(224, 242, 254, 0.95)',
-                                        borderRadius: '16px',
-                                        color: '#0369a1',
-                                        fontSize: '0.75rem',
-                                        fontWeight: 'bold',
-                                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-                                        backdropFilter: 'blur(4px)',
-                                        animation: 'fadeIn 0.3s ease-out'
-                                    }}>
-                                        {refreshStatus}
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="markdown-content" style={{
-                                backgroundColor: '#fff',
-                                padding: '20px',
-                                borderRadius: '8px',
-                                border: '1px solid var(--border-color)',
-                                fontFamily: 'inherit',
-                                fontSize: '0.75rem',
-                                lineHeight: '1.6',
-                                color: '#374151',
-                                marginBottom: '20px',
-                                textAlign: 'left'
-                            }}>
-                                <ReactMarkdown
-                                    key={refreshKey}
-                                    remarkPlugins={[remarkGfm]}
-                                    // @ts-ignore - rehype-raw type compatibility
-                                    rehypePlugins={[rehypeRaw]}
-                                    components={{ a: MarkdownLink }}
-                                >
-                                    {tutorialContent}
-                                </ReactMarkdown>
-                            </div>
-                        </div>
+                        <TutorialPage
+                            lang={lang}
+                            refreshStatus={refreshStatus}
+                            refreshKey={refreshKey}
+                            tutorialContent={tutorialContent}
+                            switchTool={switchTool}
+                        />
                     )}
                     {navTab === 'gossip' && gossipAllowed && (
-                        <GossipPanel lang={lang} />
+                        <GossipPage lang={lang} />
                     )}
                     {navTab === 'remote' && (
-                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                            <div style={{ flex: 1, overflowY: 'auto', padding: '20px', overflowX: 'hidden' }}>
-                                <RemoteSessionList
-                                    lang={lang}
-                                    remoteSessions={remoteSessions}
-                                    remoteInputDrafts={remoteInputDrafts}
-                                    setRemoteInputDrafts={setRemoteInputDrafts}
-                                    interruptRemoteSession={interruptRemoteSession}
-                                    killRemoteSession={killRemoteSession}
-                                    refreshSessionsOnly={refreshSessionsOnly}
-                                    showToastMessage={showToastMessage}
-                                    translate={translate}
-                                    formatText={formatText}
-                                    localizeText={localizeText}
-                                />
-
-                            </div>
-                        </div>
+                        <RemoteSessionsPage
+                            lang={lang}
+                            remoteSessions={remoteSessions}
+                            remoteInputDrafts={remoteInputDrafts}
+                            setRemoteInputDrafts={setRemoteInputDrafts}
+                            interruptRemoteSession={interruptRemoteSession}
+                            killRemoteSession={killRemoteSession}
+                            refreshSessionsOnly={refreshSessionsOnly}
+                            showToastMessage={showToastMessage}
+                            translate={translate}
+                            formatText={formatText}
+                            localizeText={localizeText}
+                        />
                     )}
                     {navTab === 'api-store' && (
-                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-
-                            <div style={{ flex: 1, overflowY: 'auto', padding: '20px', overflowX: 'hidden' }}>
-                                <div style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: 'repeat(4, 1fr)',
-                                    gap: '12px',
-                                    paddingBottom: '20px'
-                                }}>
-                                    {[
-                                        { name: 'ChatFire', url: 'https://api.chatfire.cn/register?aff=jira', isRelay: true, hasSubscription: false },
-                                        { name: '智谱', url: 'https://bigmodel.cn/glm-coding', isRelay: false, hasSubscription: true },
-                                        { name: '月之暗面', url: 'https://www.kimi.com/membership/pricing?from=upgrade_plan&track_id=1d2446f5-f45f-4ae5-961e-c0afe936a115', isRelay: false, hasSubscription: true },
-                                        { name: '豆包', url: 'https://www.volcengine.com/activity/codingplan', isRelay: false, hasSubscription: true },
-                                        { name: '腾讯云', url: 'https://cloud.tencent.com/act/pro/codingplan', isRelay: false, hasSubscription: true },
-                                        { name: '讯飞星辰', url: 'https://www.xfyun.cn/doc/spark/CodingPlan.html', isRelay: false, hasSubscription: true },
-                                        { name: 'MiniMax', url: 'https://platform.minimaxi.com/user-center/payment/coding-plan', isRelay: false, hasSubscription: true },
-                                        { name: '百度千帆', url: 'https://cloud.baidu.com/product/codingplan.html', isRelay: false, hasSubscription: true },
-                                        { name: 'DeepSeek', url: 'https://platform.deepseek.com/api_keys', isRelay: false, hasSubscription: false, isBilling: true },
-                                        { name: '小米', url: 'https://platform.xiaomimimo.com/#/console/api-keys', isRelay: false, hasSubscription: false, isBilling: true },
-                                        { name: '摩尔线程', url: 'https://code.mthreads.com/', isRelay: false, hasSubscription: true },
-                                        { name: '快手', url: 'https://www.streamlake.com/marketing/coding-plan', isRelay: false, hasSubscription: true },
-                                        { name: '阿里云', url: 'https://coding.dashscope.aliyuncs.com/', isRelay: false, hasSubscription: true },
-                                    ].map((provider, index) => (
-                                        <div
-                                            key={index}
-                                            style={{
-                                                backgroundColor: '#fff',
-                                                border: '1px solid var(--border-color)',
-                                                borderRadius: '8px',
-                                                padding: '8px 12px',
-                                                display: 'flex',
-                                                flexDirection: 'column',
-                                                justifyContent: 'center',
-                                                transition: 'all 0.2s ease',
-                                                cursor: 'pointer',
-                                                position: 'relative',
-                                                minHeight: '42px'
-                                            }}
-                                            onMouseEnter={(e) => {
-                                                e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
-                                                e.currentTarget.style.transform = 'translateY(-2px)';
-                                            }}
-                                            onMouseLeave={(e) => {
-                                                e.currentTarget.style.boxShadow = 'none';
-                                                e.currentTarget.style.transform = 'translateY(0)';
-                                            }}
-                                            onClick={() => BrowserOpenURL(provider.url)}
-                                        >
-                                            {provider.isRelay && (
-                                                <div style={{
-                                                    position: 'absolute',
-                                                    top: '-6px',
-                                                    right: '-6px',
-                                                    backgroundColor: '#6366f1',
-                                                    color: '#fff',
-                                                    padding: '3px 10px',
-                                                    borderRadius: '4px',
-                                                    fontSize: '0.65rem',
-                                                    fontWeight: 'bold',
-                                                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)'
-                                                }}>
-                                                    {t("relayService")}
-                                                </div>
-                                            )}
-                                            {provider.hasSubscription && (
-                                                <div style={{
-                                                    position: 'absolute',
-                                                    top: '-6px',
-                                                    right: '-6px',
-                                                    backgroundColor: '#ec4899',
-                                                    color: '#fff',
-                                                    padding: '3px 10px',
-                                                    borderRadius: '4px',
-                                                    fontSize: '0.65rem',
-                                                    fontWeight: 'bold',
-                                                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)'
-                                                }}>
-                                                    {t("subscription")}
-                                                </div>
-                                            )}
-                                            {(provider as any).isBilling && (
-                                                <div style={{
-                                                    position: 'absolute',
-                                                    top: '-6px',
-                                                    right: '-6px',
-                                                    backgroundColor: '#f59e0b',
-                                                    color: '#fff',
-                                                    padding: '3px 10px',
-                                                    borderRadius: '4px',
-                                                    fontSize: '0.65rem',
-                                                    fontWeight: 'bold',
-                                                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)'
-                                                }}>
-                                                    {t("billing")}
-                                                </div>
-                                            )}
-                                            <div style={{
-                                                fontSize: '0.85rem',
-                                                fontWeight: 600,
-                                                color: '#6366f1',
-                                                marginBottom: '8px'
-                                            }}>
-                                                {provider.name}
-                                            </div>
-                                            <div style={{
-                                                fontSize: '0.85rem',
-                                                color: '#6b7280'
-                                            }}>
-                                                🛒
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="form-group" style={{ marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u804a\u5929\u5b57\u4f53\u5927\u5c0f' : lang === 'zh-Hant' ? '\u804a\u5929\u5b57\u9ad4\u5927\u5c0f' : 'Chat Font Size'}</h4>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                        <input type="range" min={12} max={24} step={1} value={chatFontSize}
-                                            onChange={e => setChatFontSize(Number(e.target.value))}
-                                            onPointerUp={async (e) => {
-                                                const v = Number((e.currentTarget as HTMLInputElement).value);
-                                                setChatFontSize(v);
-                                                await SetChatFontSize(v).catch(() => {});
-                                            }}
-                                            style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
-                                        <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
-                                        <button onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
-                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
-                                            {lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}
-                                        </button>
-                                    </div>
-                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
-                                        {lang === 'zh-Hans' ? '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002' : lang === 'zh-Hant' ? '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002' : 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.'}
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
+                        <ApiStorePage
+                            lang={lang}
+                            t={t}
+                            chatFontSize={chatFontSize}
+                            setChatFontSize={setChatFontSize}
+                        />
                     )}
                     {isToolTab(navTab) && (
                         <ToolConfiguration
@@ -4406,242 +2285,49 @@ ${instruction}`;
                         />
                     )}
                     {navTab === 'projects' && (
-                        <div className="project-manager-panel">
-                            <div className="project-manager-toolbar">
-                                <input
-                                    type="text"
-                                    className="form-input"
-                                    value={projectSearchKeyword}
-                                    onChange={(e) => setProjectSearchKeyword(e.target.value)}
-                                    placeholder={t("projectSearchPlaceholder")}
-                                    spellCheck={false}
-                                    autoComplete="off"
-                                />
-                                <select
-                                    className="form-input"
-                                    value={projectSortMode}
-                                    onChange={(e) => setProjectSortMode(e.target.value as 'default' | 'name-asc' | 'name-desc' | 'path-asc' | 'path-desc')}
-                                >
-                                    <option value="default">{t("projectSortDefault")}</option>
-                                    <option value="name-asc">{t("projectSortNameAsc")}</option>
-                                    <option value="name-desc">{t("projectSortNameDesc")}</option>
-                                    <option value="path-asc">{t("projectSortPathAsc")}</option>
-                                    <option value="path-desc">{t("projectSortPathDesc")}</option>
-                                </select>
-                            </div>
-
-                            <div className="project-manager-summary">
-                                {filteredAndSortedProjects.length > 0 ? (
-                                    <span>
-                                        {t("projectShowing")} {projectPageStartIndex + 1}-{Math.min(projectPageStartIndex + PROJECT_PAGE_SIZE, filteredAndSortedProjects.length)} / {filteredAndSortedProjects.length} {t("projectTotal")}
-                                    </span>
-                                ) : (
-                                    <span>{t("projectNoResults")}</span>
-                                )}
-                            </div>
-
-                            <div className="project-manager-list elegant-scrollbar">
-                                {pagedProjects.map((proj: any) => (
-                                    <div key={proj.id} className="project-manager-item">
-                                        <input
-                                            type="text"
-                                            className="form-input"
-                                            data-field="project-item-name"
-                                            data-id={proj.id}
-                                            value={proj.name}
-                                            onChange={(e) => {
-                                                const newList = config.projects.map((p: any) => p.id === proj.id ? { ...p, name: e.target.value } : p);
-                                                setConfig(new main.AppConfig({ ...config, projects: newList }));
-                                            }}
-                                            style={{ fontWeight: 'bold', border: 'none', padding: 0, fontSize: '0.9rem', width: '112px', flexShrink: 0, lineHeight: 1.1 }}
-                                            spellCheck={false}
-                                            autoComplete="off"
-                                        />
-                                        <div style={{ flex: 1, fontSize: '0.78rem', color: '#6b7280', backgroundColor: '#f9fafb', padding: '3px 6px', borderRadius: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: 1.1 }}>
-                                            {proj.path}
-                                        </div>
-
-                                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-
-                                            <button className="btn-link" onClick={() => {
-                                                SelectProjectDir().then(dir => {
-                                                    if (dir) {
-                                                        const newList = config.projects.map((p: any) => p.id === proj.id ? { ...p, path: dir } : p);
-                                                        const newConfig = new main.AppConfig({ ...config, projects: newList });
-                                                        setConfig(newConfig);
-                                                        SaveConfig(newConfig);
-                                                    }
-                                                });
-                                            }}>{t("change")}</button>
-
-                                            <button
-                                                style={{ color: '#ef4444', background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.85rem' }}
-                                                onClick={() => {
-                                                    if (config.projects.length > 1) {
-                                                        const newList = config.projects.filter((p: any) => p.id !== proj.id);
-                                                        const newConfig = new main.AppConfig({ ...config, projects: newList });
-                                                        if (config.current_project === proj.id) newConfig.current_project = newList[0].id;
-                                                        if (selectedProjectForLaunch === proj.id) setSelectedProjectForLaunch(newConfig.current_project);
-                                                        setConfig(newConfig);
-                                                        SaveConfig(newConfig);
-                                                    }
-                                                }}
-                                            >
-                                                {t("delete")}
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-
-                            {filteredAndSortedProjects.length > 0 && (
-                                <div className="project-manager-pagination">
-                                    <button
-                                        className="btn-link"
-                                        onClick={() => setProjectCurrentPage(Math.max(1, safeProjectCurrentPage - 1))}
-                                        disabled={safeProjectCurrentPage <= 1}
-                                    >
-                                        {t("prevPage")}
-                                    </button>
-                                    <span>{safeProjectCurrentPage} / {totalProjectPages}</span>
-                                    <button
-                                        className="btn-link"
-                                        onClick={() => setProjectCurrentPage(Math.min(totalProjectPages, safeProjectCurrentPage + 1))}
-                                        disabled={safeProjectCurrentPage >= totalProjectPages}
-                                    >
-                                        {t("nextPage")}
-                                    </button>
-                                </div>
-                            )}
-                        </div>
+                        <ProjectManagerPage
+                            config={config}
+                            setConfig={setConfig}
+                            t={t}
+                            projectSearchKeyword={projectSearchKeyword}
+                            setProjectSearchKeyword={setProjectSearchKeyword}
+                            projectSortMode={projectSortMode}
+                            setProjectSortMode={setProjectSortMode}
+                            filteredAndSortedProjects={filteredAndSortedProjects}
+                            pagedProjects={pagedProjects}
+                            projectPageStartIndex={projectPageStartIndex}
+                            projectPageSize={PROJECT_PAGE_SIZE}
+                            safeProjectCurrentPage={safeProjectCurrentPage}
+                            totalProjectPages={totalProjectPages}
+                            setProjectCurrentPage={setProjectCurrentPage}
+                            selectedProjectForLaunch={selectedProjectForLaunch}
+                            setSelectedProjectForLaunch={setSelectedProjectForLaunch}
+                        />
                     )}
 
                     {navTab === 'skills' && (
-                        <div style={{ padding: '10px' }}>
-                            <SkillsManagementPanel localizeText={localizeText} />
-                        </div>
+                        <SkillsPage localizeText={localizeText} />
                     )}
 
                     {navTab === 'mcp' && (
-                        <div style={{ padding: '10px' }}>
-                            <MCPManagementPanel translate={translate} />
-                        </div>
+                        <MCPPage translate={translate} />
                     )}
 
                     {navTab === 'settings' && (
                         <div className="settings-shell" style={{ padding: '10px' }}>
-                            <div className="settings-top-tabs">
-                                {settingsTabOptions.map((tab) => (
-                                    <button
-                                        key={tab.id}
-                                        type="button"
-                                        className={`settings-top-tab ${settingsTab === tab.id ? 'active' : ''}`}
-                                        onClick={() => setSettingsTab(tab.id)}
-                                        title={tab.desc}
-                                    >
-                                        {tab.label}
-                                    </button>
-                                ))}
-                            </div>
-                            <div className="settings-panel" style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '20px', marginBottom: '15px' }}>
-                                <div className="form-group" style={{ flex: '1', marginBottom: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                    <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("language")}</label>
-                                    <select value={lang} onChange={handleLangChange} className="form-input" style={{ width: 'auto', fontSize: '0.8rem', padding: '2px 8px', height: '28px' }}>
-                                        <option value="en">English</option>
-                                        <option value="zh-Hans">简体中文</option>
-                                        <option value="zh-Hant">繁體中文</option>
-                                    </select>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                                    <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("defaultLaunchModeLabel")}</label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'local', remote_enabled: false }); setConfig(c); SaveConfig(c); } }} />
-                                        {t("localModeLabel")}
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true }); setConfig(c); SaveConfig(c); } }} />
-                                        {t("remoteModeLabel")}
-                                    </label>
-                                </div>
-
-                            </div>
-
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{lang === 'zh-Hans' ? '\u5de5\u4f5c\u76ee\u5f55' : lang === 'zh-Hant' ? '\u5de5\u4f5c\u76ee\u9304' : 'Working Directory'}</label>
-                                <input
-                                    type="text"
-                                    className="form-input"
-                                    style={{ flex: 1, minWidth: '220px', fontSize: '0.78rem', padding: '3px 8px', height: '28px' }}
-                                    value={config?.working_directory || ''}
-                                    placeholder="~/.maclaw/workspace"
-                                    onChange={(e) => {
-                                        if (!config) return;
-                                        setConfig(new main.AppConfig({ ...config, working_directory: e.target.value }));
-                                    }}
-                                    onBlur={() => { if (config) SaveConfig(config); }}
-                                    onKeyDown={(e) => { if (e.key === 'Enter' && config) SaveConfig(config); }}
+                            <SettingsTabsRail
+                                tabs={settingsTabOptions}
+                                activeTab={settingsTab}
+                                onChange={setSettingsTab}
+                            />
+                            <div style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
+                                <GeneralSettingsPanel
+                                    config={config}
+                                    setConfig={setConfig}
+                                    lang={lang}
+                                    t={t}
+                                    onLanguageChange={handleLangChange}
                                 />
-                                <button className="btn btn-sm" style={{ fontSize: '0.75rem', padding: '3px 10px', height: '28px', whiteSpace: 'nowrap' }} onClick={() => {
-                                    SelectWorkingDir().then(dir => {
-                                        if (dir && config) {
-                                            const c = new main.AppConfig({ ...config, working_directory: dir });
-                                            setConfig(c);
-                                            SaveConfig(c);
-                                        }
-                                    });
-                                }}>{lang === 'zh-Hans' ? '\u6d4f\u89c8' : lang === 'zh-Hant' ? '\u700f\u89bd' : 'Browse'}</button>
-                                {config?.working_directory && (
-                                    <button className="btn btn-sm" style={{ fontSize: '0.75rem', padding: '3px 10px', height: '28px', whiteSpace: 'nowrap', opacity: 0.7 }} onClick={() => {
-                                        if (config) {
-                                            const c = new main.AppConfig({ ...config, working_directory: '' });
-                                            setConfig(c);
-                                            SaveConfig(c);
-                                        }
-                                    }}>{lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}</button>
-                                )}
-                                <span style={{ fontSize: '0.68rem', color: 'var(--theme-text-muted)', whiteSpace: 'nowrap' }}>
-                                    {lang === 'zh-Hans' ? 'Agent \u4efb\u52a1\u7684\u9ed8\u8ba4\u5de5\u4f5c\u76ee\u5f55\uff0c\u7559\u7a7a\u5219\u4f7f\u7528 ~/.maclaw/workspace' : lang === 'zh-Hant' ? 'Agent \u4efb\u52d9\u7684\u9810\u8a2d\u5de5\u4f5c\u76ee\u9304\uff0c\u7559\u7a7a\u5247\u4f7f\u7528 ~/.maclaw/workspace' : 'Default directory for agent tasks. Leave empty for ~/.maclaw/workspace'}
-                                </span>
-                            </div>
-
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={config?.llm_trajectory_logging || false}
-                                        onChange={(e) => {
-                                            if (!config) return;
-                                            const c = new main.AppConfig({ ...config, llm_trajectory_logging: e.target.checked });
-                                            setConfig(c);
-                                            SaveConfig(c);
-                                        }}
-                                    />
-                                    <span>{lang === 'zh-Hans' ? '\u8bb0\u5f55 LLM \u8f68\u8ff9' : lang === 'zh-Hant' ? '\u8a18\u9304 LLM \u8ecc\u8de1' : 'Record LLM trajectory'}</span>
-                                </label>
-                                <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
-                                    {lang === 'zh-Hans' ? '\u4fdd\u5b58 LLM \u4ea4\u4e92\u8f68\u8ff9\uff0c\u7528\u4e8e\u5206\u6790\u4e0e\u8bad\u7ec3\u3002' : lang === 'zh-Hant' ? '\u4fdd\u5b58 LLM \u4e92\u52d5\u8ecc\u8de1\uff0c\u7528\u65bc\u5206\u6790\u8207\u8a13\u7df4\u3002' : 'Save LLM interaction trajectories for analysis and training.'}
-                                </span>
-                            </div>
-
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={config?.log_detail_enabled || false}
-                                        onChange={(e) => {
-                                            if (!config) return;
-                                            const c = new main.AppConfig({ ...config, log_detail_enabled: e.target.checked });
-                                            setConfig(c);
-                                            SaveConfig(c);
-                                        }}
-                                    />
-                                    <span>{lang === 'zh-Hans' ? '日志详情' : lang === 'zh-Hant' ? '日誌詳情' : 'Detailed logs'}</span>
-                                </label>
-                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
-                                    {lang === 'zh-Hans' ? '关闭时仅保留错误日志' : lang === 'zh-Hant' ? '關閉時僅保留錯誤日誌' : 'When off, only error logs are kept'}
-                                </span>
-                            </div>
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'remote' ? 'block' : 'none' }}>
@@ -4669,124 +2355,14 @@ ${instruction}`;
                                 />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'proxy' ? 'block' : 'none' }}>
-                                {/* Enable toggle */}
-                                <div style={{ marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px' }}>
-                                        <input type="checkbox" checked={config?.default_proxy_enabled || false}
-                                            onChange={(e) => { const nc = new main.AppConfig({ ...config, default_proxy_enabled: e.target.checked }); setConfig(nc); }}
-                                        />
-                                        <span style={{ fontWeight: 500 }}>{t("proxyEnabled")}</span>
-                                    </label>
-                                </div>
-
-                                {/* Protocol + Host + Port row */}
-                                <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                                    <div style={{ width: '110px', flexShrink: 0 }}>
-                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyProtocol")}</label>
-                                        <select className="form-input" style={{ height: '34px' }}
-                                            value={config?.default_proxy_protocol || 'http'}
-                                            onChange={(e) => { const nc = new main.AppConfig({ ...config, default_proxy_protocol: e.target.value }); setConfig(nc); }}
-                                        >
-                                            <option value="http">HTTP</option>
-                                            <option value="https">HTTPS</option>
-                                            <option value="socks5">SOCKS5</option>
-                                        </select>
-                                    </div>
-                                    <div style={{ flex: 1 }}>
-                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyHost")}</label>
-                                        <input type="text" className="form-input" spellCheck={false}
-                                            placeholder={t("proxyHostPlaceholder")}
-                                            value={config?.default_proxy_host || ''}
-                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_host: e.target.value })); }}
-                                        />
-                                    </div>
-                                    <div style={{ width: '90px', flexShrink: 0 }}>
-                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPort")}</label>
-                                        <input type="text" className="form-input" spellCheck={false}
-                                            placeholder={t("proxyPortPlaceholder")}
-                                            value={config?.default_proxy_port || ''}
-                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_port: e.target.value })); }}
-                                        />
-                                    </div>
-                                </div>
-
-                                {/* Username + Password row */}
-                                <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                                    <div style={{ flex: 1 }}>
-                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyUsername")}</label>
-                                        <input type="text" className="form-input" spellCheck={false} autoComplete="off"
-                                            value={config?.default_proxy_username || ''}
-                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_username: e.target.value })); }}
-                                        />
-                                    </div>
-                                    <div style={{ flex: 1 }}>
-                                        <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPassword")}</label>
-                                        <input type="password" className="form-input" autoComplete="new-password"
-                                            value={config?.default_proxy_password || ''}
-                                            onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_password: e.target.value })); }}
-                                        />
-                                    </div>
-                                </div>
-
-                                {/* Bypass list */}
-                                <div style={{ marginBottom: '12px' }}>
-                                    <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyBypass")}</label>
-                                    <textarea className="form-input" rows={2} spellCheck={false}
-                                        placeholder={t("proxyBypassPlaceholder")}
-                                        value={config?.default_proxy_bypass || ''}
-                                        onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_bypass: e.target.value })); }}
-                                        style={{ resize: 'vertical', minHeight: '40px', fontFamily: 'monospace', fontSize: '0.78rem' }}
-                                    />
-                                    <div style={{ fontSize: '0.7rem', color: '#888', marginTop: '3px' }}>{t("proxyBypassHint")}</div>
-                                </div>
-
-                                {/* Scope checkboxes */}
-                                <div style={{ marginBottom: '12px', padding: '10px', backgroundColor: 'var(--bg-secondary, #f8fafc)', borderRadius: '6px', border: '1px solid var(--border-color, #e2e8f0)' }}>
-                                    <label className="form-label" style={{ fontSize: '0.78rem', marginBottom: '8px', display: 'block' }}>{t("proxyScopeTitle")}</label>
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem' }}>
-                                            <input type="checkbox" checked={config?.default_proxy_scope_maclaw || false}
-                                                onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_maclaw: e.target.checked })); }}
-                                            />
-                                            {t("proxyScopeMaclaw")}
-                                        </label>
-                                        <label style={{ display: 'flex', alignItems: 'center', cursor: isWindows ? 'not-allowed' : 'pointer', gap: '8px', fontSize: '0.82rem', opacity: isWindows ? 0.45 : 0.75 }}>
-                                            <input type="checkbox" checked={isWindows ? false : (config?.default_proxy_scope_coding_tools || false)}
-                                                disabled={isWindows}
-                                                onChange={(e) => { if (!isWindows) { setConfig(new main.AppConfig({ ...config, default_proxy_scope_coding_tools: e.target.checked })); } }}
-                                            />
-                                            {t("proxyScopeCodingTools")}
-                                        </label>
-                                        <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '8px', fontSize: '0.82rem' }}>
-                                            <input type="checkbox" checked={config?.default_proxy_scope_agent || false}
-                                                onChange={(e) => { setConfig(new main.AppConfig({ ...config, default_proxy_scope_agent: e.target.checked })); }}
-                                            />
-                                            {t("proxyScopeAgent")}
-                                        </label>
-                                    </div>
-                                </div>
-
-                                {/* Save button */}
-                                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
-                                    <button className="btn-primary" onClick={() => {
-                                        SaveConfig(config);
-                                        try { (window as any).go?.main?.App?.SaveProxyConfig?.({
-                                            enabled: config?.default_proxy_enabled || false,
-                                            protocol: config?.default_proxy_protocol || 'http',
-                                            host: config?.default_proxy_host || '',
-                                            port: config?.default_proxy_port || '',
-                                            username: config?.default_proxy_username || '',
-                                            password: config?.default_proxy_password || '',
-                                            bypass: config?.default_proxy_bypass || '',
-                                            scope_maclaw: config?.default_proxy_scope_maclaw || false,
-                                            scope_coding_tools: config?.default_proxy_scope_coding_tools || false,
-                                            scope_agent: config?.default_proxy_scope_agent || false,
-                                        }); } catch {}
-                                    }} style={{ padding: '8px 16px' }}>
-                                        {localizeText("Save", "保存", "保存")}
-                                    </button>
-                                </div>
+                            <div style={{ display: settingsTab === 'proxy' ? 'block' : 'none' }}>
+                                <ProxySettingsPanel
+                                    config={config}
+                                    setConfig={setConfig}
+                                    isWindows={isWindows}
+                                    lang={lang}
+                                    t={t}
+                                />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'llm' ? 'block' : 'none' }}>
@@ -4795,10 +2371,6 @@ ${instruction}`;
 
                             <div className="settings-panel" style={{ display: settingsTab === 'redeem' ? 'block' : 'none' }}>
                                 <HubServiceRedeemPanel lang={lang} />
-                            </div>
-
-                            <div className="settings-panel" style={{ display: settingsTab === 'role' ? 'block' : 'none' }}>
-                                <MaclawRolePanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'memory' ? 'block' : 'none' }}>
@@ -4825,954 +2397,93 @@ ${instruction}`;
                                 <GroupDiscussionSettingsPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'im' ? 'block' : 'none' }}>
-                                {/* IM sub-tabs */}
-                                <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                                    {([
-                                        { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot' },
-                                        { key: 'telegram' as const, label: 'Telegram Bot' },
-                                        { key: 'weixin' as const, label: lang === 'zh-Hans' ? '微信' : lang === 'zh-Hant' ? '微信' : 'WeChat' },
-                                        { key: 'thirdparty' as const, label: lang === 'zh-Hans' ? '\u7b2c\u4e09\u65b9\u63a5\u5165' : lang === 'zh-Hant' ? '\u7b2c\u4e09\u65b9\u63a5\u5165' : 'Third-party Access' },
-                                    ]).map((t) => (
-                                        <button
-                                            key={t.key}
-                                            type="button"
-                                            onClick={() => setImSubTab(t.key)}
-                                            style={{
-                                                padding: '4px 14px',
-                                                borderRadius: '14px',
-                                                border: imSubTab === t.key ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                background: imSubTab === t.key ? '#eef2ff' : 'transparent',
-                                                color: imSubTab === t.key ? '#6366f1' : '#555',
-                                                fontWeight: imSubTab === t.key ? 600 : 400,
-                                                fontSize: '0.75rem',
-                                                cursor: 'pointer',
-                                                transition: 'all 0.15s',
-                                            }}
-                                        >
-                                            {t.label}
-                                        </button>
-                                    ))}
-                                </div>
-
-                                {/* QQ Bot tab */}
-                                {imSubTab === 'qq' && (
-                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
-                                        {lang === 'zh-Hans'
-                                            ? '配置你自己的 QQ 机器人，通过 QQ 与 MaClaw Agent 对话。'
-                                            : lang === 'zh-Hant'
-                                            ? '配置你自己的 QQ 機器人，透過 QQ 與 MaClaw Agent 對話。'
-                                            : 'Configure your own QQ Bot to chat with MaClaw Agent via QQ.'}
-                                    </p>
-
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={config?.qqbot_enabled || false}
-                                                onChange={(e) => saveRemoteConfigField({ qqbot_enabled: e.target.checked } as any)}
-                                            />
-                                            {lang === 'zh-Hans' ? '启用 QQ 机器人' : lang === 'zh-Hant' ? '啟用 QQ 機器人' : 'Enable QQ Bot'}
-                                        </label>
-                                        <button
-                                            type="button"
-                                            style={{
-                                                fontSize: '0.68rem',
-                                                padding: '1px 8px',
-                                                borderRadius: '4px',
-                                                border: '1px solid #6366f1',
-                                                background: 'transparent',
-                                                color: '#6366f1',
-                                                cursor: 'pointer',
-                                                whiteSpace: 'nowrap',
-                                            }}
-                                            onClick={() => BrowserOpenURL('https://q.qq.com/qqbot/openclaw/login.html')}
-                                        >
-                                            {lang === 'zh-Hans' ? '获取 AppID' : lang === 'zh-Hant' ? '取得 AppID' : 'Get AppID'}
-                                        </button>
-                                        {config?.qqbot_enabled && (
-                                            <>
-                                                <span style={{
-                                                    fontSize: '0.7rem',
-                                                    padding: '2px 8px',
-                                                    borderRadius: '10px',
-                                                    background: qqBotStatus === 'connected' ? '#dcfce7' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? '#fef9c3' : '#fee2e2',
-                                                    color: qqBotStatus === 'connected' ? '#166534' : qqBotStatus === 'connecting' || qqBotStatus === 'reconnecting' ? '#854d0e' : '#991b1b',
-                                                }}>
-                                                    {qqBotStatus === 'connected' ? '● 已连接' : qqBotStatus === 'connecting' ? '◌ 连接中...' : qqBotStatus === 'reconnecting' ? '◌ 重连中...' : qqBotStatus === 'error' ? '✕ 错误' : '○ 未连接'}
-                                                </span>
-                                                <button
-                                                    type="button"
-                                                    style={{
-                                                        fontSize: '0.68rem',
-                                                        padding: '2px 8px',
-                                                        borderRadius: '4px',
-                                                        border: '1px solid #ddd',
-                                                        background: 'transparent',
-                                                        color: '#555',
-                                                        cursor: 'pointer',
-                                                    }}
-                                                    onClick={() => RestartQQBot().then(setQQBotStatus)}
-                                                >
-                                                    {lang === 'zh-Hans' ? '重启' : 'Restart'}
-                                                </button>
-                                            </>
-                                        )}
-                                    </div>
-
-                                    {/* 单机/多机 mode selector */}
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
-                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
-                                        </span>
-                                        {[
-                                            { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
-                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🌐 多机' : '🌐 Remote', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发' : 'Via Hub' },
-                                        ].map((opt) => (
-                                            <button
-                                                key={String(opt.value)}
-                                                type="button"
-                                                aria-label={opt.desc}
-                                                title={opt.desc}
-                                                style={{
-                                                    padding: '4px 14px',
-                                                    borderRadius: '14px',
-                                                    border: qqBotLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                    background: qqBotLocalMode === opt.value ? '#eef2ff' : 'transparent',
-                                                    color: qqBotLocalMode === opt.value ? '#6366f1' : '#555',
-                                                    fontWeight: qqBotLocalMode === opt.value ? 600 : 400,
-                                                    fontSize: '0.75rem',
-                                                    cursor: 'pointer',
-                                                    transition: 'all 0.15s',
-                                                }}
-                                                onClick={() => {
-                                                    const prev = qqBotLocalMode;
-                                                    setQQBotLocalModeState(opt.value);
-                                                    SetQQBotLocalMode(opt.value).then(() => {
-                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
-                                                    }).catch((err: any) => {
-                                                        setQQBotLocalModeState(prev);
-                                                        alert(err?.message || err || '切换失败');
-                                                    });
-                                                }}
-                                            >
-                                                {opt.label}
-                                            </button>
-                                        ))}
-                                    </div>
-
-                                        <button type="button" onClick={() => setIMAuditPlatform('qq')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-                                        </button>
-
-                                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', maxWidth: '520px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>App ID</label>
-                                            <input
-                                                type="text"
-                                                value={config?.qqbot_app_id || ''}
-                                                onChange={(e) => saveRemoteConfigField({ qqbot_app_id: e.target.value } as any)}
-                                                placeholder="e.g. 102012345"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
-                                            />
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>App Secret</label>
-                                            <input
-                                                type="password"
-                                                value={config?.qqbot_app_secret || ''}
-                                                onChange={(e) => saveRemoteConfigField({ qqbot_app_secret: e.target.value } as any)}
-                                                placeholder="••••••••"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
-                                            />
-                                        </div>
-                                    </div>
-                                </div>
-                                )}
-
-                                {/* Telegram Bot tab */}
-                                {imSubTab === 'telegram' && (
-                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
-                                        {lang === 'zh-Hans'
-                                            ? '配置你自己的 Telegram Bot，通过 Telegram 与 MaClaw Agent 对话。'
-                                            : lang === 'zh-Hant'
-                                            ? '配置你自己的 Telegram Bot，透過 Telegram 與 MaClaw Agent 對話。'
-                                            : 'Configure your own Telegram Bot to chat with MaClaw Agent via Telegram.'}
-                                    </p>
-
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={(config as any)?.telegram_bot_enabled || false}
-                                                onChange={(e) => saveRemoteConfigField({ telegram_bot_enabled: e.target.checked } as any)}
-                                            />
-                                            {lang === 'zh-Hans' ? '启用 Telegram Bot' : lang === 'zh-Hant' ? '啟用 Telegram Bot' : 'Enable Telegram Bot'}
-                                        </label>
-                                        <button
-                                            type="button"
-                                            style={{
-                                                fontSize: '0.68rem',
-                                                padding: '1px 8px',
-                                                borderRadius: '4px',
-                                                border: '1px solid #6366f1',
-                                                background: 'transparent',
-                                                color: '#6366f1',
-                                                cursor: 'pointer',
-                                                whiteSpace: 'nowrap',
-                                            }}
-                                            onClick={() => BrowserOpenURL('https://open-claw.bot/docs/channels/telegram/')}
-                                        >
-                                            {lang === 'zh-Hans' ? '教程' : lang === 'zh-Hant' ? '教程' : 'Tutorial'}
-                                        </button>
-                                        {(config as any)?.telegram_bot_enabled && (
-                                            <>
-                                                <span style={{
-                                                    fontSize: '0.7rem',
-                                                    padding: '2px 8px',
-                                                    borderRadius: '10px',
-                                                    background: telegramStatus === 'connected' ? '#dcfce7' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? '#fef9c3' : '#fee2e2',
-                                                    color: telegramStatus === 'connected' ? '#166534' : telegramStatus === 'connecting' || telegramStatus === 'reconnecting' ? '#854d0e' : '#991b1b',
-                                                }}>
-                                                    {telegramStatus === 'connected' ? '● 已连接' : telegramStatus === 'connecting' ? '◌ 连接中...' : telegramStatus === 'reconnecting' ? '◌ 重连中...' : telegramStatus === 'error' ? '✕ 错误' : '○ 未连接'}
-                                                </span>
-                                                <button
-                                                    type="button"
-                                                    style={{
-                                                        fontSize: '0.68rem',
-                                                        padding: '2px 8px',
-                                                        borderRadius: '4px',
-                                                        border: '1px solid #ddd',
-                                                        background: 'transparent',
-                                                        color: '#555',
-                                                        cursor: 'pointer',
-                                                    }}
-                                                    onClick={() => RestartTelegram().then(setTelegramStatus)}
-                                                >
-                                                    {lang === 'zh-Hans' ? '重启' : 'Restart'}
-                                                </button>
-                                            </>
-                                        )}
-                                    </div>
-
-                                    {/* 单机/多机 mode selector */}
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
-                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
-                                        </span>
-                                        {[
-                                            { value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🖥 单机' : '🖥 Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '本地 LLM 直连' : 'Direct local LLM' },
-                                            { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '🌐 多机' : '🌐 Remote', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '通过 Hub 转发' : 'Via Hub' },
-                                        ].map((opt) => (
-                                            <button
-                                                key={String(opt.value)}
-                                                type="button"
-                                                aria-label={opt.desc}
-                                                title={opt.desc}
-                                                style={{
-                                                    padding: '4px 14px',
-                                                    borderRadius: '14px',
-                                                    border: telegramLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                    background: telegramLocalMode === opt.value ? '#eef2ff' : 'transparent',
-                                                    color: telegramLocalMode === opt.value ? '#6366f1' : '#555',
-                                                    fontWeight: telegramLocalMode === opt.value ? 600 : 400,
-                                                    fontSize: '0.75rem',
-                                                    cursor: 'pointer',
-                                                    transition: 'all 0.15s',
-                                                }}
-                                                onClick={() => {
-                                                    const prev = telegramLocalMode;
-                                                    setTelegramLocalModeState(opt.value);
-                                                    SetTelegramLocalMode(opt.value).then(() => {
-                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
-                                                    }).catch((err: any) => {
-                                                        setTelegramLocalModeState(prev);
-                                                        alert(err?.message || err || '切换失败');
-                                                    });
-                                                }}
-                                            >
-                                                {opt.label}
-                                            </button>
-                                        ))}
-                                    </div>
-
-                                        <button type="button" onClick={() => setIMAuditPlatform('telegram')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-                                        </button>
-
-                                    <div style={{ maxWidth: '520px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>Bot Token</label>
-                                            <input
-                                                type="password"
-                                                value={(config as any)?.telegram_bot_token || ''}
-                                                onChange={(e) => saveRemoteConfigField({ telegram_bot_token: e.target.value } as any)}
-                                                placeholder="e.g. 123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-                                                style={{ flex: 1, padding: '6px 8px', borderRadius: '4px', border: '1px solid #ddd', fontSize: '0.78rem' }}
-                                            />
-                                        </div>
-                                    </div>
-                                </div>
-                                )}
-
-                                {/* WeChat tab */}
-                                {imSubTab === 'weixin' && (
-                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: '#888', marginBottom: '12px', marginTop: 0 }}>
-                                        {lang === 'zh-Hans' || lang === 'zh-Hant'
-                                            ? '扫码登录微信，通过微信与 MaClaw Agent 对话。'
-                                            : 'Scan QR code to log in to WeChat and chat with MaClaw Agent.'}
-                                    </p>
-
-                                    {/* Status + controls row */}
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                                        <span style={{
-                                            fontSize: '0.7rem',
-                                            padding: '2px 8px',
-                                            borderRadius: '10px',
-                                            background: weixinStatus === 'connected' ? '#dcfce7'
-                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? '#fef9c3'
-                                                : '#fee2e2',
-                                            color: weixinStatus === 'connected' ? '#166534'
-                                                : ['connecting', 'reconnecting', 'paused'].includes(weixinStatus) ? '#854d0e'
-                                                : '#991b1b',
-                                        }}>
-                                            {{ connected: '● 已连接', connecting: '◌ 连接中...', reconnecting: '◌ 重连中...', paused: '◌ 已暂停', error: '✕ 错误' }[weixinStatus] || '○ 未连接'}
-                                        </span>
-                                        {(config as any)?.weixin_account_id && (
-                                            <span style={{ fontSize: '0.7rem', color: '#888' }}>
-                                                ID: {(config as any).weixin_account_id}
-                                            </span>
-                                        )}
-                                        {weixinStatus === 'connected' && (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    aria-label="Restart WeChat connection"
-                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#555', cursor: 'pointer' }}
-                                                    onClick={() => RestartWeixin().then(setWeixinStatus)}
-                                                >
-                                                    {lang === 'zh-Hans' ? '重启' : 'Restart'}
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    aria-label="Disconnect WeChat"
-                                                    style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}
-                                                    onClick={() => { StopWeixin(); setWeixinStatus('disconnected'); }}
-                                                >
-                                                    {lang === 'zh-Hans' ? '断开' : 'Disconnect'}
-                                                </button>
-                                            </>
-                                        )}
-                                    </div>
-
-                                    {/* 单机/多机 mode selector */}
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#555' }}>
-                                            {lang === 'zh-Hans' || lang === 'zh-Hant' ? '通道：' : 'Mode:'}
-                                        </span>
-                                        {((() => {
-                                            const isCN = lang === 'zh-Hans' || lang === 'zh-Hant';
-                                            return [
-                                                { value: true, label: isCN ? '🖥 单机' : '🖥 Local', desc: isCN ? '本地 LLM 直连' : 'Direct local LLM' },
-                                                { value: false, label: isCN ? '🌐 多机' : '🌐 Remote', desc: isCN ? '通过 Hub 转发' : 'Via Hub' },
-                                            ];
-                                        })()).map((opt) => (
-                                            <button
-                                                key={String(opt.value)}
-                                                type="button"
-                                                aria-label={opt.desc}
-                                                title={opt.desc}
-                                                style={{
-                                                    padding: '4px 14px',
-                                                    borderRadius: '14px',
-                                                    border: weixinLocalMode === opt.value ? '1.5px solid #6366f1' : '1px solid #ddd',
-                                                    background: weixinLocalMode === opt.value ? '#eef2ff' : 'transparent',
-                                                    color: weixinLocalMode === opt.value ? '#6366f1' : '#555',
-                                                    fontWeight: weixinLocalMode === opt.value ? 600 : 400,
-                                                    fontSize: '0.75rem',
-                                                    cursor: 'pointer',
-                                                    transition: 'all 0.15s',
-                                                }}
-                                                onClick={() => {
-                                                    const prev = weixinLocalMode;
-                                                    setWeixinLocalModeState(opt.value);
-                                                    SetWeixinLocalMode(opt.value).then(() => {
-                                                        // Sync config state so subsequent SaveConfig calls
-                                                        // don't overwrite weixin_local_mode with stale value
-                                                        LoadConfig().then((c: any) => setConfig(c)).catch(() => {});
-                                                    }).catch((err: any) => {
-                                                        setWeixinLocalModeState(prev);
-                                                        alert(err?.message || err || '切换失败');
-                                                    });
-                                                }}
-                                            >
-                                                {opt.label}
-                                            </button>
-                                        ))}
-                                    </div>
-
-                                        <button type="button" onClick={() => setIMAuditPlatform('weixin')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-                                        </button>
-
-                                    {/* QR Login section */}
-                                    {weixinStatus !== 'connected' && (
-                                    <div style={{ marginTop: '4px' }}>
-                                        {!weixinQRCode && !weixinQRLoading && !weixinQRWaiting && (
-                                            <button
-                                                type="button"
-                                                aria-label="Scan QR code to login WeChat"
-                                                style={{
-                                                    padding: '6px 18px',
-                                                    borderRadius: '6px',
-                                                    border: '1.5px solid #6366f1',
-                                                    background: '#eef2ff',
-                                                    color: '#6366f1',
-                                                    fontWeight: 600,
-                                                    fontSize: '0.78rem',
-                                                    cursor: 'pointer',
-                                                }}
-                                                onClick={async () => {
-                                                    setWeixinQRError('');
-                                                    setWeixinQRLoading(true);
-                                                    try {
-                                                        const res = await StartWeixinQRLogin();
-                                                        if (res.error) {
-                                                            setWeixinQRError(res.error);
-                                                            setWeixinQRLoading(false);
-                                                            return;
-                                                        }
-                                                        const token = res.qrcode_token || '';
-                                                        setWeixinQRCode(res.qrcode_url || '');
-                                                        setWeixinQRLoading(false);
-                                                        setWeixinQRWaiting(true);
-
-                                                        // Frontend-driven short polling
-                                                        const pollStart = Date.now();
-                                                        const maxMs = 8 * 60 * 1000;
-                                                        const poll = async () => {
-                                                            if (Date.now() - pollStart > maxMs) {
-                                                                setWeixinQRWaiting(false);
-                                                                setWeixinQRCode('');
-                                                                setWeixinQRError(lang === 'zh-Hans' ? '二维码已过期' : 'QR expired');
-                                                                return;
-                                                            }
-                                                            try {
-                                                                const p = await PollWeixinQRStatus(token);
-                                                                const st = p.status || '';
-                                                                if (st === 'confirmed') {
-                                                                    setWeixinQRWaiting(false);
-                                                                    setWeixinQRCode('');
-                                                                    if (p.error) {
-                                                                        setWeixinQRError(p.error);
-                                                                    } else {
-                                                                        setWeixinStatus('connected');
-                                                                        LoadConfig().then((cfg: any) => setConfig(cfg)).catch(() => {});
-                                                                    }
-                                                                } else if (st === 'expired') {
-                                                                    setWeixinQRWaiting(false);
-                                                                    setWeixinQRCode('');
-                                                                    setWeixinQRError(p.message || 'QR expired');
-                                                                } else if (p.error) {
-                                                                    setWeixinQRWaiting(false);
-                                                                    setWeixinQRCode('');
-                                                                    setWeixinQRError(p.error);
-                                                                } else {
-                                                                    setTimeout(poll, 2000);
-                                                                }
-                                                            } catch (err: any) {
-                                                                setWeixinQRWaiting(false);
-                                                                setWeixinQRCode('');
-                                                                setWeixinQRError(err?.message || String(err));
-                                                            }
-                                                        };
-                                                        poll();
-                                                    } catch (e: any) {
-                                                        setWeixinQRError(e?.message || String(e));
-                                                        setWeixinQRLoading(false);
-                                                        setWeixinQRWaiting(false);
-                                                        setWeixinQRCode('');
-                                                    }
-                                                }}
-                                            >
-                                                {lang === 'zh-Hans' || lang === 'zh-Hant' ? '🔑 扫码登录微信' : '🔑 Scan QR to Login'}
-                                            </button>
-                                        )}
-
-                                        {weixinQRLoading && (
-                                            <p style={{ fontSize: '0.75rem', color: '#6366f1' }}>
-                                                {lang === 'zh-Hans' ? '正在获取二维码...' : 'Loading QR code...'}
-                                            </p>
-                                        )}
-
-                                        {weixinQRCode && (
-                                            <div style={{ textAlign: 'center', maxWidth: '280px' }}>
-                                                <QRCodeSVG
-                                                    value={weixinQRCode}
-                                                    size={220}
-                                                    level="M"
-                                                    bgColor="#ffffff"
-                                                    style={{ borderRadius: '8px', border: '1px solid #e5e7eb', padding: '8px', background: '#fff' }}
-                                                />
-                                                <p style={{ fontSize: '0.72rem', color: '#6366f1', marginTop: '8px' }}>
-                                                    {lang === 'zh-Hans' || lang === 'zh-Hant' ? '请用微信扫描上方二维码' : 'Scan the QR code with WeChat'}
-                                                </p>
-                                                {weixinQRWaiting && (
-                                                    <p style={{ fontSize: '0.68rem', color: '#888' }}>
-                                                        {lang === 'zh-Hans' ? '等待扫码确认中...' : 'Waiting for confirmation...'}
-                                                    </p>
-                                                )}
-                                                <button
-                                                    type="button"
-                                                    aria-label="Cancel QR login"
-                                                    style={{ marginTop: '10px', fontSize: '0.72rem', padding: '3px 14px', borderRadius: '4px', border: '1px solid #ddd', background: 'transparent', color: '#888', cursor: 'pointer' }}
-                                                    onClick={() => {
-                                                        setWeixinQRCode('');
-                                                        setWeixinQRWaiting(false);
-                                                        setWeixinQRLoading(false);
-                                                    }}
-                                                >
-                                                    {lang === 'zh-Hans' || lang === 'zh-Hant' ? '取消' : 'Cancel'}
-                                                </button>
-                                            </div>
-                                        )}
-
-                                        {weixinQRError && (
-                                            <p style={{ fontSize: '0.72rem', color: '#ef4444', marginTop: '8px' }}>
-                                                {weixinQRError}
-                                            </p>
-                                        )}
-                                    </div>
-                                    )}
-                                </div>
-                                )}
-
-                                {imSubTab === 'thirdparty' && (
-                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
-                                        {lang === 'zh-Hans'
-                                            ? '\u5f00\u653e\u672c\u673a HTTP \u6d88\u606f\u63a5\u5165\u7aef\u53e3\uff0c\u7b2c\u4e09\u65b9\u8f6f\u4ef6\u4e3b\u52a8\u8fde\u63a5 MaClaw\uff0c\u65e0\u9700\u63d0\u4f9b\u56de\u8c03\u5730\u5740\u3002'
-                                            : lang === 'zh-Hant'
-                                            ? '\u958b\u653e\u672c\u6a5f HTTP \u6d88\u606f\u63a5\u5165\u7aef\u53e3\uff0c\u7b2c\u4e09\u65b9\u8edf\u9ad4\u4e3b\u52d5\u9023\u63a5 MaClaw\uff0c\u7121\u9700\u63d0\u4f9b\u56de\u8abf\u5730\u5740\u3002'
-                                            : 'Expose a local HTTP message gateway. Third-party software connects to MaClaw without a callback URL.'}
-                                    </p>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                            <input type="checkbox" checked={(config as any)?.thirdparty_gateway_enabled || false} onChange={async (e) => {
-                                                const enabled = e.target.checked;
-                                                const patch: any = { thirdparty_gateway_enabled: enabled };
-                                                if (enabled && !String((config as any)?.thirdparty_gateway_token || '').trim()) {
-                                                    const bytes = new Uint8Array(32);
-                                                    window.crypto.getRandomValues(bytes);
-                                                    patch.thirdparty_gateway_token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-                                                }
-                                                await saveRemoteConfigField(patch);
-                                                if (enabled) {
-                                                    try { const st = await RestartThirdPartyGateway(); setThirdPartyGatewayStatus(typeof st === 'string' ? st : 'disconnected'); }
-                                                    catch (err: any) { showToastMessage(err?.message || String(err)); }
-                                                } else {
-                                                    try { await StopThirdPartyGateway(); } catch {}
-                                                    setThirdPartyGatewayStatus('disconnected');
-                                                }
-                                            }} />
-                                            {lang === 'zh-Hans' ? '\u5f00\u542f\u7b2c\u4e09\u65b9\u8f6f\u4ef6\u63a5\u5165' : lang === 'zh-Hant' ? '\u958b\u555f\u7b2c\u4e09\u65b9\u8edf\u9ad4\u63a5\u5165' : 'Enable third-party access'}
-                                        </label>
-                                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '10px', background: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success-bg)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger-bg)' : 'var(--theme-surface-muted)', color: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger)' : 'var(--theme-text-secondary)' }}>
-                                            {{ connected: lang === 'en' ? 'Running' : '\u5df2\u542f\u52a8', connecting: lang === 'en' ? 'Starting' : '\u542f\u52a8\u4e2d', disconnected: lang === 'en' ? 'Stopped' : '\u672a\u8fde\u63a5', disabled: lang === 'en' ? 'Disabled' : '\u672a\u542f\u7528', error: lang === 'en' ? 'Error' : '\u9519\u8bef' }[thirdPartyGatewayStatus] || thirdPartyGatewayStatus}
-                                        </span>
-                                        <button type="button" style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-secondary)', cursor: 'pointer' }} disabled={!(config as any)?.thirdparty_gateway_enabled} onClick={async () => {
-                                            try { const st = await RestartThirdPartyGateway(); setThirdPartyGatewayStatus(typeof st === 'string' ? st : 'disconnected'); }
-                                            catch (e: any) { showToastMessage(e?.message || String(e)); }
-                                        }}>
-                                            {lang === 'zh-Hans' ? '\u91cd\u542f\u63a5\u53e3' : lang === 'zh-Hant' ? '\u91cd\u555f\u4ecb\u9762' : 'Restart'}
-                                        </button>
-                                    </div>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u901a\u9053\uff1a' : 'Mode:'}</span>
-                                        {[{ value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u5355\u673a' : 'Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u672c\u673a Agent \u76f4\u63a5\u5904\u7406' : 'Handle with local Agent' }, { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u591a\u673a' : 'Hub', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u901a\u8fc7 Hub \u8f6c\u53d1\u5230\u5728\u7ebf\u8bbe\u5907' : 'Forward through Hub' }].map((opt) => (
-                                            <button key={String(opt.value)} type="button" aria-label={opt.desc} title={opt.desc} style={{ padding: '4px 14px', borderRadius: '14px', border: thirdPartyGatewayLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)', background: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent', color: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)', fontWeight: thirdPartyGatewayLocalMode === opt.value ? 600 : 400, fontSize: '0.75rem', cursor: 'pointer' }} onClick={() => {
-                                                const prev = thirdPartyGatewayLocalMode;
-                                                setThirdPartyGatewayLocalModeState(opt.value);
-                                                SetThirdPartyGatewayLocalMode(opt.value).then(() => { LoadConfig().then((c: any) => setConfig(c)).catch(() => {}); }).catch((err: any) => {
-                                                    setThirdPartyGatewayLocalModeState(prev);
-                                                    showToastMessage(err?.message || err || '\u5207\u6362\u5931\u8d25');
-                                                });
-                                            }}>{opt.label}</button>
-                                        ))}
-                                        <button type="button" onClick={() => setIMAuditPlatform('thirdparty')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
-                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
-                                        </button>
-                                    </div>
-
-                                    <div style={{ maxWidth: '760px', display: 'grid', gap: '10px' }}>
-                                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 110px', gap: '10px' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '64px' }}>Host</label>
-                                                <input type="text" value={(config as any)?.thirdparty_gateway_host || '127.0.0.1'} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_host: e.target.value } as any)} placeholder="127.0.0.1" spellCheck={false} style={{ flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
-                                            </div>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap' }}>Port</label>
-                                                <input type="number" min={1} max={65535} value={(config as any)?.thirdparty_gateway_port || 18777} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_port: Number(e.target.value || 18777) } as any)} style={{ width: '86px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
-                                            </div>
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '64px' }}>Token</label>
-                                            <input type="password" value={(config as any)?.thirdparty_gateway_token || ''} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_token: e.target.value } as any)} placeholder="Bearer token" autoComplete="off" style={{ flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
-                                            <button type="button" style={{ fontSize: '0.68rem', padding: '3px 10px', borderRadius: '4px', border: '1px solid var(--theme-primary)', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={async () => {
-                                                const bytes = new Uint8Array(32);
-                                                window.crypto.getRandomValues(bytes);
-                                                const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-                                                await saveRemoteConfigField({ thirdparty_gateway_token: token } as any);
-                                                showToastMessage(lang === 'en' ? 'Token generated' : '\u5df2\u751f\u6210 Token');
-                                            }}>{lang === 'en' ? 'Generate Token' : '\u751f\u6210 Token'}</button>
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: '0.72rem', color: 'var(--theme-text-muted)' }}>
-                                            <code style={{ padding: '3px 6px', borderRadius: '4px', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-primary)' }}>{`http://${(config as any)?.thirdparty_gateway_host || '127.0.0.1'}:${(config as any)?.thirdparty_gateway_port || 18777}/api/im-gateway/v1`}</code>
-                                            <button type="button" style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-primary)', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer' }} onClick={() => {
-                                                const base = String((config as any)?.remote_hub_url || '').replace(/\/+$/, '');
-                                                BrowserOpenURL(base ? base + '/connector' : '/connector');
-                                            }}>{lang === 'zh-Hans' ? '\u6253\u5f00\u63a5\u5165\u6587\u6863' : lang === 'zh-Hant' ? '\u958b\u555f\u63a5\u5165\u6587\u4ef6' : 'Open docs'}</button>
-                                        </div>
-                                    </div>
-                                </div>
-                                )}
-                                {imAuditPlatform && (
-                                    <IMAuditPanel
-                                        platform={imAuditPlatform}
-                                        onClose={() => setIMAuditPlatform(null)}
-                                        lang={lang}
-                                    />
-                                )}
-                            </div>
+                            <IMSettingsPanel
+                                settingsTab={settingsTab}
+                                config={config}
+                                setConfig={setConfig}
+                                lang={lang}
+                                imSubTab={imSubTab}
+                                setImSubTab={setImSubTab}
+                                imAuditPlatform={imAuditPlatform}
+                                setIMAuditPlatform={setIMAuditPlatform}
+                                imAuditBtnStyle={imAuditBtnStyle}
+                                saveRemoteConfigField={saveRemoteConfigField}
+                                showToastMessage={showToastMessage}
+                                qqBotStatus={qqBotStatus}
+                                setQQBotStatus={setQQBotStatus}
+                                qqBotLocalMode={qqBotLocalMode}
+                                setQQBotLocalModeState={setQQBotLocalModeState}
+                                telegramStatus={telegramStatus}
+                                setTelegramStatus={setTelegramStatus}
+                                telegramLocalMode={telegramLocalMode}
+                                setTelegramLocalModeState={setTelegramLocalModeState}
+                                weixinStatus={weixinStatus}
+                                setWeixinStatus={setWeixinStatus}
+                                weixinLocalMode={weixinLocalMode}
+                                setWeixinLocalModeState={setWeixinLocalModeState}
+                                thirdPartyGatewayStatus={thirdPartyGatewayStatus}
+                                setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
+                                thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
+                                setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
+                                weixinQRCode={weixinQRCode}
+                                setWeixinQRCode={setWeixinQRCode}
+                                weixinQRLoading={weixinQRLoading}
+                                setWeixinQRLoading={setWeixinQRLoading}
+                                weixinQRWaiting={weixinQRWaiting}
+                                setWeixinQRWaiting={setWeixinQRWaiting}
+                                weixinQRError={weixinQRError}
+                                setWeixinQRError={setWeixinQRError}
+                            />
 
                             <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>
                                 <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>
-                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
-                                        {lang === 'zh-Hans' ? '系统设置' : lang === 'zh-Hant' ? '系統設置' : 'System Settings'}
-                                    </h4>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '\u5fc3\u8df3\u95f4\u9694\uff08\u79d2\uff09' : lang === 'zh-Hant' ? '\u5fc3\u8df3\u9593\u9694\uff08\u79d2\uff09' : 'Heartbeat Interval (sec)'}</label>
-                                            <input
-                                                className="form-input"
-                                                type="number"
-                                                min={5}
-                                                step={1}
-                                                style={{ width: '70px' }}
-                                                value={config?.remote_heartbeat_sec || 10}
-                                                onChange={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Number(e.target.value || 10) })}
-                                                onBlur={(e) => saveRemoteConfigField({ remote_heartbeat_sec: Math.max(5, Number(e.target.value || 10)) })}
-                                            />
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '\u606f\u5c4f\u7b49\u5f85\uff08\u5206\u949f\uff09' : lang === 'zh-Hant' ? '\u606f\u5c4f\u7b49\u5f85\uff08\u5206\u9418\uff09' : 'Screen Dim Timeout (min)'}</label>
-                                            <input
-                                                className="form-input"
-                                                type="number"
-                                                min={0}
-                                                step={1}
-                                                style={{ width: '70px' }}
-                                                value={(config as any)?.screen_dim_timeout_min ?? 3}
-                                                onChange={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Number(e.target.value || 0) } as any)}
-                                                onBlur={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Math.max(0, Number(e.target.value || 0)) } as any)}
-                                                title={lang === 'zh-Hans' ? '\u7a7a\u95f2\u591a\u5c11\u5206\u949f\u540e\u606f\u5c4f\uff080=\u5173\u95ed\uff09\uff1b\u5de5\u4f5c\u7ad9\u6a21\u5f0f\u6216\u9632\u9501\u5c4f\u65f6\u751f\u6548\u3002' : 'Minutes of inactivity before screen dims (0=disabled). Effective when workstation mode or screen-lock prevention is on.'}
-                                            />
-                                        </div>
-                                    </div>
-                                    <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                            <input
-                                                type="checkbox"
-                                                checked={(config as any)?.workstation_mode === true}
-                                                onChange={async (e) => {
-                                                    if (!config) return;
-                                                    const prevConfig = config;
-                                                    const newConfig = new main.AppConfig({ ...config, workstation_mode: e.target.checked } as any);
-                                                    setConfig(newConfig);
-                                                    try {
-                                                        await SaveConfig(newConfig);
-                                                    } catch (err: any) {
-                                                        setConfig(prevConfig);
-                                                        showToastMessage(err?.message || String(err));
-                                                    }
-                                                }}
-                                                style={{ width: '16px', height: '16px' }}
-                                            />
-                                            <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
-                                                {lang === 'zh-Hans' ? '\u5de5\u4f5c\u7ad9\u6a21\u5f0f' : lang === 'zh-Hant' ? '\u5de5\u4f5c\u7ad9\u6a21\u5f0f' : 'Workstation Mode'}
-                                            </span>
-                                        </label>
-                                        <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.5 }}>
-                                            {lang === 'zh-Hans'
-                                                ? '\u9632\u6b62\u7cfb\u7edf\u7761\u7720\u548c\u9501\u5c4f\uff0c\u4f46\u5141\u8bb8\u5c4f\u5e55\u5728\u7a7a\u95f2\u540e\u5173\u95ed\uff0c\u9002\u5408\u622a\u56fe\u6d4b\u8bd5\u548c\u8c03\u8bd5\u3002'
-                                                : lang === 'zh-Hant'
-                                                ? '\u9632\u6b62\u7cfb\u7d71\u7761\u7720\u548c\u9396\u5c4f\uff0c\u4f46\u5141\u8a31\u87a2\u5e55\u5728\u7a7a\u9592\u5f8c\u95dc\u9589\uff0c\u9069\u5408\u622a\u5716\u6e2c\u8a66\u548c\u9664\u932f\u3002'
-                                                : 'Prevents sleep and screen lock while allowing display off. Useful for screenshot testing and debugging.'}
-                                        </span>
-                                    </div>
-                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', marginTop: '12px', maxWidth: '760px' }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', minWidth: '90px' }}>
-                                                {lang === 'zh-Hans' ? '\u9ed8\u8ba4\u5f55\u97f3\u8bbe\u5907' : lang === 'zh-Hant' ? '\u9810\u8a2d\u9304\u97f3\u88dd\u7f6e' : 'Mic device'}
-                                            </label>
-                                            <select className="form-input" style={{ flex: 1, minWidth: 0 }} value={(config as any)?.audio_input_device_id || ''} onChange={(e) => saveRemoteConfigField({ audio_input_device_id: e.target.value } as any)}>
-                                                <option value="">{lang === 'zh-Hans' ? '\u7cfb\u7edf\u9ed8\u8ba4' : lang === 'zh-Hant' ? '\u7cfb\u7d71\u9810\u8a2d' : 'System Default'}</option>
-                                                {audioDevices.inputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
-                                            </select>
-                                        </div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', minWidth: '90px' }}>
-                                                {lang === 'zh-Hans' ? '\u9ed8\u8ba4\u64ad\u653e\u8bbe\u5907' : lang === 'zh-Hant' ? '\u9810\u8a2d\u64ad\u653e\u88dd\u7f6e' : 'Speaker device'}
-                                            </label>
-                                            <select className="form-input" style={{ flex: 1, minWidth: 0 }} value={(config as any)?.audio_output_device_id || ''} onChange={(e) => saveRemoteConfigField({ audio_output_device_id: e.target.value } as any)}>
-                                                <option value="">{lang === 'zh-Hans' ? '\u7cfb\u7edf\u9ed8\u8ba4' : lang === 'zh-Hant' ? '\u7cfb\u7d71\u9810\u8a2d' : 'System Default'}</option>
-                                                {audioDevices.outputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
-                                            </select>
-                                        </div>
-                                    </div>
-                                    <div style={{ marginTop: '8px', fontSize: '0.7rem', color: 'var(--theme-text-muted)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                                        <span>{lang === 'zh-Hans' ? '\u9009\u62e9 AI \u52a9\u624b\u5f55\u97f3\u8f93\u5165\u548c TTS \u64ad\u62a5\u4f7f\u7528\u7684\u97f3\u9891\u8bbe\u5907\u3002' : lang === 'zh-Hant' ? '\u9078\u64c7 AI \u52a9\u624b\u9304\u97f3\u8f38\u5165\u548c TTS \u64ad\u5831\u4f7f\u7528\u7684\u97f3\u8a0a\u88dd\u7f6e\u3002' : 'Select audio devices for AI assistant voice input and TTS playback.'}</span>
-                                        {!audioDevices.labelsAvailable && (
-                                            <button type="button" onClick={audioDevices.requestLabels} style={{ border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-primary)', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer', fontSize: '0.68rem' }}>
-                                                {lang === 'zh-Hans' ? '\u6388\u6743\u663e\u793a\u8bbe\u5907\u540d\u79f0' : lang === 'zh-Hant' ? '\u6388\u6b0a\u986f\u793a\u88dd\u7f6e\u540d\u7a31' : 'Show device names'}
-                                            </button>
-                                        )}
-                                    </div>
-                                </div>
-
-                                {/* Diagnostics info block */}
-                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid #e5e7eb', paddingTop: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
-                                        {lang === 'zh-Hans' ? '诊断信息' : lang === 'zh-Hant' ? '診斷資訊' : 'Diagnostics'}
-                                    </h4>
-                                    <div style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: '#6b7280', lineHeight: 1.8, background: '#f9fafb', borderRadius: '6px', padding: '10px 12px', wordBreak: 'break-all' }}>
-                                        <div>Machine ID: {config?.remote_machine_id || '(未激活)'}</div>
-                                        <div>User ID: {config?.remote_user_id || '(未激活)'}</div>
-                                        <div>Client ID: {config?.remote_client_id || '(未生成)'}</div>
-                                        <div>SN: {config?.remote_sn || '(未激活)'}</div>
-                                        <div>Hub URL: {config?.remote_hub_url || '(未设置)'}</div>
-                                        <div>Email: {config?.remote_email || '(未设置)'}</div>
-                                        <div>WeChat Mode: {(config as any)?.weixin_local_mode === false ? '多机 (Hub)' : '单机 (Local)'}</div>
-                                    </div>
-                                </div>
+                            <div style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>
+                                <SystemSettingsPanel
+                                    config={config}
+                                    setConfig={setConfig}
+                                    lang={lang}
+                                    audioDevices={audioDevices}
+                                    saveRemoteConfigField={saveRemoteConfigField}
+                                    showToastMessage={showToastMessage}
+                                />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'ui' ? 'block' : 'none' }}>
-                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '界面缩放' : lang === 'zh-Hant' ? '介面縮放' : 'UI Zoom'}</h4>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                        <input type="range" min={50} max={200} step={5} value={Math.round(uiZoom * 100)}
-                                            onChange={e => {
-                                                const v = Number(e.target.value) / 100;
-                                                setUiZoom(v);
-                                            }}
-                                            onPointerUp={async (e) => {
-                                                const v = Number((e.currentTarget as HTMLInputElement).value) / 100;
-                                                setUiZoom(v);
-                                                await SetUIZoomFactor(v).catch(() => {});
-                                            }}
-                                            style={{ flex: 1, accentColor: '#6366f1' }} />
-                                        <span style={{ fontSize: '0.78rem', color: '#4b5563', minWidth: '42px', textAlign: 'center' }}>{Math.round(uiZoom * 100)}%</span>
-                                        <button onClick={() => { setUiZoom(1.0); SetUIZoomFactor(1.0).catch(() => {}); }}
-                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: '#f3f4f6', color: '#4b5563', border: '1px solid #e5e7eb', borderRadius: 4 }}>
-                                            {lang === 'zh-Hans' ? '重置' : lang === 'zh-Hant' ? '重置' : 'Reset'}
-                                        </button>
-                                    </div>
-                                    <p style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '6px', marginBottom: 0 }}>
-                                        {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
-                                    </p>
-                                </div>
-                                                            <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px', marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u0041\u0049\u52a9\u624b\u9762\u677f\u5b57\u53f7' : lang === 'zh-Hant' ? '\u0041\u0049\u52a9\u624b\u9762\u677f\u5b57\u865f' : 'AI Assistant Font Size'}</h4>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                        <input type="range" min={12} max={24} step={1} value={chatFontSize}
-                                            onChange={e => setChatFontSize(Number(e.target.value))}
-                                            onPointerUp={async (e) => {
-                                                const v = Number((e.currentTarget as HTMLInputElement).value);
-                                                setChatFontSize(v);
-                                                await SetChatFontSize(v).catch(() => {});
-                                            }}
-                                            style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
-                                        <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
-                                        <button onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
-                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
-                                            {lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}
-                                        </button>
-                                    </div>
-                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
-                                        {lang === 'zh-Hans' ? '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002' : lang === 'zh-Hant' ? '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002' : 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.'}
-                                    </p>
-                                </div>
-                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px', marginBottom: '16px' }}>
-                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u5de6\u4fa7\u529f\u80fd\u6309\u94ae' : lang === 'zh-Hant' ? '\u5de6\u5074\u529f\u80fd\u6309\u9215' : 'Sidebar Buttons'}</h4>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                                        {[
-                                            { key: 'show_nav_mcp', label: 'MCP' },
-                                            { key: 'show_nav_gossip', label: t("gossip"), disabled: !gossipAllowed },
-                                            { key: 'show_nav_agentnet', label: lang === 'zh-Hans' ? '\u667a\u7f51' : lang === 'zh-Hant' ? '\u667a\u7db2' : 'AgentNet' },
-                                        ].map(item => (
-                                            <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: item.disabled ? 'not-allowed' : 'pointer', opacity: item.disabled ? 0.5 : 1 }}>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={(config as any)?.[item.key] !== false}
-                                                    disabled={!config || item.disabled}
-                                                    onChange={(e) => updateSidebarNavVisibility(item.key as 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet', e.target.checked)}
-                                                    style={{ width: '16px', height: '16px' }}
-                                                />
-                                                <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{item.label}</span>
-                                            </label>
-                                        ))}
-                                    </div>
-                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
-                                        {lang === 'zh-Hans' ? '\u5f00\u542f\u540e\u76f4\u63a5\u663e\u793a\u5728\u5de6\u4fa7\u5de5\u5177\u680f\uff0c\u5173\u95ed\u540e\u6536\u8fdb\u300c\u66f4\u591a\u300d\u3002' : lang === 'zh-Hant' ? '\u958b\u555f\u5f8c\u76f4\u63a5\u986f\u793a\u5728\u5de6\u5074\u5de5\u5177\u5217\uff0c\u95dc\u9589\u5f8c\u6536\u9032\u300c\u66f4\u591a\u300d\u3002' : 'When enabled, the button is shown directly in the left toolbar; when disabled, it is folded into More.'}
-                                    </p>
-                                </div>
-</div>
-
-                            <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
-
-                                                        <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                                    <div style={{ flex: '1 1 0', minWidth: '180px', maxWidth: config?.default_tool ? undefined : '320px' }}>
-                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u9ed8\u8ba4\u7f16\u7a0b\u5de5\u5177' : lang === 'zh-Hant' ? '\u9810\u8a2d\u7de8\u7a0b\u5de5\u5177' : 'Default Coding Tool'}</h4>
-                                        <select className="form-input" value={(config as any)?.default_tool || ''} onChange={(e) => { if (config) { const newConfig = new main.AppConfig({ ...config, default_tool: e.target.value, default_tool_provider: '' } as any); setConfig(newConfig); SaveConfig(newConfig); } }} style={{ width: '100%', fontSize: '0.8rem', padding: '4px 8px', height: '30px' }}>
-                                            <option value="">{lang === 'zh-Hans' ? 'Auto (\u54c1\u724c\u9ed8\u8ba4)' : lang === 'zh-Hant' ? 'Auto (\u54c1\u724c\u9810\u8a2d)' : 'Auto (Brand Default)'}</option>
-                                            {remoteToolMetadata.map((tool: any) => (<option key={tool.name} value={tool.name} disabled={!tool.installed}>{tool.display_name || tool.name}{!tool.installed ? (lang === 'zh-Hans' ? ' (\u672a\u5b89\u88c5)' : lang === 'zh-Hant' ? ' (\u672a\u5b89\u88dd)' : ' (Not Installed)') : ''}</option>))}
-                                        </select>
-                                        <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>{lang === 'zh-Hans' ? '\u9009\u62e9 MaClaw \u81ea\u52a8\u521b\u5efa AI \u7f16\u7a0b\u4f1a\u8bdd\u65f6\u9ed8\u8ba4\u4f7f\u7528\u7684\u5de5\u5177\u3002Auto \u5c06\u4f7f\u7528\u54c1\u724c\u9ed8\u8ba4\u5de5\u5177\u3002' : lang === 'zh-Hant' ? '\u9078\u64c7 MaClaw \u81ea\u52d5\u5efa\u7acb AI \u7de8\u7a0b\u6703\u8a71\u6642\u9810\u8a2d\u4f7f\u7528\u7684\u5de5\u5177\u3002Auto \u5c07\u4f7f\u7528\u54c1\u724c\u9810\u8a2d\u5de5\u5177\u3002' : 'Choose the default tool for MaClaw-created AI coding sessions. Auto uses the brand default.'}</p>
-                                    </div>
-                                    {(config as any)?.default_tool ? (<div style={{ flex: '1 1 0', minWidth: '180px' }}>
-                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u9ed8\u8ba4\u670d\u52a1\u5546' : lang === 'zh-Hant' ? '\u9810\u8a2d\u670d\u52d9\u5546' : 'Default Provider'}</h4>
-                                        <select className="form-input" value={(config as any)?.default_tool_provider || ''} onChange={(e) => { if (config) { const newConfig = new main.AppConfig({ ...config, default_tool_provider: e.target.value } as any); setConfig(newConfig); SaveConfig(newConfig); } }} style={{ width: '100%', fontSize: '0.8rem', padding: '4px 8px', height: '30px' }}>
-                                            <option value="">{lang === 'zh-Hans' ? 'Auto (\u81ea\u52a8\u9009\u62e9)' : lang === 'zh-Hant' ? 'Auto (\u81ea\u52d5\u9078\u64c7)' : 'Auto (Auto Select)'}</option>
-                                            {toolProviders.map((provider) => (<option key={provider.name} value={provider.name}>{provider.name}</option>))}
-                                        </select>
-                                        <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>{lang === 'zh-Hans' ? '\u9009\u62e9\u9ed8\u8ba4\u5de5\u5177\u4f7f\u7528\u7684\u670d\u52a1\u5546\u3002Auto \u5c06\u81ea\u52a8\u9009\u62e9\u7b2c\u4e00\u4e2a\u53ef\u7528\u670d\u52a1\u5546\u3002' : lang === 'zh-Hant' ? '\u9078\u64c7\u9810\u8a2d\u5de5\u5177\u4f7f\u7528\u7684\u670d\u52d9\u5546\u3002Auto \u5c07\u81ea\u52d5\u9078\u64c7\u7b2c\u4e00\u500b\u53ef\u7528\u670d\u52d9\u5546\u3002' : 'Choose the default provider for the selected tool. Auto picks the first available provider.'}</p>
-                                    </div>) : null}
-                                </div>
-                            </div>
+                            <div style={{ display: settingsTab === 'ui' ? 'block' : 'none' }}>
+                                <UISettingsPanel
+                                    config={config}
+                                    lang={lang}
+                                    t={t}
+                                    uiZoom={uiZoom}
+                                    setUiZoom={setUiZoom}
+                                    chatFontSize={chatFontSize}
+                                    setChatFontSize={setChatFontSize}
+                                    gossipAllowed={gossipAllowed}
+                                    updateSidebarNavVisibility={updateSidebarNavVisibility}
+                                />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
-                            <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={!config?.hide_startup_popup}
-                                        onChange={(e) => {
-                                            if (config) {
-                                                const newConfig = new main.AppConfig({ ...config, hide_startup_popup: !e.target.checked });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
-                                            }
-                                        }}
-                                        style={{ width: '16px', height: '16px' }}
-                                    />
-                                    <span style={{ fontSize: '0.8rem', color: '#374151' }}>{t("showWelcomePage")}</span>
-                                </label>
-                                <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginLeft: '24px', marginTop: '4px' }}>
-                                    {lang === 'zh-Hans' ? '开启后，程序启动时将显示新手教学和快速入门链接' :
-                                        lang === 'zh-Hant' ? '開啟後，程序啟動時將顯示新手教學和快速入門鏈接' :
-                                            'When enabled, a welcome popup with tutorial links will be shown at startup.'}
-                                </p>
+                            <div style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
+                                <ProgrammingToolsSettingsPanel
+                                    config={config}
+                                    setConfig={setConfig}
+                                    lang={lang}
+                                    remoteToolMetadata={remoteToolMetadata}
+                                    toolProviders={toolProviders}
+                                />
                             </div>
 
-                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid #f1f5f9', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.pause_env_check}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, pause_env_check: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#374151' }}>{t("pauseEnvCheck")}</span>
-                                    </label>
-                                    {/* Windows Terminal option - only show when available */}
-                                    {hasWindowsTerminal && (
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.use_windows_terminal}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, use_windows_terminal: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#374151' }}>{t("useWindowsTerminal")}</span>
-                                    </label>
-                                    )}
-                                </div>
-                                {config?.pause_env_check && (
-                                    <div style={{ marginLeft: '24px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', color: '#6b7280' }}>
-                                            <span>{t("envCheckIntervalPrefix")}</span>
-                                            <select
-                                                value={envCheckInterval}
-                                                onChange={(e) => {
-                                                    const days = parseInt(e.target.value);
-                                                    setEnvCheckInterval(days);
-                                                    SetEnvCheckInterval(days);
-                                                }}
-                                                style={{
-                                                    padding: '3px 6px',
-                                                    borderRadius: '4px',
-                                                    border: '1px solid #d1d5db',
-                                                    fontSize: '0.8rem',
-                                                    width: '60px'
-                                                }}
-                                            >
-                                                {Array.from({ length: 29 }, (_, i) => i + 2).map(day => (
-                                                    <option key={day} value={day}>{day}</option>
-                                                ))}
-                                            </select>
-                                            <span>{t("envCheckIntervalSuffix")}</span>
-                                        </label>
-                                    </div>
-                                )}
-                            </div>
-
-                            <div className="form-group" style={{ marginTop: '10px', borderTop: '1px solid #f1f5f9', paddingTop: '10px' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={config?.show_ai_trace_entry || false}
-                                        onChange={(e) => {
-                                            if (config) {
-                                                const newConfig = new main.AppConfig({ ...config, show_ai_trace_entry: e.target.checked });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
-                                            }
-                                        }}
-                                        style={{ width: '16px', height: '16px' }}
-                                    />
-                                    <span style={{ fontSize: '0.8rem', color: '#374151' }}>
-                                        {lang === 'zh-Hans' || lang === 'zh' ? '显示 AI 运行详情' : lang === 'zh-Hant' ? '顯示 AI 執行詳情' : 'Show AI run details'}
-                                    </span>
-                                </label>
-                                <p style={{ fontSize: '0.75rem', color: '#9ca3af', marginLeft: '24px', marginTop: '4px' }}>
-                                    {lang === 'zh-Hans' || lang === 'zh' ? '开启后，AI 助手消息中会显示 Trace / 运行详情入口；默认关闭。' :
-                                        lang === 'zh-Hant' ? '開啟後，AI 助手消息中會顯示 Trace / 執行詳情入口；預設關閉。' :
-                                            'When enabled, AI assistant messages show a Trace / run details entry. Disabled by default.'}
-                                </p>
-                            </div>
+                            <div style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
+                                <GeneralAdvancedSettingsPanel
+                                    config={config}
+                                    setConfig={setConfig}
+                                    lang={lang}
+                                    t={t}
+                                    hasWindowsTerminal={hasWindowsTerminal}
+                                    envCheckInterval={envCheckInterval}
+                                    setEnvCheckInterval={setEnvCheckInterval}
+                                />
                             </div>
                         </div>
                     )}
@@ -5782,85 +2493,18 @@ ${instruction}`;
                     )}
 
                     {navTab === 'about' && (
-                        <div style={{
-                            padding: '20px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            alignItems: 'center',
-                            textAlign: 'center',
-                            height: '100%',
-                            justifyContent: 'center',
-                            boxSizing: 'border-box'
-                        }}>
-                            <img src={currentIcon} alt="Logo" style={{ width: '64px', height: '64px', marginBottom: '15px' }} />
-                            <h2 style={{
-                                margin: '0 0 4px 0',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                display: 'inline-block',
-                                fontWeight: 'bold'
-                            }}>{brandDisplayTitle}</h2>
-                            <div style={{
-                                fontSize: '1rem',
-                                fontWeight: 'bold',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                marginBottom: '4px',
-                                display: 'inline-block'
-                            }}>
-                                {brandInfo?.slogan || t("slogan")}
-                            </div>
-                            <div style={{ fontSize: '1rem', color: '#374151', marginBottom: '5px' }}>{t("version")} {APP_VERSION}</div>
-                            <div style={{ fontSize: '0.9rem', color: '#9ca3af', marginBottom: '5px' }}>{brandInfo?.businessContact || t("businessCooperation")}</div>
-                            <div style={{ fontSize: '0.9rem', color: '#6b7280', marginBottom: '20px' }}>{t("author")}: {brandInfo?.author || 'Dr. Daniel'}</div>
-
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', alignItems: 'center' }}>
-                                <div style={{ display: 'flex', gap: '6px', justifyContent: 'center', flexWrap: 'wrap' }}>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo?.websiteURL || "https://maclaw.top")}>{t("officialWebsite")}</button>
-                                    <button
-                                        className="btn-link"
-                                        style={{ fontSize: '0.75rem', padding: '2px 6px' }}
-                                        onClick={() => {
-                                            setStatus(t("checkingUpdate"));
-                                            CheckUpdate(APP_VERSION).then(res => {
-                                                console.log("CheckUpdate result:", res);
-                                                setUpdateResult(res);
-                                                setIsStartupUpdateCheck(false);
-                                                setShowUpdateModal(true);
-                                                setStatus("");
-                                            }).catch(err => {
-                                                console.error("CheckUpdate error:", err);
-                                                setStatus("检查更新失败: " + err);
-                                                // 显示一个错误结果
-                                                setUpdateResult({
-                                                    has_update: false,
-                                                    latest_version: "获取失败",
-                                                    release_url: ""
-                                                });
-                                                setIsStartupUpdateCheck(false);
-                                                setShowUpdateModal(true);
-                                            });
-                                        }}
-                                    >
-                                        {t("onlineUpdate")}
-                                    </button>
-                                    <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => setShowInstallLog(true)}>{t("installLog")}</button>
-                                    {brandInfo?.githubURL ? (
-                                        <>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo.githubURL + "/issues/new")}>{t("bugReport")}</button>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL(brandInfo.githubURL)}>GitHub</button>
-                                        </>
-                                    ) : brandInfo?.id !== 'qianxin' ? (
-                                        <>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw/issues/new")}>{t("bugReport")}</button>
-                                            <button className="btn-link" style={{ fontSize: '0.75rem', padding: '2px 6px' }} onClick={() => BrowserOpenURL("https://github.com/rapidai/maclaw")}>GitHub</button>
-                                        </>
-                                    ) : null}
-                                </div>
-                            </div>
-                        </div>
+                        <AboutPage
+                            currentIcon={currentIcon}
+                            brandDisplayTitle={brandDisplayTitle}
+                            brandInfo={brandInfo}
+                            appVersion={APP_VERSION}
+                            t={t}
+                            setStatus={setStatus}
+                            setUpdateResult={setUpdateResult}
+                            setIsStartupUpdateCheck={setIsStartupUpdateCheck}
+                            setShowUpdateModal={setShowUpdateModal}
+                            setShowInstallLog={setShowInstallLog}
+                        />
                     )}
                 </div>
 
@@ -6331,415 +2975,97 @@ ${instruction}`;
                     </div>
                 )}
 
-                <div className="status-message" style={{ padding: '0 20px 4px 20px', minHeight: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span key={status} style={{ color: (status.includes("Error") || status.includes("!") || status.includes("first")) ? '#ef4444' : '#10b981' }}>
-                        {status}
-                    </span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        {(() => {
-                            const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected';
-                            const anyImConfigured = !!(config as any)?.qqbot_enabled || !!(config as any)?.telegram_enabled || !!(config as any)?.weixin_enabled;
-                            const showImWarning = anyImConfigured && !imConnected;
-                            if ((!maclawLLMOnline || !remoteActivationStatus?.activated || !agentNetRunning || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm')) {
-                                const isImIssue = maclawLLMOnline && !!remoteActivationStatus?.activated && agentNetRunning && showImWarning;
-                                return (
-                            <span
-                                style={{ fontSize: '0.72rem', color: '#f59e0b', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '3px' }}
-                                onClick={() => { if (isImIssue) { setNavTab('settings'); setSettingsTab('im'); } else { setNavTab('settings'); setSettingsTab('llm'); } }}
-                                title={lang?.startsWith('zh') ? '点击配置' : 'Click to configure'}
-                            >
-                                <img src={(() => {
-                                    if (!maclawLLMOnline && !remoteActivationStatus?.activated && !agentNetRunning) return lobsterOffline;
-                                    return lobsterHalf;
-                                })()} alt="" style={{ width: '14px', height: '14px' }} />
-                                {!maclawLLMOnline
-                                    ? (maclawLLMConfigured
-                                        ? (lang?.startsWith('zh') ? 'LLM 无法连接，无法响应远程命令' : 'LLM unreachable, remote commands unavailable')
-                                        : (lang?.startsWith('zh') ? 'MaClaw 未配置 LLM，无法响应远程命令' : 'LLM not configured, remote commands unavailable'))
-                                    : !remoteActivationStatus?.activated
-                                        ? (lang?.startsWith('zh') ? '移动端未注册' : 'Mobile not registered')
-                                        : !agentNetRunning
-                                            ? (lang?.startsWith('zh') ? '智网未连接' : 'AgentNet not connected')
-                                            : (lang?.startsWith('zh') ? 'IM 未连接' : 'IM not connected')}
-                            </span>
-                                );
-                            }
-                            return null;
-                        })()}
-                        {backgroundInstallStatus && (
-                        <span style={{
-                            fontSize: '0.75rem',
-                            color: backgroundInstallStatus.startsWith('✓') ? '#10b981' : '#9ca3af',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                        }}>
-                            {!backgroundInstallStatus.startsWith('✓') && (
-                                <span style={{
-                                    display: 'inline-block',
-                                    width: '10px',
-                                    height: '10px',
-                                    border: '2px solid #9ca3af',
-                                    borderTopColor: 'transparent',
-                                    borderRadius: '50%',
-                                    animation: 'spin 1s linear infinite'
-                                }}></span>
-                            )}
-                            {backgroundInstallStatus}
-                        </span>
-                    )}
-                    </div>
-                </div>
+                <AppStatusMessageBar
+                    status={status}
+                    lang={lang}
+                    config={config}
+                    qqBotStatus={qqBotStatus}
+                    telegramStatus={telegramStatus}
+                    weixinStatus={weixinStatus}
+                    maclawLLMOnline={maclawLLMOnline}
+                    maclawLLMConfigured={maclawLLMConfigured}
+                    remoteActivated={!!remoteActivationStatus?.activated}
+                    agentNetRunning={agentNetRunning}
+                    navTab={navTab}
+                    settingsTab={settingsTab}
+                    backgroundInstallStatus={backgroundInstallStatus}
+                    lobsterOffline={lobsterOffline}
+                    lobsterHalf={lobsterHalf}
+                    onOpenIMSettings={() => { setNavTab('settings'); setSettingsTab('im'); }}
+                    onOpenLLMSettings={() => { setNavTab('settings'); setSettingsTab('llm'); }}
+                />
             </>)}
             </div>
 
             {/* Modals */}
             {showRemoteActivationModal && (
-                <div className="modal-overlay" onClick={() => { setShowRemoteActivationModal(false); setPendingRemoteLaunchTool(""); setRemoteCenterHubs([]); }}>
-                    <div className="modal-content" style={{ width: '640px', maxWidth: '94vw', maxHeight: '82vh', textAlign: 'left', display: 'flex', flexDirection: 'column' }} onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <h3>{t("remoteActivationDialogTitle")}</h3>
-                            <button className="btn-close" onClick={() => { setShowRemoteActivationModal(false); setPendingRemoteLaunchTool(""); setRemoteCenterHubs([]); }}>&times;</button>
-                        </div>
-                        <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '10px', overflowY: 'auto', paddingBottom: '10px' }}>
-                            <div style={{ fontSize: '0.82rem', color: '#64748b', lineHeight: 1.5 }}>
-                                {t("remoteActivationDialogDesc")}
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '10px' }}>
-                                <div>
-                                    <label className="form-label">{t("remoteHubCenterUrl")}</label>
-                                    <input
-                                        className="form-input"
-                                        value={remoteActivationDraft.hubcenter_url}
-                                        onChange={(e) => setRemoteActivationDraft((prev) => ({ ...prev, hubcenter_url: e.target.value }))}
-                                        placeholder="http://127.0.0.1:9388"
-                                        spellCheck={false}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="form-label">{t("remoteEmail")}</label>
-                                    <input
-                                        className="form-input"
-                                        value={remoteActivationDraft.email}
-                                        onChange={(e) => setRemoteActivationDraft((prev) => ({ ...prev, email: e.target.value }))}
-                                        placeholder="name@example.com"
-                                        spellCheck={false}
-                                    />
-                                </div>
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '10px', alignItems: 'end' }}>
-                                <div>
-                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '6px' }}>
-                                        <label className="form-label" style={{ marginBottom: 0 }}>{t("remoteSelectRegisteredHub")}</label>
-                                        <button
-                                            className="btn-secondary"
-                                            onClick={() => loadRemoteHubsFromCenter()}
-                                            disabled={loadingRemoteCenterHubs}
-                                            style={{ minWidth: '112px', height: '30px', padding: '4px 10px', fontSize: '0.78rem', flexShrink: 0 }}
-                                        >
-                                            {loadingRemoteCenterHubs ? t("remoteLoadingRegisteredHubs") : t("remoteLoadRegisteredHubs")}
-                                        </button>
-                                    </div>
-                                    <select
-                                        className="form-select"
-                                        value={remoteCenterHubs.some((hub) => hub.base_url === remoteActivationDraft.hub_url.trim()) ? remoteActivationDraft.hub_url.trim() : ""}
-                                        onChange={(e) => setRemoteActivationDraft((prev) => ({ ...prev, hub_url: e.target.value }))}
-                                    >
-                                        <option value="">
-                                            {remoteCenterHubs.length > 0 ? t("remoteSelectRegisteredHub") : t("remoteNoRegisteredHubs")}
-                                        </option>
-                                        {remoteCenterHubs.map((hub) => (
-                                            <option key={`${hub.hub_id}-${hub.base_url}`} value={hub.base_url}>
-                                                {hub.name ? `${hub.name} (${hub.base_url})` : hub.base_url}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="form-label">{t("remoteHubUrl")}</label>
-                                    <input
-                                        className="form-input"
-                                        value={remoteActivationDraft.hub_url}
-                                        onChange={(e) => setRemoteActivationDraft((prev) => ({ ...prev, hub_url: e.target.value }))}
-                                        placeholder="https://hub.example.com"
-                                        spellCheck={false}
-                                    />
-                                </div>
-                            </div>
-                            <div style={{ fontSize: '0.79rem', color: '#64748b', lineHeight: 1.5 }}>
-                                {t("remoteHubManualOrSelect")}
-                            </div>
-                        </div>
-                        <div className="modal-footer" style={{ marginTop: '0', flexShrink: 0 }}>
-                            <button className="btn-secondary" onClick={() => { setShowRemoteActivationModal(false); setPendingRemoteLaunchTool(""); setRemoteCenterHubs([]); }}>{t("cancel")}</button>
-                            <button className="btn-primary" onClick={activateRemoteFromDialog} disabled={remoteBusy === 'activate'}>
-                                {remoteBusy === 'activate' ? t("remoteActivating") : t("remoteActivateAndLaunch")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <RemoteActivationDialog
+                    draft={remoteActivationDraft}
+                    setDraft={setRemoteActivationDraft}
+                    remoteCenterHubs={remoteCenterHubs}
+                    loadingRemoteCenterHubs={loadingRemoteCenterHubs}
+                    remoteBusy={remoteBusy}
+                    t={t}
+                    onLoadRemoteHubs={() => loadRemoteHubsFromCenter()}
+                    onActivate={activateRemoteFromDialog}
+                    onClose={() => { setShowRemoteActivationModal(false); setPendingRemoteLaunchTool(""); setRemoteCenterHubs([]); }}
+                />
             )}
 
             {showInstallLog && (
-                <div className="modal-overlay" onClick={() => setShowInstallLog(false)}>
-                    <div className="modal-content" style={{ width: '600px', maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                            <h3 style={{ margin: 0, color: '#6366f1' }}>{t("installLogTitle")}</h3>
-                            <button className="modal-close" onClick={() => setShowInstallLog(false)}>&times;</button>
-                        </div>
-                        <div
-                            className="elegant-scrollbar"
-                            style={{
-                                backgroundColor: '#1e293b',
-                                color: '#e2e8f0',
-                                padding: '15px',
-                                borderRadius: '8px',
-                                height: '250px',
-                                overflowY: 'auto',
-                                fontFamily: 'monospace',
-                                fontSize: '0.85rem',
-                                whiteSpace: 'pre-wrap',
-                                textAlign: 'left',
-                                marginBottom: '15px'
-                            }}>
-                            {envLogs.length === 0 ? (
-                                <div style={{ color: '#94a3b8', fontStyle: 'italic' }}>
-                                    {t("initializing")}
-                                </div>
-                            ) : (
-                                envLogs.map((log, index) => {
-                                    const isError = /error|failed/i.test(log);
-                                    return (
-                                        <div key={index} style={{
-                                            color: isError ? '#ef4444' : 'inherit',
-                                            marginBottom: '4px'
-                                        }}>
-                                            {isError ? `** ${log}` : log}
-                                        </div>
-                                    );
-                                })
-                            )}
-                        </div>
-                        <div style={{
-                            display: 'flex',
-                            justifyContent: 'flex-end',
-                            gap: '10px'
-                        }}>
-                            <button
-                                className="btn-link"
-                                onClick={() => {
-                                    const logText = envLogs.join('\n');
-                                    navigator.clipboard.writeText(logText).then(() => {
-                                        showToastMessage(t("logsCopied"));
-                                    });
-                                }}
-                            >
-                                {t("copyLog")}
-                            </button>
-                            <button
-                                className="btn-link"
-                                onClick={async () => {
-                                    console.log('Send log button clicked');
-                                    const hasError = envLogs.some(log => /error|failed/i.test(log));
-
-                                    if (hasError) {
-                                        // 有错误，直接发送
-                                        await performSendLog();
-                                    } else {
-                                        // 没有错误，询问用户
-                                        setConfirmDialog({
-                                            show: true,
-                                            title: t("confirmSendLog"),
-                                            message: t("confirmSendLogMessage"),
-                                            onConfirm: async () => {
-                                                setConfirmDialog({ ...confirmDialog, show: false });
-                                                await performSendLog();
-                                            }
-                                        });
-                                    }
-                                }}
-                            >
-                                {t("sendLog")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <InstallLogModal
+                    envLogs={envLogs}
+                    t={t}
+                    onClose={() => setShowInstallLog(false)}
+                    onCopied={() => showToastMessage(t("logsCopied"))}
+                    onSendLog={async (hasError) => {
+                        if (hasError) {
+                            await performSendLog();
+                        } else {
+                            setConfirmDialog({
+                                show: true,
+                                title: t("confirmSendLog"),
+                                message: t("confirmSendLogMessage"),
+                                onConfirm: async () => {
+                                    setConfirmDialog({ ...confirmDialog, show: false });
+                                    await performSendLog();
+                                }
+                            });
+                        }
+                    }}
+                />
             )}
 
             {/* Tool Repair Progress Dialog */}
             {toolRepairStatus.show && (
-                <div className="modal-overlay" style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)' }}>
-                    <div style={{
-                        backgroundColor: 'white',
-                        borderRadius: '16px',
-                        padding: '20px 28px',
-                        textAlign: 'center',
-                        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.12)',
-                        minWidth: '220px',
-                        maxWidth: '280px'
-                    }}>
-                        {toolRepairStatus.status === 'installing' && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                                <div style={{
-                                    width: '24px',
-                                    height: '24px',
-                                    border: '3px solid #e2e8f0',
-                                    borderTop: '3px solid #6366f1',
-                                    borderRadius: '50%',
-                                    animation: 'spin 0.8s linear infinite',
-                                    flexShrink: 0
-                                }}></div>
-                                <span style={{ color: '#475569', fontSize: '0.9rem', fontWeight: 500 }}>
-                                    {t("toolRepairInstalling").replace("{tool}", toolRepairStatus.toolName)}
-                                </span>
-                            </div>
-                        )}
-                        {toolRepairStatus.status === 'success' && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                                <div style={{
-                                    width: '28px',
-                                    height: '28px',
-                                    backgroundColor: '#dcfce7',
-                                    borderRadius: '50%',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    flexShrink: 0
-                                }}>
-                                    <span style={{ color: '#16a34a', fontSize: '16px' }}>✓</span>
-                                </div>
-                                <span style={{ color: '#16a34a', fontSize: '0.9rem', fontWeight: 500 }}>
-                                    {t("toolRepairSuccess").replace("{tool}", toolRepairStatus.toolName)}
-                                </span>
-                            </div>
-                        )}
-                        {toolRepairStatus.status === 'failed' && (
-                            <div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                                    <div style={{
-                                        width: '28px',
-                                        height: '28px',
-                                        backgroundColor: '#fee2e2',
-                                        borderRadius: '50%',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        flexShrink: 0
-                                    }}>
-                                        <span style={{ color: '#dc2626', fontSize: '14px' }}>✕</span>
-                                    </div>
-                                    <span style={{ color: '#dc2626', fontSize: '0.9rem', fontWeight: 500 }}>
-                                        {t("toolRepairFailed").replace("{tool}", toolRepairStatus.toolName)}
-                                    </span>
-                                </div>
-                                <p style={{ color: '#6b7280', fontSize: '0.8rem', margin: '0 0 12px 0', wordBreak: 'break-word', textAlign: 'left' }}>
-                                    {toolRepairStatus.message}
-                                </p>
-                                <button
-                                    style={{
-                                        backgroundColor: '#f1f5f9',
-                                        border: 'none',
-                                        borderRadius: '8px',
-                                        padding: '6px 16px',
-                                        fontSize: '0.85rem',
-                                        color: '#475569',
-                                        cursor: 'pointer',
-                                        fontWeight: 500
-                                    }}
-                                    onClick={() => setToolRepairStatus(prev => ({...prev, show: false}))}
-                                >
-                                    {t("close")}
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                </div>
+                <ToolRepairProgressDialog
+                    status={toolRepairStatus}
+                    t={t}
+                    onClose={() => setToolRepairStatus(prev => ({ ...prev, show: false }))}
+                />
             )}
 
             {showUpdateModal && updateResult && (
-                <div className="modal-overlay">
-                    <div className="modal-content" style={{ width: '400px', textAlign: 'left' }}>
-                        <h3>{t("foundNewVersion")}</h3>
-                        {updateResult.has_update ? (
-                            <>
-                                <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', marginBottom: '15px', border: '1px solid #e0e7ff' }}>
-                                    <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{APP_VERSION}</div>
-                                    <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
-                                    <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669' }}>{updateResult.latest_version}</div>
-                                </div>
-
-                                <div style={{ marginTop: '15px' }}>
-                                    {isDownloading ? (
-                                        <div style={{ width: '100%' }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '0.9rem' }}>
-                                                <span>{t("downloading")}</span>
-                                                <span>{downloadProgress}%</span>
-                                            </div>
-                                            <div style={{ width: '100%', height: '10px', backgroundColor: '#e2e8f0', borderRadius: '5px', overflow: 'hidden' }}>
-                                                <div style={{ width: `${downloadProgress}%`, height: '100%', backgroundColor: '#6366f1', transition: 'width 0.2s ease' }}></div>
-                                            </div>
-                                            <button
-                                                className="btn-link"
-                                                style={{ marginTop: '10px', color: '#ef4444' }}
-                                                onClick={handleCancelDownload}
-                                            >
-                                                {t("cancelDownload")}
-                                            </button>
-                                        </div>
-                                    ) : installerPath ? (
-                                        <div style={{ textAlign: 'center', padding: '10px' }}>
-                                            <p style={{ color: '#059669', fontWeight: 'bold', marginBottom: '15px' }}>{t("downloadComplete")}</p>
-                                            <button className="btn-primary" style={{ width: '100%' }} onClick={handleInstall}>
-                                                {t("installNow")}
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <div>
-                                            {downloadError && (
-                                                <div style={{ marginBottom: '10px' }}>
-                                                    <p style={{ color: '#ef4444', fontSize: '0.85rem', marginBottom: '5px' }}>{t("downloadError").replace("{error}", downloadError)}</p>
-                                                    <button className="btn-primary" style={{ width: '100%', backgroundColor: '#ef4444' }} onClick={handleDownload}>
-                                                        {t("retry")}
-                                                    </button>
-                                                </div>
-                                            )}
-                                            {!downloadError && (
-                                                <>
-                                                    <p style={{ margin: '10px 0', fontSize: '0.9rem', color: '#374151' }}>{t("foundNewVersionMsg")}</p>
-                                                    <button className="btn-primary" style={{ width: '100%' }} onClick={handleDownload}>
-                                                        {t("downloadAndUpdate")}
-                                                    </button>
-                                                </>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            </>
-                        ) : (
-                            <div style={{ backgroundColor: '#eef2ff', padding: '12px', borderRadius: '6px', border: '1px solid #e0e7ff' }}>
-                                <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("currentVersion")}</div>
-                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#4338ca', marginBottom: '12px' }}>v{APP_VERSION}</div>
-                                <div style={{ fontSize: '0.85rem', color: '#6b7280', marginBottom: '8px' }}>{t("latestVersion")}</div>
-                                <div style={{ fontSize: '1rem', fontWeight: '600', color: '#059669', marginBottom: '12px' }}>{updateResult.latest_version}</div>
-                                <p style={{ margin: '0', fontSize: '0.9rem', color: '#059669', fontWeight: '500' }}>✓ {t("isLatestVersion")}</p>
-                            </div>
-                        )}
-                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
-                            <button className="btn-primary" disabled={isDownloading} onClick={() => {
-                                setShowUpdateModal(false);
-                                // After closing update modal, show welcome page only if this was a startup check
-                                if (isStartupUpdateCheck && config && !config.hide_startup_popup) {
-                                    setShowStartupPopup(true);
-                                }
-                                // Reset the flag
-                                setIsStartupUpdateCheck(false);
-                                // Clear error if any
-                                setDownloadError("");
-                            }}>{t("close")}</button>
-                        </div>
-                    </div>
-                </div>
+                <UpdateModal
+                    updateResult={updateResult}
+                    appVersion={APP_VERSION}
+                    isDownloading={isDownloading}
+                    downloadProgress={downloadProgress}
+                    installerPath={installerPath}
+                    downloadError={downloadError}
+                    t={t}
+                    onCancelDownload={handleCancelDownload}
+                    onDownload={handleDownload}
+                    onInstall={handleInstall}
+                    onClose={() => {
+                        setShowUpdateModal(false);
+                        if (isStartupUpdateCheck && config && !config.hide_startup_popup) {
+                            setShowStartupPopup(true);
+                        }
+                        setIsStartupUpdateCheck(false);
+                        setDownloadError("");
+                    }}
+                />
             )}
 
             {showModelSettings && config && (
@@ -7080,242 +3406,32 @@ ${instruction}`;
             )}
 
             {showProviderSelector && (
-                <div className="modal-overlay" style={{ backgroundColor: 'rgba(0,0,0,0.35)', backdropFilter: 'blur(3px)' }} onClick={() => { setShowProviderSelector(false); setHoveredProvider(null); }}>
-                    <div className="modal-content" style={{ maxWidth: '480px', maxHeight: '70vh', padding: '20px', borderRadius: '16px', border: 'none', boxShadow: '0 20px 40px rgba(0,0,0,0.12)' }} onClick={(e) => e.stopPropagation()}>
-                        <h2 style={{ margin: '0 0 16px 0', fontSize: '1.1rem', fontWeight: 700, color: '#1e293b', textAlign: 'center' }}>{t("selectProviderTitle")}</h2>
-
-                        {/* Filter pills */}
-                        <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', justifyContent: 'center' }}>
-                            {(['all', 'china', 'global'] as const).map(f => (
-                                <button
-                                    key={f}
-                                    onClick={() => setProviderFilter(f)}
-                                    style={{
-                                        padding: '5px 16px', fontSize: '0.8rem', borderRadius: '20px', border: 'none', cursor: 'pointer', fontWeight: 600,
-                                        backgroundColor: providerFilter === f ? '#6366f1' : '#f1f5f9',
-                                        color: providerFilter === f ? '#fff' : '#64748b',
-                                        transition: 'all 0.2s'
-                                    }}
-                                >
-                                    {f === 'all' ? t("allProviders") : f === 'china' ? t("chinaProviders") : t("globalProviders")}
-                                </button>
-                            ))}
-                        </div>
-
-                        {/* Provider grid */}
-                        <div style={{ maxHeight: 'calc(70vh - 180px)', overflowY: 'auto', padding: '2px' }}>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                                {getFilteredProviders().map((provider, index) => {
-                                    const isSelected = selectedProviderForUrl?.name === provider.name && selectedProviderForUrl?.url === provider.url;
-                                    return (
-                                        <div
-                                            key={index}
-                                            onClick={() => handleProviderSelect(provider)}
-                                            onDoubleClick={() => { handleProviderSelect(provider); confirmProviderSelection(); }}
-                                            onMouseEnter={(e) => {
-                                                const rect = e.currentTarget.getBoundingClientRect();
-                                                setHoveredProvider({ provider, x: rect.left + rect.width / 2, y: rect.top - 4 });
-                                            }}
-                                            onMouseLeave={() => setHoveredProvider(null)}
-                                            style={{
-                                                padding: '10px 8px', borderRadius: '10px', cursor: 'pointer', textAlign: 'center',
-                                                border: isSelected ? '2px solid #6366f1' : '1.5px solid #e8ecf1',
-                                                backgroundColor: isSelected ? '#eef2ff' : '#fff',
-                                                transition: 'all 0.15s ease',
-                                                boxShadow: isSelected ? '0 2px 8px rgba(59,130,246,0.15)' : '0 1px 3px rgba(0,0,0,0.04)',
-                                                position: 'relative'
-                                            }}
-                                        >
-                                            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: isSelected ? '#6366f1' : '#334155', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
-                                                <span title={provider.region === 'china' ? (lang === 'en' ? 'China' : '国内') : (lang === 'en' ? 'Global' : '国外')} style={{ fontSize: '0.7rem', flexShrink: 0 }}>{provider.region === 'china' ? '🇨🇳' : '🌐'}</span>
-                                                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{provider.name}</span>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-
-                        {/* Action buttons */}
-                        <div style={{ display: 'flex', gap: '10px', marginTop: '14px' }}>
-                            <button className="btn-primary" style={{ flex: 1, borderRadius: '10px' }} onClick={confirmProviderSelection} disabled={!selectedProviderForUrl}>{t("confirm")}</button>
-                            <button className="btn-hide" style={{ flex: 1, borderRadius: '10px' }} onClick={() => { setShowProviderSelector(false); setSelectedProviderForUrl(null); setHoveredProvider(null); }}>{t("cancel")}</button>
-                        </div>
-                    </div>
-
-                    {/* Tooltip bubble for URL */}
-                    {hoveredProvider && (
-                        <div style={{
-                            position: 'fixed',
-                            left: hoveredProvider.x,
-                            top: hoveredProvider.y,
-                            transform: 'translate(-50%, -100%)',
-                            backgroundColor: '#1e293b',
-                            color: '#1f2937',
-                            padding: '6px 12px',
-                            borderRadius: '8px',
-                            fontSize: '0.75rem',
-                            fontFamily: 'monospace',
-                            whiteSpace: 'nowrap',
-                            zIndex: 9999,
-                            pointerEvents: 'none',
-                            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
-                            maxWidth: '360px',
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis'
-                        }}>
-                            {hoveredProvider.provider.url}
-                            {hoveredProvider.provider.description && (
-                                <div style={{ fontSize: '0.65rem', color: '#94a3b8', marginTop: '2px' }}>{hoveredProvider.provider.description}</div>
-                            )}
-                            {/* Arrow */}
-                            <div style={{
-                                position: 'absolute', bottom: '-5px', left: '50%', transform: 'translateX(-50%)',
-                                width: 0, height: 0,
-                                borderLeft: '6px solid transparent', borderRight: '6px solid transparent', borderTop: '6px solid #1e293b'
-                            }} />
-                        </div>
-                    )}
-                </div>
+                <ProviderSelectorDialog
+                    providers={getFilteredProviders()}
+                    providerFilter={providerFilter}
+                    setProviderFilter={setProviderFilter}
+                    selectedProvider={selectedProviderForUrl}
+                    setSelectedProvider={setSelectedProviderForUrl}
+                    hoveredProvider={hoveredProvider}
+                    setHoveredProvider={setHoveredProvider}
+                    lang={lang}
+                    t={t}
+                    onConfirm={confirmProviderSelection}
+                    onClose={() => { setShowProviderSelector(false); setSelectedProviderForUrl(null); setHoveredProvider(null); }}
+                />
             )}
 
             {showStartupPopup && (
-                <div className="modal-overlay" style={{ backgroundColor: 'rgba(0, 0, 0, 0.4)', backdropFilter: 'blur(4px)' }}>
-                    <div className="modal-content" style={{
-                        width: '320px',
-                        textAlign: 'center',
-                        padding: 0,
-                        borderRadius: '16px',
-                        overflow: 'hidden',
-                        border: 'none',
-                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
-                    }}>
-                        <div style={{
-                            background: 'linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)',
-                            padding: '25px 20px',
-                            color: '#1e293b',
-                            position: 'relative',
-                            borderBottom: '1px solid #e2e8f0'
-                        }}>
-                            <button
-                                className="modal-close"
-                                onClick={() => setShowStartupPopup(false)}
-                                style={{ color: '#9ca3af', opacity: 0.8, top: '10px', right: '15px', zIndex: 10 }}
-                            >&times;</button>
-                            <div style={{
-                                fontSize: '2.5rem',
-                                marginBottom: '10px',
-                                background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                fontWeight: '900',
-                                lineHeight: 1,
-                                filter: 'drop-shadow(0 2px 4px rgba(59, 130, 246, 0.1))'
-                            }}>{`</>`}</div>
-                            <h3 style={{ margin: 0, color: '#0f172a', fontSize: '1.2rem', fontWeight: 'bold' }}>{t("startupTitle")}</h3>
-                            <p style={{
-                                margin: '6px 0 0 0',
-                                background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                                WebkitBackgroundClip: 'text',
-                                WebkitTextFillColor: 'transparent',
-                                fontSize: '0.95rem',
-                                fontWeight: '700'
-                            }}>
-                                {t("slogan")}
-                            </p>
-                        </div>
-
-                        <div style={{ padding: '20px 25px' }}>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
-                                <button
-                                    style={{
-                                        width: '100%',
-                                        padding: '10px',
-                                        borderRadius: '10px',
-                                        fontSize: '0.95rem',
-                                        fontWeight: '600',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        gap: '8px',
-                                        background: 'linear-gradient(135deg, #eef2ff, #e0e7ff)',
-                                        color: '#4338ca',
-                                        border: '1px solid #c7d2fe',
-                                        boxShadow: '0 2px 4px rgba(59, 130, 246, 0.1)',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s'
-                                    }}
-                                    onClick={() => {
-                                        BrowserOpenURL("https://www.bilibili.com/video/BV1wmvoBnEF1");
-                                    }}
-                                >
-                                    <span>🎬</span> {t("quickStart")}
-                                </button>
-                                <button
-                                    className="btn-link"
-                                    style={{
-                                        padding: '10px',
-                                        border: '1px solid #e2e8f0',
-                                        borderRadius: '10px',
-                                        fontSize: '0.95rem',
-                                        fontWeight: '500',
-                                        color: '#9ca3af',
-                                        backgroundColor: '#ffffff',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        gap: '8px',
-                                        boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
-                                    }}
-                                    onClick={() => {
-                                        const manualUrl = (lang === 'zh-Hans' || lang === 'zh-Hant')
-                                            ? "https://github.com/rapidai/maclaw/blob/main/UserManual_CN.md"
-                                            : "https://github.com/rapidai/maclaw/blob/main/UserManual_EN.md";
-                                        BrowserOpenURL(manualUrl);
-                                    }}
-                                >
-                                    <span>📖</span> {t("manual")}
-                                </button>
-                            </div>
-
-                            <div style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                gap: '8px'
-                            }}>
-                                <label style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '6px',
-                                    cursor: 'pointer',
-                                    fontSize: '0.8rem',
-                                    color: '#94a3b8'
-                                }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={config?.hide_startup_popup || false}
-                                        style={{
-                                            width: '14px',
-                                            height: '14px',
-                                            cursor: 'pointer'
-                                        }}
-                                        onChange={(e) => {
-                                            if (config) {
-                                                const newConfig = new main.AppConfig({ ...config, hide_startup_popup: e.target.checked });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
-                                            }
-                                        }}
-                                    />
-                                    {t("dontShowAgain")}
-                                </label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <StartupPopup
+                    config={config}
+                    setConfig={setConfig}
+                    lang={lang}
+                    t={t}
+                    onClose={() => setShowStartupPopup(false)}
+                />
             )}
 
+            {/* MaClaw Onboarding Wizard */}
             {/* MaClaw Onboarding Wizard */}
             {showMaclawLLMPopup && (
                 <OnboardingWizard
@@ -7357,546 +3473,56 @@ ${instruction}`;
 
             {/* Thanks Modal */}
             {showThanksModal && (
-                <div className="modal-overlay">
-                    <div className="modal-content elegant-scrollbar" style={{ maxWidth: '600px', maxHeight: '80vh', overflowY: 'auto' }}>
-                        <h3 style={{ marginTop: 0, marginBottom: '15px', color: '#6366f1' }}>{t("thanks")}</h3>
-                        <div className="markdown-content" style={{
-                            backgroundColor: '#fff',
-                            padding: '10px',
-                            borderRadius: '4px',
-                            border: '1px solid var(--border-color)',
-                            fontFamily: 'inherit',
-                            fontSize: '0.8rem',
-                            lineHeight: '1.6',
-                            color: '#374151',
-                            textAlign: 'left',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word'
-                        }}>
-                            <ReactMarkdown
-                                remarkPlugins={[remarkGfm]}
-                                // @ts-ignore
-                                rehypePlugins={[rehypeRaw]}
-                                components={{ a: MarkdownLink }}
-                            >
-                                {thanksContent}
-                            </ReactMarkdown>
-                        </div>
-                        <button onClick={() => setShowThanksModal(false)} className="btn-secondary" style={{ marginTop: '20px' }}>
-                            {t("close")}
-                        </button>
-                    </div>
-                </div>
+                <ThanksModal
+                    content={thanksContent}
+                    t={t}
+                    onClose={() => setShowThanksModal(false)}
+                />
             )}
 
             {/* Confirm Dialog */}
             {confirmDialog.show && (
-                <div style={{
-                    position: 'fixed',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-                    backdropFilter: 'blur(4px)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    zIndex: 10000,
-                    animation: 'fadeIn 0.2s ease-out'
-                }}>
-                    <div style={{
-                        backgroundColor: '#ffffff',
-                        borderRadius: '12px',
-                        padding: '24px',
-                        minWidth: '360px',
-                        maxWidth: '420px',
-                        boxShadow: '0 20px 60px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(0, 0, 0, 0.05)',
-                        border: 'none',
-                        animation: 'slideUp 0.3s ease-out',
-                        position: 'relative'
-                    }}>
-                        {/* Icon */}
-                        <div style={{
-                            width: '48px',
-                            height: '48px',
-                            borderRadius: '50%',
-                            backgroundColor: '#fef2f2',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            marginBottom: '16px',
-                            border: '2px solid #fee2e2'
-                        }}>
-                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <line x1="12" y1="8" x2="12" y2="12"></line>
-                                <line x1="12" y1="16" x2="12.01" y2="16"></line>
-                            </svg>
-                        </div>
-
-                        {/* Title */}
-                        <h3 style={{
-                            margin: '0 0 8px 0',
-                            fontSize: '1.15rem',
-                            color: '#1f2937',
-                            fontWeight: '700',
-                            letterSpacing: '-0.02em'                    }}>
-                            {confirmDialog.title}
-                        </h3>
-
-                        {/* Message */}
-                        <p style={{
-                            margin: '0 0 20px 0',
-                            color: '#6b7280',
-                            fontSize: '0.9rem',
-                            lineHeight: '1.5',
-                            fontWeight: '400'
-                        }}>
-                            {confirmDialog.message}
-                        </p>
-
-                        {/* Buttons */}
-                        <div style={{
-                            display: 'flex',
-                            justifyContent: 'flex-end',
-                            gap: '10px'
-                        }}>
-                            <button
-                                onClick={() => setConfirmDialog({ ...confirmDialog, show: false })}
-                                style={{
-                                    padding: '8px 20px',
-                                    backgroundColor: '#f9fafb',
-                                    color: '#374151',
-                                    border: '1px solid #e5e7eb',
-                                    borderRadius: '8px',
-                                    cursor: 'pointer',
-                                    fontSize: '0.875rem',
-                                    fontWeight: '600',
-                                    transition: 'all 0.2s',
-                                    boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#f3f4f6';
-                                    e.currentTarget.style.borderColor = '#d1d5db';
-                                    e.currentTarget.style.transform = 'translateY(-1px)';
-                                    e.currentTarget.style.boxShadow = '0 2px 4px rgba(0, 0, 0, 0.1)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#f9fafb';
-                                    e.currentTarget.style.borderColor = '#e5e7eb';
-                                    e.currentTarget.style.transform = 'translateY(0)';
-                                    e.currentTarget.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.05)';
-                                }}
-                            >
-                                {t("cancel")}
-                            </button>
-                            <button
-                                onClick={confirmDialog.onConfirm}
-                                style={{
-                                    padding: '8px 20px',
-                                    backgroundColor: '#ef4444',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '8px',
-                                    cursor: 'pointer',
-                                    fontSize: '0.875rem',
-                                    fontWeight: '600',
-                                    transition: 'all 0.2s',
-                                    boxShadow: '0 2px 4px rgba(239, 68, 68, 0.3)'
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#dc2626';
-                                    e.currentTarget.style.transform = 'translateY(-1px)';
-                                    e.currentTarget.style.boxShadow = '0 4px 8px rgba(239, 68, 68, 0.4)';
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#ef4444';
-                                    e.currentTarget.style.transform = 'translateY(0)';
-                                    e.currentTarget.style.boxShadow = '0 2px 4px rgba(239, 68, 68, 0.3)';
-                                }}
-                            >
-                                {t("confirm")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <ConfirmDialog
+                    title={confirmDialog.title}
+                    message={confirmDialog.message}
+                    t={t}
+                    onCancel={() => setConfirmDialog({ ...confirmDialog, show: false })}
+                    onConfirm={confirmDialog.onConfirm}
+                />
             )}
 
             {/* Proxy Settings Dialog (project-level only) */}
             {showProxySettings && config && (
-                <div className="modal-overlay">
-                    <div className="modal-content" style={{ width: '540px', textAlign: 'left' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                            <h3 style={{ margin: 0, color: '#6366f1' }}>
-                                {t("proxySettings")}
-                            </h3>
-                            <button className="modal-close" onClick={() => setShowProxySettings(false)}>&times;</button>
-                        </div>
-
-                        {config?.default_proxy_host && (
-                            <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: '#eef2ff', borderRadius: '6px', fontSize: '0.85rem' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={(() => {
-                                            const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch);
-                                            return proj && !proj.proxy_host;
-                                        })()}
-                                        onChange={(e) => {
-                                            const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch);
-                                            if (proj && e.target.checked) {
-                                                const newProjects = config.projects.map((p: any) =>
-                                                    p.id === proj.id ? { ...p, proxy_host: '', proxy_port: '', proxy_username: '', proxy_password: '' } : p
-                                                );
-                                                const newConfig = new main.AppConfig({ ...config, projects: newProjects });
-                                                setConfig(newConfig);
-                                                SaveConfig(newConfig);
-                                            }
-                                        }}
-                                        style={{ marginRight: '8px' }}
-                                    />
-                                    <span>{t("useDefaultProxy")} ({config.default_proxy_host}:{config.default_proxy_port})</span>
-                                </label>
-                            </div>
-                        )}
-
-                        {/* Host + Port row */}
-                        <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                            <div style={{ flex: 1 }}>
-                                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyHost")}</label>
-                                <input type="text" className="form-input" spellCheck={false}
-                                    placeholder={t("proxyHostPlaceholder")}
-                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_host || ''}
-                                    onChange={(e) => {
-                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_host: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
-                                    }}
-                                />
-                            </div>
-                            <div style={{ width: '90px', flexShrink: 0 }}>
-                                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPort")}</label>
-                                <input type="text" className="form-input" spellCheck={false}
-                                    placeholder={t("proxyPortPlaceholder")}
-                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_port || ''}
-                                    onChange={(e) => {
-                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_port: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
-                                    }}
-                                />
-                            </div>
-                        </div>
-
-                        {/* Username + Password row */}
-                        <div style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                            <div style={{ flex: 1 }}>
-                                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyUsername")}</label>
-                                <input type="text" className="form-input" spellCheck={false} autoComplete="off"
-                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_username || ''}
-                                    onChange={(e) => {
-                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_username: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
-                                    }}
-                                />
-                            </div>
-                            <div style={{ flex: 1 }}>
-                                <label className="form-label" style={{ fontSize: '0.78rem' }}>{t("proxyPassword")}</label>
-                                <input type="password" className="form-input" autoComplete="new-password"
-                                    value={config?.projects?.find((p: any) => p.id === selectedProjectForLaunch)?.proxy_password || ''}
-                                    onChange={(e) => {
-                                        const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch); if (proj) { const np = config.projects.map((p: any) => p.id === proj.id ? { ...p, proxy_password: e.target.value } : p); setConfig(new main.AppConfig({ ...config, projects: np })); }
-                                    }}
-                                />
-                            </div>
-                        </div>
-
-                        <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '20px' }}>
-                            <button className="btn-secondary" onClick={() => setShowProxySettings(false)} style={{ padding: '8px 16px' }}>
-                                {t("cancel")}
-                            </button>
-                            <button className="btn-primary" onClick={() => {
-                                    const proj = config?.projects?.find((p: any) => p.id === selectedProjectForLaunch);
-                                    if (proj && !proj.use_proxy) {
-                                        const newProjects = config.projects.map((p: any) => p.id === proj.id ? { ...p, use_proxy: true } : p);
-                                        const newConfig = new main.AppConfig({ ...config, projects: newProjects });
-                                        setConfig(newConfig);
-                                        SaveConfig(newConfig);
-                                    } else {
-                                        SaveConfig(config);
-                                    }
-                                }} style={{ padding: '8px 16px' }}>
-                                {localizeText("Save", "保存", "保存")}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                <ProjectProxySettingsDialog
+                    config={config}
+                    selectedProjectForLaunch={selectedProjectForLaunch}
+                    setConfig={setConfig}
+                    t={t}
+                    saveLabel={localizeText("Save", "??", "??")}
+                    onClose={() => setShowProxySettings(false)}
+                />
             )}
 
-            {showInstallSkillModal && (
-                <div className="modal-overlay">
-                    <div className="modal-content" style={{ width: '500px', maxWidth: '95vw' }}>
-                        <div className="modal-header" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
-                            <h3 style={{ margin: 0, color: '#10b981', whiteSpace: 'nowrap' }}>{t("selectSkillsToInstall")}</h3>
-
-                            <div style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '12px',
-                                padding: '4px 12px',
-                                backgroundColor: '#f3f4f6',
-                                borderRadius: '20px',
-                                fontSize: '0.8rem',
-                                marginLeft: '5px'
-                            }}>
-                                <span style={{ color: '#6b7280', fontWeight: '500' }}>{t("installLocation")}</span>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'user' ? '#10b981' : '#4b5563', fontWeight: installLocation === 'user' ? 'bold' : 'normal' }}>
-                                    <input
-                                        type="radio"
-                                        name="installLocation"
-                                        checked={installLocation === 'user'}
-                                        onChange={() => setInstallLocation('user')}
-                                        style={{ margin: 0 }}
-                                    /> {t("userLocation")}
-                                </label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: installLocation === 'project' ? '#10b981' : '#4b5563', fontWeight: installLocation === 'project' ? 'bold' : 'normal' }}>
-                                    <input
-                                        type="radio"
-                                        name="installLocation"
-                                        checked={installLocation === 'project'}
-                                        onChange={() => {
-                                            setInstallLocation('project');
-                                            if (config && config.current_project) {
-                                                setInstallProject(config.current_project);
-                                            }
-                                        }}
-                                        style={{ margin: 0 }}
-                                    /> {t("projectLocation")}
-                                </label>
-                                {installLocation === 'project' && config?.projects && (
-                                    <select
-                                        value={installProject}
-                                        onChange={(e) => setInstallProject(e.target.value)}
-                                        style={{
-                                            padding: '2px 4px',
-                                            borderRadius: '4px',
-                                            border: '1px solid #d1d5db',
-                                            fontSize: '0.8rem',
-                                            maxWidth: '120px'
-                                        }}
-                                    >
-                                        {config.projects.map((proj: any) => (
-                                            <option key={proj.id} value={proj.id}>
-                                                {proj.name}
-                                            </option>
-                                        ))}
-                                    </select>
-                                )}
-                            </div>
-
-                            <button
-                                onClick={() => { setShowInstallSkillModal(false); switchTool('skills'); }}
-                                style={{
-                                    background: 'none',
-                                    border: '1px solid #d1d5db',
-                                    borderRadius: '16px',
-                                    padding: '4px 10px',
-                                    fontSize: '0.8rem',
-                                    cursor: 'pointer',
-                                    color: '#6366f1',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    whiteSpace: 'nowrap',
-                                }}
-                                title={t("skills")}
-                            >
-                                🛠️ {t("skills")}
-                            </button>
-
-                            <button onClick={() => setShowInstallSkillModal(false)} className="btn-close" style={{ marginLeft: 'auto' }}>&times;</button>
-                        </div>
-                        <div className="modal-body" style={{ maxHeight: '300px', overflowY: 'auto', padding: '10px 0' }}>
-                            {(() => {
-                                const filtered = installLocation === 'project'
-                                    ? skills.filter(s => s.type !== 'address')
-                                    : skills;
-
-                                if (filtered.length === 0) {
-                                    return (
-                                        <div style={{ textAlign: 'center', color: '#6b7280', padding: '20px' }}>
-                                            {t("noSkills")}
-                                        </div>
-                                    );
-                                }
-
-                                return (
-                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                                        {filtered.map((skill, idx) => (
-                                            <label key={idx} style={{
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                padding: '8px 12px',
-                                                border: '1px solid var(--border-color)',
-                                                borderRadius: '6px',
-                                                cursor: skill.installed ? 'not-allowed' : 'pointer',
-                                                backgroundColor: selectedSkillsToInstall.includes(skill.name) ? '#f0fdf4' : '#fff',
-                                                opacity: skill.installed ? 0.5 : 1,
-                                                position: 'relative'
-                                            }}>
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedSkillsToInstall.includes(skill.name)}
-                                                    disabled={skill.installed}
-                                                    onChange={(e) => {
-                                                        if (e.target.checked) {
-                                                            setSelectedSkillsToInstall([...selectedSkillsToInstall, skill.name]);
-                                                        } else {
-                                                            setSelectedSkillsToInstall(selectedSkillsToInstall.filter(n => n !== skill.name));
-                                                        }
-                                                    }}
-                                                    style={{ marginRight: '10px' }}
-                                                />
-                                                <div style={{ flex: 1 }} title={skill.description}>
-                                                    <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>
-                                                        {skill.name}
-                                                        {skill.installed && (
-                                                            <span style={{
-                                                                marginLeft: '8px',
-                                                                fontSize: '0.75rem',
-                                                                color: '#10b981',
-                                                                backgroundColor: '#d1fae5',
-                                                                padding: '2px 6px',
-                                                                borderRadius: '4px',
-                                                                fontWeight: 'normal'
-                                                            }}>
-                                                                {t("installed")}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </label>
-                                        ))}
-                                    </div>
-                                );
-                            })()}
-                        </div>
-                        <div className="modal-footer" style={{ marginTop: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            {activeTool === 'claude' ? (
-                                <button
-                                    className="btn-link"
-                                    style={{
-                                        color: '#6366f1',
-                                        fontSize: '0.85rem',
-                                        padding: '4px 15px',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '6px',
-                                        opacity: isMarketplaceInstalling ? 0.6 : 1,
-                                        minWidth: '120px',
-                                        justifyContent: 'center'
-                                    }}
-                                    disabled={isMarketplaceInstalling}
-                                    onClick={async () => {
-                                        setIsMarketplaceInstalling(true);
-                                        try {
-                                            await InstallDefaultMarketplace();
-                                            showToastMessage("Marketplace installed successfully!");
-                                        } catch (err) {
-                                            showToastMessage("Error installing marketplace: " + err);
-                                        } finally {
-                                            setIsMarketplaceInstalling(false);
-                                        }
-                                    }}
-                                >
-                                    {isMarketplaceInstalling && (
-                                        <div style={{
-                                            width: '12px',
-                                            height: '12px',
-                                            border: '2px solid #6366f1',
-                                            borderTopColor: 'transparent',
-                                            borderRadius: '50%',
-                                            animation: 'spin 1s linear infinite'
-                                        }}></div>
-                                    )}
-                                    {t("installDefaultMarketplace")}
-                                </button>
-                            ) : (
-                                <div></div>
-                            )}
-                            <div style={{ display: 'flex', gap: '10px' }}>
-                                <button className="btn-secondary" onClick={() => setShowInstallSkillModal(false)}>{t("cancel")}</button>
-                                <button
-                                    className="btn-primary"
-                                    style={{
-                                        backgroundColor: '#10b981',
-                                        borderColor: '#10b981',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '6px',
-                                        opacity: (selectedSkillsToInstall.length === 0 || isBatchInstalling) ? 0.6 : 1
-                                    }}
-                                    disabled={selectedSkillsToInstall.length === 0 || isBatchInstalling}
-                                    onClick={async () => {
-                                        setIsBatchInstalling(true);
-                                        let successCount = 0;
-                                        let failCount = 0;
-
-                                        // Get project path if needed
-                                        let targetProjectPath = "";
-                                        if (installLocation === 'project') {
-                                            const p = config?.projects?.find((proj: any) => proj.id === installProject);
-                                            if (p) targetProjectPath = p.path;
-                                        }
-
-                                        for (const name of selectedSkillsToInstall) {
-                                            const skill = skills.find(s => s.name === name);
-                                            if (skill) {
-                                                // Check for incompatibility
-                                                const isGeminiOrCodex = activeTool?.toLowerCase() === 'gemini' || activeTool?.toLowerCase() === 'codex';
-                                                if (isGeminiOrCodex && skill.type === 'address') {
-                                                    console.warn(`Skill ${skill.name} is not supported for ${activeTool}`);
-                                                    failCount++;
-                                                    continue;
-                                                }
-
-                                                try {
-                                                    await InstallSkill(skill.name, skill.description, skill.type, skill.value, installLocation, targetProjectPath, activeTool);
-                                                    successCount++;
-                                                } catch (e) {
-                                                    console.error(e);
-                                                    failCount++;
-                                                }
-                                            }
-                                        }
-
-                                        setIsBatchInstalling(false);
-                                        setShowInstallSkillModal(false);
-
-                                        if (failCount > 0) {
-                                            const isGeminiOrCodex = activeTool?.toLowerCase() === 'gemini' || activeTool?.toLowerCase() === 'codex';
-                                            if (isGeminiOrCodex && selectedSkillsToInstall.some(name => skills.find(s => s.name === name)?.type === 'address')) {
-                                                showToastMessage(t("skillZipOnlyError"));
-                                            } else {
-                                                showToastMessage(`${successCount} installed, ${failCount} failed.`);
-                                            }
-                                        } else {
-                                            showToastMessage(`${successCount} skills installed successfully.`);
-                                        }
-                                    }}
-                                >
-                                    {isBatchInstalling && (
-                                        <div style={{
-                                            width: '12px',
-                                            height: '12px',
-                                            border: '2px solid white',
-                                            borderTopColor: 'transparent',
-                                            borderRadius: '50%',
-                                            animation: 'spin 1s linear infinite'
-                                        }}></div>
-                                    )}
-                                    {t("install")}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+            {showInstallSkillModal && config && (
+                <InstallSkillModal
+                    config={config}
+                    skills={skills}
+                    activeTool={activeTool}
+                    installLocation={installLocation}
+                    setInstallLocation={setInstallLocation}
+                    installProject={installProject}
+                    setInstallProject={setInstallProject}
+                    selectedSkillsToInstall={selectedSkillsToInstall}
+                    setSelectedSkillsToInstall={setSelectedSkillsToInstall}
+                    isBatchInstalling={isBatchInstalling}
+                    setIsBatchInstalling={setIsBatchInstalling}
+                    isMarketplaceInstalling={isMarketplaceInstalling}
+                    setIsMarketplaceInstalling={setIsMarketplaceInstalling}
+                    t={t}
+                    switchTool={switchTool}
+                    showToastMessage={showToastMessage}
+                    onClose={() => setShowInstallSkillModal(false)}
+                />
             )}
 
             {showToast && (

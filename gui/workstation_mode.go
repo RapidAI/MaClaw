@@ -6,11 +6,8 @@ import "github.com/RapidAI/CodeClaw/corelib"
 // Called on startup and after config save.
 func (a *App) refreshWorkstationMode(config corelib.AppConfig) {
 	a.setWorkstationMode(config.WorkstationMode, config.ScreenDimTimeoutMin)
-	// When workstation mode is on, also start the screen-dim timer so the
-	// display turns off after the configured idle timeout.
-	// Only touch the dim timer here if workstation mode is enabled;
-	// otherwise let refreshPowerOptimizationStateFromConfig manage it.
-	if config.WorkstationMode {
-		a.updateScreenDimTimer(true, config.ScreenDimTimeoutMin)
-	}
+	// The display-off timer is owned by refreshPowerOptimizationStateFromConfig.
+	// Keeping a single owner avoids briefly overlapping screen-dim goroutines
+	// during config refreshes, which can otherwise issue duplicate display-off
+	// commands and make a sleeping display flash.
 }

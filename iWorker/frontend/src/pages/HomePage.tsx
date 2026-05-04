@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { quickTasks as defaultQuickTasks } from '../mock/tasks';
-import type { CenterAgentInstance, CenterGoalPush, CenterHealthStatus, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, HistoryTaskItem, WorkerMemoryStats } from '../types';
+import type { CenterAgentInstance, CenterGoalPush, CenterHealthStatus, CenterConfigBundle, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, HistoryTaskItem, WorkerMemoryStats } from '../types';
 
 type Props = {
   draft: string;
@@ -25,6 +25,9 @@ type Props = {
   installedTools: CenterInstalledTools;
   installedToolsLoading: boolean;
   installedToolsError: string;
+  configBundle: CenterConfigBundle;
+  configBundleLoading: boolean;
+  configBundleError: string;
   submitting: boolean;
   onDraftChange: (value: string) => void;
   onExpectedOutputChange: (value: string) => void;
@@ -36,6 +39,7 @@ type Props = {
   onRefreshGoalPushes: () => void | Promise<CenterGoalPush[] | undefined>;
   onRefreshMemoryStats: () => void | Promise<WorkerMemoryStats | undefined>;
   onRefreshInstalledTools: () => void | Promise<CenterInstalledTools | undefined>;
+  onRefreshConfigBundle: () => void | Promise<CenterConfigBundle | undefined>;
   onCheckCenterHealth: () => void | Promise<CenterHealthStatus | undefined>;
   onAutoHandleGoalPush: (eventId: string) => void | Promise<void>;
   onAckGoalPush: (eventId: string, status: 'resumed' | 'blocked') => void | Promise<void>;
@@ -308,6 +312,22 @@ const installedToolsDetail = (tools: CenterInstalledTools) => {
   return total + ' tools / ' + source + cached;
 };
 
+const configBundleSourceCopy = (bundle: CenterConfigBundle) => {
+  if (bundle.source === 'center') return bundle.stale ? 'Center stale' : 'Center live';
+  if (bundle.source === 'cache') return 'Cached config';
+  if (bundle.source === 'none') return 'No Center config published';
+  if (bundle.source === 'unavailable') return 'Config unavailable';
+  return 'Local config';
+};
+
+const configBundleDetail = (bundle: CenterConfigBundle) => {
+  if (!bundle.version) return configBundleSourceCopy(bundle);
+  const note = bundle.note ? ' / ' + bundle.note : '';
+  const cached = bundle.cachedAt ? ' / cached ' + bundle.cachedAt : '';
+  return 'v' + bundle.version + ' / ' + (bundle.contentType || 'config') + note + ' / ' + configBundleSourceCopy(bundle) + cached;
+};
+
+
 const runtimeSnapshotSourceCopy = (source?: string, stale?: boolean) => {
   if (source === 'center') {
     return stale ? 'Center stale' : 'Center live';
@@ -372,7 +392,7 @@ const buildTaskTemplate = (task: string, mode: WorkMode) => {
   return `Task: ${task}\n\nTurn this into structured iWorker work. Use Center memory when helpful, route to peer iWorkers or human skills when needed, and preserve reusable experience.\n\nExpected output: result, evidence, and memory suggestions.`;
 };
 
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, submitting, onDraftChange, onExpectedOutputChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onRefreshInstalledTools, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush, onOpenGoalPushTask }: Props) {
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, configBundle, configBundleLoading, configBundleError, submitting, onDraftChange, onExpectedOutputChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onRefreshInstalledTools, onRefreshConfigBundle, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush, onOpenGoalPushTask }: Props) {
   const { t } = useTranslation();
   const [workMode, setWorkMode] = useState<WorkMode>('chat');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
@@ -403,7 +423,45 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       .catch(() => undefined);
   }, []);
 
+  const formatPushAgeLabel = (seconds: number) => {
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      return t('home.justNow', 'just now');
+    }
+    const minutes = Math.max(1, Math.round(seconds / 60));
+    if (minutes < 60) {
+      return t('home.minutesWaiting', '{{count}}m waiting', { count: minutes });
+    }
+    return t('home.hoursWaiting', '{{count}}h waiting', { count: Math.round(minutes / 60) });
+  };
+
   const currentMode = modeCopy[workMode];
+  const modeTitle = t(`home.mode.${workMode}.title`, currentMode.title);
+  const modeDetail = t(`home.mode.${workMode}.detail`, currentMode.detail);
+  const modePlaceholder = t(`home.mode.${workMode}.placeholder`, currentMode.placeholder);
+  const taskLabel = (task: string) => t(`home.quickTask.${task}`, task);
+  const outputBadgeLabel = (output: ExpectedOutput) => t(`home.outputBadge.${output}`, outputBadgeCopy[output]);
+  const outputTypeLabel = (output: ExpectedOutput) => t(`home.outputType.${output}`, outputTypeCopy[output]);
+  const colleagueBadgeLabel = (name: string) => name ? t(`home.colleagueBadge.${name}`, colleagueBadgeCopy(name)) : t('home.auto', 'Auto');
+  const routeReasonLabel = (task: string) => {
+    const colleagueName = inferColleagueName(task);
+    if (colleagueName === 'Data iWorker') return t('home.routeReason.data', 'Route reason: data/table/cleanup work needs structured data preparation and validation.');
+    if (colleagueName === 'Quality iWorker') return t('home.routeReason.quality', 'Route reason: quality/root-cause/corrective work needs issue classification and cause analysis.');
+    if (colleagueName === 'Operations iWorker') return t('home.routeReason.operations', 'Route reason: operations/production/handoff work needs execution context and delivery continuity.');
+    if (colleagueName === 'Office iWorker') return t('home.routeReason.office', 'Route reason: communication/report/document work needs clear written output and stakeholder-ready language.');
+    return t('home.routeReason.auto', 'Route reason: no specialized route matched, use automatic routing through iWorkerCenter.');
+  };
+  const collaborationHintLabel = (task: string) => {
+    const normalized = task.toLowerCase();
+    if (normalized.includes('peer') || normalized.includes('ask') || normalized.includes('decision')) return t('home.collaborationHint.peer', 'Center-mediated A2A discussion is recommended before finalizing the answer.');
+    if (normalized.includes('memory') || normalized.includes('policy')) return t('home.collaborationHint.memory', 'Use company, department, and personal memory from iWorkerCenter before writing new conclusions.');
+    if (normalized.includes('data') || normalized.includes('table') || normalized.includes('cleanup')) return t('home.collaborationHint.data', 'Keep raw local evidence temporary, then save reusable cleanup rules back to department memory.');
+    return t('home.collaborationHint.default', 'Start directly, then call peer iWorkers, cloud-approved skills, or human skills only when the task needs it.');
+  };
+  const laneText = {
+    center: { label: t('home.lane.center.label', laneCopy.center.label), detail: t('home.lane.center.detail', laneCopy.center.detail) },
+    human: { label: t('home.lane.human.label', laneCopy.human.label), detail: t('home.lane.human.detail', laneCopy.human.detail) },
+    autonomy: { label: t('home.lane.autonomy.label', laneCopy.autonomy.label), detail: t('home.lane.autonomy.detail', laneCopy.autonomy.detail) },
+  };
   const visibleChips = useMemo(() => {
     if (workMode === 'task') {
       return quickTasks;
@@ -422,11 +480,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const pendingPushes = openPushes.length;
   const centerEnabled = settings.center.enabled;
   const centerReady = Boolean(centerHealthStatus?.iWorkerReadiness?.ready);
-  const centerStatusLabel = centerEnabled ? (centerHealthStatus?.reachable ? (centerReady ? 'Center ready' : 'Center online') : 'Center configured') : 'Local body only';
+  const centerStatusLabel = centerEnabled ? (centerHealthStatus?.reachable ? (centerReady ? t('home.centerReady', 'Center ready') : t('home.centerOnline', 'Center online')) : t('home.centerConfigured', 'Center configured')) : t('home.localBodyOnly', 'Local body only');
   const readiness = centerHealthStatus?.iWorkerReadiness;
   const readinessLine = readiness
-    ? `${readiness.tenantCount} tenants / ${readiness.roleCount} roles / ${readiness.colleagueCount} iWorkers / ${readiness.localAccountCount} local accounts`
-    : 'Run Center check to load iWorker readiness.';
+    ? t('home.readinessLoaded', '{{tenants}} tenants / {{roles}} roles / {{workers}} iWorkers / {{accounts}} local accounts', { tenants: readiness.tenantCount, roles: readiness.roleCount, workers: readiness.colleagueCount, accounts: readiness.localAccountCount })
+    : t('home.readinessCheckPrompt', 'Run Center check to load iWorker readiness.');
   const installedToolCount = installedTools.skills.length + installedTools.mcpServers.length;
   const installedToolsSourceLabel = installedToolsSourceCopy(installedTools.source, installedTools.stale);
   const centerAvailabilityOk = !centerEnabled || (Boolean(centerHealthStatus?.reachable) && !centerHealthError);
@@ -435,18 +493,14 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const memorySourceLabel = memoryStatsSourceCopy(workerMemoryStats);
   const memoryAvailabilityOk = memoryStatsOperable(workerMemoryStats, centerEnabled) && !workerMemoryStatsError;
   const toolsAvailabilityOk = installedToolsOperable(installedTools, centerEnabled) && !installedToolsError;
+  const configAvailabilityOk = !centerEnabled || Boolean(configBundle.version || configBundle.source === 'cache' || configBundle.source === 'local' || configBundle.source === 'none');
   const watcherAvailabilityOk = !settings.center.goalWatchAutoHandleEnabled || (!goalWatchAutoStatus?.lastError && !goalPushError);
-  const availabilityChecks = [centerAvailabilityOk, runtimeAvailabilityOk, memoryAvailabilityOk, toolsAvailabilityOk, watcherAvailabilityOk];
+  const availabilityChecks = [centerAvailabilityOk, runtimeAvailabilityOk, memoryAvailabilityOk, toolsAvailabilityOk, configAvailabilityOk, watcherAvailabilityOk];
   const availabilityScore = availabilityChecks.filter(Boolean).length;
-  const availabilityState = !centerEnabled ? 'Local mode' : availabilityScore === availabilityChecks.length ? 'Ready' : availabilityScore >= 3 ? 'Degraded' : 'Needs repair';
-  const availabilityDetail = availabilityState === 'Ready'
-    ? 'Center work, memory, runtime heartbeat, and installed tools are available.'
-    : availabilityState === 'Degraded'
-      ? 'iWorker can keep working with cached or partial capabilities while Center is repaired.'
-      : availabilityState === 'Local mode'
-        ? 'Center is disabled; local execution stays available without shared memory or pushes.'
-        : 'Core registration or local capability state needs attention before business work.';
-  const memoryAuthority = centerEnabled ? 'iWorkerCenter' : 'Not registered';
+  const availabilityStateKey = !centerEnabled ? 'local' : availabilityScore === availabilityChecks.length ? 'ready' : availabilityScore >= 3 ? 'degraded' : 'repair';
+  const availabilityState = t(`home.availabilityState.${availabilityStateKey}`, availabilityStateKey);
+  const availabilityDetail = t(`home.availabilityDetail.${availabilityStateKey}`, 'Core registration or local capability state needs attention before business work.');
+  const memoryAuthority = centerEnabled ? 'iWorkerCenter' : t('home.notRegistered', 'Not registered');
   const previewTask = activeSuggestion || visibleChips[0] || '';
   const previewOutput = inferExpectedOutput(previewTask);
   const previewColleague = inferColleagueName(previewTask);
@@ -454,39 +508,41 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const interventionPush = openPushes.find(needsHumanIntervention) || goalPushes.find(needsHumanIntervention);
   const interventionPushActionable = Boolean(interventionPush?.eventId) && !isCachedPush(interventionPush as CenterGoalPush);
   const runningPush = goalPushAckingId ? goalPushes.find((item) => item.eventId === goalPushAckingId) : undefined;
-  const humanQueueLabel = pendingPushes > 0 ? `${pendingPushes} pending handoff${pendingPushes === 1 ? '' : 's'}` : 'Ready for coworker input';
-  const centerSnapshotState = cachedAgentInstances.length || cachedGoalPushes.length ? 'Cached snapshot' : centerHealthStatus?.reachable ? 'Live sync' : centerEnabled ? 'Configured' : 'Local only';
-  const centerSyncIssue = centerEnabled && Boolean(centerHealthError || agentInstancesError || goalPushError || workerMemoryStatsError || installedToolsError);
-  const hasCachedContinuity = cachedAgentInstances.length > 0 || cachedGoalPushes.length > 0 || Boolean(workerMemoryStats?.stale || installedTools.stale);
+  const humanQueueLabel = pendingPushes > 0 ? t('home.pendingHandoffs', '{{count}} pending handoff', { count: pendingPushes }) : t('home.readyForCoworkerInput', 'Ready for coworker input');
+  const centerSnapshotState = cachedAgentInstances.length || cachedGoalPushes.length ? t('home.cachedSnapshot', 'Cached snapshot') : centerHealthStatus?.reachable ? t('home.liveSync', 'Live sync') : centerEnabled ? t('home.configured', 'Configured') : t('home.localOnly', 'Local only');
+  const centerSyncIssue = centerEnabled && Boolean(centerHealthError || agentInstancesError || goalPushError || workerMemoryStatsError || installedToolsError || configBundleError || configBundle.source === 'unavailable');
+  const hasCachedContinuity = cachedAgentInstances.length > 0 || cachedGoalPushes.length > 0 || Boolean(workerMemoryStats?.stale || installedTools.stale || configBundle.stale);
   const showContinuityNotice = !centerEnabled || centerSyncIssue || hasCachedContinuity;
   const continuityTitle = !centerEnabled ? t('home.localContinuity', 'Local continuity active') : centerSyncIssue ? t('home.centerReconnecting', 'Center reconnecting') : t('home.cachedContinuity', 'Cached continuity active');
   const continuityDetail = !centerEnabled
-    ? 'This iWorker can keep local conversations, drafts, attachments, and task history running without Cloud or Center.'
+    ? t('home.localContinuityDetail', 'This iWorker can keep local conversations, drafts, attachments, and task history running without Cloud or Center.')
     : centerSyncIssue
-      ? 'Local work can continue. Cached Center snapshots stay visible, but Resume, Block, Run, memory sync, and tool changes wait for iWorkerCenter to reconnect.'
-      : 'Cached Center context is available for review. Live mutations still go through iWorkerCenter before they affect shared work.';
+      ? t('home.centerReconnectingDetail', 'Local work can continue. Cached Center snapshots stay visible, but Resume, Block, Run, memory sync, and tool changes wait for iWorkerCenter to reconnect.')
+      : t('home.cachedContinuityDetail', 'Cached Center context is available for review. Live mutations still go through iWorkerCenter before they affect shared work.');
   const continuitySignals = [
-    !centerEnabled ? 'Local mode' : '',
-    cachedAgentInstances.length ? `${cachedAgentInstances.length} cached runtime` : '',
-    cachedGoalPushes.length ? `${cachedGoalPushes.length} cached push${cachedGoalPushes.length === 1 ? '' : 'es'}` : '',
-    workerMemoryStats?.stale ? 'stale memory snapshot' : '',
-    installedTools.stale ? 'stale tools snapshot' : '',
-    centerSyncIssue ? 'reconnect required for Center writes' : '',
+    !centerEnabled ? t('home.localMode', 'Local mode') : '',
+    cachedAgentInstances.length ? t('home.cachedRuntimeCount', '{{count}} cached runtime', { count: cachedAgentInstances.length }) : '',
+    cachedGoalPushes.length ? t('home.cachedPushCount', '{{count}} cached push', { count: cachedGoalPushes.length }) : '',
+    workerMemoryStats?.stale ? t('home.staleMemorySnapshot', 'stale memory snapshot') : '',
+    installedTools.stale ? t('home.staleToolsSnapshot', 'stale tools snapshot') : '',
+    configBundle.stale ? t('home.staleConfigSnapshot', 'stale config snapshot') : '',
+    centerSyncIssue ? t('home.reconnectRequiredForCenterWrites', 'reconnect required for Center writes') : '',
   ].filter(Boolean);
   const primaryPushNeedsHuman = primaryPush ? needsHumanIntervention(primaryPush) : false;
   const primaryPushIsCached = primaryPush ? isCachedPush(primaryPush) : false;
   const primaryPushOpensTask = primaryPushNeedsHuman || primaryPushIsCached;
   const primaryRunDisabled = Boolean(primaryPush?.eventId) && goalPushAckingId === primaryPush.eventId;
-  const primaryActionLabel = primaryPush?.eventId ? (primaryPushIsCached ? 'Open cached task' : primaryPushNeedsHuman ? 'Open review task' : 'Run Center push') : 'Check inbox';
-  const toolSummaryLabel = installedToolCount > 0 ? `${installedTools.skills.length} skills / ${installedTools.mcpServers.length} MCP` : 'No tools enabled';
+  const primaryActionLabel = primaryPush?.eventId ? (primaryPushIsCached ? t('home.openCachedTask', 'Open cached task') : primaryPushNeedsHuman ? t('home.openReviewTask', 'Open review task') : t('home.runCenterPush', 'Run Center push')) : t('home.checkInbox', 'Check inbox');
+  const toolSummaryLabel = installedToolCount > 0 ? t('home.toolSummary', '{{skills}} skills / {{mcp}} MCP', { skills: installedTools.skills.length, mcp: installedTools.mcpServers.length }) : t('home.noToolsEnabled', 'No tools enabled');
+  const configSummaryLabel = configBundleLoading ? t('home.configLoading', 'Config syncing') : configBundle.version ? t('home.configBundleVersion', 'Config v{{version}}', { version: configBundle.version }) : t('home.noConfigBundle', 'No config bundle');
   const localActiveWork = submitting ? {
     id: 'local-submit',
-    title: selectedTask || draft.trim().split('\n')[0] || 'Direct human handoff',
-    owner: selectedColleagueName || 'Auto-routing iWorker',
+    title: selectedTask || draft.trim().split('\n')[0] || t('home.directHumanHandoff', 'Direct human handoff'),
+    owner: selectedColleagueName || t('home.autoRoutingWorker', 'Auto-routing iWorker'),
     status: 'running',
-    updatedAt: 'running now',
+    updatedAt: t('home.runningNow', 'running now'),
     kind: 'active' as WorkStatusKind,
-    source: 'Local run',
+    source: t('home.localRun', 'Local run'),
     onOpen: onOpenNewTask,
   } : null;
 
@@ -502,11 +558,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     ...goalPushes.slice(0, 2).map((push) => ({
       id: push.eventId || push.taskId,
       title: push.title || push.taskId,
-      owner: push.toRoleCode || push.toColleagueId || 'Center assigned',
+      owner: push.toRoleCode || push.toColleagueId || t('home.centerAssigned', 'Center assigned'),
       status: push.status || 'pushed',
-      updatedAt: goalPushAckingId === push.eventId ? 'running now' : formatPushAge(push.ageSeconds),
+      updatedAt: goalPushAckingId === push.eventId ? t('home.runningNow', 'running now') : formatPushAgeLabel(push.ageSeconds),
       kind: normalizePushStatus(push),
-      source: push.source === 'cache' || push.stale ? 'Cached Center push' : goalPushAckingId === push.eventId ? 'Center run' : 'Center push',
+      source: push.source === 'cache' || push.stale ? t('home.cachedCenterPush', 'Cached Center push') : goalPushAckingId === push.eventId ? t('home.centerRun', 'Center run') : t('home.centerPush', 'Center push'),
       onOpen: () => onOpenGoalPushTask(push),
     })),
     ...recentTasks.slice(0, 4).map((task) => ({
@@ -516,22 +572,22 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       status: task.status,
       updatedAt: task.updatedAt,
       kind: normalizeTaskStatus(task.status),
-      source: 'Task history',
+      source: t('home.taskHistory', 'Task history'),
       onOpen: () => onOpenRecentTask(task),
     })),
   ].slice(0, 5);
-  const currentWorkTitle = runningPush?.title || localActiveWork?.title || primaryPush?.title || activeTasks[0]?.title || (goalWatchAutoStatus?.running ? 'Goal watcher is handling pushed work' : 'No active task');
+  const currentWorkTitle = runningPush?.title || localActiveWork?.title || primaryPush?.title || activeTasks[0]?.title || (goalWatchAutoStatus?.running ? t('home.goalWatcherHandling', 'Goal watcher is handling pushed work') : t('home.noActiveTask', 'No active task'));
   const currentWorkDetail = runningPush
-    ? `${runningPush.reason || 'Center push'} / running now`
+    ? `${runningPush.reason || t('home.centerPush', 'Center push')} / ${t('home.runningNow', 'running now')}`
     : localActiveWork
-      ? `${localActiveWork.owner} / local execution`
+      ? `${localActiveWork.owner} / ${t('home.localExecution', 'local execution')}`
       : primaryPush
-        ? `${primaryPush.reason || 'Center push'} / ${formatPushAge(primaryPush.ageSeconds)} / ${runtimeSnapshotSourceCopy(primaryPush.source, primaryPush.stale)}`
+        ? `${primaryPush.reason || t('home.centerPush', 'Center push')} / ${formatPushAgeLabel(primaryPush.ageSeconds)} / ${runtimeSnapshotSourceCopy(primaryPush.source, primaryPush.stale)}`
         : activeTasks[0]
           ? `${activeTasks[0].owner} / ${activeTasks[0].updatedAt}`
           : goalWatchAutoStatus?.running
-            ? `Run ${goalWatchAutoStatus.currentRunId || goalWatchAutoStatus.runCount} / single-flight watcher`
-            : 'Ready for Center push or human handoff.';
+            ? t('home.watcherRunDetail', 'Run {{run}} / single-flight watcher', { run: goalWatchAutoStatus.currentRunId || goalWatchAutoStatus.runCount })
+            : t('home.readyForCenterPushOrHandoff', 'Ready for Center push or human handoff.');
   const appendDraft = (snippet: string) => {
     onDraftChange(draft.trim() ? `${draft.trim()}\n\n${snippet}` : snippet);
   };
@@ -568,12 +624,13 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       onRefreshAgentInstances(),
       onRefreshGoalPushes(),
       onRefreshInstalledTools(),
+      onRefreshConfigBundle(),
     ]);
-    const labels = ['Center registration', 'Memory authority', 'Agent runtime', 'Goal watcher queue', 'Installed tools'];
+    const labels = ['Center registration', 'Memory authority', 'Agent runtime', 'Goal watcher queue', 'Installed tools', 'Config bundle'];
     const baseChecks = checks.map((result, index) => ({
       label: labels[index],
-      ok: result.status === 'fulfilled' && (index === 0 ? Boolean((result.value as CenterHealthStatus | undefined)?.reachable) : index === 1 ? memoryStatsOperable((result.value as WorkerMemoryStats | undefined) || workerMemoryStats, centerEnabled) : index === 2 ? Array.isArray(result.value) : index === 3 ? Array.isArray(result.value) : index === 4 ? installedToolsOperable((result.value as CenterInstalledTools | undefined) || installedTools, centerEnabled) : true),
-      detail: result.status === 'fulfilled' ? (index === 0 ? (result.value as CenterHealthStatus | undefined)?.message || 'Checked' : index === 1 ? memoryStatsDetail((result.value as WorkerMemoryStats | undefined) || workerMemoryStats) : index === 2 ? (Array.isArray(result.value) ? `${result.value.length} runtime bodies checked` : agentInstancesError || 'Runtime sync failed') : index === 3 ? (Array.isArray(result.value) ? `${result.value.length} pushes checked` : goalPushError || 'Goal watcher sync failed') : index === 4 ? installedToolsDetail((result.value as CenterInstalledTools | undefined) || installedTools) : 'Checked') : result.reason instanceof Error ? result.reason.message : 'Check failed',
+      ok: result.status === 'fulfilled' && (index === 0 ? Boolean((result.value as CenterHealthStatus | undefined)?.reachable) : index === 1 ? memoryStatsOperable((result.value as WorkerMemoryStats | undefined) || workerMemoryStats, centerEnabled) : index === 2 ? Array.isArray(result.value) : index === 3 ? Array.isArray(result.value) : index === 4 ? installedToolsOperable((result.value as CenterInstalledTools | undefined) || installedTools, centerEnabled) : index === 5 ? Boolean(((result.value as CenterConfigBundle | undefined) || configBundle).version || ((result.value as CenterConfigBundle | undefined) || configBundle).source === 'none' || !centerEnabled) : true),
+      detail: result.status === 'fulfilled' ? (index === 0 ? (result.value as CenterHealthStatus | undefined)?.message || 'Checked' : index === 1 ? memoryStatsDetail((result.value as WorkerMemoryStats | undefined) || workerMemoryStats) : index === 2 ? (Array.isArray(result.value) ? `${result.value.length} runtime bodies checked` : agentInstancesError || 'Runtime sync failed') : index === 3 ? (Array.isArray(result.value) ? `${result.value.length} pushes checked` : goalPushError || 'Goal watcher sync failed') : index === 4 ? installedToolsDetail((result.value as CenterInstalledTools | undefined) || installedTools) : index === 5 ? configBundleDetail((result.value as CenterConfigBundle | undefined) || configBundle) : 'Checked') : result.reason instanceof Error ? result.reason.message : 'Check failed',
     }));
     const healthFromCheck = checks[0].status === 'fulfilled' ? checks[0].value : undefined;
     const nextChecks = [...baseChecks, ...readinessSelfChecks(healthFromCheck || centerHealthStatus)];
@@ -620,8 +677,9 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       `Memory count: ${workerMemoryStats?.total ?? 0}`,
       `Memory source: ${memoryStatsDetail(workerMemoryStats)}`,
       `Installed tools: ${installedToolsDetail(installedTools)}`,
+      `Config bundle: ${configBundleDetail(configBundle)}`,
       `Availability: ${availabilityState} (${availabilityScore}/${availabilityChecks.length})`,
-      `Known errors: ${[centerHealthError, workerMemoryStatsError, agentInstancesError, goalPushError, installedToolsError].filter(Boolean).join(' | ') || 'none reported by UI'}`,
+      `Known errors: ${[centerHealthError, workerMemoryStatsError, agentInstancesError, goalPushError, installedToolsError, configBundleError].filter(Boolean).join(' | ') || 'none reported by UI'}`,
       '',
       'Self-check results:',
       checkLines,
@@ -633,7 +691,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     onPickTask('iWorker readiness repair');
   };
   const handlePickTemplateTask = (task: string) => {
-    const template = `${buildTaskTemplate(task, workMode)}\n\n${inferRouteReason(task)}`;
+    const template = `${buildTaskTemplate(task, workMode)}\n\n${routeReasonLabel(task)}`;
     onDraftChange(draft.trim() ? `${draft.trim()}\n\n${template}` : template);
     onExpectedOutputChange(inferExpectedOutput(task));
     onPickTask(task, inferColleagueName(task));
@@ -653,50 +711,51 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
 
   return (
     <div className="iw-workbuddy-shell">
-      <section className="iw-workbuddy-stage" aria-label="iWorker workspace">
+      <section className="iw-workbuddy-stage" aria-label={t('home.workspaceKicker', 'iWorker workspace')}>
         <header className="iw-stage-topline">
           <div>
             <span className="iw-kicker">{t('home.workspaceKicker', 'iWorker workspace')}</span>
-            <h2 aria-label="Digital coworker workbench">{t('home.workbenchTitle', 'Digital coworker workbench')}</h2>
+            <h2 aria-label={t('home.workbenchTitle', 'Digital coworker workbench')}>{t('home.workbenchTitle', 'Digital coworker workbench')}</h2>
             <p>{t('home.workbenchDesc', 'Work from Center-assigned tasks, human handoffs, and local instructions while keeping status, memory, and tools visible.')}</p>
           </div>
-          <div className="iw-stage-snapshot" aria-label="runtime snapshot">
+          <div className="iw-stage-snapshot" aria-label={t('home.runtimeSnapshot', 'runtime snapshot')}>
             <span>{centerSnapshotState}</span>
             <strong>{settings.center.tenantId || 'default'} / {settings.center.departmentId || 'default'}</strong>
-            <small>{onlineAgents}/{Math.max(agentInstances.length, 1)} runtime bodies / {toolSummaryLabel}</small>
+            <small>{onlineAgents}/{Math.max(agentInstances.length, 1)} {t('home.runtimeBodies', 'runtime bodies')} / {toolSummaryLabel} / {configSummaryLabel}</small>
           </div>
         </header>
 
-        <section className="iw-ops-strip" aria-label="Operating summary">
+        <section className="iw-ops-strip" aria-label={t('home.operatingSummary', 'Operating summary')}>
           <div><span>{t('home.current', 'Current')}</span><strong>{currentWorkTitle}</strong></div>
-          <div><span>{t('home.inbox', 'Inbox')}</span><strong>{pendingPushes} push{pendingPushes === 1 ? '' : 'es'}</strong></div>
+          <div><span>{t('home.inbox', 'Inbox')}</span><strong>{t('home.pushCount', '{{count}} push', { count: pendingPushes })}</strong></div>
           <div><span>{t('home.availability', 'Availability')}</span><strong>{availabilityState}</strong></div>
-          <div><span>{t('home.memory', 'Memory')}</span><strong>{workerMemoryStats?.total ?? 0} items</strong></div>
+          <div><span>{t('home.memory', 'Memory')}</span><strong>{t('home.itemCount', '{{count}} items', { count: workerMemoryStats?.total ?? 0 })}</strong></div>
           <div><span>{t('home.tools', 'Tools')}</span><strong>{toolSummaryLabel}</strong></div>
+          <div><span>{t('home.config', 'Config')}</span><strong>{configSummaryLabel}</strong></div>
         </section>
 
         {showContinuityNotice ? (
-          <section className={"iw-continuity-banner " + (centerSyncIssue || hasCachedContinuity ? 'is-degraded' : 'is-local')} aria-label="Local continuity status">
+          <section className={"iw-continuity-banner " + (centerSyncIssue || hasCachedContinuity ? 'is-degraded' : 'is-local')} aria-label={t('home.localContinuityStatus', 'Local continuity status')}>
             <div>
               <span>{centerSnapshotState}</span>
               <strong>{continuityTitle}</strong>
               <p>{continuityDetail}</p>
             </div>
             <div className="iw-continuity-signals">
-              {(continuitySignals.length ? continuitySignals : ['ready']).slice(0, 4).map((item) => <span key={item}>{item}</span>)}
+              {(continuitySignals.length ? continuitySignals : [t('home.ready', 'Ready')]).slice(0, 4).map((item) => <span key={item}>{item}</span>)}
             </div>
           </section>
         ) : null}
 
         {interventionPush ? (
-          <section className={"iw-intervention-banner " + (isCachedPush(interventionPush) ? 'is-cached' : '')} aria-label="Human input needed" role="status">
+          <section className={"iw-intervention-banner " + (isCachedPush(interventionPush) ? 'is-cached' : '')} aria-label={t('home.humanInputNeeded', 'Human input needed')} role="status">
             <div className="iw-intervention-main">
               <span>{isCachedPush(interventionPush) ? t('home.cachedNotice', 'Cached notice') : t('home.humanInputNeeded', 'Human input needed')}</span>
               <strong>{interventionPush.title || interventionPush.taskId}</strong>
-              <p>{isCachedPush(interventionPush) ? t('home.cachedPushDetail', 'This Center push is from a cached snapshot. Reconnect iWorkerCenter before resuming, blocking, or auto-running it.') : (interventionPush.reason || interventionPush.status || 'The autonomous run needs a human decision.') + ' / ' + formatPushAge(interventionPush.ageSeconds)}</p>
+              <p>{isCachedPush(interventionPush) ? t('home.cachedPushDetail', 'This Center push is from a cached snapshot. Reconnect iWorkerCenter before resuming, blocking, or auto-running it.') : (interventionPush.reason || interventionPush.status || t('home.autonomousRunNeedsDecision', 'The autonomous run needs a human decision.')) + ' / ' + formatPushAgeLabel(interventionPush.ageSeconds)}</p>
             </div>
             <div className="iw-intervention-meta">
-              <span>{interventionPush.toRoleCode || interventionPush.toColleagueId || 'assigned iWorker'}</span>
+              <span>{interventionPush.toRoleCode || interventionPush.toColleagueId || t('home.assignedIWorker', 'assigned iWorker')}</span>
               <span>{runtimeSnapshotSourceCopy(interventionPush.source, interventionPush.stale)}</span>
             </div>
             <div className="iw-intervention-actions">
@@ -709,11 +768,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           </section>
         ) : null}
 
-        <section className="iw-command-rail" aria-label="Command inbox lanes">
+        <section className="iw-command-rail" aria-label={t('home.commandInboxLanes', 'Command inbox lanes')}>
           <article className="iw-command-card is-center">
-            <span>{laneCopy.center.label}</span>
-            <strong>{primaryPush?.title || 'No Center push waiting'}</strong>
-            <p>{primaryPush ? `${primaryPush.reason || 'goal push'} / ${formatPushAge(primaryPush.ageSeconds)}` : laneCopy.center.detail}</p>
+            <span>{laneText.center.label}</span>
+            <strong>{primaryPush?.title || t('home.noCenterPushWaiting', 'No Center push waiting')}</strong>
+            <p>{primaryPush ? `${primaryPush.reason || t('home.goalPush', 'goal push')} / ${formatPushAgeLabel(primaryPush.ageSeconds)}` : laneText.center.detail}</p>
             <div className="iw-command-actions">
               {primaryPush?.eventId ? (
                 <>
@@ -721,15 +780,15 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                   <button type="button" disabled={goalPushAckingId === primaryPush.eventId} onClick={() => handleHumanHandoff(primaryPush)}>{t('home.askHuman', 'Ask human')}</button>
                 </>
               ) : (
-                <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? 'Syncing' : primaryActionLabel}</button>
+                <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? t('home.syncing', 'Syncing') : primaryActionLabel}</button>
               )}
             </div>
           </article>
 
           <article className="iw-command-card">
-            <span>{laneCopy.human.label}</span>
+            <span>{laneText.human.label}</span>
             <strong>{humanQueueLabel}</strong>
-            <p>{laneCopy.human.detail}</p>
+            <p>{laneText.human.detail}</p>
             <div className="iw-command-actions">
               <button type="button" onClick={() => handleHumanHandoff()}>{t('home.startHandoff', 'Start handoff')}</button>
               <button type="button" onClick={() => handleComposerTool('mention')}>{t('home.mention', 'Mention')}</button>
@@ -737,12 +796,12 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           </article>
 
           <article className="iw-command-card">
-            <span>{laneCopy.autonomy.label}</span>
-            <strong>{goalWatchAutoStatus?.running ? 'Handling push now' : `${onlineAgents} runtime body${onlineAgents === 1 ? '' : 'ies'} online`}</strong>
-            <p>{goalWatchAutoStatus?.lastError || laneCopy.autonomy.detail}</p>
+            <span>{laneText.autonomy.label}</span>
+            <strong>{goalWatchAutoStatus?.running ? t('home.handlingPushNow', 'Handling push now') : t('home.runtimeBodiesOnline', '{{count}} runtime body online', { count: onlineAgents })}</strong>
+            <p>{goalWatchAutoStatus?.lastError || laneText.autonomy.detail}</p>
             <div className="iw-command-actions">
-              <button type="button" onClick={() => { void runSelfCheck(); }}>Self-check</button>
-              <button type="button" onClick={() => { void onRefreshAgentInstances(); }}>Heartbeat</button>
+              <button type="button" onClick={() => { void runSelfCheck(); }}>{t('home.selfCheck', 'Self-check')}</button>
+              <button type="button" onClick={() => { void onRefreshAgentInstances(); }}>{t('home.heartbeat', 'Heartbeat')}</button>
             </div>
           </article>
         </section>
@@ -774,11 +833,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             ))}
           </div>
         </section>
-        <section className="iw-workbench-panel" aria-label="Work controls">
+        <section className="iw-workbench-panel" aria-label={t('home.workControls', 'Work controls')}>
           <div className="iw-agent-activity-card">
             <span>{t('home.activePartner', 'Active partner')}</span>
             <strong>{selectedColleagueName || t('home.autoRoutingWorker', 'Auto-routing iWorker')}</strong>
-            <p>{selectedTask || 'Waiting for Center push, coworker handoff, or a direct instruction, then routing to the right worker, skill, or human approval.'}</p>
+            <p>{selectedTask || t('home.waitingForInputDetail', 'Waiting for Center push, coworker handoff, or a direct instruction, then routing to the right worker, skill, or human approval.')}</p>
           </div>
           <div className={`iw-self-check-card is-${selfCheckStatus.state}`} aria-live="polite">
             <div className="iw-self-check-head">
@@ -803,13 +862,13 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <div className="iw-workbench-notes">
             <span>{t('home.operatingScope', 'Operating scope')}</span>
             <strong>{centerEnabled ? t('home.centerGoverned', 'Center governed') : t('home.localMode', 'Local mode')}</strong>
-            <p>{centerEnabled ? 'Tasks, memory, skills, and MCP visibility are governed by iWorkerCenter. Cloud stays outside business execution.' : 'Local execution is available; Center memory, pushes, and shared tools are disabled.'}</p>
+            <p>{centerEnabled ? t('home.centerGovernedDetail', 'Tasks, memory, skills, and MCP visibility are governed by iWorkerCenter. Cloud stays outside business execution.') : t('home.localModeDetail', 'Local execution is available; Center memory, pushes, and shared tools are disabled.')}</p>
           </div>
         </section>
         <div className="iw-mode-pill" role="tablist" aria-label={t('home.workMode', 'Work mode')}>
           {(Object.keys(modeCopy) as WorkMode[]).map((mode) => (
             <button key={mode} type="button" role="tab" aria-selected={workMode === mode} className={workMode === mode ? 'is-active' : ''} onClick={() => setWorkMode(mode)}>
-              {modeCopy[mode].label}
+              {t(`home.mode.${mode}.label`, modeCopy[mode].label)}
             </button>
           ))}
         </div>
@@ -819,10 +878,10 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             const outputType = inferExpectedOutput(task);
             const colleagueName = inferColleagueName(task);
             return (
-              <button key={task} type="button" aria-label={task} className={previewTask === task ? 'is-previewed' : ''} onMouseEnter={() => setActiveSuggestion(task)} onFocus={() => setActiveSuggestion(task)} onClick={() => handlePickTemplateTask(task)}>
-                <span>{task}</span>
-                <small aria-hidden="true">{outputBadgeCopy[outputType]}</small>
-                <small aria-hidden="true" className="iw-route-badge">{colleagueBadgeCopy(colleagueName)}</small>
+              <button key={task} type="button" aria-label={taskLabel(task)} className={previewTask === task ? 'is-previewed' : ''} onMouseEnter={() => setActiveSuggestion(task)} onFocus={() => setActiveSuggestion(task)} onClick={() => handlePickTemplateTask(task)}>
+                <span>{taskLabel(task)}</span>
+                <small aria-hidden="true">{outputBadgeLabel(outputType)}</small>
+                <small aria-hidden="true" className="iw-route-badge">{colleagueBadgeLabel(colleagueName)}</small>
               </button>
             );
           })}
@@ -832,13 +891,13 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <section className="iw-route-preview-card" aria-label={t('home.routePreview', 'Route preview')}>
             <div>
               <span>{t('home.routePreview', 'Route preview')}</span>
-              <strong>{previewTask}</strong>
-              <p>{inferRouteReason(previewTask)}</p>
+              <strong>{taskLabel(previewTask)}</strong>
+              <p>{routeReasonLabel(previewTask)}</p>
             </div>
             <div className="iw-route-preview-meta">
-              <span>{colleagueBadgeCopy(previewColleague)} route</span>
-              <span>{outputTypeCopy[previewOutput]}</span>
-              <span>{buildCollaborationHint(previewTask)}</span>
+              <span>{t('home.routeBadge', '{{route}} route', { route: colleagueBadgeLabel(previewColleague) })}</span>
+              <span>{outputTypeLabel(previewOutput)}</span>
+              <span>{collaborationHintLabel(previewTask)}</span>
             </div>
             <button type="button" onClick={() => handlePickTemplateTask(previewTask)}>{t('home.useThisRoute', 'Use this route')}</button>
           </section>
@@ -848,40 +907,40 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={currentMode.placeholder}
+            placeholder={modePlaceholder}
             rows={3}
           />
           <div className="iw-composer-toolbar">
             <div className="iw-tool-group" aria-label={t('home.composerTools', 'Composer tools')}>
-              <button type="button" title="Mention a worker or human skill" onClick={() => handleComposerTool('mention')}>@</button>
-              <button type="button" title="Attach local evidence" onClick={() => handleComposerTool('attach')}>Attach</button>
-              <button type="button" title="Select skill" onClick={() => handleComposerTool('skill')}>Skill</button>
-              <button type="button" title="Use Center memory" onClick={() => handleComposerTool('memory')}>Memory</button>
+              <button type="button" title={t('home.toolTitle.mention', 'Mention a worker or human skill')} onClick={() => handleComposerTool('mention')}>@</button>
+              <button type="button" title={t('home.toolTitle.attach', 'Attach local evidence')} onClick={() => handleComposerTool('attach')}>{t('home.attach', 'Attach')}</button>
+              <button type="button" title={t('home.toolTitle.skill', 'Select skill')} onClick={() => handleComposerTool('skill')}>{t('home.skill', 'Skill')}</button>
+              <button type="button" title={t('home.toolTitle.memory', 'Use Center memory')} onClick={() => handleComposerTool('memory')}>{t('home.memory', 'Memory')}</button>
             </div>
             <div className="iw-mode-summary">
-              <strong>{currentMode.title}</strong>
-              <span>{currentMode.detail}</span>
+              <strong>{modeTitle}</strong>
+              <span>{modeDetail}</span>
             </div>
-            <button type="button" className="iw-send-button" onClick={handleSubmit} aria-label="Open task workspace">{t('home.send', 'Send')}</button>
+            <button type="button" className="iw-send-button" onClick={handleSubmit} aria-label={t('home.openTaskWorkspace', 'Open task workspace')}>{t('home.send', 'Send')}</button>
           </div>
         </div>
       </section>
 
-      <aside className="iw-workbuddy-inspector" aria-label="iWorker operating status">
+      <aside className="iw-workbuddy-inspector" aria-label={t('home.operatingStatusAria', 'iWorker operating status')}>
 
         <section className="iw-inspector-card iw-availability-card">
           <div className="iw-inspector-title-row">
             <h3>{t('home.availability', 'Availability')}</h3>
-            <span className={availabilityState === 'Ready' ? 'iw-watch-pill is-running' : 'iw-watch-pill'}>{availabilityState}</span>
+            <span className={availabilityStateKey === 'ready' ? 'iw-watch-pill is-running' : 'iw-watch-pill'}>{availabilityState}</span>
           </div>
-          <strong>{availabilityScore}/{availabilityChecks.length} operating signals ready</strong>
+          <strong>{t('home.operatingSignalsReady', '{{ready}}/{{total}} operating signals ready', { ready: availabilityScore, total: availabilityChecks.length })}</strong>
           <p>{availabilityDetail}</p>
           <div className="iw-availability-grid">
-            <span className={centerAvailabilityOk ? 'is-ok' : 'is-warn'}>Center</span>
-            <span className={runtimeAvailabilityOk ? 'is-ok' : 'is-warn'}>Runtime</span>
-            <span className={memoryAvailabilityOk ? 'is-ok' : 'is-warn'}>Memory</span>
-            <span className={toolsAvailabilityOk ? 'is-ok' : 'is-warn'}>Tools</span>
-            <span className={watcherAvailabilityOk ? 'is-ok' : 'is-warn'}>Watcher</span>
+            <span className={centerAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.center', 'Center')}</span>
+            <span className={runtimeAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.runtime', 'Runtime')}</span>
+            <span className={memoryAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.memory', 'Memory')}</span>
+            <span className={toolsAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.tools', 'Tools')}</span>
+            <span className={watcherAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.watcher', 'Watcher')}</span>
           </div>
         </section>
 
@@ -890,8 +949,8 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <span>{t('home.centerRuntime', 'Center runtime')}</span>
             <button type="button" onClick={() => { void onRefreshAgentInstances(); }} disabled={agentInstancesLoading}>{agentInstancesLoading ? t('home.pinging', 'Pinging') : t('home.heartbeat', 'Heartbeat')}</button>
           </div>
-          <strong>{onlineAgents} online agent instance{onlineAgents === 1 ? '' : 's'}</strong>
-          <p>{cachedAgentInstances.length ? `${cachedAgentInstances.length} cached runtime snapshot${cachedAgentInstances.length === 1 ? '' : 's'} available while Center reconnects.` : liveAgentInstances.length ? 'Live Center runtime snapshot is available.' : 'Multiple agent instances can share Center memory while this desktop stays a replaceable body.'}</p>
+          <strong>{t('home.onlineAgentInstances', '{{count}} online agent instance', { count: onlineAgents })}</strong>
+          <p>{cachedAgentInstances.length ? t('home.cachedRuntimeSnapshotsAvailable', '{{count}} cached runtime snapshot available while Center reconnects.', { count: cachedAgentInstances.length }) : liveAgentInstances.length ? t('home.liveRuntimeSnapshotAvailable', 'Live Center runtime snapshot is available.') : t('home.multiAgentShareMemoryDetail', 'Multiple agent instances can share Center memory while this desktop stays a replaceable body.')}</p>
           {agentInstancesError ? <p className="iw-panel-error">{agentInstancesError}</p> : null}
         </section>
 
@@ -930,7 +989,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <div><span>{t('home.department', 'Department')}</span><strong>{formatScopeCount(workerMemoryStats, 'department')}</strong></div>
             <div><span>{t('home.personal', 'Personal')}</span><strong>{formatScopeCount(workerMemoryStats, 'personal')}</strong></div>
           </div>
-          {workerMemoryStats?.cachedAt ? <p>Last memory snapshot: {workerMemoryStats.cachedAt}</p> : null}
+          {workerMemoryStats?.cachedAt ? <p>{t('home.lastMemorySnapshot', 'Last memory snapshot')}: {workerMemoryStats.cachedAt}</p> : null}
           {workerMemoryStatsError ? <p className="iw-panel-error">{workerMemoryStatsError}</p> : null}
         </section>
 
@@ -940,12 +999,12 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <article>
               <span>{t('home.body', 'Body')}</span>
               <strong>{t('home.localContainer', 'Local container')}</strong>
-              <p>This computer provides screen, files, browser, and tool access.</p>
+              <p>{t('home.bodyModelDetail', 'This computer provides screen, files, browser, and tool access.')}</p>
             </article>
             <article>
               <span>{t('home.memory', 'Memory')}</span>
               <strong>{t('home.centerOwned', 'Center owned')}</strong>
-              <p>Company, department, and personal memory persist in iWorkerCenter.</p>
+              <p>{t('home.memoryModelDetail', 'Company, department, and personal memory persist in iWorkerCenter.')}</p>
             </article>
             <article>
               <span>{t('home.people', 'People')}</span>
@@ -964,7 +1023,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <div><strong>{installedTools.skills.length}</strong><span>{t('home.skills', 'Skills')}</span></div>
             <div><strong>{installedTools.mcpServers.length}</strong><span>MCP</span></div>
           </div>
-          <p>{installedToolsSourceLabel}{installedTools.cachedAt ? ` / cached ${installedTools.cachedAt}` : ''}</p>
+          <p>{installedToolsSourceLabel}{installedTools.cachedAt ? ` / ${t('home.cachedAt', 'cached')} ${installedTools.cachedAt}` : ''}</p>
           {installedToolsError ? <p className="iw-panel-error">{installedToolsError}</p> : null}
           <div className="iw-installed-tool-list">
             {[...installedTools.skills.map((skill) => ({ key: `skill-${skill.capabilityId}`, kind: 'Skill', name: skill.name, detail: `${skill.source || 'iWorkerCenter'} / ${skill.riskLevel || 'low'}` })), ...installedTools.mcpServers.map((server) => ({ key: `mcp-${server.id}`, kind: 'MCP', name: server.name, detail: `${server.serverType || 'mcp'} / ${server.departmentId || 'all'} / ${server.riskLevel || 'medium'}` }))].slice(0, 4).map((tool) => (
@@ -985,8 +1044,8 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <div className="iw-quick-action-list">
             {quickActions.map((item) => (
               <button key={item.title} type="button" onClick={() => handleQuickAction(item.id)}>
-                <strong>{item.title}</strong>
-                <span>{item.detail}</span>
+                <strong>{t(`home.quickAction.${item.id}.title`, item.title)}</strong>
+                <span>{t(`home.quickAction.${item.id}.detail`, item.detail)}</span>
               </button>
             ))}
           </div>
@@ -995,15 +1054,15 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         <section className="iw-inspector-card">
           <div className="iw-inspector-title-row">
             <h3>{t('home.goalWatcher', 'Goal watcher')}</h3>
-            <span className={goalWatchAutoStatus?.running ? 'iw-watch-pill is-running' : 'iw-watch-pill'}>{goalWatchAutoStatus?.running ? 'Running' : 'Single-flight'}</span>
+            <span className={goalWatchAutoStatus?.running ? 'iw-watch-pill is-running' : 'iw-watch-pill'}>{goalWatchAutoStatus?.running ? t('home.running', 'Running') : t('home.singleFlight', 'Single-flight')}</span>
           </div>
           <div className="iw-watch-grid">
-            <div><strong>{goalWatchAutoStatus?.runCount || 0}</strong><span>runs</span></div>
-            <div><strong>{goalWatchAutoStatus?.skipCount || 0}</strong><span>skips</span></div>
-            <div><strong>{goalWatchAutoStatus?.timeoutCancelCount || 0}</strong><span>timeouts</span></div>
-            <div><strong>{goalWatchAutoStatus?.lastHandledCount || 0}</strong><span>handled</span></div>
+            <div><strong>{goalWatchAutoStatus?.runCount || 0}</strong><span>{t('home.runs', 'runs')}</span></div>
+            <div><strong>{goalWatchAutoStatus?.skipCount || 0}</strong><span>{t('home.skips', 'skips')}</span></div>
+            <div><strong>{goalWatchAutoStatus?.timeoutCancelCount || 0}</strong><span>{t('home.timeouts', 'timeouts')}</span></div>
+            <div><strong>{goalWatchAutoStatus?.lastHandledCount || 0}</strong><span>{t('home.handled', 'handled')}</span></div>
           </div>
-          <p className="iw-watch-note">Interval {goalWatchAutoStatus?.intervalSeconds || 30}s, max run {goalWatchAutoStatus?.maxDurationSeconds || 120}s.</p>
+          <p className="iw-watch-note">{t('home.watchNote', 'Interval {{interval}}s, max run {{max}}s.', { interval: goalWatchAutoStatus?.intervalSeconds || 30, max: goalWatchAutoStatus?.maxDurationSeconds || 120 })}</p>
           {goalWatchAutoStatus?.lastError ? <p className="iw-panel-error">{goalWatchAutoStatus.lastError}</p> : null}
         </section>
 
@@ -1018,13 +1077,13 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
               <div className="iw-goal-empty">{t('home.noPush', 'No Center push is waiting. The inbox is clear.')}</div>
             ) : goalPushes.slice(0, 3).map((push) => (
               <article key={push.eventId || push.taskId} className="iw-goal-card">
-                <span>{push.reason || 'goal_push'} / {Math.max(1, Math.round(push.ageSeconds / 60))}m / {runtimeSnapshotSourceCopy(push.source, push.stale)}</span>
+                <span>{push.reason || t('home.goalPush', 'goal_push')} / {Math.max(1, Math.round(push.ageSeconds / 60))}m / {runtimeSnapshotSourceCopy(push.source, push.stale)}</span>
                 {push.recommendedAction ? <span className="iw-goal-action-pill">{push.recommendedAction}</span> : null}
                 <strong>{push.title || push.taskId}</strong>
-                <p>{push.status} / {push.toRoleCode || push.toColleagueId || 'assigned iWorker'}{push.cachedAt ? ` / ${runtimeSnapshotDetail(push.source, push.cachedAt, push.stale)}` : ''}</p>
+                <p>{push.status} / {push.toRoleCode || push.toColleagueId || t('home.assignedIWorker', 'assigned iWorker')}{push.cachedAt ? ` / ${runtimeSnapshotDetail(push.source, push.cachedAt, push.stale)}` : ''}</p>
                 {push.eventId ? (
                   <div className="iw-goal-actions">
-                    <button type="button" onClick={() => onOpenGoalPushTask(push)}>Open task</button>
+                    <button type="button" onClick={() => onOpenGoalPushTask(push)}>{t('home.openTask', 'Open task')}</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push) || needsHumanIntervention(push)} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>{t('home.run', 'Run')}</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>{t('home.resume', 'Resume')}</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>{t('home.block', 'Block')}</button>
@@ -1058,11 +1117,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                   <strong>{formatRuntimeName(instance)}</strong>
                   <span className={instance.effectiveStatus === 'online' ? 'is-online' : instance.effectiveStatus === 'offline' ? 'is-offline' : ''}>{instance.effectiveStatus || instance.status}</span>
                 </div>
-                <p>{instance.memoryAuthority || 'iWorkerCenter'} / {instance.localCacheMode || 'cache_only'} / {instance.heartbeatAgeSeconds || 0}s ago / {runtimeSnapshotDetail(instance.source, instance.cachedAt, instance.stale)}</p>
+                <p>{instance.memoryAuthority || 'iWorkerCenter'} / {instance.localCacheMode || 'cache_only'} / {t('home.secondsAgo', '{{seconds}}s ago', { seconds: instance.heartbeatAgeSeconds || 0 })} / {runtimeSnapshotDetail(instance.source, instance.cachedAt, instance.stale)}</p>
                 {instance.workStatus ? (
-                  <p>{instance.workStatus.currentTask || 'No active task'} / active {instance.workStatus.activeCount} / done {instance.workStatus.completedCount} / review {instance.workStatus.reviewCount} / blocked {instance.workStatus.blockedCount}</p>
+                  <p>{instance.workStatus.currentTask || t('home.noActiveTask', 'No active task')} / {t('home.active', 'Active')} {instance.workStatus.activeCount} / {t('home.completed', 'Completed')} {instance.workStatus.completedCount} / {t('home.review', 'Review')} {instance.workStatus.reviewCount} / {t('home.blocked', 'Blocked')} {instance.workStatus.blockedCount}</p>
                 ) : null}
-                <small>{instance.hostId || 'local body'} / {instance.capabilities.slice(0, 3).join(', ') || 'base tools'}</small>
+                <small>{instance.hostId || t('home.localBody', 'local body')} / {instance.capabilities.slice(0, 3).join(', ') || t('home.baseTools', 'base tools')}</small>
               </article>
             ))}
           </div>

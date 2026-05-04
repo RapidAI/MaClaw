@@ -1110,13 +1110,11 @@ const rolePrefixPattern = /^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|�
  * Strip hallucinated role prefixes from LLM output text.
  * Frontend safety net — catches anything the backend streaming filter missed.
  *
- * Case 1: Prefix at the start of text → strip prefix, keep content after it.
- * Case 2: Prefix in the middle → remove the Browser: line only, keep the rest.
- *         Unlike the backend stripRolePrefixHallucination (which truncates at
- *         the prefix — correct for single-LLM-call output where content after
- *         is a duplicate), this frontend version operates on streamedContent
- *         which accumulates across multiple agent loop iterations. Content
- *         after Browser: is from subsequent iterations, not a duplicate.
+ * Case 1: Prefix at the start of text -> strip prefix, keep content after it.
+ * Case 2: Prefix in the middle -> truncate at the role-prefixed tail.
+ *         This mirrors the backend post-processor and the stream filter:
+ *         once valid content has been emitted, a later Browser:/Tool: line is
+ *         treated as hallucinated continuation output, not user-facing text.
  *
  * Code blocks (``` fenced) are excluded to avoid false positives.
  */
@@ -1161,16 +1159,9 @@ function stripRolePrefixFrontend(text: string): string {
                     // Case 1: prefix at start — strip it, keep everything after.
                     return text.slice(prefixEnd).trimStart();
                 }
-                // Case 2: prefix in middle — remove the Browser: line only.
-                // Find the end of the line containing the prefix.
-                let lineEnd = text.indexOf('\n', prefixEnd);
-                if (lineEnd < 0) {
-                    // Browser: line is the last line — just keep content before.
-                    return before;
-                }
-                // Splice out the Browser: line, keep before + after.
-                const after = text.slice(lineEnd + 1);
-                return before + '\n' + after;
+                // Case 2: prefix in middle. Match backend behavior and drop
+                // the role-prefixed tail instead of keeping a duplicate block.
+                return before;
             }
         }
         absOffset += part.text.length;

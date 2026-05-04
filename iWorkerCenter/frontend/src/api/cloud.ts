@@ -41,6 +41,14 @@ export type CloudStatus = {
   control_plane: string;
   business_scope: string;
   license?: CloudLicense;
+  compute?: CloudComputeStatus;
+};
+
+export type CloudComputeStatus = {
+  provider_count: number;
+  compute_permission: boolean;
+  force_sync: boolean;
+  error?: string;
 };
 
 export type CloudLicense = {

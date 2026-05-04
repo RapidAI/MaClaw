@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -208,7 +209,7 @@ func TestHandleIMMessage_TaskContextSwitchSignalsClearUI(t *testing.T) {
 	}
 }
 
-func TestHandleIMMessage_PlainTextReplyRestoresBoundQuestionContext(t *testing.T) {
+func TestHandleIMMessage_PlainTextReplyUsesCurrentBoundQuestionContext(t *testing.T) {
 	var requestBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -241,23 +242,320 @@ func TestHandleIMMessage_PlainTextReplyRestoresBoundQuestionContext(t *testing.T
 	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) {
 		return question == "Which model should I deploy? I recommend qwen-server-model." && answer != "", nil
 	}
-	h.memory.Save(userID, []agent.ConversationEntry{
-		{Role: "user", Content: "omniroute stale current task"},
-		{Role: "assistant", Content: "continuing OmniRoute update"},
-	})
+	h.memory.Save(userID, cloneConversationEntries(boundHistory))
 
 	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u6309\u4f60\u7684\u5efa\u8bae\u90e8\u7f72"})
 	if resp == nil || resp.Error != "" {
 		t.Fatalf("expected successful response, got %+v", resp)
 	}
 	if !strings.Contains(requestBody, "install-server-task") {
-		t.Fatalf("expected restored server-install context in LLM request, got %s", requestBody)
-	}
-	if strings.Contains(requestBody, "omniroute stale current task") {
-		t.Fatalf("stale OmniRoute context leaked into LLM request: %s", requestBody)
+		t.Fatalf("expected current server-install context in LLM request, got %s", requestBody)
 	}
 }
 
+func TestHandleIMMessage_PlainTextReplyAcceptsCurrentHistoryExtension(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "pending question") && !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"deploying recommended model"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-pending-text-extended"
+	boundHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "install-server-task: install an inference server"},
+		{Role: "assistant", Content: "Which model should I deploy? I recommend qwen-server-model."},
+	}
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question:  "Which model should I deploy? I recommend qwen-server-model.",
+		History:   cloneConversationEntries(boundHistory),
+		Timestamp: time.Now(),
+	})
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) { return true, nil }
+	currentHistory := append(cloneConversationEntries(boundHistory), agent.ConversationEntry{Role: "tool", Content: "post-question tool note"})
+	h.memory.Save(userID, currentHistory)
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u6309\u4f60\u7684\u5efa\u8bae\u90e8\u7f72"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if resp.ClearUI {
+		t.Fatalf("current history extension should not be restored or clear UI, got %+v", resp)
+	}
+	if !strings.Contains(requestBody, "install-server-task") || !strings.Contains(requestBody, "post-question tool note") {
+		t.Fatalf("expected extended current context in LLM request, got %s", requestBody)
+	}
+}
+func TestHandleIMMessage_PendingReplyRejectsPrefixWithLaterUserTask(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "pending question") && !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"running current game"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-pending-prefix-later-user"
+	boundHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "server-task: check A100 status"},
+		{Role: "assistant", Content: "Should I check the A100 server now?"},
+	}
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question:  "Should I check the A100 server now?",
+		History:   cloneConversationEntries(boundHistory),
+		Timestamp: time.Now(),
+	})
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) { return true, nil }
+	currentHistory := append(cloneConversationEntries(boundHistory),
+		agent.ConversationEntry{Role: "user", Content: "game-task: create snake2 in D:\\workprj\\snake2"},
+		agent.ConversationEntry{Role: "assistant", Content: "Run it with .\\build\\Release\\snake2.exe"},
+	)
+	h.memory.Save(userID, currentHistory)
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u8fd0\u884c\u4e0b"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if strings.Contains(requestBody, "Should I check the A100 server now?") {
+		t.Fatalf("prefix stale pending reply leaked into LLM request: %s", requestBody)
+	}
+	if !strings.Contains(requestBody, "game-task: create snake2") || !strings.Contains(requestBody, "\u8fd0\u884c\u4e0b") {
+		t.Fatalf("expected current game context and run request, got %s", requestBody)
+	}
+}
+func TestHandleIMMessage_StalePlainTextReplyDoesNotRestoreOldTask(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "pending question") && !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"running current game"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-stale-pending-text"
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question: "Should I check the A100 server now?",
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "server-task: check A100 status"},
+			{Role: "assistant", Content: "Should I check the A100 server now?"},
+		},
+		Timestamp: time.Now(),
+	})
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) { return true, nil }
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "game-task: create snake2 in D:\\workprj\\snake2"},
+		{Role: "assistant", Content: "Run it with .\\build\\Release\\snake2.exe"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u8fd0\u884c\u4e0b"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if strings.Contains(requestBody, "server-task: check A100 status") {
+		t.Fatalf("stale server task leaked into LLM request: %s", requestBody)
+	}
+	if !strings.Contains(requestBody, "game-task: create snake2") || !strings.Contains(requestBody, "\u8fd0\u884c\u4e0b") {
+		t.Fatalf("expected current game context and run request, got %s", requestBody)
+	}
+}
+
+func TestHandleIMMessage_StaleAskUserReplyDoesNotForceContinueOldTask(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"running current game"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-stale-ask-user"
+	h.pendingAskUser.Store(userID, &pendingAskUserState{
+		Question: "Check A100 server status?",
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "server-task: check A100 status"},
+			{Role: "assistant", Content: "Check A100 server status?"},
+		},
+		Timestamp: time.Now(),
+	})
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "game-task: create snake2 in D:\\workprj\\snake2"},
+		{Role: "assistant", Content: "Run it with .\\build\\Release\\snake2.exe"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u8fd0\u884c\u4e0b"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if strings.Contains(requestBody, "Check A100 server status?") || strings.Contains(requestBody, "server-task: check A100 status") {
+		t.Fatalf("stale ask_user context leaked into LLM request: %s", requestBody)
+	}
+	if !strings.Contains(requestBody, "game-task: create snake2") || !strings.Contains(requestBody, "\u8fd0\u884c\u4e0b") {
+		t.Fatalf("expected current game context and run request, got %s", requestBody)
+	}
+}
+
+func TestHandleIMMessage_UnboundPlainTextReplyDoesNotRestoreOldTask(t *testing.T) {
+	var requestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), "pending question") && !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"running current game"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-unbound-pending-text"
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question:  "Should I check the A100 server now?",
+		Timestamp: time.Now(),
+	})
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) { return true, nil }
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "game-task: create snake2 in D:\\workprj\\snake2"},
+		{Role: "assistant", Content: "Run it with .\\build\\Release\\snake2.exe"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u8fd0\u884c\u4e0b"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if strings.Contains(requestBody, "Should I check the A100 server now?") {
+		t.Fatalf("unbound pending reply leaked into LLM request: %s", requestBody)
+	}
+	if !strings.Contains(requestBody, "game-task: create snake2") || !strings.Contains(requestBody, "\u8fd0\u884c\u4e0b") {
+		t.Fatalf("expected current game context and run request, got %s", requestBody)
+	}
+}
+
+func TestHandleIMMessage_UnboundAskUserDoesNotSuppressShortChitChatWithCurrentTask(t *testing.T) {
+	var llmCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmCalled.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"should not be called"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-unbound-ask-user-chitchat"
+	h.pendingAskUser.Store(userID, &pendingAskUserState{
+		Question:  "Check A100 server status?",
+		Timestamp: time.Now(),
+	})
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "game-task: create snake2 in D:\\workprj\\snake2"},
+		{Role: "assistant", Content: "Run it with .\\build\\Release\\snake2.exe"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u6ca1\u4e8b", Lang: "zh"})
+	if resp == nil || resp.Error != "" || resp.Text == "" {
+		t.Fatalf("expected direct chit-chat response, got %+v", resp)
+	}
+	if llmCalled.Load() {
+		t.Fatal("unbound stale ask_user should not suppress short chit-chat and call LLM")
+	}
+}
+func TestHandleIMMessage_StaleAskUserDoesNotSuppressShortChitChat(t *testing.T) {
+	var llmCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		llmCalled.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"should not be called"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-stale-ask-user-chitchat"
+	h.pendingAskUser.Store(userID, &pendingAskUserState{
+		Question: "Check A100 server status?",
+		History: []agent.ConversationEntry{
+			{Role: "user", Content: "server-task: check A100 status"},
+			{Role: "assistant", Content: "Check A100 server status?"},
+		},
+		Timestamp: time.Now(),
+	})
+	h.memory.Save(userID, []agent.ConversationEntry{
+		{Role: "user", Content: "game-task: create snake2 in D:\\workprj\\snake2"},
+		{Role: "assistant", Content: "Run it with .\\build\\Release\\snake2.exe"},
+	})
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u6ca1\u4e8b", Lang: "zh"})
+	if resp == nil || resp.Error != "" || resp.Text == "" {
+		t.Fatalf("expected direct chit-chat response, got %+v", resp)
+	}
+	if llmCalled.Load() {
+		t.Fatal("stale ask_user should not suppress short chit-chat and call LLM")
+	}
+}
 func TestHandleIMMessage_PlainTextStartAnswerKeepsPreviousTaskContext(t *testing.T) {
 	var requestBody string
 	requestCount := 0
@@ -364,7 +662,7 @@ func TestPendingUserReplyAnswerAmbiguousIntentKeepsPending(t *testing.T) {
 	}
 }
 
-func TestHandleIMMessage_PlainTextReplyRestoreSignalsClearUI(t *testing.T) {
+func TestHandleIMMessage_StalePlainTextReplyDoesNotSignalClearUI(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
@@ -395,8 +693,8 @@ func TestHandleIMMessage_PlainTextReplyRestoreSignalsClearUI(t *testing.T) {
 	if resp == nil || resp.Error != "" {
 		t.Fatalf("expected successful response, got %+v", resp)
 	}
-	if !resp.ClearUI {
-		t.Fatalf("expected ClearUI when restoring pending reply context, got %+v", resp)
+	if resp.ClearUI {
+		t.Fatalf("stale pending reply must not restore old context or clear UI, got %+v", resp)
 	}
 }
 
@@ -404,7 +702,9 @@ func TestHandleIMMessage_PendingTextReplyDoesNotCaptureFreshDeploymentTask(t *te
 	var requestBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		requestBody = string(body)
+		if !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"starting nginx deployment"},"finish_reason":"stop"}]}`))
 	}))

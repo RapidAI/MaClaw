@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "prebuild": "node ../../scripts/check-encoding.mjs ../../gui/frontend/src ../../gui/frontend/index.html ../../gui/frontend/package.json ../../gui/frontend/tsconfig.json ../../gui/frontend/vite.config.ts",
+    "prebuild": "node ../../scripts/check-encoding.mjs ../../gui/frontend/src ../../gui/frontend/index.html ../../gui/frontend/package.json ../../gui/frontend/tsconfig.json ../../gui/frontend/vite.config.ts && node ../../scripts/check-main-ui-guards.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest --run"

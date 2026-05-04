@@ -120,8 +120,8 @@ func main() {
 	appOptions := &options.App{
 		Title:                    brand.Current().WindowTitle,
 		Frameless:                frameless,
-		Width:                    807,
-		Height:                   392,
+		Width:                    928,
+		Height:                   431,
 		EnableDefaultContextMenu: true,
 		StartHidden:              app.IsAutoStart,
 		OnStartup:                app.startup,

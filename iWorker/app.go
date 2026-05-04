@@ -580,6 +580,13 @@ func (a *App) FetchInstalledTools() CenterInstalledTools {
 	return fetchInstalledToolsForSettings(settings, 5)
 }
 
+// FetchConfigBundle returns the latest Center-published configuration bundle for this iWorker.
+func (a *App) FetchConfigBundle() CenterConfigBundle {
+	settings, _ := readDiWorkerSettings()
+	settings = normalizeDiWorkerSettings(settings)
+	return fetchConfigBundleForSettings(settings, 5)
+}
+
 func fetchInstalledToolsForSettings(settings DiWorkerSettings, timeoutSec int) CenterInstalledTools {
 	settings = normalizeDiWorkerSettings(settings)
 	if !settings.Center.Enabled {
@@ -721,6 +728,75 @@ func writeInstalledToolsCache(tenantID, departmentID, workerID string, tools Cen
 		tools.CachedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	data, err := json.MarshalIndent(tools, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+func fetchConfigBundleForSettings(settings DiWorkerSettings, timeoutSec int) CenterConfigBundle {
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return CenterConfigBundle{Source: "local"}
+	}
+	baseURL := resolvedCenterBaseURL(settings)
+	tenantID := resolvedTenantID(settings)
+	bundle, err := fetchCenterConfigBundle(baseURL, tenantID, timeoutSec)
+	if err == nil {
+		if bundle.Version > 0 {
+			_ = writeConfigBundleCache(tenantID, bundle)
+			_ = reportCenterConfigApplyResult(baseURL, tenantID, settings.Center.DepartmentID, settings.Center.WorkerID, bundle, timeoutSec)
+		}
+		return bundle
+	}
+	if cached, ok := readConfigBundleCache(tenantID); ok {
+		cached.Source = "cache"
+		cached.Stale = true
+		if strings.TrimSpace(cached.CachedAt) == "" {
+			cached.CachedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+		return cached
+	}
+	return CenterConfigBundle{Source: "unavailable", Stale: true, CachedAt: time.Now().UTC().Format(time.RFC3339)}
+}
+
+func configBundleCachePath(tenantID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	tenantID = sanitizeCacheName(firstNonEmptyString(tenantID, "default"))
+	return filepath.Join(home, ".iworker", "cache", "config_bundles", tenantID+".json"), nil
+}
+
+func readConfigBundleCache(tenantID string) (CenterConfigBundle, bool) {
+	path, err := configBundleCachePath(tenantID)
+	if err != nil {
+		return CenterConfigBundle{}, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return CenterConfigBundle{}, false
+	}
+	var bundle CenterConfigBundle
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		return CenterConfigBundle{}, false
+	}
+	return bundle, true
+}
+
+func writeConfigBundleCache(tenantID string, bundle CenterConfigBundle) error {
+	path, err := configBundleCachePath(tenantID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if strings.TrimSpace(bundle.CachedAt) == "" {
+		bundle.CachedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	data, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {
 		return err
 	}

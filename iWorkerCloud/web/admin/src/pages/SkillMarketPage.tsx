@@ -219,7 +219,7 @@ export function SkillMarketPage() {
   };
 
   return (
-    <div className="cloud-overview-stack">
+    <div className="cloud-overview-stack cloud-page-stack">
       <section className="cloud-brief card">
         <div>
           <div className="mini">{t('skills.marketEyebrow')}</div>

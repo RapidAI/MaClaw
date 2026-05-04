@@ -5,6 +5,7 @@ import { listLicenses, issueLicense, revokeLicense, type License } from '../api/
 
 const moduleOptions = ['compute', 'skill_market', 'upgrade', 'support', 'all'];
 type Notice = { tone: 'ok' | 'danger' | 'info'; text: string };
+type LicenseDurationMode = 'month' | 'quarter' | 'year' | 'multi_year' | 'permanent';
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 function formatDate(value?: string) {
@@ -12,6 +13,15 @@ function formatDate(value?: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
+
+const durationDays = (mode: LicenseDurationMode, customYears: string) => {
+  if (mode === 'permanent') return 0;
+  if (mode === 'month') return 30;
+  if (mode === 'quarter') return 90;
+  if (mode === 'year') return 365;
+  const years = Math.max(2, parseInt(customYears, 10) || 2);
+  return years * 365;
+};
 
 function parseModules(raw: string) {
   try {
@@ -29,7 +39,8 @@ export function LicensesPage() {
   const [centers, setCenters] = useState<Center[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [centerId, setCenterId] = useState('');
-  const [days, setDays] = useState('30');
+  const [durationMode, setDurationMode] = useState<LicenseDurationMode>('month');
+  const [customYears, setCustomYears] = useState('2');
   const [modules, setModules] = useState<string[]>(['compute']);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -39,6 +50,7 @@ export function LicensesPage() {
 
   const centerName = useMemo(() => Object.fromEntries(centers.map(center => [center.id, center.company_name || center.id])), [centers]);
   const moduleLabel = (module: string) => t(`licenses.moduleLabels.${module}`, { defaultValue: module });
+  const computedDays = useMemo(() => durationDays(durationMode, customYears), [durationMode, customYears]);
 
   const licenseStats = useMemo(() => {
     const now = Date.now();
@@ -85,7 +97,7 @@ export function LicensesPage() {
 
   const handleIssue = async () => {
     const normalizedCenterId = centerId.trim();
-    const normalizedDays = Math.max(1, parseInt(days, 10) || 30);
+    const normalizedDays = computedDays;
     if (!normalizedCenterId) {
       const message = t('licenses.selectCenter');
       setError(message);
@@ -98,7 +110,6 @@ export function LicensesPage() {
     try {
       await issueLicense(normalizedCenterId, modules.length > 0 ? modules : ['compute'], normalizedDays);
       setShowForm(false);
-      setDays(String(normalizedDays));
       setNotice({ tone: 'ok', text: t('licenses.noticeIssued') });
       await load();
     } catch (err) {
@@ -173,7 +184,24 @@ export function LicensesPage() {
                 {centers.length === 0 ? <option value="">{t('centers.empty')}</option> : null}
               </select>
             </div>
-            <div><label>{t('licenses.days')}</label><input type="number" value={days} onChange={event => setDays(event.target.value)} /></div>
+            <div>
+              <label>{t('licenses.duration')}</label>
+              <select value={durationMode} onChange={event => setDurationMode(event.target.value as LicenseDurationMode)}>
+                <option value="month">{t('licenses.durationOptions.month')}</option>
+                <option value="quarter">{t('licenses.durationOptions.quarter')}</option>
+                <option value="year">{t('licenses.durationOptions.year')}</option>
+                <option value="multi_year">{t('licenses.durationOptions.multiYear')}</option>
+                <option value="permanent">{t('licenses.durationOptions.permanent')}</option>
+              </select>
+            </div>
+            {durationMode === 'multi_year' ? <div>
+              <label>{t('licenses.customYears')}</label>
+              <input type="number" min="2" value={customYears} onChange={event => setCustomYears(event.target.value)} />
+            </div> : <div>
+              <label>{t('licenses.calculatedDays')}</label>
+              <input readOnly value={computedDays === 0 ? t('licenses.permanentValue') : String(computedDays)} />
+            </div>}
+            {durationMode === 'multi_year' ? <div className="field-span-2 license-duration-hint">{t('licenses.calculatedDays')}: {computedDays}</div> : null}
             <div className="field-span-2">
               <label>{t('licenses.modules')}</label>
               <div className="module-check-grid">

@@ -43,6 +43,16 @@ func (m *memoryCenterRepo) GetByID(_ context.Context, id string) (*store.Center,
 	return &copy, nil
 }
 
+func (m *memoryCenterRepo) GetByRegistrationKey(_ context.Context, machineID, companyID string) (*store.Center, error) {
+	for _, c := range m.items {
+		if c.MachineID == machineID && c.CompanyID == companyID {
+			copy := *c
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+
 func (m *memoryCenterRepo) List(context.Context) ([]*store.Center, error) {
 	out := make([]*store.Center, 0, len(m.items))
 	for _, c := range m.items {
@@ -101,6 +111,27 @@ func (m *memoryCenterRepo) UpdateIntegration(_ context.Context, c *store.Center)
 	current.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
 	current.IWorkerReadinessJSON = c.IWorkerReadinessJSON
 	current.RuntimeStatusJSON = c.RuntimeStatusJSON
+	current.UpdatedAt = time.Now()
+	return nil
+}
+
+func (m *memoryCenterRepo) UpdateRegistration(_ context.Context, c *store.Center) error {
+	current, ok := m.items[c.ID]
+	if !ok {
+		return fmt.Errorf("not found")
+	}
+	current.MachineID = c.MachineID
+	current.CompanyID = c.CompanyID
+	current.CompanyName = c.CompanyName
+	current.AdminEmail = c.AdminEmail
+	current.AdminPhone = c.AdminPhone
+	current.Address = c.Address
+	current.LegalPerson = c.LegalPerson
+	current.BaseURL = c.BaseURL
+	current.SupportsMultiTenant = c.SupportsMultiTenant
+	current.TenantCount = c.TenantCount
+	current.CloudControlMode = c.CloudControlMode
+	current.LastSyncStatus = c.LastSyncStatus
 	current.UpdatedAt = time.Now()
 	return nil
 }
@@ -549,5 +580,30 @@ func TestServiceReadinessRejectsUnverifiedServiceIdentity(t *testing.T) {
 	}
 	if management.ManagementPosture != "needs_setup" {
 		t.Fatalf("ManagementPosture = %q, want needs_setup", management.ManagementPosture)
+	}
+}
+
+func TestRegisterReusesExistingCenterByMachineAndCompany(t *testing.T) {
+	repo := newMemoryCenterRepo()
+	svc := NewService(repo, nil)
+	ctx := context.Background()
+
+	first, err := svc.Register(ctx, RegisterRequest{MachineID: "machine-1", CompanyID: "company-1", CompanyName: "Acme", AdminEmail: "admin@example.com"})
+	if err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	second, err := svc.Register(ctx, RegisterRequest{MachineID: "machine-1", CompanyID: "company-1", CompanyName: "Acme Updated", AdminEmail: "new@example.com", BaseURL: "https://center.example.com"})
+	if err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	if !second.Reused || second.CenterID != first.CenterID || second.Secret != first.Secret {
+		t.Fatalf("registration was not reused: first=%+v second=%+v", first, second)
+	}
+	center, err := repo.GetByID(ctx, first.CenterID)
+	if err != nil {
+		t.Fatalf("get center: %v", err)
+	}
+	if center.CompanyName != "Acme Updated" || center.AdminEmail != "new@example.com" || center.BaseURL != "https://center.example.com" {
+		t.Fatalf("existing center metadata not refreshed: %+v", center)
 	}
 }

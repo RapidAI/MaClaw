@@ -1046,6 +1046,80 @@ func testContainsString(values []string, want string) bool {
 	return false
 }
 
+func TestFetchConfigBundleFallsBackToScopedCache(t *testing.T) {
+	setTestHome(t)
+	applyReported := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		switch {
+		case r.URL.Path == "/client/config/latest" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "cfgb-1", "version": 7, "content_type": "full", "payload": `{"local_continuity":true}`, "status": "published", "note": "rollout"})
+		case r.URL.Path == "/client/config/apply-result" && r.Method == http.MethodPost:
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode apply result: %v", err)
+			}
+			if req["bundle_id"] != "cfgb-1" || req["worker_id"] != "worker-a" || req["department_id"] != "sales" {
+				t.Fatalf("unexpected apply result: %+v", req)
+			}
+			applyReported = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "recorded"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	settings := DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}
+	fresh := fetchConfigBundleForSettings(settings, 5)
+	if fresh.Source != "center" || fresh.Stale || fresh.Version != 7 || fresh.Note != "rollout" {
+		t.Fatalf("fresh bundle = %+v", fresh)
+	}
+	if !applyReported {
+		t.Fatal("expected config apply result to be reported")
+	}
+
+	settings.Center.BaseURL = "http://127.0.0.1:1"
+	cached := fetchConfigBundleForSettings(settings, 1)
+	if cached.Source != "cache" || !cached.Stale || cached.Version != 7 || cached.ID != "cfgb-1" {
+		t.Fatalf("cached bundle = %+v", cached)
+	}
+}
+
+func TestFetchConfigBundleTreatsMissingPublishedBundleAsReadyEmptyState(t *testing.T) {
+	setTestHome(t)
+	applyReported := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/client/config/apply-result" {
+			applyReported = true
+		}
+		if r.URL.Path != "/client/config/latest" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		response := map[string]any{"error": map[string]string{"code": "NOT_FOUND", "message": "no published config bundle"}}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	settings := DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}
+	bundle := fetchConfigBundleForSettings(settings, 5)
+	if bundle.Source != "none" || bundle.Status != "not_published" || bundle.Version != 0 || bundle.Stale {
+		t.Fatalf("bundle = %+v", bundle)
+	}
+	if applyReported {
+		t.Fatal("missing published bundle should not report apply result")
+	}
+	if _, ok := readConfigBundleCache("tenant-a"); ok {
+		t.Fatal("missing published bundle should not overwrite cache")
+	}
+}
+
 func TestFetchInstalledToolsFetchesSkillsAndMCPConcurrently(t *testing.T) {
 	setTestHome(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

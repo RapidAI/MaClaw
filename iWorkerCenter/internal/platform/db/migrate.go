@@ -539,6 +539,21 @@ var migrations = []string{
 		PRIMARY KEY (tenant_id, id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_mcp_servers_department ON mcp_servers(tenant_id, department_id, status);`,
+
+	// 41: iWorker config bundle apply acknowledgements
+	`CREATE TABLE IF NOT EXISTS config_apply_records (
+		tenant_id     TEXT NOT NULL,
+		bundle_id     TEXT NOT NULL,
+		version       INTEGER NOT NULL DEFAULT 0,
+		worker_id     TEXT NOT NULL DEFAULT '',
+		department_id TEXT NOT NULL DEFAULT '',
+		status        TEXT NOT NULL DEFAULT 'success',
+		message       TEXT NOT NULL DEFAULT '',
+		applied_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (tenant_id, bundle_id, worker_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_config_apply_bundle ON config_apply_records(tenant_id, bundle_id, applied_at);
+	CREATE INDEX IF NOT EXISTS idx_config_apply_worker ON config_apply_records(tenant_id, worker_id, applied_at);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

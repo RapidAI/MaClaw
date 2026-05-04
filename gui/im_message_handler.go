@@ -151,6 +151,9 @@ func shouldContinueTextOutput(finishReason, content string) (bool, string) {
 	if finishReason == "length" {
 		return true, "finish_reason=length"
 	}
+	if finishReason != "" && finishReason != "stop" {
+		return false, ""
+	}
 	if !looksStructurallyTruncatedText(content) {
 		return false, ""
 	}
@@ -231,9 +234,9 @@ type agentLoopPhase struct {
 	ToolHallucinationCorrected bool
 
 	// LengthContinuations tracks how many times the loop has injected a
-	// continuation prompt after the LLM's text output was truncated
-	// (finish_reason="length"). Capped at maxLengthContinuations to
-	// prevent infinite loops.
+	// continuation prompt after the LLM's text output was likely truncated.
+	// Continuation is allowed only for finish_reason="length" or narrow
+	// structural signals. Capped at maxLengthContinuations to prevent loops.
 	LengthContinuations int
 
 	// TruncationRetries tracks how many times the loop has retried after
@@ -1056,12 +1059,17 @@ func shouldClearHistoryForIncompleteTask(text string) bool {
 	return true
 }
 
+// pendingReplyTTL bounds how long a pending user reply can claim the next
+// message as an answer to the same task.
+const pendingReplyTTL = 30 * time.Minute
+
 // pendingAskUserState tracks an ask_user question that is waiting for the
 // user's response. Stored in IMMessageHandler.pendingAskUser keyed by userID.
 type pendingAskUserState struct {
 	Question  string
 	Options   []string
 	InputType string
+	History   []agent.ConversationEntry
 	Timestamp time.Time
 }
 
@@ -1095,21 +1103,78 @@ func latestAssistantText(entries []agent.ConversationEntry) string {
 	return ""
 }
 
+func conversationEntryTextEqual(a, b agent.ConversationEntry) bool {
+	if a.Role != b.Role {
+		return false
+	}
+	textA, okA := a.Content.(string)
+	textB, okB := b.Content.(string)
+	return okA && okB && strings.TrimSpace(textA) == strings.TrimSpace(textB)
+}
+
 func conversationHistoryEqual(a, b []agent.ConversationEntry) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i].Role != b[i].Role {
-			return false
-		}
-		textA, okA := a[i].Content.(string)
-		textB, okB := b[i].Content.(string)
-		if !okA || !okB || strings.TrimSpace(textA) != strings.TrimSpace(textB) {
+		if !conversationEntryTextEqual(a[i], b[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func conversationHistoryHasPrefix(current, prefix []agent.ConversationEntry) bool {
+	if len(prefix) == 0 || len(current) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		if !conversationEntryTextEqual(current[i], prefix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func conversationExtensionHasUserMessage(current []agent.ConversationEntry, prefixLen int) bool {
+	if prefixLen < 0 || prefixLen > len(current) {
+		return true
+	}
+	for _, entry := range current[prefixLen:] {
+		if entry.Role == "user" {
+			return true
+		}
+	}
+	return false
+}
+
+func isPendingReplyBoundToCurrentHistory(pending []agent.ConversationEntry, current []agent.ConversationEntry) bool {
+	if len(pending) == 0 {
+		return len(current) == 0
+	}
+	if len(current) == 0 {
+		return true
+	}
+	if !conversationHistoryHasPrefix(current, pending) {
+		return false
+	}
+	return !conversationExtensionHasUserMessage(current, len(pending))
+}
+
+func pendingUserReplyForCurrentHistory(raw interface{}, current []agent.ConversationEntry) (*pendingUserReplyState, bool) {
+	pending, ok := raw.(*pendingUserReplyState)
+	if !ok || pending == nil || time.Since(pending.Timestamp) >= pendingReplyTTL {
+		return nil, false
+	}
+	return pending, isPendingReplyBoundToCurrentHistory(pending.History, current)
+}
+
+func pendingAskUserForCurrentHistory(raw interface{}, current []agent.ConversationEntry) (*pendingAskUserState, bool) {
+	pending, ok := raw.(*pendingAskUserState)
+	if !ok || pending == nil || time.Since(pending.Timestamp) >= pendingReplyTTL {
+		return nil, false
+	}
+	return pending, isPendingReplyBoundToCurrentHistory(pending.History, current)
 }
 
 // pendingSlotText stores the user's original task text that was intercepted
@@ -4617,8 +4682,8 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// Skip chit-chat interception when there's a pending ask_user question,
 	// because short responses like "ok"/"好的" are valid answers to ask_user.
 	hasPendingAskUser := false
-	if _, loaded := h.pendingAskUser.Load(msg.UserID); loaded {
-		hasPendingAskUser = true
+	if raw, loaded := h.pendingAskUser.Load(msg.UserID); loaded {
+		_, hasPendingAskUser = pendingAskUserForCurrentHistory(raw, h.memory.Load(msg.UserID))
 	}
 
 	// Intercept IM responses to critical-risk skill installation confirmations.
@@ -4934,8 +4999,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	var hasPendingUserReply bool
 	if !msg.IsBackground {
 		if raw, ok := h.pendingUserReply.LoadAndDelete(msg.UserID); ok {
-			pending, _ := raw.(*pendingUserReplyState)
-			pendingFresh := pending != nil && time.Since(pending.Timestamp) < 30*time.Minute
+			pending, pendingFresh := pendingUserReplyForCurrentHistory(raw, EntriesBeforeClear)
+			if !pendingFresh && pending != nil {
+				log.Printf("[PendingUserReply] discarded stale pending reply for user=%s currentLen=%d boundLen=%d answer=%q", msg.UserID, len(EntriesBeforeClear), len(pending.History), truncateRunes(trimmed, 80))
+			}
 			isPendingAnswer, classifiedPendingAnswer := false, true
 			if pendingFresh {
 				isPendingAnswer, classifiedPendingAnswer = h.classifyPendingUserReplyAnswer(pending.Question, trimmed)
@@ -4944,12 +5011,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				hasPendingUserReply = true
 				if len(pending.History) > 0 {
 					current := h.memory.Load(msg.UserID)
-					if !conversationHistoryEqual(current, pending.History) {
+					if len(current) == 0 {
 						restored := cloneConversationEntries(pending.History)
 						h.memory.Save(msg.UserID, restored)
 						EntriesBeforeClear = restored
 						unfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)
-						clearUIAfterContextSwitch = clearUIAfterContextSwitch || len(current) > 0
 						log.Printf("[PendingUserReply] restored bound question context for user=%s currentLen=%d restoredLen=%d answer=%q", msg.UserID, len(current), len(restored), truncateRunes(trimmed, 80))
 					}
 				}
@@ -5030,9 +5096,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	var askUserContext string
 	hasPendingAskUser = false
 	if raw, ok := h.pendingAskUser.LoadAndDelete(msg.UserID); ok {
-		pending := raw.(*pendingAskUserState)
-		// Expire after 30 minutes to avoid stale state.
-		if time.Since(pending.Timestamp) < 30*time.Minute {
+		pending, pendingFresh := pendingAskUserForCurrentHistory(raw, EntriesBeforeClear)
+		if !pendingFresh && pending != nil {
+			log.Printf("[AskUser] discarded stale pending ask_user for user %s, currentLen=%d boundLen=%d answer=%q", msg.UserID, len(EntriesBeforeClear), len(pending.History), truncateRunes(trimmed, 80))
+		}
+		if pendingFresh {
 			hasPendingAskUser = true
 			askUserContext = fmt.Sprintf(
 				"【上下文提示】用户正在回答你之前提出的确认问题，而非发起新请求。\n你的问题：%s\n用户回答：%s\n请基于当前任务上下文理解用户意图，将其视为补充或修改意见。",
@@ -8002,30 +8070,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 
 			const maxLengthContinuations = 3
-			// Detect output truncation by two signals:
-			// 1. Explicit: finish_reason="length" (standard OpenAI signal)
-			// 2. Heuristic: content ends mid-sentence (some APIs like DeepSeek
-			//    return "stop" instead of "length" when output is truncated)
-			//
-			// The heuristic checks: content is non-empty, doesn't end with a
-			// sentence/block terminator, and is long enough to plausibly be
-			// truncated (>200 runes — short replies shouldn't trigger this).
-			isTruncated := choice.FinishReason == "length"
-			if !isTruncated && len(msgContent) > 200 {
-				trimmed := strings.TrimRight(msgContent, " \t\r\n")
-				runes := []rune(trimmed)
-				if len(runes) > 200 {
-					last := runes[len(runes)-1]
-					switch last {
-					case '.', '!', '?', '"', ')', ']', '`',
-						'\u3002', '\uff01', '\uff1f', '\u201d', '\uff09', '\u3011', '\u300b':
-						// Ends with a sentence/block terminator — not truncated.
-					default:
-						isTruncated = true
-						log.Printf("[agent-loop] heuristic truncation detected: content ends with %q (runeLen=%d, finish_reason=%q)",
-							string(last), len(runes), choice.FinishReason)
-					}
-				}
+			isTruncated, truncationReason := shouldContinueTextOutput(choice.FinishReason, msgContent)
+			if isTruncated {
+				log.Printf("[agent-loop] text continuation requested: reason=%s runeLen=%d finish_reason=%q",
+					truncationReason, len([]rune(strings.TrimRight(msgContent, " \t\r\n"))), choice.FinishReason)
 			}
 			if isTruncated && phase.LengthContinuations < maxLengthContinuations {
 				phase.LengthContinuations++
@@ -8033,8 +8081,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// Accumulate the truncated chunk so the final response contains
 				// the full document, not just the last continuation's output.
 				lengthContinuationBuf.WriteString(msgContent)
-				log.Printf("[agent-loop] finish_reason=length on text-only response (continuation %d/%d, iter=%d, textLen=%d, accumulated=%d), injecting continuation prompt",
-					phase.LengthContinuations, maxLengthContinuations, iteration, len(msgContent), lengthContinuationBuf.Len())
+				log.Printf("[agent-loop] text continuation on text-only response (reason=%s, continuation %d/%d, iter=%d, textLen=%d, accumulated=%d), injecting continuation prompt",
+					truncationReason, phase.LengthContinuations, maxLengthContinuations, iteration, len(msgContent), lengthContinuationBuf.Len())
 				systemMessagesStart := len(conversation)
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
@@ -8627,6 +8675,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						Question:  askReq.Question,
 						Options:   askReq.Options,
 						InputType: askReq.InputType,
+						History:   cloneConversationEntries(history),
 						Timestamp: time.Now(),
 					})
 

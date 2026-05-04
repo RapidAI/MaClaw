@@ -87,7 +87,9 @@ type HubLLMAuthorizedModel struct {
 type HubLLMActiveGrant struct {
 	ServiceGroupID   string  `json:"service_group_id"`
 	Source           string  `json:"source"`
+	StartsAt         string  `json:"starts_at"`
 	ExpiresAt        string  `json:"expires_at"`
+	Active           bool    `json:"active"`
 	CreditsTotal     float64 `json:"credits_total,omitempty"`
 	CreditsUsed      float64 `json:"credits_used,omitempty"`
 	CreditsRemaining float64 `json:"credits_remaining,omitempty"`
@@ -102,11 +104,15 @@ type HubLLMServiceStatus struct {
 	AvailableModels    []string                `json:"available_models,omitempty"`
 	AuthorizedModels   []HubLLMAuthorizedModel `json:"authorized_models,omitempty"`
 	ActiveGrants       []HubLLMActiveGrant     `json:"active_grants,omitempty"`
+	CreditGrants       []HubLLMActiveGrant     `json:"credit_grants,omitempty"`
 	InactiveReasons    []string                `json:"inactive_reasons,omitempty"`
 	NearestExpiresAt   string                  `json:"nearest_expires_at,omitempty"`
 	EffectiveExpiresAt string                  `json:"effective_expires_at,omitempty"`
 	DefaultModel       string                  `json:"default_model,omitempty"`
 	HubLLMBaseURL      string                  `json:"hub_llm_base_url,omitempty"`
+	CreditsTotal       float64                 `json:"credits_total,omitempty"`
+	CreditsUsed        float64                 `json:"credits_used,omitempty"`
+	CreditsRemaining   float64                 `json:"credits_remaining,omitempty"`
 	CreditsAvailable   float64                 `json:"credits_available,omitempty"`
 	TokensPerCredit    int                     `json:"tokens_per_credit,omitempty"`
 }
@@ -139,6 +145,9 @@ func (a *App) GetHubLLMServiceStatus() (HubLLMServiceStatus, error) {
 	if a.applyHubLLMServiceStatusToConfig(&freshCfg, status) {
 		if saveErr := a.SaveConfig(freshCfg); saveErr != nil {
 			return status, saveErr
+		}
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "hub-llm-service-changed")
 		}
 	}
 	return status, nil

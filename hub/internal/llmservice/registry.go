@@ -154,7 +154,9 @@ type AuthorizedModel struct {
 type ActiveGrant struct {
 	ServiceGroupID   string    `json:"service_group_id"`
 	Source           string    `json:"source"`
+	StartsAt         time.Time `json:"starts_at"`
 	ExpiresAt        time.Time `json:"expires_at"`
+	Active           bool      `json:"active"`
 	CreditsTotal     float64   `json:"credits_total,omitempty"`
 	CreditsUsed      float64   `json:"credits_used,omitempty"`
 	CreditsRemaining float64   `json:"credits_remaining,omitempty"`
@@ -169,11 +171,15 @@ type ServiceStatus struct {
 	AvailableModels    []string          `json:"available_models,omitempty"`
 	AuthorizedModels   []AuthorizedModel `json:"authorized_models,omitempty"`
 	ActiveGrants       []ActiveGrant     `json:"active_grants,omitempty"`
+	CreditGrants       []ActiveGrant     `json:"credit_grants,omitempty"`
 	InactiveReasons    []string          `json:"inactive_reasons,omitempty"`
 	NearestExpiresAt   string            `json:"nearest_expires_at,omitempty"`
 	EffectiveExpiresAt string            `json:"effective_expires_at,omitempty"`
 	DefaultModel       string            `json:"default_model,omitempty"`
 	HubLLMBaseURL      string            `json:"hub_llm_base_url,omitempty"`
+	CreditsTotal       float64           `json:"credits_total,omitempty"`
+	CreditsUsed        float64           `json:"credits_used,omitempty"`
+	CreditsRemaining   float64           `json:"credits_remaining,omitempty"`
 	CreditsAvailable   float64           `json:"credits_available,omitempty"`
 	TokensPerCredit    int               `json:"tokens_per_credit,omitempty"`
 }

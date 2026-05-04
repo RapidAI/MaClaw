@@ -22,7 +22,8 @@ import {
 } from '../api/centers';
 
 type IntegrationDraft = CenterIntegrationPatch;
-type ManualLicenseDraft = { days: string; modules: string[] };
+type LicenseDurationMode = 'month' | 'quarter' | 'year' | 'multi_year' | 'permanent';
+type ManualLicenseDraft = { duration_mode: LicenseDurationMode; custom_years: string; modules: string[] };
 type Notice = { tone: 'ok' | 'danger' | 'info'; text: string };
 
 const licenseModuleOptions = ['compute', 'skill_market', 'upgrade', 'support', 'all'];
@@ -65,7 +66,7 @@ const syncStatusLabels: Record<string, string> = {
 };
 
 const formatDateTime = (value?: string) => {
-  if (!value || value.startsWith('0001-')) return 'No heartbeat yet';
+  if (!value || value.startsWith('0001-')) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
@@ -105,8 +106,17 @@ const runtimeContinuityClass = (runtime?: CenterRuntimeStatus) => {
   return runtime.ok ? 'ready' : 'watch';
 };
 
+const durationDays = (mode: LicenseDurationMode, customYears: string) => {
+  if (mode === 'permanent') return 0;
+  if (mode === 'month') return 30;
+  if (mode === 'quarter') return 90;
+  if (mode === 'year') return 365;
+  const years = Math.max(2, Number.parseInt(customYears, 10) || 2);
+  return years * 365;
+};
+
 function createManualLicenseDraft(): ManualLicenseDraft {
-  return { days: '30', modules: ['compute'] };
+  return { duration_mode: 'month', custom_years: '2', modules: ['compute'] };
 }
 
 function createDraft(center: Center): IntegrationDraft {
@@ -145,7 +155,10 @@ export function CentersPage() {
   const syncStatusLabel = (value?: string) => t(`centers.syncStatus.${value || 'not_configured'}`, { defaultValue: syncStatusLabels[value || ''] ?? value ?? 'not configured' });
   const runtimeModeDisplay = (value?: CenterRuntimeStatus['runtime_provider_mode']) => t(`centers.runtimeModes.${runtimeModeLabel(value)}`);
   const runtimeContinuityText = (runtime?: CenterRuntimeStatus) => runtime?.message || t(`centers.runtimeContinuity.${runtimeContinuityKey(runtime)}`);
-  const runtimeValue = (key: string, value?: string | boolean) => t(`centers.runtimeValues.${String(value || 'unknown')}`, { defaultValue: String(value || t('centers.runtimeValues.unknown')) });
+  const runtimeValue = (key: string, value?: string | boolean) => {
+    const normalized = value === undefined || value === null || value === '' ? 'unknown' : String(value);
+    return t(`centers.runtimeValues.${normalized}`, { defaultValue: normalized === 'unknown' ? t('centers.runtimeValues.unknown') : normalized });
+  };
   const licenseModuleLabel = (module: string) => t(`licenses.moduleLabels.${module}`, { defaultValue: module });
   const showError = (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
@@ -265,14 +278,29 @@ export function CentersPage() {
     patchManualLicenseDraft(centerID, { modules: modules.length > 0 ? modules : ['compute'] });
   };
 
-  const handleConfirmManual = async (center: Center) => {
-    const draft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
-    const days = Number.parseInt(draft.days, 10);
+  const handleConfirmTrial = async (center: Center) => {
     setLicensing(center.id);
     setError('');
     setNotice(null);
     try {
-      await confirmManual(center.id, draft.modules.length > 0 ? draft.modules : ['compute'], Number.isFinite(days) && days > 0 ? days : 30);
+      await confirmTrial(center.id);
+      setNotice({ tone: 'ok', text: t('centers.noticeTrialActivated') });
+      load();
+    } catch (err) {
+      showError(err);
+    } finally {
+      setLicensing(null);
+    }
+  };
+
+  const handleConfirmManual = async (center: Center) => {
+    const draft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
+    const days = durationDays(draft.duration_mode, draft.custom_years);
+    setLicensing(center.id);
+    setError('');
+    setNotice(null);
+    try {
+      await confirmManual(center.id, draft.modules.length > 0 ? draft.modules : ['compute'], days);
       setNotice({ tone: 'ok', text: t('centers.noticeManualAuthorized') });
       load();
     } catch (err) {
@@ -373,6 +401,11 @@ export function CentersPage() {
     return false;
   };
 
+  const pendingAuthorizationCenters = useMemo(() => centers.filter(center => {
+    const item = management[center.id];
+    return center.status === 'pending' || item?.issues.includes('no_active_license');
+  }), [centers, management]);
+
   const filteredCenters = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return centers.filter(center => {
@@ -437,6 +470,28 @@ export function CentersPage() {
       </div>
       {notice ? <div className={`notice ${notice.tone}`}>{notice.text}</div> : null}
       {error && !notice ? <div className="hint danger">{error}</div> : null}
+
+      {pendingAuthorizationCenters.length > 0 ? <section className="cloud-auth-queue">
+        <div>
+          <label>{t('centers.authorizationQueueTitle')}</label>
+          <strong>{t('centers.authorizationQueueCount', { count: pendingAuthorizationCenters.length })}</strong>
+          <span>{t('centers.authorizationQueueDesc')}</span>
+        </div>
+        <div className="cloud-auth-queue-list">
+          {pendingAuthorizationCenters.map(center => (
+            <div key={center.id} className="cloud-auth-queue-row">
+              <span>{center.company_name || center.id}</span>
+              <small>{center.id}</small>
+              <button className="btn-secondary" disabled={licensing === center.id} onClick={() => handleConfirmTrial(center)}>
+                {licensing === center.id ? t('centers.actions.issuing') : t('centers.confirmTrial')}
+              </button>
+              <button className="btn-ghost" disabled={licensing === center.id} onClick={() => handleConfirmManual(center)}>
+                {t('centers.actions.issueManual')}
+              </button>
+            </div>
+          ))}
+        </div>
+      </section> : null}
       {filteredCenters.length === 0 ? <div className="hint">{centers.length === 0 ? t('centers.empty') : t('centers.noMatch')}</div> : <div className="list">
         {filteredCenters.map(center => {
           const draft = drafts[center.id] ?? createDraft(center);
@@ -467,7 +522,7 @@ export function CentersPage() {
                 <span>{t('centers.readiness.agentInstances')}: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem?.iworker_readiness?.agent_instance_count ?? 0}</span>
                 <span>{t('centers.fields.tenantMode')}: {center.supports_multi_tenant === true ? t('centers.tenant.modeMulti') : center.supports_multi_tenant === false ? t('centers.tenant.modeDedicated') : t('centers.tenant.notReported')}</span>
                 {typeof center.tenant_count === 'number' && <span>{t('centers.fields.tenants')}: {center.tenant_count}</span>}
-                <span>{t('centers.fields.lastHeartbeat')}: {formatDateTime(center.last_heartbeat)}</span>
+                <span>{t('centers.fields.lastHeartbeat')}: {formatDateTime(center.last_heartbeat) || t('centers.noHeartbeat')}</span>
                 {center.created_at && <span>{t('centers.fields.registered')}: {new Date(center.created_at).toLocaleString()}</span>}
               </div>
 
@@ -622,14 +677,30 @@ export function CentersPage() {
                 </div>
                 <div className="cloud-license-controls">
                   <label>
-                    <span>{t('licenses.days')}</span>
+                    <span>{t('licenses.duration')}</span>
+                    <select
+                      value={manualLicenseDraft.duration_mode}
+                      onChange={event => patchManualLicenseDraft(center.id, { duration_mode: event.target.value as LicenseDurationMode })}
+                    >
+                      <option value="month">{t('licenses.durationOptions.month')}</option>
+                      <option value="quarter">{t('licenses.durationOptions.quarter')}</option>
+                      <option value="year">{t('licenses.durationOptions.year')}</option>
+                      <option value="multi_year">{t('licenses.durationOptions.multiYear')}</option>
+                      <option value="permanent">{t('licenses.durationOptions.permanent')}</option>
+                    </select>
+                  </label>
+                  {manualLicenseDraft.duration_mode === 'multi_year' ? <label>
+                    <span>{t('licenses.customYears')}</span>
                     <input
                       type="number"
-                      min="1"
-                      value={manualLicenseDraft.days}
-                      onChange={event => patchManualLicenseDraft(center.id, { days: event.target.value })}
+                      min="2"
+                      value={manualLicenseDraft.custom_years}
+                      onChange={event => patchManualLicenseDraft(center.id, { custom_years: event.target.value })}
                     />
-                  </label>
+                  </label> : <label>
+                    <span>{t('licenses.calculatedDays')}</span>
+                    <input readOnly value={durationDays(manualLicenseDraft.duration_mode, manualLicenseDraft.custom_years) === 0 ? t('licenses.permanentValue') : String(durationDays(manualLicenseDraft.duration_mode, manualLicenseDraft.custom_years))} />
+                  </label>}
                   <div className="cloud-license-modules">
                     {licenseModuleOptions.map(module => (
                       <label key={module} className="module-check">
@@ -673,7 +744,7 @@ export function CentersPage() {
                 >
                   {checkingReadiness === center.id ? t('centers.actions.checking') : t('centers.actions.checkServiceGate')}
                 </button>
-                {center.status === 'pending' && <button className="btn-secondary" onClick={() => { setNotice(null); confirmTrial(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeTrialActivated') }); load(); }).catch(showError); }}>{t('centers.confirmTrial')}</button>}
+                {center.status === 'pending' && <button className="btn-secondary" disabled={licensing === center.id} onClick={() => handleConfirmTrial(center)}>{licensing === center.id ? t('centers.actions.issuing') : t('centers.confirmTrial')}</button>}
                 {center.status === 'active' && <button className="btn-danger" onClick={() => { setNotice(null); disableCenter(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeDisabled') }); load(); }).catch(showError); }}>{t('centers.disable')}</button>}
                 {center.status === 'disabled' && <button className="btn-secondary" onClick={() => { setNotice(null); enableCenter(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeEnabled') }); load(); }).catch(showError); }}>{t('centers.enable')}</button>}
                 <button className="btn-danger" onClick={() => handleDelete(center.id)}>{t('centers.delete')}</button>

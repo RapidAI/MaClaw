@@ -18,6 +18,8 @@ export function DeleteWorkerMemory(arg1:string):Promise<void>;
 
 export function FetchAgentInstances():Promise<Array<main.CenterAgentInstance>>;
 
+export function FetchConfigBundle():Promise<main.CenterConfigBundle>;
+
 export function FetchGoalPushes(arg1:number):Promise<Array<main.CenterGoalPush>>;
 
 export function FetchInstalledTools():Promise<main.CenterInstalledTools>;

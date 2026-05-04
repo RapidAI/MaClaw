@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS admins (
 
 CREATE TABLE IF NOT EXISTS centers (
 	id TEXT PRIMARY KEY,
+	machine_id TEXT NOT NULL DEFAULT '',
+	company_id TEXT NOT NULL DEFAULT '',
 	company_name TEXT NOT NULL,
 	admin_email TEXT NOT NULL,
 	admin_phone TEXT NOT NULL DEFAULT '',
@@ -197,6 +199,9 @@ CREATE TABLE IF NOT EXISTS system_settings (
 `
 
 var centerIntegrationMigrations = []string{
+	`ALTER TABLE centers ADD COLUMN machine_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE centers ADD COLUMN company_id TEXT NOT NULL DEFAULT ''`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_centers_machine_company ON centers(machine_id, company_id) WHERE machine_id <> '' AND company_id <> ''`,
 	`ALTER TABLE centers ADD COLUMN base_url TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE centers ADD COLUMN supports_multi_tenant INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE centers ADD COLUMN tenant_count INTEGER NOT NULL DEFAULT 0`,

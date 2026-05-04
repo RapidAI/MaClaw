@@ -113,4 +113,16 @@ describe('resolveFinalRoundContent — Bug Condition Exploration', () => {
         // Bug: returns finalText (short confirmation) instead
         expect(result).toBe(streamedContent);
     });
+
+    it('Case 5: streamed Browser role block after a valid answer is truncated', () => {
+        const answer = 'Valid overview summary.';
+        const duplicateTail = 'Browser: duplicated overview summary.';
+        const streamedContent = answer + '\n\n' + duplicateTail;
+        const finalText = answer;
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), { text: finalText, response_source: 'agent_loop' });
+
+        expect(result).toBe(answer);
+        expect(result).not.toContain('Browser:');
+    });
 });

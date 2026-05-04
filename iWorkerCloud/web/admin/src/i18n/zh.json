@@ -23,7 +23,7 @@
   },
   "cloudOverview": {
     "title": "面向 iWorker 的厂商云控制平面",
-    "desc": "iWorkerCloud 管理已接入的 iWorkerCenter，负责算力分发、技能市场、商业授权、升级和集成，不运行客户企业。",
+    "desc": "iWorkerCloud 管理已接入的 iWorkerCenter，负责算力分发、技能市场供给、商业授权、升级和集成，不运行客户企业。",
     "positionTitle": "Cloud 管理 iWorkerCenter 服务",
     "positionDesc": "客户公司的组织管理和企业执行留在自己的 iWorkerCenter 内。iWorkerCloud 只管理我们提供的系统服务：算力、技能、授权、升级和集成。",
     "statCenters": "接入并由云端管理系统服务的 iWorkerCenter。",
@@ -67,7 +67,7 @@
       "iworkerAgents": "iWorker 实例",
       "iworkerAgentsHint": "Center 上报的聚合实例数。Cloud 不接收任务标题、任务细节、租户、用户或公司流程数据。",
       "activeWork": "进行中工作",
-      "activeWorkHint": "跨 Center 汇总的 iWorker 运行中任务数量，不包含业务载荷。",
+      "activeWorkHint": "来自 Center 汇总的 iWorker 运行中任务数量，不包含业务载荷。",
       "blockedOrReview": "阻塞或待审",
       "blockedOrReviewHint": "需要关注的聚合工作量，不包含客户业务内容。",
       "localFallback": "本地兜底",
@@ -96,15 +96,15 @@
       "highPriorityHint": "存在需要 Cloud 操作员处理的高优先级服务动作。",
       "iworkerSetup": "iWorker 就绪待确认",
       "iworkerSetupHint": "Center 已上报 iWorker 状态，但尚未达到可稳定接收推送任务的条件。",
-      "sync": "同步: {{status}}",
-      "heartbeat": "心跳: {{time}}",
-      "workload": "工作量: 进行中 {{active}} / 阻塞 {{blocked}} / 待审 {{review}}"
+      "sync": "同步：{{status}}",
+      "heartbeat": "心跳：{{time}}",
+      "workload": "工作量：进行中 {{active}} / 阻塞 {{blocked}} / 待审 {{review}}"
     }
   },
   "skills": {
     "title": "顶层 iWorker 技能市场",
     "desc": "为接入的 iWorkerCenter 创建、打包、发布、停用和下架可复用 iWorker 技能。",
-    "positionTitle": "市场，不是组织",
+    "positionTitle": "市场，而不是组织",
     "positionDesc": "Cloud 负责销售和分发技能。每个 iWorkerCenter 自己决定技能如何进入本地角色、流程、策略和审计。",
     "stage": {
       "draft": "草稿",
@@ -280,7 +280,9 @@
       "tenants": "租户数",
       "lastHeartbeat": "最近心跳",
       "registered": "注册时间",
-      "id": "ID"
+      "id": "ID",
+      "machineId": "机器 ID",
+      "companyId": "Company ID"
     },
     "actions": {
       "activateTrial": "激活试用",
@@ -405,6 +407,8 @@
       "failure": "失败",
       "pending": "等待中",
       "waiting_for_credentials": "等待凭据",
+      "true": "是",
+      "false": "否",
       "unknown": "未知"
     },
     "runtimeContinuity": {
@@ -425,7 +429,11 @@
     "noticeDeleted": "Center 注册记录已删除。",
     "noticeTrialActivated": "已为此 Center 激活试用。",
     "noticeDisabled": "Center 已停用。",
-    "noticeEnabled": "Center 已启用。"
+    "noticeEnabled": "Center 已启用。",
+    "authorizationQueueTitle": "待授权确认",
+    "authorizationQueueCount": "{{count}} 个 Center 等待 Cloud 授权",
+    "authorizationQueueDesc": "这些 Center 已完成注册。可在这里发放试用或手工授权；Cloud 授权只开放平台服务，不接触企业业务数据。",
+    "noHeartbeat": "暂无心跳"
   },
   "licenses": {
     "issue": "签发授权",
@@ -465,6 +473,17 @@
       "upgrade": "升级",
       "support": "支持",
       "all": "全部模块"
+    },
+    "duration": "授权周期",
+    "customYears": "年数",
+    "calculatedDays": "折算天数",
+    "permanentValue": "0（永久）",
+    "durationOptions": {
+      "month": "月 / 30 天",
+      "quarter": "季 / 90 天",
+      "year": "年 / 365 天",
+      "multiYear": "多年",
+      "permanent": "永久"
     }
   },
   "common": {

@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -90,5 +91,92 @@ func TestPublishNonExistent(t *testing.T) {
 	repo := NewRepo(p.Write, p.Read)
 	if err := repo.Publish("nonexistent", testTID); err == nil {
 		t.Error("expected error")
+	}
+}
+
+func TestRecordApplyResult(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-1", Version: 3, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+	rec := ApplyRecord{TenantID: testTID, BundleID: "cfgb-1", Version: 3, WorkerID: "worker-a", DepartmentID: "ops", Status: "success", Message: "cached"}
+	if err := repo.RecordApply(rec); err != nil {
+		t.Fatalf("record apply: %v", err)
+	}
+	records, err := repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list apply records: %v", err)
+	}
+	if len(records) != 1 || records[0].BundleID != "cfgb-1" || records[0].WorkerID != "worker-a" {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+	rec.Status = "failed"
+	rec.Message = "retry later"
+	if err := repo.RecordApply(rec); err != nil {
+		t.Fatalf("update apply: %v", err)
+	}
+	records, err = repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list apply records after update: %v", err)
+	}
+	if len(records) != 1 || records[0].Status != "failed" || records[0].Message != "retry later" {
+		t.Fatalf("unexpected updated records: %+v", records)
+	}
+}
+
+func TestRecordApplyRejectsUnknownBundle(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	err := repo.RecordApply(ApplyRecord{TenantID: testTID, BundleID: "missing", WorkerID: "worker-a", Status: "success"})
+	if err == nil {
+		t.Fatal("expected unknown bundle apply result to be rejected")
+	}
+	records, listErr := repo.ListApplyRecords(testTID, 10)
+	if listErr != nil {
+		t.Fatalf("list records: %v", listErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+}
+
+func TestRecordApplyNormalizesStatusAndVersion(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-2", Version: 9, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+	if err := repo.RecordApply(ApplyRecord{TenantID: testTID, BundleID: "cfgb-2", Version: 123, WorkerID: "worker-a", Status: "weird"}); err != nil {
+		t.Fatalf("record apply: %v", err)
+	}
+	records, err := repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(records) != 1 || records[0].Version != 9 || records[0].Status != "failed" {
+		t.Fatalf("unexpected normalized record: %+v", records)
+	}
+}
+
+func TestRecordApplyRejectsDraftBundle(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-draft", Version: 1, ContentType: "full", Payload: "{}", Status: "draft", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+	err := repo.RecordApply(ApplyRecord{TenantID: testTID, BundleID: "cfgb-draft", WorkerID: "worker-a", Status: "success"})
+	if !errors.Is(err, ErrBundleNotPublished) {
+		t.Fatalf("expected ErrBundleNotPublished, got %v", err)
+	}
+	records, listErr := repo.ListApplyRecords(testTID, 10)
+	if listErr != nil {
+		t.Fatalf("list records: %v", listErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("unexpected records: %+v", records)
 	}
 }

@@ -327,6 +327,39 @@ export namespace main {
 	    }
 	}
 
+	export class CenterConfigBundle {
+	    id: string;
+	    version: number;
+	    content_type: string;
+	    payload: string;
+	    status: string;
+	    note: string;
+	    created_at: string;
+	    published_at: string;
+	    source: string;
+	    cached_at: string;
+	    stale: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterConfigBundle(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.version = source["version"];
+	        this.content_type = source["content_type"];
+	        this.payload = source["payload"];
+	        this.status = source["status"];
+	        this.note = source["note"];
+	        this.created_at = source["created_at"];
+	        this.published_at = source["published_at"];
+	        this.source = source["source"];
+	        this.cached_at = source["cached_at"];
+	        this.stale = source["stale"];
+	    }
+	}
+
 	export class CenterInstalledTools {
 	    skills: CenterRuntimeCapability[];
 	    mcp_servers: CenterMCPServer[];

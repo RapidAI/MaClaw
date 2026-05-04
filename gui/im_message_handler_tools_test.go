@@ -907,10 +907,40 @@ func TestShouldContinueTextOutput_ExplicitLengthStillContinues(t *testing.T) {
 	}
 }
 
+func TestShouldContinueTextOutput_DoesNotContinueLongCompleteEmojiEnding(t *testing.T) {
+	text := strings.Repeat("Complete paragraph with enough content to exceed the heuristic threshold. ", 30) + "All checks are done \U0001F60A"
+	if got, reason := shouldContinueTextOutput("stop", text); got {
+		t.Fatalf("shouldContinueTextOutput(stop, emoji ending) = true (%s), want false", reason)
+	}
+}
+
+func TestShouldContinueTextOutput_DoesNotApplyStructuralHeuristicToNonStopReasons(t *testing.T) {
+	text := strings.Repeat("Long generated report segment near the model output limit. ", 30) + "and the next item begins,"
+	for _, finishReason := range []string{"content_filter", "tool_calls"} {
+		if got, reason := shouldContinueTextOutput(finishReason, text); got {
+			t.Fatalf("shouldContinueTextOutput(%q, structural text) = true (%s), want false", finishReason, reason)
+		}
+	}
+}
+
 func TestShouldContinueTextOutput_LongStructuralFragmentContinues(t *testing.T) {
 	text := strings.Repeat("这是一个很长的报告段落，用来模拟模型在输出限制附近被截断。", 90) + "下一节："
 	if got, reason := shouldContinueTextOutput("stop", text); !got || reason != "structural_heuristic" {
 		t.Fatalf("shouldContinueTextOutput(long fragment) = (%v,%q), want true structural_heuristic", got, reason)
+	}
+}
+
+func TestShouldContinueTextOutput_LongCommaFragmentContinues(t *testing.T) {
+	text := strings.Repeat("Long generated report segment near the model output limit. ", 30) + "and the next item begins,"
+	if got, reason := shouldContinueTextOutput("stop", text); !got || reason != "structural_heuristic" {
+		t.Fatalf("shouldContinueTextOutput(long comma fragment) = (%v,%q), want true structural_heuristic", got, reason)
+	}
+}
+
+func TestShouldContinueTextOutput_UnclosedCodeFenceContinues(t *testing.T) {
+	text := strings.Repeat("Long generated report segment near the model output limit. ", 30) + "```go\nfunc unfinished() {\n"
+	if got, reason := shouldContinueTextOutput("stop", text); !got || reason != "structural_heuristic" {
+		t.Fatalf("shouldContinueTextOutput(unclosed code fence) = (%v,%q), want true structural_heuristic", got, reason)
 	}
 }
 

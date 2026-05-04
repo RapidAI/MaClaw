@@ -146,15 +146,23 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 		HubLLMBaseURL:     strings.TrimRight(strings.TrimSpace(hubBaseURL), "/"),
 		TokensPerCredit:   reg.TokensPerCredit,
 	}
+	status.CreditGrants = creditGrantSummaries(reg, email, now)
+	for _, g := range status.CreditGrants {
+		status.CreditsTotal += g.CreditsTotal
+		status.CreditsUsed += g.CreditsUsed
+		status.CreditsRemaining += g.CreditsRemaining
+	}
+	status.CreditsTotal = roundCredits(status.CreditsTotal)
+	status.CreditsUsed = roundCredits(status.CreditsUsed)
+	status.CreditsRemaining = roundCredits(status.CreditsRemaining)
 	if len(grants) > 0 {
 		status.ActiveGrants = make([]ActiveGrant, 0, len(grants))
 		var nearest *time.Time
 		for _, g := range grants {
-			remaining := remainingGrantCredits(g)
 			if g.CreditsTotal > 0 {
-				creditsAvailable += remaining
+				creditsAvailable += availableGrantCredits(g, now)
 			}
-			status.ActiveGrants = append(status.ActiveGrants, ActiveGrant{ServiceGroupID: g.ServiceGroupID, Source: g.Source, ExpiresAt: g.ExpiresAt, CreditsTotal: g.CreditsTotal, CreditsUsed: g.CreditsUsed, CreditsRemaining: remaining})
+			status.ActiveGrants = append(status.ActiveGrants, grantSummary(g, now))
 			if nearest == nil || g.ExpiresAt.Before(*nearest) {
 				copyVal := g.ExpiresAt
 				nearest = &copyVal
@@ -174,7 +182,56 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 		status.EffectiveExpiresAt = effectiveExpiresAt.Format(time.RFC3339)
 	}
 	status.CreditsAvailable = roundCredits(creditsAvailable)
+	if status.CreditsRemaining == 0 && status.CreditsAvailable > 0 {
+		status.CreditsRemaining = status.CreditsAvailable
+	}
 	return status, models, nil
+}
+
+func creditGrantSummaries(reg *Registry, email string, now time.Time) []ActiveGrant {
+	if reg == nil {
+		return nil
+	}
+	email = normalizeEmail(email)
+	items := make([]ActiveGrant, 0)
+	for _, g := range reg.Grants {
+		if normalizeEmail(g.Email) != email {
+			continue
+		}
+		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
+			continue
+		}
+		if !g.ExpiresAt.After(now) {
+			continue
+		}
+		if g.CreditsTotal > 0 && remainingGrantCredits(g) <= 0 {
+			continue
+		}
+		items = append(items, grantSummary(g, now))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].StartsAt.Equal(items[j].StartsAt) {
+			if items[i].ExpiresAt.Equal(items[j].ExpiresAt) {
+				return items[i].ServiceGroupID < items[j].ServiceGroupID
+			}
+			return items[i].ExpiresAt.Before(items[j].ExpiresAt)
+		}
+		return items[i].StartsAt.Before(items[j].StartsAt)
+	})
+	return items
+}
+
+func grantSummary(g Grant, now time.Time) ActiveGrant {
+	return ActiveGrant{
+		ServiceGroupID:   g.ServiceGroupID,
+		Source:           g.Source,
+		StartsAt:         g.StartsAt,
+		ExpiresAt:        g.ExpiresAt,
+		Active:           !now.Before(g.StartsAt) && now.Before(g.ExpiresAt) && (g.CreditsTotal <= 0 || availableGrantCredits(g, now) > 0),
+		CreditsTotal:     roundCredits(g.CreditsTotal),
+		CreditsUsed:      roundCredits(g.CreditsUsed),
+		CreditsRemaining: remainingGrantCredits(g),
+	}
 }
 
 func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email, code, hubBaseURL string) (*ServiceStatus, error) {

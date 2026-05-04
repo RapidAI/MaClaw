@@ -64,7 +64,7 @@ export function SideNav({ activeTab, roleName, roleDescription, recentTasks = []
         </div>
 
         {interventionSummary?.count ? (
-          <button type="button" className="iw-sidebar-intervention" onClick={() => onChange('home')} aria-label="Open human intervention workbench">
+          <button type="button" className="iw-sidebar-intervention" onClick={() => onChange('home')} aria-label={t('sidebar.openInterventionWorkbench')}>
             <span>{t('sidebar.intervention')}</span>
             <strong>{interventionSummary.title}</strong>
             <small>{interventionSummary.cachedCount ? t('sidebar.cachedNotice', { count: interventionSummary.cachedCount }) : t('sidebar.waitingNotice', { count: interventionSummary.count })}</small>

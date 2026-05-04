@@ -1,0 +1,98 @@
+import type { CSSProperties } from 'react';
+import { getModelDisplayName } from '../../config/providerCatalog';
+
+const badgeBaseStyle: CSSProperties = {
+    position: 'absolute',
+    top: '-8px',
+    right: '0px',
+    color: 'white',
+    fontSize: '10px',
+    padding: '1px 6px',
+    borderRadius: '999px',
+    fontWeight: 'bold',
+    zIndex: 10,
+    transform: 'scale(0.85)',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.15)',
+    letterSpacing: '0.02em'
+};
+
+export interface ToolConfigurationProps {
+    toolName: string;
+    toolCfg: any;
+    showModelSettings: boolean;
+    setShowModelSettings: (show: boolean) => void;
+    handleModelSwitch: (name: string) => void;
+    t: (key: string) => string;
+    lang: string;
+}
+
+export const ToolConfiguration = ({
+    toolName, toolCfg, showModelSettings, setShowModelSettings,
+    handleModelSwitch, t, lang
+}: ToolConfigurationProps) => {
+    if (!toolCfg || !toolCfg.models) {
+        return <div style={{ padding: '15px', color: '#6b7280' }}>Loading configuration...</div>;
+    }
+
+    const getBadge = (model: any): { bg: string; label: string } | null => {
+        const name = model.model_name.toLowerCase();
+        if (model.model_name === "Original") return { bg: '#6366f1', label: t("originalFlag") };
+        if (model.has_subscription) return { bg: '#ec4899', label: t("subscription") };
+        if (name.includes("glm") || name.includes("kimi") || name.includes("doubao") || name.includes("minimax"))
+            return { bg: '#ec4899', label: t("monthly") };
+        if (name.includes("deepseek")) return { bg: '#f59e0b', label: t("premium") };
+        if (name.includes("xiaomi")) return { bg: '#f59e0b', label: t("bigSpender") };
+        if (model.is_custom) return { bg: '#9ca3af', label: t("customized") };
+        if (["aicodemirror", "aigocode", "noin.ai", "gaccode", "chatfire", "coderelay"].some(p => name.includes(p)))
+            return { bg: '#14b8a6', label: t("forward") };
+        return null;
+    };
+
+    return (
+        <div style={{
+            backgroundColor: 'var(--theme-surface)',
+            padding: '9px 12px',
+            borderRadius: '12px',
+            border: '1px solid var(--theme-border)',
+            marginBottom: '10px',
+            color: 'var(--theme-text-primary)'
+        }}>
+            <div className="model-switcher" style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: '8px',
+                width: '100%',
+                paddingTop: '5px',
+                paddingBottom: '5px',
+                overflow: 'visible'
+            }}>
+                {toolCfg.models.map((model: any) => {
+                    const badge = getBadge(model);
+                    return (
+                        <button
+                            key={model.model_name}
+                            className={`model-btn ${toolCfg.current_model === model.model_name ? 'selected' : ''}`}
+                            onClick={() => handleModelSwitch(model.model_name)}
+                            style={{
+                                width: '100%',
+                                padding: '5px 4px',
+                                fontSize: '1.125rem',
+                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--theme-border)',
+                                position: 'relative',
+                                overflow: 'visible',
+                                color: 'var(--theme-text-primary)'
+                            }}
+                        >
+                            {model.model_name === "Original" ? t("original") : getModelDisplayName(model.model_name, lang)}
+                            {badge && (
+                                <span style={{ ...badgeBaseStyle, backgroundColor: badge.bg }}>
+                                    {badge.label}
+                                </span>
+                            )}
+                        </button>
+                    );
+                })}
+            </div>
+        </div>
+    );
+};

@@ -17,6 +17,7 @@ import {
   DeleteWorkerMemory,
   DiscoverCenterEnrollment,
   FetchAgentInstances,
+  FetchConfigBundle,
   FetchGoalPushes,
   FetchInstalledTools,
   FetchWorkerMemoryStats,
@@ -39,6 +40,7 @@ vi.mock("../wailsjs/go/main/App", () => ({
   DeleteWorkerMemory: vi.fn(),
   DiscoverCenterEnrollment: vi.fn(),
   FetchAgentInstances: vi.fn(),
+  FetchConfigBundle: vi.fn(),
   FetchGoalPushes: vi.fn(),
   FetchInstalledTools: vi.fn(),
   FetchWorkerMemoryStats: vi.fn(),
@@ -169,6 +171,19 @@ describe("App", () => {
     } as never);
     vi.mocked(AutoHandleGoalPush).mockResolvedValue(undefined as never);
     vi.mocked(FetchAgentInstances).mockResolvedValue([] as never);
+    vi.mocked(FetchConfigBundle).mockResolvedValue({
+      id: "cfgb-1",
+      version: 3,
+      content_type: "full",
+      payload: '{"local_continuity":true}',
+      status: "published",
+      note: "test bundle",
+      created_at: "2026-05-01T00:00:00Z",
+      published_at: "2026-05-01T00:01:00Z",
+      source: "center",
+      cached_at: "2026-05-04T00:00:00Z",
+      stale: false,
+    } as never);
     vi.mocked(FetchGoalPushes).mockResolvedValue([] as never);
     vi.mocked(FetchInstalledTools).mockResolvedValue({
       source: "center",

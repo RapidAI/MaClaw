@@ -43,6 +43,16 @@ func (r *heartbeatCenterRepo) GetByID(_ context.Context, id string) (*store.Cent
 	return &copy, nil
 }
 
+func (r *heartbeatCenterRepo) GetByRegistrationKey(_ context.Context, machineID, companyID string) (*store.Center, error) {
+	for _, item := range r.items {
+		if item.MachineID == machineID && item.CompanyID == companyID {
+			copy := *item
+			return &copy, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+
 func (r *heartbeatCenterRepo) List(context.Context) ([]*store.Center, error) {
 	out := make([]*store.Center, 0, len(r.items))
 	for _, item := range r.items {
@@ -97,6 +107,26 @@ func (r *heartbeatCenterRepo) UpdateIntegration(_ context.Context, c *store.Cent
 	item.IWorkerLocalAccountCount = c.IWorkerLocalAccountCount
 	item.IWorkerAgentInstanceCount = c.IWorkerAgentInstanceCount
 	item.IWorkerReadinessJSON = c.IWorkerReadinessJSON
+	return nil
+}
+
+func (r *heartbeatCenterRepo) UpdateRegistration(_ context.Context, c *store.Center) error {
+	item, ok := r.items[c.ID]
+	if !ok {
+		return fmt.Errorf("not found")
+	}
+	item.MachineID = c.MachineID
+	item.CompanyID = c.CompanyID
+	item.CompanyName = c.CompanyName
+	item.AdminEmail = c.AdminEmail
+	item.AdminPhone = c.AdminPhone
+	item.Address = c.Address
+	item.LegalPerson = c.LegalPerson
+	item.BaseURL = c.BaseURL
+	item.SupportsMultiTenant = c.SupportsMultiTenant
+	item.TenantCount = c.TenantCount
+	item.CloudControlMode = c.CloudControlMode
+	item.LastSyncStatus = c.LastSyncStatus
 	return nil
 }
 

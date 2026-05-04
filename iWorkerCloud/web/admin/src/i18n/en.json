@@ -280,7 +280,9 @@
       "tenants": "Tenants",
       "lastHeartbeat": "Last heartbeat",
       "registered": "Registered",
-      "id": "ID"
+      "id": "ID",
+      "machineId": "Machine ID",
+      "companyId": "Company ID"
     },
     "actions": {
       "activateTrial": "Activate trial",
@@ -425,7 +427,11 @@
     "noticeDeleted": "Center registration record deleted.",
     "noticeTrialActivated": "Trial activated for this Center.",
     "noticeDisabled": "Center disabled.",
-    "noticeEnabled": "Center enabled."
+    "noticeEnabled": "Center enabled.",
+    "authorizationQueueTitle": "Pending authorization",
+    "authorizationQueueCount": "{{count}} Center(s) awaiting Cloud authorization",
+    "authorizationQueueDesc": "These Centers have registered successfully. Issue a trial or manual license here; Cloud authorization only enables platform services and does not touch enterprise business data.",
+    "noHeartbeat": "No heartbeat yet"
   },
   "licenses": {
     "issue": "Issue License",
@@ -465,6 +471,17 @@
       "upgrade": "Upgrade",
       "support": "Support",
       "all": "All modules"
+    },
+    "duration": "Duration",
+    "customYears": "Years",
+    "calculatedDays": "Calculated days",
+    "permanentValue": "0 (permanent)",
+    "durationOptions": {
+      "month": "Monthly / 30 days",
+      "quarter": "Quarterly / 90 days",
+      "year": "Annual / 365 days",
+      "multiYear": "Multi-year",
+      "permanent": "Permanent"
     }
   },
   "common": {

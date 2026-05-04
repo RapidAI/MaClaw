@@ -297,6 +297,66 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
   font-weight: 800;
 }
 
+.cloud-auth-queue {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(192, 138, 24, .26);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 249, 235, .95), rgba(255, 255, 255, .96));
+}
+
+.cloud-auth-queue label {
+  display: block;
+  color: var(--warn);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.cloud-auth-queue strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.cloud-auth-queue span {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.cloud-auth-queue-list {
+  display: grid;
+  gap: 8px;
+}
+
+.cloud-auth-queue-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.cloud-auth-queue-row span {
+  margin: 0;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.cloud-auth-queue-row small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .cloud-action-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -375,6 +435,7 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
 @media (max-width: 900px) {
   .cloud-market-grid,
   .cloud-posture-panel,
+  .cloud-auth-queue,
   .cloud-action-panel,
   .cloud-integration-panel {
     grid-template-columns: 1fr;
@@ -942,6 +1003,10 @@ textarea { width: 100%; padding: 12px 14px; border-radius: 12px; border: 1px sol
 .cloud-page-stack {
   display: grid;
   gap: 16px;
+  max-width: 1180px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .ops-summary-grid {

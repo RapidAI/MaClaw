@@ -79,3 +79,40 @@ func TestCenterRepoPersistsIWorkerReadinessAcrossHeartbeatAndIntegration(t *test
 		t.Fatalf("readiness should survive integration update: %+v", updated)
 	}
 }
+
+func TestCenterRepoDeleteCleansDependentRows(t *testing.T) {
+	provider, err := NewProvider(":memory:")
+	if err != nil {
+		t.Fatalf("NewProvider() error: %v", err)
+	}
+	defer provider.Close()
+	if err := RunMigrations(provider.Write); err != nil {
+		t.Fatalf("RunMigrations() error: %v", err)
+	}
+	ctx := context.Background()
+	repo := NewStore(provider).Centers
+	now := time.Now().UTC().Truncate(time.Second)
+	center := &store.Center{ID: "ctr_delete", CompanyName: "Delete Me", AdminEmail: "admin@example.com", Status: "active", SecretHash: "hash", CreatedAt: now, UpdatedAt: now}
+	if err := repo.Create(ctx, center); err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO licenses (id, center_id, modules, type, expires_at, is_long_term, certificate, created_at) VALUES (?, ?, '[]', 'manual', ?, 0, '', ?)`, "lic_delete", center.ID, now.AddDate(0, 1, 0).Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert license: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `CREATE TABLE center_provider_assignments (center_id TEXT NOT NULL, provider_id TEXT NOT NULL, PRIMARY KEY(center_id, provider_id))`); err != nil {
+		t.Fatalf("create assignment table: %v", err)
+	}
+	if _, err := provider.Write.ExecContext(ctx, `INSERT INTO center_provider_assignments (center_id, provider_id) VALUES (?, ?)`, center.ID, "provider-1"); err != nil {
+		t.Fatalf("insert assignment: %v", err)
+	}
+	if err := repo.Delete(ctx, center.ID); err != nil {
+		t.Fatalf("Delete() error: %v", err)
+	}
+	var centerCount, licenseCount, assignmentCount int
+	_ = provider.Read.QueryRowContext(ctx, `SELECT COUNT(*) FROM centers WHERE id=?`, center.ID).Scan(&centerCount)
+	_ = provider.Read.QueryRowContext(ctx, `SELECT COUNT(*) FROM licenses WHERE center_id=?`, center.ID).Scan(&licenseCount)
+	_ = provider.Read.QueryRowContext(ctx, `SELECT COUNT(*) FROM center_provider_assignments WHERE center_id=?`, center.ID).Scan(&assignmentCount)
+	if centerCount != 0 || licenseCount != 0 || assignmentCount != 0 {
+		t.Fatalf("dependent rows left: centers=%d licenses=%d assignments=%d", centerCount, licenseCount, assignmentCount)
+	}
+}

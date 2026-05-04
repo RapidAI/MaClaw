@@ -17,7 +17,8 @@
     "settings": "设置",
     "settingsHint": "Center、记忆、路由",
     "humanInputNeeded": "{{count}} 条需要人工输入",
-    "updated": "{{owner}} / {{time}}"
+    "updated": "{{owner}} / {{time}}",
+    "openInterventionWorkbench": "打开人工干预工作台"
   },
   "nav": {
     "home": "对话",
@@ -157,7 +158,207 @@
     "availabilitySignals": "运行信号就绪",
     "center": "Center",
     "runtime": "运行时",
-    "watcher": "守护器"
+    "watcher": "守护器",
+    "centerReady": "Center 已就绪",
+    "centerOnline": "Center 在线",
+    "centerConfigured": "Center 已配置",
+    "localBodyOnly": "仅本地本体",
+    "readinessLoaded": "{{tenants}} 个租户 / {{roles}} 个角色 / {{workers}} 个 iWorker / {{accounts}} 个本地账号",
+    "readinessCheckPrompt": "运行 Center 检查以加载 iWorker 就绪状态。",
+    "availabilityState": {
+      "ready": "就绪",
+      "degraded": "降级可用",
+      "local": "本地模式",
+      "repair": "需要修复"
+    },
+    "availabilityDetail": {
+      "ready": "Center 工作、记忆、运行时心跳和已安装工具都可用。",
+      "degraded": "Center 修复期间，iWorker 可继续使用缓存或部分能力工作。",
+      "local": "Center 已禁用；本地执行仍可用，但没有共享记忆和推送。",
+      "repair": "核心注册或本地能力状态需要处理后再承接业务工作。"
+    },
+    "notRegistered": "未注册",
+    "pendingHandoffs": "{{count}} 条待交接",
+    "readyForCoworkerInput": "可接收同事输入",
+    "cachedSnapshot": "缓存快照",
+    "liveSync": "实时同步",
+    "configured": "已配置",
+    "localOnly": "仅本地",
+    "localContinuityDetail": "即使 Cloud 或 Center 不可用，此 iWorker 仍可继续本地对话、草稿、附件和任务历史。",
+    "centerReconnectingDetail": "本地工作可继续。缓存的 Center 快照仍可查看，但恢复、阻塞、运行、记忆同步和工具变更需要等待 iWorkerCenter 重连。",
+    "cachedContinuityDetail": "可查看缓存的 Center 上下文。会影响共享工作的实时变更仍通过 iWorkerCenter 执行。",
+    "cachedRuntimeCount": "{{count}} 个缓存运行时",
+    "cachedPushCount": "{{count}} 条缓存推送",
+    "staleMemorySnapshot": "记忆快照已过期",
+    "staleToolsSnapshot": "工具快照已过期",
+    "reconnectRequiredForCenterWrites": "Center 写操作需要重连",
+    "openCachedTask": "打开缓存任务",
+    "openReviewTask": "打开复核任务",
+    "runCenterPush": "运行 Center 推送",
+    "checkInbox": "检查收件箱",
+    "toolSummary": "{{skills}} 个技能 / {{mcp}} 个 MCP",
+    "noToolsEnabled": "未启用工具",
+    "directHumanHandoff": "直接人工交接",
+    "runningNow": "正在运行",
+    "localRun": "本地运行",
+    "centerAssigned": "Center 分配",
+    "cachedCenterPush": "缓存的 Center 推送",
+    "centerRun": "Center 运行",
+    "centerPush": "Center 推送",
+    "taskHistory": "任务历史",
+    "goalWatcherHandling": "目标守护器正在处理推送工作",
+    "noActiveTask": "无进行中任务",
+    "localExecution": "本地执行",
+    "watcherRunDetail": "第 {{run}} 次运行 / 单飞守护器",
+    "readyForCenterPushOrHandoff": "已准备接收 Center 推送或人工交接。",
+    "assignedIWorker": "已分配 iWorker",
+    "noCenterPushWaiting": "没有等待中的 Center 推送",
+    "handlingPushNow": "正在处理推送",
+    "runtimeBodiesOnline": "{{count}} 个运行本体在线",
+    "workControls": "工作控制",
+    "waitingForInputDetail": "等待 Center 推送、同事交接或直接指令，然后路由到合适的员工、技能或人工审批。",
+    "centerGovernedDetail": "任务、记忆、技能和 MCP 可见性由 iWorkerCenter 管控。Cloud 不进入业务执行。",
+    "localModeDetail": "本地执行可用；Center 记忆、推送和共享工具已禁用。",
+    "operatingStatusAria": "iWorker 运行状态",
+    "operatingSignalsReady": "{{ready}}/{{total}} 个运行信号就绪",
+    "onlineAgentInstances": "{{count}} 个在线 Agent 实例",
+    "cachedRuntimeSnapshotsAvailable": "Center 重连期间有 {{count}} 个缓存运行时快照可用。",
+    "liveRuntimeSnapshotAvailable": "Center 运行时实时快照可用。",
+    "multiAgentShareMemoryDetail": "多个 Agent 实例可以共享 Center 记忆，而这台桌面只是可替换的本体。",
+    "lastMemorySnapshot": "上次记忆快照",
+    "bodyModelDetail": "这台电脑提供屏幕、文件、浏览器和工具访问。",
+    "memoryModelDetail": "公司、部门和个人记忆持久保存在 iWorkerCenter。",
+    "cachedAt": "缓存于",
+    "running": "运行中",
+    "singleFlight": "单飞模式",
+    "runs": "运行",
+    "skips": "跳过",
+    "timeouts": "超时",
+    "handled": "已处理",
+    "watchNote": "间隔 {{interval}} 秒，最长运行 {{max}} 秒。",
+    "goalPush": "目标推送",
+    "secondsAgo": "{{seconds}} 秒前",
+    "localBody": "本地本体",
+    "baseTools": "基础工具",
+    "quickAction": {
+      "im": {
+        "title": "从 IM 开始",
+        "detail": "把语音或聊天指令转换为工作。"
+      },
+      "continue": {
+        "title": "继续任务",
+        "detail": "恢复最近的证据和结果。"
+      },
+      "memory": {
+        "title": "采集记忆",
+        "detail": "将可复用经验保存到 Center。"
+      },
+      "selfcheck": {
+        "title": "运行自检",
+        "detail": "检查 Center、记忆、工具、本体运行时和守护队列。"
+      }
+    },
+    "mode": {
+      "chat": {
+        "label": "对话",
+        "title": "先对话",
+        "detail": "使用语音或 IM 风格的指令。iWorker 可以先澄清意图，再打开结构化任务。",
+        "placeholder": "和你的 iWorker 对话。例如：帮我检查今天的交付异常，必要时询问质量 iWorker，并准备一份简短决策简报。"
+      },
+      "task": {
+        "label": "任务",
+        "title": "结构化执行",
+        "detail": "将请求转换为任务工作区，包含输出类型、同事路由、附件和审计轨迹。",
+        "placeholder": "描述任务、期望输出、上下文、截止时间，以及应由哪个数字员工负责。"
+      },
+      "research": {
+        "label": "深度工作",
+        "title": "证据与综合",
+        "detail": "让 iWorker 收集事实、调用技能、与同级 Agent 讨论，并产出可复用记忆。",
+        "placeholder": "提出分析、选项、风险点、证据和建议，并可保存为组织记忆。"
+      }
+    },
+    "quickTask": {
+      "Voice handoff": "语音交接",
+      "Operating brief": "运营简报",
+      "Ask peer iWorkers": "询问同级 iWorker",
+      "Customer reply": "客户回复",
+      "Policy memory check": "政策记忆检查",
+      "Meeting decisions": "会议决策",
+      "Data cleanup": "数据清洗",
+      "Evidence pack": "证据包",
+      "Market scan": "市场扫描",
+      "Root cause analysis": "根因分析",
+      "Decision options": "决策选项",
+      "Skill search": "技能搜索",
+      "Risk review": "风险复核",
+      "Reusable playbook": "可复用手册"
+    },
+    "outputBadge": {
+      "summary": "简报",
+      "document": "文档",
+      "table": "表格"
+    },
+    "outputType": {
+      "summary": "简短简报 / 行动摘要",
+      "document": "可交付文档",
+      "table": "结构化表格 / 校验计划"
+    },
+    "auto": "自动",
+    "routeBadge": "{{route}} 路由",
+    "runtimeSnapshot": "运行时快照",
+    "runtimeBodies": "运行本体",
+    "operatingSummary": "运行摘要",
+    "pushCount": "{{count}} 条推送",
+    "itemCount": "{{count}} 项",
+    "localContinuityStatus": "本地连续性状态",
+    "colleagueBadge": {
+      "Data iWorker": "数据",
+      "Quality iWorker": "质量",
+      "Operations iWorker": "运营",
+      "Office iWorker": "办公"
+    },
+    "routeReason": {
+      "data": "路由原因：数据、表格、清洗类工作需要结构化数据准备和校验。",
+      "quality": "路由原因：质量、根因、纠正类工作需要问题分类和原因分析。",
+      "operations": "路由原因：运营、生产、交接类工作需要执行上下文和交付连续性。",
+      "office": "路由原因：沟通、报告、文档类工作需要清晰书面输出和可交付语言。",
+      "auto": "路由原因：未命中特定专长，使用 iWorkerCenter 自动路由。"
+    },
+    "collaborationHint": {
+      "peer": "建议先通过 Center 进行 A2A 讨论，再形成最终答案。",
+      "memory": "写入新结论前，先使用 iWorkerCenter 的公司、部门和个人记忆。",
+      "data": "原始本地证据保持临时使用，再把可复用清洗规则保存回部门记忆。",
+      "default": "先直接开始，只有任务需要时才调用同级 iWorker、Cloud 授权技能或人工技能。"
+    },
+    "lane": {
+      "center": {
+        "label": "推送收件箱",
+        "detail": "iWorkerCenter 推送的工作应先于临时提示可见，并提供清晰的运行、恢复和阻塞决策。"
+      },
+      "human": {
+        "label": "澄清与审批",
+        "detail": "人类同事可以交接上下文、回答问题、批准高风险步骤，或作为可调用人工技能。"
+      },
+      "autonomy": {
+        "label": "运行状态",
+        "detail": "本地本体执行任务、上报心跳、保存持久记忆，并在无法安全继续时升级处理。"
+      }
+    },
+    "justNow": "刚刚",
+    "minutesWaiting": "等待 {{count}} 分钟",
+    "hoursWaiting": "等待 {{count}} 小时",
+    "commandInboxLanes": "指令收件通道",
+    "autonomousRunNeedsDecision": "自主运行需要人工决策。",
+    "toolTitle": {
+      "mention": "提及数字员工或人工技能",
+      "attach": "附加本地证据",
+      "skill": "选择技能",
+      "memory": "使用 Center 记忆"
+    },
+    "attach": "附件",
+    "skill": "技能",
+    "openTaskWorkspace": "打开任务工作区"
   },
   "newTask": {
     "eyebrow": "任务空间",
@@ -403,7 +604,62 @@
     "healthOkTitle": "Center 连接健康",
     "healthUnreachableTitle": "Center 当前不可达",
     "manualCheck": "手动检查",
-    "autoCheck": "保存后自动检查"
+    "autoCheck": "保存后自动检查",
+    "baseUrl": "Base URL",
+    "tenantId": "租户 ID",
+    "departmentId": "部门 ID",
+    "workerId": "Worker ID",
+    "usernameEmailPhone": "用户名 / 邮箱 / 手机号",
+    "passwordVerificationCode": "密码 / 验证码",
+    "reserved": "预留",
+    "tenant": "租户",
+    "iWorkerReadiness": "iWorker 就绪状态",
+    "ready": "就绪",
+    "needsSetup": "需要设置",
+    "centerAssets": "Center 资产",
+    "centerAssetsSummary": "{{tenants}} 个租户 / {{roles}} 个角色 / {{workers}} 个 iWorker",
+    "humanAuth": "人工认证",
+    "notReported": "未上报",
+    "recordCount": "{{count}} 条记录",
+    "memoryContentPlaceholder": "写入可复用事实、规则、偏好或交接说明。",
+    "memorySearchPlaceholder": "搜索已注册 Center 记忆",
+    "memory": "记忆",
+    "note": "笔记",
+    "noCenterAddress": "尚未配置 Center 地址",
+    "model": "模型",
+    "priority": "优先级",
+    "maxContext": "最大上下文",
+    "features": "能力标签",
+    "streaming": "流式输出",
+    "vision": "视觉",
+    "description": "描述",
+    "authMethod": {
+      "localAccount": "本地账号",
+      "localAccountDesc": "手工添加或导入的用户名/密码账号。",
+      "LDAP": "LDAP",
+      "ldapDesc": "企业目录账号。",
+      "oidcSso": "OIDC / OAuth SSO",
+      "oidcDesc": "为零信任单点登录预留。"
+    },
+    "companies": "单位",
+    "roles": "角色",
+    "iWorkers": "iWorker",
+    "iWorker": "iWorker",
+    "noDescriptionConfigured": "尚未配置描述。",
+    "modelWithValue": "模型：{{value}}",
+    "priorityWithValue": "优先级：{{value}}",
+    "contextWithValue": "上下文：{{value}}",
+    "nonStreaming": "非流式",
+    "textOnly": "仅文本",
+    "noFeaturesConfigured": "尚未配置能力标签",
+    "editingProvider": "正在编辑此 Provider",
+    "summaryView": "摘要视图",
+    "collapseProvider": "收起 {{name}}",
+    "editProvider": "编辑 {{name}}",
+    "name": "名称",
+    "protocol": "协议",
+    "apiKey": "API Key",
+    "featuresPlaceholder": "documents, Chinese, structured"
   },
   "colleaguesPage": {
     "title": "同事中心",

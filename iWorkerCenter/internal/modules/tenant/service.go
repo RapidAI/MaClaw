@@ -216,16 +216,24 @@ func (s *TenantService) RequireMultiTenantEnabled(ctx context.Context) error {
 }
 
 // CloudRegistrationStatus summarizes local Cloud registration state without exposing secrets.
+type CloudComputeStatus struct {
+	ProviderCount     int    `json:"provider_count"`
+	ComputePermission bool   `json:"compute_permission"`
+	ForceSync         bool   `json:"force_sync"`
+	Error             string `json:"error,omitempty"`
+}
+
 type CloudRegistrationStatus struct {
-	Configured    bool          `json:"configured"`
-	Registered    bool          `json:"registered"`
-	CenterID      string        `json:"center_id,omitempty"`
-	Status        string        `json:"status"`
-	License       *CloudLicense `json:"license,omitempty"`
-	LicenseError  string        `json:"license_error,omitempty"`
-	NonBlocking   bool          `json:"non_blocking"`
-	ControlPlane  string        `json:"control_plane"`
-	BusinessScope string        `json:"business_scope"`
+	Configured    bool                `json:"configured"`
+	Registered    bool                `json:"registered"`
+	CenterID      string              `json:"center_id,omitempty"`
+	Status        string              `json:"status"`
+	License       *CloudLicense       `json:"license,omitempty"`
+	Compute       *CloudComputeStatus `json:"compute,omitempty"`
+	LicenseError  string              `json:"license_error,omitempty"`
+	NonBlocking   bool                `json:"non_blocking"`
+	ControlPlane  string              `json:"control_plane"`
+	BusinessScope string              `json:"business_scope"`
 }
 
 // UpdateCloudConfigRequest updates the iWorkerCloud connection settings.
@@ -289,12 +297,47 @@ func validateHTTPURL(field, value string, required bool) error {
 	return nil
 }
 
-func persistCloudConfig(cfg CloudConfig) error {
+func cloudConfigDir() (string, error) {
+	if dir := strings.TrimSpace(os.Getenv("IWORKERCENTER_HOME")); dir != "" {
+		return dir, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("resolve user home: %w", err)
+		return "", fmt.Errorf("resolve user home: %w", err)
 	}
-	dir := filepath.Join(home, ".iworkercenter")
+	return filepath.Join(home, ".iworkercenter"), nil
+}
+
+func ensureMachineID() (string, error) {
+	dir, err := cloudConfigDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("create config dir: %w", err)
+	}
+	path := filepath.Join(dir, "machine_id")
+	if data, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(data)); id != "" {
+			return id, nil
+		}
+	}
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate machine id: %w", err)
+	}
+	id := "iwm_" + hex.EncodeToString(b)
+	if err := os.WriteFile(path, []byte(id+"\n"), 0600); err != nil {
+		return "", fmt.Errorf("persist machine id: %w", err)
+	}
+	return id, nil
+}
+
+func persistCloudConfig(cfg CloudConfig) error {
+	dir, err := cloudConfigDir()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
@@ -346,6 +389,11 @@ func (s *TenantService) CloudStatus(ctx context.Context, tenantID string) (*Clou
 	}
 	status.Status = "licensed"
 	status.License = license
+	if computeStatus, err := s.cloudClient.FetchCenterComputeProviders(ctx, t.CloudCenterID, t.CloudSecret); err == nil && computeStatus != nil {
+		status.Compute = &CloudComputeStatus{ProviderCount: len(computeStatus.Providers), ComputePermission: computeStatus.ComputePermission, ForceSync: computeStatus.ForceSync}
+	} else if err != nil {
+		status.Compute = &CloudComputeStatus{Error: err.Error()}
+	}
 	return status, nil
 }
 
@@ -357,8 +405,8 @@ func classifyCloudLicenseError(err error) string {
 	if strings.Contains(message, "status 404") || strings.Contains(message, "no active license") || strings.Contains(message, "not found") {
 		return "pending"
 	}
-	if strings.Contains(message, "status 401") || strings.Contains(message, "status 403") || strings.Contains(message, "unauthorized") || strings.Contains(message, "forbidden") {
-		return "pending"
+	if strings.Contains(message, "status 401") || strings.Contains(message, "status 403") || strings.Contains(message, "unauthorized") || strings.Contains(message, "forbidden") || strings.Contains(message, "auth_failed") || strings.Contains(message, "invalid center credentials") {
+		return "credential_mismatch"
 	}
 	if strings.Contains(message, "connection") || strings.Contains(message, "timeout") || strings.Contains(message, "no such host") || strings.Contains(message, "refused") {
 		return "offline"
@@ -418,7 +466,14 @@ func (s *TenantService) RegisterTenantToCloud(ctx context.Context, tenantID stri
 	cfg := s.cloudClient.Config()
 	tenantMode, _ := s.MultiTenantSettings(ctx)
 	tenantCount, _ := s.TenantCount(ctx)
+	machineID, err := ensureMachineID()
+	if err != nil {
+		return nil, err
+	}
+
 	req := RegisterCenterRequest{
+		MachineID:           machineID,
+		CompanyID:           strings.TrimSpace(t.ID),
 		CompanyName:         firstNonEmpty(t.CompanyName, cloudRegistrationName(cfg, t.ID)),
 		AdminEmail:          firstNonEmpty(t.Email, cloudRegistrationEmail(cfg)),
 		Address:             strings.TrimSpace(t.Address),

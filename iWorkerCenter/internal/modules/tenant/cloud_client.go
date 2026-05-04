@@ -90,6 +90,8 @@ func (c *CloudClient) FetchPublicKey(ctx context.Context) ([]byte, error) {
 
 // RegisterCenterRequest is sent to iWorkerCloud to register this center.
 type RegisterCenterRequest struct {
+	MachineID           string `json:"machine_id,omitempty"`
+	CompanyID           string `json:"company_id,omitempty"`
 	CompanyName         string `json:"company_name"`
 	AdminEmail          string `json:"admin_email"`
 	AdminPhone          string `json:"admin_phone,omitempty"`

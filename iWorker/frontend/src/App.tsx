@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import './i18n';
-import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchGoalPushes, FetchInstalledTools, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchConfigBundle, FetchGoalPushes, FetchInstalledTools, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -11,7 +11,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterAgentInstance, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
+import type { CenterAgentInstance, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, CenterConfigBundle, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { titleKey: string; subtitleKey: string; fallbackTitle: string; fallbackSubtitle: string; focusKey: string; fallbackFocus: string }> = {
   home: { titleKey: 'pages.home.title', subtitleKey: 'pages.home.subtitle', fallbackTitle: 'Talk', fallbackSubtitle: 'Start from a conversation, Center push, or human handoff.', focusKey: 'status.home', fallbackFocus: 'New work' },
@@ -283,6 +283,13 @@ const markInstalledToolsStale = (tools: CenterInstalledTools): CenterInstalledTo
   cachedAt: tools.cachedAt || staleSnapshotTime(),
 });
 
+const markConfigBundleStale = (bundle: CenterConfigBundle): CenterConfigBundle => ({
+  ...bundle,
+  source: bundle.source || 'cache',
+  stale: true,
+  cachedAt: bundle.cachedAt || staleSnapshotTime(),
+});
+
 const markWorkerMemoryStatsStale = (stats: WorkerMemoryStats): WorkerMemoryStats => ({
   ...stats,
   source: stats.source || 'cache',
@@ -477,6 +484,36 @@ const formatTimestamp = () => {
 const settingsSnapshot = (item: DiWorkerSettings) => JSON.stringify(item);
 
 const emptyInstalledTools: CenterInstalledTools = { skills: [], mcpServers: [], source: 'local', cachedAt: '', stale: false };
+const emptyConfigBundle: CenterConfigBundle = { id: '', version: 0, contentType: '', payload: '', status: '', note: '', createdAt: '', publishedAt: '', source: 'local', cachedAt: '', stale: false };
+
+type WailsConfigBundle = {
+  id?: string;
+  version?: number;
+  content_type?: string;
+  payload?: string;
+  status?: string;
+  note?: string;
+  created_at?: string;
+  published_at?: string;
+  source?: string;
+  cached_at?: string;
+  stale?: boolean;
+};
+
+const fromWailsConfigBundle = (item: WailsConfigBundle | null | undefined): CenterConfigBundle => ({
+  id: item?.id || '',
+  version: Number(item?.version || 0),
+  contentType: item?.content_type || '',
+  payload: item?.payload || '',
+  status: item?.status || '',
+  note: item?.note || '',
+  createdAt: item?.created_at || '',
+  publishedAt: item?.published_at || '',
+  source: item?.source || 'center',
+  cachedAt: item?.cached_at || '',
+  stale: Boolean(item?.stale),
+});
+
 
 type WailsInstalledTools = {
   source?: string;
@@ -593,7 +630,11 @@ export default function App() {
   const [installedTools, setInstalledTools] = useState<CenterInstalledTools>(emptyInstalledTools);
   const [installedToolsLoading, setInstalledToolsLoading] = useState(false);
   const [installedToolsError, setInstalledToolsError] = useState('');
+  const [configBundle, setConfigBundle] = useState<CenterConfigBundle>(emptyConfigBundle);
+  const [configBundleLoading, setConfigBundleLoading] = useState(false);
+  const [configBundleError, setConfigBundleError] = useState('');
   const installedToolsRefreshInFlight = useRef(false);
+  const configBundleRefreshInFlight = useRef(false);
   const agentInstancesRefreshInFlight = useRef(false);
   const goalPushRefreshInFlight = useRef(false);
 
@@ -662,6 +703,41 @@ export default function App() {
     void refreshInstalledTools();
   }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.departmentId, settings.center.baseUrl]);
 
+  const refreshConfigBundle = async () => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setConfigBundle(emptyConfigBundle);
+      setConfigBundleError('');
+      return emptyConfigBundle;
+    }
+    if (configBundleRefreshInFlight.current) {
+      return configBundle;
+    }
+    configBundleRefreshInFlight.current = true;
+    setConfigBundleLoading(true);
+    setConfigBundleError('');
+    try {
+      const bundle = await FetchConfigBundle();
+      const nextBundle = fromWailsConfigBundle(bundle as unknown as WailsConfigBundle);
+      setConfigBundle(nextBundle);
+      return nextBundle;
+    } catch (error) {
+      setConfigBundleError(error instanceof Error ? error.message : 'Failed to fetch Center config bundle.');
+      setConfigBundle((current) => current.version ? markConfigBundleStale(current) : current);
+      return undefined;
+    } finally {
+      configBundleRefreshInFlight.current = false;
+      setConfigBundleLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setConfigBundle(emptyConfigBundle);
+      return;
+    }
+    void refreshConfigBundle();
+  }, [settings.center.enabled, settings.center.tenantId, settings.center.baseUrl]);
+
   const refreshGoalWatchAutoStatus = async () => {
     if (!hasWailsBridge()) {
       setGoalWatchAutoStatus(null);
@@ -728,6 +804,7 @@ export default function App() {
       void refreshAgentInstances();
       void refreshGoalWatchAutoStatus();
       void refreshInstalledTools();
+      void refreshConfigBundle();
     }, 30000);
     return () => window.clearInterval(timer);
   }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl, settings.center.goalWatchAutoHandleEnabled, settings.center.goalWatchIntervalSec, settings.center.goalWatchMaxDurationSec]);
@@ -1348,10 +1425,14 @@ export default function App() {
           installedTools={installedTools}
           installedToolsLoading={installedToolsLoading}
           installedToolsError={installedToolsError}
+          configBundle={configBundle}
+          configBundleLoading={configBundleLoading}
+          configBundleError={configBundleError}
           submitting={submitting}
           onRefreshGoalPushes={refreshGoalPushes}
           onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
           onRefreshInstalledTools={refreshInstalledTools}
+          onRefreshConfigBundle={refreshConfigBundle}
           onCheckCenterHealth={handleCheckCenterHealth}
           onAutoHandleGoalPush={handleAutoHandleGoalPush}
           onAckGoalPush={handleAckGoalPush}
@@ -1364,7 +1445,7 @@ export default function App() {
           onOpenSettings={() => setActiveTab('settings')}
         />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask, centerEnrollmentDiscovery, centerEnrollmentDiscovering, centerEnrollmentApplyingId, centerEnrollmentMessage, centerEnrollmentError]);
+  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, configBundle, configBundleLoading, configBundleError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask, centerEnrollmentDiscovery, centerEnrollmentDiscovering, centerEnrollmentApplyingId, centerEnrollmentMessage, centerEnrollmentError]);
 
   const interventionSummary = useMemo(() => {
     const items = goalPushes.filter(isHumanInterventionGoalPush);

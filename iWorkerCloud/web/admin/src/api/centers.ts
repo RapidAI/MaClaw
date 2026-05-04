@@ -4,6 +4,8 @@ export type CloudControlMode = 'cloud_managed' | 'self_managed' | 'hybrid';
 
 export interface Center {
   id: string;
+  machine_id?: string;
+  company_id?: string;
   company_name: string;
   base_url?: string;
   cloud_control_mode?: CloudControlMode;

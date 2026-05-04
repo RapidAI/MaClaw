@@ -88,11 +88,11 @@ const SectionIcon = ({ children }: { children: string }) => (
 const defaultAuthMethods = [
   {
     method: "local",
-    label: "Local account",
+    label: "localAccount",
     enabled: true,
     implemented: true,
     status: "ready",
-    description: "Manual or imported username/password account.",
+    description: "localAccountDesc",
   },
   {
     method: "ldap",
@@ -100,15 +100,15 @@ const defaultAuthMethods = [
     enabled: true,
     implemented: true,
     status: "available",
-    description: "Enterprise directory account.",
+    description: "ldapDesc",
   },
   {
     method: "oidc",
-    label: "OIDC / OAuth SSO",
+    label: "oidcSso",
     enabled: false,
     implemented: false,
     status: "reserved",
-    description: "Reserved for zero-trust SSO.",
+    description: "oidcDesc",
   },
 ];
 
@@ -363,7 +363,7 @@ export function SettingsPage({
                       />
                     </label>
                     <label>
-                      Base URL
+                      {st("baseUrl", "Base URL")}
                       <input
                         value={settings.center.baseUrl}
                         onChange={(event) =>
@@ -373,7 +373,7 @@ export function SettingsPage({
                       />
                     </label>
                     <label>
-                      Tenant ID
+                      {st("tenantId", "Tenant ID")}
                       <input
                         value={settings.center.tenantId}
                         onChange={(event) =>
@@ -383,7 +383,7 @@ export function SettingsPage({
                       />
                     </label>
                     <label>
-                      Department ID
+                      {st("departmentId", "Department ID")}
                       <input
                         value={settings.center.departmentId}
                         onChange={(event) =>
@@ -393,7 +393,7 @@ export function SettingsPage({
                       />
                     </label>
                     <label>
-                      Worker ID
+                      {st("workerId", "Worker ID")}
                       <input
                         value={settings.center.workerId}
                         onChange={(event) =>
@@ -499,14 +499,14 @@ export function SettingsPage({
                             value={method.method}
                             disabled={!method.enabled && method.implemented}
                           >
-                            {method.label}
-                            {method.implemented ? "" : " (reserved)"}
+                            {st(`authMethod.${method.label}`, method.label)}
+                            {method.implemented ? "" : ` (${st("reserved", "reserved")})`}
                           </option>
                         ))}
                       </select>
                     </label>
                     <label>
-                      Username / email / phone
+                      {st("usernameEmailPhone", "Username / email / phone")}
                       <input
                         value={enrollmentAuthUsername}
                         onChange={(event) =>
@@ -516,7 +516,7 @@ export function SettingsPage({
                       />
                     </label>
                     <label>
-                      Password / verification code
+                      {st("passwordVerificationCode", "Password / verification code")}
                       <input
                         type="password"
                         value={enrollmentAuthPassword}
@@ -531,7 +531,7 @@ export function SettingsPage({
                     </label>
                   </div>
                   {selectedAuthMethod ? (
-                    <p>{selectedAuthMethod.description}</p>
+                    <p>{st(`authMethod.${selectedAuthMethod.description}`, selectedAuthMethod.description)}</p>
                   ) : null}
                   {enrollmentMessage ? <p>{enrollmentMessage}</p> : null}
                   {enrollmentError ? <p>{enrollmentError}</p> : null}
@@ -539,21 +539,21 @@ export function SettingsPage({
                     <div className="dw-settings-enrollment-results">
                       <div className="dw-settings-kv-list">
                         <div className="dw-settings-kv-item">
-                          <span>Tenant</span>
+                          <span>{st("tenant", "Tenant")}</span>
                           <strong>
                             {enrollmentDiscovery.selectedTenantId || "-"}
                           </strong>
                         </div>
                         <div className="dw-settings-kv-item">
-                          <span>Companies</span>
+                          <span>{st("companies", "Companies")}</span>
                           <strong>{enrollmentDiscovery.tenants.length}</strong>
                         </div>
                         <div className="dw-settings-kv-item">
-                          <span>Roles</span>
+                          <span>{st("roles", "Roles")}</span>
                           <strong>{enrollmentDiscovery.roles.length}</strong>
                         </div>
                         <div className="dw-settings-kv-item">
-                          <span>iWorkers</span>
+                          <span>{st("iWorkers", "iWorkers")}</span>
                           <strong>
                             {enrollmentDiscovery.colleagues.length}
                           </strong>
@@ -571,7 +571,7 @@ export function SettingsPage({
                                 <span>
                                   {worker.roleName ||
                                     worker.roleCode ||
-                                    "iWorker"}
+                                    st("iWorker", "iWorker")}
                                 </span>
                                 <p>
                                   {worker.description ||
@@ -705,7 +705,7 @@ export function SettingsPage({
                             <strong>{provider.name}</strong>
                             <p>
                               {provider.description ||
-                                "No description configured."}
+                                st("noDescriptionConfigured", "No description configured.")}
                             </p>
                           </div>
                           <div className="dw-provider-card-badges">
@@ -720,34 +720,34 @@ export function SettingsPage({
                           </div>
                         </div>
                         <div className="dw-provider-meta-row">
-                          <span>Model: {provider.model || "-"}</span>
-                          <span>Priority: {provider.priority}</span>
+                          <span>{st("modelWithValue", "Model: {{value}}", { value: provider.model || "-" })}</span>
+                          <span>{st("priorityWithValue", "Priority: {{value}}", { value: provider.priority })}</span>
                           <span>
-                            Context: {provider.capabilities.maxContext || 0}
+                            {st("contextWithValue", "Context: {{value}}", { value: provider.capabilities.maxContext || 0 })}
                           </span>
                         </div>
                         <div className="dw-provider-feature-row">
                           <span>
                             {provider.capabilities.supportsStream
-                              ? "Streaming"
-                              : "Non-streaming"}
+                              ? st("streaming", "Streaming")
+                              : st("nonStreaming", "Non-streaming")}
                           </span>
                           <span>
                             {provider.capabilities.supportsVision
-                              ? "Vision"
-                              : "Text only"}
+                              ? st("vision", "Vision")
+                              : st("textOnly", "Text only")}
                           </span>
                           <span>
                             {provider.features.length
                               ? provider.features.join(" / ")
-                              : "No features configured"}
+                              : st("noFeaturesConfigured", "No features configured")}
                           </span>
                         </div>
                         <div className="dw-provider-summary-foot">
                           <span>
                             {isExpanded
-                              ? "Editing this provider"
-                              : "Summary view"}
+                              ? st("editingProvider", "Editing this provider")
+                              : st("summaryView", "Summary view")}
                           </span>
                           <button
                             type="button"
@@ -761,8 +761,8 @@ export function SettingsPage({
                             }
                           >
                             {isExpanded
-                              ? `Collapse ${provider.name}`
-                              : `Edit ${provider.name}`}
+                              ? st("collapseProvider", "Collapse {{name}}", { name: provider.name })
+                              : st("editProvider", "Edit {{name}}", { name: provider.name })}
                           </button>
                         </div>
                       </div>
@@ -785,7 +785,7 @@ export function SettingsPage({
                               </select>
                             </label>
                             <label>
-                              Name
+                              {st("name", "Name")}
                               <input
                                 value={provider.name}
                                 onChange={(event) =>
@@ -796,7 +796,7 @@ export function SettingsPage({
                               />
                             </label>
                             <label>
-                              Protocol
+                              {st("protocol", "Protocol")}
                               <select
                                 value={provider.protocol}
                                 onChange={(event) =>
@@ -811,7 +811,7 @@ export function SettingsPage({
                               </select>
                             </label>
                             <label className="dw-provider-field-span-3">
-                              Base URL
+                              {st("baseUrl", "Base URL")}
                               <input
                                 value={provider.baseUrl}
                                 onChange={(event) =>
@@ -822,7 +822,7 @@ export function SettingsPage({
                               />
                             </label>
                             <label className="dw-provider-field-span-3">
-                              API Key
+                              {st("apiKey", "API Key")}
                               <input
                                 value={provider.apiKey}
                                 onChange={(event) =>
@@ -836,7 +836,7 @@ export function SettingsPage({
                           <div className="dw-provider-form-divider" />
                           <div className="dw-form-grid dw-provider-grid dw-provider-grid-secondary">
                             <label>
-                              Model
+                              {st("model", "Model")}
                               <input
                                 value={provider.model}
                                 onChange={(event) =>
@@ -847,7 +847,7 @@ export function SettingsPage({
                               />
                             </label>
                             <label>
-                              Priority
+                              {st("priority", "Priority")}
                               <input
                                 value={String(provider.priority)}
                                 onChange={(event) =>
@@ -858,7 +858,7 @@ export function SettingsPage({
                               />
                             </label>
                             <label>
-                              Max context
+                              {st("maxContext", "Max context")}
                               <input
                                 value={String(provider.capabilities.maxContext)}
                                 onChange={(event) =>
@@ -873,7 +873,7 @@ export function SettingsPage({
                               />
                             </label>
                             <label className="dw-provider-field-span-3">
-                              Features
+                              {st("features", "Features")}
                               <input
                                 value={provider.features.join(", ")}
                                 onChange={(event) =>
@@ -882,11 +882,11 @@ export function SettingsPage({
                                     event.target.value,
                                   )
                                 }
-                                placeholder="documents, Chinese, structured"
+                                placeholder={st("featuresPlaceholder", "documents, Chinese, structured")}
                               />
                             </label>
                             <label>
-                              Streaming
+                              {st("streaming", "Streaming")}
                               <select
                                 value={
                                   provider.capabilities.supportsStream
@@ -907,7 +907,7 @@ export function SettingsPage({
                               </select>
                             </label>
                             <label>
-                              Vision
+                              {st("vision", "Vision")}
                               <select
                                 value={
                                   provider.capabilities.supportsVision
@@ -928,7 +928,7 @@ export function SettingsPage({
                               </select>
                             </label>
                             <label>
-                              Description
+                              {st("description", "Description")}
                               <input
                                 value={provider.description}
                                 onChange={(event) =>
@@ -955,7 +955,7 @@ export function SettingsPage({
                   <label>{st("memoryStats", "Memory records")}</label>
                   <strong>
                     {memoryStats
-                      ? `${memoryStats.total} records`
+                      ? st("recordCount", "{{count}} records", { count: memoryStats.total })
                       : st("notLoaded", "Not loaded")}
                   </strong>
                 </div>
@@ -1007,9 +1007,9 @@ export function SettingsPage({
                     }
                     disabled={!settings.center.enabled || memorySaving}
                   >
-                    <option value="personal">Personal memory</option>
-                    <option value="department">Department memory</option>
-                    <option value="company">Company memory</option>
+                    <option value="personal">{st("personalMemory", "Personal memory")}</option>
+                    <option value="department">{st("departmentMemory", "Department memory")}</option>
+                    <option value="company">{st("companyMemory", "Company memory")}</option>
                   </select>
                 </label>
                 <label>
@@ -1041,7 +1041,7 @@ export function SettingsPage({
                     onChange={(event) =>
                       onMemoryDraftContentChange(event.target.value)
                     }
-                    placeholder="Write a reusable fact, rule, preference, or handoff note."
+                    placeholder={st("memoryContentPlaceholder", "Write a reusable fact, rule, preference, or handoff note.")}
                     disabled={!settings.center.enabled || memorySaving}
                     rows={4}
                   />
@@ -1077,7 +1077,7 @@ export function SettingsPage({
                     onChange={(event) =>
                       onMemoryRecallQueryChange(event.target.value)
                     }
-                    placeholder="Search registered center memory"
+                    placeholder={st("memorySearchPlaceholder", "Search registered center memory")}
                     disabled={!settings.center.enabled || memoryRecallLoading}
                   />
                 </label>
@@ -1100,7 +1100,7 @@ export function SettingsPage({
                         key={item.id || `${item.scope}-${item.content}`}
                         className="dw-settings-kv-item"
                       >
-                        <span>{`${item.scope || "memory"} / ${item.category || "note"}`}</span>
+                        <span>{`${item.scope || st("memory", "memory")} / ${item.category || st("note", "note")}`}</span>
                         <strong>{item.content}</strong>
                         <button
                           type="button"
@@ -1157,7 +1157,7 @@ export function SettingsPage({
                   <strong>
                     {healthStatus?.resolvedBaseUrl ||
                       settings.center.baseUrl ||
-                      "No Center address configured"}
+                      st("noCenterAddress", "No Center address configured")}
                   </strong>
                 </div>
                 {healthStatus ? (
@@ -1185,23 +1185,23 @@ export function SettingsPage({
                 {centerReadiness ? (
                   <>
                     <div className="dw-settings-kv-item">
-                      <span>iWorker readiness</span>
+                      <span>{st("iWorkerReadiness", "iWorker readiness")}</span>
                       <strong>
                         {centerReadiness.ready
-                          ? "ready"
-                          : centerReadiness.status || "needs setup"}
+                          ? st("ready", "ready")
+                          : centerReadiness.status || st("needsSetup", "needs setup")}
                       </strong>
                     </div>
                     <div className="dw-settings-kv-item">
-                      <span>Center assets</span>
-                      <strong>{`${centerReadiness.tenantCount} tenants / ${centerReadiness.roleCount} roles / ${centerReadiness.colleagueCount} iWorkers`}</strong>
+                      <span>{st("centerAssets", "Center assets")}</span>
+                      <strong>{st("centerAssetsSummary", "{{tenants}} tenants / {{roles}} roles / {{workers}} iWorkers", { tenants: centerReadiness.tenantCount, roles: centerReadiness.roleCount, workers: centerReadiness.colleagueCount })}</strong>
                     </div>
                     <div className="dw-settings-kv-item">
-                      <span>Human auth</span>
+                      <span>{st("humanAuth", "Human auth")}</span>
                       <strong>
                         {centerReadiness.authMethods
                           .map((item) => `${item.method}:${item.status}`)
-                          .join(" / ") || "not reported"}
+                          .join(" / ") || st("notReported", "not reported")}
                       </strong>
                     </div>
                   </>
@@ -1213,7 +1213,7 @@ export function SettingsPage({
                     <div key={check.name} className="dw-settings-kv-item">
                       <span>{check.name}</span>
                       <strong>
-                        {check.ready ? "ready" : check.status}
+                        {check.ready ? st("ready", "ready") : check.status}
                         {typeof check.count === "number"
                           ? ` / ${check.count}`
                           : ""}

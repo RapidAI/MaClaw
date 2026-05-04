@@ -269,6 +269,20 @@ export type CenterInstalledTools = {
   stale: boolean;
 };
 
+export type CenterConfigBundle = {
+  id: string;
+  version: number;
+  contentType: string;
+  payload: string;
+  status: string;
+  note: string;
+  createdAt: string;
+  publishedAt: string;
+  source: string;
+  cachedAt: string;
+  stale: boolean;
+};
+
 export type CenterGoalPush = {
   eventId?: string;
   taskId: string;

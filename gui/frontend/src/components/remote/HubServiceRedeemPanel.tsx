@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GetHubLLMServiceStatus, LoadConfig, RedeemHubLLMService } from "../../../wailsjs/go/main/App";
-import { BrowserOpenURL } from "../../../wailsjs/runtime";
+import { BrowserOpenURL, EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { colors, radius } from "./styles";
 import { useDialog } from "../CustomDialog";
 import { buildHubCreditsURL } from "../../utils/hubCredits";
@@ -14,7 +14,12 @@ interface HubLLMAuthorizedModel {
 interface HubLLMActiveGrant {
     service_group_id: string;
     source: string;
+    starts_at?: string;
     expires_at: string;
+    active?: boolean;
+    credits_total?: number;
+    credits_used?: number;
+    credits_remaining?: number;
 }
 
 interface HubLLMServiceStatus {
@@ -26,11 +31,16 @@ interface HubLLMServiceStatus {
     available_models?: string[];
     authorized_models?: HubLLMAuthorizedModel[];
     active_grants?: HubLLMActiveGrant[];
+    credit_grants?: HubLLMActiveGrant[];
     inactive_reasons?: string[];
     nearest_expires_at?: string;
     effective_expires_at?: string;
     default_model?: string;
     hub_llm_base_url?: string;
+    credits_total?: number;
+    credits_used?: number;
+    credits_remaining?: number;
+    credits_available?: number;
 }
 
 interface Props {
@@ -155,6 +165,34 @@ const detailTheadThStyle: React.CSSProperties = {
     whiteSpace: "nowrap",
 };
 
+const creditMetricStyle: React.CSSProperties = {
+    ...mutedCardStyle,
+    padding: "10px 12px",
+};
+
+function formatCredits(value?: number): string {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num)) return "0";
+    return num.toFixed(3).replace(/\.000$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+}
+
+function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
+    return (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+}
+
+function creditTotals(status: HubLLMServiceStatus | null) {
+    const grants = creditGrants(status);
+    const grantTotal = grants.reduce((sum, grant) => sum + Number(grant.credits_total || 0), 0);
+    const grantUsed = grants.reduce((sum, grant) => sum + Number(grant.credits_used || 0), 0);
+    const grantRemaining = grants.reduce((sum, grant) => sum + Number(grant.credits_remaining || 0), 0);
+    const total = Number(status?.credits_total ?? grantTotal);
+    const used = Number(status?.credits_used ?? grantUsed);
+    const remainingRaw = Number(status?.credits_remaining ?? grantRemaining);
+    const available = Number(status?.credits_available || 0);
+    const remaining = remainingRaw > 0 ? remainingRaw : available;
+    return { total, used, remaining };
+}
+
 function formatTime(value?: string, lang?: string): string {
     if (!value) return "-";
     const dt = new Date(value);
@@ -211,6 +249,28 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         loadStatus();
     }, [loadStatus]);
 
+    useEffect(() => {
+        const timers = new Set<number>();
+        const scheduleReload = (delayMs: number) => {
+            const timer = window.setTimeout(() => {
+                timers.delete(timer);
+                void loadStatus(true);
+            }, delayMs);
+            timers.add(timer);
+        };
+        const handler = () => {
+            void loadStatus(true);
+            scheduleReload(2500);
+        };
+        EventsOn("llm-token-usage-changed", handler);
+        EventsOn("hub-llm-service-changed", handler);
+        return () => {
+            timers.forEach((timer) => window.clearTimeout(timer));
+            EventsOff("llm-token-usage-changed");
+            EventsOff("hub-llm-service-changed");
+        };
+    }, [loadStatus]);
+
     const activeGroupNames = useMemo(() => {
         if (!status?.service_group_names?.length) return [] as string[];
         return status.service_group_names.filter(Boolean);
@@ -219,6 +279,9 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     const availableModels = useMemo(() => {
         return (status?.available_models || []).filter(Boolean);
     }, [status]);
+
+    const totals = useMemo(() => creditTotals(status), [status]);
+    const grantsForDetails = useMemo(() => creditGrants(status), [status]);
 
     const openHubCreditsPage = useCallback(async () => {
         try {
@@ -359,24 +422,49 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     </tbody>
                 </table>
 
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 14 }}>
+                    <div style={creditMetricStyle}>
+                        <div style={labelStyle}>{t("Total credits", "总 credits")}</div>
+                        <div style={{ ...valueStyle, color: colors.primary, fontWeight: 700 }}>{formatCredits(totals.total)}</div>
+                    </div>
+                    <div style={creditMetricStyle}>
+                        <div style={labelStyle}>{t("Used credits", "已用 credits")}</div>
+                        <div style={{ ...valueStyle, color: colors.warning, fontWeight: 700 }}>{formatCredits(totals.used)}</div>
+                    </div>
+                    <div style={creditMetricStyle}>
+                        <div style={labelStyle}>{t("Remaining credits", "剩余 credits")}</div>
+                        <div style={{ ...valueStyle, color: colors.success, fontWeight: 700 }}>{formatCredits(totals.remaining)}</div>
+                    </div>
+                </div>
+
                 {/* Active Grants table */}
                 <div style={{ marginTop: 16 }}>
                     <div style={labelStyle}>{t("Active Grants", "生效中的授权")}</div>
-                    {(status?.active_grants || []).length ? (
+                    {grantsForDetails.length ? (
                         <table style={detailTableStyle}>
                             <thead>
                                 <tr>
                                     <th style={detailTheadThStyle}>{t("Service Group", "服务组")}</th>
                                     <th style={detailTheadThStyle}>{t("Source", "来源")}</th>
+                                    <th style={detailTheadThStyle}>{t("Starts At", "开始时间")}</th>
                                     <th style={detailTheadThStyle}>{t("Expires At", "到期时间")}</th>
+                                    <th style={detailTheadThStyle}>{t("Total", "总额")}</th>
+                                    <th style={detailTheadThStyle}>{t("Used", "已用")}</th>
+                                    <th style={detailTheadThStyle}>{t("Remaining", "剩余")}</th>
+                                    <th style={detailTheadThStyle}>{t("Status", "状态")}</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {(status?.active_grants || []).map((grant, index) => (
+                                {grantsForDetails.map((grant, index) => (
                                     <tr key={`${grant.service_group_id}-${index}`}>
                                         <td style={detailTdStyle}><span style={{ fontWeight: 600 }}>{grant.service_group_id || "-"}</span></td>
                                         <td style={detailTdStyle}>{grant.source || "-"}</td>
+                                        <td style={detailTdStyle}>{formatTime(grant.starts_at, lang)}</td>
                                         <td style={detailTdStyle}>{formatTime(grant.expires_at, lang)}</td>
+                                        <td style={detailTdStyle}>{formatCredits(grant.credits_total)}</td>
+                                        <td style={{ ...detailTdStyle, color: colors.warning }}>{formatCredits(grant.credits_used)}</td>
+                                        <td style={{ ...detailTdStyle, color: colors.success }}>{formatCredits(grant.credits_remaining)}</td>
+                                        <td style={detailTdStyle}>{grant.active === false ? t("Queued", "排队中") : t("Active", "生效中")}</td>
                                     </tr>
                                 ))}
                             </tbody>

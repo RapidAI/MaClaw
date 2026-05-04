@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import json
 import os
 import pathlib
@@ -27,10 +27,12 @@ only_assets = [
 def upload_file(client, local_path, key, cache_control):
     size = local_path.stat().st_size
     log(f"upload {local_path.name} size={size} key={key}")
-    client.put_object_from_local_file(
+    client.upload_file(
         Bucket=bucket,
-        LocalFilePath=str(local_path),
         Key=key,
+        LocalFilePath=str(local_path),
+        PartSize=int(os.environ.get("COS_UPLOAD_PART_SIZE_MB", "8")),
+        MAXThread=int(os.environ.get("COS_UPLOAD_THREADS", "8")),
         CacheControl=cache_control,
     )
 

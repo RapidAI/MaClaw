@@ -3,6 +3,7 @@ package delivery
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -24,6 +25,21 @@ type Bundle struct {
 	CreatedAt   time.Time
 	PublishedAt time.Time
 }
+
+// ApplyRecord records an iWorker acknowledgement for a delivered bundle.
+type ApplyRecord struct {
+	TenantID     string
+	BundleID     string
+	Version      int
+	WorkerID     string
+	DepartmentID string
+	Status       string
+	Message      string
+	AppliedAt    time.Time
+}
+
+// ErrBundleNotPublished is returned when an iWorker reports a draft bundle.
+var ErrBundleNotPublished = errors.New("config bundle is not published")
 
 // Repo provides persistence for config bundles.
 type Repo struct {
@@ -69,6 +85,13 @@ func (r *Repo) GetLatestPublished(tenantID string) (*Bundle, error) {
 	return scanBundle(row)
 }
 
+// GetByID returns one bundle scoped to a tenant.
+func (r *Repo) GetByID(tenantID, id string) (*Bundle, error) {
+	row := r.read.QueryRow(`SELECT id, version, content_type, payload, status, note, created_at, published_at
+		FROM config_bundles WHERE tenant_id=? AND id=? LIMIT 1`, tenantID, id)
+	return scanBundle(row)
+}
+
 // GetLatestVersion returns the highest version number.
 func (r *Repo) GetLatestVersion(tenantID string) (int, error) {
 	var v int
@@ -93,6 +116,55 @@ func (r *Repo) List(tenantID string) ([]*Bundle, error) {
 		result = append(result, b)
 	}
 	return result, rows.Err()
+}
+
+// RecordApply upserts a client-side apply acknowledgement.
+func (r *Repo) RecordApply(record ApplyRecord) error {
+	bundle, err := r.GetByID(record.TenantID, record.BundleID)
+	if err != nil {
+		return fmt.Errorf("config apply bundle %s not found for tenant %s: %w", record.BundleID, record.TenantID, err)
+	}
+	if bundle.Status != "published" {
+		return fmt.Errorf("config apply bundle %s is %s: %w", record.BundleID, bundle.Status, ErrBundleNotPublished)
+	}
+	record.Version = bundle.Version
+	now := record.AppliedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
+	_, err = r.write.Exec(`INSERT INTO config_apply_records (tenant_id, bundle_id, version, worker_id, department_id, status, message, applied_at)
+		VALUES (?,?,?,?,?,?,?,?)
+		ON CONFLICT(tenant_id, bundle_id, worker_id) DO UPDATE SET
+			version=excluded.version, department_id=excluded.department_id, status=excluded.status, message=excluded.message, applied_at=excluded.applied_at`,
+		record.TenantID, record.BundleID, record.Version, record.WorkerID, record.DepartmentID, normalizeApplyStatus(record.Status), strings.TrimSpace(record.Message), now.Format(time.RFC3339))
+	return err
+}
+
+// ListApplyRecords returns recent acknowledgements for admin visibility.
+func (r *Repo) ListApplyRecords(tenantID string, limit int) ([]ApplyRecord, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rows, err := r.read.Query(`SELECT tenant_id, bundle_id, version, worker_id, department_id, status, message, applied_at
+		FROM config_apply_records WHERE tenant_id=? ORDER BY applied_at DESC LIMIT ?`, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ApplyRecord
+	for rows.Next() {
+		var rec ApplyRecord
+		var appliedAt string
+		if err := rows.Scan(&rec.TenantID, &rec.BundleID, &rec.Version, &rec.WorkerID, &rec.DepartmentID, &rec.Status, &rec.Message, &appliedAt); err != nil {
+			return nil, err
+		}
+		rec.AppliedAt, _ = time.Parse(time.RFC3339, appliedAt)
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }
 
 func scanBundle(row *sql.Row) (*Bundle, error) {
@@ -139,6 +211,7 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 func (h *Handler) RegisterClientRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/client/config/version", h.handleClientVersion)
 	mux.HandleFunc("/client/config/latest", h.handleClientLatest)
+	mux.HandleFunc("/client/config/apply-result", h.handleClientApplyResult)
 }
 
 func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +223,12 @@ func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 			response.Internal(w, err.Error())
 			return
 		}
-		response.OK(w, map[string]any{"bundles": toBundleDTOs(bundles)})
+		records, err := h.repo.ListApplyRecords(tenantID, 1000)
+		if err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+		response.OK(w, map[string]any{"bundles": toBundleDTOs(bundles), "apply_records": toApplyRecordDTOs(records)})
 	case http.MethodPost:
 		var req struct {
 			ContentType string `json:"content_type"`
@@ -233,6 +311,55 @@ func (h *Handler) handleClientLatest(w http.ResponseWriter, r *http.Request) {
 	response.OK(w, toBundleDTO(bundle))
 }
 
+func (h *Handler) handleClientApplyResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
+		return
+	}
+	var req struct {
+		BundleID     string `json:"bundle_id"`
+		Version      int    `json:"version"`
+		WorkerID     string `json:"worker_id"`
+		DepartmentID string `json:"department_id"`
+		Status       string `json:"status"`
+		Message      string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
+		return
+	}
+	if strings.TrimSpace(req.BundleID) == "" {
+		response.BadRequest(w, "MISSING_BUNDLE", "bundle_id is required")
+		return
+	}
+	if strings.TrimSpace(req.WorkerID) == "" {
+		response.BadRequest(w, "MISSING_WORKER", "worker_id is required")
+		return
+	}
+	record := ApplyRecord{
+		TenantID:     tenant.RequestTenantID(r),
+		BundleID:     strings.TrimSpace(req.BundleID),
+		Version:      req.Version,
+		WorkerID:     strings.TrimSpace(req.WorkerID),
+		DepartmentID: strings.TrimSpace(req.DepartmentID),
+		Status:       normalizeApplyStatus(req.Status),
+		Message:      strings.TrimSpace(req.Message),
+	}
+	if err := h.repo.RecordApply(record); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			response.BadRequest(w, "UNKNOWN_BUNDLE", "config bundle is not found for this tenant")
+			return
+		}
+		if errors.Is(err, ErrBundleNotPublished) {
+			response.BadRequest(w, "BUNDLE_NOT_PUBLISHED", "config bundle is not published")
+			return
+		}
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]string{"status": "recorded"})
+}
+
 // --- DTOs ---
 
 type bundleDTO struct {
@@ -244,6 +371,16 @@ type bundleDTO struct {
 	Note        string `json:"note"`
 	CreatedAt   string `json:"created_at"`
 	PublishedAt string `json:"published_at"`
+}
+
+type applyRecordDTO struct {
+	BundleID     string `json:"bundle_id"`
+	Version      int    `json:"version"`
+	WorkerID     string `json:"worker_id"`
+	DepartmentID string `json:"department_id"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	AppliedAt    string `json:"applied_at"`
 }
 
 func toBundleDTO(b *Bundle) bundleDTO {
@@ -265,6 +402,31 @@ func toBundleDTOs(bundles []*Bundle) []bundleDTO {
 		out = append(out, toBundleDTO(b))
 	}
 	return out
+}
+
+func toApplyRecordDTOs(records []ApplyRecord) []applyRecordDTO {
+	out := make([]applyRecordDTO, 0, len(records))
+	for _, rec := range records {
+		appliedAt := ""
+		if !rec.AppliedAt.IsZero() {
+			appliedAt = rec.AppliedAt.Format("2006-01-02T15:04:05Z")
+		}
+		out = append(out, applyRecordDTO{BundleID: rec.BundleID, Version: rec.Version, WorkerID: rec.WorkerID, DepartmentID: rec.DepartmentID, Status: rec.Status, Message: rec.Message, AppliedAt: appliedAt})
+	}
+	return out
+}
+
+func normalizeApplyStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "success", "applied", "ok":
+		return "success"
+	case "failed", "failure", "error":
+		return "failed"
+	case "skipped", "skip":
+		return "skipped"
+	default:
+		return "failed"
+	}
 }
 
 func defaultStr(val, def string) string {

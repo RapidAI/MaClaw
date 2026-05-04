@@ -2,6 +2,7 @@ package tenant
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -23,6 +24,9 @@ func setupTestDB(t *testing.T) *db.Provider {
 
 func newTestService(t *testing.T) (*TenantService, *db.Provider) {
 	t.Helper()
+	if os.Getenv("IWORKERCENTER_HOME") == "" {
+		t.Setenv("IWORKERCENTER_HOME", t.TempDir())
+	}
 	p := setupTestDB(t)
 	repo := NewTenantRepo(p.Write, p.Read)
 	svc := NewTenantService(repo, p.Write, p.Write, nil)

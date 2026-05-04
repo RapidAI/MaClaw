@@ -9,8 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"io"
-	"log"
-	"net/http"
+	"log"`n`t"net"`n	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2105,6 +2104,7 @@ func (a *App) startConfigWatcher() {
 					// Let's assume for now this is for external edits.
 					config, err := a.LoadConfig()
 					if err == nil {
+						a.refreshWorkstationMode(config)
 						a.refreshPowerOptimizationStateFromConfig(config)
 						a.emitEvent("config-updated", config)
 						// Re-sync QQ Bot gateway on config change
@@ -4834,180 +4834,229 @@ type UpdateResult struct {
 	DownloadUnavailable bool   `json:"download_unavailable"` // true when new version exists but installer package is not yet available
 }
 
-func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
-	// Use GitHub API instead of web scraping
-	// Updated URL: aicoder instead of cceasy
-	url := "https://api.github.com/repos/RapidAI/MaClaw/releases/latest"
-	a.log(a.tr("CheckUpdate: Starting check against %s", url))
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		a.log(a.tr("CheckUpdate: Failed to create request: %v", err))
-		return UpdateResult{LatestVersion: "", ReleaseUrl: ""}, err
-	}
-	req.Header.Set("User-Agent", brand.Current().DisplayName)
-	// Add GitHub token for authentication (helps avoid rate limiting).
-	// Uses shared ResolveGitHubToken: env GITHUB_TOKEN > built-in default.
-	token := skill.ResolveGitHubToken()
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		a.log(a.tr("CheckUpdate: Failed to fetch GitHub API: %v", err))
-		return UpdateResult{LatestVersion: "fetch_failed", ReleaseUrl: ""}, err
-	}
-	defer resp.Body.Close()
-	a.log(a.tr("CheckUpdate: HTTP Status: %d", resp.StatusCode))
-	// Log rate limit headers for debugging
-	a.log(a.tr("CheckUpdate: Rate Limit: %s/%s, Reset: %s",
-		resp.Header.Get("X-RateLimit-Remaining"),
-		resp.Header.Get("X-RateLimit-Limit"),
-		resp.Header.Get("X-RateLimit-Reset")))
-	// Check HTTP status
-	if resp.StatusCode != 200 {
-		a.log(a.tr("CheckUpdate: GitHub API returned status %d", resp.StatusCode))
-		bodyText, _ := io.ReadAll(resp.Body)
-		a.log(a.tr("CheckUpdate: Response: %s", string(bodyText[:min(len(bodyText), 200)])))
-		// Provide specific error message for rate limiting
-		if resp.StatusCode == 403 {
-			remaining := resp.Header.Get("X-RateLimit-Remaining")
-			if remaining == "0" {
-				resetTime := resp.Header.Get("X-RateLimit-Reset")
-				a.log(a.tr("CheckUpdate: Rate limit exceeded, resets at: %s", resetTime))
-				return UpdateResult{LatestVersion: "rate_limited", ReleaseUrl: ""}, fmt.Errorf("github api rate limit exceeded (resets at %s)", resetTime)
-				fmt.Errorf("github api rate limit exceeded (resets at %s)", resetTime)
-			}
-			return UpdateResult{LatestVersion: "forbidden", ReleaseUrl: ""}, fmt.Errorf("github api access forbidden (status 403)")
+const (
+	githubLatestReleaseAPI = "https://api.github.com/repos/RapidAI/MaClaw/releases/latest"
+	cosLatestManifestURL   = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest.json"
+	cosPublicBaseURL       = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
+)
 
+type cosLatestManifest struct {
+	Version string                     `json:"version"`
+	Tag     string                     `json:"tag"`
+	Assets  map[string]cosLatestAsset `json:"assets"`
+}
+
+type cosLatestAsset struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+	URL  string `json:"url"`
+}
+
+func updateHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{Timeout: 6 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   6 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	return &http.Client{Transport: transport, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
 		}
-		return UpdateResult{LatestVersion: "api_error", ReleaseUrl: ""}, fmt.Errorf("github api returned status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		a.log(a.tr("CheckUpdate: Failed to read response body: %v", err))
-		return UpdateResult{LatestVersion: "read_failed", ReleaseUrl: ""}, err
-	}
-	// Log raw response for debugging
-	a.log(a.tr("CheckUpdate: Raw response length: %d bytes", len(body)))
-	a.log(a.tr("CheckUpdate: Response body: %s", string(body[:min(len(body), 500)])))
-	// Parse JSON response
-	var release map[string]interface{}
-	if err := json.Unmarshal(body, &release); err != nil {
-		a.log(a.tr("CheckUpdate: Failed to parse JSON: %v", err))
-		a.log(a.tr("CheckUpdate: Response body: %s", string(body[:min(len(body), 500)])))
-		return UpdateResult{LatestVersion: "parse_failed", ReleaseUrl: ""}, err
-	}
-	// Log parsed keys
-	a.log(a.tr("CheckUpdate: Parsed keys: %v", getMapKeys(release)))
-	// Extract version from either 'name' or 'tag_name'
-	var tagName string
-	// Try 'tag_name' field first (e.g.", "v2.0.0.2")
-	if tag, ok := release["tag_name"].(string); ok && tag != "" {
-		tagName = tag
-		a.log(a.tr("CheckUpdate: Found version in 'tag_name' field: %s", tagName))
-	} else if name, ok := release["name"].(string); ok && name != "" {
-		// Fallback to 'name' field (e.g.", "V2.0.0.2")
-		tagName = name
-		a.log(a.tr("CheckUpdate: Found version in 'name' field: %s", tagName))
-	} else {
-		a.log(a.tr("CheckUpdate: Neither 'name' nor 'tag_name' found. Available: %v", release))
-		return UpdateResult{LatestVersion: "unknown", ReleaseUrl: ""}, fmt.Errorf("no version found in release")
-	}
-	a.log(a.tr("CheckUpdate: Using version: %s", tagName))
-	// Extract release URL
-	htmlURL, _ := release["html_url"].(string)
-	// Extract download URL from assets
-	var downloadUrl string
-	var targetFileName string
+		return nil
+	}}
+}
+
+func updateTargetFileName() string {
 	brandName := brand.Current().DisplayName
 	if goruntime.GOOS == "darwin" {
-		targetFileName = brandName + "-Universal.pkg"
-	} else {
-		targetFileName = brandName + "-Setup.exe"
+		return brandName + "-Universal.pkg"
 	}
-	// Parse assets array from GitHub API response
-	if assets, ok := release["assets"].([]interface{}); ok && len(assets) > 0 {
-		a.log(a.tr("CheckUpdate: Found %d assets in release", len(assets)))
-		for _, assetInterface := range assets {
-			if asset, ok := assetInterface.(map[string]interface{}); ok {
-				if name, ok := asset["name"].(string); ok && name == targetFileName {
-					if browserDownloadUrl, ok := asset["browser_download_url"].(string); ok {
-						downloadUrl = browserDownloadUrl
-						a.log(a.tr("CheckUpdate: Found download URL from assets: %s", downloadUrl))
-						break
-					}
-				}
-			}
-		}
-	}
-	// Fallback: construct URL manually if not found in assets
-	if downloadUrl == "" {
-		downloadUrl = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
-		a.log(a.tr("CheckUpdate: Assets not found, using constructed URL: %s", downloadUrl))
+	return brandName + "-Setup.exe"
+}
 
-		// Validate fallback URL with a HEAD request to avoid download hanging on non-existent files
-		headReq, err := http.NewRequest("HEAD", downloadUrl, nil)
-		if err == nil {
-			headReq.Header.Set("User-Agent", brand.Current().DisplayName)
-			headClient := &http.Client{
-				Timeout: 15 * time.Second,
-				CheckRedirect: func(req *http.Request, via []*http.Request) error {
-					if len(via) >= 10 {
-						return fmt.Errorf("too many redirects")
-					}
-					return nil
-				},
-			}
-			headResp, headErr := headClient.Do(headReq)
-			if headErr != nil {
-				a.log(a.tr("CheckUpdate: HEAD request failed for fallback URL: %v", headErr))
-				downloadUrl = ""
-			} else {
-				headResp.Body.Close()
-				if headResp.StatusCode == 404 || headResp.StatusCode == 403 {
-					a.log(a.tr("CheckUpdate: Fallback URL returned %d, installer package not available", headResp.StatusCode))
-					downloadUrl = ""
-				} else {
-					a.log(a.tr("CheckUpdate: Fallback URL returned %d, proceeding", headResp.StatusCode))
-				}
-			}
-		}
+func cosReleaseAssetURL(tagName, fileName string) string {
+	return fmt.Sprintf("%s/releases/%s/%s", cosPublicBaseURL, tagName, fileName)
+}
+
+func combineDownloadURLs(primary, fallback string) string {
+	primary = strings.TrimSpace(primary)
+	fallback = strings.TrimSpace(fallback)
+	if primary == "" {
+		return fallback
 	}
-	// Keep original version with V prefix for display
+	if fallback == "" || fallback == primary {
+		return primary
+	}
+	return primary + "\n" + fallback
+}
+
+func (a *App) CheckUpdate(currentVersion string) (UpdateResult, error) {
+	targetFileName := updateTargetFileName()
+	release, source, err := a.fetchLatestReleaseFast()
+	if err != nil {
+		a.log(a.tr("CheckUpdate: all update sources failed: %v", err))
+		return UpdateResult{LatestVersion: "fetch_failed", ReleaseUrl: ""}, err
+	}
+	a.log(a.tr("CheckUpdate: using update source: %s", source))
+
+	tagName := strings.TrimSpace(release.TagName)
+	if tagName == "" {
+		tagName = strings.TrimSpace(release.Name)
+	}
+	if tagName == "" {
+		return UpdateResult{LatestVersion: "unknown", ReleaseUrl: ""}, fmt.Errorf("no version found in release")
+	}
+
+	githubDownloadUrl := strings.TrimSpace(release.GitHubDownloadURL)
+	cosDownloadUrl := strings.TrimSpace(release.COSDownloadURL)
+	if githubDownloadUrl == "" {
+		githubDownloadUrl = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
+	}
+	if cosDownloadUrl == "" {
+		cosDownloadUrl = cosReleaseAssetURL(tagName, targetFileName)
+	}
+	downloadUrl := strings.TrimSpace(release.DownloadURL)
+	if downloadUrl == "" {
+		downloadUrl = combineDownloadURLs(githubDownloadUrl, cosDownloadUrl)
+	}
+
 	displayVersion := strings.TrimSpace(tagName)
 	if !strings.HasPrefix(strings.ToUpper(displayVersion), "V") {
 		displayVersion = "V" + displayVersion
 	}
-	// Clean version strings for comparison (lowercase, no V prefix, no extra text)
 	latestVersionForComparison := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(tagName)), "v")
 	latestVersionForComparison = strings.Split(latestVersionForComparison, " ")[0]
 	cleanCurrent := strings.TrimPrefix(strings.TrimSpace(strings.ToLower(currentVersion)), "v")
 	cleanCurrent = strings.Split(cleanCurrent, " ")[0]
-	// Log for debugging
 	a.log(a.tr("CheckUpdate: Latest version: %s, Current version: %s, Display version: %s", latestVersionForComparison, cleanCurrent, displayVersion))
-	// Compare versions
 	if compareVersions(latestVersionForComparison, cleanCurrent) > 0 {
 		a.log(a.tr("CheckUpdate: Update available! %s > %s", latestVersionForComparison, cleanCurrent))
-		return UpdateResult{
-			HasUpdate:           true,
-			LatestVersion:       displayVersion,
-			ReleaseUrl:          htmlURL,
-			TagName:             tagName,
-			DownloadUrl:         downloadUrl,
-			DownloadUnavailable: downloadUrl == "",
-		}, nil
+		return UpdateResult{HasUpdate: true, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl, DownloadUnavailable: downloadUrl == ""}, nil
 	}
 	a.log(a.tr("CheckUpdate: Already on latest version"))
-	return UpdateResult{
-		HasUpdate:     false,
-		LatestVersion: displayVersion,
-		ReleaseUrl:    htmlURL,
-		TagName:       tagName,
-		DownloadUrl:   downloadUrl,
-	}, nil
+	return UpdateResult{HasUpdate: false, LatestVersion: displayVersion, ReleaseUrl: release.ReleaseURL, TagName: tagName, DownloadUrl: downloadUrl}, nil
 }
 
+type latestReleaseInfo struct {
+	TagName           string
+	Name              string
+	ReleaseURL        string
+	DownloadURL       string
+	GitHubDownloadURL string
+	COSDownloadURL    string
+}
+
+func (a *App) fetchLatestReleaseFast() (latestReleaseInfo, string, error) {
+	if release, err := a.fetchGitHubLatestRelease(4 * time.Second); err == nil {
+		return release, "github", nil
+	} else {
+		a.log(a.tr("CheckUpdate: GitHub latest check failed quickly, trying COS: %v", err))
+	}
+	if release, err := a.fetchCOSLatestRelease(5 * time.Second); err == nil {
+		return release, "cos", nil
+	} else {
+		return latestReleaseInfo{}, "", err
+	}
+}
+
+func (a *App) fetchGitHubLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
+	a.log(a.tr("CheckUpdate: Starting GitHub check against %s", githubLatestReleaseAPI))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", githubLatestReleaseAPI, nil)
+	if err != nil {
+		return latestReleaseInfo{}, err
+	}
+	req.Header.Set("User-Agent", brand.Current().DisplayName)
+	if token := skill.ResolveGitHubToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := updateHTTPClient(timeout).Do(req)
+	if err != nil {
+		return latestReleaseInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		bodyText, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return latestReleaseInfo{}, fmt.Errorf("github api returned status %d: %s", resp.StatusCode, string(bodyText))
+	}
+	var release map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return latestReleaseInfo{}, err
+	}
+	tagName, _ := release["tag_name"].(string)
+	name, _ := release["name"].(string)
+	htmlURL, _ := release["html_url"].(string)
+	targetFileName := updateTargetFileName()
+	var githubDownloadURL string
+	if assets, ok := release["assets"].([]interface{}); ok {
+		for _, assetInterface := range assets {
+			asset, ok := assetInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			assetName, _ := asset["name"].(string)
+			if assetName != targetFileName {
+				continue
+			}
+			githubDownloadURL, _ = asset["browser_download_url"].(string)
+			break
+		}
+	}
+	if tagName == "" {
+		tagName = name
+	}
+	if githubDownloadURL == "" && tagName != "" {
+		githubDownloadURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
+	}
+	cosURL := ""
+	if tagName != "" {
+		cosURL = cosReleaseAssetURL(tagName, targetFileName)
+	}
+	return latestReleaseInfo{TagName: tagName, Name: name, ReleaseURL: htmlURL, DownloadURL: combineDownloadURLs(githubDownloadURL, cosURL), GitHubDownloadURL: githubDownloadURL, COSDownloadURL: cosURL}, nil
+}
+
+func (a *App) fetchCOSLatestRelease(timeout time.Duration) (latestReleaseInfo, error) {
+	a.log(a.tr("CheckUpdate: Starting COS check against %s", cosLatestManifestURL))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", cosLatestManifestURL, nil)
+	if err != nil {
+		return latestReleaseInfo{}, err
+	}
+	req.Header.Set("User-Agent", brand.Current().DisplayName)
+	resp, err := updateHTTPClient(timeout).Do(req)
+	if err != nil {
+		return latestReleaseInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return latestReleaseInfo{}, fmt.Errorf("cos latest returned status %d", resp.StatusCode)
+	}
+	var manifest cosLatestManifest
+	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+		return latestReleaseInfo{}, err
+	}
+	tagName := strings.TrimSpace(manifest.Tag)
+	if tagName == "" {
+		tagName = strings.TrimSpace(manifest.Version)
+	}
+	targetFileName := updateTargetFileName()
+	cosURL := ""
+	if asset, ok := manifest.Assets[targetFileName]; ok {
+		cosURL = strings.TrimSpace(asset.URL)
+	}
+	if cosURL == "" && tagName != "" {
+		cosURL = cosReleaseAssetURL(tagName, targetFileName)
+	}
+	githubURL := ""
+	if tagName != "" {
+		githubURL = fmt.Sprintf("https://github.com/RapidAI/MaClaw/releases/download/%s/%s", tagName, targetFileName)
+	}
+	return latestReleaseInfo{TagName: tagName, Name: tagName, ReleaseURL: "https://github.com/RapidAI/MaClaw/releases/latest", DownloadURL: combineDownloadURLs(githubURL, cosURL), GitHubDownloadURL: githubURL, COSDownloadURL: cosURL}, nil
+}
 // Helper function to get map keys
 func getMapKeys(m map[string]interface{}) []string {
 	keys := make([]string, 0, len(m))
@@ -5026,13 +5075,16 @@ type DownloadProgress struct {
 }
 
 func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
-	a.log(fmt.Sprintf("DownloadUpdate: Starting download from %s", url))
+	urls := splitDownloadURLs(url)
+	if len(urls) == 0 {
+		return "", fmt.Errorf("download url is empty")
+	}
+	a.log(fmt.Sprintf("DownloadUpdate: Starting download candidates: %v", urls))
 	downloadsDir, err := a.GetDownloadsFolder()
 	if err != nil {
 		return "", fmt.Errorf("failed to get downloads folder: %w", err)
 	}
 	destPath := filepath.Join(downloadsDir, fileName)
-	// Create context with cancel for this download
 	ctx, cancel := context.WithCancel(context.Background())
 	downloadID := fileName
 	a.downloadMutex.Lock()
@@ -5044,50 +5096,76 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 		a.downloadMutex.Unlock()
 		cancel()
 	}()
-	// If file exists, try to remove it first
-	if _, err := os.Stat(destPath); err == nil {
-		os.Remove(destPath)
+
+	var lastErr error
+	for index, candidateURL := range urls {
+		if _, err := os.Stat(destPath); err == nil {
+			_ = os.Remove(destPath)
+		}
+		a.log(fmt.Sprintf("DownloadUpdate: Trying source %d/%d: %s", index+1, len(urls), candidateURL))
+		path, err := a.downloadUpdateFromURL(ctx, candidateURL, fileName, destPath)
+		if err == nil {
+			return path, nil
+		}
+		lastErr = err
+		a.log(fmt.Sprintf("DownloadUpdate: Source failed, will try fallback if available: %v", err))
+		if ctx.Err() == context.Canceled {
+			break
+		}
 	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("all download sources failed")
+	}
+	a.emitEvent("download-progress", DownloadProgress{Status: "error", Error: lastErr.Error()})
+	return "", lastErr
+}
+
+func splitDownloadURLs(value string) []string {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == '|'
+	})
+	urls := make([]string, 0, len(fields))
+	seen := map[string]bool{}
+	for _, field := range fields {
+		url := strings.TrimSpace(field)
+		if url == "" || seen[url] {
+			continue
+		}
+		seen[url] = true
+		urls = append(urls, url)
+	}
+	return urls
+}
+
+func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName string, destPath string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "MaClaw-App")
-	client := &http.Client{
-		Timeout: 10 * time.Minute, // prevent hanging on unresponsive servers
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
+	client := updateHTTPClient(12 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
-		return "", fmt.Errorf("闂佽娴烽幊鎾凰囬幎鍓垮绻濋崶褏顦遍梺鍛婁緱閸撴盯鎮峰┑瀣€垫繛鎴烆仾椤忓嫸鑰挎い蹇撶墛閺咁剛鈧厜鍋撻柛鎰劤濞堟瑩姊虹紒姗嗘當闁绘锕ら敃銏″鐎涙ê鍓梺鍛婃处閸嬪棝寮抽弮鍫熷仭濞达絽鎲￠崳褰掓倵閸偓鑰跨€规洩缍侀、娑樷攽閸℃绠ｉ梺璇茬箰缁绘垹鍠婂鍜冭€挎い鎾卞灩閻鏌熺€涙绠樻い?(HTTP 404)")
+		return "", fmt.Errorf("installer not found (HTTP 404)")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("濠电偞鍨堕幐鎼侇敄閸緷褰掑炊閵娿儳绐為柡澶婄墱閸嬪顤? %s", resp.Status)
+		return "", fmt.Errorf("download failed: %s", resp.Status)
 	}
-	// Validation Logic
-	// 1. Check Content-Type
 	contentType := resp.Header.Get("Content-Type")
 	a.log(fmt.Sprintf("DownloadUpdate: Content-Type: %s", contentType))
 	if !strings.Contains(strings.ToLower(contentType), "application/octet-stream") &&
 		!strings.Contains(strings.ToLower(contentType), "application/x-msdownload") &&
-		!strings.Contains(strings.ToLower(contentType), "application/x-dosexec") {
-		// Just a warning for now, as some servers might send weird types
+		!strings.Contains(strings.ToLower(contentType), "application/x-dosexec") &&
+		!strings.Contains(strings.ToLower(contentType), "application/vnd.apple.installer+xml") {
 		a.log(fmt.Sprintf("Warning: Unexpected Content-Type: %s", contentType))
 	}
-	// 2. Check File Size (> 5MB)
-	if resp.ContentLength < 5*1024*1024 {
+	if resp.ContentLength >= 0 && resp.ContentLength < 5*1024*1024 {
 		return "", fmt.Errorf("file too small (%d bytes), possibly an error page", resp.ContentLength)
 	}
-	// 3. Check Extension
 	expectedExt := ".exe"
 	if goruntime.GOOS == "darwin" {
 		expectedExt = ".pkg"
@@ -5102,28 +5180,21 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 	}
 	defer out.Close()
 	var downloaded int64
-	buffer := make([]byte, 64*1024)
+	buffer := make([]byte, 256*1024)
 	lastReport := time.Now()
 	for {
 		n, err := resp.Body.Read(buffer)
 		if n > 0 {
-			_, writeErr := out.Write(buffer[:n])
-			if writeErr != nil {
+			if _, writeErr := out.Write(buffer[:n]); writeErr != nil {
 				return "", writeErr
 			}
 			downloaded += int64(n)
-			// Report progress every 100ms
 			if time.Since(lastReport) > 100*time.Millisecond {
 				percentage := 0.0
 				if size > 0 {
 					percentage = float64(downloaded) / float64(size) * 100
 				}
-				a.emitEvent("download-progress", DownloadProgress{
-					Percentage: percentage,
-					Downloaded: downloaded,
-					Total:      size,
-					Status:     "downloading",
-				})
+				a.emitEvent("download-progress", DownloadProgress{Percentage: percentage, Downloaded: downloaded, Total: size, Status: "downloading"})
 				lastReport = time.Now()
 			}
 		}
@@ -5132,25 +5203,13 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 		}
 		if err != nil {
 			if ctx.Err() == context.Canceled {
-				a.emitEvent("download-progress", DownloadProgress{
-					Status: "cancelled",
-				})
+				a.emitEvent("download-progress", DownloadProgress{Status: "cancelled"})
 				return "", fmt.Errorf("download cancelled")
 			}
-			a.emitEvent("download-progress", DownloadProgress{
-				Status: "error",
-				Error:  err.Error(),
-			})
 			return "", err
 		}
 	}
-	// Final progress report
-	a.emitEvent("download-progress", DownloadProgress{
-		Percentage: 100,
-		Downloaded: downloaded,
-		Total:      size,
-		Status:     "completed",
-	})
+	a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: "completed"})
 	return destPath, nil
 }
 func (a *App) CancelDownload(downloadID string) {

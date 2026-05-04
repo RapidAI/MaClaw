@@ -1085,6 +1085,8 @@ jobs:
           COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
+          COS_UPLOAD_PART_SIZE_MB: 8
+          COS_UPLOAD_THREADS: 8
           COS_RELEASE_ONLY_ASSETS: |
             MaClaw-aarch64-u2204.AppImage
             MaClaw-aarch64-u2404.AppImage
@@ -1241,5 +1243,6 @@ jobs:
 
       - name: Skip Gitee release asset upload
         run: echo "Release packages are uploaded to Tencent COS; skipping slow Gitee asset upload."
+
 
 

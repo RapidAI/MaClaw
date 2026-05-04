@@ -17,7 +17,8 @@
     "settings": "Settings",
     "settingsHint": "Center, memory, routing",
     "humanInputNeeded": "{{count}} human input needed",
-    "updated": "{{owner}} / {{time}}"
+    "updated": "{{owner}} / {{time}}",
+    "openInterventionWorkbench": "Open human intervention workbench"
   },
   "nav": {
     "home": "Talk",
@@ -157,7 +158,207 @@
     "availabilitySignals": "Availability signals",
     "center": "Center",
     "runtime": "Runtime",
-    "watcher": "Watcher"
+    "watcher": "Watcher",
+    "centerReady": "Center ready",
+    "centerOnline": "Center online",
+    "centerConfigured": "Center configured",
+    "localBodyOnly": "Local body only",
+    "readinessLoaded": "{{tenants}} tenants / {{roles}} roles / {{workers}} iWorkers / {{accounts}} local accounts",
+    "readinessCheckPrompt": "Run Center check to load iWorker readiness.",
+    "availabilityState": {
+      "ready": "Ready",
+      "degraded": "Degraded",
+      "local": "Local mode",
+      "repair": "Needs repair"
+    },
+    "availabilityDetail": {
+      "ready": "Center work, memory, runtime heartbeat, and installed tools are available.",
+      "degraded": "iWorker can keep working with cached or partial capabilities while Center is repaired.",
+      "local": "Center is disabled; local execution stays available without shared memory or pushes.",
+      "repair": "Core registration or local capability state needs attention before business work."
+    },
+    "notRegistered": "Not registered",
+    "pendingHandoffs": "{{count}} pending handoff",
+    "readyForCoworkerInput": "Ready for coworker input",
+    "cachedSnapshot": "Cached snapshot",
+    "liveSync": "Live sync",
+    "configured": "Configured",
+    "localOnly": "Local only",
+    "localContinuityDetail": "This iWorker can keep local conversations, drafts, attachments, and task history running without Cloud or Center.",
+    "centerReconnectingDetail": "Local work can continue. Cached Center snapshots stay visible, but Resume, Block, Run, memory sync, and tool changes wait for iWorkerCenter to reconnect.",
+    "cachedContinuityDetail": "Cached Center context is available for review. Live mutations still go through iWorkerCenter before they affect shared work.",
+    "cachedRuntimeCount": "{{count}} cached runtime",
+    "cachedPushCount": "{{count}} cached push",
+    "staleMemorySnapshot": "stale memory snapshot",
+    "staleToolsSnapshot": "stale tools snapshot",
+    "reconnectRequiredForCenterWrites": "reconnect required for Center writes",
+    "openCachedTask": "Open cached task",
+    "openReviewTask": "Open review task",
+    "runCenterPush": "Run Center push",
+    "checkInbox": "Check inbox",
+    "toolSummary": "{{skills}} skills / {{mcp}} MCP",
+    "noToolsEnabled": "No tools enabled",
+    "directHumanHandoff": "Direct human handoff",
+    "runningNow": "running now",
+    "localRun": "Local run",
+    "centerAssigned": "Center assigned",
+    "cachedCenterPush": "Cached Center push",
+    "centerRun": "Center run",
+    "centerPush": "Center push",
+    "taskHistory": "Task history",
+    "goalWatcherHandling": "Goal watcher is handling pushed work",
+    "noActiveTask": "No active task",
+    "localExecution": "local execution",
+    "watcherRunDetail": "Run {{run}} / single-flight watcher",
+    "readyForCenterPushOrHandoff": "Ready for Center push or human handoff.",
+    "assignedIWorker": "assigned iWorker",
+    "noCenterPushWaiting": "No Center push waiting",
+    "handlingPushNow": "Handling push now",
+    "runtimeBodiesOnline": "{{count}} runtime body online",
+    "workControls": "Work controls",
+    "waitingForInputDetail": "Waiting for Center push, coworker handoff, or a direct instruction, then routing to the right worker, skill, or human approval.",
+    "centerGovernedDetail": "Tasks, memory, skills, and MCP visibility are governed by iWorkerCenter. Cloud stays outside business execution.",
+    "localModeDetail": "Local execution is available; Center memory, pushes, and shared tools are disabled.",
+    "operatingStatusAria": "iWorker operating status",
+    "operatingSignalsReady": "{{ready}}/{{total}} operating signals ready",
+    "onlineAgentInstances": "{{count}} online agent instance",
+    "cachedRuntimeSnapshotsAvailable": "{{count}} cached runtime snapshot available while Center reconnects.",
+    "liveRuntimeSnapshotAvailable": "Live Center runtime snapshot is available.",
+    "multiAgentShareMemoryDetail": "Multiple agent instances can share Center memory while this desktop stays a replaceable body.",
+    "lastMemorySnapshot": "Last memory snapshot",
+    "bodyModelDetail": "This computer provides screen, files, browser, and tool access.",
+    "memoryModelDetail": "Company, department, and personal memory persist in iWorkerCenter.",
+    "cachedAt": "cached",
+    "running": "Running",
+    "singleFlight": "Single-flight",
+    "runs": "runs",
+    "skips": "skips",
+    "timeouts": "timeouts",
+    "handled": "handled",
+    "watchNote": "Interval {{interval}}s, max run {{max}}s.",
+    "goalPush": "goal_push",
+    "secondsAgo": "{{seconds}}s ago",
+    "localBody": "local body",
+    "baseTools": "base tools",
+    "quickAction": {
+      "im": {
+        "title": "Start from IM",
+        "detail": "Turn a voice/chat instruction into work."
+      },
+      "continue": {
+        "title": "Continue a task",
+        "detail": "Resume recent evidence and result."
+      },
+      "memory": {
+        "title": "Capture memory",
+        "detail": "Save reusable experience to Center."
+      },
+      "selfcheck": {
+        "title": "Run self-check",
+        "detail": "Check Center, memory, tools, body runtime, and watcher queue."
+      }
+    },
+    "mode": {
+      "chat": {
+        "label": "Talk",
+        "title": "Conversation first",
+        "detail": "Use voice or IM style instructions. The iWorker can clarify intent before opening a structured task.",
+        "placeholder": "Talk to your iWorker. Example: help me check today's delivery exceptions, ask Quality iWorker if needed, and prepare a short decision brief."
+      },
+      "task": {
+        "label": "Task",
+        "title": "Structured execution",
+        "detail": "Convert the request into a task workspace with output type, colleague routing, attachments, and audit trail.",
+        "placeholder": "Describe the task, expected output, context, deadline, and which digital worker should own it."
+      },
+      "research": {
+        "label": "Deep work",
+        "title": "Evidence and synthesis",
+        "detail": "Ask iWorker to gather facts, consult skills, discuss with peer agents, and produce reusable memory.",
+        "placeholder": "Ask for analysis, options, risk points, evidence, and a recommendation that can be saved as organization memory."
+      }
+    },
+    "quickTask": {
+      "Voice handoff": "Voice handoff",
+      "Operating brief": "Operating brief",
+      "Ask peer iWorkers": "Ask peer iWorkers",
+      "Customer reply": "Customer reply",
+      "Policy memory check": "Policy memory check",
+      "Meeting decisions": "Meeting decisions",
+      "Data cleanup": "Data cleanup",
+      "Evidence pack": "Evidence pack",
+      "Market scan": "Market scan",
+      "Root cause analysis": "Root cause analysis",
+      "Decision options": "Decision options",
+      "Skill search": "Skill search",
+      "Risk review": "Risk review",
+      "Reusable playbook": "Reusable playbook"
+    },
+    "outputBadge": {
+      "summary": "Brief",
+      "document": "Doc",
+      "table": "Table"
+    },
+    "outputType": {
+      "summary": "short brief / action summary",
+      "document": "stakeholder-ready document",
+      "table": "structured table / validation plan"
+    },
+    "auto": "Auto",
+    "routeBadge": "{{route}} route",
+    "runtimeSnapshot": "runtime snapshot",
+    "runtimeBodies": "runtime bodies",
+    "operatingSummary": "Operating summary",
+    "pushCount": "{{count}} push",
+    "itemCount": "{{count}} items",
+    "localContinuityStatus": "Local continuity status",
+    "colleagueBadge": {
+      "Data iWorker": "Data",
+      "Quality iWorker": "Quality",
+      "Operations iWorker": "Operations",
+      "Office iWorker": "Office"
+    },
+    "routeReason": {
+      "data": "Route reason: data/table/cleanup work needs structured data preparation and validation.",
+      "quality": "Route reason: quality/root-cause/corrective work needs issue classification and cause analysis.",
+      "operations": "Route reason: operations/production/handoff work needs execution context and delivery continuity.",
+      "office": "Route reason: communication/report/document work needs clear written output and stakeholder-ready language.",
+      "auto": "Route reason: no specialized route matched, use automatic routing through iWorkerCenter."
+    },
+    "collaborationHint": {
+      "peer": "Center-mediated A2A discussion is recommended before finalizing the answer.",
+      "memory": "Use company, department, and personal memory from iWorkerCenter before writing new conclusions.",
+      "data": "Keep raw local evidence temporary, then save reusable cleanup rules back to department memory.",
+      "default": "Start directly, then call peer iWorkers, cloud-approved skills, or human skills only when the task needs it."
+    },
+    "lane": {
+      "center": {
+        "label": "Push inbox",
+        "detail": "Work pushed by iWorkerCenter should be visible before ad-hoc prompting, with clear run, resume, and block decisions."
+      },
+      "human": {
+        "label": "Clarify and approve",
+        "detail": "Human coworkers can hand off context, answer questions, approve risky steps, or become callable human skills."
+      },
+      "autonomy": {
+        "label": "Run state",
+        "detail": "The local body executes, reports heartbeat, saves durable memory, and escalates when it cannot safely continue."
+      }
+    },
+    "justNow": "just now",
+    "minutesWaiting": "{{count}}m waiting",
+    "hoursWaiting": "{{count}}h waiting",
+    "commandInboxLanes": "Command inbox lanes",
+    "autonomousRunNeedsDecision": "The autonomous run needs a human decision.",
+    "toolTitle": {
+      "mention": "Mention a worker or human skill",
+      "attach": "Attach local evidence",
+      "skill": "Select skill",
+      "memory": "Use Center memory"
+    },
+    "attach": "Attach",
+    "skill": "Skill",
+    "openTaskWorkspace": "Open task workspace"
   },
   "newTask": {
     "eyebrow": "Task space",
@@ -403,7 +604,62 @@
     "healthOkTitle": "Center connection is healthy",
     "healthUnreachableTitle": "Center is currently unreachable",
     "manualCheck": "Manual check",
-    "autoCheck": "Auto check after save"
+    "autoCheck": "Auto check after save",
+    "baseUrl": "Base URL",
+    "tenantId": "Tenant ID",
+    "departmentId": "Department ID",
+    "workerId": "Worker ID",
+    "usernameEmailPhone": "Username / email / phone",
+    "passwordVerificationCode": "Password / verification code",
+    "reserved": "reserved",
+    "tenant": "Tenant",
+    "iWorkerReadiness": "iWorker readiness",
+    "ready": "ready",
+    "needsSetup": "needs setup",
+    "centerAssets": "Center assets",
+    "centerAssetsSummary": "{{tenants}} tenants / {{roles}} roles / {{workers}} iWorkers",
+    "humanAuth": "Human auth",
+    "notReported": "not reported",
+    "recordCount": "{{count}} records",
+    "memoryContentPlaceholder": "Write a reusable fact, rule, preference, or handoff note.",
+    "memorySearchPlaceholder": "Search registered center memory",
+    "memory": "memory",
+    "note": "note",
+    "noCenterAddress": "No Center address configured",
+    "model": "Model",
+    "priority": "Priority",
+    "maxContext": "Max context",
+    "features": "Features",
+    "streaming": "Streaming",
+    "vision": "Vision",
+    "description": "Description",
+    "authMethod": {
+      "localAccount": "Local account",
+      "localAccountDesc": "Manual or imported username/password account.",
+      "LDAP": "LDAP",
+      "ldapDesc": "Enterprise directory account.",
+      "oidcSso": "OIDC / OAuth SSO",
+      "oidcDesc": "Reserved for zero-trust SSO."
+    },
+    "companies": "Companies",
+    "roles": "Roles",
+    "iWorkers": "iWorkers",
+    "iWorker": "iWorker",
+    "noDescriptionConfigured": "No description configured.",
+    "modelWithValue": "Model: {{value}}",
+    "priorityWithValue": "Priority: {{value}}",
+    "contextWithValue": "Context: {{value}}",
+    "nonStreaming": "Non-streaming",
+    "textOnly": "Text only",
+    "noFeaturesConfigured": "No features configured",
+    "editingProvider": "Editing this provider",
+    "summaryView": "Summary view",
+    "collapseProvider": "Collapse {{name}}",
+    "editProvider": "Edit {{name}}",
+    "name": "Name",
+    "protocol": "Protocol",
+    "apiKey": "API Key",
+    "featuresPlaceholder": "documents, Chinese, structured"
   },
   "colleaguesPage": {
     "title": "Colleague center",
