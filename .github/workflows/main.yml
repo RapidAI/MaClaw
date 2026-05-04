@@ -1044,6 +1044,23 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f | sort
 
+      - name: Prepare release assets
+        run: |
+          rm -rf release-assets
+          mkdir -p release-assets
+          find artifacts -type f -print0 | sort -z | while IFS= read -r -d '' file; do
+            base="$(basename "$file")"
+            dest="release-assets/${base}"
+            if [ -e "$dest" ]; then
+              parent="$(basename "$(dirname "$file")")"
+              dest="release-assets/${parent}-${base}"
+              echo "warning: duplicate asset basename ${base}; using $(basename "$dest")" >&2
+            fi
+            cp "$file" "$dest"
+          done
+          echo "Release assets:"
+          find release-assets -type f -printf '%f (%s bytes)\n' | sort
+
       - name: Prepare release notes
         run: |
           git tag -l --format='%(contents)' "${{ github.ref_name }}" > release_notes.md
@@ -1054,7 +1071,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: release-assets/*
           body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -1078,8 +1095,16 @@ jobs:
           token = os.environ["GITEE_TOKEN"]
           print(f"GITEE_TOKEN length={len(token)} sha256_prefix={hashlib.sha256(token.encode()).hexdigest()[:12]}")
           user_url = "https://gitee.com/api/v5/user?" + urllib.parse.urlencode({"access_token": token})
-          with urllib.request.urlopen(user_url, timeout=30) as resp:
-              user = json.loads(resp.read().decode("utf-8"))
+          try:
+              with urllib.request.urlopen(user_url, timeout=30) as resp:
+                  user = json.loads(resp.read().decode("utf-8"))
+          except urllib.error.HTTPError as exc:
+              payload = exc.read().decode("utf-8", errors="replace")
+              raise SystemExit(
+                  f"Gitee token validation failed at /user: HTTP {exc.code} {payload}\n"
+                  "The selected GitHub secret must be a Gitee API access token. "
+                  "Check that repository secret GITEE contains the token value itself, not a secret name, SSH key, password, or prefixed text."
+              )
           print(f"Verified Gitee token login={user.get('login')} name={user.get('name')} id={user.get('id')}")
           url = "https://gitee.com/api/v5/repos/znsoft/maclaw?" + urllib.parse.urlencode({"access_token": token})
           try:
@@ -1199,5 +1224,5 @@ jobs:
           RELEASE_NAME: ${{ github.ref_name }}
           RELEASE_BODY_FILE: release_notes.md
           RELEASE_PRERELEASE: ${{ contains(github.ref_name, '-') }}
-          RELEASE_ASSETS_DIR: artifacts
+          RELEASE_ASSETS_DIR: release-assets
         run: python3 .github/scripts/sync_gitee_release.py

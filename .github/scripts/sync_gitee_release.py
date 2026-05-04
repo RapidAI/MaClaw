@@ -158,7 +158,7 @@ def main():
     if not ASSETS_DIR.exists():
         raise RuntimeError(f"assets directory not found: {ASSETS_DIR}")
 
-    assets = sorted(path for path in ASSETS_DIR.iterdir() if path.is_file())
+    assets = sorted(path for path in ASSETS_DIR.rglob("*") if path.is_file())
     if not assets:
         raise RuntimeError(f"no release assets found in {ASSETS_DIR}")
     log("assets=" + ", ".join(f"{asset.name}({asset.stat().st_size} bytes)" for asset in assets))
