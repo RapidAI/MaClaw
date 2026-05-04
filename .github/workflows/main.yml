@@ -1075,6 +1075,7 @@ jobs:
           COS_BUCKET: ${{ secrets.COS_BUCKET }}
           COS_REGION: ${{ secrets.COS_REGION }}
           COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev' }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
           COS_RELEASE_ONLY_ASSETS: |
@@ -1103,13 +1104,49 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+      - name: Upload release assets to Cloudflare R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID || '67e0c3cc0a7fe73a0025b2de4711f649' }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET || 'maclaw' }}
+          RELEASE_ASSETS_DIR: release-assets
+          R2_RELEASE_ONLY_ASSETS: |
+            MaClaw-aarch64-u2204.AppImage
+            MaClaw-aarch64-u2404.AppImage
+            MaClaw-Setup.exe
+            MaClaw-Universal.pkg
+            TigerClaw-aarch64-u2204.AppImage
+            TigerClaw-aarch64-u2404.AppImage
+            TigerClaw-Setup.exe
+            TigerClaw-Universal.pkg
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
+            echo "Cloudflare R2 secrets are not configured; skipping R2 upload."
+            exit 0
+          fi
+          npm install -g wrangler@latest
+          echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
+          printf '%s\n' "$R2_RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            path="$RELEASE_ASSETS_DIR/$name"
+            if [ ! -f "$path" ]; then
+              echo "R2 release asset not found: $name" >&2
+              exit 1
+            fi
+            echo "R2 upload $name size=$(stat -c%s "$path") key=latest/$name"
+            wrangler r2 object put "$R2_BUCKET/latest/$name" --file "$path" --remote --cache-control "public, max-age=31536000, immutable"
+          done
+          wrangler r2 object put "$R2_BUCKET/latest.json" --file release-assets/latest.json --remote --cache-control "public, max-age=60"
+
       - name: Upload release assets to Tencent COS
+        continue-on-error: true
         env:
           COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
           COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
           COS_BUCKET: ${{ secrets.COS_BUCKET }}
           COS_REGION: ${{ secrets.COS_REGION }}
           COS_PUBLIC_BASE_URL: ${{ secrets.COS_PUBLIC_BASE_URL }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL || 'https://pub-c837069cbe31469590a5fea6235b436b.r2.dev' }}
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ASSETS_DIR: release-assets
           COS_UPLOAD_PART_SIZE_MB: 8

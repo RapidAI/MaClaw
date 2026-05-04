@@ -12,6 +12,7 @@ secret_key = os.environ.get("COS_SECRET_KEY", "")
 bucket = os.environ.get("COS_BUCKET", "")
 region = os.environ.get("COS_REGION", "")
 public_base_url = os.environ["COS_PUBLIC_BASE_URL"].rstrip("/")
+r2_public_base_url = os.environ.get("R2_PUBLIC_BASE_URL", "").rstrip("/")
 tag = os.environ["RELEASE_TAG"]
 asset_dir = pathlib.Path(os.environ.get("RELEASE_ASSETS_DIR", "release-assets"))
 only_assets = [
@@ -34,13 +35,13 @@ def upload_file(client, local_path, key, cache_control):
     )
 
 
-def list_release_objects(client):
+def list_objects_with_prefix(client, prefix):
     marker = ""
     keys = []
     while True:
         response = client.list_objects(
             Bucket=bucket,
-            Prefix="releases/",
+            Prefix=prefix,
             Marker=marker,
             MaxKeys=1000,
         )
@@ -66,6 +67,14 @@ def collect_assets():
     return assets
 
 
+def asset_urls(path):
+    urls = []
+    if r2_public_base_url:
+        urls.append(f"{r2_public_base_url}/latest/{path.name}")
+    urls.append(f"{public_base_url}/latest/{path.name}")
+    return urls
+
+
 def write_latest_manifest(assets):
     latest = {
         "version": tag,
@@ -74,7 +83,8 @@ def write_latest_manifest(assets):
             path.name: {
                 "name": path.name,
                 "size": path.stat().st_size,
-                "url": f"{public_base_url}/releases/{tag}/{path.name}",
+                "url": asset_urls(path)[-1],
+                "urls": asset_urls(path),
             }
             for path in assets
         },
@@ -106,19 +116,18 @@ def main():
     config = CosConfig(Region=region, SecretId=secret_id, SecretKey=secret_key, Scheme="https")
     client = CosS3Client(config)
 
-    log(f"bucket={bucket} region={region} tag={tag} keep_prefix=releases/{tag}/")
+    log(f"bucket={bucket} region={region} tag={tag} prefix=latest/")
     for path in assets:
         upload_file(
             client,
             path,
-            f"releases/{tag}/{path.name}",
+            f"latest/{path.name}",
             "public, max-age=31536000, immutable",
         )
     upload_file(client, latest_path, "latest.json", "public, max-age=60")
 
-    keep_prefix = f"releases/{tag}/"
-    old_keys = [key for key in list_release_objects(client) if not key.startswith(keep_prefix)]
-    log(f"cleanup old release objects count={len(old_keys)}")
+    old_keys = list_objects_with_prefix(client, "releases/")
+    log(f"cleanup old tagged release objects count={len(old_keys)}")
     for key in old_keys:
         log(f"delete old object {key}")
         client.delete_object(Bucket=bucket, Key=key)
