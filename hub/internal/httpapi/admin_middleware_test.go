@@ -76,6 +76,7 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		nil,
 		st.EmailInvites,
 		st.System,
+		provider.Write,
 		promptCache,
 		st.AdminAudit,
 		st.FailureLogs,

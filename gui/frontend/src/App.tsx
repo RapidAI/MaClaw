@@ -1,7 +1,7 @@
-﻿import { useCallback, useEffect, useState, useRef, useMemo } from 'react';
+import { useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import './App.css';
 import { buildNumber } from './version';
-import appIcon from './assets/images/appicon.png';
+import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import claudecodeIcon from './assets/images/claudecode.png';
 import codebuddyIcon from './assets/images/Codebuddy.png';
@@ -14,7 +14,7 @@ import cursorIcon from './assets/images/qodercli.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import agentnetIcon from './assets/images/agentnet.svg';
-import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, InstallTool, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SelectWorkingDir, SetLanguage, GetUserHomeDir, CheckUpdate, ShowMessage, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, AddSkill, DeleteSkill, SelectSkillFile, GetSkillsDir, SetEnvCheckInterval, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, InstallDefaultMarketplace, InstallSkill, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, RestartQQBot, GetTelegramStatus, RestartTelegram, GetWeixinStatus, RestartWeixin, StopWeixin, StartWeixinQRLogin, PollWeixinQRStatus, GetWeixinLocalMode, SetWeixinLocalMode, GetQQBotLocalMode, SetQQBotLocalMode, GetTelegramLocalMode, SetTelegramLocalMode, GetThirdPartyGatewayStatus, RestartThirdPartyGateway, StopThirdPartyGateway, GetThirdPartyGatewayLocalMode, SetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, SetUIZoomFactor, GetChatFontSize, SetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -29,19 +29,24 @@ import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
 import { SkillsManagementPanel } from './components/remote/SkillsManagementPanel';
 import { MCPManagementPanel } from './components/remote/MCPManagementPanel';
 import { LLMConfigPanel } from './components/remote/LLMConfigPanel';
+import { HubServiceRedeemPanel } from './components/remote/HubServiceRedeemPanel';
 import { EmbeddingConfigPanel } from './components/remote/EmbeddingConfigPanel';
 import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
+import { TTSConfigPanel } from './components/remote/TTSConfigPanel';
+import { useAudioDevices } from './components/ai/useAudioDevices';
 import { MaclawRolePanel } from './components/remote/MaclawRolePanel';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
-import { ScheduledTasksPanel } from './components/remote/ScheduledTasksPanel';
 import { AgentNetPanel } from './components/remote/AgentNetPanel';
 import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
 import { GroupDiscussionSettingsPanel } from './components/remote/GroupDiscussionSettingsPanel';
+import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
+import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { GossipPanel } from './components/gossip/GossipPanel';
 import { useDialog } from './components/CustomDialog';
+import { buildHubCreditsURL } from './utils/hubCredits';
 import { QRCodeSVG } from 'qrcode.react';
 
 const subscriptionUrls: { [key: string]: string } = {
@@ -89,6 +94,50 @@ interface SidebarTokenUsageStat {
     InputTokens?: number;
     OutputTokens?: number;
     TotalTokens?: number;
+}
+
+interface SidebarHubCreditGrant {
+    credits_total?: number;
+    credits_used?: number;
+    credits_remaining?: number;
+    expires_at?: string;
+    CreditsTotal?: number;
+    CreditsUsed?: number;
+    CreditsRemaining?: number;
+    ExpiresAt?: string;
+}
+
+interface SidebarHubServiceStatus {
+    active?: boolean;
+    Active?: boolean;
+    active_grants?: SidebarHubCreditGrant[];
+    ActiveGrants?: SidebarHubCreditGrant[];
+    credits_available?: number;
+    CreditsAvailable?: number;
+    tokens_per_credit?: number;
+    TokensPerCredit?: number;
+    nearest_expires_at?: string;
+    NearestExpiresAt?: string;
+    effective_expires_at?: string;
+    EffectiveExpiresAt?: string;
+    hub_llm_base_url?: string;
+    HubLLMBaseURL?: string;
+}
+
+interface SidebarHubCredits {
+    authorized: boolean;
+    total: number;
+    used: number;
+    remaining: number;
+    tokensPerCredit: number;
+    expiresAt: string;
+    unlimited: boolean;
+}
+
+interface SidebarLLMProviderSummary {
+    name: string;
+    url: string;
+    isHubService: boolean;
 }
 
 const sidebarProviderAliases: Record<string, string[]> = {
@@ -842,7 +891,7 @@ const translations: any = {
         "proxyScopeCodingTools": "编程工具（仅 macOS/Linux 生效）",
         "proxyScopeAgent": "智能体（web_search / web_fetch）",
         "proxyScopeTitle": "使用范围",
-        "remoteControl": "移动端注册",
+        "remoteControl": "远程注册",
         "remoteControlDesc": "配置 MaClaw 远程诊断、Hub 连接和远程会话控制。",
         "remoteRefresh": "刷新",
         "remoteRunReadiness": "运行就绪检查",
@@ -927,8 +976,8 @@ const translations: any = {
         "remoteSmokeFailed": "远程 {tool} 冒烟测试失败：{error}",
         "remoteEmailRequired": "必须填写远程邮箱",
         "remoteServerRequired": "必须先配置远程服务器地址",
-        "remoteActivateFirst": "请先完成移动端注册",
-        "remoteActivationDialogTitle": "移动端注册",
+        "remoteActivateFirst": "请先完成远程注册",
+        "remoteActivationDialogTitle": "远程注册",
         "remoteActivationDialogDesc": "你可以直接输入 Hub 地址，或者先从 HubCenter 加载已注册的 Hub 再选择一个。",
         "remoteActivateAndLaunch": "注册并启动",
         "remoteLoadRegisteredHubs": "加载已注册 Hub",
@@ -937,17 +986,17 @@ const translations: any = {
         "remoteNoRegisteredHubs": "没有可用的已注册 Hub",
         "remoteLoadHubListFailed": "加载 Hub 列表失败：{error}",
         "remoteHubManualOrSelect": "你可以直接粘贴 Hub 地址，也可以从上面的 HubCenter 列表中选择。",
-        "remoteActivationCompleted": "移动端注册已完成",
-        "remoteActivationFailed": "移动端注册失败：{error}",
+        "remoteActivationCompleted": "远程注册已完成",
+        "remoteActivationFailed": "远程注册失败：{error}",
         "remoteReconnectFailed": "重连失败：{error}",
         "remoteSelectProjectFirst": "请先选择一个启动项目",
         "remoteStartFailed": "启动失败：{error}",
         "remoteInstallFailed": "安装失败：{error}",
         "remoteSaveFailed": "保存失败：{error}",
         "remoteSendFailed": "发送失败：{error}",
-        "remoteActivationCleared": "移动端注册状态已清除",
+        "remoteActivationCleared": "远程注册状态已清除",
         "remoteClearFailed": "清除失败：{error}",
-        "remoteActivateStep": "移动端注册",
+        "remoteActivateStep": "远程注册",
         "remoteActivateStepDesc": "启动远程会话前，先登记邮箱和设备信息。",
         "remoteReconnectStep": "重连 Hub",
         "remoteReconnectStepDesc": "已配置 Hub 地址，但当前连接处于离线状态。",
@@ -1581,11 +1630,12 @@ const ToolConfiguration = ({
 
     return (
         <div style={{
-            backgroundColor: '#fafbff',
+            backgroundColor: 'var(--theme-surface)',
             padding: '9px 12px',
             borderRadius: '12px',
-            border: '1px solid rgba(99, 102, 241, 0.08)',
-            marginBottom: '10px'
+            border: '1px solid var(--theme-border)',
+            marginBottom: '10px',
+            color: 'var(--theme-text-primary)'
         }}>
             <div className="model-switcher" style={{
                 display: 'grid',
@@ -1607,9 +1657,10 @@ const ToolConfiguration = ({
                                 width: '100%',
                                 padding: '5px 4px',
                                 fontSize: '1.125rem',
-                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--border-color)',
+                                borderBottom: (model.api_key && model.api_key.trim() !== "") ? '3px solid var(--primary-color)' : '1px solid var(--theme-border)',
                                 position: 'relative',
-                                overflow: 'visible'
+                                overflow: 'visible',
+                                color: 'var(--theme-text-primary)'
                             }}
                         >
                             {model.model_name === "Original" ? t("original") : getModelDisplayName(model.model_name, lang)}
@@ -1630,6 +1681,7 @@ function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
     const [navTab, setNavTab] = useState<string>("ai");
+    const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
@@ -1641,17 +1693,30 @@ function App() {
     const [lastUpdateTime, setLastUpdateTime] = useState<string>("");
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
+    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(210);
+    const [isRecentTasksResizing, setIsRecentTasksResizing] = useState(false);
+    const recentTasksResizeStartX = useRef(0);
+    const recentTasksResizeStartWidth = useRef(210);
+    const [sidebarExpanded, setSidebarExpanded] = useState(false);
+    const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
+    const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
+    const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
+    const [renameValue, setRenameValue] = useState("");
+    const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; preview?: string; last_activity?: string; pinned?: boolean }>>([]);
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
-    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'remote' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'scheduler' | 'agentnet' | 'groupDiscussion' | 'security' | 'im' | 'system'>('general');
-    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin'>('qq');
+    const [settingsTab, setSettingsTab] = useState<'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'role' | 'memory' | 'agentnet' | 'groupDiscussion' | 'security' | 'im' | 'system'>('general');
+    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
     const [telegramLocalMode, setTelegramLocalModeState] = useState<boolean>(true);
     const [weixinStatus, setWeixinStatus] = useState<string>('disconnected');
     const [weixinLocalMode, setWeixinLocalModeState] = useState<boolean>(true);
+    const [thirdPartyGatewayStatus, setThirdPartyGatewayStatus] = useState<string>('disconnected');
+    const [thirdPartyGatewayLocalMode, setThirdPartyGatewayLocalModeState] = useState<boolean>(true);
+    const [imAuditPlatform, setIMAuditPlatform] = useState<string | null>(null);
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
     const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
     const [weixinQRWaiting, setWeixinQRWaiting] = useState<boolean>(false);
@@ -1661,23 +1726,52 @@ function App() {
     const [isBatchInstalling, setIsBatchInstalling] = useState(false);
     const [isMarketplaceInstalling, setIsMarketplaceInstalling] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
+    const [toolProviders, setToolProviders] = useState<Array<{ name: string; valid: boolean; builtin: boolean }>>([]);
     const [isManualCheck, setIsManualCheck] = useState(false);
     const [showStartupPopup, setShowStartupPopup] = useState(false);
     const [showMaclawLLMPopup, setShowMaclawLLMPopup] = useState(false);
     const [pythonEnvironments, setPythonEnvironments] = useState<any[]>([]);
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
     const [uiZoom, setUiZoom] = useState<number>(1.0);
+    const [chatFontSize, setChatFontSize] = useState<number>(14);
+
+    const updateSidebarNavVisibility = useCallback((key: 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet', visible: boolean) => {
+        if (!config) return;
+        const newConfig = new main.AppConfig({ ...config, [key]: visible } as any);
+        setConfig(newConfig);
+        SaveConfig(newConfig);
+    }, [config]);
+
+    const imAuditBtnStyle: React.CSSProperties = {
+        fontSize: '0.68rem',
+        padding: '2px 10px',
+        borderRadius: '4px',
+        border: '1px solid var(--theme-primary)',
+        background: 'transparent',
+        color: 'var(--theme-primary)',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+    };
 
     // Brand info from backend
     const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
     const currentIcon = brandInfo?.id === 'qianxin' ? qianxinIcon : appIcon;
-    const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '码卡龙 MaClaw';
+    const [aiThemeMode, setAIThemeMode] = useState<'light' | 'dark'>(() => {
+        if (typeof window === 'undefined') return 'light';
+        try {
+            return window.localStorage.getItem('maclaw.ai.themeMode') === 'dark' ? 'dark' : 'light';
+        } catch {
+            return 'light';
+        }
+    });
+    const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
 
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
-    const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<{ provider: string; input: number; output: number; total: number }>({ provider: '', input: 0, output: 0, total: 0 });
+    const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<{ provider: string; isHubService: boolean; input: number; output: number; total: number }>({ provider: '', isHubService: false, input: 0, output: 0, total: 0 });
+    const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
     const maclawLLMFirstPingDone = useRef(false);
 
     // AgentNet P2P network running status (globe indicator)
@@ -1699,6 +1793,18 @@ function App() {
     const [showModelSettings, setShowModelSettings] = useState(false);
     const [showProxySettings, setShowProxySettings] = useState(false);
 
+    useEffect(() => {
+        const selectedTool = config?.default_tool || '';
+        if (!selectedTool) {
+            setToolProviders([]);
+            return;
+        }
+        ListToolProviders(selectedTool).then((providers) => {
+            setToolProviders(providers || []);
+        }).catch(() => {
+            setToolProviders([]);
+        });
+    }, [config?.default_tool]);
     useEffect(() => {
         if (navTab !== 'ai' && aiPanelMaximized) {
             WindowUnfullscreen();
@@ -1910,6 +2016,29 @@ function App() {
         WindowHide();
     };
 
+    const handleRecentTasksResizeStart = (e: React.MouseEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        recentTasksResizeStartX.current = e.clientX;
+        recentTasksResizeStartWidth.current = recentTasksPaneWidth;
+        setIsRecentTasksResizing(true);
+    };
+
+    useEffect(() => {
+        if (!isRecentTasksResizing) return;
+        const handleMove = (event: MouseEvent) => {
+            const nextWidth = recentTasksResizeStartWidth.current + event.clientX - recentTasksResizeStartX.current;
+            setRecentTasksPaneWidth(Math.min(340, Math.max(160, nextWidth)));
+        };
+        const handleUp = () => setIsRecentTasksResizing(false);
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleUp);
+        return () => {
+            window.removeEventListener('mousemove', handleMove);
+            window.removeEventListener('mouseup', handleUp);
+        };
+    }, [isRecentTasksResizing]);
+
     const logEndRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
@@ -2060,6 +2189,11 @@ function App() {
                     setUiZoom(z);
                 }
             }).catch(() => {});
+            GetChatFontSize().then((s) => {
+                if (s >= 12) {
+                    setChatFontSize(s);
+                }
+            }).catch(() => {});
 
             if (!cfg.pause_env_check) {
                 checkTools();
@@ -2130,6 +2264,11 @@ function App() {
                     setUiZoom(z);
                 }
             }).catch(() => {});
+            GetChatFontSize().then((s) => {
+                if (s >= 12) {
+                    setChatFontSize(s);
+                }
+            }).catch(() => {});
             // Sync with tray menu changes — but don't yank the user away from
             // the AI assistant panel.  'ai' is never persisted as active_tool,
             // so a config-changed event would always overwrite it.
@@ -2170,6 +2309,12 @@ function App() {
         });
         GetWeixinStatus().then(setWeixinStatus).catch(() => {});
         GetWeixinLocalMode().then(setWeixinLocalModeState).catch(() => {});
+
+        EventsOn("thirdparty-gateway-status-changed", (status: string) => {
+            setThirdPartyGatewayStatus(status);
+        });
+        GetThirdPartyGatewayStatus().then(setThirdPartyGatewayStatus).catch(() => {});
+        GetThirdPartyGatewayLocalMode().then(setThirdPartyGatewayLocalModeState).catch(() => {});
 
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
@@ -2234,6 +2379,7 @@ function App() {
             EventsOff("qqbot-status-changed");
             EventsOff("telegram-status-changed");
             EventsOff("weixin-status-changed");
+            EventsOff("thirdparty-gateway-status-changed");
             EventsOff("tool-checking");
             EventsOff("tool-installing");
             EventsOff("tool-updating");
@@ -2394,6 +2540,7 @@ function App() {
 
     const switchTool = (tool: string) => {
         setNavTab(tool);
+        setToolDropdownOpen(false);
         if (isToolTab(tool)) {
             setActiveTool(tool);
             setActiveTab(0);
@@ -2656,6 +2803,37 @@ function App() {
     }, [config, groupDiscussionConfig.enabled, groupDiscussionConfig.discoverable, publishGroupDiscussionProfile]);
 
     const aiAssistant = useAIAssistant({ refreshSessionsOnly });
+    const refreshRecentProjects = useCallback(() => {
+        SearchProjects("", 10).then((r: any) => setRecentProjects(r || [])).catch(() => setRecentProjects([]));
+    }, []);
+
+    useEffect(() => {
+        if (navTab === 'ai') refreshRecentProjects();
+    }, [navTab, refreshRecentProjects]);
+
+    useEffect(() => {
+        const refresh = () => {
+            if (navTabRef.current === 'ai') refreshRecentProjects();
+        };
+        EventsOn("project-index:changed", refresh);
+        EventsOn("tasks:changed", refresh);
+        return () => {
+            EventsOff("project-index:changed");
+            EventsOff("tasks:changed");
+        };
+    }, [refreshRecentProjects]);
+
+    const resumeRecentProject = useCallback(async (projectPath: string) => {
+        try {
+            const msg = await ResumeProject(projectPath);
+            if (msg) {
+                switchTool('ai');
+                await aiAssistant.sendMessage(msg);
+            }
+        } catch (error) {
+            console.error("ResumeProject failed:", error);
+        }
+    }, [aiAssistant]);
 
     useEffect(() => {
         let cancelled = false;
@@ -2666,14 +2844,18 @@ function App() {
             return { input, output, total };
         };
         const normalizeProviderState = (data?: {
-            providers?: Array<{ name?: string; Name?: string }>;
-            Providers?: Array<{ name?: string; Name?: string }>;
+            providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
+            Providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
             current?: string;
             Current?: string;
         } | null) => {
             const list = (data?.providers ?? data?.Providers ?? [])
-                .map((provider) => provider?.name ?? provider?.Name ?? '')
-                .filter(Boolean);
+                .map((provider): SidebarLLMProviderSummary => ({
+                    name: provider?.name ?? provider?.Name ?? '',
+                    url: provider?.url ?? provider?.URL ?? '',
+                    isHubService: !!(provider?.is_hub_service ?? provider?.IsHubService),
+                }))
+                .filter((provider) => !!provider.name);
             const current = data?.current ?? data?.Current ?? '';
             return { providers: list, current };
         };
@@ -2690,52 +2872,151 @@ function App() {
         const hasUsage = (usageMap: Record<string, SidebarTokenUsageStat>, provider: string) => {
             return getUsageForProvider(usageMap, provider).total > 0;
         };
-        const getPreferredProvider = (providerNames: string[], currentProviderName: string, usageMap: Record<string, SidebarTokenUsageStat>) => {
+        const getPreferredProvider = (providerSummaries: SidebarLLMProviderSummary[], currentProviderName: string, usageMap: Record<string, SidebarTokenUsageStat>) => {
+            const providerNames = providerSummaries.map((provider) => provider.name);
+            if (currentProviderName && providerSummaries.some((provider) => provider.name === currentProviderName && provider.isHubService)) return currentProviderName;
             const providerWithUsage = providerNames.find((provider) => hasUsage(usageMap, provider));
             if (currentProviderName && providerNames.includes(currentProviderName) && (hasUsage(usageMap, currentProviderName) || !providerWithUsage)) {
                 return currentProviderName;
             }
             return providerWithUsage || currentProviderName || providerNames[0] || '';
         };
+        const normalizeHubCredits = (status?: SidebarHubServiceStatus | null): SidebarHubCredits | null => {
+            const active = status?.active ?? status?.Active ?? false;
+            if (!active) return { authorized: false, total: 0, used: 0, remaining: 0, tokensPerCredit: 0, expiresAt: '', unlimited: false };
+            const grants = status?.active_grants ?? status?.ActiveGrants ?? [];
+            let total = 0;
+            let used = 0;
+            let remaining = 0;
+            for (const grant of grants) {
+                total += Number(grant.credits_total ?? grant.CreditsTotal ?? 0);
+                used += Number(grant.credits_used ?? grant.CreditsUsed ?? 0);
+                remaining += Number(grant.credits_remaining ?? grant.CreditsRemaining ?? 0);
+            }
+            const available = Number(status?.credits_available ?? status?.CreditsAvailable ?? 0);
+            if (remaining <= 0 && available > 0) remaining = available;
+            if (total <= 0 && remaining > 0) total = used + remaining;
+            const unlimited = total <= 0;
+            const nearestGrantExpiry = grants
+                .map((grant) => String(grant.expires_at ?? grant.ExpiresAt ?? ''))
+                .filter(Boolean)
+                .sort()[0] || '';
+            return { authorized: true, total, used, remaining, tokensPerCredit: Number(status?.tokens_per_credit ?? status?.TokensPerCredit ?? 0), expiresAt: String(status?.effective_expires_at ?? status?.EffectiveExpiresAt ?? status?.nearest_expires_at ?? status?.NearestExpiresAt ?? nearestGrantExpiry), unlimited };
+        };
+        const normalizeProviderURL = (value?: string) => String(value || '').trim().replace(/\/+$/, '');
         const refreshSidebarTokenUsage = async () => {
             try {
                 const [usageMap, providerState] = await Promise.all([
                     GetAllLLMTokenUsage() as Promise<Record<string, SidebarTokenUsageStat> | null>,
                     GetMaclawLLMProviders() as Promise<{
-                        providers?: Array<{ name?: string; Name?: string }>;
-                        Providers?: Array<{ name?: string; Name?: string }>;
+                        providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
+                        Providers?: Array<{ name?: string; Name?: string; url?: string; URL?: string; is_hub_service?: boolean; IsHubService?: boolean }>;
                         current?: string;
                         Current?: string;
                     } | null>,
                 ]);
                 const normalizedMap = usageMap || {};
                 const normalizedProviderState = normalizeProviderState(providerState);
-                const providerNames = normalizedProviderState.providers.length > 0
+                const providerSummaries = normalizedProviderState.providers.length > 0
                     ? normalizedProviderState.providers
-                    : providers.map((provider) => provider.name).filter(Boolean);
+                    : providers.map((provider) => ({ name: provider.name, url: (provider as any).url || (provider as any).URL || '', isHubService: !!(provider as any).is_hub_service || !!(provider as any).IsHubService })).filter((provider) => !!provider.name);
                 const currentProviderName = getPreferredProvider(
-                    providerNames,
+                    providerSummaries,
                     normalizedProviderState.current || selectedProvider || providers[0]?.name || '',
                     normalizedMap,
                 );
                 const currentProviderUsage = getUsageForProvider(normalizedMap, currentProviderName);
+                const currentProvider = providerSummaries.find((provider) => provider.name === currentProviderName);
+                let hubStatus: SidebarHubServiceStatus | null = null;
+                try {
+                    hubStatus = await GetHubLLMServiceStatus() as SidebarHubServiceStatus;
+                } catch {
+                    hubStatus = null;
+                }
+                const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url ?? hubStatus?.HubLLMBaseURL);
+                const currentProviderURL = normalizeProviderURL(currentProvider?.url);
+                const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
+                const hubCredits = currentProviderIsHubService ? normalizeHubCredits(hubStatus) : null;
                 if (!cancelled) {
-                    setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, ...currentProviderUsage });
+                    setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, isHubService: currentProviderIsHubService, ...currentProviderUsage });
+                    setSidebarHubCredits(hubCredits);
                 }
             } catch {
                 if (!cancelled) {
-                    setSidebarCurrentProviderTokenUsage({ provider: '', input: 0, output: 0, total: 0 });
+                    setSidebarCurrentProviderTokenUsage({ provider: '', isHubService: false, input: 0, output: 0, total: 0 });
+                    setSidebarHubCredits(null);
                 }
             }
         };
         void refreshSidebarTokenUsage();
         const onTokenUsageChanged = () => { void refreshSidebarTokenUsage(); };
         EventsOn("llm-token-usage-changed", onTokenUsageChanged);
+        EventsOn("hub-llm-service-changed", onTokenUsageChanged);
         return () => {
             cancelled = true;
             EventsOff("llm-token-usage-changed");
+            EventsOff("hub-llm-service-changed");
         };
     }, [providers, selectedProvider]);
+
+    const openHubCreditsPage = useCallback(() => {
+        const url = buildHubCreditsURL((config as any)?.remote_hub_url, (config as any)?.remote_viewer_token);
+        if (url) {
+            BrowserOpenURL(url);
+            return;
+        }
+        showAlert(lang === 'zh-Hans' ? 'Hub \u767b\u5f55\u4fe1\u606f\u7f3a\u5931\uff0c\u6682\u65f6\u65e0\u6cd5\u6253\u5f00 Credits \u9875\u9762\u3002' : 'Hub login information is missing, so the Credits page cannot be opened.');
+    }, [config, lang, showAlert]);
+
+    const formatSidebarCredit = useCallback((value: number) => {
+        if (!Number.isFinite(value)) return '0';
+        if (Math.abs(value) >= 1000) return value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+        if (Math.abs(value) >= 10) return value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+        return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    }, []);
+
+    const formatSidebarTokens = useCallback((value: number) => {
+        if (!Number.isFinite(value) || value <= 0) return '0';
+        if (value >= 1000000) return `${(value / 1000000).toFixed(value >= 10000000 ? 0 : 1)}M`;
+        if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}K`;
+        return String(value);
+    }, []);
+
+    const formatSidebarExpiry = useCallback((value?: string) => {
+        if (!value) return '-';
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return value;
+        return d.toLocaleDateString(undefined, { year: '2-digit', month: '2-digit', day: '2-digit' });
+    }, []);
+
+    const noHubAuthorizationText = lang === 'zh-Hans' ? '\u65e0' : lang === 'zh-Hant' ? '\u7121' : 'None';
+    const longTermHubExpiryText = lang === 'zh-Hans' ? '\u957f\u671f' : lang === 'zh-Hant' ? '\u9577\u671f' : 'Long-term';
+    const unlimitedHubCreditText = lang === 'zh-Hans' ? '\u65e0\u9650' : lang === 'zh-Hant' ? '\u7121\u9650' : 'Unlimited';
+    const freeUseHubCreditText = lang === 'zh-Hans' ? '\u7545\u7528' : lang === 'zh-Hant' ? '\u66a2\u7528' : 'Free use';
+
+    const formatSidebarHubExpiry = useCallback((credits: SidebarHubCredits | null) => {
+        if (!credits) return '-';
+        if (!credits.authorized) return noHubAuthorizationText;
+        if (!credits.expiresAt) return longTermHubExpiryText;
+        return formatSidebarExpiry(credits.expiresAt);
+    }, [formatSidebarExpiry, longTermHubExpiryText, noHubAuthorizationText]);
+
+    const formatSidebarHubTotalCredits = useCallback((credits: SidebarHubCredits | null) => {
+        if (!credits) return '-';
+        if (!credits.authorized) return noHubAuthorizationText;
+        if (credits.unlimited) return unlimitedHubCreditText;
+        return formatSidebarCredit(credits.total);
+    }, [formatSidebarCredit, noHubAuthorizationText, unlimitedHubCreditText]);
+
+    const formatSidebarHubUsedCredits = useCallback((credits: SidebarHubCredits | null) => {
+        if (!credits) return '-';
+        if (!credits.authorized) return noHubAuthorizationText;
+        if (credits.used === 0) return freeUseHubCreditText;
+        return formatSidebarCredit(credits.used);
+    }, [formatSidebarCredit, freeUseHubCreditText, noHubAuthorizationText]);
+
+    const showHubCreditAction = !!sidebarHubCredits && (!sidebarHubCredits.authorized || (sidebarHubCredits.total > 0 && sidebarHubCredits.remaining / sidebarHubCredits.total < 0.2));
+
     const activeRemoteSessionForTool = useMemo(() => {
         return remoteSessions.find((session) => {
             if (session.tool !== activeTool) return false;
@@ -3427,9 +3708,19 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '工具显示与启动页行为' : lang === 'zh-Hant' ? '工具顯示與啟動頁行為' : 'Tool visibility and startup behavior',
         },
         {
+            id: 'pet' as const,
+            label: lang === 'zh-Hans' ? '\u5ba0\u7269' : lang === 'zh-Hant' ? '\u5bf5\u7269' : 'Pet',
+            desc: lang === 'zh-Hans' ? '\u684c\u9762\u5ba0\u7269\u5f62\u8c61\u3001\u52a8\u4f5c\u4e0e\u4ea4\u4e92\u8bbe\u7f6e' : lang === 'zh-Hant' ? '\u684c\u9762\u5bf5\u7269\u5f62\u8c61\u3001\u52d5\u4f5c\u8207\u4ea4\u4e92\u8a2d\u7f6e' : 'Desktop pet appearance, actions, and interaction settings',
+        },
+        {
             id: 'remote' as const,
-            label: lang === 'zh-Hans' ? '移动端注册' : lang === 'zh-Hant' ? '行動端註冊' : 'Remote',
+            label: lang === 'zh-Hans' ? '远程注册' : lang === 'zh-Hant' ? '遠端註冊' : 'Remote',
             desc: lang === 'zh-Hans' ? '仅配置远程服务器地址' : lang === 'zh-Hant' ? '僅配置遠端伺服器位址' : 'Server addresses only',
+        },
+        {
+            id: 'redeem' as const,
+            label: lang === 'zh-Hans' ? '\u670d\u52a1\u5151\u6362' : lang === 'zh-Hant' ? '\u670d\u52d9\u5151\u63db' : 'Service Redeem',
+            desc: lang === 'zh-Hans' ? '\u67e5\u770b Credits \u548c\u5151\u6362\u670d\u52a1\u7801' : lang === 'zh-Hant' ? '\u67e5\u770b Credits \u548c\u5151\u63db\u670d\u52d9\u78bc' : 'View credits and redeem service codes',
         },
         {
             id: 'llm' as const,
@@ -3452,19 +3743,14 @@ ${instruction}`;
             desc: lang === 'zh-Hans' ? '向量搜索与嵌入模型管理' : lang === 'zh-Hant' ? '向量搜索與嵌入模型管理' : 'Vector search and embedding model management',
         },
         {
-            id: 'scheduler' as const,
-            label: lang === 'zh-Hans' ? '计划任务' : lang === 'zh-Hant' ? '計劃任務' : 'Scheduler',
-            desc: lang === 'zh-Hans' ? '定时让 MaClaw 自动执行任务' : lang === 'zh-Hant' ? '定時讓 MaClaw 自動執行任務' : 'Schedule MaClaw to run tasks automatically',
-        },
-        {
             id: 'agentnet' as const,
             label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet',
             desc: lang === 'zh-Hans' ? 'AgentNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'AgentNet P2P 去中心化 Agent 網路' : 'AgentNet decentralized P2P agent network',
         },
         {
             id: 'groupDiscussion' as const,
-            label: lang === 'zh-Hans' ? '????' : lang === 'zh-Hant' ? '????' : 'Group Discussion',
-            desc: lang === 'zh-Hans' ? '?? Hub ?? MaClaw ??????????????' : lang === 'zh-Hant' ? '?? Hub ?? MaClaw ??????????????' : 'Current-Hub expert discovery, invites, and discussion policy',
+            label: lang === 'zh-Hans' ? 'A2A \u7fa4\u7ec4' : lang === 'zh-Hant' ? 'A2A \u7fa4\u7d44' : 'A2A Group',
+            desc: lang === 'zh-Hans' ? '\u5f53\u524d Hub \u7684\u4e13\u5bb6\u53d1\u73b0\u3001\u9080\u8bf7\u4e0e\u7fa4\u7ec4\u8ba8\u8bba\u7b56\u7565' : lang === 'zh-Hant' ? '\u76ee\u524d Hub \u7684\u5c08\u5bb6\u767c\u73fe\u3001\u9080\u8acb\u8207\u7fa4\u7d44\u8a0e\u8ad6\u7b56\u7565' : 'Current-Hub expert discovery, invites, and discussion policy',
         },
         {
             id: 'im' as const,
@@ -3485,18 +3771,18 @@ ${instruction}`;
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
-    const isLiteMode = config?.ui_mode !== 'pro';
-
+    const launchMode = config?.default_launch_mode === 'remote' ? 'remote' : 'local';
+    const launchRemoteEnabled = launchMode === 'remote';
     return (
         <div
             className="app-viewport"
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
             <div className="app-scale-layer">
-                <div id="App">
+                <div id="App" data-ai-theme={aiThemeMode}>
             <div style={{
                 height: '30px',
-                width: isLiteMode ? '60px' : '180px',
+                width: navTab === 'ai' ? `${90 + recentTasksPaneWidth + 6}px` : '90px',
                 position: 'absolute',
                 top: 0,
                 left: 0,
@@ -3504,326 +3790,189 @@ ${instruction}`;
                 '--wails-draggable': 'drag'
             } as any}></div>
 
-            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: isLiteMode ? '60px' : '180px' } as any}>
-                {/* Left Navigation Strip */}
+            <div className="sidebar" style={{ '--wails-draggable': 'no-drag', flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${90 + recentTasksPaneWidth + 6}px` : '90px' } as any} data-ai-theme={aiThemeMode}>
+                {/* Restored two-column left shell: brand nav + AI recent tasks. */}
                 <div style={{
-                    width: '60px',
-                    borderRight: '1px solid var(--border-color)',
+                    width: '90px',
+                    borderRight: '1px solid var(--theme-border)',
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
                     padding: '6px 0',
-                    backgroundColor: '#fafbff',
-                    flexShrink: 0
+                    background: 'var(--theme-page-bg)',
+                    flexShrink: 0,
                 }}>
-                    <div className="sidebar-header" style={{ padding: '0 0 6px 0', justifyContent: 'center', width: '100%' }}>
-                        <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '28px', height: '28px' }} />
-                    </div>
-                    <div style={{
-                        fontSize: '0.7rem',
-                        fontWeight: 'bold',
-                        textAlign: 'center',
-                        marginBottom: '2px',
-                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #a855f7)',
-                        WebkitBackgroundClip: 'text',
-                        WebkitTextFillColor: 'transparent',
-                        display: 'inline-block',
-                        width: '100%'
-                    }}>{brandSidebarName}</div>
-
-                    <div
-                        className={`sidebar-item ${navTab === 'remote' ? 'active' : ''}`}
-                        onClick={() => switchTool('remote')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'remote' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center', position: 'relative' }}
-                        title={lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem', position: 'relative' }}>
-                            📡
-                            {runningTaskCount > 0 && (
-                                <span style={{
-                                    position: 'absolute',
-                                    top: '-6px',
-                                    right: '-10px',
-                                    backgroundColor: '#e74c3c',
-                                    color: 'white',
-                                    fontSize: '9px',
-                                    fontWeight: 'bold',
-                                    lineHeight: 1,
-                                    minWidth: '16px',
-                                    height: '16px',
-                                    borderRadius: '8px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    padding: '0 4px',
-                                    boxSizing: 'border-box',
-                                    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-                                    zIndex: 10,
-                                }}>{runningTaskCount > 99 ? '99+' : runningTaskCount}</span>
-                            )}
-                        </span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '任务' : lang === 'zh-Hant' ? '任務' : 'Tasks'}</span>
+                    <div className="sidebar-header" style={{ height: '86px', padding: '4px 0 6px 0', justifyContent: 'flex-start', width: '100%', flexDirection: 'column', gap: '2px' }}>
+                        {brandInfo?.id === 'qianxin' ? (
+                            <img src={currentIcon} alt="Logo" className="sidebar-logo" style={{ width: '34px', height: '34px', objectFit: 'contain' }} />
+                        ) : (
+                            <div style={{ width: '42px', height: '34px', overflow: 'hidden', display: 'flex', justifyContent: 'center', alignItems: 'flex-start' }}>
+                                <img src={currentIcon} alt="Logo" style={{ width: '74px', height: '56px', objectFit: 'contain', transform: 'translateY(-2px)' }} />
+                            </div>
+                        )}
+                        <div style={{ color: '#d94b3d', fontSize: '0.78rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
                     </div>
 
                     <div
-                        className={`sidebar-item ${navTab === 'skills' ? 'active' : ''}`}
-                        onClick={() => { switchTool('skills'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'skills' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={t("skills")}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🧩</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("skills")}</span>
-                    </div>
-                    <div
-                        className={`sidebar-item ${navTab === 'mcp' ? 'active' : ''}`}
-                        onClick={() => { switchTool('mcp'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'mcp' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title="MCP"
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🔌</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>MCP</span>
-                    </div>
-
-                    <div
-                        className={`sidebar-item ${navTab === 'ai' ? 'active' : ''}`}
+                        className={`sidebar-item left-nav-item left-nav-item--ai ${navTab === 'ai' ? 'active' : ''}`}
                         onClick={() => { switchTool('ai'); }}
-                        style={{
-                            flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px',
-                            borderLeft: 'none',
-                            borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent',
-                            justifyContent: 'center'
-                        }}
+                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                         title={lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
                     >
-                        <span className="sidebar-icon" title={(() => {
-                            const llmOk = maclawLLMOnline;
-                            const netOk = agentNetRunning;
-                            const mobileOk = !!remoteActivationStatus?.activated;
-                            if (isLiteMode) {
-                                if (llmOk && netOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
-                                const parts: string[] = [];
-                                parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                                parts.push(netOk ? (lang?.startsWith('zh') ? '智网 ✓' : 'AgentNet ✓') : (lang?.startsWith('zh') ? '智网 ✗' : 'AgentNet ✗'));
-                                return parts.join('  ');
-                            }
-                            if (llmOk && netOk && mobileOk) return lang?.startsWith('zh') ? '全部在线' : 'All online';
-                            const parts: string[] = [];
-                            parts.push(llmOk ? 'LLM ✓' : 'LLM ✗');
-                            parts.push(netOk ? (lang?.startsWith('zh') ? '智网 ✓' : 'AgentNet ✓') : (lang?.startsWith('zh') ? '智网 ✗' : 'AgentNet ✗'));
-                            parts.push(mobileOk ? (lang?.startsWith('zh') ? '移动端 ✓' : 'Mobile ✓') : (lang?.startsWith('zh') ? '移动端 ✗' : 'Mobile ✗'));
-                            return parts.join('  ');
-                        })()} style={{
-                            margin: 0,
-                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                            width: '2rem', height: '2rem',
-                            borderRadius: '50%',
-                            padding: '3px',
-                            background: (() => {
-                                const on = '#e74c3c';
-                                const off = '#ccc';
-                                const llm = maclawLLMOnline ? on : off;
-                                const net = agentNetRunning ? on : off;
-                                if (isLiteMode) {
-                                    return `conic-gradient(${llm} 0deg, ${llm} 180deg, ${net} 180deg, ${net} 360deg)`;
-                                }
-                                const mob = remoteActivationStatus?.activated ? on : off;
-                                return `conic-gradient(${llm} 0deg, ${llm} 180deg, ${net} 180deg, ${net} 270deg, ${mob} 270deg, ${mob} 360deg)`;
-                            })(),
-                            boxShadow: (() => {
-                                const allOn = isLiteMode
-                                    ? (maclawLLMOnline && agentNetRunning)
-                                    : (maclawLLMOnline && agentNetRunning && !!remoteActivationStatus?.activated);
-                                const noneOn = isLiteMode
-                                    ? (!maclawLLMOnline && !agentNetRunning)
-                                    : (!maclawLLMOnline && !agentNetRunning && !remoteActivationStatus?.activated);
-                                if (noneOn) return 'none';
-                                if (allOn && navTab === 'ai') return '0 0 10px rgba(231,76,60,0.6), 0 0 20px rgba(231,76,60,0.3)';
-                                if (allOn) return '0 0 6px rgba(231,76,60,0.4), 0 0 12px rgba(231,76,60,0.15)';
-                                return '0 0 4px rgba(231,76,60,0.3)';
-                            })(),
-                            transition: 'box-shadow 0.2s ease, background 0.3s ease'
-                        }}>
-                            <span style={{
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                width: '100%', height: '100%',
-                                borderRadius: '50%', background: '#f8f9fc',
-                                fontSize: '1.3rem', lineHeight: 1
-                            }}>🦞</span>
+                        <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '2.22rem', height: '2.22rem', borderRadius: '50%', padding: '4px', background: (() => { const llm = maclawLLMOnline; const net = agentNetRunning; const mob = remoteActivationStatus?.activated; return (llm && net && mob) ? 'var(--theme-primary-strong)' : (!llm && !net && !mob) ? 'var(--theme-text-muted)' : 'var(--theme-primary)'; })(), boxShadow: navTab === 'ai' ? '0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent), 0 0 14px color-mix(in srgb, var(--theme-primary) 72%, transparent), 0 0 30px color-mix(in srgb, var(--theme-primary) 48%, transparent)' : '0 0 12px color-mix(in srgb, var(--theme-primary) 24%, transparent)', transition: 'box-shadow 0.24s ease, background 0.3s ease, filter 0.24s ease', filter: navTab === 'ai' ? 'saturate(1.16)' : 'none' }}>
+                            <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', borderRadius: '50%', background: 'var(--theme-surface)', fontSize: '1.42rem', lineHeight: 1 }}>🦞</span>
                         </span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>
-                            {lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}
-                        </span>
+                        <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{lang === 'zh-Hans' ? 'AI 助手' : lang === 'zh-Hant' ? 'AI 助手' : 'AI Asst'}</span>
                     </div>
 
-                    <div style={{ height: '18px', flexShrink: 0 }}></div>
+                    {(() => {
+                        const navItems = [
+                            { id: 'remote', configKey: 'show_nav_monitor', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem', position: 'relative' }}>📡{runningTaskCount > 0 && (<span style={{ position: 'absolute', top: '-5px', right: '-8px', minWidth: '18px', height: '18px', lineHeight: '18px', fontSize: '10px', fontWeight: 700, textAlign: 'center', padding: runningTaskCount > 99 ? '0 2px' : '0 3px', borderRadius: '999px', background: 'var(--theme-danger)', color: '#ffffff', boxShadow: '0 1px 3px rgba(0,0,0,0.3)', zIndex: 10 }}>{runningTaskCount > 99 ? '99+' : runningTaskCount}</span>)}</span>, label: lang === 'zh-Hans' ? '监控' : lang === 'zh-Hant' ? '監控' : 'Monitor' },
+                            { id: 'skills', configKey: 'show_nav_skills', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>🧩</span>, label: t("skills") },
+                            { id: 'mcp', configKey: 'show_nav_mcp', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>🔌</span>, label: 'MCP' },
+                            ...(gossipAllowed ? [{ id: 'gossip', configKey: 'show_nav_gossip', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>🗣️</span>, label: t("gossip") }] : []),
+                            { id: 'agentnet', configKey: 'show_nav_agentnet', icon: <img src={agentnetIcon} alt="AgentNet" style={{ width: '18px', height: '18px', margin: 0 }} />, label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet' },
+                        ];
+                        const isPinned = (item: typeof navItems[0]) => (config as any)?.[item.configKey] !== false;
+                        const pinnedItems = navItems.filter(isPinned);
+                        const collapsedItems = navItems.filter(item => !isPinned(item));
+                        const renderItem = (item: typeof navItems[0]) => (
+                            <div key={item.id} className={`sidebar-item left-nav-item ${navTab === item.id ? 'active' : ''}`} onClick={() => switchTool(item.id)} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === item.id ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center', position: item.id === 'remote' ? 'relative' as const : undefined }} title={item.label}>
+                                {item.icon}
+                                <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{item.label}</span>
+                            </div>
+                        );
+                        return (<>
+                            {pinnedItems.map(renderItem)}
+                            {collapsedItems.length > 0 && (
+                                <div className="sidebar-item left-nav-item" onClick={() => setSidebarExpanded(prev => !prev)} style={{ flexDirection: 'column', padding: '4px 0', width: '100%', gap: '2px', borderLeft: 'none', borderRight: '3px solid transparent', justifyContent: 'center', cursor: 'pointer', opacity: 0.7 }} title={sidebarExpanded ? (lang === 'zh-Hans' ? '收起' : 'Collapse') : (lang === 'zh-Hans' ? '更多' : 'More')}>
+                                    <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>{sidebarExpanded ? '▴' : '···'}</span>
+                                </div>
+                            )}
+                            {sidebarExpanded && collapsedItems.map(renderItem)}
+                        </>);
+                    })()}
 
-                    {gossipAllowed && (
-                        <div
-                            className={`sidebar-item ${navTab === 'gossip' ? 'active' : ''}`}
-                            onClick={() => { switchTool('gossip'); }}
-                            style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'gossip' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                            title={t("gossip")}
-                        >
-                            <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>🗣️</span>
-                            <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("gossip")}</span>
-                        </div>
-                    )}
+                    <div style={{ flex: 1 }}></div>
 
-                    <div
-                        className={`sidebar-item ${navTab === 'agentnet' ? 'active' : ''}`}
-                        onClick={() => { switchTool('agentnet'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'agentnet' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}
-                    >
-                        <img src={agentnetIcon} alt="AgentNet" style={{ width: '22px', height: '22px', margin: 0 }} />
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet'}</span>
+                    <div className={`sidebar-item left-nav-item ${navTab === 'settings' ? 'active' : ''}`} onClick={() => { switchTool('settings'); }} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }} title={t("settings")}>
+                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>⚙️</span>
+                        <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t("settings")}</span>
                     </div>
 
-                    <div
-                        className={`sidebar-item ${navTab === 'settings' ? 'active' : ''}`}
-                        onClick={() => { switchTool('settings'); }}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'settings' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={t("settings")}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>⚙️</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("settings")}</span>
-                    </div>
-
-                    <div
-                        className={`sidebar-item ${navTab === 'about' ? 'active' : ''}`}
-                        onClick={() => switchTool('about')}
-                        style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
-                        title={t("about")}
-                    >
-                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.2rem' }}>ℹ️</span>
-                        <span style={{ fontSize: '0.65rem', lineHeight: 1 }}>{t("about")}</span>
+                    <div className={`sidebar-item left-nav-item ${navTab === 'about' ? 'active' : ''}`} onClick={() => switchTool('about')} style={{ flexDirection: 'column', padding: '5px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'about' ? '3px solid var(--theme-text-muted)' : '3px solid transparent', justifyContent: 'center' }} title={t("about")}>
+                        <span className="sidebar-icon" style={{ margin: 0, fontSize: '1.08rem' }}>ℹ️</span>
+                        <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{t("about")}</span>
                     </div>
                 </div>
 
-                {/* Right Tool List */}
-                <div style={{ flex: 1, padding: '10px', overflowY: 'auto', backgroundColor: '#fafbff', display: isLiteMode ? 'none' : 'flex', flexDirection: 'column' }}>
-                    <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '0 auto 8px', flexShrink: 0, display: isLiteMode ? 'none' : undefined }}></div>
-                    <div style={{ flex: 1, display: isLiteMode ? 'none' : 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-                    <div className="tool-grid" style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '6px' }}>
-                        <div className={`sidebar-item ${navTab === 'claude' ? 'active' : ''}`} onClick={() => switchTool('claude')}>
-                            <span className="sidebar-icon">
-                                <img src={claudecodeIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Claude" />
-                            </span> <span>Claude Code</span>
+                {navTab === 'ai' && (
+                <>
+                <div style={{ width: `${recentTasksPaneWidth}px`, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--theme-border)', background: 'var(--theme-page-bg)', minHeight: 0, overflow: 'hidden' }}>
+                    <div style={{ flexShrink: 0, borderBottom: '1px solid var(--theme-border)' }}>
+                        <div onClick={() => setToolDropdownOpen(prev => !prev)} style={{ display: 'flex', alignItems: 'center', height: '58px', padding: '0 18px', gap: '12px', cursor: 'pointer' }}>
+                            <span style={{ color: '#f97316', fontSize: '1rem', lineHeight: 1 }}>✺</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.82rem', fontWeight: 700, color: 'var(--theme-text-primary)', flex: 1 }}>{activeTool === 'claude' ? 'Claude Code' : activeTool === 'gemini' ? 'Gemini CLI' : activeTool === 'codex' ? 'CodeX' : activeTool === 'opencode' ? 'OpenCode' : activeTool === 'codebuddy' ? 'CodeBuddy' : activeTool === 'cursor' ? 'Cursor Agent' : activeTool === 'iflow' ? 'iFlow CLI' : activeTool === 'kilo' ? 'Kilo Code' : activeTool}</span>
+                            <span style={{ fontSize: '0.72rem', opacity: 0.55, flexShrink: 0 }}>{toolDropdownOpen ? '▲' : '▼'}</span>
                         </div>
-                        {config?.show_gemini !== false && (
-                            <div className={`sidebar-item ${navTab === 'gemini' ? 'active' : ''}`} onClick={() => switchTool('gemini')}>
-                                <span className="sidebar-icon">
-                                    <img src={geminiIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Gemini" />
-                                </span> <span>Gemini CLI</span>
+                        {toolDropdownOpen && (
+                            <div style={{ padding: '0 8px 8px' }}>
+                                {([{ id: 'claude', name: 'Claude Code', icon: claudecodeIcon }, ...(config?.show_gemini !== false ? [{ id: 'gemini', name: 'Gemini CLI', icon: geminiIcon }] : []), ...(config?.show_codex !== false ? [{ id: 'codex', name: 'CodeX', icon: codexIcon }] : []), ...(config?.show_opencode !== false ? [{ id: 'opencode', name: 'OpenCode', icon: opencodeIcon }] : []), ...(config?.show_codebuddy !== false ? [{ id: 'codebuddy', name: 'CodeBuddy', icon: codebuddyIcon }] : []), ...(config?.show_iflow !== false ? [{ id: 'iflow', name: 'iFlow CLI', icon: iflowIcon }] : []), ...(config?.show_kilo !== false ? [{ id: 'kilo', name: 'Kilo Code', icon: kiloIcon }] : [])] as { id: string; name: string; icon: string }[]).map(tool => (
+                                    <div key={tool.id} onClick={() => switchTool(tool.id)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: activeTool === tool.id ? 'color-mix(in srgb, var(--theme-primary) 16%, transparent)' : 'transparent', fontWeight: activeTool === tool.id ? 700 : 500 }}>
+                                        <img src={tool.icon} style={{ width: '16px', height: '16px' }} alt="" />
+                                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{tool.name}</span>
+                                        {activeTool === tool.id && <span style={{ fontSize: '0.7rem', opacity: 0.65 }}>✓</span>}
+                                    </div>
+                                ))}
                             </div>
                         )}
-                        {config?.show_codex !== false && (
-                            <div className={`sidebar-item ${navTab === 'codex' ? 'active' : ''}`} onClick={() => switchTool('codex')}>
-                                <span className="sidebar-icon">
-                                    <img src={codexIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Codex" />
-                                </span> <span>CodeX</span>
-                            </div>
-                        )}
-                        {config?.show_opencode !== false && (
-                            <div className={`sidebar-item ${navTab === 'opencode' ? 'active' : ''}`} onClick={() => switchTool('opencode')}>
-                                <span className="sidebar-icon">
-                                    <img src={opencodeIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="OpenCode" />
-                                </span> <span>OpenCode</span>
-                            </div>
-                        )}
-                        {config?.show_codebuddy !== false && (
-                            <div className={`sidebar-item ${navTab === 'codebuddy' ? 'active' : ''}`} onClick={() => switchTool('codebuddy')}>
-                                <span className="sidebar-icon">
-                                    <img src={codebuddyIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="CodeBuddy" />
-                                </span> <span>CodeBuddy</span>
-                            </div>
-                        )}
-                        {!isWindows && config?.show_cursor !== false && (
-                            <div className={`sidebar-item ${navTab === 'cursor' ? 'active' : ''}`} onClick={() => switchTool('cursor')}>
-                                <span className="sidebar-icon">
-                                    <img src={cursorIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Cursor" />
-                                </span> <span>Cursor Agent</span>
-                            </div>
-                        )}
-                        {config?.show_iflow !== false && (
-                            <div className={`sidebar-item ${navTab === 'iflow' ? 'active' : ''}`} onClick={() => switchTool('iflow')}>
-                                <span className="sidebar-icon">
-                                    <img src={iflowIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="iFlow" />
-                                </span> <span>iFlow CLI</span>
-                            </div>
-                        )}
-                        {config?.show_kilo !== false && (
-                            <div className={`sidebar-item ${navTab === 'kilo' ? 'active' : ''}`} onClick={() => switchTool('kilo')}>
-                                <span className="sidebar-icon">
-                                    <img src={kiloIcon} style={{ width: '1.4em', height: '1.4em', verticalAlign: 'middle' }} alt="Kilo Code" />
-                                </span> <span>Kilo Code</span>
-                            </div>
-                        )}
-
-                    </div>
                     </div>
 
-                    {/* Status dashboard */}
-                    <div style={{ flexShrink: 0, padding: '0 5px 1px', marginTop: '6px' }}>
-                        <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '6px auto' }}></div>
-                        <div style={{ fontSize: '0.58rem', color: '#888', fontFamily: "'Segoe UI', 'SF Pro Text', -apple-system, sans-serif" }}>
-                            <div style={{ marginBottom: '4px', fontWeight: 600, color: '#666', fontSize: '0.6rem' }}>
-                                {lang === 'zh-Hans' ? '系统状态' : lang === 'zh-Hant' ? '系統狀態' : 'Status'}
+                    <div style={{ flex: 1, overflowY: 'auto', padding: '10px 8px 8px' }}>
+                        <div style={{ padding: '2px 8px 9px', fontSize: '0.68rem', color: 'var(--theme-text-muted)', fontWeight: 700, letterSpacing: '0.02em' }}>
+                            {lang === 'zh-Hans' ? '\u6700\u8fd1\u4efb\u52a1' : lang === 'zh-Hant' ? '\u6700\u8fd1\u4efb\u52d9' : 'Recent Tasks'}
+                        </div>
+                        {recentProjects.length === 0 ? (
+                            <div style={{ padding: '24px 8px', textAlign: 'center', fontSize: '0.78rem', color: 'var(--theme-text-muted)', opacity: 0.65 }}>{lang === 'zh-Hans' ? '暂无最近任务' : lang === 'zh-Hant' ? '暫無最近任務' : 'No recent tasks'}</div>
+                        ) : recentProjects.map(proj => (
+                            <div key={proj.id || proj.project_path} onClick={() => { if (!renamingTaskPath) void resumeRecentProject(proj.project_path); }} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'grid', gridTemplateColumns: '20px minmax(0, 1fr)', gap: '7px', padding: '8px 8px', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.15s' }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                                <span style={{ color: '#ff3b73', fontSize: '0.92rem', lineHeight: '1.1rem' }}>{proj.pinned ? '📌' : '🚀'}</span>
+                                <span style={{ minWidth: 0 }}>
+                                    {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await RenameTask(proj.project_path, trimmed); refreshRecentProjects(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{proj.name || proj.project_path}</span>}
+                                    <span style={{ display: 'block', marginTop: '4px', color: 'var(--theme-text-muted)', fontSize: '0.68rem', lineHeight: 1.32, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{proj.preview || proj.project_path}</span>
+                                </span>
                             </div>
-                            {[
-                                { label: 'LLM', on: maclawLLMOnline },
-                                { label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet', on: agentNetRunning },
-                                { label: lang === 'zh-Hans' ? '移动端' : lang === 'zh-Hant' ? '行動端' : 'Mobile', on: !!remoteActivationStatus?.activated },
-                                { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected', link: 'im' },
-                            ].map(({ label, on, link }) => (
-                                <div key={label} style={{ display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '2px', cursor: link ? 'pointer' : undefined }}
-                                    onClick={link ? () => { setNavTab('settings'); setSettingsTab(link as any); } : undefined}
-                                    title={link && !on ? (lang?.startsWith('zh') ? '点击配置' : 'Click to configure') : undefined}
-                                >
-                                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: on ? '#22c55e' : '#ccc', display: 'inline-block', flexShrink: 0 }}></span>
-                                    <span>{label}</span>
-                                    <span style={{ marginLeft: 'auto', color: on ? '#22c55e' : '#aaa', fontSize: '0.56rem' }}>
-                                        {on ? (lang?.startsWith('zh') ? '在线' : 'Online') : (lang?.startsWith('zh') ? '离线' : 'Offline')}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                        <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(212, 212, 247, 0.7)', fontSize: '0.58rem', color: '#777' }}>
-                            <div style={{ padding: '7px 8px', borderRadius: '8px', background: 'rgba(255,255,255,0.72)', border: '1px solid rgba(212, 212, 247, 0.6)', minWidth: 0, boxShadow: '0 1px 2px rgba(99, 102, 241, 0.08)' }}>
-                                <div style={{ color: '#555', fontWeight: 700, fontSize: '0.6rem', marginBottom: '6px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={lang === 'zh-Hans' ? '当前' : lang === 'zh-Hant' ? '當前' : 'Current'}>
-                                    {lang === 'zh-Hans' ? '当前' : lang === 'zh-Hant' ? '當前' : 'Current'}
-                                </div>
-                                <div style={{ display: 'grid', gap: '5px' }}>
-                                    {[
-                                        { label: lang === 'zh-Hans' ? '输入' : lang === 'zh-Hant' ? '輸入' : 'In', value: sidebarCurrentProviderTokenUsage.input, color: '#2563eb' },
-                                        { label: lang === 'zh-Hans' ? '输出' : lang === 'zh-Hant' ? '輸出' : 'Out', value: sidebarCurrentProviderTokenUsage.output, color: '#7c3aed' },
-                                        { label: lang === 'zh-Hans' ? '总计' : lang === 'zh-Hant' ? '總計' : 'Total', value: sidebarCurrentProviderTokenUsage.total, color: '#111827', bold: true },
-                                    ].map(({ label, value, color, bold }) => (
-                                        <div key={label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', minWidth: 0 }}>
-                                            <div style={{ fontSize: '0.54rem', color: '#7a7a7a', whiteSpace: 'nowrap', fontWeight: 600 }}>{label}</div>
-                                            <div style={{ color, fontWeight: bold ? 800 : 700, fontSize: bold ? '0.66rem' : '0.62rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontVariantNumeric: 'tabular-nums' }} title={value.toLocaleString()}>
-                                                {value.toLocaleString()}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
+                        ))}
+
+                        {taskContextMenu && (<>
+                            <div style={{ position: 'fixed', inset: 0, zIndex: 9998 }} onClick={() => setTaskContextMenu(null)} />
+                            <div style={{ position: 'fixed', left: taskContextMenu.x, top: taskContextMenu.y, zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '132px' }}>
+                                {[
+                                    { label: lang === 'zh-Hans' ? '重命名' : 'Rename', icon: '✏️', action: () => { setRenamingTaskPath(taskContextMenu.projectPath); setRenameValue(taskContextMenu.name); setTaskContextMenu(null); } },
+                                    { label: taskContextMenu.pinned ? (lang === 'zh-Hans' ? '取消置顶' : 'Unpin') : (lang === 'zh-Hans' ? '置顶' : 'Pin'), icon: '📌', action: async () => { await PinTask(taskContextMenu.projectPath, !taskContextMenu.pinned); refreshRecentProjects(); setTaskContextMenu(null); } },
+                                    { label: lang === 'zh-Hans' ? '删除' : 'Remove', icon: '🗑️', action: async () => { await HideTask(taskContextMenu.projectPath); refreshRecentProjects(); setTaskContextMenu(null); } },
+                                ].map(item => <div key={item.label} onClick={item.action} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '7px 12px', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--theme-text-primary)' }}><span>{item.icon}</span><span>{item.label}</span></div>)}
                             </div>
+                        </>)}
+                    </div>
+
+                    <div style={{ flexShrink: 0, padding: '8px 12px 10px', borderTop: '1px solid var(--theme-border)', color: 'var(--theme-text-muted)' }}>
+                        <div style={{ display: 'flex', gap: '5px', marginBottom: '6px', alignItems: 'center', fontSize: '0.62rem', lineHeight: 1.15 }}>
+                            {[{ label: 'LLM', on: maclawLLMOnline }, { label: lang === 'zh-Hans' ? '智网' : 'Net', on: agentNetRunning }, { label: lang === 'zh-Hans' ? '移动' : 'Mob', on: !!remoteActivationStatus?.activated }, { label: 'IM', on: qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' }].map(({ label, on }) => <span key={label}><span style={{ color: on ? 'var(--theme-primary)' : 'var(--theme-text-muted)' }}>●</span> {label}</span>)}
                         </div>
-                        <div style={{ width: '80%', height: '1px', background: 'linear-gradient(90deg, transparent, #d4d4f7, transparent)', margin: '6px auto' }}></div>
-                        <div style={{ textAlign: 'center', fontSize: '0.52rem', color: '#bbb', paddingBottom: '4px', fontFamily: "'Segoe UI', 'SF Pro Text', -apple-system, sans-serif" }}>
-                            V{APP_VERSION}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '0.72rem', alignItems: 'center' }}>
+                            <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sidebarCurrentProviderTokenUsage.provider || (lang === 'zh-Hans' ? '智谱编程' : lang === 'zh-Hant' ? '智譜編程' : 'Provider')}</span>
+                            <span style={{ flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{formatSidebarTokens(sidebarCurrentProviderTokenUsage.total)} tokens</span>
                         </div>
+                        {sidebarCurrentProviderTokenUsage.isHubService && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '5px', fontSize: '0.66rem', minWidth: 0 }}>
+                                <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }} title={sidebarHubCredits ? `Expires: ${formatSidebarHubExpiry(sidebarHubCredits)}, total ${formatSidebarHubTotalCredits(sidebarHubCredits)}, used ${formatSidebarHubUsedCredits(sidebarHubCredits)}, remaining ${sidebarHubCredits.authorized ? (sidebarHubCredits.unlimited ? unlimitedHubCreditText : formatSidebarCredit(sidebarHubCredits.remaining)) : noHubAuthorizationText}` : 'Credits unavailable'}>
+                                    {lang === 'zh-Hans' ? '\u6709\u6548\u671f' : lang === 'zh-Hant' ? '\u6709\u6548\u671f' : 'Exp'} {formatSidebarHubExpiry(sidebarHubCredits)} · {lang === 'zh-Hans' ? '\u603b' : 'Total'} {formatSidebarHubTotalCredits(sidebarHubCredits)} · {lang === 'zh-Hans' ? '\u5df2\u7528' : 'Used'} {formatSidebarHubUsedCredits(sidebarHubCredits)}
+                                </span>
+                                {showHubCreditAction && (
+                                    <button type="button" onClick={openHubCreditsPage} style={{ flexShrink: 0, border: '1px solid var(--theme-danger)', background: 'color-mix(in srgb, var(--theme-danger) 12%, transparent)', color: 'var(--theme-danger)', borderRadius: '999px', padding: '2px 7px', fontSize: '0.64rem', fontWeight: 800, cursor: 'pointer' }}>
+                                        {lang === 'zh-Hans' ? '\u8d2d\u4e70' : lang === 'zh-Hant' ? '\u8cfc\u8cb7' : 'Buy'}
+                                    </button>
+                                )}
+                            </div>
+                        )}
                     </div>
                 </div>
+                <div
+                    onMouseDown={handleRecentTasksResizeStart}
+                    title={lang === 'zh-Hans' ? '拖动调整最近任务宽度' : lang === 'zh-Hant' ? '拖動調整最近任務寬度' : 'Drag to resize recent tasks'}
+                    style={{
+                        width: '6px',
+                        flexShrink: 0,
+                        cursor: 'col-resize',
+                        background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent',
+                        borderRight: '1px solid var(--theme-border)',
+                        transition: 'background 120ms ease',
+                        ['--wails-draggable' as any]: 'no-drag',
+                    }}
+                />
+                </>
+                )}
             </div>
-
-            <div className="main-container">
+            <div className="main-container" data-ai-theme={aiThemeMode}>
                 {/* AI assistant as main content (both lite and pro modes) */}
                 {navTab === 'ai' ? (
                     <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', width: '100%', height: '100%', minHeight: 0 }}>
                         <AIAssistantPanel
                             onClose={() => { switchTool('settings'); }}
                             lang={lang}
+                            chatFontSize={chatFontSize}
+                            onThemeModeChange={setAIThemeMode}
+                            audioInputDeviceId={(config as any)?.audio_input_device_id || ''}
+                            audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
+                            groupDiscussion={{
+                                config: groupDiscussionConfig,
+                                status: groupDiscussionStatus,
+                                onRefreshStatus: refreshGroupDiscussionStatus,
+                                onPublishProfile: publishGroupDiscussionProfile,
+                                onAcceptInvite: handleGroupDiscussionAcceptInvite,
+                                onRejectInvite: handleGroupDiscussionRejectInvite,
+                            }}
                             state={{
                                 messages: aiAssistant.messages,
                                 progressMessages: aiAssistant.progressMessages,
@@ -3833,6 +3982,7 @@ ${instruction}`;
                                 ready: aiAssistant.ready,
                                 initStatus: aiAssistant.initStatus,
                                 selectedFilePath: (aiAssistant as any).selectedFilePath || ((aiAssistant as any).selectedFilePaths?.[0] ?? ""),
+                                selectedFilePaths: (aiAssistant as any).selectedFilePaths || [],
                                 submittedPrompts: aiAssistant.submittedPrompts,
                                 draftInputValue: aiAssistant.draftInputValue,
                                 trialReflectEnabled: aiAssistant.trialReflectEnabled,
@@ -3843,6 +3993,7 @@ ${instruction}`;
                             actions={{
                                 browseFile: aiAssistant.browseFile,
                                 clearSelectedFile: aiAssistant.clearSelectedFile,
+                                removeSelectedFile: (aiAssistant as any).removeSelectedFile,
                                 sendMessage: aiAssistant.sendMessage,
                                 clearHistory: aiAssistant.clearHistory,
                                 recordSubmittedPrompt: aiAssistant.recordSubmittedPrompt,
@@ -3851,7 +4002,7 @@ ${instruction}`;
                                 refreshNews: aiAssistant.refreshNews,
                                 onOpenOnboarding: () => setShowMaclawLLMPopup(true),
                                 cancelSession: aiAssistant.cancelSession,
-                                onOpenTutorial: () => switchTool('tutorial'),
+                                onTaskPrefsChanged: () => { void refreshSessionsOnly(); },
                             }}
                             window={{
                                 inline: true,
@@ -3864,7 +4015,7 @@ ${instruction}`;
                 ) : (
                 <><div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                        <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-color)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
+                        <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--theme-text-primary)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
                             <span>
                                 {navTab === 'claude' ? 'Claude Code' :
                                         navTab === 'gemini' ? 'Gemini CLI' :
@@ -3980,10 +4131,30 @@ ${instruction}`;
                         <div style={{ display: 'flex', gap: '10px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
                             <button
                                 onMouseDown={handleWindowHide}
-                                className="btn-hide"
-                                style={{ '--wails-draggable': 'no-drag', pointerEvents: 'auto', cursor: 'pointer', position: 'relative', zIndex: 10001 } as any}
+                                aria-label={lang === 'en' ? 'Minimize window' : '\u6700\u5c0f\u5316\u7a97\u53e3'}
+                                title={lang === 'en' ? 'Minimize window' : '\u6700\u5c0f\u5316\u7a97\u53e3'}
+                                style={{
+                                    '--wails-draggable': 'no-drag',
+                                    pointerEvents: 'auto',
+                                    cursor: 'pointer',
+                                    position: 'relative',
+                                    zIndex: 10001,
+                                    width: '36px',
+                                    height: '28px',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    borderRadius: '4px',
+                                    padding: 0,
+                                    lineHeight: 1,
+                                    flexShrink: 0,
+                                    color: 'var(--theme-text-secondary)',
+                                    transition: 'background 120ms ease, color 120ms ease',
+                                } as any}
                             >
-                                {t("hide")}
+                                <span style={{ width: '10px', borderTop: '1.5px solid currentColor', transform: 'translateY(4px)' }} />
                             </button>
                         </div>
                     </div>
@@ -4199,6 +4370,27 @@ ${instruction}`;
                                         </div>
                                     ))}
                                 </div>
+                                <div className="form-group" style={{ marginBottom: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u804a\u5929\u5b57\u4f53\u5927\u5c0f' : lang === 'zh-Hant' ? '\u804a\u5929\u5b57\u9ad4\u5927\u5c0f' : 'Chat Font Size'}</h4>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <input type="range" min={12} max={24} step={1} value={chatFontSize}
+                                            onChange={e => setChatFontSize(Number(e.target.value))}
+                                            onPointerUp={async (e) => {
+                                                const v = Number((e.currentTarget as HTMLInputElement).value);
+                                                setChatFontSize(v);
+                                                await SetChatFontSize(v).catch(() => {});
+                                            }}
+                                            style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
+                                        <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
+                                        <button onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
+                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
+                                            {lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}
+                                        </button>
+                                    </div>
+                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
+                                        {lang === 'zh-Hans' ? '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002' : lang === 'zh-Hant' ? '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002' : 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.'}
+                                    </p>
+                                </div>
                             </div>
                         </div>
                     )}
@@ -4339,7 +4531,7 @@ ${instruction}`;
                     {navTab === 'settings' && (
                         <div className="settings-shell" style={{ padding: '10px' }}>
                             <div className="settings-top-tabs">
-                                {settingsTabOptions.filter(tab => !(isLiteMode && (tab.id === 'display' || tab.id === 'remote'))).map((tab) => (
+                                {settingsTabOptions.map((tab) => (
                                     <button
                                         key={tab.id}
                                         type="button"
@@ -4361,33 +4553,74 @@ ${instruction}`;
                                         <option value="zh-Hant">繁體中文</option>
                                     </select>
                                 </div>
-                                {!isLiteMode && <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
                                     <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("defaultLaunchModeLabel")}</label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'local' }); setConfig(c); SaveConfig(c); } }} />
+                                        <input type="radio" name="launchMode" checked={!config?.default_launch_mode || config.default_launch_mode === 'local'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'local', remote_enabled: false }); setConfig(c); SaveConfig(c); } }} />
                                         {t("localModeLabel")}
                                     </label>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'remote' }); setConfig(c); SaveConfig(c); } }} />
+                                        <input type="radio" name="launchMode" checked={config?.default_launch_mode === 'remote'} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true }); setConfig(c); SaveConfig(c); } }} />
                                         {t("remoteModeLabel")}
                                     </label>
-                                </div>}
+                                </div>
 
                             </div>
 
-                            {/* UI Mode selector in general settings */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '15px', marginTop: '-5px', padding: '0 0 0 0' }}>
-                                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("uiModeLabel")}</label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                    <input type="radio" name="uiMode" checked={!isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'pro' }); setConfig(c); SaveConfig(c); } }} />
-                                    {t("uiModePro")}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{lang === 'zh-Hans' ? '\u5de5\u4f5c\u76ee\u5f55' : lang === 'zh-Hant' ? '\u5de5\u4f5c\u76ee\u9304' : 'Working Directory'}</label>
+                                <input
+                                    type="text"
+                                    className="form-input"
+                                    style={{ flex: 1, minWidth: '220px', fontSize: '0.78rem', padding: '3px 8px', height: '28px' }}
+                                    value={config?.working_directory || ''}
+                                    placeholder="~/.maclaw/workspace"
+                                    onChange={(e) => {
+                                        if (!config) return;
+                                        setConfig(new main.AppConfig({ ...config, working_directory: e.target.value }));
+                                    }}
+                                    onBlur={() => { if (config) SaveConfig(config); }}
+                                    onKeyDown={(e) => { if (e.key === 'Enter' && config) SaveConfig(config); }}
+                                />
+                                <button className="btn btn-sm" style={{ fontSize: '0.75rem', padding: '3px 10px', height: '28px', whiteSpace: 'nowrap' }} onClick={() => {
+                                    SelectWorkingDir().then(dir => {
+                                        if (dir && config) {
+                                            const c = new main.AppConfig({ ...config, working_directory: dir });
+                                            setConfig(c);
+                                            SaveConfig(c);
+                                        }
+                                    });
+                                }}>{lang === 'zh-Hans' ? '\u6d4f\u89c8' : lang === 'zh-Hant' ? '\u700f\u89bd' : 'Browse'}</button>
+                                {config?.working_directory && (
+                                    <button className="btn btn-sm" style={{ fontSize: '0.75rem', padding: '3px 10px', height: '28px', whiteSpace: 'nowrap', opacity: 0.7 }} onClick={() => {
+                                        if (config) {
+                                            const c = new main.AppConfig({ ...config, working_directory: '' });
+                                            setConfig(c);
+                                            SaveConfig(c);
+                                        }
+                                    }}>{lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}</button>
+                                )}
+                                <span style={{ fontSize: '0.68rem', color: 'var(--theme-text-muted)', whiteSpace: 'nowrap' }}>
+                                    {lang === 'zh-Hans' ? 'Agent \u4efb\u52a1\u7684\u9ed8\u8ba4\u5de5\u4f5c\u76ee\u5f55\uff0c\u7559\u7a7a\u5219\u4f7f\u7528 ~/.maclaw/workspace' : lang === 'zh-Hant' ? 'Agent \u4efb\u52d9\u7684\u9810\u8a2d\u5de5\u4f5c\u76ee\u9304\uff0c\u7559\u7a7a\u5247\u4f7f\u7528 ~/.maclaw/workspace' : 'Default directory for agent tasks. Leave empty for ~/.maclaw/workspace'}
+                                </span>
+                            </div>
+
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
+                                    <input
+                                        type="checkbox"
+                                        checked={config?.llm_trajectory_logging || false}
+                                        onChange={(e) => {
+                                            if (!config) return;
+                                            const c = new main.AppConfig({ ...config, llm_trajectory_logging: e.target.checked });
+                                            setConfig(c);
+                                            SaveConfig(c);
+                                        }}
+                                    />
+                                    <span>{lang === 'zh-Hans' ? '\u8bb0\u5f55 LLM \u8f68\u8ff9' : lang === 'zh-Hant' ? '\u8a18\u9304 LLM \u8ecc\u8de1' : 'Record LLM trajectory'}</span>
                                 </label>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                                    <input type="radio" name="uiMode" checked={isLiteMode} onChange={() => { if (config) { const c = new main.AppConfig({ ...config, ui_mode: 'lite' }); setConfig(c); SaveConfig(c); const currentTab: string = navTab; if (currentTab === 'remote' || currentTab === 'skills' || currentTab === 'mcp' || isToolTab(currentTab)) { setNavTab('ai'); } if (settingsTab === 'display' || settingsTab === 'remote' || settingsTab === 'ui') { setSettingsTab('general'); } } }} />
-                                    {t("uiModeLite")}
-                                </label>
-                                <span style={{ fontSize: '0.7rem', color: '#9ca3af' }}>
-                                    {isLiteMode ? t("uiModeLiteDesc") : t("uiModeProDesc")}
+                                <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
+                                    {lang === 'zh-Hans' ? '\u4fdd\u5b58 LLM \u4ea4\u4e92\u8f68\u8ff9\uff0c\u7528\u4e8e\u5206\u6790\u4e0e\u8bad\u7ec3\u3002' : lang === 'zh-Hant' ? '\u4fdd\u5b58 LLM \u4e92\u52d5\u8ecc\u8de1\uff0c\u7528\u65bc\u5206\u6790\u8207\u8a13\u7df4\u3002' : 'Save LLM interaction trajectories for analysis and training.'}
                                 </span>
                             </div>
 
@@ -4424,6 +4657,15 @@ ${instruction}`;
                                     invitationCode={invitationCode}
                                     setInvitationCode={setInvitationCode}
                                     invitationCodeError={invitationCodeError}
+                                />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'pet' ? 'block' : 'none' }}>
+                                <PetSettingsPanel
+                                    config={config}
+                                    lang={lang}
+                                    setConfig={setConfig}
+                                    saveConfig={SaveConfig}
                                 />
                             </div>
 
@@ -4551,6 +4793,10 @@ ${instruction}`;
                                 <LLMConfigPanel lang={lang} codexModels={config?.codex?.models} onStatusChange={(online: boolean, configured: boolean) => { setMaclawLLMOnline(online); setMaclawLLMConfigured(configured); }} />
                             </div>
 
+                            <div className="settings-panel" style={{ display: settingsTab === 'redeem' ? 'block' : 'none' }}>
+                                <HubServiceRedeemPanel lang={lang} />
+                            </div>
+
                             <div className="settings-panel" style={{ display: settingsTab === 'role' ? 'block' : 'none' }}>
                                 <MaclawRolePanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
@@ -4562,11 +4808,9 @@ ${instruction}`;
                             <div className="settings-panel" style={{ display: settingsTab === 'embedding' ? 'block' : 'none' }}>
                                 <EmbeddingConfigPanel lang={lang} />
                                 <ASRConfigPanel lang={lang} />
+                                <TTSConfigPanel lang={lang} />
                             </div>
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'scheduler' ? 'block' : 'none' }}>
-                                <ScheduledTasksPanel lang={lang} />
-                            </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'agentnet' ? 'block' : 'none' }}>
                                 <AgentNetPanel
@@ -4588,6 +4832,7 @@ ${instruction}`;
                                         { key: 'qq' as const, label: lang === 'zh-Hans' ? 'QQ 机器人' : lang === 'zh-Hant' ? 'QQ 機器人' : 'QQ Bot' },
                                         { key: 'telegram' as const, label: 'Telegram Bot' },
                                         { key: 'weixin' as const, label: lang === 'zh-Hans' ? '微信' : lang === 'zh-Hant' ? '微信' : 'WeChat' },
+                                        { key: 'thirdparty' as const, label: lang === 'zh-Hans' ? '\u7b2c\u4e09\u65b9\u63a5\u5165' : lang === 'zh-Hant' ? '\u7b2c\u4e09\u65b9\u63a5\u5165' : 'Third-party Access' },
                                     ]).map((t) => (
                                         <button
                                             key={t.key}
@@ -4716,6 +4961,10 @@ ${instruction}`;
                                             </button>
                                         ))}
                                     </div>
+
+                                        <button type="button" onClick={() => setIMAuditPlatform('qq')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
+                                        </button>
 
                                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', maxWidth: '520px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -4849,6 +5098,10 @@ ${instruction}`;
                                         ))}
                                     </div>
 
+                                        <button type="button" onClick={() => setIMAuditPlatform('telegram')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
+                                        </button>
+
                                     <div style={{ maxWidth: '520px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                             <label style={{ fontSize: '0.75rem', color: '#555', whiteSpace: 'nowrap', minWidth: '62px' }}>Bot Token</label>
@@ -4960,6 +5213,10 @@ ${instruction}`;
                                             </button>
                                         ))}
                                     </div>
+
+                                        <button type="button" onClick={() => setIMAuditPlatform('weixin')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
+                                        </button>
 
                                     {/* QR Login section */}
                                     {weixinStatus !== 'connected' && (
@@ -5092,6 +5349,103 @@ ${instruction}`;
                                     )}
                                 </div>
                                 )}
+
+                                {imSubTab === 'thirdparty' && (
+                                <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
+                                    <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginBottom: '12px', marginTop: 0 }}>
+                                        {lang === 'zh-Hans'
+                                            ? '\u5f00\u653e\u672c\u673a HTTP \u6d88\u606f\u63a5\u5165\u7aef\u53e3\uff0c\u7b2c\u4e09\u65b9\u8f6f\u4ef6\u4e3b\u52a8\u8fde\u63a5 MaClaw\uff0c\u65e0\u9700\u63d0\u4f9b\u56de\u8c03\u5730\u5740\u3002'
+                                            : lang === 'zh-Hant'
+                                            ? '\u958b\u653e\u672c\u6a5f HTTP \u6d88\u606f\u63a5\u5165\u7aef\u53e3\uff0c\u7b2c\u4e09\u65b9\u8edf\u9ad4\u4e3b\u52d5\u9023\u63a5 MaClaw\uff0c\u7121\u9700\u63d0\u4f9b\u56de\u8abf\u5730\u5740\u3002'
+                                            : 'Expose a local HTTP message gateway. Third-party software connects to MaClaw without a callback URL.'}
+                                    </p>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                                            <input type="checkbox" checked={(config as any)?.thirdparty_gateway_enabled || false} onChange={async (e) => {
+                                                const enabled = e.target.checked;
+                                                const patch: any = { thirdparty_gateway_enabled: enabled };
+                                                if (enabled && !String((config as any)?.thirdparty_gateway_token || '').trim()) {
+                                                    const bytes = new Uint8Array(32);
+                                                    window.crypto.getRandomValues(bytes);
+                                                    patch.thirdparty_gateway_token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+                                                }
+                                                await saveRemoteConfigField(patch);
+                                                if (enabled) {
+                                                    try { const st = await RestartThirdPartyGateway(); setThirdPartyGatewayStatus(typeof st === 'string' ? st : 'disconnected'); }
+                                                    catch (err: any) { showToastMessage(err?.message || String(err)); }
+                                                } else {
+                                                    try { await StopThirdPartyGateway(); } catch {}
+                                                    setThirdPartyGatewayStatus('disconnected');
+                                                }
+                                            }} />
+                                            {lang === 'zh-Hans' ? '\u5f00\u542f\u7b2c\u4e09\u65b9\u8f6f\u4ef6\u63a5\u5165' : lang === 'zh-Hant' ? '\u958b\u555f\u7b2c\u4e09\u65b9\u8edf\u9ad4\u63a5\u5165' : 'Enable third-party access'}
+                                        </label>
+                                        <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: '10px', background: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success-bg)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger-bg)' : 'var(--theme-surface-muted)', color: thirdPartyGatewayStatus === 'connected' ? 'var(--theme-success)' : thirdPartyGatewayStatus === 'error' ? 'var(--theme-danger)' : 'var(--theme-text-secondary)' }}>
+                                            {{ connected: lang === 'en' ? 'Running' : '\u5df2\u542f\u52a8', connecting: lang === 'en' ? 'Starting' : '\u542f\u52a8\u4e2d', disconnected: lang === 'en' ? 'Stopped' : '\u672a\u8fde\u63a5', disabled: lang === 'en' ? 'Disabled' : '\u672a\u542f\u7528', error: lang === 'en' ? 'Error' : '\u9519\u8bef' }[thirdPartyGatewayStatus] || thirdPartyGatewayStatus}
+                                        </span>
+                                        <button type="button" style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-text-secondary)', cursor: 'pointer' }} disabled={!(config as any)?.thirdparty_gateway_enabled} onClick={async () => {
+                                            try { const st = await RestartThirdPartyGateway(); setThirdPartyGatewayStatus(typeof st === 'string' ? st : 'disconnected'); }
+                                            catch (e: any) { showToastMessage(e?.message || String(e)); }
+                                        }}>
+                                            {lang === 'zh-Hans' ? '\u91cd\u542f\u63a5\u53e3' : lang === 'zh-Hant' ? '\u91cd\u555f\u4ecb\u9762' : 'Restart'}
+                                        </button>
+                                    </div>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)' }}>{lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u901a\u9053\uff1a' : 'Mode:'}</span>
+                                        {[{ value: true, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u5355\u673a' : 'Local', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u672c\u673a Agent \u76f4\u63a5\u5904\u7406' : 'Handle with local Agent' }, { value: false, label: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u591a\u673a' : 'Hub', desc: lang === 'zh-Hans' || lang === 'zh-Hant' ? '\u901a\u8fc7 Hub \u8f6c\u53d1\u5230\u5728\u7ebf\u8bbe\u5907' : 'Forward through Hub' }].map((opt) => (
+                                            <button key={String(opt.value)} type="button" aria-label={opt.desc} title={opt.desc} style={{ padding: '4px 14px', borderRadius: '14px', border: thirdPartyGatewayLocalMode === opt.value ? '1.5px solid var(--theme-primary)' : '1px solid var(--theme-border)', background: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-info-bg)' : 'transparent', color: thirdPartyGatewayLocalMode === opt.value ? 'var(--theme-primary)' : 'var(--theme-text-secondary)', fontWeight: thirdPartyGatewayLocalMode === opt.value ? 600 : 400, fontSize: '0.75rem', cursor: 'pointer' }} onClick={() => {
+                                                const prev = thirdPartyGatewayLocalMode;
+                                                setThirdPartyGatewayLocalModeState(opt.value);
+                                                SetThirdPartyGatewayLocalMode(opt.value).then(() => { LoadConfig().then((c: any) => setConfig(c)).catch(() => {}); }).catch((err: any) => {
+                                                    setThirdPartyGatewayLocalModeState(prev);
+                                                    showToastMessage(err?.message || err || '\u5207\u6362\u5931\u8d25');
+                                                });
+                                            }}>{opt.label}</button>
+                                        ))}
+                                        <button type="button" onClick={() => setIMAuditPlatform('thirdparty')} style={{ ...imAuditBtnStyle, marginLeft: '16px' }}>
+                                            {lang === 'zh-Hans' ? '\u76d1\u770b' : lang === 'zh-Hant' ? '\u76e3\u770b' : 'Watch'}
+                                        </button>
+                                    </div>
+
+                                    <div style={{ maxWidth: '760px', display: 'grid', gap: '10px' }}>
+                                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 110px', gap: '10px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '64px' }}>Host</label>
+                                                <input type="text" value={(config as any)?.thirdparty_gateway_host || '127.0.0.1'} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_host: e.target.value } as any)} placeholder="127.0.0.1" spellCheck={false} style={{ flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap' }}>Port</label>
+                                                <input type="number" min={1} max={65535} value={(config as any)?.thirdparty_gateway_port || 18777} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_port: Number(e.target.value || 18777) } as any)} style={{ width: '86px', padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
+                                            </div>
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label style={{ fontSize: '0.75rem', color: 'var(--theme-text-secondary)', whiteSpace: 'nowrap', minWidth: '64px' }}>Token</label>
+                                            <input type="password" value={(config as any)?.thirdparty_gateway_token || ''} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_token: e.target.value } as any)} placeholder="Bearer token" autoComplete="off" style={{ flex: 1, minWidth: 0, padding: '6px 8px', borderRadius: '4px', border: '1px solid var(--theme-border)', fontSize: '0.78rem', background: 'var(--theme-surface)', color: 'var(--theme-text-primary)' }} />
+                                            <button type="button" style={{ fontSize: '0.68rem', padding: '3px 10px', borderRadius: '4px', border: '1px solid var(--theme-primary)', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer', whiteSpace: 'nowrap' }} onClick={async () => {
+                                                const bytes = new Uint8Array(32);
+                                                window.crypto.getRandomValues(bytes);
+                                                const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+                                                await saveRemoteConfigField({ thirdparty_gateway_token: token } as any);
+                                                showToastMessage(lang === 'en' ? 'Token generated' : '\u5df2\u751f\u6210 Token');
+                                            }}>{lang === 'en' ? 'Generate Token' : '\u751f\u6210 Token'}</button>
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', fontSize: '0.72rem', color: 'var(--theme-text-muted)' }}>
+                                            <code style={{ padding: '3px 6px', borderRadius: '4px', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-primary)' }}>{`http://${(config as any)?.thirdparty_gateway_host || '127.0.0.1'}:${(config as any)?.thirdparty_gateway_port || 18777}/api/im-gateway/v1`}</code>
+                                            <button type="button" style={{ fontSize: '0.68rem', padding: '2px 8px', borderRadius: '4px', border: '1px solid var(--theme-primary)', background: 'transparent', color: 'var(--theme-primary)', cursor: 'pointer' }} onClick={() => {
+                                                const base = String((config as any)?.remote_hub_url || '').replace(/\/+$/, '');
+                                                BrowserOpenURL(base ? base + '/connector' : '/connector');
+                                            }}>{lang === 'zh-Hans' ? '\u6253\u5f00\u63a5\u5165\u6587\u6863' : lang === 'zh-Hant' ? '\u958b\u555f\u63a5\u5165\u6587\u4ef6' : 'Open docs'}</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                )}
+                                {imAuditPlatform && (
+                                    <IMAuditPanel
+                                        platform={imAuditPlatform}
+                                        onClose={() => setIMAuditPlatform(null)}
+                                        lang={lang}
+                                    />
+                                )}
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>
@@ -5105,7 +5459,7 @@ ${instruction}`;
                                     </h4>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '心跳间隔（秒）' : lang === 'zh-Hant' ? '心跳間隔（秒）' : 'Heartbeat Interval (sec)'}</label>
+                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '\u5fc3\u8df3\u95f4\u9694\uff08\u79d2\uff09' : lang === 'zh-Hant' ? '\u5fc3\u8df3\u9593\u9694\uff08\u79d2\uff09' : 'Heartbeat Interval (sec)'}</label>
                                             <input
                                                 className="form-input"
                                                 type="number"
@@ -5118,7 +5472,7 @@ ${instruction}`;
                                             />
                                         </div>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '熄屏时间（分钟）' : lang === 'zh-Hant' ? '熄屏時間（分鐘）' : 'Screen Dim Timeout (min)'}</label>
+                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap' }}>{lang === 'zh-Hans' ? '\u606f\u5c4f\u7b49\u5f85\uff08\u5206\u949f\uff09' : lang === 'zh-Hant' ? '\u606f\u5c4f\u7b49\u5f85\uff08\u5206\u9418\uff09' : 'Screen Dim Timeout (min)'}</label>
                                             <input
                                                 className="form-input"
                                                 type="number"
@@ -5128,35 +5482,68 @@ ${instruction}`;
                                                 value={(config as any)?.screen_dim_timeout_min ?? 3}
                                                 onChange={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Number(e.target.value || 0) } as any)}
                                                 onBlur={(e) => saveRemoteConfigField({ screen_dim_timeout_min: Math.max(0, Number(e.target.value || 0)) } as any)}
-                                                title={lang === 'zh-Hans' ? '无键鼠操作多少分钟后熄屏节能（0=禁用）。防锁屏开启时有效。' : 'Minutes of inactivity before screen dims (0=disabled). Effective when screen-lock prevention is on.'}
+                                                title={lang === 'zh-Hans' ? '\u7a7a\u95f2\u591a\u5c11\u5206\u949f\u540e\u606f\u5c4f\uff080=\u5173\u95ed\uff09\uff1b\u5de5\u4f5c\u7ad9\u6a21\u5f0f\u6216\u9632\u9501\u5c4f\u65f6\u751f\u6548\u3002' : 'Minutes of inactivity before screen dims (0=disabled). Effective when workstation mode or screen-lock prevention is on.'}
                                             />
                                         </div>
                                     </div>
-                                    <div style={{ marginTop: '12px' }}>
+                                    <div style={{ marginTop: '12px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                                         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                                             <input
                                                 type="checkbox"
                                                 checked={(config as any)?.workstation_mode === true}
-                                                onChange={(e) => {
-                                                    if (config) {
-                                                        const newConfig = new main.AppConfig({ ...config, workstation_mode: e.target.checked } as any);
-                                                        setConfig(newConfig);
-                                                        SaveConfig(newConfig);
+                                                onChange={async (e) => {
+                                                    if (!config) return;
+                                                    const prevConfig = config;
+                                                    const newConfig = new main.AppConfig({ ...config, workstation_mode: e.target.checked } as any);
+                                                    setConfig(newConfig);
+                                                    try {
+                                                        await SaveConfig(newConfig);
+                                                    } catch (err: any) {
+                                                        setConfig(prevConfig);
+                                                        showToastMessage(err?.message || String(err));
                                                     }
                                                 }}
                                                 style={{ width: '16px', height: '16px' }}
                                             />
-                                            <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>
-                                                {lang === 'zh-Hans' ? '工作站模式' : lang === 'zh-Hant' ? '工作站模式' : 'Workstation Mode'}
+                                            <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-secondary)' }}>
+                                                {lang === 'zh-Hans' ? '\u5de5\u4f5c\u7ad9\u6a21\u5f0f' : lang === 'zh-Hant' ? '\u5de5\u4f5c\u7ad9\u6a21\u5f0f' : 'Workstation Mode'}
                                             </span>
                                         </label>
-                                        <div style={{ fontSize: '0.7rem', color: '#9ca3af', marginTop: '4px', marginLeft: '24px' }}>
+                                        <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.5 }}>
                                             {lang === 'zh-Hans'
-                                                ? '开启后不休眠、不锁屏，但允许黑屏。方便截屏测试和调试。'
+                                                ? '\u9632\u6b62\u7cfb\u7edf\u7761\u7720\u548c\u9501\u5c4f\uff0c\u4f46\u5141\u8bb8\u5c4f\u5e55\u5728\u7a7a\u95f2\u540e\u5173\u95ed\uff0c\u9002\u5408\u622a\u56fe\u6d4b\u8bd5\u548c\u8c03\u8bd5\u3002'
                                                 : lang === 'zh-Hant'
-                                                ? '開啟後不休眠、不鎖屏，但允許黑屏。方便截屏測試和除錯。'
-                                                : 'Prevents sleep & screen lock while allowing display off. Useful for screenshot testing and debugging.'}
+                                                ? '\u9632\u6b62\u7cfb\u7d71\u7761\u7720\u548c\u9396\u5c4f\uff0c\u4f46\u5141\u8a31\u87a2\u5e55\u5728\u7a7a\u9592\u5f8c\u95dc\u9589\uff0c\u9069\u5408\u622a\u5716\u6e2c\u8a66\u548c\u9664\u932f\u3002'
+                                                : 'Prevents sleep and screen lock while allowing display off. Useful for screenshot testing and debugging.'}
+                                        </span>
+                                    </div>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '10px', marginTop: '12px', maxWidth: '760px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', minWidth: '90px' }}>
+                                                {lang === 'zh-Hans' ? '\u9ed8\u8ba4\u5f55\u97f3\u8bbe\u5907' : lang === 'zh-Hant' ? '\u9810\u8a2d\u9304\u97f3\u88dd\u7f6e' : 'Mic device'}
+                                            </label>
+                                            <select className="form-input" style={{ flex: 1, minWidth: 0 }} value={(config as any)?.audio_input_device_id || ''} onChange={(e) => saveRemoteConfigField({ audio_input_device_id: e.target.value } as any)}>
+                                                <option value="">{lang === 'zh-Hans' ? '\u7cfb\u7edf\u9ed8\u8ba4' : lang === 'zh-Hant' ? '\u7cfb\u7d71\u9810\u8a2d' : 'System Default'}</option>
+                                                {audioDevices.inputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
+                                            </select>
                                         </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', minWidth: '90px' }}>
+                                                {lang === 'zh-Hans' ? '\u9ed8\u8ba4\u64ad\u653e\u8bbe\u5907' : lang === 'zh-Hant' ? '\u9810\u8a2d\u64ad\u653e\u88dd\u7f6e' : 'Speaker device'}
+                                            </label>
+                                            <select className="form-input" style={{ flex: 1, minWidth: 0 }} value={(config as any)?.audio_output_device_id || ''} onChange={(e) => saveRemoteConfigField({ audio_output_device_id: e.target.value } as any)}>
+                                                <option value="">{lang === 'zh-Hans' ? '\u7cfb\u7edf\u9ed8\u8ba4' : lang === 'zh-Hant' ? '\u7cfb\u7d71\u9810\u8a2d' : 'System Default'}</option>
+                                                {audioDevices.outputs.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div style={{ marginTop: '8px', fontSize: '0.7rem', color: 'var(--theme-text-muted)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                        <span>{lang === 'zh-Hans' ? '\u9009\u62e9 AI \u52a9\u624b\u5f55\u97f3\u8f93\u5165\u548c TTS \u64ad\u62a5\u4f7f\u7528\u7684\u97f3\u9891\u8bbe\u5907\u3002' : lang === 'zh-Hant' ? '\u9078\u64c7 AI \u52a9\u624b\u9304\u97f3\u8f38\u5165\u548c TTS \u64ad\u5831\u4f7f\u7528\u7684\u97f3\u8a0a\u88dd\u7f6e\u3002' : 'Select audio devices for AI assistant voice input and TTS playback.'}</span>
+                                        {!audioDevices.labelsAvailable && (
+                                            <button type="button" onClick={audioDevices.requestLabels} style={{ border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-primary)', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer', fontSize: '0.68rem' }}>
+                                                {lang === 'zh-Hans' ? '\u6388\u6743\u663e\u793a\u8bbe\u5907\u540d\u79f0' : lang === 'zh-Hant' ? '\u6388\u6b0a\u986f\u793a\u88dd\u7f6e\u540d\u7a31' : 'Show device names'}
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 
@@ -5202,124 +5589,75 @@ ${instruction}`;
                                         {lang === 'zh-Hans' ? '调整界面整体缩放比例，适配高 DPI 屏幕或个人偏好。' : lang === 'zh-Hant' ? '調整介面整體縮放比例，適配高 DPI 螢幕或個人偏好。' : 'Adjust overall UI scale for HiDPI displays or personal preference.'}
                                     </p>
                                 </div>
-                            </div>
+                                                            <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px', marginBottom: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u0041\u0049\u52a9\u624b\u9762\u677f\u5b57\u53f7' : lang === 'zh-Hant' ? '\u0041\u0049\u52a9\u624b\u9762\u677f\u5b57\u865f' : 'AI Assistant Font Size'}</h4>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                        <input type="range" min={12} max={24} step={1} value={chatFontSize}
+                                            onChange={e => setChatFontSize(Number(e.target.value))}
+                                            onPointerUp={async (e) => {
+                                                const v = Number((e.currentTarget as HTMLInputElement).value);
+                                                setChatFontSize(v);
+                                                await SetChatFontSize(v).catch(() => {});
+                                            }}
+                                            style={{ flex: 1, accentColor: 'var(--theme-primary)' }} />
+                                        <span style={{ fontSize: '0.78rem', color: 'var(--theme-text-secondary)', minWidth: '42px', textAlign: 'center' }}>{chatFontSize}px</span>
+                                        <button onClick={() => { setChatFontSize(14); SetChatFontSize(14).catch(() => {}); }}
+                                            style={{ fontSize: '0.72rem', padding: '3px 10px', cursor: 'pointer', background: 'var(--theme-surface-muted)', color: 'var(--theme-text-secondary)', border: '1px solid var(--theme-border)', borderRadius: 4 }}>
+                                            {lang === 'zh-Hans' ? '\u91cd\u7f6e' : lang === 'zh-Hant' ? '\u91cd\u7f6e' : 'Reset'}
+                                        </button>
+                                    </div>
+                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
+                                        {lang === 'zh-Hans' ? '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002' : lang === 'zh-Hant' ? '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002' : 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.'}
+                                    </p>
+                                </div>
+                                <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px', marginBottom: '16px' }}>
+                                    <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u5de6\u4fa7\u529f\u80fd\u6309\u94ae' : lang === 'zh-Hant' ? '\u5de6\u5074\u529f\u80fd\u6309\u9215' : 'Sidebar Buttons'}</h4>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                                        {[
+                                            { key: 'show_nav_mcp', label: 'MCP' },
+                                            { key: 'show_nav_gossip', label: t("gossip"), disabled: !gossipAllowed },
+                                            { key: 'show_nav_agentnet', label: lang === 'zh-Hans' ? '\u667a\u7f51' : lang === 'zh-Hant' ? '\u667a\u7db2' : 'AgentNet' },
+                                        ].map(item => (
+                                            <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: item.disabled ? 'not-allowed' : 'pointer', opacity: item.disabled ? 0.5 : 1 }}>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={(config as any)?.[item.key] !== false}
+                                                    disabled={!config || item.disabled}
+                                                    onChange={(e) => updateSidebarNavVisibility(item.key as 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet', e.target.checked)}
+                                                    style={{ width: '16px', height: '16px' }}
+                                                />
+                                                <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{item.label}</span>
+                                            </label>
+                                        ))}
+                                    </div>
+                                    <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
+                                        {lang === 'zh-Hans' ? '\u5f00\u542f\u540e\u76f4\u63a5\u663e\u793a\u5728\u5de6\u4fa7\u5de5\u5177\u680f\uff0c\u5173\u95ed\u540e\u6536\u8fdb\u300c\u66f4\u591a\u300d\u3002' : lang === 'zh-Hant' ? '\u958b\u555f\u5f8c\u76f4\u63a5\u986f\u793a\u5728\u5de6\u5074\u5de5\u5177\u5217\uff0c\u95dc\u9589\u5f8c\u6536\u9032\u300c\u66f4\u591a\u300d\u3002' : 'When enabled, the button is shown directly in the left toolbar; when disabled, it is folded into More.'}
+                                    </p>
+                                </div>
+</div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'display' ? 'block' : 'none' }}>
 
-                            <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
-                                <h4 style={{ fontSize: '0.8rem', color: '#6366f1', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '工具显示' : lang === 'zh-Hant' ? '工具顯示' : 'Tool Visibility'}</h4>
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_gemini !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_gemini: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>Gemini CLI</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_codex !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_codex: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>OpenAI Codex</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_opencode !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_opencode: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>OpenCode AI</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_codebuddy !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_codebuddy: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>CodeBuddy</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: isWindows ? 'not-allowed' : 'pointer', opacity: isWindows ? 0.5 : 1 }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={isWindows ? false : config?.show_cursor !== false}
-                                            disabled={isWindows}
-                                            onChange={(e) => {
-                                                if (config && !isWindows) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_cursor: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: isWindows ? '#9ca3af' : '#4b5563' }}>Cursor Agent{isWindows ? ' (macOS/Linux)' : ''}</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_iflow !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_iflow: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>iFlow CLI</span>
-                                    </label>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={config?.show_kilo !== false}
-                                            onChange={(e) => {
-                                                if (config) {
-                                                    const newConfig = new main.AppConfig({ ...config, show_kilo: e.target.checked });
-                                                    setConfig(newConfig);
-                                                    SaveConfig(newConfig);
-                                                }
-                                            }}
-                                            style={{ width: '16px', height: '16px' }}
-                                        />
-                                        <span style={{ fontSize: '0.8rem', color: '#4b5563' }}>Kilo Code CLI</span>
-                                    </label>
+                                                        <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
+                                <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                                    <div style={{ flex: '1 1 0', minWidth: '180px', maxWidth: config?.default_tool ? undefined : '320px' }}>
+                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u9ed8\u8ba4\u7f16\u7a0b\u5de5\u5177' : lang === 'zh-Hant' ? '\u9810\u8a2d\u7de8\u7a0b\u5de5\u5177' : 'Default Coding Tool'}</h4>
+                                        <select className="form-input" value={(config as any)?.default_tool || ''} onChange={(e) => { if (config) { const newConfig = new main.AppConfig({ ...config, default_tool: e.target.value, default_tool_provider: '' } as any); setConfig(newConfig); SaveConfig(newConfig); } }} style={{ width: '100%', fontSize: '0.8rem', padding: '4px 8px', height: '30px' }}>
+                                            <option value="">{lang === 'zh-Hans' ? 'Auto (\u54c1\u724c\u9ed8\u8ba4)' : lang === 'zh-Hant' ? 'Auto (\u54c1\u724c\u9810\u8a2d)' : 'Auto (Brand Default)'}</option>
+                                            {remoteToolMetadata.map((tool: any) => (<option key={tool.name} value={tool.name} disabled={!tool.installed}>{tool.display_name || tool.name}{!tool.installed ? (lang === 'zh-Hans' ? ' (\u672a\u5b89\u88c5)' : lang === 'zh-Hant' ? ' (\u672a\u5b89\u88dd)' : ' (Not Installed)') : ''}</option>))}
+                                        </select>
+                                        <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>{lang === 'zh-Hans' ? '\u9009\u62e9 MaClaw \u81ea\u52a8\u521b\u5efa AI \u7f16\u7a0b\u4f1a\u8bdd\u65f6\u9ed8\u8ba4\u4f7f\u7528\u7684\u5de5\u5177\u3002Auto \u5c06\u4f7f\u7528\u54c1\u724c\u9ed8\u8ba4\u5de5\u5177\u3002' : lang === 'zh-Hant' ? '\u9078\u64c7 MaClaw \u81ea\u52d5\u5efa\u7acb AI \u7de8\u7a0b\u6703\u8a71\u6642\u9810\u8a2d\u4f7f\u7528\u7684\u5de5\u5177\u3002Auto \u5c07\u4f7f\u7528\u54c1\u724c\u9810\u8a2d\u5de5\u5177\u3002' : 'Choose the default tool for MaClaw-created AI coding sessions. Auto uses the brand default.'}</p>
+                                    </div>
+                                    {(config as any)?.default_tool ? (<div style={{ flex: '1 1 0', minWidth: '180px' }}>
+                                        <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '8px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>{lang === 'zh-Hans' ? '\u9ed8\u8ba4\u670d\u52a1\u5546' : lang === 'zh-Hant' ? '\u9810\u8a2d\u670d\u52d9\u5546' : 'Default Provider'}</h4>
+                                        <select className="form-input" value={(config as any)?.default_tool_provider || ''} onChange={(e) => { if (config) { const newConfig = new main.AppConfig({ ...config, default_tool_provider: e.target.value } as any); setConfig(newConfig); SaveConfig(newConfig); } }} style={{ width: '100%', fontSize: '0.8rem', padding: '4px 8px', height: '30px' }}>
+                                            <option value="">{lang === 'zh-Hans' ? 'Auto (\u81ea\u52a8\u9009\u62e9)' : lang === 'zh-Hant' ? 'Auto (\u81ea\u52d5\u9078\u64c7)' : 'Auto (Auto Select)'}</option>
+                                            {toolProviders.map((provider) => (<option key={provider.name} value={provider.name}>{provider.name}</option>))}
+                                        </select>
+                                        <p style={{ fontSize: '0.72rem', color: 'var(--theme-text-muted)', marginTop: '6px' }}>{lang === 'zh-Hans' ? '\u9009\u62e9\u9ed8\u8ba4\u5de5\u5177\u4f7f\u7528\u7684\u670d\u52a1\u5546\u3002Auto \u5c06\u81ea\u52a8\u9009\u62e9\u7b2c\u4e00\u4e2a\u53ef\u7528\u670d\u52a1\u5546\u3002' : lang === 'zh-Hant' ? '\u9078\u64c7\u9810\u8a2d\u5de5\u5177\u4f7f\u7528\u7684\u670d\u52d9\u5546\u3002Auto \u5c07\u81ea\u52d5\u9078\u64c7\u7b2c\u4e00\u500b\u53ef\u7528\u670d\u52d9\u5546\u3002' : 'Choose the default provider for the selected tool. Auto picks the first available provider.'}</p>
+                                    </div>) : null}
                                 </div>
                             </div>
-
-
-
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'general' ? 'block' : 'none' }}>
@@ -5529,7 +5867,7 @@ ${instruction}`;
                 {/* Global Action Bar (Footer) */}
                 {config && isToolTab(navTab) && (
                     <div className="global-action-bar" style={{ '--wails-draggable': 'no-drag' } as any}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%', padding: '2px 0', '--wails-draggable': 'no-drag' } as any}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', width: '100%', padding: '2px 0', '--wails-draggable': 'no-drag' } as any}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '20px', justifyContent: 'flex-start' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     {/* runnerStatus label removed */}
@@ -5639,7 +5977,7 @@ ${instruction}`;
                                         <button
                                             type="button"
                                             onClick={() => {
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: false });
+                                                const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'local', remote_enabled: false });
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
                                             }}
@@ -5647,8 +5985,8 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: !config?.remote_enabled ? '#6366f1' : 'transparent',
-                                                color: !config?.remote_enabled ? '#ffffff' : '#475569',
+                                                background: !launchRemoteEnabled ? '#6366f1' : 'transparent',
+                                                color: !launchRemoteEnabled ? '#ffffff' : '#475569',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: 'pointer'
@@ -5660,7 +5998,7 @@ ${instruction}`;
                                             type="button"
                                             onClick={() => {
                                                 if (!isRemoteCapableActiveTool) return;
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true });
+                                                const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true });
                                                 setConfig(newConfig);
                                                 SaveConfig(newConfig);
                                             }}
@@ -5668,8 +6006,8 @@ ${instruction}`;
                                                 border: 'none',
                                                 borderRadius: '999px',
                                                 padding: '5px 12px',
-                                                background: config?.remote_enabled ? '#6366f1' : 'transparent',
-                                                color: config?.remote_enabled ? '#ffffff' : '#475569',
+                                                background: launchRemoteEnabled ? '#6366f1' : 'transparent',
+                                                color: launchRemoteEnabled ? '#ffffff' : '#475569',
                                                 fontSize: '0.78rem',
                                                 fontWeight: 700,
                                                 cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
@@ -5681,7 +6019,7 @@ ${instruction}`;
                                         </button>
                                     </div>
                                 </div>
-                                {config?.remote_enabled && (
+                                {launchRemoteEnabled && (
                                     <div
                                         style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '4px 10px', background: remoteActivationStatus?.activated ? '#f0fdf4' : '#fffbeb', border: `1px solid ${remoteActivationStatus?.activated ? '#bbf7d0' : '#fde68a'}`, borderRadius: '999px', cursor: remoteActivationStatus?.activated ? 'default' : 'pointer' }}
                                         onClick={() => {
@@ -5804,7 +6142,7 @@ ${instruction}`;
                                     </div>
                                 </div>
                                 {/* Handoff: local → remote icon button */}
-                                {!config?.remote_enabled && isRemoteCapableActiveTool && (
+                                {!launchRemoteEnabled && isRemoteCapableActiveTool && (
                                     <button
                                         type="button"
                                         title={lang === 'zh-Hans' ? '转为远程' : lang === 'zh-Hant' ? '轉為遠端' : 'Switch to Remote'}
@@ -5840,7 +6178,7 @@ ${instruction}`;
                                             setStatus(lang === 'zh-Hans' ? '正在转为远程...' : lang === 'zh-Hant' ? '正在轉為遠端...' : 'Switching to remote...');
                                             setLaunchingTool(activeTool);
                                             try {
-                                                const newConfig = new main.AppConfig({ ...config, remote_enabled: true });
+                                                const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true });
                                                 setConfig(newConfig);
                                                 await SaveConfig(newConfig);
                                                 await quickStartRemoteSession(activeTool as any, "handoff");
@@ -5860,7 +6198,7 @@ ${instruction}`;
                                     disabled={onDemandInstallingTool === activeTool || backgroundInstallingTool === activeTool || launchingTool === activeTool}
                                     onClick={async () => {
                                         console.log("Launch button clicked. activeTool:", activeTool);
-                                        if (config?.remote_enabled && hasActiveRemoteSessionForTool && activeRemoteSessionForTool?.id) {
+                                        if (launchRemoteEnabled && hasActiveRemoteSessionForTool && activeRemoteSessionForTool?.id) {
                                             setLaunchingTool(activeTool);
                                             await killRemoteSession(activeRemoteSessionForTool.id);
                                             setStatus(lang === 'zh-Hans' ? '远程已停止' : lang === 'zh-Hant' ? '遠端已停止' : 'Remote stopped');
@@ -5869,7 +6207,7 @@ ${instruction}`;
                                         }
                                         const selectedProj = resolvedLaunchProject;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
-                                            if (config?.remote_enabled) {
+                                            if (launchRemoteEnabled) {
                                                 if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
                                                     setStatus(lang === 'zh-Hans' ? '当前工具暂不支持远程启动' : lang === 'zh-Hant' ? '目前工具暫不支援遠端啟動' : 'This tool does not support remote launch');
                                                     return;
@@ -5983,8 +6321,8 @@ ${instruction}`;
                                         }
                                     }}
                                 >
-                                    <span style={{ marginRight: '6px' }}>{config?.remote_enabled ? '☁' : '➤'}</span>
-                                    {config?.remote_enabled
+                                    <span style={{ marginRight: '6px' }}>{launchRemoteEnabled ? '☁' : '➤'}</span>
+                                    {launchRemoteEnabled
                                         ? (hasActiveRemoteSessionForTool ? t("remoteStopTool") : t("remoteStartTool"))
                                         : t("launch")}
                                 </button>
@@ -6984,7 +7322,6 @@ ${instruction}`;
                     lang={lang}
                     hubUrl={config?.remote_hub_url || ""}
                     email={config?.remote_email || ""}
-                    uiMode={config?.ui_mode || ""}
                     brandId={brandInfo?.id}
                     brandDisplayName={brandInfo?.displayName}
                     onClose={() => setShowMaclawLLMPopup(false)}
@@ -7011,12 +7348,6 @@ ${instruction}`;
                         console.info("[onboarding] App:onRegistered:done");
                     }}
                     onSaveField={(patch) => {
-                        // If ui_mode changed, merge into config for immediate reactivity
-                        // before calling saveRemoteConfigField (which will persist it).
-                        if (patch.ui_mode && config) {
-                            const c = new main.AppConfig({ ...config, ...patch });
-                            setConfig(c);
-                        }
                         setTimeout(() => {
                             void saveRemoteConfigField(patch as any);
                         }, 0);

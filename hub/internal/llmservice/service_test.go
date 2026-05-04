@@ -750,6 +750,40 @@ func TestRedeemCardStacksExistingGrantForSameServiceGroup(t *testing.T) {
 	if newGrant.ExpiresAt.Sub(newGrant.StartsAt) != 3*24*time.Hour {
 		t.Fatalf("expected 3-day stacked grant, got %s", newGrant.ExpiresAt.Sub(newGrant.StartsAt))
 	}
+	status, err := ResolveServiceStatus(ctx, system, nil, "user@example.com", "http://hub.test/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EffectiveExpiresAt != newGrant.ExpiresAt.Format(time.RFC3339) {
+		t.Fatalf("expected effective expiry to include stacked grant, got %q want %q", status.EffectiveExpiresAt, newGrant.ExpiresAt.Format(time.RFC3339))
+	}
+	if status.NearestExpiresAt != saved.Grants[0].ExpiresAt.Format(time.RFC3339) {
+		t.Fatalf("expected nearest expiry to remain current grant expiry, got %q", status.NearestExpiresAt)
+	}
+}
+
+func TestEffectiveExpiryIgnoresInvalidAndSpentQueuedGrants(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	now := time.Now().UTC()
+	currentExpiry := now.Add(24 * time.Hour)
+	if err := SaveRegistry(ctx, system, &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", Models: []ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-a"}}}}},
+		Grants: []Grant{
+			{ID: "grant-current", Email: "user@example.com", ServiceGroupID: "coding-basic", Source: "card", StartsAt: now.Add(-time.Hour), ExpiresAt: currentExpiry, CreatedAt: now.Add(-time.Hour)},
+			{ID: "grant-spent", Email: "user@example.com", ServiceGroupID: "coding-basic", Source: "card", StartsAt: currentExpiry, ExpiresAt: currentExpiry.Add(7 * 24 * time.Hour), CreatedAt: now, CreditsTotal: 10, CreditsUsed: 10},
+			{ID: "grant-missing-group", Email: "user@example.com", ServiceGroupID: "missing-group", Source: "card", StartsAt: currentExpiry, ExpiresAt: currentExpiry.Add(30 * 24 * time.Hour), CreatedAt: now},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := ResolveServiceStatus(ctx, system, nil, "user@example.com", "http://hub.test/api/llm/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.EffectiveExpiresAt != currentExpiry.Format(time.RFC3339) {
+		t.Fatalf("expected invalid queued grants to be ignored, got %q want %q", status.EffectiveExpiresAt, currentExpiry.Format(time.RFC3339))
+	}
 }
 func TestRedeemCardRejectsInvalidCodeFormat(t *testing.T) {
 	ctx := context.Background()

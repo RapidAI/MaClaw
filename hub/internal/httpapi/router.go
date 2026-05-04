@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"net/http"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
@@ -35,6 +36,7 @@ func NewRouter(
 	invitationSvc *invitation.Service,
 	emailInviteRepo store.EmailInviteRepository,
 	system store.SystemSettingsRepository,
+	groupDiscussionDB *sql.DB,
 	llmPromptCache *llmcache.Cache,
 	adminAudit store.AdminAuditRepository,
 	failureLogs store.FailureEventLogRepository,
@@ -83,8 +85,12 @@ func NewRouter(
 		imCleaners = append(imCleaners, dingtalkPlugin)
 	}
 	mux := http.NewServeMux()
+	groupDiscussionSvc := NewGroupDiscussionService(groupDiscussionDB)
+	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc)
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
+	groupDiscussionHandler.RegisterHubRoutes(mux)
+	mux.HandleFunc("GET /api/admin/a2a/group-discussions", RequireAdmin(admins, groupDiscussionHandler.handleAdminGroupDiscussions))
 	mux.HandleFunc("POST /api/admin/setup", SetupAdminHandler(admins))
 	mux.HandleFunc("POST /api/admin/login", AdminLoginHandler(admins))
 	mux.HandleFunc("POST /api/admin/password", RequireAdmin(admins, AdminChangePasswordHandler(admins)))

@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "check:encoding": "node scripts/check-encoding.mjs .",
+    "check:encoding:strict": "node scripts/check-encoding.mjs scripts gui/frontend/src gui/frontend/index.html gui/frontend/package.json gui/frontend/tsconfig.json gui/frontend/vite.config.ts --strict-mojibake",
+    "audit:encoding:strict": "node scripts/check-encoding.mjs . --strict-mojibake"
+  },
   "dependencies": {
     "pptxgenjs": "^4.0.1"
   }

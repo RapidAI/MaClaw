@@ -161,20 +161,21 @@ type ActiveGrant struct {
 }
 
 type ServiceStatus struct {
-	Active            bool              `json:"active"`
-	SkipLLMConfig     bool              `json:"skip_llm_config"`
-	AuthMode          string            `json:"auth_mode"`
-	ServiceGroupIDs   []string          `json:"service_group_ids,omitempty"`
-	ServiceGroupNames []string          `json:"service_group_names,omitempty"`
-	AvailableModels   []string          `json:"available_models,omitempty"`
-	AuthorizedModels  []AuthorizedModel `json:"authorized_models,omitempty"`
-	ActiveGrants      []ActiveGrant     `json:"active_grants,omitempty"`
-	InactiveReasons   []string          `json:"inactive_reasons,omitempty"`
-	NearestExpiresAt  string            `json:"nearest_expires_at,omitempty"`
-	DefaultModel      string            `json:"default_model,omitempty"`
-	HubLLMBaseURL     string            `json:"hub_llm_base_url,omitempty"`
-	CreditsAvailable  float64           `json:"credits_available,omitempty"`
-	TokensPerCredit   int               `json:"tokens_per_credit,omitempty"`
+	Active             bool              `json:"active"`
+	SkipLLMConfig      bool              `json:"skip_llm_config"`
+	AuthMode           string            `json:"auth_mode"`
+	ServiceGroupIDs    []string          `json:"service_group_ids,omitempty"`
+	ServiceGroupNames  []string          `json:"service_group_names,omitempty"`
+	AvailableModels    []string          `json:"available_models,omitempty"`
+	AuthorizedModels   []AuthorizedModel `json:"authorized_models,omitempty"`
+	ActiveGrants       []ActiveGrant     `json:"active_grants,omitempty"`
+	InactiveReasons    []string          `json:"inactive_reasons,omitempty"`
+	NearestExpiresAt   string            `json:"nearest_expires_at,omitempty"`
+	EffectiveExpiresAt string            `json:"effective_expires_at,omitempty"`
+	DefaultModel       string            `json:"default_model,omitempty"`
+	HubLLMBaseURL      string            `json:"hub_llm_base_url,omitempty"`
+	CreditsAvailable   float64           `json:"credits_available,omitempty"`
+	TokensPerCredit    int               `json:"tokens_per_credit,omitempty"`
 }
 
 func LoadRegistry(ctx context.Context, system SystemSettingsRepository) (*Registry, error) {

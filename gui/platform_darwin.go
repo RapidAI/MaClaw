@@ -598,7 +598,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		case "gemini":
 			cmdArgs = append(cmdArgs, "--yolo")
 		case "codex":
-			cmdArgs = append(cmdArgs, "--full-auto")
+			cmdArgs = append(cmdArgs, codexYoloModeFlag)
 		case "codebuddy":
 			cmdArgs = append(cmdArgs, "-y")
 		case "iflow":

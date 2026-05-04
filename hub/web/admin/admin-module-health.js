@@ -10,6 +10,7 @@
     { name: 'GovernanceTab', ok: function() { return typeof global.loadBlockedEmails === 'function' && typeof global.loadBoundUsers === 'function'; } },
     { name: 'SecurityTab', ok: function() { return typeof global.loadSecurityTab === 'function'; } },
     { name: 'MachinesTab', ok: function() { return typeof global.loadMachines === 'function' && typeof global.renderMachineList === 'function'; } },
+    { name: 'GroupDiscussionTab', ok: function() { return typeof global.loadGroupDiscussion === 'function'; } },
     { name: 'ImTab', ok: function() { return typeof global.openImSub === 'function'; } },
     { name: 'HubLlmTab', ok: function() { return typeof global.loadHubLlmConfig === 'function' && typeof global.loadHubLlmStatus === 'function'; } },
     { name: 'FeishuTab', ok: function() { return typeof global.loadFeishuConfig === 'function'; } },

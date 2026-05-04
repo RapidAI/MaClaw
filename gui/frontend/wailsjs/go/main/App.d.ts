@@ -733,5 +733,13 @@ export function ReadErrorLog():Promise<Array<string>>;
 
 export function GetHubLLMServiceStatus():Promise<any>;
 export function RedeemHubLLMService(arg1:string):Promise<any>;
+export function OnFloatingButtonClicked():Promise<void>;
+export function OnFloatingButtonDragged(arg1:number,arg2:number):Promise<void>;
 export function HideFloatingButton():Promise<void>;
+export function QuitApp():Promise<void>;
 
+export function DeleteIMAuditMessagesBefore(arg1:number):Promise<number>;
+export function ExportIMAuditCSV(arg1:string,arg2:string,arg3:string):Promise<string>;
+export function GetIMAuditStats():Promise<any>;
+export function GetIMAuditUsers(arg1:string):Promise<Array<string>>;
+export function QueryIMAuditMessages(arg1:string,arg2:string,arg3:string,arg4:number):Promise<any>;

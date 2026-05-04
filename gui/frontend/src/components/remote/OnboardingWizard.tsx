@@ -48,7 +48,6 @@ type Props = {
     lang: string;
     hubUrl: string;
     email: string;
-    uiMode?: string;
     brandId?: string;
     brandDisplayName?: string;
     onClose: () => void;
@@ -89,8 +88,6 @@ const STEP_LABELS = {
     },
 };
 
-const TOTAL_STEPS = 3;
-
 export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
     const hubT = useCallback((en: string, zhHans: string, zhHant?: string) => localizeText(lang, en, zhHans, zhHant ?? zhHans), [lang]);
@@ -100,9 +97,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     // 品牌显示名称（动态替换硬编码的 "MaClaw"）
     const displayName = brandDisplayName || 'MaClaw';
-
-    // TigerClaw 两步流程；普通品牌四步流程
-    const totalSteps = isTigerclaw ? TIGERCLAW_TOTAL_STEPS : TOTAL_STEPS;
 
     // ── Wizard step (1-based) ──
     const [step, setStep] = useState(1);
@@ -116,6 +110,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [vipFlag, setVipFlag] = useState(false);
     const [redeemCode, setRedeemCode] = useState("");
     const [freeTrial, setFreeTrial] = useState(true);
+    const totalSteps = isTigerclaw ? TIGERCLAW_TOTAL_STEPS : (freeTrial ? 2 : 3);
+    const wxStep = totalSteps;
     // Whether the free trial LLM service has been verified as active on the Hub.
     // Starts false; set to true only after GetHubLLMServiceStatus confirms Active=true.
     const [freeTrialVerified, setFreeTrialVerified] = useState(false);
@@ -171,8 +167,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         if (isTigerclaw) {
             return [false, llmDone && regDone, wxCompleted];
         }
+        if (freeTrial) {
+            return [false, regDone, wxCompleted];
+        }
         return [false, regDone, llmDone, wxCompleted];
-    }, [regDone, llmDone, wxCompleted, isTigerclaw]);
+    }, [regDone, llmDone, wxCompleted, isTigerclaw, freeTrial]);
 
     // Navigation guards
     const getPrevStep = useCallback((currentStep: number) => {
@@ -240,44 +239,11 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         }
     }, [isTigerclaw, freeTrial, freeTrialVerified, llmDone, onLLMConfigured]);
 
-    // Timeout fallback: if free trial verification doesn't complete within 15s
-    // after registration, uncheck freeTrial so the user sees the LLM config step.
-    // This handles the case where the Hub didn't provision the grant (no providers,
-    // no service groups, etc.).
-    // Note: the guard refs ensure the timeout callback reads the latest state,
-    // avoiding a stale-closure race where the timer fires after verification
-    // has already succeeded.
-    const freeTrialVerifiedRef = useRef(freeTrialVerified);
-    useEffect(() => { freeTrialVerifiedRef.current = freeTrialVerified; }, [freeTrialVerified]);
-    const llmDoneRef = useRef(llmDone);
-    useEffect(() => { llmDoneRef.current = llmDone; }, [llmDone]);
-
     useEffect(() => {
-        if (!regDone || !freeTrial || freeTrialVerified || llmDone || isTigerclaw) return;
-        const timer = setTimeout(() => {
-            // Read latest state via refs to avoid stale-closure race.
-            if (freeTrialVerifiedRef.current || llmDoneRef.current) return;
-            setFreeTrial(false);
-            setRegResult(prev => {
-                if (!prev?.ok) return prev;
-                return {
-                    ok: true,
-                    msg: prev.msg + "\n" + t(
-                        "⚠️ 免费试用服务暂未就绪，请手动配置 LLM",
-                        "⚠️ Free trial service not ready. Please configure LLM manually.",
-                        "⚠️ 免費試用服務暫未就緒，請手動配置 LLM",
-                    ),
-                };
-            });
-        }, 15000);
-        return () => clearTimeout(timer);
-    }, [regDone, freeTrial, freeTrialVerified, llmDone, isTigerclaw, t]);
-
-    useEffect(() => {
-        if (!isTigerclaw && llmDone && step === 2) {
+        if (!isTigerclaw && !freeTrial && llmDone && step === 2) {
             setStep(3);
         }
-    }, [isTigerclaw, llmDone, step]);
+    }, [isTigerclaw, freeTrial, llmDone, step]);
 
     useEffect(() => {
         if (!regDone || !hubConnecting) return;
@@ -326,7 +292,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     }, [regDone, hubConnecting, t, applyHubServiceStatus]);
 
     // Stop WeChat polling when leaving the WeChat step or unmounting
-    const wxStep = isTigerclaw ? 3 : 4;
     useEffect(() => {
         if (step !== wxStep) wxPollingRef.current = false;
         return () => { wxPollingRef.current = false; };
@@ -681,13 +646,17 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
     // ── Step labels (memoized) ──
     const labels = useMemo(() => {
-        const labelSet = isTigerclaw ? STEP_LABELS.tigerclaw : STEP_LABELS.standard;
+        const labelSet = isTigerclaw
+            ? STEP_LABELS.tigerclaw
+            : (freeTrial
+                ? { en: ["Register", "WeChat"], zhHans: ["\u90ae\u7bb1\u6ce8\u518c", "\u7ed1\u5b9a\u5fae\u4fe1"], zhHant: ["\u90f5\u7bb1\u8a3b\u518a", "\u7d81\u5b9a\u5fae\u4fe1"] }
+                : STEP_LABELS.standard);
         return lang === 'zh-Hans'
             ? labelSet.zhHans
             : lang === 'zh-Hant'
                 ? labelSet.zhHant
                 : labelSet.en;
-    }, [lang, isTigerclaw]);
+    }, [lang, isTigerclaw, freeTrial]);
 
     return (
         <div style={{
@@ -1027,7 +996,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         普通品牌：LLM 配置
                     */}
 
-                    {step === 2 && !isTigerclaw && (
+                    {step === 2 && !isTigerclaw && !freeTrial && (
                         <div>
                             <p style={{ margin: "0 0 8px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t("选择一个 LLM 服务商，输入 API Key 后测试并保存。",
@@ -1207,7 +1176,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         TigerClaw: step === 2
                         普通品牌: step === 3
                     */}
-                    {((isTigerclaw && step === 2) || (!isTigerclaw && step === 3)) && (
+                    {step === wxStep && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
                                 {t(`扫码绑定微信，即可通过微信与 ${displayName} 交互。`,

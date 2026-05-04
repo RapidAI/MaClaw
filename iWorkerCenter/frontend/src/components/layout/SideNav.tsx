@@ -5,10 +5,9 @@ type Props = { activeTab: CenterTab; onChange: (tab: CenterTab) => void };
 
 const items: NavItem[] = [
   { id: 'overview', label: '总览', hint: '运行概览与告警' },
-  { id: 'bootstrap', label: '单位初始化', hint: '新租户启动计划' },
+  { id: 'bootstrap', label: '单位初始化', hint: '新租户启动向导' },
   { id: 'employees', label: '数字员工', hint: '身份、角色与策略' },
   { id: 'communications', label: '员工通讯', hint: '协作记录与请求流转' },
-  { id: 'groupDiscussion', label: '群组讨论', hint: 'MaClaw 专家会诊' },
   { id: 'workflows', label: '流程设计', hint: '编排任务流转' },
   { id: 'knowledge', label: '经验共享', hint: '经验沉淀与复用' },
   { id: 'packages', label: '能力包', hint: '技能与 MCP 下发' },

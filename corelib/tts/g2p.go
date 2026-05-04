@@ -45,7 +45,7 @@ func TextToPhonemes(text string, pt *PhonemeTable, langID int) G2PResult {
 
 		if isChinese(r) {
 			// Chinese character → pinyin → phonemes
-			py := charToPinyin(r)
+			py := charToPinyinInText(runes, i)
 			if py != "" {
 				phs, tone := pinyinToPhonemes(py)
 				for pi, ph := range phs {
@@ -65,7 +65,7 @@ func TextToPhonemes(text string, pt *PhonemeTable, langID int) G2PResult {
 			phs := englishWordToPhonemes(word)
 			for pi, ph := range phs {
 				phonemes = append(phonemes, ph)
-				tones = append(tones, 0) // English has no lexical tone
+				tones = append(tones, 0)                          // English has no lexical tone
 				wordBounds = append(wordBounds, pi == len(phs)-1) // last phoneme of this word
 			}
 			i = j

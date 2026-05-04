@@ -11,10 +11,10 @@ import (
 // block of sentences, this filter stops forwarding the repeated content
 // to the downstream callback (typically the frontend onToken handler).
 //
-// Detection strategy �?two layers:
+// Detection strategy - two layers:
 //
 // Layer 1 (sentence-based):
-//   - Split pending buffer on sentence boundaries (。！�??).
+//   - Split pending buffer on sentence boundaries (Chinese and ASCII punctuation).
 //   - Track normalized sentences in a sliding window.
 //   - Detect repeating patterns of 1-4 sentences.
 //
@@ -33,13 +33,13 @@ import (
 // suppress further output and set a "halted" flag.
 
 const (
-	repWindowMaxSentences    = 20
-	repMinSentenceRunes      = 15
-	repMaxConsecutive        = 2
-	repMaxPatternLen         = 4
-	repWindowMaxRunes        = 2000
-	repWindowMaxParagraphs   = 12
-	repMinParagraphRunes     = 30
+	repWindowMaxSentences     = 20
+	repMinSentenceRunes       = 15
+	repMaxConsecutive         = 2
+	repMaxPatternLen          = 4
+	repWindowMaxRunes         = 2000
+	repWindowMaxParagraphs    = 12
+	repMinParagraphRunes      = 30
 	repMaxParagraphPatternLen = 3
 )
 
@@ -213,12 +213,12 @@ func (f *repetitionFilter) Flush() {
 	}
 }
 
-func (f *repetitionFilter) Halted() bool          { return f.halted }
-func (f *repetitionFilter) SuppressedRunes() int   { return f.suppressedRunes }
+func (f *repetitionFilter) Halted() bool         { return f.halted }
+func (f *repetitionFilter) SuppressedRunes() int { return f.suppressedRunes }
 
 // detectRepetition checks if the tail of `window` contains a repeating
 // pattern of length 1..maxPatLen. Shared by both Layer 1 and Layer 2.
-// Pure function �?does not access filter state.
+// Pure function - does not access filter state.
 func detectRepetition(window []string, maxPatLen int) bool {
 	n := len(window)
 	for patLen := 1; patLen <= maxPatLen; patLen++ {

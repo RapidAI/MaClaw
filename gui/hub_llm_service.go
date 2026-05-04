@@ -94,20 +94,21 @@ type HubLLMActiveGrant struct {
 }
 
 type HubLLMServiceStatus struct {
-	Active            bool                    `json:"active"`
-	SkipLLMConfig     bool                    `json:"skip_llm_config"`
-	AuthMode          string                  `json:"auth_mode"`
-	ServiceGroupIDs   []string                `json:"service_group_ids,omitempty"`
-	ServiceGroupNames []string                `json:"service_group_names,omitempty"`
-	AvailableModels   []string                `json:"available_models,omitempty"`
-	AuthorizedModels  []HubLLMAuthorizedModel `json:"authorized_models,omitempty"`
-	ActiveGrants      []HubLLMActiveGrant     `json:"active_grants,omitempty"`
-	InactiveReasons   []string                `json:"inactive_reasons,omitempty"`
-	NearestExpiresAt  string                  `json:"nearest_expires_at,omitempty"`
-	DefaultModel      string                  `json:"default_model,omitempty"`
-	HubLLMBaseURL     string                  `json:"hub_llm_base_url,omitempty"`
-	CreditsAvailable  float64                 `json:"credits_available,omitempty"`
-	TokensPerCredit   int                     `json:"tokens_per_credit,omitempty"`
+	Active             bool                    `json:"active"`
+	SkipLLMConfig      bool                    `json:"skip_llm_config"`
+	AuthMode           string                  `json:"auth_mode"`
+	ServiceGroupIDs    []string                `json:"service_group_ids,omitempty"`
+	ServiceGroupNames  []string                `json:"service_group_names,omitempty"`
+	AvailableModels    []string                `json:"available_models,omitempty"`
+	AuthorizedModels   []HubLLMAuthorizedModel `json:"authorized_models,omitempty"`
+	ActiveGrants       []HubLLMActiveGrant     `json:"active_grants,omitempty"`
+	InactiveReasons    []string                `json:"inactive_reasons,omitempty"`
+	NearestExpiresAt   string                  `json:"nearest_expires_at,omitempty"`
+	EffectiveExpiresAt string                  `json:"effective_expires_at,omitempty"`
+	DefaultModel       string                  `json:"default_model,omitempty"`
+	HubLLMBaseURL      string                  `json:"hub_llm_base_url,omitempty"`
+	CreditsAvailable   float64                 `json:"credits_available,omitempty"`
+	TokensPerCredit    int                     `json:"tokens_per_credit,omitempty"`
 }
 
 type hubLLMServiceRedeemResponse struct {
@@ -336,6 +337,7 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 	}
 	provider := corelib.MaclawLLMProvider{
 		Name:          hubServiceProviderName,
+		IsHubService:  true,
 		URL:           strings.TrimRight(strings.TrimSpace(status.HubLLMBaseURL), "/"),
 		Key:           strings.TrimSpace(cfg.RemoteViewerToken),
 		Model:         model,

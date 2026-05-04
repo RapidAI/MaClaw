@@ -1305,8 +1305,9 @@ func (a *App) AgentNetAutoPickerTriggerNow() map[string]interface{} {
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
 	}
-	go a.autoTaskPicker.pollAndPickTask()
-	return map[string]interface{}{"ok": true}
+	status := a.autoTaskPicker.pollAndPickTask()
+	status["ok"] = true
+	return status
 }
 
 // AgentNetManualPickTask manually picks a specific task: claim -> execute -> submit.

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestShouldDropASRTextPhraseLoop(t *testing.T) {
 	drop, reason := shouldDropASRText("对你好啊对你好啊对你好啊对你好啊对你好啊", 16000)
@@ -31,7 +34,7 @@ func TestShouldDropASRTextKeepsShortGreeting(t *testing.T) {
 }
 
 func TestShouldDropASRTextDropsReplacementGarbage(t *testing.T) {
-	drop, reason := shouldDropASRText("银行银行银行银行����������������", 16000)
+	drop, reason := shouldDropASRText("银行银行银行银行"+strings.Repeat(string(rune(0xFFFD)), 16), 16000)
 	if !drop {
 		t.Fatalf("expected replacement garbage to be dropped, reason=%q", reason)
 	}

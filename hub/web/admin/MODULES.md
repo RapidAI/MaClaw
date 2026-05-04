@@ -26,6 +26,7 @@ This folder now uses a thin-shell structure.
 - governance-tab.js: manual bind, blocklist, invites, content audit, smart route
 - security-tab.js: security management and org tree
 - machines-tab.js: machine list and session inspection
+- group-discussion-tab.js: current-Hub MaClaw expert list, discussions, and results
 - im-tab.js: IM sub-pane routing and bridge integrations
 - hub-llm-tab.js: legacy Hub LLM pane runtime
 - feishu-tab.js: Feishu settings and bindings

@@ -131,7 +131,8 @@ export function CloudRegistrationPage() {
   }), [registerInfo]);
 
   const canSaveConfig = Boolean(trimmedConfig.base_url);
-  const canRegister = canSaveConfig && Boolean(trimmedRegisterInfo.company_name && trimmedRegisterInfo.admin_email);
+  const hasRegisterInfo = Boolean(trimmedRegisterInfo.company_name && trimmedRegisterInfo.admin_email);
+  const canRegister = canSaveConfig && hasRegisterInfo;
 
   const statusLabel = useMemo(() => {
     if (!status) return text.unknown;
@@ -206,6 +207,7 @@ export function CloudRegistrationPage() {
         setNotice({ tone: 'danger', text: text.needRegister });
         return;
       }
+      await saveCloudConfig(trimmedConfig);
       const resp = await registerCenterToCloud(trimmedRegisterInfo);
       setNotice({ tone: 'ok', text: text.registeredPrefix + resp.center_id + text.registeredSuffix });
       await load();
@@ -276,8 +278,8 @@ export function CloudRegistrationPage() {
         </div>
 
         <div className="cloud-actions">
-          <button className="cloud-primary" type="button" onClick={save} disabled={busy || !canSaveConfig}>{busy ? text.busy : text.save}</button>
-          <button className="ghost" type="button" onClick={register} disabled={busy || !canRegister}>{busy ? text.busy : text.register}</button>
+          <button className="ghost" type="button" onClick={save} disabled={busy || !canSaveConfig}>{busy ? text.busy : text.save}</button>
+          <button className={canRegister ? "cloud-primary" : "ghost"} type="button" onClick={register} disabled={busy}>{busy ? text.busy : text.register}</button>
           <button className="ghost" type="button" onClick={refreshLicense} disabled={busy || !status?.registered}>{busy ? text.busy : text.refreshLicense}</button>
         </div>
         {notice ? <p className={'cloud-message ' + notice.tone}>{notice.text}</p> : null}

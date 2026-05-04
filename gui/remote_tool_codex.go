@@ -8,11 +8,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
+const codexYoloModeFlag = "--dangerously-bypass-approvals-and-sandbox"
+
 // CodexAdapter launches the OpenAI Codex CLI in non-interactive SDK mode
-// using `codex exec --json --full-auto`.  This avoids PTY confirmation
-// prompts entirely by leveraging Codex's structured JSONL output protocol.
+// using `codex exec --json`. This avoids PTY confirmation prompts entirely
+// by leveraging Codex's structured JSONL output protocol.
 //
-// When YoloMode is enabled, `--full-auto` allows file edits and commands.
+// When YoloMode is enabled, codexYoloModeFlag allows file edits and commands.
 // Otherwise, the default read-only sandbox is used.
 type CodexAdapter struct {
 	app *App
@@ -68,7 +70,6 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 
 	// Use `codex exec` sub-command for non-interactive structured output.
 	// --json streams JSONL events to stdout (thread.started, item.*, turn.*).
-	// --full-auto allows file edits and command execution without prompts.
 	args := []string{"exec"}
 	if spec.ResumeSessionID != "" {
 		args = append(args, "resume")
@@ -76,13 +77,13 @@ func (a *CodexAdapter) BuildCommand(spec LaunchSpec) (CommandSpec, error) {
 	args = append(args, "--json")
 
 	if spec.YoloMode {
-		args = append(args, "--full-auto")
+		args = append(args, codexYoloModeFlag)
 	}
 
 	if !isOriginal && spec.ModelID != "" {
 		args = append(args, "--model", spec.ModelID)
 	}
-	if !isOriginal {
+	if !isOriginal && strings.TrimSpace(spec.ModelName) != "" {
 		providerKey := configfile.CodexProviderKey(spec.ModelName)
 		if strings.TrimSpace(providerKey) != "" {
 			args = append(args, "-c", fmt.Sprintf("model_provider=%q", providerKey))

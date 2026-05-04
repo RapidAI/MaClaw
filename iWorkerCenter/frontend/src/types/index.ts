@@ -3,7 +3,6 @@ export type CenterTab =
   | 'bootstrap'
   | 'employees'
   | 'communications'
-  | 'groupDiscussion'
   | 'workflows'
   | 'knowledge'
   | 'packages'

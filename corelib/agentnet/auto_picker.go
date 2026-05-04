@@ -27,12 +27,14 @@ type AutoTaskPicker struct {
 	preferredTags []string
 	lang          string // "zh" or "en" for error localisation
 
-	activeTasks    map[string]*autoTaskRun
-	completedCount int
-	failedCount    int
-	totalEarned    float64
-	lastPollAt     time.Time
-	lastError      string
+	activeTasks       map[string]*autoTaskRun
+	completedCount    int
+	failedCount       int
+	totalEarned       float64
+	lastPollAt        time.Time
+	lastError         string
+	lastPollStatus    string
+	lastDiscoveredCnt int
 }
 
 type autoTaskRun struct {
@@ -122,6 +124,7 @@ func (p *AutoTaskPicker) GetStatus() map[string]interface{} {
 		"completed_count": p.completedCount, "failed_count": p.failedCount,
 		"total_earned": p.totalEarned,
 		"last_poll_at": formatTimeOrEmpty(p.lastPollAt), "last_error": p.lastError,
+		"last_poll_status": p.lastPollStatus, "last_discovered_count": p.lastDiscoveredCnt,
 	}
 }
 
@@ -154,15 +157,18 @@ func (p *AutoTaskPicker) loop() {
 	}
 }
 
-func (p *AutoTaskPicker) pollAndPickTask() {
+func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	if !p.pollMu.TryLock() {
-		return
+		p.setPollResult("busy", 0)
+		return p.GetStatus()
 	}
 	defer p.pollMu.Unlock()
 
 	p.mu.Lock()
 	p.lastPollAt = time.Now()
 	p.lastError = ""
+	p.lastPollStatus = "checking"
+	p.lastDiscoveredCnt = 0
 	activeCount := 0
 	for _, r := range p.activeTasks {
 		if r.Status == "executing" || r.Status == "claiming" || r.Status == "submitting" {
@@ -170,8 +176,10 @@ func (p *AutoTaskPicker) pollAndPickTask() {
 		}
 	}
 	if activeCount >= p.maxConcurrent {
+		p.lastPollStatus = "busy"
 		p.mu.Unlock()
-		return
+		p.notifyChange()
+		return p.GetStatus()
 	}
 	client := p.client
 	hubURL := p.hubURL
@@ -182,26 +190,31 @@ func (p *AutoTaskPicker) pollAndPickTask() {
 
 	if executor == nil {
 		p.setError("executor not configured")
-		return
+		return p.GetStatus()
 	}
 	if !client.IsRunning() {
-		return
+		p.setPollResult("offline", 0)
+		return p.GetStatus()
 	}
 
 	tasks, err := p.discoverTasks(client, hubURL)
 	if err != nil {
 		p.setError(fmt.Sprintf("task discovery failed: %v", err))
-		return
+		return p.GetStatus()
 	}
 	if len(tasks) == 0 {
-		return
+		p.setPollResult("no_tasks", 0)
+		return p.GetStatus()
 	}
 
 	selected := p.selectTask(tasks, minReward, preferredTags)
 	if selected == nil {
-		return
+		p.setPollResult("no_matching_tasks", len(tasks))
+		return p.GetStatus()
 	}
+	p.setPollResult("picked", len(tasks))
 	go p.executeTask(client, selected, executor)
+	return p.GetStatus()
 }
 
 func (p *AutoTaskPicker) discoverTasks(client *Client, hubURL string) ([]Task, error) {
@@ -452,12 +465,27 @@ func (p *AutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.failedCount++
 	delete(p.activeTasks, run.TaskID)
 	p.lastError = errMsg
+	p.lastPollStatus = "error"
 	p.mu.Unlock()
 	p.notifyChange()
 	fmt.Printf("[auto-task-picker] task %q failed: %s\n", run.Title, errMsg)
 }
 
-func (p *AutoTaskPicker) setError(msg string) { p.mu.Lock(); p.lastError = msg; p.mu.Unlock() }
+func (p *AutoTaskPicker) setError(msg string) {
+	p.mu.Lock()
+	p.lastError = msg
+	p.lastPollStatus = "error"
+	p.mu.Unlock()
+	p.notifyChange()
+}
+
+func (p *AutoTaskPicker) setPollResult(status string, discovered int) {
+	p.mu.Lock()
+	p.lastPollStatus = status
+	p.lastDiscoveredCnt = discovered
+	p.mu.Unlock()
+	p.notifyChange()
+}
 
 func (p *AutoTaskPicker) notifyChange() {
 	p.mu.Lock()

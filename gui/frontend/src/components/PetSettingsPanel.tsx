@@ -94,7 +94,7 @@ function skinToneLabel(lang: Lang, tone: string): string {
 function skinDescription(lang: Lang, id: string): string {
     switch (id) {
         case 'mini-claw':
-            return text(lang, '\u684c\u9762\u5ba0\u7269\u7684\u8f7b\u91cf\u5c0f\u4f19\u4f34\u5f62\u8c61', '\u684c\u9762\u5bf5\u7269\u7684\u8f15\u91cf\u5c0f\u5925\u4f34\u5f62\u8c61', 'Minimal desktop pet companion');
+            return text(lang, '桌面宠物的轻量小伙伴形象', '桌面寵物的輕量小夥伴形象', 'Minimal desktop pet companion');
         case 'dev-claw':
             return text(lang, '面向开发场景的伙伴形象', '面向開發場景的夥伴形象', 'Developer-focused companion style');
         case 'focus-claw':
@@ -425,7 +425,16 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                                     checked={key === 'pet_motion_enabled' || key === 'pet_motion_sound_enabled' || key === 'pet_text_interaction_enabled' || key === 'pet_file_drop_enabled'
                                         ? (config as any)[key] !== false
                                         : !!(config as any)[key]}
-                                    onChange={(event) => updatePetConfig({ [key]: event.target.checked })}
+                                    onChange={(event) => {
+                                        if (key === 'pet_voice_readback_enabled') {
+                                            updatePetConfig({
+                                                pet_voice_readback_enabled: event.target.checked,
+                                                pet_readback_mode: event.target.checked ? 'summary' : 'off',
+                                            });
+                                            return;
+                                        }
+                                        updatePetConfig({ [key]: event.target.checked });
+                                    }}
                                 />
                                 <span>{label}</span>
                             </label>

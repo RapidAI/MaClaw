@@ -1662,7 +1662,7 @@ func (a *App) platformLaunch(binaryName string, yoloMode bool, adminMode bool, p
 		case "gemini":
 			flag = "--yolo"
 		case "codex":
-			flag = "--full-auto"
+			flag = codexYoloModeFlag
 		case "codebuddy":
 			flag = "-y"
 		case "iflow":

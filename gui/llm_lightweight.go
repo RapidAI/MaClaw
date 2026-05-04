@@ -68,8 +68,8 @@ type LLMClassifyResult struct {
 // Reusable for any classification task: workflow confirm/modify detection,
 // intent classification, content categorization, etc.
 func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyRequest) (*LLMClassifyResult, error) {
-	if h.app == nil {
-		return nil, fmt.Errorf("app not initialized")
+	if h == nil {
+		return nil, fmt.Errorf("handler not initialized")
 	}
 
 	// Defaults.
@@ -80,7 +80,7 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		req.Tag = "llm-classify"
 	}
 
-	cfg := h.app.GetMaclawLLMConfig()
+	cfg := h.getMaclawLLMConfig()
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("LLM not configured")
 	}

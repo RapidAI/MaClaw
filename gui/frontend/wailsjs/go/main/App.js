@@ -1582,7 +1582,39 @@ export function RedeemHubLLMService(arg1) {
   return window['go']['main']['App']['RedeemHubLLMService'](arg1);
 }
 
+export function OnFloatingButtonClicked() {
+  return window['go']['main']['App']['OnFloatingButtonClicked']();
+}
+
+export function OnFloatingButtonDragged(arg1, arg2) {
+  return window['go']['main']['App']['OnFloatingButtonDragged'](arg1, arg2);
+}
+
 export function HideFloatingButton() {
   return window['go']['main']['App']['HideFloatingButton']();
 }
 
+export function QuitApp() {
+  return window['go']['main']['App']['QuitApp']();
+}
+
+
+export function DeleteIMAuditMessagesBefore(arg1) {
+  return window['go']['main']['App']['DeleteIMAuditMessagesBefore'](arg1);
+}
+
+export function ExportIMAuditCSV(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ExportIMAuditCSV'](arg1, arg2, arg3);
+}
+
+export function GetIMAuditStats() {
+  return window['go']['main']['App']['GetIMAuditStats']();
+}
+
+export function GetIMAuditUsers(arg1) {
+  return window['go']['main']['App']['GetIMAuditUsers'](arg1);
+}
+
+export function QueryIMAuditMessages(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['QueryIMAuditMessages'](arg1, arg2, arg3, arg4);
+}

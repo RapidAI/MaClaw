@@ -1481,7 +1481,9 @@ func (a *App) shutdown(ctx context.Context) {
 func (a *App) refreshPowerOptimizationStateFromConfig(config corelib.AppConfig) {
 	enabled := config.PowerOptimization && a.hasActiveRemoteTasks()
 	a.setPowerOptimizationEnabled(enabled)
-	a.updateScreenDimTimer(enabled, config.ScreenDimTimeoutMin)
+	// Workstation mode also owns the display-off timer: it prevents sleep/lock
+	// while still allowing the screen to turn off after the configured idle time.
+	a.updateScreenDimTimer(enabled || config.WorkstationMode, config.ScreenDimTimeoutMin)
 }
 
 func (a *App) refreshPowerOptimizationState() {

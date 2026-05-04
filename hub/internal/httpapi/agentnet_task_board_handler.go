@@ -1,4 +1,4 @@
-﻿package httpapi
+package httpapi
 
 import (
 	"encoding/json"
@@ -10,15 +10,15 @@ import (
 
 // AgentNetTaskEntry is a task published by a AgentNet peer via Hub relay.
 type AgentNetTaskEntry struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Status      string   `json:"status"`
-	Reward      float64  `json:"reward"`
-	Creator     string   `json:"creator,omitempty"`
-	PeerID      string   `json:"peer_id,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	CreatedAt   string   `json:"created_at,omitempty"`
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description,omitempty"`
+	Status      string    `json:"status"`
+	Reward      float64   `json:"reward"`
+	Creator     string    `json:"creator,omitempty"`
+	PeerID      string    `json:"peer_id,omitempty"`
+	Tags        []string  `json:"tags,omitempty"`
+	CreatedAt   string    `json:"created_at,omitempty"`
 	ExpiresAt   time.Time `json:"-"`
 }
 
@@ -87,7 +87,7 @@ func (b *AgentNetTaskBoard) gc() {
 }
 
 // AgentNetTaskPublishHandler accepts task announcements from AgentNet peers.
-// POST /api/agentnet/tasks/publish
+// POST /api/AgentNet/tasks/publish
 // Body: single task or array of tasks
 func AgentNetTaskPublishHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +128,7 @@ func AgentNetTaskPublishHandler() http.HandlerFunc {
 }
 
 // AgentNetTaskBrowseHandler returns aggregated tasks from all peers.
-// GET /api/agentnet/tasks/browse?limit=50
+// GET /api/AgentNet/tasks/browse?limit=50
 func AgentNetTaskBrowseHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit := 50

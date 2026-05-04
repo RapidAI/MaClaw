@@ -90,6 +90,9 @@ jobs:
           cache: npm
           cache-dependency-path: gui/frontend/package-lock.json
 
+      - name: Check source encoding
+        run: npm run check:encoding
+
       - name: Extract version (prefer git tag, fallback to wails.json)
         shell: pwsh
         run: |

@@ -97,7 +97,13 @@ func main() {
 		// If the path matches a known admin API prefix, forward to center.Mux
 		if isAdminAPIPath(r.URL.Path) {
 			if center != nil && center.Mux != nil {
-				center.Mux.ServeHTTP(w, r)
+				forwarded := r
+				if center.Auth != nil {
+					if withTenant, ok := center.Auth.AuthenticateWithContext(r); ok {
+						forwarded = withTenant
+					}
+				}
+				center.Mux.ServeHTTP(w, forwarded)
 			} else {
 				writeBootstrapError(w, bootstrapErr)
 			}

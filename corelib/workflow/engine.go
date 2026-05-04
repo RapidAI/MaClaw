@@ -191,7 +191,7 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 				hint += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
 			}
 			if req.AcceptText {
-				hint += "\n\n也可以直接将文档内容粘贴到对话框中，或提供网址由系统自动抓取。"
+				hint += "\n\n也可以直接将文档内容粘贴到对话框中，提供本地文件路径，或提供网址由系统自动抓取。"
 			}
 			return &WorkflowResponse{
 				Text:         "📎 " + hint,

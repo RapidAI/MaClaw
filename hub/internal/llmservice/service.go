@@ -170,6 +170,9 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 			status.NearestExpiresAt = nearest.Format(time.RFC3339)
 		}
 	}
+	if effectiveExpiresAt := effectiveGrantExpiresAt(reg, email, now); effectiveExpiresAt != nil {
+		status.EffectiveExpiresAt = effectiveExpiresAt.Format(time.RFC3339)
+	}
 	status.CreditsAvailable = roundCredits(creditsAvailable)
 	return status, models, nil
 }
@@ -258,6 +261,33 @@ func nextGrantStart(reg *Registry, email, serviceGroupID string, now time.Time) 
 		}
 	}
 	return start
+}
+
+func effectiveGrantExpiresAt(reg *Registry, email string, now time.Time) *time.Time {
+	if reg == nil {
+		return nil
+	}
+	email = normalizeEmail(email)
+	var latest *time.Time
+	for _, g := range reg.Grants {
+		if normalizeEmail(g.Email) != email {
+			continue
+		}
+		if reg.FindModelServiceGroup(g.ServiceGroupID) == nil {
+			continue
+		}
+		if g.CreditsTotal > 0 && remainingGrantCredits(g) <= 0 {
+			continue
+		}
+		if !g.ExpiresAt.After(now) {
+			continue
+		}
+		if latest == nil || g.ExpiresAt.After(*latest) {
+			copyVal := g.ExpiresAt
+			latest = &copyVal
+		}
+	}
+	return latest
 }
 
 func hasGrantWithSource(reg *Registry, email, serviceGroupID, source string) bool {

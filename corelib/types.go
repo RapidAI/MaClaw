@@ -382,6 +382,7 @@ type MaclawLLMProvider struct {
 	ContextLength  int    `json:"context_length,omitempty"`
 	TimeoutSec     int    `json:"timeout_sec,omitempty"`
 	IsCustom       bool   `json:"is_custom,omitempty"`
+	IsHubService   bool   `json:"is_hub_service,omitempty"`
 	SupportsVision bool   `json:"supports_vision"`
 	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──

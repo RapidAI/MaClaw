@@ -62,3 +62,37 @@ func TestServiceDraftApplyAndStartFirstWave(t *testing.T) {
 		t.Fatalf("unexpected status: %+v", status)
 	}
 }
+
+func TestNormalizePlanKeepsEnterpriseIdentityFields(t *testing.T) {
+	plan := NormalizePlan("tenant-a", Plan{
+		CompanyName:    "  Acme  ",
+		LegalPerson:    "  Alice  ",
+		CompanyAddress: "  Shanghai  ",
+		ContactEmail:   "  admin@example.com  ",
+	})
+	if plan.CompanyName != "Acme" || plan.LegalPerson != "Alice" || plan.CompanyAddress != "Shanghai" || plan.ContactEmail != "admin@example.com" {
+		t.Fatalf("enterprise fields not normalized: %+v", plan)
+	}
+}
+
+func TestValidatePlanRejectsInvalidContactEmail(t *testing.T) {
+	plan := NormalizePlan("tenant-a", Plan{
+		CompanyName:        "Acme",
+		LegalPerson:        "Alice",
+		CompanyAddress:     "Shanghai",
+		ContactEmail:       "not-an-email",
+		VirtualDepartments: []string{"Ops", "Sales", "Quality"},
+		InitialIWorkers:    []string{"Ops iWorker", "Quality iWorker"},
+		MemoryScopes:       []string{"company", "department", "personal"},
+	})
+	issues := ValidatePlan(plan)
+	var found bool
+	for _, issue := range issues {
+		if issue.Field == "contact_email" && issue.Level == "error" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected contact_email validation error, got %+v", issues)
+	}
+}

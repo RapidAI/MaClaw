@@ -8,6 +8,9 @@ export type WatcherPolicy = {
 export type BootstrapPlan = {
   tenant_id?: string;
   company_name: string;
+  legal_person: string;
+  company_address: string;
+  contact_email: string;
   business_summary: string;
   priority: string;
   virtual_departments: string[];
@@ -66,6 +69,11 @@ export type BootstrapStatus = {
   applied_assets: AppliedAsset[];
 };
 
+export function isBootstrapComplete(status: BootstrapStatus | null | undefined) {
+  if (!status) return false;
+  return Boolean(status.last_run || (status.ready_to_start && (status.applied_assets?.length || 0) > 0));
+}
+
 async function requestJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init);
   const text = await resp.text();
@@ -78,6 +86,9 @@ async function requestJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const defaultBootstrapPlan = (): BootstrapPlan => ({
   company_name: '',
+  legal_person: '',
+  company_address: '',
+  contact_email: '',
   business_summary: '',
   priority: 'Stabilize daily operations and customer delivery first, then let digital colleagues run inside auditable boundaries.',
   virtual_departments: ['Sales', 'Operations', 'Customer Success', 'Finance', 'Quality', 'Office', 'Data'],

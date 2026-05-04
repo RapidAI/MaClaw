@@ -450,18 +450,25 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
 
     const handleTriggerNow = async () => {
         setPickerBusy(true);
-        setTriggerMsg(t("⏳ Searching for tasks...", "⏳ 正在寻找任务..."));
+        setTriggerMsg("Searching for tasks...");
         try {
             const res = await AgentNetAutoPickerTriggerNow();
             if (!mountedRef.current) return;
             if (res.ok) {
-                setTriggerMsg(t("✅ Task search triggered, check results shortly", "✅ 已触发任务搜索，请稍候查看结果"));
+                await refreshPickerStatus();
+                const status = String(res.last_poll_status || "");
+                const pollText = pickerPollText(status, Number(res.last_discovered_count || 0));
+                if (status === "error") {
+                    setTriggerMsg(`ERROR: ${res.last_error || pollText || "Failed"}`);
+                } else {
+                    setTriggerMsg(pollText ? `OK: ${pollText}` : t("OK: Task search finished", "OK: \u4efb\u52a1\u641c\u7d22\u5df2\u5b8c\u6210"));
+                }
             } else {
-                setTriggerMsg(`❌ ${res.error || "Failed"}`);
+                setTriggerMsg(`ERROR: ${res.error || "Failed"}`);
             }
         } catch (e) {
             if (!mountedRef.current) return;
-            setTriggerMsg(`❌ ${e}`);
+            setTriggerMsg(`ERROR: ${e}`);
         } finally {
             if (!mountedRef.current) return;
             setPickerBusy(false);
@@ -473,6 +480,28 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
             setTimeout(() => { if (mountedRef.current) setTriggerMsg(""); }, 8000);
         }
     };
+    const pickerPollText = (status?: string, discovered?: number) => {
+        const count = Number(discovered || 0);
+        switch (status) {
+            case "checking":
+                return t("Scanning AgentNet tasks...", "\u6b63\u5728\u626b\u63cf AgentNet \u4efb\u52a1...");
+            case "offline":
+                return t("AgentNet is offline; auto pickup is waiting.", "AgentNet \u672a\u8fde\u63a5\uff0c\u81ea\u52a8\u63a5\u5355\u6b63\u5728\u7b49\u5f85\u3002");
+            case "busy":
+                return t("A task is already running; new pickup is paused.", "\u5df2\u6709\u4efb\u52a1\u5728\u8fd0\u884c\uff0c\u65b0\u63a5\u5355\u5df2\u6682\u505c\u3002");
+            case "no_tasks":
+                return t("No open network tasks found in the last scan.", "\u4e0a\u6b21\u626b\u63cf\u672a\u627e\u5230\u5f00\u653e\u7684\u7f51\u7edc\u4efb\u52a1\u3002");
+            case "no_matching_tasks":
+                return t(`Found ${count} task(s), but none matched the reward/tag filters.`, `\u627e\u5230 ${count} \u4e2a\u4efb\u52a1\uff0c\u4f46\u90fd\u4e0d\u7b26\u5408\u5956\u52b1/\u6807\u7b7e\u8fc7\u6ee4\u6761\u4ef6\u3002`);
+            case "picked":
+                return t(`Found ${count} task(s) and selected one to run.`, `\u627e\u5230 ${count} \u4e2a\u4efb\u52a1\uff0c\u5df2\u9009\u62e9\u4e00\u4e2a\u6267\u884c\u3002`);
+            case "error":
+                return t("Last scan failed; see the error below.", "\u4e0a\u6b21\u626b\u63cf\u5931\u8d25\uff0c\u8bf7\u67e5\u770b\u4e0b\u65b9\u9519\u8bef\u3002");
+            default:
+                return "";
+        }
+    };
+
 
     return (
         <div style={{ fontSize: "0.85rem" }}>
@@ -709,6 +738,11 @@ export function AgentNetPanel({ config, saveRemoteConfigField, lang, onRunningCh
                                 <span>{t("Failed", "失败")}: {pickerStatus.failed_count ?? 0}</span>
                                 <span>{t("Earned", "累计赚取")}: {pickerStatus.total_earned ?? 0} 🐚</span>
                             </div>
+                            {pickerPollText(pickerStatus.last_poll_status, pickerStatus.last_discovered_count) && (
+                                <div style={{ marginTop: "4px", color: pickerStatus.last_poll_status === "error" ? colors.danger : colors.textMuted, fontSize: "0.68rem" }}>
+                                    {pickerPollText(pickerStatus.last_poll_status, pickerStatus.last_discovered_count)}
+                                </div>
+                            )}
                             {pickerStatus.active_tasks?.length > 0 && (
                                 <div style={{ marginTop: "4px", padding: "4px 8px", background: colors.accentBg, borderRadius: radius.sm, fontSize: "0.68rem" }}>
                                     {t("Running", "正在执行")}: {pickerStatus.active_tasks.map((t: any) => t.title).join(", ")}

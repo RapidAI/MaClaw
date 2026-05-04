@@ -20,13 +20,14 @@ func TenantIDFromContext(ctx context.Context) string {
 	return v
 }
 
-// RequestTenantID resolves tenant identity from query, header, context, then default.
-// iWorker clients send X-Tenant-ID so tenant routing remains stable through gateways.
+// RequestTenantID resolves tenant identity from authenticated context, query, header, then default.
+// iWorker clients send X-Tenant-ID so tenant routing remains stable through gateways;
+// admin requests with a valid session use the session tenant over client-provided tenant hints.
 func RequestTenantID(r *http.Request) string {
 	if r == nil {
 		return "default"
 	}
-	for _, value := range []string{r.URL.Query().Get("tenant_id"), r.Header.Get("X-Tenant-ID"), TenantIDFromContext(r.Context()), "default"} {
+	for _, value := range []string{TenantIDFromContext(r.Context()), r.URL.Query().Get("tenant_id"), r.Header.Get("X-Tenant-ID"), "default"} {
 		if strings.TrimSpace(value) != "" {
 			return strings.TrimSpace(value)
 		}

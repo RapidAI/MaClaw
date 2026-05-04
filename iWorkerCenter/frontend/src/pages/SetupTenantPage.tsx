@@ -1,6 +1,10 @@
 import { useState } from 'react';
 
-export function SetupTenantPage({ onSetupComplete }: { onSetupComplete: () => void }) {
+type SetupTenantPageProps = {
+  onSetupComplete: (tenantID?: string) => void;
+};
+
+export function SetupTenantPage({ onSetupComplete }: SetupTenantPageProps) {
   const [companyName, setCompanyName] = useState('');
   const [legalPerson, setLegalPerson] = useState('');
   const [email, setEmail] = useState('');
@@ -37,14 +41,15 @@ export function SetupTenantPage({ onSetupComplete }: { onSetupComplete: () => vo
       });
       const data = await resp.json();
       if (resp.ok && data.tenant_id) {
-        onSetupComplete();
+        onSetupComplete(data.tenant_id);
       } else {
         setError(data?.error?.message || data?.error || '创建失败');
       }
     } catch {
       setError('网络错误');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
@@ -52,8 +57,7 @@ export function SetupTenantPage({ onSetupComplete }: { onSetupComplete: () => vo
       <div className="setup-card">
         <div className="mini">iWorkerCenter Bootstrap</div>
         <h2>欢迎使用数字员工中心</h2>
-        <p>首次使用时先创建本地单位/租户和管理员账号。进入系统后，可继续完成单位初始化、iWorker 编组、MCP/Skill 下发和 Cloud 注册。</p>
-
+        <p>首次使用时先创建本地单位/租户和管理员账号。创建完成后请用管理员账号登录；登录后系统会自动打开单位初始化向导。</p>
         <form onSubmit={handleSubmit}>
           <fieldset>
             <legend>企业信息</legend>
@@ -66,7 +70,6 @@ export function SetupTenantPage({ onSetupComplete }: { onSetupComplete: () => vo
             <label>企业地址</label>
             <input type="text" value={address} onChange={e => setAddress(e.target.value)} placeholder="企业注册地址或办公地址" />
           </fieldset>
-
           <fieldset>
             <legend>管理员账号</legend>
             <label>用户名 *</label>
@@ -76,11 +79,8 @@ export function SetupTenantPage({ onSetupComplete }: { onSetupComplete: () => vo
             <label>确认密码 *</label>
             <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="再次输入密码" />
           </fieldset>
-
           {error && <p className="cloud-message danger">{error}</p>}
-          <button type="submit" disabled={loading} className="cloud-primary setup-submit">
-            {loading ? '创建中...' : '创建企业并进入初始化'}
-          </button>
+          <button type="submit" disabled={loading} className="cloud-primary setup-submit">{loading ? '创建中...' : '创建企业并进入登录'}</button>
         </form>
       </div>
     </div>

@@ -383,6 +383,22 @@ func floatingWindowSizeForCurrentConfig(app *App) int {
 	return floatingWindowSize(config)
 }
 
+// DisablePetFromMenu hides the desktop pet and persists the same setting as
+// Settings > Pet > Enable Desktop Pet.
+func (m *FloatingAssistantManager) DisablePetFromMenu() {
+	log.Println("[floating-assistant] DisablePetFromMenu: user requested hide from desktop pet")
+	if m == nil {
+		return
+	}
+	if m.app != nil {
+		if config, err := m.app.LoadConfig(); err == nil {
+			config.PetEnabled = false
+			_ = m.app.SaveConfig(config)
+		}
+	}
+	m.HideFloatingButton()
+}
+
 // QuitApp terminates the application. Called from the desktop pet's
 // right-click context menu "Quit" item.
 func (m *FloatingAssistantManager) QuitApp() {

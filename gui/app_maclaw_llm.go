@@ -52,6 +52,11 @@ func normalizeMaclawLLMProvider(provider corelib.MaclawLLMProvider) corelib.Macl
 	return provider
 }
 
+func markHubServiceProvider(provider corelib.MaclawLLMProvider) corelib.MaclawLLMProvider {
+	provider.IsHubService = provider.Name == hubServiceProviderName
+	return provider
+}
+
 // defaultMaclawLLMProviders returns the built-in provider list.
 func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 	return []corelib.MaclawLLMProvider{
@@ -147,7 +152,7 @@ func (a *App) GetMaclawLLMProviders() struct {
 				providers[i].TimeoutSec = corelib.DefaultLLMTimeoutSec
 			}
 		}
-		providers[i] = normalizeMaclawLLMProvider(providers[i])
+		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
 		if providers[i].Name == codegenProviderName && providers[i].AuthType == "sso" {
 			providers[i].Protocol = "openai"
 			providers[i].URL = strings.TrimRight(strings.TrimSpace(providers[i].URL), "/")
@@ -287,7 +292,7 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	cfg.MaclawLLMContextLength = 0
 	cfg.MaclawLLMTimeoutSec = 0
 	for i := range providers {
-		providers[i] = normalizeMaclawLLMProvider(providers[i])
+		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
 	}
 	cfg.MaclawLLMProviders = providers
 	cfg.MaclawLLMCurrentProvider = current

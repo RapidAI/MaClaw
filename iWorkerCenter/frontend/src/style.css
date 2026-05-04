@@ -854,3 +854,194 @@ textarea:focus {
   width: auto;
   min-height: 40px;
 }
+
+
+.bootstrap-wizard-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(38, 45, 56, 0.42);
+  backdrop-filter: blur(8px);
+}
+
+.bootstrap-wizard-modal {
+  width: min(1080px, 100%);
+  max-height: min(860px, calc(100vh - 56px));
+  overflow: auto;
+  padding: 22px;
+  border-radius: 14px;
+  background: #fff;
+  border: 1px solid rgba(226, 230, 238, 0.96);
+  box-shadow: 0 24px 70px rgba(35, 41, 55, 0.22);
+}
+
+.bootstrap-wizard-head,
+.bootstrap-wizard-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.bootstrap-wizard-head {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bootstrap-wizard-head h3 {
+  margin: 10px 0 4px;
+  color: #5b6470;
+  font-size: 24px;
+  line-height: 1.18;
+}
+
+.bootstrap-wizard-head p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--muted);
+}
+
+.bootstrap-wizard-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.bootstrap-wizard-steps button {
+  min-height: 104px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #fbfcfd;
+  text-align: left;
+  display: grid;
+  gap: 7px;
+}
+
+.bootstrap-wizard-steps button:hover,
+.bootstrap-wizard-steps button.is-active {
+  border-color: rgba(239, 106, 124, 0.36);
+  background: rgba(239, 106, 124, 0.08);
+}
+
+.bootstrap-wizard-steps button.is-done {
+  border-color: rgba(35, 162, 109, 0.18);
+  background: rgba(35, 162, 109, 0.06);
+}
+
+.bootstrap-wizard-steps span {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: #aab2bd;
+  font-weight: 750;
+  font-size: 12px;
+}
+
+.bootstrap-wizard-steps button.is-active span {
+  background: var(--primary);
+}
+
+.bootstrap-wizard-steps button.is-done span {
+  background: var(--ok);
+}
+
+.bootstrap-wizard-steps strong {
+  color: #5b6470;
+  font-size: 14px;
+}
+
+.bootstrap-wizard-steps small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.bootstrap-wizard-body {
+  min-height: 260px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #fbfcfd;
+  border: 1px solid var(--line);
+}
+
+.bootstrap-wizard-review {
+  display: grid;
+  gap: 14px;
+}
+
+.bootstrap-wizard-panels {
+  max-width: none;
+  margin: 0;
+}
+
+.bootstrap-wizard-actions {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.bootstrap-wizard-actions .cloud-primary,
+.bootstrap-wizard-actions .btn-secondary {
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .bootstrap-wizard-overlay {
+    padding: 14px;
+    align-items: flex-start;
+  }
+
+  .bootstrap-wizard-modal {
+    max-height: calc(100vh - 28px);
+  }
+
+  .bootstrap-wizard-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  .bootstrap-wizard-head,
+  .bootstrap-wizard-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .bootstrap-wizard-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .bootstrap-wizard-actions .cloud-primary,
+  .bootstrap-wizard-actions .btn-secondary {
+    width: 100%;
+  }
+}
+
+
+.overview-step-list .cloud-step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.overview-step-list .cloud-step p {
+  flex: 1;
+}
+
+.overview-step-list .btn-secondary {
+  min-height: 34px;
+  margin-top: 10px;
+  padding: 0 12px;
+  border-radius: 10px;
+}

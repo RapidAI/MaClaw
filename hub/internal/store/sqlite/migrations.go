@@ -249,6 +249,47 @@ func RunMigrations(db *sql.DB) error {
 			updated_at TEXT NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_states_user ON workflow_states(user_id);`,
+
+		`CREATE TABLE IF NOT EXISTS a2a_group_profiles (
+			tenant_id TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			display_name TEXT NOT NULL DEFAULT '',
+			discoverable INTEGER NOT NULL DEFAULT 0,
+			available INTEGER NOT NULL DEFAULT 0,
+			updated_at TEXT NOT NULL,
+			profile_json TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, agent_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_a2a_group_profiles_active ON a2a_group_profiles(tenant_id, discoverable, available, updated_at DESC);`,
+
+		`CREATE TABLE IF NOT EXISTS a2a_group_sessions (
+			tenant_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT '',
+			topic TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			session_json TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, session_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_a2a_group_sessions_updated ON a2a_group_sessions(tenant_id, updated_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_a2a_group_sessions_status ON a2a_group_sessions(tenant_id, status, updated_at DESC);`,
+
+		`CREATE TABLE IF NOT EXISTS a2a_group_invites (
+			tenant_id TEXT NOT NULL,
+			invite_id TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			to_id TEXT NOT NULL DEFAULT '',
+			from_id TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL,
+			responded_at TEXT NOT NULL DEFAULT '',
+			invite_json TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, invite_id)
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_a2a_group_invites_to_status ON a2a_group_invites(tenant_id, to_id, status, created_at DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_a2a_group_invites_session ON a2a_group_invites(tenant_id, session_id);`,
 	}
 
 	for _, stmt := range stmts {

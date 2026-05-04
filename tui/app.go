@@ -473,6 +473,9 @@ func (m *tuiModel) handleSlashCommand(text string) {
 		// to clean up stale state from before the toggle was turned off).
 		if m.app.workflowEngine != nil {
 			_ = m.app.workflowEngine.CancelWorkflow("tui-user")
+			if understanding := m.app.workflowEngine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession("tui-user") {
+				_, _, _, _, _ = understanding.HandleInput("tui-user", "取消")
+			}
 		}
 		m.app.workflowMu.Lock()
 		m.app.pendingPhasePrompt = ""

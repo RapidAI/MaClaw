@@ -34,11 +34,12 @@ type IMAuditQueryResult struct {
 
 // IMAuditStats holds per-platform message counts.
 type IMAuditStats struct {
-	QQ        int `json:"qq"`
-	Telegram  int `json:"telegram"`
-	Weixin    int `json:"weixin"`
-	Lansenger int `json:"lansenger"`
-	Total     int `json:"total"`
+	QQ         int `json:"qq"`
+	Telegram   int `json:"telegram"`
+	Weixin     int `json:"weixin"`
+	Lansenger  int `json:"lansenger"`
+	ThirdParty int `json:"thirdparty"`
+	Total      int `json:"total"`
 }
 
 const (
@@ -49,8 +50,8 @@ const (
 
 // IMAuditStore manages SQLite-backed IM message audit storage.
 type IMAuditStore struct {
-	mu     sync.Mutex
-	db     *sql.DB
+	mu      sync.Mutex
+	db      *sql.DB
 	writeCh chan IMAuditMessage // async write channel
 	done    chan struct{}       // signals writer goroutine exit
 }
@@ -257,7 +258,10 @@ func (s *IMAuditStore) DeleteBefore(days int) (int64, error) {
 func (s *IMAuditStore) ListUsers(platform string) ([]string, error) {
 	var rows *sql.Rows
 	var err error
-	if platform != "" {
+	if platform == "thirdparty" {
+		rows, err = s.db.Query(
+			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform LIKE ? ORDER BY user_id`, "thirdparty:%")
+	} else if platform != "" {
 		rows, err = s.db.Query(
 			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform = ? ORDER BY user_id`, platform)
 	} else {
@@ -308,6 +312,10 @@ func (s *IMAuditStore) Stats() (*IMAuditStats, error) {
 			stats.Weixin += count
 		case "lansenger":
 			stats.Lansenger += count
+		default:
+			if strings.HasPrefix(platform, "thirdparty:") {
+				stats.ThirdParty += count
+			}
 		}
 		stats.Total += count
 	}
@@ -405,7 +413,10 @@ func buildIMAuditWhere(platform, userID, keyword string) (string, []interface{})
 	var conditions []string
 	var args []interface{}
 
-	if platform != "" {
+	if platform == "thirdparty" {
+		conditions = append(conditions, "platform LIKE ?")
+		args = append(args, "thirdparty:%")
+	} else if platform != "" {
 		conditions = append(conditions, "platform = ?")
 		args = append(args, platform)
 	}

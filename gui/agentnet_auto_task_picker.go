@@ -33,12 +33,14 @@ type AgentNetAutoTaskPicker struct {
 	lang          string        // "zh" or "en" for error localisation
 
 	// State
-	activeTasks    map[string]*autoTaskRun // taskID -> run info
-	completedCount int
-	failedCount    int
-	totalEarned    float64
-	lastPollAt     time.Time
-	lastError      string
+	activeTasks       map[string]*autoTaskRun // taskID -> run info
+	completedCount    int
+	failedCount       int
+	totalEarned       float64
+	lastPollAt        time.Time
+	lastError         string
+	lastPollStatus    string
+	lastDiscoveredCnt int
 }
 
 // autoTaskRun tracks a single auto-picked task execution.
@@ -153,17 +155,19 @@ func (p *AgentNetAutoTaskPicker) GetStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"enabled":         p.autoEnabled,
-		"running":         p.running,
-		"poll_interval":   int(p.pollInterval.Minutes()),
-		"min_reward":      p.minReward,
-		"preferred_tags":  p.preferredTags,
-		"active_tasks":    active,
-		"completed_count": p.completedCount,
-		"failed_count":    p.failedCount,
-		"total_earned":    p.totalEarned,
-		"last_poll_at":    formatTimeOrEmpty(p.lastPollAt),
-		"last_error":      p.lastError,
+		"enabled":               p.autoEnabled,
+		"running":               p.running,
+		"poll_interval":         int(p.pollInterval.Minutes()),
+		"min_reward":            p.minReward,
+		"preferred_tags":        p.preferredTags,
+		"active_tasks":          active,
+		"completed_count":       p.completedCount,
+		"failed_count":          p.failedCount,
+		"total_earned":          p.totalEarned,
+		"last_poll_at":          formatTimeOrEmpty(p.lastPollAt),
+		"last_error":            p.lastError,
+		"last_poll_status":      p.lastPollStatus,
+		"last_discovered_count": p.lastDiscoveredCnt,
 	}
 }
 
@@ -203,15 +207,18 @@ func (p *AgentNetAutoTaskPicker) loop() {
 
 // pollAndPickTask checks if AgentNet is online, browses tasks, and picks one.
 // Protected by pollMu to prevent concurrent invocations from loop + TriggerNow.
-func (p *AgentNetAutoTaskPicker) pollAndPickTask() {
+func (p *AgentNetAutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	if !p.pollMu.TryLock() {
-		return // another poll is already in progress
+		p.setPollResult("busy", 0)
+		return p.GetStatus()
 	}
 	defer p.pollMu.Unlock()
 
 	p.mu.Lock()
 	p.lastPollAt = time.Now()
 	p.lastError = ""
+	p.lastPollStatus = "checking"
+	p.lastDiscoveredCnt = 0
 
 	// Check if we're already at max concurrent tasks.
 	activeCount := 0
@@ -221,8 +228,10 @@ func (p *AgentNetAutoTaskPicker) pollAndPickTask() {
 		}
 	}
 	if activeCount >= p.maxConcurrent {
+		p.lastPollStatus = "busy"
 		p.mu.Unlock()
-		return
+		p.notifyChange()
+		return p.GetStatus()
 	}
 
 	client := p.client
@@ -234,33 +243,38 @@ func (p *AgentNetAutoTaskPicker) pollAndPickTask() {
 
 	if executor == nil {
 		p.setError("executor not configured")
-		return
+		return p.GetStatus()
 	}
 
 	// Step 1: Check if AgentNet is online.
 	if !client.IsRunning() {
 		// Not an error - just not online yet. Don't spam lastError.
-		return
+		p.setPollResult("offline", 0)
+		return p.GetStatus()
 	}
 
 	// Step 2: Browse available tasks (try matched first, then network).
 	tasks, err := p.discoverTasks(client, hubURL)
 	if err != nil {
 		p.setError(fmt.Sprintf("task discovery failed: %v", err))
-		return
+		return p.GetStatus()
 	}
 	if len(tasks) == 0 {
-		return // no tasks available, that's fine
+		p.setPollResult("no_tasks", 0)
+		return p.GetStatus() // no tasks available, that's fine
 	}
 
 	// Step 3: Select the best task.
 	selected := p.selectTask(tasks, minReward, preferredTags)
 	if selected == nil {
-		return // no suitable task found
+		p.setPollResult("no_matching_tasks", len(tasks))
+		return p.GetStatus() // no suitable task found
 	}
+	p.setPollResult("picked", len(tasks))
 
 	// Step 4: Claim and execute the task.
 	go p.executeTask(client, selected, executor)
+	return p.GetStatus()
 }
 
 // discoverTasks tries matched tasks first, then falls back to network browse.
@@ -450,6 +464,7 @@ func (p *AgentNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.failedCount++
 	delete(p.activeTasks, run.TaskID)
 	p.lastError = errMsg
+	p.lastPollStatus = "error"
 	p.mu.Unlock()
 	p.notifyChange()
 
@@ -460,7 +475,17 @@ func (p *AgentNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 func (p *AgentNetAutoTaskPicker) setError(msg string) {
 	p.mu.Lock()
 	p.lastError = msg
+	p.lastPollStatus = "error"
 	p.mu.Unlock()
+	p.notifyChange()
+}
+
+func (p *AgentNetAutoTaskPicker) setPollResult(status string, discovered int) {
+	p.mu.Lock()
+	p.lastPollStatus = status
+	p.lastDiscoveredCnt = discovered
+	p.mu.Unlock()
+	p.notifyChange()
 }
 
 // notifyChange calls the onChange callback if set.

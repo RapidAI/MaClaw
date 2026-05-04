@@ -748,9 +748,11 @@ func TestCodexAdapterBuildCommandYoloMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCommand() error = %v", err)
 	}
-	argsStr := strings.Join(cmd.Args, " ")
-	if !strings.Contains(argsStr, "--full-auto") {
-		t.Fatalf("Args = %v, want '--full-auto' flag in yolo mode", cmd.Args)
+	if !containsArg(cmd.Args, codexYoloModeFlag) {
+		t.Fatalf("Args = %v, want %q flag in yolo mode", cmd.Args, codexYoloModeFlag)
+	}
+	if containsArg(cmd.Args, "--full-auto") {
+		t.Fatalf("Args = %v, should not contain deprecated '--full-auto' flag", cmd.Args)
 	}
 }
 
@@ -798,6 +800,9 @@ func TestCodexAdapterBuildCommandResumeSession(t *testing.T) {
 		if cmd.Args[i] != want {
 			t.Fatalf("Args[%d] = %q, want %q (all args: %v)", i, cmd.Args[i], want, cmd.Args)
 		}
+	}
+	if containsArg(cmd.Args, "-c") {
+		t.Fatalf("Args = %v, should not contain model_provider override when ModelName is empty", cmd.Args)
 	}
 }
 
@@ -1413,4 +1418,13 @@ func TestAppendRecentEventsKeepsLatestItems(t *testing.T) {
 	if events[4].Summary != "Run 4" {
 		t.Fatalf("events[4].Summary = %q, want %q", events[4].Summary, "Run 4")
 	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }

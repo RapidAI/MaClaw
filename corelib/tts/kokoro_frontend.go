@@ -20,7 +20,7 @@ func KokoroTextToPhonemes(text string) string {
 		r := runes[i]
 		switch {
 		case isChinese(r):
-			if syl := kokoroChineseRuneToPhonemes(r); syl != "" {
+			if syl := kokoroChineseRuneToPhonemesInText(runes, i); syl != "" {
 				b.WriteString(syl)
 			}
 			i++
@@ -56,7 +56,14 @@ func KokoroTextToPhonemes(text string) string {
 }
 
 func kokoroChineseRuneToPhonemes(r rune) string {
-	py := charToPinyin(r)
+	return kokoroPinyinToPhonemes(charToPinyin(r))
+}
+
+func kokoroChineseRuneToPhonemesInText(runes []rune, i int) string {
+	return kokoroPinyinToPhonemes(charToPinyinInText(runes, i))
+}
+
+func kokoroPinyinToPhonemes(py string) string {
 	if py == "" {
 		return ""
 	}
@@ -94,10 +101,20 @@ func kokoroInitial(initial, final string) string {
 		return ""
 	}
 	switch initial {
-	case "b", "p", "m", "f", "d", "t", "n", "l", "k", "s", "w", "y":
+	case "m", "f", "n", "l", "s", "w", "y":
 		return initial
+	case "b":
+		return "p"
+	case "p":
+		return "p\u02b0"
+	case "d":
+		return "t"
+	case "t":
+		return "t\u02b0"
 	case "g":
 		return "k"
+	case "k":
+		return "k\u02b0"
 	case "h":
 		return "x"
 	case "j":

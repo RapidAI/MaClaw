@@ -29,9 +29,21 @@ func (a *App) OnFloatingButtonClicked() {
 	}
 }
 
+func (a *App) OnFloatingButtonDragged(x, y int) {
+	if fa := a.existingFloatingAssistant(); fa != nil {
+		fa.OnFloatingButtonDragged(x, y)
+	}
+}
+
 func (a *App) HideFloatingButton() {
 	if fa := a.existingFloatingAssistant(); fa != nil {
 		fa.HideFloatingButton()
+	}
+}
+
+func (a *App) DisablePetFromMenu() {
+	if fa := a.existingFloatingAssistant(); fa != nil {
+		fa.DisablePetFromMenu()
 	}
 }
 

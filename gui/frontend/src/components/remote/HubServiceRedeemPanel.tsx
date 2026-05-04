@@ -28,6 +28,7 @@ interface HubLLMServiceStatus {
     active_grants?: HubLLMActiveGrant[];
     inactive_reasons?: string[];
     nearest_expires_at?: string;
+    effective_expires_at?: string;
     default_model?: string;
     hub_llm_base_url?: string;
 }
@@ -319,8 +320,8 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                         <div style={valueStyle}>{activeGroupNames.length ? activeGroupNames.join(", ") : "-"}</div>
                     </div>
                     <div style={mutedCardStyle}>
-                        <div style={labelStyle}>{t("Nearest Expiry", "最近到期时间")}</div>
-                        <div style={valueStyle}>{formatTime(status?.nearest_expires_at, lang)}</div>
+                        <div style={labelStyle}>{t("Valid Until", "有效期至")}</div>
+                        <div style={valueStyle}>{formatTime(status?.effective_expires_at || status?.nearest_expires_at, lang)}</div>
                     </div>
                     <div style={mutedCardStyle}>
                         <div style={labelStyle}>{t("Default Model", "默认模型")}</div>
@@ -348,7 +349,11 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                             <td style={detailTdStyle}>{availableModels.length ? availableModels.join(", ") : "auto"}</td>
                         </tr>
                         <tr>
-                            <td style={detailThStyle}>{t("Nearest Expiry", "最近到期")}</td>
+                            <td style={detailThStyle}>{t("Valid Until", "有效期至")}</td>
+                            <td style={detailTdStyle}>{formatTime(status?.effective_expires_at || status?.nearest_expires_at, lang)}</td>
+                        </tr>
+                        <tr>
+                            <td style={detailThStyle}>{t("Current Grant Expiry", "当前授权到期")}</td>
                             <td style={detailTdStyle}>{formatTime(status?.nearest_expires_at, lang)}</td>
                         </tr>
                     </tbody>

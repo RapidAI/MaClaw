@@ -267,6 +267,33 @@ export function SkillsManagementPanel({ localizeText }: Props) {
         if (source === "crafted") return localizeText("Tool crafted", "工具制作", "工具製作");
         return source;
     };
+    const localizeAuditStatus = (value?: string): string => {
+        const normalized = String(value || "empty").toLowerCase();
+        const labels: Record<string, string> = {
+            empty: localizeText("empty", "\u7a7a", "\u7a7a"),
+            healthy: localizeText("healthy", "\u5065\u5eb7", "\u5065\u5eb7"),
+            ok: localizeText("ok", "\u6b63\u5e38", "\u6b63\u5e38"),
+            warning: localizeText("warning", "\u8b66\u544a", "\u8b66\u544a"),
+            failed: localizeText("failed", "\u5931\u8d25", "\u5931\u6557"),
+            completed: localizeText("completed", "\u5df2\u5b8c\u6210", "\u5df2\u5b8c\u6210"),
+            no_candidates: localizeText("no candidates", "\u65e0\u5019\u9009", "\u7121\u5019\u9078"),
+        };
+        return labels[normalized] || value || labels.empty;
+    };
+
+    const localizeAuditText = (value?: string): string => {
+        const auditText = String(value || "").trim();
+        if (!auditText) return "";
+        const normalized = auditText.toLowerCase();
+        if (normalized.includes("run an eligible successful session")) {
+            return localizeText(
+                "run an eligible successful session before expecting learned skills",
+                "\u8bf7\u5148\u5b8c\u6210\u4e00\u6b21\u7b26\u5408\u6761\u4ef6\u7684\u6210\u529f\u4f1a\u8bdd\uff0c\u518d\u67e5\u770b\u81ea\u5b66\u4e60\u6280\u80fd\u7ed3\u679c",
+                "\u8acb\u5148\u5b8c\u6210\u4e00\u6b21\u7b26\u5408\u689d\u4ef6\u7684\u6210\u529f\u6703\u8a71\uff0c\u518d\u67e5\u770b\u81ea\u5b78\u7fd2\u6280\u80fd\u7d50\u679c",
+            );
+        }
+        return auditText;
+    };
 
     // Install/update state
     const [installingSkills, setInstallingSkills] = useState<Set<string>>(new Set());
@@ -1312,7 +1339,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         </span>
                         <div style={{ display: "flex", gap: "6px" }}>
                             <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={loadExperienceAudit} disabled={experienceAuditLoading}>
-                                {experienceAuditLoading ? localizeText("Refreshing...", "Refreshing...", "Refreshing...") : localizeText("Audit", "Audit", "Audit")}
+                                {experienceAuditLoading ? localizeText("Refreshing...", "\u5237\u65b0\u4e2d...", "\u91cd\u65b0\u6574\u7406\u4e2d...") : localizeText("Audit", "\u5ba1\u8ba1", "\u7a3d\u6838")}
                             </button>
                             <button className="btn-secondary" style={{ fontSize: "0.78rem", padding: "4px 12px" }} onClick={handleLearnedImport} disabled={learnedImporting}>
                                 {learnedImporting ? localizeText("Importing...", "导入中...", "匯入中...") : localizeText("📦 Import", "📦 导入", "📦 匯入")}
@@ -1342,20 +1369,20 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     {(experienceAuditError || experienceAuditHealth || experienceAudit.length > 0) && (
                         <div style={{ ...remoteInfoPanelStyle, padding: "8px 10px", borderRadius: "4px" }}>
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                                <span style={{ fontWeight: 600, color: colors.text }}>{localizeText("Experience Audit", "Experience Audit", "Experience Audit")}</span>
-                                <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => { setExperienceAudit([]); setExperienceAuditHealth(null); }}>{localizeText("Hide", "Hide", "Hide")}</button>
+                                <span style={{ fontWeight: 600, color: colors.text }}>{localizeText("Experience Audit", "\u7ecf\u9a8c\u5ba1\u8ba1", "\u7d93\u9a57\u7a3d\u6838")}</span>
+                                <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => { setExperienceAudit([]); setExperienceAuditHealth(null); }}>{localizeText("Hide", "\u9690\u85cf", "\u96b1\u85cf")}</button>
                             </div>
                             {experienceAuditError && <div style={{ color: colors.danger, fontSize: "0.74rem" }}>{experienceAuditError}</div>}
                             {!experienceAuditError && experienceAuditHealth && (
                                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "6px", marginBottom: "8px" }}>
                                     {[
-                                        [localizeText("Health", "Health", "Health"), experienceAuditHealth.status || "empty"],
-                                        [localizeText("Runs", "Runs", "Runs"), experienceAuditHealth.runs],
-                                        [localizeText("Completed", "Completed", "Completed"), experienceAuditHealth.completed],
-                                        [localizeText("Failed", "Failed", "Failed"), experienceAuditHealth.failed],
-                                        [localizeText("Registered", "Registered", "Registered"), experienceAuditHealth.registered],
-                                        [localizeText("Updated", "Updated", "Updated"), experienceAuditHealth.updated],
-                                        [localizeText("Skipped", "Skipped", "Skipped"), experienceAuditHealth.skipped],
+                                        [localizeText("Health", "\u5065\u5eb7\u72b6\u6001", "\u5065\u5eb7\u72c0\u614b"), localizeAuditStatus(experienceAuditHealth.status)],
+                                        [localizeText("Runs", "\u8fd0\u884c\u6b21\u6570", "\u57f7\u884c\u6b21\u6578"), experienceAuditHealth.runs],
+                                        [localizeText("Completed", "\u5df2\u5b8c\u6210", "\u5df2\u5b8c\u6210"), experienceAuditHealth.completed],
+                                        [localizeText("Failed", "\u5931\u8d25", "\u5931\u6557"), experienceAuditHealth.failed],
+                                        [localizeText("Registered", "\u5df2\u6ce8\u518c", "\u5df2\u8a3b\u518a"), experienceAuditHealth.registered],
+                                        [localizeText("Updated", "\u5df2\u66f4\u65b0", "\u5df2\u66f4\u65b0"), experienceAuditHealth.updated],
+                                        [localizeText("Skipped", "\u5df2\u8df3\u8fc7", "\u5df2\u8df3\u904e"), experienceAuditHealth.skipped],
                                     ].map(([label, value]) => (
                                         <div key={String(label)} style={{ border: "1px solid " + colors.borderLight, borderRadius: "4px", padding: "5px 7px", background: colors.surface }}>
                                             <div style={{ fontSize: "0.66rem", color: colors.textMuted }}>{label}</div>
@@ -1366,12 +1393,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             )}
                             {!experienceAuditError && experienceAuditHealth?.primary_issue && (
                                 <div style={{ fontSize: "0.72rem", color: colors.warning, marginBottom: "6px" }}>
-                                    {localizeText("Primary issue", "Primary issue", "Primary issue")}: {experienceAuditHealth.primary_issue}
+                                    {localizeText("Primary issue", "\u4e3b\u8981\u95ee\u9898", "\u4e3b\u8981\u554f\u984c")}: {localizeAuditText(experienceAuditHealth.primary_issue)}
                                 </div>
                             )}
                             {!experienceAuditError && experienceAuditHealth?.suggested_action && (
                                 <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginBottom: "6px" }}>
-                                    {localizeText("Suggested action", "Suggested action", "Suggested action")}: {experienceAuditHealth.suggested_action}
+                                    {localizeText("Suggested action", "\u5efa\u8bae\u64cd\u4f5c", "\u5efa\u8b70\u64cd\u4f5c")}: {localizeAuditText(experienceAuditHealth.suggested_action)}
                                 </div>
                             )}
                             {!experienceAuditError && experienceAuditHealth && (Object.keys(experienceAuditHealth.skip_reasons || {}).length > 0 || Object.keys(experienceAuditHealth.unsupported_steps || {}).length > 0) && (
@@ -1396,7 +1423,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                             <span style={{ fontSize: "0.68rem", color: colors.textMuted }}>{record.timestamp ? new Date(record.timestamp).toLocaleString() : ""}</span>
                                         </div>
                                         <div style={{ fontSize: "0.72rem", color: colors.textSecondary, marginTop: "3px" }}>
-                                            {localizeText("Candidates", "Candidates", "Candidates")}: {summary.total_candidates} / {localizeText("Registered", "Registered", "Registered")}: {summary.registered} / {localizeText("Updated", "Updated", "Updated")}: {summary.updated} / {localizeText("Skipped", "Skipped", "Skipped")}: {summary.skipped}
+                                            {localizeText("Candidates", "\u5019\u9009", "\u5019\u9078")}: {summary.total_candidates} / {localizeText("Registered", "\u5df2\u6ce8\u518c", "\u5df2\u8a3b\u518a")}: {summary.registered} / {localizeText("Updated", "\u5df2\u66f4\u65b0", "\u5df2\u66f4\u65b0")}: {summary.updated} / {localizeText("Skipped", "\u5df2\u8df3\u8fc7", "\u5df2\u8df3\u904e")}: {summary.skipped}
                                         </div>
                                         {record.error && (
                                             <div style={{ fontSize: "0.72rem", color: colors.danger, marginTop: "3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={record.error}>

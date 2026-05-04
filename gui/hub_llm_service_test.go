@@ -68,6 +68,9 @@ func TestApplyHubLLMServiceStatusToConfig_AddsProviderWhenAuthorized(t *testing.
 	if !ok {
 		t.Fatalf("hub provider missing after authorized sync: %+v", cfg.MaclawLLMProviders)
 	}
+	if !provider.IsHubService {
+		t.Fatal("provider IsHubService = false, want true")
+	}
 	if provider.URL != "https://hub.example.com/api/llm/v1" {
 		t.Fatalf("provider URL = %q, want %q", provider.URL, "https://hub.example.com/api/llm/v1")
 	}
@@ -247,6 +250,9 @@ func TestGetMaclawLLMPanelState_AddsHubProviderWhenAuthorized(t *testing.T) {
 	if !ok {
 		t.Fatalf("panel providers missing hub provider after authorized status: %+v", state.Providers)
 	}
+	if !provider.IsHubService {
+		t.Fatal("provider IsHubService = false, want true")
+	}
 	if provider.Model != hubServiceAutoModel {
 		t.Fatalf("provider Model = %q, want %q", provider.Model, hubServiceAutoModel)
 	}
@@ -314,6 +320,9 @@ func TestGetMaclawLLMProviders_AddsHubProviderWhenAuthorized(t *testing.T) {
 	provider, ok := findProviderByName(state.Providers, hubServiceProviderName)
 	if !ok {
 		t.Fatalf("providers missing hub provider after authorized status: %+v", state.Providers)
+	}
+	if !provider.IsHubService {
+		t.Fatal("provider IsHubService = false, want true")
 	}
 	if provider.Model != hubServiceAutoModel {
 		t.Fatalf("provider Model = %q, want %q", provider.Model, hubServiceAutoModel)

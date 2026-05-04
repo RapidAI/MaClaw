@@ -375,3 +375,81 @@ func TestServiceCallRejectsProtocolRelativePath(t *testing.T) {
 		t.Fatal("expected protocol-relative service path to fail")
 	}
 }
+
+func TestHubTaskDiscoveryUsesAgentNetRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tasks/board":
+			_, _ = w.Write([]byte(`[{"id":"local-1","title":"Local","state":"open","reward":100}]`))
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"peer_id":"local-peer"}`))
+		case "/api/AgentNet/tasks/publish":
+			if r.Method != http.MethodPost {
+				t.Fatalf("publish method = %s", r.Method)
+			}
+			_, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/AgentNet/tasks/browse":
+			if r.Method != http.MethodGet {
+				t.Fatalf("browse method = %s", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"tasks":[{"id":"remote-1","title":"Remote","status":"open","reward":120,"peer_id":"remote-peer"}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c := testClient(server)
+
+	if err := c.PublishTasksToHub(server.URL); err != nil {
+		t.Fatalf("PublishTasksToHub failed: %v", err)
+	}
+	tasks, err := c.BrowseHubTasks(server.URL)
+	if err != nil {
+		t.Fatalf("BrowseHubTasks failed: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "remote-1" {
+		t.Fatalf("tasks = %#v", tasks)
+	}
+}
+
+func TestAutoPickerPollReturnsImmediateStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/status" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	picker := NewAutoTaskPicker(testClient(server), "")
+	picker.SetExecutor(func(_, _ string) (string, error) { return "", nil })
+
+	status := picker.pollAndPickTask()
+	if status["last_poll_status"] != "offline" {
+		t.Fatalf("status = %#v, want offline", status)
+	}
+}
+
+func TestAutoPickerStatusReportsPollResultAndErrorChanges(t *testing.T) {
+	picker := NewAutoTaskPicker(&Client{}, "")
+	changes := 0
+	picker.SetOnChange(func() { changes++ })
+
+	picker.setPollResult("no_matching_tasks", 2)
+	status := picker.GetStatus()
+	if status["last_poll_status"] != "no_matching_tasks" || status["last_discovered_count"] != 2 {
+		t.Fatalf("status = %#v", status)
+	}
+	if changes != 1 {
+		t.Fatalf("changes after poll result = %d, want 1", changes)
+	}
+
+	picker.setError("boom")
+	status = picker.GetStatus()
+	if status["last_poll_status"] != "error" || status["last_error"] != "boom" {
+		t.Fatalf("status after error = %#v", status)
+	}
+	if changes != 2 {
+		t.Fatalf("changes after error = %d, want 2", changes)
+	}
+}

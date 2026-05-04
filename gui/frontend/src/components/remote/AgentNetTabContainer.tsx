@@ -18,15 +18,15 @@ type Props = { lang: string; agentNetRunning: boolean };
 
 type AgentNetSubTab = "tasks" | "knowledge" | "chat" | "network" | "poi" | "services" | "tools" | "bundle";
 
-const tabDefs: { id: AgentNetSubTab; icon: string; label: (lang: string) => string }[] = [
-    { id: "tasks", icon: "TASK", label: (lang) => localizeText(lang, "Tasks", "Tasks") },
-    { id: "knowledge", icon: "KNOW", label: (lang) => localizeText(lang, "Knowledge", "Knowledge") },
-    { id: "chat", icon: "CHAT", label: (lang) => localizeText(lang, "Chat", "Chat") },
-    { id: "network", icon: "NET", label: (lang) => localizeText(lang, "Network", "Network") },
-    { id: "poi", icon: "POI", label: (lang) => localizeText(lang, "PoI", "PoI") },
-    { id: "services", icon: "SVC", label: (lang) => localizeText(lang, "Services", "Services") },
-    { id: "tools", icon: "TOOL", label: (lang) => localizeText(lang, "Tools", "Tools") },
-    { id: "bundle", icon: "NUT", label: (lang) => localizeText(lang, "Bundle", "Bundle") },
+const tabDefs: { id: AgentNetSubTab; shortLabel: (lang: string) => string; label: (lang: string) => string }[] = [
+    { id: "tasks", shortLabel: (lang) => localizeText(lang, "TASK", "任", "任"), label: (lang) => localizeText(lang, "Tasks", "任务", "任務") },
+    { id: "knowledge", shortLabel: (lang) => localizeText(lang, "KNOW", "知", "知"), label: (lang) => localizeText(lang, "Knowledge", "知识", "知識") },
+    { id: "chat", shortLabel: (lang) => localizeText(lang, "CHAT", "聊", "聊"), label: (lang) => localizeText(lang, "Chat", "聊天", "聊天") },
+    { id: "network", shortLabel: (lang) => localizeText(lang, "NET", "网", "網"), label: (lang) => localizeText(lang, "Network", "网络", "網路") },
+    { id: "poi", shortLabel: (lang) => localizeText(lang, "POI", "证", "證"), label: (lang) => localizeText(lang, "PoI", "智能证明", "智能證明") },
+    { id: "services", shortLabel: (lang) => localizeText(lang, "SVC", "服", "服"), label: (lang) => localizeText(lang, "Services", "服务", "服務") },
+    { id: "tools", shortLabel: (lang) => localizeText(lang, "TOOL", "工", "工"), label: (lang) => localizeText(lang, "Tools", "工具", "工具") },
+    { id: "bundle", shortLabel: (lang) => localizeText(lang, "NUT", "包", "包"), label: (lang) => localizeText(lang, "Bundle", "包", "包") },
 ];
 
 // ErrorBoundary to prevent a single panel crash from white-screening the entire view
@@ -98,12 +98,15 @@ export function AgentNetTabContainer({ lang, agentNetRunning }: Props) {
                 borderBottom: `1px solid ${colors.border}`, paddingBottom: "10px",
                 flexWrap: "wrap",
             }}>
-                {tabDefs.map(t => (
-                    <button key={t.id} style={cnTabBtn(subTab === t.id)} onClick={() => setSubTab(t.id)}>
-                        <span>{t.icon}</span>
-                        <span>{t.label(lang)}</span>
+                {tabDefs.map(t => {
+                    const label = t.label(lang);
+                    return (
+                    <button key={t.id} style={cnTabBtn(subTab === t.id)} onClick={() => setSubTab(t.id)} aria-label={label}>
+                        <span>{t.shortLabel(lang)}</span>
+                        <span>{label}</span>
                     </button>
-                ))}
+                    );
+                })}
             </div>
 
             {/* Content: only render the active panel (lazy) to avoid concurrent backend storms */}

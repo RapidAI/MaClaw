@@ -1112,45 +1112,6 @@ func conversationHistoryEqual(a, b []agent.ConversationEntry) bool {
 	return true
 }
 
-func looksLikePendingUserReplyPrompt(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	casualClosers := []string{"anything else", "what else", "let me know", "i'm here if", "\u8fd8\u6709\u4ec0\u4e48", "\u968f\u65f6\u53eb", "\u968f\u65f6\u8bf4"}
-	for _, hint := range casualClosers {
-		if strings.Contains(lower, hint) {
-			return false
-		}
-	}
-	questionHints := []string{"?", "\uff1f", "\u8bf7\u9009\u62e9", "\u8bf7\u786e\u8ba4", "\u8bf7\u63d0\u4f9b", "\u8bf7\u8865\u5145", "\u8bf7\u544a\u8bc9\u6211", "\u8bf7\u56de\u590d", "\u76f4\u63a5\u56de\u590d", "\u9700\u8981\u4f60\u9009", "\u9700\u8981\u4f60\u786e\u8ba4", "\u8981\u90e8\u7f72", "\u90e8\u7f72\u54ea", "\u54ea\u4e2a\u6a21\u578b", "\u6a21\u578b\u9009\u62e9", "\u63a8\u8350\u65b9\u6848", "please choose", "please confirm", "please provide", "which model", "what model", "deploy which", "reply with"}
-	for _, hint := range questionHints {
-		if strings.Contains(lower, hint) {
-			return true
-		}
-	}
-	return false
-}
-
-func likelyResponseToPendingUserReply(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	replyHints := []string{"ok", "okay", "yes", "confirm", "go ahead", "as you suggest", "your suggestion", "recommended", "\u597d", "\u597d\u7684", "\u53ef\u4ee5", "\u786e\u8ba4", "\u5c31\u8fd9\u4e2a", "\u6309\u4f60\u7684\u5efa\u8bae", "\u6309\u5efa\u8bae", "\u63a8\u8350"}
-	for _, hint := range replyHints {
-		if strings.Contains(lower, hint) {
-			return true
-		}
-	}
-	if looksLikeFreshTaskRequest(trimmed) {
-		return false
-	}
-	return len([]rune(trimmed)) <= 20 && countWords(trimmed) < 4
-}
-
 // pendingSlotText stores the user's original task text that was intercepted
 // by the unfinished-slot hint. Expires after 10 minutes.
 type pendingSlotText struct {
@@ -2747,6 +2708,16 @@ type IMMessageHandler struct {
 	// *pendingUserReplyState.
 	pendingUserReply sync.Map
 
+	// suppressPendingUserReplyUpdate preserves pendingUserReply for the current
+	// request when intent classification was inconclusive. Keyed by userID.
+	suppressPendingUserReplyUpdate sync.Map
+
+	// Optional test hooks for pending-reply intent classification. Production
+	// uses LLMClassify; tests inject deterministic classifiers without keyword
+	// matching hidden in the implementation.
+	pendingReplyPromptClassifier func(assistantText string) (bool, error)
+	pendingReplyAnswerClassifier func(question, answer string) (bool, error)
+
 	// pendingCapabilityGap stores the result of an async capability gap
 	// resolution (skill search + install) that completed after the response
 	// was already returned to the user. The result is injected into the
@@ -4054,13 +4025,107 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	if h == nil || strings.TrimSpace(userID) == "" || resp == nil {
 		return
 	}
+	if _, ok := h.suppressPendingUserReplyUpdate.Load(userID); ok {
+		return
+	}
 	assistantText := strings.TrimSpace(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
-	if !looksLikePendingUserReplyPrompt(assistantText) {
+	if !h.classifyPendingUserReplyPrompt(assistantText) {
 		h.pendingUserReply.Delete(userID)
 		return
 	}
 	h.pendingUserReply.Store(userID, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: cloneConversationEntries(history), Timestamp: time.Now()})
 	log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question=%q", userID, len(history), truncateRunes(assistantText, 80))
+}
+
+func (h *IMMessageHandler) classifyPendingUserReplyPrompt(assistantText string) bool {
+	assistantText = strings.TrimSpace(assistantText)
+	if assistantText == "" {
+		return false
+	}
+	if h != nil && h.pendingReplyPromptClassifier != nil {
+		ok, err := h.pendingReplyPromptClassifier(assistantText)
+		if err == nil {
+			return ok
+		}
+		log.Printf("[PendingUserReply] prompt test classifier failed: %v", err)
+	}
+	if h != nil {
+		result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
+			SystemPrompt: `You classify whether the assistant's last message is waiting for the user's next reply inside the same task.
+
+Reply with exactly one word:
+- pending: the assistant asks the user to choose, confirm, provide details, approve starting, or otherwise answer before continuing.
+- done: the assistant is simply closing, reporting completion, or making a statement that does not require the next user message to be bound to this task.`,
+			UserMessage: "Assistant message:\n" + assistantText,
+			TimeoutSec:  6,
+			Tag:         "pending-reply-prompt",
+		})
+		if err == nil {
+			intent, ok := parsePendingReplyPromptIntent(result.Text)
+			return ok && intent == "pending"
+		}
+		log.Printf("[PendingUserReply] prompt intent classification failed: %v", err)
+	}
+	return false
+}
+
+func (h *IMMessageHandler) classifyPendingUserReplyAnswer(question, answer string) (bool, bool) {
+	question = strings.TrimSpace(question)
+	answer = strings.TrimSpace(answer)
+	if question == "" || answer == "" {
+		return false, true
+	}
+	if h != nil && h.pendingReplyAnswerClassifier != nil {
+		ok, err := h.pendingReplyAnswerClassifier(question, answer)
+		if err == nil {
+			return ok, true
+		}
+		log.Printf("[PendingUserReply] answer test classifier failed: %v", err)
+	}
+	if h != nil {
+		result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
+			SystemPrompt: `You classify whether the user's new message answers the assistant's pending question from the same task, or starts a different task.
+
+Reply with exactly one word:
+- answer: the user is confirming, choosing, approving, correcting, or supplying information requested by the assistant question.
+- new: the user is asking for a separate unrelated task instead.`,
+			UserMessage: fmt.Sprintf("Assistant pending question:\n%s\n\nUser new message:\n%s", question, answer),
+			TimeoutSec:  6,
+			Tag:         "pending-reply-answer",
+		})
+		if err == nil {
+			intent, ok := parsePendingReplyAnswerIntent(result.Text)
+			if !ok {
+				log.Printf("[PendingUserReply] answer intent classification ambiguous: %q", truncateForLogGUI(result.Text, 60))
+				return false, false
+			}
+			return intent == "answer", true
+		}
+		log.Printf("[PendingUserReply] answer intent classification failed: %v", err)
+	}
+	return false, false
+}
+
+func parsePendingReplyPromptIntent(text string) (string, bool) {
+	intent := strings.ToLower(strings.TrimSpace(text))
+	intent = strings.Trim(intent, " \t\r\n`\"'.,:;!?()[]{}")
+	switch intent {
+	case "pending", "done":
+		return intent, true
+	default:
+		return "", false
+	}
+}
+
+func parsePendingReplyAnswerIntent(text string) (string, bool) {
+	intent := strings.ToLower(strings.TrimSpace(text))
+	intent = strings.Trim(intent, " \t\r\n`\"'.,:;!?()[]{}")
+	switch intent {
+	case "answer", "new":
+		return intent, true
+	default:
+		return "", false
+	}
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a
@@ -4484,6 +4549,9 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 
 func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) (result *IMAgentResponse) {
 	trimmed := strings.TrimSpace(msg.Text)
+	if strings.TrimSpace(msg.UserID) != "" {
+		defer h.suppressPendingUserReplyUpdate.Delete(msg.UserID)
+	}
 
 	// --- IM Audit: deferred write covers ALL return paths ---
 	// Record both the user message and the assistant response for IM platforms.
@@ -4867,7 +4935,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if !msg.IsBackground {
 		if raw, ok := h.pendingUserReply.LoadAndDelete(msg.UserID); ok {
 			pending, _ := raw.(*pendingUserReplyState)
-			if pending != nil && time.Since(pending.Timestamp) < 30*time.Minute && likelyResponseToPendingUserReply(trimmed) {
+			pendingFresh := pending != nil && time.Since(pending.Timestamp) < 30*time.Minute
+			isPendingAnswer, classifiedPendingAnswer := false, true
+			if pendingFresh {
+				isPendingAnswer, classifiedPendingAnswer = h.classifyPendingUserReplyAnswer(pending.Question, trimmed)
+			}
+			if pendingFresh && isPendingAnswer {
 				hasPendingUserReply = true
 				if len(pending.History) > 0 {
 					current := h.memory.Load(msg.UserID)
@@ -4881,8 +4954,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 					}
 				}
 				pendingUserReplyContext = fmt.Sprintf("[Context hint] The user is answering the assistant question from the current task, not starting or resuming another task.\nAssistant question: %s\nUser answer: %s", pending.Question, trimmed)
-			} else if pending != nil && time.Since(pending.Timestamp) < 30*time.Minute && trimmed == "" {
+			} else if pendingFresh && (!classifiedPendingAnswer || trimmed == "") {
 				h.pendingUserReply.Store(msg.UserID, pending)
+				h.suppressPendingUserReplyUpdate.Store(msg.UserID, true)
 			}
 		}
 	}

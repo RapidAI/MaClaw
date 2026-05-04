@@ -1699,7 +1699,7 @@ func (c *Client) PublishTasksToHub(hubURL string) error {
 	}
 
 	body, _ := json.Marshal(payload)
-	endpoint := strings.TrimRight(hubURL, "/") + "/api/agentnet/tasks/publish"
+	endpoint := strings.TrimRight(hubURL, "/") + "/api/AgentNet/tasks/publish"
 	hubClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := hubClient.Post(endpoint, "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -1716,7 +1716,7 @@ func (c *Client) BrowseHubTasks(hubURL string) ([]Task, error) {
 	if hubURL == "" {
 		return nil, fmt.Errorf("hub URL is empty")
 	}
-	endpoint := strings.TrimRight(hubURL, "/") + "/api/agentnet/tasks/browse?limit=50"
+	endpoint := strings.TrimRight(hubURL, "/") + "/api/AgentNet/tasks/browse?limit=50"
 	hubClient := &http.Client{Timeout: 30 * time.Second}
 	resp, err := hubClient.Get(endpoint)
 	if err != nil {

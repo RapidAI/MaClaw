@@ -17,6 +17,67 @@ func charToPinyin(r rune) string {
 	return ""
 }
 
+func charToPinyinInText(runes []rune, i int) string {
+	if i < 0 || i >= len(runes) {
+		return ""
+	}
+	if py := contextualPinyinOverride(runes, i); py != "" {
+		return py
+	}
+	return charToPinyin(runes[i])
+}
+
+func contextualPinyinOverride(runes []rune, i int) string {
+	bestPinyin := ""
+	bestLen := 0
+	for _, rule := range contextualPinyinRules {
+		if i < rule.index || i-rule.index+len(rule.phrase) > len(runes) {
+			continue
+		}
+		start := i - rule.index
+		matched := true
+		for j, r := range rule.phrase {
+			if runes[start+j] != r {
+				matched = false
+				break
+			}
+		}
+		if matched && len(rule.phrase) > bestLen {
+			bestPinyin = rule.pinyin
+			bestLen = len(rule.phrase)
+		}
+	}
+	return bestPinyin
+}
+
+type contextualPinyinRule struct {
+	phrase []rune
+	index  int
+	pinyin string
+}
+
+func pinyinRule(phrase string, index int, pinyin string) contextualPinyinRule {
+	runes := []rune(phrase)
+	if index < 0 || index >= len(runes) {
+		panic("tts: contextual pinyin rule index out of range")
+	}
+	return contextualPinyinRule{phrase: runes, index: index, pinyin: pinyin}
+}
+
+var contextualPinyinRules = []contextualPinyinRule{
+	pinyinRule("\u7761\u89c9", 1, "jiao4"),  // sleep
+	pinyinRule("\u5348\u89c9", 1, "jiao4"),  // nap
+	pinyinRule("\u61d2\u89c9", 1, "jiao4"),  // sleep in
+	pinyinRule("\u97f3\u4e50", 1, "yue4"),   // music
+	pinyinRule("\u94f6\u884c", 1, "hang2"),  // bank
+	pinyinRule("\u884c\u4e1a", 0, "hang2"),  // industry
+	pinyinRule("\u91cd\u5e86", 0, "chong2"), // Chongqing
+	pinyinRule("\u91cd\u65b0", 0, "chong2"), // again
+	pinyinRule("\u91cd\u590d", 0, "chong2"), // repeat
+	pinyinRule("\u957f\u5927", 0, "zhang3"), // grow up
+	pinyinRule("\u6821\u957f", 1, "zhang3"), // principal
+}
+
 // pinyinToPhonemes converts a pinyin syllable (e.g. "zhong1") to MeloTTS phonemes.
 // Returns phoneme list and tone number.
 func pinyinToPhonemes(pinyin string) (phonemes []string, tone int) {
@@ -79,7 +140,8 @@ func splitPinyin(py string) (initial, final string) {
 		case 'b', 'p', 'm', 'f', 'd', 't', 'n', 'l',
 			'g', 'k', 'h', 'j', 'q', 'x',
 			'w', 'y':
-			return string(c), py[1:]
+			initial = string(c)
+			return initial, normalizePinyinFinal(initial, py[1:])
 		case 'r':
 			rest := py[1:]
 			// ri → special final "ir"
@@ -99,6 +161,23 @@ func splitPinyin(py string) (initial, final string) {
 
 	// No initial (zero initial)
 	return "", py
+}
+
+func normalizePinyinFinal(initial, final string) string {
+	if initial != "j" && initial != "q" && initial != "x" {
+		return final
+	}
+	switch final {
+	case "u":
+		return "v"
+	case "uan":
+		return "van"
+	case "un":
+		return "vn"
+	case "ue":
+		return "ve"
+	}
+	return final
 }
 
 // finalToPhonemes maps a pinyin final to MeloTTS phoneme(s).
@@ -121,7 +200,7 @@ var zhFinalMap = map[string][]string{
 	"e":    {"e"},
 	"i":    {"i"},
 	"u":    {"u"},
-	"v":    {"v"},     // ü
+	"v":    {"v"}, // ü
 	"ai":   {"ai"},
 	"ei":   {"ei"},
 	"ao":   {"ao"},
@@ -151,8 +230,8 @@ var zhFinalMap = map[string][]string{
 	"ve":   {"ve"},
 	"van":  {"van"},
 	"vn":   {"vn"},
-	"ir":   {"ir"},    // zhi/chi/shi/ri 的韵母
-	"i0":   {"i0"},    // zi/ci/si 的韵母
+	"ir":   {"ir"}, // zhi/chi/shi/ri 的韵母
+	"i0":   {"i0"}, // zi/ci/si 的韵母
 }
 
 // zhPinyinTable maps common Chinese characters to pinyin with tone.

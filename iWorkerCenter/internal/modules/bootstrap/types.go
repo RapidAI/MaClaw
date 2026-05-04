@@ -12,6 +12,9 @@ type WatcherPolicy struct {
 type Plan struct {
 	TenantID                      string        `json:"tenant_id"`
 	CompanyName                   string        `json:"company_name"`
+	LegalPerson                   string        `json:"legal_person"`
+	CompanyAddress                string        `json:"company_address"`
+	ContactEmail                  string        `json:"contact_email"`
 	BusinessSummary               string        `json:"business_summary"`
 	Priority                      string        `json:"priority"`
 	VirtualDepartments            []string      `json:"virtual_departments"`

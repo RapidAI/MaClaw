@@ -61,14 +61,18 @@ func (a *App) GroupDiscussionListExperts() ([]a2a.GroupProfile, error) {
 }
 
 func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, error) {
-	client, _, err := a.groupDiscussionClient()
+	client, cfg, err := a.groupDiscussionClient()
 	if err != nil {
 		return nil, err
+	}
+	agentID := strings.TrimSpace(cfg.RemoteMachineID)
+	if agentID == "" {
+		return nil, fmt.Errorf("remote machine id is required")
 	}
 	role = strings.TrimSpace(role)
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	return client.ListDiscussions(ctx, role)
+	return client.ListDiscussionsForAgent(ctx, agentID, role)
 }
 
 func (a *App) GroupDiscussionListInvites() ([]a2a.GroupInviteSummary, error) {

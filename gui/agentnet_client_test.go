@@ -258,3 +258,83 @@ func TestAgentNetBidAndAssignValidation(t *testing.T) {
 		t.Fatal("expected empty assignee to fail")
 	}
 }
+
+func TestAgentNetHubTaskDiscoveryUsesAgentNetRoute(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tasks/board":
+			_, _ = w.Write([]byte(`[{"id":"local-1","title":"Local","state":"open","reward":100}]`))
+		case "/api/status":
+			_, _ = w.Write([]byte(`{"peer_id":"local-peer"}`))
+		case "/api/AgentNet/tasks/publish":
+			if r.Method != http.MethodPost {
+				t.Fatalf("publish method = %s", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/AgentNet/tasks/browse":
+			if r.Method != http.MethodGet {
+				t.Fatalf("browse method = %s", r.Method)
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"tasks":[{"id":"remote-1","title":"Remote","status":"open","reward":120,"peer_id":"remote-peer"}]}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	c := NewAgentNetClient()
+	c.baseURL = server.URL
+
+	if err := c.PublishTasksToHub(server.URL); err != nil {
+		t.Fatalf("PublishTasksToHub failed: %v", err)
+	}
+	tasks, err := c.BrowseHubTasks(server.URL)
+	if err != nil {
+		t.Fatalf("BrowseHubTasks failed: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].ID != "remote-1" {
+		t.Fatalf("tasks = %#v", tasks)
+	}
+}
+
+func TestAgentNetAutoPickerPollReturnsImmediateStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/status" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	client := NewAgentNetClient()
+	client.baseURL = server.URL
+	picker := NewAgentNetAutoTaskPicker(client, "")
+	picker.SetExecutor(func(_, _ string) (string, error) { return "", nil })
+
+	status := picker.pollAndPickTask()
+	if status["last_poll_status"] != "offline" {
+		t.Fatalf("status = %#v, want offline", status)
+	}
+}
+
+func TestAgentNetAutoPickerStatusReportsPollResultAndErrorChanges(t *testing.T) {
+	picker := NewAgentNetAutoTaskPicker(NewAgentNetClient(), "")
+	changes := 0
+	picker.SetOnChange(func() { changes++ })
+
+	picker.setPollResult("no_tasks", 0)
+	status := picker.GetStatus()
+	if status["last_poll_status"] != "no_tasks" || status["last_discovered_count"] != 0 {
+		t.Fatalf("status = %#v", status)
+	}
+	if changes != 1 {
+		t.Fatalf("changes after poll result = %d, want 1", changes)
+	}
+
+	picker.setError("boom")
+	status = picker.GetStatus()
+	if status["last_poll_status"] != "error" || status["last_error"] != "boom" {
+		t.Fatalf("status after error = %#v", status)
+	}
+	if changes != 2 {
+		t.Fatalf("changes after error = %d, want 2", changes)
+	}
+}

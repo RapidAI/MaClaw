@@ -435,6 +435,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		invitationService,
 		st.EmailInvites,
 		st.System,
+		provider.Write,
 		promptCache,
 		st.AdminAudit,
 		st.FailureLogs,

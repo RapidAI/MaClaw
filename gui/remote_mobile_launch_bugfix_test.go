@@ -106,7 +106,7 @@ func TestBugCondition_NonDesktopSourceBlockedByRemoteEnabled(t *testing.T) {
 				// On UNFIXED code this will fail because the check is unconditional.
 				if err != nil && strings.Contains(err.Error(), "remote mode is disabled") {
 					t.Errorf("StartRemoteSessionForProject(tool=%q, source=%q) returned "+
-						"'remote mode is disabled' �?non-desktop sources should bypass "+
+						"'remote mode is disabled' - non-desktop sources should bypass "+
 						"RemoteEnabled check. Got error: %v", tool, source, err)
 				}
 			})

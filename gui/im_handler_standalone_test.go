@@ -212,7 +212,9 @@ func TestHandleIMMessage_PlainTextReplyRestoresBoundQuestionContext(t *testing.T
 	var requestBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		requestBody = string(body)
+		if !strings.Contains(string(body), "pending question") && !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"deploying recommended model"},"finish_reason":"stop"}]}`))
 	}))
@@ -236,6 +238,9 @@ func TestHandleIMMessage_PlainTextReplyRestoresBoundQuestionContext(t *testing.T
 		History:   cloneConversationEntries(boundHistory),
 		Timestamp: time.Now(),
 	})
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) {
+		return question == "Which model should I deploy? I recommend qwen-server-model." && answer != "", nil
+	}
 	h.memory.Save(userID, []agent.ConversationEntry{
 		{Role: "user", Content: "omniroute stale current task"},
 		{Role: "assistant", Content: "continuing OmniRoute update"},
@@ -253,24 +258,109 @@ func TestHandleIMMessage_PlainTextReplyRestoresBoundQuestionContext(t *testing.T
 	}
 }
 
-func TestPendingUserReplyPromptDetection_TracksChoiceQuestionsOnly(t *testing.T) {
-	if !looksLikePendingUserReplyPrompt("Which model should I deploy? I recommend qwen-server-model.") {
-		t.Fatal("expected model selection question to create pending reply state")
+func TestHandleIMMessage_PlainTextStartAnswerKeepsPreviousTaskContext(t *testing.T) {
+	var requestBody string
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestCount++
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "pending question") {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]}`))
+			return
+		}
+		if !strings.Contains(string(body), "Assistant message:") {
+			requestBody = string(body)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"starting implementation"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-start-answer"
+	boundHistory := []agent.ConversationEntry{
+		{Role: "user", Content: "flight-game-task: create a C++ graphical airplane shooting game in D:\\workprj\\test2"},
+		{Role: "assistant", Content: "I will use C++ with a graphical UI. If this is okay, tell me to start."},
 	}
-	if !looksLikePendingUserReplyPrompt("\u8bf7\u786e\u8ba4\u8981\u90e8\u7f72\u54ea\u4e2a\u6a21\u578b\uff0c\u76f4\u63a5\u56de\u590d\u63a8\u8350\u65b9\u6848\u4e5f\u53ef\u4ee5\u3002") {
-		t.Fatal("expected Chinese deployment confirmation question to create pending reply state")
+	h.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question:  "I will use C++ with a graphical UI. If this is okay, tell me to start.",
+		History:   cloneConversationEntries(boundHistory),
+		Timestamp: time.Now(),
+	})
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "\u5f00\u5de5"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
 	}
-	if looksLikePendingUserReplyPrompt("\u4efb\u52a1\u5df2\u7ecf\u5b8c\u6210\uff0c\u6709\u9700\u8981\u968f\u65f6\u8bf4\u3002") {
-		t.Fatal("ordinary closing text must not create pending reply state")
+	if requestCount < 2 {
+		t.Fatalf("expected pending-answer classifier plus agent request, got %d request(s)", requestCount)
 	}
-	if looksLikePendingUserReplyPrompt("I can confirm the service is healthy.") {
-		t.Fatal("bare confirm statement must not create pending reply state")
+	if !strings.Contains(requestBody, "flight-game-task") {
+		t.Fatalf("expected previous airplane game context in LLM request, got %s", requestBody)
 	}
-	if !likelyResponseToPendingUserReply("\u6309\u4f60\u7684\u5efa\u8bae\u90e8\u7f72") {
-		t.Fatal("expected explicit recommendation acceptance to continue pending reply")
+	if strings.Contains(requestBody, "今天要做什么项目") {
+		t.Fatalf("assistant lost task context and asked for a new project: %s", requestBody)
 	}
-	if likelyResponseToPendingUserReply("\u90e8\u7f72 nginx \u5230\u670d\u52a1\u5668") {
-		t.Fatal("fresh deployment task must not be treated as a pending reply")
+}
+
+func TestPendingUserReplyIntentClassifiersDriveBinding(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.pendingReplyPromptClassifier = func(assistantText string) (bool, error) {
+		return strings.Contains(assistantText, "deploy"), nil
+	}
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) {
+		return strings.Contains(question, "deploy") && strings.Contains(answer, "recommendation"), nil
+	}
+
+	if !h.classifyPendingUserReplyPrompt("Which model should I deploy? I recommend qwen-server-model.") {
+		t.Fatal("expected classifier-approved assistant question to create pending reply state")
+	}
+	if h.classifyPendingUserReplyPrompt("Task completed. Let me know if you need anything else.") {
+		t.Fatal("classifier-rejected closing text must not create pending reply state")
+	}
+	if ok, classified := h.classifyPendingUserReplyAnswer("Which model should I deploy?", "use your recommendation"); !classified || !ok {
+		t.Fatal("expected classifier-approved answer to continue pending reply")
+	}
+	if ok, classified := h.classifyPendingUserReplyAnswer("Which model should I deploy?", "deploy nginx to the server"); !classified || ok {
+		t.Fatal("classifier-rejected fresh task must not be treated as a pending reply")
+	}
+}
+
+func TestPendingUserReplyAnswerAmbiguousIntentKeepsPending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"probably answering"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	h := NewIMMessageHandlerStandalone(StandaloneConfig{
+		LLMConfigFunc: func() corelib.MaclawLLMConfig {
+			return corelib.MaclawLLMConfig{URL: server.URL, Model: "test-model", Protocol: "openai"}
+		},
+		MaxIterationsFunc: func() int { return 1 },
+	})
+	defer h.memory.Stop()
+
+	userID := "u-pending-ambiguous"
+	pending := &pendingUserReplyState{
+		Question:  "Which option should I use?",
+		History:   []agent.ConversationEntry{{Role: "user", Content: "choose option"}},
+		Timestamp: time.Now(),
+	}
+	h.pendingUserReply.Store(userID, pending)
+
+	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "go"})
+	if resp == nil || resp.Error != "" {
+		t.Fatalf("expected successful response, got %+v", resp)
+	}
+	if _, ok := h.pendingUserReply.Load(userID); !ok {
+		t.Fatal("ambiguous pending-answer classification should keep pending context")
 	}
 }
 
@@ -298,6 +388,7 @@ func TestHandleIMMessage_PlainTextReplyRestoreSignalsClearUI(t *testing.T) {
 		},
 		Timestamp: time.Now(),
 	})
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) { return true, nil }
 	h.memory.Save(userID, []agent.ConversationEntry{{Role: "user", Content: "stale task"}})
 
 	resp := h.HandleIMMessage(IMUserMessage{UserID: userID, Platform: "desktop", Text: "go ahead"})
@@ -336,6 +427,7 @@ func TestHandleIMMessage_PendingTextReplyDoesNotCaptureFreshDeploymentTask(t *te
 		},
 		Timestamp: time.Now(),
 	})
+	h.pendingReplyAnswerClassifier = func(question, answer string) (bool, error) { return false, nil }
 	h.memory.Save(userID, []agent.ConversationEntry{
 		{Role: "user", Content: "current task context"},
 		{Role: "assistant", Content: "ready"},

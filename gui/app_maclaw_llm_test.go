@@ -617,6 +617,35 @@ func TestSaveMaclawLLMProviders_SyncsLegacyTimeout(t *testing.T) {
 	}
 }
 
+func TestSaveMaclawLLMProviders_PersistsHubServiceFlag(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	providers := []corelib.MaclawLLMProvider{{
+		Name:     hubServiceProviderName,
+		URL:      "https://hub.example.com/api/llm/v1",
+		Key:      "viewer-token",
+		Model:    hubServiceAutoModel,
+		Protocol: "openai",
+	}}
+	if err := app.SaveMaclawLLMProviders(providers, hubServiceProviderName); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	provider, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("saved providers missing hub provider: %+v", saved.MaclawLLMProviders)
+	}
+	if !provider.IsHubService {
+		t.Fatal("saved provider IsHubService = false, want true")
+	}
+}
 func TestGetMaclawLLMConfig_ReturnsTimeout(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

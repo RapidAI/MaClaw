@@ -350,7 +350,7 @@ func isNoiseLine(s string) bool {
 // display).  When IsScreenRefresh is true the caller should *replace*
 // the accumulated RawOutputLines instead of appending.
 type rawChunkResult struct {
-	Lines          []string
+	Lines           []string
 	IsScreenRefresh bool
 }
 
@@ -377,7 +377,7 @@ func rawChunkLines(chunk []byte) rawChunkResult {
 	raw := string(chunk)
 	// Sanitize invalid UTF-8 sequences that ConPTY on Windows may produce
 	// (e.g. emoji bytes truncated by GBK code page). Replace with empty
-	// string so garbled replacement characters (�) don't leak to the UI.
+	// string so garbled replacement characters (U+FFFD) don't leak to the UI.
 	if !utf8.ValidString(raw) {
 		raw = strings.ToValidUTF8(raw, "")
 	}

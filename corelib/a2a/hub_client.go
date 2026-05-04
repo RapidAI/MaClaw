@@ -137,9 +137,28 @@ func (c *HubClient) PublishExpertProfile(ctx context.Context, profile GroupProfi
 }
 
 func (c *HubClient) ListDiscussions(ctx context.Context, role string) ([]HubDiscussionSummary, error) {
-	path := "/api/a2a/discussions/mine"
+	return c.listDiscussions(ctx, "", role)
+}
+
+func (c *HubClient) ListDiscussionsForAgent(ctx context.Context, agentID, role string) ([]HubDiscussionSummary, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil, fmt.Errorf("agent id is required")
+	}
+	return c.listDiscussions(ctx, agentID, role)
+}
+
+func (c *HubClient) listDiscussions(ctx context.Context, agentID, role string) ([]HubDiscussionSummary, error) {
+	values := url.Values{}
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		values.Set("participant_id", agentID)
+	}
 	if role = strings.TrimSpace(role); role != "" {
-		path += "?role=" + url.QueryEscape(role)
+		values.Set("role", role)
+	}
+	path := "/api/a2a/discussions/mine"
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
 	}
 	var out DiscussionListResponse
 	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {

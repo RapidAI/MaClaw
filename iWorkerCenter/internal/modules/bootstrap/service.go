@@ -436,6 +436,9 @@ func firstWaveInputData(plan Plan, task FirstWaveTask) string {
 	payload := map[string]any{
 		"source":               "enterprise_bootstrap",
 		"company_name":         plan.CompanyName,
+		"legal_person":         plan.LegalPerson,
+		"company_address":      plan.CompanyAddress,
+		"contact_email":        plan.ContactEmail,
 		"business_summary":     plan.BusinessSummary,
 		"priority":             plan.Priority,
 		"task_id":              task.ID,
@@ -461,6 +464,9 @@ func NormalizePlan(tenantID string, input Plan) Plan {
 	if plan.CompanyName == "" {
 		plan.CompanyName = "New customer company"
 	}
+	plan.LegalPerson = strings.TrimSpace(plan.LegalPerson)
+	plan.CompanyAddress = strings.TrimSpace(plan.CompanyAddress)
+	plan.ContactEmail = strings.TrimSpace(plan.ContactEmail)
 	plan.BusinessSummary = strings.TrimSpace(plan.BusinessSummary)
 	if plan.BusinessSummary == "" {
 		plan.BusinessSummary = "To be collected during executive intake."
@@ -493,6 +499,17 @@ func ValidatePlan(plan Plan) []ValidationIssue {
 	var issues []ValidationIssue
 	if strings.TrimSpace(plan.CompanyName) == "" || plan.CompanyName == "New customer company" {
 		issues = append(issues, ValidationIssue{Field: "company_name", Level: "warning", Message: "company name should be confirmed before production launch"})
+	}
+	if strings.TrimSpace(plan.LegalPerson) == "" {
+		issues = append(issues, ValidationIssue{Field: "legal_person", Level: "warning", Message: "legal person should be confirmed before production launch"})
+	}
+	if strings.TrimSpace(plan.CompanyAddress) == "" {
+		issues = append(issues, ValidationIssue{Field: "company_address", Level: "warning", Message: "company address should be confirmed before production launch"})
+	}
+	if strings.TrimSpace(plan.ContactEmail) == "" {
+		issues = append(issues, ValidationIssue{Field: "contact_email", Level: "warning", Message: "contact email should be confirmed before production launch"})
+	} else if !strings.Contains(plan.ContactEmail, "@") {
+		issues = append(issues, ValidationIssue{Field: "contact_email", Level: "error", Message: "contact email must be a valid email address"})
 	}
 	if len(plan.VirtualDepartments) < 3 {
 		issues = append(issues, ValidationIssue{Field: "virtual_departments", Level: "error", Message: "at least three virtual departments are recommended"})

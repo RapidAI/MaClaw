@@ -64,6 +64,7 @@ const (
 	mfString     = 0x00000000
 	tpmReturncmd = 0x0100
 
+	menuIdHide = 1001
 	menuIdQuit = 1002
 
 	// Timer ID for halo animation
@@ -1168,12 +1169,21 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if hMenu == 0 {
 			break
 		}
+		hideText, _ := syscall.UTF16PtrFromString("\u9690\u85cf")
 		quitText, _ := syscall.UTF16PtrFromString("\u9000\u51fa")
+		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdHide), uintptr(unsafe.Pointer(hideText)))
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdQuit), uintptr(unsafe.Pointer(quitText)))
 		procSetForegroundWindow.Call(hwnd)
 		cmd, _, _ := procTrackPopupMenu.Call(hMenu, uintptr(tpmReturncmd), uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
 		procDestroyMenu.Call(hMenu)
-		if cmd == menuIdQuit {
+		switch cmd {
+		case menuIdHide:
+			go func() {
+				if w.app != nil {
+					w.app.DisablePetFromMenu()
+				}
+			}()
+		case menuIdQuit:
 			go func() {
 				if w.app != nil {
 					w.app.QuitApp()

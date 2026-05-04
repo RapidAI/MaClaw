@@ -18,10 +18,42 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
+
+var tuiQuotedPathPattern = regexp.MustCompile(`"([^"]+)"|'([^']+)'|“([^”]+)”|‘([^’]+)’`)
+
+type tuiWorkflowLLMCaller struct {
+	app    *TUIApp
+	client *http.Client
+}
+
+func (c *tuiWorkflowLLMCaller) DoSimpleLLMRequest(messages []interface{}, timeout time.Duration) (string, error) {
+	if c == nil || c.app == nil {
+		return "", fmt.Errorf("TUI workflow LLM caller is not initialized")
+	}
+	client := c.client
+	if client == nil {
+		client = &http.Client{Timeout: timeout + 5*time.Second}
+	}
+	resp, err := agent.DoSimpleLLMRequest(c.app.llmConfig, messages, client, timeout)
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", nil
+	}
+	return resp.Content, nil
+}
 
 // TUIWorkflowCallbacks implements workflow.EngineCallbacks for the TUI.
 // In TUI mode, events are logged but not emitted to a frontend — the
@@ -55,38 +87,34 @@ func (c *TUIWorkflowCallbacks) EmitGateResult(userID, phaseID string, result *wo
 // to survive restarts (the conversation history does, via ConversationMemory).
 type tuiWorkflowStore struct{}
 
-func (s *tuiWorkflowStore) SaveWorkflowState(state *workflow.WorkflowState) error   { return nil }
+func (s *tuiWorkflowStore) SaveWorkflowState(state *workflow.WorkflowState) error { return nil }
 func (s *tuiWorkflowStore) LoadWorkflowState(userID string) (*workflow.WorkflowState, error) {
 	return nil, nil
 }
 func (s *tuiWorkflowStore) DeleteWorkflowState(id string) error                     { return nil }
-func (s *tuiWorkflowStore) ListActiveWorkflows() ([]*workflow.WorkflowState, error)  { return nil, nil }
+func (s *tuiWorkflowStore) ListActiveWorkflows() ([]*workflow.WorkflowState, error) { return nil, nil }
 func (s *tuiWorkflowStore) SaveUnderstandingSession(session *workflow.UnderstandingSession) error {
 	return nil
 }
 func (s *tuiWorkflowStore) LoadUnderstandingSession(userID string) (*workflow.UnderstandingSession, error) {
 	return nil, nil
 }
-func (s *tuiWorkflowStore) DeleteUnderstandingSession(userID string) error           { return nil }
-func (s *tuiWorkflowStore) CleanupExpired(olderThan time.Duration) error             { return nil }
+func (s *tuiWorkflowStore) DeleteUnderstandingSession(userID string) error { return nil }
+func (s *tuiWorkflowStore) CleanupExpired(olderThan time.Duration) error   { return nil }
 
 // initWorkflowEngine creates and wires the workflow engine for the TUI.
-// The engine uses the same registry (19 templates) as the GUI.
-// Intent understanding is initialized without an LLM caller — the TUI
-// relies on QuickFilter's keyword/BM25 layers for workflow detection.
-// When those layers can't determine the workflow type, the message falls
-// through to the normal agent loop (no multi-round LLM clarification).
+// The engine uses the same registry (19 templates) as the GUI. New workflow
+// starts go through IntentUnderstandingManager, not template keyword matching.
 func (app *TUIApp) initWorkflowEngine() *workflow.WorkflowEngine {
 	registry := workflow.NewWorkflowRegistry()
 	store := &tuiWorkflowStore{}
 	callbacks := &TUIWorkflowCallbacks{app: app}
-
-	// Pass nil for IntentUnderstandingManager — the TUI doesn't have a
-	// lightweight LLM caller for multi-round intent clarification.
-	// QuickFilter's Layer 1 (keywords) and Layer 1.5 (registry matching)
-	// handle most cases. Layer 2 (BM25) provides semantic fallback.
-	// Messages that need Layer 3 (LLM) fall through to the normal agent loop.
-	engine := workflow.NewWorkflowEngine(registry, nil, store, callbacks)
+	llmCaller := &tuiWorkflowLLMCaller{
+		app:    app,
+		client: &http.Client{},
+	}
+	understanding := workflow.NewIntentUnderstandingManager(store, llmCaller, registry)
+	engine := workflow.NewWorkflowEngine(registry, understanding, store, callbacks)
 
 	return engine
 }
@@ -124,10 +152,14 @@ func (app *TUIApp) handleWorkflowInterception(text string) string {
 	case workflow.FilterActiveWorkflow:
 		return app.handleActiveWorkflowTUI(text)
 
+	case workflow.FilterActiveUnderstanding:
+		return app.handleActiveUnderstandingTUI(text)
+
 	case workflow.FilterNeedsUnderstanding:
-		// Without an LLM caller, we can't do multi-round intent clarification.
-		// Try to match a workflow template directly from keywords/BM25.
-		return app.tryDirectWorkflowStart(text)
+		if shouldBypassTUIWorkflowUnderstanding(text) {
+			return ""
+		}
+		return app.handleNeedsUnderstandingTUI(text)
 
 	case workflow.FilterSmallTalk, workflow.FilterSimpleDirective:
 		return "" // pass through to normal agent loop
@@ -138,6 +170,7 @@ func (app *TUIApp) handleWorkflowInterception(text string) string {
 
 func (app *TUIApp) handleActiveWorkflowTUI(text string) string {
 	userID := "tui-user"
+	text = app.expandWorkflowAttachmentInput(userID, text)
 	resp, err := app.workflowEngine.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[TUI-workflow] HandleInput error: %v", err)
@@ -180,50 +213,79 @@ func (app *TUIApp) handleActiveWorkflowTUI(text string) string {
 	return "" // fall through to agent loop with stashed phase prompt
 }
 
-// tryDirectWorkflowStart attempts to start a workflow directly from
-// keyword/BM25 matching, without multi-round LLM clarification.
-func (app *TUIApp) tryDirectWorkflowStart(text string) string {
+func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 	userID := "tui-user"
-	registry := app.workflowEngine.GetRegistry()
-	if registry == nil {
+	understanding := app.workflowEngine.GetUnderstanding()
+	if understanding == nil {
 		return ""
 	}
 
-	// Try strong keyword match first.
-	if wfType, matched := registry.MatchTemplateByStrongKeyword(text); matched {
-		return app.startWorkflowDirect(userID, text, wfType)
+	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
+	if err != nil {
+		log.Printf("[TUI-workflow] understanding HandleInput error: %v", err)
+		return "我收到了你的补充，但刚才内部理解步骤临时失败了。请再发一次补充，或者直接说“开工”，我会继续当前任务。"
 	}
-
-	// Try BM25 semantic match.
-	if wfType := registry.BestTemplateType(text); wfType != "" {
-		return app.startWorkflowDirect(userID, text, wfType)
+	if cancelled {
+		return "已取消。"
 	}
-
-	// Can't determine workflow type — fall through to normal agent loop.
-	return ""
+	if ready && intent != nil {
+		if intent.Category == workflow.WorkflowNone || intent.Category == "" {
+			return ""
+		}
+		state, err := app.workflowEngine.StartWorkflow(userID, *intent)
+		if err != nil {
+			log.Printf("[TUI-workflow] StartWorkflow error: %v", err)
+			return fmt.Sprintf("启动工作流失败: %v", err)
+		}
+		return app.buildWorkflowStartOverview(userID, state, reply)
+	}
+	return reply
 }
 
-func (app *TUIApp) startWorkflowDirect(userID, text string, wfType workflow.WorkflowType) string {
-	intent := workflow.StructuredIntent{
-		Category:   wfType,
-		Summary:    text,
-		Goals:      []string{text},
-		Confidence: 0.8,
+func (app *TUIApp) handleNeedsUnderstandingTUI(text string) string {
+	userID := "tui-user"
+	if strings.TrimSpace(app.llmConfig.URL) == "" || strings.TrimSpace(app.llmConfig.Model) == "" {
+		return ""
 	}
-	state, err := app.workflowEngine.StartWorkflow(userID, intent)
-	if err != nil {
-		log.Printf("[TUI-workflow] StartWorkflow error: %v", err)
+	understanding := app.workflowEngine.GetUnderstanding()
+	if understanding == nil {
 		return ""
 	}
 
+	result, err := understanding.Start(userID, text)
+	if err != nil {
+		log.Printf("[TUI-workflow] understanding Start error: %v", err)
+		return ""
+	}
+	if result == nil || result.Rejected {
+		return ""
+	}
+	return result.Reply
+}
+
+func shouldBypassTUIWorkflowUnderstanding(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return trimmed == "" || utf8.RuneCountInString(trimmed) <= 1
+}
+
+func (app *TUIApp) buildWorkflowStartOverview(userID string, state *workflow.WorkflowState, prefix string) string {
 	overview := fmt.Sprintf("🚀 工作流已启动：%s\n📋 当前阶段：%s", state.Type, state.CurrentPhase)
 	if req := app.workflowEngine.GetInputRequirement(userID); req != nil {
 		overview += "\n\n📎 " + req.Description
+		if len(req.FileTypes) > 0 {
+			overview += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
+		}
+		if req.AcceptText {
+			overview += "\n\nTUI 中请直接粘贴/拖入本地文件路径，或把文档正文粘贴进来。路径里有空格时请用引号包起来。"
+		}
+	}
+	if strings.TrimSpace(prefix) != "" {
+		overview = strings.TrimSpace(prefix) + "\n\n" + overview
 	}
 
 	// The first phase needs the agent loop to generate content.
 	// Stash the phase prompt.
-	tmpl := app.workflowEngine.GetRegistry().Match(wfType)
+	tmpl := app.workflowEngine.GetRegistry().Match(state.Type)
 	if tmpl != nil && len(tmpl.Phases) > 0 {
 		phasePrompt := workflow.BuildPhaseSystemPrompt(state, &tmpl.Phases[0], app.workflowEngine.GetRegistry())
 		if phasePrompt != "" {
@@ -235,6 +297,61 @@ func (app *TUIApp) startWorkflowDirect(userID, text string, wfType workflow.Work
 	}
 
 	return overview
+}
+
+// expandWorkflowAttachmentInput turns a pasted/dropped local path into explicit
+// workflow context. TUI has no file-picker, so the user's attachment gesture is
+// a text path in the chat input.
+func (app *TUIApp) expandWorkflowAttachmentInput(userID, text string) string {
+	if app == nil || app.workflowEngine == nil || app.workflowEngine.GetInputRequirement(userID) == nil {
+		return text
+	}
+	path := firstExistingWorkflowPath(text)
+	if path == "" {
+		return text
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	return fmt.Sprintf("用户已在 TUI 中提供本地文件路径作为附件：%s\n\n请优先使用 read_file 或可用的文档/办公工具读取该文件内容，再按当前工作流阶段进行分析。用户原始输入：%s", abs, text)
+}
+
+func firstExistingWorkflowPath(text string) string {
+	for _, candidate := range workflowPathCandidates(text) {
+		candidate = strings.TrimSpace(candidate)
+		candidate = strings.Trim(candidate, "\"'“”‘’")
+		if candidate == "" {
+			continue
+		}
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func workflowPathCandidates(text string) []string {
+	var out []string
+	for _, m := range tuiQuotedPathPattern.FindAllStringSubmatch(text, -1) {
+		for i := 1; i < len(m); i++ {
+			if strings.TrimSpace(m[i]) != "" {
+				out = append(out, m[i])
+			}
+		}
+	}
+	fields := strings.Fields(text)
+	for i := range fields {
+		if looksLikePath(fields[i]) {
+			out = append(out, strings.TrimRight(fields[i], ",，。;；"))
+		}
+	}
+	return out
+}
+
+func looksLikePath(s string) bool {
+	s = strings.Trim(s, "\"'“”‘’")
+	return strings.Contains(s, `:\`) || strings.Contains(s, `:/`) || strings.HasPrefix(s, `\\`) || strings.HasPrefix(s, "/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../")
 }
 
 // truncateTUI truncates a string for logging.
