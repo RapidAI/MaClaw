@@ -1104,6 +1104,11 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
+      - name: Set up Node.js 22 for Cloudflare R2
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Upload release assets to Cloudflare R2
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.R2_API_TOKEN }}
@@ -1124,7 +1129,10 @@ jobs:
             echo "Cloudflare R2 secrets are not configured; skipping R2 upload."
             exit 0
           fi
+          node --version
+          npm --version
           npm install -g wrangler@latest
+          wrangler --version
           echo "Uploading release assets to Cloudflare R2 bucket=$R2_BUCKET"
           printf '%s\n' "$R2_RELEASE_ONLY_ASSETS" | while IFS= read -r name; do
             [ -n "$name" ] || continue
