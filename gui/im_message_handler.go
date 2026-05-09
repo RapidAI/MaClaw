@@ -5416,7 +5416,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		loopCtx.JobID = job.JobID
 		loopCtx.RunID = run.RunID
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 璇锋眰宸叉帴鏀?, truncateTraceText(msg.Text, 180), "", "")
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI request accepted", truncateTraceText(msg.Text, 180), "", "")
 	}
 	// Wire the bgManager's statusC so the chat loop can drain background events.
 	if h.bgManager != nil && loopCtx.StatusC == nil {
@@ -5655,14 +5655,14 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 
 	var b strings.Builder
 	if len(killed) > 0 {
-		b.WriteString(fmt.Sprintf("宸查€€鍑虹紪绋嬫ā寮忋€傜粓姝簡 %d 涓細璇? %s", len(killed), strings.Join(killed, ", ")))
+		b.WriteString(fmt.Sprintf("Exited coding mode. Stopped %d session(s): %s", len(killed), strings.Join(killed, ", ")))
 	} else {
-		b.WriteString("宸查€€鍑虹紪绋嬫ā寮忋€?)
+		b.WriteString("Exited coding mode.")
 	}
 	if failCount > 0 {
-		b.WriteString(fmt.Sprintf("\n鈿狅笍 %d 涓細璇濈粓姝㈠け璐ワ紝鍙兘闇€瑕佹墜鍔ㄥ鐞嗐€?, failCount))
+		b.WriteString(fmt.Sprintf("\n%d session(s) failed to stop and may need manual handling.", failCount))
 	}
-	b.WriteString("\n瀵硅瘽宸查噸缃紝鍚庣画娑堟伅灏嗘甯稿璇濄€?)
+	b.WriteString("\nConversation reset. Future messages will continue normally.")
 	return &IMAgentResponse{Text: b.String(), ClearUI: true}
 }
 

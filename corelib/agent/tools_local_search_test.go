@@ -1314,6 +1314,43 @@ func TestToolRipgrepLocalIndexIncludesModifiedFileWithOlderModTime(t *testing.T)
 	}
 }
 
+func TestToolRipgrepLocalIndexSkipsDeletedIndexedFiles(t *testing.T) {
+	dir := t.TempDir()
+	deleted := filepath.Join(dir, "deleted.go")
+	kept := filepath.Join(dir, "kept.go")
+	for _, path := range []string{deleted, kept} {
+		if err := os.WriteFile(path, []byte("package main\nfunc TargetDeletedOverlay() {}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "TargetDeletedOverlay",
+		"output_mode": "files_with_matches",
+	}); !strings.Contains(out, deleted) || !strings.Contains(out, kept) {
+		t.Fatalf("initial indexed search missing files:\n%s", out)
+	}
+
+	if err := os.Remove(deleted); err != nil {
+		t.Fatal(err)
+	}
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "TargetDeletedOverlay",
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	if !strings.Contains(out, kept) {
+		t.Fatalf("indexed search missing kept file after delete:\n%s", out)
+	}
+	if strings.Contains(out, deleted) {
+		t.Fatalf("indexed search returned deleted file:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("deleted-file search should still use local index:\n%s", out)
+	}
+}
+
 func TestToolRipgrepRebuildsStaleIndexWhenDirtyRatioIsHigh(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "first.go")
