@@ -59,6 +59,10 @@ RapidSpeech.cpp/models/
 # AI coding tool temp files
 .aicoder/
 .claude/
+.maclaw/
+.tmp-*/
+**/.tmp-*/
+tmp_*.jsonl
 
 # Deploy HA artifacts and logs
 build/deploy-ha/*.tar.gz

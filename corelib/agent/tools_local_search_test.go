@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1314,6 +1315,49 @@ func TestToolRipgrepLocalIndexIncludesModifiedFileWithOlderModTime(t *testing.T)
 	}
 }
 
+func TestToolRipgrepLocalIndexDetectsSameMetadataContentChange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	initial := []byte("package main\nfunc InitialSameMeta() {}\n")
+	updated := []byte("package main\nfunc UpdatedSameMeta() {}\n")
+	if len(initial) != len(updated) {
+		t.Fatalf("test fixture lengths differ: initial=%d updated=%d", len(initial), len(updated))
+	}
+	if err := os.WriteFile(path, initial, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	futureTime := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, futureTime, futureTime); err != nil {
+		t.Fatal(err)
+	}
+	if out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "InitialSameMeta",
+		"output_mode": "files_with_matches",
+	}); !strings.Contains(out, path) {
+		t.Fatalf("initial indexed search missing file:\n%s", out)
+	}
+
+	if err := os.WriteFile(path, updated, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, futureTime, futureTime); err != nil {
+		t.Fatal(err)
+	}
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "UpdatedSameMeta",
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	if !strings.Contains(out, path) {
+		t.Fatalf("indexed search missed same-metadata content change:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("same-metadata content change should still use index overlay:\n%s", out)
+	}
+}
+
 func TestToolRipgrepLocalIndexSkipsDeletedIndexedFiles(t *testing.T) {
 	dir := t.TempDir()
 	deleted := filepath.Join(dir, "deleted.go")
@@ -1492,6 +1536,36 @@ func TestToolRipgrepLocalIndexDoesNotRequireOptionalGroup(t *testing.T) {
 	})
 	if !strings.Contains(out, path) {
 		t.Fatalf("indexed search required optional group:\n%s", out)
+	}
+}
+
+func TestToolRipgrepLocalIndexNarrowsCandidateSet(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 40; i++ {
+		path := filepath.Join(dir, "pkg", fmt.Sprintf("file_%02d.go", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := "package pkg\nfunc CommonSymbol() {}\n"
+		if i == 17 {
+			content += "func RareNeedleForCandidateNarrowing() {}\n"
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "RareNeedleForCandidateNarrowing",
+		"glob":        "**/*.go",
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	for _, want := range []string{"mode=indexed", "indexed_files=40", "candidates=1", "searched=1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("indexed search did not narrow candidates with %q:\n%s", want, out)
+		}
 	}
 }
 

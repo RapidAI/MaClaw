@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,8 +40,9 @@ type localSearchIndex struct {
 }
 
 type localSearchFileMeta struct {
-	size    int64
-	modTime time.Time
+	size      int64
+	modTime   time.Time
+	signature uint64
 }
 
 type searchCandidateStats struct {
@@ -268,7 +270,7 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 		id := len(idx.files)
 		idx.files = append(idx.files, path)
 		idx.fileSet[path] = true
-		idx.fileMeta[path] = localSearchFileMeta{size: info.Size(), modTime: info.ModTime()}
+		idx.fileMeta[path] = localSearchFileMeta{size: info.Size(), modTime: info.ModTime(), signature: searchContentSignature(data)}
 		for trigram := range contentTrigramsBytes(data) {
 			idx.postings[trigram] = append(idx.postings[trigram], id)
 		}
@@ -379,7 +381,23 @@ func (idx *localSearchIndex) fileMetadataUnchanged(path string, info os.FileInfo
 	if !ok {
 		return info.ModTime().Before(idx.builtAt)
 	}
-	return meta.size == info.Size() && meta.modTime.Equal(info.ModTime())
+	if meta.size != info.Size() || !meta.modTime.Equal(info.ModTime()) {
+		return false
+	}
+	if meta.modTime.Before(idx.builtAt) {
+		return true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || int64(len(data)) != meta.size {
+		return false
+	}
+	return meta.signature == searchContentSignature(data)
+}
+
+func searchContentSignature(data []byte) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write(data)
+	return h.Sum64()
 }
 
 func literalSearchTerms(pattern string) []string {

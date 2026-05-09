@@ -409,6 +409,32 @@ describe('workflow state document collection', () => {
         expect(result.current.state.gateResults.get('tasks')?.items).toEqual([]);
     });
 
+    it('opens document preview without letting blank phase ids reset the selected document', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Requirements',
+            });
+        });
+
+        expect(result.current.state.latestDocumentPhaseID).toBe('requirements');
+
+        act(() => {
+            result.current.openDocPreview('   ');
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
+        expect(result.current.state.latestDocumentPhaseID).toBe('requirements');
+
+        act(() => {
+            result.current.openDocPreview('tech_design');
+        });
+
+        expect(result.current.state.latestDocumentPhaseID).toBe('design');
+    });
+
     it('keeps the latest transient workflow text for a full timeout window', () => {
         vi.useFakeTimers();
         const { result, unmount } = renderHook(() => useWorkflowState());

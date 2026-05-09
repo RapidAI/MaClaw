@@ -357,7 +357,8 @@ export function useWorkflowState() {
     const openDocPreview = useCallback((phaseID?: string) => {
         userClosedRef.current = false;
         setSplitMode(true);
-        if (phaseID) setLatestDocumentPhaseID(normalizeWorkflowPhaseID(phaseID));
+        const normalizedPhaseID = normalizeWorkflowPhaseID(phaseID);
+        if (normalizedPhaseID) setLatestDocumentPhaseID(normalizedPhaseID);
     }, []);
 
     const closeDocPreview = useCallback(() => {

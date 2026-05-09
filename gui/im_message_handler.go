@@ -5876,7 +5876,7 @@ func containsDataStatistic(line string) bool {
 		return false
 	}
 	// Must contain a quantity word
-	quantityWords := []string{"绡?, "鏉?, "涓?, "浠?, "椤?, "寮?, "椤?}
+	quantityWords := []string{"paper", "item", "file", "record", "result"}
 	hasQuantity := false
 	for _, w := range quantityWords {
 		if strings.Contains(line, w) {
@@ -6249,7 +6249,7 @@ func classifyTrialOutcome(result string) string {
 	failureHints := []string{
 		"error", "failed", "not found", "timeout", "timed out", "denied", "invalid",
 		"panic", "exception", "unable", "cannot", "can't", "permission", "no such file",
-		"涓嶅瓨鍦?, "澶辫触", "閿欒", "瓒呮椂", "鎷掔粷", "鏃犳潈闄?, "鏈壘鍒?, "寮傚父",
+		"澶辫触", "閿欒", "瓒呮椂", "鎷掔粷", "寮傚父",
 	}
 	for _, hint := range failureHints {
 		if strings.Contains(lower, hint) {
@@ -6258,7 +6258,7 @@ func classifyTrialOutcome(result string) string {
 	}
 	successHints := []string{
 		"success", "completed", "done", "saved", "created", "updated", "ok", "ready",
-		"鎴愬姛", "宸插畬鎴?, "瀹屾垚", "宸蹭繚瀛?, "宸插垱寤?, "宸叉洿鏂?, "灏辩华",
+		"鎴愬姛", "瀹屾垚",
 	}
 	for _, hint := range successHints {
 		if strings.Contains(lower, hint) {
@@ -6304,13 +6304,13 @@ func classifyToolOutcome(toolName, result string) string {
 	case "run_skill", "get_skill_run":
 		return classifySkillRunOutcome(result)
 	case "search_and_install_skill":
-		if strings.Contains(trimmed, "鉁?) || strings.Contains(trimmed, "宸茶嚜鍔ㄥ畨瑁呭苟鎵ц Skill") {
+		if strings.Contains(trimmed, "Skill") && strings.Contains(lower, "executed") {
 			return "succeeded"
 		}
-		if strings.Contains(trimmed, "鍧囨湭鎵惧埌") || strings.Contains(trimmed, "鏈壘鍒?) {
+		if strings.Contains(trimmed, "鍧囨湭鎵惧埌") || strings.Contains(lower, "not found") {
 			return "uncertain"
 		}
-		if strings.Contains(lower, "鎼滅储 skillmarket 澶辫触") || strings.Contains(lower, "瀵煎叆澶辫触") || strings.Contains(lower, "涓嬭浇澶辫触") || strings.Contains(lower, "鎵ц澶辫触") || strings.Contains(lower, "宸叉嫆缁濊嚜鍔ㄥ畨瑁?) {
+		if strings.Contains(lower, "澶辫触") || strings.Contains(lower, "failed") || strings.Contains(lower, "rejected") {
 			return "failed"
 		}
 		return classifyTrialOutcome(result)
@@ -6329,19 +6329,19 @@ func buildTrialReflectNote(toolNames []string, observations []string, repeatedFa
 		return ""
 	}
 	toolSummary := strings.Join(toolNames, ", ")
-	observation := strings.Join(observations, "锛?)
+	observation := strings.Join(observations, "; ")
 	var b strings.Builder
-	b.WriteString("[璇曢敊鍙嶆€漖\n")
-	b.WriteString("涓婁竴杞皾璇曪細")
+	b.WriteString("[Trial reflection]\n")
+	b.WriteString("Previous attempt: ")
 	b.WriteString(toolSummary)
 	b.WriteString("\n")
-	b.WriteString("瑙傚療缁撴灉锛?)
+	b.WriteString("Observation: ")
 	b.WriteString(observation)
 	b.WriteString("\n")
-	b.WriteString("涓嬩竴杞姹傦細鍏堟牴鎹繖浜涚粨鏋滆皟鏁存柟娉曪紝鍐嶇户缁姩浣滐紱涓嶈鍘熸牱閲嶅宸茬粡澶辫触鐨勫皾璇曘€?)
+	b.WriteString("Next round: adjust the approach based on these results before continuing; do not repeat the same failed attempt.")
 	if len(repeatedFailures) > 0 {
 		sort.Strings(repeatedFailures)
-		b.WriteString("\n閬垮厤閲嶅锛?)
+		b.WriteString("\nAvoid repeating: ")
 		b.WriteString(strings.Join(repeatedFailures, ", "))
 	}
 	return b.String()
@@ -6361,9 +6361,9 @@ func (s *trialReflectState) observeIteration(toolCalls []llm.ToolCall, toolResul
 		outcome := classifyToolOutcome(name, toolResults[i])
 		summary := truncateTraceText(strings.TrimSpace(toolResults[i]), 120)
 		if summary == "" {
-			summary = "鏃犳槑纭緭鍑?
+			summary = "no clear output"
 		}
-		observations = append(observations, fmt.Sprintf("%s=%s锛?s锛?, name, outcome, summary))
+		observations = append(observations, fmt.Sprintf("%s=%s (%s)", name, outcome, summary))
 		sig := trialActionSignature(name, tc.Function.Arguments)
 		switch outcome {
 		case "failed":
@@ -6382,7 +6382,7 @@ func (s *trialReflectState) observeIteration(toolCalls []llm.ToolCall, toolResul
 	}
 	note := buildTrialReflectNote(toolNames, observations, repeatedFailures)
 	s.pendingNote = note
-	s.lastObservation = strings.Join(observations, "锛?)
+	s.lastObservation = strings.Join(observations, "; ")
 	return overall, s.lastObservation, repeatedFailures
 }
 
@@ -6792,9 +6792,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if driftTool, ok := h.sessionDriftTool.LoadAndDelete(userID); ok {
 		toolName := driftTool.(string)
 		driftCtx := fmt.Sprintf(
-			"[绯荤粺鎻愮ず] 涓婁竴杞璇濆洜鍙嶅璋冪敤 %s 澶辫触鑰屽仠姝€?+
-				"绂佹鍐嶆浣跨敤鐩稿悓鐨勬柟娉曘€?+
-				"濡傛灉娌℃湁鍏朵粬鍙鏂规锛岀洿鎺ュ憡璇夌敤鎴峰綋鍓嶇殑闄愬埗鍜屽缓璁€?,
+			"[System notice] The previous turn stopped after repeated failures calling %s. "+
+				"Do not use the same approach again. "+
+				"If no alternative is available, explain the current limitation and recommendation to the user.",
 			toolName,
 		)
 		conversation = append(conversation, map[string]string{
@@ -7133,7 +7133,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if autoExtended > effectiveMax {
 						effectiveMax = autoExtended
 						ctx.SetMaxIterations(effectiveMax)
-						sendProgress(fmt.Sprintf("鈴?褰撳墠浠诲姟杈冮暱锛屽凡鑷姩鎵╁睍鎺ㄧ悊杞鍒?%d 杞紝缁х画瀹屾垚鏈€缁堢粨鏋溾€?, effectiveMax))
+						sendProgress(fmt.Sprintf("Current task is long; auto-extended reasoning rounds to %d.", effectiveMax))
 						log.Printf("[AgentLoop] auto-extended: iteration=%d new_max=%d cap=%d loop=%s", iteration, effectiveMax, autoExtendCap, ctx.ID)
 						if h.traceService != nil && ctx.RunID != "" {
 							h.appendTraceEvent(ctx, "loop.extended", "info", "Auto-extended iteration limit", truncateTraceText(fmt.Sprintf("remaining=%d new_max=%d", remaining, effectiveMax), 220), "", "")
@@ -7157,7 +7157,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					Type:      StatusEventApproachingLimit,
 					LoopID:    ctx.ID,
 					SessionID: ctx.SessionID,
-					Message:   fmt.Sprintf("鍚庡彴浠诲姟 %s 鍗冲皢杈惧埌鏈€澶ц疆鏁?(%d/%d)", ctx.ID, iteration, effectiveMax),
+					Message:   fmt.Sprintf("Background task %s is approaching the iteration limit (%d/%d)", ctx.ID, iteration, effectiveMax),
 					Remaining: effectiveMax - iteration,
 				}:
 				default:
