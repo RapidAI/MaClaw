@@ -1247,6 +1247,37 @@ func TestToolRipgrepLocalIndexIncludesNewDirtyFiles(t *testing.T) {
 	}
 }
 
+func TestToolRipgrepLocalIndexIncludesModifiedDirtyFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc InitialSymbol() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "InitialSymbol",
+		"output_mode": "files_with_matches",
+	}); !strings.Contains(out, path) {
+		t.Fatalf("initial indexed search missing file:\n%s", out)
+	}
+
+	if err := os.WriteFile(path, []byte("package main\nfunc AddedAfterIndexBuild() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "AddedAfterIndexBuild",
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	if !strings.Contains(out, path) {
+		t.Fatalf("indexed search missed modified dirty file:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("modified dirty file search should still use index overlay:\n%s", out)
+	}
+}
+
 func TestToolRipgrepRebuildsStaleIndexWhenDirtyRatioIsHigh(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "first.go")
