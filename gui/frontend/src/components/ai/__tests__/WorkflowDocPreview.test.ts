@@ -218,6 +218,32 @@ describe('workflowProgressPhaseIDs', () => {
         expect(screen.getByText('Tasks')).toBeTruthy();
     });
 
+    it('keeps mixed document collection visible across completed, missing, and current phases', () => {
+        render(React.createElement(WorkflowDocPreview, {
+            phaseDocuments: new Map([['requirements', '# Requirements']]),
+            currentPhaseID: 'tasks',
+            latestDocumentPhaseID: 'requirements',
+            phases: [
+                { id: 'requirements', name: '需求分析', index: 0, expectsDocument: true },
+                { id: 'design', name: '技术设计', index: 1, expectsDocument: true },
+                { id: 'tasks', name: '任务拆分', index: 2, expectsDocument: true },
+            ],
+            workflowType: 'coding',
+            gateResults: new Map(),
+            onClose: () => undefined,
+            theme: testTheme,
+        }));
+
+        expect(screen.getByText('1/3 个文档')).toBeTruthy();
+        expect(screen.getByLabelText('需求分析，已完成').getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByLabelText('技术设计，缺文档')).toBeTruthy();
+        expect(screen.getByLabelText('任务拆分，生成中')).toBeTruthy();
+
+        fireEvent.click(screen.getByTitle('任务拆分 · 生成中'));
+
+        expect(screen.getByText('任务拆分文档尚未生成')).toBeTruthy();
+    });
+
     it('clears a stale manual phase selection after workflow documents reset', () => {
         const { rerender } = render(React.createElement(WorkflowDocPreview, {
             phaseDocuments: new Map([['requirements', '# Old Requirements']]),

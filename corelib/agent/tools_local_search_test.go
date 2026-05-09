@@ -1656,6 +1656,27 @@ func TestLocalSearchIndexDirtyCandidatesIncludesEqualModTime(t *testing.T) {
 	}
 }
 
+func TestLocalSearchIndexDirtyCandidatesTreatsSameFutureMetadataAsClean(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc TargetFutureClean() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	futureTime := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, futureTime, futureTime); err != nil {
+		t.Fatal(err)
+	}
+
+	idx, ok := buildLocalSearchIndex(dir, "", "", "", false)
+	if !ok {
+		t.Fatal("buildLocalSearchIndex failed")
+	}
+	files := idx.dirtyCandidateFiles("", "", "", false)
+	if len(files) != 0 {
+		t.Fatalf("dirty candidates = %#v, want unchanged future-metadata file treated as clean", files)
+	}
+}
+
 func TestSearchIndexCachePrunesExpiredAndLRU(t *testing.T) {
 	now := time.Now()
 	searchIndexCache.Lock()
