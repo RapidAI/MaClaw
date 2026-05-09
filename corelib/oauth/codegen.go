@@ -80,11 +80,18 @@ type CodeGenSSOResult struct {
 	Email string
 }
 
+// CodeGenModel describes one usable model returned by CodeGen /models.
+type CodeGenModel struct {
+	ID            string
+	Name          string
+	ContextWindow int
+}
+
 // codeGenScanResponse 是扫码页面返回的 token 响应结构。
 type codeGenScanResponse struct {
 	Token   string `json:"token"`
 	Email   string `json:"email"`
-	Status  string `json:"status"`  // "pending", "success", "expired"
+	Status  string `json:"status"` // "pending", "success", "expired"
 	Message string `json:"message,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
@@ -92,34 +99,108 @@ type codeGenScanResponse struct {
 // codeGenModelsResponse 是 /api/v1/models 端点的响应结构。
 type codeGenModelsResponse struct {
 	// 兼容两种响应格式：旧版使用 "models"，新版使用 "data"
-	Models []struct {
-		ID            string `json:"id"`
-		Name          string `json:"name"`
-		Provider      string `json:"provider"`
-		ContextWindow int    `json:"context_window"`
-	} `json:"models"`
-	Data []struct {
-		ID            string `json:"id"`
-		Name          string `json:"name"`
-		Provider      string `json:"provider"`
-		ContextWindow int    `json:"context_window"`
-	} `json:"data"`
-	BaseURL string `json:"base_url,omitempty"`
-	Success bool   `json:"success,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Models  []codeGenModelEntry `json:"models"`
+	Data    []codeGenModelEntry `json:"data"`
+	BaseURL string              `json:"base_url,omitempty"`
+	Success bool                `json:"success,omitempty"`
+	Error   string              `json:"error,omitempty"`
 }
 
-// GetModels 返回模型列表，兼容 "models" 和 "data" 两种响应字段。
-func (r *codeGenModelsResponse) GetModels() []struct {
+type codeGenModelEntry struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
 	Provider      string `json:"provider"`
 	ContextWindow int    `json:"context_window"`
-} {
+	Available     *bool  `json:"available,omitempty"`
+	Enabled       *bool  `json:"enabled,omitempty"`
+	Active        *bool  `json:"active,omitempty"`
+	Disabled      bool   `json:"disabled,omitempty"`
+	Status        string `json:"status,omitempty"`
+}
+
+// GetModels 返回模型列表，兼容 "models" 和 "data" 两种响应字段。
+func (r *codeGenModelsResponse) GetModels() []codeGenModelEntry {
 	if len(r.Models) > 0 {
 		return r.Models
 	}
 	return r.Data
+}
+
+func codeGenModelID(m codeGenModelEntry) string {
+	if id := strings.TrimSpace(m.ID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(m.Name)
+}
+
+func codeGenModelName(m codeGenModelEntry) string {
+	if name := strings.TrimSpace(m.Name); name != "" {
+		return name
+	}
+	return codeGenModelID(m)
+}
+
+func isUsableCodeGenModel(m codeGenModelEntry) bool {
+	if codeGenModelID(m) == "" {
+		return false
+	}
+	if m.Disabled {
+		return false
+	}
+	if m.Available != nil && !*m.Available {
+		return false
+	}
+	if m.Enabled != nil && !*m.Enabled {
+		return false
+	}
+	if m.Active != nil && !*m.Active {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(m.Status)) {
+	case "", "ok", "ready", "enabled", "available", "active":
+		return true
+	case "disabled", "unavailable", "inactive", "denied", "forbidden", "no_permission", "no-permission":
+		return false
+	default:
+		return true
+	}
+}
+
+func firstUsableCodeGenModel(models []codeGenModelEntry) (id string, contextLength int) {
+	for _, m := range models {
+		if isUsableCodeGenModel(m) {
+			return codeGenModelID(m), m.ContextWindow
+		}
+	}
+	return "", 0
+}
+
+func codeGenModelsFromEntries(entries []codeGenModelEntry) []CodeGenModel {
+	models := make([]CodeGenModel, 0, len(entries))
+	for _, entry := range entries {
+		if !isUsableCodeGenModel(entry) {
+			continue
+		}
+		id := codeGenModelID(entry)
+		if id == "" {
+			continue
+		}
+		models = append(models, CodeGenModel{
+			ID:            id,
+			Name:          codeGenModelName(entry),
+			ContextWindow: entry.ContextWindow,
+		})
+	}
+	return models
+}
+
+// FetchCodeGenModels returns the usable CodeGen models in the server-defined order.
+func FetchCodeGenModels(token string) ([]CodeGenModel, string, error) {
+	entries, baseURL, err := fetchCodeGenModels(token)
+	if err != nil {
+		return nil, "", err
+	}
+	return codeGenModelsFromEntries(entries), baseURL, nil
 }
 
 // jwtEmailPayload 是 JWT payload 中用于提取 email 的结构体。
@@ -259,12 +340,7 @@ func ValidateAndBuildCodeGenResult(token string) (CodeGenSSOResult, error) {
 		return CodeGenSSOResult{}, fmt.Errorf("token 无效或已过期: %w", err)
 	}
 
-	defaultModel := ""
-	contextLength := 0
-	if len(models) > 0 {
-		defaultModel = models[0].ID
-		contextLength = models[0].ContextWindow
-	}
+	defaultModel, contextLength := firstUsableCodeGenModel(models)
 
 	return CodeGenSSOResult{
 		AccessToken:   token,
@@ -376,12 +452,7 @@ func RunCodeGenSSOFlow() (CodeGenSSOResult, error) {
 	}
 
 	// 4. 选择默认模型（取第一个）
-	defaultModel := ""
-	contextLength := 0
-	if len(models) > 0 {
-		defaultModel = models[0].ID
-		contextLength = models[0].ContextWindow
-	}
+	defaultModel, contextLength := firstUsableCodeGenModel(models)
 
 	return CodeGenSSOResult{
 		AccessToken:   token,
@@ -481,12 +552,7 @@ func RunCodeGenSSOFlowWithCallback(ctx context.Context) (CodeGenSSOResult, error
 		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 获取模型列表失败: %w", err)
 	}
 
-	defaultModel := ""
-	contextLength := 0
-	if len(models) > 0 {
-		defaultModel = models[0].ID
-		contextLength = models[0].ContextWindow
-	}
+	defaultModel, contextLength := firstUsableCodeGenModel(models)
 
 	return CodeGenSSOResult{
 		AccessToken:   token,
@@ -637,6 +703,7 @@ var ewmImgRegexp = regexp.MustCompile(
 		`|` +
 		`(?i)<img\s[^>]*src\s*=\s*["']([^"']+)["'][^>]*class\s*=\s*["']ewm-img["'][^>]*/?>`,
 )
+
 // extractQRCodeFromHTML 从 HTML 中提取 class="ewm-img" 的 img 标签的 src 属性，
 // 解析其中 /qrcode.php?v=... 的 v 查询参数，URL decode 后返回二维码内容 URL。
 func extractQRCodeFromHTML(html string) (string, error) {
@@ -731,7 +798,7 @@ func ExtractSSOQRCodeURL() (qrURL string, sessionClient *http.Client, ssoPageURL
 }
 
 // fetchCodeGenModels 使用 access_token 调用 /api/v1/models 获取模型列表。
-func fetchCodeGenModels(token string) (models []struct{ ID string; ContextWindow int }, baseURL string, err error) {
+func fetchCodeGenModels(token string) (models []codeGenModelEntry, baseURL string, err error) {
 	req, err := http.NewRequest("GET", CodeGenModelsEndpoint, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("create request: %w", err)
@@ -762,12 +829,18 @@ func fetchCodeGenModels(token string) (models []struct{ ID string; ContextWindow
 		return nil, "", fmt.Errorf("api error: %s", modelsResp.Error)
 	}
 
-	// 转换为简化结构
+	// 转换为简化结构，只保留可用模型；如果服务端没有可用性字段，则默认可用。
 	modelList := modelsResp.GetModels()
-	result := make([]struct{ ID string; ContextWindow int }, len(modelList))
-	for i, m := range modelList {
-		result[i].ID = m.ID
-		result[i].ContextWindow = m.ContextWindow
+	result := make([]codeGenModelEntry, 0, len(modelList))
+	for _, m := range modelList {
+		if !isUsableCodeGenModel(m) {
+			continue
+		}
+		m.ID = codeGenModelID(m)
+		result = append(result, m)
+	}
+	if len(result) == 0 {
+		return nil, "", fmt.Errorf("no usable CodeGen models returned")
 	}
 
 	// 使用响应中的 base_url，如果没有则使用默认值
@@ -790,20 +863,10 @@ func RunCodeGenSSOFlowWithPKCE(cfg Config) (CodeGenSSOResult, error) {
 	// 获取模型列表以确定默认 modelID 和 baseURL
 	models, baseURL, err := fetchCodeGenModels(tokenResult.AccessToken)
 	if err != nil {
-		// 如果获取模型失败，仍返回 token，但使用默认值
-		return CodeGenSSOResult{
-			AccessToken: tokenResult.AccessToken,
-			BaseURL:     CodeGenBaseURL,
-		}, nil
+		return CodeGenSSOResult{}, fmt.Errorf("codegen sso: 获取模型列表失败: %w", err)
 	}
 
-	var modelID string
-	var contextLength int
-	if len(models) > 0 {
-		// 默认使用第一个模型
-		modelID = models[0].ID
-		contextLength = models[0].ContextWindow
-	}
+	modelID, contextLength := firstUsableCodeGenModel(models)
 
 	return CodeGenSSOResult{
 		AccessToken:   tokenResult.AccessToken,

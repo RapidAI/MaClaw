@@ -50,6 +50,7 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 	appID := strings.TrimSpace(cfg.LansengerAppID)
 	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
 	gwURL := cfg.LansengerApiGatewayURL()
+	wssURL := cfg.LansengerWebSocketGatewayURL()
 
 	m.mu.Lock()
 	if !cfg.LansengerEnabled || appID == "" || appSecret == "" {
@@ -72,7 +73,7 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 	}
 
 	// Compose a cache key from all credential fields so any change triggers reconnect.
-	cacheKey := appID + "|" + appSecret + "|" + gwURL
+	cacheKey := appID + "|" + appSecret + "|" + gwURL + "|" + wssURL
 
 	if m.gateway != nil && m.lastToken == cacheKey {
 		m.mu.Unlock()
@@ -87,9 +88,10 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 	}
 
 	gwCfg := lansenger.Config{
-		AppID:         appID,
-		AppSecret:     appSecret,
-		ApiGatewayURL: gwURL,
+		AppID:            appID,
+		AppSecret:        appSecret,
+		ApiGatewayURL:    gwURL,
+		WebSocketBaseURL: wssURL,
 	}
 
 	gw := lansenger.NewGateway(gwCfg, m.onIncomingMessage)

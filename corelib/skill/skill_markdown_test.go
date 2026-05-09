@@ -48,6 +48,155 @@ func TestImportMarkdownSkillDir_CreatesCraftToolWhenNoScripts(t *testing.T) {
 	}
 }
 
+func TestLoadSkillFromDir_YAMLKnowledgeTypeUsesMarkdownAsContent(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "install-guide")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	yamlContent := `name: install-guide
+description: Reference guide
+type: knowledge_skill
+triggers: [install]
+inputs:
+  server_ip:
+    required: true
+`
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(yamlContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	mdContent := "# Install Guide\n\n```bash\nrm -rf /example-only\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(mdContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, path, err := loadSkillFromDir(skillDir, "install-guide")
+	if err != nil {
+		t.Fatalf("loadSkillFromDir() error = %v", err)
+	}
+	if filepath.Base(path) != "skill.md" {
+		t.Fatalf("path = %q, want skill.md content source", path)
+	}
+	if entry.Type != "knowledge" {
+		t.Fatalf("Type = %q, want knowledge", entry.Type)
+	}
+	if len(entry.Steps) != 0 {
+		t.Fatalf("Steps = %#v, want no executable steps for knowledge skill", entry.Steps)
+	}
+	if len(entry.RequiredArgs) != 0 {
+		t.Fatalf("RequiredArgs = %#v, want no runner arg gate for knowledge skill", entry.RequiredArgs)
+	}
+	if !strings.Contains(entry.Content, "Install Guide") {
+		t.Fatalf("Content = %q, want markdown content", entry.Content)
+	}
+}
+
+func TestLoadSkillFromDir_FallsBackToMarkdownWhenYAMLParseFails(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "broken-yaml-tool")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: [broken\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	content := "# Markdown Rescue\n\n```bash\necho rescued\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	entry, path, err := loadSkillFromDir(skillDir, "broken-yaml-tool")
+	if err != nil {
+		t.Fatalf("loadSkillFromDir() error = %v", err)
+	}
+	if filepath.Base(path) != "SKILL.md" {
+		t.Fatalf("path = %q, want SKILL.md fallback source", path)
+	}
+	if entry.Name != "Markdown Rescue" {
+		t.Fatalf("Name = %q, want markdown-derived name", entry.Name)
+	}
+	if entry.DirName != "broken-yaml-tool" {
+		t.Fatalf("DirName = %q, want directory alias", entry.DirName)
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Action != "bash" {
+		t.Fatalf("unexpected steps: %+v", entry.Steps)
+	}
+	if got := entry.Steps[0].Params["command"]; got != "echo rescued" {
+		t.Fatalf("command = %#v, want %q", got, "echo rescued")
+	}
+}
+
+func TestLoadSkillFromDir_InvalidYAMLWithoutMarkdownStillFails(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "broken-yaml-only")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: [broken\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+
+	if _, _, err := loadSkillFromDir(skillDir, "broken-yaml-only"); err == nil {
+		t.Fatal("loadSkillFromDir() should fail when invalid YAML has no markdown fallback")
+	}
+}
+
+func TestImportMarkdownSkillDir_FrontmatterKnowledgeTypeUsesContent(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "markdown-knowledge")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := `---
+name: Markdown Knowledge
+description: Reference only
+type: documentation
+required_args: [server_ip]
+---
+
+# Markdown Knowledge
+
+` + "```bash\nrm -rf /example-only\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if entry.Type != "knowledge" {
+		t.Fatalf("Type = %q, want knowledge", entry.Type)
+	}
+	if len(entry.Steps) != 0 {
+		t.Fatalf("Steps = %#v, want no executable steps for frontmatter knowledge skill", entry.Steps)
+	}
+	if len(entry.RequiredArgs) != 0 {
+		t.Fatalf("RequiredArgs = %#v, want no runner arg gate for frontmatter knowledge skill", entry.RequiredArgs)
+	}
+	if !strings.Contains(entry.Content, "Markdown Knowledge") {
+		t.Fatalf("Content = %q, want markdown content", entry.Content)
+	}
+}
+
+func TestParseMarkdownSkill_FrontmatterKnowledgeTypeUsesContent(t *testing.T) {
+	content := `---
+name: Inline Knowledge
+type: knowledge
+---
+
+# Inline Knowledge
+
+` + "```bash\necho example-only\n```\n"
+	entry, err := ParseMarkdownSkill(content, MarkdownSkillOptions{Source: "file"})
+	if err != nil {
+		t.Fatalf("ParseMarkdownSkill() error = %v", err)
+	}
+	if entry.Type != "knowledge" || len(entry.Steps) != 0 {
+		t.Fatalf("entry = %#v, want knowledge entry without executable steps", entry)
+	}
+}
+
 func TestImportMarkdownSkillDir_ExplicitArtifactRequired(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "artifact-skill")
@@ -255,6 +404,14 @@ func TestExtractBashBlocksFromMarkdown_SkipsUnresolvedPlaceholders(t *testing.T)
 	blocks := extractBashBlocksFromMarkdown(content)
 	if len(blocks) != 0 {
 		t.Fatalf("expected 0 blocks (unresolved {baseDir}), got %d", len(blocks))
+	}
+}
+
+func TestExtractBashBlocksFromMarkdown_SkipsAnglePlaceholders(t *testing.T) {
+	content := "```bash\nxparse-cli parse <FILE>\n```\n"
+	blocks := extractBashBlocksFromMarkdown(content)
+	if len(blocks) != 0 {
+		t.Fatalf("expected 0 blocks (angle placeholder example), got %d", len(blocks))
 	}
 }
 
@@ -520,7 +677,464 @@ func TestImportMarkdownSkillDir_MultipleBashBlocksAllBecomeSteps(t *testing.T) {
 	}
 }
 
+func TestImportMarkdownSkillDir_UsageAlternativeCommandsKeepFirstStep(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "weather")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "weather.py"), []byte("print('weather')"), 0o755); err != nil {
+		t.Fatalf("WriteFile(weather.py) error = %v", err)
+	}
+	content := "# Weather\n\n" +
+		"## Usage\n\n" +
+		"### Current\n\n" +
+		"```bash\npython \"{baseDir}/weather.py\" realtime --city \"{{city}}\"\n```\n\n" +
+		"### Hourly\n\n" +
+		"```bash\npython \"{baseDir}/weather.py\" hourly --city \"{{city}}\"\n```\n\n" +
+		"### Weekly\n\n" +
+		"```bash\npython \"{baseDir}/weather.py\" weekly --city \"{{city}}\"\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	if entry.ExecMode != "first" {
+		t.Fatalf("ExecMode = %q, want first", entry.ExecMode)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(cmd, "realtime") || strings.Contains(cmd, "hourly") || strings.Contains(cmd, "weekly") {
+		t.Fatalf("command = %q, want only realtime alternative", cmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_RecognizesShellFenceVariants(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "shell-fences")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Shell Fences\n\n" +
+		"## Step 1\n\n" +
+		"``` bash npm2yarn\npython run.py\n```\n\n" +
+		"## Step 2\n\n" +
+		"```sh\npython check.py\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 2 {
+		t.Fatalf("Steps len = %d, want 2; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd0, _ := entry.Steps[0].Params["command"].(string)
+	cmd1, _ := entry.Steps[1].Params["command"].(string)
+	if cmd0 != "python run.py" || cmd1 != "python check.py" {
+		t.Fatalf("commands = %q / %q, want shell fence commands", cmd0, cmd1)
+	}
+}
+
+func TestImportMarkdownSkillDir_PreservesFenceShellPreference(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "ps-fence")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# PowerShell Fence\n\n```powershell\nWrite-Output 'ok'\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	if got := entry.Steps[0].Params["preferred_shell"]; got != "powershell" {
+		t.Fatalf("preferred_shell = %#v, want powershell", got)
+	}
+}
+
+func TestImportMarkdownSkillDir_LocalScriptWithSpacesInCommand(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "spaced-script")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "my tool.py"), []byte("print('ok')\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	content := "# Spaced Script\n\n```bash\npython \"{baseDir}/scripts/my tool.py\" --input \"/path/input.txt\"\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(cmd, "my tool.py") || strings.Contains(cmd, `""`) {
+		t.Fatalf("command = %q, want one quoted spaced script path", cmd)
+	}
+	if err := CheckStepFileReferences(entry); err != nil {
+		t.Fatalf("CheckStepFileReferences() error = %v", err)
+	}
+}
+
+func TestImportMarkdownSkillDir_UsageAlternativesPreferSimplestRequiredCommand(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "translator")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Translator\n\n" +
+		"## Usage\n\n" +
+		"### Default target\n\n" +
+		"```bash\npython \"{baseDir}/translate.py\" --text \"{{text}}\"\n```\n\n" +
+		"### Custom target\n\n" +
+		"```bash\npython \"{baseDir}/translate.py\" --text \"{{text}}\" --target_lang \"{{target_lang}}\"\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if strings.Contains(cmd, "--target_lang") || strings.Contains(cmd, "{{target_lang}}") || !strings.Contains(cmd, "{{text}}") {
+		t.Fatalf("command = %q, want simplest required-args alternative", cmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_RecommendedExecutionAlternativesKeepDefaultCommand(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "md-to-pdf")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "xh-md-to-pdf.mjs"), []byte("console.log('pdf')"), 0o755); err != nil {
+		t.Fatalf("WriteFile(xh-md-to-pdf.mjs) error = %v", err)
+	}
+	content := "# Markdown to PDF\n\n" +
+		"## Recommended execution methods\n\n" +
+		"### Local skill command\n\n" +
+		"```bash\nnode \"{baseDir}/scripts/xh-md-to-pdf.mjs\" \"/path/in.md\" \"/path/out.pdf\"\n```\n\n" +
+		"Optional custom CSS:\n\n" +
+		"```bash\nnode \"{baseDir}/scripts/xh-md-to-pdf.mjs\" \"/path/in.md\" \"/path/out.pdf\" --css \"/path/custom.css\"\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if strings.Contains(cmd, "--css") || strings.Contains(cmd, "custom.css") {
+		t.Fatalf("command = %q, want default command without optional css example", cmd)
+	}
+	if !strings.Contains(cmd, "{{input}}") || !strings.Contains(cmd, "{{output}}") {
+		t.Fatalf("command = %q, want normalized input/output placeholders", cmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_ExecModeAllKeepsUsageAlternatives(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "weather-all")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "---\nname: weather-all\nexec_mode: all\n---\n\n" +
+		"# Weather\n\n" +
+		"## Usage\n\n" +
+		"### Current\n\n" +
+		"```bash\npython \"{baseDir}/weather.py\" realtime --city \"{{city}}\"\n```\n\n" +
+		"### Hourly\n\n" +
+		"```bash\npython \"{baseDir}/weather.py\" hourly --city \"{{city}}\"\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 2 {
+		t.Fatalf("Steps len = %d, want 2; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	if entry.ExecMode != "all" {
+		t.Fatalf("ExecMode = %q, want all", entry.ExecMode)
+	}
+}
+
+func TestImportMarkdownSkillDir_WorkflowStepsRemainAllStepsWithSameTarget(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "workflow-same-target")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Workflow\n\n" +
+		"## Usage\n\n" +
+		"### Step 1 Setup\n\n" +
+		"```bash\npython \"{baseDir}/tool.py\" setup\n```\n\n" +
+		"### Step 2 Run\n\n" +
+		"```bash\npython \"{baseDir}/tool.py\" run\n```\n\n" +
+		"### Step 3 Verify\n\n" +
+		"```bash\npython \"{baseDir}/tool.py\" verify\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 3 {
+		t.Fatalf("Steps len = %d, want 3; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+}
+
+func TestImportMarkdownSkillDir_SameLocalScriptBlocksKeepCurrentCommand(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "same-script-blocks")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "tool.mjs"), []byte("console.log('tool')"), 0o755); err != nil {
+		t.Fatalf("WriteFile(tool.mjs) error = %v", err)
+	}
+	content := "# Same Script Blocks\n\n" +
+		"## Step 1\n\n" +
+		"```bash\nnode \"{baseDir}/scripts/tool.mjs\" alpha\n```\n\n" +
+		"## Step 2\n\n" +
+		"```bash\nnode \"{baseDir}/scripts/tool.mjs\" beta\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 2 {
+		t.Fatalf("Steps len = %d, want 2; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd0, _ := entry.Steps[0].Params["command"].(string)
+	cmd1, _ := entry.Steps[1].Params["command"].(string)
+	if !strings.Contains(cmd0, "alpha") || strings.Contains(cmd0, "beta") {
+		t.Fatalf("step 0 command = %q, want alpha only", cmd0)
+	}
+	if !strings.Contains(cmd1, "beta") || strings.Contains(cmd1, "alpha") {
+		t.Fatalf("step 1 command = %q, want beta only", cmd1)
+	}
+}
+
+func TestImportMarkdownSkillDir_GenericCLIUsageExamplesStaySeparate(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "generic-cli")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Generic CLI\n\n" +
+		"## Usage\n\n" +
+		"```bash\ncurl https://example.test/health\n```\n\n" +
+		"```bash\ncurl https://example.test/status\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 2 {
+		t.Fatalf("Steps len = %d, want 2; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	if entry.ExecMode == "first" {
+		t.Fatalf("ExecMode = %q, want no auto single-selection for generic CLI examples", entry.ExecMode)
+	}
+}
+
+func TestImportMarkdownSkillDir_ParameterizesSampleInputFileUsage(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "xparse")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# XParse\n\n" +
+		"## Quick start\n\n" +
+		"```bash\nxparse-cli parse report.pdf                         # Markdown to stdout\nxparse-cli parse photo.jpg\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if cmd != "xparse-cli parse {{input}}" {
+		t.Fatalf("command = %q, want parameterized input command", cmd)
+	}
+	params := CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs)
+	if len(params) != 1 || params[0].Name != "input" {
+		t.Fatalf("params = %#v, want synthesized input param", params)
+	}
+}
+
 // --- P0: Mixed steps — scripts + direct bash blocks should all be included ---
+
+func TestImportMarkdownSkillDir_ParameterizesAngleInputPlaceholderUsage(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "doc-parser")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Doc Parser\n\n" +
+		"## Usage\n\n" +
+		"```bash\ndoc-cli parse <FILE>\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if cmd != "doc-cli parse {{input}}" {
+		t.Fatalf("command = %q, want angle placeholder parameterized as input", cmd)
+	}
+	params := CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs)
+	if len(params) != 1 || params[0].Name != "input" {
+		t.Fatalf("params = %#v, want synthesized input param", params)
+	}
+}
+
+func TestImportMarkdownSkillDir_ParameterizesInputFlagAssignmentUsage(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "flag-parser")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# Flag Parser\n\n" +
+		"## Usage\n\n" +
+		"```bash\nflag-cli parse --file=<INPUT.pdf>\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if cmd != "flag-cli parse --file={{input}}" {
+		t.Fatalf("command = %q, want flag assignment parameterized as input", cmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_RewritesMultilineLocalScriptUsage(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "any2pdf")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "md2pdf.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	content := "# any2pdf\n\n" +
+		"## Usage\n\n" +
+		"```bash\n" +
+		"python md2pdf/scripts/md2pdf.py \\\n" +
+		"  --input report.md \\\n" +
+		"  --output report.pdf \\\n" +
+		"  --title \"My Report\"\n" +
+		"```\n\n" +
+		"## Compatibility\n\n" +
+		"```bash\npip install reportlab --break-system-packages\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("Steps len = %d, want 1 usage step; steps = %+v", len(entry.Steps), entry.Steps)
+	}
+	cmd, _ := entry.Steps[0].Params["command"].(string)
+	if !strings.Contains(filepath.ToSlash(cmd), "/scripts/md2pdf.py") {
+		t.Fatalf("command = %q, want rewritten local scripts/md2pdf.py path", cmd)
+	}
+	if !strings.Contains(cmd, "--input {{input}}") || !strings.Contains(cmd, "--output {{output}}") {
+		t.Fatalf("command = %q, want parameterized input/output flags", cmd)
+	}
+	if strings.Contains(cmd, "pip install") || !strings.Contains(cmd, `--title "My Report"`) {
+		t.Fatalf("command = %q, want dependency block skipped and title preserved", cmd)
+	}
+}
+
+func TestImportMarkdownSkillDir_SkipsNonInputAnglePlaceholderUsage(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "ssh-guide")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	content := "# SSH Guide\n\n" +
+		"## Usage\n\n" +
+		"```bash\nssh <SSH_USER>@<TEST_SERVER_IP>\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.md) error = %v", err)
+	}
+
+	entry, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{Source: "file", SkillDir: skillDir})
+	if err != nil {
+		t.Fatalf("ImportMarkdownSkillDir() error = %v", err)
+	}
+	if len(entry.Steps) != 1 || entry.Steps[0].Action != "craft_tool" {
+		t.Fatalf("Steps = %#v, want craft fallback instead of unsafe SSH usage command", entry.Steps)
+	}
+	if cmd, _ := entry.Steps[0].Params["command"].(string); cmd != "" {
+		t.Fatalf("fallback command = %q, want no direct bash command", cmd)
+	}
+}
 
 func TestImportMarkdownSkillDir_MixedScriptsAndDirectBlocks(t *testing.T) {
 	root := t.TempDir()
@@ -799,6 +1413,16 @@ func TestExtractCaptureDirectives_MultipleCaptures(t *testing.T) {
 	}
 	if directives[0]["ID"] == "" || directives[0]["TOKEN"] == "" {
 		t.Errorf("expected both ID and TOKEN captures, got %v", directives[0])
+	}
+}
+
+func TestExtractCaptureDirectives_SupportsShellFenceVariants(t *testing.T) {
+	content := `<!-- extract: ID=id:\s*(\w+) -->
+` + "``` sh\npython3 auth.py\n```" + `
+`
+	directives := extractCaptureDirectives(content)
+	if len(directives) != 1 || directives[0] == nil || directives[0]["ID"] == "" {
+		t.Fatalf("extractCaptureDirectives() = %#v, want capture on spaced sh fence", directives)
 	}
 }
 

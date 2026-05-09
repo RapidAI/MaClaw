@@ -31,12 +31,14 @@ func TestBuildGroupProfileFromConfig(t *testing.T) {
 		MaclawRoleName:           "Refactor Expert",
 		MaclawLLMCurrentProvider: "Hub LLM",
 		GroupDiscussion: corelib.GroupDiscussionConfig{
-			Enabled:         true,
-			Discoverable:    true,
-			Availability:    "available",
-			Skills:          []string{"go", "security"},
-			Languages:       []string{"zh-Hans", "en"},
-			ModelVisibility: "provider_alias",
+			Enabled:              true,
+			Discoverable:         true,
+			Availability:         "available",
+			Skills:               []string{"go", "security"},
+			Languages:            []string{"zh-Hans", "en"},
+			ModelVisibility:      "provider_alias",
+			ContributionScore:    0.82,
+			ContributionEvidence: 5,
 		},
 	}
 	profile, err := BuildGroupProfileFromConfig(cfg, now)
@@ -54,6 +56,31 @@ func TestBuildGroupProfileFromConfig(t *testing.T) {
 	}
 	if len(profile.Skills) != 2 || profile.UpdatedAt != now {
 		t.Fatalf("profile = %+v", profile)
+	}
+	if profile.ContributionScore != 0.82 || profile.ContributionEvidence != 5 {
+		t.Fatalf("contribution fields = %.2f/%d", profile.ContributionScore, profile.ContributionEvidence)
+	}
+}
+
+func TestBuildGroupProfileFromConfigHidesContributionWhenCrossAgentExperienceDisabled(t *testing.T) {
+	disabled := false
+	cfg := corelib.AppConfig{
+		RemoteMachineID: "machine-1",
+		GroupDiscussion: corelib.GroupDiscussionConfig{
+			Enabled:                 true,
+			Discoverable:            true,
+			Availability:            "available",
+			UseCrossAgentExperience: &disabled,
+			ContributionScore:       0.91,
+			ContributionEvidence:    9,
+		},
+	}
+	profile, err := BuildGroupProfileFromConfig(cfg, time.Time{})
+	if err != nil {
+		t.Fatalf("BuildGroupProfileFromConfig returned error: %v", err)
+	}
+	if profile.ContributionScore != 0 || profile.ContributionEvidence != 0 {
+		t.Fatalf("contribution fields should be hidden when disabled: %.2f/%d", profile.ContributionScore, profile.ContributionEvidence)
 	}
 }
 

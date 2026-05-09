@@ -6,6 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import * as fc from 'fast-check';
+import { motionSoundPresetOptionIds, normalizeMotionSoundPreset } from './petMotionSounds';
 
 const PET_SIZE = 88 + 16;
 const SCREEN_W = 1920;
@@ -62,6 +63,10 @@ function applyPetStateTtl(current: { state: PetRuntimeState; asrListeningActive:
         ...current,
         state: current.asrListeningActive ? 'listening' : 'idle',
     };
+}
+
+function soundOffMenuChecked(motionSoundEnabled: boolean): boolean {
+    return !motionSoundEnabled;
 }
 
 function applyCommand(state: DesktopPetState, cmd: Command): DesktopPetState {
@@ -304,6 +309,35 @@ describe('Property 8: Default position calculation', () => {
                 expect(defaultX).toBeGreaterThanOrEqual(0);
                 expect(defaultX + PET_SIZE).toBeLessThanOrEqual(screenW);
                 expect(defaultY).toBe(100);
+            })
+        );
+    });
+});
+
+describe('Property 9: Motion sound preset normalization', () => {
+    it('keeps every supported preset stable', () => {
+        for (const preset of motionSoundPresetOptionIds) {
+            expect(normalizeMotionSoundPreset(preset)).toBe(preset);
+        }
+    });
+
+    it('falls back to classic for unsupported values', () => {
+        fc.assert(
+            fc.property(
+                fc.anything().filter((value) => !motionSoundPresetOptionIds.includes(value as any)),
+                (value) => {
+                    expect(normalizeMotionSoundPreset(value)).toBe('classic');
+                }
+            )
+        );
+    });
+});
+
+describe('Property 10: Sound-off context menu semantics', () => {
+    it('checks the menu item only when motion sound is disabled', () => {
+        fc.assert(
+            fc.property(fc.boolean(), (motionSoundEnabled) => {
+                expect(soundOffMenuChecked(motionSoundEnabled)).toBe(!motionSoundEnabled);
             })
         );
     });

@@ -15,13 +15,13 @@ func TestClassifyCacheIncludesRecentHistory(t *testing.T) {
 		RecentHistory: []string{"help me develop a snake game"},
 	})
 
-	if withoutContext.Primary != LabelContinuation || withContext.Primary != LabelContinuation {
-		t.Fatalf("expected continuation labels, got without=%s with=%s", withoutContext.Primary, withContext.Primary)
+	if withoutContext.Primary != LabelUnknown || withContext.Primary != LabelUnknown {
+		t.Fatalf("expected conservative unknown labels without semantic classifiers, got without=%s with=%s", withoutContext.Primary, withContext.Primary)
 	}
-	if withoutContext.Confidence >= 0.90 {
-		t.Fatalf("without context confidence = %.2f, want below contextual threshold", withoutContext.Confidence)
+	if withoutContext.Reason != "semantic classifiers unavailable" {
+		t.Fatalf("unexpected reason without context: %q", withoutContext.Reason)
 	}
-	if withContext.Confidence < 0.90 {
-		t.Fatalf("with context confidence = %.2f, want contextual classification not stale cache", withContext.Confidence)
+	if withContext.Reason != "semantic classifiers unavailable" {
+		t.Fatalf("unexpected reason with context: %q", withContext.Reason)
 	}
 }

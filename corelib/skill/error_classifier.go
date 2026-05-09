@@ -11,103 +11,128 @@ import (
 type ErrorClass string
 
 const (
-	ErrCommandNotFound ErrorClass = "command_not_found" // exit 9009 (Windows) / 127 (Unix)
-	ErrRateLimit       ErrorClass = "rate_limit"        // HTTP 429
-	ErrFileNotFound    ErrorClass = "file_not_found"    // ENOENT / no such file
-	ErrTimeout         ErrorClass = "timeout"           // context deadline exceeded / signal killed
-	ErrNetworkError    ErrorClass = "network_error"     // connection refused / reset / DNS
-	ErrAuthError       ErrorClass = "auth_error"        // HTTP 401/403 / permission denied
-	ErrMissingParam    ErrorClass = "missing_param"     // usage: / missing argument / required
-	ErrMissingEnvVar   ErrorClass = "missing_env_var"   // environment variable not set
-	ErrShebangWindows  ErrorClass = "shebang_windows"   // bash shebang in Windows CMD
-	ErrShortPath       ErrorClass = "short_path"        // Windows 8.3 short path failure
-	ErrUnknown         ErrorClass = "unknown"
+	ErrCommandNotFound   ErrorClass = "command_not_found"  // exit 9009 (Windows) / 127 (Unix)
+	ErrRateLimit         ErrorClass = "rate_limit"         // HTTP 429
+	ErrFileNotFound      ErrorClass = "file_not_found"     // ENOENT / no such file
+	ErrTimeout           ErrorClass = "timeout"            // context deadline exceeded / signal killed
+	ErrNetworkError      ErrorClass = "network_error"      // connection refused / reset / DNS
+	ErrAuthError         ErrorClass = "auth_error"         // HTTP 401/403 / permission denied
+	ErrMissingParam      ErrorClass = "missing_param"      // usage: / missing argument / required
+	ErrMissingEnvVar     ErrorClass = "missing_env_var"    // environment variable not set
+	ErrMissingDependency ErrorClass = "missing_dependency" // package/library dependency not installed
+	ErrShebangWindows    ErrorClass = "shebang_windows"    // bash shebang in Windows CMD
+	ErrShortPath         ErrorClass = "short_path"         // Windows 8.3 short path failure
+	ErrUnsupportedAction ErrorClass = "unsupported_action" // step action unsupported by current runner
+	ErrUnknown           ErrorClass = "unknown"
 )
 
 // ClassifiedError contains the classification result, user-friendly message,
 // and metadata for downstream consumers (self-repair, nudge, capability gap).
 type ClassifiedError struct {
-	Class       ErrorClass // machine-readable classification
-	UserMessage string     // user-friendly error message (Chinese)
-	Repairable  bool       // worth attempting LLM-driven self-repair?
-	Retryable   bool       // worth automatic retry (transient error)?
-	ActionHint  string     // machine-readable action suggestion for LLM
+	Class       ErrorClass
+	UserMessage string
+	Repairable  bool
+	Retryable   bool
+	ActionHint  string
 }
 
-// classificationRule defines a single error pattern and its classification.
 type classificationRule struct {
-	class      ErrorClass
-	repairable bool
-	retryable  bool
-	// match returns true if this rule applies. Receives lowercase combined
-	// output (stdout+stderr+error message) and the exit code.
-	match func(combined string, exitCode int) bool
-	// userMessage builds the user-facing message. Receives the original
-	// (non-lowered) error message and the command string.
+	class       ErrorClass
+	repairable  bool
+	retryable   bool
+	match       func(combined string, exitCode int) bool
 	userMessage func(errMsg, command string, exitCode int) string
-	// actionHint builds a machine-readable action suggestion for the LLM.
-	// When nil, a default hint is generated from the class.
-	actionHint func(errMsg, command string) string
+	actionHint  func(errMsg, command string) string
 }
 
 // rules is the single source of truth for all error patterns.
 // Order matters: first match wins.
 var rules = []classificationRule{
-	// --- Command not found (exit 9009 on Windows, 127 on Unix) ---
+	{
+		class:      ErrUnsupportedAction,
+		repairable: false,
+		retryable:  false,
+		match: func(combined string, _ int) bool {
+			return strings.Contains(combined, "unsupported_step_action") ||
+				strings.Contains(combined, "requires gui skill runner") ||
+				strings.Contains(combined, "not supported by tui runner")
+		},
+		userMessage: func(errMsg, _ string, _ int) string {
+			msg := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(errMsg), "unsupported_step_action:"))
+			if msg == "" {
+				return "The skill uses a step action that is not supported by this runner."
+			}
+			return msg
+		},
+		actionHint: func(errMsg, _ string) string {
+			return unsupportedActionHint(errMsg)
+		},
+	},
 	{
 		class:      ErrCommandNotFound,
 		repairable: true,
 		retryable:  false,
 		match: func(combined string, exitCode int) bool {
-			return exitCode == 9009 || exitCode == 127
+			return exitCode == 9009 || exitCode == 127 ||
+				strings.Contains(combined, "command not found") ||
+				strings.Contains(combined, "not recognized as an internal or external command") ||
+				strings.Contains(combined, "not recognized as the name of") ||
+				strings.Contains(combined, "is not recognized") ||
+				strings.Contains(combined, "executable file not found in") ||
+				(strings.Contains(combined, "command") && strings.Contains(combined, "was not found on path"))
 		},
 		userMessage: func(errMsg, command string, exitCode int) string {
-			cmdName := firstWord(command)
+			cmdName := commandNameForClassification(command, errMsg)
 			if cmdName == "" {
-				return fmt.Sprintf("命令未找到 (exit %d)。请确认已安装并在 PATH 中。 | %s", exitCode, errMsg)
+				if exitCode > 0 {
+					return fmt.Sprintf("Command was not found (exit %d). Ensure the required executable is installed and available on PATH. | %s", exitCode, errMsg)
+				}
+				return fmt.Sprintf("Command was not found. Ensure the required executable is installed and available on PATH. | %s", errMsg)
 			}
-			hint := fmt.Sprintf("命令 %q 未找到 (exit %d)。", cmdName, exitCode)
+			hint := fmt.Sprintf("Command %q was not found.", cmdName)
+			if exitCode > 0 {
+				hint = fmt.Sprintf("Command %q was not found (exit %d).", cmdName, exitCode)
+			}
 			switch strings.ToLower(cmdName) {
 			case "python3", "python":
-				hint += " 请安装 Python 3.x 并确保在 PATH 中。Windows 用户请从 python.org 安装。"
+				hint += " Install Python 3.x and ensure it is on PATH. On Windows, install it from python.org or the Microsoft Store."
 			case "pip", "pip3":
-				hint += " 请运行: python -m ensurepip --upgrade"
+				hint += " Run python -m ensurepip --upgrade, or install pip with your Python distribution."
 			case "node", "npm", "npx":
-				hint += " 请安装 Node.js: https://nodejs.org/"
+				hint += " Install Node.js: https://nodejs.org/."
 			default:
-				hint += " 请确认已安装并在 PATH 中。"
+				hint += " Install the dependency or add it to PATH."
 			}
 			return hint + " | " + errMsg
 		},
-		actionHint: func(_, command string) string {
-			cmdName := firstWord(command)
+		actionHint: func(errMsg, command string) string {
+			cmdName := commandNameForClassification(command, errMsg)
 			switch strings.ToLower(cmdName) {
 			case "python3":
-				return "[action: patch] 使用 manage_skill(action=\"patch\") 将命令中的 'python3' 替换为 'python'，或搜索不依赖此命令的替代 Skill"
+				return "[action: patch] Replace 'python3' with 'python' on Windows, or install python3 and add it to PATH."
 			case "node", "npm", "npx":
-				return "[action: inform_user] 需要安装 Node.js，请告知用户从 https://nodejs.org/ 安装"
+				return "[action: inform_user] Node.js is required. Ask the user to install it from https://nodejs.org/."
 			default:
-				return fmt.Sprintf("[action: patch] 使用 manage_skill(action=\"patch\") 修复命令依赖，或使用 manage_skill(action=\"search\") 搜索替代 Skill")
+				return "[action: patch] Fix the command dependency, or search for an alternative skill that does not require it."
 			}
 		},
 	},
-	// --- Bash shebang on Windows ---
 	{
 		class:      ErrShebangWindows,
 		repairable: true,
 		retryable:  false,
 		match: func(combined string, _ int) bool {
-			return (strings.Contains(combined, "'#'") || strings.Contains(combined, "\"#\"")) &&
+			return runtime.GOOS == "windows" &&
+				(strings.Contains(combined, "'#'") || strings.Contains(combined, "\"#\"")) &&
 				strings.Contains(combined, "not recognized")
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("Bash 脚本的 shebang 行在 Windows CMD 中被当作命令执行。建议设置 preferred_shell: bash 或改用跨平台脚本。%s", errMsg)
+			return fmt.Sprintf("A bash shebang was executed by Windows cmd/powershell as a command. Set preferred_shell: bash or use a cross-platform script. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: patch] 使用 manage_skill(action=\"patch\") 在 skill.yaml 中添加 preferred_shell: bash"
+			return "[action: patch] Add preferred_shell: bash to the skill definition, or rewrite the step for the current shell."
 		},
 	},
-	// --- Windows 8.3 short path ---
 	{
 		class:      ErrShortPath,
 		repairable: true,
@@ -117,13 +142,12 @@ var rules = []classificationRule{
 				(strings.Contains(combined, "enoent") || strings.Contains(combined, "no such file"))
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("Windows 8.3 短路径解析失败，文件路径中的 '~' 缩写无法被识别。建议使用完整路径。%s", errMsg)
+			return fmt.Sprintf("Windows short-path resolution failed. Replace the '~' path with the full path and retry. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: retry] 使用完整路径重试，避免 Windows 8.3 短路径"
+			return "[action: retry] Retry with full filesystem paths instead of Windows 8.3 short paths."
 		},
 	},
-	// --- Rate limit (HTTP 429) ---
 	{
 		class:      ErrRateLimit,
 		repairable: false,
@@ -132,16 +156,16 @@ var rules = []classificationRule{
 			return strings.Contains(combined, "429") &&
 				(strings.Contains(combined, "rate limit") ||
 					strings.Contains(combined, "too many requests") ||
-					strings.Contains(combined, "频率限制"))
+					strings.Contains(combined, "frequency limit") ||
+					strings.Contains(combined, "\u9891\u7387\u9650\u5236"))
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("API 调用过于频繁 (HTTP 429)，请稍后再试。%s", errMsg)
+			return fmt.Sprintf("The API is rate limited (HTTP 429). Wait and retry later. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: retry_after 60s] API 限流，等待 60 秒后重试"
+			return "[action: retry_after 60s] Wait about 60 seconds, then retry."
 		},
 	},
-	// --- Timeout ---
 	{
 		class:      ErrTimeout,
 		repairable: true,
@@ -154,13 +178,12 @@ var rules = []classificationRule{
 				strings.Contains(combined, "timeout exceeded")
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("步骤执行超时，可能是脚本挂起。建议增加 timeout 参数或检查脚本是否有阻塞操作。%s", errMsg)
+			return fmt.Sprintf("The step timed out. Increase the timeout or check whether the script is waiting for input or blocking. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: retry_with_timeout] 增大超时时间重试，或检查脚本是否有阻塞操作"
+			return "[action: retry_with_timeout] Retry with a larger timeout, or inspect the script for blocking operations."
 		},
 	},
-	// --- Network error ---
 	{
 		class:      ErrNetworkError,
 		repairable: false,
@@ -173,13 +196,12 @@ var rules = []classificationRule{
 				(strings.Contains(combined, "dns") && strings.Contains(combined, "lookup"))
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("网络连接失败，请检查网络状态。%s", errMsg)
+			return fmt.Sprintf("Network connection failed. Check network connectivity and retry if the service is expected to be reachable. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: retry] 网络错误，可直接重试"
+			return "[action: retry] Retry after checking network connectivity."
 		},
 	},
-	// --- Auth error ---
 	{
 		class:      ErrAuthError,
 		repairable: false,
@@ -191,13 +213,12 @@ var rules = []classificationRule{
 				strings.Contains(combined, "access denied")
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("认证或权限错误，请检查 API Key 或访问权限。%s", errMsg)
+			return fmt.Sprintf("Authentication or authorization failed. Check API keys, tokens, or access permissions. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: no_retry] 认证失败，需要用户提供正确的凭证或 API Key"
+			return "[action: no_retry] Ask the user to provide valid credentials or API keys before retrying."
 		},
 	},
-	// --- File not found (ENOENT) ---
 	{
 		class:      ErrFileNotFound,
 		repairable: true,
@@ -205,16 +226,16 @@ var rules = []classificationRule{
 		match: func(combined string, _ int) bool {
 			return strings.Contains(combined, "enoent") ||
 				(strings.Contains(combined, "no such file") && strings.Contains(combined, "directory")) ||
-				strings.Contains(combined, "文件不存在")
+				strings.Contains(combined, "file not found") ||
+				strings.Contains(combined, "\u6587\u4ef6\u4e0d\u5b58\u5728")
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("输入文件不存在，请检查文件路径是否正确。%s", errMsg)
+			return fmt.Sprintf("A referenced file or directory was not found. Check the input paths and skill file references. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: check_args] 检查传入的文件路径参数是否正确，确认文件存在后重试"
+			return "[action: check_args] Verify file path arguments and referenced skill files, then retry."
 		},
 	},
-	// --- Missing environment variable ---
 	{
 		class:      ErrMissingEnvVar,
 		repairable: false,
@@ -227,13 +248,37 @@ var rules = []classificationRule{
 				(strings.Contains(combined, "secret_key") && strings.Contains(combined, "not set"))
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("Skill 可能缺少必需的环境变量。%s", errMsg)
+			return fmt.Sprintf("The skill is missing a required environment variable. Configure the required variable and retry. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: inform_user] 需要设置环境变量，请告知用户配置所需的 API Key 或环境变量"
+			return "[action: inform_user] Ask the user to configure the required API key or environment variable."
 		},
 	},
-	// --- Missing parameter ---
+	{
+		class:      ErrMissingDependency,
+		repairable: false,
+		retryable:  false,
+		match: func(combined string, _ int) bool {
+			return (strings.Contains(combined, "required python package") && strings.Contains(combined, "is not installed")) ||
+				(strings.Contains(combined, "required node package") && strings.Contains(combined, "is not installed")) ||
+				isMissingPythonPackageMessage(combined) ||
+				isMissingNodeESMPackageMessage(combined) ||
+				isMissingNodePackageMessage(combined)
+		},
+		userMessage: func(errMsg, _ string, _ int) string {
+			if name := missingDependencyNameFromMessage(errMsg); name != "" {
+				installName := missingDependencyInstallName(missingDependencyKindFromMessage(errMsg), name)
+				if installName != "" && installName != name {
+					return fmt.Sprintf("The skill is missing package dependency %q (import %q). Install it and retry. | %s", installName, name, errMsg)
+				}
+				return fmt.Sprintf("The skill is missing package dependency %q. Install it and retry. | %s", firstNonEmptyString(installName, name), errMsg)
+			}
+			return fmt.Sprintf("The skill is missing a required package dependency. Install the package dependency and retry. | %s", errMsg)
+		},
+		actionHint: func(errMsg, _ string) string {
+			return missingDependencyActionHint(errMsg)
+		},
+	},
 	{
 		class:      ErrMissingParam,
 		repairable: true,
@@ -242,44 +287,43 @@ var rules = []classificationRule{
 			if exitCode != 1 && exitCode != 2 {
 				return false
 			}
-			return strings.Contains(combined, "usage:") || strings.Contains(combined, "usage：") ||
+			return strings.Contains(combined, "usage:") ||
 				strings.Contains(combined, "missing argument") ||
 				strings.Contains(combined, "required argument") ||
-				strings.Contains(combined, "no input") || strings.Contains(combined, "缺少")
+				strings.Contains(combined, "no input") ||
+				strings.Contains(combined, "missing required parameter") ||
+				strings.Contains(combined, "\u7f3a\u5c11")
 		},
 		userMessage: func(errMsg, _ string, _ int) string {
-			return fmt.Sprintf("Skill 可能缺少必需参数。%s", errMsg)
+			return fmt.Sprintf("The skill is missing a required parameter. Provide the required args and retry. | %s", errMsg)
 		},
 		actionHint: func(_, _ string) string {
-			return "[action: check_args] 检查 Skill 需要的参数，使用 manage_skill(action=\"run\", name=\"...\", input=\"...\") 传入正确参数"
+			return "[action: check_args] Inspect the skill parameters and pass the required args to manage_skill(action=\"run\")."
 		},
 	},
 }
 
 // ClassifyStepError is the unified error classification function.
-// Both GUI and TUI skill runners should call this single function.
-//
-// Parameters:
-//   - exitCode: process exit code (0 = success, 9009/127 = command not found, etc.)
-//   - output: combined stdout+stderr output from the step
-//   - errMsg: the error message string (from err.Error() or similar)
-//   - command: the command string that was executed (for context in user messages)
-//
-// Returns a ClassifiedError with the classification, user message, and metadata.
 func ClassifyStepError(exitCode int, output, errMsg, command string) ClassifiedError {
 	combined := strings.ToLower(output + " " + errMsg)
+	embeddedHint := extractEmbeddedActionHint(output + " " + errMsg)
 
 	for _, rule := range rules {
 		if rule.match(combined, exitCode) {
-			hint := ""
+			classificationText := errMsg
+			if rule.class == ErrMissingDependency {
+				classificationText = firstNonEmptyString(strings.TrimSpace(output+" "+errMsg), errMsg)
+			}
+			hint := defaultActionHint(rule.class)
 			if rule.actionHint != nil {
-				hint = rule.actionHint(errMsg, command)
-			} else {
-				hint = defaultActionHint(rule.class)
+				hint = rule.actionHint(classificationText, command)
+			}
+			if embeddedHint != "" {
+				hint = embeddedHint
 			}
 			return ClassifiedError{
 				Class:       rule.class,
-				UserMessage: rule.userMessage(errMsg, command, exitCode),
+				UserMessage: rule.userMessage(classificationText, command, exitCode),
 				Repairable:  rule.repairable,
 				Retryable:   rule.retryable,
 				ActionHint:  hint,
@@ -290,70 +334,435 @@ func ClassifyStepError(exitCode int, output, errMsg, command string) ClassifiedE
 	return ClassifiedError{
 		Class:       ErrUnknown,
 		UserMessage: errMsg,
-		Repairable:  true, // unknown errors are worth trying to repair
+		Repairable:  true,
 		Retryable:   false,
-		ActionHint:  "[action: inspect] 检查步骤输出，判断失败原因后决定下一步操作",
+		ActionHint:  firstNonEmptyString(embeddedHint, "[action: inspect] Inspect the step output and decide the next repair action from the concrete failure."),
 	}
 }
 
-// defaultActionHint returns a generic action hint for a given error class.
-// Used when a rule does not define a custom actionHint function.
+func unsupportedActionHint(errMsg string) string {
+	lower := strings.ToLower(errMsg)
+	if strings.Contains(lower, "tui") || strings.Contains(lower, "requires gui skill runner") {
+		return "[action: open_gui] Run this skill in the GUI runner, or add executable bash steps before using TUI."
+	}
+	return "[action: patch] Fix the skill step action or add a step supported by the current runner."
+}
+
 func defaultActionHint(class ErrorClass) string {
 	switch class {
 	case ErrCommandNotFound:
-		return "[action: patch] 使用 manage_skill(action=\"patch\") 修复命令依赖"
+		return "[action: patch] Fix the command dependency."
 	case ErrRateLimit:
-		return "[action: retry_after 60s] 等待后重试"
+		return "[action: retry_after 60s] Wait, then retry."
 	case ErrFileNotFound:
-		return "[action: check_args] 检查文件路径参数"
+		return "[action: check_args] Check file path arguments."
 	case ErrTimeout:
-		return "[action: retry_with_timeout] 增大超时时间重试"
+		return "[action: retry_with_timeout] Retry with a larger timeout."
 	case ErrNetworkError:
-		return "[action: retry] 网络错误，可直接重试"
+		return "[action: retry] Retry after checking network connectivity."
 	case ErrAuthError:
-		return "[action: no_retry] 认证失败，需要用户提供凭证"
+		return "[action: no_retry] Credentials are required before retrying."
 	case ErrMissingParam:
-		return "[action: check_args] 检查并传入正确参数"
+		return "[action: check_args] Provide the required parameters."
 	case ErrMissingEnvVar:
-		return "[action: inform_user] 需要设置环境变量"
+		return "[action: inform_user] Configure the required environment variables."
+	case ErrMissingDependency:
+		return "[action: install_dependency] Install the missing package dependency."
+	case ErrUnsupportedAction:
+		return unsupportedActionHint("")
 	default:
-		return "[action: inspect] 检查步骤输出，判断失败原因"
+		return "[action: inspect] Inspect the step output and classify the failure."
 	}
 }
 
 // FormatErrorForLLM formats a ClassifiedError into a string that the LLM can
-// consume. Includes the error class tag (for machine parsing by self-repair),
-// the user-friendly message, and the action hint.
-//
-// Format: "[class: <class>] <userMessage>\n<actionHint>"
-// The class tag is parsed by ExtractErrorClass() — both use errorClassPrefix/Suffix.
+// consume. Includes the error class tag, user-facing message, and action hint.
 func FormatErrorForLLM(ce ClassifiedError) string {
 	var b strings.Builder
+	userMessage := strings.TrimSpace(ce.UserMessage)
+	actionHint := strings.TrimSpace(ce.ActionHint)
+	if actionHint != "" {
+		userMessage = strings.TrimSpace(strings.ReplaceAll(userMessage, actionHint, ""))
+	}
 	b.WriteString(errorClassPrefix)
 	b.WriteString(string(ce.Class))
 	b.WriteString(errorClassSuffix)
-	b.WriteByte(' ')
-	b.WriteString(ce.UserMessage)
-	if ce.ActionHint != "" {
+	if userMessage != "" {
+		b.WriteByte(' ')
+		b.WriteString(userMessage)
+	}
+	if actionHint != "" {
 		b.WriteString("\n")
-		b.WriteString(ce.ActionHint)
+		b.WriteString(actionHint)
 	}
 	return b.String()
 }
 
-// errorClassPrefix and errorClassSuffix define the format of the class tag
-// embedded in FormatErrorForLLM output. ExtractErrorClass uses the same
-// constants to parse it back. Single source of truth for the wire format.
+// TruncateFormattedErrorForStorage caps a formatted error while preserving the
+// leading class tag and the final action hint line when possible.
+func TruncateFormattedErrorForStorage(formatted string, maxLen int) string {
+	formatted = strings.TrimSpace(formatted)
+	if maxLen <= 0 || len(formatted) <= maxLen {
+		return formatted
+	}
+	actionLine := ""
+	actionIdx := -1
+	for _, idx := range lineStartIndexes(formatted) {
+		line := formatted[idx:]
+		if end := strings.IndexAny(line, "\r\n"); end >= 0 {
+			line = line[:end]
+		}
+		if strings.Contains(line, "[action:") {
+			actionLine = strings.TrimSpace(line)
+			actionIdx = idx
+		}
+	}
+	if actionLine == "" {
+		return truncateUTF8Bytes(formatted, maxLen)
+	}
+	prefix := strings.TrimSpace(formatted)
+	if actionIdx >= 0 {
+		prefix = strings.TrimSpace(formatted[:actionIdx])
+	}
+	if len(actionLine)+5 >= maxLen {
+		return compactFormattedErrorWithAction(prefix, actionLine, maxLen)
+	}
+	suffix := "\n...\n" + actionLine
+	budget := maxLen - len(suffix)
+	if budget <= 0 {
+		return truncateUTF8Bytes(formatted, maxLen)
+	}
+	if len(prefix) > budget {
+		if classTag := formattedErrorClassTag(prefix); classTag != "" && len(classTag) <= budget {
+			prefix = classTag
+		} else {
+			prefix = truncateUTF8Bytes(prefix, budget)
+		}
+	}
+	return strings.TrimSpace(prefix) + suffix
+}
+
+func compactFormattedErrorWithAction(prefix, actionLine string, maxLen int) string {
+	actionLine = strings.TrimSpace(actionLine)
+	if maxLen <= 0 {
+		return ""
+	}
+	if actionLine == "" {
+		return truncateUTF8Bytes(prefix, maxLen)
+	}
+	marker := "\n...\n"
+	prefix = firstFormattedErrorLine(prefix)
+	if prefix == "" || len(marker)+len("[action:") >= maxLen {
+		return truncateUTF8Bytes(actionLine, maxLen)
+	}
+	if classTag := formattedErrorClassTag(prefix); classTag != "" && len(classTag)+len(marker)+len("[action:") <= maxLen {
+		prefix = classTag
+	} else {
+		prefixBudget := maxLen / 3
+		if prefixBudget < len(errorClassPrefix)+len(errorClassSuffix)+8 {
+			prefixBudget = len(errorClassPrefix) + len(errorClassSuffix) + 8
+		}
+		if prefixBudget > len(prefix) {
+			prefixBudget = len(prefix)
+		}
+		prefix = strings.TrimSpace(truncateUTF8Bytes(prefix, prefixBudget))
+	}
+	actionBudget := maxLen - len(prefix) - len(marker)
+	if actionBudget <= 0 {
+		return truncateUTF8Bytes(actionLine, maxLen)
+	}
+	return prefix + marker + truncateUTF8Bytes(actionLine, actionBudget)
+}
+
+func formattedErrorClassTag(text string) string {
+	start := strings.Index(text, errorClassPrefix)
+	if start < 0 {
+		return ""
+	}
+	rest := text[start:]
+	end := strings.Index(rest, errorClassSuffix)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end+len(errorClassSuffix)])
+}
+
+func firstFormattedErrorLine(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if end := strings.IndexAny(text, "\r\n"); end >= 0 {
+		text = text[:end]
+	}
+	return strings.TrimSpace(text)
+}
+
 const (
 	errorClassPrefix = "[class: "
 	errorClassSuffix = "]"
 )
 
-// firstWord extracts the first whitespace-delimited word from s.
 func firstWord(s string) string {
 	fields := strings.Fields(strings.TrimSpace(s))
 	if len(fields) > 0 {
 		return fields[0]
+	}
+	return ""
+}
+
+func commandNameForClassification(command, errMsg string) string {
+	if name := commandNameFromErrorMessage(errMsg); name != "" {
+		return name
+	}
+	for _, word := range extractCommandWords(command) {
+		word = normalizeInferredCommandName(word)
+		lower := strings.ToLower(word)
+		if word == "" || isShellEnvAssignmentField(word) || shellBuiltins[lower] || skipInferredCommand(word) || commandWrapperNames[lower] {
+			continue
+		}
+		return word
+	}
+	return firstWord(command)
+}
+
+func commandNameFromErrorMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "the term '") && strings.Contains(lower, "' is not recognized") {
+		start := strings.Index(lower, "the term '") + len("the term '")
+		if end := strings.Index(message[start:], "'"); end >= 0 {
+			return strings.TrimSpace(message[start : start+end])
+		}
+	}
+	if strings.Contains(lower, ": command not found") {
+		prefix := message[:strings.Index(lower, ": command not found")]
+		if idx := strings.LastIndex(prefix, ":"); idx >= 0 {
+			prefix = prefix[idx+1:]
+		}
+		return strings.Trim(strings.TrimSpace(prefix), "\"'`:,;")
+	}
+	fields := strings.Fields(strings.TrimSpace(message))
+	for i := 0; i+2 < len(fields); i++ {
+		if strings.EqualFold(fields[i], "command") && strings.EqualFold(fields[i+2], "was") {
+			return strings.Trim(fields[i+1], "\"'`:,;")
+		}
+	}
+	for i := 0; i+3 < len(fields); i++ {
+		if strings.EqualFold(fields[i], "required") && strings.EqualFold(fields[i+1], "command") && strings.EqualFold(fields[i+3], "was") {
+			return strings.Trim(fields[i+2], "\"'`:,;")
+		}
+	}
+	return ""
+}
+
+func missingDependencyNameFromMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	lower := strings.ToLower(message)
+	for _, marker := range []string{"no module named ", "cannot find module ", "cannot find package "} {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			rest := strings.TrimSpace(message[idx+len(marker):])
+			return strings.Trim(firstWord(rest), "\"'`:,;")
+		}
+	}
+	for _, marker := range []string{"required python package ", "required node package "} {
+		if idx := strings.Index(lower, marker); idx >= 0 {
+			rest := strings.TrimSpace(message[idx+len(marker):])
+			end := strings.Index(strings.ToLower(rest), " is not installed")
+			if end >= 0 {
+				return strings.TrimSpace(rest[:end])
+			}
+		}
+	}
+	return ""
+}
+
+func missingDependencyActionHint(message string) string {
+	name := missingDependencyNameFromMessage(message)
+	switch missingDependencyKindFromMessage(message) {
+	case "python":
+		name = missingDependencyInstallName("python", name)
+		if name == "" {
+			return "[action: install_dependency] Install the missing Python package with pip, then retry the skill."
+		}
+		return fmt.Sprintf("[action: install_dependency] Install Python package %s with pip, then retry the skill.", name)
+	case "node":
+		name = missingDependencyInstallName("node", name)
+		if name == "" {
+			return "[action: install_dependency] Install the missing Node package with npm, then retry the skill."
+		}
+		return fmt.Sprintf("[action: install_dependency] Install Node package %s with npm, then retry the skill.", name)
+	default:
+		if name == "" {
+			return "[action: install_dependency] Install the missing package dependency, then retry the skill."
+		}
+		return fmt.Sprintf("[action: install_dependency] Install package %s, then retry the skill.", name)
+	}
+}
+
+func missingDependencyInstallName(kind, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	switch kind {
+	case "python":
+		if pkg := pythonImportPackageName(pythonTopLevelImportName(name)); pkg != "" {
+			return pkg
+		}
+	case "node":
+		if pkg := nodePackageName(name); pkg != "" {
+			return pkg
+		}
+	}
+	return name
+}
+
+func missingDependencyKindFromMessage(message string) string {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "required python package"),
+		strings.Contains(lower, "modulenotfounderror:"),
+		strings.Contains(lower, "importerror: no module named"),
+		strings.Contains(lower, "no module named "):
+		return "python"
+	case strings.Contains(lower, "required node package"),
+		strings.Contains(lower, "err_module_not_found"),
+		strings.Contains(lower, "cannot find module"):
+		return "node"
+	default:
+		return ""
+	}
+}
+
+func isLocalNodeModuleReference(combined string) bool {
+	if !strings.Contains(combined, "cannot find module") {
+		return false
+	}
+	name := missingDependencyNameFromMessage(combined)
+	return isLocalModulePath(name)
+}
+
+func isLocalPythonModuleReference(combined string) bool {
+	if !strings.Contains(combined, "no module named ") {
+		return false
+	}
+	name := missingDependencyNameFromMessage(combined)
+	if name == "" {
+		return false
+	}
+	return isLocalModulePath(name)
+}
+
+func isMissingPythonPackageMessage(combined string) bool {
+	if !(strings.Contains(combined, "modulenotfounderror:") ||
+		strings.Contains(combined, "importerror: no module named") ||
+		strings.Contains(combined, "no module named ")) {
+		return false
+	}
+	if isLocalPythonModuleReference(combined) {
+		return false
+	}
+	name := missingDependencyNameFromMessage(combined)
+	top := pythonTopLevelImportName(name)
+	return top == "" || !pythonStdlibModules[top]
+}
+
+func isMissingNodePackageMessage(combined string) bool {
+	if !strings.Contains(combined, "cannot find module") {
+		return false
+	}
+	if isLocalNodeModuleReference(combined) {
+		return false
+	}
+	name := missingDependencyNameFromMessage(combined)
+	return name == "" || nodePackageName(name) != ""
+}
+
+func isMissingNodeESMPackageMessage(combined string) bool {
+	if !strings.Contains(combined, "err_module_not_found") || !strings.Contains(combined, "cannot find package") {
+		return false
+	}
+	name := missingDependencyNameFromMessage(combined)
+	return name == "" || nodePackageName(name) != ""
+}
+
+func isLocalModulePath(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "/") || strings.HasPrefix(name, `\`) {
+		return true
+	}
+	if len(name) >= 2 && name[1] == ':' && ((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z')) {
+		return true
+	}
+	return strings.Contains(name, `\`)
+}
+
+func truncateUTF8Bytes(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(s) <= maxLen {
+		return s
+	}
+	last := 0
+	for idx := range s {
+		if idx > maxLen {
+			break
+		}
+		last = idx
+	}
+	if last == 0 {
+		return ""
+	}
+	return s[:last]
+}
+
+func lineStartIndexes(s string) []int {
+	indexes := []int{0}
+	for i, r := range s {
+		if r == '\n' {
+			indexes = append(indexes, i+1)
+		}
+	}
+	return indexes
+}
+
+var commandWrapperNames = map[string]bool{
+	"env": true, "sudo": true, "doas": true, "exec": true, "time": true, "nohup": true,
+}
+
+func extractEmbeddedActionHint(text string) string {
+	start := strings.Index(text, "[action:")
+	if start < 0 {
+		return ""
+	}
+	rest := text[start:]
+	end := strings.Index(rest, "]")
+	if end < 0 {
+		return strings.TrimSpace(rest)
+	}
+	lineEnd := strings.IndexAny(rest[end+1:], "\r\n")
+	if lineEnd < 0 {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(rest[:end+1+lineEnd])
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
 	}
 	return ""
 }

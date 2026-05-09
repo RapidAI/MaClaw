@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
@@ -68,6 +70,101 @@ func TestWorkerMemoryRequiresWorkerID(t *testing.T) {
 	mux.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("POST status = %d, want 400", w.Code)
+	}
+}
+
+func TestWorkerMemoryRejectsOversizedSaveBody(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	h := NewHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterClientRoutes(mux)
+
+	body := `{"tenant_id":"tenant-a","worker_id":"worker-a","content":"` + strings.Repeat("x", maxMemorySaveBodyBytes+1024)
+	req := httptest.NewRequest(http.MethodPost, "/client/iworker/memories", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("POST status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/client/iworker/memories?tenant_id=tenant-a&worker_id=worker-a&query=x&limit=10", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Memories []MemoryDTO `json:"memories"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(resp.Memories) != 0 {
+		t.Fatalf("unexpected memories after oversized save: %+v", resp.Memories)
+	}
+}
+
+func TestWorkerMemoryRejectsTrailingJSONWithoutSaving(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	h := NewHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterClientRoutes(mux)
+
+	body := `{"tenant_id":"tenant-a","worker_id":"worker-a","content":"valid-looking memory"} {"tenant_id":"tenant-a","worker_id":"worker-a","content":"extra"}`
+	req := httptest.NewRequest(http.MethodPost, "/client/iworker/memories", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("POST status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/client/iworker/memories?tenant_id=tenant-a&worker_id=worker-a&query=memory&limit=10", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Memories []MemoryDTO `json:"memories"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(resp.Memories) != 0 {
+		t.Fatalf("unexpected memories after trailing JSON save: %+v", resp.Memories)
+	}
+}
+
+func TestWorkerMemorySaveFailsWhenFlushFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "memory.json")
+	store, err := corememory.NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatalf("remove store dir: %v", err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("replace store dir with file: %v", err)
+	}
+	h := NewHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterClientRoutes(mux)
+
+	body, _ := json.Marshal(map[string]any{"tenant_id": "tenant-a", "worker_id": "worker-a", "content": "must be durable before success"})
+	req := httptest.NewRequest(http.MethodPost, "/client/iworker/memories", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("POST status = %d body=%s, want flush failure", w.Code, w.Body.String())
 	}
 }
 
@@ -270,6 +367,48 @@ func TestWorkerMemoryReadsTenantFromHeader(t *testing.T) {
 	}
 	if len(resp.Memories) != 1 || resp.Memories[0].TenantID != "tenant-header" {
 		t.Fatalf("unexpected memories: %+v", resp.Memories)
+	}
+}
+
+func TestWorkerMemoryDeleteSupportsEscapedIDAndRequiresFlush(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memory.json"))
+	if err != nil {
+		t.Fatalf("NewStore returned error: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	h := NewHandler(store)
+	mux := http.NewServeMux()
+	h.RegisterClientRoutes(mux)
+
+	dto := postMemory(t, mux, map[string]any{
+		"id":        "mem/team a",
+		"tenant_id": "tenant-a",
+		"worker_id": "worker-a",
+		"content":   "delete escaped id",
+	})
+	if dto.ID != "mem/team a" {
+		t.Fatalf("saved id = %q", dto.ID)
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/client/iworker/memories/mem%2Fteam%20a?tenant_id=tenant-a&worker_id=worker-a", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DELETE status = %d body=%s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/client/iworker/memories?tenant_id=tenant-a&worker_id=worker-a&query=escaped&limit=10", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Memories []MemoryDTO `json:"memories"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json.Unmarshal returned error: %v", err)
+	}
+	if len(resp.Memories) != 0 {
+		t.Fatalf("memory still visible after escaped delete: %+v", resp.Memories)
 	}
 }
 

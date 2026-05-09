@@ -1,10 +1,10 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/intent"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"log"
 	"os"
 	"strings"
@@ -14,69 +14,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// nonCodingKeywords are phrases that strongly indicate a non-coding task.
-// When the user message contains these AND none of the coding keywords,
-// we block session creation and guide the LLM to use direct tools instead.
-// All entries MUST be lowercase (matched against lowercased user text).
-var nonCodingKeywords = []string{
-	"搜索论文", "搜论文", "找论文", "查论文", "下载论文",
-	"翻译", "全文翻译", "翻译成中文", "翻译成英文",
-	"生成pdf", "生成 pdf", "导出pdf", "导出 pdf",
-	"ppt", "pptx", "宣传ppt", "宣传 ppt", "演示文稿", "演示稿", "幻灯片", "presentation", "slides",
-	"查天气", "天气预报", "今天天气",
-	"查快递", "快递单号", "物流查询",
-	"搜索新闻", "查新闻", "最新新闻",
-	"总结文章", "总结论文", "摘要",
-	"发邮件", "写邮件", "发送邮件",
-	"提醒我", "设个闹钟",
-	"播放音乐", "放首歌",
-	"知识库", "放入知识库", "导入知识库", "入库",
-	"报告", "评测报告", "文档处理",
-	"arxiv",
-}
-
-// codingKeywords are phrases that indicate a genuine coding task.
-// If any of these appear, the guard does NOT block session creation.
-// All entries MUST be lowercase (matched against lowercased user text).
-var codingKeywords = []string{
-	"写代码", "改代码", "修改代码", "编程", "开发", "修bug", "修 bug", "修复bug", "修复 bug", "bug",
-	"重构", "refactor", "实现", "添加功能", "新增功能",
-	"写脚本", "写一个脚本", "写个脚本",
-	"写函数", "写方法", "写接口", "写api", "写 api",
-	"代码", "源码", "源代码",
-	"编译", "构建", "build", "compile",
-	"测试", "单元测试", "test",
-	"部署", "deploy",
-	"pull request", "merge request",
-	"git commit", "git push",
-	"create_session", // explicit tool name = intentional
-	// Creation-oriented keywords: user wants to build something.
-	// "游戏" alone is strong enough — "做一个打飞机游戏" hits this.
-	"游戏", "game",
-	// Longer creation phrases that imply coding (short ones like "做个" are
-	// too ambiguous — "做个总结" is not coding).
-	"开发一个", "开发个", "实现一个", "实现个",
-	"创建一个", "创建个",
-	"前端", "后端", "frontend", "backend",
-}
-
-// codingActionPhrases are short action/continuation phrases. These are
-// retained for reference but no longer used directly — the GateIntentClassifier's
-// gateContPhrases + hasCodingSignals pipeline handles continuation detection
-// semantically. See gate_intent_classifier.go.
-//
-// Deprecated: use GateIntentClassifier.Classify() instead.
-var codingActionPhrases = []string{
-	"开工", "开干", "动手", "搞起来", "搞起", "干吧", "做吧",
-	"开始吧", "开始做", "开始干", "开始搞",
-	"let's go", "let's do it", "let's start", "let's begin",
-}
-
 // checkSessionTaskGuard returns a non-empty hint string when the current
 // user message should NOT create a coding session. Returns "" only for
 // explicit coding tasks.
 func (h *IMMessageHandler) checkSessionTaskGuard() string {
-	result := classifyTaskIntent(h.lastUserText)
+	result := h.classifyTaskIntentForSessionGuard(h.lastUserText)
 
 	// If the current message is clearly a coding task, allow immediately.
 	if result.Intent == intentCoding {
@@ -89,7 +31,7 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 	// gateContPhrases + hasCodingSignals pipeline (or UIC delegation when
 	// available), returning GateIntentContinuation for coding continuations.
 	//
-	// This replaces the keyword-based hasCodingActionPhrase workaround.
+	// This avoids local text-rule guessing for continuation handling.
 	if result.Intent == intentAmbiguous || result.Intent == intentUnknown {
 		// GateIntentClassifier: five-category semantic classification for the
 		// session guard. Consulted before the generic IntentClassifier because
@@ -110,7 +52,7 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 		}
 
 		// Hybrid intent classifier: use embedding + LLM for semantic classification
-		// when keyword-based classification is ambiguous.
+		// when the first-pass semantic result is ambiguous.
 		if h.app != nil && h.getAppToolRouter() != nil {
 			if ic := h.getAppToolRouter().IntentClassifier(); ic != nil {
 				icResult := ic.Classify(h.lastUserText)
@@ -119,7 +61,7 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 					return "" // semantic classifier says coding → allow
 				case tool.IntentQuery:
 					// Knowledge question, not an action → block session creation
-					return "⚠️ 当前请求看起来是知识问答，不需要创建编程会话。请直接回答用户的问题。"
+					return "Task intent: semantic classification indicates a knowledge question, not an action. Do not create a coding session; answer the user directly."
 				case tool.IntentSSH:
 					// Fall through to the SSH hint below
 					result.Intent = intentSSH
@@ -130,59 +72,38 @@ func (h *IMMessageHandler) checkSessionTaskGuard() string {
 		}
 	}
 
+	return formatSemanticSessionGuardHint(result)
+}
+
+func formatSemanticSessionGuardHint(result taskIntentResult) string {
 	switch result.Intent {
 	case intentSSH:
-		return fmt.Sprintf(`⚠️ 任务类型检测：当前请求更像 SSH/服务器操作任务（检测到特征：%s），不要创建编程会话。
-
-请改用 ssh 工具处理远程操作：
-- ssh(action="connect", ...)：连接服务器
-- ssh(action="exec", session_id="...", command="...")：执行短命令
-- ssh(action="exec_background", session_id="...", command="...")：执行长命令/部署/安装/编译
-- ssh(action="upload"/"download", ...)：传输文件
-
-只有明确需要修改项目代码时，才调用 create_session。`, formatIntentEvidence(result))
+		return fmt.Sprintf(`Task intent: semantic classification indicates an SSH/server operation (%s). Do not create a coding session.
+Use the ssh tool instead:
+- ssh(action="connect", ...): connect to the server
+- ssh(action="exec", session_id="...", command="..."): run a short command
+- ssh(action="exec_background", session_id="...", command="..."): run a long command, deployment, install, or build
+- ssh(action="upload"/"download", ...): transfer files
+Only call create_session when the task semantically requires modifying project code.`, formatIntentEvidence(result))
 	case intentNonCoding:
-		return fmt.Sprintf(`⚠️ 任务类型检测：当前请求看起来不是编程任务（检测到特征：%s），不需要创建编程会话。
-
-请直接使用以下工具完成任务：
-- bash：执行命令行操作（如 curl 下载、脚本执行）
-- craft_tool：自动生成并执行脚本（适合数据处理、API 调用、文件转换）
-- read_file / write_file / edit_file：读写和局部编辑本地文件
-- send_file：将文件发送给用户
-- open：打开文件或网址
-- memory：保存/检索信息
-
-如果确实需要编程会话，请在下一轮重新调用 create_session。`, formatIntentEvidence(result))
+		return fmt.Sprintf(`Task intent: semantic classification indicates this is not a coding task (%s). Do not create a coding session.
+Use direct tools instead:
+- bash: run local commands or scripts
+- craft_tool: generate and execute a task-specific script
+- read_file / write_file / edit_file: read, write, or edit local files
+- send_file: send a file to the user
+- open: open a file or URL
+- memory: save or retrieve information
+Only call create_session when the task semantically requires a coding session.`, formatIntentEvidence(result))
 	case intentUnknown, intentAmbiguous:
-		return fmt.Sprintf(`⚠️ 任务类型检测：当前请求还不能确定是编程任务还是 SSH/服务器操作（检测到特征：%s）。
-
-现在不要创建编程会话。请先澄清目标：
-- 如果是修改项目代码、修 bug、实现功能，再调用 create_session
-- 如果是登录服务器、查看日志、重启服务、上传下载文件，请改用 ssh 工具
-
-在任务不明确时，不要自动打开编程工具。`, formatIntentEvidence(result))
+		return fmt.Sprintf(`Task intent is still ambiguous (%s). Do not create a coding session yet.
+Clarify the goal first:
+- If the user needs project code changes, bug fixes, or feature implementation, create a coding session after clarification.
+- If the user needs server login, logs, service restart, upload, or download, use the ssh tool after clarification.
+When semantic intent is unavailable or ambiguous, do not open coding tools automatically.`, formatIntentEvidence(result))
 	default:
 		return ""
 	}
-}
-
-// hasCodingActionPhrase checks whether the user message contains a short
-// action/continuation phrase that signals "start working" (e.g. "开工",
-// "动手", "start"). These phrases are too generic to classify as coding
-// on their own, but combined with conversation context they indicate the
-// user wants to proceed with a previously discussed coding task.
-//
-// Deprecated: use GateIntentClassifier.Classify() which handles continuation
-// detection semantically through gateContPhrases + hasCodingSignals.
-// Retained for degraded-mode fallback when no classifier is available.
-func hasCodingActionPhrase(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	for _, phrase := range codingActionPhrases {
-		if strings.Contains(lower, phrase) {
-			return true
-		}
-	}
-	return false
 }
 
 // conversationHasCodingContext checks whether the recent conversation history
@@ -190,40 +111,8 @@ func hasCodingActionPhrase(text string) bool {
 // development, code, projects). This allows short follow-up messages like
 // "开工" to pass through the session guard when context is established.
 func (h *IMMessageHandler) conversationHasCodingContext() bool {
-	// When UIC is available, classify the most recent user message from
-	// conversation history. This is more accurate than keyword scanning
-	// because UIC uses embedding + LLM fusion.
-	if uic := unifiedClassifier; uic != nil {
+	if uic := h.getUnifiedClassifier(); uic != nil {
 		return h.conversationHasCodingContextUIC(uic)
-	}
-
-	// Fallback: keyword scan when UIC is unavailable.
-	if h.memory == nil {
-		return false
-	}
-	userID := h.lastUserID
-	if userID == "" {
-		userID = "desktop-user"
-	}
-	entries := h.memory.Load(userID)
-	if len(entries) == 0 {
-		return false
-	}
-	start := 0
-	if len(entries) > 10 {
-		start = len(entries) - 10
-	}
-	for i := start; i < len(entries); i++ {
-		text, ok := entries[i].Content.(string)
-		if !ok {
-			continue
-		}
-		lower := strings.ToLower(text)
-		for _, kw := range codingKeywords {
-			if strings.Contains(lower, kw) {
-				return true
-			}
-		}
 	}
 	return false
 }
@@ -234,9 +123,9 @@ func (h *IMMessageHandler) conversationHasCodingContext() bool {
 // coding context.
 //
 // Only checks one message (not 5) because:
-// 1. Each UIC.Classify() may trigger L2+L3 (embedding + LLM), costing 2-8s
-// 2. If the most recent user message is coding-related, that's sufficient
-//    context for a follow-up "开工" to be treated as continuation
+//  1. Each UIC.Classify() may trigger L2+L3 (embedding + LLM), costing 2-8s
+//  2. If the most recent user message is coding-related, that's sufficient
+//     context for a follow-up "开工" to be treated as continuation
 func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIntentClassifier) bool {
 	if h.memory == nil {
 		return false

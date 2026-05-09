@@ -2,6 +2,7 @@ package centers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,8 @@ import (
 )
 
 type memoryCenterRepo struct {
-	items map[string]*store.Center
+	items                map[string]*store.Center
+	updateIntegrationErr error
 }
 
 func newMemoryCenterRepo(centers ...*store.Center) *memoryCenterRepo {
@@ -37,7 +39,7 @@ func (m *memoryCenterRepo) Create(_ context.Context, c *store.Center) error {
 func (m *memoryCenterRepo) GetByID(_ context.Context, id string) (*store.Center, error) {
 	c, ok := m.items[id]
 	if !ok {
-		return nil, fmt.Errorf("not found")
+		return nil, sql.ErrNoRows
 	}
 	copy := *c
 	return &copy, nil
@@ -50,7 +52,7 @@ func (m *memoryCenterRepo) GetByRegistrationKey(_ context.Context, machineID, co
 			return &copy, nil
 		}
 	}
-	return nil, fmt.Errorf("not found")
+	return nil, sql.ErrNoRows
 }
 
 func (m *memoryCenterRepo) List(context.Context) ([]*store.Center, error) {
@@ -93,6 +95,9 @@ func (m *memoryCenterRepo) UpdateHeartbeat(_ context.Context, c *store.Center) e
 }
 
 func (m *memoryCenterRepo) UpdateIntegration(_ context.Context, c *store.Center) error {
+	if m.updateIntegrationErr != nil {
+		return m.updateIntegrationErr
+	}
 	current, ok := m.items[c.ID]
 	if !ok {
 		return fmt.Errorf("not found")
@@ -132,6 +137,8 @@ func (m *memoryCenterRepo) UpdateRegistration(_ context.Context, c *store.Center
 	current.TenantCount = c.TenantCount
 	current.CloudControlMode = c.CloudControlMode
 	current.LastSyncStatus = c.LastSyncStatus
+	current.SecretHash = c.SecretHash
+	current.ManagementSecret = c.ManagementSecret
 	current.UpdatedAt = time.Now()
 	return nil
 }
@@ -142,7 +149,8 @@ func (m *memoryCenterRepo) Delete(_ context.Context, id string) error {
 }
 
 type memoryLicenseRepo struct {
-	items map[string]*store.License
+	items     map[string]*store.License
+	activeErr error
 }
 
 func newMemoryLicenseRepo(licenses ...*store.License) *memoryLicenseRepo {
@@ -181,6 +189,9 @@ func (m *memoryLicenseRepo) GetByCenterID(_ context.Context, centerID string) ([
 }
 
 func (m *memoryLicenseRepo) GetActiveByCenterID(_ context.Context, centerID string) (*store.License, error) {
+	if m.activeErr != nil {
+		return nil, m.activeErr
+	}
 	now := time.Now()
 	for _, lic := range m.items {
 		if lic.CenterID == centerID && lic.RevokedAt == nil && (lic.IsLongTerm || lic.ExpiresAt.After(now)) {
@@ -262,7 +273,7 @@ func TestProbeCapturesNonBlockingLocalFallbackStatus(t *testing.T) {
 		if r.URL.Path != "/api/center/status" {
 			t.Fatalf("probe path = %q, want /api/center/status", r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":1,"runtime_provider_mode":"local_settings_fallback","compute_source":"cloud","compute_permission":false,"cloud_provider_count":0,"compute_sync_status":{"status":"failure","error":"cloud unavailable","provider_count":0,"non_blocking":true,"runtime_impact":"local_settings_fallback"},"iworker_readiness":{"ready":true,"status":"ready","agent_instance_count":2,"workload_summary":{"agent_instance_count":2,"active_count":1,"completed_count":3,"review_count":1,"blocked_count":0}}}`))
+		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console","provider_count":1,"runtime_provider_mode":"local_settings_fallback","compute_source":"cloud","compute_permission":false,"cloud_provider_count":0,"compute_sync_status":{"status":"failure","error":"cloud unavailable","provider_count":0,"non_blocking":true,"runtime_impact":"local_settings_fallback"},"cloud_heartbeat":{"configured":true,"status":"degraded","consecutive_failures":1,"non_blocking":true,"business_impact":"none_local_center_and_iworker_continue"},"iworker_readiness":{"ready":true,"status":"ready","agent_instance_count":2,"workload_summary":{"agent_instance_count":2,"active_count":1,"completed_count":3,"review_count":1,"blocked_count":0}}}`))
 	}))
 	defer server.Close()
 
@@ -282,12 +293,18 @@ func TestProbeCapturesNonBlockingLocalFallbackStatus(t *testing.T) {
 	if result.ComputeSyncStatus == nil || !result.ComputeSyncStatus.NonBlocking || result.ComputeSyncStatus.RuntimeImpact != "local_settings_fallback" {
 		t.Fatalf("ComputeSyncStatus = %+v, want non-blocking local fallback", result.ComputeSyncStatus)
 	}
+	if result.CloudHeartbeat == nil || !result.CloudHeartbeat.NonBlocking || result.CloudHeartbeat.BusinessImpact != "none_local_center_and_iworker_continue" {
+		t.Fatalf("CloudHeartbeat = %+v, want non-blocking local continuity", result.CloudHeartbeat)
+	}
 	if center.RuntimeStatusJSON == "" {
 		t.Fatal("probe did not persist runtime status")
 	}
 	management := buildCenterManagement(center, &store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
 	if management.RuntimeStatus == nil || management.RuntimeStatus.RuntimeProviderMode != "local_settings_fallback" || management.RuntimeStatus.ComputeSyncStatus == nil || !management.RuntimeStatus.ComputeSyncStatus.NonBlocking {
 		t.Fatalf("management runtime status = %+v", management.RuntimeStatus)
+	}
+	if management.RuntimeStatus.CloudHeartbeat == nil || !management.RuntimeStatus.CloudHeartbeat.NonBlocking {
+		t.Fatalf("management cloud heartbeat = %+v, want non-blocking", management.RuntimeStatus.CloudHeartbeat)
 	}
 	rawResult, err := json.Marshal(result)
 	if err != nil {
@@ -319,6 +336,29 @@ func TestRuntimeSnapshotDoesNotMutateCenterStatus(t *testing.T) {
 	center, _ := repo.GetByID(context.Background(), "ctr_1")
 	if center.LastSyncStatus != "configured" {
 		t.Fatalf("LastSyncStatus = %q, want unchanged configured", center.LastSyncStatus)
+	}
+}
+
+func TestProbeFailsWhenResultCannotBePersisted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok","runtime_type":"service","product_kind":"iworkercenter","admin_console":"web_console"}`))
+	}))
+	defer server.Close()
+
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", BaseURL: server.URL, Status: "active", LastSyncStatus: "configured"})
+	repo.updateIntegrationErr = errors.New("database locked")
+	svc := NewService(repo, nil)
+
+	result, center, err := svc.Probe(context.Background(), "ctr_1")
+	if err == nil || !strings.Contains(err.Error(), "record probe result") {
+		t.Fatalf("Probe() error = %v, want persistence error", err)
+	}
+	if result != nil || center != nil {
+		t.Fatalf("Probe() returned result=%+v center=%+v despite persistence failure", result, center)
+	}
+	stored, _ := repo.GetByID(context.Background(), "ctr_1")
+	if stored.LastSyncStatus != "configured" {
+		t.Fatalf("LastSyncStatus = %q, want unchanged configured", stored.LastSyncStatus)
 	}
 }
 
@@ -366,7 +406,7 @@ func TestHeartbeatRequiresIWorkerCenterServiceIdentity(t *testing.T) {
 		ProductKind:  "iworker",
 		AdminConsole: "desktop_gui",
 	})
-	if err != ErrInvalidServiceIdentity {
+	if !errors.Is(err, ErrInvalidServiceIdentity) {
 		t.Fatalf("Heartbeat() error = %v, want ErrInvalidServiceIdentity", err)
 	}
 	center, _ := repo.GetByID(context.Background(), "ctr_1")
@@ -375,6 +415,26 @@ func TestHeartbeatRequiresIWorkerCenterServiceIdentity(t *testing.T) {
 	}
 	if center.LastSyncStatus != "heartbeat_not_iworkercenter" {
 		t.Fatalf("LastSyncStatus = %q, want heartbeat_not_iworkercenter", center.LastSyncStatus)
+	}
+}
+
+func TestHeartbeatInvalidIdentityFailsWhenStatusCannotBeRecorded(t *testing.T) {
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", SecretHash: hashSecret("secret-abc"), LastSyncStatus: "configured"})
+	repo.updateIntegrationErr = errors.New("disk full")
+	svc := NewService(repo, nil)
+
+	err := svc.Heartbeat(context.Background(), "ctr_1", HeartbeatRequest{
+		Secret:       "secret-abc",
+		RuntimeType:  "desktop",
+		ProductKind:  "iworker",
+		AdminConsole: "desktop_gui",
+	})
+	if !errors.Is(err, ErrInvalidServiceIdentity) || !strings.Contains(err.Error(), "failed to record service identity failure") {
+		t.Fatalf("Heartbeat() error = %v, want wrapped identity persistence error", err)
+	}
+	center, _ := repo.GetByID(context.Background(), "ctr_1")
+	if center.LastSyncStatus != "configured" {
+		t.Fatalf("LastSyncStatus = %q, want unchanged configured", center.LastSyncStatus)
 	}
 }
 
@@ -414,6 +474,7 @@ func TestHeartbeatStoresRuntimeContinuityWithoutBusinessData(t *testing.T) {
 		ComputeSource:       "cloud",
 		CloudProviderCount:  0,
 		ComputeSyncStatus:   &centerComputeSyncStatus{Status: "failure", Error: "cloud unavailable", ProviderCount: 0, NonBlocking: true, RuntimeImpact: "local_settings_fallback"},
+		CloudHeartbeat:      &centerCloudHeartbeat{Enabled: true, Status: "degraded", FailureCount: 2, NonBlocking: true, BusinessImpact: "none_local_center_and_iworker_continue"},
 	})
 	if err != nil {
 		t.Fatalf("Heartbeat() error: %v", err)
@@ -425,6 +486,9 @@ func TestHeartbeatStoresRuntimeContinuityWithoutBusinessData(t *testing.T) {
 	management := buildCenterManagement(center, &store.License{ID: "lic_1", CenterID: "ctr_1", ExpiresAt: time.Now().Add(time.Hour), CreatedAt: time.Now()})
 	if management.RuntimeStatus == nil || management.RuntimeStatus.RuntimeProviderMode != "local_settings_fallback" || management.RuntimeStatus.ComputeSyncStatus == nil || !management.RuntimeStatus.ComputeSyncStatus.NonBlocking {
 		t.Fatalf("management runtime status = %+v", management.RuntimeStatus)
+	}
+	if management.RuntimeStatus.CloudHeartbeat == nil || !management.RuntimeStatus.CloudHeartbeat.NonBlocking || management.RuntimeStatus.CloudHeartbeat.BusinessImpact != "none_local_center_and_iworker_continue" {
+		t.Fatalf("cloud heartbeat status = %+v, want non-blocking local continuity", management.RuntimeStatus.CloudHeartbeat)
 	}
 	for _, forbidden := range []string{"current_task", "current_detail", "tenant_count", "role_count", "business_payload"} {
 		if strings.Contains(center.RuntimeStatusJSON, forbidden) {
@@ -490,7 +554,7 @@ func TestManagementDoesNotRequireIWorkerBusinessReadinessAfterServiceIdentityVer
 }
 
 func TestManagementSummaryCountsRuntimeFallbackWithoutBusinessLeak(t *testing.T) {
-	runtimeJSON := `{"provider_count":1,"runtime_provider_mode":"local_settings_fallback","compute_source":"cloud","cloud_provider_count":0,"compute_sync_status":{"status":"failure","provider_count":0,"non_blocking":true,"runtime_impact":"local_settings_fallback"}}`
+	runtimeJSON := `{"provider_count":1,"runtime_provider_mode":"local_settings_fallback","compute_source":"cloud","cloud_provider_count":0,"compute_sync_status":{"status":"failure","provider_count":0,"non_blocking":true,"runtime_impact":"local_settings_fallback"},"cloud_heartbeat":{"configured":true,"status":"degraded","consecutive_failures":2,"non_blocking":true,"business_impact":"none_local_center_and_iworker_continue"}}`
 	repo := newMemoryCenterRepo(&store.Center{
 		ID:                "ctr_1",
 		Status:            "active",
@@ -507,6 +571,9 @@ func TestManagementSummaryCountsRuntimeFallbackWithoutBusinessLeak(t *testing.T)
 	}
 	if report.Summary.RuntimeFallbackCenters != 1 || report.Summary.RuntimeNonBlockingIssues != 1 || report.Summary.RuntimeBlockingIssues != 0 {
 		t.Fatalf("runtime summary = %+v", report.Summary)
+	}
+	if report.Summary.HeartbeatDegradedCenters != 1 || report.Summary.HeartbeatBlockingIssues != 0 {
+		t.Fatalf("heartbeat summary = %+v", report.Summary)
 	}
 	raw, err := json.Marshal(report)
 	if err != nil {
@@ -535,6 +602,21 @@ func TestServiceReadinessRejectsUnlicensedCenter(t *testing.T) {
 	}
 	if _, err := svc.EnsureServiceManagementAllowed(context.Background(), "ctr_1"); !errors.Is(err, ErrServiceManagementNotAllowed) {
 		t.Fatalf("EnsureServiceManagementAllowed() error = %v, want ErrServiceManagementNotAllowed", err)
+	}
+}
+
+func TestServiceReadinessReturnsLicenseStoreErrors(t *testing.T) {
+	repo := newMemoryCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example", SupportsMultiTenant: true, LastSyncStatus: "probe_ok"})
+	licenses := newMemoryLicenseRepo()
+	licenses.activeErr = errors.New("database locked")
+	svc := NewService(repo, license.NewService(licenses, nil))
+
+	readiness, err := svc.ServiceReadiness(context.Background(), "ctr_1")
+	if err == nil || !strings.Contains(err.Error(), "load active license") {
+		t.Fatalf("ServiceReadiness() error = %v, want license store error", err)
+	}
+	if readiness != nil {
+		t.Fatalf("readiness = %+v, want nil on license store error", readiness)
 	}
 }
 
@@ -605,5 +687,62 @@ func TestRegisterReusesExistingCenterByMachineAndCompany(t *testing.T) {
 	}
 	if center.CompanyName != "Acme Updated" || center.AdminEmail != "new@example.com" || center.BaseURL != "https://center.example.com" {
 		t.Fatalf("existing center metadata not refreshed: %+v", center)
+	}
+}
+
+func TestRegisterRequiresMachineAndCompanyIdentity(t *testing.T) {
+	repo := newMemoryCenterRepo()
+	svc := NewService(repo, nil)
+	ctx := context.Background()
+
+	cases := []RegisterRequest{
+		{CompanyID: "company-1", CompanyName: "Acme", AdminEmail: "admin@example.com"},
+		{MachineID: "machine-1", CompanyName: "Acme", AdminEmail: "admin@example.com"},
+	}
+	for _, req := range cases {
+		if _, err := svc.Register(ctx, req); err == nil || !strings.Contains(err.Error(), "machine_id and company_id") {
+			t.Fatalf("Register(%+v) error = %v, want machine/company identity error", req, err)
+		}
+	}
+	if len(repo.items) != 0 {
+		t.Fatalf("unexpected centers created: %+v", repo.items)
+	}
+}
+
+func TestRegisterRepairsMissingManagementSecretWhenReusingRegistration(t *testing.T) {
+	repo := newMemoryCenterRepo(&store.Center{
+		ID:          "ctr_existing",
+		MachineID:   "machine-1",
+		CompanyID:   "company-1",
+		CompanyName: "Legacy Acme",
+		AdminEmail:  "old@example.com",
+		Status:      "pending",
+	})
+	svc := NewService(repo, nil)
+	ctx := context.Background()
+
+	result, err := svc.Register(ctx, RegisterRequest{MachineID: "machine-1", CompanyID: "company-1", CompanyName: "Acme", AdminEmail: "admin@example.com"})
+	if err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+	if !result.Reused || result.CenterID != "ctr_existing" || strings.TrimSpace(result.Secret) == "" {
+		t.Fatalf("result = %+v, want reused existing registration with repaired secret", result)
+	}
+	center, err := repo.GetByID(ctx, "ctr_existing")
+	if err != nil {
+		t.Fatalf("GetByID() error: %v", err)
+	}
+	if center.ManagementSecret != result.Secret || center.SecretHash != hashSecret(result.Secret) {
+		t.Fatalf("secret not repaired on existing center: center=%+v result=%+v", center, result)
+	}
+}
+
+func TestDeleteReturnsNotFoundForMissingCenter(t *testing.T) {
+	repo := newMemoryCenterRepo()
+	svc := NewService(repo, nil)
+
+	err := svc.Delete(context.Background(), "missing-center")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Delete() error = %v, want ErrNotFound", err)
 	}
 }

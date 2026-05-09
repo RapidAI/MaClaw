@@ -1,12 +1,14 @@
 package skill
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -69,6 +71,19 @@ var knownRuntimeSet = func() map[string]bool {
 	}
 	return m
 }()
+
+var portabilityScriptExts = map[string]bool{
+	".bat": true,
+	".cjs": true,
+	".cmd": true,
+	".js":  true,
+	".mjs": true,
+	".pl":  true,
+	".ps1": true,
+	".py":  true,
+	".rb":  true,
+	".sh":  true,
+}
 
 // commandSource pairs a bash command string with the file it came from.
 type commandSource struct {
@@ -167,6 +182,7 @@ func ValidateSkillPortability(skillDir string) (*PortabilityReport, error) {
 	if mdExists {
 		validateSkillMD(&issues, mdPath, skillDir, sf)
 	}
+	checkScriptTextEncoding(&issues, skillDir)
 
 	skillName := sf.Name
 	if skillName == "" {
@@ -548,6 +564,11 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 	for _, trigger := range sf.Triggers {
 		declaredText += " " + strings.ToLower(trigger)
 	}
+	if sf.Requires != nil {
+		for _, bin := range sf.Requires.Bins {
+			declaredText += " " + strings.ToLower(bin)
+		}
+	}
 
 	for _, cs := range commands {
 		// Check for pip install / npm install 閳?info "runtime_install"
@@ -588,7 +609,7 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 				continue
 			}
 
-			// Check if it's declared in required_env, description, or triggers.
+			// Check if it's declared in required_env, description, triggers, or binary requirements.
 			if strings.Contains(declaredText, firstWordLower) {
 				continue
 			}
@@ -597,9 +618,9 @@ func checkDependencies(issues *[]PortabilityIssue, commands []commandSource, sf 
 			*issues = append(*issues, PortabilityIssue{
 				Severity:   SeverityWarning,
 				Category:   "undeclared_dependency",
-				Message:    fmt.Sprintf("Command uses %q which is not declared in required_env or description", firstWord),
+				Message:    fmt.Sprintf("Command uses %q which is not declared in required_env, description, or requires.bins", firstWord),
 				File:       cs.file,
-				Suggestion: fmt.Sprintf("Add %q to required_env or mention it in the skill description", firstWord),
+				Suggestion: fmt.Sprintf("Add %q to requires.bins or mention it in the skill description", firstWord),
 			})
 		}
 	}
@@ -633,6 +654,79 @@ func validateSkillMD(issues *[]PortabilityIssue, mdPath, skillDir string, sf *Sk
 	checkPathSeparators(issues, mdCommands)
 	checkPlatformCompat(issues, mdCommands, sf)
 	checkDependencies(issues, mdCommands, sf)
+}
+
+func checkScriptTextEncoding(issues *[]PortabilityIssue, skillDir string) {
+	if strings.TrimSpace(skillDir) == "" {
+		return
+	}
+	_ = filepath.WalkDir(skillDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if shouldSkipEncodingScanDir(d.Name()) && path != skillDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !portabilityScriptExts[strings.ToLower(filepath.Ext(path))] {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || len(data) == 0 || len(data) > 2*1024*1024 {
+			return nil
+		}
+		if bytes.Contains(data, []byte{0}) && utf8.Valid(data) {
+			return nil
+		}
+		rel, relErr := filepath.Rel(skillDir, path)
+		if relErr != nil {
+			rel = filepath.Base(path)
+		}
+		rel = filepath.ToSlash(rel)
+		if !utf8.Valid(data) {
+			*issues = append(*issues, PortabilityIssue{
+				Severity:   SeverityWarning,
+				Category:   "encoding",
+				Message:    fmt.Sprintf("Script %s is not valid UTF-8", rel),
+				File:       rel,
+				Suggestion: "Convert the script to UTF-8 so comments and diagnostics survive install and runner output.",
+			})
+			return nil
+		}
+		if containsEncodingDamageMarker(string(data)) {
+			*issues = append(*issues, PortabilityIssue{
+				Severity:   SeverityWarning,
+				Category:   "encoding",
+				Message:    fmt.Sprintf("Script %s contains text that looks like encoding damage", rel),
+				File:       rel,
+				Suggestion: "Review comments and user-facing strings; save the file as clean UTF-8 if the text is garbled.",
+			})
+		}
+		return nil
+	})
+}
+
+func shouldSkipEncodingScanDir(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", "dist", "build":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsEncodingDamageMarker(text string) bool {
+	if strings.ContainsRune(text, utf8.RuneError) {
+		return true
+	}
+	for _, marker := range []string{"锟斤拷", "ï¿½", "�"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -847,42 +941,64 @@ func containsCommand(command, target string) bool {
 // extractFirstWord returns the first whitespace-delimited word from a line.
 func extractFirstWord(line string) string {
 	line = strings.TrimSpace(line)
-	// Skip environment variable assignments like VAR=value command.
-	for strings.Contains(line, "=") {
-		parts := strings.SplitN(line, " ", 2)
-		if len(parts) < 2 {
-			break
-		}
-		first := parts[0]
-		if strings.Contains(first, "=") && !strings.HasPrefix(first, "-") {
-			line = strings.TrimSpace(parts[1])
-			continue
-		}
-		break
-	}
-	fields := strings.Fields(line)
-	if len(fields) == 0 {
+	fields := splitCommandFields(line)
+	commandIndex := firstShellCommandFieldIndex(fields)
+	if commandIndex < 0 {
 		return ""
 	}
-	return fields[0]
+	return fields[commandIndex]
 }
 
-// splitCommandSegments splits a command line by pipe and semicolon operators.
+// splitCommandSegments splits a command line by shell command separators while
+// preserving separators inside quotes.
 func splitCommandSegments(line string) []string {
 	var segments []string
 	var current strings.Builder
+	var quote rune
+	escaped := false
+	flush := func() {
+		if strings.TrimSpace(current.String()) != "" {
+			segments = append(segments, current.String())
+		}
+		current.Reset()
+	}
 	for i := 0; i < len(line); i++ {
 		c := line[i]
-		if c == '|' || c == ';' {
-			segments = append(segments, current.String())
-			current.Reset()
-		} else {
+		if escaped {
+			current.WriteByte(c)
+			escaped = false
+			continue
+		}
+		if c == '\\' && quote != '\'' {
+			current.WriteByte(c)
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			current.WriteByte(c)
+			if rune(c) == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"', '`':
+			quote = rune(c)
+			current.WriteByte(c)
+		case ';', '|', '&':
+			if c == '&' && i+1 < len(line) && line[i+1] != '&' {
+				current.WriteByte(c)
+				continue
+			}
+			flush()
+			if (c == '|' || c == '&') && i+1 < len(line) && line[i+1] == c {
+				i++
+			}
+		default:
 			current.WriteByte(c)
 		}
 	}
-	if current.Len() > 0 {
-		segments = append(segments, current.String())
-	}
+	flush()
 	return segments
 }
 

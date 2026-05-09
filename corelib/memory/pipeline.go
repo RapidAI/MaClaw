@@ -12,14 +12,15 @@ import (
 
 // PipelineResult holds the combined outcome of a full maintenance cycle.
 type PipelineResult struct {
-	Compress      *CompressResult       `json:"compress,omitempty"`
-	Promote       *PromoteResult        `json:"promote,omitempty"`
-	Reflect       *ReflectResult        `json:"reflect,omitempty"`
-	Consolidation []ConsolidationResult `json:"consolidation,omitempty"`
-	Profile       *ConsolidationResult  `json:"profile,omitempty"`
-	Profiles      []ConsolidationResult `json:"profiles,omitempty"`
-	Dormant       int                   `json:"dormant_marked"`
-	Duration      string                `json:"duration"`
+	Compress      *CompressResult          `json:"compress,omitempty"`
+	Promote       *PromoteResult           `json:"promote,omitempty"`
+	Reflect       *ReflectResult           `json:"reflect,omitempty"`
+	Experience    *ExperienceDistillResult `json:"experience,omitempty"`
+	Consolidation []ConsolidationResult    `json:"consolidation,omitempty"`
+	Profile       *ConsolidationResult     `json:"profile,omitempty"`
+	Profiles      []ConsolidationResult    `json:"profiles,omitempty"`
+	Dormant       int                      `json:"dormant_marked"`
+	Duration      string                   `json:"duration"`
 }
 
 // Pipeline orchestrates the background memory maintenance cycle:
@@ -32,6 +33,7 @@ type Pipeline struct {
 	compressor   *Compressor
 	promoter     *Promoter
 	reflector    *Reflector
+	experience   *ExperienceDistiller
 	consolidator *Consolidator
 	profiler     *ProfileConsolidator
 	emitter      corelib.EventEmitter
@@ -50,6 +52,7 @@ func NewPipeline(store *Store, compressor *Compressor, promoter *Promoter, refle
 		compressor: compressor,
 		promoter:   promoter,
 		reflector:  reflector,
+		experience: NewExperienceDistiller(),
 		emitter:    emitter,
 	}
 }
@@ -77,6 +80,28 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		if merged > 0 {
 			log.Printf("[pipeline] semantic dedup merged %d entries", merged)
 		}
+	}
+
+	// Step 1b: Classify the experience mix before lossy maintenance steps.
+	// This is non-mutating in Phase 1 and gives later LLM-backed distillation a
+	// safe gating surface for large trace batches.
+	if p.experience != nil && ctx.Err() == nil {
+		p.store.mu.RLock()
+		entries := make([]Entry, len(p.store.entries))
+		copy(entries, p.store.entries)
+		p.store.mu.RUnlock()
+		experience := p.experience.Analyze(entries)
+		result.Experience = &experience
+	}
+	var protectedSamples []ProtectedExperienceCandidate
+	if result.Experience != nil {
+		protectedSamples = result.Experience.ProtectedSamples
+	}
+	if p.compressor != nil {
+		p.compressor.SetExperienceProtectionSamples(protectedSamples)
+	}
+	if p.promoter != nil {
+		p.promoter.SetExperienceProtectionSamples(protectedSamples)
 	}
 
 	// Step 2: Compress (dedup + LLM compress).

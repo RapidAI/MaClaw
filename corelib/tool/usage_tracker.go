@@ -14,16 +14,40 @@ import (
 
 // UsageRecord records a single tool invocation outcome.
 type UsageRecord struct {
-	ToolName    string    `json:"tool_name"`
-	QueryTokens []string  `json:"query_tokens"`
-	Success     bool      `json:"success"`
-	FollowUp    string    `json:"follow_up,omitempty"` // "continue", "retry", "abandon"
-	Timestamp   time.Time `json:"timestamp"`
+	ToolName     string    `json:"tool_name"`
+	QueryTokens  []string  `json:"query_tokens"`
+	Success      bool      `json:"success"`
+	FollowUp     string    `json:"follow_up,omitempty"` // "continue", "retry", "abandon"
+	Timestamp    time.Time `json:"timestamp"`
+	TaskType     string    `json:"task_type,omitempty"`
+	ToolSequence []string  `json:"tool_sequence,omitempty"`
+	ErrorClass   string    `json:"error_class,omitempty"`
+	RetryCount   int       `json:"retry_count,omitempty"`
+	RecoveryTool string    `json:"recovery_tool,omitempty"`
+	FinalOutcome string    `json:"final_outcome,omitempty"`
+}
+
+// ToolExperience is the richer input form used by the experience learning
+// layer. It remains optional; legacy callers can continue to use Record and
+// RecordOutcome.
+type ToolExperience struct {
+	ToolName     string
+	QueryTokens  []string
+	Success      bool
+	FollowUp     string
+	Timestamp    time.Time
+	TaskType     string
+	ToolSequence []string
+	ErrorClass   string
+	RetryCount   int
+	RecoveryTool string
+	FinalOutcome string
 }
 
 // UsageTracker maintains a rolling window of tool usage history.
 type UsageTracker struct {
 	mu       sync.RWMutex
+	saveMu   sync.Mutex
 	records  []UsageRecord
 	path     string
 	maxItems int
@@ -61,19 +85,29 @@ func (t *UsageTracker) Record(toolName string, queryTokens []string, success boo
 // followUp indicates what the model did next: "continue" (moved on), "retry"
 // (called same tool again), or "abandon" (gave up on the approach).
 func (t *UsageTracker) RecordOutcome(toolName string, queryTokens []string, success bool, followUp string) {
-	tokens := make([]string, 0, 5)
-	for i, tok := range queryTokens {
-		if i >= 5 {
-			break
-		}
-		tokens = append(tokens, tok)
+	t.RecordExperience(ToolExperience{ToolName: toolName, QueryTokens: queryTokens, Success: success, FollowUp: followUp})
+}
+
+// RecordExperience records a richer tool outcome for later routing and
+// self-evolution distillation.
+func (t *UsageTracker) RecordExperience(exp ToolExperience) {
+	tokens := normalizeUsageQueryTokens(exp.QueryTokens)
+	ts := exp.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
 	}
 	r := UsageRecord{
-		ToolName:    toolName,
-		QueryTokens: tokens,
-		Timestamp:   time.Now(),
-		Success:     success,
-		FollowUp:    followUp,
+		ToolName:     strings.TrimSpace(exp.ToolName),
+		QueryTokens:  tokens,
+		Timestamp:    ts,
+		Success:      exp.Success,
+		FollowUp:     strings.TrimSpace(exp.FollowUp),
+		TaskType:     strings.TrimSpace(exp.TaskType),
+		ToolSequence: normalizeUsageStringSlice(exp.ToolSequence, 8),
+		ErrorClass:   strings.TrimSpace(exp.ErrorClass),
+		RetryCount:   exp.RetryCount,
+		RecoveryTool: strings.TrimSpace(exp.RecoveryTool),
+		FinalOutcome: strings.TrimSpace(exp.FinalOutcome),
 	}
 	t.mu.Lock()
 	t.records = append(t.records, r)
@@ -85,6 +119,45 @@ func (t *UsageTracker) RecordOutcome(toolName string, queryTokens []string, succ
 	copy(snapshot, t.records)
 	t.mu.Unlock()
 	go t.saveSnapshot(snapshot)
+}
+
+func normalizeUsageQueryTokens(queryTokens []string) []string {
+	tokens := make([]string, 0, 5)
+	for _, tok := range queryTokens {
+		trimmed := strings.TrimSpace(tok)
+		if trimmed == "" {
+			continue
+		}
+		tokens = append(tokens, trimmed)
+		if len(tokens) >= 5 {
+			break
+		}
+	}
+	return tokens
+}
+
+func normalizeUsageStringSlice(values []string, limit int) []string {
+	if limit <= 0 {
+		limit = len(values)
+	}
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 // OutcomeScore returns a [0,1] quality score for a tool based on recent outcomes.
@@ -125,7 +198,7 @@ func (t *UsageTracker) ContextOutcomeScore(toolName string, queryTokens []string
 	// Try context-specific score first.
 	contextScore, contextTotal := t.outcomeScoreWithCount(toolName, querySet)
 
-	// Not enough context-matching records — fall back to global score.
+	// Not enough context-matching records - fall back to global score.
 	if contextTotal < contextOutcomeMinRecords {
 		score, _ := t.outcomeScoreWithCount(toolName, nil)
 		return score
@@ -136,7 +209,7 @@ func (t *UsageTracker) ContextOutcomeScore(toolName string, queryTokens []string
 
 // contextOutcomeMinJaccard is the minimum Jaccard similarity between the
 // current query tokens and a record's tokens for the record to be considered
-// "same context". 0.2 is deliberately low — even a single overlapping token
+// "same context". 0.2 is deliberately low - even a single overlapping token
 // out of 5 (Jaccard=0.2) is a meaningful signal.
 const contextOutcomeMinJaccard = 0.2
 
@@ -345,7 +418,13 @@ func (t *UsageTracker) saveSnapshot(records []UsageRecord) error {
 		return err
 	}
 	dir := filepath.Dir(t.path)
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	t.saveMu.Lock()
+	defer t.saveMu.Unlock()
+
 	// Atomic write: temp file + rename.
 	tmp := t.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
@@ -363,10 +442,596 @@ type UsagePattern struct {
 	Description string   `json:"description"`
 }
 
+// ToolRoutingHint is a conservative distilled suggestion from recent tool
+// experience. Hints are evidence for routing/self-evolution; they are not direct
+// authorization to run tools.
+type ToolRoutingHint struct {
+	ContextKey    string   `json:"context_key"`
+	TaskType      string   `json:"task_type,omitempty"`
+	QueryTokens   []string `json:"query_tokens,omitempty"`
+	PreferTools   []string `json:"prefer_tools,omitempty"`
+	AvoidTools    []string `json:"avoid_tools,omitempty"`
+	RecoveryTools []string `json:"recovery_tools,omitempty"`
+	Evidence      int      `json:"evidence"`
+	Confidence    float64  `json:"confidence"`
+	Description   string   `json:"description,omitempty"`
+}
+
+// ToolSkillNudgeCandidate is a conservative suggestion that a repeated,
+// successful multi-tool sequence may deserve a reusable skill. It is only a
+// review candidate; callers must still ask the user or a higher-level policy
+// before creating or running a skill.
+type ToolSkillNudgeCandidate struct {
+	ContextKey    string   `json:"context_key"`
+	TaskType      string   `json:"task_type,omitempty"`
+	QueryTokens   []string `json:"query_tokens,omitempty"`
+	ToolSequence  []string `json:"tool_sequence"`
+	Evidence      int      `json:"evidence"`
+	SuccessRate   float64  `json:"success_rate"`
+	Confidence    float64  `json:"confidence"`
+	SuggestedName string   `json:"suggested_name,omitempty"`
+	Description   string   `json:"description,omitempty"`
+}
+
+// ToolRecoveryPattern is a conservative distilled pattern for recovering from
+// repeated tool failures. It is explanatory project knowledge, not permission to
+// bypass normal routing or safety checks.
+type ToolRecoveryPattern struct {
+	ContextKey   string   `json:"context_key"`
+	TaskType     string   `json:"task_type,omitempty"`
+	QueryTokens  []string `json:"query_tokens,omitempty"`
+	FailedTool   string   `json:"failed_tool"`
+	ErrorClass   string   `json:"error_class,omitempty"`
+	RecoveryTool string   `json:"recovery_tool"`
+	ToolSequence []string `json:"tool_sequence,omitempty"`
+	Evidence     int      `json:"evidence"`
+	SuccessRate  float64  `json:"success_rate"`
+	Confidence   float64  `json:"confidence"`
+	Description  string   `json:"description,omitempty"`
+}
+
+// DistillRoutingHints aggregates recent rich usage records into conservative
+// routing hints. The method deliberately requires repeated evidence so one lucky
+// success or isolated failure cannot steer future routing.
+func (t *UsageTracker) DistillRoutingHints(windowDays int, minRecords int) []ToolRoutingHint {
+	if windowDays <= 0 {
+		windowDays = 7
+	}
+	if minRecords <= 0 {
+		minRecords = 3
+	}
+	cutoff := time.Now().AddDate(0, 0, -windowDays)
+	type perTool struct {
+		total     int
+		successes int
+		failures  int
+	}
+	type contextAccum struct {
+		taskType string
+		tokens   map[string]int
+		tools    map[string]*perTool
+		recovery map[string]int
+		evidence int
+	}
+	contexts := map[string]*contextAccum{}
+
+	t.mu.RLock()
+	for _, record := range t.records {
+		if record.Timestamp.Before(cutoff) || strings.TrimSpace(record.ToolName) == "" {
+			continue
+		}
+		key, taskType := usageRoutingContextKey(record)
+		if key == "" {
+			continue
+		}
+		ctx, ok := contexts[key]
+		if !ok {
+			ctx = &contextAccum{taskType: taskType, tokens: map[string]int{}, tools: map[string]*perTool{}, recovery: map[string]int{}}
+			contexts[key] = ctx
+		}
+		ctx.evidence++
+		for _, tok := range record.QueryTokens {
+			if tok = strings.TrimSpace(tok); tok != "" {
+				ctx.tokens[tok]++
+			}
+		}
+		stats, ok := ctx.tools[record.ToolName]
+		if !ok {
+			stats = &perTool{}
+			ctx.tools[record.ToolName] = stats
+		}
+		stats.total++
+		if record.Success {
+			stats.successes++
+		} else {
+			stats.failures++
+		}
+		if record.RecoveryTool != "" {
+			ctx.recovery[record.RecoveryTool]++
+		}
+	}
+	t.mu.RUnlock()
+
+	hints := make([]ToolRoutingHint, 0, len(contexts))
+	for key, ctx := range contexts {
+		if ctx.evidence < minRecords {
+			continue
+		}
+		var prefer []string
+		var avoid []string
+		for toolName, stats := range ctx.tools {
+			if stats.total < minRecords {
+				continue
+			}
+			successRate := float64(stats.successes) / float64(stats.total)
+			failureRate := float64(stats.failures) / float64(stats.total)
+			if successRate >= 0.75 {
+				prefer = append(prefer, toolName)
+			}
+			if failureRate >= 0.60 {
+				avoid = append(avoid, toolName)
+			}
+		}
+		sort.Strings(prefer)
+		sort.Strings(avoid)
+		recovery := topUsageStrings(ctx.recovery, 3)
+		if len(prefer) == 0 && len(avoid) == 0 && len(recovery) == 0 {
+			continue
+		}
+		tokens := topUsageStrings(ctx.tokens, 5)
+		confidence := clampFloat(1-math.Exp(-float64(ctx.evidence)/10.0), 0, 1)
+		descParts := []string{}
+		if len(prefer) > 0 {
+			descParts = append(descParts, "prefer "+strings.Join(prefer, ", "))
+		}
+		if len(avoid) > 0 {
+			descParts = append(descParts, "avoid "+strings.Join(avoid, ", "))
+		}
+		if len(recovery) > 0 {
+			descParts = append(descParts, "recover with "+strings.Join(recovery, ", "))
+		}
+		hints = append(hints, ToolRoutingHint{
+			ContextKey:    key,
+			TaskType:      ctx.taskType,
+			QueryTokens:   tokens,
+			PreferTools:   prefer,
+			AvoidTools:    avoid,
+			RecoveryTools: recovery,
+			Evidence:      ctx.evidence,
+			Confidence:    confidence,
+			Description:   strings.Join(descParts, "; "),
+		})
+	}
+	sort.Slice(hints, func(i, j int) bool {
+		if hints[i].Evidence != hints[j].Evidence {
+			return hints[i].Evidence > hints[j].Evidence
+		}
+		return hints[i].ContextKey < hints[j].ContextKey
+	})
+	return hints
+}
+
+// DistillSkillNudgeCandidates aggregates repeated successful tool sequences
+// into conservative skill review candidates. It requires multiple records with
+// the same context and sequence, ignores single-tool calls, and only emits
+// candidates with high success rate so noisy traces do not create skill churn.
+func (t *UsageTracker) DistillSkillNudgeCandidates(windowDays int, minRecords int) []ToolSkillNudgeCandidate {
+	if windowDays <= 0 {
+		windowDays = 14
+	}
+	if minRecords <= 0 {
+		minRecords = 3
+	}
+	cutoff := time.Now().AddDate(0, 0, -windowDays)
+	type sequenceAccum struct {
+		contextKey string
+		taskType   string
+		sequence   []string
+		tokens     map[string]int
+		total      int
+		successes  int
+	}
+	sequences := map[string]*sequenceAccum{}
+
+	t.mu.RLock()
+	for _, record := range t.records {
+		if record.Timestamp.Before(cutoff) || len(record.ToolSequence) < 2 {
+			continue
+		}
+		key, taskType := usageRoutingContextKey(record)
+		if key == "" {
+			continue
+		}
+		sequence := normalizeUsageStringSlice(record.ToolSequence, 8)
+		if len(sequence) < 2 {
+			continue
+		}
+		seqKey := key + "|seq:" + strings.Join(sequence, ">")
+		acc, ok := sequences[seqKey]
+		if !ok {
+			acc = &sequenceAccum{contextKey: key, taskType: taskType, sequence: sequence, tokens: map[string]int{}}
+			sequences[seqKey] = acc
+		}
+		acc.total++
+		if record.Success && strings.ToLower(strings.TrimSpace(record.FinalOutcome)) != "failed" {
+			acc.successes++
+		}
+		for _, tok := range record.QueryTokens {
+			if tok = strings.TrimSpace(tok); tok != "" {
+				acc.tokens[tok]++
+			}
+		}
+	}
+	t.mu.RUnlock()
+
+	candidates := make([]ToolSkillNudgeCandidate, 0, len(sequences))
+	for _, acc := range sequences {
+		if acc.total < minRecords {
+			continue
+		}
+		successRate := float64(acc.successes) / float64(acc.total)
+		if successRate < 0.80 {
+			continue
+		}
+		tokens := topUsageStrings(acc.tokens, 5)
+		confidence := clampFloat(successRate*(1-math.Exp(-float64(acc.total)/8.0)), 0, 1)
+		description := fmt.Sprintf("Repeated successful sequence %s for [%s] (%d/%d successes in last %d days)", strings.Join(acc.sequence, " -> "), strings.Join(tokens, ", "), acc.successes, acc.total, windowDays)
+		candidates = append(candidates, ToolSkillNudgeCandidate{
+			ContextKey:    acc.contextKey,
+			TaskType:      acc.taskType,
+			QueryTokens:   tokens,
+			ToolSequence:  append([]string(nil), acc.sequence...),
+			Evidence:      acc.total,
+			SuccessRate:   successRate,
+			Confidence:    confidence,
+			SuggestedName: suggestedSkillNudgeName(acc.taskType, tokens, acc.sequence),
+			Description:   description,
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Confidence != candidates[j].Confidence {
+			return candidates[i].Confidence > candidates[j].Confidence
+		}
+		if candidates[i].Evidence != candidates[j].Evidence {
+			return candidates[i].Evidence > candidates[j].Evidence
+		}
+		return strings.Join(candidates[i].ToolSequence, ">") < strings.Join(candidates[j].ToolSequence, ">")
+	})
+	return candidates
+}
+
+// DistillRecoveryPatterns aggregates repeated successful recovery flows. A
+// pattern is emitted only when the same failed-tool -> recovery-tool pair has
+// enough evidence and usually ends in a recovered/completed outcome.
+func (t *UsageTracker) DistillRecoveryPatterns(windowDays int, minRecords int) []ToolRecoveryPattern {
+	if windowDays <= 0 {
+		windowDays = 14
+	}
+	if minRecords <= 0 {
+		minRecords = 3
+	}
+	cutoff := time.Now().AddDate(0, 0, -windowDays)
+	type recoveryAccum struct {
+		contextKey   string
+		taskType     string
+		failedTool   string
+		errorClass   string
+		recoveryTool string
+		sequence     []string
+		tokens       map[string]int
+		total        int
+		successes    int
+	}
+	patterns := map[string]*recoveryAccum{}
+
+	t.mu.RLock()
+	for _, record := range t.records {
+		if record.Timestamp.Before(cutoff) {
+			continue
+		}
+		failedTool := strings.TrimSpace(record.ToolName)
+		recoveryTool := strings.TrimSpace(record.RecoveryTool)
+		if failedTool == "" || recoveryTool == "" {
+			continue
+		}
+		key, taskType := usageRoutingContextKey(record)
+		if key == "" {
+			continue
+		}
+		errorClass := strings.ToLower(strings.TrimSpace(record.ErrorClass))
+		patternKey := key + "|failed:" + failedTool + "|recover:" + recoveryTool + "|error:" + errorClass
+		acc, ok := patterns[patternKey]
+		if !ok {
+			acc = &recoveryAccum{contextKey: key, taskType: taskType, failedTool: failedTool, errorClass: errorClass, recoveryTool: recoveryTool, tokens: map[string]int{}}
+			patterns[patternKey] = acc
+		}
+		acc.total++
+		if recoveryOutcomeSucceeded(record) {
+			acc.successes++
+		}
+		for _, tok := range record.QueryTokens {
+			if tok = strings.TrimSpace(tok); tok != "" {
+				acc.tokens[tok]++
+			}
+		}
+		sequence := normalizeUsageStringSlice(record.ToolSequence, 8)
+		if len(sequence) > len(acc.sequence) {
+			acc.sequence = sequence
+		}
+	}
+	t.mu.RUnlock()
+
+	out := make([]ToolRecoveryPattern, 0, len(patterns))
+	for _, acc := range patterns {
+		if acc.total < minRecords {
+			continue
+		}
+		successRate := float64(acc.successes) / float64(acc.total)
+		if successRate < 0.75 {
+			continue
+		}
+		sequence := append([]string(nil), acc.sequence...)
+		if len(sequence) < 2 {
+			sequence = []string{acc.failedTool, acc.recoveryTool}
+		}
+		tokens := topUsageStrings(acc.tokens, 5)
+		confidence := clampFloat(successRate*(1-math.Exp(-float64(acc.total)/8.0)), 0, 1)
+		desc := fmt.Sprintf("When %s fails", acc.failedTool)
+		if acc.errorClass != "" {
+			desc += " with " + acc.errorClass
+		}
+		desc += fmt.Sprintf(", recover with %s (%d/%d recovered in last %d days)", acc.recoveryTool, acc.successes, acc.total, windowDays)
+		if len(tokens) > 0 {
+			desc += " for [" + strings.Join(tokens, ", ") + "]"
+		}
+		out = append(out, ToolRecoveryPattern{
+			ContextKey:   acc.contextKey,
+			TaskType:     acc.taskType,
+			QueryTokens:  tokens,
+			FailedTool:   acc.failedTool,
+			ErrorClass:   acc.errorClass,
+			RecoveryTool: acc.recoveryTool,
+			ToolSequence: sequence,
+			Evidence:     acc.total,
+			SuccessRate:  successRate,
+			Confidence:   confidence,
+			Description:  desc,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Confidence != out[j].Confidence {
+			return out[i].Confidence > out[j].Confidence
+		}
+		if out[i].Evidence != out[j].Evidence {
+			return out[i].Evidence > out[j].Evidence
+		}
+		if out[i].ContextKey != out[j].ContextKey {
+			return out[i].ContextKey < out[j].ContextKey
+		}
+		return out[i].FailedTool+out[i].RecoveryTool < out[j].FailedTool+out[j].RecoveryTool
+	})
+	return out
+}
+
+func recoveryOutcomeSucceeded(record UsageRecord) bool {
+	switch strings.ToLower(strings.TrimSpace(record.FinalOutcome)) {
+	case "recovered", "completed", "complete", "success", "succeeded", "ok", "resolved":
+		return true
+	case "failed", "failure", "abandoned", "abandon":
+		return false
+	default:
+		return record.Success
+	}
+}
+func usageRoutingContextKey(record UsageRecord) (key string, taskType string) {
+	taskType = strings.ToLower(strings.TrimSpace(record.TaskType))
+	if taskType != "" {
+		return "task:" + taskType, taskType
+	}
+	tokens := normalizeUsageQueryTokens(record.QueryTokens)
+	if len(tokens) == 0 {
+		return "", ""
+	}
+	if len(tokens) > 3 {
+		tokens = tokens[:3]
+	}
+	return "tokens:" + strings.Join(tokens, ","), ""
+}
+
+func suggestedSkillNudgeName(taskType string, tokens []string, sequence []string) string {
+	parts := make([]string, 0, 4)
+	if taskType = strings.TrimSpace(taskType); taskType != "" {
+		parts = append(parts, taskType)
+	} else {
+		for _, tok := range tokens {
+			if tok = strings.TrimSpace(tok); tok != "" {
+				parts = append(parts, tok)
+			}
+			if len(parts) >= 2 {
+				break
+			}
+		}
+	}
+	if len(parts) == 0 && len(sequence) > 0 {
+		parts = append(parts, sequence[0])
+	}
+	parts = append(parts, "tool", "flow")
+	name := strings.ToLower(strings.Join(parts, "-"))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range name {
+		keep := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if keep {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "tool-flow"
+	}
+	if len(out) > 48 {
+		out = strings.Trim(out[:48], "-")
+	}
+	return out
+}
+
+const maxRoutingHintAdjustment = 0.08
+
+type RoutingHintAdjustmentExplanation struct {
+	ToolName         string   `json:"tool_name"`
+	QueryTokens      []string `json:"query_tokens,omitempty"`
+	Adjustment       float64  `json:"adjustment"`
+	Direction        string   `json:"direction"`
+	MatchingRecords  int      `json:"matching_records"`
+	Successes        int      `json:"successes,omitempty"`
+	Failures         int      `json:"failures,omitempty"`
+	RecoveryEvidence int      `json:"recovery_evidence,omitempty"`
+	SuccessRate      float64  `json:"success_rate,omitempty"`
+	FailureRate      float64  `json:"failure_rate,omitempty"`
+	Reasons          []string `json:"reasons,omitempty"`
+}
+
+// RoutingHintAdjustment returns a small bounded score adjustment for the
+// current tool in a similar query context. It is intentionally smaller than the
+// main retrieval and experience signals so distilled hints can nudge routing
+// without dominating it.
+func (t *UsageTracker) RoutingHintAdjustment(toolName string, queryTokens []string) float64 {
+	return t.ExplainRoutingHintAdjustment(toolName, queryTokens).Adjustment
+}
+
+func (t *UsageTracker) ExplainRoutingHintAdjustment(toolName string, queryTokens []string) RoutingHintAdjustmentExplanation {
+	toolName = strings.TrimSpace(toolName)
+	queryTokens = normalizeUsageQueryTokens(queryTokens)
+	explanation := RoutingHintAdjustmentExplanation{
+		ToolName:    toolName,
+		QueryTokens: append([]string(nil), queryTokens...),
+		Direction:   "neutral",
+	}
+	if toolName == "" || len(queryTokens) == 0 {
+		if toolName == "" {
+			explanation.Reasons = append(explanation.Reasons, "missing_tool")
+		}
+		if len(queryTokens) == 0 {
+			explanation.Reasons = append(explanation.Reasons, "missing_query_tokens")
+		}
+		return explanation
+	}
+	querySet := make(map[string]bool, len(queryTokens))
+	for _, tok := range queryTokens {
+		if tok = strings.TrimSpace(tok); tok != "" {
+			querySet[tok] = true
+		}
+	}
+	if len(querySet) == 0 {
+		explanation.Reasons = append(explanation.Reasons, "missing_query_tokens")
+		return explanation
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -14)
+	var total, successes, failures int
+	var recoveryEvidence int
+
+	t.mu.RLock()
+	for _, record := range t.records {
+		if record.Timestamp.Before(cutoff) {
+			continue
+		}
+		sim := jaccardTokens(querySet, record.QueryTokens)
+		if sim < contextOutcomeMinJaccard {
+			continue
+		}
+		if record.ToolName == toolName {
+			total++
+			if record.Success {
+				successes++
+			} else {
+				failures++
+			}
+		}
+		if record.RecoveryTool == toolName {
+			recoveryEvidence++
+		}
+	}
+	t.mu.RUnlock()
+
+	var adjustment float64
+	explanation.MatchingRecords = total
+	explanation.Successes = successes
+	explanation.Failures = failures
+	explanation.RecoveryEvidence = recoveryEvidence
+	if total >= contextOutcomeMinRecords {
+		successRate := float64(successes) / float64(total)
+		failureRate := float64(failures) / float64(total)
+		explanation.SuccessRate = successRate
+		explanation.FailureRate = failureRate
+		confidence := 1 - math.Exp(-float64(total)/6.0)
+		if successRate >= 0.75 {
+			adjustment += maxRoutingHintAdjustment * confidence
+			explanation.Reasons = append(explanation.Reasons, "context_success_rate")
+		}
+		if failureRate >= 0.60 {
+			adjustment -= maxRoutingHintAdjustment * confidence
+			explanation.Reasons = append(explanation.Reasons, "context_failure_rate")
+		}
+	}
+	if recoveryEvidence >= contextOutcomeMinRecords {
+		confidence := 1 - math.Exp(-float64(recoveryEvidence)/6.0)
+		adjustment += (maxRoutingHintAdjustment * 0.6) * confidence
+		explanation.Reasons = append(explanation.Reasons, "recovery_tool_evidence")
+	}
+	explanation.Adjustment = clampFloat(adjustment, -maxRoutingHintAdjustment, maxRoutingHintAdjustment)
+	if explanation.Adjustment > 0 {
+		explanation.Direction = "prefer"
+	} else if explanation.Adjustment < 0 {
+		explanation.Direction = "avoid"
+	}
+	if len(explanation.Reasons) == 0 {
+		explanation.Reasons = append(explanation.Reasons, "insufficient_matching_evidence")
+	}
+	return explanation
+}
+func topUsageStrings(counts map[string]int, limit int) []string {
+	if len(counts) == 0 || limit == 0 {
+		return nil
+	}
+	type item struct {
+		value string
+		count int
+	}
+	items := make([]item, 0, len(counts))
+	for value, count := range counts {
+		value = strings.TrimSpace(value)
+		if value == "" || count <= 0 {
+			continue
+		}
+		items = append(items, item{value: value, count: count})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].count != items[j].count {
+			return items[i].count > items[j].count
+		}
+		return items[i].value < items[j].value
+	})
+	if limit < 0 || limit > len(items) {
+		limit = len(items)
+	}
+	out := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		out = append(out, items[i].value)
+	}
+	return out
+}
+
 // contextToolStats scans records whose QueryTokens overlap with queryTokens
 // (Jaccard > contextOutcomeMinJaccard) and returns per-tool success/failure
 // counts. excludeTool is excluded from results (pass "" to include all).
-// Caller must NOT hold t.mu — this method acquires the lock internally.
+// Caller must NOT hold t.mu - this method acquires the lock internally.
 func (t *UsageTracker) contextToolStats(queryTokens []string, excludeTool string) map[string]*toolCtxAccum {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -479,7 +1144,7 @@ func (t *UsageTracker) ExtractPatterns(windowDays int) []UsagePattern {
 	type toolStats struct {
 		total   int
 		success int
-		tokens  map[string]int // token → frequency
+		tokens  map[string]int // token frequency
 	}
 	stats := make(map[string]*toolStats)
 
@@ -530,7 +1195,7 @@ func (t *UsageTracker) ExtractPatterns(windowDays int) []UsagePattern {
 			topTokens[i] = tfs[i].token
 		}
 
-		desc := fmt.Sprintf("工具 %s 在 [%s] 类任务中表现稳定（成功率 %.0f%%，近%d天 %d 次）",
+		desc := fmt.Sprintf("Tool %s is stable for [%s] tasks (success rate %.0f%%, last %d days %d calls)",
 			toolName, strings.Join(topTokens, ", "), rate*100, windowDays, s.total)
 
 		patterns = append(patterns, UsagePattern{

@@ -3,6 +3,7 @@ package tool
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -116,8 +117,9 @@ func TestRouter_Reranker_PartialResults(t *testing.T) {
 }
 
 func TestRouter_BodyAware_LogField(t *testing.T) {
-	// writeRouteLog writes to ~/.maclaw/logs/tool_route.log.
-	// We verify the function accepts bodyAware and doesn't panic.
+	logPath := filepath.Join(t.TempDir(), "tool_route.log")
+	routeLogPathOverride.Store(logPath)
+	defer routeLogPathOverride.Store("")
 	SetLogDetailEnabled(true)
 	defer SetLogDetailEnabled(false)
 	writeRouteLog(
@@ -127,6 +129,7 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		true, // bodyAware
 		[]string{"tool_a", "tool_b"},
 		[]float64{0.9, 0.8},
+		[]float64{0.03, 0},
 		[]string{"tool_a"},
 		nil, // no reranker result
 		0,   // skillMatchScore
@@ -141,21 +144,16 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 		false, // bodyAware
 		[]string{"tool_c"},
 		[]float64{0.7},
+		[]float64{-0.02},
 		[]string{"tool_c"},
 		[]string{"tool_c"},     // with reranker result
 		0.5,                    // skillMatchScore
 		[]string{"deploy-app"}, // matchedSkills
 	)
 
-	// Read the log file and verify body_aware field is present.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("cannot determine home dir")
-	}
-	logPath := home + "/.maclaw/logs/tool_route.log"
 	data, err := os.ReadFile(logPath)
 	if err != nil {
-		t.Skipf("cannot read log file: %v", err)
+		t.Fatalf("cannot read log file: %v", err)
 	}
 	content := string(data)
 	if !strings.Contains(content, "Body-aware: true") {
@@ -163,5 +161,8 @@ func TestRouter_BodyAware_LogField(t *testing.T) {
 	}
 	if !strings.Contains(content, "Body-aware: false") {
 		t.Error("log should contain 'Body-aware: false'")
+	}
+	if !strings.Contains(content, "routing_hint +0.0300") || !strings.Contains(content, "routing_hint -0.0200") {
+		t.Error("log should contain routing hint adjustments")
 	}
 }

@@ -1,7 +1,10 @@
 package a2a
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -16,6 +19,8 @@ type Handler struct {
 }
 
 func NewHandler(svc *Service) *Handler { return &Handler{svc: svc} }
+
+const maxA2AJSONBodyBytes = 128 << 10
 
 func (h *Handler) RegisterRuntimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/runtime/a2a/sessions", h.handleSessions)
@@ -35,7 +40,7 @@ func (h *Handler) handleSessions(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, map[string]any{"sessions": sessions})
 	case http.MethodPost:
 		var req CreateSessionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeA2AJSON(r.Body, &req); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
@@ -123,8 +128,29 @@ func listFilterFromRequest(r *http.Request) ListSessionsFilter {
 	}
 }
 
+func decodeA2AJSON(body io.Reader, out any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxA2AJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxA2AJSONBodyBytes {
+		return errors.New("a2a json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("a2a json body contains trailing data")
+		}
+		return err
+	}
+	return nil
+}
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
-	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
+	if err := decodeA2AJSON(r.Body, out); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return false
 	}

@@ -1,8 +1,12 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
+  CenterAgentInstance,
+  CenterConfigBundle,
   CenterEnrollmentDiscovery,
+  CenterGoalPush,
   CenterHealthStatus,
+  CenterInstalledTools,
   DiWorkerSettings,
   UpstreamProvider,
   WorkerMemoryEntry,
@@ -27,6 +31,13 @@ type Props = {
   memoryStats: WorkerMemoryStats | null;
   memoryStatsLoading: boolean;
   memoryStatsError: string;
+  centerSyncing: boolean;
+  centerSyncMessage: string;
+  centerSyncError: string;
+  agentInstances: CenterAgentInstance[];
+  goalPushes: CenterGoalPush[];
+  installedTools: CenterInstalledTools;
+  configBundle: CenterConfigBundle;
   memoryDraftScope: string;
   memoryDraftContent: string;
   memoryDraftCategory: string;
@@ -68,6 +79,7 @@ type Props = {
     auth: { method: string; username: string; password: string },
   ) => void;
   onRefreshMemoryStats: () => void;
+  onSyncCenterNow: () => void;
   onMemoryDraftScopeChange: (value: string) => void;
   onMemoryDraftContentChange: (value: string) => void;
   onMemoryDraftCategoryChange: (value: string) => void;
@@ -136,6 +148,13 @@ export function SettingsPage({
   memoryStats,
   memoryStatsLoading,
   memoryStatsError,
+  centerSyncing,
+  centerSyncMessage,
+  centerSyncError,
+  agentInstances,
+  goalPushes,
+  installedTools,
+  configBundle,
   memoryDraftScope,
   memoryDraftContent,
   memoryDraftCategory,
@@ -171,6 +190,7 @@ export function SettingsPage({
   onDiscoverCenterEnrollment,
   onApplyCenterEnrollment,
   onRefreshMemoryStats,
+  onSyncCenterNow,
   onMemoryDraftScopeChange,
   onMemoryDraftContentChange,
   onMemoryDraftCategoryChange,
@@ -201,6 +221,51 @@ export function SettingsPage({
     (item) => item.method === enrollmentAuthMethod,
   );
   const centerReadiness = healthStatus?.iWorkerReadiness;
+  const installedToolCount =
+    (installedTools?.skills?.length || 0) +
+    (installedTools?.mcpServers?.length || 0);
+  const installedToolPreview = [
+    ...(installedTools?.skills || []).map((skill) => ({
+      key: `skill-${skill.capabilityId || skill.name}`,
+      kind: "Skill",
+      name: skill.name || skill.entry?.name || "-",
+      detail: [
+        skill.version
+          ? st("versionWithValue", "v{{version}}", { version: skill.version })
+          : "",
+        skill.riskLevel || "",
+        skill.source || "",
+      ]
+        .filter(Boolean)
+        .join(" / "),
+      status: st("enabled", "Enabled"),
+    })),
+    ...(installedTools?.mcpServers || []).map((server) => ({
+      key: `mcp-${server.id || server.name}`,
+      kind: "MCP",
+      name: server.name || server.id || "-",
+      detail: [
+        server.serverType || "mcp",
+        server.departmentId || st("allDepartments", "all departments"),
+        server.riskLevel || "",
+      ]
+        .filter(Boolean)
+        .join(" / "),
+      status: server.status || st("enabled", "Enabled"),
+    })),
+  ].slice(0, 5);
+  const installedToolsStateLabel = installedTools?.stale
+    ? installedTools?.source === "center-cache-error"
+      ? st("centerCacheError", "Center live / cache failed")
+      : st("cachedSnapshot", "cached snapshot")
+    : installedTools?.source === "center"
+      ? st("centerLive", "Center live")
+      : st("localSnapshot", "local snapshot");
+  const pendingPushCount = goalPushes.filter(
+    (push) => !["done", "acked", "resolved", "closed"].includes(
+      (push.status || "").toLowerCase(),
+    ),
+  ).length;
   const enabledLabel = st("enabled", "Enabled");
   const disabledLabel = st("disabled", "Disabled");
   const healthBadgeLabel = healthError
@@ -949,6 +1014,169 @@ export function SettingsPage({
           </div>
 
           <aside className="dw-task-side dw-settings-side">
+            <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
+              <div className="dw-settings-summary-head">
+                <div>
+                  <label>{st("usageFlow", "Usage flow")}</label>
+                  <strong>
+                    {settings.center.enabled
+                      ? st("centerBound", "Center bound")
+                      : st("centerNotBound", "Center not bound")}
+                  </strong>
+                </div>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={onSyncCenterNow}
+                  disabled={loading || centerSyncing || dirty || !settings.center.enabled}
+                >
+                  {centerSyncing
+                    ? st("syncing", "Syncing...")
+                    : st("syncUsageFlow", "Sync usage flow")}
+                </button>
+              </div>
+              <p>
+                {dirty
+                  ? st(
+                      "saveBeforeSync",
+                      "Save configuration before syncing; the runtime uses the saved Center binding.",
+                    )
+                  : settings.center.enabled
+                    ? st(
+                        "usageFlowHint",
+                        "Refresh Center health, runtime heartbeat, pushed work, installed MCP/Skill, config bundle, and memory snapshot.",
+                      )
+                    : st(
+                        "usageFlowDisabledHint",
+                        "Discover and bind an iWorkerCenter account before using Center-pushed work.",
+                      )}
+              </p>
+              <div className="dw-settings-kv-list">
+                <div className="dw-settings-kv-item">
+                  <span>{st("runtimeHeartbeat", "Runtime heartbeat")}</span>
+                  <strong>
+                    {!settings.center.enabled
+                      ? st("local", "local")
+                      : healthStatus?.reachable === undefined
+                        ? st("pending", "pending")
+                        : healthStatus.reachable
+                          ? st("online", "online")
+                          : st("offline", "offline")}
+                  </strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>{st("centerPush", "Center push")}</span>
+                  <strong>{settings.center.goalWatchAutoHandleEnabled ? enabledLabel : disabledLabel}</strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>{st("boundIdentity", "Bound identity")}</span>
+                  <strong>
+                    {settings.center.enabled
+                      ? st("boundIdentitySummary", "Tenant {{tenant}} / Department {{department}} / iWorker {{worker}}", {
+                          tenant: settings.center.tenantId || "-",
+                          department: settings.center.departmentId || "-",
+                          worker: settings.center.workerId || "-",
+                        })
+                      : st("notConfigured", "Not configured")}
+                  </strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>{st("runtimeInstances", "Runtime instances")}</span>
+                  <strong>{agentInstances.length}</strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>{st("pendingPushes", "Pending pushes")}</span>
+                  <strong>{pendingPushCount}</strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>{st("installedToolCount", "MCP / Skill")}</span>
+                  <strong>{installedToolCount}</strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>{st("configBundle", "Config bundle")}</span>
+                  <strong>
+                    {configBundle.version
+                      ? st("configVersion", "v{{version}}", { version: configBundle.version })
+                      : st("noConfigBundle", "none")}
+                  </strong>
+                </div>
+                <div className="dw-settings-kv-item">
+                  <span>{st("configApplyStatus", "Config apply")}</span>
+                  <strong>
+                    {configBundle.applyStatus
+                      ? configBundle.applyStatus === "success"
+                        ? st("success", "success")
+                        : configBundle.applyStatus
+                      : configBundle.version
+                        ? st("pending", "pending")
+                        : st("notConfigured", "Not configured")}
+                  </strong>
+                </div>
+              </div>
+              {configBundle.applyMessage ? (
+                <p className={configBundle.applyStatus === "failed" ? "dw-settings-tool-error" : ""}>
+                  {configBundle.applyMessage}
+                </p>
+              ) : null}
+              <div className="dw-settings-tool-status">
+                <div className="dw-settings-tool-status-head">
+                  <span>{st("installedToolsStatus", "Installed tools status")}</span>
+                  <strong>{installedToolsStateLabel}</strong>
+                </div>
+                {installedTools.skillError ? (
+                  <p className="dw-settings-tool-error">
+                    {st("skillSyncIssue", "Skill sync issue")}: {installedTools.skillError}
+                  </p>
+                ) : null}
+                {installedTools.mcpError ? (
+                  <p className="dw-settings-tool-error">
+                    {st("mcpSyncIssue", "MCP sync issue")}: {installedTools.mcpError}
+                  </p>
+                ) : null}
+                {installedTools.cacheError ? (
+                  <p className="dw-settings-tool-error">
+                    {st("cacheUpdateIssue", "Cache update issue")}: {installedTools.cacheError}
+                  </p>
+                ) : null}
+                <div className="dw-settings-tool-list">
+                  {installedToolPreview.map((tool) => (
+                    <article key={tool.key} className="dw-settings-tool-item">
+                      <span>{tool.kind}</span>
+                      <strong>{tool.name}</strong>
+                      <p>{tool.detail || tool.status}</p>
+                      <em>{tool.status}</em>
+                    </article>
+                  ))}
+                  {installedToolCount > installedToolPreview.length ? (
+                    <p className="dw-settings-tool-more">
+                      {st("moreInstalledTools", "+{{count}} more in Skills & Work", {
+                        count: installedToolCount - installedToolPreview.length,
+                      })}
+                    </p>
+                  ) : null}
+                  {installedToolCount === 0 ? (
+                    <p className="dw-settings-tool-empty">
+                      {st(
+                        "noInstalledToolsForWorker",
+                        "No Center-installed MCP or Skill is enabled for this iWorker yet.",
+                      )}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <p>
+                {centerSyncError
+                  ? centerSyncMessage
+                    ? centerSyncMessage + " " + centerSyncError
+                    : centerSyncError
+                  : centerSyncMessage ||
+                    st(
+                      "usageFlowIdle",
+                      "Use this after binding or whenever Center data looks stale.",
+                    )}
+              </p>
+            </div>
+
             <div className="card-subtle dw-side-panel-block dw-settings-summary-card">
               <div className="dw-settings-summary-head">
                 <div>

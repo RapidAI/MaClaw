@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
@@ -244,6 +245,12 @@ func TestCaptureScreenshot_CommandFailure(t *testing.T) {
 
 	app := &App{}
 	manager := NewRemoteSessionManager(app)
+
+	previousTimeout := screenshotCommandTimeout
+	screenshotCommandTimeout = 500 * time.Millisecond
+	t.Cleanup(func() {
+		screenshotCommandTimeout = previousTimeout
+	})
 
 	sdkHandle := newTestSDKHandle()
 	session := &RemoteSession{

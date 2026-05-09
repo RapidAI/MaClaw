@@ -51,8 +51,6 @@ const (
 	MsgTUITabSessions                     = "msg.tui_tab_sessions"
 	MsgTUITabTools                        = "msg.tui_tab_tools"
 	MsgTUITabSchedule                     = "msg.tui_tab_schedule"
-	MsgTUITabMemory                       = "msg.tui_tab_memory"
-	MsgTUITabAudit                        = "msg.tui_tab_audit"
 	MsgTUITabAgentNet                     = "msg.tui_tab_agentnet"
 	MsgTUITabConfig                       = "msg.tui_tab_config"
 	MsgTUITabChat                         = "msg.tui_tab_chat"
@@ -123,23 +121,6 @@ const (
 	MsgTUIBuildEnvFailed                  = "msg.tui_build_env_failed"
 	MsgTUIToolMissing                     = "msg.tui_tool_missing"
 	MsgTUIYoloBlocked                     = "msg.tui_yolo_blocked"
-	MsgTUIMemoryLoading                   = "msg.tui_memory_loading"
-	MsgTUIMemoryEmpty                     = "msg.tui_memory_empty"
-	MsgTUIMemoryHeaderCategory            = "msg.tui_memory_header_category"
-	MsgTUIMemoryHeaderAccess              = "msg.tui_memory_header_access"
-	MsgTUIMemoryHeaderContent             = "msg.tui_memory_header_content"
-	MsgTUIMemoryFooter                    = "msg.tui_memory_footer"
-	MsgTUIAuditFilterPlaceholder          = "msg.tui_audit_filter_placeholder"
-	MsgTUIAuditLoading                    = "msg.tui_audit_loading"
-	MsgTUIAuditEmpty                      = "msg.tui_audit_empty"
-	MsgTUIAuditFilterLabel                = "msg.tui_audit_filter_label"
-	MsgTUIAuditFilterSummary              = "msg.tui_audit_filter_summary"
-	MsgTUIAuditHeaderTime                 = "msg.tui_audit_header_time"
-	MsgTUIAuditHeaderTool                 = "msg.tui_audit_header_tool"
-	MsgTUIAuditHeaderRisk                 = "msg.tui_audit_header_risk"
-	MsgTUIAuditHeaderPolicy               = "msg.tui_audit_header_policy"
-	MsgTUIAuditHeaderResult               = "msg.tui_audit_header_result"
-	MsgTUIAuditFooter                     = "msg.tui_audit_footer"
 	MsgTUIChatInputPlaceholder            = "msg.tui_chat_input_placeholder"
 	MsgTUIChatSystemReady                 = "msg.tui_chat_system_ready"
 	MsgTUIChatError                       = "msg.tui_chat_error"
@@ -161,7 +142,6 @@ const (
 	MsgTUIHelpSectionListNavigation       = "msg.tui_help_section_list_navigation"
 	MsgTUIHelpSectionSessions             = "msg.tui_help_section_sessions"
 	MsgTUIHelpSectionScheduledTasks       = "msg.tui_help_section_scheduled_tasks"
-	MsgTUIHelpSectionMemory               = "msg.tui_help_section_memory"
 	MsgTUIHelpSectionConfig               = "msg.tui_help_section_config"
 	MsgTUIHelpSectionAgentNet             = "msg.tui_help_section_agentnet"
 	MsgTUIHelpSectionSessionDetail        = "msg.tui_help_section_session_detail"
@@ -198,8 +178,6 @@ const (
 	MsgTUIPythonAvailable                 = "msg.tui_python_available"
 	MsgTUIConfigSaveFailed                = "msg.tui_config_save_failed"
 	MsgTUIConfigSaved                     = "msg.tui_config_saved"
-	MsgTUIMemoryCompressHint              = "msg.tui_memory_compress_hint"
-	MsgTUIMemoryBackupListHint            = "msg.tui_memory_backup_list_hint"
 	MsgTUISessionMonitorEvent             = "msg.tui_session_monitor_event"
 	MsgTUIErrorExit                       = "msg.tui_error_exit"
 	MsgTUILLMNotConfiguredHint            = "msg.tui_llm_not_configured_hint"
@@ -208,7 +186,9 @@ const (
 	MsgTUIConfigFooterEditing             = "msg.tui_config_footer_editing"
 	MsgTUIConfigFooterNormal              = "msg.tui_config_footer_normal"
 	MsgTUIConfigFooterSelect              = "msg.tui_config_footer_select"
+	MsgTUIConfigDescSetupStatus           = "msg.tui_config_desc_setup_status"
 	MsgTUIConfigDescHubURL                = "msg.tui_config_desc_hub_url"
+	MsgTUIConfigDescHubCenterURL          = "msg.tui_config_desc_hubcenter_url"
 	MsgTUIConfigDescToken                 = "msg.tui_config_desc_token"
 	MsgTUIConfigDescDataDir               = "msg.tui_config_desc_data_dir"
 	MsgTUIConfigDescMaxIterations         = "msg.tui_config_desc_max_iterations"
@@ -217,8 +197,10 @@ const (
 	MsgTUIConfigDescLLMURL                = "msg.tui_config_desc_llm_url"
 	MsgTUIConfigDescLLMKey                = "msg.tui_config_desc_llm_key"
 	MsgTUIConfigDescLLMModel              = "msg.tui_config_desc_llm_model"
+	MsgTUIConfigDescLLMModelChoice        = "msg.tui_config_desc_llm_model_choice"
 	MsgTUIConfigDescLLMProtocol           = "msg.tui_config_desc_llm_protocol"
 	MsgTUIConfigDescLLMContextLength      = "msg.tui_config_desc_llm_context_length"
+	MsgTUIConfigDescIMChannelProfile      = "msg.tui_config_desc_im_channel_profile"
 	MsgTUIConfigDescQQBotEnabled          = "msg.tui_config_desc_qqbot_enabled"
 	MsgTUIConfigDescQQBotAppID            = "msg.tui_config_desc_qqbot_app_id"
 	MsgTUIConfigDescQQBotAppSecret        = "msg.tui_config_desc_qqbot_app_secret"
@@ -233,9 +215,11 @@ const (
 	MsgTUIConfigTabSecurity = "msg.tui_config_tab_security"
 	MsgTUIConfigTabAdvanced = "msg.tui_config_tab_advanced"
 	// New config field descriptions
+	MsgTUIConfigDescWorkDirProfile     = "msg.tui_config_desc_work_dir_profile"
 	MsgTUIConfigDescWorkDir            = "msg.tui_config_desc_work_dir"
 	MsgTUIConfigDescLanguage           = "msg.tui_config_desc_language"
 	MsgTUIConfigDescCheckUpdate        = "msg.tui_config_desc_check_update"
+	MsgTUIConfigDescAuxLLMProfile      = "msg.tui_config_desc_aux_llm_profile"
 	MsgTUIConfigDescAuxLLMURL          = "msg.tui_config_desc_aux_llm_url"
 	MsgTUIConfigDescAuxLLMKey          = "msg.tui_config_desc_aux_llm_key"
 	MsgTUIConfigDescAuxLLMModel        = "msg.tui_config_desc_aux_llm_model"
@@ -248,6 +232,7 @@ const (
 	MsgTUIConfigDescLansengerAppSecret = "msg.tui_config_desc_lansenger_app_secret"
 	MsgTUIConfigDescLansengerGateway   = "msg.tui_config_desc_lansenger_gateway"
 	MsgTUIConfigDescProxyEnabled       = "msg.tui_config_desc_proxy_enabled"
+	MsgTUIConfigDescProxyProfile       = "msg.tui_config_desc_proxy_profile"
 	MsgTUIConfigDescProxyProtocol      = "msg.tui_config_desc_proxy_protocol"
 	MsgTUIConfigDescProxyHost          = "msg.tui_config_desc_proxy_host"
 	MsgTUIConfigDescProxyPort          = "msg.tui_config_desc_proxy_port"
@@ -255,6 +240,7 @@ const (
 	MsgTUIConfigDescProxyPass          = "msg.tui_config_desc_proxy_pass"
 	MsgTUIConfigDescProxyScopeLLM      = "msg.tui_config_desc_proxy_scope_llm"
 	MsgTUIConfigDescProxyScopeAgent    = "msg.tui_config_desc_proxy_scope_agent"
+	MsgTUIConfigDescSecurityProfile    = "msg.tui_config_desc_security_profile"
 	MsgTUIConfigDescSecurityMode       = "msg.tui_config_desc_security_mode"
 	MsgTUIConfigDescSandbox            = "msg.tui_config_desc_sandbox"
 	MsgTUIConfigDescNetworkLevel       = "msg.tui_config_desc_network_level"
@@ -339,11 +325,9 @@ var translations = map[string]map[string]string{
 		MsgTUITabSessions:                     "编程",
 		MsgTUITabTools:                        "工具",
 		MsgTUITabSchedule:                     "任务",
-		MsgTUITabMemory:                       "记忆",
-		MsgTUITabAudit:                        "审计",
 		MsgTUITabAgentNet:                     "智网",
 		MsgTUITabConfig:                       "配置",
-		MsgTUITabChat:                         "助手",
+		MsgTUITabChat:                         "聊天",
 		MsgTUIInitializing:                    "正在初始化...",
 		MsgTUIReady:                           "就绪",
 		MsgTUIKernelInitFailed:                "内核初始化失败: %v",
@@ -359,7 +343,7 @@ var translations = map[string]map[string]string{
 		MsgTUIStatusConnectedHub:              "已连接 Hub",
 		MsgTUIStatusConnectingHub:             "连接 Hub 中",
 		MsgTUIStatusDisconnectedHub:           "未连接 Hub",
-		MsgTUIStatusBarHelp:                   "Tab:切换 q:退出",
+		MsgTUIStatusBarHelp:                   "F1-F6/Ctrl+Tab:切换  ?:帮助  q:退出",
 		MsgTUIToolHeaderName:                  "工具",
 		MsgTUIToolHeaderStatus:                "状态",
 		MsgTUIToolHeaderVersion:               "版本",
@@ -387,7 +371,7 @@ var translations = map[string]map[string]string{
 		MsgTUISessionCreateToolCount:          "... 共 %d 个工具",
 		MsgTUISessionCreateFooter:             "Tab:切换字段  ↑↓:选工具  Enter:确认/下一步  Esc:取消",
 		MsgTUIScheduleLoading:                 "正在加载定时任务...",
-		MsgTUIScheduleEmpty:                   "暂无定时任务\n\n使用 CLI 创建: maclaw-tui schedule create --name <name> --action <text>",
+		MsgTUIScheduleEmpty:                   "暂无计划任务\n\n可按 Enter 回到聊天页，直接说明要定时执行的事项。",
 		MsgTUIScheduleHeaderName:              "NAME",
 		MsgTUIScheduleHeaderStatus:            "STATUS",
 		MsgTUIScheduleHeaderTime:              "TIME",
@@ -397,10 +381,10 @@ var translations = map[string]map[string]string{
 		MsgTUITaskSubRemote:                   "远程",
 		MsgTUITaskSubBackground:               "后台",
 		MsgTUITaskSubScheduled:                "计划任务",
-		MsgTUITaskRemoteEmpty:                 "暂无远程任务\n\n通过 SSH 工具提交的远程后台任务将显示在此处",
-		MsgTUITaskBackgroundEmpty:             "暂无后台任务\n\n通过 Agent 启动的后台循环任务将显示在此处",
-		MsgTUITaskRemoteFooter:                "↑↓:选择  Enter:详情  1/2/3:切换子标签",
-		MsgTUITaskBackgroundFooter:            "↑↓:选择  Enter:详情  s:停止  1/2/3:切换子标签",
+		MsgTUITaskRemoteEmpty:                 "暂无远程任务\n\n需要在服务器上运行命令时，可按 Enter 打开工具页配置 SSH/MCP，或到聊天页直接说明目标。",
+		MsgTUITaskBackgroundEmpty:             "暂无后台任务\n\n需要长时间执行的工作可按 Enter 回到聊天页发起，运行中的任务会显示在这里。",
+		MsgTUITaskRemoteFooter:                "↑↓:选择  1/2/3:切换子标签",
+		MsgTUITaskBackgroundFooter:            "↑↓:选择  1/2/3:切换子标签",
 		MsgTUILoopManagerUnavailable:          "后台任务管理器未初始化（需要在 daemon 或 TUI 模式下运行）",
 		MsgTUILoopNoTasks:                     "无运行中的后台任务。",
 		MsgTUILoopTaskNotFound:                "后台任务 '%s' 不存在",
@@ -411,23 +395,6 @@ var translations = map[string]map[string]string{
 		MsgTUIBuildEnvFailed:                  "构建环境变量失败: %w",
 		MsgTUIToolMissing:                     "工具 %s 未安装（在 %s 中未找到）",
 		MsgTUIYoloBlocked:                     "⚠ YOLO 模式已被 Hub 安全策略禁止，将以普通模式启动",
-		MsgTUIMemoryLoading:                   "正在加载记忆...",
-		MsgTUIMemoryEmpty:                     "暂无记忆\n\n使用 CLI 保存: maclaw-tui memory save --content <text>",
-		MsgTUIMemoryHeaderCategory:            "CATEGORY",
-		MsgTUIMemoryHeaderAccess:              "ACCESS",
-		MsgTUIMemoryHeaderContent:             "CONTENT",
-		MsgTUIMemoryFooter:                    "↑↓:选择  d:删除  c:压缩  b:备份列表",
-		MsgTUIAuditFilterPlaceholder:          "输入工具名或风险等级过滤...",
-		MsgTUIAuditLoading:                    "正在加载审计日志...",
-		MsgTUIAuditEmpty:                      "暂无审计日志\n\n使用 CLI 查询: maclaw-tui audit list",
-		MsgTUIAuditFilterLabel:                "过滤: ",
-		MsgTUIAuditFilterSummary:              "过滤: %s (/:修改  Esc:清除)",
-		MsgTUIAuditHeaderTime:                 "TIME",
-		MsgTUIAuditHeaderTool:                 "TOOL",
-		MsgTUIAuditHeaderRisk:                 "RISK",
-		MsgTUIAuditHeaderPolicy:               "POLICY",
-		MsgTUIAuditHeaderResult:               "RESULT",
-		MsgTUIAuditFooter:                     "共 %d/%d 条  ↑↓:选择  g/G:首/尾  /:过滤  r:刷新",
 		MsgTUIChatInputPlaceholder:            "输入消息... (Enter 发送)",
 		MsgTUIChatSystemReady:                 "AI 助手就绪 [Agent 模式]。支持工具调用（bash/文件操作/会话管理）。",
 		MsgTUIChatError:                       "错误: %s",
@@ -449,7 +416,6 @@ var translations = map[string]map[string]string{
 		MsgTUIHelpSectionListNavigation:       "列表导航",
 		MsgTUIHelpSectionSessions:             "编程",
 		MsgTUIHelpSectionScheduledTasks:       "任务",
-		MsgTUIHelpSectionMemory:               "记忆",
 		MsgTUIHelpSectionConfig:               "配置",
 		MsgTUIHelpSectionAgentNet:             "智网",
 		MsgTUIHelpSectionSessionDetail:        "会话详情",
@@ -486,32 +452,35 @@ var translations = map[string]map[string]string{
 		MsgTUIPythonAvailable:                 "🐍 Python %s 可用",
 		MsgTUIConfigSaveFailed:                "保存失败: %s: %v",
 		MsgTUIConfigSaved:                     "已保存: %s = %s",
-		MsgTUIMemoryCompressHint:              "记忆压缩中... 请使用 CLI: maclaw-tui memory compress",
-		MsgTUIMemoryBackupListHint:            "备份列表请使用 CLI: maclaw-tui memory backup list",
 		MsgTUISessionMonitorEvent:             "🔔 [%s] %s",
 		MsgTUIErrorExit:                       "错误: %v\n\n按 q 退出\n",
-		MsgTUILLMNotConfiguredHint:            "LLM 未配置。运行 maclaw llm setup 快速配置。",
+		MsgTUILLMNotConfiguredHint:            "LLM 未配置。请在 TUI 中打开初始化、服务兑换或设置页，并按提示选择配置。",
 		MsgTUIConfigTitle:                     "配置",
 		MsgTUIConfigNotSet:                    "(未设置)",
 		MsgTUIConfigFooterEditing:             "Enter:确认  Esc:取消",
-		MsgTUIConfigFooterNormal:              "1-6:切换标签  ↑↓:移动  Enter:编辑  Space:切换开关",
+		MsgTUIConfigFooterNormal:              "1-6:切换标签  ↑↓:移动  Enter:选择/执行  Space:切换/建议",
 		MsgTUIConfigFooterSelect:              "←→:选择  Enter:确认  Esc:取消",
-		MsgTUIConfigDescHubURL:                "Hub 服务地址",
+		MsgTUIConfigDescSetupStatus:           "当前初始化进度：优先完成 Hub 激活和官方服务兑换，也可以配置本地/自定义 LLM",
+		MsgTUIConfigDescHubURL:                "注册后自动选择的 Hub 服务地址，只读展示",
+		MsgTUIConfigDescHubCenterURL:          "HubCenter 地址：注册时根据邮箱自动选择 Hub",
 		MsgTUIConfigDescToken:                 "认证令牌",
 		MsgTUIConfigDescDataDir:               "数据目录",
 		MsgTUIConfigDescMaxIterations:         "Agent 最大迭代次数 (30-300)",
 		MsgTUIConfigDescAgentNetEnabled:       "启用 AgentNet",
+		MsgTUIConfigDescLLMProviderPreset:     "LLM 服务商预设",
 		MsgTUIConfigDescLLMURL:                "LLM API 地址",
 		MsgTUIConfigDescLLMKey:                "LLM API 密钥",
 		MsgTUIConfigDescLLMModel:              "LLM 模型名称",
+		MsgTUIConfigDescLLMModelChoice:        "模型快选：优先选择常用模型；特殊模型可继续调整下方模型名",
 		MsgTUIConfigDescLLMProtocol:           "LLM 协议 (openai/anthropic)",
 		MsgTUIConfigDescLLMContextLength:      "上下文长度 (tokens)",
+		MsgTUIConfigDescIMChannelProfile:      "选择常用 IM 通道；高级凭据可在下方对应通道继续配置",
 		MsgTUIConfigDescQQBotEnabled:          "启用 QQ 机器人",
 		MsgTUIConfigDescQQBotAppID:            "QQ 机器人 AppID",
 		MsgTUIConfigDescQQBotAppSecret:        "QQ 机器人 AppSecret",
 		MsgTUIConfigDescTelegramEnabled:       "启用 Telegram 机器人",
 		MsgTUIConfigDescTelegramToken:         "Telegram 机器人 Token",
-		MsgTUIConfigDescSkillPurchaseMode:     "技能购买模式 (auto/free_only)",
+		MsgTUIConfigDescSkillPurchaseMode:     "技能购买模式：自动或仅免费",
 		// Config tab names
 		MsgTUIConfigTabGeneral:  "基本",
 		MsgTUIConfigTabLLM:      "LLM",
@@ -520,9 +489,11 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigTabSecurity: "安全",
 		MsgTUIConfigTabAdvanced: "高级",
 		// New config field descriptions
-		MsgTUIConfigDescWorkDir:            "默认工作目录",
+		MsgTUIConfigDescWorkDirProfile:     "工作目录方案：优先选择默认工作区、当前目录或用户目录；自定义时再填写路径",
+		MsgTUIConfigDescWorkDir:            "自定义工作目录路径",
 		MsgTUIConfigDescLanguage:           "界面语言",
 		MsgTUIConfigDescCheckUpdate:        "启动时检查更新",
+		MsgTUIConfigDescAuxLLMProfile:      "辅助 LLM 方案：默认关闭，可一键跟随主 LLM；只有自定义时才需要填写细项",
 		MsgTUIConfigDescAuxLLMURL:          "辅助 LLM API 地址",
 		MsgTUIConfigDescAuxLLMKey:          "辅助 LLM API 密钥",
 		MsgTUIConfigDescAuxLLMModel:        "辅助 LLM 模型名称",
@@ -535,6 +506,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescLansengerAppSecret: "蓝信 AppSecret",
 		MsgTUIConfigDescLansengerGateway:   "蓝信网关地址",
 		MsgTUIConfigDescProxyEnabled:       "启用代理",
+		MsgTUIConfigDescProxyProfile:       "一键应用常见本地代理方案；自定义代理可继续调整下面的主机、端口和范围",
 		MsgTUIConfigDescProxyProtocol:      "代理协议",
 		MsgTUIConfigDescProxyHost:          "代理主机",
 		MsgTUIConfigDescProxyPort:          "代理端口",
@@ -542,13 +514,14 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescProxyPass:          "代理密码",
 		MsgTUIConfigDescProxyScopeLLM:      "代理范围: LLM 请求",
 		MsgTUIConfigDescProxyScopeAgent:    "代理范围: Agent 网络",
+		MsgTUIConfigDescSecurityProfile:    "一键选择安全方案；自定义时才展开策略、沙箱和网络细项",
 		MsgTUIConfigDescSecurityMode:       "安全策略模式",
 		MsgTUIConfigDescSandbox:            "沙箱模式",
 		MsgTUIConfigDescNetworkLevel:       "网络访问级别",
 		MsgTUIConfigDescYoloMode:           "允许 YOLO 模式",
 		MsgTUIConfigDescFileOutbound:       "允许文件外发",
 		MsgTUIConfigDescImageOutbound:      "允许图片外发",
-		MsgTUIConfigDescUIMode:             "界面模式 (pro=完整/lite=精简)",
+		MsgTUIConfigDescUIMode:             "界面复杂度：简洁适合日常使用，专业显示更多调试选项",
 		MsgTUIConfigDescMemoryCompress:     "记忆自动压缩",
 		MsgTUIConfigDescLogDetail:          "详细日志",
 		MsgTUIConfigDescTrajectory:         "LLM 轨迹记录",
@@ -615,11 +588,9 @@ var translations = map[string]map[string]string{
 		MsgTUITabSessions:                     "Coding",
 		MsgTUITabTools:                        "Tools",
 		MsgTUITabSchedule:                     "Tasks",
-		MsgTUITabMemory:                       "Memory",
-		MsgTUITabAudit:                        "Audit",
 		MsgTUITabAgentNet:                     "AgentNet",
 		MsgTUITabConfig:                       "Config",
-		MsgTUITabChat:                         "Assistant",
+		MsgTUITabChat:                         "Chat",
 		MsgTUIInitializing:                    "Initializing...",
 		MsgTUIReady:                           "Ready",
 		MsgTUIKernelInitFailed:                "Kernel initialization failed: %v",
@@ -635,7 +606,7 @@ var translations = map[string]map[string]string{
 		MsgTUIStatusConnectedHub:              "Hub connected",
 		MsgTUIStatusConnectingHub:             "Connecting Hub",
 		MsgTUIStatusDisconnectedHub:           "Hub disconnected",
-		MsgTUIStatusBarHelp:                   "Tab:switch q:quit",
+		MsgTUIStatusBarHelp:                   "F1-F6/Ctrl+Tab:switch  ?:help  q:quit",
 		MsgTUIToolHeaderName:                  "Tool",
 		MsgTUIToolHeaderStatus:                "Status",
 		MsgTUIToolHeaderVersion:               "Version",
@@ -663,7 +634,7 @@ var translations = map[string]map[string]string{
 		MsgTUISessionCreateToolCount:          "... %d tools total",
 		MsgTUISessionCreateFooter:             "Tab:switch field  ↑↓:choose tool  Enter:confirm/next  Esc:cancel",
 		MsgTUIScheduleLoading:                 "Loading scheduled tasks...",
-		MsgTUIScheduleEmpty:                   "No scheduled tasks\n\nUse CLI: maclaw-tui schedule create --name <name> --action <text>",
+		MsgTUIScheduleEmpty:                   "No scheduled tasks\n\nPress Enter to return to Chat and ask for recurring work.",
 		MsgTUIScheduleHeaderName:              "NAME",
 		MsgTUIScheduleHeaderStatus:            "STATUS",
 		MsgTUIScheduleHeaderTime:              "TIME",
@@ -673,10 +644,10 @@ var translations = map[string]map[string]string{
 		MsgTUITaskSubRemote:                   "Remote",
 		MsgTUITaskSubBackground:               "Background",
 		MsgTUITaskSubScheduled:                "Scheduled",
-		MsgTUITaskRemoteEmpty:                 "No remote tasks\n\nRemote background tasks submitted via SSH will appear here",
-		MsgTUITaskBackgroundEmpty:             "No background tasks\n\nBackground loop tasks started by Agent will appear here",
-		MsgTUITaskRemoteFooter:                "↑↓:select  Enter:details  1/2/3:switch sub-tab",
-		MsgTUITaskBackgroundFooter:            "↑↓:select  Enter:details  s:stop  1/2/3:switch sub-tab",
+		MsgTUITaskRemoteEmpty:                 "No remote tasks\n\nPress Enter to open Tools and configure SSH/MCP, or ask from Chat with the target host.",
+		MsgTUITaskBackgroundEmpty:             "No background tasks\n\nPress Enter to return to Chat and start long-running work; running loops will appear here.",
+		MsgTUITaskRemoteFooter:                "↑↓:select  1/2/3:switch sub-tab",
+		MsgTUITaskBackgroundFooter:            "↑↓:select  1/2/3:switch sub-tab",
 		MsgTUILoopManagerUnavailable:          "Background loop manager is not initialized (run in daemon or TUI mode)",
 		MsgTUILoopNoTasks:                     "No running background tasks.",
 		MsgTUILoopTaskNotFound:                "Background task '%s' not found",
@@ -687,23 +658,6 @@ var translations = map[string]map[string]string{
 		MsgTUIBuildEnvFailed:                  "Failed to build environment variables: %w",
 		MsgTUIToolMissing:                     "Tool %s is not installed (not found in %s)",
 		MsgTUIYoloBlocked:                     "⚠ YOLO mode is blocked by Hub security policy; launching in normal mode",
-		MsgTUIMemoryLoading:                   "Loading memory...",
-		MsgTUIMemoryEmpty:                     "No memory entries\n\nUse CLI: maclaw-tui memory save --content <text>",
-		MsgTUIMemoryHeaderCategory:            "CATEGORY",
-		MsgTUIMemoryHeaderAccess:              "ACCESS",
-		MsgTUIMemoryHeaderContent:             "CONTENT",
-		MsgTUIMemoryFooter:                    "↑↓:select  d:delete  c:compress  b:list backups",
-		MsgTUIAuditFilterPlaceholder:          "Filter by tool or risk level...",
-		MsgTUIAuditLoading:                    "Loading audit logs...",
-		MsgTUIAuditEmpty:                      "No audit logs\n\nUse CLI: maclaw-tui audit list",
-		MsgTUIAuditFilterLabel:                "Filter: ",
-		MsgTUIAuditFilterSummary:              "Filter: %s (/:edit  Esc:clear)",
-		MsgTUIAuditHeaderTime:                 "TIME",
-		MsgTUIAuditHeaderTool:                 "TOOL",
-		MsgTUIAuditHeaderRisk:                 "RISK",
-		MsgTUIAuditHeaderPolicy:               "POLICY",
-		MsgTUIAuditHeaderResult:               "RESULT",
-		MsgTUIAuditFooter:                     "%d/%d entries  ↑↓:select  g/G:top/end  /:filter  r:refresh",
 		MsgTUIChatInputPlaceholder:            "Type a message... (Enter to send)",
 		MsgTUIChatSystemReady:                 "AI assistant is ready [Agent mode]. Tool calling is enabled (bash/file ops/session management).",
 		MsgTUIChatError:                       "Error: %s",
@@ -725,7 +679,6 @@ var translations = map[string]map[string]string{
 		MsgTUIHelpSectionListNavigation:       "List Navigation",
 		MsgTUIHelpSectionSessions:             "Coding",
 		MsgTUIHelpSectionScheduledTasks:       "Tasks",
-		MsgTUIHelpSectionMemory:               "Memory",
 		MsgTUIHelpSectionConfig:               "Config",
 		MsgTUIHelpSectionAgentNet:             "AgentNet",
 		MsgTUIHelpSectionSessionDetail:        "Session Detail",
@@ -762,17 +715,17 @@ var translations = map[string]map[string]string{
 		MsgTUIPythonAvailable:                 "🐍 Python %s available",
 		MsgTUIConfigSaveFailed:                "Save failed: %s: %v",
 		MsgTUIConfigSaved:                     "Saved: %s = %s",
-		MsgTUIMemoryCompressHint:              "Compressing memory... Use CLI: maclaw-tui memory compress",
-		MsgTUIMemoryBackupListHint:            "Use CLI for backup list: maclaw-tui memory backup list",
 		MsgTUISessionMonitorEvent:             "🔔 [%s] %s",
 		MsgTUIErrorExit:                       "Error: %v\n\nPress q to quit\n",
-		MsgTUILLMNotConfiguredHint:            "LLM is not configured. Run maclaw llm setup to get started.",
+		MsgTUILLMNotConfiguredHint:            "LLM is not configured. Open Setup, Service Redeem, or Config in the TUI and choose a provider.",
 		MsgTUIConfigTitle:                     "Configuration",
 		MsgTUIConfigNotSet:                    "(not set)",
 		MsgTUIConfigFooterEditing:             "Enter:confirm  Esc:cancel",
-		MsgTUIConfigFooterNormal:              "1-6:switch tab  Up/Down:move  Enter:edit  Space:toggle",
+		MsgTUIConfigFooterNormal:              "1-6:switch tab  Up/Down:move  Enter:choose/action  Space:cycle/suggest",
 		MsgTUIConfigFooterSelect:              "Left/Right:select  Enter:confirm  Esc:cancel",
-		MsgTUIConfigDescHubURL:                "Hub server URL",
+		MsgTUIConfigDescSetupStatus:           "Current setup progress: activate Hub and redeem official service, or configure a local/custom LLM",
+		MsgTUIConfigDescHubURL:                "Hub server URL selected automatically after setup; read-only",
+		MsgTUIConfigDescHubCenterURL:          "HubCenter URL used to choose a Hub automatically from the setup email",
 		MsgTUIConfigDescToken:                 "auth token",
 		MsgTUIConfigDescDataDir:               "data directory",
 		MsgTUIConfigDescMaxIterations:         "Agent max iterations (30-300)",
@@ -781,14 +734,16 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescLLMURL:                "LLM API URL",
 		MsgTUIConfigDescLLMKey:                "LLM API Key",
 		MsgTUIConfigDescLLMModel:              "LLM model name",
+		MsgTUIConfigDescLLMModelChoice:        "Model quick pick; use the manual model field below for special names",
 		MsgTUIConfigDescLLMProtocol:           "LLM protocol (openai/anthropic)",
 		MsgTUIConfigDescLLMContextLength:      "context length (tokens)",
+		MsgTUIConfigDescIMChannelProfile:      "Choose a common IM channel; advanced credentials remain configurable below",
 		MsgTUIConfigDescQQBotEnabled:          "enable QQ bot",
 		MsgTUIConfigDescQQBotAppID:            "QQ Bot AppID",
 		MsgTUIConfigDescQQBotAppSecret:        "QQ Bot AppSecret",
 		MsgTUIConfigDescTelegramEnabled:       "enable Telegram bot",
 		MsgTUIConfigDescTelegramToken:         "Telegram Bot Token",
-		MsgTUIConfigDescSkillPurchaseMode:     "Skill purchase mode (auto/free_only)",
+		MsgTUIConfigDescSkillPurchaseMode:     "Skill purchase mode: auto or free only",
 		// Config tab names
 		MsgTUIConfigTabGeneral:  "General",
 		MsgTUIConfigTabLLM:      "LLM",
@@ -797,9 +752,11 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigTabSecurity: "Security",
 		MsgTUIConfigTabAdvanced: "Advanced",
 		// New config field descriptions
-		MsgTUIConfigDescWorkDir:            "Default working directory",
+		MsgTUIConfigDescWorkDirProfile:     "Working directory profile: choose default workspace, current directory, or home; custom expands the path field",
+		MsgTUIConfigDescWorkDir:            "Custom working directory path",
 		MsgTUIConfigDescLanguage:           "Interface language",
 		MsgTUIConfigDescCheckUpdate:        "Check for updates on startup",
+		MsgTUIConfigDescAuxLLMProfile:      "Auxiliary LLM profile: off by default, can follow the primary LLM; custom expands manual fields",
 		MsgTUIConfigDescAuxLLMURL:          "Auxiliary LLM API URL",
 		MsgTUIConfigDescAuxLLMKey:          "Auxiliary LLM API key",
 		MsgTUIConfigDescAuxLLMModel:        "Auxiliary LLM model name",
@@ -812,6 +769,7 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescLansengerAppSecret: "Lansenger AppSecret",
 		MsgTUIConfigDescLansengerGateway:   "Lansenger gateway URL",
 		MsgTUIConfigDescProxyEnabled:       "Enable proxy",
+		MsgTUIConfigDescProxyProfile:       "Apply a common local proxy profile; adjust host, port, and scope below for custom proxy setup",
 		MsgTUIConfigDescProxyProtocol:      "Proxy protocol",
 		MsgTUIConfigDescProxyHost:          "Proxy host",
 		MsgTUIConfigDescProxyPort:          "Proxy port",
@@ -819,13 +777,14 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescProxyPass:          "Proxy password",
 		MsgTUIConfigDescProxyScopeLLM:      "Proxy scope: LLM requests",
 		MsgTUIConfigDescProxyScopeAgent:    "Proxy scope: Agent network",
+		MsgTUIConfigDescSecurityProfile:    "Choose a security profile; custom expands policy, sandbox, and network fields",
 		MsgTUIConfigDescSecurityMode:       "Security policy mode",
 		MsgTUIConfigDescSandbox:            "Sandbox mode",
 		MsgTUIConfigDescNetworkLevel:       "Network access level",
 		MsgTUIConfigDescYoloMode:           "Allow YOLO mode",
 		MsgTUIConfigDescFileOutbound:       "Allow file outbound",
 		MsgTUIConfigDescImageOutbound:      "Allow image outbound",
-		MsgTUIConfigDescUIMode:             "UI mode (pro=full/lite=simplified)",
+		MsgTUIConfigDescUIMode:             "UI complexity: Lite for daily use, Pro shows more diagnostics",
 		MsgTUIConfigDescMemoryCompress:     "Auto-compress memory",
 		MsgTUIConfigDescLogDetail:          "Detailed logging",
 		MsgTUIConfigDescTrajectory:         "LLM trajectory logging",

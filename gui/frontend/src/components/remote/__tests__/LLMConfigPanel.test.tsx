@@ -101,6 +101,203 @@ describe('LLMConfigPanel test-and-save flow', () => {
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
     });
 
+    it('keeps MaClaw Official visible when official grants are period-limited', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'coding-basic',
+                active: false,
+                status: 'period_limited',
+                retry_after_seconds: 3600,
+            }],
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+
+        const officialButton = await screen.findByRole('button', { name: /MaClaw Official/i });
+        expect(officialButton).toBeTruthy();
+        expect(screen.getAllByText('Period limited').length).toBeGreaterThan(0);
+
+        fireEvent.click(officialButton);
+
+        expect(await screen.findByText(/Current period quota is exhausted/i)).toBeTruthy();
+    });
+
+    it('keeps MaClaw Official visible when the latest official grant is expired', async () => {
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{
+                service_group_id: 'coding-basic',
+                active: false,
+                status: 'expired',
+            }],
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+
+        const officialButton = await screen.findByRole('button', { name: /MaClaw Official/i });
+        expect(officialButton).toBeTruthy();
+        expect(screen.getAllByText('Grant expired').length).toBeGreaterThan(0);
+
+        fireEvent.click(officialButton);
+
+        expect(await screen.findByText(/Official authorization has expired/i)).toBeTruthy();
+    });
+
+    it('refreshes providers after saving the fallback MaClaw Official button', async () => {
+        GetMaclawLLMProvidersMock
+            .mockResolvedValueOnce({
+                providers: [
+                    { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+                ],
+                current: 'Custom1',
+            })
+            .mockResolvedValue({
+                providers: [
+                    { name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai' },
+                    { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+                ],
+                current: 'MaClaw\u5b98\u65b9',
+            });
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{ service_group_id: 'coding-basic', active: false, status: 'period_limited', retry_after_seconds: 3600 }],
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        fireEvent.click(await screen.findByRole('button', { name: /MaClaw Official/i }));
+        fireEvent.click(screen.getByRole('button', { name: 'Use This Service' }));
+
+        await waitFor(() => {
+            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1' })],
+                'MaClaw\u5b98\u65b9',
+            );
+        });
+        await waitFor(() => {
+            expect(GetMaclawLLMProvidersMock).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    it('allows repairing MaClaw Official when current is official but provider is missing', async () => {
+        GetMaclawLLMProvidersMock
+            .mockResolvedValueOnce({
+                providers: [
+                    { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+                ],
+                current: 'MaClaw\u5b98\u65b9',
+            })
+            .mockResolvedValue({
+                providers: [
+                    { name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai' },
+                    { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+                ],
+                current: 'MaClaw\u5b98\u65b9',
+            });
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{ service_group_id: 'coding-basic', active: false, status: 'period_limited', retry_after_seconds: 3600 }],
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+        const repairButton = await screen.findByRole('button', { name: 'Use This Service' });
+        expect((repairButton as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(repairButton);
+
+        await waitFor(() => {
+            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1' })],
+                'MaClaw\u5b98\u65b9',
+            );
+        });
+    });
+
+    it('does not duplicate MaClaw Official when the synced provider already exists', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai' },
+                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+            current: 'Custom1',
+        });
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [{ service_group_id: 'coding-basic', active: false, status: 'period_limited', retry_after_seconds: 3600 }],
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+
+        await screen.findByText('MaClaw\u5b98\u65b9');
+        const maclawButtons = screen.getAllByRole('button').filter(button => button.textContent?.includes('MaClaw'));
+        expect(maclawButtons).toHaveLength(1);
+        expect(screen.getByText('Period limited')).toBeTruthy();
+    });
+
+    it('shows MaClaw Official as enabled when another official route is still active', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai' },
+            ],
+            current: 'MaClaw\u5b98\u65b9',
+        });
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [
+                { service_group_id: 'coding-basic', active: false, status: 'period_limited', retry_after_seconds: 3600 },
+                { service_group_id: 'coding-plus', active: true, status: 'active' },
+            ],
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+
+        await waitFor(() => {
+            expect(screen.getAllByText('MaClaw\u5b98\u65b9').length).toBeGreaterThan(0);
+        });
+        expect(screen.queryByText('Period limited')).toBeNull();
+    });
+
+    it('prioritizes queued grant status over exhausted older grants', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'MaClaw\u5b98\u65b9', url: 'https://hub.example.com/api/llm/v1', key: 'viewer-token', model: 'auto', protocol: 'openai' },
+            ],
+            current: 'MaClaw\u5b98\u65b9',
+        });
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: false,
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [
+                { service_group_id: 'coding-old', active: false, status: 'exhausted' },
+                { service_group_id: 'coding-next', active: false, status: 'queued', retry_after_seconds: 7200 },
+            ],
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Configure' }));
+
+        expect((await screen.findAllByText('Not active yet')).length).toBeGreaterThan(0);
+        expect(screen.queryByText('Credits exhausted')).toBeNull();
+    });
+
     it('does not save when detection fails', async () => {
         TestMaclawLLMMock.mockRejectedValue(new Error('boom'));
 

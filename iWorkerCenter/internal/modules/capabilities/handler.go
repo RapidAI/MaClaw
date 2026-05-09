@@ -1,12 +1,15 @@
 package capabilities
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -45,13 +48,46 @@ type CapabilityPackage struct {
 
 // Binding represents a colleague-capability binding.
 type Binding struct {
-	ID           string `json:"id"`
-	ColleagueID  string `json:"colleague_id"`
-	CapabilityID string `json:"capability_id"`
-	BoundAt      string `json:"bound_at"`
+	ID             string `json:"id"`
+	ColleagueID    string `json:"colleague_id"`
+	ColleagueName  string `json:"colleague_name,omitempty"`
+	CapabilityID   string `json:"capability_id"`
+	CapabilityName string `json:"capability_name,omitempty"`
+	BoundAt        string `json:"bound_at"`
 }
 
 const capabilitySelectSQL = `SELECT id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, local_skill_origin, cloud_publish_status, cloud_skill_id, cloud_published_at, cloud_publish_error, safety_status, safety_reason, safety_reviewed_at, created_at, updated_at FROM capability_packages`
+
+const maxCapabilityJSONBodyBytes = 512 << 10
+
+var (
+	errCapabilityJSONTooLarge = errors.New("capability json body exceeds size limit")
+	errCapabilityJSONTrailing = errors.New("capability json body contains trailing data")
+)
+
+func decodeCapabilityJSON(body io.Reader, dst any, allowEmpty bool) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxCapabilityJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxCapabilityJSONBodyBytes {
+		return errCapabilityJSONTooLarge
+	}
+	if len(bytes.TrimSpace(data)) == 0 && allowEmpty {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errCapabilityJSONTrailing
+		}
+		return err
+	}
+	return nil
+}
 
 type capabilityScannable interface {
 	Scan(dest ...any) error
@@ -115,6 +151,7 @@ func (h *Handler) SetSkillEvolutionMonitor(monitor *SkillEvolutionMonitor) {
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/mcp-servers/", h.handleAdminMCPServerByID)
 	mux.HandleFunc("/admin/mcp-servers", h.handleAdminMCPServers)
+	mux.HandleFunc("/admin/capability-bindings", h.handleAdminCapabilityBindings)
 	mux.HandleFunc("/admin/skillmarket/", h.handleAdminSkillMarketByID)
 	mux.HandleFunc("/admin/skillmarket", h.handleAdminSkillMarket)
 	mux.HandleFunc("/admin/capabilities-cloud-publish-rule", h.handleCloudPublishRule)
@@ -122,6 +159,39 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/capabilities/", h.handleAdminCapabilityByID)
 	mux.HandleFunc("/admin/capabilities-import/search", h.handleImportSearch)
 	mux.HandleFunc("/admin/capabilities-import/import", h.handleImportFromCloud)
+}
+
+func (h *Handler) handleAdminCapabilityBindings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+	tenantID := tenant.RequestTenantID(r)
+	rows, err := h.read.QueryContext(r.Context(), `SELECT ccb.id, ccb.colleague_id, c.name, ccb.capability_id, cp.name, ccb.bound_at
+		FROM colleague_capability_bindings ccb
+		JOIN colleagues c ON c.id = ccb.colleague_id AND c.tenant_id = ccb.tenant_id
+		JOIN capability_packages cp ON cp.id = ccb.capability_id AND cp.tenant_id = ccb.tenant_id
+		WHERE ccb.tenant_id=?
+		ORDER BY ccb.bound_at DESC, cp.name, c.name`, tenantID)
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	defer rows.Close()
+	bindings := []Binding{}
+	for rows.Next() {
+		var item Binding
+		if err := rows.Scan(&item.ID, &item.ColleagueID, &item.ColleagueName, &item.CapabilityID, &item.CapabilityName, &item.BoundAt); err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+		bindings = append(bindings, item)
+	}
+	if err := rows.Err(); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"bindings": bindings})
 }
 
 // RegisterClientRoutes registers client-facing routes (for DiWorker).
@@ -154,7 +224,7 @@ func (h *Handler) handleCloudPublishRule(w http.ResponseWriter, r *http.Request)
 		response.OK(w, rule)
 	case http.MethodPut:
 		var rule CloudPublishRule
-		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		if err := decodeCapabilityJSON(r.Body, &rule, false); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 			return
 		}
@@ -170,16 +240,29 @@ func (h *Handler) handleCloudPublishRule(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	id := extractID(path, "/admin/capabilities/")
+	rest := strings.TrimPrefix(r.URL.EscapedPath(), "/admin/capabilities/")
+	rest = strings.TrimRight(rest, "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 {
+		response.BadRequest(w, "MISSING_ID", "capability id is required")
+		return
+	}
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid capability id")
+		return
+	}
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "capability id is required")
 		return
 	}
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
 
 	// /admin/capabilities/{id}/bind
-	if strings.HasSuffix(path, "/bind") {
-		id = strings.TrimSuffix(id, "/bind")
+	if action == "bind" {
 		if r.Method == http.MethodPost {
 			h.bindToColleague(w, r, id)
 			return
@@ -189,8 +272,7 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/unbind
-	if strings.HasSuffix(path, "/unbind") {
-		id = strings.TrimSuffix(id, "/unbind")
+	if action == "unbind" {
 		if r.Method == http.MethodPost {
 			h.unbindFromColleague(w, r, id)
 			return
@@ -200,8 +282,7 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/approve
-	if strings.HasSuffix(path, "/approve") {
-		id = strings.TrimSuffix(id, "/approve")
+	if action == "approve" {
 		if r.Method == http.MethodPost {
 			h.approveCapability(w, r, id)
 			return
@@ -211,8 +292,7 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/reject
-	if strings.HasSuffix(path, "/reject") {
-		id = strings.TrimSuffix(id, "/reject")
+	if action == "reject" {
 		if r.Method == http.MethodPost {
 			h.rejectCapability(w, r, id)
 			return
@@ -222,8 +302,7 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/publish-cloud
-	if strings.HasSuffix(path, "/publish-cloud") {
-		id = strings.TrimSuffix(id, "/publish-cloud")
+	if action == "publish-cloud" {
 		if r.Method == http.MethodPost {
 			h.publishCapabilityToCloud(w, r, id)
 			return
@@ -233,8 +312,12 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/usage/{event_id}/quality
-	if strings.Contains(path, "/usage/") && strings.HasSuffix(path, "/quality") {
-		eventID := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/capabilities/"+id+"/usage/"), "/quality")
+	if action == "usage" && len(parts) == 4 && parts[3] == "quality" {
+		eventID, err := url.PathUnescape(parts[2])
+		if err != nil {
+			response.BadRequest(w, "INVALID_PATH", "invalid capability usage event id")
+			return
+		}
 		if r.Method == http.MethodPost {
 			h.updateCapabilityUsageQuality(w, r, id, strings.Trim(eventID, "/"))
 			return
@@ -244,8 +327,7 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/usage-summary
-	if strings.HasSuffix(path, "/usage-summary") {
-		id = strings.TrimSuffix(id, "/usage-summary")
+	if action == "usage-summary" {
 		if r.Method == http.MethodGet {
 			h.getCapabilityUsageSummary(w, r, id)
 			return
@@ -255,8 +337,7 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/usage
-	if strings.HasSuffix(path, "/usage") {
-		id = strings.TrimSuffix(id, "/usage")
+	if action == "usage" {
 		if r.Method == http.MethodGet {
 			h.listCapabilityUsage(w, r, id)
 			return
@@ -266,8 +347,7 @@ func (h *Handler) handleAdminCapabilityByID(w http.ResponseWriter, r *http.Reque
 	}
 
 	// /admin/capabilities/{id}/install
-	if strings.HasSuffix(path, "/install") {
-		id = strings.TrimSuffix(id, "/install")
+	if action == "install" {
 		if r.Method == http.MethodPost {
 			h.installCapability(w, r, id)
 			return
@@ -316,7 +396,11 @@ func (h *Handler) listCapabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	caps := scanCapabilities(rows)
+	caps, err := scanCapabilities(rows)
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 	response.OK(w, map[string]any{"capabilities": caps})
 }
 
@@ -328,7 +412,11 @@ func (h *Handler) listActiveCapabilities(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer rows.Close()
-	caps := scanCapabilities(rows)
+	caps, err := scanCapabilities(rows)
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 	response.OK(w, map[string]any{"capabilities": caps})
 }
 
@@ -336,15 +424,19 @@ func (h *Handler) listColleagueCapabilities(w http.ResponseWriter, r *http.Reque
 	tenantID := tenant.RequestTenantID(r)
 	rows, err := h.read.Query(`SELECT cp.id, cp.name, cp.description, cp.category, cp.version, cp.source, cp.risk_level, cp.status, cp.package_status, cp.package_format, cp.package_sha256, cp.package_size, cp.local_skill_origin, cp.cloud_publish_status, cp.cloud_skill_id, cp.cloud_published_at, cp.cloud_publish_error, cp.safety_status, cp.safety_reason, cp.safety_reviewed_at, cp.created_at, cp.updated_at
 		FROM capability_packages cp
-		JOIN colleague_capability_bindings ccb ON cp.id = ccb.capability_id
-		WHERE ccb.colleague_id = ? AND cp.status IN ('active','approved') AND ccb.tenant_id = ?
-		ORDER BY cp.name`, colleagueID, tenantID)
+		JOIN colleague_capability_bindings ccb ON cp.id = ccb.capability_id AND cp.tenant_id = ccb.tenant_id
+		WHERE ccb.colleague_id = ? AND cp.status IN ('active','approved') AND ccb.tenant_id = ? AND cp.tenant_id = ?
+		ORDER BY cp.name`, colleagueID, tenantID, tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
 	}
 	defer rows.Close()
-	caps := scanCapabilities(rows)
+	caps, err := scanCapabilities(rows)
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 	response.OK(w, map[string]any{"capabilities": caps})
 }
 
@@ -357,7 +449,7 @@ func (h *Handler) createCapability(w http.ResponseWriter, r *http.Request) {
 		Source      string `json:"source"`
 		RiskLevel   string `json:"risk_level"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -421,7 +513,7 @@ func (h *Handler) updateCapability(w http.ResponseWriter, r *http.Request, id st
 		RiskLevel   string `json:"risk_level"`
 		Status      string `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -450,7 +542,7 @@ func (h *Handler) bindToColleague(w http.ResponseWriter, r *http.Request, capabi
 	var req struct {
 		ColleagueID string `json:"colleague_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -461,41 +553,118 @@ func (h *Handler) bindToColleague(w http.ResponseWriter, r *http.Request, capabi
 	id := idgen.New("bind")
 	now := time.Now().Format(time.RFC3339)
 	tenantID := tenant.RequestTenantID(r)
-	_, err := h.write.Exec(`INSERT OR IGNORE INTO colleague_capability_bindings (id, tenant_id, colleague_id, capability_id, bound_at) VALUES (?, ?, ?, ?, ?)`,
+	if err := h.ensureCapabilityBindingScope(r.Context(), tenantID, capabilityID, strings.TrimSpace(req.ColleagueID)); err != nil {
+		if err == sql.ErrNoRows {
+			response.NotFound(w, "NOT_FOUND", "capability or colleague not found in tenant")
+			return
+		}
+		if strings.Contains(err.Error(), "must be") {
+			response.BadRequest(w, "DELIVERY_NOT_READY", err.Error())
+			return
+		}
+		response.Internal(w, err.Error())
+		return
+	}
+	result, err := h.write.Exec(`INSERT OR IGNORE INTO colleague_capability_bindings (id, tenant_id, colleague_id, capability_id, bound_at) VALUES (?, ?, ?, ?, ?)`,
 		id, tenantID, strings.TrimSpace(req.ColleagueID), capabilityID, now)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
 	}
-	response.OK(w, map[string]string{"status": "ok"})
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	status := "created"
+	if rowsAffected == 0 {
+		status = "already_bound"
+		if err := h.read.QueryRowContext(r.Context(), `SELECT id, bound_at FROM colleague_capability_bindings WHERE tenant_id=? AND colleague_id=? AND capability_id=?`, tenantID, strings.TrimSpace(req.ColleagueID), capabilityID).Scan(&id, &now); err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+	}
+	if status == "created" {
+		if err := h.recordCapabilityBindingAudit(r.Context(), tenantID, capabilityID, strings.TrimSpace(req.ColleagueID), "capability_delivered"); err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+	}
+	response.OK(w, map[string]string{"status": status, "binding_id": id, "bound_at": now})
+}
+
+func (h *Handler) ensureCapabilityBindingScope(ctx context.Context, tenantID, capabilityID, colleagueID string) error {
+	var status string
+	var packageStatus string
+	if err := h.read.QueryRowContext(ctx, `SELECT status, package_status FROM capability_packages WHERE tenant_id=? AND id=?`, tenantID, capabilityID).Scan(&status, &packageStatus); err != nil {
+		return err
+	}
+	if status != "active" && status != "approved" {
+		return fmt.Errorf("capability must be approved before delivery")
+	}
+	if packageStatus != "installed" {
+		return fmt.Errorf("capability runtime must be installed before delivery")
+	}
+	var colleagueExists int
+	if err := h.read.QueryRowContext(ctx, `SELECT 1 FROM colleagues WHERE tenant_id=? AND id=?`, tenantID, colleagueID).Scan(&colleagueExists); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) unbindFromColleague(w http.ResponseWriter, r *http.Request, capabilityID string) {
 	var req struct {
 		ColleagueID string `json:"colleague_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
-	_, _ = h.write.Exec("DELETE FROM colleague_capability_bindings WHERE colleague_id=? AND capability_id=? AND tenant_id=?",
-		strings.TrimSpace(req.ColleagueID), capabilityID, tenant.RequestTenantID(r))
-	response.OK(w, map[string]string{"status": "ok"})
+	colleagueID := strings.TrimSpace(req.ColleagueID)
+	if colleagueID == "" {
+		response.BadRequest(w, "MISSING_COLLEAGUE_ID", "colleague_id is required")
+		return
+	}
+	result, err := h.write.Exec("DELETE FROM colleague_capability_bindings WHERE colleague_id=? AND capability_id=? AND tenant_id=?",
+		colleagueID, capabilityID, tenant.RequestTenantID(r))
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	status := "removed"
+	if rowsAffected == 0 {
+		status = "not_bound"
+	}
+	if rowsAffected > 0 {
+		if err := h.recordCapabilityBindingAudit(r.Context(), tenant.RequestTenantID(r), capabilityID, colleagueID, "capability_delivery_revoked"); err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+	}
+	response.OK(w, map[string]any{"status": status, "removed": rowsAffected})
 }
 
-func scanCapabilities(rows *sql.Rows) []CapabilityPackage {
+func scanCapabilities(rows *sql.Rows) ([]CapabilityPackage, error) {
 	var result []CapabilityPackage
 	for rows.Next() {
 		var cp CapabilityPackage
 		if err := scanCapabilityRow(rows, &cp); err != nil {
-			continue
+			return nil, err
 		}
 		result = append(result, cp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	if result == nil {
 		result = []CapabilityPackage{}
 	}
-	return result
+	return result, nil
 }
 
 func scanCapabilityRow(row capabilityScannable, cp *CapabilityPackage) error {
@@ -521,7 +690,11 @@ func extractID(path, prefix string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return parts[0]
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 func (h *Handler) handleImportSearch(w http.ResponseWriter, r *http.Request) {
@@ -556,7 +729,7 @@ func (h *Handler) handleImportFromCloud(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		SkillID string `json:"skill_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -574,7 +747,7 @@ func (h *Handler) handleImportFromCloud(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) publishCapabilityToCloud(w http.ResponseWriter, r *http.Request, id string) {
 	var req CloudPublishRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+	if err := decodeCapabilityJSON(r.Body, &req, true); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -608,7 +781,7 @@ func (h *Handler) updateCapabilityUsageQuality(w http.ResponseWriter, r *http.Re
 		QualityScore  int    `json:"quality_score"`
 		QualityReason string `json:"quality_reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -754,6 +927,33 @@ func (h *Handler) recordCapabilityApprovedAudit(ctx context.Context, tenantID, c
 		ErrorMsg:    fmt.Sprintf("role_code: %s | capability_id: %s | capability_name: %s", roleCode, capabilityID, capabilityName),
 	})
 }
+
+func (h *Handler) recordCapabilityBindingAudit(ctx context.Context, tenantID, capabilityID, colleagueID, workType string) error {
+	if h.audit == nil || tenantID == "" {
+		return nil
+	}
+	var capabilityName string
+	_ = h.read.QueryRowContext(ctx, `SELECT name FROM capability_packages WHERE tenant_id=? AND id=?`, tenantID, capabilityID).Scan(&capabilityName)
+	var colleagueName string
+	_ = h.read.QueryRowContext(ctx, `SELECT name FROM colleagues WHERE tenant_id=? AND id=?`, tenantID, colleagueID).Scan(&colleagueName)
+	action := "delivered"
+	if workType == "capability_delivery_revoked" {
+		action = "revoked"
+	}
+	return h.audit.Insert(tenantID, &audit.ProxyLog{
+		RequestID:   fmt.Sprintf("%s-%s-%s-%d", workType, capabilityID, colleagueID, time.Now().UnixNano()),
+		ProviderID:  "iworkercenter",
+		Model:       "capability-delivery",
+		WorkType:    workType,
+		CostTier:    "internal",
+		Status:      "ok",
+		LatencyMs:   0,
+		InputTokens: 0,
+		Summary:     fmt.Sprintf("Capability %s for iWorker", action),
+		ErrorMsg:    fmt.Sprintf("capability_id: %s | capability_name: %s | colleague_id: %s | colleague_name: %s", capabilityID, capabilityName, colleagueID, colleagueName),
+	})
+}
+
 func (h *Handler) rejectCapability(w http.ResponseWriter, r *http.Request, id string) {
 	if h.importer == nil {
 		now := time.Now().Format(time.RFC3339)

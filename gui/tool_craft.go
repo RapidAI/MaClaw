@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
 	"net/http"
 	"os"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const (
@@ -57,6 +57,7 @@ type craftToolRequest struct {
 	SkillName          string
 	Timeout            int
 	MaxAttempts        int
+	ExtraEnv           map[string]string
 	SaveAsSkill        bool
 	ShouldAutoRegister bool
 }
@@ -87,7 +88,7 @@ func craftedToolsDir() string {
 // toolCraftTool is the implementation of the "craft_tool" tool.
 // It uses the LLM to generate a script that solves the described task,
 // executes it, and optionally registers it as a reusable Skill.
-func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress tool.ProgressCallback) string {
+func (h *IMMessageHandler) toolCraftTool(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
 	output, _ := executeCraftToolCore(h.app, h.client, args, onProgress)
 	return output
 }
@@ -195,6 +196,30 @@ func intArg(args map[string]interface{}, key string, fallback int) int {
 	return fallback
 }
 
+func floatArg(args map[string]interface{}, key string, fallback float64) float64 {
+	if args == nil {
+		return fallback
+	}
+	switch v := args[key].(type) {
+	case float32:
+		return float64(v)
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case string:
+		var parsed float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%f", &parsed); err == nil {
+			return parsed
+		}
+	}
+	return fallback
+}
+
 func parseCraftInt(raw string) (int, error) {
 	var value int
 	_, err := fmt.Sscanf(strings.TrimSpace(raw), "%d", &value)
@@ -204,11 +229,11 @@ func parseCraftInt(raw string) (int, error) {
 	return value, nil
 }
 
-func executeCraftToolCore(app *App, client *http.Client, args map[string]interface{}, onProgress tool.ProgressCallback) (string, error) {
+func executeCraftToolCore(app *App, client *http.Client, args map[string]interface{}, onProgress coretool.ProgressCallback) (string, error) {
 	return executeCraftToolCoreWithContext(context.Background(), app, client, args, onProgress)
 }
 
-func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http.Client, args map[string]interface{}, onProgress tool.ProgressCallback) (string, error) {
+func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http.Client, args map[string]interface{}, onProgress coretool.ProgressCallback) (string, error) {
 	normalizedArgs, err := normalizeCraftToolArgs(args)
 	if err != nil {
 		return "", err
@@ -278,7 +303,7 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 		}
 
 		sendProgress(fmt.Sprintf("🚀 正在执行脚本（%s，第 %d/%d 次，超时 %ds）...", request.Language, attempt, attempts, request.Timeout))
-		output, execErr := executeScriptWithContext(ctx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes)
+		output, execErr := executeScriptWithContext(ctx, scriptPath, request.Language, request.WorkingDir, request.Timeout, runtimes, request.ExtraEnv)
 		lastAttempt = craftAttemptResult{
 			ScriptPath: scriptPath,
 			Script:     script,
@@ -318,6 +343,7 @@ func buildCraftToolRequest(args map[string]interface{}, runtimes craftRuntimeAva
 		SkillName:         strings.TrimSpace(stringVal(args, "skill_name")),
 		Timeout:           resolveCraftToolTimeout(args, originalTask),
 		MaxAttempts:       intArg(args, "max_attempts", 2),
+		ExtraEnv:          cskill.ExtractRunExtraEnvFromArgs(args),
 		SaveAsSkill:       boolArg(args, "save_as_skill", true),
 	}
 	if request.RegisterPolicy == "" {
@@ -457,6 +483,8 @@ func generateScript(cfg corelib.MaclawLLMConfig, request craftToolRequest, runti
 	return generateScriptWithContext(context.Background(), cfg, request, runtimes, previous, client)
 }
 
+var craftToolRetryInitialBackoff = 2 * time.Second
+
 func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig, request craftToolRequest, runtimes craftRuntimeAvailability, previous craftAttemptResult, client *http.Client) (string, error) {
 	sysPrompt := buildCraftSystemPrompt(request, runtimes, previous)
 	userPrompt := buildCraftUserPrompt(request, previous)
@@ -471,7 +499,10 @@ func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	// returns a rate limit error, which is common when multiple skills
 	// are executed in quick succession.
 	const maxRetries = 3
-	backoff := 2 * time.Second
+	backoff := craftToolRetryInitialBackoff
+	if backoff <= 0 {
+		backoff = 2 * time.Second
+	}
 	var lastErr error
 	isCode1234 := false
 	for retry := 0; retry <= maxRetries; retry++ {
@@ -840,6 +871,11 @@ func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) 
 				return result
 			}
 		}
+		if shouldAcceptStdoutOnlyCraftResult(request, expectedArtifactPath, reportedArtifactPath, attempt) {
+			result.VerificationStatus = craftVerificationPassed
+			result.VerificationMessage = "script succeeded with stdout and no declared or reported artifact path; accepted as stdout-only result"
+			return result
+		}
 		if info, err := os.Stat(artifactPath); err == nil && !info.IsDir() && info.Size() > 0 {
 			result.VerificationStatus = craftVerificationPassed
 			result.VerificationMessage = fmt.Sprintf("已验证目标产物存在：%s（%d bytes）", artifactPath, info.Size())
@@ -887,6 +923,16 @@ func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) 
 	return result
 }
 
+func shouldAcceptStdoutOnlyCraftResult(request craftToolRequest, expectedArtifactPath, reportedArtifactPath string, attempt craftAttemptResult) bool {
+	if !strings.EqualFold(request.VerificationMode, "artifact_required") {
+		return false
+	}
+	if len(request.ExpectedArtifacts) > 0 || expectedArtifactPath != "" || reportedArtifactPath != "" {
+		return false
+	}
+	return strings.TrimSpace(attempt.Output) != ""
+}
+
 func firstExpectedArtifact(paths []string) string {
 	if len(paths) == 0 {
 		return ""
@@ -924,10 +970,26 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 	// Without this, craft_tool-generated skills have no params schema and
 	// the LLM doesn't know what arguments to pass when reusing the skill.
 	var skillParams []corelib.NLSkillParam
+	var requiredEnv []string
+	var requiresNode []string
+	var requiresPython []string
 	if scriptContent, err := os.ReadFile(scriptPath); err == nil {
-		skillParams = cskill.ExtractScriptParams(string(scriptContent), language)
+		source := string(scriptContent)
+		skillParams = cskill.ExtractScriptParams(source, language)
 		if len(skillParams) > 0 {
 			log.Printf("[craft-register] extracted %d params from script %s for skill %q", len(skillParams), scriptPath, skillName)
+			runCmd = cskill.AppendRunParamPlaceholders(runCmd, skillParams)
+		}
+		if requires := cskill.ExtractScriptRequires(source, language); requires != nil {
+			requiresPython = append(requiresPython, requires.Python...)
+			requiresNode = append(requiresNode, requires.Node...)
+			if len(requiresPython) > 0 || len(requiresNode) > 0 {
+				log.Printf("[craft-register] extracted dependencies from script %s for skill %q: python=%v node=%v", scriptPath, skillName, requiresPython, requiresNode)
+			}
+		}
+		requiredEnv = cskill.ExtractScriptRequiredEnv(source, language)
+		if len(requiredEnv) > 0 {
+			log.Printf("[craft-register] extracted required env from script %s for skill %q: %v", scriptPath, skillName, requiredEnv)
 		}
 	}
 
@@ -942,10 +1004,13 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 				"timeout": float64(120),
 			},
 		}},
-		Params:    skillParams,
-		Status:    "active",
-		CreatedAt: time.Now().Format(time.RFC3339),
-		Source:    "crafted",
+		Params:         skillParams,
+		RequiredEnv:    requiredEnv,
+		RequiresNode:   requiresNode,
+		RequiresPython: requiresPython,
+		Status:         "active",
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		Source:         "crafted",
 	}
 	if err := app.skillExecutor.Register(entry); err != nil {
 		if strings.Contains(err.Error(), "already exists") {
@@ -1002,10 +1067,10 @@ func saveScript(script, language, task string) (string, error) {
 
 // executeScript runs a script file and returns its output.
 func executeScript(scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability) (string, error) {
-	return executeScriptWithContext(context.Background(), scriptPath, language, workingDir, timeout, runtimes)
+	return executeScriptWithContext(context.Background(), scriptPath, language, workingDir, timeout, runtimes, nil)
 }
 
-func executeScriptWithContext(parent context.Context, scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability) (string, error) {
+func executeScriptWithContext(parent context.Context, scriptPath, language, workingDir string, timeout int, runtimes craftRuntimeAvailability, extraEnv map[string]string) (string, error) {
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeout)*time.Second)
 	defer cancel()
 
@@ -1019,6 +1084,7 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 		// Default to user-configured dir or ~/.maclaw/workspace.
 		cmd.Dir = corelib.EffectiveWorkspaceDir()
 	}
+	cmd.Env = cskill.BuildCommandEnv(coretool.AppendUTF8Env(os.Environ()), map[string]interface{}{"extra_env": extraEnv})
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

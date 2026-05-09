@@ -99,6 +99,44 @@ func TestCheckTenantPushIncludesWorkflowStepInstanceID(t *testing.T) {
 	}
 }
 
+func TestRecoveryPathEscapesWorkflowStepInstanceID(t *testing.T) {
+	if got := recoveryPathForWorkflowAction("resume_workflow_step", "wfsi/team a"); got != "/runtime/workflows/steps/wfsi%2Fteam%20a/resume" {
+		t.Fatalf("resume recovery path = %q", got)
+	}
+	if got := recoveryPathForWorkflowAction("start_workflow_step", "wfsi/team a"); got != "/runtime/workflows/steps/wfsi%2Fteam%20a/start" {
+		t.Fatalf("start recovery path = %q", got)
+	}
+}
+
+func TestGoalPushNotePreservesEscapedWorkflowRecoveryFields(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute})
+	task := &collaboration.Task{ID: "task-workflow-escaped", Title: "recover escaped workflow", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, WorkflowStepInstanceID: "wfsi/team a", CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	if _, err := svc.CheckTenant("tenant-a", now); err != nil {
+		t.Fatalf("check tenant: %v", err)
+	}
+	pushes, err := svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil {
+		t.Fatalf("list pushes: %v", err)
+	}
+	if len(pushes) != 1 {
+		t.Fatalf("pushes = %+v", pushes)
+	}
+	if pushes[0].WorkflowStepInstanceID != "wfsi/team a" || pushes[0].RecoveryPath != "/runtime/workflows/steps/wfsi%2Fteam%20a/resume" {
+		t.Fatalf("escaped push fields = %+v", pushes[0])
+	}
+	events, err := repo.ListEvents("tenant-a", "task-workflow-escaped")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || parseNoteValue(events[0].Note, "workflow_step_instance_id") != "wfsi/team a" || parseNoteValue(events[0].Note, "recovery_path") != "/runtime/workflows/steps/wfsi%2Fteam%20a/resume" {
+		t.Fatalf("escaped event note = %+v", events)
+	}
+}
+
 func TestCheckTenantRespectsPushCooldown(t *testing.T) {
 	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
 	svc, repo := newTestService(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute})
@@ -439,6 +477,35 @@ func TestMonitorSkipsShardWhenLeaseIsHeldByAnotherNode(t *testing.T) {
 	}
 }
 
+func TestMonitorReportsCorruptShardLease(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo, provider := newTestServiceWithProvider(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute, LeaseTTL: 5 * time.Minute})
+	task := &collaboration.Task{ID: "task-lease-corrupt", Title: "lease corrupt", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, datetime('now'))`, goalWatchShardLeaseKey("tenant-a", 0, 1), `{bad lease json`); err != nil {
+		t.Fatalf("insert corrupt lease: %v", err)
+	}
+
+	monitor := NewMonitor(svc, nil)
+	monitor.checkTenantSharded("tenant-a", now)
+	status := monitor.Status()
+	if len(status.Tenants) != 1 || status.Tenants[0].Error == "" || len(status.Tenants[0].ShardStatuses) != 1 || status.Tenants[0].ShardStatuses[0].Error == "" {
+		t.Fatalf("expected corrupt lease to be reported, got %+v", status)
+	}
+	if status.Tenants[0].Checked != 0 || status.Tenants[0].Pushed != 0 {
+		t.Fatalf("corrupt lease should block shard before checks, got %+v", status.Tenants[0])
+	}
+	events, err := repo.ListEvents("tenant-a", "task-lease-corrupt")
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected no push events with corrupt lease, got %+v", events)
+	}
+}
+
 func TestMonitorAcquiresExpiredShardLease(t *testing.T) {
 	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
 	svc, repo, provider := newTestServiceWithProvider(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute, LeaseTTL: 5 * time.Minute})
@@ -594,6 +661,130 @@ func TestHandlerUsesTenantHeaderForClientPushesAndAck(t *testing.T) {
 	}
 	if len(pushes) != 0 {
 		t.Fatalf("expected tenant-a push to be acked, got %+v", pushes)
+	}
+}
+
+func TestHandlerAckRejectsInvalidJSONWithoutAckingPush(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute})
+	task := &collaboration.Task{ID: "task-bad-ack", Title: "bad ack", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	if _, err := svc.CheckTenant("tenant-a", now); err != nil {
+		t.Fatalf("check tenant: %v", err)
+	}
+	pushes, err := svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil || len(pushes) != 1 {
+		t.Fatalf("pushes = %+v err=%v", pushes, err)
+	}
+
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterClientRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/client/goalwatch/pushes/"+pushes[0].EventID+"/ack", bytes.NewBufferString(`{"colleague_id":`))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("ack status=%d body=%s", res.Code, res.Body.String())
+	}
+	pushes, err = svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil {
+		t.Fatalf("list after bad ack: %v", err)
+	}
+	if len(pushes) != 1 {
+		t.Fatalf("expected push to remain unacked, got %+v", pushes)
+	}
+}
+
+func TestHandlerAckRejectsTrailingJSONWithoutAckingPush(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: time.Minute, PushCooldown: 10 * time.Minute})
+	task := &collaboration.Task{ID: "task-trailing-ack", Title: "trailing ack", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, CreatedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	if _, err := svc.CheckTenant("tenant-a", now); err != nil {
+		t.Fatalf("check tenant: %v", err)
+	}
+	pushes, err := svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil || len(pushes) != 1 {
+		t.Fatalf("pushes = %+v err=%v", pushes, err)
+	}
+
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterClientRoutes(mux)
+	body := bytes.NewBufferString(`{"colleague_id":"worker-a","status":"resumed"} {"colleague_id":"worker-a","status":"ignored"}`)
+	req := httptest.NewRequest(http.MethodPost, "/client/goalwatch/pushes/"+pushes[0].EventID+"/ack", body)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("ack status=%d body=%s", res.Code, res.Body.String())
+	}
+	pushes, err = svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil {
+		t.Fatalf("list after trailing ack: %v", err)
+	}
+	if len(pushes) != 1 {
+		t.Fatalf("expected push to remain unacked, got %+v", pushes)
+	}
+}
+
+func TestHandlerPolicyRejectsOversizedJSONWithoutSaving(t *testing.T) {
+	svc, _ := newTestService(t, Config{WorkersPerShard: 9, MaxWatchers: 4})
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterAdminRoutes(mux)
+
+	body := bytes.NewBuffer(make([]byte, maxGoalWatchJSONBodyBytes+1))
+	req := httptest.NewRequest(http.MethodPut, "/admin/goalwatch/policy", body)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("put status=%d body=%s", res.Code, res.Body.String())
+	}
+	_, persisted, err := svc.GetTenantPolicy(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("load policy: %v", err)
+	}
+	if persisted {
+		t.Fatal("expected oversized policy body to leave tenant policy unsaved")
+	}
+}
+
+func TestHandlerAckSupportsEscapedPushEventID(t *testing.T) {
+	now := time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC)
+	svc, repo := newTestService(t, Config{StalledAfter: time.Minute})
+	task := &collaboration.Task{ID: "task-escaped", Title: "escaped push", FromColleagueID: "planner", ToColleagueID: "worker-a", Status: collaboration.StatusInProgress, CreatedAt: now.Add(-20 * time.Minute), UpdatedAt: now.Add(-10 * time.Minute)}
+	if err := repo.InsertTask("tenant-a", task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	if err := repo.InsertEvent("tenant-a", &collaboration.TaskEvent{ID: "evt/open 1", TaskID: "task-escaped", Event: EventGoalPush, ActorID: "iworkercenter.goalwatch", Note: "reason=task_in_progress_stalled age_seconds=600", CreatedAt: now}); err != nil {
+		t.Fatalf("insert event: %v", err)
+	}
+
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterClientRoutes(mux)
+	body := bytes.NewBufferString(`{"colleague_id":"worker-a","status":"resumed","note":"escaped_ack"}`)
+	req := httptest.NewRequest(http.MethodPost, "/client/goalwatch/pushes/evt%2Fopen%201/ack", body)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("ack status=%d body=%s", res.Code, res.Body.String())
+	}
+
+	pushes, err := svc.ListPushesForColleague("tenant-a", "worker-a", 10)
+	if err != nil {
+		t.Fatalf("list pushes after ack: %v", err)
+	}
+	if len(pushes) != 0 {
+		t.Fatalf("expected escaped push to be acked, got %+v", pushes)
 	}
 }
 

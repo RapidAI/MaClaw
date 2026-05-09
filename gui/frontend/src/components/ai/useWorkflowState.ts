@@ -21,6 +21,7 @@ export interface PhaseInfo {
     id: string;
     name: string;
     index: number;
+    expectsDocument?: boolean;
 }
 
 /** UI state for the workflow split-pane document preview. */
@@ -28,7 +29,9 @@ export interface WorkflowUIState {
     active: boolean;
     splitMode: boolean;
     splitRatio: number;
+    workflowType: string;
     currentPhaseID: string;
+    latestDocumentPhaseID: string;
     phaseDocuments: Map<string, string>;
     gateResults: Map<string, QualityGateResult>;
     phases: PhaseInfo[];
@@ -36,10 +39,94 @@ export interface WorkflowUIState {
     suggestMaximizeType: string;
     transientText: string;
     workingDir: string;
-    docsBarDismissed: boolean;
 }
 
 const DEFAULT_SPLIT_RATIO = 0.42;
+const PHASE_ID_ALIASES: Record<string, string> = {
+    tech_design: "design",
+    task_breakdown: "tasks",
+};
+
+export function normalizeWorkflowPhaseID(phaseID: unknown): string {
+    if (typeof phaseID !== "string") return "";
+    const trimmed = phaseID.trim();
+    return PHASE_ID_ALIASES[trimmed] || trimmed;
+}
+
+function normalizeWorkflowDocumentContent(content: unknown): string {
+    return typeof content === "string" ? content.trim() : "";
+}
+
+export function collectWorkflowPhaseDocuments(outputs: unknown): Map<string, string> {
+    const docs = new Map<string, string>();
+    if (!outputs || typeof outputs !== "object") return docs;
+    for (const [rawPhaseID, rawContent] of Object.entries(outputs as Record<string, unknown>)) {
+        const phaseID = normalizeWorkflowPhaseID(rawPhaseID);
+        const content = normalizeWorkflowDocumentContent(rawContent);
+        if (phaseID && content) docs.set(phaseID, content);
+    }
+    return docs;
+}
+
+function mergeWorkflowPhaseDocuments(
+    prev: Map<string, string>,
+    incoming: Map<string, string>,
+    docUpdatePhaseIDs: Set<string>,
+): Map<string, string> {
+    if (incoming.size === 0) return prev;
+    const next = new Map(prev);
+    for (const [phaseID, content] of incoming) {
+        if (docUpdatePhaseIDs.has(phaseID)) continue;
+        next.set(phaseID, content);
+    }
+    return next;
+}
+
+function collectWorkflowGateResults(results: unknown): Map<string, QualityGateResult> {
+    const gates = new Map<string, QualityGateResult>();
+    if (!results || typeof results !== "object") return gates;
+    for (const [rawPhaseID, rawResult] of Object.entries(results as Record<string, unknown>)) {
+        const phaseID = normalizeWorkflowPhaseID(rawPhaseID);
+        if (!phaseID || !rawResult || typeof rawResult !== "object") continue;
+        const result = rawResult as Partial<QualityGateResult>;
+        gates.set(phaseID, {
+            ...(result as QualityGateResult),
+            phase_id: phaseID,
+            passed: result.passed === true,
+            items: Array.isArray(result.items) ? result.items : [],
+            checked_at: typeof result.checked_at === "string" ? result.checked_at : "",
+        });
+    }
+    return gates;
+}
+
+function collectWorkflowPhases(phases: unknown): PhaseInfo[] {
+    if (!Array.isArray(phases)) return [];
+    const collected: PhaseInfo[] = [];
+    const seen = new Set<string>();
+    for (const raw of phases) {
+        if (!raw || typeof raw !== "object") continue;
+        const phase = raw as Record<string, unknown>;
+        const id = normalizeWorkflowPhaseID(phase.id);
+        const name = typeof phase.name === "string" ? phase.name.trim() : "";
+        const index = typeof phase.index === "number" ? phase.index : collected.length;
+        const expectsDocument = typeof phase.expects_document === "boolean" ? phase.expects_document : undefined;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const item: PhaseInfo = { id, name, index };
+        if (typeof expectsDocument === "boolean") item.expectsDocument = expectsDocument;
+        collected.push(item);
+    }
+    return collected.sort((a, b) => a.index - b.index);
+}
+
+function resolveWorkflowInstanceKey(state: any): string {
+    const id = typeof state?.id === "string" ? state.id.trim() : "";
+    if (id) return id;
+    const createdAt = typeof state?.created_at === "string" ? state.created_at.trim() : "";
+    const type = typeof state?.type === "string" ? state.type.trim() : "";
+    return createdAt && type ? `${type}:${createdAt}` : "";
+}
 
 /**
  * useWorkflowState manages the workflow UI state for the split-pane
@@ -54,7 +141,9 @@ export function useWorkflowState() {
     const [active, setActive] = useState(false);
     const [splitMode, setSplitMode] = useState(false);
     const [splitRatio, setSplitRatioState] = useState(DEFAULT_SPLIT_RATIO);
+    const [workflowType, setWorkflowType] = useState("");
     const [currentPhaseID, setCurrentPhaseID] = useState("");
+    const [latestDocumentPhaseID, setLatestDocumentPhaseID] = useState("");
     const [phaseDocuments, setPhaseDocuments] = useState<Map<string, string>>(new Map());
     const [gateResults, setGateResults] = useState<Map<string, QualityGateResult>>(new Map());
     const [phases, setPhases] = useState<PhaseInfo[]>([]);
@@ -63,7 +152,9 @@ export function useWorkflowState() {
     const [transientText, setTransientText] = useState("");
     const [workingDir, setWorkingDir] = useState("");
     const userClosedRef = useRef(false);
-    const [docsBarDismissed, setDocsBarDismissed] = useState(false);
+    const docUpdatePhaseIDsRef = useRef<Set<string>>(new Set());
+    const workflowIDRef = useRef("");
+    const workflowTypeRef = useRef("");
 
     // Listen for phase updates
     useEffect(() => {
@@ -72,18 +163,56 @@ export function useWorkflowState() {
                 // Workflow fully reset — clear everything.
                 setActive(false);
                 setSplitMode(false);
+                setWorkflowType("");
+                setCurrentPhaseID("");
+                setLatestDocumentPhaseID("");
                 setPhaseDocuments(new Map());
                 setGateResults(new Map());
+                setPhases([]);
                 setWorkingDir("");
-                setDocsBarDismissed(false);
+                docUpdatePhaseIDsRef.current = new Set();
+                workflowIDRef.current = "";
+                workflowTypeRef.current = "";
                 return;
             }
+            const workflowID = resolveWorkflowInstanceKey(state);
+            const incomingWorkflowType = typeof state.type === "string" ? state.type : "";
+            if (workflowID && workflowID !== workflowIDRef.current) {
+                workflowIDRef.current = workflowID;
+                docUpdatePhaseIDsRef.current = new Set();
+                setLatestDocumentPhaseID("");
+                setPhaseDocuments(new Map());
+                setGateResults(new Map());
+                setPhases([]);
+            } else if (!workflowID && state.status === "active" && workflowTypeRef.current && incomingWorkflowType && incomingWorkflowType !== workflowTypeRef.current) {
+                docUpdatePhaseIDsRef.current = new Set();
+                setLatestDocumentPhaseID("");
+                setPhaseDocuments(new Map());
+                setGateResults(new Map());
+                setPhases([]);
+            }
             setActive(state.status === "active");
-            setCurrentPhaseID(state.current_phase || "");
+            setWorkflowType(incomingWorkflowType);
+            if (incomingWorkflowType) workflowTypeRef.current = incomingWorkflowType;
+            setPhases(collectWorkflowPhases(state.phases));
+            const currentPhase = normalizeWorkflowPhaseID(state.current_phase);
+            setCurrentPhaseID(currentPhase);
+            const outputDocuments = collectWorkflowPhaseDocuments(state.phase_outputs);
+            setPhaseDocuments(prev => mergeWorkflowPhaseDocuments(prev, outputDocuments, docUpdatePhaseIDsRef.current));
+            if (currentPhase && outputDocuments.has(currentPhase)) {
+                setLatestDocumentPhaseID(currentPhase);
+            }
+            setGateResults(prev => {
+                const incoming = collectWorkflowGateResults(state.gate_results);
+                if (incoming.size === 0) return prev;
+                const next = new Map(prev);
+                for (const [phaseID, result] of incoming) next.set(phaseID, result);
+                return next;
+            });
 
             // Auto-open split mode for doc phases (not implementation)
             if (state.status === "active" && !userClosedRef.current) {
-                const isImplPhase = state.current_phase === "implementation" || state.current_phase === "test_execution";
+                const isImplPhase = currentPhase === "implementation" || currentPhase === "test_execution";
                 setSplitMode(!isImplPhase);
             }
             if (state.status !== "active") {
@@ -104,25 +233,25 @@ export function useWorkflowState() {
     // Listen for document updates
     useEffect(() => {
         const unsub = EventsOn("workflow:doc_update", (data: any) => {
-            if (!data?.phase_id || !data?.content) return;
+            if (!data?.phase_id) return;
+            const phaseID = normalizeWorkflowPhaseID(data.phase_id);
+            const content = normalizeWorkflowDocumentContent(data.content);
+            if (!content) return;
+            if (!phaseID) return;
+            docUpdatePhaseIDsRef.current.add(phaseID);
             setPhaseDocuments(prev => {
                 const next = new Map(prev);
-                next.set(data.phase_id, data.content);
+                next.set(phaseID, content);
                 return next;
             });
-            // Auto-set currentPhaseID to the latest document's phase. This
-            // ensures the preview panel shows the most recent document,
-            // especially in the steering-based flow where doc_update events
-            // arrive without prior phase_update events.
-            setCurrentPhaseID(data.phase_id);
+            // Track the latest document separately from the workflow's
+            // current phase. A document event is a preview signal; it must
+            // not rewrite the active workflow phase shown on the board.
+            setLatestDocumentPhaseID(phaseID);
             // Auto-open split mode when new doc content arrives
             if (!userClosedRef.current) {
                 setSplitMode(true);
             }
-            // Re-show docs bar when a new document arrives (user may have
-            // dismissed it for the previous phase, but a new phase document
-            // is worth surfacing again).
-            setDocsBarDismissed(false);
         });
         return () => {
             if (typeof unsub === "function") unsub();
@@ -134,9 +263,18 @@ export function useWorkflowState() {
     useEffect(() => {
         const unsub = EventsOn("workflow:gate_result", (data: any) => {
             if (!data?.phase_id || !data?.result) return;
+            const phaseID = normalizeWorkflowPhaseID(data.phase_id);
+            if (!phaseID) return;
             setGateResults(prev => {
+                const result = data.result as Partial<QualityGateResult>;
                 const next = new Map(prev);
-                next.set(data.phase_id, data.result);
+                next.set(phaseID, {
+                    ...(result as QualityGateResult),
+                    phase_id: phaseID,
+                    passed: result.passed === true,
+                    items: Array.isArray(result.items) ? result.items : [],
+                    checked_at: typeof result.checked_at === "string" ? result.checked_at : "",
+                });
                 return next;
             });
         });
@@ -200,7 +338,7 @@ export function useWorkflowState() {
     const openDocPreview = useCallback((phaseID?: string) => {
         userClosedRef.current = false;
         setSplitMode(true);
-        if (phaseID) setCurrentPhaseID(phaseID);
+        if (phaseID) setLatestDocumentPhaseID(normalizeWorkflowPhaseID(phaseID));
     }, []);
 
     const closeDocPreview = useCallback(() => {
@@ -217,16 +355,14 @@ export function useWorkflowState() {
         setSuggestMaximizeType("");
     }, []);
 
-    const dismissDocsBar = useCallback(() => {
-        setDocsBarDismissed(true);
-    }, []);
-
     return {
         state: {
             active,
             splitMode,
             splitRatio,
+            workflowType,
             currentPhaseID,
+            latestDocumentPhaseID,
             phaseDocuments,
             gateResults,
             phases,
@@ -234,12 +370,10 @@ export function useWorkflowState() {
             suggestMaximizeType,
             transientText,
             workingDir,
-            docsBarDismissed,
         } as WorkflowUIState,
         openDocPreview,
         closeDocPreview,
         setSplitRatio,
         dismissMaximizeSuggestion,
-        dismissDocsBar,
     };
 }

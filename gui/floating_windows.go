@@ -195,6 +195,7 @@ type windowsFloatingWindow struct {
 	petQuietMode       bool
 	petInteractionMode string
 	petSkin            string
+	petSoundPreset     string
 
 	// Pre-rendered base image (logo + circle clip, without halo)
 	baseImg *image.NRGBA
@@ -258,12 +259,14 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	petQuietMode := false
 	petInteractionMode := "balanced"
 	petSkin := "clawmate"
+	petSoundPreset := "classic"
 	if w.app != nil {
 		if cfg, err := w.app.LoadConfig(); err == nil {
 			petEnabled = cfg.PetEnabled
 			petQuietMode = cfg.PetQuietMode
 			petMotionEnabled = isPetMotionEnabled(cfg)
 			petMotionSound = petMotionSoundEnabled(cfg)
+			petSoundPreset = petMotionSoundPreset(cfg)
 			if cfg.PetInteractionMode != "" {
 				petInteractionMode = cfg.PetInteractionMode
 			}
@@ -289,6 +292,7 @@ func (w *windowsFloatingWindow) Create(x, y, width, height int) error {
 	w.petQuietMode = petQuietMode
 	w.petInteractionMode = petInteractionMode
 	w.petSkin = petSkin
+	w.petSoundPreset = petSoundPreset
 	w.petFrameCache = make(map[petFrameCacheKey]*image.NRGBA)
 	w.stopCh = make(chan struct{})
 
@@ -878,7 +882,7 @@ func (w *windowsFloatingWindow) cachedPetFrame(sz int, skin, interactionMode str
 	return frame
 }
 
-func playPetMotionSound(interactionMode, skin string) {
+func playPetMotionSound(interactionMode, skin, preset string) {
 	go func() {
 		if interactionMode == "quiet" {
 			return
@@ -895,6 +899,16 @@ func playPetMotionSound(interactionMode, skin string) {
 			toneSet = []petTone{{988, 12}, {740, 14}, {1175, 16}}
 		case "focus-claw":
 			toneSet = []petTone{{659, 14}, {880, 16}}
+		}
+		switch preset {
+		case "bubble":
+			toneSet = []petTone{{784, 12}, {1175, 18}, {1568, 14}}
+		case "chime":
+			toneSet = []petTone{{1047, 24}, {1568, 34}}
+		case "synth":
+			toneSet = []petTone{{740, 14}, {988, 14}, {622, 20}}
+		case "soft":
+			toneSet = []petTone{{523, 24}, {659, 28}}
 		}
 		pitch := 1.0
 		if interactionMode == "active" {
@@ -928,9 +942,10 @@ func (w *windowsFloatingWindow) renderFrame() {
 	petQuietMode := w.petQuietMode
 	petInteractionMode := w.petInteractionMode
 	petSkin := w.petSkin
+	petSoundPreset := w.petSoundPreset
 	w.mu.Unlock()
 	if playPetSound {
-		playPetMotionSound(petInteractionMode, petSkin)
+		playPetMotionSound(petInteractionMode, petSkin, petSoundPreset)
 	}
 
 	if hwnd == 0 || base == nil || distMap == nil {

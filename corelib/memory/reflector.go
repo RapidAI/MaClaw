@@ -83,7 +83,7 @@ func (r *Reflector) Reflect(ctx context.Context) (*ReflectResult, error) {
 	// Build prompt.
 	var sb strings.Builder
 	for i, e := range episodic {
-		fmt.Fprintf(&sb, "[%d] %s\n", i, truncStr(e.Content, 300))
+		sb.WriteString(formatExperiencePromptEntry(i, e, 300))
 	}
 
 	systemPrompt := `You are a memory reflection assistant. Analyze the following episodic memories (conversation summaries and session checkpoints) and extract high-level insights about the user.
@@ -99,6 +99,8 @@ Return a JSON array of insights:
 
 Rules:
 - Each insight must be a single, actionable statement
+- When an entry includes experience_protection, keep concrete evidence and caveats visible instead of smoothing them away
+- Treat A2A/tool/swarm traces as experience evidence; do not turn one isolated trace into a broad user fact
 - Maximum 10 insights per reflection
 - Skip trivial or one-time observations
 - Return ONLY the JSON array, no commentary

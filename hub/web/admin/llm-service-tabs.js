@@ -155,7 +155,7 @@ const LLM_SERVICE_I18N = {
     noSecurityGroupBindings: 'No security-group bindings yet.',
     noDirectUserBindings: 'No direct user bindings yet.',
     noRedeemCards: 'No service exchange cards issued yet.',
-    noActiveGrants: 'No active grants yet.',
+    noActiveGrants: 'No grants yet.',
     remove: 'Remove',
     modelsCount: '{count} routes',
     daysCount: '{count} days',
@@ -172,6 +172,7 @@ const LLM_SERVICE_I18N = {
     directUserBindings: 'Direct User Bindings',
     matchedGroupBindings: 'Matched Group Bindings',
     activeGrants: 'Active Grants',
+    grantDetails: 'Grant Details',
     inactiveReasons: 'Inactive Reasons',
     modelRouting: 'Route Mapping',
     providerRoute: 'Providers',
@@ -257,6 +258,13 @@ const LLM_SERVICE_I18N = {
     billingRouteCredits: 'Grant credits {credits}',
     grantRouteHealthActive: 'Active',
     grantRouteHealthExpired: 'Expired or inactive',
+    grantStatusActive: 'Active',
+    grantStatusPeriodLimited: 'Period limit exhausted',
+    grantStatusQueued: 'Not active yet',
+    grantStatusExhausted: 'Credits exhausted',
+    grantStatusExpired: 'Expired',
+    grantStatusInactive: 'Inactive',
+    grantRetryAfterAt: 'Restores at {time}',
     unknownServiceGroupRefs: 'Unknown service groups: {refs}',
     serviceGroupRequired: 'Select at least one service group first.',
     unknownSecurityGroupRefs: 'Unknown security groups: {refs}',
@@ -428,7 +436,7 @@ const LLM_SERVICE_I18N = {
     noSecurityGroupBindings: '\u6682\u65e0\u5b89\u5168\u7ec4\u7ed1\u5b9a\u3002',
     noDirectUserBindings: '\u6682\u65e0\u76f4\u63a5\u7528\u6237\u7ed1\u5b9a\u3002',
     noRedeemCards: '\u6682\u65e0\u5df2\u53d1\u884c\u7684\u670d\u52a1\u5151\u6362\u5361\u3002',
-    noActiveGrants: '\u6682\u65e0\u751f\u6548\u6388\u6743\u3002',
+    noActiveGrants: '\u6682\u65e0\u6388\u6743\u3002',
     remove: '\u79fb\u9664',
     modelsCount: '{count} \u6761\u8def\u7531',
     daysCount: '{count} \u5929',
@@ -445,6 +453,7 @@ const LLM_SERVICE_I18N = {
     directUserBindings: '\u76f4\u63a5\u7528\u6237\u7ed1\u5b9a',
     matchedGroupBindings: '\u5339\u914d\u5230\u7684\u7ec4\u7ed1\u5b9a',
     activeGrants: '\u751f\u6548\u6388\u6743',
+    grantDetails: '\u6388\u6743\u660e\u7ec6',
     inactiveReasons: '\u4e0d\u53ef\u7528\u539f\u56e0',
     modelRouting: '\u8def\u7531\u6620\u5c04',
     providerRoute: '\u670d\u52a1\u5546',
@@ -516,6 +525,13 @@ const LLM_SERVICE_I18N = {
     billingRouteCredits: '\u53ef\u7528 grant \u989d\u5ea6 {credits}',
     grantRouteHealthActive: '\u751f\u6548\u4e2d',
     grantRouteHealthExpired: '\u5df2\u8fc7\u671f\u6216\u672a\u751f\u6548',
+    grantStatusActive: '\u751f\u6548\u4e2d',
+    grantStatusPeriodLimited: '\u5468\u671f\u9650\u6d41',
+    grantStatusQueued: '\u5f85\u751f\u6548',
+    grantStatusExhausted: '\u989d\u5ea6\u5df2\u7528\u5c3d',
+    grantStatusExpired: '\u5df2\u8fc7\u671f',
+    grantStatusInactive: '\u672a\u751f\u6548',
+    grantRetryAfterAt: '\u6062\u590d\u65f6\u95f4 {time}',
     unknownServiceGroupRefs: '\u672a\u77e5\u670d\u52a1\u7ec4: {refs}',
     serviceGroupRequired: '\u8bf7\u5148\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u670d\u52a1\u7ec4\u3002',
     unknownSecurityGroupRefs: '\u672a\u77e5\u5b89\u5168\u7ec4: {refs}',
@@ -1419,14 +1435,47 @@ function llmServiceGrantSourceMeta(grant, cache) {
     cardID: card ? String(card.id || grantCardID || '') : grantCardID
   };
 }
+function llmServiceGrantStatusKey(grant, now) {
+  var raw = String(grant && grant.status || '').trim().toLowerCase();
+  if (raw) return raw;
+  if (!grant) return 'inactive';
+  var startsAt = llmServiceParseTime(grant.starts_at);
+  var expiresAt = llmServiceParseTime(grant.expires_at);
+  if (startsAt && startsAt > now) return 'queued';
+  if (expiresAt && expiresAt < now) return 'expired';
+  var total = Number(grant.credits_total || 0);
+  var used = Number(grant.credits_used || 0);
+  if (total > 0 && Math.max(0, total - used) <= 0) return 'exhausted';
+  return 'active';
+}
+function llmServiceGrantStatusMeta(grant, now) {
+  var key = llmServiceGrantStatusKey(grant, now || Date.now());
+  var labelKey = {
+    active: 'grantStatusActive',
+    period_limited: 'grantStatusPeriodLimited',
+    queued: 'grantStatusQueued',
+    exhausted: 'grantStatusExhausted',
+    expired: 'grantStatusExpired'
+  }[key] || 'grantStatusInactive';
+  var badgeClass = key === 'active' ? 'ok' : (key === 'period_limited' || key === 'queued' ? 'warn' : 'danger');
+  var details = [];
+  var reason = String(grant && grant.status_reason || '').trim();
+  if (reason) details.push(reason);
+  var retryAfterAt = String(grant && grant.retry_after_at || '').trim();
+  if (retryAfterAt) details.push(lsx('grantRetryAfterAt', { time: retryAfterAt }));
+  return { key: key, label: lsx(labelKey), badgeClass: badgeClass, detail: details.join(' | ') };
+}
 function llmServiceGrantSearchText(grant, cache) {
   var sourceMeta = llmServiceGrantSourceMeta(grant, cache);
+  var statusMeta = llmServiceGrantStatusMeta(grant, Date.now());
   return [
     grant && grant.id,
     grant && grant.email,
     grant && grant.card_id,
     grant && grant.service_group_id,
     grant && grant.source,
+    statusMeta.label,
+    statusMeta.detail,
     sourceMeta.cardID,
     sourceMeta.cardLabel,
     sourceMeta.accessLabel
@@ -1827,7 +1876,7 @@ function renderLLMServiceAdmin() {
         const remaining = total > 0 ? Math.max(0, total - used) : 0;
         const creditsText = total > 0 ? lsx('creditsRemaining', { remaining: llmServiceFormatCreditValue(remaining), total: llmServiceFormatCreditValue(total) }) : lsx('emptyValue');
         const usedText = total > 0 ? lsx('creditsUsed', { used: llmServiceFormatCreditValue(used) }) : '';
-        const active = llmServiceGrantIsActive(g, Date.now()) && (!(total > 0) || remaining > 0);
+        const statusMeta = llmServiceGrantStatusMeta(g, Date.now());
         const sourceMeta = llmServiceGrantSourceMeta(g, llmServiceAdminCache);
         const startsAt = String(g.starts_at || '').trim() || lsx('emptyValue');
         const expiresAt = String(g.expires_at || '').trim() || lsx('emptyValue');
@@ -1837,13 +1886,13 @@ function renderLLMServiceAdmin() {
         return '<div class="item" style="padding:0;overflow:hidden;border:1px solid var(--line);min-width:0">'
           + '<div style="padding:10px 12px;border-bottom:1px solid rgba(31,34,48,.06);display:flex;gap:8px;align-items:flex-start;background:#fff">'
           + '<div style="min-width:0;flex:1"><div class="mono" style="font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(g.email || '') + '</div><div class="item-meta mono" style="margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(String(g.id || '')) + '</div></div>'
-          + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">' + ui.badge(active ? lsx('grantRouteHealthActive') : lsx('grantRouteHealthExpired'), active ? 'ok' : 'warn') + '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="llmServiceDeleteGrant(\'' + llmServiceJSArg(g.id || '') + '\')">' + escapeHtml(lsx('deleteGrant')) + '</button></div>'
+          + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end">' + ui.badge(statusMeta.label, statusMeta.badgeClass) + '<button class="btn-danger" style="height:28px;font-size:11px;padding:0 10px" onclick="llmServiceDeleteGrant(\'' + llmServiceJSArg(g.id || '') + '\')">' + escapeHtml(lsx('deleteGrant')) + '</button></div>'
           + '</div>'
           + '<div style="padding:10px 12px;background:#fff;display:grid;grid-template-columns:1fr 1fr;gap:8px 12px">'
           + '<div style="min-width:0"><div class="item-meta">' + escapeHtml(lsx('serviceGroups')) + '</div><div style="margin-top:4px">' + llmServiceGroupLinks([g.service_group_id]) + '</div></div>'
           + '<div style="min-width:0"><div class="item-meta">' + escapeHtml(lsx('grantGrantSource')) + '</div><div class="item-meta" style="margin-top:4px">' + cardLine + '</div><div style="margin-top:4px">' + escapeHtml(lsx('grantAccessType')) + ': ' + ui.badge(sourceMeta.accessLabel, sourceMeta.accessPolicy === 'grant_required' ? 'warn' : 'ok') + '</div></div>'
           + '<div style="min-width:0"><div class="item-meta">' + escapeHtml(lsx('credits')) + '</div><div class="mono" style="margin-top:4px;font-size:12px;font-weight:700">' + escapeHtml(creditsText) + '</div>' + (usedText ? ('<div class="item-meta mono" style="margin-top:3px">' + escapeHtml(usedText) + '</div>') : '') + '</div>'
-          + '<div style="min-width:0"><div class="item-meta">' + escapeHtml(lsx('grantStartsAt')) + ' / ' + escapeHtml(lsx('grantExpiresAt')) + '</div><div class="item-meta mono" style="margin-top:4px">' + escapeHtml(startsAt) + '</div><div class="item-meta mono" style="margin-top:3px">' + escapeHtml(expiresAt) + '</div></div>'
+          + '<div style="min-width:0"><div class="item-meta">' + escapeHtml(lsx('grantStartsAt')) + ' / ' + escapeHtml(lsx('grantExpiresAt')) + '</div><div class="item-meta mono" style="margin-top:4px">' + escapeHtml(startsAt) + '</div><div class="item-meta mono" style="margin-top:3px">' + escapeHtml(expiresAt) + '</div>' + (statusMeta.detail ? ('<div class="item-meta" style="margin-top:3px;color:#c05621">' + escapeHtml(statusMeta.detail) + '</div>') : '') + '</div>'
           + '<div style="min-width:0;grid-column:1 / -1"><div class="item-meta">' + escapeHtml(lsx('grantRouteModels')) + '</div><div style="margin-top:2px">' + llmServiceRenderGrantRoutes(g, llmServiceAdminCache, ui) + '</div></div>'
           + '</div>'
           + '</div>';
@@ -1879,7 +1928,8 @@ function renderLLMServiceAdmin() {
       const inactiveReasons = (status.inactive_reasons || []).length ? (status.inactive_reasons || []).map(function(reason) { return '<div class="item-meta" style="margin-top:4px;color:#c05621">' + escapeHtml(reason) + '</div>'; }).join('') : ui.hint(lsx('emptyValue'));
       const userBindings = (diag.direct_user_bindings || []).length ? ('<div class="table" style="gap:6px;margin-top:6px">' + (diag.direct_user_bindings || []).map(function(b) { return '<div class="row" style="grid-template-columns:1fr"><div class="item-meta">' + llmServiceGroupLinks(b.service_group_ids || []) + '</div></div>'; }).join('') + '</div>') : ui.hint(lsx('emptyValue'));
       const groupBindings = (diag.matched_group_bindings || []).length ? ('<div class="table" style="gap:6px;margin-top:6px">' + (diag.matched_group_bindings || []).map(function(b) { var securityGroup = llmServiceDescribeSecurityGroup(b.group_id); return '<div class="row" style="grid-template-columns:.9fr 1.1fr"><div class="item-meta">' + escapeHtml(securityGroup.label) + (securityGroup.missing ? (' <span style="color:#c05621">(' + escapeHtml(lsx('missingSecurityGroup')) + ')</span>') : '') + '</div><div class="item-meta">' + llmServiceGroupLinks(b.service_group_ids || []) + '</div></div>'; }).join('') + '</div>') : ui.hint(lsx('emptyValue'));
-      const grants = (diag.active_grants || []).length ? ('<div class="table" style="gap:6px;margin-top:6px">' + '<div class="row header" style="grid-template-columns:.9fr .9fr .8fr 1.2fr"><div>' + escapeHtml(lsx('serviceGroups')) + '</div><div>' + escapeHtml(lsx('grantGrantSource')) + '</div><div>' + escapeHtml(lsx('grantAccessType')) + '</div><div>' + escapeHtml(lsx('grantRouteModels')) + '</div></div>' + (diag.active_grants || []).map(function(g) { var sourceMeta = llmServiceGrantSourceMeta(g, llmServiceAdminCache); var cardText = sourceMeta.cardID ? ((sourceMeta.cardLabel || '-') + ' (' + sourceMeta.cardID + ')') : (sourceMeta.cardLabel || '-'); return '<div class="row" style="grid-template-columns:.9fr .9fr .8fr 1.2fr"><div class="item-meta">' + llmServiceGroupLinks([g.service_group_id]) + '</div><div class="item-meta mono">' + escapeHtml(cardText + ' | ' + (g.source || '') + ' | ' + String(g.expires_at || '')) + '</div><div>' + ui.badge(sourceMeta.accessLabel, sourceMeta.accessPolicy === 'grant_required' ? 'warn' : 'ok') + '</div><div>' + llmServiceRenderGrantRoutes(g, llmServiceAdminCache, ui) + '</div></div>'; }).join('') + '</div>') : ui.hint(lsx('emptyValue'));
+      const diagnosticGrants = ((status.credit_grants || []).length ? status.credit_grants : (diag.active_grants || []));
+      const grants = diagnosticGrants.length ? ('<div class="table" style="gap:6px;margin-top:6px">' + '<div class="row header" style="grid-template-columns:.9fr .9fr .8fr 1.2fr"><div>' + escapeHtml(lsx('serviceGroups')) + '</div><div>' + escapeHtml(lsx('grantGrantSource')) + '</div><div>' + escapeHtml(lsx('grantAccessType')) + '</div><div>' + escapeHtml(lsx('grantRouteModels')) + '</div></div>' + diagnosticGrants.map(function(g) { var sourceMeta = llmServiceGrantSourceMeta(g, llmServiceAdminCache); var statusMeta = llmServiceGrantStatusMeta(g, Date.now()); var cardText = sourceMeta.cardID ? ((sourceMeta.cardLabel || '-') + ' (' + sourceMeta.cardID + ')') : (sourceMeta.cardLabel || '-'); return '<div class="row" style="grid-template-columns:.9fr .9fr .8fr 1.2fr"><div class="item-meta">' + llmServiceGroupLinks([g.service_group_id]) + '</div><div><div class="item-meta mono">' + escapeHtml(cardText + ' | ' + (g.source || '') + ' | ' + String(g.expires_at || '')) + '</div><div style="margin-top:4px">' + ui.badge(statusMeta.label, statusMeta.badgeClass) + (statusMeta.detail ? ('<span class="item-meta" style="margin-left:6px">' + escapeHtml(statusMeta.detail) + '</span>') : '') + '</div></div><div>' + ui.badge(sourceMeta.accessLabel, sourceMeta.accessPolicy === 'grant_required' ? 'warn' : 'ok') + '</div><div>' + llmServiceRenderGrantRoutes(g, llmServiceAdminCache, ui) + '</div></div>'; }).join('') + '</div>') : ui.hint(lsx('emptyValue'));
       const billingRoutes = (diag.billing_routes || []).length ? ('<div class="table" style="gap:6px;margin-top:6px">' + '<div class="row header" style="grid-template-columns:.7fr .8fr .9fr .8fr 1.2fr"><div>' + escapeHtml(lsx('billingRouteModel')) + '</div><div>' + escapeHtml(lsx('billingRouteProvider')) + '</div><div>' + escapeHtml(lsx('serviceGroups')) + '</div><div>' + escapeHtml(lsx('billingRouteAccess')) + '</div><div>' + escapeHtml(lsx('billingRouteStatus')) + '</div></div>' + (diag.billing_routes || []).map(function(route) { return '<div class="row" style="grid-template-columns:.7fr .8fr .9fr .8fr 1.2fr"><div class="mono" style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(route.model_name || '-') + '</div><div class="item-meta mono">' + escapeHtml(route.provider_id || '-') + '</div><div class="item-meta">' + llmServiceGroupLinks(route.service_group_ids || []) + '</div><div>' + ui.badge(llmServiceBillingRouteAccessLabel(route), llsNormalizeAccessPolicy(route.access_policy || '') === 'grant_required' ? 'warn' : 'ok') + '</div><div>' + llmServiceBillingRouteStatus(route, ui) + '</div></div>'; }).join('') + '</div>') : ui.hint(lsx('emptyValue'));
       const authorizedModels = (status.authorized_models || []).length ? ('<div class="table" style="gap:6px;margin-top:6px">' + '<div class="row header" style="grid-template-columns:.9fr 1.3fr .8fr"><div>' + escapeHtml(lsx('modelsLabel')) + '</div><div>' + escapeHtml(lsx('providerRoute')) + '</div><div>' + escapeHtml(lsx('multiplierLabel')) + '</div></div>' + (status.authorized_models || []).map(function(model) {
         const providerGroups = model.provider_service_groups || {};
@@ -1898,12 +1948,12 @@ function renderLLMServiceAdmin() {
         + '<div class="metric"><label>' + escapeHtml(lsx('securityGroups')) + '</label><strong>' + escapeHtml(String((diag.resolved_security_group_ids || []).length || 0)) + '</strong><span class="mono">' + escapeHtml(securityGroups) + '</span></div>'
         + '<div class="metric"><label>' + escapeHtml(lsx('effectiveServiceGroups')) + '</label><strong>' + escapeHtml(String((status.service_group_ids || []).length || 0)) + '</strong><span class="mono">' + escapeHtml(effectiveGroups) + '</span></div>'
         + '<div class="metric"><label>' + escapeHtml(lsx('bindingHits')) + '</label><strong>' + escapeHtml(String((diag.direct_user_bindings || []).length + (diag.matched_group_bindings || []).length)) + '</strong><span class="mono">' + escapeHtml(String((diag.direct_user_bindings || []).length)) + ' + ' + escapeHtml(String((diag.matched_group_bindings || []).length)) + '</span></div>'
-        + '<div class="metric"><label>' + escapeHtml(lsx('grantHits')) + '</label><strong>' + escapeHtml(String((diag.active_grants || []).length || 0)) + '</strong><span class="mono">' + escapeHtml(String((diag.active_grants || []).length || 0)) + '</span></div>'
+        + '<div class="metric"><label>' + escapeHtml(lsx('grantHits')) + '</label><strong>' + escapeHtml(String(diagnosticGrants.length || 0)) + '</strong><span class="mono">' + escapeHtml(String(diagnosticGrants.length || 0)) + '</span></div>'
         + '<div class="metric"><label>' + escapeHtml(lsx('availableModels')) + '</label><strong>' + escapeHtml(String((status.available_models || []).length || 0)) + '</strong><span class="mono">' + escapeHtml(models) + '</span></div>'
         + '<div class="metric"><label>' + escapeHtml(lsx('credits')) + '</label><strong>' + escapeHtml(String(status.credits_available || 0)) + '</strong><span class="mono">' + escapeHtml(status.default_model || 'auto') + '</span></div>'
         + '</div>';
       var section = function(title, body) { return '<div class="item" style="margin-top:8px;padding:12px 14px"><div class="item-title" style="margin-bottom:6px">' + escapeHtml(title) + '</div>' + body + '</div>'; };
-      diagnoseRoot.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHtml(diag.email || '') + '</div><div class="item-meta">' + (status.active ? lsx('active') : lsx('inactive')) + ' | ' + lsx('defaultModel') + ': <span class="mono">' + escapeHtml(status.default_model || 'auto') + '</span></div></div></div>' + summaryCards + '<div style="margin-top:8px">' + section(lsx('effectiveServiceGroups'), '<div class="item-meta">' + effectiveGroupLinks + '</div>') + section(lsx('inactiveReasons'), inactiveReasons) + section(lsx('modelRouting'), authorizedModels) + section(lsx('billingRoutes'), billingRoutes) + section(lsx('directUserBindings'), userBindings) + section(lsx('matchedGroupBindings'), groupBindings) + section(lsx('activeGrants'), grants) + '</div></div>';
+      diagnoseRoot.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHtml(diag.email || '') + '</div><div class="item-meta">' + (status.active ? lsx('active') : lsx('inactive')) + ' | ' + lsx('defaultModel') + ': <span class="mono">' + escapeHtml(status.default_model || 'auto') + '</span></div></div></div>' + summaryCards + '<div style="margin-top:8px">' + section(lsx('effectiveServiceGroups'), '<div class="item-meta">' + effectiveGroupLinks + '</div>') + section(lsx('inactiveReasons'), inactiveReasons) + section(lsx('modelRouting'), authorizedModels) + section(lsx('billingRoutes'), billingRoutes) + section(lsx('directUserBindings'), userBindings) + section(lsx('matchedGroupBindings'), groupBindings) + section(lsx('grantDetails'), grants) + '</div></div>';
 
     }
   }

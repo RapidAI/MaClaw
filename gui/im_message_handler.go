@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"context"
@@ -46,7 +46,7 @@ import (
 const imHeartbeatMsg = "__heartbeat__"
 
 // ---------------------------------------------------------------------------
-// IMMessageHandler — handles IM messages forwarded from Hub via WebSocket
+// IMMessageHandler 鈥?handles IM messages forwarded from Hub via WebSocket
 // ---------------------------------------------------------------------------
 
 // MessageAttachment represents a file/image/audio attachment from IM.
@@ -229,7 +229,7 @@ type agentLoopPhase struct {
 	FailedSkillError string // the error message from the failed skill execution
 
 	// ToolHallucinationCorrected is set to true after injecting a correction
-	// for a tool availability hallucination (e.g. "我没有 bash 工具").
+	// for a tool availability hallucination (e.g. "鎴戞病鏈?bash 宸ュ叿").
 	// Only one correction per loop to avoid infinite cycles.
 	ToolHallucinationCorrected bool
 
@@ -252,7 +252,7 @@ type agentLoopPhase struct {
 	// the tools slice before each LLM call, forcing the model to use
 	// alternative approaches (e.g. bash + heredoc instead of write_file).
 	// This is a tool-execution-layer intervention, not a prompt-layer
-	// suggestion — the LLM physically cannot call these tools.
+	// suggestion 鈥?the LLM physically cannot call these tools.
 	TruncationBlockedTools map[string]bool
 }
 
@@ -272,30 +272,30 @@ func shouldPreferSkillForTask(text string) bool {
 	}
 
 	// Intent-capability pre-check: if the user's intent is clearly a
-	// query/inspect action (统计/搜索/查找/列出/打开/读取), skills are
-	// unlikely to help — the user wants to operate on existing files, not
+	// query/inspect action (缁熻/鎼滅储/鏌ユ壘/鍒楀嚭/鎵撳紑/璇诲彇), skills are
+	// unlikely to help 鈥?the user wants to operate on existing files, not
 	// generate new ones. Only enter the skill preference path when the
 	// intent is compatible with generation (the dominant skill capability).
 	//
-	// This prevents "统计d盘上的pdf文件" from triggering skill search
+	// This prevents "缁熻d鐩樹笂鐨刾df鏂囦欢" from triggering skill search
 	// just because it contains "pdf". The user wants to COUNT files, not
 	// CONVERT them.
 	if !isIntentSkillPreferenceCompatible(text) {
 		return false
 	}
 
-	// Substring hints — safe for multi-char Chinese phrases and distinctive
+	// Substring hints 鈥?safe for multi-char Chinese phrases and distinctive
 	// English terms that rarely appear as substrings of other words.
 	substringHints := []string{
-		"pdf", "报告", "文档", "综述", "markdown", "导出", "转换",
-		"生成文件", "发送文件", "daily papers",
+		"pdf", "鎶ュ憡", "鏂囨。", "缁艰堪", "markdown", "瀵煎嚭", "杞崲",
+		"generate file", "send file", "daily papers",
 	}
 	for _, hint := range substringHints {
 		if strings.Contains(lower, hint) {
 			return true
 		}
 	}
-	// Word-boundary hints — common English words that frequently appear as
+	// Word-boundary hints 鈥?common English words that frequently appear as
 	// substrings in domain names / URLs (e.g. "mypapers.top", "report.csv").
 	if skillHintWordBoundaryRe.MatchString(lower) {
 		return true
@@ -332,7 +332,7 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 		}
 		desc := strings.ToLower(strings.TrimSpace(skill.Description))
 		if desc != "" {
-			for _, token := range []string{"pdf", "报告", "文档", "综述", "markdown", "daily papers"} {
+			for _, token := range []string{"pdf", "鎶ュ憡", "鏂囨。", "缁艰堪", "markdown", "daily papers"} {
 				if strings.Contains(lower, token) && strings.Contains(desc, token) {
 					score += 2
 				}
@@ -349,7 +349,7 @@ func matchPreferredLocalSkill(exec *SkillExecutor, userText string) (string, str
 		}
 		// Intent-capability compatibility gate: even if topic tokens match,
 		// reject the skill when the user's action verb is incompatible with
-		// the skill's declared capability. This prevents "统计 PDF 文件"
+		// the skill's declared capability. This prevents "缁熻 PDF 鏂囦欢"
 		// (query intent) from matching "xh-md-to-pdf" (generate capability).
 		if score > 0 && !isIntentCategoryCompatibleWithSkill(userIntent, skill.Description) {
 			continue
@@ -454,12 +454,12 @@ func buildSkillProgressGuidance(skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return fmt.Sprintf("若已拿到 run_id，请优先调用 get_skill_run(run_id=\"%s\") 继续观察状态；仅在明确失败后再切换到其他真实工具。", runID)
+		return fmt.Sprintf("If run_id is available, call get_skill_run(run_id=%q) first to observe progress; only switch tools after a clear failure.", runID)
 	}
 	if skillName != "" {
-		return fmt.Sprintf("若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；否则先调用 manage_skill(action=\"run\", name=\"%s\") 开始执行。", skillName)
+		return fmt.Sprintf("If run_id is available, call get_skill_run(run_id=...) first; otherwise call manage_skill(action=\"run\", name=%q) to start execution.", skillName)
 	}
-	return "若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态。"
+	return "If run_id is available and no clear success/failure is visible yet, call get_skill_run(run_id=...) first to observe progress."
 }
 
 func extractSkillRunID(toolCalls []llm.ToolCall, toolResults []string) string {
@@ -477,7 +477,7 @@ func extractSkillRunID(toolCalls []llm.ToolCall, toolResults []string) string {
 		if matches := regexp.MustCompile(`run_id[:=]\s*([A-Za-z0-9._-]+)`).FindStringSubmatch(result); len(matches) == 2 {
 			return strings.TrimSpace(matches[1])
 		}
-		if matches := regexp.MustCompile(`（run_id=([A-Za-z0-9._-]+)）`).FindStringSubmatch(result); len(matches) == 2 {
+		if matches := regexp.MustCompile(`run_id=([A-Za-z0-9._-]+)`).FindStringSubmatch(result); len(matches) == 2 {
 			return strings.TrimSpace(matches[1])
 		}
 	}
@@ -488,21 +488,21 @@ func buildSkillRecoverPrompt(skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	guidance := buildSkillProgressGuidance(skillName, runID)
 	if skillName == "" {
-		return "[Recover 阶段]\n本地 Skill 已尝试且失败，当前进入 Recover 阶段。不要重复同一个失败 Skill。请基于已知失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n" + guidance + "\n[/Recover 阶段]"
+		return "[Recover 闃舵]\n鏈湴 Skill 宸插皾璇曚笖澶辫触锛屽綋鍓嶈繘鍏?Recover 闃舵銆備笉瑕侀噸澶嶅悓涓€涓け璐?Skill銆傝鍩轰簬宸茬煡澶辫触鍘熷洜閲嶆柊瑙勫垝锛屾敼鐢ㄥ叾浠栫湡瀹炲伐鍏凤紙濡?send_file / craft_tool / bash锛夎蛋鏈€鐭氦浠樿矾寰勶紝骞剁户缁畬鎴愪换鍔°€俓n" + guidance + "\n[/Recover 闃舵]"
 	}
-	return fmt.Sprintf("[Recover 阶段]\n本地 Skill「%s」已尝试且失败，当前进入 Recover 阶段。不要再次调用同一个 Skill。请基于失败原因重新规划，改用其他真实工具（如 send_file / craft_tool / bash）走最短交付路径，并继续完成任务。\n%s\n[/Recover 阶段]", skillName, guidance)
+	return fmt.Sprintf("[Recover 闃舵]\n鏈湴 Skill銆?s銆嶅凡灏濊瘯涓斿け璐ワ紝褰撳墠杩涘叆 Recover 闃舵銆備笉瑕佸啀娆¤皟鐢ㄥ悓涓€涓?Skill銆傝鍩轰簬澶辫触鍘熷洜閲嶆柊瑙勫垝锛屾敼鐢ㄥ叾浠栫湡瀹炲伐鍏凤紙濡?send_file / craft_tool / bash锛夎蛋鏈€鐭氦浠樿矾寰勶紝骞剁户缁畬鎴愪换鍔°€俓n%s\n[/Recover 闃舵]", skillName, guidance)
 }
 
 func buildDriftRecoverPrompt(drift DriftResult) string {
 	detail := strings.TrimSpace(drift.ReplanPrompt)
 	if detail == "" {
-		detail = "检测到执行路径出现漂移或循环，请停止重复同一做法，回到原始目标并改用不同路径继续完成任务。"
+		detail = "Execution drift or repetition was detected. Stop repeating the same approach, return to the original goal, and continue with a different path."
 	}
 	toolWarning := ""
 	if drift.DriftedTool != "" {
-		toolWarning = fmt.Sprintf("\n禁止再次调用 %s（已连续失败）。如果没有替代方案，直接向用户说明限制。", drift.DriftedTool)
+		toolWarning = fmt.Sprintf("\nDo not call %s again after repeated failures. If no alternative exists, explain the limitation to the user.", drift.DriftedTool)
 	}
-	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + toolWarning + "\n[/Recover 阶段]"
+	return "[Recover 闃舵]\n妫€娴嬪埌鎵ц璺緞鍑虹幇婕傜Щ鎴栧惊鐜紝褰撳墠杩涘叆 Recover 闃舵銆傝鍏堟殏鍋滈噸澶嶆搷浣滐紝鍥炲埌鍘熷鐩爣锛屽熀浜庡凡鐭ョ粨鏋滄敼鐢ㄤ笉鍚岃矾寰勭户缁畬鎴愪换鍔°€俓n" + detail + toolWarning + "\n[/Recover 闃舵]"
 }
 
 // truncateRunesForDrift truncates a string to maxRunes for use as a drift
@@ -517,30 +517,30 @@ func truncateRunesForDrift(s string, maxRunes int) string {
 	if idx := strings.LastIndex(truncated, "\n"); idx > len(truncated)/2 {
 		truncated = truncated[:idx]
 	}
-	return truncated + "…"
+	return truncated + "..."
 }
 
 func buildDeliverableRecoverPrompt(skillName string, preferSkill bool, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上。" + buildSkillProgressGuidance(skillName, runID) + " 若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
+		return "[Recover]\nA deliverable was promised but not produced. " + buildSkillProgressGuidance(skillName, runID) + " If completion is still impossible, explain the failure reason and visible result.\n[/Recover]"
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，优先直接调用 manage_skill(action=\"run\", name=\"%s\") 完成交付；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 明确失败，再切换到其他真实工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]", skillName)
+		return fmt.Sprintf("[Recover]\nA deliverable was promised but not produced. Call manage_skill(action=\"run\", name=%q) to complete delivery, or explain the failure if no path remains.\n[/Recover]", skillName)
 	}
-	return "[Recover 阶段]\n检测到上一轮只承诺将要生成、整理或发送结果，但还没有真正交付，当前进入 Recover 阶段。不要继续停留在承诺或解释上，请立即调用真实工具完成交付；若目标是文档，优先选择当前可用的文档/文件交付工具。若仍无法完成，必须直接说明失败原因和当前可见结果。\n[/Recover 阶段]"
+	return "[Recover]\nA deliverable was promised but not produced. Use a real tool to complete delivery immediately, or explain the failure reason and visible result.\n[/Recover]"
 }
 
 // buildEmptyResultRecoverPromptWithTasks builds the empty-response Recover
 // prompt. When pendingTaskHint is non-empty it is appended to guide the LLM
 // toward checking active background tasks instead of stalling.
 func buildEmptyResultRecoverPromptWithTasks(pendingTaskHint string) string {
-	base := "[Recover 阶段]\n检测到上一轮没有返回任何可展示结果，当前进入 Recover 阶段。不要空结束，也不要只重复解释。请立即二选一：1) 直接给出可展示结果；2) 明确说明失败原因和当前状态。若还需要继续执行，必须立即调用真实工具。"
+	base := "[Recover]\nThe previous round returned no visible result. Either provide a visible result or clearly explain the failure reason and current status. If more execution is needed, call a real tool immediately."
 	if pendingTaskHint != "" {
 		base += "\n" + pendingTaskHint
 	}
-	base += "\n[/Recover 阶段]"
+	base += "\n[/Recover 闃舵]"
 	return base
 }
 
@@ -574,17 +574,17 @@ loop:
 		switch role {
 		case "assistant":
 			if msgHasToolCalls(conversation[i]) {
-				break loop // productive turn — stop
+				break loop // productive turn 鈥?stop
 			}
-			cutFrom = i // stale turn — mark for removal
+			cutFrom = i // stale turn 鈥?mark for removal
 		case "system":
 			if isRecoverOrNudgeSystemMessage(msgContent(conversation[i])) {
-				cutFrom = i // recover/nudge injection — mark for removal
+				cutFrom = i // recover/nudge injection 鈥?mark for removal
 			} else {
-				break loop // non-recover system message — stop
+				break loop // non-recover system message 鈥?stop
 			}
 		default:
-			break loop // user, tool, or other — stop
+			break loop // user, tool, or other 鈥?stop
 		}
 	}
 
@@ -594,7 +594,7 @@ loop:
 
 	pruned := len(conversation) - cutFrom
 	if pruned > 0 {
-		log.Printf("[prune-stale-turns] removed %d stale no-tool-call messages from conversation (len %d → %d)",
+		log.Printf("[prune-stale-turns] removed %d stale no-tool-call messages from conversation (len %d 鈫?%d)",
 			pruned, len(conversation), cutFrom)
 	}
 	return conversation[:cutFrom]
@@ -621,15 +621,15 @@ func isRecoverOrNudgeSystemMessage(content string) bool {
 		return false
 	}
 	// Recover phase markers.
-	if strings.Contains(content, "[Recover 阶段]") || strings.Contains(content, "[/Recover 阶段]") {
+	if strings.Contains(content, "[Recover 闃舵]") || strings.Contains(content, "[/Recover 闃舵]") {
 		return true
 	}
 	// No-tool action prompts.
-	if strings.Contains(content, "[执行要求]") || strings.Contains(content, "[/执行要求]") {
+	if strings.Contains(content, "[鎵ц瑕佹眰]") || strings.Contains(content, "[/鎵ц瑕佹眰]") {
 		return true
 	}
 	// Goal anchor and progress tracker injections from previous iterations
-	// are not pruned — they carry useful context.
+	// are not pruned 鈥?they carry useful context.
 	return false
 }
 
@@ -660,9 +660,9 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 	// any partial tool results that follow it.
 	history = stripTrailingBrokenToolGroup(history)
 	h.saveConversationHistoryTimed(userID, history, nil)
-	cancelMsg := "⏹️ 任务已取消。"
+	cancelMsg := "Task cancelled."
 	if taskPreview := truncateRunes(userText, 30); taskPreview != "" {
-		cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", taskPreview)
+		cancelMsg = fmt.Sprintf("Task cancelled: %s", taskPreview)
 	}
 	return &IMAgentResponse{Text: cancelMsg}
 }
@@ -671,7 +671,7 @@ func (h *IMMessageHandler) cancelledExitResponse(userID string, history []agent.
 // message. This is the single exit point for all LLM error paths inside
 // runAgentLoop, structurally enforcing the invariant that the loop always
 // saves (never clears) history. Mirrors cancelledExitResponse for cancel
-// paths — see #54 and #55 for the design rationale.
+// paths 鈥?see #54 and #55 for the design rationale.
 //
 // The error message includes a task context hint extracted from the last
 // user message in history, so the user knows what was being worked on and
@@ -691,7 +691,7 @@ func (h *IMMessageHandler) llmErrorExitResponse(userID string, history []agent.C
 		}
 	}
 	if taskHint != "" {
-		errorMsg += fmt.Sprintf("\n\n💡 你之前的任务：%s\n发送任意消息即可继续。", taskHint)
+		errorMsg += fmt.Sprintf("\n\nPrevious task: %s\nSend another message to continue.", taskHint)
 	}
 
 	return &IMAgentResponse{Error: errorMsg}
@@ -713,7 +713,7 @@ func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.Con
 			assistantIdx = i
 			break
 		}
-		// Stop scanning if we hit a user message — the broken group must
+		// Stop scanning if we hit a user message 鈥?the broken group must
 		// be at the tail of the conversation.
 		if history[i].Role == "user" {
 			break
@@ -744,7 +744,7 @@ func stripTrailingBrokenToolGroup(history []agent.ConversationEntry) []agent.Con
 	if expectedCount > 0 && toolCount >= expectedCount {
 		return history // group is complete, nothing to fix
 	}
-	// Incomplete group — strip ToolCalls and remove partial tool results.
+	// Incomplete group 鈥?strip ToolCalls and remove partial tool results.
 	// Copy the entry before mutating to avoid corrupting the caller's slice.
 	patched := history[assistantIdx]
 	patched.ToolCalls = nil
@@ -795,7 +795,7 @@ func (h *IMMessageHandler) incrementCompactionCount(userID string) int {
 
 // resetCompactionTokenCalibration signals that the token calibration data
 // from the previous LLM call is stale after compaction. The actual reset
-// happens in the agent loop via lastLLMInputTokens — this is a no-op
+// happens in the agent loop via lastLLMInputTokens 鈥?this is a no-op
 // placeholder that documents the intent. The agent loop's local variable
 // lastLLMInputTokens is naturally reset when the loop re-enters after
 // saveConversationHistoryTimed returns.
@@ -836,47 +836,47 @@ func (c *sessionStartLLMCaller) IsConfigured() bool {
 
 func buildTrialFailureRecoverPrompt(observation string, repeatedFailures []string) string {
 	var b strings.Builder
-	b.WriteString("[Recover 阶段]\n上一轮真实工具执行已出现失败，当前进入 Recover 阶段。请先根据失败结果调整计划，不要原样重复已经失败的尝试。")
+	b.WriteString("[Recover]\nThe previous real tool attempt failed. Adjust the plan based on the failure and do not repeat the same failed attempt.")
 	if obs := strings.TrimSpace(observation); obs != "" {
-		b.WriteString("\n失败观察: ")
+		b.WriteString("\nFailure observation: ")
 		b.WriteString(obs)
 	}
 	if len(repeatedFailures) > 0 {
 		items := append([]string(nil), repeatedFailures...)
 		sort.Strings(items)
-		b.WriteString("\n避免重复: ")
+		b.WriteString("\nAvoid repeating: ")
 		b.WriteString(strings.Join(items, ", "))
 	}
-	b.WriteString("\n下一步：优先改用不同路径或修正参数后继续完成任务；若仍无法完成，直接说明失败原因和当前状态。\n[/Recover 阶段]")
+	b.WriteString("\nNext step: use a different path or corrected parameters. If completion is still impossible, explain the blocker and current state.\n[/Recover]")
 	return b.String()
 }
 
 func buildRemoteSkillSearchPrompt() string {
-	return "[执行要求]\n当前任务属于 Skill 优先路径，但本地未命中合适 Skill。不要继续解释、承诺或直接 craft_tool；请立即先调用 search_and_install_skill（或其他 skill 搜索/安装工具）查找并安装可复用 Skill。只有在确认远程 Skill 路径无解后，才切换到 craft_tool 或 bash。\n[/执行要求]"
+	return "[Execution requirement]\nThis task should prefer a reusable Skill, but no suitable local Skill was found. Search/install a reusable Skill first. Only switch to craft_tool or bash after the remote Skill path is unavailable.\n[/Execution requirement]"
 }
 
 func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。" + buildSkillProgressGuidance(skillName, runID) + "\n[/执行要求]"
+		return "[Execution requirement]\nThis task requires real execution. Do not stop at explanation or planning. " + buildSkillProgressGuidance(skillName, runID) + "\n[/Execution requirement]"
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。优先立即调用 manage_skill(action=\"run\", name=\"%s\") 开始执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具。\n[/执行要求]", skillName)
+		return fmt.Sprintf("[Execution requirement]\nThis task requires real execution. Prefer manage_skill(action=\"run\", name=\"%s\"). If a run_id exists, call get_skill_run(run_id=...) until success or failure. If the Skill fails, switch to another real tool path.\n[/Execution requirement]", skillName)
 	}
-	return "[执行要求]\n当前任务需要真实执行，不要继续停留在解释、承诺或列步骤上。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成、编辑或发送相关工具。\n[/执行要求]"
+	return "[Execution requirement]\nThis task requires real execution. Choose the best real tool and start executing. For document/file delivery, prefer file generation, editing, or sending tools.\n[/Execution requirement]"
 }
 
 func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName, runID string) string {
 	skillName = strings.TrimSpace(skillName)
 	runID = strings.TrimSpace(runID)
 	if runID != "" {
-		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。%s\n[/Recover 阶段]", consecutive, buildSkillProgressGuidance(skillName, runID))
+		return fmt.Sprintf("[Recover]\nNo real tool was called for %d consecutive rounds. Do not continue with explanation only. %s\n[/Recover]", consecutive, buildSkillProgressGuidance(skillName, runID))
 	}
 	if preferSkill && skillName != "" {
-		return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。优先立即调用 manage_skill(action=\"run\", name=\"%s\") 启动实际执行；若已拿到 run_id 且尚未见明确成功/失败，请优先调用 get_skill_run(run_id=...) 继续观察状态；若该 Skill 不适用或失败，再切换到其他真实工具完成任务。\n[/Recover 阶段]", consecutive, skillName)
+		return fmt.Sprintf("[Recover]\nNo real tool was called for %d consecutive rounds. Prefer manage_skill(action=\"run\", name=\"%s\"). If that Skill fails, use another real tool path.\n[/Recover]", consecutive, skillName)
 	}
-	return fmt.Sprintf("[Recover 阶段]\n连续 %d 轮都没有真正调用工具，任务已进入停滞状态，当前进入 Recover 阶段。不要继续解释、承诺或空转。请立即选择一个最合适的真实工具开始执行；若目标是文档/文件交付，优先使用文件生成或发送相关工具。\n[/Recover 阶段]", consecutive)
+	return fmt.Sprintf("[Recover]\nNo real tool was called for %d consecutive rounds. Choose the best real tool now; for document/file delivery, prefer file generation or sending tools.\n[/Recover]", consecutive)
 }
 
 func didSkillToolFail(toolCalls []llm.ToolCall, toolResults []string) bool {
@@ -947,17 +947,17 @@ func extractFailedSkillInfo(toolCalls []llm.ToolCall, toolResults []string) (ski
 func userFacingToolProgressText(toolName string) string {
 	switch toolName {
 	case "craft_tool":
-		return "🛠️ 正在生成并执行脚本，准备继续完成交付..."
+		return "馃洜锔?姝ｅ湪鐢熸垚骞舵墽琛岃剼鏈紝鍑嗗缁х画瀹屾垚浜や粯..."
 	case "bash":
-		return "🖥️ 正在执行命令处理文件，请稍候..."
+		return "馃枼锔?姝ｅ湪鎵ц鍛戒护澶勭悊鏂囦欢锛岃绋嶅€?.."
 	case "run_skill":
-		return "🚀 正在启动 Skill 并等待状态快照..."
+		return "馃殌 姝ｅ湪鍚姩 Skill 骞剁瓑寰呯姸鎬佸揩鐓?.."
 	case "send_file":
-		return "📤 正在整理并发送生成的文件..."
+		return "馃摛 姝ｅ湪鏁寸悊骞跺彂閫佺敓鎴愮殑鏂囦欢..."
 	case "generate_pdf":
-		return "📄 正在生成 PDF 文件..."
+		return "馃搫 姝ｅ湪鐢熸垚 PDF 鏂囦欢..."
 	default:
-		return "⚙️ 正在执行工具，请稍候..."
+		return "鈿欙笍 姝ｅ湪鎵ц宸ュ叿锛岃绋嶅€?.."
 	}
 }
 
@@ -978,7 +978,7 @@ func filterUserFacingToolProgress(toolName, msg string) string {
 	if shouldExposeToolInternalProgress(toolName) {
 		switch toolName {
 		case "craft_tool":
-			allowedPrefixes := []string{"🧠 ", "💾 ", "🚀 ", "📦 ", "⏳ "}
+			allowedPrefixes := []string{"馃 ", "馃捑 ", "馃殌 ", "馃摝 ", "鈴?"}
 			for _, prefix := range allowedPrefixes {
 				if strings.HasPrefix(trimmed, prefix) {
 					return trimmed
@@ -986,12 +986,12 @@ func filterUserFacingToolProgress(toolName, msg string) string {
 			}
 			return ""
 		case "bash":
-			if strings.HasPrefix(trimmed, "⏳ ") {
+			if strings.HasPrefix(trimmed, "鈴?") {
 				return trimmed
 			}
 			return ""
 		case "run_skill":
-			allowedPrefixes := []string{"🚀 ", "⏳ ", "✅ ", "❌ "}
+			allowedPrefixes := []string{"馃殌 ", "鈴?", "鉁?", "鉂?"}
 			for _, prefix := range allowedPrefixes {
 				if strings.HasPrefix(trimmed, prefix) {
 					return trimmed
@@ -1010,7 +1010,7 @@ func shouldResumeIncompleteTask(text string) bool {
 	}
 
 	resumePhrases := []string{
-		"继续", "继续呀", "继续做", "继续完成", "继续上次", "接着做", "接着完成", "接着上次", "恢复上次", "做完上次",
+		"缁х画", "缁х画瀹屾垚", "缁х画涓婃", "鎺ョ潃瀹屾垚", "鎺ョ潃涓婃", "鎭㈠涓婃", "鍋氬畬涓婃",
 		"continue", "continue it", "continue this", "resume", "resume it", "resume this", "pick up where you left off",
 	}
 	for _, phrase := range resumePhrases {
@@ -1031,7 +1031,7 @@ func looksLikeFreshTaskRequest(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	freshTaskHints := []string{
-		"帮我", "请你", "请帮我", "现在去", "把", "整理", "分析", "搜索", "生成", "写", "修", "移动", "复制", "放入", "导入",
+		"甯垜", "璇蜂綘", "鏁寸悊", "鍒嗘瀽", "鎼滅储", "鐢熸垚", "绉诲姩", "澶嶅埗", "鏀惧叆", "瀵煎叆",
 		"please", "help me", "can you", "now", "move", "copy", "write", "generate", "summarize", "analyze", "search", "import",
 	}
 	for _, hint := range freshTaskHints {
@@ -1206,13 +1206,13 @@ func hasIncompleteTaskMarker(entries []agent.ConversationEntry) bool {
 		if trimmed == "" {
 			continue
 		}
-		if strings.Contains(trimmed, "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。") {
+		if strings.Contains(trimmed, "coding session is still running") {
 			return true
 		}
-		if strings.Contains(trimmed, "(已达到最大推理轮次，请继续发送消息以完成任务)") {
+		if strings.Contains(trimmed, "(宸茶揪鍒版渶澶ф帹鐞嗚疆娆★紝璇风户缁彂閫佹秷鎭互瀹屾垚浠诲姟)") {
 			return true
 		}
-		if strings.Contains(trimmed, "已接近最大推理轮次") {
+		if strings.Contains(trimmed, "approaching maximum reasoning rounds") {
 			return true
 		}
 	}
@@ -1268,7 +1268,7 @@ func extractProgressSummary(history []agent.ConversationEntry) string {
 			continue
 		}
 		// Skip the max-rounds marker itself.
-		if strings.Contains(trimmed, "已达到最大推理轮次") || strings.Contains(trimmed, "已接近最大推理轮次") {
+		if strings.Contains(trimmed, "maximum reasoning rounds") || strings.Contains(trimmed, "approaching maximum reasoning rounds") {
 			continue
 		}
 		lastAssistantTexts = append(lastAssistantTexts, truncateRunes(trimmed, 150))
@@ -1280,7 +1280,7 @@ func extractProgressSummary(history []agent.ConversationEntry) string {
 	for i, j := 0, len(lastAssistantTexts)-1; i < j; i, j = i+1, j-1 {
 		lastAssistantTexts[i], lastAssistantTexts[j] = lastAssistantTexts[j], lastAssistantTexts[i]
 	}
-	return strings.Join(lastAssistantTexts, " → ")
+	return strings.Join(lastAssistantTexts, " -> ")
 }
 
 type explicitTaskSlotDecision struct {
@@ -1310,14 +1310,14 @@ func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## 显式恢复未完成任务\n")
+	b.WriteString("\n## 鏄惧紡鎭㈠鏈畬鎴愪换鍔n")
 	if slot.LastTask != "" {
-		b.WriteString("- 任务: ")
+		b.WriteString("- 浠诲姟: ")
 		b.WriteString(slot.LastTask)
 		b.WriteString("\n")
 	}
 	if slot.Summary != "" {
-		b.WriteString("- 当前进度: ")
+		b.WriteString("- 褰撳墠杩涘害: ")
 		b.WriteString(slot.Summary)
 		b.WriteString("\n")
 	}
@@ -1327,7 +1327,7 @@ func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("用户已显式选择继续这个未完成任务。请仅围绕该任务继续，不要混入其他旧任务。\n")
+	b.WriteString("鐢ㄦ埛宸叉樉寮忛€夋嫨缁х画杩欎釜鏈畬鎴愪换鍔°€傝浠呭洿缁曡浠诲姟缁х画锛屼笉瑕佹贩鍏ュ叾浠栨棫浠诲姟銆俓n")
 	return b.String()
 }
 
@@ -1336,8 +1336,8 @@ func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {
 		return nil
 	}
 	return []IMResponseAction{
-		{Label: "继续上次任务", Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
-		{Label: "执行新任务", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
+		{Label: "缁х画涓婃浠诲姟", Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
+		{Label: "Start new task", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
 	}
 }
 
@@ -1347,9 +1347,9 @@ func buildUnfinishedSlotHint(slot *agent.UnfinishedTaskSlot) string {
 	}
 	title := strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary, slot.ProjectPath))
 	if title == "" {
-		title = "上次未完成任务"
+		title = "Previous unfinished task"
 	}
-	return "检测到一个未完成任务：" + truncateRunes(title, 60) + "。如需继续，请显式选择“继续上次任务”。"
+	return "Detected an unfinished task: " + truncateRunes(title, 60) + ". Choose resume to continue it."
 }
 
 func isSlotActionCommand(text string) bool {
@@ -1402,9 +1402,9 @@ func (h *IMMessageHandler) classifyConfirmationIntent(userID, text string, pendi
 	}
 
 	// Build context from the pending confirmation.
-	ctx := fmt.Sprintf("任务摘要：%s\n", truncateRunes(pending.Summary, 300))
+	ctx := fmt.Sprintf("Task summary: %s\n", truncateRunes(pending.Summary, 300))
 	if len(pending.PlannedActions) > 0 {
-		ctx += "计划动作：\n"
+		ctx += "Planned actions:\n"
 		for i, action := range pending.PlannedActions {
 			if i >= 5 {
 				break
@@ -1412,14 +1412,14 @@ func (h *IMMessageHandler) classifyConfirmationIntent(userID, text string, pendi
 			ctx += fmt.Sprintf("  %d. %s\n", i+1, truncateRunes(action, 100))
 		}
 	}
-	ctx += "系统提示用户：请确认方案或提出修改意见。"
+	ctx += "The system asked the user to confirm the plan or provide changes."
 
 	// Add the last assistant message for conversational context.
 	if lastAssistant := h.getLastAssistantSnippet(userID, 300); lastAssistant != "" {
-		ctx += fmt.Sprintf("\n助手最后一条消息：%s", lastAssistant)
+		ctx += fmt.Sprintf("\n鍔╂墜鏈€鍚庝竴鏉℃秷鎭細%s", lastAssistant)
 	}
 
-	userMessage := fmt.Sprintf("[上下文]\n%s\n\n[用户回复]\n%s", ctx, text)
+	userMessage := fmt.Sprintf("[Context]\n%s\n\n[User reply]\n%s", ctx, text)
 
 	result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
 		SystemPrompt: `You are a user intent classifier for a task execution confirmation dialog.
@@ -1432,9 +1432,9 @@ The user was shown a task plan and asked to confirm, cancel, or revise it. You w
 IMPORTANT: Pay close attention to the assistant's last message. If the assistant asked the user to say a specific word/phrase to proceed, and the user replies with that word/phrase, it is a confirmation.
 
 Classify the user's response into exactly one category. Reply with ONLY the category word:
-- "confirm" — user approves the plan and wants to start execution. This includes any form of agreement, readiness signal, or go-ahead in the context of the pending task.
-- "cancel" — user wants to abandon the task entirely.
-- "modify" — user provides specific changes, corrections, or additional requirements for the plan.
+- "confirm" - user approves the plan and wants to start execution. This includes any form of agreement, readiness signal, or go-ahead in the context of the pending task.
+- "cancel" - user wants to abandon the task entirely.
+- "modify" - user provides specific changes, corrections, or additional requirements for the plan.
 
 When in doubt between "confirm" and "modify", prefer "confirm" if the response is short and doesn't contain specific change requests.`,
 		UserMessage: userMessage,
@@ -1468,10 +1468,10 @@ func isShortChitChatMessage(text string) bool {
 	return normalizeShortChitChatToken(text) != ""
 }
 
-var shortChitChatEdgePunctuationPattern = regexp.MustCompile(`^[\s"'“”‘’` + "`" + `()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+|[\s"'“”‘’` + "`" + `()（）\[\]【】<>《》,，.。!！?？~～…:：;；、\-—_]+$`)
-var shortChitChatChineseIdlePattern = regexp.MustCompile(`^(没事|没事了|没有)(啊|呀|啦|呢|吧|哦|喔|哈|哇|嘛|的)?$`)
-var shortChitChatChineseThanksPattern = regexp.MustCompile(`^(谢谢)(啊|呀|啦|呢|吧|哦|喔|哈)?$`)
-var shortChitChatChineseGreetingPattern = regexp.MustCompile(`^(你好|你好呀|你好啊|嗨|哈喽)(啊|呀|啦|呢|吧|哦|喔|哈)?$`)
+var shortChitChatEdgePunctuationPattern = regexp.MustCompile(`^[\s"'` + "`" + `\(\)\[\]<>.,!?;:，。！？；：、-]+|[\s"'` + "`" + `\(\)\[\]<>.,!?;:，。！？；：、-]+$`)
+var shortChitChatChineseIdlePattern = regexp.MustCompile(`^(没事|没事了|没有)(啊|呀|哦|啦|哈|呢|的)?$`)
+var shortChitChatChineseThanksPattern = regexp.MustCompile(`^(谢谢)(啊|呀|哦|啦|哈|呢)?$`)
+var shortChitChatChineseGreetingPattern = regexp.MustCompile(`^(你好|你好呀|你好啊|哈喽)(啊|呀|哦|啦|哈|呢)?$`)
 
 func normalizeShortChitChatToken(text string) string {
 	cleaned := strings.ToLower(strings.TrimSpace(text))
@@ -1491,25 +1491,25 @@ func normalizeShortChitChatToken(text string) string {
 	}
 	switch {
 	case shortChitChatChineseIdlePattern.MatchString(cleaned):
-		return "没事"
+		return "娌′簨"
 	case shortChitChatChineseThanksPattern.MatchString(cleaned):
-		return "谢谢"
+		return "璋㈣阿"
 	case shortChitChatChineseGreetingPattern.MatchString(cleaned):
-		return "你好"
+		return "浣犲ソ"
 	}
 	shortPhrases := map[string]struct{}{
 		"hi":        {},
 		"hello":     {},
 		"hey":       {},
-		"你好":        {},
-		"没事":        {},
+		"浣犲ソ":        {},
+		"娌′簨":        {},
 		"nothing":   {},
 		"none":      {},
 		"ok":        {},
 		"okay":      {},
 		"thanks":    {},
 		"thank you": {},
-		"谢谢":        {},
+		"璋㈣阿":        {},
 	}
 	if _, ok := shortPhrases[cleaned]; ok {
 		return cleaned
@@ -1544,14 +1544,14 @@ func buildShortChitChatResponse(text, lang string) string {
 		}
 	}
 	switch normalized {
-	case "谢谢":
-		return "不客气。我在这，有需要随时说。"
-	case "没事", "nothing", "none":
-		return "好，没问题。我在这，有需要随时叫我。"
+	case "璋㈣阿":
+		return "You're welcome. I'm here if you need anything."
+	case "娌′簨", "nothing", "none":
+		return "No problem. I'm here if you need anything."
 	case "ok", "okay":
-		return "好的，我在这。有需要随时说。"
+		return "Okay. I'm here if you need anything."
 	default:
-		return "你好，我在这。有需要随时说。"
+		return "Hi! I'm here if you need anything."
 	}
 }
 
@@ -1575,24 +1575,24 @@ func confirmationTaskLabel(intent taskIntent) string {
 func confirmationPlannedActions(intent taskIntent) []string {
 	switch intent {
 	case intentCoding:
-		return []string{"确认项目目录", "确认任务目标", "确认后开始修改代码"}
+		return []string{"Confirm project directory", "Confirm task goal", "Start code changes after confirmation"}
 	case intentSSH:
-		return []string{"确认目标服务器/目录", "确认排查目标", "确认后执行远程操作"}
+		return []string{"Confirm target server or directory", "Confirm diagnosis goal", "Run remote operation after confirmation"}
 	case intentAmbiguous:
-		return []string{"确认这是改代码还是远程处理", "确认工作目录/目标环境", "确认后再执行"}
+		return []string{"Confirm whether this is code work or remote work", "Confirm workspace or target environment", "Execute after confirmation"}
 	default:
-		return []string{"确认任务理解", "确认后开始执行"}
+		return []string{"Confirm task understanding", "Start execution after confirmation"}
 	}
 }
 
 func confirmationRiskFlags(intent taskIntent) []string {
 	switch intent {
 	case intentCoding:
-		return []string{"未经确认直接执行可能在错误目录修改代码"}
+		return []string{"Executing without confirmation may modify code in the wrong directory"}
 	case intentSSH:
-		return []string{"未经确认直接执行可能连错服务器或操作错环境"}
+		return []string{"Executing without confirmation may connect to the wrong server or environment"}
 	case intentAmbiguous:
-		return []string{"当前请求同时包含多种执行路径，直接执行容易跑偏"}
+		return []string{"The request has multiple possible execution paths and should be clarified first"}
 	default:
 		return nil
 	}
@@ -1601,16 +1601,16 @@ func confirmationRiskFlags(intent taskIntent) []string {
 func confirmationRevisionHints(intent taskIntent) []string {
 	switch intent {
 	case intentAmbiguous:
-		return []string{"补充这是改代码还是 SSH/服务器操作", "补充正确的项目目录或主机信息"}
+		return []string{"Clarify whether this is code work or SSH/server work", "Provide the correct project directory or host information"}
 	default:
-		return []string{"如果目录不对，请直接回复正确目录", "如果任务理解不对，请直接回复要修正的点"}
+		return []string{"If the directory is wrong, reply with the correct directory", "If the task understanding is wrong, reply with the correction"}
 	}
 }
 
 func buildPendingConfirmation(app *App, userID, text string, result taskIntentResult, understanding *taskUnderstandingResult) *pendingConfirmation {
 	now := time.Now()
-	// The confirmation panel's "默认工作目录" must reflect the agent's actual
-	// default working directory — i.e. where bash, craft_tool, and other
+	// The confirmation panel's "榛樿宸ヤ綔鐩綍" must reflect the agent's actual
+	// default working directory 鈥?i.e. where bash, craft_tool, and other
 	// general-purpose tools execute by default. This is the user-configured
 	// working directory (AppConfig.WorkingDirectory) if set, otherwise
 	// ~/.maclaw/workspace. Using EffectiveWorkspaceDir() aligns the
@@ -1635,17 +1635,17 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		summary = enhancedSummary
 	} else {
 		// Fallback: raw-text echo (previous behavior).
-		summary = fmt.Sprintf("我理解你想让我处理这项任务：%s", strings.TrimSpace(text))
+		summary = fmt.Sprintf("I understand you want me to handle this task: %s", strings.TrimSpace(text))
 		if projectPath != "" {
-			summary += fmt.Sprintf("\n默认工作目录：%s", projectPath)
+			summary += fmt.Sprintf("\nDefault workspace: %s", projectPath)
 		}
 		if label := strings.TrimSpace(confirmationTaskLabel(result.Intent)); label != "" {
-			summary += fmt.Sprintf("\n识别到的任务类型：%s", label)
+			summary += fmt.Sprintf("\nDetected task type: %s", label)
 		}
 		if reason := strings.TrimSpace(result.Reason); reason != "" {
-			summary += fmt.Sprintf("（原因：%s）", reason)
-		} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "未命中特征词" {
-			summary += fmt.Sprintf("（依据：%s）", ev)
+			summary += fmt.Sprintf(" (reason: %s)", reason)
+		} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "鏈懡涓壒寰佽瘝" {
+			summary += fmt.Sprintf(" (evidence: %s)", ev)
 		}
 	}
 
@@ -1692,26 +1692,29 @@ func buildConfirmationPayload(item *pendingConfirmation) *IMResponseConfirmation
 
 func buildConfirmationResponse(item *pendingConfirmation) *IMAgentResponse {
 	if item == nil {
-		return &IMAgentResponse{Text: "请确认后再继续。"}
+		return &IMAgentResponse{Text: "Please confirm before continuing."}
 	}
-	// Summary is already shown inside the Confirmation card — only keep the
+	// Summary is already shown inside the Confirmation card 鈥?only keep the
 	// action prompt here to avoid repeating the same content twice.
-	text := "请先确认我的理解是否正确。确认后我再开始执行；如果有偏差，直接回复要修改的目录、目标或前提。\n\n请输入：确认 或 修改意见"
+	text := "Please confirm whether my understanding is correct. After confirmation I will start execution; if anything is off, reply with the corrected directory, goal, or premise."
 	return &IMAgentResponse{
 		Text:         text,
 		Confirmation: buildConfirmationPayload(item),
 		Actions: []IMResponseAction{
-			{Label: "确认并开始", Command: buildConfirmationActionCommand("confirm", item.ID), Style: "primary"},
-			{Label: "取消", Command: buildConfirmationActionCommand("cancel", item.ID), Style: "secondary"},
+			{Label: "Confirm and start", Command: buildConfirmationActionCommand("confirm", item.ID), Style: "primary"},
+			{Label: "Cancel", Command: buildConfirmationActionCommand("cancel", item.ID), Style: "secondary"},
 		},
 	}
 }
 
 type pendingExecutionConfirmationResult struct {
-	Handled           bool
-	Response          *IMAgentResponse
-	ConfirmedResume   bool
-	WorkflowAgentLoop bool
+	Handled              bool
+	Response             *IMAgentResponse
+	ConfirmedResume      bool
+	WorkflowAgentLoop    bool
+	SkipWorkflowOnce     bool
+	ReprocessAsFreshTask bool
+	SkipExecutionConfirm bool
 }
 
 func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage, trimmed *string) pendingExecutionConfirmationResult {
@@ -1732,7 +1735,7 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 			return
 		}
 		entries := h.memory.Load(msg.UserID)
-		cancelNote := fmt.Sprintf("（用户取消了该任务的执行确认，原始请求：%s）", truncateRunes(pending.OriginalText, 200))
+		cancelNote := fmt.Sprintf("(User cancelled execution confirmation for this task. Original request: %s)", truncateRunes(pending.OriginalText, 200))
 		entries = append(entries,
 			agent.ConversationEntry{Role: "user", Content: pending.OriginalText},
 			agent.ConversationEntry{Role: "assistant", Content: cancelNote},
@@ -1740,8 +1743,12 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		h.memory.Save(msg.UserID, entries)
 	}
 
+	isWorkflowConfirmation := strings.TrimSpace(pending.WorkflowType) != ""
 	approve := func() pendingExecutionConfirmationResult {
 		h.confirmationStore.clear(msg.UserID)
+		if isWorkflowConfirmation {
+			return h.approvePendingWorkflowConfirmation(msg.UserID, pending)
+		}
 		msg.Text = confirmationApprovedText(pending)
 		*trimmed = strings.TrimSpace(msg.Text)
 		result := pendingExecutionConfirmationResult{ConfirmedResume: true}
@@ -1767,8 +1774,13 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		if action == "confirm" {
 			return approve()
 		}
-		saveCancelContext()
 		h.confirmationStore.clear(msg.UserID)
+		if isWorkflowConfirmation {
+			msg.Text = firstNonEmptyTraceText(pending.ResumeText, pending.OriginalText)
+			*trimmed = strings.TrimSpace(msg.Text)
+			return pendingExecutionConfirmationResult{SkipWorkflowOnce: true, SkipExecutionConfirm: true}
+		}
+		saveCancelContext()
 		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Cancelled pending confirmation."}}
 	case !msg.IsBackground:
 		llmIntent := h.classifyConfirmationIntent(msg.UserID, *trimmed, pending)
@@ -1776,10 +1788,21 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 		case "confirm":
 			return approve()
 		case "cancel":
-			saveCancelContext()
 			h.confirmationStore.clear(msg.UserID)
-			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}}
+			if isWorkflowConfirmation {
+				msg.Text = firstNonEmptyTraceText(pending.ResumeText, pending.OriginalText)
+				*trimmed = strings.TrimSpace(msg.Text)
+				return pendingExecutionConfirmationResult{SkipWorkflowOnce: true, SkipExecutionConfirm: true}
+			}
+			saveCancelContext()
+			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Cancelled pending confirmation."}}
 		default:
+			if isWorkflowConfirmation {
+				h.confirmationStore.clear(msg.UserID)
+				msg.Text = strings.TrimSpace(firstNonEmptyTraceText(pending.ResumeText, pending.OriginalText) + "\n\nUser clarification: " + *trimmed)
+				*trimmed = strings.TrimSpace(msg.Text)
+				return pendingExecutionConfirmationResult{ReprocessAsFreshTask: true, SkipExecutionConfirm: true}
+			}
 			updated := applyConfirmationRevision(pending, *trimmed)
 			h.confirmationStore.set(updated)
 			return pendingExecutionConfirmationResult{Handled: true, Response: buildConfirmationResponse(updated)}
@@ -1798,11 +1821,11 @@ func applyConfirmationRevision(item *pendingConfirmation, revision string) *pend
 		return item
 	}
 	clone := *item
-	clone.ResumeText = strings.TrimSpace(item.OriginalText + "\n\n用户补充/修正：" + revision)
-	clone.Summary = item.Summary + "\n用户补充/修正：" + revision
+	clone.ResumeText = strings.TrimSpace(item.OriginalText + "\n\nUser supplement/correction: " + revision)
+	clone.Summary = item.Summary + "\nUser supplement/correction: " + revision
 	clone.RevisionHints = append([]string(nil), item.RevisionHints...)
 	clone.UpdatedAt = time.Now()
-	// Clear enhanced fields — the revision changes the task, so the LLM
+	// Clear enhanced fields 鈥?the revision changes the task, so the LLM
 	// understanding is stale. confirmationApprovedText will fall back to
 	// ResumeText (which includes the revision).
 	clone.EnhancedSummary = ""
@@ -1824,7 +1847,7 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 		original := strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
 		base = ei
 		if original != "" && original != ei {
-			base += "\n\n[用户原始请求]\n" + original
+			base += "\n\n[Original user request]\n" + original
 		}
 	} else {
 		base = strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
@@ -1833,29 +1856,29 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 		return ""
 	}
 
-	// Extract "⚠️ 待确认" items from the confirmation summary/constraints.
+	// Extract "鈿狅笍 寰呯‘璁? items from the confirmation summary/constraints.
 	// When the LLM task understanding marked items as pending confirmation
-	// (e.g. SSH credentials, deployment path), the user clicking "确认并开始"
+	// (e.g. SSH credentials, deployment path), the user clicking "纭骞跺紑濮?
 	// confirms the PLAN but does NOT provide the missing information.
 	// We must tell the agent to ask the user for these items before executing.
 	pendingItems := extractPendingConfirmItems(item)
 	if len(pendingItems) > 0 {
 		var pendingSection strings.Builder
-		pendingSection.WriteString("\n\n[执行上下文]\n用户已确认执行方案。但以下信息尚未提供，请在执行前先获取：\n")
+		pendingSection.WriteString("\n\n[Execution context]\nThe user confirmed the plan, but the following information is still missing and must be obtained before execution:\n")
 		for _, pi := range pendingItems {
 			pendingSection.WriteString("- " + pi + "\n")
 		}
-		pendingSection.WriteString("请先尝试通过 memory(action=recall) 从记忆中召回以上信息。如果记忆中没有，再向用户询问。获得全部信息后再开始执行。")
+		pendingSection.WriteString("First try memory(action=recall) to retrieve these values. If memory does not contain them, ask the user. Start execution only after all required information is available.")
 		return strings.TrimSpace(base + pendingSection.String())
 	}
 
-	return strings.TrimSpace(base + "\n\n[执行上下文]\n用户已确认当前方案，请直接开始执行，不要再次请求确认。\n如果暂时还没有最终交付，请先说明正在执行的动作或下一步。")
+	return strings.TrimSpace(base + "\n\n[Execution context]\nThe user confirmed the current plan. Start execution directly and do not request confirmation again. If there is no final deliverable yet, state the current action or next step.")
 }
 
 // extractPendingConfirmItems scans the confirmation's Summary and Constraints
-// for "⚠️ 待确认" markers. These indicate information the LLM flagged as
+// for "鈿狅笍 寰呯‘璁? markers. These indicate information the LLM flagged as
 // missing during task understanding. The user confirmed the plan but did NOT
-// provide these values — the agent must ask for them before executing.
+// provide these values 鈥?the agent must ask for them before executing.
 func extractPendingConfirmItems(item *pendingConfirmation) []string {
 	if item == nil {
 		return nil
@@ -1865,8 +1888,8 @@ func extractPendingConfirmItems(item *pendingConfirmation) []string {
 
 	// Scan all text sources for pending confirmation markers.
 	// Only scan Summary and EnhancedSummary (user-facing display text).
-	// EnhancedInstruction is the execution directive — scanning it would
-	// cause false positives if it mentions "待确认" in a different context.
+	// EnhancedInstruction is the execution directive 鈥?scanning it would
+	// cause false positives if it mentions "寰呯‘璁? in a different context.
 	sources := []string{item.Summary, item.EnhancedSummary}
 	for _, c := range item.RiskFlags {
 		sources = append(sources, c)
@@ -1875,13 +1898,13 @@ func extractPendingConfirmItems(item *pendingConfirmation) []string {
 	for _, src := range sources {
 		for _, line := range strings.Split(src, "\n") {
 			line = strings.TrimSpace(line)
-			// Match "⚠️ 待确认：xxx" or "待确认：xxx" at meaningful positions.
-			// Require "待确认" to be preceded by start-of-line, bullet, or ⚠️
-			// to avoid matching "确认待确认项" or similar false positives.
-			for _, sep := range []string{"⚠️ 待确认：", "⚠️ 待确认:", "待确认：", "待确认:"} {
+			// Match "鈿狅笍 寰呯‘璁わ細xxx" or "寰呯‘璁わ細xxx" at meaningful positions.
+			// Require "寰呯‘璁? to be preceded by start-of-line, bullet, or 鈿狅笍
+			// to avoid matching "纭寰呯‘璁ら」" or similar false positives.
+			for _, sep := range []string{"鈿狅笍 寰呯‘璁わ細", "鈿狅笍 寰呯‘璁?", "寰呯‘璁わ細", "寰呯‘璁?"} {
 				if pos := strings.Index(line, sep); pos >= 0 {
 					extracted := strings.TrimSpace(line[pos+len(sep):])
-					// Strip trailing parenthetical notes like "（建议...）"
+					// Strip trailing parenthetical notes like "锛堝缓璁?..锛?
 					if extracted != "" && !seen[extracted] {
 						seen[extracted] = true
 						items = append(items, extracted)
@@ -1901,7 +1924,7 @@ func looksLikeNoToolStallReply(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	stallHints := []string{
-		"我先想想", "先想想", "再想想", "整理一下步骤", "整理步骤", "先整理", "先分析", "先看看", "先确认", "先梳理",
+		"鎴戝厛鎯虫兂",
 		"let me think", "i'll think", "think first", "organize the steps", "plan this out", "analyze first", "check first",
 	}
 	for _, hint := range stallHints {
@@ -1911,19 +1934,17 @@ func looksLikeNoToolStallReply(text string) bool {
 	}
 	// Detect "blocked on one track but intending to continue another" pattern.
 	// When the LLM reports a blocker (login required, waiting for approval, etc.)
-	// AND also mentions continuing with other work, it should not finalize —
-	// the agent loop should force another round so the LLM can proceed with
+	// AND also mentions continuing with other work, it should not finalize 鈥?	// the agent loop should force another round so the LLM can proceed with
 	// the unblocked subtask via tool calls.
 	blockerHints := []string{
-		"需要登录", "需要扫码", "需要验证", "需要授权", "需要审批", "等待登录", "等待扫码",
+		"绛夊緟鐧诲綍", "绛夊緟鎵爜",
 		"requires login", "needs login", "need to log in", "waiting for approval",
 	}
 	// These hints indicate the LLM intends to work on a different subtask.
-	// Deliberately excludes bare "继续" — it often appears in blocker context
-	// ("需要登录才能继续") rather than indicating a parallel work track.
+	// Deliberately excludes bare "缁х画" 鈥?it often appears in blocker context
+	// ("闇€瑕佺櫥褰曟墠鑳界户缁?) rather than indicating a parallel work track.
 	continueHints := []string{
-		"同时开始", "同时准备", "同时处理", "先处理其他", "先做其他", "先准备", "先开始",
-		"与此同时", "另一方面", "另外先",
+		"鍚屾椂鍑嗗", "鍚屾椂澶勭悊", "涓庢鍚屾椂", "鍙︿竴鏂归潰",
 		"meanwhile", "in the meantime", "continue with", "proceed with", "at the same time",
 	}
 	hasBlocker := false
@@ -1943,10 +1964,10 @@ func looksLikeNoToolStallReply(text string) bool {
 	return false
 }
 
-// Compiled regexes for isSubstantivePhaseDocument — package-level for performance.
+// Compiled regexes for isSubstantivePhaseDocument 鈥?package-level for performance.
 var (
 	substantiveHeadingRe    = regexp.MustCompile(`(?m)^#{1,6}\s+\S`)
-	substantiveNumberedRe   = regexp.MustCompile(`(?m)^(?:\d+[.、])\s*\S`)
+	substantiveNumberedRe   = regexp.MustCompile(`(?m)^(?:\d+[.銆乚)\s*\S`)
 	substantiveBulletLineRe = regexp.MustCompile(`(?m)^[-*]\s+\S`)
 )
 
@@ -1955,7 +1976,7 @@ var (
 // It returns true if ANY of the following conditions hold:
 // 1. Text is 200+ runes long (sufficient length for a document)
 // 2. Text contains Markdown heading markers (# , ## , ### , etc.)
-// 3. Text contains numbered list patterns (1. , 2. , 1、, etc.)
+// 3. Text contains numbered list patterns (1. , 2. , 1銆? etc.)
 // 4. Text contains 3+ bullet list lines (- item or * item)
 func isSubstantivePhaseDocument(text string) bool {
 	if len([]rune(text)) >= 200 {
@@ -1980,7 +2001,7 @@ func hasFutureDeliveryPromise(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	futureDeliveryHints := []string{
-		"马上发你", "稍后发送", "接下来发送", "继续发送", "继续发你", "继续生成", "继续整理",
+		"椹笂鍙戜綘", "缁х画鍙戜綘", "缁х画鐢熸垚", "缁х画鏁寸悊",
 		"will send", "send it to you shortly", "send you shortly", "about to send", "going to send",
 	}
 	for _, hint := range futureDeliveryHints {
@@ -1998,9 +2019,9 @@ func looksLikeCompletedOrSummaryDeliverableReply(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	completedHints := []string{
-		"已完成", "已经完成", "完成了", "已整理", "已经整理", "整理好了", "已为你", "已经为你",
-		"已沉淀", "已保存", "保存了", "已记录", "记录了", "沉淀完成", "沉淀完毕",
-		"结果如下", "总结如下", "以下是", "结论如下", "报告如下", "文档如下", "文字版如下", "这里是",
+		"宸茬粡瀹屾垚", "宸茬粡鏁寸悊", "鏁寸悊濂戒簡",
+		"宸叉矇娣€", "娌夋穩瀹屾垚", "娌夋穩瀹屾瘯",
+		"缁撴灉濡備笅", "鎬荤粨濡備笅", "缁撹濡備笅", "鎶ュ憡濡備笅", "鏂囨。濡備笅",
 		"completed", "done", "here is", "here's", "results below", "summary below", "below is",
 		"saved", "recorded",
 	}
@@ -2028,11 +2049,11 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	lower := strings.ToLower(trimmed)
 
 	// Negative patterns: self-introduction / capability-listing context.
-	// When the model describes what it *can* do (e.g. "帮你写文档、做整理"),
+	// When the model describes what it *can* do (e.g. "甯綘鍐欐枃妗ｃ€佸仛鏁寸悊"),
 	// the deliverable keywords appear in a descriptive context, not as an
 	// actual promise to deliver a specific file. Skip these.
 	selfIntroHints := []string{
-		"我叫", "你好，我是", "我的名字", "平时我会", "我可以帮你", "我能帮你",
+		"鎴戝彨", "鎴戠殑鍚嶅瓧", "骞虫椂鎴戜細", "鎴戣兘甯綘",
 		"i'm ", "my name is", "i can help you", "nice to meet",
 	}
 	for _, hint := range selfIntroHints {
@@ -2040,14 +2061,14 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 			return false
 		}
 	}
-	// "我是" is very common in Chinese; only treat it as self-intro when it
+	// "鎴戞槸" is very common in Chinese; only treat it as self-intro when it
 	// appears at the very beginning of the response (first 10 chars).
-	if len([]rune(lower)) >= 2 && strings.HasPrefix(lower, "我是") {
+	if len([]rune(lower)) >= 2 && strings.HasPrefix(lower, "鎴戞槸") {
 		return false
 	}
 
 	deliverableHints := []string{
-		"pdf", "生成pdf", "生成 pdf", "报告", "文档", "文件", "综述", "发送给你", "发你",
+		"pdf", "鐢熸垚pdf", "鐢熸垚 pdf", "鎶ュ憡", "鏂囨。", "鏂囦欢", "缁艰堪", "鍙戜綘",
 		"report", "document", "file", "send you", "deliver", "summary",
 	}
 	hasDeliverableIntent := false
@@ -2058,7 +2079,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 		}
 	}
 	if !hasDeliverableIntent {
-		if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+		if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "锛") {
 			hasDeliverableIntent = true
 		}
 	}
@@ -2066,7 +2087,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 		return false
 	}
 	promiseHints := []string{
-		"我来", "我会", "马上", "立刻", "直接", "继续", "执行", "生成", "发送", "整理", "添加", "补充", "写",
+		"鎴戞潵", "鎴戜細", "椹笂", "绔嬪埢", "鐩存帴", "缁х画", "鎵ц", "鐢熸垚", "鏁寸悊", "娣诲姞", "琛ュ厖",
 		"i will", "i'll", "let me", "going to", "about to", "right away", "prepare", "generate", "send", "continue", "append",
 	}
 	hasPromiseHint := false
@@ -2082,7 +2103,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	if looksLikeCompletedOrSummaryDeliverableReply(trimmed) {
 		return false
 	}
-	failureHints := []string{"失败", "无法", "出错", "报错", "error", "failed", "unable", "cannot"}
+	failureHints := []string{"澶辫触", "鏃犳硶", "鍑洪敊", "鎶ラ敊", "error", "failed", "unable", "cannot"}
 	for _, hint := range failureHints {
 		if strings.Contains(lower, hint) {
 			return false
@@ -2090,8 +2111,8 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	}
 	futureDeliveryPromise := hasFutureDeliveryPromise(trimmed)
 	completionHints := []string{
-		"已生成", "已保存", "文件已保存", "将发送给用户", "已准备好，将发送给用户", "失败原因", "无法生成", "localfile", "[file_base64|", "[voice_base64|",
-		"已完成", "已经完成", "结果如下", "总结如下", "以下是", "here is", "here's", "results below", "summary below",
+		"灏嗗彂閫佺粰鐢ㄦ埛", "宸插噯澶囧ソ", "澶辫触鍘熷洜", "鏃犳硶鐢熸垚", "localfile", "[file_base64|", "[voice_base64|",
+		"宸茬粡瀹屾垚", "缁撴灉濡備笅", "鎬荤粨濡備笅", "here is", "here's", "results below", "summary below",
 	}
 	for _, hint := range completionHints {
 		if strings.Contains(lower, hint) {
@@ -2101,7 +2122,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 			return false
 		}
 	}
-	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "锛") {
 		return true
 	}
 	return true
@@ -2120,7 +2141,7 @@ func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool 
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	failureHints := []string{"失败", "无法", "出错", "报错", "error", "failed", "unable", "cannot"}
+	failureHints := []string{"澶辫触", "鏃犳硶", "鍑洪敊", "鎶ラ敊", "error", "failed", "unable", "cannot"}
 	for _, hint := range failureHints {
 		if strings.Contains(lower, hint) {
 			return false
@@ -2130,7 +2151,7 @@ func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool 
 		return true
 	}
 	pendingRunContinuationHints := []string{
-		"继续添加", "继续补充", "继续整理", "继续写", "继续生成",
+		"缁х画娣诲姞", "缁х画琛ュ厖", "缁х画鏁寸悊", "缁х画鐢熸垚",
 		"append more", "continue writing", "continue generating",
 	}
 	for _, hint := range pendingRunContinuationHints {
@@ -2138,7 +2159,7 @@ func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool 
 			return true
 		}
 	}
-	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+	if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "锛") {
 		return true
 	}
 	return false
@@ -2150,7 +2171,7 @@ func looksLikePromiseOnlyPDFReply(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	hasPDFIntent := strings.Contains(lower, "pdf") || strings.Contains(lower, "生成pdf") || strings.Contains(lower, "生成 pdf")
+	hasPDFIntent := strings.Contains(lower, "pdf") || strings.Contains(lower, "鐢熸垚pdf") || strings.Contains(lower, "鐢熸垚 pdf")
 	if !hasPDFIntent {
 		return false
 	}
@@ -2275,12 +2296,12 @@ func isVisibleEmptyResultSummary(summary string) bool {
 		return false
 	}
 	lower := strings.ToLower(summary)
-	normalizedEcho := normalizeShortChitChatToken(regexp.MustCompile(`^(summary|result|trace summary|结果|摘要)\s*[:：-]?\s*`).ReplaceAllString(lower, ""))
+	normalizedEcho := normalizeShortChitChatToken(regexp.MustCompile(`^(summary|result|trace summary|缁撴灉|鎽樿)\s*[:锛?]?\s*`).ReplaceAllString(lower, ""))
 	if normalizedEcho != "" {
 		return false
 	}
 	promptLikeMarkers := []string{
-		"当前工作目录",
+		"褰撳墠宸ヤ綔鐩綍",
 		"primary working directory",
 		"current working directory",
 		"project directory",
@@ -2290,12 +2311,12 @@ func isVisibleEmptyResultSummary(summary string) bool {
 		"user:",
 		"assistant:",
 		"task:",
-		"任务：",
-		"请帮我",
-		"帮我",
-		"请实现",
-		"请修复",
-		"请重建",
+		"浠诲姟",
+		"璇峰府鎴",
+		"甯垜",
+		"璇峰疄鐜",
+		"璇蜂慨澶",
+		"璇烽噸寤",
 		"you are",
 	}
 	for _, marker := range promptLikeMarkers {
@@ -2325,24 +2346,24 @@ func isVisibleEmptyResultSummary(summary string) bool {
 		"delivered",
 		"found",
 		"produced",
-		"执行",
-		"失败",
-		"错误",
-		"超时",
-		"取消",
-		"停止",
-		"重试",
-		"恢复",
-		"生成",
-		"创建",
-		"保存",
-		"写入",
-		"导出",
-		"上传",
-		"下载",
-		"准备",
-		"找到",
-		"文件",
+		"鎵ц",
+		"澶辫触",
+		"閿欒",
+		"瓒呮椂",
+		"鍙栨秷",
+		"鍋滄",
+		"閲嶈瘯",
+		"鎭㈠",
+		"鐢熸垚",
+		"鍒涘缓",
+		"淇濆瓨",
+		"鍐欏叆",
+		"瀵煎嚭",
+		"涓婁紶",
+		"涓嬭浇",
+		"鍑嗗",
+		"鎵惧埌",
+		"鏂囦欢",
 	}
 	for _, signal := range executionSignals {
 		if strings.Contains(lower, signal) {
@@ -2357,19 +2378,19 @@ func buildEmptyResultFallback(status TraceRunStatus, traceSummary string) string
 	switch status {
 	case TraceRunStatusFailed, TraceRunStatusTimeout, TraceRunStatusCancelled, TraceRunStatusStopped:
 		if summary != "" {
-			return fmt.Sprintf("任务未完成可交付结果。%s", summary)
+			return fmt.Sprintf("The task did not produce a deliverable result. %s", summary)
 		}
-		return "任务未完成可交付结果。可查看 Trace 了解失败位置。"
+		return "The task did not produce a deliverable result. Check Trace for the failure point."
 	case TraceRunStatusCompleted, TraceRunStatusExited:
 		if summary != "" {
-			return fmt.Sprintf("任务已结束，但没有生成可展示的结果。%s", summary)
+			return fmt.Sprintf("The task finished but did not produce a displayable result. %s", summary)
 		}
-		return "任务已结束，但没有生成可展示的结果。可查看 Trace 了解详情。"
+		return "The task finished but did not produce a displayable result. Check Trace for details."
 	default:
 		if summary != "" {
-			return fmt.Sprintf("任务已停止，但没有返回可显示的结果。%s", summary)
+			return fmt.Sprintf("The task stopped without a displayable result. %s", summary)
 		}
-		return "任务已停止，但没有返回可显示的结果。可查看 Trace 了解详情。"
+		return "The task stopped without a displayable result. Check Trace for details."
 	}
 }
 
@@ -2378,19 +2399,19 @@ func buildConfirmedResumeEmptyResultFallback(status TraceRunStatus, traceSummary
 	switch status {
 	case TraceRunStatusFailed, TraceRunStatusTimeout, TraceRunStatusCancelled, TraceRunStatusStopped:
 		if summary != "" {
-			return fmt.Sprintf("任务已确认并开始执行，但未完成可交付结果。%s", summary)
+			return fmt.Sprintf("The confirmed task started but did not complete a deliverable result. %s", summary)
 		}
-		return "任务已确认并开始执行，但未完成可交付结果。可查看 Trace 了解失败位置。"
+		return "The confirmed task started but did not complete a deliverable result. Check Trace for the failure point."
 	case TraceRunStatusCompleted, TraceRunStatusExited:
 		if summary != "" {
-			return fmt.Sprintf("已确认并开始执行任务。当前暂无可展示结果。%s", summary)
+			return fmt.Sprintf("The confirmed task started. There is no displayable result yet. %s", summary)
 		}
-		return "已确认并开始执行任务。当前暂无可展示结果，可查看 Trace 了解进展。"
+		return "The confirmed task started. There is no displayable result yet. Check Trace for progress."
 	default:
 		if summary != "" {
-			return fmt.Sprintf("任务已确认并开始执行，但暂未返回可显示结果。%s", summary)
+			return fmt.Sprintf("The confirmed task started but has not returned a displayable result yet. %s", summary)
 		}
-		return "任务已确认并开始执行，但暂未返回可显示结果。可查看 Trace 了解进展。"
+		return "The confirmed task started but has not returned a displayable result yet. Check Trace for progress."
 	}
 }
 
@@ -2447,8 +2468,8 @@ func buildRecoverableSessionActions(sessionID string) []IMResponseAction {
 		return nil
 	}
 	return []IMResponseAction{
-		{Label: "恢复会话", Command: "__resume_session__ " + sessionID, Style: "default"},
-		{Label: "忽略此会话", Command: "__dismiss_recoverable_session__ " + sessionID, Style: "danger"},
+		{Label: "Resume session", Command: "__resume_session__ " + sessionID, Style: "default"},
+		{Label: "Dismiss session", Command: "__dismiss_recoverable_session__ " + sessionID, Style: "danger"},
 	}
 }
 
@@ -2627,7 +2648,7 @@ type IMMessageHandler struct {
 	// Configuration manager (lazily initialized via setter).
 	configManager *ConfigManager
 
-	// Dynamic loop limit — set by the "set_max_iterations" tool during an
+	// Dynamic loop limit 鈥?set by the "set_max_iterations" tool during an
 	// active agent loop. Reset to 0 at the start of each runAgentLoop call.
 	// A positive value overrides the configured maxIter for the current loop.
 	// NOTE: This field is kept as a legacy bridge alongside currentLoopCtx.
@@ -2695,8 +2716,8 @@ type IMMessageHandler struct {
 	// sessionDriftReplanCount tracks the cumulative drift replan count
 	// across agent loops for each user. When a loop exits due to drift
 	// (NeedHumanHelp), the replan count is saved here so the next loop
-	// inherits it — preventing the detector from re-walking the full
-	// "first drift → recover → second drift → human help" cycle.
+	// inherits it 鈥?preventing the detector from re-walking the full
+	// "first drift 鈫?recover 鈫?second drift 鈫?human help" cycle.
 	// Keyed by userID, value is int.
 	sessionDriftReplanCount sync.Map
 
@@ -2723,8 +2744,8 @@ type IMMessageHandler struct {
 
 	// workflowOriginalRequest holds the user's original task request text
 	// when a workflow starts via multi-round IUM. The message that triggers
-	// StartWorkflow is the IUM completion message (e.g. "没有其它信息了"),
-	// not the original request (e.g. "根据 readme.md 做 PPT"). Without
+	// StartWorkflow is the IUM completion message (e.g. "娌℃湁鍏跺畠淇℃伅浜?),
+	// not the original request (e.g. "鏍规嵁 readme.md 鍋?PPT"). Without
 	// this stash, the agent loop's userText would be the IUM completion
 	// message, which carries no task semantics and causes the LLM to drift.
 	// Consumed (LoadAndDelete) by runAgentLoop to replace msg.Text.
@@ -2744,7 +2765,7 @@ type IMMessageHandler struct {
 	// workflowPendingConfirmOther is set by handlePendingConfirm when the
 	// LLM classifies the user's message as "other" (unrelated to the active
 	// workflow's pending confirmation). Consumed (LoadAndDelete) by the
-	// agent loop to skip the NeedsConfirm gate — otherwise the unrelated
+	// agent loop to skip the NeedsConfirm gate 鈥?otherwise the unrelated
 	// LLM output (e.g. weather query result) would be captured as a phase
 	// document and emitted to the doc preview panel.
 	workflowPendingConfirmOther sync.Map
@@ -2757,7 +2778,7 @@ type IMMessageHandler struct {
 
 	// pendingCriticalConfirmIM maps "platform:userID" to the active
 	// critical-risk confirmation ID. When an IM user responds with
-	// "确认安装" or "拒绝安装", handleIMMessageWithLoop checks this map
+	// "纭瀹夎" or "鎷掔粷瀹夎", handleIMMessageWithLoop checks this map
 	// to route the answer to ResolveCriticalConfirm.
 	pendingCriticalConfirmIM sync.Map
 
@@ -2841,7 +2862,7 @@ type IMMessageHandler struct {
 
 	// taskContextManager is the unified decision point for task switching.
 	// It determines whether a new message continues the current task,
-	// starts a new task, or recalls a past task — replacing the scattered
+	// starts a new task, or recalls a past task 鈥?replacing the scattered
 	// logic across looksLikeFreshTaskRequest, TopicSwitchDetector, and
 	// shouldAutoClearIncompleteTaskContext.
 	taskContextManager *agent.TaskContextManager
@@ -2875,7 +2896,7 @@ type IMMessageHandler struct {
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
 	// Response-header timeout: how long to wait for the FIRST byte from the
 	// LLM API after sending the request. This is NOT the total streaming
-	// duration — once headers arrive, SSE streaming continues without this
+	// duration 鈥?once headers arrive, SSE streaming continues without this
 	// limit. 120s is sufficient for even the slowest models (deepseek-reasoner
 	// thinking phase). If no byte arrives in 120s, the API is down.
 	//
@@ -2884,7 +2905,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	// switch providers mid-session; the transport should not carry a stale
 	// timeout from the previous provider.
 	const responseHeaderTimeout = 120 * time.Second
-	// Optimised transport for interactive chat — larger connection pool
+	// Optimised transport for interactive chat 鈥?larger connection pool
 	// so concurrent requests don't queue behind each other.
 	chatTransport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -2898,7 +2919,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		MaxIdleConnsPerHost:   20,
 		MaxConnsPerHost:       20,
 		IdleConnTimeout:       90 * time.Second,
-		DisableCompression:    true, // 禁止自动 gzip，避免 SSE 流式被压缩缓冲
+		DisableCompression:    true, // Disable automatic gzip for streaming responses.
 	}
 	// Separate transport for background tasks (scheduled tasks, auto-picked
 	// AgentNet tasks) so they never starve the chat connection pool.
@@ -2991,8 +3012,8 @@ var userCorrectionKeywords = []string{
 	"should be", "use this", "try this", "do it this way", "that's wrong",
 	"fix", "correct",
 	// Chinese
-	"不对", "错了", "应该", "不是这样", "换一种", "改成", "用这个", "试试这个",
-	"这样做", "纠正", "修正",
+	"涓嶅", "閿欎簡", "搴旇", "涓嶆槸杩欐牱", "鏀规垚", "璇曡瘯杩欎釜",
+	"绾犳", "淇",
 }
 
 // containsCorrectionKeywords checks if the user message contains any
@@ -3031,7 +3052,7 @@ func hasRecentFailedToolCall(history []agent.ConversationEntry) bool {
 		}
 		lower := strings.ToLower(content)
 		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") ||
-			strings.Contains(lower, "失败") || strings.Contains(lower, "错误") {
+			strings.Contains(lower, "澶辫触") || strings.Contains(lower, "閿欒") {
 			return true
 		}
 	}
@@ -3058,7 +3079,7 @@ func (h *IMMessageHandler) wasSkillRecentlyRepaired(skillName string) bool {
 
 // injectNudgeMessages checks nudge conditions and appends appropriate system
 // messages to the conversation history. Nudges are injected AFTER the current
-// response is delivered — they go into the conversation history for the NEXT
+// response is delivered 鈥?they go into the conversation history for the NEXT
 // LLM call, not the current one.
 //
 // Parameters:
@@ -3081,7 +3102,7 @@ func (h *IMMessageHandler) injectNudgeMessages(
 	}
 	tracker := h.ensureNudgeTracker()
 
-	// 1. Complex task nudge: ≥5 tool calls in this loop.
+	// 1. Complex task nudge: 鈮? tool calls in this loop.
 	if totalToolCallsInLoop >= 5 {
 		event := nudge.NudgeEvent{
 			Type:           nudge.ComplexTask,
@@ -3326,7 +3347,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 	var tools []map[string]interface{}
 
 	// --- Phase 1 upgrade: prefer DynamicToolBuilder from ToolRegistry ---
-	// Note: We use BuildAll() here intentionally — context-aware filtering
+	// Note: We use BuildAll() here intentionally 鈥?context-aware filtering
 	// is handled downstream by routeTools() / ToolRouter which uses TF-IDF.
 	// DynamicToolBuilder.Build(msg) is an alternative path for simpler setups
 	// without ToolRouter.
@@ -3358,7 +3379,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 		cacheTime := h.toolsCacheTime
 		h.toolsMu.RUnlock()
 
-		// Fallback: no generator configured — use hardcoded definitions.
+		// Fallback: no generator configured 鈥?use hardcoded definitions.
 		if gen == nil {
 			tools = h.buildToolDefinitions()
 		} else if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
@@ -3417,14 +3438,13 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 	if hasApp && !hasSearchTool {
 		h.registry.Register(RegisteredTool{
 			Name: "search_and_install_skill",
-			Description: "在 SkillMarket 技能市场中搜索并安装技能。当你发现现有工具无法满足用户需求时，" +
-				"主动调用此工具搜索可用的 Skill，找到后自动安装并执行。" +
+			Description: "Search and install a skill from SkillMarket when existing tools cannot fulfill the request. " +
 				"Search and install a skill from SkillMarket when existing tools cannot fulfill the request.",
 			Category: ToolCategoryBuiltin,
 			Tags:     []string{"skill", "skillmarket", "install", "search", "capability"},
 			Status:   RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"query": map[string]string{"type": "string", "description": "搜索关键词，描述你需要的能力（如 '生成PDF'、'发送邮件'、'图片处理'）"},
+				"query": map[string]string{"type": "string", "description": "Search query describing the capability you need."},
 			},
 			Required: []string{"query"},
 			HandlerProg: func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
@@ -3437,12 +3457,12 @@ func (h *IMMessageHandler) syncSkillHubTools() {
 }
 
 // toolSearchAndInstallSkill handles the search_and_install_skill tool call.
-// Search order: SkillMarket (HubCenter) → ClawHub mirror → GitHub.
+// Search order: SkillMarket (HubCenter) 鈫?ClawHub mirror 鈫?GitHub.
 // If a match is found, it downloads and registers the skill locally.
 func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 	query, _ := args["query"].(string)
 	if query == "" {
-		return "错误: 缺少 query 参数"
+		return "閿欒: 缂哄皯 query 鍙傛暟"
 	}
 
 	sendStatus := func(msg string) {
@@ -3456,16 +3476,16 @@ func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}
 	smClient := NewSkillMarketClient(h.app)
 	searcher := NewSkillSearcher(smClient)
 
-	sendStatus("🔍 正在搜索 SkillMarket...")
+	sendStatus("馃攳 姝ｅ湪鎼滅储 SkillMarket...")
 	best, err := searcher.SearchAndInstall(ctx, query)
 	if err != nil {
-		return fmt.Sprintf("搜索 SkillMarket 失败: %v", err)
+		return fmt.Sprintf("鎼滅储 SkillMarket 澶辫触: %v", err)
 	}
 	if best == nil {
-		return fmt.Sprintf("在 SkillMarket、ClawHub 和 GitHub 上均未找到与 %q 匹配的 Skill", query)
+		return fmt.Sprintf("鍦?SkillMarket銆丆lawHub 鍜?GitHub 涓婂潎鏈壘鍒颁笌 %q 鍖归厤鐨?Skill", query)
 	}
 
-	sendStatus(fmt.Sprintf("📦 找到 Skill: %s — %s (来源: %s)", best.Name, best.Description, best.Status))
+	sendStatus(fmt.Sprintf("馃摝 鎵惧埌 Skill: %s 鈥?%s (鏉ユ簮: %s)", best.Name, best.Description, best.Status))
 
 	// Read platform/userID from the active loop context (valid during agent loop).
 	platform := ""
@@ -3480,10 +3500,10 @@ func (h *IMMessageHandler) toolSearchAndInstallSkill(args map[string]interface{}
 // passive (capability gap) paths.
 //
 // platform and userID are passed explicitly for the same reason as
-// registerAndExecuteSkill — async callers must capture these before
+// registerAndExecuteSkill 鈥?async callers must capture these before
 // the agent loop's defer clears currentLoopCtx.
 func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *SkillSearchResult, query, platform, userID string, sendStatus func(string)) string {
-	// GitHub result → import via a stable install ref when available.
+	// GitHub result 鈫?import via a stable install ref when available.
 	if best.Status == "github" {
 		var imported *corelib.NLSkillEntry
 		if strings.TrimSpace(best.InstallRef) != "" {
@@ -3496,24 +3516,24 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 			gs := cskill.NewGitHubSearcher("")
 			candidates, err := gs.SearchGitHub(best.ID)
 			if err != nil || len(candidates) == 0 {
-				return fmt.Sprintf("找到 GitHub Skill「%s」但导入失败", best.Name)
+				return fmt.Sprintf("鎵惧埌 GitHub Skill銆?s銆嶄絾瀵煎叆澶辫触", best.Name)
 			}
 			imported, err = gs.ImportFromCandidate(candidates[0])
 			if err != nil {
-				return fmt.Sprintf("GitHub Skill 导入失败: %v", err)
+				return fmt.Sprintf("GitHub Skill 瀵煎叆澶辫触: %v", err)
 			}
 		}
 		imported.Source = "auto_github"
 		return h.registerAndExecuteSkill(ctx, imported, best.Name, "auto_github", platform, userID, sendStatus)
 	}
 
-	// SkillMarket or ClawHub result → download and register locally.
-	sendStatus(fmt.Sprintf("⬇️ 正在安装: %s ...", best.Name))
+	// SkillMarket or ClawHub result 鈫?download and register locally.
+	sendStatus(fmt.Sprintf("猬囷笍 姝ｅ湪瀹夎: %s ...", best.Name))
 
 	if best.Status == "clawhub" {
 		skill, dlErr := downloadClawHubSkill(ctx, best.ID)
 		if dlErr != nil {
-			return fmt.Sprintf("🔎 找到 ClawHub Skill「%s」但下载失败: %v", best.Name, dlErr)
+			return fmt.Sprintf("馃攷 鎵惧埌 ClawHub Skill銆?s銆嶄絾涓嬭浇澶辫触: %v", best.Name, dlErr)
 		}
 		skill.Source = "auto_clawhub"
 		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, sendStatus)
@@ -3568,7 +3588,7 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 		TrustLevel  string            `json:"trust_level"`
 		Version     string            `json:"version"`
 		Steps       []json.RawMessage `json:"steps"`
-		Files       map[string]string `json:"files"` // path → base64 content
+		Files       map[string]string `json:"files"` // path 鈫?base64 content
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 5<<20)).Decode(&full); err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -3651,7 +3671,7 @@ func extractSkillFiles(skillName string, files map[string]string, targetDir stri
 			continue
 		}
 
-		// Sanitize path — prevent directory traversal.
+		// Sanitize path 鈥?prevent directory traversal.
 		clean := filepath.ToSlash(filepath.Clean(relPath))
 		if strings.Contains(clean, "..") || filepath.IsAbs(relPath) || strings.HasPrefix(clean, "/") {
 			log.Printf("[skill-install] skipping unsafe path: %s", relPath)
@@ -3681,7 +3701,7 @@ func extractSkillFiles(skillName string, files map[string]string, targetDir stri
 // currentLoopCtx has already been cleared by the agent loop's defer.
 func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *corelib.NLSkillEntry, displayName, source string, platform, userID string, sendStatus func(string)) string {
 	if h.getSkillExecutor() == nil {
-		return fmt.Sprintf("找到 Skill「%s」但 SkillExecutor 未初始化", displayName)
+		return fmt.Sprintf("鎵惧埌 Skill銆?s銆嶄絾 SkillExecutor 鏈垵濮嬪寲", displayName)
 	}
 
 	// Security review: staging + intelligent scan.
@@ -3706,7 +3726,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 					})
 				}
 				return FormatScanReportForUser(scanReport, displayName) +
-					fmt.Sprintf("\n⚠️ Skill「%s」已拒绝自动安装。", displayName)
+					fmt.Sprintf("\nSkill %s was rejected and not installed.", displayName)
 			}
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
@@ -3734,14 +3754,14 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 					})
 				}
 				return FormatScanReportForUser(scanReport, displayName) +
-					fmt.Sprintf("\n⚠️ Skill「%s」已拒绝自动安装。", displayName)
+					fmt.Sprintf("\nSkill %s was rejected and not installed.", displayName)
 			}
 		}
 	}
 
-	sendStatus(fmt.Sprintf("📝 正在注册 Skill: %s ...", skill.Name))
+	sendStatus(fmt.Sprintf("Registering Skill: %s ...", skill.Name))
 	if err := h.getSkillExecutor().Register(*skill); err != nil {
-		return fmt.Sprintf("注册 Skill「%s」失败: %v", displayName, err)
+		return fmt.Sprintf("Registering Skill %s failed: %v", displayName, err)
 	}
 
 	// Refresh skill BM25 index so the router picks up the new skill.
@@ -3762,13 +3782,13 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		})
 	}
 
-	sendStatus(fmt.Sprintf("▶️ 正在执行 Skill: %s ...", skill.Name))
+	sendStatus(fmt.Sprintf("鈻讹笍 姝ｅ湪鎵ц Skill: %s ...", skill.Name))
 	execResult, execErr := h.getSkillExecutor().Execute(skill.Name)
 	if execErr != nil {
 		log.Printf("[skill-auto] execute skill %s failed: %v", skill.Name, execErr)
-		return fmt.Sprintf("⚠️ Skill「%s」已安装，但执行失败: %v", skill.Name, execErr)
+		return fmt.Sprintf("鈿狅笍 Skill銆?s銆嶅凡瀹夎锛屼絾鎵ц澶辫触: %v", skill.Name, execErr)
 	}
-	return fmt.Sprintf("✅ 已自动安装并执行 Skill「%s」\n%s", skill.Name, execResult)
+	return fmt.Sprintf("Skill %s was installed and executed.\n%s", skill.Name, execResult)
 }
 
 // syncAgentNetTools dynamically registers or unregisters AgentNet tools
@@ -3783,12 +3803,12 @@ func (h *IMMessageHandler) syncAgentNetTools() {
 	if running && !hasSearch {
 		h.registry.Register(RegisteredTool{
 			Name:        "agentnet_search",
-			Description: "在智网（AgentNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
+			Description: "Search AgentNet P2P knowledge entries and return matching items.",
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"agentnet", "search", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"query": map[string]string{"type": "string", "description": "搜索关键词"},
+				"query": map[string]string{"type": "string", "description": "Search query."},
 			},
 			Required: []string{"query"},
 			Source:   "agentnet",
@@ -3796,13 +3816,13 @@ func (h *IMMessageHandler) syncAgentNetTools() {
 		})
 		h.registry.Register(RegisteredTool{
 			Name:        "agentnet_publish",
-			Description: "向智网（AgentNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
+			Description: "Publish a knowledge entry to AgentNet P2P.",
 			Category:    ToolCategoryBuiltin,
 			Tags:        []string{"agentnet", "publish", "knowledge", "p2p"},
 			Status:      RegToolAvailable,
 			InputSchema: map[string]interface{}{
-				"title": map[string]string{"type": "string", "description": "知识标题"},
-				"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
+				"title": map[string]string{"type": "string", "description": "Knowledge title."},
+				"body":  map[string]string{"type": "string", "description": "Knowledge body in Markdown."},
 			},
 			Required: []string{"title", "body"},
 			Source:   "agentnet",
@@ -3924,7 +3944,7 @@ func extractBrowserRootCause(text string) string {
 		return ""
 	}
 	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "浏览器") && !strings.Contains(lower, "cdp") && !strings.Contains(lower, "debug") {
+	if !strings.Contains(lower, "browser") && !strings.Contains(lower, "cdp") && !strings.Contains(lower, "debug") {
 		return ""
 	}
 	lines := strings.Split(text, "\n")
@@ -3966,7 +3986,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 			}
 			// Token limit: match the entry limit's token equivalent.
 			// This ensures the entry-based and token-based triggers are
-			// consistent — no double-compression.
+			// consistent 鈥?no double-compression.
 			tokenEquiv := dynamicLimit * 1500
 			if tokenEquiv > dynamicTokenLimit {
 				dynamicTokenLimit = tokenEquiv
@@ -4031,7 +4051,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	if willCompact && len(trimmed) < beforeCount {
 		elapsed := time.Since(startedAt)
 
-		// Improvement 9: Compaction analytics — log compaction stats for
+		// Improvement 9: Compaction analytics 鈥?log compaction stats for
 		// observability and future optimization.
 		log.Printf("[compaction] trigger=auto entries=%d->%d summary=%v duration=%dms user=%s",
 			beforeCount, len(trimmed), summarizer != nil, elapsed.Milliseconds(), userID)
@@ -4048,7 +4068,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		// new conversation.
 		count := h.incrementCompactionCount(userID)
 		if count > 0 && count%2 == 0 {
-			log.Printf("[compaction] user=%s compaction_count=%d — quality warning threshold reached", userID, count)
+			log.Printf("[compaction] user=%s compaction_count=%d 鈥?quality warning threshold reached", userID, count)
 		}
 	}
 
@@ -4070,7 +4090,7 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		}()
 	}
 
-	// --- Task sedimentation: ensure meaningful conversations appear in "最近任务" ---
+	// --- Task sedimentation: ensure meaningful conversations appear in "鏈€杩戜换鍔? ---
 	// Many tasks (SSH ops, file processing, info queries) don't go through
 	// workflow_artifact_saver or memory(action=save), so they never appear
 	// in the task list. This mechanism creates a lightweight project_knowledge
@@ -4399,7 +4419,7 @@ func (h *IMMessageHandler) buildTraceEvidencePrompt(userID, userMessage string) 
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## 最近执行证据\n")
+	b.WriteString("\n## 鏈€杩戞墽琛岃瘉鎹甛n")
 	for _, item := range evidence {
 		line := ""
 		if item.SourceKind == "trial_reflect_summary" {
@@ -4433,11 +4453,11 @@ func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) 
 func traceCategoryForToolResult(toolName, result string) string {
 	lower := strings.ToLower(result)
 	switch {
-	case strings.Contains(lower, "失败") || strings.Contains(lower, "error") || strings.Contains(lower, "failed"):
+	case strings.Contains(lower, "澶辫触") || strings.Contains(lower, "error") || strings.Contains(lower, "failed"):
 		return "error"
 	case toolName == "create_session":
 		return "result"
-	case strings.Contains(lower, "文件") || strings.Contains(lower, "saved"):
+	case strings.Contains(lower, "鏂囦欢") || strings.Contains(lower, "saved"):
 		return "file"
 	default:
 		return "event"
@@ -4472,8 +4492,8 @@ func (h *IMMessageHandler) HandleIMMessage(msg IMUserMessage) *IMAgentResponse {
 
 // HandleIMMessageWithProgress processes an IM message with an optional progress
 // callback. When onProgress is non-nil, the agent loop sends intermediate status
-// updates (e.g. "正在执行 bash 命令…") so the Hub can relay them to the user
-// and reset the response timeout — preventing 504 on long-running tasks.
+// updates (e.g. "姝ｅ湪鎵ц bash 鍛戒护鈥?) so the Hub can relay them to the user
+// and reset the response timeout 鈥?preventing 504 on long-running tasks.
 func (h *IMMessageHandler) HandleIMMessageWithProgress(msg IMUserMessage, onProgress tool.ProgressCallback) *IMAgentResponse {
 	return h.HandleIMMessageWithProgressAndStream(msg, onProgress, nil, nil, nil)
 }
@@ -4502,7 +4522,7 @@ func (h *IMMessageHandler) StartDesktopBackgroundTask(text, projectPath string) 
 		loopCtx.JobID = job.JobID
 		loopCtx.RunID = run.RunID
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 后台任务已接收", truncateTraceText(trimmedText, 180), "", "")
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI background task accepted", truncateTraceText(trimmedText, 180), "", "")
 	}
 	title := truncateRunes(trimmedText, 72)
 	session := h.manager.CreateAIBackgroundSession(title, projectPath, loopCtx)
@@ -4571,7 +4591,7 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 			s.Summary.Status = string(SessionExited)
 			s.Summary.Severity = "warn"
 			s.Summary.LastResult = "Canceled"
-			s.Summary.ProgressSummary = "任务已取消"
+			s.Summary.ProgressSummary = "Task canceled"
 		})
 		h.manager.AddBackgroundAIEvent(sessionID, ImportantEvent{
 			Type:     "ai.background.canceled",
@@ -4590,7 +4610,7 @@ func (h *IMMessageHandler) runDesktopBackgroundTask(sessionID string, loopCtx *L
 		s.Summary.Status = string(SessionExited)
 		s.Summary.Severity = "info"
 		s.Summary.WaitingForUser = false
-		s.Summary.ProgressSummary = firstNonEmptyTraceText(resultText, "任务已完成")
+		s.Summary.ProgressSummary = firstNonEmptyTraceText(resultText, "Task completed")
 		s.Summary.LastResult = resultText
 	})
 	if resultText != "" {
@@ -4661,7 +4681,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		defer uic.InvalidateCache()
 	}
 
-	// Slash commands are processed before the LLM config check — they don't
+	// Slash commands are processed before the LLM config check 鈥?they don't
 	// need LLM and must always work so users can manage state even when LLM
 	// is misconfigured.
 	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
@@ -4673,14 +4693,14 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// Flush evidence batch and reset session on conversation reset.
 		h.flushEvidenceOnSessionEnd(msg.UserID)
 		// cancelWorkflowForUser is now called inside clearPerUserSessionState.
-		resp := &IMAgentResponse{Text: "对话已重置。", ClearUI: true}
+		resp := &IMAgentResponse{Text: "瀵硅瘽宸查噸缃€?, ClearUI: true}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
 		}
 		return resp
 	}
 	// Skip chit-chat interception when there's a pending ask_user question,
-	// because short responses like "ok"/"好的" are valid answers to ask_user.
+	// because short responses like "ok"/"濂界殑" are valid answers to ask_user.
 	hasPendingAskUser := false
 	if raw, loaded := h.pendingAskUser.Load(msg.UserID); loaded {
 		_, hasPendingAskUser = pendingAskUserForCurrentHistory(raw, h.memory.Load(msg.UserID))
@@ -4695,12 +4715,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			confirmID, _ := v.(string)
 			if confirmID != "" {
 				lower := strings.TrimSpace(strings.ToLower(trimmed))
-				confirmed := lower == "确认安装" || lower == "确认" || lower == "1"
+				confirmed := lower == "纭瀹夎" || lower == "纭" || lower == "1"
 				h.ResolveCriticalConfirm(confirmID, confirmed) //nolint:errcheck // IM path: error logged internally
 				if confirmed {
-					return &IMAgentResponse{Text: "✅ 已确认安装该 Critical 风险 Skill。"}
+					return &IMAgentResponse{Text: "鉁?宸茬‘璁ゅ畨瑁呰 Critical 椋庨櫓 Skill銆?}
 				}
-				return &IMAgentResponse{Text: "❌ 已拒绝安装该 Critical 风险 Skill。"}
+				return &IMAgentResponse{Text: "鉂?宸叉嫆缁濆畨瑁呰 Critical 椋庨櫓 Skill銆?}
 			}
 		}
 	}
@@ -4721,15 +4741,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return h.handleMemoryStatusCommand()
 	}
 	if trimmed == "/help" {
-		return &IMAgentResponse{Text: "📖 可用命令:\n" +
-			"/new /reset /clear — 重置对话\n" +
-			"/btw <查询> — 侧查询（不打断当前任务上下文）\n" +
-			"/compress — 压缩当前对话历史\n" +
-			"/memory — 查看记忆状态和容量\n" +
-			"/cancel /取消 — 取消当前正在执行的任务\n" +
-			"/exit /quit — 终止所有会话，退出编程模式\n" +
-			"/sessions /status — 查看当前会话状态\n" +
-			"/help — 显示此帮助"}
+		return &IMAgentResponse{Text: "馃摉 鍙敤鍛戒护:\n" +
+			"/new /reset /clear 鈥?閲嶇疆瀵硅瘽\n" +
+			"/btw <鏌ヨ> 鈥?渚ф煡璇紙涓嶆墦鏂綋鍓嶄换鍔′笂涓嬫枃锛塡n" +
+			"/compress 鈥?鍘嬬缉褰撳墠瀵硅瘽鍘嗗彶\n" +
+			"/memory 鈥?鏌ョ湅璁板繂鐘舵€佸拰瀹归噺\n" +
+			"/cancel /鍙栨秷 鈥?鍙栨秷褰撳墠姝ｅ湪鎵ц鐨勪换鍔n" +
+			"/exit /quit 鈥?缁堟鎵€鏈変細璇濓紝閫€鍑虹紪绋嬫ā寮廫n" +
+			"/sessions /status 鈥?鏌ョ湅褰撳墠浼氳瘽鐘舵€乗n" +
+			"/help 鈥?鏄剧ず姝ゅ府鍔?}
 	}
 	// --- /btw side query: independent agent loop for quick lookups ---
 	// Runs in a clean context (no workflow, no 40+ tools). Results are
@@ -4742,38 +4762,38 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			btwQuery = strings.TrimSpace(trimmed[5:])
 		}
 		if btwQuery == "" {
-			return &IMAgentResponse{Text: "用法: /btw <查询内容>\n\n示例:\n  /btw 最新的 Go 1.23 有什么新特性\n  /btw React 19 的主要变化\n  /btw 这个项目用了什么框架"}
+			return &IMAgentResponse{Text: "鐢ㄦ硶: /btw <鏌ヨ鍐呭>\n\n绀轰緥:\n  /btw 鏈€鏂扮殑 Go 1.23 鏈変粈涔堟柊鐗规€n  /btw React 19 鐨勪富瑕佸彉鍖朶n  /btw 杩欎釜椤圭洰鐢ㄤ簡浠€涔堟鏋?}
 		}
 		if !h.isMaclawLLMConfigured() {
-			return &IMAgentResponse{Error: "LLM 未配置，无法执行 /btw 查询。"}
+			return &IMAgentResponse{Error: "LLM 鏈厤缃紝鏃犳硶鎵ц /btw 鏌ヨ銆?}
 		}
 		return h.handleBtwCommand(msg, btwQuery, onProgress, onToken)
 	}
-	if trimmed == "/cancel" || trimmed == "/取消" {
+	if trimmed == "/cancel" || trimmed == "/鍙栨秷" {
 		// Cancel active workflow if any.
 		h.cancelWorkflowForUser(msg.UserID)
 		if h.confirmationStore != nil {
 			if pending := h.confirmationStore.get(msg.UserID); pending != nil {
 				h.confirmationStore.clear(msg.UserID)
-				return &IMAgentResponse{Text: "⏹️ 已取消待确认任务。"}
+				return &IMAgentResponse{Text: "鈴癸笍 宸插彇娑堝緟纭浠诲姟銆?}
 			}
 		}
 		// Cancel active /btw side query if any.
 		if btw := h.activeBtwSubAgent.Load(); btw != nil {
 			btw.Cancel()
-			return &IMAgentResponse{Text: "⏹️ 已取消 /btw 侧查询。"}
+			return &IMAgentResponse{Text: "鈴癸笍 宸插彇娑?/btw 渚ф煡璇€?}
 		}
 		ctx := h.currentLoopCtx
 		if ctx == nil {
-			return &IMAgentResponse{Text: "ℹ️ 当前没有正在执行的任务。"}
+			return &IMAgentResponse{Text: "鈩癸笍 褰撳墠娌℃湁姝ｅ湪鎵ц鐨勪换鍔°€?}
 		}
 		taskText := h.lastUserText
 		ctx.Cancel()
-		// Don't wait for the loop to exit — the IM caller shouldn't block.
+		// Don't wait for the loop to exit 鈥?the IM caller shouldn't block.
 		// The loop will detect cancellation and clean up on its own.
-		cancelMsg := "⏹️ 任务已取消。"
+		cancelMsg := "鈴癸笍 浠诲姟宸插彇娑堛€?
 		if preview := truncateRunes(taskText, 30); preview != "" {
-			cancelMsg = fmt.Sprintf("⏹️ 已取消任务「%s」。", preview)
+			cancelMsg = fmt.Sprintf("鈴癸笍 宸插彇娑堜换鍔°€?s銆嶃€?, preview)
 		}
 		return &IMAgentResponse{Text: cancelMsg}
 	}
@@ -4816,10 +4836,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// If the previous agent loop was interrupted by a process kill (e.g.,
 	// updater restart), the in-flight marker persists on disk. Consume it
 	// and promote to an UnfinishedTaskSlot so the existing resume machinery
-	// handles it — no keyword matching needed, works regardless of what the
+	// handles it 鈥?no keyword matching needed, works regardless of what the
 	// user's next message says.
 	//
-	// No filtering needed: The marker is set lazily — only after the agent
+	// No filtering needed: The marker is set lazily 鈥?only after the agent
 	// loop produces valuable intermediate state (first tool call executed
 	// and committed to history). Simple commands (clear, hi, ok) that get
 	// a quick LLM text response never set the marker. If the marker exists,
@@ -4835,7 +4855,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				Status:       "interrupted",
 				LastTask:     interruptedTask,
 				Summary:      extractProgressSummary(EntriesBeforeClear),
-				ResumePrompt: "上一次任务执行过程中应用被中断（可能因更新重启）。对话历史已恢复。请基于对话历史中已完成的工作继续执行，不要重复已完成的步骤。\n",
+				ResumePrompt: "涓婁竴娆′换鍔℃墽琛岃繃绋嬩腑搴旂敤琚腑鏂紙鍙兘鍥犳洿鏂伴噸鍚級銆傚璇濆巻鍙插凡鎭㈠銆傝鍩轰簬瀵硅瘽鍘嗗彶涓凡瀹屾垚鐨勫伐浣滅户缁墽琛岋紝涓嶈閲嶅宸插畬鎴愮殑姝ラ銆俓n",
 				Source:       "in_flight_recovery",
 				CreatedAt:    time.Now(),
 				UpdatedAt:    time.Now(),
@@ -4867,7 +4887,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.manager.SuppressResumeForSession(decision.DismissRecoverableSessionID)
 		decision.ResumeRecoverableSessionID = ""
 		freshTask = true
-		return &IMAgentResponse{Text: "已忽略该恢复会话。"}
+		return &IMAgentResponse{Text: "宸插拷鐣ヨ鎭㈠浼氳瘽銆?}
 	}
 	if decision.ResumeRecoverableSessionID != "" && h.manager != nil {
 		session, ok := h.manager.Get(decision.ResumeRecoverableSessionID)
@@ -4889,28 +4909,28 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 					InjectResumePrompt: false,
 				})
 				if err != nil {
-					return &IMAgentResponse{Error: fmt.Sprintf("恢复会话失败: %v", err)}
+					return &IMAgentResponse{Error: fmt.Sprintf("鎭㈠浼氳瘽澶辫触: %v", err)}
 				}
 				h.manager.SuppressResumeForSession(decision.ResumeRecoverableSessionID)
-				return &IMAgentResponse{Text: "已启动恢复会话。请到远程会话列表继续查看执行状态。"}
+				return &IMAgentResponse{Text: "宸插惎鍔ㄦ仮澶嶄細璇濄€傝鍒拌繙绋嬩細璇濆垪琛ㄧ户缁煡鐪嬫墽琛岀姸鎬併€?}
 			}
 		}
-		return &IMAgentResponse{Error: "当前没有可恢复的会话，或该会话不支持恢复。"}
+		return &IMAgentResponse{Error: "褰撳墠娌℃湁鍙仮澶嶇殑浼氳瘽锛屾垨璇ヤ細璇濅笉鏀寔鎭㈠銆?}
 	}
 
 	if !h.isMaclawLLMConfigured() {
 		return &IMAgentResponse{
-			Error: "MaClaw LLM 未配置，无法处理请求。请在 MaClaw 客户端的设置中配置 LLM。",
+			Error: "MaClaw LLM 鏈厤缃紝鏃犳硶澶勭悊璇锋眰銆傝鍦?MaClaw 瀹㈡埛绔殑璁剧疆涓厤缃?LLM銆?,
 		}
 	}
 
-	// ── Serialization boundary ──
+	// 鈹€鈹€ Serialization boundary 鈹€鈹€
 	//
 	// chatLoopMu serializes all shared per-user state mutations below:
 	// workflow interception (IUM sessions, blocking LLM calls),
 	// resolveTaskContext (history clearing), confirmation gate, prompt building.
 	//
-	// The interrupt handler runs BEFORE the lock — it handles merge/replace/queue
+	// The interrupt handler runs BEFORE the lock 鈥?it handles merge/replace/queue
 	// without waiting for the running loop to finish.
 	//
 	// Background messages use bgManager.SpawnOrQueue for serialization and
@@ -4930,7 +4950,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 					Corrections: result.Corrections,
 				}
 			}
-			// Not handled — fall through to Lock. The message will be processed
+			// Not handled 鈥?fall through to Lock. The message will be processed
 			// normally after the current loop finishes.
 		}
 		h.chatLoopMu.Lock()
@@ -4943,11 +4963,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		decision = resolveExplicitTaskSlotDecision(msg, unfinishedSlot)
 	}
 
-	// ── Explicit task slot actions (StartNewTask / DismissSlotID) ──
+	// 鈹€鈹€ Explicit task slot actions (StartNewTask / DismissSlotID) 鈹€鈹€
 	//
 	// These MUST run BEFORE workflow interception. Otherwise an active
-	// workflow's QuickFilter.HasActiveWorkflow → handleActiveWorkflow
-	// intercepts the synthetic placeholder text ("放弃上次未完成任务")
+	// workflow's QuickFilter.HasActiveWorkflow 鈫?handleActiveWorkflow
+	// intercepts the synthetic placeholder text ("鏀惧純涓婃鏈畬鎴愪换鍔?)
 	// before clearPerUserSessionState has a chance to cancel the workflow.
 	// The workflow engine would then process the placeholder as a real
 	// user message, and the StartNewTask cleanup + UIAction replay would
@@ -4984,7 +5004,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			}
 			if !hasSavedText {
 				log.Printf("[TaskSlot] UI action for user %s: dismiss_slot:%s", msg.UserID, decision.DismissSlotID)
-				return &IMAgentResponse{Text: "✅ 已放弃旧任务。请告诉我你的新任务。"}
+				return &IMAgentResponse{Text: "鉁?宸叉斁寮冩棫浠诲姟銆傝鍛婅瘔鎴戜綘鐨勬柊浠诲姟銆?}
 			}
 		}
 	} else if decision.ResumeSlotID != "" {
@@ -5035,7 +5055,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// this message to the agent loop (RunAgentLoop=true). When true, the
 	// agent loop is running ON BEHALF of the workflow and its output should
 	// be captured as phase output. When false, the agent loop is running for
-	// a normal (non-workflow) message and doc capture must be skipped — even
+	// a normal (non-workflow) message and doc capture must be skipped 鈥?even
 	// if a stale workflow happens to be active in memory.
 	workflowAgentLoop := confirmedWorkflowAgentLoop
 	skipWorkflowForAttachment := false
@@ -5058,11 +5078,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			if wfResp := h.handleWorkflowInterception(msg.UserID, trimmed); wfResp != nil {
 				// Consume any pending ask_user state so it doesn't leak into
 				// the next message when the workflow engine handles this one
-				// (e.g., user clicks "确认" which matches confirmWords).
+				// (e.g., user clicks "纭" which matches confirmWords).
 				h.pendingAskUser.Delete(msg.UserID)
 				return wfResp
 			}
-			// handleWorkflowInterception returned nil — either the message is not
+			// handleWorkflowInterception returned nil 鈥?either the message is not
 			// a workflow message, or the workflow engine set RunAgentLoop=true.
 			// Check the marker set by handleActiveWorkflow.
 			if _, ok := h.workflowAgentLoopMarker.LoadAndDelete(msg.UserID); ok {
@@ -5080,8 +5100,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// gate still enforces the three-phase flow.
 	_, skipNeedsConfirmGate := h.workflowPendingConfirmOther.LoadAndDelete(msg.UserID)
 
-	// Also skip workflow gates when the attachment bypass was triggered —
-	// the message is unrelated to the workflow (image recognition, etc.)
+	// Also skip workflow gates when the attachment bypass was triggered 鈥?	// the message is unrelated to the workflow (image recognition, etc.)
 	// and should not be subject to doc_only tool filtering.
 	if skipWorkflowForAttachment {
 		skipNeedsConfirmGate = true
@@ -5103,7 +5122,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if pendingFresh {
 			hasPendingAskUser = true
 			askUserContext = fmt.Sprintf(
-				"【上下文提示】用户正在回答你之前提出的确认问题，而非发起新请求。\n你的问题：%s\n用户回答：%s\n请基于当前任务上下文理解用户意图，将其视为补充或修改意见。",
+				"銆愪笂涓嬫枃鎻愮ず銆戠敤鎴锋鍦ㄥ洖绛斾綘涔嬪墠鎻愬嚭鐨勭‘璁ら棶棰橈紝鑰岄潪鍙戣捣鏂拌姹傘€俓n浣犵殑闂锛?s\n鐢ㄦ埛鍥炵瓟锛?s\n璇峰熀浜庡綋鍓嶄换鍔′笂涓嬫枃鐞嗚В鐢ㄦ埛鎰忓浘锛屽皢鍏惰涓鸿ˉ鍏呮垨淇敼鎰忚銆?,
 				pending.Question, trimmed,
 			)
 			log.Printf("[AskUser] consumed pending ask_user for user %s, question=%q, answer=%q", msg.UserID, truncateRunes(pending.Question, 50), truncateRunes(trimmed, 50))
@@ -5133,7 +5152,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			}
 			freshTask = true
 			clearUIAfterContextSwitch = clearUIAfterContextSwitch || len(EntriesBeforeClear) > 0
-			// Clear ask_user context — it belongs to the old task.
+			// Clear ask_user context 鈥?it belongs to the old task.
 			askUserContext = ""
 			log.Printf("[TaskContext] new task for user %s: %s", msg.UserID, tcDecision.Reason)
 		case agent.TaskRecall:
@@ -5151,7 +5170,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				clearUIAfterContextSwitch = true
 				log.Printf("[TaskContext] recalled task %s for user %s", tcDecision.RecallTaskID, msg.UserID)
 			} else {
-				// Recall failed — treat as new task.
+				// Recall failed 鈥?treat as new task.
 				h.memory.ClearConversationAndDismissSlot(msg.UserID)
 				h.clearPerUserSessionState(msg.UserID)
 				freshTask = true
@@ -5159,7 +5178,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				log.Printf("[TaskContext] recall failed for user %s, treating as new task", msg.UserID)
 			}
 		case agent.TaskContinue:
-			// Nothing to do — keep current conversation history.
+			// Nothing to do 鈥?keep current conversation history.
 			log.Printf("[TaskContext] continue for user %s: %s", msg.UserID, tcDecision.Reason)
 		}
 	}
@@ -5175,7 +5194,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if time.Since(pending.Timestamp) < 10*time.Minute {
 			if pending.Success {
 				capabilityGapContext = fmt.Sprintf(
-					"[系统通知] 上一轮对话后，系统在后台自动搜索并安装了 Skill「%s」。你现在可以使用这个新能力来帮助用户。安装结果：%s",
+					"[绯荤粺閫氱煡] 涓婁竴杞璇濆悗锛岀郴缁熷湪鍚庡彴鑷姩鎼滅储骞跺畨瑁呬簡 Skill銆?s銆嶃€備綘鐜板湪鍙互浣跨敤杩欎釜鏂拌兘鍔涙潵甯姪鐢ㄦ埛銆傚畨瑁呯粨鏋滐細%s",
 					pending.SkillName, pending.Result,
 				)
 				log.Printf("[CapabilityGap] injecting async skill install result for user %s: skill=%s", msg.UserID, pending.SkillName)
@@ -5201,11 +5220,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 
 		loopCtx, waitC := h.bgManager.SpawnOrQueue(slotKind, msg.UserID, msg.Text, maxIter)
 		if loopCtx == nil && waitC != nil {
-			// Slot full — block until a slot opens.
+			// Slot full 鈥?block until a slot opens.
 			loopCtx = <-waitC
 		}
 		if loopCtx == nil {
-			return &IMAgentResponse{Error: "后台任务启动失败：无法获取执行槽位"}
+			return &IMAgentResponse{Error: "鍚庡彴浠诲姟鍚姩澶辫触锛氭棤娉曡幏鍙栨墽琛屾Ы浣?}
 		}
 		loopCtx.HTTPClient = httpClient
 		if h.traceService != nil && loopCtx.RunID == "" {
@@ -5213,7 +5232,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			loopCtx.JobID = job.JobID
 			loopCtx.RunID = run.RunID
 			h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-			h.appendTraceEvent(loopCtx, "request.accepted", "info", "后台任务已接收", truncateTraceText(msg.Text, 180), "", "")
+			h.appendTraceEvent(loopCtx, "request.accepted", "info", "鍚庡彴浠诲姟宸叉帴鏀?, truncateTraceText(msg.Text, 180), "", "")
 		}
 
 		var systemPrompt string
@@ -5262,7 +5281,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// --- Execution confirmation gate ---
 	// Only require confirmation for genuinely new tasks (freshTask == true).
 	// When the TaskContextManager decided "continue", the message is a
-	// follow-up within the current conversation — not a fresh task.
+	// follow-up within the current conversation 鈥?not a fresh task.
 	if freshTask && shouldRequireExecutionConfirmation(msg, nil) {
 		intent := h.classifyTaskIntentForExecution(trimmed, msg.Attachments, httpClient)
 		if shouldRequireExecutionConfirmationForIntent(msg, nil, intent) {
@@ -5279,7 +5298,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 	if unfinishedSlot != nil && unfinishedSlot.Source != "session_exit" && !msg.IsBackground && !freshTask && !isSlotActionCommand(trimmed) && !decision.StartNewTask && decision.ResumeSlotID == "" {
 		// Project path check: don't show an unfinished slot from a different
-		// project. The slot is preserved in memory — switching back to the
+		// project. The slot is preserved in memory 鈥?switching back to the
 		// original project will surface it again.
 		currentProjectPath := h.getCurrentProjectPath()
 		slotProjectMismatch := false
@@ -5355,7 +5374,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			systemPrompt += "\n" + phasePrompt
 		}
 	} else {
-		// Not a workflow agent loop — clean up any stashed prompt to prevent
+		// Not a workflow agent loop 鈥?clean up any stashed prompt to prevent
 		// it from leaking into a future message.
 		h.stashedPhasePrompt.Delete(msg.UserID)
 		h.workflowOriginalRequest.Delete(msg.UserID)
@@ -5397,7 +5416,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		loopCtx.JobID = job.JobID
 		loopCtx.RunID = run.RunID
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 请求已接收", truncateTraceText(msg.Text, 180), "", "")
+		h.appendTraceEvent(loopCtx, "request.accepted", "info", "AI 璇锋眰宸叉帴鏀?, truncateTraceText(msg.Text, 180), "", "")
 	}
 	// Wire the bgManager's statusC so the chat loop can drain background events.
 	if h.bgManager != nil && loopCtx.StatusC == nil {
@@ -5411,15 +5430,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// routing decisions (e.g. Skill preference) that assume a fresh task.
 	loopCtx.IsAskUserResponse = askUserContext != "" || pendingUserReplyContext != ""
 
-	// NOTE: chatLoopMu is already held — acquired at the serialization
+	// NOTE: chatLoopMu is already held 鈥?acquired at the serialization
 	// boundary above (before workflow interception). The interrupt handler
 	// also ran there. No need to re-acquire.
 
 	// --- SubAgent interception for coding execution ---
 	//
 	// The orchestrator is ONLY activated when the workflow engine has
-	// completed the three-phase flow (requirements → design → task breakdown)
-	// ── SubAgent activation ──
+	// completed the three-phase flow (requirements 鈫?design 鈫?task breakdown)
+	// 鈹€鈹€ SubAgent activation 鈹€鈹€
 	//
 	// The orchestrator is activated by the workflow engine when advancePhase
 	// enters an execution phase (ToolFilterFull && !NeedsConfirm). This
@@ -5441,7 +5460,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		taskOrch := h.getTaskOrchestratorReadOnly(msg.UserID)
 
 		if onProgress != nil {
-			onProgress("🚀 启动编码 SubAgent（纯净上下文模式）")
+			onProgress("馃殌 鍚姩缂栫爜 SubAgent锛堢函鍑€涓婁笅鏂囨ā寮忥級")
 		}
 
 		runner := NewSubAgentTaskRunner(h, cfg, httpClient, taskOrch, loopCtx)
@@ -5460,7 +5479,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// --- Fix #1: Save implementation phase output and advance workflow ---
 		// Previously, SubAgent completion only deactivated the orchestrator
 		// without updating the workflow engine. This left the workflow stuck
-		// in the "implementation" phase forever — the integration and review
+		// in the "implementation" phase forever 鈥?the integration and review
 		// phases were never reached.
 		//
 		// Now we:
@@ -5480,12 +5499,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				integrationPrompt := taskOrch.BuildIntegrationPrompt()
 				if integrationPrompt != "" {
 					if onProgress != nil {
-						onProgress("🔗 启动集成联调阶段...")
+						onProgress("馃敆 鍚姩闆嗘垚鑱旇皟闃舵...")
 					}
 					integrationResult := RunTaskWithSubAgent(
 						h, cfg, httpClient,
 						&TaskItem{
-							Title:       "集成联调",
+							Title:       "闆嗘垚鑱旇皟",
 							Description: integrationPrompt,
 						},
 						taskOrch.ProjectPath,
@@ -5499,12 +5518,12 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 							}
 						},
 					)
-					report += "\n\n## 集成联调\n\n" + integrationResult.Summary
+					report += "\n\n## 闆嗘垚鑱旇皟\n\n" + integrationResult.Summary
 				}
 			}
 
 			// Advance from implementation to review phase.
-			// Skip if the user cancelled — don't advance to review when
+			// Skip if the user cancelled 鈥?don't advance to review when
 			// the implementation was interrupted.
 			if !loopCtx.IsCancelled() {
 				advResp, advErr := engine.AdvancePhase(msg.UserID)
@@ -5530,7 +5549,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		}
 
 		// Preserve SubAgent execution context in conversation history so the
-		// LLM has context for follow-up messages ("改一下 Player 的跳跃逻辑").
+		// LLM has context for follow-up messages ("鏀逛竴涓?Player 鐨勮烦璺冮€昏緫").
 		history = append(history, agent.ConversationEntry{
 			Role:    "assistant",
 			Content: report,
@@ -5541,10 +5560,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return resp
 	}
 
-	// ── Workflow original request substitution ──
+	// 鈹€鈹€ Workflow original request substitution 鈹€鈹€
 	//
 	// When a workflow starts via multi-round IUM, msg.Text is the IUM
-	// completion message (e.g. "没有其它信息了"), not the original task
+	// completion message (e.g. "娌℃湁鍏跺畠淇℃伅浜?), not the original task
 	// request. The original request was stashed by handlePostStartWorkflow.
 	// Replace msg.Text so the LLM sees the actual task as the user message.
 	agentLoopUserText := msg.Text
@@ -5571,7 +5590,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// engine (RunAgentLoop=true). This prevents unrelated messages (weather
 	// queries, Q&A, etc.) from being captured as phase output when a stale
 	// workflow happens to be active in memory.
-	// Use a lower threshold (50 chars) — the engine already confirmed this is
+	// Use a lower threshold (50 chars) 鈥?the engine already confirmed this is
 	// a workflow phase, so even shorter text is a valid deliverable. The old
 	// 200-char threshold could miss cases where the LLM used tools (write_file)
 	// to produce the document and only output a short confirmation message.
@@ -5636,14 +5655,14 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 
 	var b strings.Builder
 	if len(killed) > 0 {
-		b.WriteString(fmt.Sprintf("已退出编程模式。终止了 %d 个会话: %s", len(killed), strings.Join(killed, ", ")))
+		b.WriteString(fmt.Sprintf("宸查€€鍑虹紪绋嬫ā寮忋€傜粓姝簡 %d 涓細璇? %s", len(killed), strings.Join(killed, ", ")))
 	} else {
-		b.WriteString("已退出编程模式。")
+		b.WriteString("宸查€€鍑虹紪绋嬫ā寮忋€?)
 	}
 	if failCount > 0 {
-		b.WriteString(fmt.Sprintf("\n⚠️ %d 个会话终止失败，可能需要手动处理。", failCount))
+		b.WriteString(fmt.Sprintf("\n鈿狅笍 %d 涓細璇濈粓姝㈠け璐ワ紝鍙兘闇€瑕佹墜鍔ㄥ鐞嗐€?, failCount))
 	}
-	b.WriteString("\n对话已重置，后续消息将正常对话。")
+	b.WriteString("\n瀵硅瘽宸查噸缃紝鍚庣画娑堟伅灏嗘甯稿璇濄€?)
 	return &IMAgentResponse{Text: b.String(), ClearUI: true}
 }
 
@@ -5651,7 +5670,7 @@ func (h *IMMessageHandler) handleExitCommand(userID string) *IMAgentResponse {
 // The query runs with a minimal tool set (web_search, web_fetch, read_file,
 // memory) and does not pollute the main conversation with intermediate steps.
 //
-// Concurrency: /btw runs before chatLoopMu (by design — side queries should
+// Concurrency: /btw runs before chatLoopMu (by design 鈥?side queries should
 // not block on the main loop). Results are NOT appended to the main history
 // to avoid racing with a concurrent main loop's Save.
 func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) *IMAgentResponse {
@@ -5672,14 +5691,14 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 	result := btw.Execute(query)
 
 	if result.Error != "" && result.Text == "" {
-		return &IMAgentResponse{Error: fmt.Sprintf("/btw 查询失败: %s", result.Error)}
+		return &IMAgentResponse{Error: fmt.Sprintf("/btw 鏌ヨ澶辫触: %s", result.Error)}
 	}
 
 	// NOTE: We intentionally do NOT append /btw results to the main
 	// conversation history. Reasons:
 	//
 	// 1. If a main agent loop is running concurrently, its final Save()
-	//    does a full replacement of the history — any Append we do here
+	//    does a full replacement of the history 鈥?any Append we do here
 	//    would be silently overwritten. Appending gives a false sense of
 	//    persistence.
 	//
@@ -5689,7 +5708,7 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 	//
 	// 3. For IM channels, the /btw result is returned as IMAgentResponse.Text
 	//    and delivered to the user. The next user message will trigger a
-	//    fresh Load() that doesn't include the /btw exchange — this is
+	//    fresh Load() that doesn't include the /btw exchange 鈥?this is
 	//    acceptable because /btw is a side query, not part of the main task.
 	//
 	// If future requirements need /btw context in the main conversation,
@@ -5705,32 +5724,32 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 // handleSessionsCommand returns a quick status summary of active sessions.
 func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 	if h.manager == nil {
-		return &IMAgentResponse{Text: "会话管理器未初始化。"}
+		return &IMAgentResponse{Text: "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖栥€?}
 	}
 	sessions := h.manager.List()
 	if len(sessions) == 0 {
 		return &IMAgentResponse{
-			Text: "当前没有活跃会话。\n\n💡 提示: 发送 /exit 可退出编程模式回到普通对话。",
+			Text: "褰撳墠娌℃湁娲昏穬浼氳瘽銆俓n\n馃挕 鎻愮ず: 鍙戦€?/exit 鍙€€鍑虹紪绋嬫ā寮忓洖鍒版櫘閫氬璇濄€?,
 		}
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("📋 当前 %d 个会话:\n", len(sessions)))
+	b.WriteString(fmt.Sprintf("馃搵 褰撳墠 %d 涓細璇?\n", len(sessions)))
 	for _, s := range sessions {
 		s.mu.RLock()
 		status := string(s.Status)
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
 		s.mu.RUnlock()
-		b.WriteString(fmt.Sprintf("• [%s] %s — %s", s.ID, s.Tool, status))
+		b.WriteString(fmt.Sprintf("鈥?[%s] %s 鈥?%s", s.ID, s.Tool, status))
 		if task != "" {
 			b.WriteString(fmt.Sprintf(" | %s", task))
 		}
 		if waiting {
-			b.WriteString(" ⏳等待输入")
+			b.WriteString(" 鈴崇瓑寰呰緭鍏?)
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n💡 发送 /exit 可终止所有会话并退出编程模式。")
+	b.WriteString("\n馃挕 鍙戦€?/exit 鍙粓姝㈡墍鏈変細璇濆苟閫€鍑虹紪绋嬫ā寮忋€?)
 	return &IMAgentResponse{Text: b.String()}
 }
 
@@ -5755,8 +5774,7 @@ func extractKeyDataFromEntries(entries []agent.ConversationEntry) []string {
 		if !ok || text == "" {
 			continue
 		}
-		// Only scan tool results and assistant messages (not user messages —
-		// those are preserved verbatim in turn boundaries).
+		// Only scan tool results and assistant messages (not user messages 鈥?		// those are preserved verbatim in turn boundaries).
 		if e.Role != "tool" && e.Role != "assistant" {
 			continue
 		}
@@ -5799,20 +5817,20 @@ func extractKeyDataRefsFromText(text string) []string {
 			if len(refs) >= maxRefsPerText {
 				break
 			}
-			cleaned := strings.Trim(token, "\"'`()[]{}，。、；：")
+			cleaned := strings.Trim(token, "\"'`()[]{}，。；：,.;:")
 			if cleaned == "" {
 				continue
 			}
 			// Windows path: drive letter + colon + backslash
 			if len(cleaned) >= 3 && cleaned[1] == ':' && (cleaned[2] == '\\' || cleaned[2] == '/') &&
 				((cleaned[0] >= 'A' && cleaned[0] <= 'Z') || (cleaned[0] >= 'a' && cleaned[0] <= 'z')) {
-				refs = append(refs, "文件路径: "+cleaned)
+				refs = append(refs, "鏂囦欢璺緞: "+cleaned)
 				continue
 			}
 			// Unix absolute path (skip short ones like "/n" or "/")
 			if len(cleaned) > 4 && cleaned[0] == '/' && cleaned[1] != '/' &&
 				(strings.Contains(cleaned, "/") && strings.Count(cleaned, "/") >= 2) {
-				refs = append(refs, "文件路径: "+cleaned)
+				refs = append(refs, "鏂囦欢璺緞: "+cleaned)
 				continue
 			}
 			// URL
@@ -5830,14 +5848,14 @@ func extractKeyDataRefsFromText(text string) []string {
 			}
 		}
 
-		// Pattern 4: Data statistics — lines containing numbers + Chinese
-		// quantity words (篇/条/个/份/项) near keywords (论文/评论/数据/文件).
+		// Pattern 4: Data statistics 鈥?lines containing numbers + Chinese
+		// quantity words (绡?鏉?涓?浠?椤? near keywords (璁烘枃/璇勮/鏁版嵁/鏂囦欢).
 		if len(refs) < maxRefsPerText && containsDataStatistic(line) {
 			runes := []rune(line)
 			if len(runes) > 150 {
 				line = string(runes[:150]) + "..."
 			}
-			refs = append(refs, "数据统计: "+line)
+			refs = append(refs, "鏁版嵁缁熻: "+line)
 		}
 	}
 	return refs
@@ -5858,7 +5876,7 @@ func containsDataStatistic(line string) bool {
 		return false
 	}
 	// Must contain a quantity word
-	quantityWords := []string{"篇", "条", "个", "份", "项", "张", "页"}
+	quantityWords := []string{"绡?, "鏉?, "涓?, "浠?, "椤?, "寮?, "椤?}
 	hasQuantity := false
 	for _, w := range quantityWords {
 		if strings.Contains(line, w) {
@@ -5870,7 +5888,7 @@ func containsDataStatistic(line string) bool {
 		return false
 	}
 	// Must contain a data keyword
-	dataKeywords := []string{"论文", "评论", "数据", "文件", "记录", "结果", "报告", "图片", "视频", "paper", "comment", "file", "record"}
+	dataKeywords := []string{"璁烘枃", "璇勮", "鏁版嵁", "鏂囦欢", "璁板綍", "缁撴灉", "鎶ュ憡", "鍥剧墖", "瑙嗛", "paper", "comment", "file", "record"}
 	for _, kw := range dataKeywords {
 		if strings.Contains(line, kw) {
 			return true
@@ -5881,10 +5899,10 @@ func containsDataStatistic(line string) bool {
 
 // extractFinalAssistantTexts returns the last assistant message before each
 // new user turn in the conversation. These "conclusion" messages often
-// contain the results of a multi-tool sequence (e.g., "99篇论文已保存到...").
+// contain the results of a multi-tool sequence (e.g., "99绡囪鏂囧凡淇濆瓨鍒?..").
 //
 // Turn boundaries capture the FIRST assistant response; this captures the
-// LAST one — they are complementary. If a turn has only one assistant
+// LAST one 鈥?they are complementary. If a turn has only one assistant
 // message, it's already captured by turn boundaries and is skipped here
 // to avoid duplication in the summarizer input.
 func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int) []string {
@@ -5908,7 +5926,7 @@ func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int)
 				lastAssistantIdx = i
 			}
 		case "user":
-			// A new user turn — the previous assistant message is the "final"
+			// A new user turn 鈥?the previous assistant message is the "final"
 			// one for the preceding turn.
 			if lastAssistantIdx >= 0 && lastAssistantText != "" && len(texts) < maxTexts {
 				// Skip if this is the same as the first assistant (already in turn boundaries).
@@ -5943,7 +5961,7 @@ func extractFinalAssistantTexts(entries []agent.ConversationEntry, maxTexts int)
 //
 //	"web_fetch: https://huggingface.co/papers"
 //	"write_file: D:\workprj\hf_papers.json"
-//	"generate_pdf: HF_World_日报_2026-04-30.pdf"
+//	"generate_pdf: HF_World_鏃ユ姤_2026-04-30.pdf"
 //
 // This captures WHAT was done (tool names + key args), complementing
 // extractKeyDataFromEntries (WHAT was produced) and extractTurnBoundaryTexts
@@ -5987,7 +6005,7 @@ func extractToolOperationSummary(entries []agent.ConversationEntry, maxOps int) 
 	}
 
 	// Emit: for each tool, show up to 2 distinct examples. If the tool was
-	// called more than 2 times, append "(共N次)" to the last example.
+	// called more than 2 times, append "(鍏盢娆?" to the last example.
 	var ops []string
 	toolEmitted := make(map[string]int)
 	seen := make(map[string]bool)
@@ -6016,7 +6034,7 @@ func extractToolOperationSummary(entries []agent.ConversationEntry, maxOps int) 
 
 		// On the last emitted example for a high-frequency tool, append count.
 		if freq > 2 && toolEmitted[op.name] >= 2 {
-			summary += fmt.Sprintf(" (共%d次)", freq)
+			summary += fmt.Sprintf(" (鍏?d娆?", freq)
 		}
 		ops = append(ops, summary)
 	}
@@ -6135,7 +6153,7 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 // loop to consume at the start of its next iteration. Returns true if a loop
 // is currently active (injection accepted), false otherwise.
 //
-// This is the mechanism behind the desktop panel's "fire" (发射) button:
+// This is the mechanism behind the desktop panel's "fire" (鍙戝皠) button:
 // the user's buffered message is injected as supplementary context without
 // cancelling the ongoing task. The agent loop picks it up via
 // pendingInjection.LoadAndDelete at the top of each iteration.
@@ -6146,7 +6164,7 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 	if h.currentLoopCtx == nil || h.currentLoopCtx.IsCancelled() {
 		return false
 	}
-	h.accumulateInjection(userID, "[用户补充] "+text)
+	h.accumulateInjection(userID, "[鐢ㄦ埛琛ュ厖] "+text)
 	log.Printf("[inject-supplementary] user=%s text=%s", userID, truncateForLog(text, 60))
 	return true
 }
@@ -6156,7 +6174,7 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 // exists (from a prior injection in the same iteration window), the new
 // text is appended with a newline separator.
 //
-// This is the single write path for pendingInjection — all callers
+// This is the single write path for pendingInjection 鈥?all callers
 // (InjectSupplementary, interrupt handler Merge, HandleCorrection Merge)
 // must use this method instead of calling pendingInjection.Store directly.
 func (h *IMMessageHandler) accumulateInjection(userID, prefixedText string) {
@@ -6198,11 +6216,11 @@ func drainStatusEvents(ctx *LoopContext, conversation *[]interface{}, sendProgre
 	for {
 		select {
 		case evt := <-ctx.StatusC:
-			statusMsg := fmt.Sprintf("[后台事件] %s", evt.Message)
+			statusMsg := fmt.Sprintf("[鍚庡彴浜嬩欢] %s", evt.Message)
 			*conversation = append(*conversation, map[string]string{
 				"role": "system", "content": statusMsg,
 			})
-			sendProgress(fmt.Sprintf("📡 %s", evt.Message))
+			sendProgress(fmt.Sprintf("馃摗 %s", evt.Message))
 		default:
 			return
 		}
@@ -6231,7 +6249,7 @@ func classifyTrialOutcome(result string) string {
 	failureHints := []string{
 		"error", "failed", "not found", "timeout", "timed out", "denied", "invalid",
 		"panic", "exception", "unable", "cannot", "can't", "permission", "no such file",
-		"不存在", "失败", "错误", "超时", "拒绝", "无权限", "未找到", "异常",
+		"涓嶅瓨鍦?, "澶辫触", "閿欒", "瓒呮椂", "鎷掔粷", "鏃犳潈闄?, "鏈壘鍒?, "寮傚父",
 	}
 	for _, hint := range failureHints {
 		if strings.Contains(lower, hint) {
@@ -6240,7 +6258,7 @@ func classifyTrialOutcome(result string) string {
 	}
 	successHints := []string{
 		"success", "completed", "done", "saved", "created", "updated", "ok", "ready",
-		"成功", "已完成", "完成", "已保存", "已创建", "已更新", "就绪",
+		"鎴愬姛", "宸插畬鎴?, "瀹屾垚", "宸蹭繚瀛?, "宸插垱寤?, "宸叉洿鏂?, "灏辩华",
 	}
 	for _, hint := range successHints {
 		if strings.Contains(lower, hint) {
@@ -6276,9 +6294,9 @@ func classifyToolOutcome(toolName, result string) string {
 	}
 	switch name {
 	case "list_skills":
-		if strings.Contains(trimmed, "=== 本地已注册 Skill ===") ||
-			strings.Contains(trimmed, "本地没有已注册的 Skill") ||
-			strings.Contains(trimmed, "推荐 Skill") ||
+		if strings.Contains(trimmed, "=== 鏈湴宸叉敞鍐?Skill ===") ||
+			strings.Contains(trimmed, "鏈湴娌℃湁宸叉敞鍐岀殑 Skill") ||
+			strings.Contains(trimmed, "鎺ㄨ崘 Skill") ||
 			strings.Contains(trimmed, "search_skill_hub") {
 			return "succeeded"
 		}
@@ -6286,13 +6304,13 @@ func classifyToolOutcome(toolName, result string) string {
 	case "run_skill", "get_skill_run":
 		return classifySkillRunOutcome(result)
 	case "search_and_install_skill":
-		if strings.Contains(trimmed, "✅") || strings.Contains(trimmed, "已自动安装并执行 Skill") {
+		if strings.Contains(trimmed, "鉁?) || strings.Contains(trimmed, "宸茶嚜鍔ㄥ畨瑁呭苟鎵ц Skill") {
 			return "succeeded"
 		}
-		if strings.Contains(trimmed, "均未找到") || strings.Contains(trimmed, "未找到") {
+		if strings.Contains(trimmed, "鍧囨湭鎵惧埌") || strings.Contains(trimmed, "鏈壘鍒?) {
 			return "uncertain"
 		}
-		if strings.Contains(lower, "搜索 skillmarket 失败") || strings.Contains(lower, "导入失败") || strings.Contains(lower, "下载失败") || strings.Contains(lower, "执行失败") || strings.Contains(lower, "已拒绝自动安装") {
+		if strings.Contains(lower, "鎼滅储 skillmarket 澶辫触") || strings.Contains(lower, "瀵煎叆澶辫触") || strings.Contains(lower, "涓嬭浇澶辫触") || strings.Contains(lower, "鎵ц澶辫触") || strings.Contains(lower, "宸叉嫆缁濊嚜鍔ㄥ畨瑁?) {
 			return "failed"
 		}
 		return classifyTrialOutcome(result)
@@ -6311,19 +6329,19 @@ func buildTrialReflectNote(toolNames []string, observations []string, repeatedFa
 		return ""
 	}
 	toolSummary := strings.Join(toolNames, ", ")
-	observation := strings.Join(observations, "；")
+	observation := strings.Join(observations, "锛?)
 	var b strings.Builder
-	b.WriteString("[试错反思]\n")
-	b.WriteString("上一轮尝试：")
+	b.WriteString("[璇曢敊鍙嶆€漖\n")
+	b.WriteString("涓婁竴杞皾璇曪細")
 	b.WriteString(toolSummary)
 	b.WriteString("\n")
-	b.WriteString("观察结果：")
+	b.WriteString("瑙傚療缁撴灉锛?)
 	b.WriteString(observation)
 	b.WriteString("\n")
-	b.WriteString("下一轮要求：先根据这些结果调整方法，再继续动作；不要原样重复已经失败的尝试。")
+	b.WriteString("涓嬩竴杞姹傦細鍏堟牴鎹繖浜涚粨鏋滆皟鏁存柟娉曪紝鍐嶇户缁姩浣滐紱涓嶈鍘熸牱閲嶅宸茬粡澶辫触鐨勫皾璇曘€?)
 	if len(repeatedFailures) > 0 {
 		sort.Strings(repeatedFailures)
-		b.WriteString("\n避免重复：")
+		b.WriteString("\n閬垮厤閲嶅锛?)
 		b.WriteString(strings.Join(repeatedFailures, ", "))
 	}
 	return b.String()
@@ -6343,9 +6361,9 @@ func (s *trialReflectState) observeIteration(toolCalls []llm.ToolCall, toolResul
 		outcome := classifyToolOutcome(name, toolResults[i])
 		summary := truncateTraceText(strings.TrimSpace(toolResults[i]), 120)
 		if summary == "" {
-			summary = "无明确输出"
+			summary = "鏃犳槑纭緭鍑?
 		}
-		observations = append(observations, fmt.Sprintf("%s=%s（%s）", name, outcome, summary))
+		observations = append(observations, fmt.Sprintf("%s=%s锛?s锛?, name, outcome, summary))
 		sig := trialActionSignature(name, tc.Function.Arguments)
 		switch outcome {
 		case "failed":
@@ -6364,15 +6382,15 @@ func (s *trialReflectState) observeIteration(toolCalls []llm.ToolCall, toolResul
 	}
 	note := buildTrialReflectNote(toolNames, observations, repeatedFailures)
 	s.pendingNote = note
-	s.lastObservation = strings.Join(observations, "；")
+	s.lastObservation = strings.Join(observations, "锛?)
 	return overall, s.lastObservation, repeatedFailures
 }
 
 func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt string, history []agent.ConversationEntry, userText string, attachments []MessageAttachment, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback, minIterations int, platform string) (result *IMAgentResponse) {
-	// panic recovery — 防止工具执行异常导致 goroutine 崩溃
+	// panic recovery 鈥?闃叉宸ュ叿鎵ц寮傚父瀵艰嚧 goroutine 宕╂簝
 	defer func() {
 		if r := recover(); r != nil {
-			result = &IMAgentResponse{Error: fmt.Sprintf("Agent 内部错误: %v", r)}
+			result = &IMAgentResponse{Error: fmt.Sprintf("Agent 鍐呴儴閿欒: %v", r)}
 		}
 	}()
 
@@ -6525,7 +6543,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	// isDebug reads the debug toggle live from config so changes take effect
-	// immediately — even mid-loop when the user flips the switch.
+	// immediately 鈥?even mid-loop when the user flips the switch.
 	// Cached for up to 2 seconds to avoid excessive disk reads in the hot loop.
 	var cachedDebug bool
 	var cachedDebugTime time.Time
@@ -6550,7 +6568,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	// --- Event-driven progress tracker ---
-	// Replaces the old ack timer + "任务较复杂" patience hints with
+	// Replaces the old ack timer + "浠诲姟杈冨鏉? patience hints with
 	// milestone-based progress that only sends messages when there's new info.
 	//
 	// Compute task embedding for the interrupt handler's relevance scoring.
@@ -6590,7 +6608,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	defer close(heartbeatDone)
 
 	configStartedAt := time.Now()
-	// Ensure OAuth token is fresh before reading config — the token may have
+	// Ensure OAuth token is fresh before reading config 鈥?the token may have
 	// expired since the last request. ensureOAuthToken refreshes and persists
 	// the new token so GetMaclawLLMConfig picks up the updated Key.
 	if err := h.ensureOAuthToken(); err != nil {
@@ -6618,7 +6636,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 	phase := agentLoopPhase{Stage: agentStageOrient, SkillMode: skillPreferenceNone}
 	// Skip Skill preference evaluation when the user is answering a previous
-	// ask_user question. The task context is already established — re-evaluating
+	// ask_user question. The task context is already established 鈥?re-evaluating
 	// the answer text as a new task leads to false positives (e.g. a domain name
 	// like "mypapers.top" matching the "paper" hint and triggering Skill search).
 	if !ctx.IsAskUserResponse && shouldPreferSkillForTask(userText) {
@@ -6686,7 +6704,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	attachPendingVisibleArtifacts := func(resp *IMAgentResponse) {
 		attachLocalPreview(resp, pendingLocalPreviewPath, pendingLocalPreviewThumbnail)
 		if pendingQRCodeURL != "" {
-			appendVisibleNote(resp, "二维码登录链接："+pendingQRCodeURL)
+			appendVisibleNote(resp, "浜岀淮鐮佺櫥褰曢摼鎺ワ細"+pendingQRCodeURL)
 		}
 	}
 	recordSystemMessages := func(start int, items []interface{}) {
@@ -6759,7 +6777,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		conversation = append(conversation, stripHistoryAttachments(entry.ToMessage()))
 	}
 
-	// Build user message — multimodal if attachments contain images.
+	// Build user message 鈥?multimodal if attachments contain images.
 	userContent := buildUserContent(userText, attachments, cfg.Protocol, cfg.SupportsVision)
 	conversation = append(conversation, map[string]interface{}{"role": "user", "content": userContent})
 
@@ -6774,9 +6792,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if driftTool, ok := h.sessionDriftTool.LoadAndDelete(userID); ok {
 		toolName := driftTool.(string)
 		driftCtx := fmt.Sprintf(
-			"[系统提示] 上一轮对话因反复调用 %s 失败而停止。"+
-				"禁止再次使用相同的方法。"+
-				"如果没有其他可行方案，直接告诉用户当前的限制和建议。",
+			"[绯荤粺鎻愮ず] 涓婁竴杞璇濆洜鍙嶅璋冪敤 %s 澶辫触鑰屽仠姝€?+
+				"绂佹鍐嶆浣跨敤鐩稿悓鐨勬柟娉曘€?+
+				"濡傛灉娌℃湁鍏朵粬鍙鏂规锛岀洿鎺ュ憡璇夌敤鎴峰綋鍓嶇殑闄愬埗鍜屽缓璁€?,
 			toolName,
 		)
 		conversation = append(conversation, map[string]string{
@@ -6799,7 +6817,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	BrowserDiagCP4_FinalToolList(tools, 0, len(tools))
 
 	// maxIter defaults to 300 (MaxAgentIterationsCap).
-	// Use the single source of truth for configured → effective conversion.
+	// Use the single source of truth for configured 鈫?effective conversion.
 	effectiveMax := config.EffectiveMaxIterations(maxIter)
 	chatFinalizeGrace := 0
 	if ctx.Kind == LoopKindChat {
@@ -6821,12 +6839,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	if h.app != nil {
 		gic = h.getGateIntentClassifier()
 	}
-	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.lastUserID)
+	gateConfig := newCodingToolGateConfigWithClassifier(userText, ctx.Kind, gic, h.getUnifiedClassifier(), h.lastUserID)
 
-	// When the user has disabled the workflow toggle ("打开工作流" = off),
+	// When the user has disabled the workflow toggle ("鎵撳紑宸ヤ綔娴? = off),
 	// deactivate both the coding tool gate and the steering detector so the
 	// three-phase flow is not enforced. Without this, turning off the toggle
-	// only disables engine-driven workflows (via getWorkflowEngine() → nil)
+	// only disables engine-driven workflows (via getWorkflowEngine() 鈫?nil)
 	// but the steering-driven coding gate + detector continue to operate.
 	workflowOff := h.app != nil && h.app.workflowDisabled.Load()
 	if workflowOff {
@@ -6847,13 +6865,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// Skip when SkipNeedsConfirmGate is set AND the gate activation is from
 	// the fail-closed safety net (intent=ambiguous), not from a genuine coding
 	// classification (intent=coding). handlePendingConfirm used an LLM to
-	// classify the message as "other" — this is a stronger signal than the
+	// classify the message as "other" 鈥?this is a stronger signal than the
 	// fail-closed safety net which activates when classifiers are unavailable.
 	// When the GateIntentClassifier has high confidence that this IS a coding
 	// task (intent=coding), the gate must fire to enforce the three-phase flow
 	// even if handlePendingConfirm said "other" (consistent with #73).
 	//
-	// Also skip when the TaskExecutionOrchestrator is active — the orchestrator
+	// Also skip when the TaskExecutionOrchestrator is active 鈥?the orchestrator
 	// manages tool availability itself (direct mode keeps bash/write_file/edit_file,
 	// external mode keeps session tools). Applying the gate on top would strip
 	// tools that the orchestrator intentionally preserved.
@@ -6870,7 +6888,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// skipCodingGate: bypass the Coding Tool Gate when handlePendingConfirm
 	// classified the message as "other" AND the gate activation is NOT from
 	// a confident coding classification. This handles the case where the
-	// fail-closed safety net (classifiers unavailable → active=true,
+	// fail-closed safety net (classifiers unavailable 鈫?active=true,
 	// intent=ambiguous) incorrectly blocks non-coding messages.
 	skipCodingGate := ctx.SkipNeedsConfirmGate && gateConfig.intent != intentCoding
 	if skipCodingGate && gateConfig.active {
@@ -6912,7 +6930,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// would normally come from the WorkflowEngine path. Only activate when:
 	// 1. Not a background task (ctx.Kind != LoopKindBackground)
 	// 2. The GateIntentClassifier confirms coding intent, or conversation
-	//    history has coding context (for follow-up messages like "确认")
+	//    history has coding context (for follow-up messages like "纭")
 	// 3. No active workflow engine workflow exists for this user
 	//
 	// IMPORTANT: We rely on gateConfig (from the three-layer GateIntentClassifier)
@@ -6923,16 +6941,16 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// suggestion banner. The banner is only emitted when gateConfig.active=true,
 	// meaning the classifier is confident this is a new_project coding task.
 	// This prevents non-coding messages (skill invocations, weather queries, etc.)
-	// from triggering the "编程" banner just because the conversation history
+	// from triggering the "缂栫▼" banner just because the conversation history
 	// contains coding context.
 	var steeringDetector *SteeringWorkflowDetector
 	if ctx.Kind != LoopKindBackground {
 		detector := NewSteeringWorkflowDetector(userID)
 		// Two-tier activation:
-		// Tier 1 (strong): gateConfig.active — classifier confirmed new_project
-		//   → activate detector + emit fullscreen banner immediately
+		// Tier 1 (strong): gateConfig.active 鈥?classifier confirmed new_project
+		//   鈫?activate detector + emit fullscreen banner immediately
 		// Tier 2 (weak): conversation history has coding context
-		//   → activate detector (prepare to intercept coding tools) but
+		//   鈫?activate detector (prepare to intercept coding tools) but
 		//     do NOT emit fullscreen banner yet; defer to first actual
 		//     coding tool interception
 		shouldActivate := gateConfig.active || h.conversationHasCodingContext()
@@ -6992,7 +7010,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	// totalToolCallsInLoop tracks the cumulative number of tool calls across
 	// all iterations in this agent loop. Used by the nudge system to detect
-	// complex tasks (≥5 tool calls).
+	// complex tasks (鈮? tool calls).
 	totalToolCallsInLoop := 0
 
 	// --- Coding iteration budget ---
@@ -7009,7 +7027,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	codingIterCount := 0            // consecutive iterations with coding tools
 
 	// --- In-flight task marker (lazy activation) ---
-	// The marker is NOT set at loop entry. It is set lazily — only after
+	// The marker is NOT set at loop entry. It is set lazily 鈥?only after
 	// the loop produces valuable intermediate state (first tool call
 	// executed and committed to history). This is the mechanism-level fix
 	// for the false-positive problem: simple commands like "clear", "hi",
@@ -7074,7 +7092,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// full document must be saved as the phase output.
 	var lengthContinuationBuf strings.Builder
 
-	// Voice data from tts tool — persists across iterations so voice
+	// Voice data from tts tool 鈥?persists across iterations so voice
 	// generated in iteration N is still available when the loop finalizes
 	// in iteration N+1.
 	var voiceData, voiceFileName, voiceMimeType string
@@ -7115,7 +7133,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if autoExtended > effectiveMax {
 						effectiveMax = autoExtended
 						ctx.SetMaxIterations(effectiveMax)
-						sendProgress(fmt.Sprintf("⏳ 当前任务较长，已自动扩展推理轮次到 %d 轮，继续完成最终结果…", effectiveMax))
+						sendProgress(fmt.Sprintf("鈴?褰撳墠浠诲姟杈冮暱锛屽凡鑷姩鎵╁睍鎺ㄧ悊杞鍒?%d 杞紝缁х画瀹屾垚鏈€缁堢粨鏋溾€?, effectiveMax))
 						log.Printf("[AgentLoop] auto-extended: iteration=%d new_max=%d cap=%d loop=%s", iteration, effectiveMax, autoExtendCap, ctx.ID)
 						if h.traceService != nil && ctx.RunID != "" {
 							h.appendTraceEvent(ctx, "loop.extended", "info", "Auto-extended iteration limit", truncateTraceText(fmt.Sprintf("remaining=%d new_max=%d", remaining, effectiveMax), 220), "", "")
@@ -7125,7 +7143,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 
-		// --- Background loop: pause near limit, wait for 续命 ---
+		// --- Background loop: pause near limit, wait for 缁懡 ---
 		// Only pause if: (a) background loop, (b) effectiveMax > 4 to ensure
 		// meaningful work before first pause, (c) iteration is at the pause
 		// threshold. The threshold is effectiveMax-2 to give 2 remaining rounds
@@ -7139,7 +7157,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					Type:      StatusEventApproachingLimit,
 					LoopID:    ctx.ID,
 					SessionID: ctx.SessionID,
-					Message:   fmt.Sprintf("后台任务 %s 即将达到最大轮数 (%d/%d)", ctx.ID, iteration, effectiveMax),
+					Message:   fmt.Sprintf("鍚庡彴浠诲姟 %s 鍗冲皢杈惧埌鏈€澶ц疆鏁?(%d/%d)", ctx.ID, iteration, effectiveMax),
 					Remaining: effectiveMax - iteration,
 				}:
 				default:
@@ -7153,10 +7171,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				ctx.SetState("running")
 			case <-ctx.CancelC:
 				ctx.SetState("stopped")
-				return &IMAgentResponse{Text: fmt.Sprintf("后台任务 %s 已被停止。", ctx.ID)}
+				return &IMAgentResponse{Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 宸茶鍋滄銆?, ctx.ID)}
 			case <-time.After(5 * time.Minute):
 				ctx.SetState("timeout")
-				return &IMAgentResponse{Text: fmt.Sprintf("后台任务 %s 等待续命超时，已自动结束。", ctx.ID)}
+				return &IMAgentResponse{Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 绛夊緟缁懡瓒呮椂锛屽凡鑷姩缁撴潫銆?, ctx.ID)}
 			}
 		}
 
@@ -7183,21 +7201,21 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		if iteration > 0 {
 			if iteration >= effectiveMax && ctx.Kind == LoopKindChat {
-				sendProgress("⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…")
+				sendProgress("鈴?宸叉帴杩戞渶澶ф帹鐞嗚疆娆★紝姝ｅ湪鍩轰簬鐜版湁淇℃伅鏀跺熬骞剁敓鎴愭渶缁堢粨鏋溾€?)
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": "[收尾要求]\n你已接近最大推理轮次。禁止继续扩展搜索范围；优先基于当前已有信息直接收尾并交付最终结果。若已有文档内容，请立即生成并发送 PDF；若仍无法生成 PDF，请明确说明当前已完成部分、缺少什么，并给出可见终态。[/收尾要求]",
+					"content": "[鏀跺熬瑕佹眰]\n浣犲凡鎺ヨ繎鏈€澶ф帹鐞嗚疆娆°€傜姝㈢户缁墿灞曟悳绱㈣寖鍥达紱浼樺厛鍩轰簬褰撳墠宸叉湁淇℃伅鐩存帴鏀跺熬骞朵氦浠樻渶缁堢粨鏋溿€傝嫢宸叉湁鏂囨。鍐呭锛岃绔嬪嵆鐢熸垚骞跺彂閫?PDF锛涜嫢浠嶆棤娉曠敓鎴?PDF锛岃鏄庣‘璇存槑褰撳墠宸插畬鎴愰儴鍒嗐€佺己灏戜粈涔堬紝骞剁粰鍑哄彲瑙佺粓鎬併€俒/鏀跺熬瑕佹眰]",
 				})
 			}
 			if isDebug() {
 				if maxIter > 0 || h.loopMaxOverride > 0 {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d/%d 轮）…", iteration+1, effectiveMax))
+					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d/%d 杞級鈥?, iteration+1, effectiveMax))
 				} else {
-					sendProgress(fmt.Sprintf("🔄 Agent 推理中（第 %d 轮）…", iteration+1))
+					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d 杞級鈥?, iteration+1))
 				}
 			} else {
 				// Event-driven progress: milestone tracker handles merge
-				// window expiry and heartbeat. No more timer-based "任务较复杂".
+				// window expiry and heartbeat. No more timer-based "浠诲姟杈冨鏉?.
 				milestoneTracker.Tick()
 			}
 		}
@@ -7206,7 +7224,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
 			injectedText, _ := injected.(string)
 			if injectedText != "" {
-				// The prefix (e.g. "[用户补充]") is already included by the
+				// The prefix (e.g. "[鐢ㄦ埛琛ュ厖]") is already included by the
 				// writer (InjectSupplementary / classifyMergeInjection).
 				// Do NOT add another prefix here.
 				conversation = append(conversation, map[string]string{
@@ -7235,7 +7253,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			estimated := estimateConversationTokens(conversation)
 			if estimated > 0 {
 				ratio := float64(lastLLMInputTokens) / float64(estimated)
-				if ratio > 1.15 { // >15% underestimate — apply calibration
+				if ratio > 1.15 { // >15% underestimate 鈥?apply calibration
 					calibrated := int(float64(effectiveTokenLimit) / ratio)
 					if calibrated < 4000 {
 						calibrated = 4000
@@ -7298,8 +7316,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// stale turn (assistant text + any system recover prompts) stays
 		// in the conversation, inflating context and pushing useful history
 		// out of the token window. This creates a positive feedback loop:
-		// more stale turns → less useful context → LLM more confused →
-		// more stale turns.
+		// more stale turns 鈫?less useful context 鈫?LLM more confused 鈫?		// more stale turns.
 		//
 		// Fix: remove the most recent consecutive no-tool-call assistant
 		// messages and any system messages that were injected between them
@@ -7307,7 +7324,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// clean so the LLM sees the original task context + one fresh
 		// recover prompt, not a trail of failed attempts.
 		//
-		// Must run BEFORE GoalAnchor/ProgressTracker injection — otherwise
+		// Must run BEFORE GoalAnchor/ProgressTracker injection 鈥?otherwise
 		// those non-recover system messages block the backward scan and
 		// prevent pruning of stale turns that precede them.
 		if phase.Stage == agentStageRecover && (phase.ConsecutiveNoTool >= 2 || phase.ConsecutiveEmptyResponses >= 1) {
@@ -7321,7 +7338,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if loopProgressTracker != nil {
 				progressSummary = loopProgressTracker.Summary()
 			} else {
-				progressSummary = fmt.Sprintf("迭代 %d/%d", iteration, effectiveMax)
+				progressSummary = fmt.Sprintf("杩唬 %d/%d", iteration, effectiveMax)
 			}
 			anchorContent := loopGoalAnchor.BuildAnchorContent(progressSummary)
 			conversation = append(conversation, map[string]string{
@@ -7333,7 +7350,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if loopProgressTracker != nil {
 			if checklist := loopProgressTracker.BuildChecklistContent(); checklist != "" {
 				conversation = append(conversation, map[string]string{
-					"role": "system", "content": "[📋 任务清单]\n" + checklist + "\n[/任务清单]",
+					"role": "system", "content": "[馃搵 浠诲姟娓呭崟]\n" + checklist + "\n[/浠诲姟娓呭崟]",
 				})
 			}
 		}
@@ -7420,7 +7437,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 				// In direct mode, strip session management tools from the tool
 				// list so the LLM codes directly instead of trying to delegate.
-				// Only filter once per mode resolution — after the first pass,
+				// Only filter once per mode resolution 鈥?after the first pass,
 				// session tools are already gone from the tools slice.
 				if execMode == TaskExecModeDirect && !directModeToolsFiltered {
 					var directFiltered []map[string]interface{}
@@ -7454,14 +7471,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if phase.Stage == agentStageOrient && phase.ForceSkillPreference {
 			convergePrompt := ""
 			if shouldRestrictToSkillSearch(phase) {
-				convergePrompt = "[Skill 优先要求]\n当前任务属于 Skill 优先路径，但本地未命中合适 Skill。本轮必须先调用 search_and_install_skill（或其他 skill 搜索/安装工具）查找可复用 Skill；在确认远程 Skill 路径无解之前，不要直接使用 craft_tool 或 bash。\n[/Skill 优先要求]"
+				convergePrompt = "[Skill 浼樺厛瑕佹眰]\n褰撳墠浠诲姟灞炰簬 Skill 浼樺厛璺緞锛屼絾鏈湴鏈懡涓悎閫?Skill銆傛湰杞繀椤诲厛璋冪敤 search_and_install_skill锛堟垨鍏朵粬 skill 鎼滅储/瀹夎宸ュ叿锛夋煡鎵惧彲澶嶇敤 Skill锛涘湪纭杩滅▼ Skill 璺緞鏃犺В涔嬪墠锛屼笉瑕佺洿鎺ヤ娇鐢?craft_tool 鎴?bash銆俓n[/Skill 浼樺厛瑕佹眰]"
 			} else if phase.PreferredSkillName != "" {
 				guidance := buildSkillProgressGuidance(phase.PreferredSkillName, phase.PreferredSkillRunID)
-				convergePrompt = fmt.Sprintf("[Skill 优先要求]\n检测到本地已有可复用 Skill「%s」。本轮优先调用 manage_skill(action=\"run\", name=\"%s\") 完成任务，不要先使用 craft_tool 或 bash 自建脚本。%s 若该 Skill 失败，再基于失败原因切换到其他工具路径。", phase.PreferredSkillName, phase.PreferredSkillName, guidance)
+				convergePrompt = fmt.Sprintf("[Skill 浼樺厛瑕佹眰]\n妫€娴嬪埌鏈湴宸叉湁鍙鐢?Skill銆?s銆嶃€傛湰杞紭鍏堣皟鐢?manage_skill(action=\"run\", name=\"%s\") 瀹屾垚浠诲姟锛屼笉瑕佸厛浣跨敤 craft_tool 鎴?bash 鑷缓鑴氭湰銆?s 鑻ヨ Skill 澶辫触锛屽啀鍩轰簬澶辫触鍘熷洜鍒囨崲鍒板叾浠栧伐鍏疯矾寰勩€?, phase.PreferredSkillName, phase.PreferredSkillName, guidance)
 				if phase.PreferredSkillReason != "" {
-					convergePrompt += fmt.Sprintf("\n匹配依据: %s", truncateTraceText(phase.PreferredSkillReason, 160))
+					convergePrompt += fmt.Sprintf("\n鍖归厤渚濇嵁: %s", truncateTraceText(phase.PreferredSkillReason, 160))
 				}
-				convergePrompt += "\n[/Skill 优先要求]"
+				convergePrompt += "\n[/Skill 浼樺厛瑕佹眰]"
 			}
 			if convergePrompt != "" {
 				conversation = append(conversation, map[string]string{"role": "system", "content": convergePrompt})
@@ -7472,7 +7489,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			preLLMIterationPrepElapsed += time.Since(iterationPrepStartedAt)
 		}
 
-		// Notify frontend of new round (for streaming UI) — skip first iteration
+		// Notify frontend of new round (for streaming UI) 鈥?skip first iteration
 		// since the frontend already created a placeholder message.
 		if onNewRound != nil && iteration > 0 {
 			onNewRound()
@@ -7506,7 +7523,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// When AdaptiveRetry is available, use it for smarter classification;
 		// otherwise fall back to the existing isRetryableLLMError logic.
 		if err != nil {
-			// If cancelled, don't retry — exit immediately.
+			// If cancelled, don't retry 鈥?exit immediately.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
 				break
@@ -7514,7 +7531,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if loopAdaptiveRetry != nil {
 				category := loopAdaptiveRetry.Classify("llm_request", err)
 				// Rate limit errors need multiple retries with exponential
-				// backoff (5s → 10s → 20s). Loop until Decide says "skip"
+				// backoff (5s 鈫?10s 鈫?20s). Loop until Decide says "skip"
 				// or the request succeeds.
 				for retryAttempt := 0; err != nil && !ctx.IsCancelled(); retryAttempt++ {
 					decision := loopAdaptiveRetry.Decide("llm_request", category, retryAttempt)
@@ -7522,17 +7539,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					h.appendTraceEvidence(ctx, "adaptive_retry", string(category), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, err.Error()), 400), "", "llm_request")
 					if decision.Action != "retry" {
 						// Record the final non-retry decision but don't
-						// inflate failureCounts — only actual retry attempts
+						// inflate failureCounts 鈥?only actual retry attempts
 						// should count toward the cumulative failure threshold.
 						break
 					}
 					loopAdaptiveRetry.RecordFailure("llm_request", category, decision)
-					log.Printf("[LLM] AdaptiveRetry: %s 错误，%v 后重试 (%d): %v", string(category), decision.Delay, retryAttempt+1, err)
+					log.Printf("[LLM] AdaptiveRetry: %s 閿欒锛?v 鍚庨噸璇?(%d): %v", string(category), decision.Delay, retryAttempt+1, err)
 					firstLLMRetryWaitElapsed += decision.Delay
 					firstLLMRetryCount++
 					// Notify user about transient server error wait.
 					if category == FailureTransient && onProgress != nil {
-						onProgress(fmt.Sprintf("⏳ API 服务暂时不可用，等待 %ds 后重试 (%d/%d)...", int(decision.Delay.Seconds()), retryAttempt+1, maxTransientRetries))
+						onProgress(fmt.Sprintf("鈴?API 鏈嶅姟鏆傛椂涓嶅彲鐢紝绛夊緟 %ds 鍚庨噸璇?(%d/%d)...", int(decision.Delay.Seconds()), retryAttempt+1, maxTransientRetries))
 					}
 					// Cancellation-aware sleep: abort wait if user cancels.
 					select {
@@ -7582,11 +7599,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					retryMax = 3
 				}
 				for retryAttempt := 0; retryAttempt < retryMax && err != nil && !ctx.IsCancelled(); retryAttempt++ {
-					log.Printf("[LLM] 请求失败，%v 后重试 (%d/%d): %v", retryDelay, retryAttempt+1, retryMax, err)
+					log.Printf("[LLM] 璇锋眰澶辫触锛?v 鍚庨噸璇?(%d/%d): %v", retryDelay, retryAttempt+1, retryMax, err)
 					firstLLMRetryWaitElapsed += retryDelay
 					firstLLMRetryCount++
 					if isTransient && onProgress != nil {
-						onProgress(fmt.Sprintf("⏳ API 服务暂时不可用，等待 %ds 后重试 (%d/%d)...", int(retryDelay.Seconds()), retryAttempt+1, retryMax))
+						onProgress(fmt.Sprintf("鈴?API 鏈嶅姟鏆傛椂涓嶅彲鐢紝绛夊緟 %ds 鍚庨噸璇?(%d/%d)...", int(retryDelay.Seconds()), retryAttempt+1, retryMax))
 					}
 					select {
 					case <-time.After(retryDelay):
@@ -7614,8 +7631,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					if err == nil && streamDoneCallback != nil {
 						streamDoneCallback()
 					}
-					// Re-check error type after retry — error may change
-					// (e.g. 429 → timeout, or 503 → success).
+					// Re-check error type after retry 鈥?error may change
+					// (e.g. 429 鈫?timeout, or 503 鈫?success).
 					if err != nil {
 						newIsTransient := isTransientServerError(err)
 						if newIsTransient != isTransient {
@@ -7655,7 +7672,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if err != nil {
 			// If the error is due to cancellation, save history and return
 			// a clean message instead of an LLM error. The agent loop must
-			// never call memory.Clear — history lifecycle is managed by the
+			// never call memory.Clear 鈥?history lifecycle is managed by the
 			// caller (handleIMMessageWithLoop), not the loop itself.
 			if ctx.IsCancelled() {
 				ctx.SetState("stopped")
@@ -7667,7 +7684,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// request because the input exceeds the context window, remove
 			// the oldest non-system entry from the conversation and retry.
 			// This is a last-resort fallback after trimConversation and
-			// token calibration have already run — it handles edge cases
+			// token calibration have already run 鈥?it handles edge cases
 			// where the estimate is still too optimistic.
 			//
 			// Max 5 retries to avoid infinite loops. Each retry removes one
@@ -7713,13 +7730,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// If still errored after all retries (including context trim), return.
 			if err != nil {
 				llmErrorExitFlag = true // preserve in-flight marker for recovery
-				return h.llmErrorExitResponse(userID, history, fmt.Sprintf("LLM 调用失败: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol))
+				return h.llmErrorExitResponse(userID, history, fmt.Sprintf("LLM 璋冪敤澶辫触: %s [url=%s model=%s protocol=%s]", err.Error(), cfg.URL, cfg.Model, cfg.Protocol))
 			}
 		}
 		if len(resp.Choices) == 0 {
 			log.Printf("[agent-loop] LLM returned 0 choices: url=%s model=%s protocol=%s", cfg.URL, cfg.Model, cfg.Protocol)
 			llmErrorExitFlag = true // preserve in-flight marker for recovery
-			return h.llmErrorExitResponse(userID, history, "LLM 未返回有效回复")
+			return h.llmErrorExitResponse(userID, history, "LLM 鏈繑鍥炴湁鏁堝洖澶?)
 		}
 
 		choiceStartedAt := time.Now()
@@ -7739,7 +7756,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// Strip hallucinated role prefix (e.g. "Browser: ...") that some LLMs
 		// produce when browser tool definitions are in context or when the
-		// output text mentions browser-related terms (like "Chrome 浏览器进程").
+		// output text mentions browser-related terms (like "Chrome 娴忚鍣ㄨ繘绋?).
 		beforeStripRP := msgContent
 		msgContent = stripRolePrefixHallucination(msgContent)
 		BrowserDiagCP6_PostProcess(beforeStripRP, msgContent)
@@ -7788,9 +7805,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		// --- Coding Tool Gate: strip coding tools on ALL iterations ---
 		// The gate must remain active for the entire agent loop (not just
-		// iteration 0). Within a single user message → agent loop, if the
+		// iteration 0). Within a single user message 鈫?agent loop, if the
 		// intent is coding and no skip signal, coding tools should never be
-		// allowed. The user's confirmation ("确认") arrives as a separate
+		// allowed. The user's confirmation ("纭") arrives as a separate
 		// message triggering a new loop where the gate is re-evaluated.
 		// Previously this only fired on iteration == 0, so the LLM could
 		// output the requirements doc on iteration 1 and then immediately
@@ -7846,11 +7863,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// attempt coding tools again on the next iteration).
 				if len(gateResult.remaining) == 0 {
 					if iteration == 0 && strings.TrimSpace(msgContent) == "" {
-						// First iteration, no text yet — prompt for requirements doc.
+						// First iteration, no text yet 鈥?prompt for requirements doc.
 						systemMessagesStart := len(conversation)
 						conversation = append(conversation, map[string]string{
 							"role":    "system",
-							"content": "[编程工作流] 你刚才尝试直接调用编码工具，但当前处于需求确认阶段。请先生成需求文档（包含功能需求、非功能需求、边界情况、验收标准），等待用户确认后再开始编码。",
+							"content": "[缂栫▼宸ヤ綔娴乚 浣犲垰鎵嶅皾璇曠洿鎺ヨ皟鐢ㄧ紪鐮佸伐鍏凤紝浣嗗綋鍓嶅浜庨渶姹傜‘璁ら樁娈点€傝鍏堢敓鎴愰渶姹傛枃妗ｏ紙鍖呭惈鍔熻兘闇€姹傘€侀潪鍔熻兘闇€姹傘€佽竟鐣屾儏鍐点€侀獙鏀舵爣鍑嗭級锛岀瓑寰呯敤鎴风‘璁ゅ悗鍐嶅紑濮嬬紪鐮併€?,
 						})
 						recordSystemMessages(systemMessagesStart, conversation)
 						continue
@@ -7892,11 +7909,11 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						h.saveConversationHistoryTimed(userID, history, finalResp)
 						return finalResp
 					}
-					// No text and not iteration 0 — inject reminder and continue.
+					// No text and not iteration 0 鈥?inject reminder and continue.
 					systemMessagesStart := len(conversation)
 					conversation = append(conversation, map[string]string{
 						"role":    "system",
-						"content": "[编程工作流] 编码工具已被拦截。请先完成需求文档并等待用户确认，不要尝试调用编码工具。",
+						"content": "[缂栫▼宸ヤ綔娴乚 缂栫爜宸ュ叿宸茶鎷︽埅銆傝鍏堝畬鎴愰渶姹傛枃妗ｅ苟绛夊緟鐢ㄦ埛纭锛屼笉瑕佸皾璇曡皟鐢ㄧ紪鐮佸伐鍏枫€?,
 					})
 					recordSystemMessages(systemMessagesStart, conversation)
 					continue
@@ -7958,7 +7975,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// truncation hint so the LLM sees it in the next iteration and
 			// retries with shorter arguments.
 			//
-			// This is NOT a stall or deliverable — it's a recoverable error
+			// This is NOT a stall or deliverable 鈥?it's a recoverable error
 			// caused by output length limits. Without this, the no-tool branch
 			// falls through to agentStageFinalize and returns the LLM's text
 			// as the final response, even though the LLM intended to call a tool.
@@ -7970,14 +7987,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			const maxTruncationRetries = 3
 			if len(choice.TruncatedToolNames) > 0 {
 				if phase.TruncationRetries < maxTruncationRetries {
-					// Phase 1: hint-based recovery — ask the LLM to split.
+					// Phase 1: hint-based recovery 鈥?ask the LLM to split.
 					phase.TruncationRetries++
-					phase.ConsecutiveNoTool = 0 // reset — this is not a stall
+					phase.ConsecutiveNoTool = 0 // reset 鈥?this is not a stall
 					truncatedList := strings.Join(choice.TruncatedToolNames, ", ")
 					log.Printf("[agent-loop] truncated tool call recovery (retry %d/%d, iter=%d, tools=%s), injecting hint as system message",
 						phase.TruncationRetries, maxTruncationRetries, iteration, truncatedList)
-					hint := fmt.Sprintf("[系统提示] 以下工具调用的参数不完整（被截断或缺少必需字段）：%s。"+
-						"请将大文件内容拆分为多次写入（每次不超过 5000 字符），或使用 bash 工具通过脚本写入。",
+					hint := fmt.Sprintf("[绯荤粺鎻愮ず] 浠ヤ笅宸ュ叿璋冪敤鐨勫弬鏁颁笉瀹屾暣锛堣鎴柇鎴栫己灏戝繀闇€瀛楁锛夛細%s銆?+
+						"璇峰皢澶ф枃浠跺唴瀹规媶鍒嗕负澶氭鍐欏叆锛堟瘡娆′笉瓒呰繃 5000 瀛楃锛夛紝鎴栦娇鐢?bash 宸ュ叿閫氳繃鑴氭湰鍐欏叆銆?,
 						truncatedList)
 					systemMessagesStart := len(conversation)
 					conversation = append(conversation, map[string]string{
@@ -7987,7 +8004,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					recordSystemMessages(systemMessagesStart, conversation)
 					continue
 				}
-				// Phase 2: tool-execution-layer intervention — block the
+				// Phase 2: tool-execution-layer intervention 鈥?block the
 				// truncated tools from the LLM's tool list entirely.
 				// This is a mechanism-level fix: the LLM physically cannot
 				// call these tools, so it MUST use alternatives (bash +
@@ -7997,7 +8014,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				if phase.TruncationBlockedTools == nil {
 					phase.TruncationBlockedTools = make(map[string]bool)
 				}
-				// Never block essential fallback tools — they are the
+				// Never block essential fallback tools 鈥?they are the
 				// alternatives that blocked tools should fall back to.
 				// Blocking bash would leave the LLM with no way to write files.
 				truncationBlockSafe := map[string]bool{
@@ -8015,7 +8032,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					}
 				}
 				if len(newlyBlocked) > 0 {
-					// Reset stall counter — we're making progress by blocking tools.
+					// Reset stall counter 鈥?we're making progress by blocking tools.
 					phase.ConsecutiveNoTool = 0
 					// Filter the blocked tools from the tools slice.
 					// This takes effect on the next LLM call in this loop.
@@ -8035,22 +8052,22 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					for _, tn := range newlyBlocked {
 						switch tn {
 						case "write_file":
-							altInstructions += "write_file 工具因内容过长被反复截断，已被临时禁用。" +
-								"请改用 bash 工具写入文件。方法一（推荐）：\n" +
+							altInstructions += "write_file 宸ュ叿鍥犲唴瀹硅繃闀胯鍙嶅鎴柇锛屽凡琚复鏃剁鐢ㄣ€? +
+								"璇锋敼鐢?bash 宸ュ叿鍐欏叆鏂囦欢銆傛柟娉曚竴锛堟帹鑽愶級锛歕n" +
 								"bash(command=\"python -c \\\"\nimport pathlib\n" +
-								"content = '''\n你的文件内容\n'''\n" +
+								"content = '''\n浣犵殑鏂囦欢鍐呭\n'''\n" +
 								"pathlib.Path('output.md').write_text(content, encoding='utf-8')\n\\\"\")\n" +
-								"方法二：bash(command=\"cat > output.md << 'MACLAW_EOF'\n内容\nMACLAW_EOF\")\n" +
-								"注意：每次 bash 调用的 command 参数也不要超过 5000 字符，超长内容请分多次追加写入。\n"
+								"鏂规硶浜岋細bash(command=\"cat > output.md << 'MACLAW_EOF'\n鍐呭\nMACLAW_EOF\")\n" +
+								"娉ㄦ剰锛氭瘡娆?bash 璋冪敤鐨?command 鍙傛暟涔熶笉瑕佽秴杩?5000 瀛楃锛岃秴闀垮唴瀹硅鍒嗗娆¤拷鍔犲啓鍏ャ€俓n"
 						case "edit_file":
-							altInstructions += "edit_file 工具因参数过长被反复截断，已被临时禁用。" +
-								"请改用 bash + sed 或 Python 脚本进行文件编辑。\n"
+							altInstructions += "edit_file 宸ュ叿鍥犲弬鏁拌繃闀胯鍙嶅鎴柇锛屽凡琚复鏃剁鐢ㄣ€? +
+								"璇锋敼鐢?bash + sed 鎴?Python 鑴氭湰杩涜鏂囦欢缂栬緫銆俓n"
 						default:
-							altInstructions += fmt.Sprintf("%s 工具因参数过长被反复截断，已被临时禁用。请使用其他方式完成任务。\n", tn)
+							altInstructions += fmt.Sprintf("%s 宸ュ叿鍥犲弬鏁拌繃闀胯鍙嶅鎴柇锛屽凡琚复鏃剁鐢ㄣ€傝浣跨敤鍏朵粬鏂瑰紡瀹屾垚浠诲姟銆俓n", tn)
 						}
 					}
-					hint := fmt.Sprintf("[系统提示] %s"+
-						"注意：被禁用的工具不在你的可用工具列表中，不要尝试调用它们。",
+					hint := fmt.Sprintf("[绯荤粺鎻愮ず] %s"+
+						"娉ㄦ剰锛氳绂佺敤鐨勫伐鍏蜂笉鍦ㄤ綘鐨勫彲鐢ㄥ伐鍏峰垪琛ㄤ腑锛屼笉瑕佸皾璇曡皟鐢ㄥ畠浠€?,
 						altInstructions)
 					systemMessagesStart := len(conversation)
 					conversation = append(conversation, map[string]string{
@@ -8062,7 +8079,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 				// All truncated tools were either already blocked or are
 				// essential (safe) tools that cannot be blocked. Continue
-				// the loop — the blocking hint from a previous iteration
+				// the loop 鈥?the blocking hint from a previous iteration
 				// is still in conversation history.
 				log.Printf("[agent-loop] truncated tool call: no new tools to block (tools=%v, already_blocked=%v, iter=%d)",
 					choice.TruncatedToolNames, phase.TruncationBlockedTools, iteration)
@@ -8077,7 +8094,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 			if isTruncated && phase.LengthContinuations < maxLengthContinuations {
 				phase.LengthContinuations++
-				phase.ConsecutiveNoTool = 0 // reset — this is not a stall
+				phase.ConsecutiveNoTool = 0 // reset 鈥?this is not a stall
 				// Accumulate the truncated chunk so the final response contains
 				// the full document, not just the last continuation's output.
 				lengthContinuationBuf.WriteString(msgContent)
@@ -8086,7 +8103,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				systemMessagesStart := len(conversation)
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": "[系统提示] 你的输出因长度限制被截断。请从截断处继续输出，不要重复已输出的内容。",
+					"content": "[绯荤粺鎻愮ず] 浣犵殑杈撳嚭鍥犻暱搴﹂檺鍒惰鎴柇銆傝浠庢埅鏂缁х画杈撳嚭锛屼笉瑕侀噸澶嶅凡杈撳嚭鐨勫唴瀹广€?,
 				})
 				recordSystemMessages(systemMessagesStart, conversation)
 				continue
@@ -8097,7 +8114,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// (e.g. requirements, tech design, task breakdown), and the LLM
 			// has produced a substantive deliverable (not a stall/thinking
 			// reply), return immediately. This prevents stall/deliverable
-			// heuristics (which match keywords like "文档", "写", "生成")
+			// heuristics (which match keywords like "鏂囨。", "鍐?, "鐢熸垚")
 			// from misclassifying the confirmation prompt as a "promise to
 			// deliver" and forcing another round that re-outputs the content.
 			needsConfirmFromEngine := false
@@ -8120,8 +8137,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				//
 				// EXCEPTION: When gateConfig.active is true, the current
 				// message is a NEW coding task that needs the three-phase
-				// flow (requirements → design → task breakdown). In this
-				// case, do NOT bypass — let the Coding Tool Gate enforce
+				// flow (requirements 鈫?design 鈫?task breakdown). In this
+				// case, do NOT bypass 鈥?let the Coding Tool Gate enforce
 				// the three-phase flow even though the message came through
 				// the "other" path of handlePendingConfirm.
 				if ctx.SkipNeedsConfirmGate && !gateConfig.active {
@@ -8150,14 +8167,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			needsConfirmFromSteering := false
 			if gateConfig.active && iteration > 0 {
 				if h.getWorkflowEngine() != nil && h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
-					// Engine owns the workflow — delegate to phase-aware check.
+					// Engine owns the workflow 鈥?delegate to phase-aware check.
 					// IsPhaseNeedsConfirm returns false for implementation/execution phases.
 					needsConfirmFromSteering = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
 					if !needsConfirmFromSteering && platform == "desktop" {
 						log.Printf("[agent-loop] NeedsConfirm steering bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
 					}
 				} else {
-					// No engine workflow — pure steering-driven flow, use gate as before.
+					// No engine workflow 鈥?pure steering-driven flow, use gate as before.
 					needsConfirmFromSteering = true
 				}
 			}
@@ -8169,7 +8186,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// gate fires). HasPhaseOutput is a post-loop persistence flag
 			// that is always false during the first execution of a phase,
 			// which would permanently disable the gate within a single
-			// agent loop — creating a blind spot where the LLM can
+			// agent loop 鈥?creating a blind spot where the LLM can
 			// self-confirm and proceed without user confirmation.
 			if platform == "desktop" && (engineGateActive || needsConfirmFromSteering) {
 				log.Printf("[agent-loop] NeedsConfirm check: engine=%v steering=%v iteration=%d msgLen=%d steeringDetector=%v user=%s",
@@ -8204,7 +8221,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					log.Printf("[agent-loop] NeedsConfirm gate (%s): returning response for user confirmation (iteration=%d len=%d)", gateSource, iteration, len(trimmedForGate))
 					if h.traceService != nil && ctx.RunID != "" {
 						h.appendTraceEvent(ctx, "gate.needs_confirm", "info",
-							fmt.Sprintf("NeedsConfirm phase gate (%s) — pausing for user confirmation", gateSource),
+							fmt.Sprintf("NeedsConfirm phase gate (%s) 鈥?pausing for user confirmation", gateSource),
 							truncateTraceText(trimmedForGate, 220), "", "")
 					}
 					phase.Stage = agentStageFinalize
@@ -8233,10 +8250,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 									emitted = true
 								})
 							}
-							// Path 2: WorkflowEngine active — use the engine's current phase directly.
+							// Path 2: WorkflowEngine active 鈥?use the engine's current phase directly.
 							// This covers all workflow templates (coding, product_design, innovation, etc.)
 							// where the steering detector is not activated (because the engine owns the workflow).
-							// Use a lower threshold (50 chars) than the old 200 — the engine already confirmed
+							// Use a lower threshold (50 chars) than the old 200 鈥?the engine already confirmed
 							// this is a NeedsConfirm phase, so even shorter text is a valid deliverable.
 							// Also emit suggest_maximize in case it wasn't emitted yet (e.g. dedup cleared).
 							if !emitted && engineGateActive && len(docPreviewText) >= 50 {
@@ -8257,7 +8274,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					h.saveConversationHistoryTimed(userID, history, finalResp)
 					return finalResp
 				} else if trimmedForGate != "" && !looksLikeNoToolStallReply(msgContent) {
-					// isSubstantivePhaseDocument was false — short preamble, let the loop continue.
+					// isSubstantivePhaseDocument was false 鈥?short preamble, let the loop continue.
 					log.Printf("[agent-loop] NeedsConfirm gate: skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedForGate)))
 				}
 			}
@@ -8265,7 +8282,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Hard cap: if the model has returned text without tool calls for
 			// too many consecutive iterations, force-return the latest response.
 			// This prevents infinite loops caused by false-positive stall/deliverable
-			// detection (e.g. self-introduction text matching "文档"/"写" keywords).
+			// detection (e.g. self-introduction text matching "鏂囨。"/"鍐? keywords).
 			const maxConsecutiveNoTool = 5
 			trimmedVisibleContent := strings.TrimSpace(stripThinkingTags(msgContent))
 			if phase.ConsecutiveNoTool > maxConsecutiveNoTool && trimmedVisibleContent != "" {
@@ -8298,10 +8315,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// the summary endlessly.
 			//
 			// Root cause: looksLikePromiseOnlyDeliverableReply uses keyword
-			// matching (e.g., text ending with "：" + containing "直接")
-			// which false-positives on post-tool summaries like "✅ 操作经验
-			// 已沉淀为知识！保存了以下核心内容：". The function has no
-			// awareness of whether tools were already called — it only looks
+			// matching (e.g., text ending with "锛? + containing "鐩存帴")
+			// which false-positives on post-tool summaries like "鉁?鎿嶄綔缁忛獙
+			// 宸叉矇娣€涓虹煡璇嗭紒淇濆瓨浜嗕互涓嬫牳蹇冨唴瀹癸細". The function has no
+			// awareness of whether tools were already called 鈥?it only looks
 			// at the current text. This context-aware suppression provides
 			// that missing signal.
 			if promiseOnlyDeliverable && phase.ConsecutiveNoTool == 1 && totalToolCallsInLoop > 0 {
@@ -8341,18 +8358,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// the empty-response problem (common with glm-5.1 at >100K tokens).
 				if phase.ConsecutiveEmptyResponses >= maxConsecutiveEmptyResponses ||
 					phase.TotalRecoverInjections >= maxTotalRecoverInjections {
-					log.Printf("[agent-loop] hard exit: %d consecutive empty responses, %d total recovers — returning best available result",
+					log.Printf("[agent-loop] hard exit: %d consecutive empty responses, %d total recovers 鈥?returning best available result",
 						phase.ConsecutiveEmptyResponses, phase.TotalRecoverInjections)
 					phase.Stage = agentStageFinalize
 					// Try to return the last non-empty assistant message from history.
 					fallbackText := findLastAssistantContent(history)
 					if fallbackText == "" {
-						fallbackText = "抱歉，模型多次返回空响应，无法继续处理。请尝试简化请求或重新发送。"
+						fallbackText = "鎶辨瓑锛屾ā鍨嬪娆¤繑鍥炵┖鍝嶅簲锛屾棤娉曠户缁鐞嗐€傝灏濊瘯绠€鍖栬姹傛垨閲嶆柊鍙戦€併€?
 					}
 					// If there are pending background tasks, append a hint so the
 					// user knows they can check on them manually.
 					if taskHint != "" {
-						fallbackText += "\n\n" + taskHint + "\n你可以发送「检查后台任务」来查看进度。"
+						fallbackText += "\n\n" + taskHint + "\n浣犲彲浠ュ彂閫併€屾鏌ュ悗鍙颁换鍔°€嶆潵鏌ョ湅杩涘害銆?
 					}
 					finalResp := &IMAgentResponse{Text: fallbackText, HardExit: true}
 					attachLLMTelemetry(finalResp)
@@ -8402,9 +8419,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				continue
 			}
 			// Check for capability gap in the background (async).
-			// Uses SkillSearcher (SkillMarket → ClawHub mirror → GitHub) for
+			// Uses SkillSearcher (SkillMarket 鈫?ClawHub mirror 鈫?GitHub) for
 			// unified search order, then installAndExecuteSkill for the install
-			// path — no duplicate searches.
+			// path 鈥?no duplicate searches.
 			//
 			// IMPORTANT: This runs as a goroutine AFTER the response is returned
 			// to the user, so the input box is unlocked immediately. If a skill
@@ -8412,7 +8429,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// and injected into the next conversation turn's system prompt.
 			//
 			// Skip when the LLM has been actively working (many tool-call
-			// iterations) or the response is long — these are summaries/reports,
+			// iterations) or the response is long 鈥?these are summaries/reports,
 			// not "I can't do this" signals.
 			skipCapabilityGap := iteration >= 3 || len(trimmedVisibleContent) > 500 || len(choice.TruncatedToolNames) > 0
 			if !skipCapabilityGap && h.capabilityGapDetector != nil && h.capabilityGapDetector.Detect(msgContent) {
@@ -8438,7 +8455,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						func(status string) {
 							log.Printf("[skill-auto-async] %s", status)
 						})
-					success := strings.HasPrefix(installResult, "✅")
+					success := strings.HasPrefix(installResult, "鉁?)
 					h.pendingCapabilityGap.Store(capturedUserID, &pendingCapabilityGapResult{
 						SkillName: best.Name,
 						Result:    installResult,
@@ -8479,7 +8496,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				for tn := range phase.TruncationBlockedTools {
 					blockedNames = append(blockedNames, tn)
 				}
-				finalText += fmt.Sprintf("\n\n⚠️ 工具 %s 因参数过长被反复截断，已自动切换到替代方式。如果结果不完整，请重新发送请求。",
+				finalText += fmt.Sprintf("\n\n鈿狅笍 宸ュ叿 %s 鍥犲弬鏁拌繃闀胯鍙嶅鎴柇锛屽凡鑷姩鍒囨崲鍒版浛浠ｆ柟寮忋€傚鏋滅粨鏋滀笉瀹屾暣锛岃閲嶆柊鍙戦€佽姹傘€?,
 					strings.Join(blockedNames, ", "))
 				log.Printf("[agent-loop] finalize with blocked tools: %v", blockedNames)
 			}
@@ -8500,7 +8517,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// skill failure as a "workaround" outcome.
 			if phase.FailedSkillName != "" && h.app != nil && h.getSkillRunner() != nil {
 				h.getSkillRunner().RecordWorkaround(phase.FailedSkillName, phase.FailedSkillError)
-				log.Printf("[skill-workaround] skill %q failure classified as workaround — LLM resolved task via alternative tools", phase.FailedSkillName)
+				log.Printf("[skill-workaround] skill %q failure classified as workaround 鈥?LLM resolved task via alternative tools", phase.FailedSkillName)
 			}
 
 			// Nudge injection: append nudge system messages to history
@@ -8522,7 +8539,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// slot's recovery purpose is fulfilled. Without this, a stale
 			// slot from a previous max_rounds/in-flight-recovery persists
 			// across normal agent loop completions and re-triggers the
-			// "检测到未完成任务" prompt on every subsequent user message.
+			// "妫€娴嬪埌鏈畬鎴愪换鍔? prompt on every subsequent user message.
 			h.memory.DismissUnfinishedSlot(userID, "")
 			return finalResp
 		}
@@ -8580,7 +8597,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				return h.cancelledExitResponse(userID, history, userText)
 			}
 			toolLabel := userFacingToolProgressText(tc.Function.Name)
-			// Record "starting" milestone — pusher decides whether to show it.
+			// Record "starting" milestone 鈥?pusher decides whether to show it.
 			milestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
 			if isDebug() {
 				sendToolProgress(toolLabel)
@@ -8607,7 +8624,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// a clear error message to use alternatives.
 			var result string
 			if phase.TruncationBlockedTools[tc.Function.Name] {
-				result = fmt.Sprintf("[系统拒绝] %s 工具已被临时禁用（参数过长反复截断）。请使用 bash 工具通过 Python 脚本或 heredoc 写入文件。", tc.Function.Name)
+				result = fmt.Sprintf("[绯荤粺鎷掔粷] %s 宸ュ叿宸茶涓存椂绂佺敤锛堝弬鏁拌繃闀垮弽澶嶆埅鏂級銆傝浣跨敤 bash 宸ュ叿閫氳繃 Python 鑴氭湰鎴?heredoc 鍐欏叆鏂囦欢銆?, tc.Function.Name)
 				log.Printf("[agent-loop] rejected execution of truncation-blocked tool %q (iter=%d)", tc.Function.Name, iteration)
 			} else {
 				result = h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
@@ -8639,7 +8656,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							plainText += fmt.Sprintf("\n%d. %s", i+1, opt)
 						}
 					}
-					result = fmt.Sprintf("编码工作流中不使用 ask_user 弹窗确认。请将确认提示直接写在回复文本中，用户会直接在输入框回复。你的问题是: %s", plainText)
+					result = fmt.Sprintf("缂栫爜宸ヤ綔娴佷腑涓嶄娇鐢?ask_user 寮圭獥纭銆傝灏嗙‘璁ゆ彁绀虹洿鎺ュ啓鍦ㄥ洖澶嶆枃鏈腑锛岀敤鎴蜂細鐩存帴鍦ㄨ緭鍏ユ鍥炲銆備綘鐨勯棶棰樻槸: %s", plainText)
 					log.Printf("[coding-gate] ask_user intercepted: converted to plain text (question=%q)", askReq.Question)
 					// Fall through to normal tool result handling below.
 				} else {
@@ -8647,8 +8664,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					// Prepend any LLM text output from this iteration (e.g. a
 					// requirements document) that would otherwise be lost when
 					// we return early for ask_user. This is critical for IM
-					// channels like Lanxin (蓝信) that don't support interactive
-					// cards — the document content must be in resp.Text.
+					// channels like Lanxin (钃濅俊) that don't support interactive
+					// cards 鈥?the document content must be in resp.Text.
 					// Skip for desktop: the user already sees msgContent via
 					// streaming tokens, and the frontend's SPECIAL_RESPONSE_SOURCES
 					// logic would replace the streamed content with resp.Text,
@@ -8658,7 +8675,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							displayText = trimmedMsg + "\n\n---\n\n" + displayText
 						}
 					}
-					toolResults = append(toolResults, fmt.Sprintf("用户被提问: %s（等待回答）", askReq.Question))
+					toolResults = append(toolResults, fmt.Sprintf("鐢ㄦ埛琚彁闂? %s锛堢瓑寰呭洖绛旓級", askReq.Question))
 					recordToolResult(tc.ID, toolResults[len(toolResults)-1])
 
 					conversation = append(conversation, map[string]interface{}{
@@ -8691,8 +8708,8 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						resp.Actions = actions
 					} else if askReq.InputType == "confirm" {
 						resp.Actions = []IMResponseAction{
-							{Label: "✅ 确认", Command: "确认"},
-							{Label: "❌ 取消", Command: "取消"},
+							{Label: "鉁?纭", Command: "纭"},
+							{Label: "鉂?鍙栨秷", Command: "鍙栨秷"},
 						}
 					}
 					return resp
@@ -8712,7 +8729,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Some tools (e.g. generate_pdf) are excluded from pinning
 			// because they should only appear in specific contexts.
 			if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
-				!strings.HasPrefix(result, "未知工具") && !strings.HasPrefix(result, "工具执行异常") {
+				!strings.HasPrefix(result, "鏈煡宸ュ叿") && !strings.HasPrefix(result, "宸ュ叿鎵ц寮傚父") {
 				h.toolRouter.ActivateSessionTool(tc.Function.Name)
 				log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
 			}
@@ -8720,18 +8737,18 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			traceResult := result
 			toolContent := result
 			if strings.HasPrefix(result, "[screenshot_base64]") {
-				traceResult = "截图已成功捕获，将作为图片发送给用户。"
+				traceResult = "鎴浘宸叉垚鍔熸崟鑾凤紝灏嗕綔涓哄浘鐗囧彂閫佺粰鐢ㄦ埛銆?
 				toolContent = traceResult
 			}
 			if result == "[screenshot_sent]" {
-				traceResult = "截图已成功捕获并发送给用户。"
+				traceResult = "鎴浘宸叉垚鍔熸崟鑾峰苟鍙戦€佺粰鐢ㄦ埛銆?
 				toolContent = traceResult
 			}
 			if strings.HasPrefix(result, "[file_base64|") {
-				traceResult = "文件已生成，等待解析发送结果。"
+				traceResult = "鏂囦欢宸茬敓鎴愶紝绛夊緟瑙ｆ瀽鍙戦€佺粨鏋溿€?
 			}
 			if strings.HasPrefix(result, "[voice_base64|") {
-				traceResult = "语音消息已合成，等待发送。"
+				traceResult = "璇煶娑堟伅宸插悎鎴愶紝绛夊緟鍙戦€併€?
 			}
 			if !streamDoneAt.IsZero() {
 				handlerPostStreamToolExecElapsed += time.Since(toolExecStartedAt)
@@ -8746,7 +8763,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 			// Intercept session-based screenshot: image was already pushed
 			// via session.image WebSocket channel, so we just need to stop
-			// the agent loop — no image data to carry in the response.
+			// the agent loop 鈥?no image data to carry in the response.
 			if result == "[screenshot_sent]" {
 				screenshotAlreadySent = true
 			}
@@ -8754,7 +8771,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// Intercept file send results: collect ALL files (not just the last one).
 			// Format: [file_base64|filename|mimetype]data
 			//     or: [file_base64|filename|mimetype|im]data  (forward to IM)
-			//     or: [file_base64|filename|mimetype|im|msg:提示信息]data
+			//     or: [file_base64|filename|mimetype|im|msg:鎻愮ず淇℃伅]data
 			if strings.HasPrefix(result, "[file_base64|") {
 				rest := strings.TrimPrefix(result, "[file_base64|")
 				if closeBracket := strings.Index(rest, "]"); closeBracket > 0 {
@@ -8772,7 +8789,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							} else if strings.HasPrefix(seg, "msg:") {
 								fileMsg = strings.TrimPrefix(seg, "msg:")
 							} else {
-								// Unknown segment — append to mimeType for safety.
+								// Unknown segment 鈥?append to mimeType for safety.
 								mType += "|" + seg
 							}
 						}
@@ -8788,9 +8805,9 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 							message:   fileMsg,
 						})
 						if fwd {
-							toolContent = fmt.Sprintf("文件 %s 已准备好，将通过 IM 通道发送给用户。", parts[0])
+							toolContent = fmt.Sprintf("鏂囦欢 %s 宸插噯澶囧ソ锛屽皢閫氳繃 IM 閫氶亾鍙戦€佺粰鐢ㄦ埛銆?, parts[0])
 						} else {
-							toolContent = fmt.Sprintf("文件 %s 已准备好，将发送给用户。", parts[0])
+							toolContent = fmt.Sprintf("鏂囦欢 %s 宸插噯澶囧ソ锛屽皢鍙戦€佺粰鐢ㄦ埛銆?, parts[0])
 						}
 						traceResult = toolContent
 					}
@@ -8809,7 +8826,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						voiceData = rest[closeBracket+1:]
 						voiceFileName = parts[0]
 						voiceMimeType = parts[1]
-						toolContent = "语音消息已合成，将发送给用户。"
+						toolContent = "璇煶娑堟伅宸插悎鎴愶紝灏嗗彂閫佺粰鐢ㄦ埛銆?
 						traceResult = toolContent
 					}
 				}
@@ -8856,7 +8873,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			setInFlightMarkerOnce()
 
 			// --- Truncate oversized arguments in conversation after tool failure ---
-			// When a tool call fails (e.g. "缺少 path 参数") and the arguments
+			// When a tool call fails (e.g. "缂哄皯 path 鍙傛暟") and the arguments
 			// were very large (>2000 chars), the raw arguments JSON stays in the
 			// assistant message's tool_calls entry in conversation history. This
 			// bloats context with useless failed content. Truncate the arguments
@@ -8875,17 +8892,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			// case (removing truncated calls before they reach executeTool), but this
 			// counter catches edge cases where the tool call survived filtering and
 			// failed at execution (e.g. JSON valid but semantically incomplete).
-			isWriteFileFailure := tc.Function.Name == "write_file" && (strings.Contains(truncated, "参数解析失败") ||
-				strings.Contains(truncated, "缺少 path 参数") ||
-				strings.Contains(truncated, "缺少 content 参数") ||
+			isWriteFileFailure := tc.Function.Name == "write_file" && (strings.Contains(truncated, "鍙傛暟瑙ｆ瀽澶辫触") ||
+				strings.Contains(truncated, "缂哄皯 path 鍙傛暟") ||
+				strings.Contains(truncated, "缂哄皯 content 鍙傛暟") ||
 				strings.Contains(truncated, "unexpected end of JSON input"))
 			if isWriteFileFailure {
 				consecutiveJSONTruncations++
 				if consecutiveJSONTruncations >= 2 {
-					jsonHint := "[系统提示] 连续 " + fmt.Sprintf("%d", consecutiveJSONTruncations) + " 次 write_file 调用失败。" +
-						"常见原因：内容过长导致 JSON 参数被截断或必需字段（path）被遗漏。" +
-						"请将文件内容拆分为多次写入：第一次用 write_file(path=\"文件路径\", content=\"前半部分\") 写入前半部分（不超过 5000 字符），后续用 write_file(path=\"文件路径\", mode=\"append\", content=\"后半部分\") 逐块追加。" +
-						"⚠️ 每次调用必须包含 path 参数。"
+					jsonHint := "[绯荤粺鎻愮ず] 杩炵画 " + fmt.Sprintf("%d", consecutiveJSONTruncations) + " 娆?write_file 璋冪敤澶辫触銆? +
+						"甯歌鍘熷洜锛氬唴瀹硅繃闀垮鑷?JSON 鍙傛暟琚埅鏂垨蹇呴渶瀛楁锛坧ath锛夎閬楁紡銆? +
+						"璇峰皢鏂囦欢鍐呭鎷嗗垎涓哄娆″啓鍏ワ細绗竴娆＄敤 write_file(path=\"鏂囦欢璺緞\", content=\"鍓嶅崐閮ㄥ垎\") 鍐欏叆鍓嶅崐閮ㄥ垎锛堜笉瓒呰繃 5000 瀛楃锛夛紝鍚庣画鐢?write_file(path=\"鏂囦欢璺緞\", mode=\"append\", content=\"鍚庡崐閮ㄥ垎\") 閫愬潡杩藉姞銆? +
+						"鈿狅笍 姣忔璋冪敤蹇呴』鍖呭惈 path 鍙傛暟銆?
 					conversation = append(conversation, map[string]string{
 						"role":    "system",
 						"content": jsonHint,
@@ -8898,7 +8915,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				consecutiveJSONTruncations = 0
 			}
 
-			// --- Harness: DriftDetector — record tool_call and check for drift ---
+			// --- Harness: DriftDetector 鈥?record tool_call and check for drift ---
 			if loopDriftDetector != nil {
 				argsHash := fmt.Sprintf("%x", sha256.Sum256([]byte(tc.Function.Arguments)))
 				resultHash := fmt.Sprintf("%x", sha256.Sum256([]byte(truncated)))
@@ -8911,7 +8928,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				})
 				driftResult := loopDriftDetector.DetectDrift()
 				if driftResult.Drifted {
-					log.Printf("[Harness] 漂移检测触发: pattern=%s needHuman=%v replanCount=%d tool=%s", driftResult.Pattern, driftResult.NeedHumanHelp, loopDriftDetector.ReplanCount(), driftResult.DriftedTool)
+					log.Printf("[Harness] 婕傜Щ妫€娴嬭Е鍙? pattern=%s needHuman=%v replanCount=%d tool=%s", driftResult.Pattern, driftResult.NeedHumanHelp, loopDriftDetector.ReplanCount(), driftResult.DriftedTool)
 					conversation = append(conversation, map[string]string{
 						"role": "system", "content": driftResult.ReplanPrompt,
 					})
@@ -8924,7 +8941,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						h.sessionDriftTool.Store(userID, driftResult.DriftedTool)
 
 						resp := &IMAgentResponse{
-							Text: fmt.Sprintf("⚠️ Agent 在执行过程中反复调用 %s 未能成功，已停止尝试。请检查任务要求或提供新的指示。", driftResult.DriftedTool),
+							Text: fmt.Sprintf("鈿狅笍 Agent 鍦ㄦ墽琛岃繃绋嬩腑鍙嶅璋冪敤 %s 鏈兘鎴愬姛锛屽凡鍋滄灏濊瘯銆傝妫€鏌ヤ换鍔¤姹傛垨鎻愪緵鏂扮殑鎸囩ず銆?, driftResult.DriftedTool),
 						}
 						h.saveConversationHistoryTimed(userID, history, resp)
 						return resp
@@ -9046,7 +9063,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if len(choice.Message.ToolCalls) > 0 && codingToolsThisIter*100/len(choice.Message.ToolCalls) >= 80 {
 				codingIterCount++
 			} else if len(choice.Message.ToolCalls) == 0 {
-				// No tool calls — don't reset, the LLM might be thinking
+				// No tool calls 鈥?don't reset, the LLM might be thinking
 				// between coding bursts.
 			} else {
 				codingIterCount = 0 // non-coding tools, reset
@@ -9055,7 +9072,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if codingIterCount >= codingIterBudgetHard {
 				log.Printf("[coding-budget] hard limit reached: %d consecutive coding iterations, force-returning (iter=%d)", codingIterCount, iteration)
 				phase.Stage = agentStageFinalize
-				summaryText := fmt.Sprintf("⏸️ 编码执行已达到 %d 轮迭代上限。已完成的工作已保存。\n\n如需继续，请发送「继续」。", codingIterCount)
+				summaryText := fmt.Sprintf("鈴革笍 缂栫爜鎵ц宸茶揪鍒?%d 杞凯浠ｄ笂闄愩€傚凡瀹屾垚鐨勫伐浣滃凡淇濆瓨銆俓n\n濡傞渶缁х画锛岃鍙戦€併€岀户缁€嶃€?, codingIterCount)
 				finalResp := &IMAgentResponse{Text: summaryText}
 				if voiceData != "" {
 					finalResp.VoiceData = voiceData
@@ -9072,7 +9089,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				systemMessagesStart := len(conversation)
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": fmt.Sprintf("[系统提示] 你已连续执行了 %d 轮编码操作。请在完成当前文件后暂停，向用户汇报进度（已完成哪些文件、还剩哪些），然后等待用户确认是否继续。", codingIterCount),
+					"content": fmt.Sprintf("[绯荤粺鎻愮ず] 浣犲凡杩炵画鎵ц浜?%d 杞紪鐮佹搷浣溿€傝鍦ㄥ畬鎴愬綋鍓嶆枃浠跺悗鏆傚仠锛屽悜鐢ㄦ埛姹囨姤杩涘害锛堝凡瀹屾垚鍝簺鏂囦欢銆佽繕鍓╁摢浜涳級锛岀劧鍚庣瓑寰呯敤鎴风‘璁ゆ槸鍚︾户缁€?, codingIterCount),
 				})
 				recordSystemMessages(systemMessagesStart, conversation)
 			}
@@ -9081,12 +9098,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// If a direct screenshot was captured, return it immediately as an image response.
 		// However, if the screenshot was part of a multi-tool call (LLM called screenshot
 		// alongside other tools) or the agent has been actively working (prior tool calls
-		// in earlier iterations), the screenshot is an intermediate step — let the loop
+		// in earlier iterations), the screenshot is an intermediate step 鈥?let the loop
 		// continue so the LLM can proceed with the remaining task. The screenshot result
-		// is already in the conversation as a tool_result ("截图已成功捕获...").
+		// is already in the conversation as a tool_result ("鎴浘宸叉垚鍔熸崟鑾?..").
 		//
 		// We use totalToolCallsInLoop <= 1 instead of iteration == 0 because the LLM
-		// might output a preamble ("好的，我来截屏") in iteration 0 and call screenshot
+		// might output a preamble ("濂界殑锛屾垜鏉ユ埅灞?) in iteration 0 and call screenshot
 		// in iteration 1. As long as screenshot is the ONLY tool call so far, it's a
 		// pure screenshot request and should return immediately.
 		screenshotIsOnlyAction := len(choice.Message.ToolCalls) <= 1 && totalToolCallsInLoop <= 1
@@ -9101,7 +9118,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			if platform == "desktop" {
 				filePath, err := h.saveScreenshotToFile(pendingImageKey)
 				if err != nil {
-					return &IMAgentResponse{Text: fmt.Sprintf("📷 截图已捕获，但保存文件失败: %s", err.Error())}
+					return &IMAgentResponse{Text: fmt.Sprintf("馃摲 鎴浘宸叉崟鑾凤紝浣嗕繚瀛樻枃浠跺け璐? %s", err.Error())}
 				}
 				// Generate a small thumbnail (reuse the base64 data, frontend will size it)
 				thumb := pendingImageKey
@@ -9111,7 +9128,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 						thumb = downsized
 					}
 				}
-				resp.Text = "📷 截图已保存"
+				resp.Text = "馃摲 鎴浘宸蹭繚瀛?
 				resp.LocalFilePath = filePath
 				resp.ThumbnailBase64 = thumb
 				return resp
@@ -9120,7 +9137,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			resp.ImageKey = pendingImageKey
 			return resp
 		} else if pendingImageKey != "" {
-			// Screenshot is an intermediate step — save the file but don't
+			// Screenshot is an intermediate step 鈥?save the file but don't
 			// stop the loop. The LLM will continue with the next step.
 			if platform == "desktop" {
 				if filePath, err := h.saveScreenshotToFile(pendingImageKey); err == nil {
@@ -9135,7 +9152,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				}
 			} else {
 				// Non-desktop (IM): save to file so the path is available in
-				// the tool result text. The LLM already received "截图已成功捕获"
+				// the tool result text. The LLM already received "鎴浘宸叉垚鍔熸崟鑾?
 				// as tool_result and can reference the screenshot in its response.
 				if filePath, err := h.saveScreenshotToFile(pendingImageKey); err == nil {
 					log.Printf("[screenshot] intermediate screenshot (IM) saved to %s, loop continues (iteration=%d toolCalls=%d)", filePath, iteration, len(choice.Message.ToolCalls))
@@ -9144,12 +9161,12 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		// If screenshot was already delivered via session.image channel,
-		// stop the loop immediately — UNLESS the screenshot is an intermediate
+		// stop the loop immediately 鈥?UNLESS the screenshot is an intermediate
 		// step in a larger task. When the LLM called multiple tools in this
 		// iteration or has been actively working (iteration > 0), the screenshot
 		// is just a "check the screen" step and the LLM should continue.
 		if screenshotAlreadySent && screenshotIsOnlyAction {
-			resp := &IMAgentResponse{Text: "📷 截图已发送"}
+			resp := &IMAgentResponse{Text: "馃摲 鎴浘宸插彂閫?}
 			attachLLMTelemetry(resp)
 			h.saveConversationHistoryTimed(userID, history, resp)
 			return resp
@@ -9173,7 +9190,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				for _, pf := range pendingFiles {
 					filePath, err := h.saveFileDataToLocal(pf.name, pf.data)
 					if err != nil {
-						failLines = append(failLines, fmt.Sprintf("📄 %s 保存失败: %s", pf.name, err.Error()))
+						failLines = append(failLines, fmt.Sprintf("馃搫 %s 淇濆瓨澶辫触: %s", pf.name, err.Error()))
 						continue
 					}
 					savedPaths = append(savedPaths, filePath)
@@ -9181,10 +9198,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 					// Forward to IM channels if requested and sender is configured.
 					if pf.forwardIM {
 						if h.imFileSender == nil {
-							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但未连接到 Hub，无法转发到 IM", pf.name))
+							failLines = append(failLines, fmt.Sprintf("馃搫 %s 宸蹭繚瀛樺埌鏈湴锛屼絾鏈繛鎺ュ埌 Hub锛屾棤娉曡浆鍙戝埌 IM", pf.name))
 						} else if err := h.imFileSender(pf.data, pf.name, pf.mimeType, pf.message); err != nil {
 							log.Printf("[IMMessageHandler] IM forward failed for %s: %v", pf.name, err)
-							failLines = append(failLines, fmt.Sprintf("📄 %s 已保存到本地，但发送到 IM 失败: %s", pf.name, err.Error()))
+							failLines = append(failLines, fmt.Sprintf("馃搫 %s 宸蹭繚瀛樺埌鏈湴锛屼絾鍙戦€佸埌 IM 澶辫触: %s", pf.name, err.Error()))
 						} else {
 							imForwardedCount++
 						}
@@ -9194,7 +9211,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// so the frontend can render clickable links without duplication.
 				text := strings.Join(failLines, "\n")
 				if imForwardedCount > 0 {
-					imNote := fmt.Sprintf("📨 已将 %d 个文件发送到 IM 通道", imForwardedCount)
+					imNote := fmt.Sprintf("馃摠 宸插皢 %d 涓枃浠跺彂閫佸埌 IM 閫氶亾", imForwardedCount)
 					if text != "" {
 						text = imNote + "\n" + text
 					} else {
@@ -9237,20 +9254,20 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		// doc), force-return after executing delivery tools (open, memory,
 		// task, etc.) instead of continuing to the next iteration.
 		//
-		// IMPORTANT: Same phase-awareness as the no-tool branch — when the
+		// IMPORTANT: Same phase-awareness as the no-tool branch 鈥?when the
 		// WorkflowEngine has an active workflow, defer to IsPhaseNeedsConfirm()
 		// instead of blindly using gateConfig.active. This prevents premature
 		// exit during the implementation phase where NeedsConfirm=false.
 		needsConfirmToolBranch := false
 		if gateConfig.active && iteration > 0 {
 			if h.getWorkflowEngine() != nil && h.getWorkflowEngine().GetActiveWorkflow(userID) != nil {
-				// Engine owns the workflow — delegate to phase-aware check.
+				// Engine owns the workflow 鈥?delegate to phase-aware check.
 				needsConfirmToolBranch = h.getWorkflowEngine().IsPhaseNeedsConfirm(userID)
 				if !needsConfirmToolBranch {
 					log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: engine workflow active, phase NeedsConfirm=false (iter=%d user=%s)", iteration, userID)
 				}
 			} else {
-				// No engine workflow — pure steering-driven flow.
+				// No engine workflow 鈥?pure steering-driven flow.
 				needsConfirmToolBranch = true
 			}
 		}
@@ -9262,14 +9279,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		//
 		// EXCEPTION: When the semantic intent classifier has determined the
 		// user's message is maintenance/bug_fix/continuation (not a workflow
-		// phase document), skip the engine gate. This prevents "改进优化下这个
-		// 技能？" from being force-returned as a phase document when a
+		// phase document), skip the engine gate. This prevents "鏀硅繘浼樺寲涓嬭繖涓?		// 鎶€鑳斤紵" from being force-returned as a phase document when a
 		// presentation_design workflow happens to be active.
 		if !needsConfirmToolBranch && iteration > 0 && h.getWorkflowEngine() != nil {
 			semanticBypass := false
 			switch gateConfig.intent {
 			case intentCoding:
-				// maintenance or bug_fix — gateConfig.active is false but intent is coding.
+				// maintenance or bug_fix 鈥?gateConfig.active is false but intent is coding.
 				// The user is doing maintenance work, not generating a workflow phase doc.
 				if !gateConfig.active {
 					semanticBypass = true
@@ -9286,7 +9302,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			}
 		}
 		// NOTE: No HasPhaseOutput check here. Same reasoning as the no-tool
-		// branch — the gate relies on isSubstantivePhaseDocument() to
+		// branch 鈥?the gate relies on isSubstantivePhaseDocument() to
 		// distinguish preamble from deliverable. HasPhaseOutput is a
 		// post-loop persistence flag that creates a blind spot during
 		// first execution.
@@ -9297,7 +9313,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		//
 		// EXCEPTION: When gateConfig.active is true, the current message
 		// is a NEW coding task that needs the three-phase flow. Do NOT
-		// bypass — let the Coding Tool Gate enforce the three-phase flow.
+		// bypass 鈥?let the Coding Tool Gate enforce the three-phase flow.
 		if needsConfirmToolBranch && ctx.SkipNeedsConfirmGate && !gateConfig.active {
 			needsConfirmToolBranch = false
 			log.Printf("[workflow-gate] NeedsConfirm tool-branch bypassed: pending confirm classified as 'other' (iter=%d user=%s)", iteration, userID)
@@ -9360,14 +9376,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				h.saveConversationHistoryTimed(userID, history, finalResp)
 				return finalResp
 			} else if trimmedAfterTools != "" && !looksLikeNoToolStallReply(msgContent) {
-				// isSubstantivePhaseDocument was false — short preamble after tool execution, let the loop continue.
+				// isSubstantivePhaseDocument was false 鈥?short preamble after tool execution, let the loop continue.
 				log.Printf("[workflow-gate] NeedsConfirm (tool branch): skipping non-substantive preamble (len=%d), allowing loop to continue", len([]rune(trimmedAfterTools)))
 			}
 		}
 
 		// --- Apply pending context compression ---
 		// Compress only `history` (the persistence source of truth).
-		// `conversation` is NOT directly modified — trimConversation at the
+		// `conversation` is NOT directly modified 鈥?trimConversation at the
 		// start of the next iteration will naturally trim it based on the
 		// token budget. This avoids the dual-array desync problem:
 		// conversation contains injected system messages (GoalAnchor,
@@ -9383,7 +9399,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	}
 
 	// When the loop exits due to cancellation, save history and return a
-	// clean message. The agent loop must never call memory.Clear — history
+	// clean message. The agent loop must never call memory.Clear 鈥?history
 	// lifecycle is managed by the caller, not the loop itself.
 	if ctx.IsCancelled() {
 		return h.cancelledExitResponse(userID, history, userText)
@@ -9393,7 +9409,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 	// auto-continue one extra round so the agent can check session status,
 	// then ask the user whether to keep watching.
 	if h.manager != nil && h.manager.HasActiveSessions() {
-		sendProgress("⏳ 推理轮次已用完，但编程会话仍在运行，正在检查状态…")
+		sendProgress("鈴?鎺ㄧ悊杞宸茬敤瀹岋紝浣嗙紪绋嬩細璇濅粛鍦ㄨ繍琛岋紝姝ｅ湪妫€鏌ョ姸鎬佲€?)
 
 		// Run one bonus iteration to let the agent observe current session state.
 		conversation = autoCompressConversation(conversation, cfg, httpClient)
@@ -9477,7 +9493,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				// Guard: reject truncation-blocked tools in bonus round too.
 				var toolResult string
 				if phase.TruncationBlockedTools[tc.Function.Name] {
-					toolResult = fmt.Sprintf("[系统拒绝] %s 工具已被临时禁用（参数过长反复截断）。请使用 bash 工具通过 Python 脚本或 heredoc 写入文件。", tc.Function.Name)
+					toolResult = fmt.Sprintf("[绯荤粺鎷掔粷] %s 宸ュ叿宸茶涓存椂绂佺敤锛堝弬鏁拌繃闀垮弽澶嶆埅鏂級銆傝浣跨敤 bash 宸ュ叿閫氳繃 Python 鑴氭湰鎴?heredoc 鍐欏叆鏂囦欢銆?, tc.Function.Name)
 				} else {
 					toolResult = h.executeTool(tc.Function.Name, tc.Function.Arguments, toolOnProgress)
 				}
@@ -9487,7 +9503,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 				// Handle ask_user in background loop: skip (background tasks shouldn't ask questions).
 				if IsAskUserResult(toolResult) {
-					toolResult = "ask_user 在后台任务中不可用，请直接做出决定。"
+					toolResult = "ask_user 鍦ㄥ悗鍙颁换鍔′腑涓嶅彲鐢紝璇风洿鎺ュ仛鍑哄喅瀹氥€?
 				}
 
 				// Handle delegate_task: inject sub-agent context.
@@ -9497,7 +9513,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 				// Pin conditional tools to session (same as main loop).
 				if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) &&
-					!strings.HasPrefix(toolResult, "未知工具") && !strings.HasPrefix(toolResult, "工具执行异常") {
+					!strings.HasPrefix(toolResult, "鏈煡宸ュ叿") && !strings.HasPrefix(toolResult, "宸ュ叿鎵ц寮傚父") {
 					h.toolRouter.ActivateSessionTool(tc.Function.Name)
 					log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
 				}
@@ -9522,15 +9538,15 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		}
 
 		h.saveConversationHistoryTimed(userID, history, &IMAgentResponse{})
-		resp := &IMAgentResponse{Text: "🔔 编程会话还在运行中。回复「继续」可以继续看护，回复其它内容正常对话。", Deferred: true}
+		resp := &IMAgentResponse{Text: "馃敂 缂栫▼浼氳瘽杩樺湪杩愯涓€傚洖澶嶃€岀户缁€嶅彲浠ョ户缁湅鎶わ紝鍥炲鍏跺畠鍐呭姝ｅ父瀵硅瘽銆?, Deferred: true}
 		attachLLMTelemetry(resp)
 		attachPendingVisibleArtifacts(resp)
 		return resp
 	}
 
-	// --- Create unfinished task slot so "继续" can resume with context ---
+	// --- Create unfinished task slot so "缁х画" can resume with context ---
 	finalIteration := ctx.Iteration()
-	log.Printf("[AgentLoop] ⚠️ MAX ROUNDS EXHAUSTED loop=%s iteration=%d effectiveMax=%d configMax=%d loopOverride=%d grace=%d kind=%d user=%q task=%q elapsed=%s",
+	log.Printf("[AgentLoop] 鈿狅笍 MAX ROUNDS EXHAUSTED loop=%s iteration=%d effectiveMax=%d configMax=%d loopOverride=%d grace=%d kind=%d user=%q task=%q elapsed=%s",
 		ctx.ID, finalIteration, effectiveMax, maxIter, h.loopMaxOverride, chatFinalizeGrace, ctx.Kind, userID, truncateRunes(userText, 80), time.Since(conversationStartedAt))
 	originalTask := extractOriginalUserTask(history)
 	progressSummary := extractProgressSummary(history)
@@ -9543,14 +9559,14 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 			Status:       "max_rounds_reached",
 			LastTask:     originalTask,
 			Summary:      progressSummary,
-			ResumePrompt: "用户发送「继续」以恢复此任务。请基于对话历史中已完成的工作，继续完成剩余部分。不要重复已完成的步骤。\n",
+			ResumePrompt: "鐢ㄦ埛鍙戦€併€岀户缁€嶄互鎭㈠姝や换鍔°€傝鍩轰簬瀵硅瘽鍘嗗彶涓凡瀹屾垚鐨勫伐浣滐紝缁х画瀹屾垚鍓╀綑閮ㄥ垎銆備笉瑕侀噸澶嶅凡瀹屾垚鐨勬楠ゃ€俓n",
 			Source:       "max_rounds",
 		})
 		h.memory.BindUnfinishedSlot(userID, slotID)
 		log.Printf("[MaxRounds] created unfinished slot %s for user %s, task=%q", slotID, userID, truncateRunes(originalTask, 80))
 	}
 
-	resp := &IMAgentResponse{Text: "(已达到最大推理轮次，请继续发送消息以完成任务)"}
+	resp := &IMAgentResponse{Text: "(宸茶揪鍒版渶澶ф帹鐞嗚疆娆★紝璇风户缁彂閫佹秷鎭互瀹屾垚浠诲姟)"}
 	attachLLMTelemetry(resp)
 	attachPendingVisibleArtifacts(resp)
 	// Nudge injection at max-rounds exit.
@@ -9613,11 +9629,11 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 }
 
 // ---------------------------------------------------------------------------
-// Attachment → LLM Content Builder
+// Attachment 鈫?LLM Content Builder
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// SteeringWorkflowDetector — lightweight detector for steering-driven coding
+// SteeringWorkflowDetector 鈥?lightweight detector for steering-driven coding
 // workflows. When the workflow engine has no active workflow for the user but
 // the LLM is executing a coding task via steering rules (coding-workflow.md),
 // this detector identifies phase documents from tool calls and emits the same
@@ -9630,7 +9646,7 @@ func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string,
 type SteeringWorkflowDetector struct {
 	detected               bool              // whether a coding workflow has been detected
 	suggestMaximizeEmitted bool              // whether suggest_maximize event has been emitted
-	phaseDocuments         map[string]string // detected phase documents (phaseID → content)
+	phaseDocuments         map[string]string // detected phase documents (phaseID 鈫?content)
 	userID                 string            // current user ID
 }
 
@@ -9654,8 +9670,8 @@ func (d *SteeringWorkflowDetector) isCodingTask(message string) bool {
 
 	// Keywords aligned with coding-workflow.md steering rules.
 	keywords := []string{
-		"开发", "编写", "实现", "创建", "修改代码", "重构",
-		"修 bug", "设计架构", "添加功能", "新增功能",
+		"寮€鍙?, "缂栧啓", "瀹炵幇", "鍒涘缓", "淇敼浠ｇ爜", "閲嶆瀯",
+		"淇?bug", "璁捐鏋舵瀯", "娣诲姞鍔熻兘", "鏂板鍔熻兘",
 	}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
@@ -9673,30 +9689,30 @@ func (d *SteeringWorkflowDetector) matchPhaseID(fileName string) string {
 	if lower == "" {
 		return ""
 	}
-	// Check tasks BEFORE design — task documents often reference "技术设计"
+	// Check tasks BEFORE design 鈥?task documents often reference "鎶€鏈璁?
 	// in their body, which would cause a false match on the design case.
 	switch {
-	case strings.Contains(lower, "任务拆分") ||
-		strings.Contains(lower, "任务列表") ||
-		strings.Contains(lower, "任务分解") ||
-		strings.Contains(lower, "开发任务") ||
+	case strings.Contains(lower, "浠诲姟鎷嗗垎") ||
+		strings.Contains(lower, "浠诲姟鍒楄〃") ||
+		strings.Contains(lower, "浠诲姟鍒嗚В") ||
+		strings.Contains(lower, "寮€鍙戜换鍔?) ||
 		strings.Contains(lower, "tasks") ||
 		strings.Contains(lower, "task_breakdown") ||
 		strings.Contains(lower, "task breakdown"):
 		return "tasks"
-	case strings.Contains(lower, "需求文档") ||
-		strings.Contains(lower, "需求分析") ||
-		strings.Contains(lower, "功能需求") ||
-		strings.Contains(lower, "项目需求") ||
-		strings.Contains(lower, "需求背景") ||
-		strings.Contains(lower, "需求概述") ||
+	case strings.Contains(lower, "闇€姹傛枃妗?) ||
+		strings.Contains(lower, "闇€姹傚垎鏋?) ||
+		strings.Contains(lower, "鍔熻兘闇€姹?) ||
+		strings.Contains(lower, "椤圭洰闇€姹?) ||
+		strings.Contains(lower, "闇€姹傝儗鏅?) ||
+		strings.Contains(lower, "闇€姹傛杩?) ||
 		strings.Contains(lower, "requirements"):
 		return "requirements"
-	case strings.Contains(lower, "技术设计") ||
-		strings.Contains(lower, "设计文档") ||
-		strings.Contains(lower, "架构设计") ||
-		strings.Contains(lower, "接口设计") ||
-		strings.Contains(lower, "技术方案") ||
+	case strings.Contains(lower, "鎶€鏈璁?) ||
+		strings.Contains(lower, "璁捐鏂囨。") ||
+		strings.Contains(lower, "鏋舵瀯璁捐") ||
+		strings.Contains(lower, "鎺ュ彛璁捐") ||
+		strings.Contains(lower, "鎶€鏈柟妗?) ||
 		strings.Contains(lower, "design"):
 		return "design"
 	default:

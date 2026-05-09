@@ -419,6 +419,61 @@ func TestApplyCreditUsageHonorsPeriodLimits(t *testing.T) {
 	}
 }
 
+func TestApplyCreditUsageHonorsPeriodLimitsForUnlimitedGrant(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+		}},
+		Grants: []Grant{{
+			ID:             "g1",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   0,
+			PeriodLimits:   CreditPeriodLimits{FiveHour: 10},
+		}},
+	}
+
+	used := ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"coding-basic"}, 6, now)
+	if used != 6 {
+		t.Fatalf("expected first usage 6, got %v", used)
+	}
+	if got := reg.Grants[0].PeriodUsage.FiveHour.CreditsUsed; got != 6 {
+		t.Fatalf("five-hour usage = %v, want 6", got)
+	}
+	if allowed, _, code, _, credits, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"coding-basic"}, now); !allowed || code != "" || credits != 4 {
+		t.Fatalf("expected unlimited grant to report remaining period credits before limit is exhausted, allowed=%v code=%q credits=%v", allowed, code, credits)
+	}
+
+	used = ApplyCreditUsageToRegistry(reg, "user@example.com", []string{"coding-basic"}, 10, now)
+	if used != 4 {
+		t.Fatalf("expected second usage to stop at remaining period limit 4, got %v", used)
+	}
+	allowed, _, code, _, _, _, _ := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"coding-basic"}, now)
+	if allowed || code != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("expected exhausted period limit, allowed=%v code=%q", allowed, code)
+	}
+	statusNow := time.Now().UTC()
+	reg.Grants[0].StartsAt = statusNow.Add(-time.Hour)
+	reg.Grants[0].ExpiresAt = statusNow.Add(24 * time.Hour)
+	reg.Grants[0].PeriodUsage.FiveHour = GrantUsageWindow{WindowStart: fiveHourWindowStart(statusNow), CreditsUsed: 10}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if status.Active || len(status.CreditGrants) != 1 || status.CreditGrants[0].Status != "period_limited" {
+		t.Fatalf("expected resolved status to show unlimited grant as period-limited, got %#v", status)
+	}
+	if len(status.ActiveGrants) != 0 {
+		t.Fatalf("period-limited unlimited grant should not be exposed as active_grants, got %#v", status.ActiveGrants)
+	}
+}
+
 func TestRedeemCardCopiesPeriodLimitsToGrant(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()
@@ -910,5 +965,423 @@ func TestExplainEntitlementDiagnosticIncludesBillingRoutes(t *testing.T) {
 	}
 	if route.CreditsAvailable != 5 {
 		t.Fatalf("credits available = %v, want 5", route.CreditsAvailable)
+	}
+}
+
+func TestResolveStatusReportsPeriodLimitInactiveReason(t *testing.T) {
+	now := time.Now().UTC()
+	windowStart := fiveHourWindowStart(now)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "grant-group",
+			Name:         "Grant",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}},
+		}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+			PeriodLimits:   CreditPeriodLimits{FiveHour: 10},
+			PeriodUsage:    CreditPeriodUsage{FiveHour: GrantUsageWindow{WindowStart: windowStart, CreditsUsed: 10}},
+		}},
+	}
+	reg.Normalize()
+
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if status.Active {
+		t.Fatalf("status active = true, want false: %#v", status)
+	}
+	if len(status.InactiveReasons) == 0 || !strings.Contains(status.InactiveReasons[0], "current period credit limit is exhausted") {
+		t.Fatalf("expected period-limit inactive reason, got %#v", status.InactiveReasons)
+	}
+}
+
+func TestGrantSummaryReportsPeriodLimitRetry(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	windowStart := fiveHourWindowStart(now)
+	grant := Grant{
+		ID:             "g1",
+		Email:          "user@example.com",
+		ServiceGroupID: "coding-basic",
+		Source:         "card",
+		StartsAt:       now.Add(-time.Hour),
+		ExpiresAt:      now.Add(24 * time.Hour),
+		CreditsTotal:   100,
+		CreditsUsed:    10,
+		PeriodLimits:   CreditPeriodLimits{FiveHour: 10},
+		PeriodUsage:    CreditPeriodUsage{FiveHour: GrantUsageWindow{WindowStart: windowStart, CreditsUsed: 10}},
+	}
+
+	summary := grantSummary(grant, now)
+	if summary.Active || summary.Status != "period_limited" {
+		t.Fatalf("expected period-limited inactive grant, got %#v", summary)
+	}
+	if summary.RetryAfterSeconds <= 0 {
+		t.Fatalf("expected retry_after_seconds, got %#v", summary)
+	}
+	wantRetryAt := windowStart.Add(5 * time.Hour).Format(time.RFC3339)
+	if summary.RetryAfterAt != wantRetryAt {
+		t.Fatalf("retry_after_at = %q, want %q", summary.RetryAfterAt, wantRetryAt)
+	}
+}
+
+func TestGrantSummaryReportsQueuedRetry(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	startsAt := now.Add(90 * time.Minute)
+	grant := Grant{
+		ID:             "g1",
+		Email:          "user@example.com",
+		ServiceGroupID: "coding-basic",
+		Source:         "card",
+		StartsAt:       startsAt,
+		ExpiresAt:      startsAt.Add(24 * time.Hour),
+		CreditsTotal:   100,
+	}
+
+	summary := grantSummary(grant, now)
+	if summary.Active || summary.Status != "queued" {
+		t.Fatalf("expected queued inactive grant, got %#v", summary)
+	}
+	if summary.RetryAfterSeconds != int64((90 * time.Minute).Seconds()) {
+		t.Fatalf("retry_after_seconds = %d", summary.RetryAfterSeconds)
+	}
+	if summary.RetryAfterAt != startsAt.Format(time.RFC3339) {
+		t.Fatalf("retry_after_at = %q, want %q", summary.RetryAfterAt, startsAt.Format(time.RFC3339))
+	}
+}
+
+func TestCreditGrantSummariesKeepsExhaustedGrantVisible(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   10,
+			CreditsUsed:    10,
+		}},
+	}
+	reg.Normalize()
+
+	summaries := creditGrantSummaries(reg, "user@example.com", now)
+	if len(summaries) != 1 {
+		t.Fatalf("summaries len = %d, want 1", len(summaries))
+	}
+	if summaries[0].Active || summaries[0].Status != "exhausted" {
+		t.Fatalf("expected exhausted grant to remain visible, got %#v", summaries[0])
+	}
+}
+
+func TestCreditGrantSummariesPrioritizesQueuedOverExhausted(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	startsAt := now.Add(2 * time.Hour)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Grants: []Grant{{
+			ID:             "grant-old",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-24 * time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    100,
+		}, {
+			ID:             "grant-next",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       startsAt,
+			ExpiresAt:      startsAt.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}},
+	}
+	reg.Normalize()
+
+	summaries := creditGrantSummaries(reg, "user@example.com", now)
+	if len(summaries) != 2 {
+		t.Fatalf("summaries len = %d, want 2", len(summaries))
+	}
+	if summaries[0].Status != "queued" || summaries[1].Status != "exhausted" {
+		t.Fatalf("expected queued grant before exhausted grant, got %#v", summaries)
+	}
+}
+
+func TestCreditGrantSummariesKeepsLatestExpiredGrantVisibleWhenNoCurrentGrant(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Grants: []Grant{{
+			ID:             "old-expired",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-72 * time.Hour),
+			ExpiresAt:      now.Add(-48 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    20,
+		}, {
+			ID:             "latest-expired",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-48 * time.Hour),
+			ExpiresAt:      now.Add(-time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+		}},
+	}
+	reg.Normalize()
+
+	summaries := creditGrantSummaries(reg, "user@example.com", now)
+	if len(summaries) != 1 {
+		t.Fatalf("summaries len = %d, want 1", len(summaries))
+	}
+	if summaries[0].Status != "expired" || summaries[0].ServiceGroupID != "coding-basic" || summaries[0].ExpiresAt != now.Add(-time.Hour) {
+		t.Fatalf("expected latest expired grant summary, got %#v", summaries[0])
+	}
+}
+
+func TestCreditGrantSummariesOmitsExpiredGrantWhenCurrentGrantExists(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Grants: []Grant{{
+			ID:             "expired",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-72 * time.Hour),
+			ExpiresAt:      now.Add(-time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+		}, {
+			ID:             "active",
+			Email:          "user@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+		}},
+	}
+	reg.Normalize()
+
+	summaries := creditGrantSummaries(reg, "user@example.com", now)
+	if len(summaries) != 1 {
+		t.Fatalf("summaries len = %d, want 1", len(summaries))
+	}
+	if summaries[0].Status != "active" {
+		t.Fatalf("expected only current active grant summary, got %#v", summaries)
+	}
+}
+
+func TestBillingEligibilityReportsPeriodLimit(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	windowStart := fiveHourWindowStart(now)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+			PeriodLimits:   CreditPeriodLimits{FiveHour: 10},
+			PeriodUsage:    CreditPeriodUsage{FiveHour: GrantUsageWindow{WindowStart: windowStart, CreditsUsed: 10}},
+		}},
+	}
+	reg.Normalize()
+
+	allowed, policy, code, message, credits, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_PERIOD_LIMITED" || credits != 0 || !hasActiveGrant || !hasAnyGrant {
+		t.Fatalf("unexpected period-limit eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v message=%q", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant, message)
+	}
+	if !strings.Contains(message, windowStart.Add(5*time.Hour).Format(time.RFC3339)) {
+		t.Fatalf("expected retry time in message, got %q", message)
+	}
+
+}
+
+func TestBillingEligibilityReportsQueuedGrant(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	startsAt := now.Add(2 * time.Hour)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       startsAt,
+			ExpiresAt:      startsAt.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}},
+	}
+	reg.Normalize()
+
+	allowed, policy, code, message, credits, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_GRANT_QUEUED" || credits != 0 || hasActiveGrant || !hasAnyGrant {
+		t.Fatalf("unexpected queued eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v message=%q", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant, message)
+	}
+	if !strings.Contains(message, startsAt.Format(time.RFC3339)) {
+		t.Fatalf("expected grant start time in message, got %q", message)
+	}
+}
+
+func TestBillingEligibilityReportsExpiredGrant(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-48 * time.Hour),
+			ExpiresAt:      now.Add(-time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+		}},
+	}
+	reg.Normalize()
+
+	allowed, policy, code, message, credits, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_GRANT_EXPIRED" || credits != 0 || hasActiveGrant || !hasAnyGrant {
+		t.Fatalf("unexpected expired eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v message=%q", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant, message)
+	}
+	if !strings.Contains(message, "expired") {
+		t.Fatalf("expected expired message, got %q", message)
+	}
+}
+
+func TestBillingEligibilityReportsQueuedGrantWhenCurrentGrantExhausted(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	startsAt := now.Add(2 * time.Hour)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-old",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       now.Add(-24 * time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    100,
+		}, {
+			ID:             "grant-next",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "card",
+			StartsAt:       startsAt,
+			ExpiresAt:      startsAt.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}},
+	}
+	reg.Normalize()
+
+	allowed, policy, code, message, credits, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_GRANT_QUEUED" || credits != 0 || !hasActiveGrant || !hasAnyGrant {
+		t.Fatalf("unexpected exhausted+queued eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v message=%q", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant, message)
+	}
+	if !strings.Contains(message, startsAt.Format(time.RFC3339)) {
+		t.Fatalf("expected future grant start time in message, got %q", message)
+	}
+}
+
+func TestBillingEligibilityAllowsUnlimitedGrant(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "grant-group",
+			Name:         "Grant",
+			AccessPolicy: AccessPolicyGrantRequired,
+			Models:       []ModelServiceModel{{Name: "gpt-5", ProviderIDs: []string{"provider-a"}}},
+		}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "admin",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.AddDate(0, 0, 30),
+			CreditsTotal:   0,
+		}},
+	}
+	reg.Normalize()
+
+	allowed, policy, code, message, credits, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if !allowed || policy != AccessPolicyGrantRequired || code != "" || message != "" || credits != 0 || !hasActiveGrant || !hasAnyGrant {
+		t.Fatalf("unexpected unlimited eligibility: allowed=%v policy=%q code=%q message=%q credits=%v active=%v any=%v", allowed, policy, code, message, credits, hasActiveGrant, hasAnyGrant)
+	}
+
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if !status.Active || !status.SkipLLMConfig {
+		t.Fatalf("expected unlimited grant to keep service active, got %#v", status)
+	}
+}
+
+func TestBillingEligibilityReportsPeriodLimitForUnlimitedGrant(t *testing.T) {
+	now := time.Date(2026, 5, 1, 8, 30, 0, 0, time.UTC)
+	windowStart := fiveHourWindowStart(now)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "grant-group", Name: "Grant", AccessPolicy: AccessPolicyGrantRequired}},
+		Grants: []Grant{{
+			ID:             "grant-1",
+			Email:          "user@example.com",
+			ServiceGroupID: "grant-group",
+			Source:         "admin",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.AddDate(0, 0, 30),
+			CreditsTotal:   0,
+			PeriodLimits:   CreditPeriodLimits{FiveHour: 10},
+			PeriodUsage:    CreditPeriodUsage{FiveHour: GrantUsageWindow{WindowStart: windowStart, CreditsUsed: 10}},
+		}},
+	}
+	reg.Normalize()
+
+	allowed, policy, code, message, credits, hasActiveGrant, hasAnyGrant := BillingEligibilityForServiceGroups(reg, "user@example.com", []string{"grant-group"}, now)
+	if allowed || policy != AccessPolicyGrantRequired || code != "LLM_SERVICE_PERIOD_LIMITED" || credits != 0 || !hasActiveGrant || !hasAnyGrant {
+		t.Fatalf("unexpected unlimited period-limit eligibility: allowed=%v policy=%q code=%q credits=%v active=%v any=%v message=%q", allowed, policy, code, credits, hasActiveGrant, hasAnyGrant, message)
+	}
+	if !strings.Contains(message, windowStart.Add(5*time.Hour).Format(time.RFC3339)) {
+		t.Fatalf("expected retry time in message, got %q", message)
+	}
+
+	statusNow := time.Now().UTC()
+	statusWindowStart := fiveHourWindowStart(statusNow)
+	reg.Grants[0].StartsAt = statusNow.Add(-time.Hour)
+	reg.Grants[0].ExpiresAt = statusNow.AddDate(0, 0, 30)
+	reg.Grants[0].PeriodUsage.FiveHour = GrantUsageWindow{WindowStart: statusWindowStart, CreditsUsed: 10}
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if status.Active {
+		t.Fatalf("expected unlimited period-limited grant to make service inactive, got %#v", status)
+	}
+	if len(status.CreditGrants) != 1 || status.CreditGrants[0].Status != "period_limited" || status.CreditGrants[0].RetryAfterSeconds <= 0 {
+		t.Fatalf("expected period-limited credit grant summary, got %#v", status.CreditGrants)
 	}
 }

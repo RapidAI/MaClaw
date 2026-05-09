@@ -2,26 +2,21 @@ package main
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 // ---------------------------------------------------------------------------
-// Coding Tool Gate — code-level enforcement of the three-phase coding workflow.
+// Coding Tool Gate: code-level enforcement of the three-phase coding workflow.
 //
-// When the intent classifier returns intentCoding and the user has not sent a
-// skip signal AND the task is not a bug-fix/debug task, the gate strips coding
-// tool calls (create_session, bash, etc.) from ALL iterations of the LLM
-// response loop, preserving text content and delivery tools (generate_pdf,
-// send_file, etc.).
-//
-// Bug-fix/debug tasks (e.g. "有bug，一直显示加载中", "修复加载错误") are
-// detected by isBugFixOnly() and bypass the gate entirely, because they should
-// be executed directly without the three-phase workflow (requirements → design
-// → task breakdown).
-//
+// When the gate intent classifier returns a confirmed new-project intent, the
+// gate strips coding tool calls (create_session, bash, etc.) from all
+// iterations of the LLM response loop, preserving text content and delivery
+// tools (generate_pdf, send_file, etc.). Bug-fix, maintenance, continuation,
+// and non-coding decisions come from the classifier result, not local keyword
+// helpers.
+
 // The gate remains active for the entire agent loop (all iterations within a
 // single user message). The user's confirmation arrives as a separate message,
 // triggering a new loop where the gate is re-evaluated. On iteration 1+, if
@@ -50,9 +45,9 @@ type codingToolGateResult struct {
 }
 
 // codingToolBlocklist lists tool names subject to stripping when the gate is
-// active during the three-phase workflow (requirements → design → task breakdown).
+// active during the three-phase workflow (requirements, design, task breakdown).
 // This includes coding session tools, direct coding tools, AND browser automation
-// tools — during the three-phase phases, none of these should be available.
+// tools; during the three-phase phases, none of these should be available.
 var codingToolBlocklist = map[string]bool{
 	// Coding session tools.
 	"create_session":   true,
@@ -63,25 +58,25 @@ var codingToolBlocklist = map[string]bool{
 	"craft_tool":       true,
 	"send_and_observe": true,
 	"control_session":  true,
-	// Browser automation tools — the unified "browser" tool replaces 22
+	// Browser automation tools; the unified "browser" tool replaces 22
 	// individual browser_* tools. Block it plus the remaining individual tools.
-	"browser": true,
+	"browser":          true,
 	"browser_task_run": true, "browser_task_replay": true, "browser_task_verify": true, "browser_task_status": true,
 	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
-	"browser_ocr": true,
+	"browser_ocr":      true,
 	"gui_record_start": true, "gui_record_stop": true,
 	"gui_observe": true, "gui_verify": true,
 }
 
 // directModeSessionBlocklist lists session management tools that should be
 // stripped during the execution phase when using direct coding mode. In direct
-// mode, maclaw writes code itself using bash/write_file/edit_file — external
+// mode, maclaw writes code itself using bash/write_file/edit_file; external
 // session tools are unnecessary and their presence confuses the LLM into
 // trying to delegate instead of coding directly.
 var directModeSessionBlocklist = map[string]bool{
-	"create_session":    true,
-	"send_and_observe":  true,
-	"control_session":   true,
+	"create_session":     true,
+	"send_and_observe":   true,
+	"control_session":    true,
 	"get_session_output": true,
 	"get_session_events": true,
 	"interrupt_session":  true,
@@ -103,79 +98,6 @@ var deliveryToolAllowlist = map[string]bool{
 	"task":          true,
 }
 
-// skipSignalsChinese contains Chinese phrases that bypass the gate.
-var skipSignalsChinese = []string{
-	"直接做", "直接用", "不用问了", "按你的想法来", "直接开始",
-	"不用确认", "马上做", "赶紧做", "跳过文档", "不需要文档",
-	// Action/continuation phrases — user wants to start working on an
-	// already-discussed task, not go through the three-phase workflow again.
-	// NOTE: These are degraded-mode fallbacks only. When GIC/UIC is available,
-	// the classifier's GateIntentContinuation handles these phrases semantically.
-	"开工", "开干", "动手", "搞起来", "搞起", "干吧", "做吧",
-	"开始吧", "开始做", "开始干", "开始搞",
-}
-
-// skipSignalsEnglish contains English phrases that bypass the gate.
-var skipSignalsEnglish = []string{
-	"just do it", "skip confirmation", "go ahead", "do it now",
-	"let's go", "let's do it", "let's start", "let's begin",
-}
-
-// bugFixKeywords are phrases that indicate a bug-fix, debugging, or
-// maintenance task rather than a new-project creation task. When the user
-// message ONLY matches these keywords (and none of the "creation" keywords
-// like "开发一个", "游戏", "前端" etc.), the gate is NOT activated because
-// bug fixes should be executed directly without the three-phase workflow.
-var bugFixKeywords = map[string]bool{
-	"修bug": true, "修 bug": true, "修复bug": true, "修复 bug": true,
-	"bug": true, "fix": true, "修复": true, "修正": true,
-	"调试": true, "debug": true, "排查": true, "排错": true,
-	"报错": true, "出错": true, "错误": true, "异常": true,
-	"加载中": true, "卡住": true, "崩溃": true, "crash": true,
-	"白屏": true, "闪退": true, "不工作": true, "不生效": true,
-	"失败": true, "不显示": true, "显示异常": true,
-}
-
-// creationCodingKeywords are phrases that indicate a new project/feature
-// creation task that SHOULD go through the three-phase workflow. When any
-// of these appear alongside bugFixKeywords, the gate remains active.
-var creationCodingKeywords = []string{
-	"开发", "开发一个", "开发个", "实现一个", "实现个",
-	"创建一个", "创建个", "写代码", "编程",
-	"添加功能", "新增功能", "写脚本", "写一个脚本", "写个脚本",
-	"写函数", "写方法", "写接口", "写api", "写 api",
-	"游戏", "game", "前端", "后端", "frontend", "backend",
-}
-
-// isBugFixOnly returns true when the user message matches bug-fix keywords
-// but does NOT match any creation-oriented coding keywords. This means the
-// task is a direct fix/debug that should skip the three-phase workflow.
-func isBugFixOnly(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return false
-	}
-	// Check if any bug-fix keyword matches.
-	hasBugFix := false
-	for kw := range bugFixKeywords {
-		if strings.Contains(lower, kw) {
-			hasBugFix = true
-			break
-		}
-	}
-	if !hasBugFix {
-		return false
-	}
-	// If any creation keyword also matches, this is a new project that
-	// happens to mention bugs — not a pure bug-fix task.
-	for _, kw := range creationCodingKeywords {
-		if strings.Contains(lower, kw) {
-			return false
-		}
-	}
-	return true
-}
-
 // isCodingTool returns true iff name is in the blocklist and not in the allowlist.
 func isCodingTool(name string) bool {
 	return codingToolBlocklist[name] && !deliveryToolAllowlist[name]
@@ -187,39 +109,28 @@ func isDirectModeBlockedTool(name string) bool {
 	return directModeSessionBlocklist[name]
 }
 
-// containsSkipSignal checks whether text contains any known skip signal
-// (Chinese or English) using case-insensitive substring matching.
-func containsSkipSignal(text string) bool {
-	lower := strings.ToLower(text)
-	// Chinese signals: no case variation, but ToLower on text handles mixed-language input.
-	for _, sig := range skipSignalsChinese {
-		if strings.Contains(lower, sig) {
-			return true
-		}
-	}
-	// English signals are already lowercase constants.
-	for _, sig := range skipSignalsEnglish {
-		if strings.Contains(lower, sig) {
-			return true
-		}
-	}
-	return false
-}
-
 // mapGateIntentToConfig maps a GateIntentResult from the semantic classifier
 // to a codingToolGateConfig. This is the bridge between the five-category
 // semantic classification and the gate's active/bugFix decision.
 //
 // Mapping rules:
-//   - new_project + confidence ≥ 0.70 → active=true, intent=intentCoding
-//   - bug_fix → active=false, bugFix=true, intent=intentCoding
-//   - maintenance → active=false, intent=intentCoding
-//   - non_coding → active=false, intent=intentNonCoding
-//   - continuation → active=false, intent=intentUnknown
-//   - unknown or low confidence → active=false, intent=intentUnknown
+//   - accepted new_project => active=true, intent=intentCoding
+//   - bug_fix => active=false, bugFix=true, intent=intentCoding
+//   - maintenance => active=false, intent=intentCoding
+//   - non_coding => active=false, intent=intentNonCoding
+//   - continuation => active=false, intent=intentUnknown
+//   - unknown or low confidence => active=false, intent=intentAmbiguous
 func mapGateIntentToConfig(result GateIntentResult, skip bool) codingToolGateConfig {
 	cfg := codingToolGateConfig{
 		skipSignal: skip,
+	}
+
+	if !shouldAcceptGateResult(result) {
+		cfg.active = false
+		cfg.intent = intentAmbiguous
+		cfg.reason = fmt.Sprintf("gate inactive: inconclusive classifier result; ordinary agent path (intent=%s, conf=%.2f, degraded=%v)",
+			result.Intent, result.Confidence, result.Degraded)
+		return cfg
 	}
 
 	if skip {
@@ -229,24 +140,10 @@ func mapGateIntentToConfig(result GateIntentResult, skip bool) codingToolGateCon
 
 	switch result.Intent {
 	case GateIntentNewProject:
-		// In degraded mode (one fusion channel failed), embedding-only confidence
-		// is capped at ~0.60-0.65 because the embedding space has overlapping
-		// clusters (e.g., coding vs ssh). The normal 0.70 threshold is unreachable.
-		// Lower to 0.55 so the gate still activates for clear coding tasks.
-		threshold := 0.70
-		if result.Degraded {
-			threshold = 0.55
-		}
-		if result.Confidence >= threshold {
-			cfg.active = true
-			cfg.intent = intentCoding
-			cfg.reason = fmt.Sprintf("gate active: semantic new_project (conf=%.2f, layer=%d, degraded=%v, threshold=%.2f)",
-				result.Confidence, result.Layer, result.Degraded, threshold)
-		} else {
-			cfg.intent = intentUnknown
-			cfg.reason = fmt.Sprintf("gate inactive: new_project but low confidence (%.2f < %.2f, degraded=%v)",
-				result.Confidence, threshold, result.Degraded)
-		}
+		cfg.active = true
+		cfg.intent = intentCoding
+		cfg.reason = fmt.Sprintf("gate active: semantic new_project (conf=%.2f, layer=%d, degraded=%v)",
+			result.Confidence, result.Layer, result.Degraded)
 	case GateIntentBugFix:
 		cfg.bugFix = true
 		cfg.intent = intentCoding
@@ -261,8 +158,10 @@ func mapGateIntentToConfig(result GateIntentResult, skip bool) codingToolGateCon
 		cfg.intent = intentUnknown
 		cfg.reason = fmt.Sprintf("gate inactive: semantic continuation (conf=%.2f)", result.Confidence)
 	default:
-		cfg.intent = intentUnknown
-		cfg.reason = fmt.Sprintf("gate inactive: semantic unknown/low confidence (conf=%.2f)", result.Confidence)
+		cfg.active = false
+		cfg.intent = intentAmbiguous
+		cfg.reason = fmt.Sprintf("gate inactive: unsupported classifier result; ordinary agent path (intent=%s, conf=%.2f)",
+			result.Intent, result.Confidence)
 	}
 
 	return cfg
@@ -271,7 +170,7 @@ func mapGateIntentToConfig(result GateIntentResult, skip bool) codingToolGateCon
 // newCodingToolGateConfig computes the gate decision once before the iteration
 // loop begins. The result is immutable for the duration of the loop.
 func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateConfig {
-	return newCodingToolGateConfigWithClassifier(userText, loopKind, nil, "")
+	return newCodingToolGateConfigWithClassifier(userText, loopKind, nil, nil, "")
 }
 
 // newCodingToolGateConfigWithClassifier is like newCodingToolGateConfig but
@@ -281,12 +180,12 @@ func newCodingToolGateConfig(userText string, loopKind LoopKind) codingToolGateC
 // Classification priority:
 //  1. GateIntentClassifier (semantic, delegates to UIC when available)
 //  2. UIC directly (when GIC not ready but UIC is available)
-//  3. Fail-closed safety net (classifiers unexpectedly nil)
+//  3. Ordinary-agent fallback (classifiers unexpectedly nil)
 //
 // Since initEarlyClassifier creates UIC synchronously at app startup,
 // path 2 (UIC direct) is always available from the first user message.
 // Path 3 is a safety net for test code or edge cases where no App exists.
-func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, gic *GateIntentClassifier, userID string) codingToolGateConfig {
+func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, gic *GateIntentClassifier, uic *intent.UnifiedIntentClassifier, userID string) codingToolGateConfig {
 	// Background loop always bypasses the gate, regardless of classification.
 	if loopKind == LoopKindBackground {
 		return codingToolGateConfig{
@@ -295,8 +194,8 @@ func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, g
 	}
 
 	// Try semantic classification first when classifier is available.
-	// GIC.Classify() delegates to UIC when available (which handles L1/L2/L3
-	// layer availability internally), so we don't need to check Ready() here.
+	// GIC.Classify() delegates to UIC when available, so we don't need to
+	// check Ready() here.
 	if gic != nil {
 		result := gic.Classify(userText, userID)
 		skip := result.Intent == GateIntentContinuation
@@ -306,7 +205,10 @@ func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, g
 
 	// Fallback: GIC is nil (test code or edge case without App).
 	// Try UIC directly via the package-level variable.
-	if uic := unifiedClassifier; uic != nil {
+	if uic == nil {
+		uic = unifiedClassifier
+	}
+	if uic != nil {
 		uicResult := uic.Classify(intent.MessageContext{Text: userText})
 		gateIntent, confidence, _, layer, reason := uicResult.ToGateIntent()
 		gateResult := GateIntentResult{
@@ -314,23 +216,24 @@ func newCodingToolGateConfigWithClassifier(userText string, loopKind LoopKind, g
 			Confidence: confidence,
 			Layer:      layer,
 			Reason:     reason,
+			Degraded:   uicResult.Degraded,
 		}
 		skip := gateResult.Intent == GateIntentContinuation
 		cfg := mapGateIntentToConfig(gateResult, skip)
 		return cfg
 	}
 
-	// Neither GIC nor UIC available — should not happen in normal operation
+	// Neither GIC nor UIC available; should not happen in normal operation
 	// because initEarlyClassifier creates UIC synchronously at app startup.
 	// This path is a safety net for edge cases (e.g., test code that creates
 	// an IMMessageHandler without an App).
 	//
-	// Fail-closed: activate the gate to block coding tools by default.
-	// The LLM still has non-coding tools (web_search, read_file, ssh, etc.).
+	// Do not infer workflow intent from classifier absence. Let the ordinary
+	// agent path proceed; high-risk actions are governed by their own tool and
+	// route checks.
 	return codingToolGateConfig{
-		active: true,
-		intent: intentAmbiguous,
-		reason: "gate active: fail-closed safety net (classifiers unexpectedly nil)",
+		intent: intentUnknown,
+		reason: "gate inactive: classifiers unavailable; ordinary agent path",
 	}
 }
 

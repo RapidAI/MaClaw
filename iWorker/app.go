@@ -79,16 +79,19 @@ type TaskItem struct {
 }
 
 type HistoryTaskItem struct {
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	Owner          string `json:"owner"`
-	Status         string `json:"status"`
-	UpdatedAt      string `json:"updated_at"`
-	Description    string `json:"description"`
-	Draft          string `json:"draft,omitempty"`
-	ExpectedOutput string `json:"expected_output,omitempty"`
-	Result         string `json:"result,omitempty"`
-	Model          string `json:"model,omitempty"`
+	ID                     string `json:"id"`
+	Title                  string `json:"title"`
+	Owner                  string `json:"owner"`
+	Status                 string `json:"status"`
+	UpdatedAt              string `json:"updated_at"`
+	Description            string `json:"description"`
+	Draft                  string `json:"draft,omitempty"`
+	ExpectedOutput         string `json:"expected_output,omitempty"`
+	Result                 string `json:"result,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	SourceType             string `json:"source_type,omitempty"`
+	CenterHandoffID        string `json:"center_handoff_id,omitempty"`
+	WorkflowStepInstanceID string `json:"workflow_step_instance_id,omitempty"`
 }
 
 type WelcomeData struct {
@@ -620,31 +623,44 @@ func fetchInstalledToolsForSettings(settings DiWorkerSettings, timeoutSec int) C
 
 	if skillsResult.err == nil && mcpResult.err == nil {
 		tools := CenterInstalledTools{Skills: skillsResult.items, MCPServers: mcpResult.items, Source: "center", CachedAt: time.Now().UTC().Format(time.RFC3339)}
-		_ = writeInstalledToolsCache(tenantID, departmentID, workerID, tools)
+		if err := writeInstalledToolsCache(tenantID, departmentID, workerID, tools); err != nil {
+			cacheErr := fmt.Sprintf("installed tools cache update failed: %v", err)
+			tools.Source = "center-cache-error"
+			tools.Stale = true
+			tools.CacheError = cacheErr
+		}
 		return tools
 	}
 	if skillsResult.err == nil || mcpResult.err == nil {
 		tools := mergePartialInstalledToolsSnapshot(tenantID, departmentID, workerID, skillsResult.items, skillsResult.err, mcpResult.items, mcpResult.err)
-		_ = writeInstalledToolsCache(tenantID, departmentID, workerID, tools)
+		if err := writeInstalledToolsCache(tenantID, departmentID, workerID, tools); err != nil {
+			tools.CacheError = fmt.Sprintf("installed tools cache update failed: %v", err)
+		}
 		return tools
 	}
 	if cached, ok := readInstalledToolsCache(tenantID, departmentID, workerID); ok {
 		cached.Source = "cache"
 		cached.Stale = true
+		cached.SkillError = strings.TrimSpace(errorString(skillsResult.err))
+		cached.MCPError = strings.TrimSpace(errorString(mcpResult.err))
 		return cached
 	}
-	return CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}, Source: "unavailable", Stale: true}
+	return CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}, Source: "unavailable", Stale: true, SkillError: strings.TrimSpace(errorString(skillsResult.err)), MCPError: strings.TrimSpace(errorString(mcpResult.err))}
 }
 func mergePartialInstalledToolsSnapshot(tenantID, departmentID, workerID string, skills []CenterRuntimeCapability, skillErr error, mcpServers []CenterMCPServer, mcpErr error) CenterInstalledTools {
 	cached, hasCache := readInstalledToolsCache(tenantID, departmentID, workerID)
 	if !hasCache {
 		cached = CenterInstalledTools{Skills: []CenterRuntimeCapability{}, MCPServers: []CenterMCPServer{}}
 	}
+	skillError := ""
+	mcpError := ""
 	if skillErr != nil {
 		skills = cached.Skills
+		skillError = errorString(skillErr)
 	}
 	if mcpErr != nil {
 		mcpServers = cached.MCPServers
+		mcpError = errorString(mcpErr)
 	}
 	if skills == nil {
 		skills = []CenterRuntimeCapability{}
@@ -658,7 +674,57 @@ func mergePartialInstalledToolsSnapshot(tenantID, departmentID, workerID string,
 		Source:     "partial-cache",
 		CachedAt:   time.Now().UTC().Format(time.RFC3339),
 		Stale:      true,
+		SkillError: strings.TrimSpace(skillError),
+		MCPError:   strings.TrimSpace(mcpError),
 	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func writeJSONFileDurable(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Rename(tmpName, path); err != nil {
+			return err
+		}
+	}
+	cleanup = false
+	return nil
 }
 
 // FetchCapabilities returns capabilities from iWorkerCenter.
@@ -715,9 +781,6 @@ func writeInstalledToolsCache(tenantID, departmentID, workerID string, tools Cen
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	if tools.Skills == nil {
 		tools.Skills = []CenterRuntimeCapability{}
 	}
@@ -727,11 +790,7 @@ func writeInstalledToolsCache(tenantID, departmentID, workerID string, tools Cen
 	if strings.TrimSpace(tools.CachedAt) == "" {
 		tools.CachedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	data, err := json.MarshalIndent(tools, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, tools)
 }
 
 func fetchConfigBundleForSettings(settings DiWorkerSettings, timeoutSec int) CenterConfigBundle {
@@ -741,15 +800,24 @@ func fetchConfigBundleForSettings(settings DiWorkerSettings, timeoutSec int) Cen
 	}
 	baseURL := resolvedCenterBaseURL(settings)
 	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
 	bundle, err := fetchCenterConfigBundle(baseURL, tenantID, timeoutSec)
 	if err == nil {
 		if bundle.Version > 0 {
-			_ = writeConfigBundleCache(tenantID, bundle)
-			_ = reportCenterConfigApplyResult(baseURL, tenantID, settings.Center.DepartmentID, settings.Center.WorkerID, bundle, timeoutSec)
+			reportStatus := "success"
+			reportMessage := "iWorker fetched and cached the published config bundle"
+			if cacheErr := writeConfigBundleCache(tenantID, departmentID, workerID, bundle); cacheErr != nil {
+				reportStatus = "failed"
+				reportMessage = "iWorker fetched the published config bundle but local cache write failed: " + cacheErr.Error()
+			}
+			bundle.ApplyStatus = reportStatus
+			bundle.ApplyMessage = reportMessage
+			_ = reportCenterConfigApplyResult(baseURL, tenantID, departmentID, workerID, bundle, reportStatus, reportMessage, timeoutSec)
 		}
 		return bundle
 	}
-	if cached, ok := readConfigBundleCache(tenantID); ok {
+	if cached, ok := readConfigBundleCache(tenantID, departmentID, workerID); ok {
 		cached.Source = "cache"
 		cached.Stale = true
 		if strings.TrimSpace(cached.CachedAt) == "" {
@@ -760,7 +828,18 @@ func fetchConfigBundleForSettings(settings DiWorkerSettings, timeoutSec int) Cen
 	return CenterConfigBundle{Source: "unavailable", Stale: true, CachedAt: time.Now().UTC().Format(time.RFC3339)}
 }
 
-func configBundleCachePath(tenantID string) (string, error) {
+func configBundleCachePath(tenantID, departmentID, workerID string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	tenantID = sanitizeCacheName(firstNonEmptyString(tenantID, "default"))
+	departmentID = sanitizeCacheName(firstNonEmptyString(departmentID, "default"))
+	workerID = sanitizeCacheName(firstNonEmptyString(workerID, "default"))
+	return filepath.Join(home, ".iworker", "cache", "config_bundles", strings.Join([]string{tenantID, departmentID, workerID}, "__")+".json"), nil
+}
+
+func legacyConfigBundleCachePath(tenantID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -769,14 +848,21 @@ func configBundleCachePath(tenantID string) (string, error) {
 	return filepath.Join(home, ".iworker", "cache", "config_bundles", tenantID+".json"), nil
 }
 
-func readConfigBundleCache(tenantID string) (CenterConfigBundle, bool) {
-	path, err := configBundleCachePath(tenantID)
+func readConfigBundleCache(tenantID, departmentID, workerID string) (CenterConfigBundle, bool) {
+	path, err := configBundleCachePath(tenantID, departmentID, workerID)
 	if err != nil {
 		return CenterConfigBundle{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return CenterConfigBundle{}, false
+		legacyPath, legacyErr := legacyConfigBundleCachePath(tenantID)
+		if legacyErr != nil {
+			return CenterConfigBundle{}, false
+		}
+		data, err = os.ReadFile(legacyPath)
+		if err != nil {
+			return CenterConfigBundle{}, false
+		}
 	}
 	var bundle CenterConfigBundle
 	if err := json.Unmarshal(data, &bundle); err != nil {
@@ -785,22 +871,15 @@ func readConfigBundleCache(tenantID string) (CenterConfigBundle, bool) {
 	return bundle, true
 }
 
-func writeConfigBundleCache(tenantID string, bundle CenterConfigBundle) error {
-	path, err := configBundleCachePath(tenantID)
+func writeConfigBundleCache(tenantID, departmentID, workerID string, bundle CenterConfigBundle) error {
+	path, err := configBundleCachePath(tenantID, departmentID, workerID)
 	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	if strings.TrimSpace(bundle.CachedAt) == "" {
 		bundle.CachedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	data, err := json.MarshalIndent(bundle, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, bundle)
 }
 
 func defaultColleagues() []Colleague {
@@ -922,14 +1001,17 @@ func (a *App) SaveDiWorkerSettings(settings DiWorkerSettings) error {
 	return nil
 }
 
-func (a *App) RecallWorkerMemories(query string) []WorkerMemoryEntry {
-	settings, _ := readDiWorkerSettings()
+func (a *App) RecallWorkerMemories(query string) ([]WorkerMemoryEntry, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return nil, err
+	}
 	if !settings.Center.Enabled {
-		return nil
+		return nil, fmt.Errorf("iWorkerCenter is disabled; memory recall requires the registered center")
 	}
 	baseURL := resolvedCenterBaseURL(settings)
 	workerID := resolvedWorkerID(settings)
-	return fetchWorkerMemories(baseURL, resolvedTenantID(settings), resolvedDepartmentID(settings), workerID, query, 10, settings.Center.TimeoutSec)
+	return fetchWorkerMemoriesResult(baseURL, resolvedTenantID(settings), resolvedDepartmentID(settings), workerID, query, 10, settings.Center.TimeoutSec)
 }
 
 func (a *App) FetchWorkerMemoryStats() (WorkerMemoryStats, error) {
@@ -1139,13 +1221,27 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 	if settings.Center.Enabled {
 		baseURL := resolvedCenterBaseURL(settings)
 		roleCode := colleagueRoleCode(colleagueName)
-		memories := fetchSharedMemories(baseURL, resolvedTenantID(settings), roleCode, 5)
+		memories, err := fetchSharedMemoriesResult(baseURL, resolvedTenantID(settings), roleCode, 5)
+		if err != nil {
+			return SubmitTaskResult{}, err
+		}
 		if memoryBlock := buildMemorySystemPrompt(memories); memoryBlock != "" {
 			systemPrompt += "\n\nOrganization memory:\n" + memoryBlock
 		}
-		workerMemories := fetchWorkerMemories(baseURL, resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), draft, 8, settings.Center.TimeoutSec)
+		workerMemories, memoryErr := fetchWorkerMemoriesResult(baseURL, resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), draft, 8, settings.Center.TimeoutSec)
+		if memoryErr != nil && len(workerMemories) > 0 {
+			return SubmitTaskResult{}, memoryErr
+		}
 		if workerMemoryBlock := buildWorkerMemorySystemPrompt(workerMemories); workerMemoryBlock != "" {
 			systemPrompt += "\n\niWorker durable memory from iWorkerCenter:\n" + workerMemoryBlock
+		}
+		configBundle := fetchConfigBundleForSettings(settings, 3)
+		if configBlock := buildConfigBundleSystemPrompt(configBundle); configBlock != "" {
+			systemPrompt += "\n\niWorkerCenter configuration bundle:\n" + configBlock
+		}
+		installedTools := fetchInstalledToolsForSettings(settings, 3)
+		if toolsBlock := buildInstalledToolsSystemPrompt(installedTools); toolsBlock != "" {
+			systemPrompt += "\n\nCenter-installed tools available to this iWorker:\n" + toolsBlock
 		}
 	}
 	messages := []interface{}{
@@ -1164,6 +1260,118 @@ func (a *App) SubmitTask(req SubmitTaskRequest) (SubmitTaskResult, error) {
 	taskTitle := generateSubmitTaskTitle(taskType, draft, expectedOutput, content, usedCfg, fallbackCfg)
 	centerTaskID, centerTaskStatus, centerTaskSyncErr := syncHumanTaskToCenter(settings, centerBaseURL, centerAssigneeID, centerAssigneeRoleCode, taskTitle, colleagueName, expectedOutput, draft, content)
 	return SubmitTaskResult{TaskType: taskType, TaskTitle: taskTitle, ColleagueName: colleagueName, ExpectedOutput: expectedOutput, Model: usedCfg.Model, Content: content, CenterTaskID: centerTaskID, CenterTaskStatus: centerTaskStatus, CenterTaskSyncError: centerTaskSyncErr}, nil
+}
+
+func buildInstalledToolsSystemPrompt(tools CenterInstalledTools) string {
+	if len(tools.Skills) == 0 && len(tools.MCPServers) == 0 {
+		return ""
+	}
+	lines := []string{}
+	source := strings.TrimSpace(tools.Source)
+	if source == "" {
+		source = "center"
+	}
+	lines = append(lines, "- Tool snapshot source="+source)
+	if tools.Stale || source == "cache" || source == "partial-cache" || source == "unavailable" {
+		lines = append(lines, "- Tool snapshot is stale or partial. Treat cached Skill/MCP entries as context only until iWorkerCenter reconnects; do not claim a shared tool action was executed from cache.")
+	}
+	if err := strings.TrimSpace(tools.SkillError); err != "" {
+		lines = append(lines, "- Skill sync issue="+compactForPrompt(err, 240))
+	}
+	if err := strings.TrimSpace(tools.MCPError); err != "" {
+		lines = append(lines, "- MCP sync issue="+compactForPrompt(err, 240))
+	}
+	if err := strings.TrimSpace(tools.CacheError); err != "" {
+		lines = append(lines, "- Tool cache issue="+compactForPrompt(err, 240))
+	}
+	for _, skill := range tools.Skills {
+		name := strings.TrimSpace(skill.Name)
+		if name == "" {
+			name = strings.TrimSpace(skill.Entry.Name)
+		}
+		if name == "" {
+			name = strings.TrimSpace(skill.CapabilityID)
+		}
+		if name == "" {
+			continue
+		}
+		detail := []string{"Skill " + name}
+		if id := strings.TrimSpace(skill.CapabilityID); id != "" {
+			detail = append(detail, "id="+id)
+		}
+		if version := strings.TrimSpace(skill.Version); version != "" {
+			detail = append(detail, "version="+version)
+		}
+		if risk := strings.TrimSpace(skill.RiskLevel); risk != "" {
+			detail = append(detail, "risk="+risk)
+		}
+		if len(skill.Entry.Triggers) > 0 {
+			detail = append(detail, "triggers="+strings.Join(skill.Entry.Triggers, ","))
+		}
+		lines = append(lines, "- "+strings.Join(detail, " / "))
+	}
+	for _, server := range tools.MCPServers {
+		name := strings.TrimSpace(server.Name)
+		if name == "" {
+			name = strings.TrimSpace(server.ID)
+		}
+		if name == "" {
+			continue
+		}
+		detail := []string{"MCP " + name}
+		if id := strings.TrimSpace(server.ID); id != "" {
+			detail = append(detail, "id="+id)
+		}
+		if serverType := strings.TrimSpace(server.ServerType); serverType != "" {
+			detail = append(detail, "transport="+serverType)
+		}
+		if department := strings.TrimSpace(server.DepartmentID); department != "" {
+			detail = append(detail, "department="+department)
+		}
+		if risk := strings.TrimSpace(server.RiskLevel); risk != "" {
+			detail = append(detail, "risk="+risk)
+		}
+		route := strings.TrimSpace(server.Command)
+		if route == "" {
+			route = strings.TrimSpace(server.Endpoint)
+		}
+		if route != "" {
+			detail = append(detail, "route="+route)
+		}
+		if len(server.EnvKeys) > 0 {
+			detail = append(detail, "env_keys="+strings.Join(server.EnvKeys, ","))
+		}
+		lines = append(lines, "- "+strings.Join(detail, " / "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func buildConfigBundleSystemPrompt(bundle CenterConfigBundle) string {
+	if bundle.Version <= 0 && strings.TrimSpace(bundle.Payload) == "" {
+		return ""
+	}
+	lines := []string{}
+	source := strings.TrimSpace(bundle.Source)
+	if source == "" {
+		source = "center"
+	}
+	lines = append(lines, fmt.Sprintf("- Config snapshot source=%s / version=%d / status=%s", source, bundle.Version, firstNonEmptyString(bundle.Status, "unknown")))
+	if bundle.Stale || source == "cache" || source == "unavailable" {
+		lines = append(lines, "- Config snapshot is cached or stale. Use it as context, but do not claim shared configuration changes were applied until iWorkerCenter reconnects.")
+	}
+	if note := strings.TrimSpace(bundle.Note); note != "" {
+		lines = append(lines, "- Note="+compactForPrompt(note, 300))
+	}
+	if applyStatus := strings.TrimSpace(bundle.ApplyStatus); applyStatus != "" {
+		lines = append(lines, "- Local apply status="+applyStatus)
+	}
+	if applyMessage := strings.TrimSpace(bundle.ApplyMessage); applyMessage != "" {
+		lines = append(lines, "- Local apply message="+compactForPrompt(applyMessage, 300))
+	}
+	if payload := strings.TrimSpace(bundle.Payload); payload != "" {
+		lines = append(lines, "- Payload summary="+compactForPrompt(payload, 1200))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func generateSubmitTaskTitle(taskType, draft, expectedOutput, content string, primaryCfg corelib.MaclawLLMConfig, fallbackCfg *corelib.MaclawLLMConfig) string {
@@ -1390,14 +1598,7 @@ func writeTaskHistory(items []HistoryTaskItem) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(items, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, items)
 }
 
 func readDiWorkerSettings() (DiWorkerSettings, error) {
@@ -1421,14 +1622,7 @@ func writeDiWorkerSettings(settings DiWorkerSettings) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(normalizeDiWorkerSettings(settings), "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, normalizeDiWorkerSettings(settings))
 }
 
 func syncCenterSettings(settings DiWorkerSettings) error {
@@ -1472,11 +1666,7 @@ func syncCenterSettings(settings DiWorkerSettings) error {
 			TimeoutSec:  timeoutSec,
 		})
 	}
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, payload)
 }
 
 func centerSyncSettingsPath() (string, error) {
@@ -1845,7 +2035,7 @@ func currentProviderConfig(cfgFile maclawConfigFile) (corelib.MaclawLLMConfig, b
 }
 
 func enrichAgentRuntimeSnapshotWithInstalledTools(snapshot AgentRuntimeSnapshot, tools CenterInstalledTools) AgentRuntimeSnapshot {
-	toolCaps := installedToolCapabilityLabels(tools)
+	toolCaps := installedToolCapabilityLabelsForHeartbeat(tools)
 	if len(toolCaps) == 0 {
 		return snapshot
 	}
@@ -1856,6 +2046,20 @@ func enrichAgentRuntimeSnapshotWithInstalledTools(snapshot AgentRuntimeSnapshot,
 		snapshot.Instances[i].Capabilities = mergeCapabilityLabels(snapshot.Instances[i].Capabilities, toolCaps)
 	}
 	return snapshot
+}
+
+func installedToolCapabilityLabelsForHeartbeat(tools CenterInstalledTools) []string {
+	if tools.Source == "cache" || tools.Source == "unavailable" {
+		return nil
+	}
+	liveTools := tools
+	if strings.TrimSpace(tools.SkillError) != "" {
+		liveTools.Skills = nil
+	}
+	if strings.TrimSpace(tools.MCPError) != "" {
+		liveTools.MCPServers = nil
+	}
+	return installedToolCapabilityLabels(liveTools)
 }
 
 func installedToolCapabilityLabels(tools CenterInstalledTools) []string {
@@ -1961,20 +2165,13 @@ func writeAgentInstancesCache(tenantID, departmentID, workerID string, instances
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	cachedAt := time.Now().UTC().Format(time.RFC3339)
 	for i := range instances {
 		instances[i].Source = "center"
 		instances[i].CachedAt = cachedAt
 		instances[i].Stale = false
 	}
-	data, err := json.MarshalIndent(instances, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, instances)
 }
 
 func readGoalPushesCache(tenantID, departmentID, workerID string) ([]CenterGoalPush, bool) {
@@ -2004,26 +2201,19 @@ func writeGoalPushesCache(tenantID, departmentID, workerID string, pushes []Cent
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	cachedAt := time.Now().UTC().Format(time.RFC3339)
 	for i := range pushes {
 		pushes[i].Source = "center"
 		pushes[i].CachedAt = cachedAt
 		pushes[i].Stale = false
 	}
-	data, err := json.MarshalIndent(pushes, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, pushes)
 }
 
-func removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID string) {
+func removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID string) error {
 	pushes, ok := readGoalPushesCache(tenantID, departmentID, workerID)
 	if !ok {
-		return
+		return nil
 	}
 	eventID = strings.TrimSpace(eventID)
 	filtered := pushes[:0]
@@ -2035,7 +2225,234 @@ func removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID string) {
 		push.Stale = false
 		filtered = append(filtered, push)
 	}
-	_ = writeGoalPushesCache(tenantID, departmentID, workerID, filtered)
+	return writeGoalPushesCache(tenantID, departmentID, workerID, filtered)
+}
+
+func readCollaborationTasksCache(tenantID, departmentID, workerID string) ([]CenterCollabTask, bool) {
+	path, err := runtimeSnapshotCachePath("collaboration_tasks", tenantID, departmentID, workerID)
+	if err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var tasks []CenterCollabTask
+	if err := json.Unmarshal(data, &tasks); err != nil {
+		return nil, false
+	}
+	cachedAt := cacheFileModifiedAt(path)
+	for i := range tasks {
+		tasks[i].Source = "cache"
+		tasks[i].CachedAt = cachedAt
+		tasks[i].Stale = true
+	}
+	return tasks, true
+}
+
+func writeCollaborationTasksCache(tenantID, departmentID, workerID string, tasks []CenterCollabTask) error {
+	path, err := runtimeSnapshotCachePath("collaboration_tasks", tenantID, departmentID, workerID)
+	if err != nil {
+		return err
+	}
+	cachedAt := time.Now().UTC().Format(time.RFC3339)
+	for i := range tasks {
+		tasks[i].Source = "center"
+		tasks[i].CachedAt = cachedAt
+		tasks[i].Stale = false
+	}
+	return writeJSONFileDurable(path, tasks)
+}
+
+func readWorkflowInstancesCache(tenantID, departmentID, workerID string) ([]CenterWorkflowInstance, bool) {
+	path, err := runtimeSnapshotCachePath("workflow_instances", tenantID, departmentID, workerID)
+	if err != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var instances []CenterWorkflowInstance
+	if err := json.Unmarshal(data, &instances); err != nil {
+		return nil, false
+	}
+	cachedAt := cacheFileModifiedAt(path)
+	filtered := instances[:0]
+	workerID = strings.TrimSpace(workerID)
+	for _, inst := range instances {
+		if workerID != "" && strings.TrimSpace(inst.CurrentStepAssigneeColleagueID) != "" && strings.TrimSpace(inst.CurrentStepAssigneeColleagueID) != workerID && strings.TrimSpace(inst.InitiatorID) != workerID {
+			continue
+		}
+		inst.Source = "cache"
+		inst.CachedAt = cachedAt
+		inst.Stale = true
+		filtered = append(filtered, inst)
+	}
+	return filtered, len(filtered) > 0
+}
+
+func writeWorkflowInstancesCache(tenantID, departmentID, workerID string, instances []CenterWorkflowInstance) error {
+	path, err := runtimeSnapshotCachePath("workflow_instances", tenantID, departmentID, workerID)
+	if err != nil {
+		return err
+	}
+	cachedAt := time.Now().UTC().Format(time.RFC3339)
+	for i := range instances {
+		instances[i].Source = "center"
+		instances[i].CachedAt = cachedAt
+		instances[i].Stale = false
+	}
+	return writeJSONFileDurable(path, instances)
+}
+
+func upsertWorkflowInstanceCacheItem(tenantID, departmentID, workerID string, updated CenterWorkflowInstance) error {
+	instances, ok := readWorkflowInstancesCache(tenantID, departmentID, workerID)
+	if !ok {
+		instances = []CenterWorkflowInstance{}
+	}
+	instanceID := strings.TrimSpace(updated.ID)
+	if instanceID == "" {
+		return fmt.Errorf("workflow instance id is required for cache update")
+	}
+	updated.Source = "center"
+	updated.Stale = false
+	if strings.TrimSpace(updated.CachedAt) == "" {
+		updated.CachedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	changed := false
+	for i := range instances {
+		if strings.TrimSpace(instances[i].ID) != instanceID {
+			continue
+		}
+		instances[i] = mergeCenterWorkflowInstance(instances[i], updated)
+		changed = true
+		break
+	}
+	if !changed {
+		instances = append([]CenterWorkflowInstance{updated}, instances...)
+	}
+	return writeWorkflowInstancesCache(tenantID, departmentID, workerID, instances)
+}
+
+func mergeCenterWorkflowInstance(existing, updated CenterWorkflowInstance) CenterWorkflowInstance {
+	next := updated
+	if strings.TrimSpace(next.DefinitionID) == "" {
+		next.DefinitionID = existing.DefinitionID
+	}
+	if strings.TrimSpace(next.Title) == "" {
+		next.Title = existing.Title
+	}
+	if strings.TrimSpace(next.InitiatorID) == "" {
+		next.InitiatorID = existing.InitiatorID
+	}
+	if strings.TrimSpace(next.CurrentStepID) == "" {
+		next.CurrentStepID = existing.CurrentStepID
+	}
+	if strings.TrimSpace(next.CurrentStepAssigneeColleagueID) == "" {
+		next.CurrentStepAssigneeColleagueID = existing.CurrentStepAssigneeColleagueID
+	}
+	if strings.TrimSpace(next.Status) == "" {
+		next.Status = existing.Status
+	}
+	if strings.TrimSpace(next.CreatedAt) == "" {
+		next.CreatedAt = existing.CreatedAt
+	}
+	if strings.TrimSpace(next.UpdatedAt) == "" {
+		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	next.Source = "center"
+	next.Stale = false
+	if strings.TrimSpace(next.CachedAt) == "" {
+		next.CachedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	return next
+}
+
+func removeCollaborationTaskCacheItem(tenantID, departmentID, workerID, taskID string) error {
+	tasks, ok := readCollaborationTasksCache(tenantID, departmentID, workerID)
+	if !ok {
+		return nil
+	}
+	taskID = strings.TrimSpace(taskID)
+	filtered := tasks[:0]
+	for _, task := range tasks {
+		if taskID != "" && strings.TrimSpace(task.ID) == taskID {
+			continue
+		}
+		task.Source = "center"
+		task.Stale = false
+		filtered = append(filtered, task)
+	}
+	return writeCollaborationTasksCache(tenantID, departmentID, workerID, filtered)
+}
+
+func upsertCollaborationTaskCacheItem(tenantID, departmentID, workerID string, updated CenterCollabTask) error {
+	tasks, ok := readCollaborationTasksCache(tenantID, departmentID, workerID)
+	if !ok {
+		tasks = []CenterCollabTask{}
+	}
+	taskID := strings.TrimSpace(updated.ID)
+	if taskID == "" {
+		return fmt.Errorf("collaboration task id is required for cache update")
+	}
+	changed := false
+	for i := range tasks {
+		if strings.TrimSpace(tasks[i].ID) != taskID {
+			continue
+		}
+		tasks[i] = mergeCenterCollaborationTask(tasks[i], updated)
+		changed = true
+		break
+	}
+	if !changed {
+		tasks = append([]CenterCollabTask{normalizeCenterCollaborationTaskForCache(updated)}, tasks...)
+	}
+	return writeCollaborationTasksCache(tenantID, departmentID, workerID, tasks)
+}
+
+func mergeCenterCollaborationTask(existing, updated CenterCollabTask) CenterCollabTask {
+	next := updated
+	if strings.TrimSpace(next.Title) == "" {
+		next.Title = existing.Title
+	}
+	if strings.TrimSpace(next.Description) == "" {
+		next.Description = existing.Description
+	}
+	if strings.TrimSpace(next.FromColleagueID) == "" {
+		next.FromColleagueID = existing.FromColleagueID
+	}
+	if strings.TrimSpace(next.ToColleagueID) == "" {
+		next.ToColleagueID = existing.ToColleagueID
+	}
+	if strings.TrimSpace(next.ToRoleCode) == "" {
+		next.ToRoleCode = existing.ToRoleCode
+	}
+	if next.Priority == 0 {
+		next.Priority = existing.Priority
+	}
+	if strings.TrimSpace(next.Result) == "" {
+		next.Result = existing.Result
+	}
+	if strings.TrimSpace(next.WorkflowStepID) == "" {
+		next.WorkflowStepID = existing.WorkflowStepID
+	}
+	if strings.TrimSpace(next.CreatedAt) == "" {
+		next.CreatedAt = existing.CreatedAt
+	}
+	if strings.TrimSpace(next.UpdatedAt) == "" {
+		next.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	return normalizeCenterCollaborationTaskForCache(next)
+}
+
+func normalizeCenterCollaborationTaskForCache(task CenterCollabTask) CenterCollabTask {
+	task.Source = "center"
+	task.Stale = false
+	if strings.TrimSpace(task.CachedAt) == "" {
+		task.CachedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	return task
 }
 
 func cacheFileModifiedAt(path string) string {
@@ -2069,6 +2486,7 @@ func (a *App) HeartbeatAgentRuntimeContext(ctx context.Context) ([]CenterAgentIn
 		return nil, err
 	}
 	results := make([]CenterAgentInstance, 0, len(snapshot.Instances))
+	runtimeSkillErrors := []string{}
 	for _, instance := range snapshot.Instances {
 		if err := ctxErr(ctx); err != nil {
 			return results, err
@@ -2090,9 +2508,18 @@ func (a *App) HeartbeatAgentRuntimeContext(ctx context.Context) ([]CenterAgentIn
 		if err != nil {
 			return results, err
 		}
+		if skillErr := strings.TrimSpace(result.RuntimeSkillError); skillErr != "" {
+			result.Instance.RuntimeSkillError = skillErr
+			runtimeSkillErrors = append(runtimeSkillErrors, fmt.Sprintf("%s: %s", result.Instance.InstanceID, skillErr))
+		}
 		results = append(results, result.Instance)
 	}
-	_ = writeAgentInstancesCache(resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), results)
+	if err := writeAgentInstancesCache(resolvedTenantID(settings), resolvedDepartmentID(settings), resolvedWorkerID(settings), results); err != nil {
+		return results, fmt.Errorf("agent runtime heartbeat accepted by iWorkerCenter but local cache update failed: %w", err)
+	}
+	if len(runtimeSkillErrors) > 0 {
+		return results, fmt.Errorf("agent runtime heartbeat accepted by iWorkerCenter but runtime skill sync failed: %s", strings.Join(runtimeSkillErrors, " | "))
+	}
 	return results, nil
 }
 
@@ -2115,7 +2542,9 @@ func (a *App) FetchAgentInstancesContext(ctx context.Context) ([]CenterAgentInst
 	workerID := resolvedWorkerID(settings)
 	instances, err := fetchCenterAgentInstancesContext(ctx, resolvedCenterBaseURL(settings), tenantID, workerID, settings.Center.TimeoutSec)
 	if err == nil {
-		_ = writeAgentInstancesCache(tenantID, departmentID, workerID, instances)
+		if cacheErr := writeAgentInstancesCache(tenantID, departmentID, workerID, instances); cacheErr != nil {
+			return instances, fmt.Errorf("agent instances fetched from iWorkerCenter but local cache update failed: %w", cacheErr)
+		}
 		return instances, nil
 	}
 	if cached, ok := readAgentInstancesCache(tenantID, departmentID, workerID); ok {
@@ -2143,7 +2572,9 @@ func (a *App) FetchGoalPushesContext(ctx context.Context, limit int) ([]CenterGo
 	workerID := resolvedWorkerID(settings)
 	pushes, err := fetchCenterGoalPushesContext(ctx, resolvedCenterBaseURL(settings), tenantID, workerID, limit, settings.Center.TimeoutSec)
 	if err == nil {
-		_ = writeGoalPushesCache(tenantID, departmentID, workerID, pushes)
+		if cacheErr := writeGoalPushesCache(tenantID, departmentID, workerID, pushes); cacheErr != nil {
+			return pushes, fmt.Errorf("goal pushes fetched from iWorkerCenter but local cache update failed: %w", cacheErr)
+		}
 		return pushes, nil
 	}
 	if cached, ok := readGoalPushesCache(tenantID, departmentID, workerID); ok {
@@ -2336,7 +2767,40 @@ func (a *App) AckGoalPushContext(ctx context.Context, eventID, status, note stri
 		Note:        note,
 	}, settings.Center.TimeoutSec)
 	if err == nil {
-		removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID)
+		if cacheErr := removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID); cacheErr != nil {
+			return result, fmt.Errorf("goal push acknowledged by iWorkerCenter but local cache update failed: %w", cacheErr)
+		}
+	}
+	return result, err
+}
+
+// RecoverGoalPush asks iWorkerCenter to resume the workflow step behind a GoalWatch push.
+func (a *App) RecoverGoalPush(eventID, note string) (CenterGoalPushRecoverResult, error) {
+	return a.RecoverGoalPushContext(context.Background(), eventID, note)
+}
+
+func (a *App) RecoverGoalPushContext(ctx context.Context, eventID, note string) (CenterGoalPushRecoverResult, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return CenterGoalPushRecoverResult{}, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return CenterGoalPushRecoverResult{}, fmt.Errorf("iWorkerCenter is disabled; goal push recovery requires the registered center")
+	}
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
+	result, err := recoverCenterGoalPushContext(ctx, resolvedCenterBaseURL(settings), tenantID, CenterGoalPushAckRequest{
+		EventID:     eventID,
+		ColleagueID: workerID,
+		Status:      "recovered",
+		Note:        note,
+	}, settings.Center.TimeoutSec)
+	if err == nil {
+		if cacheErr := removeGoalPushCacheItem(tenantID, departmentID, workerID, eventID); cacheErr != nil {
+			return result, fmt.Errorf("goal push recovered by iWorkerCenter but local cache update failed: %w", cacheErr)
+		}
 	}
 	return result, err
 }
@@ -2345,40 +2809,125 @@ func (a *App) AckGoalPushContext(ctx context.Context, eventID, status, note stri
 
 // FetchCollaborations returns collaboration tasks from iWorkerCenter.
 // If colleagueID is provided, returns only tasks assigned to that colleague.
-func (a *App) FetchCollaborations(colleagueID string) []CenterCollabTask {
-	settings, _ := readDiWorkerSettings()
+func (a *App) FetchCollaborations(colleagueID string) ([]CenterCollabTask, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
 	if !settings.Center.Enabled {
-		return nil
+		return nil, fmt.Errorf("iWorkerCenter is disabled; collaboration tasks require the registered center")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
-	if baseURL == "" {
-		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
+	tasks, err := fetchCenterCollaborationsContext(context.Background(), resolvedCenterBaseURL(settings), tenantID, colleagueID, settings.Center.TimeoutSec)
+	if err == nil {
+		if cacheErr := writeCollaborationTasksCache(tenantID, departmentID, workerID, tasks); cacheErr != nil {
+			return tasks, fmt.Errorf("collaboration tasks fetched from iWorkerCenter but local cache update failed: %w", cacheErr)
+		}
+		return tasks, nil
 	}
-	return fetchCenterCollaborations(baseURL, resolvedTenantID(settings), colleagueID, 5)
+	if cached, ok := readCollaborationTasksCache(tenantID, departmentID, workerID); ok {
+		return cached, nil
+	}
+	return nil, err
+}
+
+// TransitionCollaborationTask advances a Center collaboration task from the iWorker client.
+func (a *App) TransitionCollaborationTask(taskID, action, result, note string) (CenterCollabTask, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return CenterCollabTask{}, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return CenterCollabTask{}, fmt.Errorf("iWorkerCenter is disabled; collaboration task transition requires the registered center")
+	}
+	actorID := resolvedWorkerID(settings)
+	if strings.TrimSpace(note) == "" {
+		note = "operator action from iWorker client"
+	}
+	tenantID := resolvedTenantID(settings)
+	updated, err := transitionCenterCollaborationTaskContext(context.Background(), resolvedCenterBaseURL(settings), tenantID, taskID, action, actorID, result, note, settings.Center.TimeoutSec)
+	if err == nil {
+		departmentID := resolvedDepartmentID(settings)
+		workerID := resolvedWorkerID(settings)
+		switch strings.TrimSpace(updated.Status) {
+		case "completed", "rejected":
+			if cacheErr := removeCollaborationTaskCacheItem(tenantID, departmentID, workerID, taskID); cacheErr != nil {
+				return updated, fmt.Errorf("collaboration task updated by iWorkerCenter but local cache update failed: %w", cacheErr)
+			}
+		case "":
+		default:
+			if cacheErr := upsertCollaborationTaskCacheItem(tenantID, departmentID, workerID, updated); cacheErr != nil {
+				return updated, fmt.Errorf("collaboration task updated by iWorkerCenter but local cache update failed: %w", cacheErr)
+			}
+		}
+	}
+	return updated, err
 }
 
 // FetchWorkflowInstances returns workflow instances from iWorkerCenter.
-func (a *App) FetchWorkflowInstances() []CenterWorkflowInstance {
-	settings, _ := readDiWorkerSettings()
+func (a *App) FetchWorkflowInstances() ([]CenterWorkflowInstance, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
 	if !settings.Center.Enabled {
-		return nil
+		return nil, fmt.Errorf("iWorkerCenter is disabled; workflow instances require the registered center")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
-	if baseURL == "" {
-		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
+	instances, err := fetchCenterWorkflowInstancesResult(context.Background(), resolvedCenterBaseURL(settings), tenantID, workerID, settings.Center.TimeoutSec)
+	if err == nil {
+		if cacheErr := writeWorkflowInstancesCache(tenantID, departmentID, workerID, instances); cacheErr != nil {
+			return instances, fmt.Errorf("workflow instances fetched from iWorkerCenter but local cache update failed: %w", cacheErr)
+		}
+		return instances, nil
 	}
-	return fetchCenterWorkflowInstances(baseURL, resolvedTenantID(settings), 5)
+	if cached, ok := readWorkflowInstancesCache(tenantID, departmentID, workerID); ok {
+		return cached, nil
+	}
+	return nil, err
+}
+
+// TransitionWorkflowStep advances an assigned workflow step through iWorkerCenter runtime APIs.
+func (a *App) TransitionWorkflowStep(stepID, action, result, note string) (CenterWorkflowStepTransitionResult, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return CenterWorkflowStepTransitionResult{}, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
+	if !settings.Center.Enabled {
+		return CenterWorkflowStepTransitionResult{}, fmt.Errorf("iWorkerCenter is disabled; workflow step transition requires the registered center")
+	}
+	tenantID := resolvedTenantID(settings)
+	departmentID := resolvedDepartmentID(settings)
+	workerID := resolvedWorkerID(settings)
+	if strings.TrimSpace(note) == "" {
+		note = "workflow step action from iWorker client"
+	}
+	transition, err := transitionCenterWorkflowStepContext(context.Background(), resolvedCenterBaseURL(settings), tenantID, stepID, action, workerID, result, note, settings.Center.TimeoutSec)
+	if err == nil {
+		if cacheErr := upsertWorkflowInstanceCacheItem(tenantID, departmentID, workerID, transition.Instance); cacheErr != nil {
+			return transition, fmt.Errorf("workflow step updated by iWorkerCenter but local cache update failed: %w", cacheErr)
+		}
+	}
+	return transition, err
 }
 
 // RecommendColleague asks iWorkerCenter to recommend the best colleague for a task.
-func (a *App) RecommendColleague(taskDescription string) []CenterRecommendation {
-	settings, _ := readDiWorkerSettings()
+func (a *App) RecommendColleague(taskDescription string) ([]CenterRecommendation, error) {
+	settings, err := readDiWorkerSettings()
+	if err != nil {
+		return nil, err
+	}
+	settings = normalizeDiWorkerSettings(settings)
 	if !settings.Center.Enabled {
-		return nil
+		return nil, fmt.Errorf("iWorkerCenter is disabled; colleague recommendation requires the registered center")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(settings.Center.BaseURL), "/")
-	if baseURL == "" {
-		baseURL = buildCenterBaseURL(settings.Center.Host, settings.Center.Port)
-	}
-	return fetchRecommendations(baseURL, resolvedTenantID(settings), taskDescription, 3, 5)
+	return fetchRecommendationsResult(context.Background(), resolvedCenterBaseURL(settings), resolvedTenantID(settings), taskDescription, 3, settings.Center.TimeoutSec)
 }

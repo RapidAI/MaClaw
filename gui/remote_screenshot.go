@@ -12,6 +12,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
+var screenshotCommandTimeout = 45 * time.Second
+
 // CaptureScreenshot executes the full screenshot capture flow for the given
 // session: detect display → build command → execute → parse output → send image.
 // Only SDK-mode sessions are supported; PTY sessions return an error.
@@ -96,7 +98,7 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 
 	// Fallback: shell command approach (all platforms, or when native failed).
 	if base64Data == "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), screenshotCommandTimeout)
 		defer cancel()
 
 		var shellName string
@@ -119,7 +121,7 @@ func (m *RemoteSessionManager) captureAndSend(sessionID, label, cmdStr string) e
 
 		if err := cmd.Run(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("screenshot command timed out after 45s")
+				return fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 			}
 			m.app.log(fmt.Sprintf("[screenshot] capture failed for session=%s: %v, stderr: %s", sessionID, err, stderr.String()))
 			return fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
@@ -218,7 +220,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 		return "", fmt.Errorf("screenshot capture is not supported on %s", runtime.GOOS)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), screenshotCommandTimeout)
 	defer cancel()
 
 	var shellName string
@@ -241,7 +243,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirect() (string, error) {
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("screenshot command timed out after 45s")
+			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
 		m.app.log(fmt.Sprintf("[screenshot-direct] capture failed: %v, stderr: %s", err, stderr.String()))
 		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
@@ -290,7 +292,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex in
 		return "", fmt.Errorf("single monitor screenshot not supported on this platform")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), screenshotCommandTimeout)
 	defer cancel()
 
 	var shellName string
@@ -313,7 +315,7 @@ func (m *RemoteSessionManager) CaptureScreenshotDirectForDisplay(displayIndex in
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("screenshot command timed out after 45s")
+			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
 		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
@@ -383,7 +385,7 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 		return "", fmt.Errorf("screenshot not supported on %s", runtime.GOOS)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), screenshotCommandTimeout)
 	defer cancel()
 
 	var shellName string
@@ -405,7 +407,7 @@ func (m *RemoteSessionManager) CaptureScreenshotToBase64(sessionID string) (stri
 	m.app.log(fmt.Sprintf("[screenshot-b64] capturing for session=%s", sessionID))
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("screenshot command timed out after 45s")
+			return "", fmt.Errorf("screenshot command timed out after %s", screenshotCommandTimeout)
 		}
 		return "", fmt.Errorf("screenshot command failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}

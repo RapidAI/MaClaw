@@ -1,13 +1,19 @@
 package workflow
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
+
+const maxWorkflowJSONBodyBytes = 256 << 10
 
 // Handler exposes HTTP endpoints for workflow management and runtime.
 type Handler struct {
@@ -60,7 +66,7 @@ func (h *Handler) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, map[string]any{"workflows": toDefDTOs(defs)})
 	case http.MethodPost:
 		var req CreateDefinitionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeWorkflowJSON(r.Body, &req, false); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
@@ -77,10 +83,14 @@ func (h *Handler) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleDefinitionByID(w http.ResponseWriter, r *http.Request) {
 	tid := tenant.RequestTenantID(r)
-	rest := strings.TrimPrefix(r.URL.Path, "/admin/workflows/")
+	rest := strings.TrimPrefix(r.URL.EscapedPath(), "/admin/workflows/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
-	id := parts[0]
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid workflow id")
+		return
+	}
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "workflow id required")
 		return
@@ -189,7 +199,7 @@ func (h *Handler) handleDesign(w http.ResponseWriter, r *http.Request) {
 	}
 	tid := tenant.RequestTenantID(r)
 	var req DesignRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeWorkflowJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -212,7 +222,7 @@ func (h *Handler) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	tid := tenant.RequestTenantID(r)
 	var req StartInstanceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeWorkflowJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -231,14 +241,23 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 	}
 	tid := tenant.RequestTenantID(r)
 	// /runtime/workflows/steps/{id}/{action}
-	rest := strings.TrimPrefix(r.URL.Path, "/runtime/workflows/steps/")
+	rest := strings.TrimPrefix(r.URL.EscapedPath(), "/runtime/workflows/steps/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) < 2 {
 		response.BadRequest(w, "INVALID_PATH", "expected /runtime/workflows/steps/{id}/{action}")
 		return
 	}
-	stepID, action := parts[0], parts[1]
+	stepID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid workflow step id")
+		return
+	}
+	action, err := url.PathUnescape(parts[1])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid workflow step action")
+		return
+	}
 
 	var body struct {
 		ActorID             string `json:"actor_id"`
@@ -251,12 +270,15 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 		QualityScore        int    `json:"quality_score"`
 		QualityReason       string `json:"quality_reason"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := decodeWorkflowJSON(r.Body, &body, true); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
+		return
+	}
 
 	switch action {
 	case "start", "resume":
 		if err := h.svc.StartOrResumeStep(tid, stepID, body.ActorID, body.Note); err != nil {
-			response.BadRequest(w, "START_FAILED", err.Error())
+			writeStepActionError(w, "START_FAILED", err)
 			return
 		}
 	case "complete":
@@ -270,19 +292,37 @@ func (h *Handler) handleStepAction(w http.ResponseWriter, r *http.Request) {
 			QualityScore:        body.QualityScore,
 			QualityReason:       body.QualityReason,
 		}); err != nil {
-			response.BadRequest(w, "COMPLETE_FAILED", err.Error())
+			writeStepActionError(w, "COMPLETE_FAILED", err)
 			return
 		}
 	case "reject":
 		if err := h.svc.RejectStep(tid, stepID, body.ActorID, body.Note); err != nil {
-			response.BadRequest(w, "REJECT_FAILED", err.Error())
+			writeStepActionError(w, "REJECT_FAILED", err)
 			return
 		}
 	default:
 		response.BadRequest(w, "INVALID_ACTION", "valid actions: start, resume, complete, reject")
 		return
 	}
-	response.OK(w, map[string]string{"status": "ok"})
+	step, err := h.svc.GetStepInstance(tid, stepID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "STEP_READ_FAILED", "workflow step was transitioned but could not be loaded")
+		return
+	}
+	inst, err := h.svc.GetInstance(tid, step.InstanceID)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INSTANCE_READ_FAILED", "workflow instance was transitioned but could not be loaded")
+		return
+	}
+	response.OK(w, map[string]any{"status": "ok", "step": toStepInstDTO(step), "instance": toInstDTO(inst)})
+}
+
+func writeStepActionError(w http.ResponseWriter, code string, err error) {
+	if errors.Is(err, ErrStepActorForbidden) {
+		response.Error(w, http.StatusForbidden, "STEP_ACTOR_FORBIDDEN", err.Error())
+		return
+	}
+	response.BadRequest(w, code, err.Error())
 }
 
 // --- Client endpoints ---
@@ -314,7 +354,8 @@ func (h *Handler) handleClientInstances(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	tid := tenant.RequestTenantID(r)
-	instances, err := h.svc.ListInstances(tid)
+	colleagueID := strings.TrimSpace(firstNonEmpty(r.URL.Query().Get("colleague_id"), r.URL.Query().Get("worker_id")))
+	instances, err := h.svc.ListInstancesForColleague(tid, colleagueID)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -348,18 +389,20 @@ type stepDefDTO struct {
 }
 
 type instDTO struct {
-	ID            string `json:"id"`
-	DefinitionID  string `json:"definition_id"`
-	Title         string `json:"title"`
-	InitiatorID   string `json:"initiator_id"`
-	CurrentStepID string `json:"current_step_id"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	ID                             string `json:"id"`
+	DefinitionID                   string `json:"definition_id"`
+	Title                          string `json:"title"`
+	InitiatorID                    string `json:"initiator_id"`
+	CurrentStepID                  string `json:"current_step_id"`
+	CurrentStepAssigneeColleagueID string `json:"current_step_assignee_colleague_id"`
+	Status                         string `json:"status"`
+	CreatedAt                      string `json:"created_at"`
+	UpdatedAt                      string `json:"updated_at"`
 }
 
 type stepInstDTO struct {
 	ID                  string `json:"id"`
+	InstanceID          string `json:"instance_id"`
 	StepDefinitionID    string `json:"step_definition_id"`
 	AssigneeColleagueID string `json:"assignee_colleague_id"`
 	CollaborationTaskID string `json:"collaboration_task_id"`
@@ -367,6 +410,7 @@ type stepInstDTO struct {
 	Result              string `json:"result"`
 	SortOrder           int    `json:"sort_order"`
 	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
 }
 
 type eventDTO struct {
@@ -408,9 +452,11 @@ func toStepDefDTOs(steps []*StepDefinition) []stepDefDTO {
 
 func toInstDTO(inst *Instance) instDTO {
 	return instDTO{ID: inst.ID, DefinitionID: inst.DefinitionID, Title: inst.Title,
-		InitiatorID: inst.InitiatorID, CurrentStepID: inst.CurrentStepID, Status: inst.Status,
-		CreatedAt: inst.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt: inst.UpdatedAt.Format("2006-01-02T15:04:05Z")}
+		InitiatorID: inst.InitiatorID, CurrentStepID: inst.CurrentStepID,
+		CurrentStepAssigneeColleagueID: inst.CurrentStepAssigneeColleagueID,
+		Status:                         inst.Status,
+		CreatedAt:                      inst.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:                      inst.UpdatedAt.Format("2006-01-02T15:04:05Z")}
 }
 
 func toInstDTOs(instances []*Instance) []instDTO {
@@ -425,14 +471,33 @@ func toStepInstDTOs(steps []*StepInstance) []stepInstDTO {
 	out := make([]stepInstDTO, 0, len(steps))
 	for _, s := range steps {
 		out = append(out, stepInstDTO{
-			ID: s.ID, StepDefinitionID: s.StepDefinitionID,
+			ID: s.ID, InstanceID: s.InstanceID, StepDefinitionID: s.StepDefinitionID,
 			AssigneeColleagueID: s.AssigneeColleagueID,
 			CollaborationTaskID: s.CollaborationTaskID,
 			Status:              s.Status, Result: s.Result, SortOrder: s.SortOrder,
 			CreatedAt: s.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: s.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		})
 	}
 	return out
+}
+
+func toStepInstDTO(step *StepInstance) stepInstDTO {
+	if step == nil {
+		return stepInstDTO{}
+	}
+	return stepInstDTO{
+		ID:                  step.ID,
+		InstanceID:          step.InstanceID,
+		StepDefinitionID:    step.StepDefinitionID,
+		AssigneeColleagueID: step.AssigneeColleagueID,
+		CollaborationTaskID: step.CollaborationTaskID,
+		Status:              step.Status,
+		Result:              step.Result,
+		SortOrder:           step.SortOrder,
+		CreatedAt:           step.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:           step.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+	}
 }
 
 func toEventDTOs(events []*InstanceEvent) []eventDTO {
@@ -445,4 +510,28 @@ func toEventDTOs(events []*InstanceEvent) []eventDTO {
 		})
 	}
 	return out
+}
+
+func decodeWorkflowJSON(body io.Reader, dst any, allowEmpty bool) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxWorkflowJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxWorkflowJSONBodyBytes {
+		return errors.New("workflow json body exceeds size limit")
+	}
+	if len(bytes.TrimSpace(data)) == 0 && allowEmpty {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("workflow json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }

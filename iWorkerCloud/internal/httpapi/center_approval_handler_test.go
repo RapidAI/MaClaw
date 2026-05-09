@@ -113,6 +113,109 @@ func TestConfirmCenterManualHandlerActivatesAndIssuesPermanentLicense(t *testing
 	}
 }
 
+func TestConfirmCenterManualHandlerRejectsInvalidJSONWithoutLicense(t *testing.T) {
+	provider, centerSvc, licenseSvc := newApprovalTestServices(t)
+	insertApprovalCenter(t, provider, "ctr_manual_bad_json")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/centers/{id}/confirm", ConfirmCenterManualHandler(centerSvc))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/centers/ctr_manual_bad_json/confirm", strings.NewReader(`{"modules":`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	stores := sqlite.NewStore(provider)
+	center, err := stores.Centers.GetByID(context.Background(), "ctr_manual_bad_json")
+	if err != nil {
+		t.Fatalf("get center: %v", err)
+	}
+	if center.Status != "pending" {
+		t.Fatalf("center status = %q, want pending", center.Status)
+	}
+	if lic, err := licenseSvc.GetActive(context.Background(), "ctr_manual_bad_json"); err == nil || lic != nil {
+		t.Fatalf("license should not be issued after invalid JSON: lic=%+v err=%v", lic, err)
+	}
+}
+
+func TestConfirmCenterManualHandlerRejectsNegativeDurationWithoutActivating(t *testing.T) {
+	provider, centerSvc, licenseSvc := newApprovalTestServices(t)
+	insertApprovalCenter(t, provider, "ctr_manual_negative_days")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/centers/{id}/confirm", ConfirmCenterManualHandler(centerSvc))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/centers/ctr_manual_negative_days/confirm", strings.NewReader(`{"modules":["compute"],"days":-1}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	stores := sqlite.NewStore(provider)
+	center, err := stores.Centers.GetByID(context.Background(), "ctr_manual_negative_days")
+	if err != nil {
+		t.Fatalf("get center: %v", err)
+	}
+	if center.Status != "pending" {
+		t.Fatalf("center status = %q, want pending", center.Status)
+	}
+	if lic, err := licenseSvc.GetActive(context.Background(), "ctr_manual_negative_days"); err == nil || lic != nil {
+		t.Fatalf("license should not be issued after negative duration: lic=%+v err=%v", lic, err)
+	}
+}
+
+func TestConfirmCenterManualHandlerDoesNotActivateWhenLicenseSigningFails(t *testing.T) {
+	provider, _, _ := newApprovalTestServices(t)
+	stores := sqlite.NewStore(provider)
+	centerSvc := centers.NewService(stores.Centers, license.NewService(stores.Licenses, nil))
+	insertApprovalCenter(t, provider, "ctr_manual_signing_failed")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/centers/{id}/confirm", ConfirmCenterManualHandler(centerSvc))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/centers/ctr_manual_signing_failed/confirm", strings.NewReader(`{"modules":["compute"],"days":365}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	center, err := stores.Centers.GetByID(context.Background(), "ctr_manual_signing_failed")
+	if err != nil {
+		t.Fatalf("get center: %v", err)
+	}
+	if center.Status != "pending" {
+		t.Fatalf("center status = %q, want pending after license signing failure", center.Status)
+	}
+	if lic, err := stores.Licenses.GetActiveByCenterID(context.Background(), "ctr_manual_signing_failed"); err == nil || lic != nil {
+		t.Fatalf("license should not be issued after signing failure: lic=%+v err=%v", lic, err)
+	}
+}
+
+func TestConfirmCenterManualHandlerDoesNotPanicWithoutLicenseService(t *testing.T) {
+	provider, _, _ := newApprovalTestServices(t)
+	stores := sqlite.NewStore(provider)
+	centerSvc := centers.NewService(stores.Centers, nil)
+	insertApprovalCenter(t, provider, "ctr_manual_no_license_service")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/centers/{id}/confirm", ConfirmCenterManualHandler(centerSvc))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/centers/ctr_manual_no_license_service/confirm", strings.NewReader(`{"modules":["compute"],"days":365}`))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	center, err := stores.Centers.GetByID(context.Background(), "ctr_manual_no_license_service")
+	if err != nil {
+		t.Fatalf("get center: %v", err)
+	}
+	if center.Status != "pending" {
+		t.Fatalf("center status = %q, want pending when license service is unavailable", center.Status)
+	}
+}
+
 func TestConfirmManualLicenseCanBeFetchedByRegisteredCenter(t *testing.T) {
 	provider, centerSvc, licenseSvc := newApprovalTestServices(t)
 	stores := sqlite.NewStore(provider)
@@ -213,5 +316,22 @@ func TestDeleteCenterHandlerCleansDependentRows(t *testing.T) {
 		if count != 0 {
 			t.Fatalf("%s rows left after delete: %d", check.name, count)
 		}
+	}
+}
+
+func TestDeleteCenterHandlerReturnsNotFoundForMissingCenter(t *testing.T) {
+	_, centerSvc, _ := newApprovalTestServices(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /api/admin/centers/{id}", DeleteCenterHandler(centerSvc))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/centers/missing-center", nil)
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("delete status = %d body=%s, want 404", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "CENTER_NOT_FOUND") {
+		t.Fatalf("body = %s, want CENTER_NOT_FOUND", res.Body.String())
 	}
 }

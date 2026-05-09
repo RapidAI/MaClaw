@@ -3,6 +3,7 @@ package adminauth
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
@@ -51,5 +52,26 @@ func TestAuthenticateWithContextRejectsMissingSession(t *testing.T) {
 	}
 	if withTenant != req {
 		t.Fatal("unauthenticated request should be returned unchanged")
+	}
+}
+
+func TestLoginRejectsInvalidJSONBeforeCaptcha(t *testing.T) {
+	h := newTestHandler(t)
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(`{"username":`))
+	rec := httptest.NewRecorder()
+	h.handleLogin(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLoginRejectsOversizedJSONBeforeCaptcha(t *testing.T) {
+	h := newTestHandler(t)
+	body := `{"username":"admin","password":"` + strings.Repeat("x", maxAdminAuthJSONBodyBytes+1024)
+	req := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.handleLogin(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
 	}
 }

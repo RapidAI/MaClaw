@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -215,7 +214,7 @@ func (h *Handler) handleAdminSkillMarketEvolutionAutomationRule(w http.ResponseW
 		response.OK(w, rule)
 	case http.MethodPut:
 		var rule SkillEvolutionAutomationRule
-		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		if err := decodeCapabilityJSON(r.Body, &rule, false); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 			return
 		}
@@ -317,7 +316,7 @@ func (h *Handler) handleAdminSkillMarketEvolutionRun(w http.ResponseWriter, r *h
 		return
 	}
 	var req SkillEvolutionRunRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+	if err := decodeCapabilityJSON(r.Body, &req, true); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -363,7 +362,7 @@ func (h *Handler) handleAdminSkillMarketSafety(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var req SkillSafetyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}

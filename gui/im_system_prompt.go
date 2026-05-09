@@ -10,7 +10,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func (h *IMMessageHandler) buildSystemPrompt() string {
@@ -80,6 +79,14 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 - ⚠️ 提问即停：当你需要向用户提问、征求意见或提供选项让用户选择时（如"要不要继续？"、"你想下载哪个？"、"需要压缩吗？"），**只输出问题文本，不要在同一轮中调用任何工具**。等用户回答后再根据回答行动。自问自答（自己提问又自己回答并执行）是严重错误——用户会看到你替他做了决定。
 - ⚠️ 短消息上下文延续：当用户发送简短消息（如"开工"、"好"、"继续"、"可以"等）时，必须结合对话历史理解其含义。如果你在上一条消息中要求用户确认或说某个词来继续，用户的短回复就是对你上一条消息的回应——直接按之前讨论的任务继续执行，不要当作新对话的开始。绝不要回复"请告诉我今天要做什么"之类的通用问候。
 
+## 知识库外脑触发规则
+- 当用户说"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"批量录入这些文档/链接"等明确长期保存意图时，才调用知识库写入工具。
+- 公共网页保存使用 knowledge_save_url 或 knowledge_save_urls；用户贴出混杂文本、HTML、sitemap 或多行链接并要求保存网页信息时，先用 knowledge_discover_urls 提取候选，再按用户意图批量保存。
+- 文档/表格/目录录入使用 knowledge_import_files 或 knowledge_import_directory；当前话题结论、笔记、工作流产物等纯文本保存使用 knowledge_save_text。
+- 查询、回忆、解释、找关联、生成上下文包时优先使用 knowledge_search、knowledge_explain、knowledge_context_pack、knowledge_source_digest、knowledge_fact_graph 等本地只读工具；查询阶段默认不依赖 LLM。
+- 写入阶段允许在配置可用且有助于提升结构化质量时使用 LLM 辅助蒸馏；如果 LLM 不可用或失败，仍要回退到规则结构化，不能阻塞保存。
+- 不要因为用户只是让你"看看这个链接/总结这个文件/搜索资料"就自动写入知识库；除非用户明确表达保存、记住、录入、归档或以后复用。
+
 ## 上下文管理（长程任务优化）
 - 当你完成一个子任务或阶段性工作后（如完成了文件创建、完成了一轮测试、完成了数据收集），主动调用 compress_context 工具压缩之前的详细工具调用历史为一段摘要。
 - 摘要应包含：已完成的工作、创建/修改的文件列表、关键决策和结论、下一步计划。
@@ -89,6 +96,8 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
   - 切换到不同类型的工作时（如从代码编写切换到测试）
 - 不要在每次工具调用后都压缩——只在关键检查点使用。
 `)
+
+	appendCodingWorkflowContract(&b)
 
 	if isProMode {
 		// Pro mode: full coding workflow with session management.
@@ -212,6 +221,8 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 1. 按任务列表顺序逐个执行，每次只执行一个任务，不再需要用户交互
 2. 系统会在每次迭代中注入当前任务的上下文和具体操作指引（直接编码或委托编程工具），严格按照注入的指引执行
 3. 每个任务完成后运行验收测试，测试通过进入下一个任务，失败则修复重试（最多 3 次）
+   - 如果某个任务达到最多 3 次重试仍失败，记录为失败 ❌，跳到下一个任务继续推进，不要卡死在同一任务上
+   - 每个任务结束必须用固定格式标记：完成 ✅ / 失败 ❌
 4. 所有任务完成后进入集成联调阶段
 
 🚫 **严禁行为（违反将导致任务分解失去意义）：**
@@ -275,6 +286,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 - 不要反复重试创建新会话——同样的环境问题会导致同样的失败
 - 不要反复调用 get_session_output 轮询已退出的会话——状态不会改变
 - 立即停止工具调用，将错误信息和修复建议直接告知用户
+- 绝对不要终止状态为 busy 的编程会话；busy 表示工具仍在工作，应等待、观察或周期性获取输出
 - 常见原因：工具未安装、API Key 未配置、项目路径不存在、网络问题
 - 如果输出中有具体错误信息，提取关键信息告诉用户如何修复
 - 最多重试 1 次（换工具或换服务商），仍然失败则直接告知用户
@@ -372,6 +384,13 @@ office 工具是统一的文档操作工具，支持以下 action：
 `)
 	}
 	b.WriteString(`
+## MIS Dynamic AgentView
+- When the user asks to submit, edit, continue, validate, approve, query, or store business data such as expenses, reimbursements, purchase requests, leave requests, invoices, customers, contracts, assets, or tickets, prefer the mis_data tool over free-form chat.
+- Do not identify business objects by keyword matching. Use semantic business intent handling: call mis_data(action="resolve_intent", query=the user's natural-language request) when the requested business object or action must be inferred.
+- If the user wants to continue unfinished business entry or inspect active AgentView business work, call mis_data(action="list_agent_transactions"). This opens the local right-side transaction workspace and does not require the MIS service to be online.
+- The right-side AgentView must show directly operable UI such as forms, approvals, progress, or result browsers. Never show schema/source code to the user as the primary UI.
+- Standard skills remain immutable. If a skill or tool needs complex input, let the runtime generate an adaptive AgentView form and return validated structured data instead of modifying the skill itself.
+
 ## MaClaw Group Discussion
 - When group discussion is enabled, you may use group_discussion(action="status") to inspect current-Hub experts, active discussions, and pending invites.
 - Group discussion is current Hub only. Never route it through AgentNet, HubCenter, public networks, or cross-Hub discovery.
@@ -646,6 +665,41 @@ func imWorkflowDocDeliveryRule() string {
 `
 }
 
+func appendCodingWorkflowContract(b *strings.Builder) {
+	b.WriteString(`
+## 编程与非编程任务路由契约
+- 编程任务 / Coding_Task：明确要求修改项目代码、修 bug、重构、实现功能、补测试或运行代码级验证时，才进入编程任务工作流。
+- 非编程任务：信息检索、翻译、文档生成、文件操作、通信、日常助手、配置查看、截屏/screenshot、简单问答等，优先用现有工具直接完成，不要调用 create_session。
+- SSH/服务器操作任务：登录服务器、查看远程日志、重启服务、上传下载服务器文件等，优先使用 SSH/服务器工具；如果不能确定是编程任务，不要调用 create_session。
+- 文件与命令类非编程操作可用 bash、read_file、write_file、edit_file、craft_tool、send_file 等直接处理。
+
+## Spec 驱动编程任务工作流
+第一步：识别任务类型，区分编程任务、非编程任务、SSH/服务器操作任务。
+第二步：检查跳过确认信号。用户说“直接做”“不用问了”“全力推进”“just do it”“go ahead”等时，跳过三个确认阶段和剩余确认阶段，但仍在内部完成规划并直接执行。
+第三步：需求确认。生成需求文档并等待用户明确确认后才进入下一阶段；内容必须包括需求背景与目标、功能需求列表、非功能需求、约束与假设。若 PDF 生成失败，发送 Markdown 纯文本并说明 PDF 生成失败。
+第四步：技术设计。基于确认的需求文档生成设计文档，内容必须包括架构设计、接口设计、数据模型变更、实现方案概述。
+第五步：任务拆解。基于确认的需求和设计文档生成编号的任务列表、任务的描述和涉及的文件、TDD 验收测试用例。
+第六步：执行。只有在确认任务列表或收到跳过确认信号后才调用 create_session / send_and_observe；向执行会话传入需求和设计上下文。
+
+## 文档交付契约
+- 需求文档、设计文档、任务列表优先生成 PDF，可使用 craft_tool、bash、pandoc、wkhtmltopdf 或等价工具。
+- 通过 send_file 且 forward_to_im=true 发送给用户。
+- PDF 文件名使用 需求文档_<feature>.pdf、设计文档_<feature>.pdf、任务列表_<feature>.pdf。
+- 发送 PDF 时必须附带行动提示或文字摘要，不能只发文件。
+- 用户提出修改时，更新文档、重新生成 PDF，并把修订后使用最新版本作为后续阶段输入。
+- 收到“回退到需求阶段”或“回到需求阶段”等请求时，告知用户回退信息，并重新生成所有后续阶段文档。
+
+## 执行验证与止损契约
+- 每个任务完成后运行对应 TDD 测试；失败时最多 3 次重试，仍失败则记录原因并跳到下一个任务。
+- 进度格式要能区分完成 ✅ 和失败 ❌。
+- 所有任务结束后运行全量回归测试，并报告总任务数、成功/失败数、每个任务的执行结果、全量测试运行结果；全部通过时说明全部通过，有失败时列出失败项。
+- 会话失败止损原则：同一会话连续失败或无进展时不要无限重试，切换策略、拆小任务或向用户报告阻塞。
+- 执行验证原则：没有验证结果不要声称完成；验证不可运行时说明原因和剩余风险。
+- 绝对不要终止状态为 busy 的编程会话。
+- 自动续接 / Auto-Resume：已有可恢复会话、run_id、resume session id 或执行上下文时，优先续接，不要重复创建会话。
+`)
+}
+
 // buildSystemPromptWithMemory builds the system prompt with the lightweight
 // memory section (user_fact summary + proactive recall + dynamic recall hint).
 // The isFirstTurn flag controls whether the full memory management guide is included.
@@ -853,36 +907,9 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 		log.Printf("[proactive_recall] injected %d entries (with index) into system prompt", len(relevant))
 		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
 
-		// Memory-driven tool pinning: scan recalled memory content for
-		// conditional tool keywords (e.g. "服务器", "SSH") and pin matching
-		// tools to the session. This handles the case where the app was
-		// restarted and the user says "开工吧" to resume a server task —
-		// the user message has no SSH keywords, but the recalled memory does.
-		if h.toolRouter != nil {
-			var memoryText strings.Builder
-			for _, e := range relevant {
-				memoryText.WriteString(e.Content)
-				memoryText.WriteString(" ")
-			}
-			matched := tool.MatchConditionalTools(memoryText.String())
-			// Defense-in-depth: even though MatchConditionalTools already
-			// filters noEagerPinTools, double-check here. This prevents
-			// browser tools from being session-pinned if MatchConditionalTools
-			// has a bug or the filtering is bypassed by a future code change.
-			for name := range matched {
-				if tool.IsNoEagerPinTool(name) {
-					log.Printf("[MemoryPin] BLOCKED %q from memory-driven pin (in noEagerPinTools)", name)
-					continue
-				}
-				if tool.ShouldPinConditionalTool(name) {
-					h.toolRouter.ActivateSessionTool(name)
-					log.Printf("[MemoryPin] pinned conditional tool %q from recalled memory content", name)
-					if browserDiagToolNames[name] {
-						log.Printf("[browser-diag] Route_SessionPin: ⚠️ browser tool %q session-pinned via memory-driven-pin", name)
-					}
-				}
-			}
-		}
+		// Recalled memory is prompt context only. It must not session-pin
+		// conditional tools; current-message semantic routing or actual
+		// successful tool use owns that decision.
 	}
 }
 
@@ -1280,15 +1307,10 @@ func sortMatchedKnowledgeSkills(matched []matchedKnowledgeSkill) {
 }
 
 // buildParamSchemaForSkill returns a formatted parameter schema string for
-// a skill. If the skill has explicit params, uses those. Otherwise,
-// auto-synthesizes from command templates. Returns empty string if no
-// params are found.
+// a skill, preserving explicit params and completing any template placeholders
+// that the author omitted from the declared schema.
 func buildParamSchemaForSkill(s NLSkillDefinition) string {
-	params := s.Params
-	if len(params) == 0 && len(s.Steps) > 0 {
-		// Auto-synthesize from command templates.
-		params = cskill.SynthesizeParams(s.Steps, s.RequiredArgs)
-	}
+	params := cskill.CompleteParamsForRunner(s.Params, s.Steps, s.RequiredArgs)
 	if len(params) == 0 {
 		return ""
 	}

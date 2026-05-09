@@ -26,10 +26,14 @@ type SourceManager struct {
 
 // NewSourceManager creates a SourceManager that defaults to cloud mode.
 func NewSourceManager(syncMgr *SyncManager) *SourceManager {
-	return &SourceManager{
+	sm := &SourceManager{
 		source:  "cloud",
 		syncMgr: syncMgr,
 	}
+	if syncMgr != nil {
+		syncMgr.SetForceSyncObserver(sm.CheckForceSync)
+	}
+	return sm
 }
 
 // SetFallbackProvidersResolver configures the local provider fallback used when
@@ -57,7 +61,7 @@ func (sm *SourceManager) SetSource(source string) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	if source == "local" && !sm.syncMgr.GetComputePermission() {
+	if source == "local" && (sm.syncMgr == nil || !sm.syncMgr.GetComputePermission()) {
 		return ErrNoPermission
 	}
 
@@ -84,6 +88,12 @@ func (sm *SourceManager) GetActiveProviderSnapshot() ([]ComputeProvider, string,
 		copy(out, sm.localProviders)
 		return out, "local", false
 	}
+	if sm.syncMgr == nil {
+		if sm.shouldUseFallbackLocked() {
+			return sm.localFallbackProvidersLocked(), "local_fallback", true
+		}
+		return []ComputeProvider{}, "cloud", false
+	}
 	providers := sm.syncMgr.GetProviders()
 	if len(providers) > 0 || !sm.shouldUseFallbackLocked() {
 		return providers, "cloud", false
@@ -96,7 +106,7 @@ func (sm *SourceManager) GetActiveProviderSnapshot() ([]ComputeProvider, string,
 func (sm *SourceManager) IsLocalEditAllowed() bool {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
-	return sm.source == "local" && sm.syncMgr.GetComputePermission()
+	return sm.source == "local" && sm.syncMgr != nil && sm.syncMgr.GetComputePermission()
 }
 
 // HandleForceSync switches back to cloud mode and discards local providers.
@@ -110,7 +120,7 @@ func (sm *SourceManager) HandleForceSync() {
 // CheckForceSync checks the SyncManager for a pending force_sync flag and,
 // if set, calls HandleForceSync to revert to cloud mode.
 func (sm *SourceManager) CheckForceSync() {
-	if sm.syncMgr.HasForceSync() {
+	if sm.syncMgr != nil && sm.syncMgr.HasForceSync() {
 		sm.HandleForceSync()
 	}
 }
@@ -143,6 +153,9 @@ func (sm *SourceManager) GetLocalProviders() []ComputeProvider {
 func (sm *SourceManager) shouldUseFallbackLocked() bool {
 	if sm.fallbackProvidersResolver == nil {
 		return false
+	}
+	if sm.syncMgr == nil {
+		return true
 	}
 	status := sm.syncMgr.GetSyncStatus()
 	return status.Status == "pending" || status.Status == "failure" || status.Status == "waiting_for_credentials"

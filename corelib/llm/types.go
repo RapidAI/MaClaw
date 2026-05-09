@@ -40,12 +40,14 @@ type Message struct {
 }
 
 type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type Usage struct {
@@ -58,19 +60,19 @@ type Usage struct {
 }
 
 type openAIWireResponse struct {
-	ID                string           `json:"id,omitempty"`
-	Object            string           `json:"object,omitempty"`
-	Created           int64            `json:"created,omitempty"`
-	Model             string           `json:"model,omitempty"`
-	SystemFingerprint string           `json:"system_fingerprint,omitempty"`
+	ID                string             `json:"id,omitempty"`
+	Object            string             `json:"object,omitempty"`
+	Created           int64              `json:"created,omitempty"`
+	Model             string             `json:"model,omitempty"`
+	SystemFingerprint string             `json:"system_fingerprint,omitempty"`
 	Choices           []openAIWireChoice `json:"choices"`
-	Usage             *Usage           `json:"usage,omitempty"`
+	Usage             *Usage             `json:"usage,omitempty"`
 }
 
 type openAIWireChoice struct {
-	Index        int                `json:"index,omitempty"`
-	Message      openAIWireMessage  `json:"message"`
-	FinishReason string             `json:"finish_reason"`
+	Index        int               `json:"index,omitempty"`
+	Message      openAIWireMessage `json:"message"`
+	FinishReason string            `json:"finish_reason"`
 }
 
 type openAIWireMessage struct {
@@ -79,7 +81,6 @@ type openAIWireMessage struct {
 	ReasoningContent string      `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
 }
-
 
 // TokenCallback is called with each text delta from the LLM streaming response.
 type TokenCallback func(delta string)
@@ -157,7 +158,7 @@ func ParseNonStreamAnthropicResponse(resp *http.Response) (*Response, error) {
 	return &Response{
 		Choices: []Choice{{Message: msg, FinishReason: finishReason}},
 		Usage:   usage,
-		}, nil
+	}, nil
 }
 
 func normalizeOpenAIMessageContent(raw interface{}) (string, interface{}) {

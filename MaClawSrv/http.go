@@ -244,6 +244,12 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/jobs/{jobId}", s.withPrincipal(s.handleGetAsyncJob))
 	s.mux.HandleFunc("POST /api/v1/jobs/{jobId}/cancel", s.withPrincipal(s.handleCancelAsyncJob))
 	s.mux.HandleFunc("DELETE /api/v1/jobs/{jobId}", s.withPrincipal(s.handleDeleteAsyncJob))
+	s.mux.HandleFunc("GET /api/v1/records", s.withPrincipal(s.handleListStructuredRecords))
+	s.mux.HandleFunc("GET /api/v1/records/{collection}", s.withPrincipal(s.handleListStructuredRecords))
+	s.mux.HandleFunc("POST /api/v1/records/{collection}", s.withPrincipal(s.handleCreateStructuredRecord))
+	s.mux.HandleFunc("GET /api/v1/records/{collection}/{recordId}", s.withPrincipal(s.handleGetStructuredRecord))
+	s.mux.HandleFunc("PATCH /api/v1/records/{collection}/{recordId}", s.withPrincipal(s.handleUpdateStructuredRecord))
+	s.mux.HandleFunc("DELETE /api/v1/records/{collection}/{recordId}", s.withPrincipal(s.handleDeleteStructuredRecord))
 	s.mux.HandleFunc("GET /api/v1/skill-uploads/{submissionId}", s.withPrincipal(s.handleGetSkillUploadStatus))
 	s.mux.HandleFunc("GET /api/v1/skill-market/account", s.withPrincipal(s.handleGetSkillMarketAccount))
 	s.mux.HandleFunc("GET /api/v1/skills/{skillName}", s.withPrincipal(s.handleGetSkill))
@@ -1615,6 +1621,72 @@ func (s *HTTPServer) handleDeleteAsyncJob(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "job": job})
 }
+
+func (s *HTTPServer) handleListStructuredRecords(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := s.svc.ListStructuredRecords(r.Context(), p, agentservice.ListStructuredRecordsInput{
+		Collection: r.PathValue("collection"),
+		Tag:        strings.TrimSpace(r.URL.Query().Get("tag")),
+		Q:          strings.TrimSpace(r.URL.Query().Get("q")),
+		Limit:      page.Limit,
+		Before:     formatOptionalCursorTime(page.Before),
+	})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	items, meta := recordsPageMeta(out, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
+}
+
+func (s *HTTPServer) handleCreateStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.CreateStructuredRecordInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	in.Collection = r.PathValue("collection")
+	out, err := s.svc.CreateStructuredRecord(r.Context(), p, in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+func (s *HTTPServer) handleGetStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	out, err := s.svc.GetStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleUpdateStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	var in agentservice.UpdateStructuredRecordInput
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	out, err := s.svc.UpdateStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *HTTPServer) handleDeleteStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
+	if err := s.svc.DeleteStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId")); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
 func (s *HTTPServer) handleGetSkillUploadStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetSkillUploadStatus(r.Context(), p, r.PathValue("submissionId"), strings.TrimSpace(r.URL.Query().Get("base_url")))
 	if err != nil {
@@ -2548,6 +2620,14 @@ func paginateRuns(items []agentservice.Run, page pageQuery) ([]agentservice.Run,
 	})
 }
 
+func recordsPageMeta(items []agentservice.StructuredRecord, page pageQuery) ([]agentservice.StructuredRecord, pageMeta) {
+	meta := pageMeta{Limit: page.Limit, HasMore: len(items) == page.Limit}
+	if meta.HasMore && len(items) > 0 {
+		meta.NextBefore = items[len(items)-1].CreatedAt.Format(time.RFC3339Nano)
+	}
+	return items, meta
+}
+
 func paginateTenants(items []agentservice.Tenant, page pageQuery) ([]agentservice.Tenant, pageMeta) {
 	filtered := make([]agentservice.Tenant, 0, len(items))
 	for _, item := range items {
@@ -2726,6 +2806,13 @@ func parseCursorTime(raw string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func formatOptionalCursorTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339Nano)
+}
+
 func buildPageMeta(total, start, limit int, cursor func() time.Time) pageMeta {
 	meta := pageMeta{Limit: limit, HasMore: start > 0}
 	if meta.HasMore {
@@ -2753,7 +2840,7 @@ func writeError(w http.ResponseWriter, err error) {
 		code = http.StatusUnauthorized
 	case errors.Is(err, agentservice.ErrForbidden):
 		code = http.StatusForbidden
-	case errors.Is(err, agentservice.ErrTenantNotFound), errors.Is(err, agentservice.ErrUserNotFound), errors.Is(err, agentservice.ErrCredentialNotFound), errors.Is(err, agentservice.ErrUserConfigNotFound), errors.Is(err, agentservice.ErrInstanceNotFound), errors.Is(err, agentservice.ErrSessionNotFound), errors.Is(err, agentservice.ErrRunNotFound), errors.Is(err, agentservice.ErrSnapshotNotFound):
+	case errors.Is(err, agentservice.ErrTenantNotFound), errors.Is(err, agentservice.ErrUserNotFound), errors.Is(err, agentservice.ErrCredentialNotFound), errors.Is(err, agentservice.ErrUserConfigNotFound), errors.Is(err, agentservice.ErrInstanceNotFound), errors.Is(err, agentservice.ErrSessionNotFound), errors.Is(err, agentservice.ErrRunNotFound), errors.Is(err, agentservice.ErrSnapshotNotFound), errors.Is(err, agentservice.ErrRecordNotFound):
 		code = http.StatusNotFound
 	case errors.Is(err, agentservice.ErrRunNotRunning), errors.Is(err, agentservice.ErrInstanceBusy), errors.Is(err, agentservice.ErrUserBusy), errors.Is(err, agentservice.ErrTenantBusy), errors.Is(err, agentservice.ErrDeleteProtected), errors.Is(err, agentservice.ErrSessionBusy), errors.Is(err, agentservice.ErrSessionArchived), errors.Is(err, agentservice.ErrAlreadyExists):
 		code = http.StatusConflict

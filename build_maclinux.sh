@@ -96,8 +96,9 @@ CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags desktop,production -ldfla
 rm -f gui/resource_windows_amd64.syso gui/resource_windows_arm64.syso
 
 # Build TUI/CLI Binaries
-echo "  - Building TUI/CLI binaries..."
+echo "  - Building TUI/CLI and DataSrv binaries..."
 TUI_LDFLAGS="-s -w -X main.version=${VERSION}"
+DATASRV_LDFLAGS="-s -w -X main.serviceVersion=${VERSION}"
 for TUI_ARCH in amd64 arm64; do
     # macOS TUI
     CGO_ENABLED=0 GOOS=darwin GOARCH=$TUI_ARCH go build -ldflags "$TUI_LDFLAGS" -o "${BIN_DIR}/maclaw-tui_${TUI_ARCH}_darwin" ./tui/
@@ -109,8 +110,12 @@ for TUI_ARCH in amd64 arm64; do
     CGO_ENABLED=0 GOOS=darwin GOARCH=$TUI_ARCH go build -ldflags "$TUI_LDFLAGS" -o "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_darwin" ./cmd/maclaw-tool/
     CGO_ENABLED=0 GOOS=windows GOARCH=$TUI_ARCH go build -ldflags "$TUI_LDFLAGS" -o "${BIN_DIR}/maclaw-tool_${TUI_ARCH}.exe" ./cmd/maclaw-tool/
     CGO_ENABLED=0 GOOS=linux GOARCH=$TUI_ARCH go build -ldflags "$TUI_LDFLAGS" -o "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_linux" ./cmd/maclaw-tool/
+    # maclaw-data-srv
+    CGO_ENABLED=0 GOOS=darwin GOARCH=$TUI_ARCH go build -ldflags "$DATASRV_LDFLAGS" -o "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_darwin" ./cmd/maclaw-data-srv/
+    CGO_ENABLED=0 GOOS=windows GOARCH=$TUI_ARCH go build -ldflags "$DATASRV_LDFLAGS" -o "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}.exe" ./cmd/maclaw-data-srv/
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TUI_ARCH go build -ldflags "$DATASRV_LDFLAGS" -o "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_linux" ./cmd/maclaw-data-srv/
 done
-echo "  TUI/CLI binaries built for all platforms."
+echo "  TUI/CLI and DataSrv binaries built for all platforms."
 
 # Export PATH for nfpm
 export PATH=$PATH:$(go env GOPATH)/bin
@@ -363,6 +368,41 @@ create_pkg() {
     rm -rf "$TEMP_ROOT"
 }
 
+# Function to create standalone DataSrv PKG
+create_datasrv_pkg() {
+    ARCH=$1
+    if [ "$ARCH" == "universal" ]; then
+        SRC_BINARY="${BIN_DIR}/maclaw-data-srv_universal_darwin"
+        PKG_NAME="maclaw-data-srv-Universal.pkg"
+        if [ ! -f "$SRC_BINARY" ]; then
+            lipo -create "${BIN_DIR}/maclaw-data-srv_amd64_darwin" "${BIN_DIR}/maclaw-data-srv_arm64_darwin" -output "$SRC_BINARY"
+        fi
+    else
+        SRC_BINARY="${BIN_DIR}/maclaw-data-srv_${ARCH}_darwin"
+        PKG_NAME="maclaw-data-srv-${ARCH}.pkg"
+    fi
+
+    if [ ! -f "$SRC_BINARY" ]; then
+        echo "  - Skipping DataSrv PKG for $ARCH: $SRC_BINARY not found."
+        return
+    fi
+
+    TEMP_ROOT="build/datasrv_pkg_root_${ARCH}"
+    rm -rf "$TEMP_ROOT"
+    mkdir -p "$TEMP_ROOT/usr/local/bin"
+    cp "$SRC_BINARY" "$TEMP_ROOT/usr/local/bin/maclaw-data-srv"
+    chmod 755 "$TEMP_ROOT/usr/local/bin/maclaw-data-srv"
+
+    echo "  - Creating DataSrv PKG for $ARCH..."
+    pkgbuild --root "$TEMP_ROOT" \
+             --identifier "com.rapidai.maclaw.datasrv" \
+             --version "$VERSION" \
+             --install-location "/" \
+             "${OUTPUT_DIR}/${PKG_NAME}"
+
+    rm -rf "$TEMP_ROOT"
+}
+
 echo "[4/4] Creating Packages..."
 cp "${BIN_DIR}/${APP_NAME}_amd64.exe" "${OUTPUT_DIR}/"
 cp "${BIN_DIR}/${APP_NAME}_arm64.exe" "${OUTPUT_DIR}/"
@@ -375,11 +415,17 @@ for TUI_ARCH in amd64 arm64; do
     cp "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_darwin" "${OUTPUT_DIR}/" 2>/dev/null || true
     cp "${BIN_DIR}/maclaw-tool_${TUI_ARCH}.exe" "${OUTPUT_DIR}/" 2>/dev/null || true
     cp "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_linux" "${OUTPUT_DIR}/" 2>/dev/null || true
+    cp "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_darwin" "${OUTPUT_DIR}/" 2>/dev/null || true
+    cp "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}.exe" "${OUTPUT_DIR}/" 2>/dev/null || true
+    cp "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_linux" "${OUTPUT_DIR}/" 2>/dev/null || true
 done
 
 create_pkg amd64
 create_pkg arm64
 create_pkg universal
+create_datasrv_pkg amd64
+create_datasrv_pkg arm64
+create_datasrv_pkg universal
 
 echo "Build Complete!"
 echo "App Bundles and Packages are in $OUTPUT_DIR"

@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -14,6 +17,29 @@ import (
 // Handler exposes HTTP endpoints for role management.
 type Handler struct {
 	svc *service.RoleService
+}
+
+const maxRoleJSONBodyBytes = 128 << 10
+
+func decodeRoleJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxRoleJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxRoleJSONBodyBytes {
+		return errors.New("role json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("role json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 // New creates a Handler.
@@ -98,7 +124,7 @@ func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) createRole(w http.ResponseWriter, r *http.Request) {
 	tid := tenant.RequestTenantID(r)
 	var req service.CreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRoleJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -123,7 +149,7 @@ func (h *Handler) getRole(w http.ResponseWriter, r *http.Request, id string) {
 func (h *Handler) updateRole(w http.ResponseWriter, r *http.Request, id string) {
 	tid := tenant.RequestTenantID(r)
 	var req service.UpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRoleJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -140,7 +166,7 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
 		Status string `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRoleJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}

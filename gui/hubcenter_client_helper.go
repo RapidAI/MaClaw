@@ -77,6 +77,14 @@ func (a *App) getHubCenterJSON(ctx context.Context, client *http.Client, path st
 	if err != nil {
 		return "", nil, err
 	}
+	return a.getHubCenterJSONFromCandidates(ctx, client, bases, path, limit, dest)
+}
+
+func (a *App) getHubCenterJSONFromCandidates(ctx context.Context, client *http.Client, bases []string, path string, limit int64, dest interface{}) (string, []string, error) {
+	bases = remote.NormalizeHubCenterURLs(bases)
+	if len(bases) == 0 {
+		return "", nil, fmt.Errorf("hubcenter URL not configured")
+	}
 	var lastErr error
 	for _, base := range bases {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)

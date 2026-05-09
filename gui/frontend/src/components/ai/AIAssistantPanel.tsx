@@ -1,16 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { SelectProjectDir, SetWorkflowWorkingDir } from "../../../wailsjs/go/main/App";
 import type { ChatMessage } from "./useAIAssistant";
 import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { useWorkflowState } from "./useWorkflowState";
-import { WorkflowDocPreview } from "./WorkflowDocPreview";
 import { useCodePreviewState } from "./useCodePreviewState";
-import { CodePreviewPanel, darkCodePreviewTheme, lightCodePreviewTheme } from "./CodePreviewPanel";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
-import { AI_PANEL_STATIC_STYLE_ID, AI_PANEL_STATIC_STYLE_TEXT, darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme, type Theme } from "./aiAssistantPanelTheme";
+import { AI_PANEL_STATIC_STYLE_ID, AI_PANEL_STATIC_STYLE_TEXT, darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
@@ -25,29 +22,18 @@ import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
 import { AssistantInputStack } from "./AssistantInputStack";
-import { AssistantWorkflowDocsBar } from "./AssistantWorkflowDocsBar";
-import { AssistantInputComposer } from "./AssistantInputComposer";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
+import { AssistantPreviewPane } from "./AssistantPreviewPane";
+import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
 
-/* Theme definitions live in aiAssistantPanelTheme.tsx. */
-
-/* Project search UI lives in ProjectSearchPanel.tsx. */
-
-/* Small AI panel controls live in aiAssistantControls.tsx. */
-
-/* Themed inline markdown rendering lives in aiAssistantMarkdown.tsx. */
-
-/* Inject static panel styles once at module level */
 if (typeof document !== "undefined" && !document.getElementById(AI_PANEL_STATIC_STYLE_ID)) {
     const style = document.createElement("style");
     style.id = AI_PANEL_STATIC_STYLE_ID;
     style.textContent = AI_PANEL_STATIC_STYLE_TEXT;
     document.head.appendChild(style);
 }
-
-/* Main component */
 
 export function AIAssistantPanel(props: any) {
     const { onClose, lang, chatFontSize = 14, groupDiscussion, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0 } = props;
@@ -69,12 +55,14 @@ export function AIAssistantPanel(props: any) {
         scrollToTopSeq,
         onboardingIncomplete,
         showTraceEntry = false,
+        agentView = null,
     } = state;
     const {
         browseFile,
         clearSelectedFile,
         removeSelectedFile,
         sendMessage,
+        injectSupplementary,
         clearHistory,
         recordSubmittedPrompt,
         setDraftInputValue,
@@ -84,6 +72,8 @@ export function AIAssistantPanel(props: any) {
         cancelSession,
         onOpenTutorial,
         onTaskPrefsChanged,
+        submitAgentView,
+        dismissAgentView,
     } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
@@ -97,28 +87,30 @@ export function AIAssistantPanel(props: any) {
     const [composing, setComposing] = useState(false);
     const [cancelPending, setCancelPending] = useState(false);
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+    const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled } = useTTSReadback(audioOutputDeviceId);
 
-    const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire } = useBufferQueue();
+    const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire, extractEntry } = useBufferQueue();
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
 
 
-    const { state: workflowState, openDocPreview, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion, dismissDocsBar } = useWorkflowState();
+    const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
-    const showWorkflowPreview = workflowState.splitMode;
-    const showCodePreview = !showWorkflowPreview && codePreviewState.active;
-    const anySplitActive = showWorkflowPreview || showCodePreview;
+    const showAgentView = !!agentView;
+    const showWorkflowPreview = !showAgentView && workflowState.splitMode;
+    const showCodePreview = !showAgentView && !showWorkflowPreview && codePreviewState.active;
+    const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
 
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
-    const thinkingText = lang === "en" ? "Thinking..." : "\u6b63\u5728\u601d\u8003...";
-    const processingText = lang === "en" ? "Executing tools and finishing task..." : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u5e76\u5b8c\u6210\u4efb\u52a1...";
+    const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
+    const processingText = lang === "en" ? "Running tools... (you can type ahead)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const idlePlaceholderText = lang === "en" ? "Type a message..." : "\u8f93\u5165\u6d88\u606f...";
     const savedFileLabel = lang === "en" ? "Saved file" : "\u6587\u4ef6\u5df2\u4fdd\u5b58";
     const isBusy = sending;
@@ -128,6 +120,9 @@ export function AIAssistantPanel(props: any) {
     const showThinkingState = streaming;
     const showProcessingState = isBusy && !streaming;
     const showBusySpinner = isBusy;
+    const codingAgentTurnSnapshot = useMemo(() => sending ? latestCodingAgentTurnSnapshot(progressMessages) : null, [progressMessages, sending]);
+    const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(progressMessages, sending), [codingAgentTurnSnapshot, progressMessages, sending]);
+    const activeProcessingText = codingAgentProgress ? codingAgentCompactText(codingAgentProgress, lang) : processingText;
     const projectSearch = useProjectSearch(lang);
     const handleProjectSearchSwitch = useCallback(async (msg: string) => {
         if (isBusy && cancelSession) {
@@ -164,7 +159,7 @@ export function AIAssistantPanel(props: any) {
         : showThinkingState
             ? thinkingText
             : showProcessingState
-                ? processingText
+                ? activeProcessingText
                 : idlePlaceholderText;
     const inputValue = localDraftInputValue;
     const updateInputValue = useCallback((nextValue: string) => {
@@ -186,8 +181,11 @@ export function AIAssistantPanel(props: any) {
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
     }, [messages]);
     const hasConversation = otherMessages.length + progressMessages.length > 0;
-    const { handleScroll, outputContainerRef, outputEndRef, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages, ready, scrollToTopSeq });
-    const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputValue);
+    const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages, ready, scrollToTopSeq });
+    const handleInputResizeEnd = useCallback(() => {
+        scrollToBottom("auto", true, 2);
+    }, [scrollToBottom]);
+    const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputValue, handleInputResizeEnd);
 
     // Sync local draft from parent-owned draft state.
     useEffect(() => {
@@ -215,14 +213,6 @@ export function AIAssistantPanel(props: any) {
         return () => window.removeEventListener("keydown", handler);
     }, [onClose, inline, maximized, onToggleMaximize]);
 
-    const handleSelectWorkflowDir = useCallback(async () => {
-        try {
-            const dir = await SelectProjectDir();
-            if (dir) SetWorkflowWorkingDir(dir);
-        } catch (err) {
-            console.error("Failed to set workflow working directory:", err);
-        }
-    }, []);
     const applyInputValue = useCallback((nextValue: string) => {
         updateInputValue(nextValue);
         requestAnimationFrame(() => {
@@ -259,8 +249,17 @@ export function AIAssistantPanel(props: any) {
 
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
-        if (submitLocked) {
-            if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) return;
+        if (submitLocked || queueEditDraftActive) {
+            if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) {
+                if (queueEditDraftActive) {
+                    resetHistoryBrowsing();
+                    updateInputValue("");
+                    setQueueEditDraftActive(false);
+                    if (inputRef.current) inputRef.current.style.height = "auto";
+                    requestAnimationFrame(() => inputRef.current?.focus());
+                }
+                return;
+            }
             const attachments: AttachmentInfo[] = [...pendingAttachments];
             for (const fp of selectedFilePaths) {
                 const fileName = fp.split(/[/\\]/).pop() || fp;
@@ -271,6 +270,7 @@ export function AIAssistantPanel(props: any) {
             recordSubmittedPrompt?.(inputValue);
             resetHistoryBrowsing();
             updateInputValue("");
+            setQueueEditDraftActive(false);
             if (inputRef.current) inputRef.current.style.height = "auto";
             setPendingAttachments([]);
             clearSelectedFile?.();
@@ -291,7 +291,7 @@ export function AIAssistantPanel(props: any) {
         userScrolledUpRef.current = false;
         const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
         await sendMessage(outgoing);
-    }, [inputValue, submitLocked, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessage]);
+    }, [inputValue, submitLocked, queueEditDraftActive, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessage]);
 
     useEffect(() => {
         if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {
@@ -305,7 +305,42 @@ export function AIAssistantPanel(props: any) {
         prevSubmitLockedRef.current = submitLocked;
     }, [submitLocked, queue.length, mergeAndFire, sendMessage, recordSubmittedPrompt]);
 
-    const handleEditEntry = useCallback((id: string) => setEditingEntryId(id), []);
+    const handleFireEntry = useCallback(async (id: string) => {
+        const entry = extractEntry(id);
+        if (!entry) return;
+        const outgoing = buildOutgoingMessageMulti(entry.text, entry.attachments.map(att => att.filePath));
+        try {
+            const injected = injectSupplementary ? await injectSupplementary(outgoing) : false;
+            if (!injected) {
+                const sent = await sendMessage(outgoing);
+                if (sent === false) {
+                    addEntry(entry.text, entry.attachments);
+                    return;
+                }
+            }
+            recordSubmittedPrompt?.(entry.text);
+        } catch {
+            addEntry(entry.text, entry.attachments);
+        }
+    }, [addEntry, extractEntry, injectSupplementary, recordSubmittedPrompt, sendMessage]);
+
+    const handleEditEntry = useCallback((id: string) => {
+        const entry = extractEntry(id);
+        if (!entry) return;
+        setEditingEntryId(null);
+        setQueueEditDraftActive(true);
+        updateInputValue(entry.text);
+        setPendingAttachments([...entry.attachments]);
+        clearSelectedFile?.();
+        resetHistoryBrowsing();
+        requestAnimationFrame(() => {
+            resizeInput();
+            if (!inputRef.current) return;
+            inputRef.current.focus();
+            const caret = entry.text.length;
+            inputRef.current.setSelectionRange(caret, caret);
+        });
+    }, [clearSelectedFile, extractEntry, resetHistoryBrowsing, resizeInput, setPendingAttachments, updateInputValue]);
     const handleCancelEdit = useCallback(() => setEditingEntryId(null), []);
     const handleSaveEdit = useCallback((id: string, text: string, attachments: AttachmentInfo[]) => {
         updateEntry(id, text, attachments);
@@ -334,22 +369,21 @@ export function AIAssistantPanel(props: any) {
 
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
-        return otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel));
-    }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel]);
+        return otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel, lang));
+    }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel, lang]);
 
     const renderedProgressMessages = useMemo(() => {
-        return progressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel));
-    }, [progressMessages, executeAction, t, savedFileLabel]);
-
+        return progressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang));
+    }, [progressMessages, executeAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline
         ? (maximized
             ? maximizedInlineStyle
-            : { display: "flex", flexDirection: "column", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" })
+            : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" })
         : overlayStyle;
 
     return (
         <div data-testid="ai-panel-root" style={{ ...containerStyle, flexDirection: "row" }}>
-            <div style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, height: "100%" }}>
+            <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden" }}>
             {/* Drag overlay (inline mode) */}
             {inline && !maximized && (
                 <div style={{
@@ -361,6 +395,7 @@ export function AIAssistantPanel(props: any) {
             <AssistantTitleBar
                 bindGroupDiscussionPress={bindGroupDiscussionPress}
                 clearHistory={clearHistory}
+                codingAgentProgress={codingAgentProgress}
                 groupActiveTalks={groupActiveTalks}
                 groupDiscussion={groupDiscussion}
                 groupDiscussionBusy={groupDiscussionBusy}
@@ -436,7 +471,7 @@ export function AIAssistantPanel(props: any) {
                     onOpenOnboarding={onOpenOnboarding}
                     onboardingIncomplete={onboardingIncomplete}
                     pinnedNews={pinnedNews}
-                    processingText={processingText}
+                    processingText={activeProcessingText}
                     ready={ready}
                     renderedOtherMessages={renderedOtherMessages}
                     renderedProgressMessages={renderedProgressMessages}
@@ -456,7 +491,6 @@ export function AIAssistantPanel(props: any) {
                 cancelSession={cancelSession}
                 clearSelectedFile={clearSelectedFile}
                 composing={composing}
-                dismissDocsBar={dismissDocsBar}
                 editingEntryId={editingEntryId}
                 exitHistoryBrowsing={exitHistoryBrowsing}
                 finishVoicePointer={finishVoicePointer}
@@ -465,7 +499,7 @@ export function AIAssistantPanel(props: any) {
                 handleEditEntry={handleEditEntry}
                 handlePaste={handlePaste}
                 handleSaveEdit={handleSaveEdit}
-                handleSelectWorkflowDir={handleSelectWorkflowDir}
+                handleFireEntry={handleFireEntry}
                 handleSend={handleSend}
                 handleVoiceClick={handleVoiceClick}
                 handleVoicePointerDown={handleVoicePointerDown}
@@ -478,7 +512,6 @@ export function AIAssistantPanel(props: any) {
                 isBusy={isBusy}
                 isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
                 lang={lang}
-                openDocPreview={openDocPreview}
                 pendingAttachments={pendingAttachments}
                 placeholderText={placeholderText}
                 queue={queue}
@@ -498,52 +531,27 @@ export function AIAssistantPanel(props: any) {
                 themeMode={themeMode}
                 updateInputValue={updateInputValue}
                 voiceInput={voiceInput}
-                workflowState={workflowState}
             />
             </div>
-            {showWorkflowPreview && (
-                <div style={{ flex: Math.max(0.2, 1 - splitRatio), minWidth: 0, height: "100%" }}>
-                    <WorkflowDocPreview
-                        phaseDocuments={workflowState.phaseDocuments}
-                        currentPhaseID={workflowState.currentPhaseID}
-                        gateResults={workflowState.gateResults}
-                        onClose={closeDocPreview}
-                        onToggleMaximize={inline ? onToggleMaximize : undefined}
-                        onResizeStart={startPreviewResize}
-                        theme={{
-                            bg: t.bg,
-                            text: t.text,
-                            textMuted: t.textMuted,
-                            border: t.divider,
-                            headerBg: t.titleBarBg,
-                            accentColor: t.headingColor,
-                            accentBg: themeMode === 'dark' ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)",
-                            codeBg: t.codeBg,
-                            codeText: t.codeText,
-                            codeBlockBg: t.codeBlockBg,
-                            codeBlockBorder: t.codeBlockBorder,
-                            headingColor: t.headingColor,
-                            linkColor: t.linkColor,
-                            quoteBorder: t.quoteBorder,
-                            quoteText: t.quoteText,
-                            quoteBg: themeMode === 'dark' ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.04)",
-                        }}
-                    />
-                </div>
-            )}
-            {showCodePreview && (
-                <div style={{ flex: Math.max(0.2, 1 - splitRatio), minWidth: 0, height: "100%" }}>
-                    <CodePreviewPanel
-                        files={codePreviewState.files}
-                        activeFilePath={codePreviewState.activeFilePath}
-                        onSelectFile={selectCodeFile}
-                        onClose={closeCodePreview}
-                        onResizeStart={startPreviewResize}
-                        onToggleMaximize={inline ? onToggleMaximize : undefined}
-                        theme={themeMode === 'dark' ? darkCodePreviewTheme : lightCodePreviewTheme}
-                    />
-                </div>
-            )}
+            <AssistantPreviewPane
+                agentView={agentView}
+                codePreviewState={codePreviewState}
+                closeCodePreview={closeCodePreview}
+                closeDocPreview={closeDocPreview}
+                dismissAgentView={dismissAgentView}
+                inline={!!inline}
+                onToggleMaximize={onToggleMaximize}
+                selectCodeFile={selectCodeFile}
+                submitAgentView={submitAgentView}
+                showCodePreview={showCodePreview}
+                showAgentView={showAgentView}
+                showWorkflowPreview={showWorkflowPreview}
+                splitRatio={splitRatio}
+                startPreviewResize={startPreviewResize}
+                theme={t}
+                themeMode={themeMode}
+                workflowState={workflowState}
+            />
         </div>
     );
 }

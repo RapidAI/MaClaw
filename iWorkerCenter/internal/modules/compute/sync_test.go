@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -273,6 +274,41 @@ func TestSyncInvalidJSON(t *testing.T) {
 	status := sm.GetSyncStatus()
 	if status.Status != "failure" {
 		t.Fatalf("status = %q, want failure", status.Status)
+	}
+}
+
+func TestSyncRejectsTrailingJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"providers":[{"id":"p1","name":"Cloud GPT"}]} {"providers":[]}`))
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManager(srv.URL, "center-1", "secret-abc")
+	err := sm.SyncNow()
+	if !errors.Is(err, errSyncTrailingData) {
+		t.Fatalf("SyncNow() error = %v, want errSyncTrailingData", err)
+	}
+	if got := sm.GetProviders(); len(got) != 0 {
+		t.Fatalf("providers = %+v, want none after invalid sync payload", got)
+	}
+}
+
+func TestSyncRejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"providers":[],"padding":"` + strings.Repeat("x", syncResponseBodyLimit) + `"}`))
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManager(srv.URL, "center-1", "secret-abc")
+	err := sm.SyncNow()
+	if !errors.Is(err, errSyncResponseTooLarge) {
+		t.Fatalf("SyncNow() error = %v, want errSyncResponseTooLarge", err)
+	}
+	status := sm.GetSyncStatus()
+	if status.Status != "failure" || !status.NonBlocking {
+		t.Fatalf("status = %+v, want non-blocking failure", status)
 	}
 }
 

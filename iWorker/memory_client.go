@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,48 +24,51 @@ type SharedMemoryEntry struct {
 
 // fetchSharedMemories retrieves shared memories from iWorkerCenter.
 // It fetches enterprise-level memories plus role-specific memories matching roleCode.
-// Returns empty slice on any error (non-blocking).
 func fetchSharedMemories(centerBaseURL string, tenantID string, roleCode string, timeoutSec int) []SharedMemoryEntry {
+	memories, _ := fetchSharedMemoriesResult(centerBaseURL, tenantID, roleCode, timeoutSec)
+	return memories
+}
+
+func fetchSharedMemoriesResult(centerBaseURL string, tenantID string, roleCode string, timeoutSec int) ([]SharedMemoryEntry, error) {
+	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
 	if centerBaseURL == "" {
-		return nil
+		return nil, fmt.Errorf("iWorkerCenter base URL is required")
 	}
 	if timeoutSec <= 0 {
 		timeoutSec = 10
 	}
-	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-
-	url := strings.TrimRight(centerBaseURL, "/") + "/client/memories"
+	endpoint := centerBaseURL + "/client/memories"
 	if roleCode != "" {
-		url += "?role_code=" + roleCode
+		values := url.Values{}
+		values.Set("role_code", roleCode)
+		endpoint += "?" + values.Encode()
 	}
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	setCenterTenantHeader(req, tenantID)
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return nil
+		return nil, fmt.Errorf("iWorkerCenter shared memories failed: status=%d body=%s", resp.StatusCode, readCenterErrorBody(resp.Body))
 	}
 
 	var result struct {
 		Memories []SharedMemoryEntry `json:"memories"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil
+	if err := decodeCenterJSON(resp.Body, &result, 1024*1024); err != nil {
+		return nil, err
 	}
-	return result.Memories
+	if result.Memories == nil {
+		result.Memories = []SharedMemoryEntry{}
+	}
+	return result.Memories, nil
 }
 
 // buildMemorySystemPrompt assembles shared memories into a system prompt section.
@@ -207,15 +209,11 @@ func fetchWorkerMemoryStats(centerBaseURL, tenantID, departmentID, workerID stri
 		return WorkerMemoryStats{}, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return WorkerMemoryStats{}, err
-	}
 	if resp.StatusCode != http.StatusOK {
-		return WorkerMemoryStats{}, fmt.Errorf("iWorkerCenter memory stats failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return WorkerMemoryStats{}, fmt.Errorf("iWorkerCenter memory stats failed: status=%d body=%s", resp.StatusCode, readCenterErrorBody(resp.Body))
 	}
 	var stats WorkerMemoryStats
-	if err := json.Unmarshal(body, &stats); err != nil {
+	if err := decodeCenterJSON(resp.Body, &stats, 1024*1024); err != nil {
 		return WorkerMemoryStats{}, err
 	}
 	if stats.ByScope == nil {
@@ -296,12 +294,17 @@ func workerMemoryCacheModifiedAt(tenantID, departmentID, workerID string) (strin
 }
 
 func fetchWorkerMemories(centerBaseURL, tenantID, departmentID, workerID, query string, limit int, timeoutSec int) []WorkerMemoryEntry {
+	memories, _ := fetchWorkerMemoriesResult(centerBaseURL, tenantID, departmentID, workerID, query, limit, timeoutSec)
+	return memories
+}
+
+func fetchWorkerMemoriesResult(centerBaseURL, tenantID, departmentID, workerID, query string, limit int, timeoutSec int) ([]WorkerMemoryEntry, error) {
 	centerBaseURL = strings.TrimRight(strings.TrimSpace(centerBaseURL), "/")
 	tenantID = firstNonEmptyString(strings.TrimSpace(tenantID), "default")
 	departmentID = strings.TrimSpace(departmentID)
 	workerID = strings.TrimSpace(workerID)
 	if centerBaseURL == "" || workerID == "" {
-		return nil
+		return nil, fmt.Errorf("iWorkerCenter base URL and worker_id are required")
 	}
 	if timeoutSec <= 0 {
 		timeoutSec = 10
@@ -323,30 +326,40 @@ func fetchWorkerMemories(centerBaseURL, tenantID, departmentID, workerID, query 
 	endpoint := centerBaseURL + "/client/iworker/memories?" + values.Encode()
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return readWorkerMemoryCache(tenantID, departmentID, workerID)
+		return readWorkerMemoryCache(tenantID, departmentID, workerID), err
 	}
 	setCenterTenantHeader(req, tenantID)
 	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return readWorkerMemoryCache(tenantID, departmentID, workerID)
+		cached := readWorkerMemoryCache(tenantID, departmentID, workerID)
+		if len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return readWorkerMemoryCache(tenantID, departmentID, workerID)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return readWorkerMemoryCache(tenantID, departmentID, workerID)
+		cached := readWorkerMemoryCache(tenantID, departmentID, workerID)
+		if len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, fmt.Errorf("iWorkerCenter memories failed: status=%d body=%s", resp.StatusCode, readCenterErrorBody(resp.Body))
 	}
 	var result struct {
 		Memories []WorkerMemoryEntry `json:"memories"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return readWorkerMemoryCache(tenantID, departmentID, workerID)
+	if err := decodeCenterJSON(resp.Body, &result, 1024*1024); err != nil {
+		cached := readWorkerMemoryCache(tenantID, departmentID, workerID)
+		if len(cached) > 0 {
+			return cached, nil
+		}
+		return nil, err
 	}
-	_ = writeWorkerMemoryCache(tenantID, departmentID, workerID, result.Memories)
-	return result.Memories
+	if err := writeWorkerMemoryCache(tenantID, departmentID, workerID, result.Memories); err != nil {
+		return result.Memories, fmt.Errorf("worker memories fetched from iWorkerCenter but local cache update failed: %w", err)
+	}
+	return result.Memories, nil
 }
 
 func saveWorkerMemory(centerBaseURL, tenantID, departmentID, workerID string, req SaveWorkerMemoryRequest, timeoutSec int) (WorkerMemoryEntry, error) {
@@ -392,20 +405,18 @@ func saveWorkerMemory(centerBaseURL, tenantID, departmentID, workerID string, re
 		return WorkerMemoryEntry{}, err
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return WorkerMemoryEntry{}, err
-	}
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		return WorkerMemoryEntry{}, fmt.Errorf("iWorkerCenter memory save failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return WorkerMemoryEntry{}, fmt.Errorf("iWorkerCenter memory save failed: status=%d body=%s", resp.StatusCode, readCenterErrorBody(resp.Body))
 	}
 	var saved WorkerMemoryEntry
-	if err := json.Unmarshal(respBody, &saved); err != nil {
+	if err := decodeCenterJSON(resp.Body, &saved, 1024*1024); err != nil {
 		return WorkerMemoryEntry{}, err
 	}
 	cached := readWorkerMemoryCache(tenantID, departmentID, workerID)
 	cached = upsertWorkerMemoryCache(cached, saved)
-	_ = writeWorkerMemoryCache(tenantID, departmentID, workerID, cached)
+	if err := writeWorkerMemoryCache(tenantID, departmentID, workerID, cached); err != nil {
+		return saved, fmt.Errorf("worker memory saved to iWorkerCenter but local cache update failed: %w", err)
+	}
 	return saved, nil
 }
 
@@ -445,15 +456,13 @@ func deleteWorkerMemory(centerBaseURL, tenantID, departmentID, workerID, memoryI
 		return err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
-	if err != nil {
-		return err
-	}
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("iWorkerCenter memory delete failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return fmt.Errorf("iWorkerCenter memory delete failed: status=%d body=%s", resp.StatusCode, readCenterErrorBody(resp.Body))
 	}
 	cached := removeWorkerMemoryCache(readWorkerMemoryCache(tenantID, departmentID, workerID), memoryID)
-	_ = writeWorkerMemoryCache(tenantID, departmentID, workerID, cached)
+	if err := writeWorkerMemoryCache(tenantID, departmentID, workerID, cached); err != nil {
+		return fmt.Errorf("worker memory deleted from iWorkerCenter but local cache update failed: %w", err)
+	}
 	return nil
 }
 func buildWorkerMemorySystemPrompt(memories []WorkerMemoryEntry) string {
@@ -526,14 +535,7 @@ func writeWorkerMemoryCache(tenantID, departmentID, workerID string, memories []
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(memories, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return writeJSONFileDurable(path, memories)
 }
 
 func upsertWorkerMemoryCache(items []WorkerMemoryEntry, saved WorkerMemoryEntry) []WorkerMemoryEntry {

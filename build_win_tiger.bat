@@ -11,6 +11,10 @@ echo [INFO] Starting TigerClaw build process...
 REM -- Set Environment Variables --
 set "APP_NAME=TigerClaw"
 set "BUILD_TAGS=desktop,production,oem_qianxin"
+set "GUI_AMD64_TAGS=%BUILD_TAGS%"
+set "GUI_ARM64_TAGS=%BUILD_TAGS%"
+set "GUI_AMD64_CGO=0"
+set "GUI_ARM64_CGO=0"
 set "TUI_NAME=tigerclaw-tui"
 set "TOOL_NAME=tigerclaw-tool"
 set "OUTPUT_DIR=%~dp0dist"
@@ -114,52 +118,35 @@ if !errorlevel! neq 0 (
     goto :error
 )
 
-REM -- (Optional) Build RapidSpeech static library for CGO embedding --
-REM   If build\build_rapidspeech.cmd succeeds, the cgo_embedding tag is added
-REM   so that GemmaEmbedder (vector embedding via RapidSpeech) is compiled in.
-REM   If it fails (missing CMake/compiler), the build continues without it.
-echo [Step 5.5/9] Building RapidSpeech static library (optional)...
-set "RS_LIB=%~dp0RapidSpeech.cpp\build\librapidspeech_static.a"
-if exist "%~dp0build\build_rapidspeech.cmd" (
-    call "%~dp0build\build_rapidspeech.cmd"
-    if !errorlevel! equ 0 (
-        if exist "%RS_LIB%" (
-            echo [INFO] RapidSpeech static library built. Enabling cgo_embedding tag.
-            set "BUILD_TAGS=%BUILD_TAGS%,cgo_embedding"
-            set "CGO_ENABLED=1"
-        ) else (
-            echo [WARN] build_rapidspeech.cmd succeeded but library not found. Skipping cgo_embedding.
-        )
-    ) else (
-        echo [WARN] RapidSpeech static library build failed. Continuing without cgo_embedding.
-    )
-) else (
-    echo [WARN] build\build_rapidspeech.cmd not found. Skipping RapidSpeech build.
-)
+REM -- Skip RapidSpeech static library for this Windows package --
+REM   TigerClaw release builds stay pure-Go/non-cgo so both amd64 and arm64
+REM   binaries can be produced with the standard Go Windows toolchain.
+echo [Step 5.5/9] Skipping RapidSpeech static library build.
 
 REM -- Build Go Binaries (with oem_qianxin tag) --
 echo [Step 6/9] Compiling TigerClaw GUI binaries...
 set "GOOS=windows"
-if not "%CGO_ENABLED%"=="1" set "CGO_ENABLED=0"
 set "GOARCH=amd64"
+set "CGO_ENABLED=%GUI_AMD64_CGO%"
 "%GOVERSIONINFO_PATH%" -64 -icon "%ICON_PATH%" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_amd64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate amd64 resources.
     goto :error
 )
-go build -tags %BUILD_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
+go build -tags %GUI_AMD64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_amd64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI amd64 failed.
     goto :error
 )
 del "%~dp0gui\resource_windows_amd64.syso"
 set "GOARCH=arm64"
+set "CGO_ENABLED=%GUI_ARM64_CGO%"
 "%GOVERSIONINFO_PATH%" -64 -arm -icon "%ICON_PATH%" -manifest "%~dp0build\windows\wails.exe.manifest.tmp" -o "%~dp0gui\resource_windows_arm64.syso" "%~dp0build\windows\versioninfo.json.tmp"
 if !errorlevel! neq 0 (
     echo [ERROR] Failed to generate arm64 resources.
     goto :error
 )
-go build -tags %BUILD_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
+go build -tags %GUI_ARM64_TAGS% -ldflags "-s -w -H windowsgui -X main.version=%VERSION%" -o "%OUTPUT_DIR%\%APP_NAME%_arm64.exe" ./gui/
 if !errorlevel! neq 0 (
     echo [ERROR] Go build for TigerClaw GUI arm64 failed.
     goto :error

@@ -1,12 +1,15 @@
 package adminauth
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	mrand "math/rand"
 	"net/http"
@@ -17,6 +20,8 @@ import (
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
 )
+
+const maxAdminAuthJSONBodyBytes = 64 << 10
 
 // Handler provides auth endpoints.
 type Handler struct {
@@ -135,7 +140,7 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		CaptchaID  string `json:"captcha_id"`
 		CaptchaAns int    `json:"captcha_answer"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -250,7 +255,7 @@ func (h *Handler) updateProfile(w http.ResponseWriter, r *http.Request, userID s
 	var req struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -280,7 +285,7 @@ func (h *Handler) handlePassword(w http.ResponseWriter, r *http.Request) {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeAdminAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -334,6 +339,27 @@ func generateSalt() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+func decodeAdminAuthJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxAdminAuthJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxAdminAuthJSONBodyBytes {
+		return errors.New("admin auth json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("admin auth json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 func hashPassword(password, salt string) string {

@@ -255,6 +255,34 @@ func TestDeleteProvider_CleansUpAssignments(t *testing.T) {
 	}
 }
 
+func TestDeleteProvider_SetsForceSyncForAffectedCenters(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	p := sampleProvider()
+	s.CreateProvider(ctx, p)
+
+	if err := s.AssignProvider(ctx, "center-1", p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AssignProvider(ctx, "center-2", p.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteProvider(ctx, p.ID); err != nil {
+		t.Fatalf("DeleteProvider: %v", err)
+	}
+
+	for _, centerID := range []string{"center-1", "center-2"} {
+		forceSync, err := s.GetForceSync(ctx, centerID)
+		if err != nil {
+			t.Fatalf("GetForceSync(%s): %v", centerID, err)
+		}
+		if !forceSync {
+			t.Fatalf("expected force_sync for %s after provider deletion", centerID)
+		}
+	}
+}
+
 func TestToggleProvider(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

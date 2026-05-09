@@ -12,9 +12,12 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/swarm"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // ---------------------------------------------------------------------------
@@ -203,7 +206,7 @@ func TestBuildRemoteSkillSearchPrompt(t *testing.T) {
 
 func TestBuildNoToolActionPrompt(t *testing.T) {
 	prompt := buildNoToolActionPrompt(true, "hf_daily_papers_report", "")
-	if !contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
+	if !contains(prompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected preferred skill action guidance, got %q", prompt)
 	}
 	if !contains(prompt, `get_skill_run(run_id=...)`) {
@@ -214,7 +217,7 @@ func TestBuildNoToolActionPrompt(t *testing.T) {
 	if !contains(runningPrompt, `get_skill_run(run_id="run-456")`) {
 		t.Fatalf("expected concrete run_id guidance, got %q", runningPrompt)
 	}
-	if contains(runningPrompt, `run_skill(name="hf_daily_papers_report")`) {
+	if contains(runningPrompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected running prompt to avoid restarting skill, got %q", runningPrompt)
 	}
 
@@ -229,7 +232,7 @@ func TestBuildNoToolStallRecoverPrompt(t *testing.T) {
 	if !contains(prompt, "连续 2 轮都没有真正调用工具") {
 		t.Fatalf("expected stall count, got %q", prompt)
 	}
-	if !contains(prompt, `run_skill(name="hf_daily_papers_report")`) {
+	if !contains(prompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected preferred skill guidance, got %q", prompt)
 	}
 	if !contains(prompt, `get_skill_run(run_id=...)`) {
@@ -240,7 +243,7 @@ func TestBuildNoToolStallRecoverPrompt(t *testing.T) {
 	if !contains(runningPrompt, `get_skill_run(run_id="run-456")`) {
 		t.Fatalf("expected concrete run_id guidance, got %q", runningPrompt)
 	}
-	if contains(runningPrompt, `run_skill(name="hf_daily_papers_report")`) {
+	if contains(runningPrompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected running prompt to avoid restarting skill, got %q", runningPrompt)
 	}
 
@@ -434,18 +437,24 @@ func TestGetTools_CacheInvalidatedBySetGenerator(t *testing.T) {
 	}
 }
 
-// TestRouteTools_NoRouterReturnsAll verifies that routeTools returns all
-// tools unchanged when no router is configured.
-func TestRouteTools_NoRouterReturnsAll(t *testing.T) {
+// TestRouteTools_NoRouterFailsClosed verifies that routeTools still applies
+// conservative conditional-tool filtering when no router is configured.
+func TestRouteTools_NoRouterFailsClosed(t *testing.T) {
 	handler := &IMMessageHandler{
 		app: &App{},
 	}
 
 	tools := handler.buildToolDefinitions()
-	routed := handler.routeTools("hello", tools)
+	routed := handler.routeTools("open a browser and inspect the remote server", tools)
 
-	if len(routed) != len(tools) {
-		t.Fatalf("expected %d tools without router, got %d", len(tools), len(routed))
+	if len(routed) == 0 || len(routed) > len(tools) {
+		t.Fatalf("unexpected routed tool count without router: got %d of %d", len(routed), len(tools))
+	}
+	for _, item := range routed {
+		name := extractToolName(item)
+		if name == "browser" || name == "ssh" {
+			t.Fatalf("conditional tool %q should fail closed without configured router", name)
+		}
 	}
 }
 
@@ -527,6 +536,15 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 
 	gen := NewToolDefinitionGenerator(nil, tools)
 	router := NewToolRouter(gen)
+	ic := coretool.NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) {
+		if strings.Contains(prompt, "home.rapidai.tech") {
+			return coretool.IntentSSH, nil
+		}
+		return coretool.IntentUnknown, nil
+	})
+	router.SetIntentClassifier(ic)
 	handler.SetToolRouter(router)
 
 	runCase := func(message string, wantSSH bool) {
@@ -554,6 +572,50 @@ func TestRouteTools_WithRouterKeepsSSHForSSHIntent(t *testing.T) {
 	// follow-up SSH operations), but these are independent test scenarios.
 	router.ResetSession()
 	runCase("我要查询数据库", false)
+}
+
+func TestRouteTools_WithRouterKeepsMISDataForBusinessTransactionIntent(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+
+	for i := 0; i < 20; i++ {
+		handler.registry.Register(RegisteredTool{
+			Name:        fmt.Sprintf("extra_%d", i),
+			Description: fmt.Sprintf("extra tool %d", i),
+			Category:    ToolCategoryNonCode,
+			Status:      RegToolAvailable,
+		})
+	}
+
+	tools := NewDynamicToolBuilder(handler.registry).BuildAll()
+	if len(tools) <= maxToolBudget {
+		t.Fatalf("need more than %d tools to test routing, got %d", maxToolBudget, len(tools))
+	}
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	router.SetUnifiedClassifier(intent.New(intent.Config{
+		Embedder: embedding.NewNoopEmbedder(),
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"business_data","score":0.92,"workflow_type":""},{"skill":"non_coding","score":0.35,"workflow_type":""},{"skill":"continuation","score":0.30,"workflow_type":""}]}`, nil
+		},
+	}))
+	handler.SetToolRouter(router)
+
+	routed := handler.routeTools("继续处理上次差旅报销录入，打开未完成事务", tools)
+	foundMISData := false
+	for _, tool := range routed {
+		if extractToolName(tool) == "mis_data" {
+			foundMISData = true
+			break
+		}
+	}
+	if !foundMISData {
+		names := make([]string, len(routed))
+		for i, tool := range routed {
+			names[i] = extractToolName(tool)
+		}
+		t.Fatalf("mis_data should be routed for business transaction intent, got: %v", names)
+	}
 }
 
 func TestToolWebFetchIncludesContinuationMetadata(t *testing.T) {
@@ -1029,6 +1091,17 @@ func TestBuildToolDefinitions_IncludesTemplateTools(t *testing.T) {
 			t.Errorf("expected template tool %q in buildToolDefinitions", name)
 		}
 	}
+}
+
+func TestBuildToolDefinitions_IncludesMISData(t *testing.T) {
+	handler := &IMMessageHandler{app: &App{}}
+	tools := handler.buildToolDefinitions()
+	for _, tool := range tools {
+		if extractToolName(tool) == "mis_data" {
+			return
+		}
+	}
+	t.Fatal("mis_data tool not found in buildToolDefinitions")
 }
 
 // contains is a test helper that checks if s contains substr.

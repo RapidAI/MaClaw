@@ -90,21 +90,13 @@ func (p *OpenAIProxy) Port() int {
 
 // NeedsOpenAIProxy determines if a skill needs the local OpenAI proxy.
 // Returns true if required_env contains OPENAI_API_KEY and the user
-// has not provided OPENAI_API_KEY or OPENAI_BASE_URL via extra_env.
+// has not provided OPENAI_API_KEY via extra_env.
 func NeedsOpenAIProxy(requiredEnv []string, extraEnv map[string]string) bool {
-	// Check if requiredEnv contains OPENAI_API_KEY (case-sensitive)
-	found := false
-	for _, env := range requiredEnv {
-		if env == "OPENAI_API_KEY" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !declaresOpenAIAPIKey(requiredEnv) {
 		return false
 	}
 
-	return !hasUserProvidedOpenAIEnv(extraEnv)
+	return !hasUserProvidedOpenAIAPIKey(extraEnv)
 }
 
 // NeedsOpenAIProxyAuto is like NeedsOpenAIProxy but also auto-detects
@@ -114,99 +106,244 @@ func NeedsOpenAIProxy(requiredEnv []string, extraEnv map[string]string) bool {
 // but don't declare requires_env in their metadata.
 //
 // Detection order:
-//  1. RequiredEnv explicitly declares OPENAI_API_KEY 閳?use proxy
-//  2. Step commands reference OPENAI_API_KEY/OPENAI_BASE_URL 閳?use proxy
-//  3. Script files (.py, .js, .ts, .sh) in skillDir reference them 閳?use proxy
+//  1. RequiredEnv explicitly declares OPENAI_API_KEY/OPENAI_BASE_URL.
+//  2. Step commands reference OPENAI_API_KEY/OPENAI_BASE_URL.
+//  3. Script files (.py, .js, .ts, .sh) in skillDir reference them.
 //
-// In all cases, if the user has already provided the env vars via extraEnv
-// or the process environment, the proxy is not started.
+// Explicit required_env entries are satisfied per variable. Passive script
+// detection remains conservative: any user-provided OpenAI env disables the
+// proxy so caller-supplied endpoints are not overwritten.
 func NeedsOpenAIProxyAuto(requiredEnv []string, extraEnv map[string]string, steps []NLSkillStep, skillDir string) bool {
-	// Fast path: user already provided credentials via extraEnv
-	if hasUserProvidedOpenAIEnv(extraEnv) {
-		return false
-	}
-
-	// Check if skill explicitly declares OPENAI_API_KEY requirement.
+	// Check if the skill or any executable step explicitly declares
+	// OPENAI env requirements. Step-level required_env is common in imported skills.
 	// Checked before the process-level env so that a stale
 	// "sk-maclaw-local-proxy" sentinel in os env doesn't prevent
 	// proxy startup for skills that genuinely need it.
-	explicitlyRequired := false
-	for _, env := range requiredEnv {
-		if env == "OPENAI_API_KEY" {
-			explicitlyRequired = true
-			break
-		}
+	explicitUsage := openAIEnvUsage{
+		apiKey:  declaresOpenAIAPIKey(requiredEnv) || stepsDeclareOpenAIAPIKey(steps),
+		baseURL: declaresOpenAIBaseURL(requiredEnv) || stepsDeclareOpenAIBaseURL(steps),
+	}
+	if explicitUsage.any() {
+		apiKeySatisfied := !explicitUsage.apiKey || hasUserProvidedOpenAIAPIKey(extraEnv) || hasProcessOpenAIAPIKey(extraEnv)
+		baseURLSatisfied := !explicitUsage.baseURL || hasUserProvidedOpenAIBaseURL(extraEnv) || hasProcessOpenAIBaseURL(extraEnv)
+		return !(apiKeySatisfied && baseURLSatisfied)
 	}
 
-	// Check process-level env: if OPENAI_API_KEY is set globally and
-	// extraEnv doesn't explicitly override it (e.g. with empty string),
-	// the skill can use the existing key directly 閳?no proxy needed.
-	// However, ignore the maclaw-internal proxy sentinel ("sk-maclaw-local-proxy")
-	// because it points to a proxy that may no longer be running.
-	if v := os.Getenv("OPENAI_API_KEY"); v != "" {
-		if _, explicitlyCleared := extraEnv["OPENAI_API_KEY"]; !explicitlyCleared {
-			if v == "sk-maclaw-local-proxy" {
-				// Stale leftover from a previous proxy session 閳?ignore it
-				// and fall through so a fresh proxy is started.
-				log.Printf("[openai-proxy] ignoring stale process env OPENAI_API_KEY=sk-maclaw-local-proxy")
-			} else {
-				// Real user-provided key in process env 閳?use it directly.
-				return false
+	var detectedUsage openAIEnvUsage
+	// Layer 2: scan executable step command/code fields for env var references.
+	for _, step := range steps {
+		if !isOpenAIProbeCommandAction(step.Action) {
+			continue
+		}
+		for _, text := range openAIProbeStepTexts(step.Params) {
+			detected := detectOpenAIEnvUsage(text)
+			if detected.any() {
+				log.Printf("[openai-proxy] auto-detected OPENAI env usage in step command")
+				detectedUsage = detectedUsage.merge(detected)
 			}
 		}
 	}
 
-	if explicitlyRequired {
-		return true
+	// Layer 3: scan script files in skillDir
+	if skillDir != "" {
+		detected := scanSkillDirForOpenAIEnvUsage(skillDir)
+		if detected.any() {
+			log.Printf("[openai-proxy] auto-detected OPENAI env usage in skill scripts at %s", skillDir)
+			detectedUsage = detectedUsage.merge(detected)
+		}
 	}
 
-	// Layer 2: scan step commands for env var references
-	for _, step := range steps {
-		if step.Action != "bash" {
-			continue
-		}
-		cmd, _ := step.Params["command"].(string)
-		if cmd != "" && containsOpenAIEnvRef(cmd) {
-			log.Printf("[openai-proxy] auto-detected OPENAI env usage in step command")
+	if !detectedUsage.any() {
+		return false
+	}
+	if hasUserProvidedOpenAIEnv(extraEnv) || hasProcessOpenAIAPIKey(extraEnv) || hasProcessOpenAIBaseURL(extraEnv) {
+		return false
+	}
+	return true
+}
+
+func declaresOpenAIAPIKey(requiredEnv []string) bool {
+	for _, env := range requiredEnv {
+		if isOpenAIAPIKeyEnvName(env) {
 			return true
 		}
 	}
-
-	// Layer 3: scan script files in skillDir
-	if skillDir != "" && scanSkillDirForOpenAIEnv(skillDir) {
-		log.Printf("[openai-proxy] auto-detected OPENAI env usage in skill scripts at %s", skillDir)
-		return true
-	}
-
 	return false
+}
+
+func stepsDeclareOpenAIAPIKey(steps []NLSkillStep) bool {
+	for _, step := range steps {
+		for _, env := range stepRequiredEnvNames(step.Params) {
+			if isOpenAIAPIKeyEnvName(env) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func declaresOpenAIBaseURL(requiredEnv []string) bool {
+	for _, env := range requiredEnv {
+		if isOpenAIBaseURLEnvName(env) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepsDeclareOpenAIBaseURL(steps []NLSkillStep) bool {
+	for _, step := range steps {
+		for _, env := range stepRequiredEnvNames(step.Params) {
+			if isOpenAIBaseURLEnvName(env) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isOpenAIAPIKeyEnvName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "OPENAI_API_KEY")
+}
+
+func isOpenAIBaseURLEnvName(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "OPENAI_BASE_URL")
+}
+
+func stepRequiredEnvNames(params map[string]interface{}) []string {
+	for _, key := range []string{"required_env", "requires_env", "required_environment"} {
+		if raw, ok := params[key]; ok {
+			return stringListFromAny(raw)
+		}
+	}
+	return nil
+}
+
+func stringListFromAny(raw interface{}) []string {
+	var result []string
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			result = append(result, value)
+		}
+	}
+	switch v := raw.(type) {
+	case []interface{}:
+		for _, item := range v {
+			add(fmt.Sprintf("%v", item))
+		}
+	case []string:
+		for _, item := range v {
+			add(item)
+		}
+	case string:
+		for _, item := range strings.Split(v, ",") {
+			add(item)
+		}
+	}
+	return result
+}
+
+func isOpenAIProbeCommandAction(action string) bool {
+	action = strings.ToLower(strings.TrimSpace(action))
+	action = strings.ReplaceAll(action, "-", "_")
+	action = strings.ReplaceAll(action, " ", "_")
+	switch action {
+	case "", "bash", "run", "exec", "execute", "command", "shell", "sh", "cmd", "script",
+		"python", "python3", "node", "js", "javascript", "powershell", "pwsh":
+		return true
+	default:
+		return false
+	}
+}
+
+func openAIProbeStepTexts(params map[string]interface{}) []string {
+	var texts []string
+	for _, key := range []string{"command", "cmd", "run", "script", "shell_command", "code", "source"} {
+		if text, ok := params[key].(string); ok && strings.TrimSpace(text) != "" {
+			texts = append(texts, text)
+		}
+	}
+	return texts
+}
+
+type openAIEnvUsage struct {
+	apiKey  bool
+	baseURL bool
+}
+
+func (u openAIEnvUsage) any() bool {
+	return u.apiKey || u.baseURL
+}
+
+func (u openAIEnvUsage) merge(other openAIEnvUsage) openAIEnvUsage {
+	u.apiKey = u.apiKey || other.apiKey
+	u.baseURL = u.baseURL || other.baseURL
+	return u
 }
 
 // hasUserProvidedOpenAIEnv checks if the user has provided OPENAI_API_KEY
 // or OPENAI_BASE_URL via extraEnv with non-empty values.
 func hasUserProvidedOpenAIEnv(extraEnv map[string]string) bool {
-	if v, ok := extraEnv["OPENAI_API_KEY"]; ok && v != "" {
-		return true
-	}
-	if v, ok := extraEnv["OPENAI_BASE_URL"]; ok && v != "" {
+	return hasUserProvidedOpenAIAPIKey(extraEnv) || hasUserProvidedOpenAIBaseURL(extraEnv)
+}
+
+func hasUserProvidedOpenAIAPIKey(extraEnv map[string]string) bool {
+	if v, ok := lookupExtraEnvName(extraEnv, "OPENAI_API_KEY"); ok && strings.TrimSpace(v) != "" {
 		return true
 	}
 	return false
 }
 
-// openaiEnvPatterns are the env var names we look for in script content.
-var openaiEnvPatterns = []string{
-	"OPENAI_API_KEY",
-	"OPENAI_BASE_URL",
+func hasUserProvidedOpenAIBaseURL(extraEnv map[string]string) bool {
+	if v, ok := lookupExtraEnvName(extraEnv, "OPENAI_BASE_URL"); ok && strings.TrimSpace(v) != "" {
+		return true
+	}
+	return false
+}
+
+func hasProcessOpenAIAPIKey(extraEnv map[string]string) bool {
+	if _, explicitlyOverridden := lookupExtraEnvName(extraEnv, "OPENAI_API_KEY"); explicitlyOverridden {
+		return false
+	}
+	v := os.Getenv("OPENAI_API_KEY")
+	if v == "" {
+		return false
+	}
+	if v == "sk-maclaw-local-proxy" {
+		log.Printf("[openai-proxy] ignoring stale process env OPENAI_API_KEY=sk-maclaw-local-proxy")
+		return false
+	}
+	return true
+}
+
+func hasProcessOpenAIBaseURL(extraEnv map[string]string) bool {
+	if _, explicitlyOverridden := lookupExtraEnvName(extraEnv, "OPENAI_BASE_URL"); explicitlyOverridden {
+		return false
+	}
+	return strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")) != ""
+}
+
+func lookupExtraEnvName(extraEnv map[string]string, name string) (string, bool) {
+	for key, value := range extraEnv {
+		if strings.EqualFold(strings.TrimSpace(key), name) {
+			return value, true
+		}
+	}
+	return "", false
 }
 
 // containsOpenAIEnvRef checks if text contains references to OpenAI env vars.
 func containsOpenAIEnvRef(text string) bool {
-	for _, pat := range openaiEnvPatterns {
-		if strings.Contains(text, pat) {
-			return true
-		}
+	return detectOpenAIEnvUsage(text).any()
+}
+
+func detectOpenAIEnvUsage(text string) openAIEnvUsage {
+	upper := strings.ToUpper(text)
+	return openAIEnvUsage{
+		apiKey:  strings.Contains(upper, "OPENAI_API_KEY"),
+		baseURL: strings.Contains(upper, "OPENAI_BASE_URL"),
 	}
-	return false
 }
 
 // scriptExtensions are file extensions that may contain env var references.
@@ -220,6 +357,10 @@ var scriptExtensions = map[string]bool{
 // of common subdirectories (scripts/, src/, lib/). Safety limits: max 30 files,
 // max 64KB each.
 func scanSkillDirForOpenAIEnv(skillDir string) bool {
+	return scanSkillDirForOpenAIEnvUsage(skillDir).any()
+}
+
+func scanSkillDirForOpenAIEnvUsage(skillDir string) openAIEnvUsage {
 	// Directories to scan: top-level + common script subdirectories
 	dirsToScan := []string{skillDir}
 	for _, sub := range []string{"scripts", "src", "lib"} {
@@ -230,6 +371,7 @@ func scanSkillDirForOpenAIEnv(skillDir string) bool {
 	}
 
 	scanned := 0
+	var usage openAIEnvUsage
 	for _, dir := range dirsToScan {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -245,7 +387,7 @@ func scanSkillDirForOpenAIEnv(skillDir string) bool {
 			}
 			scanned++
 			if scanned > 30 {
-				return false // safety limit
+				return usage // safety limit
 			}
 
 			info, err := entry.Info()
@@ -257,12 +399,10 @@ func scanSkillDirForOpenAIEnv(skillDir string) bool {
 			if err != nil {
 				continue
 			}
-			if containsOpenAIEnvRef(string(data)) {
-				return true
-			}
+			usage = usage.merge(detectOpenAIEnvUsage(string(data)))
 		}
 	}
-	return false
+	return usage
 }
 
 // routeProtocol determines which upstream protocol to use based on config.

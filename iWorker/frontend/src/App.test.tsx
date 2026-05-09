@@ -18,18 +18,23 @@ import {
   DiscoverCenterEnrollment,
   FetchAgentInstances,
   FetchConfigBundle,
+  FetchCollaborations,
   FetchGoalPushes,
   FetchInstalledTools,
+  FetchWorkflowInstances,
   FetchWorkerMemoryStats,
   GetGoalWatchAutoHandleStatus,
   HeartbeatAgentRuntime,
   LoadDiWorkerSettings,
   LoadTaskHistory,
   RecallWorkerMemories,
+  RecoverGoalPush,
   SaveDiWorkerSettings,
   SaveTaskHistory,
   SaveWorkerMemory,
   SubmitTask,
+  TransitionCollaborationTask,
+  TransitionWorkflowStep,
 } from "../wailsjs/go/main/App";
 
 vi.mock("../wailsjs/go/main/App", () => ({
@@ -41,18 +46,23 @@ vi.mock("../wailsjs/go/main/App", () => ({
   DiscoverCenterEnrollment: vi.fn(),
   FetchAgentInstances: vi.fn(),
   FetchConfigBundle: vi.fn(),
+  FetchCollaborations: vi.fn(),
   FetchGoalPushes: vi.fn(),
   FetchInstalledTools: vi.fn(),
+  FetchWorkflowInstances: vi.fn(),
   FetchWorkerMemoryStats: vi.fn(),
   GetGoalWatchAutoHandleStatus: vi.fn(),
   HeartbeatAgentRuntime: vi.fn(),
   LoadDiWorkerSettings: vi.fn(),
   LoadTaskHistory: vi.fn(),
   RecallWorkerMemories: vi.fn(),
+  RecoverGoalPush: vi.fn(),
   SaveDiWorkerSettings: vi.fn(),
   SaveTaskHistory: vi.fn(),
   SaveWorkerMemory: vi.fn(),
   SubmitTask: vi.fn(),
+  TransitionCollaborationTask: vi.fn(),
+  TransitionWorkflowStep: vi.fn(),
 }));
 
 const settingsFixture = {
@@ -132,6 +142,7 @@ describe("App", () => {
     installWailsBridge();
 
     vi.mocked(AckGoalPush).mockResolvedValue(undefined as never);
+    vi.mocked(RecoverGoalPush).mockResolvedValue(undefined as never);
     vi.mocked(DiscoverCenterEnrollment).mockResolvedValue({
       base_url: "http://127.0.0.1:9377",
       selected_tenant_id: "acme",
@@ -183,7 +194,52 @@ describe("App", () => {
       source: "center",
       cached_at: "2026-05-04T00:00:00Z",
       stale: false,
+      apply_status: "success",
+      apply_message: "iWorker fetched and cached the published config bundle",
     } as never);
+    vi.mocked(FetchCollaborations).mockResolvedValue([] as never);
+    vi.mocked(TransitionCollaborationTask).mockImplementation(async (taskId, action, result) => ({
+      id: taskId,
+      title: taskId,
+      description: "",
+      from_colleague_id: "worker-office",
+      to_colleague_id: "worker-ops",
+      to_role_code: "ops",
+      status: action === "accept" ? "accepted" : action === "start" ? "in_progress" : action === "reject" ? "rejected" : "completed",
+      priority: 0,
+      result: result || "",
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-01T00:03:00Z",
+    }) as never);
+    vi.mocked(TransitionWorkflowStep).mockImplementation(async (stepId, action, result) => ({
+      status: "ok",
+      step: {
+        id: stepId,
+        instance_id: "wf-1",
+        step_definition_id: stepId,
+        assignee_colleague_id: "worker-1",
+        collaboration_task_id: "",
+        status: action === "complete" ? "completed" : action === "reject" ? "rejected" : "in_progress",
+        result: result || "",
+        sort_order: 1,
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:03:00Z",
+      },
+      instance: {
+        id: "wf-1",
+        definition_id: "def-onboarding",
+        title: "Approve onboarding workflow",
+        initiator_id: "center-admin",
+        current_step_id: stepId,
+        current_step_assignee_colleague_id: "worker-1",
+        status: action === "reject" ? "rejected" : "running",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:03:00Z",
+        source: "center",
+        cached_at: "2026-05-01T00:03:00Z",
+        stale: false,
+      },
+    }) as never);
     vi.mocked(FetchGoalPushes).mockResolvedValue([] as never);
     vi.mocked(FetchInstalledTools).mockResolvedValue({
       source: "center",
@@ -219,6 +275,7 @@ describe("App", () => {
         },
       ],
     } as never);
+    vi.mocked(FetchWorkflowInstances).mockResolvedValue([] as never);
     vi.mocked(GetGoalWatchAutoHandleStatus).mockResolvedValue({
       enabled: true,
       running: false,
@@ -451,6 +508,8 @@ describe("App", () => {
       expect(HeartbeatAgentRuntime).toHaveBeenCalled();
       expect(FetchAgentInstances).toHaveBeenCalled();
       expect(FetchGoalPushes).toHaveBeenCalled();
+      expect(FetchCollaborations).toHaveBeenCalledWith("worker-1");
+      expect(FetchWorkflowInstances).toHaveBeenCalled();
       expect(screen.getByText("Ready to work")).toBeTruthy();
       expect(screen.getAllByText("Center registration").length).toBeGreaterThan(
         1,
@@ -458,6 +517,8 @@ describe("App", () => {
       expect(screen.getAllByText("Memory authority").length).toBeGreaterThan(1);
       expect(screen.getByText("Agent runtime")).toBeTruthy();
       expect(screen.getByText("Goal watcher queue")).toBeTruthy();
+      expect(screen.getByText("Collaboration queue")).toBeTruthy();
+      expect(screen.getByText("Workflow queue")).toBeTruthy();
       expect(screen.getAllByText("Installed tools").length).toBeGreaterThan(0);
     });
 
@@ -471,6 +532,10 @@ describe("App", () => {
     expect(
       screen.getByDisplayValue(/Create an iWorker readiness repair task/),
     ).toBeTruthy();
+    expect(screen.getByDisplayValue(/Center push queue:/)).toBeTruthy();
+    expect(screen.getByDisplayValue(/Human handoff queue:/)).toBeTruthy();
+    expect(screen.getByDisplayValue(/Workflow queue:/)).toBeTruthy();
+    expect(screen.getByDisplayValue(/GoalWatcher:/)).toBeTruthy();
   });
 
   it("treats no published Center config as a ready empty state", async () => {
@@ -680,6 +745,468 @@ describe("App", () => {
     });
   });
 
+  it("shows Center workflow instances in the work status board", async () => {
+    vi.mocked(FetchWorkflowInstances).mockResolvedValue([
+      {
+        id: "wf-1",
+        definition_id: "def-onboarding",
+        title: "Approve onboarding workflow",
+        initiator_id: "center-admin",
+        current_step_id: "legal-review",
+        status: "running",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:10:00Z",
+        source: "cache",
+        cached_at: "2026-05-01T00:11:00Z",
+        stale: true,
+      },
+    ] as never);
+
+    render(<App />);
+
+    const board = await screen.findByRole("region", {
+      name: "Digital coworker work status",
+    });
+    await waitFor(() => {
+      expect(FetchWorkflowInstances).toHaveBeenCalled();
+      expect(within(board).getAllByText("Approve onboarding workflow").length).toBeGreaterThan(0);
+      expect(screen.getByText("Workflow instances")).toBeTruthy();
+      expect(screen.getAllByText(/legal-review/).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/Cached snapshot/).length).toBeGreaterThan(0);
+    });
+  });
+
+  it("can transition an assigned Center workflow step from the workflow inspector", async () => {
+    vi.mocked(FetchWorkflowInstances).mockResolvedValue([
+      {
+        id: "wf-1",
+        definition_id: "def-onboarding",
+        title: "Approve onboarding workflow",
+        initiator_id: "center-admin",
+        current_step_id: "legal-review",
+        current_step_assignee_colleague_id: "worker-1",
+        status: "running",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:10:00Z",
+        source: "center",
+        cached_at: "2026-05-01T00:11:00Z",
+        stale: false,
+      },
+    ] as never);
+
+    render(<App />);
+
+    await screen.findByRole("region", {
+      name: "Digital coworker work status",
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText("Approve onboarding workflow").length).toBeGreaterThan(0);
+    });
+    const workflowCard = screen.getAllByText("Approve onboarding workflow").find((node) => node.closest("article"))?.closest("article");
+    expect(workflowCard).toBeTruthy();
+    fireEvent.click(within(workflowCard as HTMLElement).getByRole("button", { name: "Complete" }));
+
+    await waitFor(() => {
+      expect(TransitionWorkflowStep).toHaveBeenCalledWith(
+        "legal-review",
+        "complete",
+        "Approve onboarding workflow completed from iWorker",
+        "iWorker client complete",
+      );
+    });
+  });
+
+  it("shows a human-readable workflow authorization error", async () => {
+    vi.mocked(FetchWorkflowInstances).mockResolvedValue([
+      {
+        id: "wf-1",
+        definition_id: "def-onboarding",
+        title: "Approve onboarding workflow",
+        initiator_id: "center-admin",
+        current_step_id: "legal-review",
+        current_step_assignee_colleague_id: "worker-1",
+        status: "running",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:10:00Z",
+        source: "center",
+        cached_at: "2026-05-01T00:11:00Z",
+        stale: false,
+      },
+    ] as never);
+    vi.mocked(TransitionWorkflowStep).mockRejectedValueOnce(new Error("iWorkerCenter workflow step transition failed: status=403 STEP_ACTOR_FORBIDDEN: actor worker-1 cannot operate workflow step legal-review assigned to worker-2"));
+
+    render(<App />);
+
+    await screen.findByRole("region", {
+      name: "Digital coworker work status",
+    });
+    const workflowCard = screen.getAllByText("Approve onboarding workflow").find((node) => node.closest("article"))?.closest("article");
+    expect(workflowCard).toBeTruthy();
+    fireEvent.click(within(workflowCard as HTMLElement).getByRole("button", { name: "Complete" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("This workflow step is assigned to another iWorker. Refresh the workflow queue or ask iWorkerCenter to reassign it.")).toBeTruthy();
+    });
+  });
+
+  it("promotes Center runtime work status to the main work board", async () => {
+    vi.mocked(FetchAgentInstances).mockResolvedValue([
+      {
+        tenant_id: "acme",
+        worker_id: "worker-ops",
+        instance_id: "worker-ops:executor",
+        role: "operations_executor",
+        status: "online",
+        org_unit_id: "ops",
+        capabilities: ["base", "skill:brief"],
+        memory_authority: "iWorkerCenter",
+        local_cache_mode: "cache_only",
+        work_status: {
+          current_task: "Runtime is preparing exception brief",
+          current_detail: "Collecting evidence",
+          active_count: 2,
+          completed_count: 5,
+          review_count: 1,
+          blocked_count: 0,
+          updated_at: "2026-05-02T00:02:00Z",
+        },
+        host_id: "desktop-a",
+        process_id: 100,
+        started_at: "2026-05-02T00:00:00Z",
+        last_heartbeat_at: "2026-05-02T00:02:00Z",
+        heartbeat_age_seconds: 8,
+        effective_status: "online",
+        source: "center",
+        cached_at: "",
+        stale: false,
+      },
+      {
+        tenant_id: "acme",
+        worker_id: "worker-ops",
+        instance_id: "worker-ops:reviewer",
+        role: "operations_reviewer",
+        status: "online",
+        org_unit_id: "ops",
+        capabilities: ["base"],
+        memory_authority: "iWorkerCenter",
+        local_cache_mode: "cache_only",
+        work_status: {
+          current_task: "Runtime reviewer mirrors the same local history",
+          active_count: 2,
+          completed_count: 5,
+          review_count: 1,
+          blocked_count: 0,
+          updated_at: "2026-05-02T00:02:00Z",
+        },
+        host_id: "desktop-a",
+        process_id: 101,
+        started_at: "2026-05-02T00:00:00Z",
+        last_heartbeat_at: "2026-05-02T00:02:00Z",
+        heartbeat_age_seconds: 8,
+        effective_status: "online",
+        source: "center",
+        cached_at: "",
+        stale: false,
+      },
+    ] as never);
+
+    render(<App />);
+
+    const board = await screen.findByRole("region", {
+      name: "Digital coworker work status",
+    });
+    await waitFor(() => {
+      expect(
+        within(board).getAllByText("Runtime is preparing exception brief")
+          .length,
+      ).toBeGreaterThan(0);
+      expect(
+        within(board).getAllByText(/Center runtime status/).length,
+      ).toBeGreaterThan(0);
+      expect(
+        within(board).getByText("Active").previousElementSibling?.textContent,
+      ).toBe("2");
+      expect(
+        within(board).getByText("Completed").previousElementSibling
+          ?.textContent,
+      ).toBe("5");
+      expect(
+        within(board).getByText("Review").previousElementSibling?.textContent,
+      ).toBe("1");
+    });
+  });
+
+  it("surfaces Center collaboration handoffs in the human queue and work board", async () => {
+    vi.mocked(FetchCollaborations).mockResolvedValue([
+      {
+        id: "collab-1",
+        title: "Human shift handoff",
+        description: "Please review the night shift exceptions.",
+        from_colleague_id: "worker-office",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+          status: "pending",
+          priority: 4,
+          result: "",
+          workflow_step_instance_id: "wf-step-1",
+          created_at: "2026-05-01T00:00:00Z",
+          updated_at: "2026-05-01T00:02:00Z",
+        },
+    ] as never);
+
+    render(<App />);
+
+    const board = await screen.findByRole("region", {
+      name: "Digital coworker work status",
+    });
+    expect(await screen.findByText("1 pending handoff")).toBeTruthy();
+    expect(within(board).getByText("Human shift handoff")).toBeTruthy();
+    expect(within(board).getByText("Workflow handoff")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open handoff" }));
+    expect(
+      await screen.findByDisplayValue("Human shift handoff"),
+    ).toBeTruthy();
+      expect(
+        screen.getByDisplayValue(/Workflow step: wf-step-1/),
+      ).toBeTruthy();
+      expect(screen.getByDisplayValue(/Please review the night shift exceptions./)).toBeTruthy();
+    });
+
+  it("advances Center collaboration handoffs from the iWorker workbench", async () => {
+    vi.mocked(FetchCollaborations).mockResolvedValue([
+      {
+        id: "collab-accept",
+        title: "Accept shift handoff",
+        description: "Please take the shift.",
+        from_colleague_id: "worker-office",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+          status: "pending",
+          priority: 4,
+          result: "",
+          workflow_step_instance_id: "wf-step-submit",
+          created_at: "2026-05-01T00:00:00Z",
+          updated_at: "2026-05-01T00:02:00Z",
+        },
+    ] as never);
+
+    render(<App />);
+
+    expect(await screen.findByText("Accept shift handoff")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    await waitFor(() => {
+      expect(TransitionCollaborationTask).toHaveBeenCalledWith(
+        "collab-accept",
+        "accept",
+        "",
+        "iWorker client accept",
+      );
+    });
+    expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
+  });
+
+  it("allows completing an in-progress Center handoff from the reminder card", async () => {
+    vi.mocked(FetchCollaborations).mockResolvedValue([
+      {
+        id: "collab-progress",
+        title: "Finish verified handoff",
+        description: "Use the workbench so the final result is captured.",
+        from_colleague_id: "worker-office",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "running",
+        priority: 4,
+        result: "",
+        workflow_step_instance_id: "wf-step-progress",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:02:00Z",
+      },
+    ] as never);
+
+    render(<App />);
+
+    expect(await screen.findByText("Finish verified handoff")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Complete" }));
+
+    await waitFor(() => {
+      expect(TransitionCollaborationTask).toHaveBeenCalledWith(
+        "collab-progress",
+        "complete",
+        "Use the workbench so the final result is captured.",
+        "iWorker client complete",
+      );
+    });
+    expect(screen.queryByText("Finish verified handoff")).toBeNull();
+  });
+
+  it("completes the source Center handoff after task workspace submission", async () => {
+    vi.mocked(FetchCollaborations).mockResolvedValue([
+      {
+        id: "collab-submit",
+        title: "Finish shift handoff",
+        description: "Prepare the shift summary.",
+        from_colleague_id: "worker-office",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+          status: "pending",
+          priority: 4,
+          result: "",
+          workflow_step_instance_id: "wf-step-submit",
+          created_at: "2026-05-01T00:00:00Z",
+          updated_at: "2026-05-01T00:02:00Z",
+        },
+    ] as never);
+    vi.mocked(SubmitTask).mockResolvedValue({
+      task_type: "Finish shift handoff",
+      task_title: "Finish shift handoff",
+      colleague_name: "ops",
+      expected_output: "summary",
+      model: "office-openai",
+      content: "Shift summary is ready.",
+    } as never);
+
+    render(<App />);
+
+    expect(await screen.findByText("Finish shift handoff")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open handoff" }));
+    expect(
+      await screen.findByDisplayValue(/Prepare the shift summary./),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start work" }));
+
+    await waitFor(() => {
+        expect(TransitionCollaborationTask).toHaveBeenCalledWith(
+          "collab-submit",
+          "complete",
+          "Shift summary is ready.",
+          "completed from iWorker task workspace",
+        );
+        const saved = vi.mocked(SaveTaskHistory).mock.calls.at(-1)?.[0] as Array<{
+          source_type?: string;
+          center_handoff_id?: string;
+          workflow_step_instance_id?: string;
+        }>;
+        expect(saved?.[0]).toMatchObject({
+          source_type: "workflow_handoff",
+          center_handoff_id: "collab-submit",
+          workflow_step_instance_id: "wf-step-submit",
+        });
+      });
+      expect(await screen.findByRole("region", { name: "Selected work result" })).toBeTruthy();
+      expect(screen.getAllByText("Workflow handoff").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Step wf-step-submit").length).toBeGreaterThan(0);
+      expect(screen.getByText("Shift summary is ready.")).toBeTruthy();
+    });
+
+  it("does not mark a Center handoff complete locally when Center completion fails", async () => {
+    vi.mocked(FetchCollaborations).mockResolvedValue([
+      {
+        id: "collab-fail",
+        title: "Finish exception handoff",
+        description: "Prepare the exception summary.",
+        from_colleague_id: "worker-office",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "pending",
+        priority: 4,
+        result: "",
+        workflow_step_instance_id: "wf-step-fail",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:02:00Z",
+      },
+    ] as never);
+    vi.mocked(TransitionCollaborationTask).mockRejectedValueOnce(new Error("center transition failed"));
+    vi.mocked(SubmitTask).mockResolvedValue({
+      task_type: "Finish exception handoff",
+      task_title: "Finish exception handoff",
+      colleague_name: "ops",
+      expected_output: "summary",
+      model: "office-openai",
+      content: "Exception summary is ready.",
+    } as never);
+
+    render(<App />);
+
+    expect(await screen.findByText("Finish exception handoff")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open handoff" }));
+    expect(await screen.findByDisplayValue(/Prepare the exception summary./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start work" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("center transition failed")).toBeTruthy();
+      expect(SaveTaskHistory).not.toHaveBeenCalled();
+      expect(screen.queryByRole("region", { name: "Selected work result" })).toBeNull();
+    });
+  });
+
+  it("keeps cached Center collaboration handoffs visible but read-only", async () => {
+    vi.mocked(FetchCollaborations).mockResolvedValue([
+      {
+        id: "collab-cached",
+        title: "Cached human handoff",
+        description: "Reconnect before acting.",
+        from_colleague_id: "worker-office",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "pending",
+        priority: 4,
+        result: "",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:02:00Z",
+        source: "cache",
+        cached_at: "2026-05-01T00:03:00Z",
+        stale: true,
+      },
+    ] as never);
+
+    render(<App />);
+
+    const board = await screen.findByRole("region", {
+      name: "Digital coworker work status",
+    });
+    expect(within(board).getByText("Cached human handoff")).toBeTruthy();
+    expect(within(board).getByText("Cached Center handoff")).toBeTruthy();
+    const continuity = screen.getByRole("region", {
+      name: "Local continuity status",
+    });
+    expect(within(continuity).getByText("Cached continuity active")).toBeTruthy();
+    expect(within(continuity).getByText("1 cached handoff")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("marks live Center collaboration handoffs read-only when refresh fails", async () => {
+    vi.mocked(FetchCollaborations).mockResolvedValueOnce([
+      {
+        id: "collab-live",
+        title: "Live human handoff",
+        description: "Reconnect before acting if refresh fails.",
+        from_colleague_id: "worker-office",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "pending",
+        priority: 4,
+        result: "",
+        created_at: "2026-05-01T00:00:00Z",
+        updated_at: "2026-05-01T00:02:00Z",
+      },
+    ] as never);
+
+    render(<App />);
+
+    expect(await screen.findByText("Live human handoff")).toBeTruthy();
+    vi.mocked(FetchCollaborations).mockRejectedValue(new Error("center offline"));
+    for (const refreshButton of screen.getAllByRole("button", { name: "Refresh" })) {
+      fireEvent.click(refreshButton);
+    }
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Cached Center handoff").length).toBeGreaterThan(0);
+      expect((screen.getByRole("button", { name: "Accept" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+  });
+
   it("keeps the last Center push snapshot read-only when refresh fails", async () => {
     vi.mocked(FetchGoalPushes).mockResolvedValue([
       {
@@ -716,7 +1243,7 @@ describe("App", () => {
       });
       expect(within(continuity).getByText("Center reconnecting")).toBeTruthy();
       expect(within(continuity).getByText(/1 cached push/)).toBeTruthy();
-      expect(screen.getByText(/center offline/)).toBeTruthy();
+      expect(screen.getAllByText(/center offline/).length).toBeGreaterThan(0);
       expect(screen.getAllByText(/Cached Center push/).length).toBeGreaterThan(
         0,
       );
@@ -731,6 +1258,160 @@ describe("App", () => {
       await screen.findByDisplayValue("Check delivery exception"),
     ).toBeTruthy();
     expect(screen.getByText("Cached Center push")).toBeTruthy();
+  });
+
+  it("runs recoverable Center workflow pushes through recovery instead of plain ack", async () => {
+    vi.mocked(FetchGoalPushes).mockResolvedValue([
+      {
+        event_id: "evt-recover",
+        task_id: "task-recover",
+        workflow_step_instance_id: "wfsi-recover",
+        title: "Resume invoice workflow",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "pending",
+        reason: "goal_push",
+        recommended_action: "resume_workflow_step",
+        recovery_action: "resume_workflow_step",
+        recovery_method: "POST",
+        recovery_path: "/runtime/workflows/steps/wfsi-recover/resume",
+        age_seconds: 90,
+        created_at: "2026-05-01T00:00:00Z",
+      },
+    ] as never);
+
+    render(<App />);
+
+    expect(
+      (await screen.findAllByText("Resume invoice workflow")).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Run Center push" }));
+
+    await waitFor(() => {
+      expect(RecoverGoalPush).toHaveBeenCalledWith(
+        "evt-recover",
+        "interaction agent ran workflow recovery",
+      );
+      expect(AutoHandleGoalPush).not.toHaveBeenCalled();
+      expect(AckGoalPush).not.toHaveBeenCalled();
+      const saved = vi.mocked(SaveTaskHistory).mock.calls.at(-1)?.[0] as Array<{
+        title?: string;
+        status?: string;
+        result?: string;
+      }>;
+      expect(saved?.[0]).toMatchObject({
+        title: "Resume invoice workflow",
+        status: "recovered",
+      });
+      expect(saved?.[0]?.result).toContain("Workflow recovery");
+    });
+  });
+
+  it("treats legacy workflow pushes with task actions as recoverable", async () => {
+    vi.mocked(FetchGoalPushes).mockResolvedValue([
+      {
+        event_id: "evt-legacy-recover",
+        task_id: "task-legacy-recover",
+        workflow_step_instance_id: "wfsi-legacy-recover",
+        title: "Resume legacy workflow push",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "pending",
+        reason: "goal_push",
+        recommended_action: "resume_task",
+        age_seconds: 90,
+        created_at: "2026-05-01T00:00:00Z",
+      },
+    ] as never);
+
+    render(<App />);
+
+    expect(
+      (await screen.findAllByText("Resume legacy workflow push")).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Run Center push" }));
+
+    await waitFor(() => {
+      expect(RecoverGoalPush).toHaveBeenCalledWith(
+        "evt-legacy-recover",
+        "interaction agent ran workflow recovery",
+      );
+      expect(AutoHandleGoalPush).not.toHaveBeenCalled();
+      expect(AckGoalPush).not.toHaveBeenCalled();
+    });
+  });
+
+  it("acks explicit non-workflow recovery actions instead of calling recovery", async () => {
+    vi.mocked(FetchGoalPushes).mockResolvedValue([
+      {
+        event_id: "evt-task-recovery",
+        task_id: "task-task-recovery",
+        workflow_step_instance_id: "wfsi-task-recovery",
+        title: "Resume task-level push",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "pending",
+        reason: "goal_push",
+        recommended_action: "resume_task",
+        recovery_action: "resume_task",
+        age_seconds: 90,
+        created_at: "2026-05-01T00:00:00Z",
+      },
+    ] as never);
+
+    render(<App />);
+
+    expect(
+      (await screen.findAllByText("Resume task-level push")).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getAllByRole("button", { name: "Resume" })[0]);
+
+    await waitFor(() => {
+      expect(AckGoalPush).toHaveBeenCalledWith(
+        "evt-task-recovery",
+        "resumed",
+        "interaction agent confirmed resume",
+      );
+      expect(RecoverGoalPush).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not fail a recovered Center push when local history persistence fails", async () => {
+    vi.mocked(FetchGoalPushes).mockResolvedValue([
+      {
+        event_id: "evt-history-fail",
+        task_id: "task-history-fail",
+        workflow_step_instance_id: "wfsi-history-fail",
+        title: "Resume after local history issue",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "pending",
+        reason: "goal_push",
+        recommended_action: "resume_workflow_step",
+        recovery_action: "resume_workflow_step",
+        recovery_method: "POST",
+        recovery_path: "/runtime/workflows/steps/wfsi-history-fail/resume",
+        age_seconds: 90,
+        created_at: "2026-05-01T00:00:00Z",
+      },
+    ] as never);
+    vi.mocked(SaveTaskHistory).mockRejectedValueOnce(new Error("disk full"));
+
+    render(<App />);
+
+    expect(
+      (await screen.findAllByText("Resume after local history issue")).length,
+    ).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Run Center push" }));
+
+    await waitFor(() => {
+      expect(RecoverGoalPush).toHaveBeenCalledWith(
+        "evt-history-fail",
+        "interaction agent ran workflow recovery",
+      );
+      expect(SaveTaskHistory).toHaveBeenCalled();
+      expect(screen.queryByText(/disk full/)).toBeNull();
+    });
   });
 
   it("keeps human-intervention alerts visible outside the workbench", async () => {
@@ -777,12 +1458,16 @@ describe("App", () => {
       {
         event_id: "evt-human",
         task_id: "task-human",
+        workflow_step_instance_id: "wfsi-human",
         title: "Approve exception reply",
         to_colleague_id: "worker-ops",
         to_role_code: "ops",
         status: "blocked",
         reason: "missing_input",
-        recommended_action: "ask_human",
+        recommended_action: "resume_workflow_step",
+        recovery_action: "resume_workflow_step",
+        recovery_method: "POST",
+        recovery_path: "/runtime/workflows/steps/wfsi-human/resume",
         age_seconds: 180,
         created_at: "2026-05-01T00:00:00Z",
       },
@@ -823,15 +1508,69 @@ describe("App", () => {
       name: "Human input needed",
     });
     fireEvent.click(
-      within(refreshedBanner).getByRole("button", { name: "Resume" }),
+      within(refreshedBanner).getByRole("button", { name: "Recover workflow" }),
+    );
+
+    await waitFor(() => {
+      expect(RecoverGoalPush).toHaveBeenCalledWith(
+        "evt-human",
+        "interaction agent confirmed workflow recovery",
+      );
+      expect(AckGoalPush).not.toHaveBeenCalled();
+      const saved = vi.mocked(SaveTaskHistory).mock.calls.at(-1)?.[0] as Array<{
+        title?: string;
+        status?: string;
+        result?: string;
+      }>;
+      expect(saved?.[0]).toMatchObject({
+        title: "Approve exception reply",
+        status: "recovered",
+      });
+      expect(saved?.[0]?.result).toContain("Human approved resume");
+    });
+  });
+
+  it("records blocked Center pushes in local work history", async () => {
+    vi.mocked(FetchGoalPushes).mockResolvedValue([
+      {
+        event_id: "evt-block-human",
+        task_id: "task-block-human",
+        title: "Block risky payment run",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "blocked",
+        reason: "approval_required",
+        recommended_action: "ask_human",
+        age_seconds: 210,
+        created_at: "2026-05-01T00:00:00Z",
+      },
+    ] as never);
+
+    render(<App />);
+
+    const banner = await screen.findByRole("status", {
+      name: "Human input needed",
+    });
+    fireEvent.click(
+      within(banner).getByRole("button", { name: "Block" }),
     );
 
     await waitFor(() => {
       expect(AckGoalPush).toHaveBeenCalledWith(
-        "evt-human",
-        "resumed",
-        "interaction agent confirmed resume",
+        "evt-block-human",
+        "blocked",
+        "interaction agent reported blocked",
       );
+      const saved = vi.mocked(SaveTaskHistory).mock.calls.at(-1)?.[0] as Array<{
+        title?: string;
+        status?: string;
+        result?: string;
+      }>;
+      expect(saved?.[0]).toMatchObject({
+        title: "Block risky payment run",
+        status: "blocked",
+      });
+      expect(saved?.[0]?.result).toContain("Human blocked");
     });
   });
 
@@ -909,11 +1648,47 @@ describe("App", () => {
     ).toBe(true);
   });
 
+  it("recognizes localized cached Center push drafts as intervention tasks", async () => {
+    vi.mocked(FetchGoalPushes).mockResolvedValue([
+      {
+        event_id: "evt-cached-zh",
+        task_id: "task-cached-zh",
+        title: "审批缓存异常",
+        to_colleague_id: "worker-ops",
+        to_role_code: "ops",
+        status: "blocked",
+        reason: "missing_input",
+        recommended_action: "ask_human",
+        age_seconds: 300,
+        created_at: "2026-05-01T00:00:00Z",
+        source: "cache",
+        cached_at: "2026-05-02T00:02:00Z",
+        stale: true,
+      },
+    ] as never);
+
+    render(<App />);
+
+    await screen.findByRole("status", { name: "Human input needed" });
+    fireEvent.click(screen.getByRole("button", { name: "Language" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "打开缓存任务" })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "打开缓存任务" }));
+
+    expect(await screen.findByDisplayValue("审批缓存异常")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Center 推送人工介入任务" })).toBeTruthy();
+    expect(screen.getByText("缓存的 Center 推送")).toBeTruthy();
+    expect(screen.getByText(/先重连 iWorkerCenter，再执行恢复、阻塞或运行操作/)).toBeTruthy();
+  });
+
   it("labels partially cached installed tools without implying local-only mode", async () => {
     vi.mocked(FetchInstalledTools).mockResolvedValue({
       source: "partial-cache",
       cached_at: "2026-05-02T00:02:00Z",
       stale: true,
+      mcp_error: "iWorkerCenter MCP servers failed",
       skills: [
         {
           capability_id: "skill-brief",
@@ -955,6 +1730,13 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText(/Partial Center snapshot/)).toBeTruthy();
       expect(screen.getByText("Cached MCP")).toBeTruthy();
+      expect(screen.getByText(/MCP sync issue/)).toBeTruthy();
+      expect(screen.getByText(/iWorkerCenter MCP servers failed/)).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Skills & Work" }));
+    await waitFor(() => {
+      expect(screen.getByText(/Partial Center snapshot/)).toBeTruthy();
+      expect(screen.getByText("Cached MCP")).toBeTruthy();
     });
     expect(screen.queryByText(/Local only/)).toBeNull();
   });
@@ -975,7 +1757,86 @@ describe("App", () => {
       expect(screen.getByText("CRM MCP")).toBeTruthy();
       expect(screen.getByText("Center live")).toBeTruthy();
     });
+    expect(screen.queryByText(/CRM_TOKEN=/)).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "Use in task" })[0]);
+    expect(
+      screen.getByDisplayValue(/Use Center-installed Skill "Brief Writer"/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Skills & Work" }));
+    await waitFor(() => {
+      expect(screen.getByText("Transport http")).toBeTruthy();
+      expect(screen.getByText("Department ops")).toBeTruthy();
+      expect(screen.getByText("Env keys CRM_TOKEN")).toBeTruthy();
+    });
+    expect(screen.queryByText(/CRM_TOKEN=/)).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "Use in task" })[1]);
+    expect(
+      screen.getByDisplayValue(/Use Center-installed MCP "CRM MCP"/),
+    ).toBeTruthy();
+    expect(screen.getByDisplayValue(/Required env keys: CRM_TOKEN/)).toBeTruthy();
+    expect(screen.queryByDisplayValue(/CRM_TOKEN=/)).toBeNull();
   });
+
+  it("keeps Center-installed tools usable when legacy payloads omit optional fields", async () => {
+    vi.mocked(FetchInstalledTools).mockResolvedValue({
+      source: "center",
+      cached_at: "2026-05-02T00:02:00Z",
+      stale: false,
+      skills: [
+        {
+          source: "iWorkerCenter",
+          version: "2.0.0",
+          entry: {
+            name: "Legacy Skill",
+            description: "Legacy skill payload with no capability id",
+          },
+        },
+      ],
+      mcp_servers: [
+        {
+          name: "Legacy MCP",
+          description: "Command-only MCP payload",
+          server_type: "stdio",
+          command: "legacy-mcp",
+          args: "not-an-array",
+          status: "enabled",
+        },
+      ],
+    } as never);
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "Digital coworker workbench",
+      }),
+    ).toBeTruthy();
+
+    await waitFor(() => {
+      expect(screen.getByText("Legacy Skill")).toBeTruthy();
+      expect(screen.getByText("Legacy MCP")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Skills & Work" }));
+    await waitFor(() => {
+      expect(screen.getByText("No env keys required")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Use in task" })[0]);
+    expect(
+      screen.getByDisplayValue(/Use Center-installed Skill "Legacy Skill"/),
+    ).toBeTruthy();
+    expect(screen.getByDisplayValue(/Capability ID: Legacy Skill/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Skills & Work" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Use in task" })[1]);
+    expect(
+      screen.getByDisplayValue(/Use Center-installed MCP "Legacy MCP"/),
+    ).toBeTruthy();
+    expect(screen.getByDisplayValue(/Endpoint\/command: legacy-mcp/)).toBeTruthy();
+    expect(screen.getByDisplayValue(/Required env keys: none/)).toBeTruthy();
+  });
+
   it("tests center health from settings page and shows snapshot", async () => {
     render(<App />);
 
@@ -986,6 +1847,12 @@ describe("App", () => {
     expect(
       await screen.findByRole("heading", { name: "Center configuration" }),
     ).toBeTruthy();
+    expect(screen.getByText("Installed tools status")).toBeTruthy();
+    expect(screen.getByText("Center live")).toBeTruthy();
+    expect(screen.getByText("Brief Writer")).toBeTruthy();
+    expect(screen.getByText("CRM MCP")).toBeTruthy();
+    expect(screen.getByText("Config apply")).toBeTruthy();
+    expect(screen.getByText("iWorker fetched and cached the published config bundle")).toBeTruthy();
 
     fireEvent.click(
       screen.getByRole("button", { name: /Test Center connection/ }),
@@ -1026,8 +1893,16 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(DiscoverCenterEnrollment).toHaveBeenCalledTimes(1);
-      expect(DiscoverCenterEnrollment).toHaveBeenCalledTimes(1);
     });
+
+    vi.mocked(CheckCenterHealth).mockClear();
+    vi.mocked(FetchWorkerMemoryStats).mockClear();
+    vi.mocked(HeartbeatAgentRuntime).mockClear();
+    vi.mocked(FetchAgentInstances).mockClear();
+    vi.mocked(FetchGoalPushes).mockClear();
+    vi.mocked(FetchWorkflowInstances).mockClear();
+    vi.mocked(FetchInstalledTools).mockClear();
+    vi.mocked(FetchConfigBundle).mockClear();
 
     fireEvent.change(screen.getByPlaceholderText("alice@example.com"), {
       target: { value: "alice" },
@@ -1039,7 +1914,15 @@ describe("App", () => {
 
     await waitFor(() => {
       expect(ApplyCenterEnrollment).toHaveBeenCalledTimes(1);
-      expect(ApplyCenterEnrollment).toHaveBeenCalledTimes(1);
+      expect(CheckCenterHealth).toHaveBeenCalledTimes(1);
+      expect(FetchWorkerMemoryStats).toHaveBeenCalledTimes(1);
+      expect(HeartbeatAgentRuntime).toHaveBeenCalled();
+      expect(FetchAgentInstances).toHaveBeenCalled();
+      expect(FetchGoalPushes).toHaveBeenCalled();
+      expect(FetchWorkflowInstances).toHaveBeenCalled();
+      expect(FetchInstalledTools).toHaveBeenCalled();
+      expect(FetchConfigBundle).toHaveBeenCalled();
+      expect(screen.getByText(/Usage flow connected/)).toBeTruthy();
     });
 
     const applied = vi.mocked(ApplyCenterEnrollment).mock.calls[0]?.[0] as {

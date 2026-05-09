@@ -101,8 +101,8 @@ func (repo *CenterRepo) UpdateIntegration(ctx context.Context, c *store.Center) 
 
 func (repo *CenterRepo) UpdateRegistration(ctx context.Context, c *store.Center) error {
 	_, err := repo.w.ExecContext(ctx,
-		`UPDATE centers SET machine_id=?, company_id=?, company_name=?, admin_email=?, admin_phone=?, address=?, legal_person=?, base_url=?, supports_multi_tenant=?, tenant_count=?, cloud_control_mode=?, last_sync_status=?, updated_at=? WHERE id=?`,
-		c.MachineID, c.CompanyID, c.CompanyName, c.AdminEmail, c.AdminPhone, c.Address, c.LegalPerson, c.BaseURL, boolToInt(c.SupportsMultiTenant), c.TenantCount, normalizeRepoControlMode(c.CloudControlMode), c.LastSyncStatus, time.Now().Format(time.RFC3339), c.ID)
+		`UPDATE centers SET machine_id=?, company_id=?, company_name=?, admin_email=?, admin_phone=?, address=?, legal_person=?, base_url=?, supports_multi_tenant=?, tenant_count=?, cloud_control_mode=?, last_sync_status=?, secret_hash=?, management_secret=?, updated_at=? WHERE id=?`,
+		c.MachineID, c.CompanyID, c.CompanyName, c.AdminEmail, c.AdminPhone, c.Address, c.LegalPerson, c.BaseURL, boolToInt(c.SupportsMultiTenant), c.TenantCount, normalizeRepoControlMode(c.CloudControlMode), c.LastSyncStatus, c.SecretHash, c.ManagementSecret, time.Now().Format(time.RFC3339), c.ID)
 	return err
 }
 
@@ -397,7 +397,10 @@ func (repo *SkillRepo) SearchActive(ctx context.Context, query string) ([]*store
 	query = strings.TrimSpace(query)
 	if query == "" {
 		rows, err := repo.r.QueryContext(ctx,
-			`SELECT id, name, description, category, version, tags, risk_level, status, price, author, author_email, source_center_id, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at FROM skill_market_skills WHERE status='active' ORDER BY download_count DESC, category, name`)
+			`SELECT id, name, description, category, version, tags, risk_level, status, price, author, author_email, source_center_id, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at
+			 FROM skill_market_skills
+			 WHERE status='active' AND TRIM(COALESCE(package_content, ''))<>'' AND TRIM(COALESCE(package_sha256, ''))<>''
+			 ORDER BY download_count DESC, category, name`)
 		if err != nil {
 			return nil, err
 		}
@@ -408,7 +411,8 @@ func (repo *SkillRepo) SearchActive(ctx context.Context, query string) ([]*store
 	rows, err := repo.r.QueryContext(ctx,
 		`SELECT id, name, description, category, version, tags, risk_level, status, price, author, author_email, source_center_id, avg_rating, download_count, package_format, package_content, package_sha256, package_size, created_at, updated_at
 		 FROM skill_market_skills
-		 WHERE status='active' AND (id LIKE ? OR name LIKE ? OR description LIKE ? OR category LIKE ? OR tags LIKE ?)
+		 WHERE status='active' AND TRIM(COALESCE(package_content, ''))<>'' AND TRIM(COALESCE(package_sha256, ''))<>''
+		   AND (id LIKE ? OR name LIKE ? OR description LIKE ? OR category LIKE ? OR tags LIKE ?)
 		 ORDER BY download_count DESC, category, name`, like, like, like, like, like)
 	if err != nil {
 		return nil, err

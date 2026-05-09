@@ -66,8 +66,8 @@ var (
 // delimiters before rendering. This prevents raw markdown markers from
 // appearing during streaming when content arrives incrementally.
 func RenderMarkdown(text string, maxWidth int) []string {
-	if maxWidth < 20 {
-		maxWidth = 60
+	if maxWidth < 8 {
+		maxWidth = 8
 	}
 
 	// Clean orphaned delimiters at the end of streaming content.
@@ -113,7 +113,7 @@ func RenderMarkdown(text string, maxWidth int) []string {
 		// Horizontal rule.
 		trimmed := strings.TrimSpace(line)
 		if isHorizontalRule(trimmed) {
-			hr := strings.Repeat("─", maxWidth-4)
+			hr := strings.Repeat("─", max(1, maxWidth-4))
 			result = append(result, mdHRStyle.Render("  "+hr))
 			continue
 		}
@@ -202,7 +202,7 @@ func RenderMarkdown(text string, maxWidth int) []string {
 
 		// Normal paragraph — apply inline formatting and wrap to width.
 		rendered := renderInlineMarkdown(line)
-		wrapped := wrapToWidth(rendered, maxWidth-2)
+		wrapped := wrapToWidth(rendered, max(1, maxWidth-2))
 		for _, wl := range wrapped {
 			result = append(result, "  "+wl)
 		}

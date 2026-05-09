@@ -40,18 +40,31 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress coretoo
 	// Track file paths for steering fileMatch resolution.
 	h.trackSteeringFileFromArgs(name, args)
 
-	// --- SecurityFirewall check (Phase 2 upgrade) ---
-	if h.firewall != nil {
-		ctx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
-		allowed, reason := h.firewall.Check(name, args, ctx)
-		if !allowed {
-			return reason
-		}
-	}
-
 	// --- Registry-based dispatch (unified path) ---
 	if h.registry != nil {
 		if tool, ok := h.registry.Get(name); ok {
+			if h.emitRegisteredToolAgentViewIfNeeded(name, args) {
+				return "Tool parameters are incomplete. A task panel form has been opened on the right."
+			}
+			if validationIssues := registeredToolValidateArgIssues(*tool, args); len(validationIssues) > 0 {
+				if h.app != nil {
+					if view := buildRegisteredToolAgentView(*tool, args, nil); view != nil {
+						applyRegisteredToolFieldIssues(view, validationIssues)
+						h.app.emitAgentView(view)
+					}
+				}
+				return "Tool parameters need correction. A task panel form has been opened on the right."
+			}
+			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
+			if h.emitRegisteredToolApprovalAgentViewIfNeeded(name, args, securityCtx) {
+				return "Tool execution needs approval. An approval panel has been opened on the right."
+			}
+			if h.firewall != nil {
+				allowed, reason := h.firewall.Check(name, args, securityCtx)
+				if !allowed {
+					return reason
+				}
+			}
 			if tool.HandlerProg != nil {
 				return tool.HandlerProg(args, onProgress)
 			}

@@ -1,5 +1,6 @@
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { SidebarHubCredits } from '../../types/appShell';
+import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SidebarToolSelector } from './SidebarToolSelector';
 import { SidebarRecentTasks, type RecentProject, type TaskContextMenu } from './SidebarRecentTasks';
 import { SidebarSystemStatus } from './SidebarSystemStatus';
@@ -7,12 +8,16 @@ import { SidebarSystemStatus } from './SidebarSystemStatus';
 type SidebarAiPaneProps = {
     recentTasksPaneWidth: number;
     lang: string;
+    aiThemeMode?: 'light' | 'dark';
     maclawLLMOnline: boolean;
     agentNetRunning: boolean;
+    hideAgentNet?: boolean;
+    showLansenger?: boolean;
     remoteActivationStatus: any;
     qqBotStatus: string;
     telegramStatus: string;
     weixinStatus: string;
+    lansengerStatus: string;
     config: any;
     activeTool: string;
     toolDropdownOpen: boolean;
@@ -23,6 +28,9 @@ type SidebarAiPaneProps = {
     renameValue: string;
     setRenameValue: (value: string) => void;
     resumeRecentProject: (projectPath: string) => Promise<void> | void;
+    assistantReady?: boolean;
+    onRecentTaskSwitchBlocked?: () => void;
+    createRecentTask: (name: string) => Promise<void> | void;
     refreshRecentProjects: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
@@ -40,6 +48,8 @@ type SidebarAiPaneProps = {
     noHubAuthorizationText: string;
     showHubCreditAction: boolean;
     openHubCreditsPage: () => void;
+    codingAgentProgress?: CodingAgentProgress | null;
+    codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
     handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
     isRecentTasksResizing: boolean;
     switchTool: (tool: string) => void;
@@ -49,12 +59,16 @@ type SidebarAiPaneProps = {
 export const SidebarAiPane = ({
     recentTasksPaneWidth,
     lang,
+    aiThemeMode,
     maclawLLMOnline,
     agentNetRunning,
+    hideAgentNet = false,
+    showLansenger = false,
     remoteActivationStatus,
     qqBotStatus,
     telegramStatus,
     weixinStatus,
+    lansengerStatus,
     config,
     activeTool,
     toolDropdownOpen,
@@ -65,6 +79,9 @@ export const SidebarAiPane = ({
     renameValue,
     setRenameValue,
     resumeRecentProject,
+    assistantReady = true,
+    onRecentTaskSwitchBlocked,
+    createRecentTask,
     refreshRecentProjects,
     taskContextMenu,
     setTaskContextMenu,
@@ -82,6 +99,8 @@ export const SidebarAiPane = ({
     noHubAuthorizationText,
     showHubCreditAction,
     openHubCreditsPage,
+    codingAgentProgress = null,
+    codingAgentTurnSnapshot = null,
     handleRecentTasksResizeStart,
     isRecentTasksResizing,
     switchTool,
@@ -98,12 +117,16 @@ export const SidebarAiPane = ({
 
     <SidebarRecentTasks
         lang={lang}
+        themeMode={aiThemeMode}
         recentProjects={recentProjects}
         renamingTaskPath={renamingTaskPath}
         setRenamingTaskPath={setRenamingTaskPath}
         renameValue={renameValue}
         setRenameValue={setRenameValue}
         resumeRecentProject={resumeRecentProject}
+        assistantReady={assistantReady}
+        onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked}
+        createRecentTask={createRecentTask}
         refreshRecentProjects={refreshRecentProjects}
         taskContextMenu={taskContextMenu}
         setTaskContextMenu={setTaskContextMenu}
@@ -116,10 +139,13 @@ export const SidebarAiPane = ({
         lang={lang}
         maclawLLMOnline={maclawLLMOnline}
         agentNetRunning={agentNetRunning}
+        hideAgentNet={hideAgentNet}
+        showLansenger={showLansenger}
         remoteActivationStatus={remoteActivationStatus}
         qqBotStatus={qqBotStatus}
         telegramStatus={telegramStatus}
         weixinStatus={weixinStatus}
+        lansengerStatus={lansengerStatus}
         sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
         sidebarHubCredits={sidebarHubCredits}
         formatSidebarTokens={formatSidebarTokens}
@@ -131,6 +157,8 @@ export const SidebarAiPane = ({
         noHubAuthorizationText={noHubAuthorizationText}
         showHubCreditAction={showHubCreditAction}
         openHubCreditsPage={openHubCreditsPage}
+        codingAgentProgress={codingAgentProgress}
+        codingAgentTurnSnapshot={codingAgentTurnSnapshot}
     />
 </div>
 <div

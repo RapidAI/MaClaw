@@ -37,12 +37,7 @@ export function TTSConfigPanel({ lang }: Props) {
                 const selectedVoice = await GetTTSVoiceID();
                 setVoiceID(selectedVoice || 'zf_xiaoyi');
                 const on = await GetTTSEnabled();
-                if (info.exists && !on) {
-                    await SetTTSEnabled(true);
-                    setEnabled(true);
-                } else {
-                    setEnabled(!!on);
-                }
+                setEnabled(!!on);
             } catch {}
             setLoading(false);
         })();
@@ -60,7 +55,6 @@ export function TTSConfigPanel({ lang }: Props) {
                 setDownloading(false);
                 setModelExists(true);
                 setModelSize(data.downloaded || 0);
-                setEnabled(true);
             }
         };
         EventsOn('tts-download-progress', handler);
@@ -70,8 +64,19 @@ export function TTSConfigPanel({ lang }: Props) {
     const handleToggle = async (on: boolean) => {
         setEnabled(on);
         setError('');
-        try { await SetTTSEnabled(on); } catch (e: any) { setError(e?.message || String(e)); return; }
-        if (on && !modelExists && !downloading) { startDownload(); }
+        if (on && !modelExists) {
+            setDownloading(true);
+        } else if (!on) {
+            setDownloading(false);
+        }
+        try {
+            await SetTTSEnabled(on);
+        } catch (e: any) {
+            setEnabled(!on);
+            setDownloading(false);
+            setError(e?.message || String(e));
+            return;
+        }
     };
 
     const handleVoiceChange = async (nextVoiceID: string) => {
@@ -116,7 +121,7 @@ export function TTSConfigPanel({ lang }: Props) {
             </h4>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
                 <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} disabled={downloading} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
                     {t('Enable TTS Voice Playback', '启用语音播报', '啟用語音播報')}
                 </label>
             </div>
@@ -156,4 +161,3 @@ export function TTSConfigPanel({ lang }: Props) {
         </div>
     );
 }
-

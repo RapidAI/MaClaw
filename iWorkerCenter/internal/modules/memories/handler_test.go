@@ -1,6 +1,7 @@
 package memories
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -34,6 +35,76 @@ func TestClientMemoriesUseTenantHeader(t *testing.T) {
 	}
 	if len(body.Memories) != 1 || body.Memories[0].ID != "mem-a" {
 		t.Fatalf("unexpected memories: %+v", body.Memories)
+	}
+}
+
+func TestClientMemoriesRejectsCorruptTagsJSON(t *testing.T) {
+	db := newTestMemoryDB(t)
+	h := NewHandler(db, db)
+	mux := http.NewServeMux()
+	h.RegisterClientRoutes(mux)
+	_, err := db.Exec(`INSERT INTO shared_memories (id, tenant_id, title, content, level, scope, tags, version, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 'enterprise', 'all', ?, 1, 'active', '2026-04-28T00:00:00Z', '2026-04-28T00:00:00Z')`,
+		"mem-bad-tags", "tenant-a", "Bad tags", "corrupt metadata", "{bad-json")
+	if err != nil {
+		t.Fatalf("seed corrupt tags: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/client/memories", nil)
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body=%s, want corrupt tags to fail loudly", res.Code, res.Body.String())
+	}
+}
+
+func TestUpdateMemoryRejectsEmptyTitleWithoutMutating(t *testing.T) {
+	db := newTestMemoryDB(t)
+	h := NewHandler(db, db)
+	mux := http.NewServeMux()
+	h.RegisterAdminRoutes(mux)
+	seedSharedMemory(t, db, "mem-a", "tenant-a", "original content")
+
+	req := httptest.NewRequest(http.MethodPut, "/admin/memories/mem-a", bytes.NewBufferString(`{"title":" ","content":"mutated","level":"role","scope":"ops","tags":[],"status":"active"}`))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want missing title", res.Code, res.Body.String())
+	}
+	var content string
+	if err := db.QueryRow(`SELECT content FROM shared_memories WHERE tenant_id=? AND id=?`, "tenant-a", "mem-a").Scan(&content); err != nil {
+		t.Fatalf("query memory: %v", err)
+	}
+	if content != "original content" {
+		t.Fatalf("content = %q, want unchanged", content)
+	}
+}
+
+func TestUpdateMemorySupportsEscapedID(t *testing.T) {
+	db := newTestMemoryDB(t)
+	h := NewHandler(db, db)
+	mux := http.NewServeMux()
+	h.RegisterAdminRoutes(mux)
+	seedSharedMemory(t, db, "mem/team a", "tenant-a", "original content")
+
+	req := httptest.NewRequest(http.MethodPut, "/admin/memories/mem%2Fteam%20a", bytes.NewBufferString(`{"title":"Team memory","content":"updated","level":"team","scope":"ops","tags":["ops"],"status":"active"}`))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+
+	if res.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", res.Code, res.Body.String())
+	}
+	var content, level, scope string
+	if err := db.QueryRow(`SELECT content, level, scope FROM shared_memories WHERE tenant_id=? AND id=?`, "tenant-a", "mem/team a").Scan(&content, &level, &scope); err != nil {
+		t.Fatalf("query memory: %v", err)
+	}
+	if content != "updated" || level != "team" || scope != "ops" {
+		t.Fatalf("memory = content:%q level:%q scope:%q", content, level, scope)
 	}
 }
 

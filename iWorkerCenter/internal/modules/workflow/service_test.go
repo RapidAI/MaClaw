@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +72,7 @@ func (f fakeCapabilityResolver) SelectWorkerForTask(context.Context, string, str
 
 type fakeCapabilityMemoryRecorder struct {
 	called        bool
+	err           error
 	tenantID      string
 	workerID      string
 	orgUnitID     string
@@ -90,10 +93,11 @@ func (f *fakeCapabilityMemoryRecorder) RecordCapabilityExecutionMemory(_ context
 	f.workflowName = workflowName
 	f.status = status
 	f.resultSummary = resultSummary
-	return nil
+	return f.err
 }
 
 type fakeCapabilityUsageRecorder struct {
+	err                    error
 	capabilityID           string
 	colleagueID            string
 	workflowInstanceID     string
@@ -119,7 +123,7 @@ func (f *fakeCapabilityUsageRecorder) RecordCapabilityUsage(_ context.Context, _
 	f.latencyMs = latencyMs
 	f.qualityScore = qualityScore
 	f.qualityReason = qualityReason
-	return nil
+	return f.err
 }
 
 func seedRolesAndColleagues(t *testing.T, p *db.Provider) {
@@ -280,6 +284,13 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 	if stepInstances[0].AssigneeColleagueID != "col-xiaozhou" {
 		t.Errorf("step 1 assignee: expected col-xiaozhou, got %s", stepInstances[0].AssigneeColleagueID)
 	}
+	tasks, err := svc.collabRepo.ListAll(testTenantID)
+	if err != nil {
+		t.Fatalf("list collaboration tasks: %v", err)
+	}
+	if len(tasks) != 1 || !strings.Contains(tasks[0].Description, "Workflow step is ready for processing: Issue analysis") {
+		t.Fatalf("first collaboration description = %+v", tasks)
+	}
 
 	if err := svc.CompleteStep(testTenantID, stepInstances[0].ID, "col-xiaozhou", "analysis done"); err != nil {
 		t.Fatalf("complete step 1: %v", err)
@@ -291,6 +302,13 @@ func TestWorkflowLifecycle_FullRun(t *testing.T) {
 	}
 	if stepInstances[1].AssigneeColleagueID != "col-laochen" {
 		t.Errorf("step 2 assignee: expected col-laochen, got %s", stepInstances[1].AssigneeColleagueID)
+	}
+	tasks, err = svc.collabRepo.ListAll(testTenantID)
+	if err != nil {
+		t.Fatalf("list collaboration tasks after step 1: %v", err)
+	}
+	if len(tasks) != 2 || !strings.Contains(tasks[0].Description+tasks[1].Description, "Workflow step is ready for processing: Fix plan") {
+		t.Fatalf("next collaboration description = %+v", tasks)
 	}
 
 	if err := svc.CompleteStep(testTenantID, stepInstances[1].ID, "col-laochen", "plan done"); err != nil {
@@ -371,6 +389,214 @@ func TestCompleteStepRecordsCapabilityUsageFeedback(t *testing.T) {
 	}
 	if memoryRecorder.workerID != "col-xiaozhou" || memoryRecorder.orgUnitID != "quality" || memoryRecorder.capabilityID != "cap-revenue" || memoryRecorder.status != "success" {
 		t.Fatalf("unexpected memory recorder payload: %+v", memoryRecorder)
+	}
+}
+
+func TestCompleteStepReturnsCapabilityRecorderErrors(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+	recorder := &fakeCapabilityUsageRecorder{err: errors.New("usage store unavailable")}
+	memoryRecorder := &fakeCapabilityMemoryRecorder{err: errors.New("memory store unavailable")}
+	svc.SetCapabilityUsageRecorder(recorder)
+	svc.SetCapabilityExecutionMemoryRecorder(memoryRecorder)
+
+	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
+		Name:  "Capability feedback failure",
+		Steps: []CreateStepDefRequest{{StepName: "Revenue check", AssigneeRoleCode: "quality"}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.PublishDefinition(testTenantID, def.ID); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-xiaozhou"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+
+	err = svc.CompleteStepWithInput(testTenantID, steps[0].ID, CompleteStepInput{
+		ActorID:      "col-xiaozhou",
+		Result:       "forecast ready",
+		CapabilityID: "cap-revenue",
+	})
+	if err == nil {
+		t.Fatal("expected recorder errors to be returned")
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "record capability usage") || !strings.Contains(errText, "record capability execution memory") {
+		t.Fatalf("error = %q, want both recorder failures", errText)
+	}
+	if !recorder.called || !memoryRecorder.called {
+		t.Fatalf("recorders called usage=%t memory=%t", recorder.called, memoryRecorder.called)
+	}
+}
+
+func TestCompleteStepRejectsMissingActorID(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+
+	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
+		Name:  "Missing actor",
+		Steps: []CreateStepDefRequest{{StepName: "Revenue check", AssigneeRoleCode: "quality"}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.PublishDefinition(testTenantID, def.ID); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-xiaozhou"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+
+	if err := svc.CompleteStepWithInput(testTenantID, steps[0].ID, CompleteStepInput{ActorID: " ", Result: "done"}); err == nil {
+		t.Fatal("expected missing actor_id to fail")
+	}
+	unchanged, err := svc.GetStepInstance(testTenantID, steps[0].ID)
+	if err != nil {
+		t.Fatalf("get step: %v", err)
+	}
+	if unchanged.Status != StepPending {
+		t.Fatalf("step status = %s, want pending", unchanged.Status)
+	}
+}
+
+func TestWorkflowStepActionsRequireAssignedActor(t *testing.T) {
+	tests := []struct {
+		name   string
+		action func(svc *Service, stepID string) error
+	}{
+		{
+			name: "resume",
+			action: func(svc *Service, stepID string) error {
+				return svc.StartOrResumeStep(testTenantID, stepID, "col-laochen", "not my step")
+			},
+		},
+		{
+			name: "complete",
+			action: func(svc *Service, stepID string) error {
+				return svc.CompleteStep(testTenantID, stepID, "col-laochen", "not my result")
+			},
+		},
+		{
+			name: "reject",
+			action: func(svc *Service, stepID string) error {
+				return svc.RejectStep(testTenantID, stepID, "col-laochen", "not my rejection")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := setupTestDB(t)
+			seedRolesAndColleagues(t, p)
+			svc := newTestService(t, p)
+
+			def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
+				Name:  "Assigned actor only",
+				Steps: []CreateStepDefRequest{{StepName: "Quality review", AssigneeMode: "fixed_colleague", AssigneeColleagueID: "col-xiaozhou", AssigneeRoleCode: "quality"}},
+			})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if err := svc.PublishDefinition(testTenantID, def.ID); err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+			inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-laochen"})
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			steps, err := svc.ListStepInstances(testTenantID, inst.ID)
+			if err != nil || len(steps) != 1 {
+				t.Fatalf("steps = %+v err=%v", steps, err)
+			}
+
+			err = tt.action(svc, steps[0].ID)
+			if !errors.Is(err, ErrStepActorForbidden) {
+				t.Fatalf("action error = %v, want assigned actor failure", err)
+			}
+			unchangedStep, err := svc.GetStepInstance(testTenantID, steps[0].ID)
+			if err != nil {
+				t.Fatalf("get step: %v", err)
+			}
+			if unchangedStep.Status != StepPending || unchangedStep.Result != "" {
+				t.Fatalf("step after unauthorized action = %+v, want pending without result", unchangedStep)
+			}
+			unchangedInst, err := svc.GetInstance(testTenantID, inst.ID)
+			if err != nil {
+				t.Fatalf("get instance: %v", err)
+			}
+			if unchangedInst.Status != InstStatusRunning || unchangedInst.CurrentStepID != steps[0].ID {
+				t.Fatalf("instance after unauthorized action = %+v", unchangedInst)
+			}
+		})
+	}
+}
+
+func TestRejectStepRejectsMissingActorID(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+
+	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
+		Name:  "Reject missing actor",
+		Steps: []CreateStepDefRequest{{StepName: "Quality review", AssigneeRoleCode: "quality"}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.PublishDefinition(testTenantID, def.ID); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-xiaozhou"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+
+	if err := svc.RejectStep(testTenantID, steps[0].ID, " ", "invalid input"); err == nil || !strings.Contains(err.Error(), "actor_id is required") {
+		t.Fatalf("RejectStep error = %v, want missing actor_id", err)
+	}
+	unchanged, err := svc.GetStepInstance(testTenantID, steps[0].ID)
+	if err != nil {
+		t.Fatalf("get step: %v", err)
+	}
+	if unchanged.Status != StepPending {
+		t.Fatalf("step status = %s, want pending", unchanged.Status)
+	}
+}
+
+func TestWorkflowRepoRejectsCorruptStepTimestamp(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+
+	def, err := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
+		Name:  "Corrupt timestamp",
+		Steps: []CreateStepDefRequest{{StepName: "Revenue check", AssigneeRoleCode: "quality"}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.PublishDefinition(testTenantID, def.ID); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	inst, err := svc.StartInstance(testTenantID, StartInstanceRequest{DefinitionID: def.ID, InitiatorID: "col-xiaozhou"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+	if _, err := p.Write.Exec(`UPDATE workflow_step_instances SET updated_at=? WHERE tenant_id=? AND id=?`, "not-rfc3339", testTenantID, steps[0].ID); err != nil {
+		t.Fatalf("corrupt timestamp: %v", err)
+	}
+	if _, err := svc.GetStepInstance(testTenantID, steps[0].ID); err == nil || !strings.Contains(err.Error(), "parse workflow step instance") {
+		t.Fatalf("GetStepInstance error = %v, want parse failure", err)
 	}
 }
 
@@ -471,6 +697,41 @@ func TestWorkflowReject_TerminatesProcess(t *testing.T) {
 
 	if err := svc.CompleteStep(testTenantID, steps[0].ID, "col-xiaozhou", ""); err == nil {
 		t.Error("expected error completing rejected step")
+	}
+}
+
+func TestWorkflowRejectFailsWhenCollaborationTaskCannotSync(t *testing.T) {
+	p := setupTestDB(t)
+	seedRolesAndColleagues(t, p)
+	svc := newTestService(t, p)
+
+	def, _ := svc.CreateDefinition(testTenantID, CreateDefinitionRequest{
+		Name: "Reject sync failure",
+		Steps: []CreateStepDefRequest{
+			{StepName: "Step 1", AssigneeRoleCode: "quality"},
+		},
+	})
+	_ = svc.PublishDefinition(testTenantID, def.ID)
+	inst, _ := svc.StartInstance(testTenantID, StartInstanceRequest{
+		DefinitionID: def.ID, InitiatorID: "col-xiaozhou",
+	})
+	steps, _ := svc.ListStepInstances(testTenantID, inst.ID)
+	if len(steps) != 1 || strings.TrimSpace(steps[0].CollaborationTaskID) == "" {
+		t.Fatalf("step missing collaboration task: %+v", steps)
+	}
+	if _, err := p.Write.Exec(`DELETE FROM collaboration_task_events WHERE tenant_id=? AND task_id=?`, testTenantID, steps[0].CollaborationTaskID); err != nil {
+		t.Fatalf("delete collaboration task events: %v", err)
+	}
+	if _, err := p.Write.Exec(`DELETE FROM collaboration_tasks WHERE tenant_id=? AND id=?`, testTenantID, steps[0].CollaborationTaskID); err != nil {
+		t.Fatalf("delete collaboration task: %v", err)
+	}
+
+	if err := svc.RejectStep(testTenantID, steps[0].ID, "col-xiaozhou", "invalid input"); err == nil || !strings.Contains(err.Error(), "reject collab task") {
+		t.Fatalf("RejectStep error = %v, want collab sync failure", err)
+	}
+	inst, _ = svc.GetInstance(testTenantID, inst.ID)
+	if inst.Status == InstStatusRejected {
+		t.Fatalf("workflow instance was rejected despite collaboration sync failure")
 	}
 }
 

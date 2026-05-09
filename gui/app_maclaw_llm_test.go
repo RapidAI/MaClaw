@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"pgregory.net/rapid"
 )
 
@@ -291,13 +293,13 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 	if got := saved.MaclawLLMProviders[0].Model; got != "maclaw-model" {
 		t.Fatalf("MaClaw provider model = %q, want %q", got, "maclaw-model")
 	}
-	if got := saved.Claude.CurrentModel; got != codegenProviderName {
-		t.Fatalf("Claude CurrentModel = %q, want %q", got, codegenProviderName)
+	if got := saved.Claude.CurrentModel; got != "claude-model" {
+		t.Fatalf("Claude CurrentModel = %q, want %q", got, "claude-model")
 	}
 
 	var claudeCodeGen *corelib.ModelConfig
 	for i := range saved.Claude.Models {
-		if saved.Claude.Models[i].ModelName == codegenProviderName {
+		if saved.Claude.Models[i].ModelName == "claude-model" {
 			claudeCodeGen = &saved.Claude.Models[i]
 			break
 		}
@@ -314,7 +316,7 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 
 	var codexCodeGen *corelib.ModelConfig
 	for i := range saved.Codex.Models {
-		if saved.Codex.Models[i].ModelName == codegenProviderName {
+		if saved.Codex.Models[i].ModelName == "maclaw-model" {
 			codexCodeGen = &saved.Codex.Models[i]
 			break
 		}
@@ -347,6 +349,364 @@ func TestSaveCodeGenModelChoiceUsesClaudeSpecificModel(t *testing.T) {
 	}
 }
 
+func TestInjectCodeGenModelIntoToolConfigsUsesFirstModelAsToolModelName(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := corelib.AppConfig{
+		Claude: corelib.ToolConfig{
+			CurrentModel: codegenProviderName,
+			Models: []corelib.ModelConfig{{
+				ModelName: codegenProviderName,
+				ModelId:   "old-model",
+				ModelUrl:  "http://127.0.0.1:5001/anthropic",
+				ApiKey:    "old-token",
+				WireApi:   "anthropic",
+			}},
+		},
+		Codex: corelib.ToolConfig{
+			CurrentModel: "Original",
+			Models: []corelib.ModelConfig{
+				{
+					ModelName: "Original",
+					ModelId:   "gpt-4.1",
+					ModelUrl:  "https://api.openai.com/v1",
+					ApiKey:    "openai-token",
+					WireApi:   "responses",
+				},
+				{
+					ModelName: codegenProviderName,
+					ModelId:   "old-model",
+					ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+					ApiKey:    "old-token",
+					WireApi:   "responses",
+				},
+			},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	app.injectCodeGenModelIntoToolConfigs(oauth.CodeGenSSOResult{
+		AccessToken: "token-123",
+		BaseURL:     "https://codegen.qianxin-inc.cn/api/v1",
+		ModelID:     "first-usable-model",
+	})
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := saved.Claude.CurrentModel; got != "first-usable-model" {
+		t.Fatalf("Claude CurrentModel = %q, want %q", got, "first-usable-model")
+	}
+	if got := saved.Claude.Models[0].ModelName; got != "first-usable-model" {
+		t.Fatalf("Claude model_name = %q, want %q", got, "first-usable-model")
+	}
+	if got := saved.Claude.Models[0].ModelId; got != "first-usable-model" {
+		t.Fatalf("Claude model_id = %q, want %q", got, "first-usable-model")
+	}
+	if got := saved.Codex.CurrentModel; got != "first-usable-model" {
+		t.Fatalf("Codex CurrentModel = %q, want %q", got, "first-usable-model")
+	}
+	if got := saved.Codex.Models[0].ModelName; got != "Original" {
+		t.Fatalf("Codex first model_name = %q, want %q", got, "Original")
+	}
+	if got := saved.Codex.Models[1].ModelName; got != "first-usable-model" {
+		t.Fatalf("Codex model_name = %q, want %q", got, "first-usable-model")
+	}
+	if got := saved.Codex.Models[1].ModelId; got != "first-usable-model" {
+		t.Fatalf("Codex model_id = %q, want %q", got, "first-usable-model")
+	}
+}
+
+func TestSaveCodeGenModelChoiceRenamesExistingCodeGenModelEntry(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	cfg := corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name:     codegenProviderName,
+			URL:      "https://codegen.qianxin-inc.cn/api/v1",
+			Key:      "token-123",
+			Model:    "first-model",
+			Protocol: "openai",
+			AuthType: "sso",
+		}},
+		MaclawLLMCurrentProvider: codegenProviderName,
+		Codex: corelib.ToolConfig{
+			CurrentModel: "first-model",
+			Models: []corelib.ModelConfig{
+				{
+					ModelName: "first-model",
+					ModelId:   "first-model",
+					ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+					ApiKey:    "token-123",
+					WireApi:   "responses",
+				},
+				{
+					ModelName: codegenProviderName,
+					ModelId:   "legacy-model",
+					ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+					ApiKey:    "token-123",
+					WireApi:   "responses",
+				},
+			},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	if err := app.SaveCodeGenModelChoice("second-model", ""); err != nil {
+		t.Fatalf("SaveCodeGenModelChoice() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := saved.Codex.CurrentModel; got != "second-model" {
+		t.Fatalf("Codex CurrentModel = %q, want %q", got, "second-model")
+	}
+	if got := saved.Codex.Models[0].ModelName; got != "second-model" {
+		t.Fatalf("Codex model_name = %q, want %q", got, "second-model")
+	}
+	if got := saved.Codex.Models[0].ModelId; got != "second-model" {
+		t.Fatalf("Codex model_id = %q, want %q", got, "second-model")
+	}
+	if len(saved.Codex.Models) != 1 {
+		t.Fatalf("Codex CodeGen entries should be deduplicated, got %+v", saved.Codex.Models)
+	}
+}
+
+func TestUpdateCodeGenToolAPIKeyMatchesRenamedCodeGenEntryWithoutSwitchingCurrent(t *testing.T) {
+	tc := corelib.ToolConfig{
+		CurrentModel: "Original",
+		Models: []corelib.ModelConfig{
+			{
+				ModelName: "Original",
+				ModelId:   "gpt-4.1",
+				ModelUrl:  "https://api.openai.com/v1",
+				ApiKey:    "openai-token",
+				WireApi:   "responses",
+			},
+			{
+				ModelName: "first-usable-model",
+				ModelId:   "first-usable-model",
+				ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+				ApiKey:    "old-token",
+				WireApi:   "responses",
+			},
+		},
+	}
+
+	changed := updateCodeGenToolAPIKey(&tc, corelib.ModelConfig{
+		ModelName: "first-usable-model",
+		ModelId:   "first-usable-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "new-token",
+		WireApi:   "responses",
+	})
+
+	if !changed {
+		t.Fatal("updateCodeGenToolAPIKey() changed = false, want true")
+	}
+	if got := tc.CurrentModel; got != "Original" {
+		t.Fatalf("CurrentModel = %q, want %q", got, "Original")
+	}
+	if got := tc.Models[0].ApiKey; got != "openai-token" {
+		t.Fatalf("custom ApiKey = %q, want %q", got, "openai-token")
+	}
+	if got := tc.Models[1].ApiKey; got != "new-token" {
+		t.Fatalf("CodeGen ApiKey = %q, want %q", got, "new-token")
+	}
+}
+
+func TestUpdateCodeGenToolAPIKeySkipsCustomSameURLProvider(t *testing.T) {
+	tc := corelib.ToolConfig{
+		CurrentModel: "Custom CodeGen Mirror",
+		Models: []corelib.ModelConfig{
+			{
+				ModelName: "Custom CodeGen Mirror",
+				ModelId:   "custom-model",
+				ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+				ApiKey:    "custom-token",
+				WireApi:   "responses",
+				IsCustom:  true,
+			},
+			{
+				ModelName: "first-usable-model",
+				ModelId:   "first-usable-model",
+				ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+				ApiKey:    "old-token",
+				WireApi:   "responses",
+			},
+		},
+	}
+
+	changed := updateCodeGenToolAPIKey(&tc, corelib.ModelConfig{
+		ModelName: "first-usable-model",
+		ModelId:   "first-usable-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "new-token",
+		WireApi:   "responses",
+	})
+
+	if !changed {
+		t.Fatal("updateCodeGenToolAPIKey() changed = false, want true")
+	}
+	if got := tc.Models[0].ApiKey; got != "custom-token" {
+		t.Fatalf("custom ApiKey = %q, want %q", got, "custom-token")
+	}
+	if got := tc.Models[1].ApiKey; got != "new-token" {
+		t.Fatalf("CodeGen ApiKey = %q, want %q", got, "new-token")
+	}
+}
+
+func TestUpdateCodeGenToolAPIKeyDoesNotMatchByModelNameOnly(t *testing.T) {
+	tc := corelib.ToolConfig{
+		CurrentModel: "first-usable-model",
+		Models: []corelib.ModelConfig{
+			{
+				ModelName: "first-usable-model",
+				ModelId:   "first-usable-model",
+				ModelUrl:  "https://example.invalid/v1",
+				ApiKey:    "custom-token",
+				WireApi:   "responses",
+			},
+		},
+	}
+
+	changed := updateCodeGenToolAPIKey(&tc, corelib.ModelConfig{
+		ModelName: "first-usable-model",
+		ModelId:   "first-usable-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "new-token",
+		WireApi:   "responses",
+	})
+
+	if changed {
+		t.Fatal("updateCodeGenToolAPIKey() changed = true, want false")
+	}
+	if got := tc.Models[0].ApiKey; got != "custom-token" {
+		t.Fatalf("ApiKey = %q, want %q", got, "custom-token")
+	}
+}
+
+func TestEnsureCodeGenToolModelAvailableFallsBackToFirstModel(t *testing.T) {
+	tc := corelib.ToolConfig{
+		CurrentModel: "missing-model",
+		Models: []corelib.ModelConfig{
+			{
+				ModelName: "missing-model",
+				ModelId:   "missing-model",
+				ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+				ApiKey:    "old-token",
+				WireApi:   "responses",
+			},
+		},
+	}
+
+	changed := ensureCodeGenToolModelAvailable(&tc, corelib.ModelConfig{
+		ModelName: "first-available-model",
+		ModelId:   "first-available-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "token-123",
+		WireApi:   "responses",
+	}, map[string]bool{"first-available-model": true})
+
+	if !changed {
+		t.Fatal("ensureCodeGenToolModelAvailable() changed = false, want true")
+	}
+	if got := tc.CurrentModel; got != "first-available-model" {
+		t.Fatalf("CurrentModel = %q, want %q", got, "first-available-model")
+	}
+	if got := tc.Models[0].ModelName; got != "first-available-model" {
+		t.Fatalf("ModelName = %q, want %q", got, "first-available-model")
+	}
+	if got := tc.Models[0].ModelId; got != "first-available-model" {
+		t.Fatalf("ModelId = %q, want %q", got, "first-available-model")
+	}
+}
+
+func TestEnsureCodeGenToolModelAvailableDoesNotSwitchUnrelatedCurrentModel(t *testing.T) {
+	tc := corelib.ToolConfig{
+		CurrentModel: "Original",
+		Models: []corelib.ModelConfig{
+			{
+				ModelName: "Original",
+				ModelId:   "gpt-4.1",
+				ModelUrl:  "https://api.openai.com/v1",
+				ApiKey:    "openai-token",
+				WireApi:   "responses",
+			},
+			{
+				ModelName: "missing-model",
+				ModelId:   "missing-model",
+				ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+				ApiKey:    "old-token",
+				WireApi:   "responses",
+			},
+		},
+	}
+
+	changed := ensureCodeGenToolModelAvailable(&tc, corelib.ModelConfig{
+		ModelName: "first-available-model",
+		ModelId:   "first-available-model",
+		ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
+		ApiKey:    "token-123",
+		WireApi:   "responses",
+	}, map[string]bool{"first-available-model": true})
+
+	if !changed {
+		t.Fatal("ensureCodeGenToolModelAvailable() changed = false, want true")
+	}
+	if got := tc.CurrentModel; got != "Original" {
+		t.Fatalf("CurrentModel = %q, want %q", got, "Original")
+	}
+	if got := tc.Models[1].ModelName; got != "first-available-model" {
+		t.Fatalf("CodeGen ModelName = %q, want %q", got, "first-available-model")
+	}
+}
+
+func TestProviderModelItemFromEntrySkipsExplicitlyUnavailableModels(t *testing.T) {
+	unavailable := false
+
+	if _, ok := providerModelItemFromEntry(providerModelEntry{ID: "disabled-model", Disabled: true}); ok {
+		t.Fatal("disabled model should be skipped")
+	}
+	if _, ok := providerModelItemFromEntry(providerModelEntry{ID: "unavailable-model", Available: &unavailable}); ok {
+		t.Fatal("unavailable model should be skipped")
+	}
+	if _, ok := providerModelItemFromEntry(providerModelEntry{ID: "inactive-model", Status: "inactive"}); ok {
+		t.Fatal("inactive model should be skipped")
+	}
+}
+
+func TestProviderModelItemFromEntryUsesDisplayNameWhenAvailable(t *testing.T) {
+	item, ok := providerModelItemFromEntry(providerModelEntry{
+		ID:          "model-id",
+		Name:        "Model Name",
+		DisplayName: "Display Name",
+		Status:      "available",
+	})
+	if !ok {
+		t.Fatal("available model should be included")
+	}
+	if item.ID != "model-id" {
+		t.Fatalf("ID = %q, want %q", item.ID, "model-id")
+	}
+	if item.Name != "Display Name" {
+		t.Fatalf("Name = %q, want %q", item.Name, "Display Name")
+	}
+}
+
 func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)
@@ -361,7 +721,7 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 				{ModelName: codegenProviderName, ModelId: "qax-codegen/Auto", ModelUrl: "http://127.0.0.1:5001/anthropic", ApiKey: "token-123", WireApi: "anthropic"},
 			},
 		},
-		Codex: corelib.ToolConfig{Models: []corelib.ModelConfig{{
+		Codex: corelib.ToolConfig{CurrentModel: "Original", Models: []corelib.ModelConfig{{
 			ModelName: codegenProviderName,
 			ModelId:   "qax-codegen/Auto",
 			ModelUrl:  "https://codegen.qianxin-inc.cn/api/v1",
@@ -392,8 +752,11 @@ func TestSaveCodeGenModelChoiceUpdatesClaudeSettingsForActiveCodeGenProvider(t *
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if got := saved.Claude.CurrentModel; got != codegenProviderName {
-		t.Fatalf("Claude CurrentModel = %q, want %q", got, codegenProviderName)
+	if got := saved.Claude.CurrentModel; got != "claude-model" {
+		t.Fatalf("Claude CurrentModel = %q, want %q", got, "claude-model")
+	}
+	if got := saved.Codex.CurrentModel; got != "maclaw-model" {
+		t.Fatalf("Codex CurrentModel = %q, want %q", got, "maclaw-model")
 	}
 
 	settingsPath := filepath.Join(tmpHome, ".claude", "settings.json")
@@ -440,8 +803,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if first.ContextLength != 110000 {
 		t.Errorf("OpenAI ContextLength = %d, want %d", first.ContextLength, 110000)
 	}
-	if first.TimeoutSec != 360 {
-		t.Errorf("OpenAI TimeoutSec = %d, want %d", first.TimeoutSec, 360)
+	if first.TimeoutSec != corelib.DefaultLLMTimeoutSec {
+		t.Errorf("OpenAI TimeoutSec = %d, want %d", first.TimeoutSec, corelib.DefaultLLMTimeoutSec)
 	}
 
 	zhipuLobster := providers[1]
@@ -578,8 +941,8 @@ func TestGetMaclawLLMProviders_BackfillsMissingTimeoutToDefault(t *testing.T) {
 	if len(data.Providers) == 0 {
 		t.Fatal("expected providers")
 	}
-	if got := data.Providers[0].TimeoutSec; got != 360 {
-		t.Fatalf("TimeoutSec = %d, want %d", got, 360)
+	if got := data.Providers[0].TimeoutSec; got != corelib.DefaultLLMTimeoutSec {
+		t.Fatalf("TimeoutSec = %d, want %d", got, corelib.DefaultLLMTimeoutSec)
 	}
 }
 
@@ -606,14 +969,14 @@ func TestSaveMaclawLLMProviders_SyncsLegacyTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if saved.MaclawLLMTimeoutSec != 360 {
-		t.Fatalf("MaclawLLMTimeoutSec = %d, want %d", saved.MaclawLLMTimeoutSec, 360)
+	if saved.MaclawLLMTimeoutSec != corelib.DefaultLLMTimeoutSec {
+		t.Fatalf("MaclawLLMTimeoutSec = %d, want %d", saved.MaclawLLMTimeoutSec, corelib.DefaultLLMTimeoutSec)
 	}
 	if len(saved.MaclawLLMProviders) == 0 {
 		t.Fatal("expected saved providers")
 	}
-	if got := saved.MaclawLLMProviders[0].TimeoutSec; got != 360 {
-		t.Fatalf("provider TimeoutSec = %d, want %d", got, 360)
+	if got := saved.MaclawLLMProviders[0].TimeoutSec; got != corelib.DefaultLLMTimeoutSec {
+		t.Fatalf("provider TimeoutSec = %d, want %d", got, corelib.DefaultLLMTimeoutSec)
 	}
 }
 
@@ -646,6 +1009,174 @@ func TestSaveMaclawLLMProviders_PersistsHubServiceFlag(t *testing.T) {
 		t.Fatal("saved provider IsHubService = false, want true")
 	}
 }
+
+func TestSaveMaclawLLMProviders_SyncsMissingHubProviderWhenSelected(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var hubURL string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/service/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":false,"hub_llm_base_url":"` + hubURL + `/api/llm/v1","credit_grants":[{"service_group_id":"coding-basic","active":false,"status":"period_limited","retry_after_seconds":3600}]}`))
+	}))
+	hubURL = hub.URL
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hub.URL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	providers := []corelib.MaclawLLMProvider{{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test", IsCustom: true}}
+	if err := app.SaveMaclawLLMProviders(providers, hubServiceProviderName); err != nil {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v", err)
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	provider, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("saved providers missing hub provider: %+v", saved.MaclawLLMProviders)
+	}
+	if provider.URL != hub.URL+"/api/llm/v1" || provider.Key != "viewer-token" || provider.Model != hubServiceAutoModel || !provider.IsHubService {
+		t.Fatalf("unexpected synced hub provider: %+v", provider)
+	}
+	if saved.MaclawLLMUrl != provider.URL || saved.MaclawLLMCurrentProvider != hubServiceProviderName {
+		t.Fatalf("legacy/current fields not synced: current=%q url=%q provider=%+v", saved.MaclawLLMCurrentProvider, saved.MaclawLLMUrl, provider)
+	}
+}
+
+func TestSaveMaclawLLMProviders_RejectsMissingHubProviderWhenSyncUnavailable(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      "http://127.0.0.1:1",
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	providers := []corelib.MaclawLLMProvider{{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test", IsCustom: true}}
+	err := app.SaveMaclawLLMProviders(providers, hubServiceProviderName)
+	if err == nil || !strings.Contains(err.Error(), "MaClaw 官方服务商暂不可用") {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v, want missing hub provider error", err)
+	}
+
+	saved, loadErr := app.LoadConfig()
+	if loadErr != nil {
+		t.Fatalf("LoadConfig() error = %v", loadErr)
+	}
+	if saved.MaclawLLMCurrentProvider == hubServiceProviderName {
+		t.Fatalf("current provider changed to missing hub provider: %+v", saved)
+	}
+}
+
+func TestSaveMaclawLLMProviders_ExplainsLimitedHubProviderWhenServiceEntryMissing(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	app := &App{testHomeDir: tmpHome}
+	var hubURL string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/service/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":false,"credit_grants":[{"service_group_id":"coding-basic","active":false,"status":"period_limited","retry_after_seconds":3600}]}`))
+	}))
+	hubURL = hub.URL
+	defer hub.Close()
+
+	if err := app.SaveConfig(corelib.AppConfig{
+		RemoteHubURL:      hubURL,
+		RemoteViewerToken: "viewer-token",
+	}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	providers := []corelib.MaclawLLMProvider{{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test", IsCustom: true}}
+	err := app.SaveMaclawLLMProviders(providers, hubServiceProviderName)
+	if err == nil {
+		t.Fatal("SaveMaclawLLMProviders() expected error")
+	}
+	if !strings.Contains(err.Error(), "周期限流") || !strings.Contains(err.Error(), "1 小时") {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v, want period-limit explanation", err)
+	}
+	if strings.Contains(err.Error(), "服务商暂不可用") {
+		t.Fatalf("SaveMaclawLLMProviders() error = %v, should not hide period limit behind unavailable wording", err)
+	}
+}
+
+func TestSaveMaclawLLMProviders_ExplainsInactiveHubProviderWhenServiceEntryMissing(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		retryAfter int
+		want       string
+	}{
+		{name: "queued", status: "queued", retryAfter: 7200, want: "授权尚未生效"},
+		{name: "exhausted", status: "exhausted", want: "额度已用尽"},
+		{name: "expired", status: "expired", want: "授权已过期"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpHome := t.TempDir()
+			t.Setenv("USERPROFILE", tmpHome)
+			t.Setenv("HOME", tmpHome)
+
+			app := &App{testHomeDir: tmpHome}
+			hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/api/llm/service/status" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				grant := fmt.Sprintf(`{"service_group_id":"coding-basic","active":false,"status":%q`, tt.status)
+				if tt.retryAfter > 0 {
+					grant += fmt.Sprintf(`,"retry_after_seconds":%d`, tt.retryAfter)
+				}
+				grant += `}`
+				_, _ = w.Write([]byte(`{"active":false,"credit_grants":[` + grant + `]}`))
+			}))
+			defer hub.Close()
+
+			if err := app.SaveConfig(corelib.AppConfig{
+				RemoteHubURL:      hub.URL,
+				RemoteViewerToken: "viewer-token",
+			}); err != nil {
+				t.Fatalf("SaveConfig() error = %v", err)
+			}
+
+			providers := []corelib.MaclawLLMProvider{{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test", IsCustom: true}}
+			err := app.SaveMaclawLLMProviders(providers, hubServiceProviderName)
+			if err == nil {
+				t.Fatal("SaveMaclawLLMProviders() expected error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("SaveMaclawLLMProviders() error = %v, want %q", err, tt.want)
+			}
+			if strings.Contains(err.Error(), "MaClaw 官方服务商暂不可用") || strings.Contains(err.Error(), "服务商暂不可用") {
+				t.Fatalf("SaveMaclawLLMProviders() error = %v, should explain inactive grant state", err)
+			}
+		})
+	}
+}
+
 func TestGetMaclawLLMConfig_ReturnsTimeout(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("USERPROFILE", tmpHome)

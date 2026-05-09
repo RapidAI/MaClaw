@@ -3,6 +3,7 @@ package skill
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -20,6 +21,27 @@ func NormalizeSkillForRunner(skill *corelib.NLSkillEntry) {
 	for i := range skill.Steps {
 		skill.Steps[i] = NormalizeStepForRunner(skill.Steps[i], skill.SkillDir)
 	}
+}
+
+// NormalizeStepForRunnerCopy adapts a single step without mutating caller-owned
+// map fields. Use this for read-only prechecks; execution paths can call
+// NormalizeStepForRunner directly when they intentionally solidify the step.
+func NormalizeStepForRunnerCopy(step corelib.NLSkillStep, skillDir string) corelib.NLSkillStep {
+	if step.Params != nil {
+		params := make(map[string]interface{}, len(step.Params))
+		for key, value := range step.Params {
+			params[key] = value
+		}
+		step.Params = params
+	}
+	if step.Capture != nil {
+		capture := make(map[string]string, len(step.Capture))
+		for key, value := range step.Capture {
+			capture[key] = value
+		}
+		step.Capture = capture
+	}
+	return NormalizeStepForRunner(step, skillDir)
 }
 
 // NormalizeStepForRunner adapts a single step to the runner contract.
@@ -86,10 +108,7 @@ func normalizeOnErrorPolicy(policy string) string {
 }
 
 func normalizeActionName(action string) string {
-	action = strings.ToLower(strings.TrimSpace(action))
-	action = strings.ReplaceAll(action, "-", "_")
-	action = strings.ReplaceAll(action, " ", "_")
-	return action
+	return NormalizeStepActionName(action)
 }
 
 func normalizeCommonParamAliases(params map[string]interface{}) {
@@ -334,8 +353,8 @@ func normalizeNumericParam(raw interface{}) (float64, bool) {
 	case float32:
 		return float64(v), true
 	case string:
-		var parsed float64
-		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%f", &parsed); err == nil {
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err == nil {
 			return parsed, true
 		}
 	}
@@ -513,6 +532,10 @@ func shellArgsParam(raw interface{}) string {
 
 func normalizeScriptReference(command, skillDir string) string {
 	command = strings.TrimSpace(command)
+	if command != "" && skillDir != "" {
+		command = strings.TrimSpace(resolveBaseDirInBlock(command, skillDir))
+		command = quoteResolvedLocalScriptReferences(command, skillDir)
+	}
 	if command == "" || skillDir == "" {
 		return command
 	}
@@ -536,6 +559,63 @@ func normalizeScriptReference(command, skillDir string) string {
 	}
 	resolved := filepath.Clean(filepath.Join(skillDir, first))
 	return strings.Replace(command, fields[0], QuoteForShell(resolved), 1)
+}
+
+func quoteResolvedLocalScriptReferences(command, skillDir string) string {
+	slashDir := filepath.ToSlash(strings.TrimRight(skillDir, `/\`))
+	if command == "" || slashDir == "" || !strings.Contains(command, slashDir) {
+		return command
+	}
+	var out strings.Builder
+	last := 0
+	pos := 0
+	changed := false
+	for {
+		idxRel := strings.Index(command[pos:], slashDir)
+		if idxRel < 0 {
+			break
+		}
+		idx := pos + idxRel
+		if idx > 0 && isShellQuote(command[idx-1]) {
+			pos = idx + len(slashDir)
+			continue
+		}
+		if idx > 0 && !isCommandPathBoundary(command[idx-1]) {
+			pos = idx + len(slashDir)
+			continue
+		}
+		end := idx + len(slashDir)
+		for end < len(command) && !isCommandPathTerminator(command[end]) {
+			end++
+		}
+		candidate := command[idx:end]
+		if !isScriptFileName(filepath.Base(candidate)) {
+			pos = idx + len(slashDir)
+			continue
+		}
+		out.WriteString(command[last:idx])
+		out.WriteString(QuoteForShell(candidate))
+		last = end
+		pos = end
+		changed = true
+	}
+	if !changed {
+		return command
+	}
+	out.WriteString(command[last:])
+	return out.String()
+}
+
+func isShellQuote(ch byte) bool {
+	return ch == '"' || ch == '\'' || ch == '`'
+}
+
+func isCommandPathBoundary(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '=' || ch == '(' || ch == ','
+}
+
+func isCommandPathTerminator(ch byte) bool {
+	return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '"' || ch == '\'' || ch == '`' || ch == ')' || ch == ','
 }
 
 func shouldResolveRelativeScript(path string) bool {

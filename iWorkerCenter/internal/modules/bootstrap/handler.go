@@ -1,12 +1,22 @@
 package bootstrap
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
+)
+
+const maxBootstrapPlanBodyBytes = 256 << 10
+
+var (
+	errBootstrapJSONTooLarge = errors.New("bootstrap json body exceeds size limit")
+	errBootstrapJSONTrailing = errors.New("bootstrap json body contains trailing data")
 )
 
 type Handler struct {
@@ -40,7 +50,7 @@ func (h *Handler) handleDraftPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req Plan
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBootstrapJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -58,7 +68,7 @@ func (h *Handler) handleValidatePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req Plan
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBootstrapJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -73,7 +83,7 @@ func (h *Handler) handleApplyPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req Plan
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeBootstrapJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -114,4 +124,25 @@ func (h *Handler) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.OK(w, map[string]any{"run": run})
+}
+
+func decodeBootstrapJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxBootstrapPlanBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxBootstrapPlanBodyBytes {
+		return errBootstrapJSONTooLarge
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errBootstrapJSONTrailing
+		}
+		return err
+	}
+	return nil
 }

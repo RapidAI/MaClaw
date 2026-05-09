@@ -88,6 +88,12 @@ var openAPIRoutes = []openAPIRoute{
 	{Method: http.MethodGet, Path: "/api/v1/jobs/{jobId}", Summary: "Get async job", Description: "Returns the current state of an async user-scoped job started by async skill or MCP operations.", Tag: "jobs", Security: bearerSecurity()},
 	{Method: http.MethodPost, Path: "/api/v1/jobs/{jobId}/cancel", Summary: "Cancel async job", Description: "Requests cancellation for a pending or running async job owned by the current tenant/user.", Tag: "jobs", Security: bearerSecurity()},
 	{Method: http.MethodDelete, Path: "/api/v1/jobs/{jobId}", Summary: "Delete async job", Description: "Deletes a completed, failed, or canceled async job owned by the current tenant/user.", Tag: "jobs", Security: bearerSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/records", Summary: "List structured records", Description: "Lists user-scoped flexible JSON records across collections with optional tag and text filters.", Tag: "records", Security: bearerSecurity(), QueryParams: []string{"tag", "q", "limit", "before"}},
+	{Method: http.MethodGet, Path: "/api/v1/records/{collection}", Summary: "List collection records", Description: "Lists flexible JSON records from one collection, such as finance or hr.", Tag: "records", Security: bearerSecurity(), QueryParams: []string{"tag", "q", "limit", "before"}},
+	{Method: http.MethodPost, Path: "/api/v1/records/{collection}", Summary: "Create structured record", Description: "Creates a flexible JSON record. The data field accepts any JSON object so callers can store finance, HR, or other structured information without a fixed schema.", Tag: "records", Security: bearerSecurity()},
+	{Method: http.MethodGet, Path: "/api/v1/records/{collection}/{recordId}", Summary: "Get structured record", Tag: "records", Security: bearerSecurity()},
+	{Method: http.MethodPatch, Path: "/api/v1/records/{collection}/{recordId}", Summary: "Update structured record", Description: "Updates title, tags, or replaces the flexible JSON data object.", Tag: "records", Security: bearerSecurity()},
+	{Method: http.MethodDelete, Path: "/api/v1/records/{collection}/{recordId}", Summary: "Delete structured record", Tag: "records", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/skill-uploads/{submissionId}", Summary: "Skill upload status", Tag: "skills", Security: bearerSecurity()},
 	{Method: http.MethodGet, Path: "/api/v1/skill-market/account", Summary: "Skill market account", Description: "Returns author account profile from the configured skill market by email and optional base_url.", Tag: "skills", Security: bearerSecurity(), QueryParams: []string{"email", "base_url"}},
 	{Method: http.MethodGet, Path: "/api/v1/skills/{skillName}", Summary: "Get skill", Tag: "skills", Security: bearerSecurity()},
@@ -300,6 +306,8 @@ func openAPIQuerySchema(path, name string) map[string]any {
 		if path != "/api/v1/skills" {
 			return map[string]any{"type": "string", "format": "date-time"}
 		}
+	case "q", "tag":
+		return map[string]any{"type": "string"}
 	case "limit":
 		if path == "/api/v1/admin/insights" {
 			return map[string]any{"type": "integer", "minimum": 0, "maximum": 50}
@@ -340,6 +348,10 @@ func openAPIQueryDescription(path, name string) string {
 		return "When true, only credentials expiring within the default 7-day window are returned; when false, those credentials are excluded."
 	case "credential_expiry_window_days":
 		return "Number of days ahead to include credential_expiring alerts. Defaults to 7 and is capped at 365."
+	case "tag":
+		return "Filters flexible structured records by tag."
+	case "q":
+		return "Case-insensitive text search over structured record title, tags, collection, and JSON data."
 	}
 	return ""
 }

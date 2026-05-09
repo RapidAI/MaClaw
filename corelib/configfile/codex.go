@@ -1,11 +1,20 @@
 package configfile
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 // CodexAuthPath returns ~/.codex/auth.json
@@ -28,12 +37,19 @@ func CodexConfigPath() string {
 // 2. Atomic dual-file write with rollback
 // 3. base_url goes into [model_providers.xxx] section, not top-level
 func WriteCodexConfig(apiKey, baseURL, modelID, providerName, wireApi string) error {
-	if apiKey == "" {
-		return nil
+	return WriteCodexConfigAt(filepath.Dir(CodexAuthPath()), apiKey, baseURL, modelID, providerName, wireApi)
+}
+
+// WriteCodexConfigAt writes auth.json and config.toml under codexDir using the
+// same conservative switching path as WriteCodexConfig. It exists for
+// project-scoped Codex config directories.
+func WriteCodexConfigAt(codexDir, apiKey, baseURL, modelID, providerName, wireApi string) error {
+	if err := ensureCodexProcessesStopped(); err != nil {
+		return err
 	}
 
-	authPath := CodexAuthPath()
-	configPath := CodexConfigPath()
+	authPath := filepath.Join(codexDir, "auth.json")
+	configPath := filepath.Join(codexDir, "config.toml")
 
 	// Ensure directory exists
 	dir := filepath.Dir(authPath)
@@ -41,13 +57,18 @@ func WriteCodexConfig(apiKey, baseURL, modelID, providerName, wireApi string) er
 		return fmt.Errorf("create codex dir: %w", err)
 	}
 
-	// Save old auth.json for rollback
+	// Save old files for rollback
 	oldAuth, _ := os.ReadFile(authPath)
+	oldConfig, _ := os.ReadFile(configPath)
 
 	// Step 1: Write auth.json
-	auth := map[string]string{"OPENAI_API_KEY": apiKey}
-	if err := AtomicWriteJSON(authPath, auth); err != nil {
-		return fmt.Errorf("write codex auth: %w", err)
+	if apiKey != "" {
+		auth := map[string]string{"OPENAI_API_KEY": apiKey}
+		if err := AtomicWriteJSON(authPath, auth); err != nil {
+			return fmt.Errorf("write codex auth: %w", err)
+		}
+	} else if err := os.Remove(authPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale codex auth: %w", err)
 	}
 
 	// Step 2: Build config.toml with incremental editing
@@ -61,6 +82,12 @@ func WriteCodexConfig(apiKey, baseURL, modelID, providerName, wireApi string) er
 	if err := AtomicWrite(configPath, []byte(configToml)); err != nil {
 		rollbackFile(authPath, oldAuth)
 		return fmt.Errorf("write codex config: %w", err)
+	}
+
+	if err := syncCodexSessionState(codexDir, CodexProviderKey(providerName), modelID); err != nil {
+		rollbackFile(configPath, oldConfig)
+		rollbackFile(authPath, oldAuth)
+		return fmt.Errorf("sync codex session state: %w", err)
 	}
 
 	return nil
@@ -96,96 +123,147 @@ func buildCodexConfigToml(configPath, baseURL, modelID, providerName, wireApi st
 	return result, nil
 }
 
+// BuildCodexConfigTomlContent returns a fresh Codex config.toml using the same
+// provider normalization and defaults as WriteCodexConfigAt.
+func BuildCodexConfigTomlContent(baseURL, modelID, providerName, wireApi string) string {
+	providerName = CodexProviderKey(providerName)
+	if providerName == "" {
+		providerName = "custom"
+	}
+	if modelID == "" {
+		modelID = "gpt-5.4"
+	}
+	if wireApi == "" {
+		wireApi = "responses"
+	}
+	return generateFreshCodexToml(providerName, modelID, baseURL, wireApi)
+}
+
 // incrementalUpdateCodexToml updates provider fields in existing TOML while
 // preserving MCP servers, profiles, comments, and other user config.
 func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, wireApi string) string {
 	var result []string
 	updatedModelProvider := false
 	updatedModel := false
-	inProviderSection := false
 	providerSectionKey := fmt.Sprintf("[model_providers.%s]", providerName)
-	updatedBaseURL := false
-	updatedWireApi := false
 	foundProviderSection := false
+	currentSection := ""
+	targetKeys := map[string]bool{}
+
+	appendMissingTargetFields := func() {
+		if !foundProviderSection {
+			return
+		}
+		expected := map[string]string{
+			"name":                fmt.Sprintf("name = %s", tomlString(providerName)),
+			"wire_api":            fmt.Sprintf("wire_api = %s", tomlString(wireApi)),
+			"supports_websockets": "supports_websockets = false",
+		}
+		if baseURL != "" {
+			expected["base_url"] = fmt.Sprintf("base_url = %s", tomlString(baseURL))
+		}
+		order := []string{"name", "base_url", "wire_api", "supports_websockets"}
+		for _, key := range order {
+			line, ok := expected[key]
+			if ok && !targetKeys[key] {
+				result = append(result, line)
+				targetKeys[key] = true
+			}
+		}
+	}
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		if section := codexTomlSectionName(trimmed); section != "" {
+			if currentSection == fmt.Sprintf("model_providers.%s", providerName) {
+				appendMissingTargetFields()
+			}
+			currentSection = section
+			if trimmed == providerSectionKey {
+				foundProviderSection = true
+			}
+			result = append(result, line)
+			continue
+		}
 
 		// Update top-level model_provider
-		if strings.HasPrefix(trimmed, "model_provider") && strings.Contains(trimmed, "=") {
-			result = append(result, fmt.Sprintf("model_provider = %q", providerName))
+		if currentSection == "" && codexTomlKey(trimmed) == "model_provider" {
+			result = append(result, fmt.Sprintf("model_provider = %s", tomlString(providerName)))
 			updatedModelProvider = true
 			continue
 		}
 
 		// Update top-level model
-		if strings.HasPrefix(trimmed, "model =") || strings.HasPrefix(trimmed, "model=") {
-			if !inProviderSection && !isInsideSection(result) {
-				result = append(result, fmt.Sprintf("model = %q", modelID))
-				updatedModel = true
-				continue
-			}
-		}
-
-		// Detect provider section
-		if trimmed == providerSectionKey {
-			inProviderSection = true
-			foundProviderSection = true
-			result = append(result, line)
+		if currentSection == "" && codexTomlKey(trimmed) == "model" {
+			result = append(result, fmt.Sprintf("model = %s", tomlString(modelID)))
+			updatedModel = true
 			continue
 		}
 
-		// Detect other sections (exit provider section)
-		if inProviderSection && strings.HasPrefix(trimmed, "[") && trimmed != providerSectionKey {
-			// Before leaving, inject missing fields
-			if !updatedBaseURL && baseURL != "" {
-				result = append(result, fmt.Sprintf("base_url = %q", baseURL))
+		if strings.HasPrefix(currentSection, "model_providers.") {
+			switch codexTomlKey(trimmed) {
+			case "requires_openai_auth":
+				continue
+			case "supports_websockets":
+				if currentSection != fmt.Sprintf("model_providers.%s", providerName) {
+					result = append(result, "supports_websockets = false")
+					continue
+				}
 			}
-			if !updatedWireApi {
-				result = append(result, fmt.Sprintf("wire_api = %q", wireApi))
-			}
-			inProviderSection = false
 		}
 
 		// Update fields inside provider section
-		if inProviderSection {
-			if strings.HasPrefix(trimmed, "base_url") && strings.Contains(trimmed, "=") {
+		if currentSection == fmt.Sprintf("model_providers.%s", providerName) {
+			switch key := codexTomlKey(trimmed); key {
+			case "name":
+				result = append(result, fmt.Sprintf("name = %s", tomlString(providerName)))
+				targetKeys[key] = true
+				continue
+			case "base_url":
 				if baseURL != "" {
-					result = append(result, fmt.Sprintf("base_url = %q", baseURL))
+					result = append(result, fmt.Sprintf("base_url = %s", tomlString(baseURL)))
 				}
 				// If baseURL is empty, skip the line (remove it)
-				updatedBaseURL = true
+				targetKeys[key] = true
 				continue
-			}
-			if strings.HasPrefix(trimmed, "wire_api") && strings.Contains(trimmed, "=") {
-				result = append(result, fmt.Sprintf("wire_api = %q", wireApi))
-				updatedWireApi = true
+			case "wire_api":
+				result = append(result, fmt.Sprintf("wire_api = %s", tomlString(wireApi)))
+				targetKeys[key] = true
 				continue
+			case "supports_websockets":
+				result = append(result, "supports_websockets = false")
+				targetKeys[key] = true
+				continue
+			case "requires_openai_auth":
+				continue
+			default:
+				if key != "" {
+					targetKeys[key] = true
+				}
 			}
+		}
+
+		if currentSection == "features" && codexTomlKey(trimmed) == "responses_websockets_v2" {
+			continue
 		}
 
 		result = append(result, line)
 	}
 
 	// If we were still in provider section at EOF, inject missing fields
-	if inProviderSection {
-		if !updatedBaseURL && baseURL != "" {
-			result = append(result, fmt.Sprintf("base_url = %q", baseURL))
-		}
-		if !updatedWireApi {
-			result = append(result, fmt.Sprintf("wire_api = %q", wireApi))
-		}
+	if currentSection == fmt.Sprintf("model_providers.%s", providerName) {
+		appendMissingTargetFields()
 	}
 
 	// If top-level fields weren't found, prepend them
 	if !updatedModelProvider {
-		result = append([]string{fmt.Sprintf("model_provider = %q", providerName)}, result...)
+		result = append([]string{fmt.Sprintf("model_provider = %s", tomlString(providerName))}, result...)
 	}
 	if !updatedModel {
 		// Insert after model_provider line
 		for i, l := range result {
 			if strings.HasPrefix(strings.TrimSpace(l), "model_provider") {
-				modelLine := fmt.Sprintf("model = %q", modelID)
+				modelLine := fmt.Sprintf("model = %s", tomlString(modelID))
 				// Safe insert: copy tail to avoid mutating underlying array
 				tail := make([]string, len(result[i+1:]))
 				copy(tail, result[i+1:])
@@ -199,13 +277,12 @@ func incrementalUpdateCodexToml(lines []string, providerName, modelID, baseURL, 
 	if !foundProviderSection {
 		result = append(result, "")
 		result = append(result, providerSectionKey)
-		result = append(result, fmt.Sprintf("name = %q", providerName))
+		result = append(result, fmt.Sprintf("name = %s", tomlString(providerName)))
 		if baseURL != "" {
-			result = append(result, fmt.Sprintf("base_url = %q", baseURL))
+			result = append(result, fmt.Sprintf("base_url = %s", tomlString(baseURL)))
 		}
-		result = append(result, fmt.Sprintf("wire_api = %q", wireApi))
-		result = append(result, "supports_websockets = true")
-		result = append(result, "requires_openai_auth = true")
+		result = append(result, fmt.Sprintf("wire_api = %s", tomlString(wireApi)))
+		result = append(result, "supports_websockets = false")
 	}
 
 	return strings.Join(result, "\n")
@@ -226,21 +303,44 @@ func isInsideSection(lines []string) bool {
 
 func generateFreshCodexToml(providerName, modelID, baseURL, wireApi string) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "model_provider = %q\n", providerName)
-	fmt.Fprintf(&sb, "model = %q\n", modelID)
+	fmt.Fprintf(&sb, "model_provider = %s\n", tomlString(providerName))
+	fmt.Fprintf(&sb, "model = %s\n", tomlString(modelID))
 	sb.WriteString("model_reasoning_effort = \"xhigh\"\n")
 	sb.WriteString("disable_response_storage = true\n")
 	fmt.Fprintf(&sb, "\n[model_providers.%s]\n", providerName)
-	fmt.Fprintf(&sb, "name = %q\n", providerName)
+	fmt.Fprintf(&sb, "name = %s\n", tomlString(providerName))
 	if baseURL != "" {
-		fmt.Fprintf(&sb, "base_url = %q\n", baseURL)
+		fmt.Fprintf(&sb, "base_url = %s\n", tomlString(baseURL))
 	}
-	fmt.Fprintf(&sb, "wire_api = %q\n", wireApi)
-	sb.WriteString("supports_websockets = true\n")
-	sb.WriteString("requires_openai_auth = true\n")
-	sb.WriteString("\n[features]\n")
-	sb.WriteString("responses_websockets_v2 = true\n")
+	fmt.Fprintf(&sb, "wire_api = %s\n", tomlString(wireApi))
+	sb.WriteString("supports_websockets = false\n")
 	return sb.String()
+}
+
+func tomlString(value string) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return strconv.Quote(value)
+	}
+	return string(data)
+}
+
+func codexTomlSectionName(trimmed string) string {
+	if !strings.HasPrefix(trimmed, "[") || !strings.HasSuffix(trimmed, "]") || strings.HasPrefix(trimmed, "[[") {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+}
+
+func codexTomlKey(trimmed string) string {
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "[") {
+		return ""
+	}
+	before, _, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(before)
 }
 
 func sanitizeTomlKey(s string) string {
@@ -296,11 +396,29 @@ func ReadCodexConfigToml() (string, error) {
 // profiles, features, and other user settings.
 // If files don't exist, this is a no-op.
 func ClearCodexThirdPartySettings() error {
+	return ClearCodexThirdPartySettingsAt(filepath.Dir(CodexAuthPath()))
+}
+
+// ClearCodexThirdPartySettingsAt removes third-party provider configuration
+// from a specific Codex config directory.
+func ClearCodexThirdPartySettingsAt(codexDir string) error {
+	needsClear, err := hasCodexThirdPartySettingsAt(codexDir)
+	if err != nil {
+		return err
+	}
+	if !needsClear {
+		return nil
+	}
+
+	if err := ensureCodexProcessesStopped(); err != nil {
+		return err
+	}
+
 	var firstErr error
-	if err := clearCodexAuth(); err != nil {
+	if err := clearCodexAuthAt(codexDir); err != nil {
 		firstErr = fmt.Errorf("clear codex auth: %w", err)
 	}
-	if err := clearCodexConfigProvider(); err != nil {
+	if err := clearCodexConfigProviderAt(codexDir); err != nil {
 		if firstErr != nil {
 			return firstErr
 		}
@@ -309,9 +427,253 @@ func ClearCodexThirdPartySettings() error {
 	return firstErr
 }
 
+func hasCodexThirdPartySettingsAt(codexDir string) (bool, error) {
+	authPath := filepath.Join(codexDir, "auth.json")
+	if _, err := os.Stat(authPath); err == nil {
+		return true, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("stat codex auth: %w", err)
+	}
+
+	configPath := filepath.Join(codexDir, "config.toml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read config.toml: %w", err)
+	}
+	content := string(data)
+	if strings.TrimSpace(content) == "" {
+		return false, nil
+	}
+	cleared := strings.Join(stripCodexProviderLines(strings.Split(content, "\n")), "\n")
+	return content != cleared, nil
+}
+
+// syncCodexSessionState mirrors the conservative parts of switch_provider.py:
+// JSONL session metadata is the authoritative source, while state_*.sqlite is
+// Codex Desktop's cache. Both must be consistent or existing conversations can
+// keep routing through the previous provider after a switch.
+func syncCodexSessionState(codexDir, providerName, modelID string) error {
+	if strings.EqualFold(os.Getenv("AICODER_SKIP_CODEX_SESSION_SYNC"), "1") ||
+		strings.EqualFold(os.Getenv("AICODER_SKIP_CODEX_SESSION_SYNC"), "true") {
+		return nil
+	}
+	providerName = CodexProviderKey(providerName)
+	if providerName == "" {
+		providerName = "custom"
+	}
+	if strings.TrimSpace(modelID) == "" {
+		modelID = "gpt-5.4"
+	}
+
+	if err := updateCodexSessionJSONL(codexDir, providerName, modelID); err != nil {
+		return err
+	}
+	if err := updateCodexStateSQLite(codexDir, providerName, modelID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func updateCodexSessionJSONL(codexDir, providerName, modelID string) error {
+	roots := []string{
+		filepath.Join(codexDir, "sessions"),
+		filepath.Join(codexDir, "archived_sessions"),
+	}
+	for _, root := range roots {
+		if _, err := os.Stat(root); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", root, err)
+		}
+		if err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || !strings.HasPrefix(filepath.Base(path), "rollout-") || filepath.Ext(path) != ".jsonl" {
+				return nil
+			}
+			changed, err := updateCodexSessionJSONLFile(path, providerName, modelID)
+			if err != nil {
+				return err
+			}
+			if changed {
+				log.Printf("[config] Codex session metadata updated: %s", path)
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("walk %s: %w", root, err)
+		}
+	}
+	return nil
+}
+
+func updateCodexSessionJSONLFile(path, providerName, modelID string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return false, nil
+	}
+
+	changed := false
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			out = append(out, line)
+			continue
+		}
+
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			out = append(out, line)
+			continue
+		}
+
+		lineChanged := false
+		switch obj["type"] {
+		case "session_meta":
+			if payload, ok := obj["payload"].(map[string]interface{}); ok {
+				if _, ok := payload["model_provider"]; ok && payload["model_provider"] != providerName {
+					payload["model_provider"] = providerName
+					lineChanged = true
+				}
+			}
+		case "turn_context":
+			if payload, ok := obj["payload"].(map[string]interface{}); ok {
+				if _, ok := payload["model"]; ok && payload["model"] != modelID {
+					payload["model"] = modelID
+					lineChanged = true
+				}
+				if cm, ok := payload["collaboration_mode"].(map[string]interface{}); ok {
+					if settings, ok := cm["settings"].(map[string]interface{}); ok {
+						if _, ok := settings["model"]; ok && settings["model"] != modelID {
+							settings["model"] = modelID
+							lineChanged = true
+						}
+					}
+				}
+			}
+		}
+
+		if !lineChanged {
+			out = append(out, line)
+			continue
+		}
+		encoded, err := json.Marshal(obj)
+		if err != nil {
+			return false, fmt.Errorf("marshal %s: %w", path, err)
+		}
+		out = append(out, string(encoded)+"\n")
+		changed = true
+	}
+
+	if !changed {
+		return false, nil
+	}
+	if err := AtomicWrite(path, []byte(strings.Join(out, ""))); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func updateCodexStateSQLite(codexDir, providerName, modelID string) error {
+	dbs, err := discoverCodexStateDBs(codexDir)
+	if err != nil {
+		return err
+	}
+	if len(dbs) == 0 {
+		return nil
+	}
+	for _, dbPath := range dbs {
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", dbPath, err)
+		}
+		res, execErr := db.Exec(
+			"UPDATE threads SET model_provider = ?, model = ? WHERE model_provider IS NOT ? OR model IS NOT ?",
+			providerName, modelID, providerName, modelID,
+		)
+		if execErr == nil {
+			_, execErr = db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+		}
+		closeErr := db.Close()
+		if execErr != nil {
+			return fmt.Errorf("update %s: %w", dbPath, execErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close %s: %w", dbPath, closeErr)
+		}
+		if rows, err := res.RowsAffected(); err == nil && rows > 0 {
+			log.Printf("[config] Codex state cache updated: rows=%d db=%s", rows, dbPath)
+		}
+	}
+	return nil
+}
+
+func discoverCodexStateDBs(codexDir string) ([]string, error) {
+	matches, err := filepath.Glob(filepath.Join(codexDir, "state_*.sqlite"))
+	if err != nil {
+		return nil, err
+	}
+	type candidate struct {
+		path    string
+		modTime time.Time
+	}
+	var candidates []candidate
+	for _, path := range matches {
+		base := filepath.Base(path)
+		if strings.Contains(base, ".bak.") || strings.HasSuffix(base, "-wal") || strings.HasSuffix(base, "-shm") {
+			continue
+		}
+		ok, err := codexStateDBHasThreads(path)
+		if err != nil {
+			log.Printf("[config] Codex state cache ignored: %s: %v", path, err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
+		candidates = append(candidates, candidate{path: path, modTime: info.ModTime()})
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+	return []string{candidates[0].path}, nil
+}
+
+func codexStateDBHasThreads(path string) (bool, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='threads'").Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // clearCodexAuth removes ~/.codex/auth.json. No-op if it doesn't exist.
 func clearCodexAuth() error {
-	authPath := CodexAuthPath()
+	return clearCodexAuthAt(filepath.Dir(CodexAuthPath()))
+}
+
+func clearCodexAuthAt(codexDir string) error {
+	authPath := filepath.Join(codexDir, "auth.json")
 	if err := os.Remove(authPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -323,7 +685,11 @@ func clearCodexAuth() error {
 // section, then writes back preserving all other content.
 // No-op if the file doesn't exist.
 func clearCodexConfigProvider() error {
-	configPath := CodexConfigPath()
+	return clearCodexConfigProviderAt(filepath.Dir(CodexConfigPath()))
+}
+
+func clearCodexConfigProviderAt(codexDir string) error {
+	configPath := filepath.Join(codexDir, "config.toml")
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -358,6 +724,7 @@ func clearCodexConfigProvider() error {
 func stripCodexProviderLines(lines []string) []string {
 	var result []string
 	inModelProvidersSection := false
+	inFeaturesSection := false
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -371,10 +738,15 @@ func stripCodexProviderLines(lines []string) []string {
 		// Detect any other section header — exits model_providers section
 		if strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "[model_providers.") {
 			inModelProvidersSection = false
+			inFeaturesSection = codexTomlSectionName(trimmed) == "features"
 		}
 
 		// Skip all lines inside a [model_providers.xxx] section
 		if inModelProvidersSection {
+			continue
+		}
+
+		if inFeaturesSection && codexTomlKey(trimmed) == "responses_websockets_v2" {
 			continue
 		}
 
@@ -434,4 +806,200 @@ func rollbackFile(path string, oldData []byte) {
 	} else {
 		_ = os.Remove(path)
 	}
+}
+
+type codexProcess struct {
+	PID         int
+	Name        string
+	CommandLine string
+}
+
+var (
+	findCodexProcessesFunc = findCodexProcesses
+	killProcessTreeFunc    = killProcessTree
+	codexProcessStopSleep  = time.Sleep
+)
+
+func ensureCodexProcessesStopped() error {
+	if strings.EqualFold(os.Getenv("AICODER_SKIP_CODEX_PROCESS_KILL"), "1") ||
+		strings.EqualFold(os.Getenv("AICODER_SKIP_CODEX_PROCESS_KILL"), "true") {
+		return nil
+	}
+
+	processes, err := findCodexProcessesFunc()
+	if err != nil {
+		return fmt.Errorf("check codex processes: %w", err)
+	}
+	if len(processes) == 0 {
+		return nil
+	}
+
+	for _, p := range processes {
+		log.Printf("[config] Codex process running before provider switch: pid=%d name=%s", p.PID, p.Name)
+		if err := killProcessTreeFunc(p.PID); err != nil {
+			return fmt.Errorf("kill codex process pid=%d name=%s: %w", p.PID, p.Name, err)
+		}
+	}
+
+	var remaining []codexProcess
+	for i := 0; i < 10; i++ {
+		remaining, err = findCodexProcessesFunc()
+		if err != nil {
+			return fmt.Errorf("verify codex processes stopped: %w", err)
+		}
+		if len(remaining) == 0 {
+			return nil
+		}
+		codexProcessStopSleep(150 * time.Millisecond)
+	}
+
+	parts := make([]string, 0, len(remaining))
+	for _, p := range remaining {
+		parts = append(parts, fmt.Sprintf("%s(pid=%d)", p.Name, p.PID))
+	}
+	return fmt.Errorf("codex processes still running after kill: %s", strings.Join(parts, ", "))
+}
+
+func findCodexProcesses() ([]codexProcess, error) {
+	if runtime.GOOS == "windows" {
+		return findCodexProcessesWindows()
+	}
+	return findCodexProcessesUnix()
+}
+
+func findCodexProcessesWindows() ([]codexProcess, error) {
+	script := `$ErrorActionPreference = 'Stop'
+$selfPid = $PID
+Get-CimInstance Win32_Process | ForEach-Object {
+  $cmd = [string]$_.CommandLine
+  $exe = [string]$_.ExecutablePath
+  $name = [string]$_.Name
+  if ($_.ProcessId -ne $selfPid -and ($name -match '(?i)codex' -or $exe -match '(?i)codex' -or $cmd -match '(?i)codex|@openai[\\/]+codex|openai\.codex_')) {
+    "$($_.ProcessId)$([char]9)$($name)$([char]9)$($cmd -replace $([char]9), ' ')"
+  }
+}`
+	out, err := exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script).Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseCodexProcessLines(string(out)), nil
+}
+
+func findCodexProcessesUnix() ([]codexProcess, error) {
+	out, err := exec.Command("ps", "-eo", "pid=,comm=,args=").Output()
+	if err != nil {
+		return nil, err
+	}
+	var processes []codexProcess
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil || pid == os.Getpid() {
+			continue
+		}
+		name := fields[1]
+		cmd := strings.Join(fields[2:], " ")
+		if isCodexProcessCandidate(name, cmd) {
+			processes = append(processes, codexProcess{PID: pid, Name: name, CommandLine: cmd})
+		}
+	}
+	return processes, nil
+}
+
+func parseCodexProcessLines(out string) []codexProcess {
+	var processes []codexProcess
+	seen := map[int]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil || pid == os.Getpid() || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		cmd := ""
+		if len(parts) == 3 {
+			cmd = strings.TrimSpace(parts[2])
+		}
+		name := strings.TrimSpace(parts[1])
+		if !isCodexProcessCandidate(name, cmd) {
+			continue
+		}
+		processes = append(processes, codexProcess{
+			PID:         pid,
+			Name:        name,
+			CommandLine: cmd,
+		})
+	}
+	return processes
+}
+
+func isCodexProcessCandidate(name, commandLine string) bool {
+	base := strings.ToLower(filepath.Base(strings.TrimSpace(name)))
+	base = strings.TrimSuffix(base, ".exe")
+	base = strings.TrimSuffix(base, ".cmd")
+	if base == "codex" {
+		return true
+	}
+
+	cmd := strings.ToLower(commandLine)
+	normalized := strings.NewReplacer("\\", "/", "\"", " ", "'", " ").Replace(cmd)
+	if strings.Contains(normalized, "/@openai/codex/bin/codex.js") {
+		return true
+	}
+	if strings.Contains(normalized, "/openai.codex_") {
+		return true
+	}
+	fields := strings.Fields(normalized)
+	for i, field := range fields {
+		fieldBase := strings.TrimSuffix(filepath.Base(field), ".exe")
+		fieldBase = strings.TrimSuffix(fieldBase, ".cmd")
+		if fieldBase == "codex.js" {
+			return true
+		}
+		if fieldBase == "codex" && isCodexCommandToken(fields, i) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodexCommandToken(fields []string, index int) bool {
+	if index < 0 || index >= len(fields) {
+		return false
+	}
+	field := fields[index]
+	if strings.Contains(field, "/") {
+		return true
+	}
+	if index == 0 {
+		return true
+	}
+	prev := strings.ToLower(strings.TrimSpace(fields[index-1]))
+	switch prev {
+	case "-command", "-c", "/c", "/k":
+		return true
+	default:
+		return false
+	}
+}
+
+func killProcessTree(pid int) error {
+	if runtime.GOOS == "windows" {
+		return exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").Run()
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return proc.Kill()
 }

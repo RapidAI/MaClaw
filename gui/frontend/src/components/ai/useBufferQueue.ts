@@ -27,7 +27,7 @@ export interface UseBufferQueueReturn {
     reorderEntry: (fromIndex: number, toIndex: number) => void;
     mergeAndFire: () => { mergedText: string; allFilePaths: string[] } | null;
     /** Extract a single entry from the queue by id, removing it. Returns null if not found. */
-    extractEntry: (id: string) => { text: string; filePaths: string[] } | null;
+    extractEntry: (id: string) => BufferEntry | null;
     clearQueue: () => void;
     restoreQueue: () => BufferEntry[];
 }
@@ -104,6 +104,13 @@ export function useBufferQueue(): UseBufferQueueReturn {
     // loaded from localStorage, so writing it back would be a no-op.
     // Subsequent queue mutations set initializedRef via their callbacks.
     const initializedRef = useRef(false);
+    const queueRef = useRef(queue);
+
+    const commitQueue = useCallback((next: BufferEntry[]) => {
+        initializedRef.current = true;
+        queueRef.current = next;
+        setQueue(next);
+    }, []);
 
     const addEntry = useCallback((text: string, attachments: AttachmentInfo[]) => {
         // Reject whitespace-only text with no attachments
@@ -115,94 +122,65 @@ export function useBufferQueue(): UseBufferQueueReturn {
             attachments,
             createdAt: Date.now(),
         };
-        initializedRef.current = true;
-        setQueue(prev => [...prev, entry]);
-    }, []);
+        commitQueue([...queueRef.current, entry]);
+    }, [commitQueue]);
 
     const removeEntry = useCallback((id: string) => {
-        initializedRef.current = true;
-        setQueue(prev => prev.filter(e => e.id !== id));
-    }, []);
+        commitQueue(queueRef.current.filter(e => e.id !== id));
+    }, [commitQueue]);
 
     const updateEntry = useCallback(
         (id: string, text: string, attachments: AttachmentInfo[]) => {
-            initializedRef.current = true;
             // If both empty, remove the entry
             if (!text.trim() && attachments.length === 0) {
-                setQueue(prev => prev.filter(e => e.id !== id));
+                commitQueue(queueRef.current.filter(e => e.id !== id));
                 return;
             }
-            setQueue(prev =>
-                prev.map(e => (e.id === id ? { ...e, text, attachments } : e)),
-            );
+            commitQueue(queueRef.current.map(e => (e.id === id ? { ...e, text, attachments } : e)));
         },
-        [],
+        [commitQueue],
     );
 
     const reorderEntry = useCallback((fromIndex: number, toIndex: number) => {
-        initializedRef.current = true;
-        setQueue(prev => {
-            if (
-                fromIndex < 0 ||
-                fromIndex >= prev.length ||
-                toIndex < 0 ||
-                toIndex >= prev.length
-            ) {
-                return prev;
-            }
-            const next = [...prev];
-            const [moved] = next.splice(fromIndex, 1);
-            next.splice(toIndex, 0, moved);
-            return next;
-        });
-    }, []);
+        const current = queueRef.current;
+        if (
+            fromIndex < 0 ||
+            fromIndex >= current.length ||
+            toIndex < 0 ||
+            toIndex >= current.length
+        ) {
+            return;
+        }
+        const next = [...current];
+        const [moved] = next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, moved);
+        commitQueue(next);
+    }, [commitQueue]);
 
     const mergeAndFire = useCallback(() => {
-        let result: { mergedText: string; allFilePaths: string[] } | null = null;
+        const current = queueRef.current;
+        if (current.length === 0) return null;
 
-        initializedRef.current = true;
-        setQueue(prev => {
-            if (prev.length === 0) {
-                result = null;
-                return prev;
-            }
-
-            const mergedText = prev.map(e => e.text).join("\n\n---\n\n");
-            const allFilePaths = prev.flatMap(e =>
-                e.attachments.map(a => a.filePath),
-            );
-
-            result = { mergedText, allFilePaths };
-            return []; // clear queue
-        });
-
+        const result = {
+            mergedText: current.map(e => e.text).join("\n\n---\n\n"),
+            allFilePaths: current.flatMap(e => e.attachments.map(a => a.filePath)),
+        };
+        commitQueue([]);
         return result;
-    }, []);
+    }, [commitQueue]);
 
     const clearQueue = useCallback(() => {
-        initializedRef.current = true;
-        setQueue([]);
-    }, []);
+        commitQueue([]);
+    }, [commitQueue]);
 
-    const extractEntry = useCallback((id: string): { text: string; filePaths: string[] } | null => {
-        let result: { text: string; filePaths: string[] } | null = null;
+    const extractEntry = useCallback((id: string): BufferEntry | null => {
+        const result = queueRef.current.find(e => e.id === id) || null;
+        if (!result) return null;
 
-        initializedRef.current = true;
-        setQueue(prev => {
-            const entry = prev.find(e => e.id === id);
-            if (!entry) {
-                result = null;
-                return prev;
-            }
-            result = {
-                text: entry.text,
-                filePaths: entry.attachments.map(a => a.filePath),
-            };
-            return prev.filter(e => e.id !== id);
-        });
-
+        const next = queueRef.current.filter(e => e.id !== id);
+        commitQueue(next);
         return result;
-    }, []);
+    }, [commitQueue]);
 
     const restoreQueue = useCallback((): BufferEntry[] => {
         try {
@@ -216,14 +194,13 @@ export function useBufferQueue(): UseBufferQueueReturn {
             const entries: BufferEntry[] = parsed.filter(
                 (e: any) => e && typeof e.id === "string" && typeof e.text === "string",
             );
-            initializedRef.current = true;
-            setQueue(entries);
+            commitQueue(entries);
             return entries;
         } catch {
             console.warn("Failed to restore buffer queue from localStorage");
             return [];
         }
-    }, []);
+    }, [commitQueue]);
 
     // Persist queue to localStorage after every mutation.
     // Skip the first run (mount) — the lazy initializer already loaded from

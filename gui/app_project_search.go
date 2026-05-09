@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,15 +16,15 @@ import (
 // ProjectSearchResult is the frontend-facing search result type.
 // Exported as a Wails binding return type.
 type ProjectSearchResult struct {
-	ID           string   `json:"id"`             // ProjectPath as stable ID
-	Name         string   `json:"name"`           // Human-readable project name
-	ProjectPath  string   `json:"project_path"`   // Canonical absolute path
-	WorkflowType string   `json:"workflow_type"`  // e.g. "coding", "product_design"
-	Preview      string   `json:"preview"`        // Short content preview (~150 chars)
-	Tags         []string `json:"tags"`           // Union of all entry tags
-	LastActivity string   `json:"last_activity"`  // RFC3339 formatted timestamp
-	EntryCount   int      `json:"entry_count"`    // Number of memory entries
-	Pinned       bool     `json:"pinned"`         // Whether the task is pinned to top
+	ID           string   `json:"id"`            // ProjectPath as stable ID
+	Name         string   `json:"name"`          // Human-readable project name
+	ProjectPath  string   `json:"project_path"`  // Canonical absolute path
+	WorkflowType string   `json:"workflow_type"` // e.g. "coding", "product_design"
+	Preview      string   `json:"preview"`       // Short content preview (~150 chars)
+	Tags         []string `json:"tags"`          // Union of all entry tags
+	LastActivity string   `json:"last_activity"` // RFC3339 formatted timestamp
+	EntryCount   int      `json:"entry_count"`   // Number of memory entries
+	Pinned       bool     `json:"pinned"`        // Whether the task is pinned to top
 }
 
 // SearchProjects searches the project index for projects matching the query.
@@ -52,30 +54,130 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
-		r := ProjectSearchResult{
-			ID:           rec.ProjectPath,
-			Name:         rec.Name,
-			ProjectPath:  rec.ProjectPath,
-			WorkflowType: rec.WorkflowType,
-			Preview:      rec.Preview,
-			Tags:         rec.Tags,
-			LastActivity: rec.LastActivity.Format(time.RFC3339),
-			EntryCount:   rec.EntryCount,
-			Pinned:       pi.IsPinned(rec.ProjectPath),
-		}
-
-		// Generate a human-readable name when the index couldn't extract one.
-		// Priority: user custom name > extracted name > preview-based summary > directory name.
-		if custom := pi.CustomName(rec.ProjectPath); custom != "" {
-			r.Name = custom
-		} else if r.Name == "" {
-			r.Name = deriveTaskName(rec)
-		}
-
-		results = append(results, r)
+		results = append(results, projectRecordToSearchResult(pi, rec))
 	}
 
 	return results
+}
+
+func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectRecord) ProjectSearchResult {
+	r := ProjectSearchResult{
+		ID:           rec.ProjectPath,
+		Name:         rec.Name,
+		ProjectPath:  rec.ProjectPath,
+		WorkflowType: rec.WorkflowType,
+		Preview:      rec.Preview,
+		Tags:         rec.Tags,
+		LastActivity: rec.LastActivity.Format(time.RFC3339),
+		EntryCount:   rec.EntryCount,
+		Pinned:       pi.IsPinned(rec.ProjectPath),
+	}
+
+	// Generate a human-readable name when the index couldn't extract one.
+	// Priority: user custom name > extracted name > preview-based summary > directory name.
+	if custom := pi.CustomName(rec.ProjectPath); custom != "" {
+		r.Name = custom
+	} else if r.Name == "" {
+		r.Name = deriveTaskName(rec)
+	}
+	return r
+}
+
+// CreateRecentTask creates a lightweight standalone task record so it appears
+// in the recent task list immediately and after restart.
+func (a *App) CreateRecentTask(name string) ProjectSearchResult {
+	taskName := normalizeRecentTaskName(name)
+	if taskName == "" {
+		return ProjectSearchResult{}
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+
+	now := time.Now()
+	taskDir := filepath.Join(a.GetDataDir(), "tasks", fmt.Sprintf("%s-%d", recentTaskSlug(taskName), now.UnixNano()))
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		log.Printf("[project_search] CreateRecentTask mkdir failed: %v", err)
+		return ProjectSearchResult{}
+	}
+	taskFile := filepath.Join(taskDir, "task.md")
+	taskContent := fmt.Sprintf("# %s\n\nCreated from recent tasks.\nTask ID: %d", taskName, now.UnixNano())
+	if err := os.WriteFile(taskFile, []byte(taskContent), 0o644); err != nil {
+		log.Printf("[project_search] CreateRecentTask write task file failed: %v", err)
+		return ProjectSearchResult{}
+	}
+
+	entry := memory.Entry{
+		Title:      taskName,
+		Content:    taskContent,
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"manual_task", "recent_task"},
+		SourceURL:  taskFile,
+		SourceType: "manual",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := a.memoryStore.Save(entry); err != nil {
+		log.Printf("[project_search] CreateRecentTask save failed: %v", err)
+		return ProjectSearchResult{}
+	}
+	if err := a.memoryStore.Flush(); err != nil {
+		log.Printf("[project_search] CreateRecentTask flush failed: %v", err)
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "project-index:changed", taskDir)
+		runtime.EventsEmit(a.ctx, "tasks:changed", nil)
+	}
+
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1}
+	}
+	if rec := pi.Get(taskDir); rec != nil {
+		return projectRecordToSearchResult(pi, *rec)
+	}
+	return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1}
+}
+
+func normalizeRecentTaskName(name string) string {
+	normalized := strings.Join(strings.Fields(name), " ")
+	runes := []rune(normalized)
+	if len(runes) > 120 {
+		normalized = string(runes[:120])
+	}
+	return normalized
+}
+
+func recentTaskSlug(name string) string {
+	var b strings.Builder
+	lastWasSeparator := false
+	for _, r := range strings.ToLower(strings.TrimSpace(name)) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastWasSeparator = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastWasSeparator = false
+		case r == '-' || r == '_':
+			if b.Len() > 0 && !lastWasSeparator {
+				b.WriteRune(r)
+				lastWasSeparator = true
+			}
+		case b.Len() > 0 && !lastWasSeparator:
+			b.WriteByte('-')
+			lastWasSeparator = true
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+	slug := strings.Trim(b.String(), "-_")
+	if slug == "" {
+		return "task"
+	}
+	return slug
 }
 
 // ResumeProject switches the current context to the specified project.

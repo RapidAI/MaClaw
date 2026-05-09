@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/license"
@@ -47,6 +48,10 @@ func IssueLicenseHandler(svc *license.Service) http.HandlerFunc {
 		}
 		lic, err := svc.IssueManual(r.Context(), req.CenterID, req.Modules, req.Days)
 		if err != nil {
+			if errors.Is(err, license.ErrInvalidDuration) {
+				writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "ISSUE_FAILED", err.Error())
 			return
 		}

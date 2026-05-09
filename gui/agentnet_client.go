@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentnet"
@@ -1210,13 +1211,42 @@ func (c *AgentNetClient) SelfUpdate() error {
 
 const agentnetAutoUpdateInterval = 24 * time.Hour
 
+var agentnetLastUpdatePathOverride atomic.Value
+
 // agentnetLastUpdatePath returns the path to the timestamp file.
 func agentnetLastUpdatePath() string {
-	dir, err := anetInstallDir()
-	if err != nil {
-		return ""
+	if v := agentnetLastUpdatePathOverride.Load(); v != nil {
+		if p, ok := v.(string); ok && p != "" {
+			return p
+		}
 	}
-	return filepath.Join(dir, ".last_update")
+	dir, err := anetInstallDir()
+	if err == nil && dir != "" {
+		if dirAcceptsAgentNetTimestamp(dir) {
+			return filepath.Join(dir, ".last_update")
+		}
+	}
+	if cacheDir, cacheErr := os.UserCacheDir(); cacheErr == nil && cacheDir != "" {
+		return filepath.Join(cacheDir, "maclaw", "agentnet", ".last_update")
+	}
+	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
+		return filepath.Join(home, ".maclaw", "agentnet", ".last_update")
+	}
+	return ""
+}
+
+func dirAcceptsAgentNetTimestamp(dir string) bool {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return false
+	}
+	f, err := os.CreateTemp(dir, ".last_update_probe_*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 // readLastUpdateTime reads the last successful update timestamp.
@@ -1225,6 +1255,16 @@ func readLastUpdateTime() time.Time {
 	if p == "" {
 		return time.Time{}
 	}
+	if t := readLastUpdateTimeFromPath(p); !t.IsZero() {
+		return t
+	}
+	if fallback := agentnetFallbackLastUpdatePath(); fallback != "" && fallback != p {
+		return readLastUpdateTimeFromPath(fallback)
+	}
+	return time.Time{}
+}
+
+func readLastUpdateTimeFromPath(p string) time.Time {
 	data, err := os.ReadFile(p)
 	if err != nil {
 		return time.Time{}
@@ -1243,7 +1283,23 @@ func writeLastUpdateTime() {
 		return
 	}
 	_ = os.MkdirAll(filepath.Dir(p), 0755)
-	_ = os.WriteFile(p, []byte(time.Now().UTC().Format(time.RFC3339)), 0644)
+	if err := os.WriteFile(p, []byte(time.Now().UTC().Format(time.RFC3339)), 0644); err == nil {
+		return
+	}
+	if fallback := agentnetFallbackLastUpdatePath(); fallback != "" && fallback != p {
+		_ = os.MkdirAll(filepath.Dir(fallback), 0755)
+		_ = os.WriteFile(fallback, []byte(time.Now().UTC().Format(time.RFC3339)), 0644)
+	}
+}
+
+func agentnetFallbackLastUpdatePath() string {
+	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+		return filepath.Join(cacheDir, "maclaw", "agentnet", ".last_update")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".maclaw", "agentnet", ".last_update")
+	}
+	return ""
 }
 
 // needsUpdate returns true if more than 24 hours have passed since the last update.

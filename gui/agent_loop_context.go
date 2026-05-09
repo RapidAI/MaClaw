@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"context"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"net/http"
 	"sync"
 	"time"
@@ -19,6 +19,8 @@ const (
 	LoopKindChat       LoopKind = iota // interactive user chat
 	LoopKindBackground                 // background task (coding, scheduled, auto)
 )
+
+const LoopKindNormal = LoopKindChat
 
 // SlotKind categorizes background loops for concurrency control.
 type SlotKind int
@@ -65,7 +67,7 @@ type LoopContext struct {
 	iteration     int    // current iteration count
 	status        string // "running", "paused", "completed", "failed"
 
-	Conversation []interface{}       // this loop's conversation messages
+	Conversation []interface{}             // this loop's conversation messages
 	History      []agent.ConversationEntry // loaded history (for chat loops)
 
 	ContinueC chan int         // receive additional rounds (Background only)
@@ -81,17 +83,15 @@ type LoopContext struct {
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
 
-	// SkipNeedsConfirmGate is set when handlePendingConfirm classifies the
-	// user's message as "other" (unrelated to the active workflow). When true,
-	// the agent loop skips workflow-engine-specific gates (NeedsConfirm phase
-	// capture, doc_only tool filtering) to prevent unrelated LLM output from
-	// being captured as a phase document.
+	// SkipNeedsConfirmGate is set only for non-review continuations that have
+	// their own interaction state, such as attachment bypasses or ask_user
+	// replies. A workflow phase awaiting review overrides this flag so every
+	// NeedsConfirm phase still stops for explicit confirmation or supplement.
 	//
-	// This flag also bypasses the Coding Tool Gate when the gate activation
-	// is from the fail-closed safety net (intent=ambiguous), not from a
-	// genuine coding classification (intent=coding). When the message IS a
-	// new coding task (intent=coding), the coding gate enforces the
-	// three-phase flow regardless of this flag.
+	// This flag also bypasses the Coding Tool Gate unless the current message
+	// has a genuine coding classification. When the message IS a new coding
+	// task (intent=coding), the coding gate enforces the three-phase flow
+	// regardless of this flag.
 	SkipNeedsConfirmGate bool
 
 	// IsAskUserResponse is true when the current message is a response to a
@@ -259,9 +259,9 @@ const (
 // chat loop to inform it about state changes.
 type StatusEvent struct {
 	Type      StatusEventType
-	LoopID    string // which background loop
-	SessionID string // related coding session (if any)
-	Message   string // human-readable description
-	Remaining int    // remaining iterations (for ApproachingLimit)
+	LoopID    string            // which background loop
+	SessionID string            // related coding session (if any)
+	Message   string            // human-readable description
+	Remaining int               // remaining iterations (for ApproachingLimit)
 	Extra     map[string]string // optional key-value metadata (e.g. screenshot)
 }

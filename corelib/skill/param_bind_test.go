@@ -23,6 +23,55 @@ func TestBindParams_AliasResolution(t *testing.T) {
 	}
 }
 
+func TestBindParams_MirrorsResolvedValueToAliases(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "file", Aliases: []string{"input"}},
+	}
+	vars := map[string]string{"file": "report.md"}
+
+	result := BindParams(params, vars)
+
+	if result.ResolvedVars["file"] != "report.md" || result.ResolvedVars["input"] != "report.md" {
+		t.Fatalf("ResolvedVars = %#v, want value mirrored to canonical name and alias", result.ResolvedVars)
+	}
+}
+
+func TestBindParams_HonorsCommonAliases(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "input", Required: true},
+	}
+	vars := map[string]string{"file": "report.md"}
+
+	result := BindParams(params, vars)
+
+	if result.HasErrors() {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if result.ResolvedVars["input"] != "report.md" || result.ResolvedVars["file"] != "report.md" {
+		t.Fatalf("ResolvedVars = %#v, want common alias bound and mirrored", result.ResolvedVars)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("common alias should be consumed without warnings: %v", result.Warnings)
+	}
+}
+
+func TestBindParams_CommonAliasesDoNotOverrideDeclaredParams(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "text", Required: true},
+		{Name: "content", Required: true},
+	}
+	vars := map[string]string{"text": "from-text", "content": "from-content"}
+
+	result := BindParams(params, vars)
+
+	if result.HasErrors() {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if result.ResolvedVars["text"] != "from-text" || result.ResolvedVars["content"] != "from-content" {
+		t.Fatalf("ResolvedVars = %#v, want declared params to keep independent values", result.ResolvedVars)
+	}
+}
+
 func TestBindParams_DirectMatch(t *testing.T) {
 	params := []corelib.NLSkillParam{
 		{Name: "input", CLIFlag: "--input"},
@@ -99,6 +148,26 @@ func TestBindParams_UndeclaredParameter(t *testing.T) {
 	}
 }
 
+func TestBindParams_IgnoresUndeclaredRunInputCarriers(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "city"},
+	}
+	vars := map[string]string{
+		"input":       "weather in Chengdu",
+		"user_prompt": "weather in Chengdu",
+		"city":        "Chengdu",
+	}
+
+	result := BindParams(params, vars)
+
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none for generic run input carriers", result.Warnings)
+	}
+	if result.ResolvedVars["city"] != "Chengdu" {
+		t.Fatalf("resolved city = %q, want Chengdu", result.ResolvedVars["city"])
+	}
+}
+
 func TestBindParams_RequiredMissing(t *testing.T) {
 	params := []corelib.NLSkillParam{
 		{Name: "input", Required: true},
@@ -153,6 +222,42 @@ func TestBindParams_EmptyVarsIgnored(t *testing.T) {
 
 	if !result.HasErrors() {
 		t.Fatal("empty value should not satisfy required param")
+	}
+}
+
+func TestBindParams_AcceptsRawKeyShapes(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "Input-File", Aliases: []string{"Source File"}, Required: true},
+	}
+	vars := map[string]string{"Source File": "report.md"}
+
+	result := BindParams(params, vars)
+
+	if result.HasErrors() {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("unexpected warnings for consumed raw alias: %v", result.Warnings)
+	}
+	if result.ResolvedVars["input_file"] != "report.md" {
+		t.Fatalf("ResolvedVars = %#v, want raw alias bound to canonical input_file", result.ResolvedVars)
+	}
+}
+
+func TestBindParams_CanonicalizesParamAndAliasNames(t *testing.T) {
+	params := []corelib.NLSkillParam{
+		{Name: "Input.File", Aliases: []string{"Source File"}, Required: true},
+		{Name: "targetLanguage", Required: true},
+	}
+	vars := map[string]string{"source_file": "report.md", "target_language": "English"}
+
+	result := BindParams(params, vars)
+
+	if result.HasErrors() {
+		t.Fatalf("unexpected errors: %v", result.Errors)
+	}
+	if result.ResolvedVars["input_file"] != "report.md" || result.ResolvedVars["target_language"] != "English" {
+		t.Fatalf("ResolvedVars = %#v, want canonical input_file and target_language", result.ResolvedVars)
 	}
 }
 

@@ -40,14 +40,20 @@ func isVisibleAIAssistantProgressText(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing"}
+	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing", "执行工具", "先搜索"}
 
 	for _, marker := range blockedMarkers {
 		if strings.Contains(lower, strings.ToLower(marker)) {
 			return false
 		}
 	}
-	visiblePrefixes := []string{"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving"}
+	if strings.HasPrefix(trimmed, "Coding Agent:") {
+		return true
+	}
+	if isCodingAgentEventText(trimmed) {
+		return true
+	}
+	visiblePrefixes := []string{"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving", "正在生成", "已接近", "⏳"}
 	for _, prefix := range visiblePrefixes {
 		if strings.HasPrefix(trimmed, prefix) {
 			return true
@@ -1215,13 +1221,16 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	if ensureInteractionInfraElapsed > 100*time.Millisecond {
 		log.Printf("[SendAIAssistantMessage] ensureInteractionInfra took %v", ensureInteractionInfraElapsed)
 	}
-	hubClient := a.hubClient()
-	if hubClient == nil {
-		return nil, fmt.Errorf("AI assistant not initialized")
-	}
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		return nil, fmt.Errorf("message text is required")
+	}
+	if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
+		return resp, err
+	}
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil, fmt.Errorf("AI assistant not initialized")
 	}
 	msg := IMUserMessage{
 		UserID:                      "desktop-user",
@@ -1284,6 +1293,19 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	if resp != nil {
 		resp.RequestID = requestID
+		if resp.ResponseSource == "file_delivery" || resp.LocalFilePath != "" || len(resp.LocalFilePaths) > 0 {
+			paths := resp.LocalFilePaths
+			if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
+				paths = append([]string{resp.LocalFilePath}, paths...)
+			}
+			fileNames := make([]string, 0, len(paths))
+			for _, p := range paths {
+				if strings.TrimSpace(p) != "" {
+					fileNames = append(fileNames, filepath.Base(p))
+				}
+			}
+			BrowserDiagFileDelivery("wails-return", resp.Text, fileNames, paths, resp.ResponseSource)
+		}
 	}
 	agentLoopElapsed = time.Since(agentLoopStartedAt)
 	if !streamDoneAt.IsZero() {

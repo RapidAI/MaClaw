@@ -1,28 +1,21 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
-// unifiedClassifier is the package-level UIC instance. When non-nil,
-// classifyTaskIntent delegates to it instead of using keyword rules.
-// Set via setUnifiedClassifierForIM during app initialization.
 var unifiedClassifier *intent.UnifiedIntentClassifier
 
-// setUnifiedClassifierForIM sets the package-level UIC used by classifyTaskIntent.
-func setUnifiedClassifierForIM(uic *intent.UnifiedIntentClassifier) {
-	unifiedClassifier = uic
-}
+func setUnifiedClassifierForIM(uic *intent.UnifiedIntentClassifier) { unifiedClassifier = uic }
 
 type taskIntent string
 
@@ -43,22 +36,6 @@ type taskIntentResult struct {
 	Source     string
 }
 
-var sshKeywords = []string{
-	"ssh", "服务器", "服务端", "主机", "远程机器", "远程主机", "云服务器", "线上机器",
-	"登录服务器", "连上服务器", "连接服务器", "远程登录", "看日志", "查看日志", "日志", "tail -f",
-	"journalctl", "systemctl", "service ", "nginx", "docker", "docker compose", "k8s", "kubectl",
-	"pm2", "supervisor", "重启服务", "重启 nginx", "重启进程", "上传到服务器", "下载服务器文件",
-	"sftp", "scp", "rsync", "端口", "进程", "服务器文件", "服务器上", "远程执行",
-	"host", "user", "label", "initial_command",
-}
-
-var ambiguousKeywords = []string{
-	"部署", "deploy", "上线", "线上问题", "线上故障", "服务挂了", "服务异常", "环境问题",
-	"处理一下线上问题", "看看服务", "看下服务", "排查一下", "处理一下这个项目",
-}
-
-var ipv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-
 type llmIntentClassification struct {
 	Intent     string   `json:"intent"`
 	Confidence float64  `json:"confidence"`
@@ -67,40 +44,45 @@ type llmIntentClassification struct {
 }
 
 func classifyTaskIntent(text string) taskIntentResult {
-	// Delegate to UIC when available.
 	if uic := unifiedClassifier; uic != nil {
 		result := uic.Classify(intent.MessageContext{Text: text})
 		intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
-		return taskIntentResult{
-			Intent:     taskIntent(intentStr),
-			Matched:    matched,
-			Evidence:   evidence,
-			Reason:     reason,
-			Confidence: confidence,
-			Source:     "uic",
-		}
+		return taskIntentResult{Intent: taskIntent(intentStr), Matched: matched, Evidence: evidence, Reason: reason, Confidence: confidence, Source: "uic"}
 	}
+	return classifyTaskIntentWithoutSemantic(text)
+}
 
-	// Fallback: UIC is nil — return ambiguous instead of guessing with keywords.
-	// Keyword-based classification is unreliable (e.g., "基于文档生成PPT" gets
-	// misclassified as non_coding because "PPT" is in nonCodingKeywords).
-	// Returning ambiguous lets callers take the conservative path.
-	return taskIntentResult{Intent: intentAmbiguous, Source: "rules-degraded", Reason: "UIC unavailable, keyword classification disabled"}
+func classifyTaskIntentWithoutSemantic(text string) taskIntentResult {
+	if strings.TrimSpace(text) == "" {
+		return taskIntentResult{Intent: intentUnknown, Source: "semantic-unavailable", Reason: "empty task text; no execution route classified", Confidence: 0.3}
+	}
+	return taskIntentResult{Intent: intentUnknown, Source: "semantic-unavailable", Reason: "semantic classifier unavailable; no execution route classified", Confidence: 0.45}
+}
+
+func (h *IMMessageHandler) classifyTaskIntentForSessionGuard(text string) taskIntentResult {
+	if result, ok := h.classifyTaskIntentWithUIC(text); ok {
+		return result
+	}
+	return classifyTaskIntent(text)
 }
 
 func shouldRequireExecutionConfirmationForIntent(msg IMUserMessage, pending *pendingConfirmation, intent taskIntentResult) bool {
-	if msg.IsBackground || pending != nil {
-		return false
-	}
-	trimmed := strings.TrimSpace(msg.Text)
-	if trimmed == "" || !looksLikeFreshTaskRequest(trimmed) {
-		return false
-	}
-	return intent.Intent == intentCoding || intent.Intent == intentSSH || intent.Intent == intentAmbiguous
+	return !msg.IsBackground && pending == nil && strings.TrimSpace(msg.Text) != "" &&
+		intent.Matched != "continuation" &&
+		(intent.Intent == intentCoding || intent.Intent == intentSSH)
+}
+
+func shouldConsiderExecutionConfirmation(freshTask bool, msg IMUserMessage, trimmedText string) bool {
+	return freshTask && !msg.IsBackground && strings.TrimSpace(trimmedText) != ""
 }
 
 func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachments []MessageAttachment, httpClient *http.Client) taskIntentResult {
-	fallback := classifyTaskIntent(text)
+	if len(attachments) == 0 {
+		if result, ok := h.classifyTaskIntentWithUIC(text); ok && isDecisiveTaskIntentResult(result) {
+			return result
+		}
+	}
+	fallback := classifyTaskIntentWithoutSemantic(text)
 	if h == nil || h.app == nil || httpClient == nil {
 		return fallback
 	}
@@ -110,6 +92,9 @@ func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachmen
 	}
 	llmResult, err := h.classifyTaskIntentWithLLM(cfg, text, attachments, httpClient)
 	if err != nil {
+		if result, ok := h.classifyTaskIntentWithUIC(text); ok && isDecisiveTaskIntentResult(result) {
+			return result
+		}
 		return fallback
 	}
 	if llmResult.Confidence < 0.6 {
@@ -118,11 +103,38 @@ func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachmen
 		}
 		llmResult.Intent = intentAmbiguous
 		if strings.TrimSpace(llmResult.Reason) == "" {
-			llmResult.Reason = "模型置信度不足，保守降级为 ambiguous"
+			llmResult.Reason = "model confidence too low; conservatively downgraded to ambiguous"
 		}
 		return llmResult
 	}
 	return llmResult
+}
+
+func isDecisiveTaskIntentResult(result taskIntentResult) bool {
+	if result.Matched == "continuation" {
+		return true
+	}
+	if result.Intent == intentUnknown || result.Intent == intentAmbiguous {
+		return false
+	}
+	return result.Confidence >= 0.6
+}
+
+func (h *IMMessageHandler) classifyTaskIntentWithUIC(text string) (taskIntentResult, bool) {
+	uic := h.getUnifiedClassifier()
+	if uic == nil {
+		return taskIntentResult{}, false
+	}
+	result := uic.Classify(intent.MessageContext{Text: text})
+	intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
+	return taskIntentResult{
+		Intent:     taskIntent(intentStr),
+		Matched:    matched,
+		Evidence:   evidence,
+		Reason:     reason,
+		Confidence: confidence,
+		Source:     "uic",
+	}, true
 }
 
 func (h *IMMessageHandler) classifyTaskIntentWithLLM(cfg corelib.MaclawLLMConfig, text string, attachments []MessageAttachment, httpClient *http.Client) (taskIntentResult, error) {
@@ -172,11 +184,9 @@ func summarizeAttachmentNames(attachments []MessageAttachment) []string {
 	}
 	names := make([]string, 0, len(attachments))
 	for _, attachment := range attachments {
-		name := strings.TrimSpace(attachment.FileName)
-		if name == "" {
-			continue
+		if name := strings.TrimSpace(attachment.FileName); name != "" {
+			names = append(names, name)
 		}
-		names = append(names, name)
 		if len(names) >= 4 {
 			break
 		}
@@ -200,14 +210,11 @@ func (h *IMMessageHandler) requestIntentClassificationOpenAI(cfg corelib.MaclawL
 	responseFormat := map[string]interface{}{
 		"type": "json_schema",
 		"json_schema": map[string]interface{}{
-			"name": "task_intent_classification",
+			"name":   "task_intent_classification",
 			"schema": intentClassifierJSONSchema,
 		},
 	}
-	req, body, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{
-		Stream:         false,
-		ResponseFormat: responseFormat,
-	})
+	req, body, endpoint, err := llm.NewOpenAIChatRequest(ctx, cfg, messages, llm.OpenAIChatRequestOptions{Stream: false, ResponseFormat: responseFormat})
 	if err != nil {
 		return llmIntentClassification{}, err
 	}
@@ -263,19 +270,12 @@ func decodeIntentClassificationContent(content string) (llmIntentClassification,
 }
 
 func normalizeIntentClassification(parsed llmIntentClassification) (taskIntentResult, error) {
-	intent := normalizeTaskIntent(parsed.Intent)
-	if intent == intentUnknown {
+	intentValue := normalizeTaskIntent(parsed.Intent)
+	if intentValue == intentUnknown {
 		return taskIntentResult{}, fmt.Errorf("unknown intent %q", parsed.Intent)
 	}
 	evidence := normalizeIntentEvidence(parsed.Evidence)
-	matched := ""
-	if len(evidence) > 0 {
-		matched = evidence[0]
-	}
-	reason := strings.TrimSpace(parsed.Reason)
-	if matched == "" && reason != "" {
-		matched = reason
-	}
+	matched := firstEvidence(evidence, strings.TrimSpace(parsed.Reason))
 	confidence := parsed.Confidence
 	if confidence < 0 {
 		confidence = 0
@@ -283,14 +283,7 @@ func normalizeIntentClassification(parsed llmIntentClassification) (taskIntentRe
 	if confidence > 1 {
 		confidence = 1
 	}
-	return taskIntentResult{
-		Intent:     intent,
-		Matched:    matched,
-		Evidence:   evidence,
-		Reason:     reason,
-		Confidence: confidence,
-		Source:     "llm",
-	}, nil
+	return taskIntentResult{Intent: intentValue, Matched: matched, Evidence: evidence, Reason: strings.TrimSpace(parsed.Reason), Confidence: confidence, Source: "llm"}, nil
 }
 
 func normalizeTaskIntent(raw string) taskIntent {
@@ -309,16 +302,11 @@ func normalizeTaskIntent(raw string) taskIntent {
 }
 
 func normalizeIntentEvidence(items []string) []string {
-	if len(items) == 0 {
-		return nil
-	}
-	normalized := make([]string, 0, len(items))
+	var normalized []string
 	for _, item := range items {
-		trimmed := strings.TrimSpace(item)
-		if trimmed == "" {
-			continue
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			normalized = appendIfMissing(normalized, trimmed)
 		}
-		normalized = appendIfMissing(normalized, trimmed)
 		if len(normalized) >= 4 {
 			break
 		}
@@ -330,71 +318,24 @@ var intentClassifierJSONSchema = map[string]interface{}{
 	"type":                 "object",
 	"additionalProperties": false,
 	"properties": map[string]interface{}{
-		"intent": map[string]interface{}{
-			"type": "string",
-			"enum": []string{"coding", "ssh", "non_coding", "ambiguous"},
-		},
-		"confidence": map[string]interface{}{
-			"type":    "number",
-			"minimum": 0,
-			"maximum": 1,
-		},
-		"reason": map[string]interface{}{"type": "string"},
-		"evidence": map[string]interface{}{
-			"type":     "array",
-			"maxItems": 4,
-			"items": map[string]interface{}{
-				"type": "string",
-			},
-		},
+		"intent":     map[string]interface{}{"type": "string", "enum": []string{"coding", "ssh", "non_coding", "ambiguous"}},
+		"confidence": map[string]interface{}{"type": "number", "minimum": 0, "maximum": 1},
+		"reason":     map[string]interface{}{"type": "string"},
+		"evidence":   map[string]interface{}{"type": "array", "maxItems": 4, "items": map[string]interface{}{"type": "string"}},
 	},
 	"required": []string{"intent", "confidence", "reason", "evidence"},
 }
 
-const intentClassifierSystemPrompt = `你是一个任务执行方式分类器，只负责判断当前请求应该归类到哪种执行路径。
+const intentClassifierSystemPrompt = `You classify the execution route for the current request.
 
-分类目标：
-- coding：明确需要修改代码、写代码、调试、修复 bug、实现功能、处理项目源码
-- ssh：明确需要登录服务器、查看线上日志、远程执行命令、重启服务、操作远端主机
-- non_coding：不需要编程会话或 ssh，典型如资料整理、翻译、总结、知识库录入、PPT/PDF/报告、截图理解与分析
-- ambiguous：信息不足，或同时像 coding 与 ssh，无法安全决定执行路径
+Routes: coding, ssh, non_coding, ambiguous.
+Classify by the execution required, not by topic. Output only JSON matching the schema.`
 
-规则：
-- 这是执行方式分类，不是主题分类。
-- 如果请求是在让助手理解、分析、总结截图或附件内容，而不是要求修改代码或登录服务器，优先判为 non_coding。
-- 只有在明确提到改代码、修 bug、实现功能、修改项目时，才判为 coding。
-- 只有在明确提到服务器、ssh、日志、部署环境、远程命令时，才判为 ssh。
-- 信息不足时保守输出 ambiguous。
-- 只输出 JSON，不要输出任何额外解释。
-`
-
-func hasOnlyWeakCodingEvidence(hits []string) bool {
-	if len(hits) == 0 {
-		return false
+func firstEvidence(items []string, fallback string) string {
+	if len(items) > 0 {
+		return items[0]
 	}
-	weak := map[string]struct{}{
-		"编程":  {},
-		"代码":  {},
-		"测试":  {},
-		"源码":  {},
-		"源代码": {},
-	}
-	for _, hit := range hits {
-		if _, ok := weak[hit]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-func collectIntentMatches(msg string, keywords []string) []string {
-	var hits []string
-	for _, kw := range keywords {
-		if strings.Contains(msg, kw) {
-			hits = appendIfMissing(hits, kw)
-		}
-	}
-	return hits
+	return fallback
 }
 
 func appendIfMissing(items []string, value string) []string {
@@ -406,31 +347,12 @@ func appendIfMissing(items []string, value string) []string {
 	return append(items, value)
 }
 
-func combineEvidence(groups ...[]string) []string {
-	merged := make([]string, 0)
-	for _, group := range groups {
-		for _, item := range group {
-			merged = appendIfMissing(merged, item)
-		}
-	}
-	return merged
-}
-
-func firstMatch(groups ...[]string) string {
-	for _, group := range groups {
-		if len(group) > 0 {
-			return group[0]
-		}
-	}
-	return ""
-}
-
 func formatIntentEvidence(result taskIntentResult) string {
 	if len(result.Evidence) == 0 {
 		if result.Matched != "" {
 			return fmt.Sprintf("%q", result.Matched)
 		}
-		return "未命中特征词"
+		return "no local evidence"
 	}
 	if len(result.Evidence) == 1 {
 		return fmt.Sprintf("%q", result.Evidence[0])

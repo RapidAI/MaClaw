@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -67,6 +68,23 @@ func TestSetSource_InvalidValue(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestSetSourceRejectsOversizedJSONWithoutChangingSource(t *testing.T) {
+	h, _, sourceMgr, _ := newTestHandler(t)
+	mux := setupMux(h)
+
+	payload := `{"source":"` + strings.Repeat("x", maxComputeJSONBodyBytes+1024) + `"}`
+	req := httptest.NewRequest(http.MethodPut, "/admin/compute/source", bytes.NewBufferString(payload))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", w.Code, w.Body.String())
+	}
+	if sourceMgr.GetSource() != "cloud" {
+		t.Fatalf("source changed after oversized JSON: %s", sourceMgr.GetSource())
 	}
 }
 
@@ -171,6 +189,10 @@ func TestLocalProviders_CRUD(t *testing.T) {
 	if len(listBody.Providers) != 1 {
 		t.Fatalf("len(providers) = %d, want 1", len(listBody.Providers))
 	}
+	activeAfterCreate := sourceMgr.GetActiveProviders()
+	if len(activeAfterCreate) != 1 || activeAfterCreate[0].Name != "test-provider" {
+		t.Fatalf("active providers after create = %+v, want created local provider", activeAfterCreate)
+	}
 	providerID := listBody.Providers[0].ID
 	if listBody.Providers[0].Name != "test-provider" {
 		t.Errorf("name = %q, want test-provider", listBody.Providers[0].Name)
@@ -185,6 +207,10 @@ func TestLocalProviders_CRUD(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("update status = %d, want 200, body: %s", w.Code, w.Body.String())
 	}
+	activeAfterUpdate := sourceMgr.GetActiveProviders()
+	if len(activeAfterUpdate) != 1 || activeAfterUpdate[0].Name != "updated-provider" {
+		t.Fatalf("active providers after update = %+v, want updated local provider", activeAfterUpdate)
+	}
 
 	// Delete the provider
 	req = httptest.NewRequest(http.MethodDelete, "/admin/compute/local-providers/"+providerID, nil)
@@ -193,6 +219,9 @@ func TestLocalProviders_CRUD(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, want 200", w.Code)
+	}
+	if activeAfterDelete := sourceMgr.GetActiveProviders(); len(activeAfterDelete) != 0 {
+		t.Fatalf("active providers after delete = %+v, want empty", activeAfterDelete)
 	}
 
 	// Verify empty after delete
@@ -206,6 +235,62 @@ func TestLocalProviders_CRUD(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &afterDelete)
 	if len(afterDelete.Providers) != 0 {
 		t.Errorf("after delete: len(providers) = %d, want 0", len(afterDelete.Providers))
+	}
+}
+
+func TestSetSourceLocalLoadsStoredProvidersIntoRuntime(t *testing.T) {
+	h, syncMgr, sourceMgr, localStore := newTestHandler(t)
+	if err := localStore.SaveProvider(ComputeProvider{Name: "Stored Local", BaseURL: "https://api.example.com", Protocol: "openai", Model: "gpt-4"}); err != nil {
+		t.Fatal(err)
+	}
+	syncMgr.mu.Lock()
+	syncMgr.computePermission = true
+	syncMgr.mu.Unlock()
+	mux := setupMux(h)
+
+	req := httptest.NewRequest(http.MethodPut, "/admin/compute/source", bytes.NewBufferString(`{"source":"local"}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+	active := sourceMgr.GetActiveProviders()
+	if len(active) != 1 || active[0].Name != "Stored Local" {
+		t.Fatalf("active providers = %+v, want stored local provider", active)
+	}
+	var body struct {
+		Source              string `json:"source"`
+		EffectiveSource     string `json:"effective_source"`
+		ActiveProviderCount int    `json:"active_provider_count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Source != "local" || body.EffectiveSource != "local" || body.ActiveProviderCount != 1 {
+		t.Fatalf("source response = %+v, want authoritative local snapshot", body)
+	}
+}
+
+func TestCreateLocalProviderRejectsInvalidJSONWithoutSavingProvider(t *testing.T) {
+	h, syncMgr, sourceMgr, localStore := newTestHandler(t)
+	mux := setupMux(h)
+	syncMgr.mu.Lock()
+	syncMgr.computePermission = true
+	syncMgr.mu.Unlock()
+	if err := sourceMgr.SetSource("local"); err != nil {
+		t.Fatalf("SetSource: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/compute/local-providers", bytes.NewBufferString(`{"name":`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", w.Code, w.Body.String())
+	}
+	if providers := localStore.ListProviders(); len(providers) != 0 {
+		t.Fatalf("providers saved after invalid JSON: %+v", providers)
 	}
 }
 
@@ -257,6 +342,19 @@ func TestLocalStore_TempFile(t *testing.T) {
 	_ = ls.SaveProvider(ComputeProvider{Name: "x", Protocol: "openai"})
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("file not created: %v", err)
+	}
+}
+
+func TestLocalStoreCreatesDirectoryAndPersistsDurably(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "nested", "providers.json")
+	ls := NewLocalStore(path)
+	if err := ls.SaveProvider(ComputeProvider{Name: "durable", Protocol: "openai"}); err != nil {
+		t.Fatalf("SaveProvider() error = %v", err)
+	}
+	loaded := NewLocalStore(path)
+	providers := loaded.ListProviders()
+	if len(providers) != 1 || providers[0].Name != "durable" {
+		t.Fatalf("loaded providers = %+v, want durable provider", providers)
 	}
 }
 

@@ -4,7 +4,11 @@ const INPUT_STACK_MIN_HEIGHT = 96;
 const INPUT_STACK_MAX_HEIGHT = 420;
 const INPUT_TEXTAREA_DEFAULT_MAX_HEIGHT = 120;
 
-export function useResizableAssistantInput(inputRef: React.MutableRefObject<HTMLTextAreaElement | null>, inputValue: string) {
+export function useResizableAssistantInput(
+    inputRef: React.MutableRefObject<HTMLTextAreaElement | null>,
+    inputValue: string,
+    onResizeEnd?: () => void,
+) {
     const [inputAreaHeight, setInputAreaHeight] = useState<number | null>(null);
 
     const resizeInput = useCallback(() => {
@@ -36,12 +40,13 @@ export function useResizableAssistantInput(inputRef: React.MutableRefObject<HTML
             document.removeEventListener("mouseup", onMouseUp);
             document.body.style.cursor = "";
             document.body.style.userSelect = "";
+            onResizeEnd?.();
         };
         document.body.style.cursor = "ns-resize";
         document.body.style.userSelect = "none";
         document.addEventListener("mousemove", onMouseMove);
         document.addEventListener("mouseup", onMouseUp);
-    }, [inputAreaHeight]);
+    }, [inputAreaHeight, onResizeEnd]);
 
     return { inputAreaHeight, resizeInput, startInputResize };
 }

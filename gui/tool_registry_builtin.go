@@ -77,73 +77,73 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolProjectManage(args) })
 
-	reg("list_providers", "列出指定编程工具的所有可用服务商（已过滤未配置的空服务商）",
+	reg("list_providers", "List configured providers for a coding tool.",
 		ToolCategoryBuiltin, []string{"provider", "list", "model"},
 		map[string]interface{}{
 			"tool": map[string]string{"type": "string", "description": "工具名称，如 claude, codex, gemini"},
 		}, []string{"tool"},
 		func(args map[string]interface{}) string { return h.toolListProviders(args) })
 
-	reg("send_input", "向指定会话发送文本输入。发送后可用 get_session_output 观察结果。",
+	reg("send_input", "Send text input to a remote coding session.",
 		ToolCategoryBuiltin, []string{"session", "input", "send"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 			"text":       map[string]string{"type": "string", "description": "要发送的文本"},
 		}, []string{"session_id", "text"},
 		func(args map[string]interface{}) string { return h.toolSendInput(args) })
 
-	reg("get_session_output", "获取指定会话的最近输出内容和状态摘要。",
+	reg("get_session_output", "Get recent output and status for a remote coding session.",
 		ToolCategoryBuiltin, []string{"session", "output", "status"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID"},
-			"lines":      map[string]string{"type": "integer", "description": "返回最近 N 行输出（默认 30，最大 100）"},
+			"session_id": map[string]string{"type": "string", "description": "Session ID."},
+			"lines":      map[string]string{"type": "integer", "description": "Number of recent output lines to return."},
 		}, []string{"session_id"},
 		func(args map[string]interface{}) string { return h.toolGetSessionOutput(args) })
 
-	reg("get_session_events", "获取指定会话的重要事件列表（文件修改、命令执行、错误等）",
+	reg("get_session_events", "Get important events for a remote coding session.",
 		ToolCategoryBuiltin, []string{"session", "events"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 		}, []string{"session_id"},
 		func(args map[string]interface{}) string { return h.toolGetSessionEvents(args) })
 
-	reg("interrupt_session", "中断指定会话（发送 Ctrl+C 信号）",
+	reg("interrupt_session", "Interrupt a remote coding session with Ctrl+C.",
 		ToolCategoryBuiltin, []string{"session", "interrupt", "cancel"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 		}, []string{"session_id"},
 		func(args map[string]interface{}) string { return h.toolInterruptSession(args) })
 
 	reg("kill_session", "终止指定会话",
 		ToolCategoryBuiltin, []string{"session", "kill", "stop"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 		}, []string{"session_id"},
 		func(args map[string]interface{}) string { return h.toolKillSession(args) })
 
 	// --- Merged tools (optimized for fewer LLM round-trips) ---
 
-	reg("send_and_observe", "向会话发送文本并等待返回输出结果（合并了 send_input + get_session_output，推荐优先使用此工具代替分别调用 send_input 和 get_session_output）",
+	reg("send_and_observe", "Send text to a session and wait for observed output.",
 		ToolCategoryBuiltin, []string{"session", "input", "send", "output", "observe"},
 		map[string]interface{}{
 			"session_id":      map[string]string{"type": "string", "description": "会话 ID"},
 			"text":            map[string]string{"type": "string", "description": "要发送的文本"},
-			"timeout_seconds": map[string]string{"type": "number", "description": "可选：等待输出的超时秒数（默认约 30 秒，最大 120 秒）。对于复杂编程任务可设置更长时间。"},
+			"timeout_seconds": map[string]string{"type": "number", "description": "Optional output wait timeout in seconds."},
 		}, []string{"session_id", "text"},
 		func(args map[string]interface{}) string { return h.toolSendAndObserve(args) })
 
-	reg("control_session", "控制会话：中断（interrupt）或终止（kill）",
+	reg("control_session", "Control a session: interrupt or kill.",
 		ToolCategoryBuiltin, []string{"session", "interrupt", "kill", "stop", "cancel", "control"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID"},
+			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 			"action":     map[string]string{"type": "string", "description": "操作类型: interrupt（发送 Ctrl+C）或 kill（终止会话）"},
 		}, []string{"session_id", "action"},
 		func(args map[string]interface{}) string { return h.toolControlSession(args) })
 
-	reg("screenshot", "截取屏幕截图并发送给用户。这是截屏的唯一正确方式，禁止用 bash 编写 PowerShell/Python/scrot 等截屏脚本替代此工具。使用场景：(1) 用户明确要求截屏；(2) 用户通过 IM 远程监督，需要确认操作结果。不要在用户未要求时主动截屏。最小间隔 30 秒。支持 display 参数指定显示器（0=主屏，1=第二屏，不传=所有屏幕拼图）。",
+	reg("screenshot", "Capture a screenshot and send it to the user.",
 		ToolCategoryBuiltin, []string{"session", "screenshot", "capture"},
 		map[string]interface{}{
-			"session_id": map[string]string{"type": "string", "description": "会话 ID（可选，只有一个会话时自动选择）"},
+			"session_id": map[string]string{"type": "string", "description": "Session ID."},
 			"display":    map[string]string{"type": "integer", "description": "显示器编号（可选，0=主屏，1=第二屏/扩展屏，不传则截取所有屏幕拼图）"},
 		}, nil,
 		func(args map[string]interface{}) string { return h.toolScreenshot(args) })
@@ -154,12 +154,12 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		nil, nil,
 		func(args map[string]interface{}) string { return h.toolListMCPTools(args) })
 
-	reg("call_mcp_tool", "调用 MCP Server 上的外部工具。仅用于 MCP 扩展工具（通过 list_mcp_tools 查看），不要用于内置工具（ssh、bash、write_file 等内置工具直接以函数名调用）。server_id 支持 ID 或 Name，重名时请传 ID。",
+	reg("call_mcp_tool", "Call an external tool on a registered MCP server.",
 		ToolCategoryBuiltin, []string{"mcp", "call", "execute"},
 		map[string]interface{}{
 			"server_id": map[string]string{"type": "string", "description": "MCP Server ID 或 Name"},
 			"tool_name": map[string]string{"type": "string", "description": "工具名称"},
-			"arguments": map[string]string{"type": "object", "description": "工具参数（JSON 对象）"},
+			"arguments": map[string]string{"type": "object", "description": "Tool arguments as a JSON object."},
 		}, []string{"server_id", "tool_name"},
 		func(args map[string]interface{}) string { return h.toolCallMCPTool(args) })
 
@@ -168,19 +168,19 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		ToolCategoryBuiltin, append([]string{"skill"}, skill.ManageSkillActionNames()...),
 		map[string]interface{}{
 			"action":       map[string]string{"type": "string", "description": "操作: " + skill.ManageSkillActionSlash()},
-			"query":        map[string]string{"type": "string", "description": "搜索关键词（search 时必填，如 'git commit'、'代码审查'、'部署'）"},
+			"query":        map[string]string{"type": "string", "description": "Search query for skill discovery."},
 			"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
 			"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
 			"auto_run":     map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（install 时可选，默认 true）"},
 			"name":         map[string]string{"type": "string", "description": "Skill 名称（run/upload 时必填）"},
 			"args":         map[string]string{"type": "object", "description": "Skill 运行参数（run 时按需传入）。Skill 命令中的 {{key}} 占位符会被替换为 args 中对应的值。例如 Skill 命令含 {{city}} 则传 args={\"city\":\"北京\"}，含 {{input}} 则传 args={\"input\":\"文件路径\"}。如果首次调用因缺少参数而失败，错误信息会提示需要哪些 key。"},
 			"env":          map[string]string{"type": "object", "description": "注入到 skill 子进程的环境变量（run 时可选），例如 {\"LIBTV_ACCESS_KEY\": \"xxx\"}"},
-			"operation":    map[string]string{"type": "string", "description": "执行指定的 operation（run 时可选，api_workflow 模式 Skill 的操作名称，如 generate/query）"},
+			"operation":    map[string]string{"type": "string", "description": "Optional operation name for api_workflow skills."},
 			"input":        map[string]string{"type": "string", "description": "兼容旧调用的输入参数（run 时可选）"},
 			"output":       map[string]string{"type": "string", "description": "兼容旧调用的输出参数（run 时可选）"},
 			"user_prompt":  map[string]string{"type": "string", "description": "用户的原始请求文本（run 时可选，供 craft_tool 类型 Skill 生成脚本时使用）"},
-			"wait_seconds": map[string]string{"type": "number", "description": "等待状态快照的秒数（install/run/status 时可选，默认 2，最大 30）"},
-			"run_id":       map[string]string{"type": "string", "description": "运行 ID（status 时必填，从 run 返回值中获取）"},
+			"wait_seconds": map[string]string{"type": "number", "description": "Seconds to wait for a status snapshot."},
+			"run_id":       map[string]string{"type": "string", "description": "Run ID returned by a previous run action."},
 		}, []string{"action"},
 		func(args map[string]interface{}, onProgress tool.ProgressCallback) string {
 			return h.toolManageSkill(args, onProgress)
@@ -542,6 +542,22 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"data":      map[string]string{"type": "object", "description": "写入数据（write_excel 时必填），格式: {\"sheets\": [{\"name\": \"Sheet1\", \"rows\": [[...]]}]}"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolOffice(args) })
+
+	// --- MIS structured data and AgentView transaction workspace ---
+	reg("mis_data", "Structured MIS data tool for semantic business intents, business actions, and local AgentView transaction workspace.",
+		ToolCategoryBuiltin, []string{"mis", "data", "business", "agent_view", "transaction", "structured"},
+		map[string]interface{}{
+			"action":             map[string]string{"type": "string", "description": "Action name. Use list_agent_transactions to open the local right-side transaction workspace without requiring the MIS service."},
+			"query":              map[string]string{"type": "string", "description": "Natural-language business intent query for resolve_intent."},
+			"domain":             map[string]string{"type": "string", "description": "Optional MIS domain filter."},
+			"business_action_id": map[string]string{"type": "string", "description": "Business action id for get_business_action, execute_business_action, or transaction filtering."},
+			"dataset_id":         map[string]string{"type": "string", "description": "Dataset/business object id for data actions or transaction filtering."},
+			"record_id":          map[string]string{"type": "string", "description": "Record id for record-level operations."},
+			"data":               map[string]string{"type": "object", "description": "Structured payload for writes, validation, imports, queries, or action execution."},
+			"limit":              map[string]string{"type": "integer", "description": "Optional result limit."},
+			"dry_run":            map[string]string{"type": "boolean", "description": "Validate business action execution without committing."},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolMISData(args) })
 
 	// --- PDF generation tool (coding workflow only) - backward-compatible alias ---
 	reg("generate_pdf", "生成 PDF 文档并发送给用户。仅用于编程流程的需求文档、技术设计文档、任务拆分文档。严禁用于资料收集、翻译、内容整理等非编程流程任务的 Markdown 转 PDF。参数 doc_type 可选: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。",

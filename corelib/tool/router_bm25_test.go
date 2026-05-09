@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	uicintent "github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 // loadTestEmbedder loads the Gemma embedding model for tests that need
@@ -149,14 +150,11 @@ func TestRouter_BM25_ConditionalKeep_PDFWorkflow(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	// web_search and document delivery tools should be kept for PDF intent.
+	// Without UIC or a semantic IntentClassifier, local wording must not keep
+	// conditional tools for PDF/search delivery intent.
 	for _, name := range []string{"web_search", "send_file", "open"} {
-		if !resultNames[name] {
-			names := make([]string, len(result))
-			for i, r := range result {
-				names[i] = ExtractToolName(r)
-			}
-			t.Errorf("PDF workflow tool %q should be in result, got: %v", name, names)
+		if resultNames[name] {
+			t.Errorf("PDF workflow tool %q should not be routed without semantic classification", name)
 		}
 	}
 
@@ -188,18 +186,50 @@ func TestRouter_BM25_ConditionalKeep_SearchWorkflow(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	// web_search should be kept for search intent.
-	if !resultNames["web_search"] {
-		names := make([]string, len(result))
-		for i, r := range result {
-			names[i] = ExtractToolName(r)
-		}
-		t.Errorf("web_search should be in result for search intent, got: %v", names)
+	// web_search should not be kept from local search wording alone.
+	if resultNames["web_search"] {
+		t.Error("web_search should not be routed without semantic classification")
 	}
 
 	// ssh should NOT be in result.
 	if resultNames["ssh"] {
 		t.Error("ssh should not be routed for search intent")
+	}
+}
+
+func TestRouter_BM25_ConditionalKeep_MISBusinessTransactionWorkflow(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools,
+		makeToolDef("mis_data", "structured MIS business data and AgentView transaction workspace"),
+		makeToolDef("web_search", "search web content"),
+		makeToolDef("ssh", "connect to servers with SSH"),
+	)
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("继续处理上次那个差旅报销录入，打开未完成事务", tools)
+	resultNames := make(map[string]bool)
+	for _, r := range result {
+		resultNames[ExtractToolName(r)] = true
+	}
+	if resultNames["mis_data"] {
+		t.Error("mis_data should not be routed without semantic classification")
+	}
+	if resultNames["ssh"] {
+		t.Error("ssh should not be routed for business transaction workflow")
+	}
+}
+
+func TestBuiltinToolNamesIncludesMISData(t *testing.T) {
+	if !IsBuiltinToolName("mis_data") {
+		t.Fatal("mis_data should be recognized as a builtin tool")
 	}
 }
 
@@ -226,13 +256,9 @@ func TestRouter_BM25_ConditionalKeep_BrowserWorkflow(t *testing.T) {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	// Browser tool should be kept for browser intent.
-	if !resultNames["browser"] {
-		names := make([]string, len(result))
-		for i, r := range result {
-			names[i] = ExtractToolName(r)
-		}
-		t.Errorf("browser tool should be in result, got: %v", names)
+	// Browser tool should not be kept from local browser wording alone.
+	if resultNames["browser"] {
+		t.Error("browser tool should not be routed without semantic classification")
 	}
 
 	// ssh and web_search should NOT be in result.
@@ -284,8 +310,8 @@ func TestRouter_BM25_ConditionalKeep_NoFalseTriggers(t *testing.T) {
 }
 
 // TestRouter_BrowserSemanticConfirm_RejectsFalsePositive verifies that browser
-// tools are NOT activated when keywords like "打开"+"页面" match but the
-// IntentClassifier determines the actual intent is coding (not browser).
+// tools are NOT activated when the IntentClassifier determines the actual
+// intent is coding rather than browser automation.
 // This is the core fix for the "Browser:" prefix hallucination bug.
 func TestRouter_BrowserSemanticConfirm_RejectsFalsePositive(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
@@ -296,7 +322,12 @@ func TestRouter_BrowserSemanticConfirm_RejectsFalsePositive(t *testing.T) {
 	if emb == nil {
 		t.Skip("embedding model not available")
 	}
+	defer emb.Close()
 	ic := NewIntentClassifier(emb)
+	defer ic.Close()
+	if !ic.WaitReady(intentClassifierWarmupTimeout) {
+		t.Fatalf("IntentClassifier not ready after %s", intentClassifierWarmupTimeout)
+	}
 	router.SetIntentClassifier(ic)
 
 	var tools []map[string]interface{}
@@ -310,10 +341,9 @@ func TestRouter_BrowserSemanticConfirm_RejectsFalsePositive(t *testing.T) {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	// "开发一个打飞机游戏，页面上直接打开即玩" — weak keywords "打开"+"页面"
-	// match the browser rule, but the intent is clearly coding, not browser.
-	// Note: no strong keyword like "浏览器" — only the weak page+action combo.
-	result := router.Route("开发一个打飞机游戏，页面上直接打开即玩，有飞机和子弹", tools)
+	// This describes building a web game. Local lexical cues must not activate
+	// browser automation.
+	result := router.Route("Build a browser-playable airplane shooting game with a start screen and bullets.", tools)
 	resultNames := make(map[string]bool)
 	for _, r := range result {
 		resultNames[ExtractToolName(r)] = true
@@ -329,31 +359,26 @@ func TestRouter_BrowserSemanticConfirm_RejectsFalsePositive(t *testing.T) {
 }
 
 // TestRouter_BrowserSemanticConfirm_AcceptsTruePositive verifies that browser
-// tools ARE activated when both keywords and IntentClassifier agree on browser intent.
+// tools ARE activated when the IntentClassifier returns browser intent.
 func TestRouter_BrowserSemanticConfirm_AcceptsTruePositive(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
 
-	emb := loadTestEmbedder(t)
-	if emb == nil {
-		t.Skip("embedding model not available")
-	}
-	ic := NewIntentClassifier(emb)
+	ic := NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentBrowser, nil })
 	router.SetIntentClassifier(ic)
 
 	var tools []map[string]interface{}
 	for name := range CoreToolNames {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
-	tools = append(tools,
-		makeToolDef("browser", "浏览器自动化工具"),
-	)
+	tools = append(tools, makeToolDef("browser", "browser automation tool"))
 	for i := 0; i < 20; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	// Genuine browser intent — strong keyword "浏览器" directly matches.
-	result := router.Route("打开浏览器帮我在网页上点击购买按钮", tools)
+	result := router.Route("Use a browser to open https://example.com and inspect the page.", tools)
 	resultNames := make(map[string]bool)
 	for _, r := range result {
 		resultNames[ExtractToolName(r)] = true
@@ -364,14 +389,14 @@ func TestRouter_BrowserSemanticConfirm_AcceptsTruePositive(t *testing.T) {
 		for i, r := range result {
 			names[i] = ExtractToolName(r)
 		}
-		t.Errorf("browser tool should be in result for genuine browser intent, got: %v", names)
+		t.Errorf("browser tool should be in result when semantic classifier returns browser, got: %v", names)
 	}
 }
 
-// TestRouter_BrowserSemanticConfirm_FallbackWithoutClassifier verifies that
-// when no IntentClassifier is available, browser tools fall back to keyword
-// matching (backward compatible behavior).
-func TestRouter_BrowserSemanticConfirm_FallbackWithoutClassifier(t *testing.T) {
+// TestRouter_BrowserSemanticConfirm_NoFallbackWithoutClassifier verifies that
+// when no IntentClassifier is available, browser tools do not fall back to
+// local lexical activation.
+func TestRouter_BrowserSemanticConfirm_NoFallbackWithoutClassifier(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen) // No IntentClassifier set.
 
@@ -386,23 +411,22 @@ func TestRouter_BrowserSemanticConfirm_FallbackWithoutClassifier(t *testing.T) {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
 
-	// Without IntentClassifier, keyword match should still work (fallback).
 	result := router.Route("打开浏览器访问百度网站", tools)
 	resultNames := make(map[string]bool)
 	for _, r := range result {
 		resultNames[ExtractToolName(r)] = true
 	}
 
-	if !resultNames["browser"] {
+	if resultNames["browser"] {
 		names := make([]string, len(result))
 		for i, r := range result {
 			names[i] = ExtractToolName(r)
 		}
-		t.Errorf("browser should be in result when no classifier (fallback), got: %v", names)
+		t.Errorf("browser should not be in result without semantic classifier, got: %v", names)
 	}
 }
 
-func TestRouter_Route_ConditionallyKeepsSSHForSSHIntent(t *testing.T) {
+func TestRouter_Route_FiltersConditionalToolsUnderBudgetWithoutClassifier(t *testing.T) {
 	gen := NewDefinitionGenerator(nil, nil)
 	router := NewRouter(gen)
 
@@ -410,7 +434,92 @@ func TestRouter_Route_ConditionallyKeepsSSHForSSHIntent(t *testing.T) {
 	for name := range CoreToolNames {
 		tools = append(tools, makeToolDef(name, "core "+name))
 	}
-	tools = append(tools, makeToolDef("ssh", "通过 SSH 连接服务器并执行命令"))
+	tools = append(tools,
+		makeToolDef("browser", "browser automation tool"),
+		makeToolDef("ssh", "connect to a remote server and run commands"),
+	)
+
+	if len(tools) > MaxToolBudget {
+		t.Fatalf("test expects tools under budget, got %d > %d", len(tools), MaxToolBudget)
+	}
+
+	result := router.Route("Open the website and inspect the deployment server.", tools)
+	for _, r := range result {
+		name := ExtractToolName(r)
+		if name == "browser" || name == "ssh" {
+			t.Fatalf("conditional tool %q should be filtered under budget without semantic classifier; result=%v", name, result)
+		}
+	}
+}
+
+func TestRouter_UICLowConfidenceDoesNotActivateConditionalTools(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"browser","score":0.89},{"skill":"ssh","score":0.20},{"skill":"coding","score":0.10}]}`, nil
+		},
+	}))
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("browser", "browser automation tool"))
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("Open a website in the browser.", tools)
+	for _, r := range result {
+		if ExtractToolName(r) == "browser" {
+			t.Fatalf("browser should not be included for UIC confidence below activation threshold")
+		}
+	}
+}
+
+func TestRouter_UICHighConfidenceActivatesConditionalTools(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	router.SetUnifiedClassifier(uicintent.New(uicintent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(systemPrompt, userText string) (string, error) {
+			return `{"top":[{"skill":"browser","score":0.95},{"skill":"search","score":0.20},{"skill":"coding","score":0.10}]}`, nil
+		},
+	}))
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("browser", "browser automation tool"))
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("Open a website in the browser.", tools)
+	for _, r := range result {
+		if ExtractToolName(r) == "browser" {
+			return
+		}
+	}
+	names := make([]string, len(result))
+	for i, r := range result {
+		names[i] = ExtractToolName(r)
+	}
+	t.Fatalf("browser should be included for high-confidence UIC browser intent, got: %v", names)
+}
+
+func TestRouter_Route_NoLocalSSHFallbackWithoutClassifier(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("ssh", "connect to a remote server and run commands"))
 	for i := 0; i < 20; i++ {
 		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
 	}
@@ -419,27 +528,42 @@ func TestRouter_Route_ConditionallyKeepsSSHForSSHIntent(t *testing.T) {
 		t.Fatalf("need more than %d tools to test routing, got %d", MaxToolBudget, len(tools))
 	}
 
-	runCase := func(message string, wantSSH bool) {
-		result := router.Route(message, tools)
-		found := false
-		for _, r := range result {
-			if ExtractToolName(r) == "ssh" {
-				found = true
-				break
-			}
-		}
-		if found != wantSSH {
-			names := make([]string, len(result))
-			for i, r := range result {
-				names[i] = ExtractToolName(r)
-			}
-			t.Fatalf("ssh presence for %q = %v, want %v; got: %v", message, found, wantSSH, names)
+	result := router.Route("Log in to the 4090 server at host home.rapidai.tech on port 33.", tools)
+	for _, r := range result {
+		if ExtractToolName(r) == "ssh" {
+			t.Fatalf("ssh should not be included without semantic classifier")
 		}
 	}
+}
 
-	runCase("登录 4090 服务器，host home.rapidai.tech 端口 33", true)
-	router.ResetSession() // Clear session-pinned tools between independent test cases.
-	runCase("我要查询数据库", false)
+func TestRouter_Route_SemanticallyKeepsSSHForSSHIntent(t *testing.T) {
+	gen := NewDefinitionGenerator(nil, nil)
+	router := NewRouter(gen)
+	ic := NewIntentClassifier(embedding.NoopEmbedder{})
+	defer ic.Close()
+	ic.SetLLMFunc(func(prompt string) (string, error) { return IntentSSH, nil })
+	router.SetIntentClassifier(ic)
+
+	var tools []map[string]interface{}
+	for name := range CoreToolNames {
+		tools = append(tools, makeToolDef(name, "core "+name))
+	}
+	tools = append(tools, makeToolDef("ssh", "connect to a remote server and run commands"))
+	for i := 0; i < 20; i++ {
+		tools = append(tools, makeToolDef(fmt.Sprintf("extra_%d", i), "extra tool"))
+	}
+
+	result := router.Route("Check the remote server resource usage.", tools)
+	for _, r := range result {
+		if ExtractToolName(r) == "ssh" {
+			return
+		}
+	}
+	names := make([]string, len(result))
+	for i, r := range result {
+		names[i] = ExtractToolName(r)
+	}
+	t.Fatalf("ssh should be included when semantic classifier returns ssh, got: %v", names)
 }
 
 func TestDynamicToolBuilder_BM25(t *testing.T) {

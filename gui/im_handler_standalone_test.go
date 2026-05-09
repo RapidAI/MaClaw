@@ -82,12 +82,12 @@ func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 		t.Error("expected pro mode to default to true")
 	}
 
-	// Nil accessors should return nil gracefully (not panic)
+	// Nil optional accessors should return nil gracefully (not panic).
 	if h.getWorkflowEngine() != nil {
 		t.Error("expected nil workflow engine")
 	}
-	if h.getUnifiedClassifier() != nil {
-		t.Error("expected nil unified classifier")
+	if h.getUnifiedClassifier() == nil {
+		t.Error("expected default unified classifier")
 	}
 	if h.getSkillExecutor() != nil {
 		t.Error("expected nil skill executor")
@@ -627,6 +627,18 @@ func TestPendingUserReplyIntentClassifiersDriveBinding(t *testing.T) {
 	}
 	if ok, classified := h.classifyPendingUserReplyAnswer("Which model should I deploy?", "deploy nginx to the server"); !classified || ok {
 		t.Fatal("classifier-rejected fresh task must not be treated as a pending reply")
+	}
+}
+
+func TestPendingUserReplyPromptCandidateFiltersClosingStatements(t *testing.T) {
+	if looksLikePendingUserReplyPromptCandidate("Task completed. Let me know if you need anything else.") {
+		t.Fatal("generic closing statement should not require pending reply classification")
+	}
+	if !looksLikePendingUserReplyPromptCandidate("Please confirm before I deploy this change.") {
+		t.Fatal("explicit confirmation request should be a pending reply candidate")
+	}
+	if !looksLikePendingUserReplyPromptCandidate("Which model should I deploy?") {
+		t.Fatal("question should be a pending reply candidate")
 	}
 }
 

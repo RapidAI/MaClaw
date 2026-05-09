@@ -14,12 +14,42 @@ export function useAssistantOutputScroll({ hasConversation, messages, ready, scr
     const userScrolledUpRef = useRef(false);
     const prevMsgCountRef = useRef(0);
     const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const scrollRafRef = useRef<number | null>(null);
     const prevReadyRef = useRef(ready);
+
+    const cancelScheduledScroll = useCallback(() => {
+        if (scrollRafRef.current === null || typeof cancelAnimationFrame !== "function") return;
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+    }, []);
+
+    const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto", force = false, settleFrames = 0) => {
+        if (force) userScrolledUpRef.current = false;
+        const scroll = () => outputEndRef.current?.scrollIntoView({ behavior });
+        const scheduleSettledScroll = (remainingFrames: number) => {
+            if (remainingFrames <= 0 || typeof requestAnimationFrame !== "function") return;
+            scrollRafRef.current = requestAnimationFrame(() => {
+                scrollRafRef.current = null;
+                scroll();
+                scheduleSettledScroll(remainingFrames - 1);
+            });
+        };
+        cancelScheduledScroll();
+        scroll();
+        scheduleSettledScroll(settleFrames);
+    }, [cancelScheduledScroll]);
+
+    useEffect(() => {
+        return () => {
+            if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+            cancelScheduledScroll();
+        };
+    }, [cancelScheduledScroll]);
 
     useEffect(() => {
         userScrolledUpRef.current = false;
-        outputEndRef.current?.scrollIntoView({ behavior: "auto" });
-    }, []);
+        scrollToBottom("auto");
+    }, [scrollToBottom]);
 
     useEffect(() => {
         if (userScrolledUpRef.current) {
@@ -28,17 +58,17 @@ export function useAssistantOutputScroll({ hasConversation, messages, ready, scr
         }
         if (messages.length !== prevMsgCountRef.current) {
             prevMsgCountRef.current = messages.length;
-            outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
+            scrollToBottom("smooth");
             return;
         }
         if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
         scrollTimerRef.current = setTimeout(() => {
-            outputEndRef.current?.scrollIntoView({ behavior: "auto" });
+            scrollToBottom("auto");
         }, 80);
         return () => {
             if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
         };
-    }, [messages]);
+    }, [messages, scrollToBottom]);
 
     const handleScroll = useCallback(() => {
         const container = outputContainerRef.current;
@@ -52,8 +82,8 @@ export function useAssistantOutputScroll({ hasConversation, messages, ready, scr
         const becameReady = !prevReadyRef.current && ready;
         prevReadyRef.current = ready;
         if (!becameReady || userScrolledUpRef.current || !hasConversation) return;
-        outputEndRef.current?.scrollIntoView({ behavior: "auto" });
-    }, [ready, hasConversation]);
+        scrollToBottom("auto");
+    }, [ready, hasConversation, scrollToBottom]);
 
     useEffect(() => {
         if (!scrollToTopSeq || hasConversation) return;
@@ -64,5 +94,5 @@ export function useAssistantOutputScroll({ hasConversation, messages, ready, scr
         }
     }, [scrollToTopSeq, hasConversation]);
 
-    return { handleScroll, outputContainerRef, outputEndRef, userScrolledUpRef };
+    return { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef };
 }

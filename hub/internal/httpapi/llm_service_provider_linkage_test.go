@@ -88,6 +88,40 @@ func TestFilterAuthorizedModelsByProviderRegistry(t *testing.T) {
 	}
 }
 
+func TestFilterAuthorizedModelsByProviderRegistryPreservesBillingInactiveStatus(t *testing.T) {
+	status := &llmservice.ServiceStatus{
+		Active:          false,
+		SkipLLMConfig:   false,
+		AvailableModels: []string{"auto"},
+		DefaultModel:    "auto",
+		CreditGrants: []llmservice.ActiveGrant{{
+			ServiceGroupID: "group-a",
+			Status:         "period_limited",
+			RetryAfterAt:   "2026-05-05T10:00:00Z",
+		}},
+	}
+	models := []llmservice.AuthorizedModel{{
+		Name:            "auto",
+		ProviderIDs:     []string{"provider-a"},
+		ServiceGroupIDs: []string{"group-a"},
+		ProviderServiceGroups: map[string][]string{
+			"provider-a": {"group-a"},
+		},
+	}}
+	providerReg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a"}}}
+
+	filteredStatus, filteredModels := filterAuthorizedModelsByProviderRegistry(status, models, providerReg)
+	if len(filteredModels) != 1 {
+		t.Fatalf("expected model route to remain explainable, got %#v", filteredModels)
+	}
+	if filteredStatus.Active || filteredStatus.SkipLLMConfig {
+		t.Fatalf("provider filtering must not re-activate period-limited status: %#v", filteredStatus)
+	}
+	if len(filteredStatus.AvailableModels) != 1 || filteredStatus.AvailableModels[0] != "auto" {
+		t.Fatalf("available models should remain visible for diagnostics, got %#v", filteredStatus.AvailableModels)
+	}
+}
+
 func TestExplainFilteredServiceStatusIssues(t *testing.T) {
 	providerReg := &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a"}}}
 	original := &llmservice.ServiceStatus{
@@ -104,6 +138,19 @@ func TestExplainFilteredServiceStatusIssues(t *testing.T) {
 	}
 	if !containsString(reasons, "active grants exist, but they currently expose no live model routes") {
 		t.Fatalf("expected active-grant reason in %#v", reasons)
+	}
+
+	periodLimited := &llmservice.ServiceStatus{CreditGrants: []llmservice.ActiveGrant{{
+		ServiceGroupID: "group-a",
+		Status:         "period_limited",
+		RetryAfterAt:   "2026-05-05T10:00:00Z",
+	}}}
+	reasons = explainFilteredServiceStatusIssues(periodLimited, nil, providerReg)
+	if !containsString(reasons, "current period credit limit is exhausted; retry after 2026-05-05T10:00:00Z") {
+		t.Fatalf("expected period-limit reason in %#v", reasons)
+	}
+	if containsString(reasons, "no service-group entitlement is active for this user") {
+		t.Fatalf("period limit should not be reported as missing entitlement: %#v", reasons)
 	}
 
 	noEntitlement := &llmservice.ServiceStatus{}

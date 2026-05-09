@@ -282,6 +282,16 @@ func TestTenantRepo_CRUD(t *testing.T) {
 	}
 }
 
+func TestTenantRepoUpdateCloudInfoRequiresExistingTenant(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewTenantRepo(p.Write, p.Read)
+
+	err := repo.UpdateCloudInfo(context.Background(), "missing-tenant", "center-1", "secret-1")
+	if err != ErrTenantNotFound {
+		t.Fatalf("UpdateCloudInfo missing tenant err = %v, want ErrTenantNotFound", err)
+	}
+}
+
 func TestLoginWithTenantID(t *testing.T) {
 	p := setupTestDB(t)
 	svc, _ := newTestService(t)

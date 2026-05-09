@@ -1483,6 +1483,56 @@ body {
     gap: 8px;
 }
 
+.pet-sound-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+    gap: 8px;
+}
+
+.pet-sound-grid--muted .pet-sound-option:not(.active) {
+    opacity: 0.72;
+}
+
+.pet-sound-option {
+    min-height: 74px;
+    border: 1px solid var(--theme-border);
+    border-radius: 8px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    padding: 10px;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.pet-sound-option:hover {
+    border-color: var(--theme-primary);
+    transform: translateY(-1px);
+}
+
+.pet-sound-grid--muted .pet-sound-option:hover {
+    transform: none;
+}
+
+.pet-sound-option.active {
+    border-color: var(--theme-primary);
+    background: var(--theme-info-bg);
+    box-shadow: inset 0 0 0 1px var(--theme-primary-soft);
+}
+
+.pet-sound-option strong {
+    display: block;
+    font-size: 0.82rem;
+    margin-bottom: 5px;
+}
+
+.pet-sound-option span {
+    display: block;
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    line-height: 1.35;
+}
+
 .pet-skin-option {
     display: flex;
     flex-direction: column;
@@ -2139,6 +2189,63 @@ body {
     text-align: center;
     min-height: 18px;
     animation: fadeIn 0.2s ease-out;
+}
+
+.codex-config-progress-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--theme-page-bg) 58%, transparent);
+    backdrop-filter: blur(2px);
+    pointer-events: auto;
+}
+
+.codex-config-progress-panel {
+    width: min(360px, calc(100% - 40px));
+    padding: 16px;
+    border-radius: 8px;
+    background: var(--theme-surface);
+    border: 1px solid var(--theme-border);
+    box-shadow: var(--shadow-lg);
+}
+
+.codex-config-progress-title {
+    margin-bottom: 12px;
+    color: var(--theme-text-primary);
+    font-size: 0.92rem;
+    font-weight: 700;
+    text-align: center;
+}
+
+.codex-config-progress-track {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 8px;
+    background: var(--theme-surface-muted);
+    border: 1px solid var(--theme-border-subtle);
+}
+
+.codex-config-progress-bar {
+    width: 42%;
+    height: 100%;
+    border-radius: 8px;
+    background: var(--theme-primary);
+    animation: codexConfigProgress 1.15s ease-in-out infinite;
+}
+
+@keyframes codexConfigProgress {
+    0% { transform: translateX(-120%); }
+    50% { transform: translateX(90%); }
+    100% { transform: translateX(260%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .codex-config-progress-bar {
+        animation-duration: 2.4s;
+    }
 }
 
 @keyframes fadeIn {

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 )
 
 const yoloModelFilename = "omniparser-v2.yolow"
@@ -109,14 +108,6 @@ func (a *App) DownloadYOLOModel() error {
 // when screen parsing is enabled and the model file is missing.
 // Reuses the same downloadModelFrom infrastructure as the embedding model.
 func (a *App) backgroundPreloadYOLOModel() {
-	// Wait for infrastructure
-	for i := 0; i < 60; i++ {
-		if a.remoteInfraReady.Load() {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-
 	// Check if enabled
 	if !a.GetScreenParsingEnabled() {
 		return

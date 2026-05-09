@@ -173,8 +173,6 @@ func TestBuildTaskPrompt(t *testing.T) {
 
 func TestBuildSystemInjection(t *testing.T) {
 	o := NewTaskExecutionOrchestrator()
-
-	// Not active — should return empty
 	if inj := o.BuildSystemInjection(); inj != "" {
 		t.Errorf("inactive orchestrator should return empty injection, got %q", inj)
 	}
@@ -184,17 +182,18 @@ func TestBuildSystemInjection(t *testing.T) {
 		{Index: 1, Title: "Task B", Description: "Do B", Status: TaskExecPending},
 	}
 	o.Activate(tasks, "", "", "/p", "claude")
+	o.ExternalChecker = &fakeExternalChecker{available: true}
+	o.ResolveExecutionMode()
 
 	inj := o.BuildSystemInjection()
-	if !strings.Contains(inj, "任务 1/2") {
+	if !strings.Contains(inj, "1/2") {
 		t.Error("injection should contain current task number")
 	}
 	if !strings.Contains(inj, "create_session") {
-		t.Error("injection for pending task should mention create_session")
+		t.Error("injection for pending external task should mention create_session")
 	}
-	if !strings.Contains(inj, "⏳ 1 剩余") {
-		// 1 remaining because task A is pending (counted as remaining) but
-		// we're on task A, so remaining = 2 (both pending)
+	if !strings.Contains(inj, "remaining") {
+		t.Error("injection should contain progress summary")
 	}
 }
 
@@ -268,7 +267,6 @@ func TestProgressSummary(t *testing.T) {
 		t.Error("summary should contain 'T3: Task C' on its own line without marker")
 	}
 }
-
 
 func TestIsTaskHeader_FalsePositives(t *testing.T) {
 	// "任务完成后..." should NOT be a task header (no digit after 任务)
@@ -350,7 +348,6 @@ func TestParseTaskList_DescriptionLines(t *testing.T) {
 	}
 }
 
-
 func TestBuildIntegrationPrompt(t *testing.T) {
 	o := NewTaskExecutionOrchestrator()
 	o.Tasks = []*TaskItem{
@@ -414,5 +411,170 @@ func TestBuildIntegrationPrompt_NoFailedTasks(t *testing.T) {
 	// Should NOT contain the failed task warning
 	if strings.Contains(prompt, "不完整") {
 		t.Error("prompt should not warn about incomplete files when no tasks failed")
+	}
+}
+
+func TestCurrentTaskAPIsIgnoreInactiveOrchestrator(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/p", "claude")
+	task := o.Tasks[0]
+	task.ExecMode = TaskExecModeExternal
+	o.Deactivate()
+
+	o.RecordCurrentActualArtifacts([]string{"inactive.go"}, []string{"created.go"})
+	o.MarkCurrentStatus(TaskExecFailed, "inactive")
+	if o.IncrementRetry() {
+		t.Fatal("inactive current retry should be rejected")
+	}
+	o.SetCurrentSessionID("inactive-session")
+	if prompt := o.BuildTaskPrompt(); prompt != "" {
+		t.Fatalf("inactive current task prompt should be empty, got %q", prompt)
+	}
+	if prompt := o.BuildTDDPrompt(); prompt != "" {
+		t.Fatalf("inactive TDD prompt should be empty, got %q", prompt)
+	}
+	if prompt := o.BuildFixPrompt("failed"); prompt != "" {
+		t.Fatalf("inactive fix prompt should be empty, got %q", prompt)
+	}
+	if o.DegradeCurrentToDirectMode() {
+		t.Fatal("inactive current degradation should be rejected")
+	}
+	o.ResolveExecutionMode()
+
+	if task.Status != TaskExecPending || task.RetryCount != 0 || task.SessionID != "" || len(task.ActualFiles) != 0 || len(task.ActualCreatedFiles) != 0 || task.ExecMode != TaskExecModeExternal {
+		t.Fatalf("inactive current API mutated task: %#v", task)
+	}
+}
+
+func TestTargetTaskAPIsIgnoreInactiveOrchestrator(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/p", "")
+	task := o.Tasks[0]
+	o.Deactivate()
+
+	if o.RecordTaskActualArtifacts(task, []string{"inactive.go"}, []string{"created.go"}) {
+		t.Fatal("inactive target artifact update should be rejected")
+	}
+	if status, ok := o.TaskStatus(task); ok || status != "" {
+		t.Fatalf("inactive target status read should be rejected, got %q ok=%v", status, ok)
+	}
+	if o.IsTaskTerminal(task) {
+		t.Fatal("inactive target terminal read should be false")
+	}
+	if o.MarkTaskStatus(task, TaskExecFailed, "inactive") {
+		t.Fatal("inactive target status update should be rejected")
+	}
+	if retryCount, allowed := o.IncrementTaskRetry(task); retryCount != 0 || allowed {
+		t.Fatalf("inactive target retry should be rejected, got count=%d allowed=%v", retryCount, allowed)
+	}
+	if o.SetTaskSessionID(task, "inactive-session") {
+		t.Fatal("inactive target session update should be rejected")
+	}
+	if prompt := o.BuildTaskPromptForTask(task); prompt != "" {
+		t.Fatalf("inactive target prompt should be empty, got %q", prompt)
+	}
+	if task.Status != TaskExecPending || task.RetryCount != 0 || task.SessionID != "" || len(task.ActualFiles) != 0 || len(task.ActualCreatedFiles) != 0 {
+		t.Fatalf("inactive target API mutated task: %#v", task)
+	}
+}
+
+func TestBuildSystemInjectionForTaskRunRejectsStaleRun(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	task := &TaskItem{Index: 0, Title: "Task A", Status: TaskExecPending}
+	o.Activate([]*TaskItem{task}, "", "", "/p", "")
+	_, oldRunID := o.CurrentTaskHandle()
+	o.Activate([]*TaskItem{{Index: 0, Title: "Task B", Status: TaskExecPending}}, "", "", "/p", "")
+
+	if inj := o.BuildSystemInjectionForTaskRun(task, oldRunID); inj != "" {
+		t.Fatalf("stale run should not build injection, got %q", inj)
+	}
+}
+
+func TestBuildSystemInjectionForTaskRunUsesTargetTask(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{
+		{Index: 0, Title: "Task A", Status: TaskExecPending, ExecMode: TaskExecModeDirect},
+		{Index: 1, Title: "Task B", Status: TaskExecPending, ExecMode: TaskExecModeExternal},
+	}, "", "", "/p", "claude")
+	taskA, runID := o.CurrentTaskHandle()
+	o.CurrentIndex = 1
+
+	inj := o.BuildSystemInjectionForTaskRun(taskA, runID)
+	if !strings.Contains(inj, "Task A") || strings.Contains(inj, "executing task 2/2") {
+		t.Fatalf("target injection mismatch, got %q", inj)
+	}
+	if !strings.Contains(inj, "direct coding") || strings.Contains(inj, "create_session") {
+		t.Fatalf("target injection should use target task mode, got %q", inj)
+	}
+}
+
+func TestTDDAndFixPromptsLabelActualArtifacts(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{{Index: 0, Title: "Task A"}}, "", "", "/project", "")
+	o.Tasks[0].ActualFiles = []string{"src/a.go"}
+	o.Tasks[0].ActualCreatedFiles = []string{"src/new.go"}
+
+	tdd := o.BuildTDDPrompt()
+	if !strings.Contains(tdd, "Actual Artifacts From This Task") || !strings.Contains(tdd, "Created: src/new.go") || !strings.Contains(tdd, "Modified: src/a.go") {
+		t.Fatalf("TDD prompt should label actual artifacts, got %q", tdd)
+	}
+	fix := o.BuildFixPrompt("test failed")
+	if !strings.Contains(fix, "Actual Artifacts From This Task") || !strings.Contains(fix, "Created: src/new.go") || !strings.Contains(fix, "Modified: src/a.go") {
+		t.Fatalf("fix prompt should label actual artifacts, got %q", fix)
+	}
+}
+
+func TestParseTaskListExtractsBareFileBullets(t *testing.T) {
+	input := "1. Implement model\nDefine files below.\n- user.go\n- internal/session_store.go\n- README.md\n\n### acceptance\n- go test ./..."
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %#v", tasks)
+	}
+	want := []string{"user.go", "internal/session_store.go", "README.md"}
+	if strings.Join(tasks[0].Files, ",") != strings.Join(want, ",") {
+		t.Fatalf("unexpected files: got %#v want %#v", tasks[0].Files, want)
+	}
+	if len(tasks[0].AcceptanceCriteria) != 1 || tasks[0].AcceptanceCriteria[0] != "go test ./..." {
+		t.Fatalf("acceptance criteria should not be classified as files: %#v", tasks[0].AcceptanceCriteria)
+	}
+}
+
+func TestParseTaskListDoesNotTreatURLsOrSentencesAsFiles(t *testing.T) {
+	input := "1. Document behavior\n- https://example.com/spec.md\n- this is not a file.go sentence\n- pkg/server.go"
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %#v", tasks)
+	}
+	if len(tasks[0].Files) != 1 || tasks[0].Files[0] != "pkg/server.go" {
+		t.Fatalf("expected only real file path, got %#v", tasks[0].Files)
+	}
+}
+
+func TestParseTaskListUnicodeHeadersAndCriteria(t *testing.T) {
+	input := "1\u3001\u521d\u59cb\u5316\n\u63cf\u8ff0\n\n\u4efb\u52a1 2\uff1a\u5b9e\u73b0 API\n### \u9a8c\u6536\u6807\u51c6\n- go test ./...\n\nTask 3: Wire UI\n### acceptance\n- npm test"
+	tasks := ParseTaskListFromText(input)
+	if len(tasks) != 3 {
+		t.Fatalf("expected 3 tasks, got %#v", tasks)
+	}
+	if tasks[0].Title != "\u521d\u59cb\u5316" || tasks[1].Title != "\u5b9e\u73b0 API" || tasks[2].Title != "Wire UI" {
+		t.Fatalf("unexpected titles: %#v", []string{tasks[0].Title, tasks[1].Title, tasks[2].Title})
+	}
+	if len(tasks[1].AcceptanceCriteria) != 1 || tasks[1].AcceptanceCriteria[0] != "go test ./..." {
+		t.Fatalf("expected unicode acceptance criteria, got %#v", tasks[1].AcceptanceCriteria)
+	}
+	if len(tasks[2].AcceptanceCriteria) != 1 || tasks[2].AcceptanceCriteria[0] != "npm test" {
+		t.Fatalf("expected english acceptance criteria, got %#v", tasks[2].AcceptanceCriteria)
+	}
+}
+
+func TestIsTaskHeaderUnicodePunctuation(t *testing.T) {
+	cases := []string{"1\u3001\u521d\u59cb\u5316", "2\uff0e\u5b9e\u73b0", "\u4efb\u52a1 3\uff1a\u96c6\u6210", "Task 4: Verify"}
+	for _, tc := range cases {
+		if !isTaskHeader(tc) {
+			t.Fatalf("expected %q to be a task header", tc)
+		}
+	}
+	if isTaskHeader("\u4efb\u52a1\u5b8c\u6210\u540e\u8fd0\u884c\u6d4b\u8bd5") {
+		t.Fatal("plain sentence should not be a task header")
 	}
 }

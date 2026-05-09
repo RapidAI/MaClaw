@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
+import type { AgentView } from "./agentViewTypes";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -52,6 +53,8 @@ interface AIAssistantSendResult {
     ThumbnailBase64?: string;
     request_id?: string;
     RequestID?: string;
+    response_source?: string;
+    ResponseSource?: string;
     trace_status?: string;
     TraceStatus?: string;
     trace_summary?: string;
@@ -104,6 +107,19 @@ interface AIAssistantPendingTask {
 interface AIAssistantStreamEvent {
     request_id?: string;
     text?: string;
+}
+
+const AGENT_VIEW_EVENT = "agent-view";
+const AGENT_VIEW_CLEAR_EVENT = "agent-view-clear";
+const AGENT_VIEW_LIFECYCLE_EVENT = "agent-view:lifecycle";
+
+type AgentViewLifecycleAction = "open" | "update" | "submit" | "dismiss" | "error" | "complete";
+
+interface AgentViewLifecyclePayload {
+    action: AgentViewLifecycleAction;
+    view?: AgentView;
+    view_id?: string;
+    error?: string;
 }
 
 type DesktopPetState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -426,7 +442,14 @@ function isExplicitHistoryResetCommand(text: string): boolean {
 }
 
 function buildResetConfirmationMessages(response: any): ChatMessage[] {
-    const resetText = response?.text || response?.error || '';
+    const rawResetText = typeof response?.text === 'string'
+        ? response.text
+        : (typeof response?.error === 'string' ? response.error : '');
+    const resetText = stripRolePrefixFrontend(rawResetText);
+    logRolePrefixDiagnostic('reset-confirmation', rawResetText, resetText, {
+        requestId: response?.request_id,
+        responseSource: response?.response_source,
+    });
     if (!resetText) return [];
     return [{
         id: nextId(),
@@ -664,7 +687,13 @@ function isConfirmationApprovalAction(action: ChatAction | undefined): boolean {
 }
 
 function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage {
-    const nextContent = message.content ? message.content + delta : delta;
+    const rawNextContent = message.content ? message.content + delta : delta;
+    const nextContent = stripRolePrefixFrontend(rawNextContent);
+    logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {
+        messageId: message.id,
+        requestId: message.requestId,
+        deltaLen: delta.length,
+    });
     if (nextContent === message.content) return message;
     return {
         ...message,
@@ -835,6 +864,7 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
         local_file_paths: Array.isArray(raw.local_file_paths) ? raw.local_file_paths : (Array.isArray(raw.LocalFilePaths) ? raw.LocalFilePaths : undefined),
         thumbnail_base64: typeof raw.thumbnail_base64 === 'string' ? raw.thumbnail_base64 : (typeof raw.ThumbnailBase64 === 'string' ? raw.ThumbnailBase64 : ''),
         request_id: typeof raw.request_id === 'string' ? raw.request_id : (typeof raw.RequestID === 'string' ? raw.RequestID : ''),
+        response_source: typeof raw.response_source === 'string' ? raw.response_source : (typeof raw.ResponseSource === 'string' ? raw.ResponseSource : ''),
         trace_status: typeof raw.trace_status === 'string' ? raw.trace_status : (typeof raw.TraceStatus === 'string' ? raw.TraceStatus : ''),
         trace_summary: typeof raw.trace_summary === 'string' ? raw.trace_summary : (typeof raw.TraceSummary === 'string' ? raw.TraceSummary : ''),
         trace_event_count: typeof raw.trace_event_count === 'number' ? raw.trace_event_count : (typeof raw.TraceEventCount === 'number' ? raw.TraceEventCount : undefined),
@@ -1106,6 +1136,99 @@ const SPECIAL_RESPONSE_SOURCES: ReadonlySet<string> = new Set([
 // This is the frontend equivalent of the Go-side rolePrefixRe / rolePrefixLineRe.
 const rolePrefixPattern = /^[\s>*\-]*(?:\d+\.\s*)?(Browser|Tool)\s*(?::[ \t]?|：)/m;
 
+type RolePrefixDiagnosticMeta = Record<string, string | number | boolean | null | undefined>;
+type RolePrefixDiagnosticInfo = {
+    hasRolePrefix: boolean;
+    rolePrefixKind?: string;
+    rolePrefixIndex?: number;
+    rolePrefixAtStart?: boolean;
+};
+
+function hasRolePrefixLeakCandidate(text: string): boolean {
+    if (!text) return false;
+    if (!text.includes('Browser') && !text.includes('Tool')) return false;
+    if (!text.includes(':') && !text.includes('\uff1a')) return false;
+    return rolePrefixPattern.test(text);
+}
+
+function rolePrefixDiagnosticInfo(text: string): RolePrefixDiagnosticInfo {
+    if (!text || (!text.includes('Browser') && !text.includes('Tool'))) {
+        return { hasRolePrefix: false };
+    }
+    if (!text.includes(':') && !text.includes('\uff1a')) {
+        return { hasRolePrefix: false };
+    }
+    const match = rolePrefixPattern.exec(text);
+    if (!match || match.index === undefined) {
+        return { hasRolePrefix: false };
+    }
+    return {
+        hasRolePrefix: true,
+        rolePrefixKind: match[1],
+        rolePrefixIndex: match.index,
+        rolePrefixAtStart: text.slice(0, match.index).trim().length === 0,
+    };
+}
+
+function logRolePrefixDiagnostic(stage: string, before: string, after?: string, meta: RolePrefixDiagnosticMeta = {}): void {
+    const beforeText = before || '';
+    const afterText = after ?? beforeText;
+    const stripped = after !== undefined && afterText !== beforeText;
+    if (!stripped && !hasRolePrefixLeakCandidate(beforeText) && !hasRolePrefixLeakCandidate(afterText)) {
+        return;
+    }
+    const beforeInfo = rolePrefixDiagnosticInfo(beforeText);
+    const afterInfo = rolePrefixDiagnosticInfo(afterText);
+    const payload: RolePrefixDiagnosticMeta & {
+        stage: string;
+        stripped: boolean;
+        beforeLen: number;
+        afterLen: number;
+        beforeHasRolePrefix: boolean;
+        beforeRolePrefixKind?: string;
+        beforeRolePrefixIndex?: number;
+        beforeRolePrefixAtStart?: boolean;
+        afterHasRolePrefix: boolean;
+        afterRolePrefixKind?: string;
+        afterRolePrefixIndex?: number;
+        afterRolePrefixAtStart?: boolean;
+    } = {
+        stage,
+        stripped,
+        beforeLen: beforeText.length,
+        afterLen: afterText.length,
+        beforeHasRolePrefix: beforeInfo.hasRolePrefix,
+        afterHasRolePrefix: afterInfo.hasRolePrefix,
+        ...meta,
+    };
+    if (beforeInfo.hasRolePrefix) {
+        payload.beforeRolePrefixKind = beforeInfo.rolePrefixKind;
+        payload.beforeRolePrefixIndex = beforeInfo.rolePrefixIndex;
+        payload.beforeRolePrefixAtStart = beforeInfo.rolePrefixAtStart;
+    }
+    if (afterInfo.hasRolePrefix) {
+        payload.afterRolePrefixKind = afterInfo.rolePrefixKind;
+        payload.afterRolePrefixIndex = afterInfo.rolePrefixIndex;
+        payload.afterRolePrefixAtStart = afterInfo.rolePrefixAtStart;
+    }
+    // Diagnostic only: catches display-layer role prefix leaks without logging
+    // assistant/user content.
+    console.warn('[ai-role-prefix]', payload);
+    const logFrontendDiagnostic = typeof window !== 'undefined'
+        ? (window as any).go?.main?.App?.LogFrontendDiagnostic
+        : undefined;
+    if (typeof logFrontendDiagnostic === 'function') {
+        try {
+            void Promise.resolve(logFrontendDiagnostic({
+                tag: 'ai-role-prefix',
+                ...payload,
+            })).catch(() => { });
+        } catch {
+            // Diagnostics must never affect chat rendering.
+        }
+    }
+}
+
 /**
  * Strip hallucinated role prefixes from LLM output text.
  * Frontend safety net — catches anything the backend streaming filter missed.
@@ -1170,9 +1293,23 @@ function stripRolePrefixFrontend(text: string): string {
 }
 
 export function resolveFinalRoundContent(message: ChatMessage, response: any): string {
-    const finalText = typeof response?.text === 'string' ? response.text : '';
-    const streamedContent = message.content || '';
-    const responseSource: string = typeof response?.response_source === 'string' ? response.response_source : '';
+    const rawFinalText = typeof response?.text === 'string' ? response.text : '';
+    const rawStreamedContent = message.content || '';
+    const finalText = stripRolePrefixFrontend(rawFinalText);
+    const streamedContent = stripRolePrefixFrontend(rawStreamedContent);
+    const responseSource: string = typeof response?.response_source === 'string'
+        ? response.response_source
+        : (typeof response?.ResponseSource === 'string' ? response.ResponseSource : '');
+    logRolePrefixDiagnostic('final-response:text', rawFinalText, finalText, {
+        messageId: message.id,
+        requestId: message.requestId || response?.request_id,
+        responseSource,
+    });
+    logRolePrefixDiagnostic('final-response:streamed', rawStreamedContent, streamedContent, {
+        messageId: message.id,
+        requestId: message.requestId || response?.request_id,
+        responseSource,
+    });
 
     // --- Layer 1: Source check ---
     // Special handler paths produce text semantically unrelated to streamed
@@ -1180,6 +1317,13 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     // delivery notices, screenshot captions). Always use finalText for these.
     if (SPECIAL_RESPONSE_SOURCES.has(responseSource)) {
         return finalText;
+    }
+    const localFilePath = typeof response?.local_file_path === 'string'
+        ? response.local_file_path
+        : (typeof response?.LocalFilePath === 'string' ? response.LocalFilePath : '');
+    const localFilePaths = normalizeLocalFilePaths(localFilePath, response?.local_file_paths ?? response?.LocalFilePaths);
+    if (!finalText && localFilePaths?.length) {
+        return '';
     }
 
     // --- Layer 2: Length comparison ---
@@ -1276,8 +1420,21 @@ function replaceRoundWithError(messages: ChatMessage[], assistantMessageId: stri
             }];
 }
 
-function removeRoundMessage(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null): ChatMessage[] {
-    return updateRoundMessage(messages, assistantMessageId, requestId, () => null);
+export const CANCELED_BY_USER_LINE = "任务已经应用户要求取消";
+
+export function markRoundCancelled(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null): ChatMessage[] {
+    const markCancelled = (message: ChatMessage): ChatMessage => {
+        const content = message.content || "";
+        if (content.includes(CANCELED_BY_USER_LINE)) return message;
+        return {
+            ...message,
+            content: content.trimEnd()
+                ? `${content.trimEnd()}\n${CANCELED_BY_USER_LINE}`
+                : CANCELED_BY_USER_LINE,
+            timestamp: Date.now(),
+        };
+    };
+    return updateRoundMessage(messages, assistantMessageId, requestId, markCancelled);
 }
 
 function resolveSendResult(messages: ChatMessage[], assistantMessageId: string | null, requestId: string | null, response: any, preferences: AIAssistantPreferences, errorText?: string): ChatMessage[] {
@@ -1342,6 +1499,33 @@ function matchesActiveRequest(round: ActiveRound, event: AIAssistantStreamEvent)
 function matchesActiveProgressRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
     if (!round.requestId || round.generation === 0 || round.phase === 'idle') return false;
     return !!event.request_id && event.request_id === round.requestId;
+}
+
+function normalizeAgentView(raw: unknown): AgentView | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const data = raw as Record<string, unknown>;
+    const candidate = data.view && typeof data.view === 'object'
+        ? data.view as Record<string, unknown>
+        : data;
+    if (typeof candidate.type !== 'string' || typeof candidate.title !== 'string') {
+        return null;
+    }
+    return candidate as unknown as AgentView;
+}
+
+function normalizeAgentViewLifecycle(raw: unknown): AgentViewLifecyclePayload | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const data = raw as Record<string, unknown>;
+    const action = typeof data.action === 'string' ? data.action.trim() : '';
+    if (!["open", "update", "submit", "dismiss", "error", "complete"].includes(action)) {
+        return null;
+    }
+    return {
+        action: action as AgentViewLifecycleAction,
+        view: normalizeAgentView(data) || undefined,
+        view_id: typeof data.view_id === 'string' ? data.view_id : undefined,
+        error: typeof data.error === 'string' ? data.error : undefined,
+    };
 }
 
 function subscribeEvent(eventName: string, handler: (...args: any[]) => void): () => void {
@@ -1549,6 +1733,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const [scrollToTopSeq, setScrollToTopSeq] = useState(0);
     const [activeRound, setActiveRound] = useState<ActiveRound>(IDLE_ROUND);
     const [pendingTask, setPendingTask] = useState<AIAssistantPendingTask | null>(null);
+    const [agentView, setAgentView] = useState<AgentView | null>(null);
     const activeRoundRef = useRef<ActiveRound>(IDLE_ROUND);
     const pendingTaskRef = useRef<AIAssistantPendingTask | null>(null);
     const foregroundSendTailRef = useRef<Promise<boolean>>(Promise.resolve(true));
@@ -1964,7 +2149,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const tokenHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
-            if (!matchesActiveRequest(currentRound, event)) return;
+            const isActiveRequest = matchesActiveRequest(currentRound, event);
+            logRolePrefixDiagnostic('stream-event-received', event.text || '', undefined, {
+                requestId: event.request_id,
+                activeRequestId: currentRound.requestId,
+                messageId: currentRound.assistantMessageId,
+                matchedActiveRequest: isActiveRequest,
+            });
+            if (!isActiveRequest) return;
             if (!currentRound.assistantMessageId || !event.text) return;
             emitPetStateForAssistant('speaking', 'ai:stream-token', 1800);
             queueStreamToken(currentRound, event.text);
@@ -2097,6 +2289,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             }
         } catch (err: any) {
             resetStreamTokenBuffer();
+            const currentRound = activeRoundRef.current;
+            if (currentRound.generation !== generation || currentRound.phase === 'idle') {
+                return true;
+            }
             setMessages(prev => resolveSendResult(prev, assistantMessageId, requestId, null, preferences, err?.message || String(err)));
             setPendingTaskState(null);
         } finally {
@@ -2374,6 +2570,43 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
     }, []);
 
+    useEffect(() => {
+        const offView = subscribeEvent(AGENT_VIEW_EVENT, (payload: unknown) => {
+            const nextView = normalizeAgentView(payload);
+            if (nextView) setAgentView(nextView);
+        });
+        const offClear = subscribeEvent(AGENT_VIEW_CLEAR_EVENT, () => setAgentView(null));
+        const offLifecycle = subscribeEvent(AGENT_VIEW_LIFECYCLE_EVENT, (payload: unknown) => {
+            const event = normalizeAgentViewLifecycle(payload);
+            if (!event) return;
+            switch (event.action) {
+                case "open":
+                case "update":
+                    if (event.view) setAgentView(event.view);
+                    break;
+                case "dismiss":
+                    setAgentView(null);
+                    break;
+                case "complete":
+                    if (event.view) setAgentView(event.view);
+                    else setAgentView(null);
+                    break;
+                case "error":
+                    if (event.error) {
+                        setMessages(prev => [...prev, createErrorMessage(event.error || "Task panel error")]);
+                    }
+                    break;
+                case "submit":
+                    break;
+            }
+        });
+        return () => {
+            offView();
+            offClear();
+            offLifecycle();
+        };
+    }, []);
+
     // Listen for critical-risk skill installation confirmation events from the backend.
     useEffect(() => {
         const handler = (payload: unknown) => {
@@ -2408,7 +2641,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             return { canceledText: "" };
         }
         if (canceledRound.assistantMessageId) {
-            setMessages(prev => removeRoundMessage(prev, canceledRound.assistantMessageId, canceledRound.requestId));
+            flushStreamTokenBuffer();
+            resetStreamTokenBuffer();
+            setMessages(prev => markRoundCancelled(prev, canceledRound.assistantMessageId, canceledRound.requestId));
         }
         foregroundSendTailRef.current = Promise.resolve(true);
         resetActiveRound(nextGeneration);
@@ -2436,7 +2671,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } catch {
             return { canceledText: "" };
         }
-    }, [emitPetStateForAssistant, resetActiveRound, setPendingTaskState]);
+    }, [emitPetStateForAssistant, flushStreamTokenBuffer, resetActiveRound, resetStreamTokenBuffer, setPendingTaskState]);
 
     // injectSupplementary sends a supplementary message into the running
     // agent loop without cancelling it. Returns true if the injection was
@@ -2458,7 +2693,38 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, []);
 
-    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary };
+    const submitAgentView = useCallback(async (viewId: string | undefined, data: Record<string, unknown>) => {
+        setAgentView(null);
+        const payload = JSON.stringify({ view_id: viewId || "", data });
+        try {
+            await SubmitAgentView({ view_id: viewId || "", data });
+            return;
+        } catch {
+            // Older desktop bindings may not expose the structured task-panel API yet.
+        }
+        const message = `__agent_view_submit__ ${payload}`;
+        const injected = await injectSupplementary(message);
+        if (!injected) {
+            await sendMessage(message, { uiAction: true, displayText: "Submit structured data" });
+        }
+    }, [injectSupplementary, sendMessage]);
+
+    const dismissAgentView = useCallback(async (viewId: string | undefined) => {
+        setAgentView(null);
+        try {
+            await DismissAgentView({ view_id: viewId || "" });
+            return;
+        } catch {
+            // Older desktop bindings may not expose the structured task-panel API yet.
+        }
+        const message = `__agent_view_dismiss__ ${JSON.stringify({ view_id: viewId || "" })}`;
+        const injected = await injectSupplementary(message);
+        if (!injected) {
+            await sendMessage(message, { uiAction: true, displayText: "Close task panel" });
+        }
+    }, [injectSupplementary, sendMessage]);
+
+    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, submitAgentView, dismissAgentView };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

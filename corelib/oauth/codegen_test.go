@@ -178,6 +178,74 @@ func TestProperty_NeedsRefreshCodeGen_NonSSOSkipped(t *testing.T) {
 	})
 }
 
+func TestFirstUsableCodeGenModelSkipsUnavailableEntries(t *testing.T) {
+	available := true
+	unavailable := false
+	models := []codeGenModelEntry{
+		{ID: "disabled-model", ContextWindow: 1000, Disabled: true},
+		{ID: "unavailable-model", ContextWindow: 2000, Available: &unavailable},
+		{ID: "enabled-model", ContextWindow: 3000, Available: &available},
+	}
+
+	id, contextLength := firstUsableCodeGenModel(models)
+	if id != "enabled-model" {
+		t.Fatalf("model id = %q, want %q", id, "enabled-model")
+	}
+	if contextLength != 3000 {
+		t.Fatalf("context length = %d, want %d", contextLength, 3000)
+	}
+}
+
+func TestFirstUsableCodeGenModelUsesNameWhenIDMissing(t *testing.T) {
+	id, _ := firstUsableCodeGenModel([]codeGenModelEntry{{Name: "named-model", Status: "available"}})
+	if id != "named-model" {
+		t.Fatalf("model id = %q, want %q", id, "named-model")
+	}
+}
+
+func TestFirstUsableCodeGenModelReturnsEmptyWhenAllEntriesUnavailable(t *testing.T) {
+	unavailable := false
+	models := []codeGenModelEntry{
+		{ID: "disabled-model", Disabled: true},
+		{ID: "unavailable-model", Available: &unavailable},
+		{ID: "inactive-model", Status: "inactive"},
+	}
+
+	id, contextLength := firstUsableCodeGenModel(models)
+	if id != "" {
+		t.Fatalf("model id = %q, want empty", id)
+	}
+	if contextLength != 0 {
+		t.Fatalf("context length = %d, want 0", contextLength)
+	}
+}
+
+func TestCodeGenModelsFromEntriesKeepsOnlyUsableModelsInServerOrder(t *testing.T) {
+	unavailable := false
+	models := codeGenModelsFromEntries([]codeGenModelEntry{
+		{ID: "disabled-model", Disabled: true},
+		{ID: "server-first-model", Name: "Server First", ContextWindow: 1000},
+		{ID: "alphabetically-first-model", ContextWindow: 2000, Available: &unavailable},
+		{ID: "server-second-model", ContextWindow: 3000, Status: "available"},
+	})
+
+	if len(models) != 2 {
+		t.Fatalf("model count = %d, want 2: %+v", len(models), models)
+	}
+	if models[0].ID != "server-first-model" {
+		t.Fatalf("first model = %q, want %q", models[0].ID, "server-first-model")
+	}
+	if models[0].Name != "Server First" {
+		t.Fatalf("first model name = %q, want %q", models[0].Name, "Server First")
+	}
+	if models[1].ID != "server-second-model" {
+		t.Fatalf("second model = %q, want %q", models[1].ID, "server-second-model")
+	}
+	if models[1].ContextWindow != 3000 {
+		t.Fatalf("second model context = %d, want 3000", models[1].ContextWindow)
+	}
+}
+
 // ─── Task 8.1 ───────────────────────────────────────────────────────────────
 // Feature: codegen-scan-login, Property 1: Success response parsing extracts token and email
 // **Validates: Requirements 1.3**
@@ -287,7 +355,6 @@ func TestProperty_ErrorResponseFormatting(t *testing.T) {
 		}
 	})
 }
-
 
 // ─── Task 8.3 ───────────────────────────────────────────────────────────────
 // Feature: codegen-scan-login, Property 6: MaclawLLMProvider serialization round-trip

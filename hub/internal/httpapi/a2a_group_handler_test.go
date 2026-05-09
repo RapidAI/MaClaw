@@ -171,6 +171,111 @@ func TestGroupDiscussionHubLifecycleAndAdminSnapshot(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionHubProposalReviewDecision(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	handler := NewGroupDiscussionHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"proposal loop","question":"Which path?"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/proposals", `{"author_id":"maclaw-a","title":"Use staged rollout","content":"Ship behind gates","risks":["rollback drift"]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("proposal status = %d, body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodGet, "/api/a2a/consultations/"+created.Discussion.ID+"/detail", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var detail corea2a.HubDiscussionDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if len(detail.Proposals) != 1 || detail.Proposals[0].Title != "Use staged rollout" {
+		t.Fatalf("proposals = %+v", detail.Proposals)
+	}
+	proposalID := detail.Proposals[0].ID
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/reviews", `{"proposal_id":"`+proposalID+`","reviewer_id":"maclaw-a","position":"approve","comment":"safe enough"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("review status = %d, body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/decide", `{"proposal_id":"`+proposalID+`","summary":"Use staged rollout","rationale":"Approval includes rollback gates","rollback_on":["gate fails", "", "gate fails"]}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("decide status = %d, body=%s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodGet, "/api/a2a/consultations/"+created.Discussion.ID+"/detail", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("final detail status = %d, body=%s", w.Code, w.Body.String())
+	}
+	detail = corea2a.HubDiscussionDetail{}
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal final detail: %v", err)
+	}
+	if detail.Decision == nil || detail.Decision.ProposalID != proposalID || detail.Discussion.Status != string(corea2a.SessionDecided) {
+		t.Fatalf("decision detail = %+v status=%s", detail.Decision, detail.Discussion.Status)
+	}
+	if detail.Decision.Rationale != "Approval includes rollback gates" || len(detail.Decision.RollbackOn) != 1 || detail.Decision.RollbackOn[0] != "gate fails" {
+		t.Fatalf("decision rationale/rollback = %+v", detail.Decision)
+	}
+	summary := detail.ReviewSummaries[proposalID]
+	if summary.Approvals != 1 || summary.Rejections != 0 || summary.Concerns != 0 || len(summary.ReviewedBy) != 1 || summary.ReviewedBy[0] != "maclaw-a" {
+		t.Fatalf("review summary = %+v", summary)
+	}
+}
+
+func TestGroupDiscussionHubEscalation(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	handler := NewGroupDiscussionHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"blocked rollout","question":"Who should decide?"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/escalate", `{"raised_by":"maclaw-a","reason":"needs executive owner","target":"iworkercenter"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("escalate status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodGet, "/api/a2a/consultations/"+created.Discussion.ID+"/detail", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var detail corea2a.HubDiscussionDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if detail.Session == nil || detail.Session.Escalation == nil || detail.Discussion.Status != string(corea2a.SessionEscalated) {
+		t.Fatalf("escalation detail = %+v status=%s", detail.Session, detail.Discussion.Status)
+	}
+	if detail.Session.Escalation.RaisedBy != "maclaw-a" || detail.Session.Escalation.Reason != "needs executive owner" || detail.Session.Escalation.Target != "iworkercenter" {
+		t.Fatalf("escalation = %+v", detail.Session.Escalation)
+	}
+}
+
 func TestGroupDiscussionActiveExpertWindow(t *testing.T) {
 	svc := NewGroupDiscussionService()
 	old := time.Now().Add(-20 * time.Minute)

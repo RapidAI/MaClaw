@@ -152,14 +152,19 @@ type AuthorizedModel struct {
 }
 
 type ActiveGrant struct {
-	ServiceGroupID   string    `json:"service_group_id"`
-	Source           string    `json:"source"`
-	StartsAt         time.Time `json:"starts_at"`
-	ExpiresAt        time.Time `json:"expires_at"`
-	Active           bool      `json:"active"`
-	CreditsTotal     float64   `json:"credits_total,omitempty"`
-	CreditsUsed      float64   `json:"credits_used,omitempty"`
-	CreditsRemaining float64   `json:"credits_remaining,omitempty"`
+	ServiceGroupID    string    `json:"service_group_id"`
+	Source            string    `json:"source"`
+	StartsAt          time.Time `json:"starts_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	Active            bool      `json:"active"`
+	Status            string    `json:"status,omitempty"`
+	StatusReason      string    `json:"status_reason,omitempty"`
+	CreditsTotal      float64   `json:"credits_total,omitempty"`
+	CreditsUsed       float64   `json:"credits_used,omitempty"`
+	CreditsAvailable  float64   `json:"credits_available,omitempty"`
+	RetryAfterSeconds int64     `json:"retry_after_seconds,omitempty"`
+	RetryAfterAt      string    `json:"retry_after_at,omitempty"`
+	CreditsRemaining  float64   `json:"credits_remaining,omitempty"`
 }
 
 type ServiceStatus struct {

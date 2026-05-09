@@ -3,14 +3,15 @@ package app
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/agentruntime"
-	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/goalwatch"
 	centercompute "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/compute"
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/goalwatch"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
 )
 
@@ -77,6 +78,40 @@ func TestRuntimeStatusSnapshotReportsLocalFallbackWhenCloudUnavailable(t *testin
 	}
 }
 
+func TestRuntimeStatusSnapshotUsesEffectiveCloudProviderCount(t *testing.T) {
+	center := newReadinessTestCenter(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	settingsPath := filepath.Join(home, ".iworkercenter", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatalf("mkdir settings dir: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{"providers":[{"id":"legacy-local"}]}`), 0o644); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"providers":          []map[string]any{},
+			"compute_permission": false,
+			"force_sync":         false,
+		})
+	}))
+	defer srv.Close()
+	syncMgr := centercompute.NewSyncManager(srv.URL, "center-1", "secret")
+	if err := syncMgr.SyncNow(); err != nil {
+		t.Fatalf("SyncNow() error: %v", err)
+	}
+	center.ComputeSyncManager = syncMgr
+	center.ComputeSourceManager = centercompute.NewSourceManager(syncMgr)
+
+	status := center.RuntimeStatusSnapshot()
+	if status.RuntimeProviderMode != "cloud_sync" || status.ProviderCount != 0 || status.CloudProviderCount != 0 {
+		t.Fatalf("status = %+v, want cloud_sync with zero effective providers", status)
+	}
+}
+
 func TestIWorkerReadinessSnapshotReportsMissingBootstrapData(t *testing.T) {
 	center := newReadinessTestCenter(t)
 	status := center.IWorkerReadinessSnapshot()
@@ -92,6 +127,11 @@ func TestIWorkerReadinessSnapshotReportsMissingBootstrapData(t *testing.T) {
 	}
 	if !containsString(status.RequiredClientPaths, "/client/iworker/instances") || containsString(status.RequiredClientPaths, "/client/iworker/agent-instances") {
 		t.Fatalf("iWorker runtime path mismatch: %+v", status.RequiredClientPaths)
+	}
+	for _, required := range []string{"/client/config/latest", "/client/config/apply-result", "/client/capabilities", "/client/mcp-servers"} {
+		if !containsString(status.RequiredClientPaths, required) {
+			t.Fatalf("required delivery/capability path %q missing: %+v", required, status.RequiredClientPaths)
+		}
 	}
 	if status.AuthMethods[0].Method != "local" || status.AuthMethods[0].Ready {
 		t.Fatalf("local auth readiness = %+v, want not ready", status.AuthMethods[0])
@@ -163,7 +203,7 @@ func TestCloudIWorkerReadinessSnapshotIncludesOnlyAggregateWorkload(t *testing.T
 	if err != nil {
 		t.Fatalf("marshal cloud readiness: %v", err)
 	}
-	for _, forbidden := range []string{"confidential board report", "current_task", "current_detail", "required_client_paths", "checks", "auth_methods", "/client/iworker/instances"} {
+	for _, forbidden := range []string{"confidential board report", "current_task", "current_detail", "required_client_paths", "checks", "auth_methods", "/client/iworker/instances", "/client/config/latest", "/client/mcp-servers"} {
 		if strings.Contains(string(data), forbidden) {
 			t.Fatalf("cloud readiness leaked %q: %s", forbidden, string(data))
 		}

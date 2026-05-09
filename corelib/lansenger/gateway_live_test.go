@@ -50,14 +50,14 @@ func TestLiveAuth(t *testing.T) {
 	}
 
 	gw := NewGateway(cfg, nil)
-	appToken, err := gw.getAppToken()
+	appToken, err := gw.getAppToken(context.Background())
 	if err != nil {
 		t.Fatalf("getAppToken failed: %v", err)
 	}
 	t.Logf("appToken: %s...%s (len=%d)", appToken[:8], appToken[len(appToken)-4:], len(appToken))
 
 	// Second call should hit cache.
-	appToken2, err := gw.getAppToken()
+	appToken2, err := gw.getAppToken(context.Background())
 	if err != nil {
 		t.Fatalf("getAppToken (cached) failed: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestLiveWebSocketURL(t *testing.T) {
 	}
 
 	gw := NewGateway(cfg, nil)
-	wsURL, err := gw.getWebSocketURL()
+	wsURL, err := gw.getWebSocketURL(context.Background())
 	if err != nil {
 		t.Fatalf("getWebSocketURL failed: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestLiveSendImageDirect(t *testing.T) {
 	}
 
 	gw := NewGateway(cfg, nil)
-	appToken, err := gw.getAppToken()
+	appToken, err := gw.getAppToken(context.Background())
 	if err != nil {
 		t.Fatalf("getAppToken: %v", err)
 	}

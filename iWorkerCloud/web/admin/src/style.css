@@ -337,7 +337,7 @@ label { display: block; font-size: 12px; font-weight: 800; color: var(--muted); 
 
 .cloud-auth-queue-row {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(160px, 1fr) auto auto;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 1fr) auto auto auto;
   align-items: center;
   gap: 8px;
   padding: 10px;
@@ -1185,6 +1185,79 @@ button:disabled {
   z-index: 30;
   background: rgba(27, 32, 42, 0.38);
   backdrop-filter: blur(2px);
+}
+
+.cloud-delete-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(27, 32, 42, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+.cloud-delete-confirm-dialog {
+  position: fixed;
+  z-index: 70;
+  top: 50%;
+  left: 50%;
+  width: min(460px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(214, 93, 87, 0.30);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 22px 60px rgba(27, 32, 42, 0.22);
+}
+
+.cloud-delete-confirm-dialog span {
+  display: block;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.cloud-delete-confirm-dialog strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.cloud-delete-confirm-dialog p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.cloud-delete-confirm-target {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.cloud-delete-confirm-target span {
+  color: var(--text);
+  font-size: 14px;
+  text-transform: none;
+}
+
+.cloud-delete-confirm-target small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.cloud-delete-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .cloud-center-card-head-actions {

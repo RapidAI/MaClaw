@@ -12,10 +12,12 @@ type Props = {
   onViewResult: (task: HistoryTaskItem) => void;
   onCloneTask: (task: HistoryTaskItem) => void;
   onDeleteTask: (task: HistoryTaskItem) => void;
+  onUseInstalledTool: (prompt: string, toolName: string) => void;
   viewedTask: HistoryTaskItem | null;
 };
 
 type ToolItem = { id: string; nameKey: string; fallbackName: string; icon: string; descKey: string; fallbackDesc: string; badgeKey?: string; fallbackBadge?: string };
+type CenterToolRow = { id: string; kind: string; name: string; description: string; badge: string; icon: string; details: string[]; prompt?: string };
 
 const fallbackInstalledTools: ToolItem[] = [
   { id: 'capability-evolver', nameKey: 'history.tools.capability.name', fallbackName: 'capability-evolver', icon: 'CE', descKey: 'history.tools.capability.desc', fallbackDesc: 'Evolves organizational capability maps from reusable work evidence.' },
@@ -33,35 +35,95 @@ const catalogTools: ToolItem[] = [
   { id: 'brand-design', nameKey: 'history.catalog.brand.name', fallbackName: 'Brand design expert', icon: 'BD', descKey: 'history.catalog.brand.desc', fallbackDesc: 'Reuses brand visual assets to generate design proposals quickly.' },
 ];
 
-export function TaskHistoryPage({ tasks, installedTools, installedToolsLoading, installedToolsError, onRefreshInstalledTools, onResumeTask, onViewResult, onCloneTask, onDeleteTask, viewedTask }: Props) {
+const stableToolId = (prefix: string, raw: string | undefined, index: number) => `${prefix}-${raw || index + 1}`;
+const safeList = (items: string[] | undefined) => Array.isArray(items) ? items.filter(Boolean) : [];
+
+export function TaskHistoryPage({ tasks, installedTools, installedToolsLoading, installedToolsError, onRefreshInstalledTools, onResumeTask, onViewResult, onCloneTask, onDeleteTask, onUseInstalledTool, viewedTask }: Props) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<typeof catalogTabs[number]>('recommended');
   const [searchQuery, setSearchQuery] = useState('');
+  const sourceTypeLabel = (task: HistoryTaskItem) => {
+    if (task.sourceType === 'workflow_handoff') return t('history.workflowHandoff', 'Workflow handoff');
+    if (task.sourceType === 'center_handoff') return t('history.centerHandoff', 'Center handoff');
+    if (task.sourceType === 'center_push') return t('history.centerPush', 'Center push');
+    return t('history.localTask', 'Local task');
+  };
   const localizedCatalog = useMemo(() => catalogTools.map((tool) => ({ ...tool, name: t(tool.nameKey, tool.fallbackName), description: t(tool.descKey, tool.fallbackDesc) })), [t]);
-  const centerToolRows = useMemo(() => [
-    ...installedTools.skills.map((skill) => ({
-      id: `skill-${skill.capabilityId}`,
+  const centerToolRows = useMemo<CenterToolRow[]>(() => [
+    ...installedTools.skills.map((skill, index) => {
+      const triggers = safeList(skill.entry?.triggers);
+      const skillId = skill.capabilityId || skill.name || skill.entry?.name || `skill-${index + 1}`;
+      const skillName = skill.name || skill.entry?.name || skillId;
+      return {
+      id: stableToolId('skill', skillId, index),
       kind: 'Skill',
-      name: skill.name || skill.capabilityId,
-      description: skill.entry?.description || (skill.entry?.triggers || []).join(', ') || t('history.centerSkillDesc', 'Center-distributed iWorker skill.'),
+      name: skillName,
+      description: skill.entry?.description || triggers.join(', ') || t('history.centerSkillDesc', 'Center-distributed iWorker skill.'),
       badge: `${skill.source || 'iWorkerCenter'} / ${skill.version || '-'} / ${skill.riskLevel || 'low'}`,
       icon: 'SK',
-    })),
-    ...installedTools.mcpServers.map((server) => ({
-      id: `mcp-${server.id}`,
+      details: [
+        t('history.toolMeta.version', 'Version {{value}}', { value: skill.version || '-' }),
+        t('history.toolMeta.risk', 'Risk {{value}}', { value: skill.riskLevel || 'low' }),
+        ...(triggers.length ? [t('history.toolMeta.triggers', 'Triggers {{value}}', { value: triggers.join(', ') })] : []),
+      ],
+      prompt: t('history.useInstalledSkillPrompt', 'Use Center-installed Skill "{{name}}" for this task.\n\nSkill context:\n- Capability ID: {{id}}\n- Version: {{version}}\n- Risk: {{risk}}\n- Triggers: {{triggers}}\n\nKeep execution inside tenant policy, ask a human before using missing context, and record reusable output as Center memory.', {
+        name: skillName,
+        id: skillId,
+        version: skill.version || '-',
+        risk: skill.riskLevel || 'low',
+        triggers: triggers.join(', ') || t('history.none', 'none'),
+      }),
+    };
+    }),
+    ...installedTools.mcpServers.map((server, index) => {
+      const envKeys = safeList(server.envKeys);
+      const serverId = server.id || server.name || `mcp-${index + 1}`;
+      const serverName = server.name || server.id || serverId;
+      return {
+      id: stableToolId('mcp', serverId, index),
       kind: 'MCP',
-      name: server.name || server.id,
+      name: serverName,
       description: server.description || server.endpoint || server.command || t('history.centerMcpDesc', 'Center-installed MCP service.'),
       badge: `${server.status || 'enabled'} / ${server.departmentId || 'all'} / ${server.riskLevel || 'medium'}`,
       icon: 'MC',
-    })),
+      details: [
+        t('history.toolMeta.transport', 'Transport {{value}}', { value: server.serverType || 'http' }),
+        t('history.toolMeta.department', 'Department {{value}}', { value: server.departmentId || t('history.allDepartments', 'all departments') }),
+        t('history.toolMeta.risk', 'Risk {{value}}', { value: server.riskLevel || 'medium' }),
+        server.command
+          ? t('history.toolMeta.command', 'Command {{value}}', { value: server.command })
+          : t('history.toolMeta.endpoint', 'Endpoint {{value}}', { value: server.endpoint || '-' }),
+        envKeys.length
+          ? t('history.toolMeta.envKeys', 'Env keys {{value}}', { value: envKeys.join(', ') })
+          : t('history.toolMeta.noEnvKeys', 'No env keys required'),
+      ],
+      prompt: t('history.useInstalledMcpPrompt', 'Use Center-installed MCP "{{name}}" for this task.\n\nMCP context:\n- Server ID: {{id}}\n- Transport: {{transport}}\n- Department: {{department}}\n- Risk: {{risk}}\n- Endpoint/command: {{route}}\n- Required env keys: {{envKeys}}\n\nVerify credentials before execution, do not expose secret values, and ask a human for approval if the MCP access is missing or high risk.', {
+        name: serverName,
+        id: serverId,
+        transport: server.serverType || 'http',
+        department: server.departmentId || t('history.allDepartments', 'all departments'),
+        risk: server.riskLevel || 'medium',
+        route: server.command || server.endpoint || '-',
+        envKeys: envKeys.join(', ') || t('history.none', 'none'),
+      }),
+    };
+    }),
   ], [installedTools.mcpServers, installedTools.skills, t]);
-  const installedSourceLabel = installedTools.source === 'center' ? (installedTools.stale ? t('history.centerStale', 'Center stale') : t('history.centerLive', 'Center live')) : installedTools.source === 'cache' || installedTools.stale ? t('history.cachedSnapshot', 'Cached snapshot') : installedTools.source === 'unavailable' ? t('history.unavailable', 'Unavailable') : t('history.localFallback', 'Local fallback');
+  const installedSourceLabel = installedTools.source === 'center' ? (installedTools.stale ? t('history.centerStale', 'Center stale') : t('history.centerLive', 'Center live')) : installedTools.source === 'center-cache-error' ? t('history.centerCacheError', 'Center live / cache failed') : installedTools.source === 'partial-cache' ? t('history.partialCenterSnapshot', 'Partial Center snapshot') : installedTools.source === 'cache' || installedTools.stale ? t('history.cachedSnapshot', 'Cached snapshot') : installedTools.source === 'unavailable' ? t('history.unavailable', 'Unavailable') : t('history.localFallback', 'Local fallback');
   const filteredCatalog = useMemo(() => {
     if (!searchQuery) return localizedCatalog;
     const query = searchQuery.toLowerCase();
     return localizedCatalog.filter((tool) => tool.name.toLowerCase().includes(query) || tool.description.toLowerCase().includes(query));
   }, [localizedCatalog, searchQuery]);
+  const displayedToolRows: CenterToolRow[] = centerToolRows.length > 0 ? centerToolRows : fallbackInstalledTools.map((tool) => ({
+    id: tool.id,
+    kind: t('history.localFallback', 'Local fallback'),
+    name: t(tool.nameKey, tool.fallbackName),
+    description: t(tool.descKey, tool.fallbackDesc),
+    badge: tool.badgeKey ? t(tool.badgeKey, tool.fallbackBadge || '') : t('history.displayOnly', 'display only'),
+    icon: tool.icon,
+    details: [],
+  }));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', height: '100%', overflow: 'auto' }}>
@@ -82,8 +144,10 @@ export function TaskHistoryPage({ tasks, installedTools, installedToolsLoading, 
           <span style={{ fontSize: '12px', color: 'var(--dw-tools-muted-text)' }}>{installedSourceLabel}{installedTools.cachedAt ? ` / ${installedTools.cachedAt}` : ''}</span>
         </div>
         {installedToolsError ? <p style={{ fontSize: '12px', color: '#b91c1c', margin: '0 0 10px' }}>{installedToolsError}</p> : null}
+        {installedTools.skillError ? <p style={{ fontSize: '12px', color: '#b91c1c', margin: '0 0 10px' }}>{t('history.skillSyncIssue', 'Skill sync issue')}: {installedTools.skillError}</p> : null}
+        {installedTools.mcpError ? <p style={{ fontSize: '12px', color: '#b91c1c', margin: '0 0 10px' }}>{t('history.mcpSyncIssue', 'MCP sync issue')}: {installedTools.mcpError}</p> : null}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px' }}>
-          {(centerToolRows.length > 0 ? centerToolRows : fallbackInstalledTools.map((tool) => ({ id: tool.id, kind: t('history.localFallback', 'Local fallback'), name: t(tool.nameKey, tool.fallbackName), description: t(tool.descKey, tool.fallbackDesc), badge: tool.badgeKey ? t(tool.badgeKey, tool.fallbackBadge || '') : t('history.displayOnly', 'display only'), icon: tool.icon }))).map((tool) => (
+          {displayedToolRows.map((tool) => (
             <div key={tool.id} style={{ display: 'flex', gap: '10px', padding: '12px', borderRadius: '10px', border: '1px solid var(--dw-tools-card-border)', background: 'var(--dw-tools-card-bg)' }}>
               <div style={{ width: '36px', height: '36px', borderRadius: '8px', background: tool.kind === 'MCP' ? '#ecfdf5' : '#eef2ff', color: tool.kind === 'MCP' ? '#166534' : '#3730a3', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, flexShrink: 0 }}>{tool.icon}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -93,6 +157,16 @@ export function TaskHistoryPage({ tasks, installedTools, installedToolsLoading, 
                 </div>
                 <p style={{ fontSize: '11px', color: 'var(--dw-tools-muted-text)', margin: '4px 0 0', lineHeight: '1.5' }}>{tool.description}</p>
                 <p style={{ fontSize: '10px', color: 'var(--dw-tools-muted-text)', margin: '4px 0 0' }}>{tool.badge}</p>
+                {tool.details.length ? (
+                  <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '6px' }}>
+                    {tool.details.map((detail) => (
+                      <span key={detail} style={{ padding: '2px 6px', borderRadius: '4px', background: 'var(--dw-tools-input-bg)', color: 'var(--dw-tools-muted-text)', fontSize: '10px', lineHeight: 1.4 }}>{detail}</span>
+                    ))}
+                  </div>
+                ) : null}
+                {tool.prompt ? (
+                  <button type="button" className="secondary" onClick={() => onUseInstalledTool(tool.prompt || '', tool.name)} style={{ marginTop: '8px' }}>{t('history.useTool', 'Use in task')}</button>
+                ) : null}
               </div>
             </div>
           ))}
@@ -116,6 +190,24 @@ export function TaskHistoryPage({ tasks, installedTools, installedToolsLoading, 
           ))}
         </div>
       </section>
+      {viewedTask ? (
+        <section aria-label={t('history.resultDetailAria', 'Selected work result')} style={{ padding: '14px', borderRadius: '10px', border: '1px solid var(--dw-tools-card-border)', background: 'var(--dw-tools-card-bg)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div>
+              <h3 style={{ margin: 0, fontSize: '14px', color: 'var(--dw-tools-title)' }}>{t('history.resultDetail', 'Result detail')}</h3>
+              <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--dw-tools-muted-text)' }}>{viewedTask.title} / {viewedTask.owner} / {viewedTask.updatedAt}</p>
+            </div>
+            <span style={{ padding: '2px 8px', borderRadius: '10px', background: 'var(--dw-tools-official-badge-bg)', color: 'var(--dw-tools-official-badge-text)', fontSize: '11px', fontWeight: 700 }}>{sourceTypeLabel(viewedTask)}</span>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap', fontSize: '11px', color: 'var(--dw-tools-muted-text)' }}>
+            {viewedTask.centerHandoffId ? <span>{t('history.handoffId', 'Handoff {{id}}', { id: viewedTask.centerHandoffId })}</span> : null}
+            {viewedTask.workflowStepInstanceId ? <span>{t('history.workflowStepId', 'Step {{id}}', { id: viewedTask.workflowStepInstanceId })}</span> : null}
+            {viewedTask.model ? <span>{t('history.modelUsed', 'Model {{model}}', { model: viewedTask.model })}</span> : null}
+            <span>{viewedTask.status}</span>
+          </div>
+          <pre style={{ whiteSpace: 'pre-wrap', margin: '12px 0 0', padding: '12px', borderRadius: '8px', background: 'var(--dw-tools-input-bg)', color: 'var(--dw-tools-title)', fontSize: '12px', lineHeight: 1.6, fontFamily: 'inherit' }}>{viewedTask.result || viewedTask.description || t('history.noResultRecorded', 'No result recorded.')}</pre>
+        </section>
+      ) : null}
       <section>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
           <h3 style={{ margin: 0, fontSize: '14px', color: 'var(--dw-tools-title)' }}>{t('history.recentTasks', 'Recent tasks')}</h3>
@@ -124,8 +216,13 @@ export function TaskHistoryPage({ tasks, installedTools, installedToolsLoading, 
         <div style={{ display: 'grid', gap: '8px' }}>
           {tasks.map((task) => (
             <div key={task.id} style={{ padding: '12px', borderRadius: '10px', border: '1px solid var(--dw-tools-card-border)', background: viewedTask?.id === task.id ? 'var(--dw-tools-row-hover)' : 'var(--dw-tools-card-bg)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}><div><div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--dw-tools-title)' }}>{task.title}</div><div style={{ fontSize: '11px', color: 'var(--dw-tools-muted-text)', marginTop: '4px' }}>{task.owner} / {task.updatedAt}</div></div><span style={{ fontSize: '11px', color: 'var(--dw-tools-muted-text)' }}>{task.status}</span></div>
-              <p style={{ fontSize: '12px', color: 'var(--dw-tools-subtitle)', margin: '8px 0 0', lineHeight: '1.5' }}>{task.description}</p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'flex-start' }}><div><div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--dw-tools-title)' }}>{task.title}</div><div style={{ fontSize: '11px', color: 'var(--dw-tools-muted-text)', marginTop: '4px' }}>{task.owner} / {task.updatedAt}</div></div><span style={{ fontSize: '11px', color: 'var(--dw-tools-muted-text)' }}>{task.status}</span></div>
+                <div style={{ display: 'flex', gap: '6px', marginTop: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ padding: '1px 6px', borderRadius: '4px', background: 'var(--dw-tools-official-badge-bg)', color: 'var(--dw-tools-official-badge-text)', fontSize: '10px', fontWeight: 600 }}>{sourceTypeLabel(task)}</span>
+                  {task.centerHandoffId ? <span style={{ fontSize: '10px', color: 'var(--dw-tools-muted-text)' }}>{t('history.handoffId', 'Handoff {{id}}', { id: task.centerHandoffId })}</span> : null}
+                  {task.workflowStepInstanceId ? <span style={{ fontSize: '10px', color: 'var(--dw-tools-muted-text)' }}>{t('history.workflowStepId', 'Step {{id}}', { id: task.workflowStepInstanceId })}</span> : null}
+                </div>
+                <p style={{ fontSize: '12px', color: 'var(--dw-tools-subtitle)', margin: '8px 0 0', lineHeight: '1.5' }}>{task.description}</p>
               <div style={{ display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' }}>
                 <button type="button" onClick={() => onViewResult(task)} className="secondary">{t('history.viewResult', 'View result')}</button>
                 <button type="button" onClick={() => onResumeTask(task)} className="secondary">{t('history.continueEditing', 'Continue editing')}</button>

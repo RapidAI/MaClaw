@@ -141,9 +141,10 @@ func TestProperty10_SkipBehaviorFollowsCanSkipFlag(t *testing.T) {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 
-	resp, err := engine1.HandleInput("u_skip_no", "跳过")
+	saveReviewOutputForCurrentPhase(t, engine1, "u_skip_no")
+	resp, err := engine1.ApplyReviewIntent("u_skip_no", ReviewIntentSkip, "")
 	if err != nil {
-		t.Fatalf("HandleInput failed: %v", err)
+		t.Fatalf("ApplyReviewIntent skip failed: %v", err)
 	}
 	state := engine1.GetActiveWorkflow("u_skip_no")
 	if state == nil {
@@ -162,23 +163,22 @@ func TestProperty10_SkipBehaviorFollowsCanSkipFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
-	// Advance to phase 2 (task_breakdown) by confirming twice.
-	// HandleInput requires PhaseOutputs to exist before confirm can advance,
-	// so inject mock outputs before each confirm.
-	engine2.mu.Lock()
-	engine2.workflows["u_skip_yes"].PhaseOutputs["requirements"] = "mock output"
-	engine2.mu.Unlock()
-	engine2.HandleInput("u_skip_yes", "确认")
-	engine2.mu.Lock()
-	engine2.workflows["u_skip_yes"].PhaseOutputs["tech_design"] = "mock output"
-	engine2.mu.Unlock()
-	engine2.HandleInput("u_skip_yes", "确认")
+	// Advance to phase 2 (task_breakdown) by applying classified confirms.
+	saveReviewOutputForCurrentPhase(t, engine2, "u_skip_yes")
+	if _, err := engine2.ApplyReviewIntent("u_skip_yes", ReviewIntentConfirm, ""); err != nil {
+		t.Fatalf("first ApplyReviewIntent confirm failed: %v", err)
+	}
+	saveReviewOutputForCurrentPhase(t, engine2, "u_skip_yes")
+	if _, err := engine2.ApplyReviewIntent("u_skip_yes", ReviewIntentConfirm, ""); err != nil {
+		t.Fatalf("second ApplyReviewIntent confirm failed: %v", err)
+	}
 	state2 := engine2.GetActiveWorkflow("u_skip_yes")
 	if state2 == nil || state2.PhaseIndex != 2 {
 		t.Fatalf("expected PhaseIndex=2, got %v", state2)
 	}
 
-	resp2, err := engine2.HandleInput("u_skip_yes", "跳过")
+	saveReviewOutputForCurrentPhase(t, engine2, "u_skip_yes")
+	resp2, err := engine2.ApplyReviewIntent("u_skip_yes", ReviewIntentSkip, "")
 	if err != nil {
 		t.Fatalf("HandleInput skip failed: %v", err)
 	}
@@ -226,25 +226,25 @@ func TestProperty11_LastPhaseAdvanceMarksCompleted(t *testing.T) {
 		lastPhase := tmpl.Phases[lastIdx]
 
 		if lastPhase.NeedsConfirm {
-			// HandleInput requires PhaseOutputs to exist before confirm can advance,
-			// so inject a mock output for the last phase.
-			engine.mu.Lock()
-			ws.PhaseOutputs[ws.CurrentPhase] = "mock output for last phase"
-			engine.mu.Unlock()
+			ws.PendingReviewPhaseID = ws.CurrentPhase
+			ws.PhaseOutputs[ws.CurrentPhase] = reviewStateValidContent
 
-			// Confirm to advance past the last phase → should complete
-			resp, err := engine.HandleInput(userID, "确认")
+			// Classified confirm advances past the last phase → should complete
+			resp, err := engine.ApplyReviewIntent(userID, ReviewIntentConfirm, "")
 			if err != nil {
-				t.Fatalf("%s: HandleInput at last phase failed: %v", wt, err)
+				t.Fatalf("%s: ApplyReviewIntent at last phase failed: %v", wt, err)
 			}
 			if !resp.Complete {
 				t.Errorf("%s: expected Complete=true at last phase", wt)
 			}
 		} else if lastPhase.CanSkip {
-			// Skip to advance past the last phase → should complete
-			resp, err := engine.HandleInput(userID, "跳过")
+			ws.PendingReviewPhaseID = ws.CurrentPhase
+			ws.PhaseOutputs[ws.CurrentPhase] = reviewStateValidContent
+
+			// Classified skip advances past the last phase → should complete
+			resp, err := engine.ApplyReviewIntent(userID, ReviewIntentSkip, "")
 			if err != nil {
-				t.Fatalf("%s: HandleInput skip at last phase failed: %v", wt, err)
+				t.Fatalf("%s: ApplyReviewIntent skip at last phase failed: %v", wt, err)
 			}
 			if !resp.Complete {
 				t.Errorf("%s: expected Complete=true when skipping last phase", wt)

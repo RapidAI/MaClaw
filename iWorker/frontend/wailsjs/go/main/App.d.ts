@@ -20,7 +20,13 @@ export function FetchAgentInstances():Promise<Array<main.CenterAgentInstance>>;
 
 export function FetchConfigBundle():Promise<main.CenterConfigBundle>;
 
+export function FetchCollaborations(arg1:string):Promise<Array<main.CenterCollabTask>>;
+
 export function FetchGoalPushes(arg1:number):Promise<Array<main.CenterGoalPush>>;
+
+export function FetchWorkflowInstances():Promise<Array<main.CenterWorkflowInstance>>;
+
+export function RecoverGoalPush(arg1:string,arg2:string):Promise<main.CenterGoalPushRecoverResult>;
 
 export function FetchInstalledTools():Promise<main.CenterInstalledTools>;
 
@@ -40,6 +46,8 @@ export function LoadDiWorkerSettings():Promise<main.DiWorkerSettings>;
 
 export function RecallWorkerMemories(arg1:string):Promise<Array<main.WorkerMemoryEntry>>;
 
+export function RecommendColleague(arg1:string):Promise<Array<main.CenterRecommendation>>;
+
 export function LoadTaskHistory():Promise<Array<main.HistoryTaskItem>>;
 
 export function SaveDiWorkerSettings(arg1:main.DiWorkerSettings):Promise<void>;
@@ -49,3 +57,7 @@ export function SaveWorkerMemory(arg1:main.SaveWorkerMemoryRequest):Promise<main
 export function SaveTaskHistory(arg1:Array<main.HistoryTaskItem>):Promise<void>;
 
 export function SubmitTask(arg1:main.SubmitTaskRequest):Promise<main.SubmitTaskResult>;
+
+export function TransitionCollaborationTask(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.CenterCollabTask>;
+
+export function TransitionWorkflowStep(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.CenterWorkflowStepTransitionResult>;

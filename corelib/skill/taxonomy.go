@@ -88,10 +88,7 @@ func formatExecutableContext(skill *corelib.NLSkillEntry) string {
 		b.WriteString("\n")
 	}
 
-	params := skill.Params
-	if len(params) == 0 {
-		params = SynthesizeParams(skill.Steps, skill.RequiredArgs)
-	}
+	params := CompleteParamsForRunner(skill.Params, skill.Steps, skill.RequiredArgs)
 	if schema := FormatParamSchema(params); schema != "" {
 		b.WriteString(schema)
 	}
@@ -157,10 +154,7 @@ func formatCraftableContext(skill *corelib.NLSkillEntry, docContent string) stri
 		b.WriteString("\n")
 	}
 
-	params := skill.Params
-	if len(params) == 0 {
-		params = SynthesizeParams(skill.Steps, skill.RequiredArgs)
-	}
+	params := CompleteParamsForRunner(skill.Params, skill.Steps, skill.RequiredArgs)
 	if schema := FormatParamSchema(params); schema != "" {
 		b.WriteString(schema)
 	}

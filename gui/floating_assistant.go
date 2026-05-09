@@ -308,6 +308,15 @@ func petMotionSoundEnabled(config corelib.AppConfig) bool {
 	return config.PetMotionSound == nil || *config.PetMotionSound
 }
 
+func petMotionSoundPreset(config corelib.AppConfig) string {
+	switch config.PetMotionSoundPreset {
+	case "classic", "bubble", "chime", "synth", "soft":
+		return config.PetMotionSoundPreset
+	default:
+		return "classic"
+	}
+}
+
 func sanitizePetConfig(config *corelib.AppConfig) {
 	if config == nil {
 		return
@@ -333,6 +342,7 @@ func sanitizePetConfig(config *corelib.AppConfig) {
 	default:
 		config.PetInteractionMode = "balanced"
 	}
+	config.PetMotionSoundPreset = petMotionSoundPreset(*config)
 	switch config.PetConversationMode {
 	case "text-first", "voice-turn", "continuous":
 	default:
@@ -368,6 +378,7 @@ func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
 		oldConfig.PetSize != newConfig.PetSize ||
 		isPetMotionEnabled(oldConfig) != isPetMotionEnabled(newConfig) ||
 		petMotionSoundEnabled(oldConfig) != petMotionSoundEnabled(newConfig) ||
+		petMotionSoundPreset(oldConfig) != petMotionSoundPreset(newConfig) ||
 		oldConfig.PetQuietMode != newConfig.PetQuietMode ||
 		oldConfig.PetInteractionMode != newConfig.PetInteractionMode
 }

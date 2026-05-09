@@ -92,16 +92,17 @@ func TestBgLoopProperty6_ChatLoopContextCreation(t *testing.T) {
 // toolSetMaxIterations writes to loopMaxOverride, it also updates the
 // active LoopContext.
 func TestBgLoopProperty6_LoopMaxOverrideSyncsToCtx(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SetMaclawAgentMaxIterations(200); err != nil {
+		t.Fatalf("SetMaclawAgentMaxIterations(200) error = %v", err)
+	}
+
 	f := func(cfg bgloopTestConfig) bool {
 		if cfg.LoopOverride < 1 || cfg.LoopOverride > config.MaxAgentIterationsCap {
 			return true // skip invalid overrides
 		}
 
-		tmpHome := t.TempDir()
-		app := &App{testHomeDir: tmpHome}
-		if err := app.SetMaclawAgentMaxIterations(200); err != nil {
-			t.Fatalf("SetMaclawAgentMaxIterations(200) error = %v", err)
-		}
 		mgr := &RemoteSessionManager{
 			app:      app,
 			sessions: map[string]*RemoteSession{},
@@ -196,7 +197,6 @@ func TestBgLoopProperty6_StatusCDrainSkippedWhenNil(t *testing.T) {
 		t.Errorf("Property 6d (StatusCDrainSkippedWhenNil) failed: %v", err)
 	}
 }
-
 
 // TestBgLoopProperty6_StatusCDrainWorksWhenSet verifies that when a chat
 // loop has a StatusC (because bgManager is active), events are correctly

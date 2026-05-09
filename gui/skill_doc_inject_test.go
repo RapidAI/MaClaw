@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // TestSkillDocInject_KnowledgeSkillInlined verifies that knowledge-type skills
@@ -130,6 +132,23 @@ func TestSkillDocInject_TokenBudgetTruncation(t *testing.T) {
 	// The injected content should be much shorter than the original.
 	if len([]rune(result)) > 600 {
 		t.Errorf("content should be truncated to ~300 runes, got %d runes total", len([]rune(result)))
+	}
+}
+
+func TestBuildParamSchemaForSkillCompletesPartialSchema(t *testing.T) {
+	schema := buildParamSchemaForSkill(NLSkillDefinition{
+		Name: "partial-schema",
+		Params: []corelib.NLSkillParam{
+			{Name: "format", Description: "Output format"},
+		},
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Params: map[string]interface{}{"command": "convert {{input}} --format {{format}}"}},
+		},
+		RequiredArgs: []string{"input"},
+	})
+
+	if !strings.Contains(schema, "format") || !strings.Contains(schema, "input") {
+		t.Fatalf("schema did not include complete params:\n%s", schema)
 	}
 }
 

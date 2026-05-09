@@ -6,3 +6,9 @@ type ConfigSavedMsg struct {
 	Key   string
 	Value string
 }
+
+// ConfigSaveFailedMsg is sent when a config save operation fails.
+type ConfigSaveFailedMsg struct {
+	Key   string
+	Error string
+}

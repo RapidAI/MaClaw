@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { quickTasks as defaultQuickTasks } from '../mock/tasks';
-import type { CenterAgentInstance, CenterGoalPush, CenterHealthStatus, CenterConfigBundle, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, HistoryTaskItem, WorkerMemoryStats } from '../types';
+import type { CenterAgentInstance, CenterCollabTask, CenterGoalPush, CenterHealthStatus, CenterConfigBundle, CenterInstalledTools, CenterWorkflowInstance, DiWorkerSettings, GoalWatchAutoHandleStatus, HistoryTaskItem, WorkerMemoryStats } from '../types';
 
 type Props = {
   draft: string;
@@ -21,6 +21,14 @@ type Props = {
   goalPushLoading: boolean;
   goalPushError: string;
   goalPushAckingId: string;
+  collaborationTasks: CenterCollabTask[];
+  collaborationTasksLoading: boolean;
+  collaborationTasksError: string;
+  collaborationTaskBusyId: string;
+  workflowInstances: CenterWorkflowInstance[];
+  workflowInstancesLoading: boolean;
+  workflowInstancesError: string;
+  workflowStepBusyId: string;
   goalWatchAutoStatus: GoalWatchAutoHandleStatus | null;
   installedTools: CenterInstalledTools;
   installedToolsLoading: boolean;
@@ -37,6 +45,11 @@ type Props = {
   onOpenSettings: () => void;
   onRefreshAgentInstances: () => void | Promise<CenterAgentInstance[] | undefined>;
   onRefreshGoalPushes: () => void | Promise<CenterGoalPush[] | undefined>;
+  onRefreshCollaborationTasks: () => void | Promise<CenterCollabTask[] | undefined>;
+  onRefreshWorkflowInstances: () => void | Promise<CenterWorkflowInstance[] | undefined>;
+  onTransitionCollaborationTask: (taskId: string, action: 'accept' | 'start' | 'complete' | 'reject') => void | Promise<void>;
+  onTransitionWorkflowStep: (stepId: string, action: 'start' | 'resume' | 'complete' | 'reject') => void | Promise<void>;
+  onOpenCollaborationTask: (task: CenterCollabTask) => void;
   onRefreshMemoryStats: () => void | Promise<WorkerMemoryStats | undefined>;
   onRefreshInstalledTools: () => void | Promise<CenterInstalledTools | undefined>;
   onRefreshConfigBundle: () => void | Promise<CenterConfigBundle | undefined>;
@@ -51,6 +64,13 @@ type ComposerTool = 'mention' | 'attach' | 'skill' | 'memory';
 type ExpectedOutput = 'summary' | 'document' | 'table';
 type CollaborationLane = 'center' | 'human' | 'autonomy';
 type WorkStatusKind = 'active' | 'done' | 'review' | 'blocked';
+type OperatingAction = {
+  tone: 'ok' | 'warn' | 'danger' | 'local';
+  title: string;
+  detail: string;
+  primary: string;
+  onPrimary: () => void;
+};
 
 type SelfCheckStatus = {
   state: 'idle' | 'running' | 'done' | 'issue';
@@ -116,17 +136,6 @@ const laneCopy: Record<CollaborationLane, { title: string; label: string; detail
   },
 };
 
-const formatPushAge = (seconds: number) => {
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    return 'just now';
-  }
-  const minutes = Math.max(1, Math.round(seconds / 60));
-  if (minutes < 60) {
-    return `${minutes}m waiting`;
-  }
-  return `${Math.round(minutes / 60)}h waiting`;
-};
-
 const normalizeWorkStatus = (status: string): WorkStatusKind => {
   const normalized = status.toLowerCase().replace(/[_-]/g, ' ');
   if (['done', 'complete', 'completed', 'acked', 'acknowledged', 'resumed', 'resolved'].some((token) => normalized.includes(token))) {
@@ -143,7 +152,10 @@ const normalizeWorkStatus = (status: string): WorkStatusKind => {
 
 const normalizeTaskStatus = (status: string): WorkStatusKind => normalizeWorkStatus(status);
 const normalizePushStatus = (push: CenterGoalPush): WorkStatusKind => normalizeWorkStatus(`${push.status || ''} ${push.recommendedAction || ''} ${push.reason || ''}`.trim() || 'pushed');
+const normalizeCollabStatus = (task: CenterCollabTask): WorkStatusKind => normalizeWorkStatus(task.status || 'pending');
 const isCachedPush = (push: CenterGoalPush) => push.source === 'cache' || Boolean(push.stale);
+const workflowRecoveryActions = ['start_workflow_step', 'resume_workflow_step'];
+const legacyTaskRecoveryActions = ['start_task', 'resume_task', 'accept_task'];
 const isOpenPush = (push: CenterGoalPush) => {
   const kind = normalizePushStatus(push);
   return kind === 'active' || kind === 'review';
@@ -152,6 +164,14 @@ const needsHumanIntervention = (push: CenterGoalPush) => {
   const combined = `${push.status || ''} ${push.recommendedAction || ''} ${push.reason || ''}`.toLowerCase();
   const kind = normalizePushStatus(push);
   return push.recommendedAction === 'ask_human' || kind === 'review' || kind === 'blocked' || ['human', 'manual', 'approval', 'approve', 'missing', 'clarify', 'blocked'].some((token) => combined.includes(token));
+};
+
+const collaborationActions = (status: string): Array<'accept' | 'start' | 'complete' | 'reject'> => {
+  const normalized = status.toLowerCase().replace(/[_-]/g, ' ').trim();
+  if (normalized === 'pending' || normalized === 'open' || normalized === 'created') return ['accept', 'reject'];
+  if (normalized === 'accepted' || normalized === 'assigned') return ['start', 'reject'];
+  if (normalized === 'in progress' || normalized === 'running' || normalized === 'started') return ['complete', 'reject'];
+  return [];
 };
 
 const workStatusCopyKey: Record<WorkStatusKind, string> = {
@@ -269,30 +289,7 @@ const installedToolsOperable = (tools: CenterInstalledTools, centerEnabled: bool
   return tools.source !== 'unavailable';
 };
 
-const buildTaskTemplate = (task: string, mode: WorkMode) => {
-  const normalized = task.toLowerCase();
-  if (normalized.includes('peer') || normalized.includes('ask')) {
-    return `Task: ${task}\n\nPlease discuss this with the relevant peer iWorkers through iWorkerCenter, summarize the agreed decision, and list any human skill that must be called.\n\nExpected output: decision, owner, evidence, and next action.`;
-  }
-  if (normalized.includes('memory') || normalized.includes('policy')) {
-    return `Task: ${task}\n\nUse company, department, and personal memory from the registered iWorkerCenter. Clearly separate remembered facts from new assumptions.\n\nExpected output: matched memory, gaps, and recommended action.`;
-  }
-  if (normalized.includes('customer') || normalized.includes('reply')) {
-    return `Task: ${task}\n\nDraft a customer-ready response. Check policy memory first, keep the tone professional, and include any missing information that a human or peer iWorker should confirm.\n\nExpected output: final reply plus internal notes.`;
-  }
-  if (normalized.includes('data') || normalized.includes('table')) {
-    return `Task: ${task}\n\nClean and structure the data. Identify missing fields, suspicious values, and reusable rules that should be saved as department memory.\n\nExpected output: cleaned table plan, validation notes, and follow-up actions.`;
-  }
-  if (normalized.includes('research') || normalized.includes('market') || normalized.includes('risk')) {
-    return `Task: ${task}\n\nRun deep work mode: gather evidence, compare options, discuss uncertainty, and produce a recommendation suitable for organization memory.\n\nExpected output: findings, evidence, risks, recommendation, and reusable playbook notes.`;
-  }
-  if (mode === 'chat') {
-    return `Task: ${task}\n\nStart as an IM/voice handoff. Clarify intent first if needed, then convert the request into executable work.\n\nExpected output: clarified task, routing decision, and next action.`;
-  }
-  return `Task: ${task}\n\nTurn this into structured iWorker work. Use Center memory when helpful, route to peer iWorkers or human skills when needed, and preserve reusable experience.\n\nExpected output: result, evidence, and memory suggestions.`;
-};
-
-export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, configBundle, configBundleLoading, configBundleError, submitting, onDraftChange, onExpectedOutputChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshMemoryStats, onRefreshInstalledTools, onRefreshConfigBundle, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush, onOpenGoalPushTask }: Props) {
+export function HomePage({ draft, selectedTask, selectedColleagueName, recentTasks, settings, centerHealthStatus, centerHealthError, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, collaborationTasks, collaborationTasksLoading, collaborationTasksError, collaborationTaskBusyId, workflowInstances, workflowInstancesLoading, workflowInstancesError, workflowStepBusyId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, configBundle, configBundleLoading, configBundleError, submitting, onDraftChange, onExpectedOutputChange, onPickTask, onOpenNewTask, onOpenRecentTask, onOpenSettings, onRefreshAgentInstances, onRefreshGoalPushes, onRefreshCollaborationTasks, onRefreshWorkflowInstances, onTransitionCollaborationTask, onTransitionWorkflowStep, onOpenCollaborationTask, onRefreshMemoryStats, onRefreshInstalledTools, onRefreshConfigBundle, onCheckCenterHealth, onAutoHandleGoalPush, onAckGoalPush, onOpenGoalPushTask }: Props) {
   const { t } = useTranslation();
   const [workMode, setWorkMode] = useState<WorkMode>('chat');
   const [quickTasks, setQuickTasks] = useState<string[]>(defaultQuickTasks);
@@ -337,6 +334,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const sourceText = (key: string, fallback: string, options?: Record<string, unknown>) => t(`home.source.${key}`, { defaultValue: fallback, ...options });
   const checkText = (key: string, fallback: string, options?: Record<string, unknown>) => t(`home.selfCheckText.${key}`, { defaultValue: fallback, ...options });
   const readinessCheckText = (name: string) => t(`home.readinessCheck.${name}`, readinessCheckLabel(name));
+  const collabActionText = (action: 'accept' | 'start' | 'complete' | 'reject') => t(`home.collabAction.${action}`, action);
   const statusText = (status?: string) => {
     const normalized = (status || '').trim();
     return normalized ? t(`home.statusLabel.${normalized}`, normalized.replace(/[_-]/g, ' ')) : '';
@@ -345,6 +343,28 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     const normalized = (action || '').trim();
     return normalized ? t(`home.recommendedAction.${normalized}`, { defaultValue: normalized.replace(/[_-]/g, ' ') }) : '';
   };
+  const recoveryRouteText = (push?: CenterGoalPush) => {
+    const action = recommendedActionText(push?.recoveryAction || push?.recommendedAction);
+    const method = (push?.recoveryMethod || '').trim();
+    const path = (push?.recoveryPath || '').trim();
+    if (!action && !method && !path) {
+      return '';
+    }
+    const route = [method, path].filter(Boolean).join(' ');
+    return route
+      ? t('home.recoveryRouteDetail', 'Recovery: {{action}} / {{route}}', { action: action || route, route })
+      : t('home.recoveryActionDetail', 'Recovery: {{action}}', { action });
+  };
+  const isRecoverablePush = (push?: CenterGoalPush) => {
+    if (!push?.workflowStepInstanceId) return false;
+    const recoveryAction = (push.recoveryAction || '').trim();
+    const recommendedAction = (push.recommendedAction || '').trim();
+    if (recoveryAction) {
+      return workflowRecoveryActions.includes(recoveryAction);
+    }
+    return workflowRecoveryActions.includes(recommendedAction) || legacyTaskRecoveryActions.includes(recommendedAction);
+  };
+  const resumePushLabel = (push?: CenterGoalPush) => isRecoverablePush(push) ? t('home.recoverWorkflow', 'Recover workflow') : t('home.resume', 'Resume');
   const cacheModeText = (mode?: string) => {
     const normalized = (mode || '').trim();
     return normalized ? t(`home.cacheMode.${normalized}`, { defaultValue: normalized.replace(/[_-]/g, ' ') }) : '';
@@ -369,6 +389,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     if (source === 'center') return stale ? sourceText('centerStale', 'Center stale') : sourceText('centerLive', 'Center live');
     if (source === 'cache') return sourceText('cachedFallback', 'Cached fallback');
     if (source === 'partial-cache') return sourceText('partialCenterSnapshot', 'Partial Center snapshot');
+    if (source === 'center-cache-error') return sourceText('centerCacheError', 'Center live / cache failed');
     if (source === 'unavailable') return sourceText('unavailable', 'Unavailable');
     return sourceText('localOnly', 'Local only');
   };
@@ -398,6 +419,11 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     if (source === 'center') return stale ? sourceText('centerStale', 'Center stale') : sourceText('centerLive', 'Center live');
     if (source === 'cache') return sourceText('cachedSnapshot', 'Cached snapshot');
     return sourceText('centerLive', 'Center live');
+  };
+  const collaborationSourceLabel = (task: CenterCollabTask) => {
+    if (task.source === 'cache' || task.stale) return t('home.cachedCenterHandoff', 'Cached Center handoff');
+    if (task.workflowStepInstanceId) return t('home.workflowCenterHandoff', 'Workflow handoff');
+    return t('home.centerHandoff', 'Center handoff');
   };
   const runtimeSnapshotDetailLabel = (source?: string, cachedAt?: string, stale?: boolean) => {
     const label = runtimeSnapshotSourceLabel(source, stale);
@@ -464,7 +490,10 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const cachedAgentInstances = agentInstances.filter((item) => item.source === 'cache' || item.stale);
   const onlineAgents = agentInstances.filter((item) => item.effectiveStatus === 'online').length;
   const cachedGoalPushes = goalPushes.filter((item) => item.source === 'cache' || item.stale);
+  const cachedCollaborationTasks = collaborationTasks.filter((item) => item.source === 'cache' || item.stale);
   const openPushes = goalPushes.filter(isOpenPush);
+  const openCollaborationTasks = collaborationTasks.filter((task) => normalizeCollabStatus(task) === 'active' || normalizeCollabStatus(task) === 'review');
+  const primaryCollaborationTask = openCollaborationTasks[0] || collaborationTasks[0];
   const pendingPushes = openPushes.length;
   const centerEnabled = settings.center.enabled;
   const centerReady = Boolean(centerHealthStatus?.iWorkerReadiness?.ready);
@@ -483,7 +512,8 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const toolsAvailabilityOk = installedToolsOperable(installedTools, centerEnabled) && !installedToolsError;
   const configAvailabilityOk = !centerEnabled || Boolean(configBundle.version || configBundle.source === 'cache' || configBundle.source === 'local' || configBundle.source === 'none');
   const watcherAvailabilityOk = !settings.center.goalWatchAutoHandleEnabled || (!goalWatchAutoStatus?.lastError && !goalPushError);
-  const availabilityChecks = [centerAvailabilityOk, runtimeAvailabilityOk, memoryAvailabilityOk, toolsAvailabilityOk, configAvailabilityOk, watcherAvailabilityOk];
+  const collaborationAvailabilityOk = !centerEnabled || !collaborationTasksError;
+  const availabilityChecks = [centerAvailabilityOk, runtimeAvailabilityOk, memoryAvailabilityOk, toolsAvailabilityOk, configAvailabilityOk, watcherAvailabilityOk, collaborationAvailabilityOk];
   const availabilityScore = availabilityChecks.filter(Boolean).length;
   const availabilityStateKey = !centerEnabled ? 'local' : availabilityScore === availabilityChecks.length ? 'ready' : availabilityScore >= 3 ? 'degraded' : 'repair';
   const availabilityState = t(`home.availabilityState.${availabilityStateKey}`, availabilityStateKey);
@@ -494,12 +524,14 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const previewColleague = inferColleagueName(previewTask);
   const primaryPush = openPushes[0] || goalPushes[0];
   const interventionPush = openPushes.find(needsHumanIntervention) || goalPushes.find(needsHumanIntervention);
+  const primaryCollaborationActions = primaryCollaborationTask ? collaborationActions(primaryCollaborationTask.status) : [];
   const interventionPushActionable = Boolean(interventionPush?.eventId) && !isCachedPush(interventionPush as CenterGoalPush);
   const runningPush = goalPushAckingId ? goalPushes.find((item) => item.eventId === goalPushAckingId) : undefined;
-  const humanQueueLabel = pendingPushes > 0 ? t('home.pendingHandoffs', '{{count}} pending handoff', { count: pendingPushes }) : t('home.readyForCoworkerInput', 'Ready for coworker input');
+  const humanQueueCount = pendingPushes + openCollaborationTasks.length;
+  const humanQueueLabel = humanQueueCount > 0 ? t('home.pendingHandoffs', '{{count}} pending handoff', { count: humanQueueCount }) : t('home.readyForCoworkerInput', 'Ready for coworker input');
   const centerSnapshotState = cachedAgentInstances.length || cachedGoalPushes.length ? t('home.cachedSnapshot', 'Cached snapshot') : centerHealthStatus?.reachable ? t('home.liveSync', 'Live sync') : centerEnabled ? t('home.configured', 'Configured') : t('home.localOnly', 'Local only');
-  const centerSyncIssue = centerEnabled && Boolean(centerHealthError || agentInstancesError || goalPushError || workerMemoryStatsError || installedToolsError || configBundleError || configBundle.source === 'unavailable');
-  const hasCachedContinuity = cachedAgentInstances.length > 0 || cachedGoalPushes.length > 0 || Boolean(workerMemoryStats?.stale || installedTools.stale || configBundle.stale);
+  const centerSyncIssue = centerEnabled && Boolean(centerHealthError || agentInstancesError || goalPushError || collaborationTasksError || workflowInstancesError || workerMemoryStatsError || installedToolsError || configBundleError || configBundle.source === 'unavailable');
+  const hasCachedContinuity = cachedAgentInstances.length > 0 || cachedGoalPushes.length > 0 || cachedCollaborationTasks.length > 0 || Boolean(workerMemoryStats?.stale || installedTools.stale || configBundle.stale);
   const showContinuityNotice = !centerEnabled || centerSyncIssue || hasCachedContinuity;
   const continuityTitle = !centerEnabled ? t('home.localContinuity', 'Local continuity active') : centerSyncIssue ? t('home.centerReconnecting', 'Center reconnecting') : t('home.cachedContinuity', 'Cached continuity active');
   const continuityDetail = !centerEnabled
@@ -511,6 +543,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     !centerEnabled ? t('home.localMode', 'Local mode') : '',
     cachedAgentInstances.length ? t('home.cachedRuntimeCount', '{{count}} cached runtime', { count: cachedAgentInstances.length }) : '',
     cachedGoalPushes.length ? t('home.cachedPushCount', '{{count}} cached push', { count: cachedGoalPushes.length }) : '',
+    cachedCollaborationTasks.length ? t('home.cachedHandoffCount', '{{count}} cached handoff', { count: cachedCollaborationTasks.length }) : '',
     workerMemoryStats?.stale ? t('home.staleMemorySnapshot', 'stale memory snapshot') : '',
     installedTools.stale ? t('home.staleToolsSnapshot', 'stale tools snapshot') : '',
     configBundle.stale ? t('home.staleConfigSnapshot', 'stale config snapshot') : '',
@@ -538,11 +571,66 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const completedTasks = recentTasks.filter((task) => normalizeTaskStatus(task.status) === 'done');
   const reviewTasks = recentTasks.filter((task) => normalizeTaskStatus(task.status) === 'review');
   const blockedTasks = recentTasks.filter((task) => normalizeTaskStatus(task.status) === 'blocked');
+  const activeWorkflowInstances = workflowInstances.filter((item) => normalizeTaskStatus(item.status) === 'active' || item.status === 'running');
+  const completedWorkflowInstances = workflowInstances.filter((item) => normalizeTaskStatus(item.status) === 'done');
+  const reviewWorkflowInstances = workflowInstances.filter((item) => normalizeTaskStatus(item.status) === 'review');
+  const blockedWorkflowInstances = workflowInstances.filter((item) => normalizeTaskStatus(item.status) === 'blocked');
   const completedPushes = goalPushes.filter((push) => normalizePushStatus(push) === 'done');
   const reviewPushes = goalPushes.filter((push) => normalizePushStatus(push) === 'review');
   const blockedPushes = goalPushes.filter((push) => normalizePushStatus(push) === 'blocked');
+  const completedCollaborationTasks = collaborationTasks.filter((task) => normalizeCollabStatus(task) === 'done');
+  const reviewCollaborationTasks = collaborationTasks.filter((task) => normalizeCollabStatus(task) === 'review');
+  const blockedCollaborationTasks = collaborationTasks.filter((task) => normalizeCollabStatus(task) === 'blocked');
+  const runtimeWorkSummaries = agentInstances
+    .map((instance) => ({ instance, workStatus: instance.workStatus }))
+    .filter((item): item is { instance: CenterAgentInstance; workStatus: NonNullable<CenterAgentInstance['workStatus']> } => Boolean(item.workStatus));
+  const runtimeCountsByWorker = runtimeWorkSummaries.reduce<Record<string, Record<WorkStatusKind, number>>>((acc, item) => {
+    const key = item.instance.workerId || item.instance.instanceId;
+    const current = acc[key] || { active: 0, done: 0, review: 0, blocked: 0 };
+    acc[key] = {
+      active: Math.max(current.active, item.workStatus.activeCount || 0),
+      done: Math.max(current.done, item.workStatus.completedCount || 0),
+      review: Math.max(current.review, item.workStatus.reviewCount || 0),
+      blocked: Math.max(current.blocked, item.workStatus.blockedCount || 0),
+    };
+    return acc;
+  }, {});
+  const runtimeWorkCounts = Object.values(runtimeCountsByWorker).reduce((acc, counts) => ({
+    active: acc.active + counts.active,
+    done: acc.done + counts.done,
+    review: acc.review + counts.review,
+    blocked: acc.blocked + counts.blocked,
+  }), { active: 0, done: 0, review: 0, blocked: 0 });
+  const runtimeCountContribution = {
+    active: Math.max(0, runtimeWorkCounts.active - activeTasks.length),
+    done: Math.max(0, runtimeWorkCounts.done - completedTasks.length),
+    review: Math.max(0, runtimeWorkCounts.review - reviewTasks.length),
+    blocked: Math.max(0, runtimeWorkCounts.blocked - blockedTasks.length),
+  };
+  const primaryRuntimeWork = runtimeWorkSummaries.find((item) => item.workStatus.currentTask || item.workStatus.activeCount > 0 || item.workStatus.reviewCount > 0 || item.workStatus.blockedCount > 0);
+  const runtimeWorkItem = primaryRuntimeWork ? {
+    id: `runtime-${primaryRuntimeWork.instance.instanceId}`,
+    title: primaryRuntimeWork.workStatus.currentTask || t('home.runtimeReportedWork', 'Runtime reported work'),
+    owner: formatRuntimeName(primaryRuntimeWork.instance),
+    status: primaryRuntimeWork.workStatus.blockedCount > 0 ? 'blocked' : primaryRuntimeWork.workStatus.reviewCount > 0 ? 'review' : 'active',
+    updatedAt: primaryRuntimeWork.workStatus.updatedAt || primaryRuntimeWork.instance.lastHeartbeatAt || t('home.justNow', 'just now'),
+    kind: (primaryRuntimeWork.workStatus.blockedCount > 0 ? 'blocked' : primaryRuntimeWork.workStatus.reviewCount > 0 ? 'review' : 'active') as WorkStatusKind,
+    source: primaryRuntimeWork.instance.stale ? t('home.cachedRuntimeStatus', 'Cached runtime status') : t('home.centerRuntimeStatus', 'Center runtime status'),
+    onOpen: onRefreshAgentInstances,
+  } : null;
   const visibleWorkItems = [
     ...(localActiveWork ? [localActiveWork] : []),
+    ...(runtimeWorkItem ? [runtimeWorkItem] : []),
+    ...collaborationTasks.slice(0, 2).map((task) => ({
+      id: task.id,
+      title: task.title || task.id,
+      owner: task.toRoleCode || task.toColleagueId || t('home.assignedIWorker', 'assigned iWorker'),
+      status: task.status || 'pending',
+      updatedAt: task.updatedAt || task.createdAt || t('home.justNow', 'just now'),
+      kind: normalizeCollabStatus(task),
+      source: collaborationSourceLabel(task),
+      onOpen: () => onOpenCollaborationTask(task),
+    })),
     ...goalPushes.slice(0, 2).map((push) => ({
       id: push.eventId || push.taskId,
       title: push.title || push.taskId,
@@ -552,6 +640,16 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       kind: normalizePushStatus(push),
       source: push.source === 'cache' || push.stale ? t('home.cachedCenterPush', 'Cached Center push') : goalPushAckingId === push.eventId ? t('home.centerRun', 'Center run') : t('home.centerPush', 'Center push'),
       onOpen: () => onOpenGoalPushTask(push),
+    })),
+    ...workflowInstances.slice(0, 2).map((instance) => ({
+      id: instance.id,
+      title: instance.title || instance.id,
+      owner: instance.initiatorId || t('home.iworkerCenter', 'iWorkerCenter'),
+      status: instance.status || 'running',
+      updatedAt: instance.updatedAt || instance.createdAt || t('home.justNow', 'just now'),
+      kind: normalizeTaskStatus(instance.status || 'running'),
+      source: t('home.centerWorkflow', 'Center workflow'),
+      onOpen: onRefreshWorkflowInstances,
     })),
     ...recentTasks.slice(0, 4).map((task) => ({
       id: task.id,
@@ -564,14 +662,18 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       onOpen: () => onOpenRecentTask(task),
     })),
   ].slice(0, 5);
-  const currentWorkTitle = runningPush?.title || localActiveWork?.title || primaryPush?.title || activeTasks[0]?.title || (goalWatchAutoStatus?.running ? t('home.goalWatcherHandling', 'Goal watcher is handling pushed work') : t('home.noActiveTask', 'No active task'));
+  const currentWorkTitle = runningPush?.title || localActiveWork?.title || primaryPush?.title || primaryRuntimeWork?.workStatus.currentTask || activeWorkflowInstances[0]?.title || activeTasks[0]?.title || (goalWatchAutoStatus?.running ? t('home.goalWatcherHandling', 'Goal watcher is handling pushed work') : t('home.noActiveTask', 'No active task'));
   const currentWorkDetail = runningPush
     ? `${runningPush.reason || t('home.centerPush', 'Center push')} / ${t('home.runningNow', 'running now')}`
     : localActiveWork
       ? `${localActiveWork.owner} / ${t('home.localExecution', 'local execution')}`
       : primaryPush
         ? `${primaryPush.reason || t('home.centerPush', 'Center push')} / ${formatPushAgeLabel(primaryPush.ageSeconds)} / ${runtimeSnapshotSourceLabel(primaryPush.source, primaryPush.stale)}`
-        : activeTasks[0]
+        : primaryRuntimeWork
+          ? `${formatRuntimeName(primaryRuntimeWork.instance)} / ${primaryRuntimeWork.instance.stale ? t('home.cachedRuntimeStatus', 'Cached runtime status') : t('home.centerRuntimeStatus', 'Center runtime status')}`
+        : activeWorkflowInstances[0]
+          ? `${t('home.centerWorkflow', 'Center workflow')} / ${activeWorkflowInstances[0].currentStepId || activeWorkflowInstances[0].definitionId || '-'}`
+          : activeTasks[0]
           ? `${activeTasks[0].owner} / ${activeTasks[0].updatedAt}`
           : goalWatchAutoStatus?.running
             ? t('home.watcherRunDetail', 'Run {{run}} / single-flight watcher', { run: goalWatchAutoStatus.currentRunId || goalWatchAutoStatus.runCount })
@@ -579,46 +681,101 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
   const appendDraft = (snippet: string) => {
     onDraftChange(draft.trim() ? `${draft.trim()}\n\n${snippet}` : snippet);
   };
+  const draftPrompt = (key: string, fallback: string, options?: Record<string, unknown>) => t(`home.draftPrompt.${key}`, { defaultValue: fallback, ...options });
+  const installedToolShortcutsAll = [
+    ...installedTools.skills.map((skill) => ({
+      key: `skill-${skill.capabilityId || skill.name}`,
+      kind: 'Skill',
+      name: skill.name || skill.entry?.name || skill.capabilityId,
+      detail: `${skill.source || 'iWorkerCenter'} / ${skill.version || '-'} / ${skill.riskLevel || 'low'}`,
+      prompt: draftPrompt('useInstalledSkill', 'Use Center-installed Skill "{{name}}" for this task. Triggers: {{triggers}}. Keep execution within tenant policy and record any reusable output as Center memory.', { name: skill.name || skill.entry?.name || skill.capabilityId, triggers: (skill.entry?.triggers || []).join(', ') || t('home.none', 'none') }),
+    })),
+    ...installedTools.mcpServers.map((server) => ({
+      key: `mcp-${server.id || server.name}`,
+      kind: 'MCP',
+      name: server.name || server.id,
+      detail: `${server.serverType || 'mcp'} / ${server.departmentId || 'all'} / ${server.riskLevel || 'medium'}`,
+      prompt: draftPrompt('useInstalledMcp', 'Use Center-installed MCP "{{name}}" for this task. Scope: {{scope}}. Check required credentials/env keys before execution and ask for human confirmation if access is missing.', { name: server.name || server.id, scope: server.departmentId || t('home.allDepartments', 'all departments') }),
+    })),
+  ].filter((tool) => tool.name);
+  const installedToolShortcuts = installedToolShortcutsAll.slice(0, 6);
+  const hiddenInstalledToolCount = Math.max(0, installedToolShortcutsAll.length - installedToolShortcuts.length);
+  const highRiskInstalledToolCount = [
+    ...installedTools.skills.map((skill) => skill.riskLevel),
+    ...installedTools.mcpServers.map((server) => server.riskLevel),
+  ].filter((risk) => risk === 'high').length;
+  const buildTaskTemplate = (task: string, mode: WorkMode) => {
+    const normalized = task.toLowerCase();
+    if (normalized.includes('peer') || normalized.includes('ask')) {
+      return draftPrompt('peer', 'Task: {{task}}\n\nPlease discuss this with the relevant peer iWorkers through iWorkerCenter, summarize the agreed decision, and list any human skill that must be called.\n\nExpected output: decision, owner, evidence, and next action.', { task });
+    }
+    if (normalized.includes('memory') || normalized.includes('policy')) {
+      return draftPrompt('memoryTask', 'Task: {{task}}\n\nUse company, department, and personal memory from the registered iWorkerCenter. Clearly separate remembered facts from new assumptions.\n\nExpected output: matched memory, gaps, and recommended action.', { task });
+    }
+    if (normalized.includes('customer') || normalized.includes('reply')) {
+      return draftPrompt('customer', 'Task: {{task}}\n\nDraft a customer-ready response. Check policy memory first, keep the tone professional, and include any missing information that a human or peer iWorker should confirm.\n\nExpected output: final reply plus internal notes.', { task });
+    }
+    if (normalized.includes('data') || normalized.includes('table')) {
+      return draftPrompt('data', 'Task: {{task}}\n\nClean and structure the data. Identify missing fields, suspicious values, and reusable rules that should be saved as department memory.\n\nExpected output: cleaned table plan, validation notes, and follow-up actions.', { task });
+    }
+    if (normalized.includes('research') || normalized.includes('market') || normalized.includes('risk')) {
+      return draftPrompt('research', 'Task: {{task}}\n\nRun deep work mode: gather evidence, compare options, discuss uncertainty, and produce a recommendation suitable for organization memory.\n\nExpected output: findings, evidence, risks, recommendation, and reusable playbook notes.', { task });
+    }
+    if (mode === 'chat') {
+      return draftPrompt('chat', 'Task: {{task}}\n\nStart as an IM/voice handoff. Clarify intent first if needed, then convert the request into executable work.\n\nExpected output: clarified task, routing decision, and next action.', { task });
+    }
+    return draftPrompt('structured', 'Task: {{task}}\n\nTurn this into structured iWorker work. Use Center memory when helpful, route to peer iWorkers or human skills when needed, and preserve reusable experience.\n\nExpected output: result, evidence, and memory suggestions.', { task });
+  };
 
   const handleComposerTool = (tool: ComposerTool) => {
     if (tool === 'mention') {
-      appendDraft('@Operations iWorker please collaborate with the right peer worker or human skill when needed.');
+      appendDraft(draftPrompt('mention', '@Operations iWorker please collaborate with the right peer worker or human skill when needed.'));
       return;
     }
     if (tool === 'attach') {
-      appendDraft('I will attach local evidence in the structured task workspace. Please use it as temporary body data, not durable memory unless I confirm.');
+      appendDraft(draftPrompt('attach', 'I will attach local evidence in the structured task workspace. Please use it as temporary body data, not durable memory unless I confirm.'));
       onOpenNewTask();
       return;
     }
     if (tool === 'skill') {
-      appendDraft('Search or call the best available skill for this task. Prefer enterprise-approved skills first, then request cloud/market skills only when allowed.');
+      appendDraft(draftPrompt('skill', 'Search or call the best available skill for this task. Prefer enterprise-approved skills first, then request cloud/market skills only when allowed.'));
       return;
     }
-    appendDraft(`Use Center memory for context: company memory, department memory, and personal memory. Current authority: ${memoryAuthority}.`);
+    appendDraft(draftPrompt('memory', 'Use Center memory for context: company memory, department memory, and personal memory. Current authority: {{memoryAuthority}}.', { memoryAuthority }));
+  };
+
+  const handleUseInstalledTool = (prompt: string) => {
+    setWorkMode('task');
+    appendDraft(prompt);
   };
 
   const handleHumanHandoff = (push?: CenterGoalPush) => {
     setWorkMode('chat');
-    const prefix = push ? `Human intervention needed for Center push: ${push.title || push.taskId}. Reason: ${push.reason || push.status || 'needs review'}.` : 'Human collaboration needed.';
-    appendDraft(`${prefix} Ask the coworker for missing context, approval, or a decision. Keep the autonomous run paused until the human answer is captured and saved as task evidence.`);
+    const title = push?.title || push?.taskId || '';
+    const reason = push?.reason || push?.status || t('home.statusLabel.review', 'review');
+    appendDraft(push
+      ? draftPrompt('humanInterventionPush', 'Human intervention needed for Center push: {{title}}. Reason: {{reason}}. Ask the coworker for missing context, approval, or a decision. Keep the autonomous run paused until the human answer is captured and saved as task evidence.', { title, reason })
+      : draftPrompt('humanIntervention', 'Human collaboration needed. Ask the coworker for missing context, approval, or a decision. Keep the autonomous run paused until the human answer is captured and saved as task evidence.'));
   };
 
   const runSelfCheck = async () => {
-    appendDraft('Run iWorker body self-check: verify Center registration, memory authority, agent heartbeat, and GoalWatcher push queue. If any check fails, create a repair task before starting business work.');
+    appendDraft(draftPrompt('selfCheck', 'Run iWorker body self-check: verify Center registration, memory authority, agent heartbeat, GoalWatcher push queue, installed Skill/MCP tools, and config bundle delivery. If any check fails, create a repair task before starting business work.'));
     setSelfCheckStatus({ state: 'running', completedAt: '', checks: [] });
     const checks = await Promise.allSettled([
       onCheckCenterHealth(),
       onRefreshMemoryStats(),
       onRefreshAgentInstances(),
       onRefreshGoalPushes(),
+      onRefreshCollaborationTasks(),
+      onRefreshWorkflowInstances(),
       onRefreshInstalledTools(),
       onRefreshConfigBundle(),
     ]);
-    const labels = [checkText('centerRegistration', 'Center registration'), checkText('memoryAuthority', 'Memory authority'), checkText('agentRuntime', 'Agent runtime'), checkText('goalWatcherQueue', 'Goal watcher queue'), checkText('installedTools', 'Installed tools'), checkText('configBundle', 'Config bundle')];
+    const labels = [checkText('centerRegistration', 'Center registration'), checkText('memoryAuthority', 'Memory authority'), checkText('agentRuntime', 'Agent runtime'), checkText('goalWatcherQueue', 'Goal watcher queue'), checkText('collaborationQueue', 'Collaboration queue'), checkText('workflowQueue', 'Workflow queue'), checkText('installedTools', 'Installed tools'), checkText('configBundle', 'Config bundle')];
     const baseChecks = checks.map((result, index) => ({
       label: labels[index],
-      ok: result.status === 'fulfilled' && (index === 0 ? Boolean((result.value as CenterHealthStatus | undefined)?.reachable) : index === 1 ? memoryStatsOperable((result.value as WorkerMemoryStats | undefined) || workerMemoryStats, centerEnabled) : index === 2 ? Array.isArray(result.value) : index === 3 ? Array.isArray(result.value) : index === 4 ? installedToolsOperable((result.value as CenterInstalledTools | undefined) || installedTools, centerEnabled) : index === 5 ? Boolean(((result.value as CenterConfigBundle | undefined) || configBundle).version || ((result.value as CenterConfigBundle | undefined) || configBundle).source === 'none' || !centerEnabled) : true),
-      detail: result.status === 'fulfilled' ? (index === 0 ? (result.value as CenterHealthStatus | undefined)?.message || checkText('checked', 'Checked') : index === 1 ? memoryStatsDetailLabel((result.value as WorkerMemoryStats | undefined) || workerMemoryStats) : index === 2 ? (Array.isArray(result.value) ? checkText('runtimeBodiesChecked', '{{count}} runtime bodies checked', { count: result.value.length }) : agentInstancesError || checkText('runtimeSyncFailed', 'Runtime sync failed')) : index === 3 ? (Array.isArray(result.value) ? checkText('pushesChecked', '{{count}} pushes checked', { count: result.value.length }) : goalPushError || checkText('goalWatcherSyncFailed', 'Goal watcher sync failed')) : index === 4 ? installedToolsDetailLabel((result.value as CenterInstalledTools | undefined) || installedTools) : index === 5 ? configBundleDetailLabel((result.value as CenterConfigBundle | undefined) || configBundle) : checkText('checked', 'Checked')) : result.reason instanceof Error ? result.reason.message : checkText('checkFailed', 'Check failed'),
+      ok: result.status === 'fulfilled' && (index === 0 ? Boolean((result.value as CenterHealthStatus | undefined)?.reachable) : index === 1 ? memoryStatsOperable((result.value as WorkerMemoryStats | undefined) || workerMemoryStats, centerEnabled) : index === 2 ? Array.isArray(result.value) : index === 3 ? Array.isArray(result.value) : index === 4 ? Array.isArray(result.value) : index === 5 ? Array.isArray(result.value) : index === 6 ? installedToolsOperable((result.value as CenterInstalledTools | undefined) || installedTools, centerEnabled) : index === 7 ? Boolean(((result.value as CenterConfigBundle | undefined) || configBundle).version || ((result.value as CenterConfigBundle | undefined) || configBundle).source === 'none' || !centerEnabled) : true),
+      detail: result.status === 'fulfilled' ? (index === 0 ? (result.value as CenterHealthStatus | undefined)?.message || checkText('checked', 'Checked') : index === 1 ? memoryStatsDetailLabel((result.value as WorkerMemoryStats | undefined) || workerMemoryStats) : index === 2 ? (Array.isArray(result.value) ? checkText('runtimeBodiesChecked', '{{count}} runtime bodies checked', { count: result.value.length }) : agentInstancesError || checkText('runtimeSyncFailed', 'Runtime sync failed')) : index === 3 ? (Array.isArray(result.value) ? checkText('pushesChecked', '{{count}} pushes checked', { count: result.value.length }) : goalPushError || checkText('goalWatcherSyncFailed', 'Goal watcher sync failed')) : index === 4 ? (Array.isArray(result.value) ? checkText('collaborationTasksChecked', '{{count}} collaboration tasks checked', { count: result.value.length }) : collaborationTasksError || checkText('collaborationSyncFailed', 'Collaboration sync failed')) : index === 5 ? (Array.isArray(result.value) ? checkText('workflowInstancesChecked', '{{count}} workflow instances checked', { count: result.value.length }) : workflowInstancesError || checkText('workflowSyncFailed', 'Workflow sync failed')) : index === 6 ? installedToolsDetailLabel((result.value as CenterInstalledTools | undefined) || installedTools) : index === 7 ? configBundleDetailLabel((result.value as CenterConfigBundle | undefined) || configBundle) : checkText('checked', 'Checked')) : result.reason instanceof Error ? result.reason.message : checkText('checkFailed', 'Check failed'),
     }));
     const healthFromCheck = checks[0].status === 'fulfilled' ? checks[0].value : undefined;
     const nextChecks = [...baseChecks, ...readinessSelfChecksLabel(healthFromCheck || centerHealthStatus)];
@@ -629,10 +786,68 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
     });
   };
 
+  const operatingRisks = [
+    centerSyncIssue ? t('home.operatingRisk.centerReconnect', 'Center reconnect required for shared writes') : '',
+    interventionPush ? t('home.operatingRisk.humanIntervention', 'Human decision waiting') : '',
+    blockedPushes.length || blockedCollaborationTasks.length || blockedWorkflowInstances.length ? t('home.operatingRisk.blockedWork', '{{count}} blocked work item', { count: blockedPushes.length + blockedCollaborationTasks.length + blockedWorkflowInstances.length }) : '',
+    cachedGoalPushes.length ? t('home.operatingRisk.cachedPushes', '{{count}} cached Center push', { count: cachedGoalPushes.length }) : '',
+    workerMemoryStats?.stale ? t('home.operatingRisk.staleMemory', 'Memory snapshot is stale') : '',
+    installedTools.stale ? t('home.operatingRisk.staleTools', 'Tool snapshot is stale') : '',
+    installedToolCount === 0 && centerEnabled ? t('home.operatingRisk.noTools', 'No Center-delivered Skill/MCP enabled') : '',
+    goalWatchAutoStatus?.lastError ? t('home.operatingRisk.watcherError', 'GoalWatcher needs attention') : '',
+  ].filter(Boolean).slice(0, 4);
+  const operatingAction: OperatingAction = (() => {
+    if (!centerEnabled) {
+      return {
+        tone: 'local',
+        title: t('home.operatingAction.localTitle', 'Local mode is available'),
+        detail: t('home.operatingAction.localDetail', 'You can keep drafting and running local work. Bind iWorkerCenter when you need shared memory, push work, or enterprise tools.'),
+        primary: t('home.openSettings', 'Open settings'),
+        onPrimary: onOpenSettings,
+      };
+    }
+    if (interventionPush) {
+      return {
+        tone: isCachedPush(interventionPush) ? 'warn' : 'danger',
+        title: t('home.operatingAction.humanTitle', 'Human input is needed'),
+        detail: isCachedPush(interventionPush)
+          ? t('home.operatingAction.cachedHumanDetail', 'The visible push is cached. Reconnect Center before resuming or blocking shared work.')
+          : t('home.operatingAction.humanDetail', 'Open the intervention task, capture the human decision, then resume or block the Center push.'),
+        primary: t('home.openTask', 'Open task'),
+        onPrimary: () => onOpenGoalPushTask(interventionPush),
+      };
+    }
+    if (centerSyncIssue) {
+      return {
+        tone: 'warn',
+        title: t('home.operatingAction.reconnectTitle', 'Center sync is degraded'),
+        detail: t('home.operatingAction.reconnectDetail', 'Local work and cached snapshots remain visible. Recheck Center before shared writes, memory sync, or tool changes.'),
+        primary: t('home.recheck', 'Recheck'),
+        onPrimary: () => { void onCheckCenterHealth(); },
+      };
+    }
+    if (availabilityStateKey === 'ready') {
+      return {
+        tone: 'ok',
+        title: t('home.operatingAction.readyTitle', 'Ready for Center-pushed work'),
+        detail: t('home.operatingAction.readyDetail', 'Runtime, memory, tools, config, and collaboration signals are ready. You can accept Center work or start a local task.'),
+        primary: t('home.checkInbox', 'Check inbox'),
+        onPrimary: () => { void onRefreshGoalPushes(); },
+      };
+    }
+    return {
+      tone: 'warn',
+      title: t('home.operatingAction.degradedTitle', 'Partially available'),
+      detail: t('home.operatingAction.degradedDetail', 'Some Center signals need attention. Run self-check before taking sensitive or shared work.'),
+      primary: t('home.selfCheck', 'Self-check'),
+      onPrimary: () => { void runSelfCheck(); },
+    };
+  })();
+
   const handleQuickAction = (actionId: 'im' | 'continue' | 'memory' | 'selfcheck') => {
     if (actionId === 'im') {
       setWorkMode('chat');
-      appendDraft('I want to start from an IM or voice instruction. Please clarify intent first, then turn it into a runnable task if needed.');
+      appendDraft(draftPrompt('quickIm', 'I want to start from an IM or voice instruction. Please clarify intent first, then turn it into a runnable task if needed.'));
       return;
     }
     if (actionId === 'continue') {
@@ -641,12 +856,12 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         onOpenRecentTask(latestTask);
         return;
       }
-      appendDraft('Continue the most recent unfinished work and reconstruct context from Center memory and task history.');
+      appendDraft(draftPrompt('quickContinue', 'Continue the most recent unfinished work and reconstruct context from Center memory and task history.'));
       onOpenNewTask();
       return;
     }
     if (actionId === 'memory') {
-      appendDraft('Capture this as reusable memory. Classify whether it belongs to company, department, or personal memory before saving to iWorkerCenter.');
+      appendDraft(draftPrompt('quickMemory', 'Capture this as reusable memory. Classify whether it belongs to company, department, or personal memory before saving to iWorkerCenter.'));
       onOpenSettings();
       return;
     }
@@ -667,7 +882,16 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
       checkText('installedToolsLine', 'Installed tools: {{detail}}', { detail: installedToolsDetailLabel(installedTools) }),
       checkText('configBundleLine', 'Config bundle: {{detail}}', { detail: configBundleDetailLabel(configBundle) }),
       checkText('availabilityLine', 'Availability: {{state}} ({{ready}}/{{total}})', { state: availabilityState, ready: availabilityScore, total: availabilityChecks.length }),
-      checkText('knownErrorsLine', 'Known errors: {{errors}}', { errors: [centerHealthError, workerMemoryStatsError, agentInstancesError, goalPushError, installedToolsError, configBundleError].filter(Boolean).join(' | ') || checkText('noneReportedByUi', 'none reported by UI') }),
+      checkText('pushQueueLine', 'Center push queue: {{open}} open / {{review}} review / {{blocked}} blocked / {{cached}} cached', { open: openPushes.length, review: reviewPushes.length, blocked: blockedPushes.length, cached: cachedGoalPushes.length }),
+      checkText('handoffQueueLine', 'Human handoff queue: {{open}} open / {{review}} review / {{blocked}} blocked', { open: openCollaborationTasks.length, review: reviewCollaborationTasks.length, blocked: blockedCollaborationTasks.length }),
+      checkText('workflowQueueLine', 'Workflow queue: {{active}} active / {{completed}} completed / {{review}} review / {{blocked}} blocked', { active: activeWorkflowInstances.length, completed: completedWorkflowInstances.length, review: reviewWorkflowInstances.length, blocked: blockedWorkflowInstances.length }),
+      checkText('watcherLine', 'GoalWatcher: {{state}} / handled {{handled}} / timeouts {{timeouts}}{{error}}', {
+        state: goalWatchAutoStatus?.running ? t('home.running', 'Running') : t('home.singleFlight', 'Single-flight'),
+        handled: goalWatchAutoStatus?.lastHandledCount || 0,
+        timeouts: goalWatchAutoStatus?.timeoutCancelCount || 0,
+        error: goalWatchAutoStatus?.lastError ? ' / ' + goalWatchAutoStatus.lastError : '',
+      }),
+      checkText('knownErrorsLine', 'Known errors: {{errors}}', { errors: [centerHealthError, workerMemoryStatsError, agentInstancesError, goalPushError, collaborationTasksError, workflowInstancesError, installedToolsError, configBundleError].filter(Boolean).join(' | ') || checkText('noneReportedByUi', 'none reported by UI') }),
       '',
       checkText('selfCheckResults', 'Self-check results:'),
       checkLines,
@@ -722,6 +946,22 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <div><span>{t('home.config', 'Config')}</span><strong>{configSummaryLabel}</strong></div>
         </section>
 
+        <section className={`iw-operating-action-bar is-${operatingAction.tone}`} aria-label={t('home.operatingDecisionAria', 'Current operating decision')}>
+          <div className="iw-operating-action-copy">
+            <span>{t('home.operatingDecision', 'Operating decision')}</span>
+            <strong>{operatingAction.title}</strong>
+            <p>{operatingAction.detail}</p>
+          </div>
+          <div className="iw-operating-risk-list" aria-label={t('home.operatingSignals', 'Operating signals')}>
+            {(operatingRisks.length ? operatingRisks : [t('home.noOperatingRisks', 'No blocking signal')]).map((risk) => <span key={risk}>{risk}</span>)}
+          </div>
+          <div className="iw-operating-action-controls">
+            <button type="button" onClick={operatingAction.onPrimary}>{operatingAction.primary}</button>
+            <button type="button" onClick={() => { void runSelfCheck(); }}>{t('home.selfCheck', 'Self-check')}</button>
+            <button type="button" onClick={onOpenSettings}>{t('home.openSettings', 'Open settings')}</button>
+          </div>
+        </section>
+
         {showContinuityNotice ? (
           <section className={"iw-continuity-banner " + (centerSyncIssue || hasCachedContinuity ? 'is-degraded' : 'is-local')} aria-label={t('home.localContinuityStatus', 'Local continuity status')}>
             <div>
@@ -745,11 +985,12 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <div className="iw-intervention-meta">
               <span>{interventionPush.toRoleCode || interventionPush.toColleagueId || t('home.assignedIWorker', 'assigned iWorker')}</span>
               <span>{runtimeSnapshotSourceLabel(interventionPush.source, interventionPush.stale)}</span>
+              {recoveryRouteText(interventionPush) ? <span>{recoveryRouteText(interventionPush)}</span> : null}
             </div>
             <div className="iw-intervention-actions">
               <button type="button" onClick={() => onOpenGoalPushTask(interventionPush)}>{t('home.openTask', 'Open task')}</button>
               <button type="button" onClick={() => handleHumanHandoff(interventionPush)}>{t('home.takeOver', 'Take over')}</button>
-              <button type="button" disabled={!interventionPushActionable || goalPushAckingId === interventionPush.eventId} onClick={() => { void onAckGoalPush(interventionPush.eventId || '', 'resumed'); }}>{t('home.resume', 'Resume')}</button>
+              <button type="button" disabled={!interventionPushActionable || goalPushAckingId === interventionPush.eventId} onClick={() => { void onAckGoalPush(interventionPush.eventId || '', 'resumed'); }}>{resumePushLabel(interventionPush)}</button>
               <button type="button" disabled={!interventionPushActionable || goalPushAckingId === interventionPush.eventId} onClick={() => { void onAckGoalPush(interventionPush.eventId || '', 'blocked'); }}>{t('home.block', 'Block')}</button>
               <button type="button" onClick={() => { void onRefreshGoalPushes(); }} disabled={goalPushLoading}>{goalPushLoading ? t('home.syncing', 'Syncing') : t('home.refresh', 'Refresh')}</button>
             </div>
@@ -776,10 +1017,27 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <article className="iw-command-card">
             <span>{laneText.human.label}</span>
             <strong>{humanQueueLabel}</strong>
-            <p>{laneText.human.detail}</p>
+            <p>{primaryCollaborationTask ? `${primaryCollaborationTask.title || primaryCollaborationTask.id} / ${statusText(primaryCollaborationTask.status)} / ${collaborationSourceLabel(primaryCollaborationTask)}` : collaborationTasksError || laneText.human.detail}</p>
             <div className="iw-command-actions">
-              <button type="button" onClick={() => handleHumanHandoff()}>{t('home.startHandoff', 'Start handoff')}</button>
+              <button type="button" onClick={() => {
+                if (primaryCollaborationTask) {
+                  onOpenCollaborationTask(primaryCollaborationTask);
+                } else {
+                  handleHumanHandoff();
+                }
+              }}>{primaryCollaborationTask ? t('home.openHandoff', 'Open handoff') : t('home.startHandoff', 'Start handoff')}</button>
+              {primaryCollaborationActions.slice(0, 2).map((action) => (
+                <button
+                  key={action}
+                  type="button"
+                  disabled={Boolean(collaborationTaskBusyId) || Boolean(primaryCollaborationTask?.stale || primaryCollaborationTask?.source === 'cache')}
+                  onClick={() => { void onTransitionCollaborationTask(primaryCollaborationTask?.id || '', action); }}
+                >
+                  {collaborationTaskBusyId === `${primaryCollaborationTask?.id}:${action}` ? t('home.syncing', 'Syncing') : collabActionText(action)}
+                </button>
+              ))}
               <button type="button" onClick={() => handleComposerTool('mention')}>{t('home.mention', 'Mention')}</button>
+              <button type="button" onClick={() => { void onRefreshCollaborationTasks(); }} disabled={collaborationTasksLoading}>{collaborationTasksLoading ? t('home.syncing', 'Syncing') : t('home.refresh', 'Refresh')}</button>
             </div>
           </article>
 
@@ -801,10 +1059,10 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <p>{currentWorkDetail}</p>
           </div>
           <div className="iw-work-status-counts" aria-label={t('home.workStatusSummary', 'Work status summary')}>
-            <div><strong>{activeTasks.length + pendingPushes + (localActiveWork ? 1 : 0)}</strong><span>{t('home.active', 'Active')}</span></div>
-            <div><strong>{completedTasks.length + completedPushes.length}</strong><span>{t('home.completed', 'Completed')}</span></div>
-            <div><strong>{reviewTasks.length + reviewPushes.length}</strong><span>{t('home.review', 'Review')}</span></div>
-            <div><strong>{blockedTasks.length + blockedPushes.length}</strong><span>{t('home.blocked', 'Blocked')}</span></div>
+            <div><strong>{activeTasks.length + activeWorkflowInstances.length + pendingPushes + openCollaborationTasks.length + runtimeCountContribution.active + (localActiveWork ? 1 : 0)}</strong><span>{t('home.active', 'Active')}</span></div>
+            <div><strong>{completedTasks.length + completedWorkflowInstances.length + completedPushes.length + completedCollaborationTasks.length + runtimeCountContribution.done}</strong><span>{t('home.completed', 'Completed')}</span></div>
+            <div><strong>{reviewTasks.length + reviewWorkflowInstances.length + reviewPushes.length + reviewCollaborationTasks.length + runtimeCountContribution.review}</strong><span>{t('home.review', 'Review')}</span></div>
+            <div><strong>{blockedTasks.length + blockedWorkflowInstances.length + blockedPushes.length + blockedCollaborationTasks.length + runtimeCountContribution.blocked}</strong><span>{t('home.blocked', 'Blocked')}</span></div>
           </div>
           <div className="iw-work-status-feed" aria-label={t('home.recentStatus', 'Recent work status')}>
             {visibleWorkItems.length === 0 ? (
@@ -929,6 +1187,7 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
             <span className={memoryAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.memory', 'Memory')}</span>
             <span className={toolsAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.tools', 'Tools')}</span>
             <span className={watcherAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.watcher', 'Watcher')}</span>
+            <span className={collaborationAvailabilityOk ? 'is-ok' : 'is-warn'}>{t('home.collaboration', 'Collaboration')}</span>
           </div>
         </section>
 
@@ -1010,17 +1269,27 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
           <div className="iw-tool-summary-grid">
             <div><strong>{installedTools.skills.length}</strong><span>{t('home.skills', 'Skills')}</span></div>
             <div><strong>{installedTools.mcpServers.length}</strong><span>MCP</span></div>
+            <div><strong>{highRiskInstalledToolCount}</strong><span>{t('home.highRiskTools', 'High risk')}</span></div>
           </div>
           <p>{installedToolsSourceLabel}{installedTools.cachedAt ? ` / ${t('home.cachedAt', 'cached')} ${installedTools.cachedAt}` : ''}</p>
           {installedToolsError ? <p className="iw-panel-error">{installedToolsError}</p> : null}
+          {installedTools.skillError ? <p className="iw-panel-error">{t('home.skillSyncIssue', 'Skill sync issue')}: {installedTools.skillError}</p> : null}
+          {installedTools.mcpError ? <p className="iw-panel-error">{t('home.mcpSyncIssue', 'MCP sync issue')}: {installedTools.mcpError}</p> : null}
+          {installedTools.cacheError ? <p className="iw-panel-error">{t('home.cacheUpdateIssue', 'Cache update issue')}: {installedTools.cacheError}</p> : null}
           <div className="iw-installed-tool-list">
-            {[...installedTools.skills.map((skill) => ({ key: `skill-${skill.capabilityId}`, kind: 'Skill', name: skill.name, detail: `${skill.source || 'iWorkerCenter'} / ${skill.riskLevel || 'low'}` })), ...installedTools.mcpServers.map((server) => ({ key: `mcp-${server.id}`, kind: 'MCP', name: server.name, detail: `${server.serverType || 'mcp'} / ${server.departmentId || 'all'} / ${server.riskLevel || 'medium'}` }))].slice(0, 4).map((tool) => (
+            {installedToolShortcuts.map((tool) => (
               <article key={tool.key} className="iw-installed-tool-card">
                 <span>{tool.kind}</span>
                 <strong>{tool.name}</strong>
                 <p>{tool.detail}</p>
+                <button type="button" onClick={() => handleUseInstalledTool(tool.prompt)}>{t('home.useTool', 'Use in task')}</button>
               </article>
             ))}
+            {hiddenInstalledToolCount > 0 ? (
+              <div className="iw-goal-empty">
+                {t('home.moreInstalledTools', '{{count}} more Center-installed tools are available in settings.', { count: hiddenInstalledToolCount })}
+              </div>
+            ) : null}
             {installedToolCount === 0 ? <div className="iw-goal-empty">{t('home.noTools', 'No Center-installed skill or MCP is enabled for this iWorker yet.')}</div> : null}
           </div>
         </section>
@@ -1069,11 +1338,12 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                 {push.recommendedAction ? <span className="iw-goal-action-pill">{recommendedActionText(push.recommendedAction)}</span> : null}
                 <strong>{push.title || push.taskId}</strong>
                 <p>{statusText(push.status)} / {push.toRoleCode || push.toColleagueId || t('home.assignedIWorker', 'assigned iWorker')}{push.cachedAt ? ` / ${runtimeSnapshotDetailLabel(push.source, push.cachedAt, push.stale)}` : ''}</p>
+                {recoveryRouteText(push) ? <p>{recoveryRouteText(push)}</p> : null}
                 {push.eventId ? (
                   <div className="iw-goal-actions">
                     <button type="button" onClick={() => onOpenGoalPushTask(push)}>{t('home.openTask', 'Open task')}</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push) || needsHumanIntervention(push)} onClick={() => { void onAutoHandleGoalPush(push.eventId || ''); }}>{t('home.run', 'Run')}</button>
-                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>{t('home.resume', 'Resume')}</button>
+                    <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'resumed'); }}>{resumePushLabel(push)}</button>
                     <button type="button" disabled={goalPushAckingId === push.eventId || isCachedPush(push)} onClick={() => { void onAckGoalPush(push.eventId || '', 'blocked'); }}>{t('home.block', 'Block')}</button>
                   </div>
                 ) : null}
@@ -1095,6 +1365,45 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
         </section>
 
         <section className="iw-inspector-card">
+          <div className="iw-inspector-title-row">
+            <h3>{t('home.workflowInstances', 'Workflow instances')}</h3>
+            <button type="button" onClick={() => { void onRefreshWorkflowInstances(); }} disabled={workflowInstancesLoading}>{workflowInstancesLoading ? t('home.syncing', 'Syncing') : t('home.refresh', 'Refresh')}</button>
+          </div>
+          {workflowInstancesError ? <p className="iw-panel-error">{workflowInstancesError}</p> : null}
+          <div className="iw-agent-list">
+            {workflowInstances.length === 0 ? (
+              <div className="iw-goal-empty">{t('home.noWorkflowInstances', 'No Center workflow instance is assigned or visible yet.')}</div>
+            ) : workflowInstances.slice(0, 4).map((instance) => (
+              <article key={instance.id} className="iw-agent-card">
+                <div>
+                  <strong>{instance.title || instance.id}</strong>
+                  <span>{statusText(instance.status)}</span>
+                </div>
+                <p>
+                  {t('home.workflowStep', 'Step')}: {instance.currentStepId || '-'} / {t('home.updated', 'Updated')}: {instance.updatedAt || instance.createdAt || '-'}
+                  {instance.cachedAt ? ` / ${runtimeSnapshotDetailLabel(instance.source, instance.cachedAt, instance.stale)}` : ''}
+                </p>
+                <small>{instance.definitionId || t('home.workflowDefinition', 'workflow definition')} / {instance.initiatorId || t('home.iworkerCenter', 'iWorkerCenter')} / {runtimeSnapshotSourceLabel(instance.source, instance.stale)}</small>
+                {instance.currentStepId ? (
+                  <div className="iw-goal-actions">
+                    {(['start', 'complete', 'reject'] as const).map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        disabled={Boolean(workflowStepBusyId) || Boolean(instance.stale || instance.source === 'cache')}
+                        onClick={() => { void onTransitionWorkflowStep(instance.currentStepId, action); }}
+                      >
+                        {workflowStepBusyId === `${instance.currentStepId}:${action}` ? t('home.syncing', 'Syncing') : t(`home.collabAction.${action}`, action)}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="iw-inspector-card">
           <h3>{t('home.agentInstances', 'Agent instances')}</h3>
           <div className="iw-agent-list">
             {agentInstances.length === 0 ? (
@@ -1108,6 +1417,9 @@ export function HomePage({ draft, selectedTask, selectedColleagueName, recentTas
                 <p>{instance.memoryAuthority || 'iWorkerCenter'} / {cacheModeText(instance.localCacheMode || 'cache_only')} / {t('home.secondsAgo', '{{seconds}}s ago', { seconds: instance.heartbeatAgeSeconds || 0 })} / {runtimeSnapshotDetailLabel(instance.source, instance.cachedAt, instance.stale)}</p>
                 {instance.workStatus ? (
                   <p>{instance.workStatus.currentTask || t('home.noActiveTask', 'No active task')} / {t('home.active', 'Active')} {instance.workStatus.activeCount} / {t('home.completed', 'Completed')} {instance.workStatus.completedCount} / {t('home.review', 'Review')} {instance.workStatus.reviewCount} / {t('home.blocked', 'Blocked')} {instance.workStatus.blockedCount}</p>
+                ) : null}
+                {instance.runtimeSkillError ? (
+                  <p className="iw-panel-error">{t('home.runtimeSkillSyncIssue', 'Runtime skill sync issue')}: {instance.runtimeSkillError}</p>
                 ) : null}
                 <small>{instance.hostId || t('home.localBody', 'local body')} / {instance.capabilities.slice(0, 3).join(', ') || t('home.baseTools', 'base tools')}</small>
               </article>

@@ -1,15 +1,26 @@
 package collaboration
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
+)
+
+const maxCollaborationJSONBodyBytes = 128 << 10
+
+var (
+	errCollaborationJSONTooLarge = errors.New("collaboration json body exceeds size limit")
+	errCollaborationJSONTrailing = errors.New("collaboration json body contains trailing data")
 )
 
 // Handler exposes HTTP endpoints for collaboration tasks.
@@ -51,7 +62,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, map[string]any{"tasks": toTaskDTOs(tasks)})
 	case http.MethodPost:
 		var req CreateRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeCollaborationJSON(r.Body, &req, false); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
@@ -79,7 +90,7 @@ func (h *Handler) handleSettings(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, overview)
 	case http.MethodPost:
 		var req RoutingSettings
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeCollaborationJSON(r.Body, &req, false); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
@@ -104,7 +115,7 @@ func (h *Handler) handleRoleAction(w http.ResponseWriter, r *http.Request) {
 		Action   string `json:"action"`
 		ActorID  string `json:"actor_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCollaborationJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -171,7 +182,11 @@ func (h *Handler) handleClientList(w http.ResponseWriter, r *http.Request) {
 	tid := tenant.RequestTenantID(r)
 	colleagueID := r.URL.Query().Get("colleague_id")
 	if colleagueID == "" {
-		tasks, _ := h.svc.ListAll(tid)
+		tasks, err := h.svc.ListAll(tid)
+		if err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
 		response.OK(w, map[string]any{"tasks": toTaskDTOs(tasks)})
 		return
 	}
@@ -190,7 +205,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	tid := tenant.RequestTenantID(r)
 	var req CreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCollaborationJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -243,7 +258,7 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		ColleagueID string `json:"colleague_id"`
 		ObservedAt  string `json:"observed_at"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCollaborationJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -262,10 +277,14 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleByID(w http.ResponseWriter, r *http.Request) {
 	tid := tenant.RequestTenantID(r)
-	rest := strings.TrimPrefix(r.URL.Path, "/admin/collaborations/")
+	rest := strings.TrimPrefix(r.URL.EscapedPath(), "/admin/collaborations/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
-	id := parts[0]
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid collaboration task id")
+		return
+	}
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "task id required")
 		return
@@ -295,21 +314,33 @@ func (h *Handler) handleTransition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tid := tenant.RequestTenantID(r)
-	rest := strings.TrimPrefix(r.URL.Path, "/runtime/collaboration/")
+	rest := strings.TrimPrefix(r.URL.EscapedPath(), "/runtime/collaboration/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) < 2 || parts[0] == "" || parts[0] == "create" || parts[0] == "heartbeat" {
 		response.BadRequest(w, "INVALID_PATH", "expected /runtime/collaboration/{id}/{action}")
 		return
 	}
-	id, action := parts[0], parts[1]
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid collaboration task id")
+		return
+	}
+	action, err := url.PathUnescape(parts[1])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid collaboration action")
+		return
+	}
 
 	var body struct {
 		ActorID string `json:"actor_id"`
 		Result  string `json:"result"`
 		Note    string `json:"note"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := decodeCollaborationJSON(r.Body, &body, true); err != nil {
+		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
+		return
+	}
 
 	statusMap := map[string]string{
 		"accept":   StatusAccepted,
@@ -327,7 +358,12 @@ func (h *Handler) handleTransition(w http.ResponseWriter, r *http.Request) {
 		response.BadRequest(w, "TRANSITION_FAILED", err.Error())
 		return
 	}
-	response.OK(w, map[string]string{"status": "ok"})
+	task, err := h.svc.GetByID(tid, id)
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "TASK_READ_FAILED", "collaboration task was transitioned but could not be loaded")
+		return
+	}
+	response.OK(w, map[string]any{"status": "ok", "task": toTaskDTO(task)})
 }
 
 type taskDTO struct {
@@ -340,6 +376,7 @@ type taskDTO struct {
 	Status          string `json:"status"`
 	Priority        int    `json:"priority"`
 	Result          string `json:"result"`
+	WorkflowStepID  string `json:"workflow_step_instance_id,omitempty"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 }
@@ -358,9 +395,10 @@ func toTaskDTO(t *Task) taskDTO {
 		ID: t.ID, Title: t.Title, Description: t.Description,
 		FromColleagueID: t.FromColleagueID, ToColleagueID: t.ToColleagueID,
 		ToRoleCode: t.ToRoleCode, Status: t.Status, Priority: t.Priority,
-		Result:    t.Result,
-		CreatedAt: t.CreatedAt.Format("2006-01-02T15:04:05Z"),
-		UpdatedAt: t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+		Result:         t.Result,
+		WorkflowStepID: t.WorkflowStepInstanceID,
+		CreatedAt:      t.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:      t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 }
 
@@ -382,4 +420,28 @@ func toEventDTOs(events []*TaskEvent) []eventDTO {
 		})
 	}
 	return dtos
+}
+
+func decodeCollaborationJSON(body io.Reader, dst any, allowEmpty bool) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxCollaborationJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxCollaborationJSONBodyBytes {
+		return errCollaborationJSONTooLarge
+	}
+	if len(bytes.TrimSpace(data)) == 0 && allowEmpty {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errCollaborationJSONTrailing
+		}
+		return err
+	}
+	return nil
 }

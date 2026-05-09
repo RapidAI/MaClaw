@@ -66,12 +66,12 @@ export function VoiceLevelVisualizer({ onAudioLevelRef, isSpeaking, themeColor, 
 }
 
 export function getWindowControlButtonStyle(t: Theme, variant: "hide" | "fullscreen", active = false): React.CSSProperties {
-    const hoverBg = variant === "hide" ? "rgba(148, 163, 184, 0.14)" : "rgba(99, 102, 241, 0.12)";
+    const hoverBg = variant === "hide" ? "rgba(148, 163, 184, 0.14)" : "rgba(99, 102, 241, 0.16)";
     return {
         ...baseWindowControlBtnStyle,
-        color: active ? "#1f2937" : t.actionBtnColor,
-        background: active ? "rgba(99, 102, 241, 0.16)" : "transparent",
-        boxShadow: active ? "inset 0 0 0 1px rgba(99, 102, 241, 0.08)" : "none",
+        color: active ? t.text : t.actionBtnColor,
+        background: active ? t.divider : "transparent",
+        boxShadow: active ? `inset 0 0 0 1px ${t.fieldBorder}` : "none",
         ['--ai-window-control-hover-bg' as any]: hoverBg,
     };
 }

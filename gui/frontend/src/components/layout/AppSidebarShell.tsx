@@ -2,6 +2,7 @@ import type { MouseEvent as ReactMouseEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
 import type { SidebarHubCredits } from '../../types/appShell';
+import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 
 type RecentProject = {
@@ -27,10 +28,12 @@ interface AppSidebarShellProps {
     lang: string;
     maclawLLMOnline: boolean;
     agentNetRunning: boolean;
+    showLansenger?: boolean;
     remoteActivationStatus: any;
     qqBotStatus: string;
     telegramStatus: string;
     weixinStatus: string;
+    lansengerStatus: string;
     runningTaskCount: number;
     t: (key: string) => string;
     gossipAllowed: boolean;
@@ -46,6 +49,9 @@ interface AppSidebarShellProps {
     renameValue: string;
     setRenameValue: (value: string) => void;
     resumeRecentProject: (projectPath: string) => Promise<void> | void;
+    assistantReady?: boolean;
+    onRecentTaskSwitchBlocked?: () => void;
+    createRecentTask: (name: string) => Promise<void> | void;
     refreshRecentProjects: () => void;
     taskContextMenu: TaskContextMenu;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
@@ -63,6 +69,8 @@ interface AppSidebarShellProps {
     noHubAuthorizationText: string;
     showHubCreditAction: boolean;
     openHubCreditsPage: () => void;
+    codingAgentProgress?: CodingAgentProgress | null;
+    codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
     handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
     isRecentTasksResizing: boolean;
 }
@@ -79,10 +87,12 @@ export const AppSidebarShell = ({
     lang,
     maclawLLMOnline,
     agentNetRunning,
+    showLansenger = false,
     remoteActivationStatus,
     qqBotStatus,
     telegramStatus,
     weixinStatus,
+    lansengerStatus,
     runningTaskCount,
     t,
     gossipAllowed,
@@ -98,6 +108,9 @@ export const AppSidebarShell = ({
     renameValue,
     setRenameValue,
     resumeRecentProject,
+    assistantReady = true,
+    onRecentTaskSwitchBlocked,
+    createRecentTask,
     refreshRecentProjects,
     taskContextMenu,
     setTaskContextMenu,
@@ -115,6 +128,8 @@ export const AppSidebarShell = ({
     noHubAuthorizationText,
     showHubCreditAction,
     openHubCreditsPage,
+    codingAgentProgress = null,
+    codingAgentTurnSnapshot = null,
     handleRecentTasksResizeStart,
     isRecentTasksResizing,
 }: AppSidebarShellProps) => (
@@ -150,12 +165,16 @@ export const AppSidebarShell = ({
                     <SidebarAiPane
                         recentTasksPaneWidth={recentTasksPaneWidth}
                         lang={lang}
+                        aiThemeMode={aiThemeMode}
                         maclawLLMOnline={maclawLLMOnline}
                         agentNetRunning={agentNetRunning}
+                        hideAgentNet={brandInfo?.id === 'qianxin'}
+                        showLansenger={showLansenger}
                         remoteActivationStatus={remoteActivationStatus}
                         qqBotStatus={qqBotStatus}
                         telegramStatus={telegramStatus}
                         weixinStatus={weixinStatus}
+                        lansengerStatus={lansengerStatus}
                         config={config}
                         activeTool={activeTool}
                         toolDropdownOpen={toolDropdownOpen}
@@ -166,6 +185,9 @@ export const AppSidebarShell = ({
                         renameValue={renameValue}
                         setRenameValue={setRenameValue}
                         resumeRecentProject={resumeRecentProject}
+                        assistantReady={assistantReady}
+                        onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked}
+                        createRecentTask={createRecentTask}
                         refreshRecentProjects={refreshRecentProjects}
                         taskContextMenu={taskContextMenu}
                         setTaskContextMenu={setTaskContextMenu}
@@ -183,6 +205,8 @@ export const AppSidebarShell = ({
                         noHubAuthorizationText={noHubAuthorizationText}
                         showHubCreditAction={showHubCreditAction}
                         openHubCreditsPage={openHubCreditsPage}
+                        codingAgentProgress={codingAgentProgress}
+                        codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                         handleRecentTasksResizeStart={handleRecentTasksResizeStart}
                         isRecentTasksResizing={isRecentTasksResizing}
                         switchTool={switchTool}

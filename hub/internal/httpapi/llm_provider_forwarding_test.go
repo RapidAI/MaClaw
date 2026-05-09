@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -301,6 +302,658 @@ func TestLLMV1ChatCompletionsHandlerRejectsGrantRequiredServiceWithoutCredits(t 
 	}
 	if upstreamHits.Load() != 0 {
 		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReportsPeriodLimitRetry(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "period-limited@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "period-limited@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-1",
+			Email:          "period-limited@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    1,
+			PeriodLimits:   llmservice.CreditPeriodLimits{Daily: 10},
+			PeriodUsage:    llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("expected period limit code, body = %s", rr.Body.String())
+	}
+	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReportsExpiredGrant(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "expired-grant@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "expired-grant@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-1",
+			Email:          "expired-grant@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-48 * time.Hour),
+			ExpiresAt:      now.Add(-time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_GRANT_EXPIRED" {
+		t.Fatalf("expected expired grant code, body = %s", rr.Body.String())
+	}
+	if !strings.Contains(strings.ToLower(fmt.Sprint(resp["message"])), "expired") {
+		t.Fatalf("expected expired message, body = %s", rr.Body.String())
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReportsPeriodLimitRetryForUnlimitedGrant(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "unlimited-period-limited@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "unlimited-period-limited@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-1",
+			Email:          "unlimited-period-limited@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "admin",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   0,
+			PeriodLimits:   llmservice.CreditPeriodLimits{Daily: 10},
+			PeriodUsage:    llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("expected period limit code, body = %s", rr.Body.String())
+	}
+	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReportsPeriodLimitForExplicitModelWhenOtherRouteAvailable(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "explicit-limited@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "limited-group",
+			Name:         "Limited Group",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "limited",
+				ProviderIDs: []string{"provider-limited"},
+			}},
+		}, {
+			ID:           "active-group",
+			Name:         "Active Group",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "active",
+				ProviderIDs: []string{"provider-active"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "explicit-limited@example.com",
+			ServiceGroupIDs: []string{"limited-group", "active-group"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-limited",
+			Email:          "explicit-limited@example.com",
+			ServiceGroupID: "limited-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    1,
+			PeriodLimits:   llmservice.CreditPeriodLimits{Daily: 10},
+			PeriodUsage:    llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+		}, {
+			ID:             "grant-active",
+			Email:          "explicit-limited@example.com",
+			ServiceGroupID: "active-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    1,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var limitedHits atomic.Int32
+	var activeHits atomic.Int32
+	limitedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limitedHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "limited", "model": "limited"})
+	}))
+	defer limitedServer.Close()
+	activeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		activeHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "active", "model": "active"})
+	}))
+	defer activeServer.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{
+		{ID: "provider-limited", APIURL: limitedServer.URL, Model: "limited-upstream"},
+		{ID: "provider-active", APIURL: activeServer.URL, Model: "active-upstream"},
+	}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "limited", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("expected explicit limited model to report period limit, body = %s", rr.Body.String())
+	}
+	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+	if limitedHits.Load() != 0 || activeHits.Load() != 0 {
+		t.Fatalf("expected no upstream calls for explicitly limited model, limited=%d active=%d", limitedHits.Load(), activeHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReportsQueuedGrantRetry(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "queued-grant@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	startsAt := now.Add(2 * time.Hour).Truncate(time.Second)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "queued-grant@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-1",
+			Email:          "queued-grant@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       startsAt,
+			ExpiresAt:      startsAt.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_GRANT_QUEUED" {
+		t.Fatalf("expected queued grant code, body = %s", rr.Body.String())
+	}
+	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerReportsQueuedGrantRetryWhenCurrentGrantExhausted(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "exhausted-then-queued@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	startsAt := now.Add(2 * time.Hour).Truncate(time.Second)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "coding-basic",
+			Name:         "Coding Basic",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models: []llmservice.ModelServiceModel{{
+				Name:        "auto",
+				ProviderIDs: []string{"provider-a"},
+			}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "exhausted-then-queued@example.com",
+			ServiceGroupIDs: []string{"coding-basic"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-old",
+			Email:          "exhausted-then-queued@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       now.Add(-24 * time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    100,
+		}, {
+			ID:             "grant-next",
+			Email:          "exhausted-then-queued@example.com",
+			ServiceGroupID: "coding-basic",
+			Source:         "card",
+			StartsAt:       startsAt,
+			ExpiresAt:      startsAt.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+
+	var upstreamHits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream", "model": "auto"})
+	}))
+	defer server.Close()
+
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", APIURL: server.URL, Model: "test-model"}}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_GRANT_QUEUED" {
+		t.Fatalf("expected queued grant code, body = %s", rr.Body.String())
+	}
+	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+	if upstreamHits.Load() != 0 {
+		t.Fatalf("expected upstream to be blocked, hits = %d", upstreamHits.Load())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerPrioritizesQueuedDenialForAuto(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "auto-queued@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	startsAt := now.Add(2 * time.Hour).Truncate(time.Second)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "exhausted-group",
+			Name:         "Exhausted",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models:       []llmservice.ModelServiceModel{{Name: "exhausted", ProviderIDs: []string{"provider-exhausted"}}},
+		}, {
+			ID:           "queued-group",
+			Name:         "Queued",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models:       []llmservice.ModelServiceModel{{Name: "queued", ProviderIDs: []string{"provider-queued"}}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "auto-queued@example.com",
+			ServiceGroupIDs: []string{"exhausted-group", "queued-group"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-exhausted",
+			Email:          "auto-queued@example.com",
+			ServiceGroupID: "exhausted-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    100,
+		}, {
+			ID:             "grant-queued",
+			Email:          "auto-queued@example.com",
+			ServiceGroupID: "queued-group",
+			Source:         "card",
+			StartsAt:       startsAt,
+			ExpiresAt:      startsAt.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream should not be called")
+	}))
+	defer server.Close()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{
+		{ID: "provider-exhausted", APIURL: server.URL, Model: "exhausted-upstream"},
+		{ID: "provider-queued", APIURL: server.URL, Model: "queued-upstream"},
+	}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_GRANT_QUEUED" {
+		t.Fatalf("expected queued denial to win over exhausted, body = %s", rr.Body.String())
+	}
+	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+}
+
+func TestLLMV1ChatCompletionsHandlerPrioritizesPeriodLimitDenialForAuto(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken, _ := issueViewerToken(t, identity, "auto-limited@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	startsAt := now.Add(2 * time.Hour).Truncate(time.Second)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{
+			ID:           "queued-group",
+			Name:         "Queued",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models:       []llmservice.ModelServiceModel{{Name: "queued", ProviderIDs: []string{"provider-queued"}}},
+		}, {
+			ID:           "limited-group",
+			Name:         "Limited",
+			AccessPolicy: llmservice.AccessPolicyGrantRequired,
+			Models:       []llmservice.ModelServiceModel{{Name: "limited", ProviderIDs: []string{"provider-limited"}}},
+		}},
+		UserBindings: []llmservice.UserBinding{{
+			Email:           "auto-limited@example.com",
+			ServiceGroupIDs: []string{"queued-group", "limited-group"},
+		}},
+		Grants: []llmservice.Grant{{
+			ID:             "grant-queued",
+			Email:          "auto-limited@example.com",
+			ServiceGroupID: "queued-group",
+			Source:         "card",
+			StartsAt:       startsAt,
+			ExpiresAt:      startsAt.Add(24 * time.Hour),
+			CreditsTotal:   100,
+		}, {
+			ID:             "grant-limited",
+			Email:          "auto-limited@example.com",
+			ServiceGroupID: "limited-group",
+			Source:         "card",
+			StartsAt:       now.Add(-time.Hour),
+			ExpiresAt:      now.Add(24 * time.Hour),
+			CreditsTotal:   100,
+			CreditsUsed:    1,
+			PeriodLimits:   llmservice.CreditPeriodLimits{Daily: 10},
+			PeriodUsage:    llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{WindowStart: dayStart, CreditsUsed: 10}},
+		}},
+	}); err != nil {
+		t.Fatalf("save service registry: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("upstream should not be called")
+	}))
+	defer server.Close()
+	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{
+		{ID: "provider-queued", APIURL: server.URL, Model: "queued-upstream"},
+		{ID: "provider-limited", APIURL: server.URL, Model: "limited-upstream"},
+	}}); err != nil {
+		t.Fatalf("save provider registry: %v", err)
+	}
+
+	bodyBytes, err := json.Marshal(map[string]any{"model": "auto", "messages": []any{map[string]any{"role": "user", "content": "hello"}}})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/v1/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	LLMV1ChatCompletionsHandler(identity, system, nil).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["code"] != "LLM_SERVICE_PERIOD_LIMITED" {
+		t.Fatalf("expected period limit denial to win over queued, body = %s", rr.Body.String())
+	}
+	if resp["retry_after_at"] == "" || resp["retry_after_seconds"] == nil || rr.Header().Get("Retry-After") == "" {
+		t.Fatalf("expected retry metadata, header=%q body=%s", rr.Header().Get("Retry-After"), rr.Body.String())
 	}
 }
 

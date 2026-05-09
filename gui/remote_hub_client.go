@@ -1037,7 +1037,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		// Interrupt check: if the agent loop is already running (chatLoopMu held)
 		// and this message is a cancel/merge/status signal, handle it immediately
 		// without waiting for the lock.
-		if handler.interruptHandler != nil && payload.Text != "" && handler.currentLoopCtx != nil {
+		if handler.shouldTryInlineInterrupt(payload) {
 			result := handler.interruptHandler.TryInterrupt(payload.UserID, payload.Text)
 			if result.PendingConfirm {
 				// Scheduler uncertain — send confirmation with corrections.

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -71,13 +70,11 @@ func ResolveStep(
 					cp := copyParams(step.Params)
 					var quotedParts []string
 					for i := 0; i < len(filtered); i += 2 {
-						quotedParts = append(quotedParts, filtered[i]) // flag
+						flag := filtered[i]
 						if i+1 < len(filtered) {
-							val := filtered[i+1]
-							if quoteFunc != nil {
-								val = quoteFunc(val)
-							}
-							quotedParts = append(quotedParts, val)
+							quotedParts = append(quotedParts, renderCLIArgPair(flag, filtered[i+1], quoteFunc)...)
+						} else if strings.TrimSpace(flag) != "" {
+							quotedParts = append(quotedParts, strings.TrimSpace(flag))
 						}
 					}
 					cp["command"] = cmd + " " + strings.Join(quotedParts, " ")
@@ -89,10 +86,8 @@ func ResolveStep(
 
 	// Phase 2: Template substitution.
 	resolved := step
-	if resolvedParams := resolveValue(step.Params, bindVars, quoteFunc); resolvedParams != nil {
-		if m, ok := resolvedParams.(map[string]interface{}); ok {
-			resolved.Params = m
-		}
+	if resolvedParams := resolveStepParams(step.Action, step.Params, bindVars, quoteFunc); resolvedParams != nil {
+		resolved.Params = resolvedParams
 	} else if step.Params != nil {
 		resolved.Params = map[string]interface{}{}
 	}
@@ -106,7 +101,7 @@ func ResolveStep(
 			if v, _ := resolved.Params[key].(string); strings.TrimSpace(v) != "" {
 				continue
 			}
-			if value := strings.TrimSpace(bindVars[key]); value != "" {
+			if value := strings.TrimSpace(resolveRunVarValueForKey(key, bindVars)); value != "" {
 				resolved.Params[key] = value
 			}
 		}
@@ -127,8 +122,9 @@ func ResolveStep(
 // a CLIFlag and a template placeholder, the template substitution handles it.
 func FilterConsumedCLIArgs(cliArgs []string, params []corelib.NLSkillParam, originalCmd string) []string {
 	consumedFlags := make(map[string]bool)
+	primaryNames := schemaPrimaryParamNames(params)
 	for _, p := range params {
-		if p.CLIFlag != "" && CommandReferencesParam(originalCmd, p.Name) {
+		if p.CLIFlag != "" && commandReferencesParamBindingName(originalCmd, p, primaryNames) {
 			consumedFlags[p.CLIFlag] = true
 		}
 	}
@@ -144,16 +140,93 @@ func FilterConsumedCLIArgs(cliArgs []string, params []corelib.NLSkillParam, orig
 	return filtered
 }
 
+func commandReferencesParamBindingName(cmd string, param corelib.NLSkillParam, primaryNames map[string]bool) bool {
+	for _, name := range paramBindingNamesForSchema(param, primaryNames) {
+		if CommandReferencesParam(cmd, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // CommandReferencesParam checks if a command string contains a placeholder
 // reference to the given param name ({{name}}, ${name}, or {name}).
 func CommandReferencesParam(cmd, paramName string) bool {
-	return strings.Contains(cmd, "{{"+paramName+"}}") ||
-		strings.Contains(cmd, "${"+paramName+"}") ||
-		strings.Contains(cmd, "{"+paramName+"}")
+	paramName = canonicalRunVarKey(paramName)
+	for _, key := range ExtractPlaceholderKeys(cmd) {
+		if canonicalRunVarKey(key) == paramName {
+			return true
+		}
+	}
+	return false
 }
 
-// resolveValue recursively substitutes placeholders in all string values
-// within a params structure (map, slice, or string).
+func renderCLIArgPair(flag, value string, quoteFunc func(string) string) []string {
+	flag = strings.TrimSpace(flag)
+	if flag == "" || value == "" {
+		return nil
+	}
+	if quoteFunc != nil {
+		value = quoteFunc(value)
+	}
+	if strings.HasSuffix(flag, "=") || strings.HasSuffix(flag, ":") {
+		return []string{flag + value}
+	}
+	return []string{flag, value}
+}
+
+func resolveStepParams(action string, params map[string]interface{}, vars map[string]string, quoteFunc func(string) string) map[string]interface{} {
+	if params == nil {
+		return nil
+	}
+	resolved := make(map[string]interface{}, len(params))
+	for key, item := range params {
+		resolved[key] = resolveValue(item, vars, quoteFuncForStepParam(action, key, quoteFunc))
+	}
+	return resolved
+}
+
+func quoteFuncForStepParam(action, key string, quoteFunc func(string) string) func(string) string {
+	if quoteFunc == nil {
+		return nil
+	}
+	if NormalizeStepActionName(action) != "bash" {
+		return nil
+	}
+	switch canonicalRunVarKey(key) {
+	case "command":
+		return quoteFunc
+	default:
+		return nil
+	}
+}
+
+func resolveRunVarValueForKey(key string, vars map[string]string) string {
+	key = canonicalRunVarKey(key)
+	if key == "" {
+		return ""
+	}
+	if value, ok := lookupCanonicalVar(vars, key); ok && strings.TrimSpace(value) != "" {
+		return value
+	}
+	param := corelib.NLSkillParam{Name: key}
+	if aliases, ok := commonParamAliases[key]; ok {
+		param.Aliases = aliases
+	}
+	for _, alias := range runParamInferenceNames(param) {
+		if alias == key {
+			continue
+		}
+		if value, ok := lookupCanonicalVar(vars, alias); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// resolveValue recursively substitutes placeholders in a params value. The
+// quote function must already be scoped by caller context; shell quoting should
+// only be applied to shell command strings, not structured tool arguments.
 func resolveValue(value interface{}, vars map[string]string, quoteFunc func(string) string) interface{} {
 	switch typed := value.(type) {
 	case string:
@@ -180,36 +253,64 @@ func resolveValue(value interface{}, vars map[string]string, quoteFunc func(stri
 // After substitution, any remaining unresolved placeholders are stripped
 // (they represent optional parameters that were not provided).
 func substituteWithQuote(command string, vars map[string]string, quoteFunc func(string) string) string {
-	if command == "" || len(vars) == 0 {
-		return StripUnresolvedPlaceholders(command)
+	return SubstituteVariablesWithQuote(command, vars, quoteFunc)
+}
+
+func replaceCanonicalPlaceholder(command, key, value string, stripSurroundingQuotes bool) string {
+	target := canonicalRunVarKey(key)
+	if target == "" || command == "" {
+		return command
 	}
-	// Sort keys to ensure deterministic replacement order. This prevents
-	// edge cases where {key} could partially match inside {{key_longer}}
-	// if processed in the wrong order.
-	keys := make([]string, 0, len(vars))
-	for k := range vars {
-		keys = append(keys, k)
+
+	matches := placeholderRe.FindAllStringIndex(command, -1)
+	if len(matches) == 0 {
+		return command
 	}
-	slices.Sort(keys)
-	for _, key := range keys {
-		value := vars[key]
-		quoted := value
-		if quoteFunc != nil {
-			quoted = quoteFunc(value)
+
+	var builder strings.Builder
+	last := 0
+	changed := false
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		if canonicalRunVarKey(placeholderKeyFromMatch(command[start:end])) != target {
+			continue
 		}
-		// Replace quoted-placeholder patterns first (e.g. "{{key}}" → value),
-		// then replace bare placeholders ({{key}} → value).
-		// This avoids double-quoting when SKILL.md authors wrap placeholders
-		// in quotes that quoteFunc would also add.
-		for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}", "{" + key + "}"} {
-			doubleQuoted := `"` + placeholder + `"`
-			singleQuoted := `'` + placeholder + `'`
-			command = strings.ReplaceAll(command, doubleQuoted, quoted)
-			command = strings.ReplaceAll(command, singleQuoted, quoted)
-			command = strings.ReplaceAll(command, placeholder, quoted)
+
+		replaceStart, replaceEnd := start, end
+		if stripSurroundingQuotes && start > 0 && end < len(command) {
+			before, after := command[start-1], command[end]
+			if (before == '"' && after == '"') ||
+				(before == '\'' && after == '\'') ||
+				(before == '`' && after == '`') {
+				replaceStart = start - 1
+				replaceEnd = end + 1
+			}
 		}
+
+		builder.WriteString(command[last:replaceStart])
+		builder.WriteString(value)
+		last = replaceEnd
+		changed = true
 	}
-	return StripUnresolvedPlaceholders(command)
+	if !changed {
+		return command
+	}
+	builder.WriteString(command[last:])
+	return builder.String()
+}
+
+func placeholderKeyFromMatch(match string) string {
+	match = strings.TrimSpace(match)
+	if strings.HasPrefix(match, "{{") && strings.HasSuffix(match, "}}") {
+		return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(match, "{{"), "}}"))
+	}
+	if strings.HasPrefix(match, "${") && strings.HasSuffix(match, "}") {
+		return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(match, "${"), "}"))
+	}
+	if strings.HasPrefix(match, "{") && strings.HasSuffix(match, "}") {
+		return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(match, "{"), "}"))
+	}
+	return ""
 }
 
 // copyParams creates a shallow copy of a params map.

@@ -1,6 +1,11 @@
 package bootstrap
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
 
 func TestNormalizePlanProvidesSafeDefaults(t *testing.T) {
 	plan := NormalizePlan("tenant-a", Plan{})
@@ -60,6 +65,84 @@ func TestServiceDraftApplyAndStartFirstWave(t *testing.T) {
 	status := svc.Status("tenant-a")
 	if !status.HasPlan || status.LastRun == nil || !status.ReadyToStart {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestServiceUsesRequestTenantOverPlanTenant(t *testing.T) {
+	svc := NewService(t.TempDir() + "/bootstrap.json")
+	plan, _, err := svc.DraftPlan("tenant-a", Plan{
+		TenantID:    "tenant-b",
+		CompanyName: "Acme",
+	})
+	if err != nil {
+		t.Fatalf("draft: %v", err)
+	}
+	if plan.TenantID != "tenant-a" {
+		t.Fatalf("plan tenant = %q", plan.TenantID)
+	}
+	statusA := svc.Status("tenant-a")
+	if !statusA.HasPlan || statusA.Plan == nil || statusA.Plan.TenantID != "tenant-a" {
+		t.Fatalf("expected tenant-a plan, got %+v", statusA)
+	}
+	statusB := svc.Status("tenant-b")
+	if statusB.HasPlan {
+		t.Fatalf("tenant-b should not inherit tenant-a bootstrap plan: %+v", statusB)
+	}
+}
+
+func TestDraftPlanRejectsInvalidJSONWithoutSavingPlan(t *testing.T) {
+	svc := NewService(t.TempDir() + "/bootstrap.json")
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterAdminRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/bootstrap/draft-plan", strings.NewReader(`{"company_name":`))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	if status := svc.Status("tenant-a"); status.HasPlan {
+		t.Fatalf("unexpected saved plan after invalid JSON: %+v", status)
+	}
+}
+
+func TestApplyPlanRejectsOversizedJSONWithoutSavingPlan(t *testing.T) {
+	svc := NewService(t.TempDir() + "/bootstrap.json")
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterAdminRoutes(mux)
+
+	body := `{"company_name":"Acme","company_address":"` + strings.Repeat("x", maxBootstrapPlanBodyBytes+1024)
+	req := httptest.NewRequest(http.MethodPost, "/admin/bootstrap/apply-plan", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	if status := svc.Status("tenant-a"); status.HasPlan {
+		t.Fatalf("unexpected saved plan after oversized JSON: %+v", status)
+	}
+}
+
+func TestDraftPlanRejectsTrailingJSONWithoutSavingPlan(t *testing.T) {
+	svc := NewService(t.TempDir() + "/bootstrap.json")
+	handler := NewHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterAdminRoutes(mux)
+
+	body := `{"company_name":"Acme","legal_person":"Alice","company_address":"Shanghai","contact_email":"admin@example.com"} {"company_name":"Extra"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/bootstrap/draft-plan", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	if status := svc.Status("tenant-a"); status.HasPlan {
+		t.Fatalf("unexpected saved plan after trailing JSON: %+v", status)
 	}
 }
 

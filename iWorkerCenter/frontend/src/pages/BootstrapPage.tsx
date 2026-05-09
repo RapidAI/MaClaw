@@ -25,14 +25,14 @@ type Props = {
   onBootstrapChanged?: (status: BootstrapStatus | null) => void;
 };
 
-const splitLines = (value: string) => value.split(String.fromCharCode(10)).map(item => item.trim()).filter(Boolean);
-const joinLines = (value: string[] | undefined) => (value || []).join(String.fromCharCode(10));
+const splitLines = (value: string) => value.split('\n').map(item => item.trim()).filter(Boolean);
+const joinLines = (value: string[] | undefined) => (value || []).join('\n');
 
 function TextAreaList({ label, value, onChange, hint, rows = 5 }: { label: string; value: string[]; onChange: (next: string[]) => void; hint?: string; rows?: number }) {
   return (
     <label className="cloud-field">
       <span>{label}</span>
-      <textarea value={joinLines(value)} onChange={e => onChange(splitLines(e.target.value))} rows={rows} />
+      <textarea value={joinLines(value)} onChange={event => onChange(splitLines(event.target.value))} rows={rows} />
       {hint ? <small className="cloud-inline-note">{hint}</small> : null}
     </label>
   );
@@ -69,7 +69,7 @@ function AssetList({ assets }: { assets: AppliedAsset[] }) {
     workflow_instance: t('流程实例', 'Workflow run'),
     goalwatch_policy: t('自动运行策略', 'Automation policy'),
   }[kind] || kind);
-  if (!assets.length) return <p className="cloud-inline-note">{t('应用启动计划后会显示创建或复用的角色、iWorker、流程、记忆和策略。', 'Applied roles, iWorkers, workflows, memories, and policies appear after the plan is applied.')}</p>;
+  if (!assets.length) return <p className="cloud-inline-note">{t('应用启动计划后，会显示创建或复用的角色、iWorker、流程、记忆和策略。', 'Applied roles, iWorkers, workflows, memories, and policies appear after the plan is applied.')}</p>;
   return (
     <div className="item-list">
       {assets.map((asset, index) => (
@@ -134,16 +134,16 @@ export function BootstrapPage({ wizardOpen = false, onWizardClose, onBootstrapCh
 
   const effectiveWizardOpen = wizardOpen || localWizardOpen;
   const blockingIssues = useMemo(() => issues.filter(issue => issue.level === 'error'), [issues]);
-  const contactEmailValid = !plan.contact_email.trim() || /^[^s@]+@[^s@]+.[^s@]+$/.test(plan.contact_email.trim());
+  const contactEmailValid = !plan.contact_email.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(plan.contact_email.trim());
   const companyInfoReady = Boolean(plan.company_name.trim() && plan.legal_person.trim() && plan.company_address.trim() && plan.contact_email.trim() && contactEmailValid);
   const planReady = blockingIssues.length === 0 && companyInfoReady && plan.initial_iworkers.length >= 2 && plan.virtual_departments.length >= 3;
   const bootstrapDone = isBootstrapComplete(status);
 
   const stepCopy: Array<{ title: string; desc: string }> = [
-    { title: t('单位信息', 'Company'), desc: t('确认单位名称、法人、地址、邮箱和上线边界。', 'Confirm company identity, legal contact, address, email, and launch boundary.') },
+    { title: t('单位信息', 'Company'), desc: t('确认单位名称、法人姓名、公司地址、公司联系邮箱和上线边界。', 'Confirm company identity, legal representative, address, email, and launch boundary.') },
     { title: t('组织骨架', 'Organization'), desc: t('配置虚拟部门、首批数字同事和可复用记忆范围。', 'Configure departments, first digital colleagues, and reusable memory scopes.') },
     { title: t('运行边界', 'Operating Boundary'), desc: t('设置循环任务、人工确认边界和自动运行策略。', 'Set recurring tasks, human checkpoints, and automation policy.') },
-    { title: t('应用启动', 'Apply'), desc: t('校验计划，写入本地资产，并启动首批任务。', 'Validate, write local assets, and start first-wave work.') },
+    { title: t('应用启动', 'Apply'), desc: t('校验计划，写入本地资源，并启动首批任务。', 'Validate, write local assets, and start first-wave work.') },
   ];
 
   const publishStatus = (next: BootstrapStatus | null) => {
@@ -262,8 +262,8 @@ export function BootstrapPage({ wizardOpen = false, onWizardClose, onBootstrapCh
         setMessage({ kind: 'warn', text: contactEmailValid ? t('请先填写单位名称、法人姓名、公司地址和联系邮箱。', 'Fill company name, legal representative, company address, and contact email first.') : t('请填写有效的公司联系邮箱。', 'Enter a valid company contact email.') });
         return;
       }
-      await saveDraft();
-      setStep(1);
+      const saved = await saveDraft();
+      if (saved) setStep(1);
       return;
     }
     if (step === 1) {
@@ -271,12 +271,13 @@ export function BootstrapPage({ wizardOpen = false, onWizardClose, onBootstrapCh
         setMessage({ kind: 'warn', text: t('请至少配置 2 个首批 iWorker。', 'Configure at least 2 initial iWorkers.') });
         return;
       }
-      await saveDraft();
-      setStep(2);
+      const saved = await saveDraft();
+      if (saved) setStep(2);
       return;
     }
     if (step === 2) {
-      await saveDraft();
+      const saved = await saveDraft();
+      if (!saved) return;
       const ok = await validatePlan();
       if (ok) setStep(3);
     }
@@ -286,27 +287,27 @@ export function BootstrapPage({ wizardOpen = false, onWizardClose, onBootstrapCh
     <div className="cloud-form-grid">
       <label className="cloud-field">
         <span>{t('单位/企业名称', 'Company name')}</span>
-        <input value={plan.company_name} onChange={e => updatePlan({ company_name: e.target.value })} placeholder={t('例如：XX 科技有限公司', 'Example: Acme Technology Ltd.')} />
+        <input value={plan.company_name} onChange={event => updatePlan({ company_name: event.target.value })} placeholder={t('例如：XX 科技有限公司', 'Example: Acme Technology Ltd.')} />
       </label>
       <label className="cloud-field">
         <span>{t('法人姓名', 'Legal representative')}</span>
-        <input value={plan.legal_person} onChange={e => updatePlan({ legal_person: e.target.value })} placeholder={t('法人代表姓名', 'Legal representative name')} />
+        <input value={plan.legal_person} onChange={event => updatePlan({ legal_person: event.target.value })} placeholder={t('法人代表姓名', 'Legal representative name')} />
       </label>
       <label className="cloud-field">
         <span>{t('公司联系邮箱', 'Company contact email')}</span>
-        <input type="email" value={plan.contact_email} onChange={e => updatePlan({ contact_email: e.target.value })} placeholder="admin@example.com" />
+        <input type="email" value={plan.contact_email} onChange={event => updatePlan({ contact_email: event.target.value })} placeholder="admin@example.com" />
       </label>
       <label className="cloud-field">
         <span>{t('公司地址', 'Company address')}</span>
-        <input value={plan.company_address} onChange={e => updatePlan({ company_address: e.target.value })} placeholder={t('注册地址或办公地址', 'Registered or office address')} />
+        <input value={plan.company_address} onChange={event => updatePlan({ company_address: event.target.value })} placeholder={t('注册地址或办公地址', 'Registered or office address')} />
       </label>
       <label className="cloud-field cloud-field-wide">
         <span>{t('当前优先级', 'Current priority')}</span>
-        <input value={plan.priority} onChange={e => updatePlan({ priority: e.target.value })} />
+        <input value={plan.priority} onChange={event => updatePlan({ priority: event.target.value })} />
       </label>
       <label className="cloud-field cloud-field-wide">
         <span>{t('业务摘要', 'Business summary')}</span>
-        <textarea value={plan.business_summary} onChange={e => updatePlan({ business_summary: e.target.value })} rows={mode === 'wizard' ? 3 : 4} placeholder={t('说明主营业务、当前目标和上线边界', 'Describe main business, current goals, and launch boundaries')} />
+        <textarea value={plan.business_summary} onChange={event => updatePlan({ business_summary: event.target.value })} rows={mode === 'wizard' ? 3 : 4} placeholder={t('说明主营业务、当前目标和上线边界', 'Describe main business, current goals, and launch boundaries')} />
       </label>
       {(mode === 'full' || step === 1) ? <TextAreaList label={t('虚拟部门', 'Virtual departments')} value={plan.virtual_departments} onChange={value => updatePlan({ virtual_departments: value })} hint={t('每行一个部门，建议至少 3 个。', 'One department per line, at least 3 recommended.')} /> : null}
       {(mode === 'full' || step === 1) ? <TextAreaList label={t('首批 iWorker', 'Initial iWorkers')} value={plan.initial_iworkers} onChange={value => updatePlan({ initial_iworkers: value })} hint={t('每行一个数字同事，建议至少 2 个。', 'One digital colleague per line, at least 2 recommended.')} /> : null}
@@ -318,16 +319,16 @@ export function BootstrapPage({ wizardOpen = false, onWizardClose, onBootstrapCh
 
   const renderPolicy = () => (
     <div className="bootstrap-policy-grid">
-      <label><input type="checkbox" checked={plan.watcher_policy.enabled} onChange={e => updatePlan({ watcher_policy: { ...plan.watcher_policy, enabled: e.target.checked } })} /> {t('启用自动运行观察器', 'Enable automation watcher')}</label>
-      <label><input type="checkbox" checked={plan.watcher_policy.single_flight} onChange={e => updatePlan({ watcher_policy: { ...plan.watcher_policy, single_flight: e.target.checked } })} /> {t('单任务防重入', 'Single-flight protection')}</label>
-      <label><input type="checkbox" checked={plan.watcher_policy.scale_by_worker_count} onChange={e => updatePlan({ watcher_policy: { ...plan.watcher_policy, scale_by_worker_count: e.target.checked } })} /> {t('按 iWorker 数量扩展', 'Scale by iWorker count')}</label>
-      <label className="cloud-field"><span>{t('单次最长运行秒数', 'Max run seconds')}</span><input type="number" min={30} value={plan.watcher_policy.max_run_seconds} onChange={e => updatePlan({ watcher_policy: { ...plan.watcher_policy, max_run_seconds: Number(e.target.value) || 120 } })} /></label>
+      <label><input type="checkbox" checked={plan.watcher_policy.enabled} onChange={event => updatePlan({ watcher_policy: { ...plan.watcher_policy, enabled: event.target.checked } })} /> {t('启用自动运行观察器', 'Enable automation watcher')}</label>
+      <label><input type="checkbox" checked={plan.watcher_policy.single_flight} onChange={event => updatePlan({ watcher_policy: { ...plan.watcher_policy, single_flight: event.target.checked } })} /> {t('单任务防重入', 'Single-flight protection')}</label>
+      <label><input type="checkbox" checked={plan.watcher_policy.scale_by_worker_count} onChange={event => updatePlan({ watcher_policy: { ...plan.watcher_policy, scale_by_worker_count: event.target.checked } })} /> {t('按 iWorker 数量扩展', 'Scale by iWorker count')}</label>
+      <label className="cloud-field"><span>{t('单次最长运行秒数', 'Max run seconds')}</span><input type="number" min={30} value={plan.watcher_policy.max_run_seconds} onChange={event => updatePlan({ watcher_policy: { ...plan.watcher_policy, max_run_seconds: Number(event.target.value) || 120 } })} /></label>
     </div>
   );
 
   const wizardBody = () => {
-    if (step === 0) return <>{renderPlanFields('wizard')}</>;
-    if (step === 1) return <>{renderPlanFields('wizard')}</>;
+    if (step === 0) return renderPlanFields('wizard');
+    if (step === 1) return renderPlanFields('wizard');
     if (step === 2) return <>{renderPlanFields('wizard')}{renderPolicy()}</>;
     return (
       <div className="bootstrap-wizard-review">
@@ -340,7 +341,7 @@ export function BootstrapPage({ wizardOpen = false, onWizardClose, onBootstrapCh
         <IssueList issues={issues} />
         <div className="panel-grid bootstrap-wizard-panels">
           <section className="section-card"><div className="section-head"><div><h3>{t('建议首批任务', 'Suggested First-Wave Tasks')}</h3><p>{t('应用计划后可以启动这些任务。', 'These tasks can be started after applying the plan.')}</p></div></div><FirstWaveList tasks={firstWave} /></section>
-          <section className="section-card"><div className="section-head"><div><h3>{t('已应用资产', 'Applied Assets')}</h3><p>{t('应用计划后写入 Center 本地。', 'Written locally to Center after applying the plan.')}</p></div></div><AssetList assets={assets} /></section>
+          <section className="section-card"><div className="section-head"><div><h3>{t('已应用资源', 'Applied Assets')}</h3><p>{t('应用计划后写入 Center 本地。', 'Written locally to Center after applying the plan.')}</p></div></div><AssetList assets={assets} /></section>
         </div>
       </div>
     );
@@ -384,11 +385,11 @@ export function BootstrapPage({ wizardOpen = false, onWizardClose, onBootstrapCh
 
       <div className="panel-grid">
         <section className="section-card">
-          <div className="section-head"><div><h3>{t('建议首批任务', 'Suggested First-Wave Tasks')}</h3><p>{t('这些任务会进入 Center 的流程实例，iWorker 执行时仍需要把人工干预点显式推给人类员工。', 'These tasks become Center workflow runs. iWorkers still surface human intervention points explicitly.')}</p></div><button className="cloud-primary" type="button" onClick={startFirstWave} disabled={busy !== null || !planReady}>{busy === 'start' ? t('启动中...', 'Starting...') : t('启动首批任务', 'Start first wave')}</button></div>
+          <div className="section-head"><div><h3>{t('建议首批任务', 'Suggested First-Wave Tasks')}</h3><p>{t('这些任务会进入 Center 的流程实例。iWorker 执行时仍需要把人工干预点显式推给人类员工。', 'These tasks become Center workflow runs. iWorkers still surface human intervention points explicitly.')}</p></div><button className="cloud-primary" type="button" onClick={startFirstWave} disabled={busy !== null || !planReady}>{busy === 'start' ? t('启动中...', 'Starting...') : t('启动首批任务', 'Start first wave')}</button></div>
           <FirstWaveList tasks={firstWave} />
         </section>
         <section className="section-card">
-          <div className="section-head"><div><h3>{t('已应用资产', 'Applied Assets')}</h3><p>{t('应用计划会把组织骨架写入当前租户的 Center 本地空间，不依赖 Cloud 在线。', 'Applying the plan writes the organization shape into the current tenant space in Center and does not require Cloud online.')}</p></div><button className="btn-secondary" type="button" onClick={applyPlan} disabled={busy !== null || !planReady}>{busy === 'apply' ? t('应用中...', 'Applying...') : t('应用启动计划', 'Apply bootstrap plan')}</button></div>
+          <div className="section-head"><div><h3>{t('已应用资源', 'Applied Assets')}</h3><p>{t('应用计划会把组织骨架写入当前租户的 Center 本地空间，不依赖 Cloud 在线。', 'Applying the plan writes the organization shape into the current tenant space in Center and does not require Cloud online.')}</p></div><button className="btn-secondary" type="button" onClick={applyPlan} disabled={busy !== null || !planReady}>{busy === 'apply' ? t('应用中...', 'Applying...') : t('应用启动计划', 'Apply bootstrap plan')}</button></div>
           <AssetList assets={assets} />
         </section>
       </div>

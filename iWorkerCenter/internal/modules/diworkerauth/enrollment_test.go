@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +121,112 @@ func TestImportCSVWithHeaderCreatesLocalEnrollmentAccounts(t *testing.T) {
 		t.Fatalf("verify response = %+v", verified)
 	}
 }
+
+func TestImportCSVStopsAtAccountRowLimit(t *testing.T) {
+	h, cleanup := newEnrollmentTestHandler(t)
+	defer cleanup()
+
+	var body strings.Builder
+	body.WriteString("username,password,identifier,expiry_days\n")
+	for i := 0; i < maxAccountImportRows+1; i++ {
+		body.WriteString("user")
+		body.WriteString(strconv.Itoa(i))
+		body.WriteString(",secret,*,0\n")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/diworker-auth/import-csv", strings.NewReader(body.String()))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	w := httptest.NewRecorder()
+	h.handleImportCSV(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	var imported map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&imported); err != nil {
+		t.Fatalf("decode import response: %v", err)
+	}
+	if imported["created"] != float64(maxAccountImportRows) || imported["skipped"] != float64(1) {
+		t.Fatalf("import response = %+v", imported)
+	}
+	var count int
+	if err := h.read.QueryRow(`SELECT COUNT(*) FROM diworker_accounts WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("count accounts: %v", err)
+	}
+	if count != maxAccountImportRows {
+		t.Fatalf("created accounts = %d, want %d", count, maxAccountImportRows)
+	}
+}
+
+func TestCreateAccountRejectsInvalidJSONWithoutCreatingAccount(t *testing.T) {
+	h, cleanup := newEnrollmentTestHandler(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/diworker-auth/accounts", strings.NewReader(`{"username":`))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	w := httptest.NewRecorder()
+	h.handleAccounts(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	var count int
+	if err := h.read.QueryRow(`SELECT COUNT(*) FROM diworker_accounts WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("count accounts: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("created accounts after invalid JSON = %d", count)
+	}
+}
+
+func TestAuthenticateRejectsOversizedJSONBeforeAuth(t *testing.T) {
+	h, cleanup := newEnrollmentTestHandler(t)
+	defer cleanup()
+
+	body := `{"method":"local","username":"alice","password":"` + strings.Repeat("x", maxDiWorkerAuthJSONBodyBytes+1024) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/diworker-auth/authenticate", strings.NewReader(body))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	w := httptest.NewRecorder()
+	h.handleAuthenticate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEnrollmentVerifyRejectsInvalidJSONBeforeAuth(t *testing.T) {
+	h, cleanup := newEnrollmentTestHandler(t)
+	defer cleanup()
+	seedEnrollmentAccount(t, h, "tenant-a", "alice", "secret", "worker-ops")
+
+	req := httptest.NewRequest(http.MethodPost, "/diworker-auth/enrollment/verify", strings.NewReader(`{"method":`))
+	req.Header.Set("X-Tenant-ID", "tenant-a")
+	w := httptest.NewRecorder()
+	h.handleEnrollmentVerify(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestOIDCConfigRejectsInvalidJSONWithoutChangingSecret(t *testing.T) {
+	h, cleanup := newEnrollmentTestHandler(t)
+	defer cleanup()
+	if err := h.saveOIDCConfig(OIDCConfig{Enabled: true, IssuerURL: "https://idp.example.com", ClientID: "client-a", ClientSecret: "keep-me"}); err != nil {
+		t.Fatalf("save oidc config: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/diworker-auth/oidc", strings.NewReader(`{"enabled":`))
+	w := httptest.NewRecorder()
+	h.handleOIDC(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s", w.Code, w.Body.String())
+	}
+	cfg := h.loadOIDCConfig()
+	if cfg.ClientSecret != "keep-me" || cfg.ClientID != "client-a" {
+		t.Fatalf("oidc config changed after invalid JSON: %+v", cfg)
+	}
+}
 func TestAuthMethodsExposeProviderRegistry(t *testing.T) {
 	h, cleanup := newEnrollmentTestHandler(t)
 	defer cleanup()
@@ -173,6 +281,10 @@ func TestAuthenticateRoutesOAuthAliasToOIDCProvider(t *testing.T) {
 	h, cleanup := newEnrollmentTestHandler(t)
 	defer cleanup()
 
+	if err := h.saveOIDCConfig(OIDCConfig{Enabled: true, IssuerURL: "https://idp.example.com", ClientID: "client-a"}); err != nil {
+		t.Fatalf("save oidc config: %v", err)
+	}
+
 	body := bytes.NewBufferString(`{"method":"oauth2","username":"alice","password":"token"}`)
 	req := httptest.NewRequest(http.MethodPost, "/diworker-auth/authenticate", body)
 	req.Header.Set("X-Tenant-ID", "tenant-a")
@@ -188,6 +300,9 @@ func TestAuthenticateRoutesOAuthAliasToOIDCProvider(t *testing.T) {
 	}
 	if resp["authenticated"] != false || resp["method"] != "oidc" {
 		t.Fatalf("response = %+v", resp)
+	}
+	if resp["error"] != "OIDC/OAuth SSO is a reserved adapter; live sign-in is not enabled in this version" {
+		t.Fatalf("error = %v", resp["error"])
 	}
 }
 

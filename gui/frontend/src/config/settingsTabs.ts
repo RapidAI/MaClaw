@@ -1,4 +1,4 @@
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'memory' | 'agentnet' | 'groupDiscussion' | 'security' | 'im' | 'system';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'agentnet' | 'groupDiscussion' | 'security' | 'im' | 'system';
 
 export interface SettingsTabOption {
     id: SettingsTabId;
@@ -6,82 +6,102 @@ export interface SettingsTabOption {
     desc: string;
 }
 
-export const getSettingsTabOptions = (lang: string): SettingsTabOption[] => {
-    return [
+const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
+    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+);
+
+export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: boolean } = {}): SettingsTabOption[] => {
+    const tabs: SettingsTabOption[] = [
         {
             id: 'general' as const,
-            label: lang === 'zh-Hans' ? '通用设置' : lang === 'zh-Hant' ? '通用設置' : 'General',
-            desc: lang === 'zh-Hans' ? '语言、项目与环境' : lang === 'zh-Hant' ? '語言、項目與環境' : 'Language, projects, and environment',
+            label: textForLang(lang, 'General', '通用设置', '通用設定'),
+            desc: textForLang(lang, 'Language, projects, and environment', '语言、项目与环境', '語言、專案與環境'),
         },
         {
             id: 'proxy' as const,
-            label: lang === 'zh-Hans' ? '代理设置' : lang === 'zh-Hant' ? '代理設置' : 'Proxy',
-            desc: lang === 'zh-Hans' ? '全局网络代理配置' : lang === 'zh-Hant' ? '全局網路代理配置' : 'Global network proxy configuration',
+            label: textForLang(lang, 'Proxy', '代理设置', '代理設定'),
+            desc: textForLang(lang, 'Global network proxy configuration', '全局网络代理配置', '全域網路代理設定'),
         },
         {
             id: 'ui' as const,
-            label: lang === 'zh-Hans' ? 'UI配置' : lang === 'zh-Hant' ? 'UI配置' : 'UI Config',
-            desc: lang === 'zh-Hans' ? '界面缩放与整体显示行为' : lang === 'zh-Hant' ? '介面縮放與整體顯示行為' : 'UI scaling and display behavior',
+            label: textForLang(lang, 'UI Config', 'UI 配置', 'UI 配置'),
+            desc: textForLang(lang, 'UI scaling and display behavior', '界面缩放与显示行为', '介面縮放與顯示行為'),
         },
         {
             id: 'display' as const,
-            label: lang === 'zh-Hans' ? '编程工具' : lang === 'zh-Hant' ? '編程工具' : 'Dev CLI',
-            desc: lang === 'zh-Hans' ? '工具显示与启动页行为' : lang === 'zh-Hant' ? '工具顯示與啟動頁行為' : 'Tool visibility and startup behavior',
+            label: textForLang(lang, 'Dev CLI', '编程工具', '程式工具'),
+            desc: textForLang(lang, 'Tool visibility and startup behavior', '工具显示与启动页行为', '工具顯示與啟動頁行為'),
         },
         {
             id: 'pet' as const,
-            label: lang === 'zh-Hans' ? '\u5ba0\u7269' : lang === 'zh-Hant' ? '\u5bf5\u7269' : 'Pet',
-            desc: lang === 'zh-Hans' ? '\u684c\u9762\u5ba0\u7269\u5f62\u8c61\u3001\u52a8\u4f5c\u4e0e\u4ea4\u4e92\u8bbe\u7f6e' : lang === 'zh-Hant' ? '\u684c\u9762\u5bf5\u7269\u5f62\u8c61\u3001\u52d5\u4f5c\u8207\u4ea4\u4e92\u8a2d\u7f6e' : 'Desktop pet appearance, actions, and interaction settings',
+            label: textForLang(lang, 'Pet', '宠物', '寵物'),
+            desc: textForLang(lang, 'Desktop pet appearance, actions, and interaction settings', '桌面宠物形象、动作与交互设置', '桌面寵物形象、動作與互動設定'),
         },
         {
             id: 'remote' as const,
-            label: lang === 'zh-Hans' ? '远程注册' : lang === 'zh-Hant' ? '遠端註冊' : 'Remote',
-            desc: lang === 'zh-Hans' ? '仅配置远程服务器地址' : lang === 'zh-Hant' ? '僅配置遠端伺服器位址' : 'Server addresses only',
+            label: textForLang(lang, 'Remote', '远程注册', '遠端註冊'),
+            desc: textForLang(lang, 'Server addresses only', '仅配置远程服务器地址', '僅設定遠端伺服器位址'),
+        },
+        {
+            id: 'searchEngine' as const,
+            label: textForLang(lang, 'Search Engine', '搜索引擎', '搜尋引擎'),
+            desc: textForLang(lang, 'Configure web search providers', '配置联网搜索引擎', '設定聯網搜尋引擎'),
         },
         {
             id: 'redeem' as const,
-            label: lang === 'zh-Hans' ? '\u670d\u52a1\u5151\u6362' : lang === 'zh-Hant' ? '\u670d\u52d9\u5151\u63db' : 'Service Redeem',
-            desc: lang === 'zh-Hans' ? '\u67e5\u770b Credits \u548c\u5151\u6362\u670d\u52a1\u7801' : lang === 'zh-Hant' ? '\u67e5\u770b Credits \u548c\u5151\u63db\u670d\u52d9\u78bc' : 'View credits and redeem service codes',
+            label: textForLang(lang, 'Service Redeem', '服务兑换', '服務兌換'),
+            desc: textForLang(lang, 'View credits and redeem service codes', '查看 Credits 和兑换服务码', '查看 Credits 和兌換服務碼'),
         },
         {
             id: 'llm' as const,
-            label: lang === 'zh-Hans' ? 'LLM 配置' : lang === 'zh-Hant' ? 'LLM 配置' : 'LLM Config',
-            desc: lang === 'zh-Hans' ? '配置 MaClaw 代理使用的 LLM' : lang === 'zh-Hant' ? '配置 MaClaw 代理使用的 LLM' : 'Configure LLM for MaClaw agent',
+            label: textForLang(lang, 'LLM Config', 'LLM 配置', 'LLM 配置'),
+            desc: textForLang(lang, 'Configure LLM for MaClaw agent', '配置 MaClaw 代理使用的 LLM', '配置 MaClaw 代理使用的 LLM'),
         },
         {
             id: 'memory' as const,
-            label: lang === 'zh-Hans' ? '记忆管理' : lang === 'zh-Hant' ? '記憶管理' : 'Memory',
-            desc: lang === 'zh-Hans' ? '查看、编辑和管理 MaClaw 的长期记忆' : lang === 'zh-Hant' ? '查看、編輯和管理 MaClaw 的長期記憶' : 'View, edit and manage MaClaw long-term memory',
+            label: textForLang(lang, 'Memory', '记忆管理', '記憶管理'),
+            desc: textForLang(lang, 'View, edit and manage MaClaw long-term memory', '查看、编辑和管理 MaClaw 的长期记忆', '查看、編輯和管理 MaClaw 的長期記憶'),
+        },
+        {
+            id: 'knowledge' as const,
+            label: textForLang(lang, 'Knowledge', '知识库', '知識庫'),
+            desc: textForLang(lang, 'Save URLs and batch-import document knowledge', '保存公共网页，并从目录批量录入文档知识', '保存公共網頁，並從目錄批量錄入文件知識'),
+        },
+        {
+            id: 'misData' as const,
+            label: 'MIS数据',
+            desc: textForLang(lang, 'Enterprise structured data service', '企业结构化数据服务', '企業結構化資料服務'),
         },
         {
             id: 'embedding' as const,
-            label: lang === 'zh-Hans' ? 'AI模型' : lang === 'zh-Hant' ? 'AI模型' : 'AI Model',
-            desc: lang === 'zh-Hans' ? '向量搜索与嵌入模型管理' : lang === 'zh-Hant' ? '向量搜索與嵌入模型管理' : 'Vector search and embedding model management',
+            label: textForLang(lang, 'AI Model', 'AI 模型', 'AI 模型'),
+            desc: textForLang(lang, 'Vector search and embedding model management', '向量搜索与嵌入模型管理', '向量搜尋與嵌入模型管理'),
         },
         {
             id: 'agentnet' as const,
-            label: lang === 'zh-Hans' ? '智网' : lang === 'zh-Hant' ? '智網' : 'AgentNet',
-            desc: lang === 'zh-Hans' ? 'AgentNet P2P 去中心化 Agent 网络' : lang === 'zh-Hant' ? 'AgentNet P2P 去中心化 Agent 網路' : 'AgentNet decentralized P2P agent network',
+            label: textForLang(lang, 'AgentNet', '智网', '智網'),
+            desc: textForLang(lang, 'AgentNet decentralized P2P agent network', 'AgentNet P2P 去中心化 Agent 网络', 'AgentNet P2P 去中心化 Agent 網路'),
         },
         {
             id: 'groupDiscussion' as const,
-            label: lang === 'zh-Hans' ? 'A2A \u7fa4\u7ec4' : lang === 'zh-Hant' ? 'A2A \u7fa4\u7d44' : 'A2A Group',
-            desc: lang === 'zh-Hans' ? '\u5f53\u524d Hub \u7684\u4e13\u5bb6\u53d1\u73b0\u3001\u9080\u8bf7\u4e0e\u7fa4\u7ec4\u8ba8\u8bba\u7b56\u7565' : lang === 'zh-Hant' ? '\u76ee\u524d Hub \u7684\u5c08\u5bb6\u767c\u73fe\u3001\u9080\u8acb\u8207\u7fa4\u7d44\u8a0e\u8ad6\u7b56\u7565' : 'Current-Hub expert discovery, invites, and discussion policy',
+            label: textForLang(lang, 'A2A Group', 'A2A 群组', 'A2A 群組'),
+            desc: textForLang(lang, 'Current-Hub expert discovery, invites, and discussion policy', '当前 Hub 的专家发现、邀请与群组讨论策略', '目前 Hub 的專家發現、邀請與群組討論策略'),
         },
         {
             id: 'im' as const,
             label: 'IM',
-            desc: lang === 'zh-Hans' ? '配置 QQ 机器人、Telegram Bot、微信等即时通讯接入' : lang === 'zh-Hant' ? '配置 QQ 機器人、Telegram Bot、微信等即時通訊接入' : 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations',
+            desc: textForLang(lang, 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations', '配置 QQ 机器人、Telegram Bot、微信等即时通讯接入', '配置 QQ 機器人、Telegram Bot、微信等即時通訊接入'),
         },
         {
             id: 'security' as const,
-            label: lang === 'zh-Hans' ? '安全策略' : lang === 'zh-Hant' ? '安全策略' : 'Security',
-            desc: lang === 'zh-Hans' ? '安全策略模式与审计日志' : lang === 'zh-Hant' ? '安全策略模式與審計日誌' : 'Security policy mode and audit log',
+            label: textForLang(lang, 'Security', '安全策略', '安全策略'),
+            desc: textForLang(lang, 'Security policy mode and audit log', '安全策略模式与审计日志', '安全策略模式與稽核日誌'),
         },
         {
             id: 'system' as const,
-            label: lang === 'zh-Hans' ? '系统' : lang === 'zh-Hant' ? '系統' : 'System',
-            desc: lang === 'zh-Hans' ? '心跳、熄屏等系统级设置' : lang === 'zh-Hant' ? '心跳、熄屏等系統級設置' : 'Heartbeat, screen dimming and other system settings',
+            label: textForLang(lang, 'System', '系统', '系統'),
+            desc: textForLang(lang, 'Heartbeat, screen dimming and other system settings', '心跳、熄屏等系统级设置', '心跳、熄屏等系統級設定'),
         },
     ];
+    return options.hideAgentNet ? tabs.filter(tab => tab.id !== 'agentnet') : tabs;
 };

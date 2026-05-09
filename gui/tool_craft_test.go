@@ -1,11 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
-
 )
 
 func TestDetectScriptLanguage(t *testing.T) {
@@ -134,6 +135,11 @@ func TestStripScriptCodeFences(t *testing.T) {
 }
 
 func TestSaveScript(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
 	script := "echo hello world"
 	path, err := saveScript(script, "bash", "test echo")
 	if err != nil {
@@ -292,6 +298,10 @@ func TestVerifyCraftExecution(t *testing.T) {
 		t.Fatalf("expected missing artifact message to mention unreported artifact path, got %q", missing.VerificationMessage)
 	}
 
+	stdoutOnly := verifyCraftExecution(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{Output: "Gold Price Report\nprice: 123"})
+	if stdoutOnly.VerificationStatus != craftVerificationPassed {
+		t.Fatalf("stdout-only VerificationStatus = %q, want %q", stdoutOnly.VerificationStatus, craftVerificationPassed)
+	}
 	reportedMissingPath := filepath.Join(t.TempDir(), "reported-missing.pdf")
 	reportedMissing := verifyCraftExecution(craftToolRequest{VerificationMode: "artifact_required"}, craftAttemptResult{Output: "artifact: " + reportedMissingPath})
 	if reportedMissing.VerificationStatus != craftVerificationArtifactMissing {
@@ -468,6 +478,181 @@ func TestRegisterCraftedSkillEntry(t *testing.T) {
 	}
 	if len(last.Steps) != 1 || last.Steps[0].Action != "bash" {
 		t.Fatalf("unexpected crafted steps: %#v", last.Steps)
+	}
+}
+
+func TestRegisterCraftedSkillEntryAppendsExtractedArgparsePlaceholders(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	scriptPath := filepath.Join(tempHome, "demo.py")
+	script := `
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--input", required=True)
+parser.add_argument("--format", default="pdf")
+parser.add_argument("--verbose", action="store_true")
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	result := registerCraftedSkillEntry(app, "convert file", "", scriptPath, "python")
+	if !strings.Contains(result, "Skill") {
+		t.Fatalf("unexpected register result: %s", result)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	if len(skills) == 0 {
+		t.Fatal("expected crafted skill to be registered")
+	}
+	last := skills[len(skills)-1]
+	command, _ := last.Steps[0].Params["command"].(string)
+	if !strings.Contains(command, "--input {{input}}") || !strings.Contains(command, "--format {{format}}") {
+		t.Fatalf("crafted command = %q, want extracted argparse params appended as placeholders", command)
+	}
+	if strings.Contains(command, "verbose") {
+		t.Fatalf("crafted command = %q, store_true flag should not require a value placeholder", command)
+	}
+	byName := map[string]bool{}
+	required := map[string]bool{}
+	for _, param := range last.Params {
+		byName[param.Name] = true
+		required[param.Name] = param.Required
+	}
+	if !byName["input"] || !required["input"] || !byName["format"] || required["format"] || byName["verbose"] {
+		t.Fatalf("crafted params = %#v, want required input, optional format, no verbose value param", last.Params)
+	}
+}
+
+func TestRegisterCraftedSkillEntryExtractsRuntimeMetadata(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	scriptPath := filepath.Join(tempHome, "metadata.py")
+	script := `
+import os
+import requests
+
+print(os.environ["OPENAI_API_KEY"])
+print(requests.__version__)
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	result := registerCraftedSkillEntry(app, "call api", "", scriptPath, "python")
+	if !strings.Contains(result, "Skill") {
+		t.Fatalf("unexpected register result: %s", result)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	if len(skills) == 0 {
+		t.Fatal("expected crafted skill to be registered")
+	}
+	last := skills[len(skills)-1]
+	if len(last.RequiredEnv) != 1 || last.RequiredEnv[0] != "OPENAI_API_KEY" {
+		t.Fatalf("crafted required env = %#v, want OPENAI_API_KEY", last.RequiredEnv)
+	}
+	if len(last.RequiresPython) != 1 || last.RequiresPython[0] != "requests" {
+		t.Fatalf("crafted python dependencies = %#v, want requests", last.RequiresPython)
+	}
+	if len(last.RequiresNode) != 0 {
+		t.Fatalf("crafted node dependencies = %#v, want none", last.RequiresNode)
+	}
+}
+
+func TestBuildCraftToolRequestExtractsExtraEnv(t *testing.T) {
+	request := buildCraftToolRequest(map[string]interface{}{
+		"task":      "print token",
+		"language":  "python",
+		"extra_env": map[string]interface{}{"API_TOKEN": "secret"},
+	}, craftRuntimeAvailability{Python: "python"})
+
+	if request.ExtraEnv["API_TOKEN"] != "secret" {
+		t.Fatalf("ExtraEnv = %#v, want API_TOKEN", request.ExtraEnv)
+	}
+}
+
+func TestExecuteScriptWithContextInjectsExtraEnvWithoutProcessMutation(t *testing.T) {
+	const key = "MACLAW_CRAFT_EXTRA_ENV_TEST"
+	t.Setenv(key, "")
+
+	runtimes := detectAvailableScriptRuntimes()
+	language := ""
+	script := ""
+	switch {
+	case runtimes.Python != "":
+		language = "python"
+		script = "import os\nprint(os.environ.get('" + key + "', ''))\n"
+	case runtimes.Node != "":
+		language = "node"
+		script = "console.log(process.env." + key + " || '')\n"
+	case runtimes.PowerShell != "":
+		language = "powershell"
+		script = "Write-Output $env:" + key + "\n"
+	case runtimes.Bash != "":
+		language = "bash"
+		script = "printf '%s\\n' \"$" + key + "\"\n"
+	default:
+		t.Skip("no script runtime available")
+	}
+
+	scriptPath := filepath.Join(t.TempDir(), "env"+scriptExtension(language))
+	perm := os.FileMode(0o644)
+	if runtime.GOOS != "windows" {
+		perm = 0o755
+	}
+	if err := os.WriteFile(scriptPath, []byte(script), perm); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	out, err := executeScriptWithContext(context.Background(), scriptPath, language, t.TempDir(), 30, runtimes, map[string]string{key: "from-extra"})
+	if err != nil {
+		t.Fatalf("executeScriptWithContext() error = %v; output=%s", err, out)
+	}
+	if !strings.Contains(out, "from-extra") {
+		t.Fatalf("output = %q, want injected env value", out)
+	}
+	if got := os.Getenv(key); got != "" {
+		t.Fatalf("process env mutated to %q, want unchanged empty value", got)
+	}
+}
+
+func TestRegisterCraftedSkillEntryAppendsSysArgvPositionals(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	scriptPath := filepath.Join(tempHome, "argv.py")
+	if err := os.WriteFile(scriptPath, []byte("import sys\nprint(sys.argv[1], sys.argv[2])\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	result := registerCraftedSkillEntry(app, "join args", "", scriptPath, "python")
+	if !strings.Contains(result, "Skill") {
+		t.Fatalf("unexpected register result: %s", result)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	if len(skills) == 0 {
+		t.Fatal("expected crafted skill to be registered")
+	}
+	last := skills[len(skills)-1]
+	command, _ := last.Steps[0].Params["command"].(string)
+	if !strings.Contains(command, "{{input}} {{output}}") {
+		t.Fatalf("crafted command = %q, want positional placeholders appended", command)
 	}
 }
 

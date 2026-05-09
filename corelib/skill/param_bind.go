@@ -54,27 +54,33 @@ func BindParams(params []corelib.NLSkillParam, vars map[string]string) BindResul
 		return result
 	}
 
+	primaryNames := schemaPrimaryParamNames(params)
 	consumed := make(map[string]bool)
 
 	// Phase 1: Alias resolution + default application.
 	for _, p := range params {
-		allNames := append([]string{p.Name}, p.Aliases...)
+		p.Name = canonicalRunVarKey(p.Name)
+		allNames := paramBindingNamesForSchema(p, primaryNames)
 
 		var matched string
 		for _, name := range allNames {
-			if v, ok := vars[name]; ok && v != "" {
+			if v, ok := lookupCanonicalVar(vars, name); ok && v != "" {
 				matched = v
 				break
 			}
 		}
 
 		if matched != "" {
-			result.ResolvedVars[p.Name] = matched
+			for _, name := range allNames {
+				result.ResolvedVars[name] = matched
+			}
 			for _, n := range allNames {
 				consumed[n] = true
 			}
 		} else if p.Default != "" {
-			result.ResolvedVars[p.Name] = p.Default
+			for _, name := range allNames {
+				result.ResolvedVars[name] = p.Default
+			}
 		}
 	}
 
@@ -82,6 +88,7 @@ func BindParams(params []corelib.NLSkillParam, vars map[string]string) BindResul
 	// Values are stored unquoted — shell quoting is the responsibility of
 	// the execution layer (resolveSkillStep), not the binding layer.
 	for _, p := range params {
+		p.Name = canonicalRunVarKey(p.Name)
 		v := result.ResolvedVars[p.Name]
 		if v == "" || p.CLIFlag == "" || p.Synthetic {
 			continue
@@ -92,7 +99,7 @@ func BindParams(params []corelib.NLSkillParam, vars map[string]string) BindResul
 	// Phase 3: Undeclared parameter detection.
 	var declaredNames string // lazy-computed, shared across warnings
 	for key, value := range vars {
-		if consumed[key] || value == "" {
+		if consumed[canonicalRunVarKey(key)] || value == "" || isUndeclaredRunCarrierKey(key) {
 			continue
 		}
 		if declaredNames == "" {
@@ -105,6 +112,7 @@ func BindParams(params []corelib.NLSkillParam, vars map[string]string) BindResul
 
 	// Phase 4: Required parameter validation.
 	for _, p := range params {
+		p.Name = canonicalRunVarKey(p.Name)
 		if p.Required && result.ResolvedVars[p.Name] == "" {
 			result.Errors = append(result.Errors, fmt.Sprintf(
 				"必需参数 %q 未提供", p.Name))
@@ -112,6 +120,56 @@ func BindParams(params []corelib.NLSkillParam, vars map[string]string) BindResul
 	}
 
 	return result
+}
+
+func isUndeclaredRunCarrierKey(key string) bool {
+	switch canonicalRunVarKey(key) {
+	case "input", "user_prompt":
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalParamNames(names []string) []string {
+	seen := map[string]bool{}
+	var result []string
+	for _, name := range names {
+		name = canonicalRunVarKey(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		result = append(result, name)
+	}
+	return result
+}
+
+func paramBindingNames(param corelib.NLSkillParam) []string {
+	return paramBindingNamesForSchema(param, nil)
+}
+
+func paramBindingNamesForSchema(param corelib.NLSkillParam, primaryNames map[string]bool) []string {
+	names := append([]string{param.Name}, param.Aliases...)
+	paramName := canonicalRunVarKey(param.Name)
+	for _, alias := range commonParamAliases[paramName] {
+		aliasKey := canonicalRunVarKey(alias)
+		if primaryNames != nil && primaryNames[aliasKey] && aliasKey != paramName {
+			continue
+		}
+		names = append(names, alias)
+	}
+	return canonicalParamNames(names)
+}
+
+func schemaPrimaryParamNames(params []corelib.NLSkillParam) map[string]bool {
+	primaryNames := make(map[string]bool, len(params))
+	for _, param := range params {
+		if key := canonicalRunVarKey(param.Name); key != "" {
+			primaryNames[key] = true
+		}
+	}
+	return primaryNames
 }
 
 // HasErrors returns true if the bind result contains hard errors.
@@ -128,7 +186,7 @@ func (r BindResult) ErrorString() string {
 func formatParamNames(params []corelib.NLSkillParam) string {
 	names := make([]string, 0, len(params))
 	for _, p := range params {
-		name := p.Name
+		name := canonicalRunVarKey(p.Name)
 		if len(p.Aliases) > 0 {
 			name += " (别名: " + strings.Join(p.Aliases, ", ") + ")"
 		}

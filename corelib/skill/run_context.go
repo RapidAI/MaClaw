@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"runtime"
+	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -15,10 +18,20 @@ func NormalizeRunVars(runArgs map[string]interface{}) map[string]string {
 		return nil
 	}
 	vars := map[string]string{}
-	mergeRunVarMap(vars, runArgs["args"], true)
-	mergeRunVarJSON(vars, runArgs["args"], true)
+	rawArgs, _ := lookupRunArg(runArgs, "args")
+	mergeRunVarMap(vars, rawArgs, true)
+	mergeRunVarJSON(vars, rawArgs, true)
+	if value, ok := rawArgs.(string); ok {
+		value = strings.TrimSpace(value)
+		if value != "" && !strings.HasPrefix(value, "{") && !strings.HasPrefix(value, "[") {
+			if _, exists := vars["input"]; !exists {
+				vars["input"] = value
+			}
+		}
+	}
 	for _, key := range RunVarFallbackKeys {
-		raw, ok := runArgs[key]
+		key = canonicalRunVarKey(key)
+		raw, ok := lookupRunArg(runArgs, key)
 		if !ok || raw == nil {
 			continue
 		}
@@ -34,6 +47,7 @@ func NormalizeRunVars(runArgs map[string]interface{}) map[string]string {
 		}
 	}
 	for key, raw := range runArgs {
+		key = canonicalRunVarKey(key)
 		if isRunControlKey(key) {
 			continue
 		}
@@ -50,10 +64,28 @@ func NormalizeRunVars(runArgs map[string]interface{}) map[string]string {
 	return vars
 }
 
+func lookupRunArg(runArgs map[string]interface{}, key string) (interface{}, bool) {
+	if runArgs == nil {
+		return nil, false
+	}
+	if raw, ok := runArgs[key]; ok {
+		return raw, true
+	}
+	for candidate, raw := range runArgs {
+		if canonicalRunVarKey(candidate) == key {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
 func mergeRunVarMap(vars map[string]string, raw interface{}, overwrite bool) {
 	add := func(key string, value interface{}) {
-		key = strings.TrimSpace(key)
+		key = canonicalRunVarKey(key)
 		if key == "" || value == nil {
+			return
+		}
+		if isNestedRunVarControlKey(key) {
 			return
 		}
 		if !overwrite {
@@ -93,6 +125,14 @@ func mergeRunVarJSON(vars map[string]string, raw interface{}, overwrite bool) {
 	mergeRunVarMap(vars, parsed, overwrite)
 }
 
+func isNestedRunVarControlKey(key string) bool {
+	key = canonicalRunVarKey(key)
+	if key == "operation" {
+		return false
+	}
+	return isRunControlKey(key)
+}
+
 func runVarString(value interface{}) (string, bool) {
 	if value == nil {
 		return "", false
@@ -118,13 +158,89 @@ func runVarString(value interface{}) (string, bool) {
 	}
 }
 
+func canonicalRunVarKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	runes := []rune(key)
+	var b strings.Builder
+	lastUnderscore := false
+	for i, r := range runes {
+		if r == '-' || r == '.' || unicode.IsSpace(r) {
+			if b.Len() > 0 && !lastUnderscore {
+				b.WriteByte('_')
+				lastUnderscore = true
+			}
+			continue
+		}
+		if unicode.IsUpper(r) {
+			if i > 0 && !lastUnderscore {
+				prev := runes[i-1]
+				var next rune
+				if i+1 < len(runes) {
+					next = runes[i+1]
+				}
+				if unicode.IsLower(prev) || unicode.IsDigit(prev) || (unicode.IsUpper(prev) && next != 0 && unicode.IsLower(next)) {
+					b.WriteByte('_')
+				}
+			}
+			r = unicode.ToLower(r)
+		}
+		b.WriteRune(r)
+		lastUnderscore = false
+	}
+	return strings.Trim(b.String(), "_")
+}
+
 func isRunControlKey(key string) bool {
-	switch strings.ToLower(strings.TrimSpace(key)) {
-	case "action", "name", "skill", "skill_name", "qualified_name", "args", "env", "steps", "step", "dry_run":
+	key = canonicalRunVarKey(key)
+	if IsManageSkillRunnerControlKey(key) {
+		return true
+	}
+	switch key {
+	case "args", "env", "extra_env", "environment", "steps", "step", "operation", "dry_run", "pipeline_stack", "pipeline_internal_call":
 		return true
 	default:
 		return false
 	}
+}
+
+// IsManageSkillRunnerControlKey reports whether a manage_skill argument is consumed
+// by the manage_skill tool itself and should not be forwarded as runner input.
+// Runtime selectors such as query and mode intentionally remain forwardable.
+func IsManageSkillRunnerControlKey(key string) bool {
+	switch canonicalRunVarKey(key) {
+	case "action", "name", "skill", "skill_name", "qualified_name", "skill_id", "hub_url", "install_ref", "auto_run", "wait_seconds", "run_id", "auto_fix", "force", "step_index", "field", "value", "find", "replace", "reason":
+		return true
+	default:
+		return false
+	}
+}
+
+func ExtractRunExtraEnvFromArgs(runArgs map[string]interface{}) map[string]string {
+	if len(runArgs) == 0 {
+		return nil
+	}
+	result := map[string]string{}
+	for _, key := range []string{"env", "extra_env", "environment"} {
+		raw, ok := lookupRunArg(runArgs, key)
+		if !ok {
+			if rawArgs, hasArgs := lookupRunArg(runArgs, "args"); hasArgs && rawArgs != nil {
+				raw, ok = lookupNestedRunControlArg(rawArgs, key)
+			}
+		}
+		if !ok {
+			continue
+		}
+		for name, value := range ExtractRunExtraEnv(raw) {
+			result[name] = value
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func ExtractRunExtraEnv(raw interface{}) map[string]string {
@@ -229,6 +345,9 @@ func CollectSkillProvidedEnv(entry *corelib.NLSkillEntry) map[string]string {
 	}
 	for _, step := range entry.Steps {
 		for key, value := range ExtractRunExtraEnv(firstNonNilStepParam(step.Params, "extra_env", "env", "environment")) {
+			if !isConcreteEnvAssignment(key, value) {
+				continue
+			}
 			provided[key] = value
 		}
 	}
@@ -243,18 +362,52 @@ func BuildRunCheckContext(entry *corelib.NLSkillEntry, extraEnv map[string]strin
 	if ctx.ProvidedEnvVars == nil {
 		ctx.ProvidedEnvVars = map[string]bool{}
 	}
+	for name := range ctx.ProvidedEnvVars {
+		markProvidedEnvVar(ctx, name)
+	}
 	if entry != nil {
 		ctx.SkillDir = strings.TrimSpace(entry.SkillDir)
 	}
 	for name := range CollectSkillProvidedEnv(entry) {
-		ctx.ProvidedEnvVars[name] = true
+		markProvidedEnvVar(ctx, name)
 	}
-	for name := range extraEnv {
-		if strings.TrimSpace(name) != "" {
-			ctx.ProvidedEnvVars[name] = true
+	for name, value := range extraEnv {
+		if !isConcreteEnvAssignment(name, value) {
+			continue
+		}
+		markProvidedEnvVar(ctx, name)
+	}
+	return ctx
+}
+
+func BuildRunCheckContextForRunner(entry *corelib.NLSkillEntry, extraEnv map[string]string, runner string) *CheckContext {
+	ctx := BuildRunCheckContext(entry, extraEnv)
+	if normalizeRunnerBackend(runner) == RunnerBackendGUI && entry != nil {
+		proxyProbeSteps := PrecheckExecutableSteps(entry.Steps, nil)
+		proxyRequiredEnv := entry.RequiredEnv
+		if len(proxyProbeSteps) == 0 && len(entry.Steps) > 0 {
+			proxyRequiredEnv = nil
+		}
+		if corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, extraEnv, proxyProbeSteps, entry.SkillDir) {
+			markProvidedEnvVar(ctx, "OPENAI_API_KEY")
+			markProvidedEnvVar(ctx, "OPENAI_BASE_URL")
+			markProvidedEnvVar(ctx, "OPENAI_MODEL")
 		}
 	}
 	return ctx
+}
+
+func markProvidedEnvVar(ctx *CheckContext, name string) {
+	if ctx == nil || ctx.ProvidedEnvVars == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	ctx.ProvidedEnvVars[name] = true
+	ctx.ProvidedEnvVars[strings.ToUpper(name)] = true
+	ctx.ProvidedEnvVars[strings.ToLower(name)] = true
 }
 
 func HydrateRunMetadata(dst, src *corelib.NLSkillEntry) {
@@ -262,16 +415,24 @@ func HydrateRunMetadata(dst, src *corelib.NLSkillEntry) {
 		return
 	}
 	dstHadExecutionDefinition := hasExecutionDefinition(dst)
-	if len(dst.Steps) == 0 {
+	dstIsKnowledge := isKnowledgeSkillType(dst.Type)
+	if dst.Type == "" {
+		dst.Type = src.Type
+		dstIsKnowledge = isKnowledgeSkillType(dst.Type)
+	}
+	if dst.Content == "" {
+		dst.Content = src.Content
+	}
+	if !dstIsKnowledge && len(dst.Steps) == 0 {
 		dst.Steps = append([]corelib.NLSkillStep(nil), src.Steps...)
 	}
-	if len(dst.Params) == 0 {
+	if !dstIsKnowledge && len(dst.Params) == 0 {
 		dst.Params = append([]corelib.NLSkillParam(nil), src.Params...)
 	}
-	if len(dst.RequiredArgs) == 0 {
+	if !dstIsKnowledge && len(dst.RequiredArgs) == 0 {
 		dst.RequiredArgs = append([]string(nil), src.RequiredArgs...)
 	}
-	if len(dst.RequiredEnv) == 0 {
+	if !dstIsKnowledge && len(dst.RequiredEnv) == 0 {
 		dst.RequiredEnv = append([]string(nil), src.RequiredEnv...)
 	}
 	if len(dst.RequiresPython) == 0 {
@@ -301,7 +462,7 @@ func HydrateRunMetadata(dst, src *corelib.NLSkillEntry) {
 	if len(dst.Operations) == 0 {
 		dst.Operations = append([]corelib.NLSkillOperation(nil), src.Operations...)
 	}
-	if len(dst.Pipeline) == 0 {
+	if !dstIsKnowledge && len(dst.Pipeline) == 0 {
 		dst.Pipeline = append([]corelib.SkillPipelineStep(nil), src.Pipeline...)
 	}
 	if len(dst.References) == 0 {
@@ -340,7 +501,11 @@ func HydrateRunMetadataFromDir(entry *corelib.NLSkillEntry) error {
 	if entry == nil || strings.TrimSpace(entry.SkillDir) == "" {
 		return nil
 	}
-	imported, err := ImportMarkdownSkillDir(entry.SkillDir, MarkdownSkillOptions{NameFallback: entry.Name})
+	fallbackName := strings.TrimSpace(entry.Name)
+	if fallbackName == "" {
+		fallbackName = strings.TrimSpace(entry.DirName)
+	}
+	imported, _, err := loadSkillFromDir(entry.SkillDir, fallbackName)
 	if err != nil {
 		return err
 	}
@@ -369,22 +534,76 @@ func ApplyRunInputInference(entry *corelib.NLSkillEntry, vars map[string]string,
 		return
 	}
 	candidates := runInputCandidates(vars, runArgs)
+	paramsByName := map[string]corelib.NLSkillParam{}
+	for _, param := range entry.Params {
+		if name := canonicalRunVarKey(param.Name); name != "" {
+			param.Name = name
+			paramsByName[name] = param
+		}
+	}
 	for _, arg := range entry.RequiredArgs {
-		arg = strings.TrimSpace(arg)
-		if arg != "" && strings.TrimSpace(vars[arg]) == "" {
-			if value := inferRunArgValue(arg, candidates); value != "" {
+		arg = canonicalRunVarKey(arg)
+		if arg == "" {
+			continue
+		}
+		if promoteRunParamAlias(vars, runParamForName(arg, paramsByName)) {
+			continue
+		}
+		if strings.TrimSpace(vars[arg]) == "" {
+			if value := inferRunParamValue(runParamForName(arg, paramsByName), candidates); value != "" {
 				vars[arg] = value
 			}
 		}
 	}
 	for _, param := range entry.Params {
-		name := strings.TrimSpace(param.Name)
-		if name != "" && strings.TrimSpace(vars[name]) == "" {
-			if value := inferRunArgValue(name, candidates); value != "" {
+		name := canonicalRunVarKey(param.Name)
+		if name == "" {
+			continue
+		}
+		param.Name = name
+		if promoteRunParamAlias(vars, param) {
+			continue
+		}
+		if strings.TrimSpace(vars[name]) == "" {
+			if value := inferRunParamValue(param, candidates); value != "" {
 				vars[name] = value
 			}
 		}
 	}
+}
+
+func promoteRunParamAlias(vars map[string]string, param corelib.NLSkillParam) bool {
+	name := canonicalRunVarKey(param.Name)
+	if name == "" {
+		return false
+	}
+	if value, ok := lookupCanonicalVar(vars, name); ok && strings.TrimSpace(value) != "" {
+		vars[name] = value
+		return true
+	}
+	for _, alias := range runParamInferenceNames(param) {
+		alias = canonicalRunVarKey(alias)
+		if alias == "" || alias == name {
+			continue
+		}
+		if value, ok := lookupCanonicalVar(vars, alias); ok && strings.TrimSpace(value) != "" {
+			vars[name] = value
+			return true
+		}
+	}
+	return false
+}
+
+func runParamForName(name string, paramsByName map[string]corelib.NLSkillParam) corelib.NLSkillParam {
+	name = canonicalRunVarKey(name)
+	if param, ok := paramsByName[name]; ok {
+		return param
+	}
+	param := corelib.NLSkillParam{Name: name}
+	if aliases, ok := commonParamAliases[name]; ok {
+		param.Aliases = aliases
+	}
+	return param
 }
 
 func runInputCandidates(vars map[string]string, runArgs map[string]interface{}) []string {
@@ -397,30 +616,138 @@ func runInputCandidates(vars map[string]string, runArgs map[string]interface{}) 
 			result = append(result, value)
 		}
 	}
-	for _, key := range []string{"input", "user_prompt", "text", "query"} {
-		add(vars[key])
-		if runArgs != nil {
-			if raw, ok := runArgs[key]; ok {
-				add(fmt.Sprintf("%v", raw))
-			}
+	for _, key := range []string{"input", "user_prompt", "text", "content", "message", "prompt", "query", "task", "description"} {
+		if value, ok := lookupCanonicalVar(vars, key); ok {
+			add(value)
+		}
+		if raw, ok := lookupRunArg(runArgs, key); ok {
+			add(fmt.Sprintf("%v", raw))
+		}
+	}
+	if raw, ok := lookupRunArg(runArgs, "args"); ok {
+		if value, ok := runVarString(raw); ok && !strings.HasPrefix(strings.TrimSpace(value), "{") {
+			add(value)
 		}
 	}
 	return result
 }
 
 func inferRunArgValue(arg string, candidates []string) string {
-	arg = strings.ToLower(strings.TrimSpace(arg))
+	return inferRunParamValue(corelib.NLSkillParam{Name: arg}, candidates)
+}
+
+func inferRunParamValue(param corelib.NLSkillParam, candidates []string) string {
+	paramNames := runParamInferenceNames(param)
 	for _, candidate := range candidates {
-		if value := extractNamedRunArg(candidate, arg); value != "" {
-			return value
+		for _, name := range paramNames {
+			if value := extractNamedRunArg(candidate, name); value != "" {
+				return value
+			}
 		}
 	}
 	for _, candidate := range candidates {
-		if value := fallbackRunArgValue(arg, candidate); value != "" {
+		if value := fallbackRunParamValue(param, candidate); value != "" {
 			return value
 		}
 	}
 	return ""
+}
+
+func runParamInferenceNames(param corelib.NLSkillParam) []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		name = canonicalRunVarKey(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	add(param.Name)
+	for _, alias := range param.Aliases {
+		add(alias)
+	}
+	for _, alias := range commonParamAliases[canonicalRunVarKey(param.Name)] {
+		add(alias)
+	}
+	switch runParamKind(param) {
+	case "city":
+		for _, alias := range []string{"city", "location", "place", "area", "\u57ce\u5e02", "\u5730\u70b9"} {
+			add(alias)
+		}
+	case "target_language":
+		for _, alias := range []string{"target_language", "target_lang", "to_lang", "language", "lang", "\u76ee\u6807\u8bed\u8a00", "\u8bed\u8a00"} {
+			add(alias)
+		}
+	case "source_language":
+		for _, alias := range []string{"source_language", "source_lang", "from_lang", "\u6e90\u8bed\u8a00"} {
+			add(alias)
+		}
+	}
+	return names
+}
+
+func runParamKind(param corelib.NLSkillParam) string {
+	parts := []string{normalizeRunParamToken(param.Name), strings.ToLower(param.Description)}
+	for _, alias := range param.Aliases {
+		parts = append(parts, normalizeRunParamToken(alias))
+	}
+	joined := strings.Join(parts, " ")
+	if strings.Contains(joined, "targetlanguage") || strings.Contains(joined, "targetlang") || strings.Contains(joined, "tolang") || strings.Contains(joined, "\u76ee\u6807\u8bed\u8a00") {
+		return "target_language"
+	}
+	if strings.Contains(joined, "sourcelanguage") || strings.Contains(joined, "sourcelang") || strings.Contains(joined, "fromlang") || strings.Contains(joined, "\u6e90\u8bed\u8a00") {
+		return "source_language"
+	}
+	if strings.Contains(joined, "city") || strings.Contains(joined, "location") || strings.Contains(joined, "place") || strings.Contains(joined, "weathercity") || strings.Contains(joined, "\u57ce\u5e02") || strings.Contains(joined, "\u5730\u70b9") || strings.Contains(joined, "\u5929\u6c14") {
+		return "city"
+	}
+	if strings.Contains(joined, "language") || strings.Contains(joined, "lang") || strings.Contains(joined, "\u8bed\u8a00") {
+		return "target_language"
+	}
+	if strings.Contains(joined, "format") || strings.Contains(joined, "fmt") || strings.Contains(joined, "\u683c\u5f0f") {
+		return "format"
+	}
+	return ""
+}
+func normalizeRunParamToken(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	replacer := strings.NewReplacer("_", "", "-", "", " ", "", ".", "")
+	return replacer.Replace(value)
+}
+
+func fallbackRunParamValue(param corelib.NLSkillParam, text string) string {
+	arg := strings.ToLower(strings.TrimSpace(param.Name))
+	switch runParamKind(param) {
+	case "city":
+		return extractCityRunArg(text)
+	case "target_language":
+		if value := extractTargetLanguageRunArg(text); value != "" {
+			return value
+		}
+	case "source_language":
+		if value := extractSourceLanguageRunArg(text); value != "" {
+			return value
+		}
+	}
+	return fallbackScalarRunArgValue(arg, text)
+}
+
+func legacyRunArgKind(arg string) string {
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	switch normalizeRunParamToken(arg) {
+	case "city", "location", "place", "area", "weathercity":
+		return "city"
+	case "targetlanguage", "targetlang", "tolang", "language", "lang":
+		return "target_language"
+	case "sourcelanguage", "sourcelang", "fromlang":
+		return "source_language"
+	case "format", "fmt", "outputformat":
+		return "format"
+	default:
+		return ""
+	}
 }
 
 func extractNamedRunArg(text, arg string) string {
@@ -453,15 +780,151 @@ func cleanInferredRunArgValue(value string) string {
 }
 
 func fallbackRunArgValue(arg, text string) string {
+	switch legacyRunArgKind(arg) {
+	case "city":
+		return extractCityRunArg(text)
+	case "target_language":
+		if value := extractTargetLanguageRunArg(text); value != "" {
+			return value
+		}
+	case "source_language":
+		if value := extractSourceLanguageRunArg(text); value != "" {
+			return value
+		}
+	}
+	return fallbackScalarRunArgValue(arg, text)
+}
+
+func fallbackScalarRunArgValue(arg, text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" || strings.HasPrefix(text, "{") {
 		return ""
 	}
 	switch arg {
-	case "city", "text", "query", "url", "path", "file", "input":
+	case "city", "location", "place", "area", "text", "content", "message", "prompt", "description", "task", "query", "url", "path", "file", "input":
 		return text
 	default:
 		return ""
+	}
+}
+
+func extractCityRunArg(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.HasPrefix(text, "{") {
+		return ""
+	}
+	for _, pattern := range []string{
+		`(?i)\b(?:weather|forecast)\s+(?:in|for|at)\s+([a-z][a-z .'-]{0,40})`,
+		`(?i)\b(?:weather|forecast)\s+([a-z][a-z .'-]{0,40})`,
+		`(?i)\b(?:in|for|at)\s+([a-z][a-z .'-]{0,40})\s+(?:weather|forecast)\b`,
+	} {
+		if re, err := regexp.Compile(pattern); err == nil {
+			if m := re.FindStringSubmatch(text); len(m) > 1 {
+				return cleanCityRunArgValue(m[1])
+			}
+		}
+	}
+	trimmed := stripRunIntentPrefix(text)
+	for _, pattern := range []string{
+		"^(?:\u5929\u6c14|\u6c14\u6e29|\u9884\u62a5)\\s*([\\p{Han}A-Za-z][\\p{Han}A-Za-z .'-]{0,40})$",
+		"^(.+?)(?:\u7684)?(?:\u5929\u6c14|\u6c14\u6e29|\u9884\u62a5)(?:\u600e\u4e48\u6837|\u5982\u4f55|\u4fe1\u606f)?$",
+		`^(.+?)(?:\s+)?(?:weather|forecast)$`,
+	} {
+		if re, err := regexp.Compile(pattern); err == nil {
+			if m := re.FindStringSubmatch(trimmed); len(m) > 1 {
+				return cleanCityRunArgValue(m[1])
+			}
+		}
+	}
+	if !strings.ContainsAny(trimmed, " ,.;\uff0c\u3002\uff1b\uff1f\uff01?") && len([]rune(trimmed)) <= 32 {
+		return cleanCityRunArgValue(trimmed)
+	}
+	return ""
+}
+
+func stripRunIntentPrefix(text string) string {
+	text = strings.TrimSpace(text)
+	for {
+		before := text
+		for _, prefix := range []string{"\u8bf7\u5e2e\u6211", "\u5e2e\u6211", "\u9ebb\u70e6", "\u8bf7", "\u67e5\u8be2\u4e00\u4e0b", "\u67e5\u4e00\u4e0b", "\u67e5\u8be2", "\u67e5\u770b", "\u83b7\u53d6", "\u7ed9\u6211", "\u67e5", "please", "look up", "show me", "tell me"} {
+			if strings.HasPrefix(strings.ToLower(text), prefix) {
+				text = strings.TrimSpace(text[len(prefix):])
+			}
+		}
+		if text == before {
+			return text
+		}
+	}
+}
+
+func cleanCityRunArgValue(value string) string {
+	value = cleanInferredRunArgValue(value)
+	value = strings.TrimSpace(strings.TrimSuffix(value, "\u7684"))
+	for _, prefix := range []string{"\u4eca\u5929", "\u660e\u5929", "\u540e\u5929"} {
+		value = strings.TrimSpace(strings.TrimPrefix(value, prefix))
+	}
+	for _, marker := range []string{" today", " tomorrow", " please", " \u4eca\u5929", " \u660e\u5929", " \u540e\u5929", "\u4eca\u5929", "\u660e\u5929", "\u540e\u5929"} {
+		if idx := strings.Index(strings.ToLower(value), marker); idx > 0 {
+			value = strings.TrimSpace(value[:idx])
+		}
+	}
+	value = strings.Trim(value, " ,.;\uff0c\u3002\uff1b\uff1f\uff01?")
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "weather", "forecast", "current weather", "weather forecast", "today", "tomorrow", "\u5929\u6c14", "\u6c14\u6e29", "\u9884\u62a5", "\u4eca\u5929", "\u660e\u5929", "\u540e\u5929":
+		return ""
+	default:
+		return value
+	}
+}
+
+func extractTargetLanguageRunArg(text string) string {
+	return extractLanguageRunArg(text, []string{
+		`(?i)\b(?:translate|translation).*?\bto\s+([a-z][a-z -]{1,30})`,
+		"(?:\u7ffb\u8bd1|\u8f49\u8b6f|\u7ffb\u8b6f)(?:\u6210|\u4e3a|\u70ba|\u5230)?\\s*([\\p{Han}A-Za-z][\\p{Han}A-Za-z -]{0,20})",
+	})
+}
+
+func extractSourceLanguageRunArg(text string) string {
+	return extractLanguageRunArg(text, []string{
+		`(?i)\bfrom\s+([a-z][a-z -]{1,30})\b.*?\b(?:to|translate)\b`,
+		"(?:\u4ece|\u7531)\\s*([\\p{Han}A-Za-z][\\p{Han}A-Za-z -]{0,20})(?:\u7ffb\u8bd1|\u8f49\u8b6f|\u7ffb\u8b6f|\u8bd1|\u8b6f)",
+	})
+}
+
+func extractLanguageRunArg(text string, patterns []string) string {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.HasPrefix(text, "{") {
+		return ""
+	}
+	for _, pattern := range patterns {
+		if re, err := regexp.Compile(pattern); err == nil {
+			if m := re.FindStringSubmatch(text); len(m) > 1 {
+				return normalizeLanguageRunArg(cleanInferredRunArgValue(m[1]))
+			}
+		}
+	}
+	return ""
+}
+
+func normalizeLanguageRunArg(value string) string {
+	value = strings.Trim(value, " ,.;\uff0c\u3002\uff1b\uff1f\uff01?")
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "\u82f1\u6587", "\u82f1\u8bed", "\u82f1\u8a9e", "english", "en", "en-us", "en_us":
+		return "English"
+	case "\u4e2d\u6587", "\u6c49\u8bed", "\u6f22\u8a9e", "\u7b80\u4f53\u4e2d\u6587", "\u7c21\u9ad4\u4e2d\u6587", "chinese", "zh", "zh-cn", "zh_cn":
+		return "Chinese"
+	case "\u65e5\u6587", "\u65e5\u8bed", "\u65e5\u8a9e", "japanese", "ja", "jp":
+		return "Japanese"
+	case "\u97e9\u6587", "\u97e9\u8bed", "\u97d3\u8a9e", "korean", "ko":
+		return "Korean"
+	case "\u6cd5\u6587", "\u6cd5\u8bed", "\u6cd5\u8a9e", "french", "fr":
+		return "French"
+	case "\u5fb7\u6587", "\u5fb7\u8bed", "\u5fb7\u8a9e", "german", "de":
+		return "German"
+	case "\u897f\u73ed\u7259\u8bed", "\u897f\u73ed\u7259\u8a9e", "spanish", "es":
+		return "Spanish"
+	default:
+		return strings.TrimSpace(value)
 	}
 }
 
@@ -529,12 +992,49 @@ func MergeExtraEnvParam(params map[string]interface{}, extraEnv map[string]strin
 		if strings.TrimSpace(k) == "" {
 			continue
 		}
-		if _, exists := merged[k]; !exists {
-			merged[k] = v
-		}
+		merged[k] = v
 	}
 	if len(merged) > 0 {
 		params["extra_env"] = merged
+	}
+}
+
+// PrepareResolvedStepEnv applies the runner env contract to a step after
+// ResolveStep has performed parameter binding. Bash steps receive required
+// environment names plus caller-supplied env values in the command params so
+// BuildCommandEnv can inject them uniformly in GUI and TUI runners.
+func PrepareResolvedStepEnv(step corelib.NLSkillStep, requiredEnv []string, extraEnv map[string]string) corelib.NLSkillStep {
+	if !stepCanReceiveCommandEnv(step) {
+		return step
+	}
+	step = NormalizeStepForRunnerCopy(step, "")
+	if NormalizeStepActionName(step.Action) != "bash" {
+		return step
+	}
+	if len(requiredEnv) == 0 && len(extraEnv) == 0 {
+		return step
+	}
+	if step.Params == nil {
+		step.Params = map[string]interface{}{}
+	}
+	if len(requiredEnv) > 0 {
+		MergeRequiredEnvParam(step.Params, requiredEnv)
+	}
+	if len(extraEnv) > 0 {
+		MergeExtraEnvParam(step.Params, extraEnv)
+	}
+	return step
+}
+
+func stepCanReceiveCommandEnv(step corelib.NLSkillStep) bool {
+	action := NormalizeStepActionName(step.Action)
+	switch action {
+	case "bash", "run", "exec", "execute", "command", "shell", "sh", "cmd", "script", "python", "python3", "node", "js", "javascript", "powershell", "pwsh":
+		return true
+	case "":
+		return hasNonEmptyParam(step.Params, "command") || hasNonEmptyParam(step.Params, "cmd") || hasNonEmptyParam(step.Params, "run") || hasNonEmptyParam(step.Params, "script")
+	default:
+		return false
 	}
 }
 
@@ -542,13 +1042,65 @@ func BuildCommandEnv(base []string, params map[string]interface{}) []string {
 	env := append([]string(nil), base...)
 	for _, envName := range stringListParam(firstNonNilStepParam(params, "required_env", "requires_env", "required_environment")) {
 		if value := os.Getenv(envName); value != "" {
-			env = append(env, fmt.Sprintf("%s=%s", envName, value))
+			env = upsertCommandEnv(env, envName, value)
 		}
 	}
-	for key, value := range ExtractRunExtraEnv(firstNonNilStepParam(params, "extra_env", "env", "environment")) {
-		env = append(env, fmt.Sprintf("%s=%s", key, value))
+	extra := ExtractRunExtraEnv(firstNonNilStepParam(params, "extra_env", "env", "environment"))
+	keys := make([]string, 0, len(extra))
+	for key := range extra {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !isConcreteEnvAssignment(key, extra[key]) {
+			continue
+		}
+		env = upsertCommandEnv(env, key, extra[key])
 	}
 	return env
+}
+
+func upsertCommandEnv(env []string, key, value string) []string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return env
+	}
+	assignment := fmt.Sprintf("%s=%s", key, value)
+	for i, item := range env {
+		name, _, ok := strings.Cut(item, "=")
+		if ok && envNameEqual(name, key) {
+			env[i] = assignment
+			return env
+		}
+	}
+	return append(env, assignment)
+}
+
+func envNameEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func isConcreteEnvAssignment(key, value string) bool {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || value == "" {
+		return false
+	}
+	for _, placeholder := range []string{
+		"$" + key,
+		"${" + key + "}",
+		"%" + key + "%",
+		"{{" + key + "}}",
+		"{" + key + "}",
+	} {
+		if strings.EqualFold(value, placeholder) {
+			return false
+		}
+	}
+	return true
 }
 
 func stringListParam(raw interface{}) []string {

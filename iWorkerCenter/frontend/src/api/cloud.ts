@@ -34,9 +34,14 @@ const serializeCloudConfig = (config: CloudConfig): CloudConfig => ({
 export type CloudStatus = {
   configured: boolean;
   registered: boolean;
+  machine_id?: string;
+  company_id?: string;
   center_id?: string;
   status: string;
   license_error?: string;
+  cache_error?: string;
+  license_cached?: boolean;
+  compute_cached?: boolean;
   non_blocking: boolean;
   control_plane: string;
   business_scope: string;
@@ -73,12 +78,22 @@ export type RegisterCloudResponse = {
   center_id: string;
   status: string;
   message: string;
+  reused?: boolean;
+  heartbeat_sent?: boolean;
+  heartbeat_error?: string;
 };
 
 async function requestJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init);
   const text = await resp.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text.trim() };
+    }
+  }
   if (!resp.ok) {
     throw new Error(data?.error || data?.message || `Request failed: ${resp.status}`);
   }

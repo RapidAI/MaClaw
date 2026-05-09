@@ -1,15 +1,26 @@
 package goalwatch
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
+)
+
+const maxGoalWatchJSONBodyBytes = 64 << 10
+
+var (
+	errGoalWatchJSONTooLarge = errors.New("goalwatch json body exceeds size limit")
+	errGoalWatchJSONTrailing = errors.New("goalwatch json body contains trailing data")
 )
 
 type RecoveryExecutor interface {
@@ -58,7 +69,15 @@ func parsePushAction(path string) (string, string) {
 	if len(parts) != 2 {
 		return "", ""
 	}
-	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	eventID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return "", ""
+	}
+	action, err := url.PathUnescape(parts[1])
+	if err != nil {
+		return "", ""
+	}
+	return strings.TrimSpace(eventID), strings.TrimSpace(action)
 }
 
 func (h *Handler) handleClientPushes(w http.ResponseWriter, r *http.Request) {
@@ -81,7 +100,7 @@ func (h *Handler) handleClientPushAction(w http.ResponseWriter, r *http.Request)
 		response.Error(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use POST")
 		return
 	}
-	eventID, action := parsePushAction(r.URL.Path)
+	eventID, action := parsePushAction(r.URL.EscapedPath())
 	if eventID == "" || (action != "ack" && action != "recover") {
 		response.NotFound(w, "ACTION_NOT_FOUND", "expected /client/goalwatch/pushes/{event_id}/ack or /recover")
 		return
@@ -91,7 +110,7 @@ func (h *Handler) handleClientPushAction(w http.ResponseWriter, r *http.Request)
 		Status      string `json:"status"`
 		Note        string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeGoalWatchJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -239,7 +258,7 @@ func (h *Handler) handlePolicy(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, map[string]any{"policy": policy, "persisted": persisted})
 	case http.MethodPut:
 		var req TenantPolicy
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeGoalWatchJSON(r.Body, &req, false); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
@@ -263,4 +282,28 @@ func configStatus(svc *Service) MonitorConfigStatus {
 
 func requestTenantID(r *http.Request) string {
 	return tenant.RequestTenantID(r)
+}
+
+func decodeGoalWatchJSON(body io.Reader, dst any, allowEmpty bool) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxGoalWatchJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxGoalWatchJSONBodyBytes {
+		return errGoalWatchJSONTooLarge
+	}
+	if len(bytes.TrimSpace(data)) == 0 && allowEmpty {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errGoalWatchJSONTrailing
+		}
+		return err
+	}
+	return nil
 }

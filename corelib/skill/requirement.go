@@ -26,6 +26,7 @@ package skill
 import (
 	"fmt"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -42,9 +43,10 @@ type Requirement struct {
 	//   "inferred" = extracted from step commands automatically
 	Source string
 
-	// Provided marks requirements that are satisfied by the execution context
-	// rather than the system environment. For example, OPENAI_API_KEY is
-	// provided by the local proxy at runtime — the checker should skip it.
+	// Provided marks requirements that are satisfied by the selected execution
+	// context rather than the system environment. For example, the GUI runner
+	// can satisfy OPENAI_API_KEY by starting its local proxy, while the TUI
+	// runner must see a real env var or caller-supplied extra_env.
 	//
 	// This replaces per-caller SkipNames configuration. The decision of what
 	// is "provided" lives in ExtractRequirements (single data source), not
@@ -82,10 +84,10 @@ type Checker interface {
 
 // Fixer can auto-repair a specific requirement type. This is separate from
 // Checker because:
-//   1. Not all requirement types support auto-fix (commands, platforms don't)
-//   2. Fix strategy may vary by context (the same pip package might be
-//      installed globally, in a venv, or in the skill directory)
-//   3. A Fixer can be registered/replaced independently of its Checker
+//  1. Not all requirement types support auto-fix (commands, platforms don't)
+//  2. Fix strategy may vary by context (the same pip package might be
+//     installed globally, in a venv, or in the skill directory)
+//  3. A Fixer can be registered/replaced independently of its Checker
 type Fixer interface {
 	// Type returns the Requirement.Type this fixer handles.
 	Type() string
@@ -208,6 +210,25 @@ func FilterErrors(violations []Violation) []Violation {
 	return errors
 }
 
+// PromoteRunnerBlockingViolations tightens requirement results for an imminent
+// skill execution. Inferred command requirements stay warnings in generic
+// validation because static command parsing can be conservative, but a missing
+// command in the selected executable steps will fail immediately at runtime.
+func PromoteRunnerBlockingViolations(violations []Violation) []Violation {
+	if len(violations) == 0 {
+		return nil
+	}
+	promoted := make([]Violation, len(violations))
+	copy(promoted, violations)
+	for i := range promoted {
+		req := promoted[i].Requirement
+		if promoted[i].Severity == "warning" && req.Type == "command" && req.Source == "inferred" {
+			promoted[i].Severity = "error"
+		}
+	}
+	return promoted
+}
+
 // FormatViolations builds a user-friendly error message from violations.
 func FormatViolations(violations []Violation) string {
 	if len(violations) == 0 {
@@ -215,7 +236,96 @@ func FormatViolations(violations []Violation) string {
 	}
 	var parts []string
 	for _, v := range violations {
-		parts = append(parts, v.Message)
+		if message := FormatViolation(v); message != "" {
+			parts = append(parts, message)
+		}
 	}
-	return strings.Join(parts, "; ")
+	return strings.Join(parts, "\n")
+}
+
+// FormatViolation renders one requirement violation with a runner-action hint.
+// Checkers keep their messages small and factual; this function adds the
+// consistent next-step marker used by GUI/TUI skill runners.
+func FormatViolation(v Violation) string {
+	message := stableRequirementViolationMessage(v)
+	if message == "" {
+		return ""
+	}
+	if strings.Contains(message, "[action:") {
+		return message
+	}
+	if hint := RequirementActionHint(v.Requirement); hint != "" {
+		return message + " " + hint
+	}
+	return message
+}
+
+func stableRequirementViolationMessage(v Violation) string {
+	if strings.Contains(v.Message, "[action:") {
+		return strings.TrimSpace(v.Message)
+	}
+	req := v.Requirement
+	switch req.Type {
+	case "command":
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			return "required command was not found on PATH"
+		}
+		return fmt.Sprintf("required command %s was not found on PATH", name)
+	case "env":
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			return "required environment variable is not set"
+		}
+		return fmt.Sprintf("required environment variable %s is not set", name)
+	case "pip":
+		name := strings.TrimSpace(req.Name + req.Version)
+		if name == "" {
+			return "required Python package is not installed"
+		}
+		return fmt.Sprintf("required Python package %s is not installed", name)
+	case "npm":
+		name := strings.TrimSpace(req.Name + req.Version)
+		if name == "" {
+			return "required Node package is not installed"
+		}
+		return fmt.Sprintf("required Node package %s is not installed", name)
+	case "platform":
+		currentPlatform := mapGOOSToPlatform(runtime.GOOS)
+		if len(req.Values) == 0 {
+			return "current platform is not supported by this skill"
+		}
+		return fmt.Sprintf("current platform %s is not supported by this skill; supported platforms: %s", currentPlatform, strings.Join(req.Values, ", "))
+	case "gui":
+		return "this skill requires a GUI-capable environment"
+	default:
+		return strings.TrimSpace(v.Message)
+	}
+}
+
+func RequirementActionHint(req Requirement) string {
+	switch req.Type {
+	case "command":
+		name := strings.TrimSpace(req.Name)
+		if name == "" {
+			return "[action: install_dependency] Install the missing command or update the skill command."
+		}
+		return fmt.Sprintf("[action: install_dependency] Install %s and ensure it is available on PATH, or update the skill to use an available command.", name)
+	case "pip", "npm":
+		if strings.TrimSpace(req.Name) == "" {
+			return "[action: install_dependency] Install the missing package dependency."
+		}
+		return fmt.Sprintf("[action: install_dependency] Install package %s%s, then retry the skill.", req.Name, req.Version)
+	case "env":
+		if strings.TrimSpace(req.Name) == "" {
+			return "[action: provide_env] Provide the required environment variable before running the skill."
+		}
+		return fmt.Sprintf("[action: provide_env] Provide environment variable %s via run env/config, then retry.", req.Name)
+	case "platform":
+		return "[action: inspect_skill] Run this skill on a supported platform or adjust its platforms declaration."
+	case "gui":
+		return "[action: open_gui] Run this skill in a GUI-capable environment."
+	default:
+		return "[action: inspect_skill] Inspect the skill requirements and execution environment."
+	}
 }

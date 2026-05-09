@@ -134,9 +134,10 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 	for _, model := range models {
 		availableModels = append(availableModels, model.Name)
 	}
+	active := hasEligibleAuthorizedModel(reg, email, models, now)
 	status := &ServiceStatus{
-		Active:            len(models) > 0,
-		SkipLLMConfig:     len(models) > 0,
+		Active:            active,
+		SkipLLMConfig:     active,
 		AuthMode:          "viewer_bearer_token",
 		ServiceGroupIDs:   append([]string(nil), serviceGroupIDs...),
 		ServiceGroupNames: serviceGroupNames,
@@ -155,13 +156,14 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 	status.CreditsTotal = roundCredits(status.CreditsTotal)
 	status.CreditsUsed = roundCredits(status.CreditsUsed)
 	status.CreditsRemaining = roundCredits(status.CreditsRemaining)
+	if !status.Active || len(serviceGroupIDs) == 0 {
+		status.InactiveReasons = grantStateInactiveReasons(status.CreditGrants)
+	}
 	if len(grants) > 0 {
 		status.ActiveGrants = make([]ActiveGrant, 0, len(grants))
 		var nearest *time.Time
 		for _, g := range grants {
-			if g.CreditsTotal > 0 {
-				creditsAvailable += availableGrantCredits(g, now)
-			}
+			creditsAvailable += availableGrantCredits(g, now)
 			status.ActiveGrants = append(status.ActiveGrants, grantSummary(g, now))
 			if nearest == nil || g.ExpiresAt.Before(*nearest) {
 				copyVal := g.ExpiresAt
@@ -194,6 +196,7 @@ func creditGrantSummaries(reg *Registry, email string, now time.Time) []ActiveGr
 	}
 	email = normalizeEmail(email)
 	items := make([]ActiveGrant, 0)
+	var latestExpired *Grant
 	for _, g := range reg.Grants {
 		if normalizeEmail(g.Email) != email {
 			continue
@@ -202,14 +205,21 @@ func creditGrantSummaries(reg *Registry, email string, now time.Time) []ActiveGr
 			continue
 		}
 		if !g.ExpiresAt.After(now) {
-			continue
-		}
-		if g.CreditsTotal > 0 && remainingGrantCredits(g) <= 0 {
+			if latestExpired == nil || g.ExpiresAt.After(latestExpired.ExpiresAt) {
+				copyGrant := g
+				latestExpired = &copyGrant
+			}
 			continue
 		}
 		items = append(items, grantSummary(g, now))
 	}
+	if len(items) == 0 && latestExpired != nil {
+		items = append(items, grantSummary(*latestExpired, now))
+	}
 	sort.Slice(items, func(i, j int) bool {
+		if rankI, rankJ := grantSummarySortRank(items[i]), grantSummarySortRank(items[j]); rankI != rankJ {
+			return rankI < rankJ
+		}
 		if items[i].StartsAt.Equal(items[j].StartsAt) {
 			if items[i].ExpiresAt.Equal(items[j].ExpiresAt) {
 				return items[i].ServiceGroupID < items[j].ServiceGroupID
@@ -221,17 +231,108 @@ func creditGrantSummaries(reg *Registry, email string, now time.Time) []ActiveGr
 	return items
 }
 
+func grantSummarySortRank(grant ActiveGrant) int {
+	switch strings.ToLower(strings.TrimSpace(grant.Status)) {
+	case "active":
+		return 0
+	case "period_limited":
+		return 1
+	case "queued":
+		return 2
+	case "exhausted":
+		return 3
+	case "expired":
+		return 4
+	default:
+		if grant.Active {
+			return 0
+		}
+		return 5
+	}
+}
+
+func grantStateInactiveReasons(grants []ActiveGrant) []string {
+	if len(grants) == 0 {
+		return nil
+	}
+	reasons := make([]string, 0, len(grants))
+	seen := map[string]struct{}{}
+	add := func(reason string) {
+		reason = strings.TrimSpace(reason)
+		if reason == "" {
+			return
+		}
+		key := strings.ToLower(reason)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		reasons = append(reasons, reason)
+	}
+	for _, grant := range grants {
+		switch strings.ToLower(strings.TrimSpace(grant.Status)) {
+		case "period_limited":
+			reason := "current period credit limit is exhausted"
+			if grant.RetryAfterAt != "" {
+				reason += "; retry after " + grant.RetryAfterAt
+			}
+			add(reason)
+		case "exhausted":
+			add("grant credits are exhausted")
+		case "queued":
+			reason := "grant is not active yet"
+			if grant.RetryAfterAt != "" {
+				reason += "; starts at " + grant.RetryAfterAt
+			}
+			add(reason)
+		case "expired":
+			add("grant has expired")
+		}
+	}
+	return reasons
+}
+
 func grantSummary(g Grant, now time.Time) ActiveGrant {
-	return ActiveGrant{
+	status, reason, active, retryAt := grantStatus(g, now)
+	available := availableGrantCredits(g, now)
+	summary := ActiveGrant{
 		ServiceGroupID:   g.ServiceGroupID,
 		Source:           g.Source,
 		StartsAt:         g.StartsAt,
 		ExpiresAt:        g.ExpiresAt,
-		Active:           !now.Before(g.StartsAt) && now.Before(g.ExpiresAt) && (g.CreditsTotal <= 0 || availableGrantCredits(g, now) > 0),
+		Active:           active,
+		Status:           status,
+		StatusReason:     reason,
 		CreditsTotal:     roundCredits(g.CreditsTotal),
 		CreditsUsed:      roundCredits(g.CreditsUsed),
+		CreditsAvailable: available,
 		CreditsRemaining: remainingGrantCredits(g),
 	}
+	if retryAt != nil && retryAt.After(now) {
+		summary.RetryAfterSeconds = int64(math.Ceil(retryAt.Sub(now).Seconds()))
+		summary.RetryAfterAt = retryAt.Format(time.RFC3339)
+	}
+	return summary
+}
+
+func grantStatus(g Grant, now time.Time) (string, string, bool, *time.Time) {
+	if now.Before(g.StartsAt) {
+		copyVal := g.StartsAt
+		return "queued", "grant starts in the future", false, &copyVal
+	}
+	if !now.Before(g.ExpiresAt) {
+		return "expired", "grant has expired", false, nil
+	}
+	if g.CreditsTotal > 0 {
+		remaining := remainingGrantCredits(g)
+		if remaining <= 0 {
+			return "exhausted", "grant credits are exhausted", false, nil
+		}
+	}
+	if availableGrantPeriodCredits(g, now) <= 0 {
+		return "period_limited", "current period credit limit is exhausted", false, grantPeriodRetryAt(g, now)
+	}
+	return "active", "grant is active", true, nil
 }
 
 func RedeemCard(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email, code, hubBaseURL string) (*ServiceStatus, error) {
@@ -423,16 +524,51 @@ func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc *s
 		if normalizeEmail(g.Email) != email {
 			continue
 		}
-		if now.Before(g.StartsAt) || !now.Before(g.ExpiresAt) {
-			continue
-		}
-		if g.CreditsTotal > 0 && availableGrantCredits(g, now) <= 0 {
+		if !now.Before(g.ExpiresAt) {
 			continue
 		}
 		appendID(g.ServiceGroupID)
+		if now.Before(g.StartsAt) {
+			continue
+		}
+		if status, _, active, _ := grantStatus(g, now); !active || status != "active" {
+			continue
+		}
 		activeGrants = append(activeGrants, g)
 	}
 	return serviceGroupIDs, activeGrants, nil
+}
+
+func hasEligibleAuthorizedModel(reg *Registry, email string, models []AuthorizedModel, now time.Time) bool {
+	if len(models) == 0 {
+		return false
+	}
+	for i := range models {
+		model := &models[i]
+		providerIDs := model.ProviderIDs
+		if len(providerIDs) == 0 {
+			providerIDs = keysOfProviderServiceGroups(model.ProviderServiceGroups)
+		}
+		for _, providerID := range providerIDs {
+			allowed, _, _, _, _, _, _ := BillingEligibilityForServiceGroups(reg, email, ServiceGroupIDsForProvider(model, providerID), now)
+			if allowed {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func keysOfProviderServiceGroups(items map[string][]string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(items))
+	for key := range items {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func buildAuthorizedModels(reg *Registry, serviceGroupIDs []string) ([]AuthorizedModel, string) {
@@ -805,7 +941,7 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
 			continue
 		}
-		if grant.CreditsTotal <= 0 || availableGrantCredits(grant, now) <= 0 {
+		if consumableGrantCredits(grant, now) <= 0 {
 			continue
 		}
 		candidates = append(candidates, candidate{idx: i, g: grant})
@@ -820,7 +956,7 @@ func ApplyCreditUsageToRegistry(reg *Registry, email string, serviceGroupIDs []s
 	consumed := 0.0
 	for _, cand := range candidates {
 		grant := &reg.Grants[cand.idx]
-		available := availableGrantCredits(*grant, now)
+		available := consumableGrantCredits(*grant, now)
 		if available <= 0 {
 			continue
 		}
@@ -865,15 +1001,44 @@ func AvailableCreditsForServiceGroups(reg *Registry, email string, serviceGroupI
 }
 
 func availableGrantCredits(grant Grant, now time.Time) float64 {
-	remaining := remainingGrantCredits(grant)
-	if remaining <= 0 {
-		return 0
-	}
 	periodRemaining := availableGrantPeriodCredits(grant, now)
 	if periodRemaining <= 0 {
 		return 0
 	}
+	if grant.CreditsTotal <= 0 {
+		if !hasGrantPeriodLimits(grant) {
+			return 0
+		}
+		return periodRemaining
+	}
+	remaining := remainingGrantCredits(grant)
+	if remaining <= 0 {
+		return 0
+	}
 	return roundCredits(math.Min(remaining, periodRemaining))
+}
+
+func consumableGrantCredits(grant Grant, now time.Time) float64 {
+	periodRemaining := availableGrantPeriodCredits(grant, now)
+	if periodRemaining <= 0 {
+		return 0
+	}
+	if grant.CreditsTotal <= 0 {
+		if !hasGrantPeriodLimits(grant) {
+			return 0
+		}
+		return periodRemaining
+	}
+	remaining := remainingGrantCredits(grant)
+	if remaining <= 0 {
+		return 0
+	}
+	return roundCredits(math.Min(remaining, periodRemaining))
+}
+
+func hasGrantPeriodLimits(grant Grant) bool {
+	limits := grant.PeriodLimits
+	return limits.FiveHour > 0 || limits.Daily > 0 || limits.Weekly > 0 || limits.Monthly > 0
 }
 
 func availableGrantPeriodCredits(grant Grant, now time.Time) float64 {
@@ -904,6 +1069,30 @@ func availableGrantPeriodCredits(grant Grant, now time.Time) float64 {
 		return math.MaxFloat64
 	}
 	return roundCredits(available)
+}
+
+func grantPeriodRetryAt(grant Grant, now time.Time) *time.Time {
+	limits := grant.PeriodLimits
+	usage := grant.PeriodUsage
+	var retryAt *time.Time
+	check := func(limit float64, window GrantUsageWindow, start, end time.Time) {
+		if limit <= 0 || !window.WindowStart.Equal(start) || roundCredits(limit-window.CreditsUsed) > 0 {
+			return
+		}
+		if retryAt == nil || end.After(*retryAt) {
+			copyVal := end
+			retryAt = &copyVal
+		}
+	}
+	fiveHourStart := fiveHourWindowStart(now)
+	dayStart := dayWindowStart(now)
+	weekStart := weekWindowStart(now)
+	monthStart := monthWindowStart(now)
+	check(limits.FiveHour, usage.FiveHour, fiveHourStart, fiveHourStart.Add(5*time.Hour))
+	check(limits.Daily, usage.Daily, dayStart, dayStart.AddDate(0, 0, 1))
+	check(limits.Weekly, usage.Weekly, weekStart, weekStart.AddDate(0, 0, 7))
+	check(limits.Monthly, usage.Monthly, monthStart, monthStart.AddDate(0, 1, 0))
+	return retryAt
 }
 
 func applyGrantPeriodUsage(grant *Grant, credits float64, now time.Time) {
@@ -971,6 +1160,40 @@ func HasAnyGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []
 	return false
 }
 
+func GrantStartAtForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) *time.Time {
+	if reg == nil {
+		return nil
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return nil
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(id)] = struct{}{}
+	}
+	var startsAt *time.Time
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if !grant.StartsAt.After(now) || !grant.ExpiresAt.After(now) {
+			continue
+		}
+		if grant.CreditsTotal > 0 && remainingGrantCredits(grant) <= 0 {
+			continue
+		}
+		if startsAt == nil || grant.StartsAt.Before(*startsAt) {
+			copyVal := grant.StartsAt
+			startsAt = &copyVal
+		}
+	}
+	return startsAt
+}
+
 func HasActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
 	if reg == nil {
 		return false
@@ -991,6 +1214,70 @@ func HasActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs
 			continue
 		}
 		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+func PeriodLimitRetryAtForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) *time.Time {
+	if reg == nil {
+		return nil
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return nil
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(id)] = struct{}{}
+	}
+	var retryAt *time.Time
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		if (grant.CreditsTotal > 0 && remainingGrantCredits(grant) <= 0) || availableGrantPeriodCredits(grant, now) > 0 {
+			continue
+		}
+		candidate := grantPeriodRetryAt(grant, now)
+		if candidate != nil && candidate.After(now) && (retryAt == nil || candidate.Before(*retryAt)) {
+			copyVal := *candidate
+			retryAt = &copyVal
+		}
+	}
+	return retryAt
+}
+
+func HasUnlimitedActiveGrantForServiceGroups(reg *Registry, email string, serviceGroupIDs []string, now time.Time) bool {
+	if reg == nil {
+		return false
+	}
+	serviceGroupIDs = normalizeStringSlice(serviceGroupIDs)
+	if len(serviceGroupIDs) == 0 {
+		return false
+	}
+	serviceGroupSet := map[string]struct{}{}
+	for _, id := range serviceGroupIDs {
+		serviceGroupSet[strings.ToLower(id)] = struct{}{}
+	}
+	for _, grant := range reg.Grants {
+		if normalizeEmail(grant.Email) != normalizeEmail(email) {
+			continue
+		}
+		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
+			continue
+		}
+		if now.Before(grant.StartsAt) || !now.Before(grant.ExpiresAt) {
+			continue
+		}
+		if grant.CreditsTotal > 0 || availableGrantPeriodCredits(grant, now) <= 0 {
 			continue
 		}
 		return true
@@ -1019,11 +1306,23 @@ func BillingEligibilityForServiceGroups(reg *Registry, email string, serviceGrou
 	}
 	hasActiveGrant := HasActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now)
 	if hasActiveGrant {
-		return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_EXHAUSTED", "selected model requires remaining credits in an active grant", 0, true, true
+		if retryAt := PeriodLimitRetryAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); retryAt != nil {
+			return false, AccessPolicyGrantRequired, "LLM_SERVICE_PERIOD_LIMITED", fmt.Sprintf("current period credit limit is exhausted; try again after %s", retryAt.Format(time.RFC3339)), 0, true, true
+		}
+		if HasUnlimitedActiveGrantForServiceGroups(reg, email, grantRequiredGroupIDs, now) {
+			return true, AccessPolicyGrantRequired, "", "", 0, true, true
+		}
+		if startsAt := GrantStartAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); startsAt != nil {
+			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, true, true
+		}
+		return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_EXHAUSTED", "selected model grant credits are exhausted", 0, true, true
 	}
 	hasAnyGrant := HasAnyGrantForServiceGroups(reg, email, grantRequiredGroupIDs)
 	if hasAnyGrant {
-		return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_EXPIRED", "selected model requires an active grant for this service group", 0, false, true
+		if startsAt := GrantStartAtForServiceGroups(reg, email, grantRequiredGroupIDs, now); startsAt != nil {
+			return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_QUEUED", fmt.Sprintf("selected model grant is not active yet; starts at %s", startsAt.Format(time.RFC3339)), 0, false, true
+		}
+		return false, AccessPolicyGrantRequired, "LLM_SERVICE_GRANT_EXPIRED", "selected model grant has expired", 0, false, true
 	}
 	return false, AccessPolicyGrantRequired, "LLM_SERVICE_CREDITS_REQUIRED", "selected model requires a grant-backed service group with remaining credits", 0, false, false
 }

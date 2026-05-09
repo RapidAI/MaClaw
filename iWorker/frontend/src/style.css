@@ -2139,6 +2139,89 @@ textarea {
   color: #1f2937;
 }
 
+.dw-settings-tool-status {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #e6ecf2;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.dw-settings-tool-status-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dw-settings-tool-status-head span {
+  color: #6b7a8d;
+  font-size: 12px;
+}
+
+.dw-settings-tool-status-head strong {
+  color: #1f2937;
+  font-size: 12px;
+}
+
+.dw-settings-tool-list {
+  display: grid;
+  gap: 6px;
+}
+
+.dw-settings-tool-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 8px;
+  border: 1px solid rgba(31, 41, 55, 0.08);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.dw-settings-tool-item span {
+  color: #2563eb;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.dw-settings-tool-item strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dw-settings-tool-item p {
+  grid-column: 2 / 4;
+  color: #6b7a8d;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.dw-settings-tool-item em {
+  justify-self: end;
+  color: #2d704f;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.dw-settings-tool-error,
+.dw-settings-tool-empty,
+.dw-settings-tool-more {
+  color: #6b7a8d;
+  font-size: 11px;
+}
+
+.dw-settings-tool-error {
+  color: #b91c1c;
+}
+
 .dw-settings-save-row {
   display: grid;
   gap: 8px;
@@ -3254,6 +3337,104 @@ textarea {
   white-space: nowrap;
 }
 
+.iw-operating-action-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.55fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 13px 14px;
+  border-radius: 8px;
+  border: 1px solid #dce5ec;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 14px 32px rgba(31, 41, 55, 0.07);
+}
+
+.iw-operating-action-bar.is-ok {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: #f7fcf8;
+}
+
+.iw-operating-action-bar.is-warn,
+.iw-operating-action-bar.is-local {
+  border-color: rgba(245, 158, 11, 0.24);
+  background: #fffaf0;
+}
+
+.iw-operating-action-bar.is-danger {
+  border-color: rgba(239, 68, 68, 0.24);
+  background: #fff5f5;
+}
+
+.iw-operating-action-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.iw-operating-action-copy span {
+  color: var(--iw-faint);
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.iw-operating-action-copy strong {
+  color: var(--iw-ink);
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.iw-operating-action-copy p {
+  margin: 0;
+  color: var(--iw-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.iw-operating-risk-list {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.iw-operating-risk-list span {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 45, 61, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.iw-operating-action-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.iw-operating-action-controls button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: var(--iw-ink);
+  font-weight: 850;
+}
+
+.iw-operating-action-controls button:first-child {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #ffffff;
+}
 
 .iw-continuity-banner {
   display: grid;
@@ -4016,12 +4197,14 @@ textarea {
   .iw-command-rail,
   .iw-work-status-board,
   .iw-workbench-panel,
+  .iw-operating-action-bar,
   .iw-continuity-banner,
   .iw-intervention-banner {
     grid-template-columns: 1fr;
   }
 
   .iw-continuity-signals,
+  .iw-operating-action-controls,
   .iw-intervention-meta,
   .iw-intervention-actions {
     justify-content: flex-start;
@@ -4451,7 +4634,7 @@ textarea {
 
 .iw-tool-summary-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 10px 0;
 }
@@ -4513,6 +4696,19 @@ textarea {
   color: var(--iw-muted);
   font-size: 12px;
   line-height: 1.4;
+}
+
+.iw-installed-tool-card button {
+  justify-self: flex-start;
+  min-height: 28px;
+  margin-top: 2px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 850;
 }
 
 .iw-availability-card {

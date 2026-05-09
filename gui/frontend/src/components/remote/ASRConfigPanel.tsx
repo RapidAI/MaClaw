@@ -65,13 +65,7 @@ export function ASRConfigPanel({ lang }: Props) {
                 setModelExists(info.exists);
                 setModelSize(info.size || 0);
                 const on = await GetASREnabled();
-                // If model exists, always show as enabled (auto-enable)
-                if (info.exists && !on) {
-                    await SetASREnabled(true);
-                    setEnabled(true);
-                } else {
-                    setEnabled(on);
-                }
+                setEnabled(on);
                 // Load existing calibration values
                 const cfg = await LoadConfig();
                 if (cfg.noise_floor_calibrated && cfg.noise_floor_calibrated > 0) {
@@ -98,7 +92,6 @@ export function ASRConfigPanel({ lang }: Props) {
                 setDownloading(false);
                 setModelExists(true);
                 setModelSize(data.downloaded || 0);
-                setEnabled(true); // auto-enable after download
             }
         };
         EventsOn('asr-download-progress', handler);
@@ -108,8 +101,19 @@ export function ASRConfigPanel({ lang }: Props) {
     const handleToggle = async (on: boolean) => {
         setEnabled(on);
         setError('');
-        try { await SetASREnabled(on); } catch (e: any) { setError(e?.message || String(e)); return; }
-        if (on && !modelExists && !downloading) { startDownload(); }
+        if (on && !modelExists) {
+            setDownloading(true);
+        } else if (!on) {
+            setDownloading(false);
+        }
+        try {
+            await SetASREnabled(on);
+        } catch (e: any) {
+            setEnabled(!on);
+            setDownloading(false);
+            setError(e?.message || String(e));
+            return;
+        }
     };
 
     const startDownload = async () => {
@@ -267,7 +271,7 @@ export function ASRConfigPanel({ lang }: Props) {
             </h4>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
                 <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} disabled={downloading} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                    <input type='checkbox' checked={enabled} onChange={e => handleToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
                     {t('Enable Speech Recognition', '启用语音识别', '啟用語音識別')}
                 </label>
             </div>

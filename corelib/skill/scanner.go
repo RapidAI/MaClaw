@@ -77,7 +77,7 @@ func IsUnderSkillsRoot(path string) bool {
 		if err != nil {
 			continue
 		}
-		// rel must not start with ".." — that would mean cleaned is outside rootAbs.
+		// rel must not start with ".."; that would mean cleaned is outside rootAbs.
 		if !strings.HasPrefix(rel, "..") {
 			return true
 		}
@@ -255,6 +255,7 @@ type SkillYAMLParam struct {
 type SkillYAMLRequires struct {
 	Python []string `yaml:"python,omitempty"` // pip packages, e.g. ["markitdown>=0.1.0", "python-pptx"]
 	Node   []string `yaml:"node,omitempty"`   // npm packages, e.g. ["puppeteer"]
+	Bins   []string `yaml:"bins,omitempty"`   // command-line binaries, e.g. ["python", "node"]
 }
 
 // SkillYAMLStepPoll configures repeated execution of a step until a condition is met.
@@ -274,7 +275,7 @@ type SkillYAMLStep struct {
 	Condition      string                 `yaml:"condition,omitempty"`
 	When           string                 `yaml:"when,omitempty"`    // conditional expression for dynamic routing
 	Label          string                 `yaml:"label,omitempty"`   // step selector label for api_workflow mode
-	Capture        map[string]string      `yaml:"capture,omitempty"` // output capture: varName → regex pattern
+	Capture        map[string]string      `yaml:"capture,omitempty"` // output capture: varName to regex pattern
 	TimeoutSeconds int                    `yaml:"timeout,omitempty"` // per-step timeout in seconds (0 = use default)
 	ContinueOnErr  bool                   `yaml:"continue_on_error"`
 	Poll           *SkillYAMLStepPoll     `yaml:"poll,omitempty"` // poll config for async steps
@@ -508,6 +509,12 @@ func normalizeYAMLRequires(raw map[string]any) (map[string]interface{}, bool) {
 	}
 	copyRequiresAlias(req, "python", "pip", "python_packages", "pypi")
 	copyRequiresAlias(req, "node", "npm", "node_packages", "javascript")
+	copyRequiresAlias(req, "bins", "bin", "commands", "executables")
+	if req["bins"] == nil {
+		if metadataBins := openclawMetadataRequiredBins(raw); len(metadataBins) > 0 {
+			req["bins"] = metadataBins
+		}
+	}
 	if req["python"] == nil {
 		for _, key := range []string{"python", "pip", "python_packages", "pypi"} {
 			if values := yamlStringList(raw[key]); len(values) > 0 {
@@ -524,12 +531,37 @@ func normalizeYAMLRequires(raw map[string]any) (map[string]interface{}, bool) {
 			}
 		}
 	}
-	for _, key := range []string{"python", "node"} {
+	for _, key := range []string{"python", "node", "bins"} {
 		if values := yamlStringList(req[key]); len(values) > 0 {
 			req[key] = values
 		}
 	}
 	return req, len(req) > 0
+}
+
+func openclawMetadataRequiredBins(raw map[string]any) []string {
+	metadata, ok := yamlMap(raw["metadata"])
+	if !ok {
+		return nil
+	}
+	openclaw, ok := yamlMap(metadata["openclaw"])
+	if !ok {
+		return nil
+	}
+	requires, ok := yamlMap(openclaw["requires"])
+	if !ok {
+		return nil
+	}
+	return yamlStringList(requires["bins"])
+}
+
+func yamlMap(raw interface{}) (map[string]interface{}, bool) {
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		return v, true
+	default:
+		return nil, false
+	}
 }
 
 func copyRequiresAlias(req map[string]interface{}, canonical string, aliases ...string) {
@@ -639,7 +671,18 @@ func isEmptyYAMLValue(value interface{}) bool {
 	if value == nil {
 		return true
 	}
-	return strings.TrimSpace(fmt.Sprintf("%v", value)) == "" || strings.TrimSpace(fmt.Sprintf("%v", value)) == "<nil>"
+	switch v := value.(type) {
+	case []interface{}:
+		return len(v) == 0
+	case []string:
+		return len(v) == 0
+	case map[string]interface{}:
+		return len(v) == 0
+	case map[string]string:
+		return len(v) == 0
+	}
+	text := strings.TrimSpace(fmt.Sprintf("%v", value))
+	return text == "" || text == "<nil>"
 }
 
 func normalizeYAMLScalars(raw map[string]any) {
@@ -1166,6 +1209,10 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		}
 		parsedYAML, err := ParseSkillDefinitionFile(data, defFormat)
 		if err != nil {
+			if parsed, fallbackPath, fallbackErr := loadMarkdownSkillFromDir(skillDir, fallbackName); fallbackErr == nil {
+				log.Printf("[skill-scanner] %s: %s parse failed (%v), using markdown fallback %s", fallbackName, filepath.Base(defPath), err, filepath.Base(fallbackPath))
+				return parsed, fallbackPath, nil
+			}
 			return nil, "", err
 		}
 		sf := *parsedYAML
@@ -1226,27 +1273,29 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			steps = append(steps, step)
 		}
 
-		// Handle YAML-declared knowledge skills: type: knowledge with content field.
-		if sf.Type == "knowledge" && sf.Content != "" {
-			return &corelib.NLSkillEntry{
-				Name:                    name,
-				DirName:                 fallbackName,
-				Description:             sf.Description,
-				Triggers:                sf.Triggers,
-				Status:                  status,
-				Source:                  "file",
-				Platforms:               sf.Platforms,
-				RequiresGUI:             sf.RequiresGUI,
-				SkillDir:                skillDir,
-				CreatedAt:               fileModTime(defPath),
-				Type:                    "knowledge",
-				Content:                 sf.Content,
-				RequiresTools:           sf.RequiresTools,
-				FallbackForTools:        sf.FallbackForTools,
-				RequiresToolsets:        sf.RequiresToolsets,
-				FallbackForToolsets:     sf.FallbackForToolsets,
-				RequiredCredentialFiles: sf.RequiredCredentialFiles,
-			}, defPath, nil
+		// Handle YAML-declared knowledge skills before any markdown command
+		// extraction. Documentation skills often contain many bash examples;
+		// type: knowledge is an explicit signal that those blocks are reference
+		// material, not a sequential executable workflow.
+		if isKnowledgeSkillType(sf.Type) {
+			content := strings.TrimSpace(sf.Content)
+			contentPath := defPath
+			if content == "" {
+				if mdPath, mdErr := skillMarkdownPath(skillDir); mdErr == nil {
+					if data, readErr := os.ReadFile(mdPath); readErr == nil {
+						content = strings.TrimSpace(string(data))
+						contentPath = mdPath
+					} else {
+						return nil, "", readErr
+					}
+				}
+			}
+			if content != "" {
+				return buildYAMLKnowledgeSkillEntry(skillDir, name, fallbackName, status, content, contentPath, sf), contentPath, nil
+			}
+			if knowledgeEntry, knowledgePath, knowledgeErr := loadKnowledgeSkill(skillDir, name, fallbackName, sf.Description, sf.Triggers, status, sf.Platforms, sf.RequiresGUI, defPath); knowledgeErr == nil {
+				return knowledgeEntry, knowledgePath, nil
+			}
 		}
 
 		if len(steps) == 0 {
@@ -1309,6 +1358,9 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				if reqs := requiresNodeFromYAML(sf.Requires); len(reqs) > 0 {
 					parsed.RequiresNode = reqs
 				}
+				if reqs := requiresBinsFromYAML(sf.Requires); len(reqs) > 0 {
+					parsed.RequiresBins = reqs
+				}
 				if sf.Mode != "" {
 					parsed.Mode = sf.Mode
 				}
@@ -1337,7 +1389,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				return parsed, defPath, nil
 			}
 
-			// No SKILL.md found — check for KNOWLEDGE.md to create a knowledge skill.
+			// No SKILL.md found; check for KNOWLEDGE.md to create a knowledge skill.
 			if knowledgeEntry, knowledgePath, knowledgeErr := loadKnowledgeSkill(skillDir, name, fallbackName, sf.Description, sf.Triggers, status, sf.Platforms, sf.RequiresGUI, defPath); knowledgeErr == nil {
 				return knowledgeEntry, knowledgePath, nil
 			}
@@ -1396,6 +1448,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			RequiredCredentialFiles: sf.RequiredCredentialFiles,
 			RequiresPython:          requiresPythonFromYAML(sf.Requires),
 			RequiresNode:            requiresNodeFromYAML(sf.Requires),
+			RequiresBins:            requiresBinsFromYAML(sf.Requires),
 			Stateful:                sf.Stateful,
 			Pipeline:                convertPipelineSteps(sf.Pipeline),
 			References:              scanReferences(skillDir),
@@ -1404,6 +1457,10 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 		return entry, defPath, nil
 	}
 
+	return loadMarkdownSkillFromDir(skillDir, fallbackName)
+}
+
+func loadMarkdownSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, string, error) {
 	parsed, err := ImportMarkdownSkillDir(skillDir, MarkdownSkillOptions{
 		NameFallback: fallbackName,
 		Source:       "file",
@@ -1431,7 +1488,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 				// Ultimate fallback: when all structured parsers fail, feed
 				// the raw markdown to LLM via craft_tool. This gives unknown
 				// skill formats (OpenAI skill.md, third-party formats, etc.)
-				// a chance to work — the LLM reads the instructions and
+				// a chance to work; the LLM reads the instructions and
 				// decides how to execute. Deterministic execution is lost,
 				// but the skill doesn't silently disappear.
 				entry := buildCraftToolFallback(skillDir, fallbackName, data)
@@ -1498,18 +1555,60 @@ func loadKnowledgeSkill(skillDir, name, fallbackName, description string, trigge
 	}, knowledgePath, nil
 }
 
+func isKnowledgeSkillType(raw string) bool {
+	typ := strings.ToLower(strings.TrimSpace(raw))
+	typ = strings.NewReplacer("-", "_", " ", "_").Replace(typ)
+	switch typ {
+	case "knowledge", "knowledge_skill", "documentation", "documentation_skill", "doc", "docs":
+		return true
+	default:
+		return false
+	}
+}
+
+func IsKnowledgeSkillType(raw string) bool {
+	return isKnowledgeSkillType(raw)
+}
+
+func buildYAMLKnowledgeSkillEntry(skillDir, name, fallbackName, status, content, contentPath string, sf SkillYAMLFile) *corelib.NLSkillEntry {
+	createdAt := fileModTime(contentPath)
+	if strings.TrimSpace(createdAt) == "" {
+		createdAt = time.Now().Format(time.RFC3339)
+	}
+	return &corelib.NLSkillEntry{
+		Name:                    name,
+		DirName:                 fallbackName,
+		Description:             sf.Description,
+		Triggers:                sf.Triggers,
+		Status:                  status,
+		Source:                  "file",
+		Platforms:               sf.Platforms,
+		RequiresGUI:             sf.RequiresGUI,
+		SkillDir:                skillDir,
+		CreatedAt:               createdAt,
+		Type:                    "knowledge",
+		Content:                 content,
+		RequiresTools:           sf.RequiresTools,
+		FallbackForTools:        sf.FallbackForTools,
+		RequiresToolsets:        sf.RequiresToolsets,
+		FallbackForToolsets:     sf.FallbackForToolsets,
+		RequiredCredentialFiles: sf.RequiredCredentialFiles,
+		References:              scanReferences(skillDir),
+	}
+}
+
 // buildCraftToolFallback creates an NLSkillEntry that delegates the entire
 // skill markdown to LLM via a single craft_tool step. This is the last-resort
 // fallback when no structured parser (skill.yaml, our markdown, Claude SKILL.md)
 // can handle the format. The LLM reads the raw instructions and figures out
-// what to do — like goskills' approach, but only as a fallback.
+// what to do, like goskills' approach, but only as a fallback.
 func buildCraftToolFallback(skillDir, fallbackName string, data []byte) *corelib.NLSkillEntry {
 	content := strings.TrimSpace(string(data))
 	if content == "" {
 		return nil
 	}
 
-	// Parse YAML frontmatter — single source of truth.
+	// Parse YAML frontmatter as the single source of truth.
 	yamlFM, body := ParseMarkdownFrontmatterYAML(content)
 
 	name := yamlString(yamlFM["name"])
@@ -1599,12 +1698,46 @@ func isSkillCompatibleWithPlatform(platforms []string, platform string) bool {
 	if len(platforms) == 0 {
 		return true
 	}
+	current := normalizeSkillPlatform(platform)
+	sawSpecific := false
 	for _, p := range platforms {
-		if strings.EqualFold(p, platform) {
+		p = normalizeSkillPlatform(p)
+		if p == "" {
+			continue
+		}
+		if isUniversalSkillPlatform(p) {
+			return true
+		}
+		sawSpecific = true
+		if p == current {
 			return true
 		}
 	}
-	return false
+	return !sawSpecific
+}
+
+func normalizeSkillPlatform(platform string) string {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	platform = strings.NewReplacer("-", "_", " ", "_", ".", "_").Replace(platform)
+	switch platform {
+	case "darwin", "mac", "mac_os", "osx":
+		return "macos"
+	case "win", "win32", "win64":
+		return "windows"
+	case "gnu_linux":
+		return "linux"
+	default:
+		return platform
+	}
+}
+
+func isUniversalSkillPlatform(platform string) bool {
+	switch platform {
+	case "universal", "all", "any", "*", "cross_platform", "crossplatform", "portable":
+		return true
+	default:
+		return false
+	}
 }
 
 // ScanSkillDir scans a single directory for skill.yaml / skill.yml / skill.md files
@@ -1617,7 +1750,7 @@ func ScanSkillDir(root string) []corelib.NLSkillEntry {
 
 // ScanSkillDirAll is like ScanSkillDir but does not apply platform filtering.
 // Use this when the caller needs to see every skill on disk regardless of
-// compatibility — e.g. for deletion or diagnostics.
+// compatibility, e.g. for deletion or diagnostics.
 func ScanSkillDirAll(root string) []corelib.NLSkillEntry {
 	return scanSkillDirInternal(root, false)
 }
@@ -1784,6 +1917,13 @@ func requiresNodeFromYAML(req *SkillYAMLRequires) []string {
 	return req.Node
 }
 
+func requiresBinsFromYAML(req *SkillYAMLRequires) []string {
+	if req == nil {
+		return nil
+	}
+	return req.Bins
+}
+
 // FindSimilarSkill searches all active skills for one similar to the given
 // description. Uses BM25 scoring against each skill's description + triggers.
 // Returns the best match and its score, or nil if no match exceeds threshold.
@@ -1871,7 +2011,7 @@ func bm25ScoreSimple(queryTokens, docTokens []string) float64 {
 }
 
 // newSkillBM25Index is a placeholder for future BM25 index integration.
-// Currently unused — kept for API compatibility.
+// Currently unused; kept for API compatibility.
 // func newSkillBM25Index() interface{} { return nil }
 
 // convertPipelineSteps converts YAML pipeline steps to corelib types.
@@ -1900,7 +2040,7 @@ func scanReferences(skillDir string) []corelib.SkillReference {
 	refDir := filepath.Join(skillDir, "references")
 	entries, err := os.ReadDir(refDir)
 	if err != nil {
-		return nil // no references/ directory — normal case
+		return nil // no references/ directory; normal case
 	}
 	var refs []corelib.SkillReference
 	for _, e := range entries {

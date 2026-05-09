@@ -1,6 +1,9 @@
 package i18n
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestT_ZhLookup(t *testing.T) {
 	got := T(MsgAckProcessing, "zh")
@@ -106,5 +109,16 @@ func TestAllKeysPresent(t *testing.T) {
 		if _, ok := translations["zh"][key]; !ok {
 			t.Errorf("key %q present in en but missing in zh", key)
 		}
+	}
+}
+
+func TestTUILLMNotConfiguredHintUsesTUIPath(t *testing.T) {
+	en := T(MsgTUILLMNotConfiguredHint, "en")
+	if !strings.Contains(en, "Open Setup") || strings.Contains(en, "maclaw llm setup") {
+		t.Fatalf("English LLM hint should point to TUI setup paths, got %q", en)
+	}
+	zh := T(MsgTUILLMNotConfiguredHint, "zh")
+	if !strings.Contains(zh, "TUI") || strings.Contains(zh, "maclaw llm setup") {
+		t.Fatalf("Chinese LLM hint should point to TUI setup paths, got %q", zh)
 	}
 }

@@ -99,8 +99,10 @@ type AddReviewRequest struct {
 }
 
 type DecideRequest struct {
-	ProposalID string `json:"proposal_id"`
-	Summary    string `json:"summary"`
+	ProposalID string   `json:"proposal_id"`
+	Summary    string   `json:"summary"`
+	Rationale  string   `json:"rationale"`
+	RollbackOn []string `json:"rollback_on"`
 }
 
 type EscalateRequest struct {
@@ -305,13 +307,36 @@ func (s *GroupDiscussionService) GetDiscussionDetail(tenantID, sessionID string)
 		return corea2a.HubDiscussionDetail{}, err
 	}
 	return corea2a.HubDiscussionDetail{
-		Discussion: discussionSummaryFromSession(session),
-		Session:    session,
-		Messages:   append([]corea2a.Message(nil), session.Messages...),
-		Proposals:  append([]corea2a.Proposal(nil), session.Proposals...),
-		Reviews:    append([]corea2a.Review(nil), session.Reviews...),
-		Decision:   session.Decision,
+		Discussion:      discussionSummaryFromSession(session),
+		Session:         session,
+		Messages:        append([]corea2a.Message(nil), session.Messages...),
+		Proposals:       append([]corea2a.Proposal(nil), session.Proposals...),
+		Reviews:         append([]corea2a.Review(nil), session.Reviews...),
+		ReviewSummaries: reviewSummariesFromSession(session),
+		Decision:        session.Decision,
 	}, nil
+}
+
+func reviewSummariesFromSession(session *corea2a.Session) map[string]corea2a.ReviewSummary {
+	if session == nil || len(session.Proposals) == 0 {
+		return nil
+	}
+	summaries := make(map[string]corea2a.ReviewSummary, len(session.Proposals))
+	for _, proposal := range session.Proposals {
+		proposalID := strings.TrimSpace(proposal.ID)
+		if proposalID == "" {
+			continue
+		}
+		summary := session.ReviewSummary(proposalID)
+		if summary.Approvals == 0 && summary.Rejections == 0 && summary.Concerns == 0 && summary.Abstains == 0 && len(summary.ReviewedBy) == 0 {
+			continue
+		}
+		summaries[proposalID] = summary
+	}
+	if len(summaries) == 0 {
+		return nil
+	}
+	return summaries
 }
 
 func (s *GroupDiscussionService) ListInvitations(tenantID, toID, status string, filters ...ListInvitationsFilter) []corea2a.GroupInviteSummary {
@@ -581,7 +606,14 @@ func (s *GroupDiscussionService) AddReview(tenantID, sessionID string, req AddRe
 func (s *GroupDiscussionService) Decide(tenantID, sessionID string, req DecideRequest) (*corea2a.Session, error) {
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
 		_, err := session.TryDecide(newGroupDiscussionID("a2adec"), req.ProposalID, req.Summary, time.Now().UTC())
-		return err
+		if err != nil {
+			return err
+		}
+		if session.Decision != nil {
+			session.Decision.Rationale = strings.TrimSpace(req.Rationale)
+			session.Decision.RollbackOn = compactGroupDiscussionStrings(req.RollbackOn)
+		}
+		return nil
 	})
 }
 
@@ -971,6 +1003,24 @@ func formatGroupDiscussionOptionalTime(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func compactGroupDiscussionStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		clean := strings.TrimSpace(value)
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
 }
 
 func firstNonEmptyGroupStatus(values ...string) string {

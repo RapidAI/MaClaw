@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef } from "react";
 import { BufferEntry, AttachmentInfo, getTextPreview } from "./useBufferQueue";
+import { AssistantInputIcon } from "./aiAssistantPanelTheme";
 
 // ---------------------------------------------------------------------------
 // Localization helper (same pattern as AIAssistantPanel)
@@ -319,7 +320,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
                             dragDeltaY={deltaY}
                             onPointerDown={handlePointerDown}
                             setRowRef={setRowRef}
-                            onFireEntry={onFireEntry && entry.attachments.length === 0 ? onFireEntry : undefined}
+                            onFireEntry={onFireEntry}
                         />
                         {showInsertionAfter && (
                             <div
@@ -691,10 +692,10 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                         flexShrink: 0,
                         lineHeight: 1.2,
                     }}
-                    aria-label={localizeText(lang, "Send as supplementary info", "补充到当前任务", "補充到當前任務")}
-                    title={localizeText(lang, "Supplement", "补充", "補充")}
+                    aria-label={localizeText(lang, "Guide into next agent loop", "引导进入下一次 agent loop", "引導進入下一次 agent loop")}
+                    title={localizeText(lang, "Guide into next agent loop", "引导发射", "引導發射")}
                 >
-                    ⏎
+                    <AssistantInputIcon name="cornerDownLeft" size={13} />
                 </button>
             )}
             <button

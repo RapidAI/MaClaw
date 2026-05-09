@@ -111,6 +111,10 @@ export function GroupDiscussionStartAuthorizedConsultation(arg1) {
   return window['go']['main']['App']['GroupDiscussionStartAuthorizedConsultation'](arg1);
 }
 
+export function GroupDiscussionRankExperts(arg1) {
+  return window['go']['main']['App']['GroupDiscussionRankExperts'](arg1);
+}
+
 export function GroupDiscussionGetConsultation(arg1) {
   return window['go']['main']['App']['GroupDiscussionGetConsultation'](arg1);
 }
@@ -121,6 +125,22 @@ export function GroupDiscussionGetConsultationDetail(arg1) {
 
 export function GroupDiscussionGetReadiness(arg1) {
   return window['go']['main']['App']['GroupDiscussionGetReadiness'](arg1);
+}
+
+export function GroupDiscussionGetWorkflowState(arg1) {
+  return window['go']['main']['App']['GroupDiscussionGetWorkflowState'](arg1);
+}
+
+export function GroupDiscussionSuggestEscalationRoute(arg1) {
+  return window['go']['main']['App']['GroupDiscussionSuggestEscalationRoute'](arg1);
+}
+
+export function GroupDiscussionBuildWorkflowActionDraft(arg1) {
+  return window['go']['main']['App']['GroupDiscussionBuildWorkflowActionDraft'](arg1);
+}
+
+export function GroupDiscussionGetRollbackReadiness(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionGetRollbackReadiness'](arg1, arg2);
 }
 
 export function GroupDiscussionSummarizeResult(arg1) {
@@ -141,6 +161,22 @@ export function GroupDiscussionRejectInvite(arg1, arg2) {
 
 export function GroupDiscussionSendMessage(arg1, arg2) {
   return window['go']['main']['App']['GroupDiscussionSendMessage'](arg1, arg2);
+}
+
+export function GroupDiscussionAddProposal(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionAddProposal'](arg1, arg2);
+}
+
+export function GroupDiscussionAddReview(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionAddReview'](arg1, arg2);
+}
+
+export function GroupDiscussionDecide(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionDecide'](arg1, arg2);
+}
+
+export function GroupDiscussionEscalate(arg1, arg2) {
+  return window['go']['main']['App']['GroupDiscussionEscalate'](arg1, arg2);
 }
 
 export function GroupDiscussionSubmitResult(arg1, arg2) {
@@ -181,6 +217,10 @@ export function GetRemotePTYProbe() {
 
 export function SearchProjects(arg1, arg2) {
   return window['go']['main']['App']['SearchProjects'](arg1, arg2);
+}
+
+export function CreateRecentTask(arg1) {
+  return window['go']['main']['App']['CreateRecentTask'](arg1);
 }
 
 export function ResumeProject(arg1) {
@@ -814,6 +854,58 @@ export function GetMemoryStatus() {
   return window['go']['main']['App']['GetMemoryStatus']();
 }
 
+export function GetExperienceLearningSnapshot() {
+  return window['go']['main']['App']['GetExperienceLearningSnapshot']();
+}
+
+export function GetExperienceGovernanceSummary(arg1) {
+  return window['go']['main']['App']['GetExperienceGovernanceSummary'](arg1);
+}
+
+export function QueryExperienceFollowUpActions(arg1) {
+  return window['go']['main']['App']['QueryExperienceFollowUpActions'](arg1);
+}
+
+export function ReviewExperienceTrace(arg1, arg2) {
+  return window['go']['main']['App']['ReviewExperienceTrace'](arg1, arg2);
+}
+
+export function BuildExperienceTraceFollowUp(arg1) {
+  return window['go']['main']['App']['BuildExperienceTraceFollowUp'](arg1);
+}
+
+export function BuildExperienceMemoryMaintenanceDraft(arg1) {
+  return window['go']['main']['App']['BuildExperienceMemoryMaintenanceDraft'](arg1);
+}
+
+export function BuildExperienceRoutingAdjustmentDraft(arg1) {
+  return window['go']['main']['App']['BuildExperienceRoutingAdjustmentDraft'](arg1);
+}
+
+export function BuildExperienceSkillDraft(arg1) {
+  return window['go']['main']['App']['BuildExperienceSkillDraft'](arg1);
+}
+
+export function BuildExperienceRollbackWorkflowDraft(arg1) {
+  return window['go']['main']['App']['BuildExperienceRollbackWorkflowDraft'](arg1);
+}
+
+export function BuildExperienceEscalationBrief(arg1) {
+  return window['go']['main']['App']['BuildExperienceEscalationBrief'](arg1);
+}
+
+export function BuildExperienceConflictReconciliationDraft(arg1) {
+  return window['go']['main']['App']['BuildExperienceConflictReconciliationDraft'](arg1);
+}
+
+export function RecordExperienceTraceFollowUp(arg1, arg2) {
+  return window['go']['main']['App']['RecordExperienceTraceFollowUp'](arg1, arg2);
+}
+
+export function RecordExperienceDraftReview(arg1) {
+  return window['go']['main']['App']['RecordExperienceDraftReview'](arg1);
+}
+
 export function GetMemoryMaxBackups() {
   return window['go']['main']['App']['GetMemoryMaxBackups']();
 }
@@ -1274,6 +1366,14 @@ export function SendAIAssistantMessage(arg1) {
   return window['go']['main']['App']['SendAIAssistantMessage'](arg1);
 }
 
+export function SubmitAgentView(arg1) {
+  return window['go']['main']['App']['SubmitAgentView'](arg1);
+}
+
+export function DismissAgentView(arg1) {
+  return window['go']['main']['App']['DismissAgentView'](arg1);
+}
+
 export function SendBtwQuery(arg1, arg2) {
   return window['go']['main']['App']['SendBtwQuery'](arg1, arg2);
 }
@@ -1617,4 +1717,361 @@ export function GetIMAuditUsers(arg1) {
 
 export function QueryIMAuditMessages(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['QueryIMAuditMessages'](arg1, arg2, arg3, arg4);
+}
+
+export function KnowledgeStats() {
+  return window['go']['main']['App']['KnowledgeStats']();
+}
+
+export function KnowledgeDoctor() {
+  return window['go']['main']['App']['KnowledgeDoctor']();
+}
+
+export function KnowledgeHealth(arg1) {
+  return window['go']['main']['App']['KnowledgeHealth'](arg1);
+}
+
+export function KnowledgeSourceQualityReport(arg1) {
+  return window['go']['main']['App']['KnowledgeSourceQualityReport'](arg1);
+}
+
+export function KnowledgeSourceQualityMaintenancePlan(arg1) {
+  return window['go']['main']['App']['KnowledgeSourceQualityMaintenancePlan'](arg1);
+}
+
+export function KnowledgeQualityMaintenancePolicies() {
+  return window['go']['main']['App']['KnowledgeQualityMaintenancePolicies']();
+}
+
+export function KnowledgeExecuteSourceQualityMaintenancePlan(arg1) {
+  return window['go']['main']['App']['KnowledgeExecuteSourceQualityMaintenancePlan'](arg1);
+}
+
+export function KnowledgeCapabilities() {
+  return window['go']['main']['App']['KnowledgeCapabilities']();
+}
+
+export function KnowledgeListURLDomainPolicies() {
+  return window['go']['main']['App']['KnowledgeListURLDomainPolicies']();
+}
+
+export function KnowledgeUpdateURLDomainPolicies(arg1) {
+  return window['go']['main']['App']['KnowledgeUpdateURLDomainPolicies'](arg1);
+}
+
+export function KnowledgeCheckURLDomainPolicy(arg1) {
+  return window['go']['main']['App']['KnowledgeCheckURLDomainPolicy'](arg1);
+}
+
+export function KnowledgeMaintain(arg1) {
+  return window['go']['main']['App']['KnowledgeMaintain'](arg1);
+}
+
+export function KnowledgeExportSnapshot(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeExportSnapshot'](arg1, arg2);
+}
+
+export function KnowledgeExportSnapshotWithOptions(arg1) {
+  return window['go']['main']['App']['KnowledgeExportSnapshotWithOptions'](arg1);
+}
+
+export function KnowledgeImportSnapshot(arg1) {
+  return window['go']['main']['App']['KnowledgeImportSnapshot'](arg1);
+}
+
+export function KnowledgeListSources(arg1) {
+  return window['go']['main']['App']['KnowledgeListSources'](arg1);
+}
+
+export function KnowledgeListSourceLabels(arg1) {
+  return window['go']['main']['App']['KnowledgeListSourceLabels'](arg1);
+}
+
+export function KnowledgeGetSource(arg1) {
+  return window['go']['main']['App']['KnowledgeGetSource'](arg1);
+}
+
+export function KnowledgeUpdateSourceMetadata(arg1) {
+  return window['go']['main']['App']['KnowledgeUpdateSourceMetadata'](arg1);
+}
+
+export function KnowledgeUpdateSourceLabels(arg1) {
+  return window['go']['main']['App']['KnowledgeUpdateSourceLabels'](arg1);
+}
+
+export function KnowledgeBackfillSourceAutoLabels(arg1) {
+  return window['go']['main']['App']['KnowledgeBackfillSourceAutoLabels'](arg1);
+}
+
+export function KnowledgeSearch(arg1) {
+  return window['go']['main']['App']['KnowledgeSearch'](arg1);
+}
+
+export function KnowledgeExplain(arg1) {
+  return window['go']['main']['App']['KnowledgeExplain'](arg1);
+}
+
+export function KnowledgeSearchFacets(arg1) {
+  return window['go']['main']['App']['KnowledgeSearchFacets'](arg1);
+}
+
+export function KnowledgeTopicRelevance(arg1) {
+  return window['go']['main']['App']['KnowledgeTopicRelevance'](arg1);
+}
+
+export function KnowledgeContextPack(arg1) {
+  return window['go']['main']['App']['KnowledgeContextPack'](arg1);
+}
+
+export function KnowledgeFactGraph(arg1) {
+  return window['go']['main']['App']['KnowledgeFactGraph'](arg1);
+}
+
+export function KnowledgeFactIndex(arg1) {
+  return window['go']['main']['App']['KnowledgeFactIndex'](arg1);
+}
+
+export function KnowledgeEntityProfile(arg1) {
+  return window['go']['main']['App']['KnowledgeEntityProfile'](arg1);
+}
+
+export function KnowledgeSuggest(arg1) {
+  return window['go']['main']['App']['KnowledgeSuggest'](arg1);
+}
+
+export function KnowledgeDeleteSource(arg1) {
+  return window['go']['main']['App']['KnowledgeDeleteSource'](arg1);
+}
+
+export function KnowledgeDisableSource(arg1) {
+  return window['go']['main']['App']['KnowledgeDisableSource'](arg1);
+}
+
+export function KnowledgeDisableSources(arg1) {
+  return window['go']['main']['App']['KnowledgeDisableSources'](arg1);
+}
+
+export function KnowledgeDisableSourcesByFilter(arg1) {
+  return window['go']['main']['App']['KnowledgeDisableSourcesByFilter'](arg1);
+}
+
+export function KnowledgeEnableSource(arg1) {
+  return window['go']['main']['App']['KnowledgeEnableSource'](arg1);
+}
+
+export function KnowledgeEnableSources(arg1) {
+  return window['go']['main']['App']['KnowledgeEnableSources'](arg1);
+}
+
+export function KnowledgeEnableSourcesByFilter(arg1) {
+  return window['go']['main']['App']['KnowledgeEnableSourcesByFilter'](arg1);
+}
+
+export function KnowledgeRefreshSource(arg1) {
+  return window['go']['main']['App']['KnowledgeRefreshSource'](arg1);
+}
+
+export function KnowledgePreviewSourceRefresh(arg1) {
+  return window['go']['main']['App']['KnowledgePreviewSourceRefresh'](arg1);
+}
+
+export function KnowledgePreviewSourcesRefresh(arg1) {
+  return window['go']['main']['App']['KnowledgePreviewSourcesRefresh'](arg1);
+}
+
+export function KnowledgePreviewSourcesRefreshByFilter(arg1) {
+  return window['go']['main']['App']['KnowledgePreviewSourcesRefreshByFilter'](arg1);
+}
+
+export function KnowledgeRefreshChangedSources(arg1) {
+  return window['go']['main']['App']['KnowledgeRefreshChangedSources'](arg1);
+}
+
+export function KnowledgeRefreshChangedSourcesByFilter(arg1) {
+  return window['go']['main']['App']['KnowledgeRefreshChangedSourcesByFilter'](arg1);
+}
+
+export function KnowledgeRefreshSources(arg1) {
+  return window['go']['main']['App']['KnowledgeRefreshSources'](arg1);
+}
+
+export function KnowledgeRefreshSourcesByFilter(arg1) {
+  return window['go']['main']['App']['KnowledgeRefreshSourcesByFilter'](arg1);
+}
+
+export function KnowledgeRebuildSourceDerived(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeRebuildSourceDerived'](arg1, arg2);
+}
+
+export function KnowledgeRebuildSourcesDerived(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeRebuildSourcesDerived'](arg1, arg2);
+}
+
+export function KnowledgeRebuildSourcesDerivedByFilter(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeRebuildSourcesDerivedByFilter'](arg1, arg2);
+}
+
+export function KnowledgeScanDirectory(arg1) {
+  return window['go']['main']['App']['KnowledgeScanDirectory'](arg1);
+}
+
+export function KnowledgeScanFiles(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeScanFiles'](arg1, arg2);
+}
+
+export function KnowledgeImportDirectory(arg1) {
+  return window['go']['main']['App']['KnowledgeImportDirectory'](arg1);
+}
+
+export function KnowledgeImportFiles(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeImportFiles'](arg1, arg2);
+}
+
+export function KnowledgeListImportBatches(arg1) {
+  return window['go']['main']['App']['KnowledgeListImportBatches'](arg1);
+}
+
+export function KnowledgeListImportItems(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeListImportItems'](arg1, arg2);
+}
+
+export function KnowledgeRetryImportBatch(arg1) {
+  return window['go']['main']['App']['KnowledgeRetryImportBatch'](arg1);
+}
+
+export function KnowledgeListNodesBySource(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeListNodesBySource'](arg1, arg2);
+}
+
+export function KnowledgeListSourceVersions(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeListSourceVersions'](arg1, arg2);
+}
+
+export function KnowledgeListCardsBySource(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeListCardsBySource'](arg1, arg2);
+}
+
+export function KnowledgeListFactsBySource(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeListFactsBySource'](arg1, arg2);
+}
+
+export function KnowledgeListSourceLinks(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeListSourceLinks'](arg1, arg2);
+}
+
+export function KnowledgeSourceGraph(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeSourceGraph'](arg1, arg2);
+}
+
+export function KnowledgeSourceNeighborhood(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['KnowledgeSourceNeighborhood'](arg1, arg2, arg3, arg4);
+}
+
+export function KnowledgeSourcePath(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['KnowledgeSourcePath'](arg1, arg2, arg3, arg4);
+}
+
+export function KnowledgePreviewSourceTopicLinks(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgePreviewSourceTopicLinks'](arg1, arg2);
+}
+
+export function KnowledgeLinkSources(arg1) {
+  return window['go']['main']['App']['KnowledgeLinkSources'](arg1);
+}
+
+export function KnowledgeUnlinkSources(arg1, arg2, arg3) {
+  return window['go']['main']['App']['KnowledgeUnlinkSources'](arg1, arg2, arg3);
+}
+
+export function KnowledgeListSourceLinkEvents(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeListSourceLinkEvents'](arg1, arg2);
+}
+
+export function KnowledgeSourceTimeline(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeSourceTimeline'](arg1, arg2);
+}
+
+export function KnowledgeSourceDigest(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['KnowledgeSourceDigest'](arg1, arg2, arg3, arg4, arg5);
+}
+
+export function KnowledgeRefreshSourceTopicLinks(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeRefreshSourceTopicLinks'](arg1, arg2);
+}
+
+export function KnowledgeRefreshSourceTopicLinksByFilter(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeRefreshSourceTopicLinksByFilter'](arg1, arg2);
+}
+
+export function KnowledgeListDuplicateCards(arg1) {
+  return window['go']['main']['App']['KnowledgeListDuplicateCards'](arg1);
+}
+
+export function KnowledgeSuppressDuplicateCards(arg1) {
+  return window['go']['main']['App']['KnowledgeSuppressDuplicateCards'](arg1);
+}
+
+export function KnowledgeSuppressCards(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeSuppressCards'](arg1, arg2);
+}
+
+export function KnowledgeRestoreSuppressedCards(arg1) {
+  return window['go']['main']['App']['KnowledgeRestoreSuppressedCards'](arg1);
+}
+
+export function KnowledgeListSuppressedCards(arg1) {
+  return window['go']['main']['App']['KnowledgeListSuppressedCards'](arg1);
+}
+
+export function KnowledgeScanSensitiveContent(arg1) {
+  return window['go']['main']['App']['KnowledgeScanSensitiveContent'](arg1);
+}
+
+export function KnowledgeDisableSensitiveSources(arg1) {
+  return window['go']['main']['App']['KnowledgeDisableSensitiveSources'](arg1);
+}
+
+export function KnowledgeStartImportDirectory(arg1) {
+  return window['go']['main']['App']['KnowledgeStartImportDirectory'](arg1);
+}
+
+export function KnowledgeImportJobStatus(arg1) {
+  return window['go']['main']['App']['KnowledgeImportJobStatus'](arg1);
+}
+
+export function KnowledgeSaveURL(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['KnowledgeSaveURL'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function KnowledgeSaveURLs(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['KnowledgeSaveURLs'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function KnowledgeDiscoverURLs(arg1) {
+  return window['go']['main']['App']['KnowledgeDiscoverURLs'](arg1);
+}
+
+export function KnowledgeSaveText(arg1) {
+  return window['go']['main']['App']['KnowledgeSaveText'](arg1);
+}
+
+export function SelectKnowledgeDirectory() {
+  return window['go']['main']['App']['SelectKnowledgeDirectory']();
+}
+
+export function SelectKnowledgeFiles() {
+  return window['go']['main']['App']['SelectKnowledgeFiles']();
+}
+
+// MIS data service bindings
+export function GetMISDataConfig() {
+  return window['go']['main']['App']['GetMISDataConfig']();
+}
+
+export function SaveMISDataConfig(arg1) {
+  return window['go']['main']['App']['SaveMISDataConfig'](arg1);
+}
+
+export function TestMISDataConnection(arg1) {
+  return window['go']['main']['App']['TestMISDataConnection'](arg1);
 }

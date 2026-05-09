@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -29,13 +30,13 @@ import (
 
 // PipelineResult is the outcome of a pipeline execution.
 type PipelineResult struct {
-	Status      string            `json:"status"` // "completed", "failed", "stopped_at_checkpoint", "cancelled"
-	FailedAt    int               `json:"failed_at,omitempty"`
-	FailedSkill string            `json:"failed_skill,omitempty"`
-	StoppedAt   int               `json:"stopped_at,omitempty"`
-	Error       string            `json:"error,omitempty"`
+	Status      string               `json:"status"` // "completed", "failed", "stopped_at_checkpoint", "cancelled"
+	FailedAt    int                  `json:"failed_at,omitempty"`
+	FailedSkill string               `json:"failed_skill,omitempty"`
+	StoppedAt   int                  `json:"stopped_at,omitempty"`
+	Error       string               `json:"error,omitempty"`
 	StepResults []PipelineStepResult `json:"step_results,omitempty"`
-	Vars        map[string]string `json:"vars,omitempty"` // accumulated vars from all steps
+	Vars        map[string]string    `json:"vars,omitempty"` // accumulated vars from all steps
 }
 
 // PipelineStepResult records the outcome of one pipeline step.
@@ -79,6 +80,9 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 	if len(steps) == 0 {
 		return &PipelineResult{Status: "completed"}, nil
 	}
+	if pr == nil || pr.Executor == nil {
+		return &PipelineResult{Status: "failed", Error: "pipeline executor is nil"}, fmt.Errorf("pipeline executor is nil")
+	}
 
 	vars := make(map[string]string)
 	for k, v := range initialVars {
@@ -95,25 +99,73 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 		select {
 		case <-ctx.Done():
 			result.Status = "cancelled"
+			result.Error = ctx.Err().Error()
 			return result, nil
 		default:
 		}
 
+		skillName := strings.TrimSpace(step.Skill)
+		if skillName == "" {
+			errMsg := fmt.Sprintf("pipeline step %d is missing skill", i+1)
+			result.StepResults = append(result.StepResults, PipelineStepResult{
+				Status: "failed",
+				Error:  errMsg,
+			})
+			if !step.ContinueOnFail {
+				result.Status = "failed"
+				result.FailedAt = i
+				result.Error = errMsg
+				return result, nil
+			}
+			continue
+		}
+
 		// Resolve template variables in params
 		resolvedParams := resolveTemplateParams(step.Params, vars)
+		if errMsg := unresolvedPipelineParamMessage(resolvedParams); errMsg != "" {
+			result.StepResults = append(result.StepResults, PipelineStepResult{
+				Skill:  skillName,
+				Status: "failed",
+				Error:  errMsg,
+			})
+			if !step.ContinueOnFail {
+				result.Status = "failed"
+				result.FailedAt = i
+				result.FailedSkill = skillName
+				result.Error = errMsg
+				return result, nil
+			}
+			continue
+		}
 
 		// Execute sub-skill
 		start := time.Now()
-		captured, output, err := pr.Executor.RunSubSkill(ctx, step.Skill, resolvedParams)
+		captured, output, err := pr.Executor.RunSubSkill(ctx, skillName, resolvedParams)
 		duration := time.Since(start).Round(time.Millisecond).String()
+		if strings.TrimSpace(output) != "" {
+			if captured == nil {
+				captured = map[string]string{}
+			}
+			if _, hasOutput := captured["output"]; !hasOutput {
+				captured["output"] = output
+			}
+		}
 
 		stepResult := PipelineStepResult{
-			Skill:        step.Skill,
+			Skill:        skillName,
 			CapturedVars: captured,
 			Duration:     duration,
 		}
 
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				stepResult.Status = "cancelled"
+				stepResult.Error = ctxErr.Error()
+				result.StepResults = append(result.StepResults, stepResult)
+				result.Status = "cancelled"
+				result.Error = ctxErr.Error()
+				return result, nil
+			}
 			stepResult.Status = "failed"
 			stepResult.Error = err.Error()
 			result.StepResults = append(result.StepResults, stepResult)
@@ -121,30 +173,24 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 			if !step.ContinueOnFail {
 				result.Status = "failed"
 				result.FailedAt = i
-				result.FailedSkill = step.Skill
+				result.FailedSkill = skillName
 				result.Error = err.Error()
 				return result, nil
 			}
+			mergePipelineStepVars(vars, skillName, captured, output)
 			// ContinueOnFail: record failure but proceed
 		} else {
 			stepResult.Status = "completed"
 			result.StepResults = append(result.StepResults, stepResult)
 
-			// Merge captured vars into pipeline vars with skill-name prefix
-			for k, v := range captured {
-				vars[step.Skill+"."+k] = v
-			}
-			// Also store raw output for simple reference
-			if output != "" {
-				vars[step.Skill+".output"] = truncateForVar(output, 500)
-			}
+			mergePipelineStepVars(vars, skillName, captured, output)
 		}
 
 		// Checkpoint gate
 		if step.Checkpoint && pr.AskUser != nil {
 			msg := resolveTemplateString(step.CheckpointMessage, vars)
 			if msg == "" {
-				msg = fmt.Sprintf("Step %d (%s) completed. Continue?", i+1, step.Skill)
+				msg = fmt.Sprintf("Step %d (%s) completed. Continue?", i+1, skillName)
 			}
 			if step.TimeImpactOnReject != "" {
 				msg += "\n(stopping will delay by " + step.TimeImpactOnReject + ")"
@@ -154,7 +200,19 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 			// The actual option text is provided by the caller (localized).
 			// Pipeline only checks the index — language-independent.
 			chosenIdx, askErr := pr.AskUser(msg, []string{"continue", "stop"})
-			if askErr != nil || chosenIdx != 0 {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				result.Status = "cancelled"
+				result.Error = ctxErr.Error()
+				return result, nil
+			}
+			if askErr != nil {
+				result.Status = "failed"
+				result.FailedAt = i
+				result.FailedSkill = skillName
+				result.Error = fmt.Sprintf("checkpoint prompt failed: %v", askErr)
+				return result, nil
+			}
+			if chosenIdx != 0 {
 				result.Status = "stopped_at_checkpoint"
 				result.StoppedAt = i
 				return result, nil
@@ -166,8 +224,20 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 	return result, nil
 }
 
+func mergePipelineStepVars(vars map[string]string, skillName string, captured map[string]string, output string) {
+	for k, v := range captured {
+		vars[skillName+"."+k] = v
+	}
+	if output != "" {
+		vars[skillName+".output"] = truncateForVar(output, 500)
+	}
+}
+
 // FormatResult generates a human-readable summary of the pipeline execution.
 func FormatPipelineResult(result *PipelineResult) string {
+	if result == nil {
+		return "Pipeline status: unknown\n"
+	}
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Pipeline 状态: %s\n", result.Status))
 
@@ -183,6 +253,15 @@ func FormatPipelineResult(result *PipelineResult) string {
 			b.WriteString(" — " + sr.Error)
 		}
 		b.WriteString("\n")
+		if output := strings.TrimSpace(sr.CapturedVars["output"]); output != "" {
+			displayOutput, truncated := truncatePipelineText(output, 1000)
+			b.WriteString("```\n")
+			b.WriteString(displayOutput)
+			if truncated {
+				b.WriteString("\n... (truncated)")
+			}
+			b.WriteString("\n```\n")
+		}
 	}
 
 	if result.Error != "" {
@@ -216,9 +295,36 @@ func resolveTemplateString(s string, vars map[string]string) string {
 	})
 }
 
+func unresolvedPipelineParamMessage(params map[string]string) string {
+	var missing []string
+	for key, value := range params {
+		matches := pipelineVarPattern.FindAllString(value, -1)
+		for _, match := range matches {
+			missing = append(missing, fmt.Sprintf("%s=%s", key, match))
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	sort.Strings(missing)
+	return "pipeline params contain unresolved variable(s): " + strings.Join(missing, ", ")
+}
+
 func truncateForVar(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	truncated, ok := truncatePipelineText(s, maxLen)
+	if !ok {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return truncated + "..."
+}
+
+func truncatePipelineText(s string, maxRunes int) (string, bool) {
+	if maxRunes <= 0 {
+		return "", s != ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s, false
+	}
+	return string(runes[:maxRunes]), true
 }

@@ -35,16 +35,18 @@ const (
 )
 
 type GroupProfile struct {
-	AgentID         string    `json:"agent_id"`
-	DisplayName     string    `json:"display_name,omitempty"`
-	Skills          []string  `json:"skills,omitempty"`
-	Description     string    `json:"description,omitempty"`
-	ModelClass      string    `json:"model_class,omitempty"`
-	Languages       []string  `json:"languages,omitempty"`
-	SecurityGroupID string    `json:"security_group_id,omitempty"`
-	Discoverable    bool      `json:"discoverable"`
-	Available       bool      `json:"available"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	AgentID              string    `json:"agent_id"`
+	DisplayName          string    `json:"display_name,omitempty"`
+	Skills               []string  `json:"skills,omitempty"`
+	Description          string    `json:"description,omitempty"`
+	ModelClass           string    `json:"model_class,omitempty"`
+	Languages            []string  `json:"languages,omitempty"`
+	SecurityGroupID      string    `json:"security_group_id,omitempty"`
+	ContributionScore    float64   `json:"contribution_score,omitempty"`
+	ContributionEvidence int       `json:"contribution_evidence,omitempty"`
+	Discoverable         bool      `json:"discoverable"`
+	Available            bool      `json:"available"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 type GroupConsultationRequest struct {
@@ -176,6 +178,14 @@ func (p GroupProfile) DiscoveryView(modelVisibility string) GroupProfile {
 	out.Description = strings.TrimSpace(out.Description)
 	out.ModelClass = strings.TrimSpace(out.ModelClass)
 	out.SecurityGroupID = strings.TrimSpace(out.SecurityGroupID)
+	if out.ContributionScore < 0 {
+		out.ContributionScore = 0
+	} else if out.ContributionScore > 1 {
+		out.ContributionScore = 1
+	}
+	if out.ContributionEvidence < 0 {
+		out.ContributionEvidence = 0
+	}
 	if modelVisibility == "hidden" {
 		out.ModelClass = ""
 	}

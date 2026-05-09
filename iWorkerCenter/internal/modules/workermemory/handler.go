@@ -1,10 +1,14 @@
 package workermemory
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +26,13 @@ const (
 	// it is a capability/domain boundary for recall, permissions, and routing.
 	ScopeDepartment = "department"
 	ScopePersonal   = "personal"
+)
+
+const maxMemorySaveBodyBytes = 256 << 10
+
+var (
+	errMemoryJSONTooLarge = errors.New("worker memory json body exceeds size limit")
+	errMemoryJSONTrailing = errors.New("worker memory json body contains trailing data")
 )
 
 // Handler exposes iWorker memory APIs. iWorkerCenter is the source of truth;
@@ -183,8 +194,14 @@ func (h *Handler) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
 		response.BadRequest(w, err.code, err.message)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/client/iworker/memories/")
+	id := strings.TrimPrefix(r.URL.EscapedPath(), "/client/iworker/memories/")
 	id = strings.Trim(id, "/")
+	if unescaped, err := url.PathUnescape(id); err == nil {
+		id = strings.TrimSpace(unescaped)
+	} else {
+		response.BadRequest(w, "INVALID_ID", "memory id is invalid")
+		return
+	}
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "memory id is required")
 		return
@@ -206,7 +223,10 @@ func (h *Handler) handleMemoryByID(w http.ResponseWriter, r *http.Request) {
 		response.Internal(w, err.Error())
 		return
 	}
-	_ = h.store.Flush()
+	if err := h.store.Flush(); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 	response.OK(w, map[string]string{"status": "deleted"})
 }
 
@@ -270,7 +290,7 @@ func (h *Handler) recallEntries(ctx memoryContext, query string, category coreme
 
 func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 	var req saveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeMemoryJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -311,7 +331,10 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 		response.BadRequest(w, "SAVE_REJECTED", err.Error())
 		return
 	}
-	_ = h.store.Flush()
+	if err := h.store.Flush(); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 
 	matches := h.store.Search(category, content, 0)
 	for _, match := range matches {
@@ -548,4 +571,25 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func decodeMemoryJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxMemorySaveBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxMemorySaveBodyBytes {
+		return errMemoryJSONTooLarge
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errMemoryJSONTrailing
+		}
+		return err
+	}
+	return nil
 }

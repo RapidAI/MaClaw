@@ -694,20 +694,39 @@ html, body {
     border-radius: 6px;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     padding: 4px 0;
-    min-width: 80px;
+    min-width: 112px;
 }
 
 .floating-context-menu-item {
-    padding: 6px 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 14px;
+    border: 0;
     font-size: 13px;
     color: #374151;
+    background: transparent;
     cursor: pointer;
     white-space: nowrap;
+    text-align: left;
+    font: inherit;
 }
 
-.floating-context-menu-item:hover {
+.floating-context-menu-check {
+    width: 14px;
+    flex: 0 0 14px;
+    color: #2563eb;
+    font-weight: 700;
+    line-height: 1;
+    text-align: center;
+}
+
+.floating-context-menu-item:hover,
+.floating-context-menu-item:focus-visible {
     background: #f3f4f6;
     color: #111827;
+    outline: none;
 }
 
 .floating-context-menu-separator {

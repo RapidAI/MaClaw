@@ -123,13 +123,12 @@ func SanitizeID(name string) string {
 	if s == "" {
 		return "custom"
 	}
-	// Normalize Chinese names
 	switch s {
-	case "讯飞星辰":
+	case "\u8baf\u98de\u661f\u8fb0":
 		return "xfyun"
-	case "阿里云":
+	case "\u963f\u91cc\u4e91":
 		return "aliyun"
-	case "百度千帆", "qianfan":
+	case "\u767e\u5ea6\u5343\u5e06", "qianfan":
 		return "qianfan"
 	}
 	var result []byte

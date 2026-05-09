@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { TaskAttachment } from '../types';
+import type { CenterTaskContext, TaskAttachment } from '../types';
 
 type SubmitTaskResult = {
   task_type: string;
@@ -17,6 +17,7 @@ type Props = {
   draft: string;
   expectedOutput: string;
   attachments: TaskAttachment[];
+  centerTaskContext: CenterTaskContext | null;
   submitting: boolean;
   submitError: string;
   submitResult: SubmitTaskResult | null;
@@ -44,6 +45,7 @@ export function NewTaskPage({
   draft,
   expectedOutput,
   attachments,
+  centerTaskContext,
   submitting,
   submitError,
   submitResult,
@@ -58,8 +60,19 @@ export function NewTaskPage({
 }: Props) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const isInterventionTask = draft.includes('Human intervention needed:') || draft.includes('This push is cached.');
-  const isCachedInterventionTask = draft.includes('This push is cached.');
+  const isInterventionTask = Boolean(centerTaskContext) || draft.includes('Human intervention needed:') || draft.includes('需要人工介入：') || draft.includes('This push is cached.') || draft.includes('此推送来自缓存。');
+  const isCachedInterventionTask = Boolean(centerTaskContext?.cached) || draft.includes('This push is cached.') || draft.includes('此推送来自缓存。');
+  const interventionTitle = centerTaskContext?.title || selectedTask || t('newTask.humanTask', 'Human intervention task');
+  const interventionSource = centerTaskContext
+    ? centerTaskContext.cached
+      ? t('newTask.cachedPush', 'Cached Center push')
+      : centerTaskContext.kind === 'collaboration'
+        ? t('newTask.centerHandoff', 'Center handoff')
+        : t('newTask.livePush', 'Live Center push')
+    : isCachedInterventionTask ? t('newTask.cachedPush', 'Cached Center push') : t('newTask.livePush', 'Live Center push');
+  const interventionDetail = centerTaskContext?.detail || (isCachedInterventionTask
+    ? t('newTask.cachedPushDetail', 'This is a cached Center push. Reconnect iWorkerCenter before Resume, Block, or Run actions so the decision is applied to the live task.')
+    : t('newTask.livePushDetail', 'Capture the human decision here, then return to the workbench to Resume or Block the live Center push.'));
   const outputLabel = t(`newTask.output.${expectedOutput}`, expectedOutput);
 
   return (
@@ -75,9 +88,10 @@ export function NewTaskPage({
         {isInterventionTask ? (
           <section className={`dw-center-push-context ${isCachedInterventionTask ? 'is-cached' : ''}`} aria-label={t('newTask.centerPushAria', 'Center push intervention task')}>
             <div>
-              <span>{isCachedInterventionTask ? t('newTask.cachedPush', 'Cached Center push') : t('newTask.livePush', 'Live Center push')}</span>
-              <strong>{selectedTask || t('newTask.humanTask', 'Human intervention task')}</strong>
-              <p>{isCachedInterventionTask ? t('newTask.cachedPushDetail', 'This is a cached Center push. Reconnect iWorkerCenter before Resume, Block, or Run actions so the decision is applied to the live task.') : t('newTask.livePushDetail', 'Capture the human decision here, then return to the workbench to Resume or Block the live Center push.')}</p>
+              <span>{interventionSource}</span>
+              <strong>{interventionTitle}</strong>
+              <p>{interventionDetail}</p>
+              {centerTaskContext?.workflowStepInstanceId ? <small>{t('newTask.workflowStep', 'Workflow step')}: {centerTaskContext.workflowStepInstanceId}</small> : null}
             </div>
             <span className="dw-center-push-context-badge">{isCachedInterventionTask ? t('newTask.displayOnly', 'Display only') : t('newTask.decisionNeeded', 'Decision needed')}</span>
           </section>

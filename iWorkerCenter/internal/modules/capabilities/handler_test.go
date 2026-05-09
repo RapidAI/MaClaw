@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	marketschema "github.com/RapidAI/CodeClaw/corelib/skillmarket"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/db"
@@ -67,6 +68,100 @@ func TestApproveCapabilityWritesAuditAndPromotesApprovedStatus(t *testing.T) {
 	}
 }
 
+func TestApproveCapabilityHTTPSupportsEscapedID(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	if _, err := provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "cap/team a", "tenant-a", "Team Skill", "draft", "ops", "1.0.0", "local", "low", "active", now, now); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	h := NewHandler(provider.Write, provider.Read)
+	h.RegisterAdminRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/admin/capabilities/cap%2Fteam%20a/approve", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var status string
+	if err := provider.Read.QueryRow(`SELECT status FROM capability_packages WHERE tenant_id=? AND id=?`, "tenant-a", "cap/team a").Scan(&status); err != nil {
+		t.Fatalf("query capability status: %v", err)
+	}
+	if status != "approved" {
+		t.Fatalf("status = %q, want approved", status)
+	}
+}
+
+func TestCreateCapabilityRejectsOversizedBody(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(provider.Write, provider.Read).RegisterAdminRoutes(mux)
+	body := `{"name":"Oversized Skill","description":"` + strings.Repeat("x", maxCapabilityJSONBodyBytes+1024)
+	req := httptest.NewRequest(http.MethodPost, "/admin/capabilities", strings.NewReader(body))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())
+	}
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM capability_packages WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("count capabilities: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("capability count = %d, want 0", count)
+	}
+}
+
+func TestCreateCapabilityRejectsTrailingJSONWithoutSaving(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(provider.Write, provider.Read).RegisterAdminRoutes(mux)
+	body := `{"name":"Finance Skill","description":"first","category":"finance"} {"name":"Extra Skill"}`
+	req := httptest.NewRequest(http.MethodPost, "/admin/capabilities", strings.NewReader(body))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rr.Code, rr.Body.String())
+	}
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM capability_packages WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("count capabilities: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("capability count = %d, want 0", count)
+	}
+}
+
 func TestClientRuntimeEntriesReturnsBoundInstalledCapabilities(t *testing.T) {
 	provider, err := db.Open(":memory:")
 	if err != nil {
@@ -117,6 +212,386 @@ func TestClientRuntimeEntriesReturnsBoundInstalledCapabilities(t *testing.T) {
 	}
 	if len(body.RuntimeEntries) != 1 || body.RuntimeEntries[0].CapabilityID != "cap-runtime" || body.RuntimeEntries[0].Entry.Name != "Finance Skill" {
 		t.Fatalf("runtime entries = %+v", body.RuntimeEntries)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/capabilities/cap-runtime/unbind", strings.NewReader(`{"colleague_id":"worker-a"}`))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr = httptest.NewRecorder()
+	h.unbindFromColleague(rr, req, "cap-runtime")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unbind status = %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/client/capabilities?colleague_id=worker-a&runtime=1", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr = httptest.NewRecorder()
+	h.handleClientCapabilities(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status after unbind = %d body=%s", rr.Code, rr.Body.String())
+	}
+	body = struct {
+		RuntimeEntries []RuntimeCapabilityEntry `json:"runtime_entries"`
+	}{}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response after unbind: %v", err)
+	}
+	if len(body.RuntimeEntries) != 0 {
+		t.Fatalf("runtime entries after unbind = %+v, want none", body.RuntimeEntries)
+	}
+}
+
+func TestClientColleagueCapabilitiesIgnoresCrossTenantDirtyBinding(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cap-foreign", "tenant-b", "Foreign Skill", "other tenant", "ops", "1.0.0", "local", "low", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-worker", "tenant-a", "Worker", "worker", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "worker-a", "tenant-a", "Worker A", "role-worker", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed colleague: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO colleague_capability_bindings (id, tenant_id, colleague_id, capability_id, bound_at) VALUES (?, ?, ?, ?, ?)`, "bind-dirty", "tenant-a", "worker-a", "cap-foreign", now)
+	if err != nil {
+		t.Fatalf("seed dirty binding: %v", err)
+	}
+
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodGet, "/client/capabilities?colleague_id=worker-a", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.handleClientCapabilities(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Capabilities []CapabilityPackage `json:"capabilities"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Capabilities) != 0 {
+		t.Fatalf("capabilities leaked across tenants: %+v", body.Capabilities)
+	}
+}
+
+func TestSelectWorkerForTaskRejectsCorruptInstalledRuntimeEntry(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-worker", "tenant-a", "Worker", "worker", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "worker-a", "tenant-a", "Worker A", "role-worker", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed colleague: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, installed_entry_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cap-corrupt-runtime", "tenant-a", "Corrupt Runtime", "bad installed json", "ops", "1.0.0", "local", "low", "approved", "installed", "{bad-json", now, now)
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO colleague_capability_bindings (id, tenant_id, colleague_id, capability_id, bound_at) VALUES (?, ?, ?, ?, ?)`, "bind-corrupt", "tenant-a", "worker-a", "cap-corrupt-runtime", now)
+	if err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+
+	h := NewHandler(provider.Write, provider.Read)
+	_, matched, err := h.SelectWorkerForTask(context.Background(), "tenant-a", "worker", "use corrupt runtime")
+	if err == nil || !strings.Contains(err.Error(), "decode installed runtime entry") {
+		t.Fatalf("err = %v, want corrupt runtime entry error", err)
+	}
+	if matched {
+		t.Fatal("matched corrupt runtime entry, want no match")
+	}
+}
+
+func TestBindCapabilityRejectsCrossTenantCapability(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cap-foreign", "tenant-b", "Foreign Skill", "other tenant", "ops", "1.0.0", "local", "low", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-worker", "tenant-a", "Worker", "worker", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	_, err = provider.Write.Exec(`INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "worker-a", "tenant-a", "Worker A", "role-worker", "active", now, now)
+	if err != nil {
+		t.Fatalf("seed colleague: %v", err)
+	}
+
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodPost, "/admin/capabilities/cap-foreign/bind", strings.NewReader(`{"colleague_id":"worker-a"}`))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.bindToColleague(rr, req, "cap-foreign")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body=%s, want 404", rr.Code, rr.Body.String())
+	}
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM colleague_capability_bindings WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("count bindings: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("cross-tenant binding was created")
+	}
+}
+
+func TestAdminCapabilityBindingsReturnsTenantScopedBindings(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	for _, tenantID := range []string{"tenant-a", "tenant-b"} {
+		roleID := "role-" + tenantID
+		workerID := "worker-" + tenantID
+		capID := "cap-" + tenantID
+		if _, err := provider.Write.Exec(`INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, roleID, tenantID, "Worker "+tenantID, "worker-"+tenantID, "active", now, now); err != nil {
+			t.Fatalf("seed role %s: %v", tenantID, err)
+		}
+		if _, err := provider.Write.Exec(`INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, workerID, tenantID, "Worker "+tenantID, roleID, "active", now, now); err != nil {
+			t.Fatalf("seed colleague %s: %v", tenantID, err)
+		}
+		if _, err := provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, capID, tenantID, "Capability "+tenantID, "", "ops", "1.0.0", "local", "low", "approved", now, now); err != nil {
+			t.Fatalf("seed capability %s: %v", tenantID, err)
+		}
+		if _, err := provider.Write.Exec(`INSERT INTO colleague_capability_bindings (id, tenant_id, colleague_id, capability_id, bound_at) VALUES (?, ?, ?, ?, ?)`, "bind-"+tenantID, tenantID, workerID, capID, now); err != nil {
+			t.Fatalf("seed binding %s: %v", tenantID, err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(provider.Write, provider.Read).RegisterAdminRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/admin/capability-bindings", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Bindings []Binding `json:"bindings"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Bindings) != 1 {
+		t.Fatalf("bindings = %+v, want one tenant-a binding", body.Bindings)
+	}
+	got := body.Bindings[0]
+	if got.ID != "bind-tenant-a" || got.ColleagueID != "worker-tenant-a" || got.ColleagueName != "Worker tenant-a" || got.CapabilityID != "cap-tenant-a" || got.CapabilityName != "Capability tenant-a" {
+		t.Fatalf("binding = %+v", got)
+	}
+}
+
+func TestBindCapabilityIsIdempotentForSameWorker(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	if _, err := provider.Write.Exec(`INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-worker", "tenant-a", "Worker", "worker", "active", now, now); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "worker-a", "tenant-a", "Worker A", "role-worker", "active", now, now); err != nil {
+		t.Fatalf("seed colleague: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "cap-safe", "tenant-a", "Safe Skill", "", "ops", "1.0.0", "local", "low", "approved", "installed", now, now); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	h := NewHandler(provider.Write, provider.Read)
+	h.SetAuditRepo(auditRepo)
+	for i, wantStatus := range []string{"created", "already_bound"} {
+		req := httptest.NewRequest(http.MethodPost, "/admin/capabilities/cap-safe/bind", strings.NewReader(`{"colleague_id":"worker-a"}`))
+		req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+		rr := httptest.NewRecorder()
+		h.bindToColleague(rr, req, "cap-safe")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+		var body map[string]string
+		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+			t.Fatalf("decode attempt %d: %v", i+1, err)
+		}
+		if body["status"] != wantStatus || body["binding_id"] == "" || body["bound_at"] == "" {
+			t.Fatalf("attempt %d body = %+v, want status %s with binding details", i+1, body, wantStatus)
+		}
+	}
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM colleague_capability_bindings WHERE tenant_id=? AND colleague_id=? AND capability_id=?`, "tenant-a", "worker-a", "cap-safe").Scan(&count); err != nil {
+		t.Fatalf("count bindings: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("binding count = %d, want 1", count)
+	}
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	deliveredCount := 0
+	for _, log := range logs {
+		if log.WorkType == "capability_delivered" {
+			deliveredCount++
+			if !strings.Contains(log.ErrorMsg, "cap-safe") || !strings.Contains(log.ErrorMsg, "worker-a") {
+				t.Fatalf("delivery audit log = %+v", log)
+			}
+		}
+	}
+	if deliveredCount != 1 {
+		t.Fatalf("capability_delivered audit count = %d, want 1; logs=%+v", deliveredCount, logs)
+	}
+}
+
+func TestBindCapabilityRejectsApprovedButUninstalledRuntime(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	if _, err := provider.Write.Exec(`INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-worker", "tenant-a", "Worker", "worker", "active", now, now); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "worker-a", "tenant-a", "Worker A", "role-worker", "active", now, now); err != nil {
+		t.Fatalf("seed colleague: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "cap-approved", "tenant-a", "Approved Skill", "", "ops", "1.0.0", "local", "low", "approved", "package_cached", now, now); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodPost, "/admin/capabilities/cap-approved/bind", strings.NewReader(`{"colleague_id":"worker-a"}`))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.bindToColleague(rr, req, "cap-approved")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400 for uninstalled runtime", rr.Code, rr.Body.String())
+	}
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM colleague_capability_bindings WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("count bindings: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("binding count = %d, want 0", count)
+	}
+}
+
+func TestUnbindCapabilityReportsRemovedAndNotBound(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	if _, err := provider.Write.Exec(`INSERT INTO roles (id, tenant_id, name, code, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "role-worker", "tenant-a", "Worker", "worker", "active", now, now); err != nil {
+		t.Fatalf("seed role: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO colleagues (id, tenant_id, name, role_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`, "worker-a", "tenant-a", "Worker A", "role-worker", "active", now, now); err != nil {
+		t.Fatalf("seed colleague: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "cap-safe", "tenant-a", "Safe Skill", "", "ops", "1.0.0", "local", "low", "approved", now, now); err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	if _, err := provider.Write.Exec(`INSERT INTO colleague_capability_bindings (id, tenant_id, colleague_id, capability_id, bound_at) VALUES (?, ?, ?, ?, ?)`, "bind-safe", "tenant-a", "worker-a", "cap-safe", now); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	h := NewHandler(provider.Write, provider.Read)
+	h.SetAuditRepo(auditRepo)
+	for i, wantStatus := range []string{"removed", "not_bound"} {
+		req := httptest.NewRequest(http.MethodPost, "/admin/capabilities/cap-safe/unbind", strings.NewReader(`{"colleague_id":"worker-a"}`))
+		req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+		rr := httptest.NewRecorder()
+		h.unbindFromColleague(rr, req, "cap-safe")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("attempt %d status = %d body=%s", i+1, rr.Code, rr.Body.String())
+		}
+		var body struct {
+			Status  string `json:"status"`
+			Removed int64  `json:"removed"`
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+			t.Fatalf("decode attempt %d: %v", i+1, err)
+		}
+		if body.Status != wantStatus {
+			t.Fatalf("attempt %d status = %q, want %q", i+1, body.Status, wantStatus)
+		}
+		if i == 0 && body.Removed != 1 {
+			t.Fatalf("removed = %d, want 1", body.Removed)
+		}
+		if i == 1 && body.Removed != 0 {
+			t.Fatalf("removed = %d, want 0", body.Removed)
+		}
+	}
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	revokedCount := 0
+	for _, log := range logs {
+		if log.WorkType == "capability_delivery_revoked" {
+			revokedCount++
+			if !strings.Contains(log.ErrorMsg, "cap-safe") || !strings.Contains(log.ErrorMsg, "worker-a") {
+				t.Fatalf("revoke audit log = %+v", log)
+			}
+		}
+	}
+	if revokedCount != 1 {
+		t.Fatalf("capability_delivery_revoked audit count = %d, want 1; logs=%+v", revokedCount, logs)
 	}
 }
 
@@ -369,6 +844,46 @@ func TestPublishCapabilityToCloudUsesCenterScopedAuthor(t *testing.T) {
 	}
 }
 
+func TestPublishSkillInputToCloudRejectsOversizedPayloadBeforeRequest(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"unexpected"}`))
+	}))
+	defer server.Close()
+
+	h := &Handler{cloudURL: server.URL}
+	_, err := h.publishSkillInputToCloud(context.Background(), "center-a", "secret-a", marketschema.SkillInput{
+		ID:          "large-skill",
+		Name:        "Large Skill",
+		Description: strings.Repeat("x", cloudPublishSkillJSONBodyLimit+1024),
+	})
+	if err == nil || !strings.Contains(err.Error(), "payload exceeds") {
+		t.Fatalf("publish error = %v, want payload size error", err)
+	}
+	if called {
+		t.Fatal("cloud server should not be called for oversized payload")
+	}
+}
+
+func TestPublishSkillInputToCloudRejectsTrailingCloudJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"skill-1","name":"Skill One"} {"id":"extra"}`))
+	}))
+	defer server.Close()
+
+	h := &Handler{cloudURL: server.URL}
+	_, err := h.publishSkillInputToCloud(context.Background(), "center-a", "secret-a", marketschema.SkillInput{
+		ID:   "skill-1",
+		Name: "Skill One",
+	})
+	if err == nil {
+		t.Fatal("publishSkillInputToCloud() error = nil, want trailing JSON rejection")
+	}
+}
+
 func TestPublishCapabilityToCloudRejectsImmatureSkill(t *testing.T) {
 	provider, err := db.Open(":memory:")
 	if err != nil {
@@ -404,7 +919,7 @@ func TestInstallCapabilityBuildsRuntimeEntry(t *testing.T) {
 	now := time.Now().Format(time.RFC3339)
 	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, package_content, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		"cap-install", "tenant-a", "Revenue Watch", "Watch revenue signals", "ops", "1.0.0", "iworkercloud:revenue-watch", "low", "pending_review", "package_cached", "skill.md", fmt.Sprintf("%x", sum[:]), len(payload), base64.StdEncoding.EncodeToString(payload), now, now)
+		"cap-install", "tenant-a", "Revenue Watch", "Watch revenue signals", "ops", "1.0.0", "iworkercloud:revenue-watch", "low", "approved", "package_cached", "skill.md", fmt.Sprintf("%x", sum[:]), len(payload), base64.StdEncoding.EncodeToString(payload), now, now)
 	if err != nil {
 		t.Fatalf("seed capability: %v", err)
 	}
@@ -435,6 +950,42 @@ func TestInstallCapabilityBuildsRuntimeEntry(t *testing.T) {
 	}
 	if !strings.Contains(clientRR.Body.String(), "Revenue Watch") {
 		t.Fatalf("runtime entry body = %s", clientRR.Body.String())
+	}
+}
+
+func TestInstallCapabilityRejectsPendingReviewPackage(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	payload := []byte("---\nname: Pending Skill\n---\n# Pending Skill")
+	sum := sha256.Sum256(payload)
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, package_content, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cap-pending-install", "tenant-a", "Pending Skill", "Needs review", "ops", "1.0.0", "iworkercloud:pending", "low", "pending_review", "package_cached", "skill.md", fmt.Sprintf("%x", sum[:]), len(payload), base64.StdEncoding.EncodeToString(payload), now, now)
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodPost, "/admin/capabilities/cap-pending-install/install", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.installCapability(rr, req, "cap-pending-install")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("install status = %d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+	var packageStatus, installedJSON string
+	if err := provider.Read.QueryRow(`SELECT package_status, installed_entry_json FROM capability_packages WHERE tenant_id=? AND id=?`, "tenant-a", "cap-pending-install").Scan(&packageStatus, &installedJSON); err != nil {
+		t.Fatalf("query pending capability: %v", err)
+	}
+	if packageStatus != "package_cached" || installedJSON != "" {
+		t.Fatalf("packageStatus=%q installedJSON=%q, want unchanged package_cached and empty runtime", packageStatus, installedJSON)
 	}
 }
 
@@ -1370,6 +1921,100 @@ func TestClientMCPServersReturnsDepartmentEnabledServers(t *testing.T) {
 	}
 }
 
+func TestClientMCPServersWithoutDepartmentReturnsGlobalOnly(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO mcp_servers (tenant_id, id, name, description, server_type, endpoint, command, args_json, env_keys_json, department_id, risk_level, status, installed_at, created_at, updated_at) VALUES
+		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+		(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tenant-a", "mcp-fin", "Finance MCP", "finance tools", "http", "https://mcp.example/finance", "", "[]", "[]", "finance", "medium", "enabled", now, now, now,
+		"tenant-a", "mcp-all", "Common MCP", "common tools", "sse", "https://mcp.example/common", "", "[]", "[]", "all", "low", "enabled", now, now, now,
+		"tenant-a", "mcp-empty", "Global Empty MCP", "common tools", "http", "https://mcp.example/global", "", "[]", "[]", "", "low", "enabled", now, now, now)
+	if err != nil {
+		t.Fatalf("seed mcp servers: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodGet, "/client/mcp-servers", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.handleClientMCPServers(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		MCPServers []MCPServer `json:"mcp_servers"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, server := range body.MCPServers {
+		ids[server.ID] = true
+	}
+	if len(ids) != 2 || !ids["mcp-all"] || !ids["mcp-empty"] || ids["mcp-fin"] {
+		t.Fatalf("unexpected mcp ids without department: %+v", ids)
+	}
+}
+
+func TestClientMCPServersRejectsCorruptRuntimeJSON(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO mcp_servers (tenant_id, id, name, description, server_type, endpoint, command, args_json, env_keys_json, department_id, risk_level, status, installed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tenant-a", "mcp-corrupt", "Corrupt MCP", "bad json", "http", "https://mcp.example/bad", "", "{bad-json", "[]", "all", "low", "enabled", now, now, now)
+	if err != nil {
+		t.Fatalf("seed mcp server: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodGet, "/client/mcp-servers", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.handleClientMCPServers(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s, want corrupt json to fail loudly", rr.Code, rr.Body.String())
+	}
+}
+
+func TestListCapabilitiesRejectsUnscannableRows(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_size, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"cap-bad-size", "tenant-a", "Bad Size", "corrupt row", "ops", "1.0.0", "local", "low", "active", "not-an-int", now, now)
+	if err != nil {
+		t.Fatalf("seed capability: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	req := httptest.NewRequest(http.MethodGet, "/admin/capabilities", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.listCapabilities(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s, want scan error to fail loudly", rr.Code, rr.Body.String())
+	}
+}
+
 func TestCreateMCPServerValidatesTransportConfig(t *testing.T) {
 	provider, err := db.Open(":memory:")
 	if err != nil {
@@ -1393,6 +2038,185 @@ func TestCreateMCPServerValidatesTransportConfig(t *testing.T) {
 	}
 	if server.ServerType != "stdio" || server.Command != "mcp-files" || server.DepartmentID != "ops" || server.Status != "enabled" || len(server.EnvKeys) != 1 {
 		t.Fatalf("server = %+v", server)
+	}
+}
+
+func TestCreateMCPServerRejectsOversizedBody(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	h := NewHandler(provider.Write, provider.Read)
+	body := `{"name":"Large MCP","server_type":"http","endpoint":"https://mcp.example","description":"` + strings.Repeat("x", maxCapabilityJSONBodyBytes+1024)
+	req := httptest.NewRequest(http.MethodPost, "/admin/mcp-servers", strings.NewReader(body))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.handleAdminMCPServers(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM mcp_servers WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("count mcp servers: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("mcp server count = %d, want 0", count)
+	}
+}
+
+func TestCreateMCPServerWritesAudit(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	h := NewHandler(provider.Write, provider.Read)
+	h.SetAuditRepo(auditRepo)
+	req := httptest.NewRequest(http.MethodPost, "/admin/mcp-servers", strings.NewReader(`{"name":"Finance MCP","server_type":"http","endpoint":"https://mcp.example/finance","department_id":"finance","risk_level":"high","env_keys":["FINANCE_TOKEN"]}`))
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	h.handleAdminMCPServers(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected mcp install audit log")
+	}
+	if logs[0].WorkType != "mcp_server_installed" {
+		t.Fatalf("work_type = %q", logs[0].WorkType)
+	}
+	if !strings.Contains(logs[0].Summary, "Finance MCP") || !strings.Contains(logs[0].ErrorMsg, "FINANCE_TOKEN") {
+		t.Fatalf("audit log = %+v", logs[0])
+	}
+	if strings.Contains(logs[0].ErrorMsg, "=secret") {
+		t.Fatalf("audit log leaked secret value: %s", logs[0].ErrorMsg)
+	}
+}
+
+func TestGetMCPServerSupportsEscapedID(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO mcp_servers (tenant_id, id, name, description, server_type, endpoint, command, args_json, env_keys_json, department_id, risk_level, status, installed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tenant-a", "mcp/team a", "Team MCP", "team tools", "http", "https://mcp.example/team", "", "[]", "[]", "all", "low", "enabled", now, now, now)
+	if err != nil {
+		t.Fatalf("seed mcp server: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(provider.Write, provider.Read).RegisterAdminRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/admin/mcp-servers/mcp%2Fteam%20a", nil)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var server MCPServer
+	if err := json.NewDecoder(rr.Body).Decode(&server); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if server.ID != "mcp/team a" || server.Name != "Team MCP" {
+		t.Fatalf("server = %+v", server)
+	}
+}
+
+func TestUpdateMCPServerStatusSupportsEscapedID(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO mcp_servers (tenant_id, id, name, description, server_type, endpoint, command, args_json, env_keys_json, department_id, risk_level, status, installed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tenant-a", "mcp/team a", "Team MCP", "team tools", "http", "https://mcp.example/team", "", "[]", "[\"TEAM_TOKEN\"]", "all", "low", "enabled", now, now, now)
+	if err != nil {
+		t.Fatalf("seed mcp server: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(provider.Write, provider.Read).RegisterAdminRoutes(mux)
+	body := strings.NewReader(`{"name":"Team MCP","description":"team tools","server_type":"http","endpoint":"https://mcp.example/team","args":[],"env_keys":["TEAM_TOKEN"],"department_id":"all","risk_level":"low","status":"disabled"}`)
+	req := httptest.NewRequest(http.MethodPut, "/admin/mcp-servers/mcp%2Fteam%20a", body)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var status string
+	if err := provider.Read.QueryRow(`SELECT status FROM mcp_servers WHERE tenant_id=? AND id=?`, "tenant-a", "mcp/team a").Scan(&status); err != nil {
+		t.Fatalf("query mcp status: %v", err)
+	}
+	if status != "disabled" {
+		t.Fatalf("status = %q, want disabled", status)
+	}
+}
+
+func TestUpdateMCPServerStatusWritesAudit(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	now := time.Now().Format(time.RFC3339)
+	_, err = provider.Write.Exec(`INSERT INTO mcp_servers (tenant_id, id, name, description, server_type, endpoint, command, args_json, env_keys_json, department_id, risk_level, status, installed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"tenant-a", "mcp/team a", "Team MCP", "team tools", "http", "https://mcp.example/team", "", "[]", "[\"TEAM_TOKEN\"]", "all", "low", "enabled", now, now, now)
+	if err != nil {
+		t.Fatalf("seed mcp server: %v", err)
+	}
+
+	auditRepo := audit.NewRepo(provider.Write, provider.Read)
+	h := NewHandler(provider.Write, provider.Read)
+	h.SetAuditRepo(auditRepo)
+	mux := http.NewServeMux()
+	h.RegisterAdminRoutes(mux)
+	body := strings.NewReader(`{"name":"Team MCP","description":"team tools","server_type":"http","endpoint":"https://mcp.example/team","args":[],"env_keys":["TEAM_TOKEN"],"department_id":"all","risk_level":"low","status":"disabled"}`)
+	req := httptest.NewRequest(http.MethodPut, "/admin/mcp-servers/mcp%2Fteam%20a", body)
+	req = req.WithContext(tenant.WithTenantID(context.Background(), "tenant-a"))
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	logs, err := auditRepo.ListRecent("tenant-a", 10)
+	if err != nil {
+		t.Fatalf("list audit logs: %v", err)
+	}
+	if len(logs) == 0 {
+		t.Fatalf("expected mcp status audit log")
+	}
+	if logs[0].WorkType != "mcp_server_status_changed" {
+		t.Fatalf("work_type = %q", logs[0].WorkType)
+	}
+	if !strings.Contains(logs[0].ErrorMsg, "previous_status: enabled") || !strings.Contains(logs[0].ErrorMsg, "status: disabled") {
+		t.Fatalf("audit log = %+v", logs[0])
 	}
 }
 

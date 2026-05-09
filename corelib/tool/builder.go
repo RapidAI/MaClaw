@@ -258,6 +258,10 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		if b.tracker != nil {
 			outcomeScore = b.tracker.ContextOutcomeScore(t.Name, queryTokens)
 		}
+		var routingHintAdjustment float64
+		if b.tracker != nil {
+			routingHintAdjustment = b.tracker.RoutingHintAdjustment(t.Name, queryTokens)
+		}
 		priorityBonus := clampFloat(float64(t.Priority)*0.1, 0, 1)
 
 		// Skill match bonus: only applies to manage_skill tool.
@@ -274,6 +278,7 @@ func (b *DynamicToolBuilder) Build(userMessage string) []map[string]interface{} 
 		} else {
 			s = 0.9*retrievalScore + 0.1*priorityBonus
 		}
+		s = clampFloat(s+routingHintAdjustment, 0, 1)
 		scoredList = append(scoredList, scored{tool: t, score: s})
 	}
 	sort.Slice(scoredList, func(i, j int) bool {

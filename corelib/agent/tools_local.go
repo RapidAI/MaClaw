@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -290,18 +291,22 @@ func ToolFileRead(args map[string]interface{}) string {
 
 // ToolRipgrep searches text files recursively using Go regexp.
 func ToolRipgrep(args map[string]interface{}) string {
+	totalStart := time.Now()
 	pattern := StringArg(args, "pattern")
 	if pattern == "" {
-		return "缺少 pattern 参数"
+		return "missing pattern parameter"
 	}
 	caseSensitive := boolArg(args, "case_sensitive", false)
-	compilePattern := pattern
+	fixedString := boolArg(args, "fixed_string", false)
+	wholeWord := boolArg(args, "whole_word", false)
+	lineRegexp := boolArg(args, "line_regexp", false)
+	compilePattern := buildSearchRegexpPattern(pattern, fixedString, wholeWord, lineRegexp)
 	if !caseSensitive {
-		compilePattern = "(?i:" + pattern + ")"
+		compilePattern = "(?i:" + compilePattern + ")"
 	}
 	re, err := regexp.Compile(compilePattern)
 	if err != nil {
-		return fmt.Sprintf("正则表达式无效: %s", err.Error())
+		return fmt.Sprintf("invalid regex: %s", err.Error())
 	}
 
 	base, err := resolveSearchBase(StringArg(args, "path"))
@@ -309,6 +314,7 @@ func ToolRipgrep(args map[string]interface{}) string {
 		return err.Error()
 	}
 	globPattern := StringArg(args, "glob")
+	excludePattern := resolveSearchExcludePattern(args, base)
 	maxResults := intArg(args, "max_results", 100)
 	if maxResults <= 0 {
 		maxResults = 100
@@ -316,11 +322,34 @@ func ToolRipgrep(args map[string]interface{}) string {
 	if maxResults > 1000 {
 		maxResults = 1000
 	}
+	outputMode := StringArg(args, "output_mode")
+	if outputMode == "" {
+		outputMode = "content"
+	}
+	if !isValidSearchOutputMode(outputMode) {
+		return fmt.Sprintf("invalid output_mode %q: expected content, files_with_matches, or count", outputMode)
+	}
+	offset := intArg(args, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
+	outputLimit := maxResults + offset
+	beforeContext, afterContext := resolveSearchContextArgs(args)
+	includeStats := boolArg(args, "stats", false)
+	fileType := StringArg(args, "type")
+	includeHidden := boolArg(args, "include_hidden", false)
 
 	matches := make([]string, 0, min(maxResults, 100))
 	filesSearched := 0
-	err = walkSearchFiles(base, globPattern, false, func(path string, d fs.DirEntry) error {
-		if len(matches) >= maxResults {
+	fileCounts := make(map[string]int)
+	matchedFiles := make(map[string]bool)
+	searchStats := searchCandidateStats{}
+	appendStats := func(result string) string {
+		searchStats.totalTime = time.Since(totalStart)
+		return appendSearchStats(result, includeStats, searchStats, filesSearched)
+	}
+	visit := func(path string, d fs.DirEntry) error {
+		if searchOutputLimitReached(outputMode, outputLimit, matches, matchedFiles, fileCounts) {
 			return filepath.SkipAll
 		}
 		info, err := d.Info()
@@ -331,26 +360,100 @@ func ToolRipgrep(args map[string]interface{}) string {
 			return nil
 		}
 		filesSearched++
-		return searchFileLines(path, re, maxResults, &matches)
-	})
-	if err != nil && err != filepath.SkipAll {
-		return fmt.Sprintf("搜索失败: %s", err.Error())
+		if err := searchFileLinesWithMode(path, re, outputLimit, outputMode, beforeContext, afterContext, &matches, matchedFiles, fileCounts); err != nil {
+			return err
+		}
+		if searchOutputLimitReached(outputMode, outputLimit, matches, matchedFiles, fileCounts) {
+			return filepath.SkipAll
+		}
+		return nil
 	}
+	candidateStart := time.Now()
+	candidates, ok, stats := indexedSearchCandidates(base, pattern, globPattern, excludePattern, fileType, fixedString, includeHidden)
+	stats.candidateTime = time.Since(candidateStart)
+	searchStats = stats
+	scanStart := time.Now()
+	if ok {
+		searchStats = stats
+		for _, path := range candidates {
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			visitErr := visit(path, fileInfoDirEntry{info: info})
+			if visitErr == filepath.SkipAll {
+				break
+			}
+			if visitErr != nil {
+				err = visitErr
+				break
+			}
+		}
+	} else {
+		searchStats = stats
+		err = walkSearchFilesFiltered(base, globPattern, excludePattern, fileType, false, includeHidden, visit)
+	}
+	searchStats.scanTime = time.Since(scanStart)
+	if err != nil && err != filepath.SkipAll {
+		return fmt.Sprintf("search failed: %s", err.Error())
+	}
+
+	switch outputMode {
+	case "files_with_matches":
+		files := make([]string, 0, len(matchedFiles))
+		for file := range matchedFiles {
+			files = append(files, file)
+		}
+		sort.Strings(files)
+		files = applyStringOffset(files, offset)
+		if len(files) > maxResults {
+			files = files[:maxResults]
+		}
+		if len(files) == 0 {
+			return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
+		}
+		result := strings.Join(files, "\n")
+		if len(matchedFiles) >= maxResults+offset {
+			result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
+		}
+		return appendStats(result)
+	case "count":
+		files := make([]string, 0, len(fileCounts))
+		for file := range fileCounts {
+			files = append(files, file)
+		}
+		sort.Strings(files)
+		files = applyStringOffset(files, offset)
+		if len(files) == 0 {
+			return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
+		}
+		if len(files) > maxResults {
+			files = files[:maxResults]
+		}
+		for _, file := range files {
+			matches = append(matches, fmt.Sprintf("%s:%d", file, fileCounts[file]))
+		}
+	}
+
 	if len(matches) == 0 {
-		return fmt.Sprintf("未找到匹配项（已搜索 %d 个文件）", filesSearched)
+		return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
+	}
+	matches = applyStringOffset(matches, offset)
+	if len(matches) == 0 {
+		return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
 	}
 	result := strings.Join(matches, "\n")
 	if len(matches) >= maxResults {
-		result += fmt.Sprintf("\n... 已达到 max_results=%d", maxResults)
+		result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
 	}
-	return result
+	return appendStats(result)
 }
 
 // ToolGlob finds files by glob pattern, including recursive ** patterns.
 func ToolGlob(args map[string]interface{}) string {
 	pattern := StringArg(args, "pattern")
 	if pattern == "" {
-		return "缺少 pattern 参数"
+		return "missing pattern parameter"
 	}
 	base, err := resolveSearchBase(StringArg(args, "path"))
 	if err != nil {
@@ -364,9 +467,12 @@ func ToolGlob(args map[string]interface{}) string {
 		maxResults = 2000
 	}
 	includeDirs := boolArg(args, "include_dirs", false)
+	includeHidden := boolArg(args, "include_hidden", false)
+	fileType := StringArg(args, "type")
+	excludePattern := resolveSearchExcludePattern(args, base)
 
 	var results []string
-	err = walkSearchFiles(base, pattern, includeDirs, func(path string, d fs.DirEntry) error {
+	err = walkSearchFilesFiltered(base, pattern, excludePattern, fileType, includeDirs, includeHidden, func(path string, d fs.DirEntry) error {
 		if d.IsDir() && !includeDirs {
 			return nil
 		}
@@ -377,15 +483,15 @@ func ToolGlob(args map[string]interface{}) string {
 		return nil
 	})
 	if err != nil && err != filepath.SkipAll {
-		return fmt.Sprintf("Glob 失败: %s", err.Error())
+		return fmt.Sprintf("Glob 濠电姰鍨洪崕鑲╁垝妤ｅ啯鏅? %s", err.Error())
 	}
 	sort.Strings(results)
 	if len(results) == 0 {
-		return "未找到匹配路径"
+		return "no matches found"
 	}
 	result := strings.Join(results, "\n")
 	if len(results) >= maxResults {
-		result += fmt.Sprintf("\n... 已达到 max_results=%d", maxResults)
+		result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
 	}
 	return result
 }
@@ -783,17 +889,131 @@ func resolveSearchBase(path string) (string, error) {
 	return ResolveFileToolPath(path)
 }
 
+func resolveSearchExcludePattern(args map[string]interface{}, base string) string {
+	var patterns []string
+	if exclude := strings.TrimSpace(StringArg(args, "exclude")); exclude != "" {
+		patterns = append(patterns, exclude)
+	}
+	if exclude := strings.TrimSpace(StringArg(args, "exclude_glob")); exclude != "" {
+		patterns = append(patterns, exclude)
+	}
+	if !boolArg(args, "no_ignore", false) {
+		patterns = append(patterns, rootIgnoreExcludePattern(base))
+	}
+	return strings.Join(nonEmptySearchPatterns(patterns), " ")
+}
+
+func nonEmptySearchPatterns(patterns []string) []string {
+	out := patterns[:0]
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern != "" {
+			out = append(out, pattern)
+		}
+	}
+	return out
+}
+
+func rootIgnoreExcludePattern(base string) string {
+	root := base
+	if info, err := os.Stat(root); err == nil && !info.IsDir() {
+		root = filepath.Dir(root)
+	}
+	var patterns []string
+	for _, ignoreFile := range []string{
+		filepath.Join(root, ".gitignore"),
+		filepath.Join(root, ".ignore"),
+		filepath.Join(root, ".git", "info", "exclude"),
+	} {
+		data, err := os.ReadFile(ignoreFile)
+		if err != nil {
+			continue
+		}
+		filePatterns, ok := gitignoreExcludePatterns(string(data))
+		if !ok {
+			continue
+		}
+		patterns = append(patterns, filePatterns...)
+	}
+	return strings.Join(patterns, " ")
+}
+
+func gitignoreExcludePatterns(content string) ([]string, bool) {
+	var patterns []string
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, `\#`) || strings.HasPrefix(line, `\!`) {
+			line = line[1:]
+		} else if strings.HasPrefix(line, "#") {
+			continue
+		} else if strings.HasPrefix(line, "!") {
+			return nil, false
+		}
+		line = strings.TrimRight(line, " ")
+		anchored := strings.HasPrefix(line, "/")
+		line = strings.TrimPrefix(line, "/")
+		line = filepath.ToSlash(line)
+		if line == "" {
+			continue
+		}
+		dirOnly := strings.HasSuffix(line, "/")
+		line = strings.TrimSuffix(line, "/")
+		if line == "" {
+			continue
+		}
+		if anchored {
+			if dirOnly {
+				patterns = append(patterns, "./"+line+"/**")
+			} else {
+				patterns = append(patterns, "./"+line, "./"+line+"/**")
+			}
+			continue
+		}
+		if dirOnly {
+			if strings.Contains(line, "/") {
+				patterns = append(patterns, line+"/**")
+			} else {
+				patterns = append(patterns, line+"/**", "**/"+line+"/**")
+			}
+			continue
+		}
+		patterns = append(patterns, line, line+"/**")
+		if !strings.Contains(line, "/") {
+			patterns = append(patterns, "**/"+line+"/**")
+		}
+	}
+	return patterns, scanner.Err() == nil
+}
+
+func buildSearchRegexpPattern(pattern string, fixedString, wholeWord, lineRegexp bool) string {
+	if fixedString {
+		pattern = regexp.QuoteMeta(pattern)
+	}
+	if wholeWord {
+		pattern = `\b(?:` + pattern + `)\b`
+	}
+	if lineRegexp {
+		pattern = `^(?:` + pattern + `)$`
+	}
+	return pattern
+}
+
 func walkSearchFiles(base, pattern string, includeDirs bool, visit func(string, fs.DirEntry) error) error {
+	return walkSearchFilesFiltered(base, pattern, "", "", includeDirs, false, visit)
+}
+
+func walkSearchFilesFiltered(base, pattern, excludePattern, fileType string, includeDirs, includeHidden bool, visit func(string, fs.DirEntry) error) error {
 	info, err := os.Stat(base)
 	if err != nil {
-		return fmt.Errorf("路径不存在或无法访问: %w", err)
+		return fmt.Errorf("闂佽崵濮崇拃锕傚垂閹殿喗顐介柣鎰嚟閳绘梻鈧箍鍎遍幊鎰板箺閻樼粯鐓曢柨鏂挎惈婵′粙鏌涢妸锝呭鐎殿噮鍣ｉ幃鈺佺暦閸ャ儮鍋撴繝鍥ㄥ仯濞达絽鎲￠崑銉╂煥? %w", err)
 	}
 	if !info.IsDir() {
-		if pattern != "" {
-			matched, err := matchGlob(pattern, filepath.Base(base), false)
-			if err != nil || !matched {
-				return err
-			}
+		if !matchesSearchFilters(filepath.Base(base), false, pattern, excludePattern, fileType) {
+			return nil
 		}
 		return visit(base, fileInfoDirEntry{info: info})
 	}
@@ -801,32 +1021,84 @@ func walkSearchFiles(base, pattern string, includeDirs bool, visit func(string, 
 		if err != nil {
 			return nil
 		}
-		if path != base && d.IsDir() && shouldSkipSearchDir(d.Name()) {
+		if path != base && isSearchSymlink(d) {
+			return nil
+		}
+		if path != base && d.IsDir() && shouldSkipSearchDir(d.Name(), includeHidden) {
 			return filepath.SkipDir
 		}
 		if path == base {
 			return nil
 		}
+		if !includeHidden && isHiddenSearchPath(d.Name()) {
+			return nil
+		}
+		rel, err := filepath.Rel(base, path)
+		if err != nil {
+			return nil
+		}
+		if excludePattern != "" {
+			excluded, err := matchGlob(excludePattern, rel, d.IsDir())
+			if err != nil {
+				return err
+			}
+			if excluded && d.IsDir() {
+				return filepath.SkipDir
+			}
+		}
 		if d.IsDir() && !includeDirs {
 			return nil
 		}
-		if pattern != "" {
-			rel, err := filepath.Rel(base, path)
-			if err != nil {
-				return nil
-			}
-			matched, err := matchGlob(pattern, rel, d.IsDir())
-			if err != nil || !matched {
-				return err
-			}
+		if !matchesSearchFilters(rel, d.IsDir(), pattern, excludePattern, fileType) {
+			return nil
 		}
 		return visit(path, d)
 	})
 }
 
+func matchesSearchFilters(rel string, isDir bool, globPattern, excludePattern, fileType string) bool {
+	if excludePattern != "" {
+		matched, err := matchGlob(excludePattern, rel, isDir)
+		if err != nil || matched {
+			return false
+		}
+	}
+	if globPattern != "" {
+		matched, err := matchGlob(globPattern, rel, isDir)
+		if err != nil || !matched {
+			return false
+		}
+	}
+	if isDir || strings.TrimSpace(fileType) == "" {
+		return true
+	}
+	return matchSearchFileType(rel, fileType)
+}
+
 func matchGlob(pattern, rel string, isDir bool) (bool, error) {
+	patterns := expandSearchGlobPatterns(pattern)
+	if len(patterns) == 0 {
+		return true, nil
+	}
+	for _, pattern := range patterns {
+		matched, err := matchSingleGlob(pattern, rel, isDir)
+		if err != nil {
+			return false, err
+		}
+		if matched {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func matchSingleGlob(pattern, rel string, isDir bool) (bool, error) {
 	pattern = filepath.ToSlash(strings.TrimSpace(pattern))
 	rel = filepath.ToSlash(rel)
+	rootAnchored := strings.HasPrefix(pattern, "./")
+	if rootAnchored {
+		pattern = strings.TrimPrefix(pattern, "./")
+	}
 	if isDir {
 		rel = strings.TrimSuffix(rel, "/") + "/"
 	}
@@ -834,12 +1106,12 @@ func matchGlob(pattern, rel string, isDir bool) (bool, error) {
 		return true, nil
 	}
 	if strings.HasPrefix(pattern, "**/") {
-		matched, err := matchGlob(strings.TrimPrefix(pattern, "**/"), rel, isDir)
+		matched, err := matchSingleGlob(strings.TrimPrefix(pattern, "**/"), rel, isDir)
 		if err != nil || matched {
 			return matched, err
 		}
 	}
-	if !strings.Contains(pattern, "/") {
+	if !rootAnchored && !strings.Contains(pattern, "/") {
 		return filepath.Match(pattern, filepath.Base(rel))
 	}
 	re := regexp.QuoteMeta(pattern)
@@ -849,13 +1121,171 @@ func matchGlob(pattern, rel string, isDir bool) (bool, error) {
 	return regexp.MatchString("^"+re+"$", rel)
 }
 
-func shouldSkipSearchDir(name string) bool {
+func expandSearchGlobPatterns(pattern string) []string {
+	raw := strings.Fields(strings.TrimSpace(pattern))
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []string
+	for _, item := range raw {
+		parts := []string{item}
+		if !(strings.Contains(item, "{") && strings.Contains(item, "}")) {
+			parts = strings.Split(item, ",")
+		}
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			out = append(out, expandSingleGlobBraces(part)...)
+		}
+	}
+	return out
+}
+
+func expandSingleGlobBraces(pattern string) []string {
+	start := strings.Index(pattern, "{")
+	end := strings.Index(pattern, "}")
+	if start < 0 || end <= start {
+		return []string{pattern}
+	}
+	var out []string
+	prefix, suffix := pattern[:start], pattern[end+1:]
+	for _, option := range strings.Split(pattern[start+1:end], ",") {
+		option = strings.TrimSpace(option)
+		if option == "" {
+			continue
+		}
+		out = append(out, prefix+option+suffix)
+	}
+	if len(out) == 0 {
+		return []string{pattern}
+	}
+	return out
+}
+
+func matchSearchFileType(path, fileType string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, candidate := range searchFileTypeExtensions(fileType) {
+		if strings.HasPrefix(candidate, "name:") && base == strings.TrimPrefix(candidate, "name:") {
+			return true
+		}
+		if strings.HasPrefix(candidate, "suffix:") && strings.HasSuffix(base, strings.TrimPrefix(candidate, "suffix:")) {
+			return true
+		}
+		if ext == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func searchFileTypeExtensions(fileType string) []string {
+	parts := strings.FieldsFunc(strings.ToLower(strings.TrimSpace(fileType)), func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	})
+	seen := make(map[string]bool)
+	var out []string
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		for _, ext := range searchFileTypeExtensionSet(part) {
+			if !seen[ext] {
+				seen[ext] = true
+				out = append(out, ext)
+			}
+		}
+	}
+	return out
+}
+
+func searchFileTypeExtensionSet(fileType string) []string {
+	if strings.HasPrefix(fileType, ".") {
+		return []string{fileType}
+	}
+	switch fileType {
+	case "go", "golang":
+		return []string{".go"}
+	case "js", "javascript":
+		return []string{".js", ".jsx", ".mjs", ".cjs"}
+	case "ts", "typescript":
+		return []string{".ts", ".tsx", ".mts", ".cts"}
+	case "py", "python":
+		return []string{".py", ".pyw"}
+	case "rs", "rust":
+		return []string{".rs"}
+	case "java":
+		return []string{".java"}
+	case "c":
+		return []string{".c", ".h"}
+	case "cpp", "c++":
+		return []string{".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"}
+	case "cs", "csharp":
+		return []string{".cs"}
+	case "md", "markdown":
+		return []string{".md", ".markdown", ".mdx"}
+	case "json":
+		return []string{".json", ".jsonc"}
+	case "yaml", "yml":
+		return []string{".yaml", ".yml"}
+	case "toml":
+		return []string{".toml"}
+	case "html":
+		return []string{".html", ".htm"}
+	case "css":
+		return []string{".css", ".scss", ".sass", ".less"}
+	case "sh", "shell", "bash":
+		return []string{".sh", ".bash", ".zsh", ".fish"}
+	case "sql":
+		return []string{".sql"}
+	case "proto", "protobuf":
+		return []string{".proto"}
+	case "kt", "kotlin":
+		return []string{".kt", ".kts"}
+	case "swift":
+		return []string{".swift"}
+	case "php":
+		return []string{".php", ".phtml"}
+	case "rb", "ruby":
+		return []string{".rb"}
+	case "xml":
+		return []string{".xml"}
+	case "docker", "dockerfile":
+		return []string{".dockerfile", "name:dockerfile"}
+	case "make", "makefile":
+		return []string{".mk", "name:makefile"}
+	case "cmake":
+		return []string{".cmake", "name:cmakelists.txt"}
+	case "gradle":
+		return []string{".gradle", "suffix:.gradle.kts"}
+	default:
+		return []string{"." + fileType}
+	}
+}
+
+func shouldSkipSearchDir(name string, includeHidden bool) bool {
+	if name == ".git" {
+		return true
+	}
+	if !includeHidden && isHiddenSearchPath(name) {
+		return true
+	}
 	switch name {
-	case ".git", "node_modules", "vendor", "dist", "build", ".next", ".cache", ".gomodcache", ".gocache":
+	case "node_modules", "vendor", "dist", "build", "out", "target", "coverage", ".next", ".cache", ".gomodcache", ".gocache", ".venv", "venv", "env", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".gradle", ".terraform":
 		return true
 	default:
 		return false
 	}
+}
+
+func isHiddenSearchPath(name string) bool {
+	return strings.HasPrefix(name, ".") && name != "." && name != ".."
+}
+
+func isSearchSymlink(d fs.DirEntry) bool {
+	return d.Type()&fs.ModeSymlink != 0
 }
 
 func isLikelyBinary(path string) bool {
@@ -869,6 +1299,175 @@ func isLikelyBinary(path string) bool {
 	return bytes.Contains(buf[:n], []byte{0})
 }
 
+func searchFileLinesWithMode(path string, re *regexp.Regexp, maxResults int, outputMode string, beforeContext, afterContext int, matches *[]string, matchedFiles map[string]bool, fileCounts map[string]int) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSearchFileSize+1)
+	lineNo := 0
+	var previous []numberedLine
+	var pendingAfter int
+	lastOutputLine := 0
+	for scanner.Scan() {
+		lineNo++
+		line := scanner.Text()
+		if !re.MatchString(line) {
+			if pendingAfter > 0 && outputMode == "content" {
+				appendSearchOutputLine(path, lineNo, line, false, &lastOutputLine, matches)
+				pendingAfter--
+				if len(*matches) >= maxResults {
+					return filepath.SkipAll
+				}
+			}
+			if beforeContext > 0 {
+				previous = append(previous, numberedLine{lineNo: lineNo, text: line})
+				if len(previous) > beforeContext {
+					previous = previous[len(previous)-beforeContext:]
+				}
+			}
+			continue
+		}
+		switch outputMode {
+		case "files_with_matches":
+			matchedFiles[path] = true
+			return nil
+		case "count":
+			fileCounts[path]++
+		default:
+			for _, ctx := range previous {
+				appendSearchOutputLine(path, ctx.lineNo, ctx.text, false, &lastOutputLine, matches)
+				if len(*matches) >= maxResults {
+					return filepath.SkipAll
+				}
+			}
+			appendSearchOutputLine(path, lineNo, line, true, &lastOutputLine, matches)
+			if len(*matches) >= maxResults {
+				return filepath.SkipAll
+			}
+			pendingAfter = afterContext
+		}
+		if beforeContext > 0 {
+			previous = append(previous, numberedLine{lineNo: lineNo, text: line})
+			if len(previous) > beforeContext {
+				previous = previous[len(previous)-beforeContext:]
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+type numberedLine struct {
+	lineNo int
+	text   string
+}
+
+func appendSearchOutputLine(path string, lineNo int, line string, isMatch bool, lastOutputLine *int, matches *[]string) {
+	if lineNo <= *lastOutputLine {
+		return
+	}
+	if *lastOutputLine > 0 && lineNo > *lastOutputLine+1 {
+		*matches = append(*matches, "--")
+	}
+	*lastOutputLine = lineNo
+	trimmed := strings.TrimSpace(line)
+	if len([]rune(trimmed)) > 240 {
+		trimmed = string([]rune(trimmed)[:237]) + "..."
+	}
+	separator := ":"
+	if !isMatch {
+		separator = "-"
+	}
+	*matches = append(*matches, fmt.Sprintf("%s%s%d:%s", path, separator, lineNo, trimmed))
+}
+
+func resolveSearchContextArgs(args map[string]interface{}) (int, int) {
+	if c := intArg(args, "context", 0); c > 0 {
+		return c, c
+	}
+	before := intArg(args, "before_context", 0)
+	after := intArg(args, "after_context", 0)
+	if before < 0 {
+		before = 0
+	}
+	if after < 0 {
+		after = 0
+	}
+	return before, after
+}
+
+func applyStringOffset(items []string, offset int) []string {
+	if offset <= 0 {
+		return items
+	}
+	if offset >= len(items) {
+		return nil
+	}
+	return items[offset:]
+}
+
+func appendSearchStats(result string, include bool, stats searchCandidateStats, filesSearched int) string {
+	if !include {
+		return result
+	}
+	mode := "full_scan"
+	if stats.indexed {
+		mode = "indexed"
+	}
+	line := fmt.Sprintf("search_stats: mode=%s indexed_files=%d candidates=%d dirty=%d searched=%d rebuilt=%t candidate_ms=%d scan_ms=%d total_ms=%d",
+		mode,
+		stats.indexedFiles,
+		stats.candidateFiles,
+		stats.dirtyFiles,
+		filesSearched,
+		stats.rebuilt,
+		durationMillis(stats.candidateTime),
+		durationMillis(stats.scanTime),
+		durationMillis(stats.totalTime),
+	)
+	if !stats.indexed && stats.fallbackReason != "" {
+		line += " fallback=" + stats.fallbackReason
+	}
+	return fmt.Sprintf("%s\n%s",
+		result, line)
+}
+
+func durationMillis(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	ms := d.Milliseconds()
+	if ms == 0 {
+		return 1
+	}
+	return ms
+}
+
+func searchOutputLimitReached(outputMode string, limit int, matches []string, matchedFiles map[string]bool, fileCounts map[string]int) bool {
+	if limit <= 0 {
+		return true
+	}
+	switch outputMode {
+	case "files_with_matches":
+		return len(matchedFiles) >= limit
+	case "count":
+		return len(fileCounts) >= limit
+	default:
+		return len(matches) >= limit
+	}
+}
+
+func isValidSearchOutputMode(outputMode string) bool {
+	switch outputMode {
+	case "content", "files_with_matches", "count":
+		return true
+	default:
+		return false
+	}
+}
+
 func searchFileLines(path string, re *regexp.Regexp, maxResults int, matches *[]string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -876,7 +1475,7 @@ func searchFileLines(path string, re *regexp.Regexp, maxResults int, matches *[]
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), MaxSearchFileSize+1)
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
@@ -892,7 +1491,7 @@ func searchFileLines(path string, re *regexp.Regexp, maxResults int, matches *[]
 			}
 		}
 	}
-	return nil
+	return scanner.Err()
 }
 
 type fileInfoDirEntry struct {

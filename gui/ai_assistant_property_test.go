@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"math/rand"
 	"reflect"
@@ -179,14 +180,12 @@ func TestAIAssistantProperty5_DesktopConversationMemoryIsolation(t *testing.T) {
 // ---------------------------------------------------------------------------
 func TestAIAssistantProperty6_ErrorResponsePropagation(t *testing.T) {
 	f := func(input aiRandomText) bool {
-		// Use testHomeDir pointing to a non-existent directory so
-		// LoadConfig fails → isMaclawLLMConfigured() returns false.
-		app := &App{testHomeDir: t.TempDir()}
-		mgr := &RemoteSessionManager{
-			app:      app,
-			sessions: map[string]*RemoteSession{},
-		}
-		h := NewIMMessageHandler(app, mgr)
+		h := NewIMMessageHandlerStandalone(StandaloneConfig{
+			LLMConfigFunc: func() corelib.MaclawLLMConfig {
+				return corelib.MaclawLLMConfig{}
+			},
+		})
+		defer h.memory.Stop()
 
 		msg := IMUserMessage{
 			UserID:   "desktop-user",

@@ -13,6 +13,7 @@ type UISettingsPanelProps = {
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
     gossipAllowed: boolean;
+    hideAgentNet?: boolean;
     updateSidebarNavVisibility: (key: SidebarVisibilityKey, visible: boolean) => void;
 };
 
@@ -29,6 +30,7 @@ export const UISettingsPanel = ({
     chatFontSize,
     setChatFontSize,
     gossipAllowed,
+    hideAgentNet = false,
     updateSidebarNavVisibility,
 }: UISettingsPanelProps) => (
     <div className="settings-panel">
@@ -107,7 +109,7 @@ export const UISettingsPanel = ({
                 {[
                     { key: 'show_nav_mcp' as const, label: 'MCP' },
                     { key: 'show_nav_gossip' as const, label: t("gossip"), disabled: !gossipAllowed },
-                    { key: 'show_nav_agentnet' as const, label: textForLang(lang, 'AgentNet', '\u667a\u7f51', '\u667a\u7db2') },
+                    ...(!hideAgentNet ? [{ key: 'show_nav_agentnet' as const, label: textForLang(lang, 'AgentNet', '\u667a\u7f51', '\u667a\u7db2') }] : []),
                 ].map(item => (
                     <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: item.disabled ? 'not-allowed' : 'pointer', opacity: item.disabled ? 0.5 : 1 }}>
                         <input

@@ -2,107 +2,128 @@ package views
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Tab 索引常量。
-// Chat is first — it's the primary use case for TUI.
-// AgentNet removed — not relevant for standalone TUI.
-// Coding sessions removed — TUI codes directly via bash/write_file/edit_file.
 const (
-	TabChat = iota
+	TabOnboarding = iota
+	TabChat
 	TabTools
-	TabTasks // 任务（远程 + 后台 + 计划任务）
-	TabMemory
-	TabAudit
+	TabTasks
+	TabServiceRedeem
 	TabConfig
 	TabCount
 )
 
-// RootModel 是 TUI 的根 Model，管理 Tab 切换和子视图。
 type RootModel struct {
 	width  int
 	height int
 	tab    int
 	lang   string
 
-	// 子视图
-	Tools     ToolStatusModel
-	Tasks     TaskModel
-	Memory    MemoryModel
-	Audit     AuditModel
-	Config    ConfigModel
-	Chat      ChatModel
-	StatusBar StatusBarModel
-	Help      HelpModel
+	Onboarding OnboardingModel
+	Tools      ToolStatusModel
+	Tasks      TaskModel
+	Service    ServiceRedeemModel
+	Config     ConfigModel
+	Chat       ChatModel
+	StatusBar  StatusBarModel
+	Help       HelpModel
 }
 
-// NewRootModel 创建根 Model。
 func NewRootModel(lang string) RootModel {
 	lang = i18n.NormalizeLang(lang)
 	chat := NewChatModel(lang)
-	chat.FocusInput() // 启动后直接聚焦输入框
+	chat.FocusInput()
 	return RootModel{
-		tab:       TabChat,
-		lang:      lang,
-		Tools:     NewToolStatusModel(lang),
-		Tasks:     NewTaskModel(lang),
-		Memory:    NewMemoryModel(lang),
-		Audit:     NewAuditModel(lang),
-		Config:    NewConfigModel(lang),
-		Chat:      chat,
-		StatusBar: NewStatusBarModel(lang),
-		Help:      NewHelpModel(lang),
+		tab:        TabChat,
+		lang:       lang,
+		Onboarding: NewOnboardingModel(lang),
+		Tools:      NewToolStatusModel(lang),
+		Tasks:      NewTaskModel(lang),
+		Service:    NewServiceRedeemModel(lang),
+		Config:     NewConfigModel(lang),
+		Chat:       chat,
+		StatusBar:  NewStatusBarModel(lang),
+		Help:       NewHelpModel(lang),
 	}
 }
 
 func (m *RootModel) SetLang(lang string) {
 	m.lang = i18n.NormalizeLang(lang)
+	m.Onboarding.SetLang(m.lang)
 	m.Tools.SetLang(m.lang)
 	m.Tasks.SetLang(m.lang)
-	m.Memory.SetLang(m.lang)
-	m.Audit.SetLang(m.lang)
+	m.Service.SetLang(m.lang)
 	m.Config.SetLang(m.lang)
 	m.Chat.SetLang(m.lang)
 	m.Help.SetLang(m.lang)
 	m.StatusBar.SetLang(m.lang)
 }
 
-func (m RootModel) Lang() string {
-	return m.lang
-}
+func (m RootModel) Lang() string { return m.lang }
 
-// Init 实现 tea.Model。
-func (m RootModel) Init() tea.Cmd {
-	return nil
-}
+func (m RootModel) Init() tea.Cmd { return nil }
 
-// Update 处理键盘导航和子视图更新。
 func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case TaskOpenToolsMsg:
+		m.SetTab(TabTools)
+		m.Tools.FocusMCP()
+		return m, nil
+	case TaskOpenChatMsg:
+		m.SetTab(TabChat)
+		return m, nil
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.Help.SetViewport(msg.Width, max(1, msg.Height-4))
+		return m, m.updateChildSizes(msg)
 	case tea.KeyMsg:
+		if tab, ok := rootDirectTabShortcut(msg.String()); ok {
+			previousTab := m.tab
+			m.Help.visible = false
+			m.SetTab(tab)
+			if previousTab == TabServiceRedeem && tab == TabTools && m.Service.NeedsMCPNextStep() {
+				m.Tools.StartMCPLocalTemplate()
+			}
+			return m, nil
+		}
+		switch msg.String() {
+		case "ctrl+right", "ctrl+tab":
+			m.Help.visible = false
+			m.SetTab((m.tab + 1) % TabCount)
+			return m, nil
+		case "ctrl+left", "ctrl+shift+tab":
+			m.Help.visible = false
+			m.SetTab((m.tab - 1 + TabCount) % TabCount)
+			return m, nil
+		}
+		if msg.String() == "?" && !m.activeViewIsEditing() {
+			m.Help.Toggle()
+			return m, nil
+		}
+
 		if m.Help.IsVisible() {
 			var cmd tea.Cmd
 			m.Help, cmd = m.Help.Update(msg)
 			return m, cmd
 		}
-		if m.tab == TabConfig && m.Config.IsEditing() {
+		if m.tab == TabConfig || m.tab == TabOnboarding {
 			break
 		}
-		if m.tab == TabAudit && m.Audit.IsFiltering() {
+		if m.tab == TabServiceRedeem && m.Service.IsEditing() {
 			break
 		}
 		if m.tab == TabTools && m.Tools.IsEditing() {
 			break
 		}
 		if m.tab == TabChat && m.Chat.IsInputFocused() {
-			break // let chat handle all keys when input is focused
+			break
 		}
 
 		switch msg.String() {
@@ -110,25 +131,17 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 			m.Help.Toggle()
 			return m, nil
 		case "tab", "right":
-			m.tab = (m.tab + 1) % TabCount
-			if m.tab == TabChat {
-				m.Chat.FocusInput()
-			}
+			m.SetTab((m.tab + 1) % TabCount)
 			return m, nil
 		case "shift+tab", "left":
-			m.tab = (m.tab - 1 + TabCount) % TabCount
-			if m.tab == TabChat {
-				m.Chat.FocusInput()
-			}
+			m.SetTab((m.tab - 1 + TabCount) % TabCount)
 			return m, nil
 		}
 	}
 
-	// Status bar always gets all messages.
 	var sbCmd tea.Cmd
 	m.StatusBar, sbCmd = m.StatusBar.Update(msg)
 
-	// Route async result messages to their target view regardless of active tab.
 	switch msg.(type) {
 	case ToolSkillSearchResultMsg, ToolSkillInstallResultMsg, ToolOperationResultMsg:
 		var toolCmd tea.Cmd
@@ -152,14 +165,30 @@ func (m RootModel) Update(msg tea.Msg) (RootModel, tea.Cmd) {
 	return m, tea.Batch(cmd, sbCmd)
 }
 
-// View 渲染完整 TUI 界面。
+func (m *RootModel) updateChildSizes(msg tea.WindowSizeMsg) tea.Cmd {
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
+	m.Onboarding, cmd = m.Onboarding.Update(msg)
+	cmds = append(cmds, cmd)
+	m.Tools, cmd = m.Tools.Update(msg)
+	cmds = append(cmds, cmd)
+	m.Tasks, cmd = m.Tasks.Update(msg)
+	cmds = append(cmds, cmd)
+	m.Service, cmd = m.Service.Update(msg)
+	cmds = append(cmds, cmd)
+	m.Config, cmd = m.Config.Update(msg)
+	cmds = append(cmds, cmd)
+	m.Chat, cmd = m.Chat.Update(msg)
+	cmds = append(cmds, cmd)
+	return tea.Batch(cmds...)
+}
+
 func (m RootModel) View() string {
 	if m.width == 0 {
 		return i18n.T(i18n.MsgTUIInitializing, m.lang) + "\n"
 	}
 
 	tabBar := m.renderTabs()
-
 	contentHeight := m.height - 4
 	if contentHeight < 1 {
 		contentHeight = 1
@@ -167,17 +196,17 @@ func (m RootModel) View() string {
 
 	content := ""
 	if m.Help.IsVisible() {
-		content = m.Help.View()
+		content = m.Help.ViewWithSize(contentHeight, m.width)
 	} else {
 		switch m.tab {
+		case TabOnboarding:
+			content = m.Onboarding.View()
 		case TabTools:
 			content = m.Tools.View()
 		case TabTasks:
 			content = m.Tasks.View()
-		case TabMemory:
-			content = m.Memory.View()
-		case TabAudit:
-			content = m.Audit.View()
+		case TabServiceRedeem:
+			content = m.Service.View()
 		case TabConfig:
 			content = m.Config.View()
 		case TabChat:
@@ -185,65 +214,119 @@ func (m RootModel) View() string {
 		}
 	}
 
-	contentStyle := lipgloss.NewStyle().
-		Width(m.width).
-		Height(contentHeight)
-	content = contentStyle.Render(content)
-
+	content = limitRenderedLines(content, contentHeight)
+	content = lipgloss.NewStyle().Width(m.width).Height(contentHeight).Render(content)
 	statusBar := m.StatusBar.View(m.width)
 	return fmt.Sprintf("%s\n%s\n%s", tabBar, content, statusBar)
 }
 
-// renderTabs 渲染 Tab 栏。
-func (m RootModel) renderTabs() string {
-	activeStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("229")).
-		Background(lipgloss.Color("57")).
-		Padding(0, 2)
+func limitRenderedLines(s string, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	if len(lines) <= maxLines {
+		return s
+	}
+	return strings.Join(lines[:maxLines], "\n")
+}
 
-	inactiveStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("252")).
-		Background(lipgloss.Color("236")).
-		Padding(0, 2)
+func (m RootModel) renderTabs() string {
+	padding := 2
+	if m.width < 88 {
+		padding = 1
+	}
+	if m.width < 56 {
+		padding = 0
+	}
+	activeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57")).Padding(0, padding)
+	inactiveStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Background(lipgloss.Color("236")).Padding(0, padding)
 
 	tabNames := [TabCount]string{
+		onboardingTabName(m.lang),
 		i18n.T(i18n.MsgTUITabChat, m.lang),
 		i18n.T(i18n.MsgTUITabTools, m.lang),
 		i18n.T(i18n.MsgTUITabSchedule, m.lang),
-		i18n.T(i18n.MsgTUITabMemory, m.lang),
-		i18n.T(i18n.MsgTUITabAudit, m.lang),
+		serviceRedeemTabName(m.lang),
 		i18n.T(i18n.MsgTUITabConfig, m.lang),
 	}
 
-	tabs := ""
+	var tabs strings.Builder
 	for i, name := range tabNames {
+		label := rootTabLabel(i, name, m.width, m.lang)
 		if i == m.tab {
-			tabs += activeStyle.Render(name)
+			tabs.WriteString(activeStyle.Render(label))
 		} else {
-			tabs += inactiveStyle.Render(name)
+			tabs.WriteString(inactiveStyle.Render(label))
 		}
 	}
-	return tabs
+	return fitRenderedLines(tabs.String(), m.width)
 }
 
-// ActiveTab 返回当前活跃的 Tab 索引。
-func (m RootModel) ActiveTab() int {
-	return m.tab
+func rootTabLabel(idx int, name string, width int, lang string) string {
+	if width >= 88 {
+		return fmt.Sprintf("F%d %s", idx+1, name)
+	}
+	if width >= 56 {
+		return name
+	}
+	return fmt.Sprintf("F%d%s", idx+1, rootMiniTabName(idx, lang))
 }
 
-// updateActiveTab dispatches a message to the currently active tab's view.
+func rootMiniTabName(idx int, lang string) string {
+	if i18n.NormalizeLang(lang) == "en" {
+		labels := [TabCount]string{"S", "C", "T", "J", "R", "G"}
+		return labels[idx]
+	}
+	labels := [TabCount]string{"初", "聊", "工", "任", "兑", "设"}
+	return labels[idx]
+}
+
+func rootDirectTabShortcut(key string) (int, bool) {
+	switch key {
+	case "f1", "alt+1":
+		return TabOnboarding, true
+	case "f2", "alt+2":
+		return TabChat, true
+	case "f3", "alt+3":
+		return TabTools, true
+	case "f4", "alt+4":
+		return TabTasks, true
+	case "f5", "alt+5":
+		return TabServiceRedeem, true
+	case "f6", "alt+6":
+		return TabConfig, true
+	}
+	return 0, false
+}
+
+func onboardingTabName(lang string) string {
+	if i18n.NormalizeLang(lang) == "en" {
+		return "Setup"
+	}
+	return "初始化"
+}
+
+func serviceRedeemTabName(lang string) string {
+	if i18n.NormalizeLang(lang) == "en" {
+		return "Redeem"
+	}
+	return "服务兑换"
+}
+
+func (m RootModel) ActiveTab() int { return m.tab }
+
 func (m *RootModel) updateActiveTab(msg tea.Msg) tea.Cmd {
 	var cmd tea.Cmd
 	switch m.tab {
+	case TabOnboarding:
+		m.Onboarding, cmd = m.Onboarding.Update(msg)
 	case TabTools:
 		m.Tools, cmd = m.Tools.Update(msg)
 	case TabTasks:
 		m.Tasks, cmd = m.Tasks.Update(msg)
-	case TabMemory:
-		m.Memory, cmd = m.Memory.Update(msg)
-	case TabAudit:
-		m.Audit, cmd = m.Audit.Update(msg)
+	case TabServiceRedeem:
+		m.Service, cmd = m.Service.Update(msg)
 	case TabConfig:
 		m.Config, cmd = m.Config.Update(msg)
 	case TabChat:
@@ -252,9 +335,28 @@ func (m *RootModel) updateActiveTab(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-// SetTab 切换到指定 Tab。
+func (m RootModel) activeViewIsEditing() bool {
+	switch m.tab {
+	case TabOnboarding:
+		return m.Onboarding.IsEditing()
+	case TabTools:
+		return m.Tools.IsEditing()
+	case TabServiceRedeem:
+		return m.Service.IsEditing()
+	case TabConfig:
+		return m.Config.IsEditing()
+	case TabChat:
+		return m.Chat.IsInputFocused()
+	default:
+		return false
+	}
+}
+
 func (m *RootModel) SetTab(tab int) {
 	if tab >= 0 && tab < TabCount {
 		m.tab = tab
+		if m.tab == TabChat {
+			m.Chat.FocusInput()
+		}
 	}
 }

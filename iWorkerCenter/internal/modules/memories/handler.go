@@ -1,9 +1,14 @@
 package memories
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -30,6 +35,29 @@ type MemoryEntry struct {
 type Handler struct {
 	write *sql.DB
 	read  *sql.DB
+}
+
+const maxMemoriesJSONBodyBytes = 256 << 10
+
+func decodeMemoriesJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxMemoriesJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxMemoriesJSONBodyBytes {
+		return errors.New("memories json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("memories json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 // NewHandler creates a memories Handler.
@@ -60,7 +88,7 @@ func (h *Handler) handleAdminMemories(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAdminMemoryByID(w http.ResponseWriter, r *http.Request) {
-	id := extractID(r.URL.Path, "/admin/memories/")
+	id := extractID(r.URL.EscapedPath(), "/admin/memories/")
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "memory id is required")
 		return
@@ -117,13 +145,22 @@ func (h *Handler) listMemories(w http.ResponseWriter, r *http.Request, activeOnl
 			response.Internal(w, err.Error())
 			return
 		}
-		_ = json.Unmarshal([]byte(tags), &m.Tags)
+		if strings.TrimSpace(tags) != "" {
+			if err := json.Unmarshal([]byte(tags), &m.Tags); err != nil {
+				response.Internal(w, fmt.Sprintf("invalid shared memory tags for %s: %v", m.ID, err))
+				return
+			}
+		}
 		if m.Tags == nil {
 			m.Tags = []string{}
 		}
 		m.CreatedAt = createdAt
 		m.UpdatedAt = updatedAt
 		memories = append(memories, m)
+	}
+	if err := rows.Err(); err != nil {
+		response.Internal(w, err.Error())
+		return
 	}
 	if memories == nil {
 		memories = []MemoryEntry{}
@@ -139,7 +176,7 @@ func (h *Handler) createMemory(w http.ResponseWriter, r *http.Request) {
 		Scope   string   `json:"scope"`
 		Tags    []string `json:"tags"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeMemoriesJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -189,9 +226,22 @@ func (h *Handler) updateMemory(w http.ResponseWriter, r *http.Request, id string
 		Tags    []string `json:"tags"`
 		Status  string   `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeMemoriesJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		response.BadRequest(w, "MISSING_TITLE", "title is required")
+		return
+	}
+	level := strings.TrimSpace(req.Level)
+	if level == "" {
+		level = "enterprise"
+	}
+	scope := strings.TrimSpace(req.Scope)
+	if scope == "" {
+		scope = "all"
 	}
 
 	now := time.Now().Format(time.RFC3339)
@@ -207,8 +257,8 @@ func (h *Handler) updateMemory(w http.ResponseWriter, r *http.Request, id string
 
 	tenantID := requestTenantID(r)
 	res, err := h.write.Exec(`UPDATE shared_memories SET title=?, content=?, level=?, scope=?, tags=?, status=?, version=version+1, updated_at=? WHERE id=? AND tenant_id=?`,
-		strings.TrimSpace(req.Title), strings.TrimSpace(req.Content),
-		strings.TrimSpace(req.Level), strings.TrimSpace(req.Scope),
+		title, strings.TrimSpace(req.Content),
+		level, scope,
 		string(tagsJSON), status, now, id, tenantID)
 	if err != nil {
 		response.Internal(w, err.Error())
@@ -228,7 +278,11 @@ func extractID(path, prefix string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return parts[0]
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 func requestTenantID(r *http.Request) string {

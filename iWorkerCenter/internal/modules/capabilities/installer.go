@@ -36,6 +36,9 @@ func (h *Handler) installCapabilityPackage(ctx context.Context, tenantID, id str
 	if err := row.Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.PackageStatus, &cp.PackageFormat, &cp.PackageSHA256, &cp.PackageSize, &cp.CreatedAt, &cp.UpdatedAt, &packageContent); err != nil {
 		return nil, err
 	}
+	if cp.Status != "active" && cp.Status != "approved" {
+		return nil, fmt.Errorf("capability must be approved before runtime installation")
+	}
 	entry, err := buildRuntimeEntryFromPackage(cp, packageContent)
 	now := time.Now().Format(time.RFC3339)
 	if err != nil {
@@ -193,7 +196,7 @@ func (h *Handler) SelectWorkerForTask(ctx context.Context, tenantID, roleCode, t
 			return "", false, err
 		}
 		if err := json.Unmarshal([]byte(entryJSON), &item.Entry); err != nil {
-			continue
+			return "", false, fmt.Errorf("decode installed runtime entry for %s: %w", item.CapabilityID, err)
 		}
 		score := scoreRuntimeSkillMatch(query, item)
 		score += h.capabilityUsageScore(ctx, tenantID, item.CapabilityID, workerID)

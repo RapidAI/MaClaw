@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -20,11 +21,20 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	lansengerReadWait     = 180 * time.Second
+	lansengerPingInterval = 15 * time.Second
+	lansengerPingWait     = 15 * time.Second
+	lansengerMaxBackoff   = 30 * time.Second
+	lansengerAPIMaxRetry  = 3
+)
+
 // Config holds the credentials and endpoints for a Lansenger bot.
 type Config struct {
-	AppID         string // Application ID (from token field 1)
-	AppSecret     string // Application secret (from token field 2)
-	ApiGatewayURL string // API gateway base URL (from token field 3)
+	AppID            string // Application ID (from token field 1)
+	AppSecret        string // Application secret (from token field 2)
+	ApiGatewayURL    string // API gateway base URL (from token field 3)
+	WebSocketBaseURL string // optional WebSocket gateway base URL override
 }
 
 // ParseToken parses a composite token string "AppID:AppSecret:ApiGatewayURL".
@@ -130,28 +140,40 @@ func (tc *tokenCache) set(token string, expiresIn int) {
 
 // Gateway manages the WebSocket connection and REST API calls to Lansenger.
 type Gateway struct {
-	config  Config
-	handler MessageHandler
+	config   Config
+	handler  MessageHandler
 	statusCb StatusCallback
-	client  *http.Client
-	tokens  tokenCache
+	client   *http.Client
+	tokens   tokenCache
 
-	mu       sync.Mutex
-	ws       *websocket.Conn
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	running  bool
+	mu      sync.Mutex
+	ws      *websocket.Conn
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	running bool
 }
 
 // NewGateway creates a new Lansenger gateway.
 func NewGateway(config Config, handler MessageHandler) *Gateway {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
 	return &Gateway{
 		config:  config,
 		handler: handler,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				Proxy:                 http.ProxyFromEnvironment,
+				DialContext:           dialer.DialContext,
+				TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+				TLSHandshakeTimeout:   10 * time.Second,
+				ResponseHeaderTimeout: 30 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				IdleConnTimeout:       90 * time.Second,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   10,
 			},
 		},
 	}
@@ -184,7 +206,7 @@ func (g *Gateway) Start(ctx context.Context) error {
 	log.Printf("[lansenger] starting gateway: appID=%s gateway=%s", g.config.AppID, g.config.ApiGatewayURL)
 
 	// Validate credentials by fetching an app token.
-	if _, err := g.getAppToken(); err != nil {
+	if _, err := g.getAppToken(ctx2); err != nil {
 		g.emitStatus("error")
 		g.mu.Lock()
 		g.running = false
@@ -235,9 +257,8 @@ func (g *Gateway) IsRunning() bool {
 // ---------------------------------------------------------------------------
 
 func (g *Gateway) connectLoop(ctx context.Context) {
-	defer g.wg.Done()
+	defer g.finishConnectLoop(ctx)
 	attempt := 0
-	maxAttempts := 100
 	var lastConnectedAt time.Time
 
 	for {
@@ -248,30 +269,25 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 		default:
 		}
 
-		if attempt >= maxAttempts {
-			log.Printf("[lansenger] error: max reconnect attempts (%d) reached, stopping", maxAttempts)
-			g.mu.Lock()
-			g.running = false
-			g.mu.Unlock()
-			g.emitStatus("error")
-			return
-		}
-
-		wsURL, err := g.getWebSocketURL()
+		wsURL, err := g.getWebSocketURL(ctx)
 		if err != nil {
-			log.Printf("[lansenger] error: get WS URL failed (attempt %d/%d): %v", attempt+1, maxAttempts, err)
+			log.Printf("[lansenger] error: get WS URL failed (attempt %d): %v", attempt+1, err)
 			attempt++
 			g.backoff(ctx, attempt)
 			continue
 		}
 
-		log.Printf("[lansenger] dialing WebSocket (attempt %d/%d): %s", attempt+1, maxAttempts, wsURL)
+		log.Printf("[lansenger] dialing WebSocket (attempt %d): %s", attempt+1, wsURL)
 		g.emitStatus("connecting")
 
 		dialStart := time.Now()
 		dialer := websocket.Dialer{
 			TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
 			HandshakeTimeout: 30 * time.Second,
+			NetDialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
 		}
 		conn, resp, err := dialer.DialContext(ctx, wsURL, nil)
 		dialDuration := time.Since(dialStart)
@@ -280,8 +296,8 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 			if resp != nil {
 				extra = fmt.Sprintf(", HTTP status=%d", resp.StatusCode)
 			}
-			log.Printf("[lansenger] error: WS dial failed (attempt %d/%d, took %v%s): %v",
-				attempt+1, maxAttempts, dialDuration, extra, err)
+			log.Printf("[lansenger] error: WS dial failed (attempt %d, took %v%s): %v",
+				attempt+1, dialDuration, extra, err)
 			attempt++
 			g.backoff(ctx, attempt)
 			continue
@@ -297,8 +313,12 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 		log.Printf("[lansenger] WebSocket connected (dial took %v), remote=%v",
 			dialDuration, conn.RemoteAddr())
 
-		// Read loop — blocks until error or close.
+		// Read loop blocks until error or close.
 		g.readLoop(ctx, conn)
+		if ctx.Err() != nil {
+			log.Printf("[lansenger] connection loop stopped after readLoop: %v", ctx.Err())
+			return
+		}
 
 		uptime := time.Since(lastConnectedAt)
 		g.mu.Lock()
@@ -306,11 +326,28 @@ func (g *Gateway) connectLoop(ctx context.Context) {
 		g.mu.Unlock()
 
 		g.emitStatus("reconnecting")
-		log.Printf("[lansenger] warning: connection lost after %v uptime, reconnecting (attempt %d/%d)",
-			uptime.Truncate(time.Second), attempt+1, maxAttempts)
+		log.Printf("[lansenger] warning: connection lost after %v uptime, reconnecting (attempt %d)",
+			uptime.Truncate(time.Second), attempt+1)
 		attempt++
 		g.backoff(ctx, attempt)
 	}
+}
+
+func (g *Gateway) finishConnectLoop(ctx context.Context) {
+	g.mu.Lock()
+	wasRunning := g.running
+	g.running = false
+	ws := g.ws
+	g.ws = nil
+	g.mu.Unlock()
+
+	if ws != nil {
+		_ = ws.Close()
+	}
+	if wasRunning && ctx.Err() != nil {
+		g.emitStatus("disconnected")
+	}
+	g.wg.Done()
 }
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
@@ -318,6 +355,15 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	defer hbCancel()
 	go g.heartbeatLoop(hbCtx, conn)
+	contextClosed := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-contextClosed:
+		}
+	}()
+	defer close(contextClosed)
 
 	msgCount := 0
 	lastMsgAt := time.Now()
@@ -325,7 +371,7 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 
 	// Set Pong handler to reset read deadline when server responds to our Ping.
 	conn.SetPongHandler(func(appData string) error {
-		_ = conn.SetReadDeadline(time.Now().Add(180 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(lansengerReadWait))
 		return nil
 	})
 
@@ -345,7 +391,7 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 		default:
 		}
 
-		_ = conn.SetReadDeadline(time.Now().Add(180 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(lansengerReadWait))
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
@@ -383,7 +429,7 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 }
 
 func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(lansengerPingInterval)
 	defer ticker.Stop()
 	pingCount := 0
 	for {
@@ -400,9 +446,10 @@ func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
 				return
 			}
 			pingStart := time.Now()
-			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(15*time.Second)); err != nil {
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(lansengerPingWait)); err != nil {
 				log.Printf("[lansenger] error: heartbeat ping #%d failed (took %v): %v",
 					pingCount+1, time.Since(pingStart), err)
+				_ = conn.Close()
 				return
 			}
 			pingCount++
@@ -416,15 +463,27 @@ func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
 }
 
 func (g *Gateway) backoff(ctx context.Context, attempt int) {
-	delay := time.Duration(attempt) * 3 * time.Second
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
-	}
+	delay := reconnectBackoffDelay(attempt)
 	log.Printf("[lansenger] warning: backoff waiting %v before retry (attempt %d)", delay, attempt)
 	select {
 	case <-ctx.Done():
 	case <-time.After(delay):
 	}
+}
+
+func reconnectBackoffDelay(attempt int) time.Duration {
+	if attempt <= 0 {
+		return 0
+	}
+	backoffStep := attempt
+	if backoffStep > int(lansengerMaxBackoff/(3*time.Second)) {
+		backoffStep = int(lansengerMaxBackoff / (3 * time.Second))
+	}
+	delay := time.Duration(backoffStep) * 3 * time.Second
+	if delay > lansengerMaxBackoff {
+		delay = lansengerMaxBackoff
+	}
+	return delay
 }
 
 // ---------------------------------------------------------------------------
@@ -591,7 +650,7 @@ func extractText(raw json.RawMessage, msgType string) string {
 // REST API — authentication
 // ---------------------------------------------------------------------------
 
-func (g *Gateway) getAppToken() (string, error) {
+func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 	if tok, ok := g.tokens.get(); ok {
 		return tok, nil
 	}
@@ -603,7 +662,7 @@ func (g *Gateway) getAppToken() (string, error) {
 		g.config.AppSecret,
 	)
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
@@ -646,7 +705,7 @@ func (g *Gateway) getAppToken() (string, error) {
 }
 
 // getWebSocketURL creates a WebSocket endpoint via the API.
-func (g *Gateway) getWebSocketURL() (string, error) {
+func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 	apiBase := strings.TrimRight(g.config.ApiGatewayURL, "/")
 	url := apiBase + "/v1/ws/endpoint/create"
 
@@ -655,7 +714,7 @@ func (g *Gateway) getWebSocketURL() (string, error) {
 		"secret": g.config.AppSecret,
 	})
 
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -692,8 +751,14 @@ func (g *Gateway) getWebSocketURL() (string, error) {
 		return result.Data.WsEndpoint, nil
 	}
 
-	// Fallback: construct from gateway URL.
-	wsBase := strings.Replace(apiBase, "https://", "wss://", 1)
+	// Fallback: construct from a dedicated WebSocket gateway when configured,
+	// otherwise derive it from the API gateway.
+	wsBase := strings.TrimSpace(g.config.WebSocketBaseURL)
+	if wsBase == "" {
+		wsBase = apiBase
+	}
+	wsBase = strings.TrimRight(wsBase, "/")
+	wsBase = strings.Replace(wsBase, "https://", "wss://", 1)
 	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
 	fallbackURL := fmt.Sprintf("%s/open-apis/im/v1/ws/%s", wsBase, g.config.AppID)
 	log.Printf("[lansenger] warning: WS endpoint API returned empty, using fallback: %s", fallbackURL)
@@ -710,7 +775,7 @@ func (g *Gateway) apiURL(path string) string {
 
 // SendText sends a text message to a user or group.
 func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
-	token, err := g.getAppToken()
+	token, err := g.getAppToken(ctx)
 	if err != nil {
 		return err
 	}
@@ -733,7 +798,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		return fmt.Errorf("lansenger: empty file data")
 	}
 
-	token, err := g.getAppToken()
+	token, err := g.getAppToken(ctx)
 	if err != nil {
 		return err
 	}
@@ -888,36 +953,79 @@ func (g *Gateway) sendGroupMessage(ctx context.Context, token, groupID, msgType 
 }
 
 func (g *Gateway) doPost(ctx context.Context, url string, body []byte) error {
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 1; attempt <= lansengerAPIMaxRetry; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	reqStart := time.Now()
-	resp, err := g.client.Do(req)
-	if err != nil {
-		log.Printf("[lansenger] error: API POST failed (took %v): %v", time.Since(reqStart), err)
-		return err
-	}
-	defer resp.Body.Close()
+		reqStart := time.Now()
+		resp, err := g.client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			lastErr = err
+			log.Printf("[lansenger] error: API POST failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), err)
+			if attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return err
+		}
 
-	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		log.Printf("[lansenger] error: API POST HTTP %d (took %v): %s", resp.StatusCode, time.Since(reqStart), string(respBody))
-		return fmt.Errorf("lansenger API HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			log.Printf("[lansenger] error: API POST body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, time.Since(reqStart), readErr)
+			if attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return readErr
+		}
 
-	var result struct {
-		ErrCode int    `json:"errCode"`
-		ErrMsg  string `json:"errMsg"`
+		if resp.StatusCode != http.StatusOK {
+			err := fmt.Errorf("lansenger API HTTP %d: %s", resp.StatusCode, string(respBody))
+			lastErr = err
+			log.Printf("[lansenger] error: API POST HTTP %d (attempt %d/%d, took %v): %s", resp.StatusCode, attempt, lansengerAPIMaxRetry, time.Since(reqStart), string(respBody))
+			if isRetryableHTTPStatus(resp.StatusCode) && attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return err
+		}
+
+		var result struct {
+			ErrCode int    `json:"errCode"`
+			ErrMsg  string `json:"errMsg"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil // response parsed OK, ignore decode issues
+		}
+		if result.ErrCode != 0 {
+			log.Printf("[lansenger] error: API POST errCode=%d: %s (took %v)", result.ErrCode, result.ErrMsg, time.Since(reqStart))
+			return fmt.Errorf("lansenger API error %d: %s", result.ErrCode, result.ErrMsg)
+		}
+		return nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil // response parsed OK, ignore decode issues
+	return lastErr
+}
+
+func apiRetryBackoff(ctx context.Context, attempt int) {
+	delay := time.Duration(attempt) * 500 * time.Millisecond
+	if delay > 2*time.Second {
+		delay = 2 * time.Second
 	}
-	if result.ErrCode != 0 {
-		log.Printf("[lansenger] error: API POST errCode=%d: %s (took %v)", result.ErrCode, result.ErrMsg, time.Since(reqStart))
-		return fmt.Errorf("lansenger API error %d: %s", result.ErrCode, result.ErrMsg)
+	select {
+	case <-ctx.Done():
+	case <-time.After(delay):
 	}
-	return nil
+}
+
+func isRetryableHTTPStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status >= 500
 }

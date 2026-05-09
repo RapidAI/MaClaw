@@ -60,34 +60,51 @@ func TestIntentUnderstanding_StartAndHandleInput(t *testing.T) {
 	}
 }
 
-func TestIntentUnderstanding_CancelWordDetection(t *testing.T) {
+func TestIntentUnderstanding_CancelIntentClassification(t *testing.T) {
 	llm := &MockLLMCaller{
 		Response: `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":false}`,
 	}
 	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
 
-	cancelWords := []string{"算了", "取消", "不做了"}
-	for _, word := range cancelWords {
-		// Start a session first
-		_, err := mgr.Start("cancel_user", "做个系统")
-		if err != nil {
-			t.Fatalf("Start failed: %v", err)
-		}
-		if !mgr.HasActiveSession("cancel_user") {
-			t.Fatal("expected active session")
-		}
+	_, err := mgr.Start("cancel_user", "做个系统")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if !mgr.HasActiveSession("cancel_user") {
+		t.Fatal("expected active session")
+	}
 
-		// Send cancel word
-		_, _, cancelled, _, err := mgr.HandleInput("cancel_user", word)
-		if err != nil {
-			t.Fatalf("HandleInput(%q) failed: %v", word, err)
-		}
-		if !cancelled {
-			t.Errorf("expected cancelled=true for %q", word)
-		}
-		if mgr.HasActiveSession("cancel_user") {
-			t.Errorf("session should be removed after cancel word %q", word)
-		}
+	llm.Response = `{"intent":{"category":"cancel","summary":"user cancelled","ready":false},"reply":"已取消。","ready":false}`
+	_, _, cancelled, _, err := mgr.HandleInput("cancel_user", "算了")
+	if err != nil {
+		t.Fatalf("HandleInput cancel failed: %v", err)
+	}
+	if !cancelled {
+		t.Fatal("expected cancelled=true from classified cancel intent")
+	}
+	if mgr.HasActiveSession("cancel_user") {
+		t.Fatal("session should be removed after classified cancel intent")
+	}
+}
+
+func TestIntentUnderstanding_CancelSessionDoesNotCallLLM(t *testing.T) {
+	llm := &MockLLMCaller{
+		Response: `{"intent":{"category":"coding","summary":"test"},"reply":"ok","ready":false}`,
+	}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
+
+	if _, err := mgr.Start("direct_cancel_user", "build an app"); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if !mgr.HasActiveSession("direct_cancel_user") {
+		t.Fatal("expected active session")
+	}
+
+	llm.Err = errors.New("LLM should not be called during direct cancellation")
+	mgr.CancelSession("direct_cancel_user")
+
+	if mgr.HasActiveSession("direct_cancel_user") {
+		t.Fatal("session should be removed by direct cancellation")
 	}
 }
 

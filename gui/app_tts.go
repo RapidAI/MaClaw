@@ -126,7 +126,9 @@ func (a *App) SetTTSEnabled(enabled bool) error {
 	if enabled {
 		info := a.CheckTTSModel()
 		if !info["exists"].(bool) {
-			go a.DownloadTTSModel()
+			go a.downloadTTSModelIfStillEnabled()
+		} else {
+			a.initTTSManager()
 		}
 	} else {
 		ttsSpeakMu.Lock()
@@ -157,6 +159,14 @@ func (a *App) CheckTTSModel() map[string]interface{} {
 
 // DownloadTTSModel downloads the TTS model (GitHub first, Hub fallback).
 func (a *App) DownloadTTSModel() error {
+	return a.downloadTTSModel(true)
+}
+
+func (a *App) downloadTTSModelIfStillEnabled() error {
+	return a.downloadTTSModel(false)
+}
+
+func (a *App) downloadTTSModel(autoEnable bool) error {
 	if !ttsDownloadMu.TryLock() {
 		return nil
 	}
@@ -169,7 +179,11 @@ func (a *App) DownloadTTSModel() error {
 	if err := a.ensureTTSAssets(cfg.RemoteHubURL, true); err != nil {
 		return err
 	}
-	a.autoEnableTTS()
+	if autoEnable {
+		a.autoEnableTTS()
+	} else if !a.ttsStillConfiguredEnabled() {
+		return nil
+	}
 	a.initTTSManager()
 	return nil
 }
@@ -322,6 +336,10 @@ func (a *App) initTTSManager() {
 	if a.ttsManager != nil {
 		return
 	}
+	cfg, err := a.LoadConfig()
+	if err != nil || !cfg.TTSEnabled {
+		return
+	}
 	modelPath, err := ttsModelPath()
 	if err != nil || !fileExistsLocal(modelPath) {
 		return // model not downloaded yet
@@ -331,9 +349,7 @@ func (a *App) initTTSManager() {
 		return
 	}
 	voiceID := tts.DefaultTTSVoiceID
-	if cfg, err := a.LoadConfig(); err == nil {
-		voiceID = normalizeTTSVoiceID(cfg.TTSVoiceID)
-	}
+	voiceID = normalizeTTSVoiceID(cfg.TTSVoiceID)
 	a.ttsManager = tts.NewKokoroManager(modelPath, voiceDir, voiceID)
 }
 
@@ -348,13 +364,17 @@ func (a *App) backgroundPreloadTTSModel() {
 	if err != nil {
 		return
 	}
+	if !cfg.TTSEnabled {
+		return
+	}
 	if err := a.ensureTTSAssets(cfg.RemoteHubURL, false); err != nil {
 		fmt.Printf("[tts] background preload: all sources failed: %v\n", err)
 		return
 	}
-	cfg.TTSEnabled = true
-	a.SaveConfig(cfg)
-	fmt.Println("[tts] background preload: download complete, auto-enabled")
+	if !a.ttsStillConfiguredEnabled() {
+		return
+	}
+	fmt.Println("[tts] background preload: download complete")
 	a.initTTSManager()
 }
 

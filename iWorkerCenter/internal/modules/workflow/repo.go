@@ -63,8 +63,9 @@ func (r *Repo) ListDefinitions(tenantID string) ([]*Definition, error) {
 		if err := rows.Scan(&d.ID, &d.Name, &d.Description, &d.TriggerType, &d.Status, &ca, &ua); err != nil {
 			return nil, err
 		}
-		d.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-		d.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+		if err := setDefinitionTimes(&d, ca, ua); err != nil {
+			return nil, err
+		}
 		result = append(result, &d)
 	}
 	return result, rows.Err()
@@ -143,14 +144,18 @@ func (r *Repo) UpdateInstanceTx(tenantID string, tx *sql.Tx, inst *Instance) err
 }
 
 func (r *Repo) GetInstance(tenantID string, id string) (*Instance, error) {
-	row := r.read.QueryRow(`SELECT id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at
-		FROM workflow_instances WHERE id=? AND tenant_id=?`, id, tenantID)
+	row := r.read.QueryRow(`SELECT wi.id, wi.definition_id, wi.title, wi.initiator_id, wi.current_step_id, COALESCE(si.assignee_colleague_id,''), wi.status, wi.input_data, wi.created_at, wi.updated_at
+		FROM workflow_instances wi
+		LEFT JOIN workflow_step_instances si ON si.tenant_id=wi.tenant_id AND si.id=wi.current_step_id
+		WHERE wi.id=? AND wi.tenant_id=?`, id, tenantID)
 	return scanInstance(row)
 }
 
 func (r *Repo) ListInstances(tenantID string) ([]*Instance, error) {
-	rows, err := r.read.Query(`SELECT id, definition_id, title, initiator_id, current_step_id, status, input_data, created_at, updated_at
-		FROM workflow_instances WHERE tenant_id=? ORDER BY created_at DESC`, tenantID)
+	rows, err := r.read.Query(`SELECT wi.id, wi.definition_id, wi.title, wi.initiator_id, wi.current_step_id, COALESCE(si.assignee_colleague_id,''), wi.status, wi.input_data, wi.created_at, wi.updated_at
+		FROM workflow_instances wi
+		LEFT JOIN workflow_step_instances si ON si.tenant_id=wi.tenant_id AND si.id=wi.current_step_id
+		WHERE wi.tenant_id=? ORDER BY wi.created_at DESC`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -160,11 +165,39 @@ func (r *Repo) ListInstances(tenantID string) ([]*Instance, error) {
 		var inst Instance
 		var ca, ua string
 		if err := rows.Scan(&inst.ID, &inst.DefinitionID, &inst.Title, &inst.InitiatorID,
-			&inst.CurrentStepID, &inst.Status, &inst.InputData, &ca, &ua); err != nil {
+			&inst.CurrentStepID, &inst.CurrentStepAssigneeColleagueID, &inst.Status, &inst.InputData, &ca, &ua); err != nil {
 			return nil, err
 		}
-		inst.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-		inst.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+		if err := setInstanceTimes(&inst, ca, ua); err != nil {
+			return nil, err
+		}
+		result = append(result, &inst)
+	}
+	return result, rows.Err()
+}
+
+func (r *Repo) ListInstancesForColleague(tenantID string, colleagueID string) ([]*Instance, error) {
+	rows, err := r.read.Query(`SELECT DISTINCT wi.id, wi.definition_id, wi.title, wi.initiator_id, wi.current_step_id, COALESCE(current_si.assignee_colleague_id,''), wi.status, wi.input_data, wi.created_at, wi.updated_at
+		FROM workflow_instances wi
+		LEFT JOIN workflow_step_instances si ON si.tenant_id=wi.tenant_id AND si.instance_id=wi.id
+		LEFT JOIN workflow_step_instances current_si ON current_si.tenant_id=wi.tenant_id AND current_si.id=wi.current_step_id
+		WHERE wi.tenant_id=? AND (wi.initiator_id=? OR si.assignee_colleague_id=?)
+		ORDER BY wi.created_at DESC`, tenantID, colleagueID, colleagueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*Instance
+	for rows.Next() {
+		var inst Instance
+		var ca, ua string
+		if err := rows.Scan(&inst.ID, &inst.DefinitionID, &inst.Title, &inst.InitiatorID,
+			&inst.CurrentStepID, &inst.CurrentStepAssigneeColleagueID, &inst.Status, &inst.InputData, &ca, &ua); err != nil {
+			return nil, err
+		}
+		if err := setInstanceTimes(&inst, ca, ua); err != nil {
+			return nil, err
+		}
 		result = append(result, &inst)
 	}
 	return result, rows.Err()
@@ -234,7 +267,11 @@ func (r *Repo) ListEvents(tenantID string, instanceID string) ([]*InstanceEvent,
 		if err := rows.Scan(&e.ID, &e.InstanceID, &e.StepID, &e.Event, &e.ActorID, &e.Note, &ca); err != nil {
 			return nil, err
 		}
-		e.CreatedAt, _ = time.Parse(time.RFC3339, ca)
+		createdAt, err := time.Parse(time.RFC3339, ca)
+		if err != nil {
+			return nil, fmt.Errorf("parse workflow event %s created_at: %w", e.ID, err)
+		}
+		e.CreatedAt = createdAt
 		result = append(result, &e)
 	}
 	return result, rows.Err()
@@ -248,8 +285,9 @@ func scanDefinition(row *sql.Row) (*Definition, error) {
 	if err := row.Scan(&d.ID, &d.Name, &d.Description, &d.TriggerType, &d.Status, &ca, &ua); err != nil {
 		return nil, err
 	}
-	d.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-	d.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	if err := setDefinitionTimes(&d, ca, ua); err != nil {
+		return nil, err
+	}
 	return &d, nil
 }
 
@@ -257,11 +295,12 @@ func scanInstance(row *sql.Row) (*Instance, error) {
 	var inst Instance
 	var ca, ua string
 	if err := row.Scan(&inst.ID, &inst.DefinitionID, &inst.Title, &inst.InitiatorID,
-		&inst.CurrentStepID, &inst.Status, &inst.InputData, &ca, &ua); err != nil {
+		&inst.CurrentStepID, &inst.CurrentStepAssigneeColleagueID, &inst.Status, &inst.InputData, &ca, &ua); err != nil {
 		return nil, err
 	}
-	inst.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-	inst.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	if err := setInstanceTimes(&inst, ca, ua); err != nil {
+		return nil, err
+	}
 	return &inst, nil
 }
 
@@ -272,8 +311,9 @@ func scanStepInstance(row *sql.Row) (*StepInstance, error) {
 		&si.CollaborationTaskID, &si.Status, &si.Result, &si.SortOrder, &ca, &ua); err != nil {
 		return nil, err
 	}
-	si.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-	si.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	if err := setStepInstanceTimes(&si, ca, ua); err != nil {
+		return nil, err
+	}
 	return &si, nil
 }
 
@@ -284,7 +324,50 @@ func scanStepInstanceRows(rows *sql.Rows) (*StepInstance, error) {
 		&si.CollaborationTaskID, &si.Status, &si.Result, &si.SortOrder, &ca, &ua); err != nil {
 		return nil, err
 	}
-	si.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-	si.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	if err := setStepInstanceTimes(&si, ca, ua); err != nil {
+		return nil, err
+	}
 	return &si, nil
+}
+
+func setDefinitionTimes(d *Definition, createdAtRaw, updatedAtRaw string) error {
+	createdAt, err := time.Parse(time.RFC3339, createdAtRaw)
+	if err != nil {
+		return fmt.Errorf("parse workflow definition %s created_at: %w", d.ID, err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, updatedAtRaw)
+	if err != nil {
+		return fmt.Errorf("parse workflow definition %s updated_at: %w", d.ID, err)
+	}
+	d.CreatedAt = createdAt
+	d.UpdatedAt = updatedAt
+	return nil
+}
+
+func setInstanceTimes(inst *Instance, createdAtRaw, updatedAtRaw string) error {
+	createdAt, err := time.Parse(time.RFC3339, createdAtRaw)
+	if err != nil {
+		return fmt.Errorf("parse workflow instance %s created_at: %w", inst.ID, err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, updatedAtRaw)
+	if err != nil {
+		return fmt.Errorf("parse workflow instance %s updated_at: %w", inst.ID, err)
+	}
+	inst.CreatedAt = createdAt
+	inst.UpdatedAt = updatedAt
+	return nil
+}
+
+func setStepInstanceTimes(si *StepInstance, createdAtRaw, updatedAtRaw string) error {
+	createdAt, err := time.Parse(time.RFC3339, createdAtRaw)
+	if err != nil {
+		return fmt.Errorf("parse workflow step instance %s created_at: %w", si.ID, err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, updatedAtRaw)
+	if err != nil {
+		return fmt.Errorf("parse workflow step instance %s updated_at: %w", si.ID, err)
+	}
+	si.CreatedAt = createdAt
+	si.UpdatedAt = updatedAt
+	return nil
 }

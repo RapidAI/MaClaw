@@ -26,6 +26,18 @@ type GUIWorkflowAdapter struct {
 	suggestMaximizeSent sync.Map
 }
 
+type frontendWorkflowPhase struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Index           int    `json:"index"`
+	ExpectsDocument bool   `json:"expects_document"`
+}
+
+type frontendWorkflowState struct {
+	*workflow.WorkflowState
+	Phases []frontendWorkflowPhase `json:"phases,omitempty"`
+}
+
 // NewGUIWorkflowAdapter creates a new adapter wiring the App and WorkflowEngine.
 func NewGUIWorkflowAdapter(app *App, engine *workflow.WorkflowEngine) *GUIWorkflowAdapter {
 	return &GUIWorkflowAdapter{app: app, engine: engine}
@@ -45,17 +57,11 @@ func (a *GUIWorkflowAdapter) SendTextToUser(userID, text string) error {
 // EmitPhaseUpdate notifies the frontend of a phase change.
 func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
 	if a.app.ctx != nil {
-		// Normalize the current phase ID for the frontend.
-		emitState := state
-		if state != nil {
-			if canonical, ok := normalizePhaseIDMap[state.CurrentPhase]; ok {
-				// Shallow copy to avoid mutating the engine's state.
-				cp := *state
-				cp.CurrentPhase = canonical
-				emitState = &cp
-			}
+		var registry *workflow.WorkflowRegistry
+		if a.engine != nil {
+			registry = a.engine.GetRegistry()
 		}
-		runtime.EventsEmit(a.app.ctx, "workflow:phase_update", emitState)
+		runtime.EventsEmit(a.app.ctx, "workflow:phase_update", normalizeWorkflowStateForFrontendWithRegistry(state, registry))
 	}
 	return nil
 }
@@ -69,14 +75,100 @@ var normalizePhaseIDMap = map[string]string{
 	"task_breakdown": "tasks",
 }
 
+func canonicalWorkflowPhaseID(phaseID string) string {
+	if canonical, ok := normalizePhaseIDMap[phaseID]; ok {
+		return canonical
+	}
+	return phaseID
+}
+
+func normalizeWorkflowStateForFrontend(state *workflow.WorkflowState) *frontendWorkflowState {
+	return normalizeWorkflowStateForFrontendWithRegistry(state, nil)
+}
+
+func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.WorkflowState, registry *workflow.WorkflowRegistry) *frontendWorkflowState {
+	if state == nil {
+		return nil
+	}
+	cp := *state
+	cp.CurrentPhase = canonicalWorkflowPhaseID(cp.CurrentPhase)
+	cp.PendingReviewPhaseID = canonicalWorkflowPhaseID(cp.PendingReviewPhaseID)
+	cp.PhaseOutputs = normalizeWorkflowPhaseOutputs(state.PhaseOutputs)
+	cp.GateResults = normalizeWorkflowGateResults(state.GateResults)
+	return &frontendWorkflowState{
+		WorkflowState: &cp,
+		Phases:        normalizeWorkflowPhasesForFrontend(state.Type, registry),
+	}
+}
+
+func normalizeWorkflowPhasesForFrontend(workflowType workflow.WorkflowType, registry *workflow.WorkflowRegistry) []frontendWorkflowPhase {
+	if registry == nil {
+		return nil
+	}
+	tmpl := registry.Match(workflowType)
+	if tmpl == nil || len(tmpl.Phases) == 0 {
+		return nil
+	}
+	phases := make([]frontendWorkflowPhase, 0, len(tmpl.Phases))
+	seen := make(map[string]bool, len(tmpl.Phases))
+	for _, phase := range tmpl.Phases {
+		id := canonicalWorkflowPhaseID(phase.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		phases = append(phases, frontendWorkflowPhase{
+			ID:              id,
+			Name:            phase.Name,
+			Index:           len(phases),
+			ExpectsDocument: phase.ToolPolicy != workflow.ToolFilterFull,
+		})
+	}
+	return phases
+}
+
+func normalizeWorkflowPhaseOutputs(outputs map[string]string) map[string]string {
+	if outputs == nil {
+		return nil
+	}
+	normalized := make(map[string]string, len(outputs))
+	for phaseID, content := range outputs {
+		canonical := canonicalWorkflowPhaseID(phaseID)
+		if _, exists := normalized[canonical]; exists && phaseID != canonical {
+			continue
+		}
+		normalized[canonical] = content
+	}
+	return normalized
+}
+
+func normalizeWorkflowGateResults(results map[string]*workflow.QualityGateResult) map[string]*workflow.QualityGateResult {
+	if results == nil {
+		return nil
+	}
+	normalized := make(map[string]*workflow.QualityGateResult, len(results))
+	for phaseID, result := range results {
+		canonical := canonicalWorkflowPhaseID(phaseID)
+		if _, exists := normalized[canonical]; exists && phaseID != canonical {
+			continue
+		}
+		if result == nil {
+			normalized[canonical] = nil
+			continue
+		}
+		cp := *result
+		cp.PhaseID = canonicalWorkflowPhaseID(cp.PhaseID)
+		normalized[canonical] = &cp
+	}
+	return normalized
+}
+
 // EmitDocUpdate notifies the frontend of document content changes and
 // persists the document to the project's .maclaw/workflow/ directory.
 // The content sent to the frontend is read back from the persisted file
 // to ensure the preview panel always shows the clean document.
 func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) error {
-	if canonical, ok := normalizePhaseIDMap[phaseID]; ok {
-		phaseID = canonical
-	}
+	phaseID = canonicalWorkflowPhaseID(phaseID)
 	// Strip conversational preamble before persisting.
 	content = stripDocPreamble(content)
 	// Content-based phase correction: detect the actual phase from the
@@ -351,9 +443,7 @@ func (a *GUIWorkflowAdapter) ResetSuggestMaximize(userID string) {
 
 // EmitGateResult notifies the frontend of a quality gate result.
 func (a *GUIWorkflowAdapter) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
-	if canonical, ok := normalizePhaseIDMap[phaseID]; ok {
-		phaseID = canonical
-	}
+	phaseID = canonicalWorkflowPhaseID(phaseID)
 	if a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:gate_result", map[string]interface{}{
 			"user_id":  userID,

@@ -245,17 +245,19 @@ jobs:
             }
           }
 
-      - name: Build maclawsrv & srvdemo (default brand only)
+      - name: Build maclawsrv, datasrv & srvdemo (default brand only)
         if: matrix.brand == ''
         shell: pwsh
         run: |
           $commit = git rev-parse --short HEAD
           $builtAt = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
-          $ldflags = "-s -w -X main.serviceVersion=$env:VERSION -X main.serviceCommit=$commit -X main.serviceBuiltAt=$builtAt"
+          $srvLdflags = "-s -w -X main.serviceVersion=$env:VERSION -X main.serviceCommit=$commit -X main.serviceBuiltAt=$builtAt"
+          $dataSrvLdflags = "-s -w -X main.serviceVersion=$env:VERSION"
           # maclawsrv: pure Go server, CGO_ENABLED=0, cross-compile all arches
           foreach ($arch in @('amd64','arm64')) {
             $env:GOOS='windows'; $env:GOARCH=$arch; $env:CGO_ENABLED='0'
-            go build -ldflags $ldflags -o "dist/maclawsrv_${arch}.exe" ./MaClawSrv/
+            go build -ldflags $srvLdflags -o "dist/maclawsrv_${arch}.exe" ./MaClawSrv/
+            go build -ldflags $dataSrvLdflags -o "dist/maclaw-data-srv_${arch}.exe" ./cmd/maclaw-data-srv/
           }
           # srvdemo: Wails GUI app (pre-committed frontend, no npm build needed)
           # amd64 with CGO (native WebView)
@@ -342,6 +344,8 @@ jobs:
             dist/maclaw-tool_arm64.exe
             dist/maclawsrv_amd64.exe
             dist/maclawsrv_arm64.exe
+            dist/maclaw-data-srv_amd64.exe
+            dist/maclaw-data-srv_arm64.exe
             dist/srvdemo_amd64.exe
             dist/srvdemo_arm64.exe
 
@@ -446,18 +450,21 @@ jobs:
             fi
           done
 
-      - name: Build maclawsrv & srvdemo (default brand only, darwin)
+      - name: Build maclawsrv, datasrv & srvdemo (default brand only, darwin)
         if: matrix.brand == ''
         env:
           MACOSX_DEPLOYMENT_TARGET: '11.0'
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          LDFLAGS="-s -w -X main.serviceVersion=${VERSION} -X main.serviceCommit=${COMMIT} -X main.serviceBuiltAt=${BUILT_AT}"
+          SRV_LDFLAGS="-s -w -X main.serviceVersion=${VERSION} -X main.serviceCommit=${COMMIT} -X main.serviceBuiltAt=${BUILT_AT}"
+          DATA_SRV_LDFLAGS="-s -w -X main.serviceVersion=${VERSION}"
           # maclawsrv: pure Go server, CGO_ENABLED=0
           for ARCH in amd64 arm64; do
             CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
-              go build -ldflags "$LDFLAGS" -o "dist/maclawsrv_${ARCH}_darwin" ./MaClawSrv/
+              go build -ldflags "$SRV_LDFLAGS" -o "dist/maclawsrv_${ARCH}_darwin" ./MaClawSrv/
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
+              go build -ldflags "$DATA_SRV_LDFLAGS" -o "dist/maclaw-data-srv_${ARCH}_darwin" ./cmd/maclaw-data-srv/
           done
           # srvdemo: Wails GUI app (pre-committed frontend)
           for ARCH in amd64 arm64; do
@@ -571,6 +578,8 @@ jobs:
             dist/maclaw-tool_arm64_darwin
             dist/maclawsrv_amd64_darwin
             dist/maclawsrv_arm64_darwin
+            dist/maclaw-data-srv_amd64_darwin
+            dist/maclaw-data-srv_arm64_darwin
             dist/srvdemo_amd64_darwin
             dist/srvdemo_arm64_darwin
 
@@ -711,16 +720,19 @@ jobs:
             fi
           done
 
-      - name: Build maclawsrv & srvdemo (default brand, newest runner only)
+      - name: Build maclawsrv, datasrv & srvdemo (default brand, newest runner only)
         if: matrix.brand == '' && env.BUILD_PURE_GO == 'true'
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          LDFLAGS="-s -w -X main.serviceVersion=${VERSION} -X main.serviceCommit=${COMMIT} -X main.serviceBuiltAt=${BUILT_AT}"
+          SRV_LDFLAGS="-s -w -X main.serviceVersion=${VERSION} -X main.serviceCommit=${COMMIT} -X main.serviceBuiltAt=${BUILT_AT}"
+          DATA_SRV_LDFLAGS="-s -w -X main.serviceVersion=${VERSION}"
           # maclawsrv: pure Go server, CGO_ENABLED=0
           for ARCH in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
-              go build -ldflags "$LDFLAGS" -o "dist/maclawsrv_${ARCH}_linux" ./MaClawSrv/
+              go build -ldflags "$SRV_LDFLAGS" -o "dist/maclawsrv_${ARCH}_linux" ./MaClawSrv/
+            CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+              go build -ldflags "$DATA_SRV_LDFLAGS" -o "dist/maclaw-data-srv_${ARCH}_linux" ./cmd/maclaw-data-srv/
           done
           # srvdemo: Wails GUI app (pre-committed frontend), needs CGO for WebView
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
@@ -828,6 +840,8 @@ jobs:
           path: |
             dist/maclawsrv_amd64_linux
             dist/maclawsrv_arm64_linux
+            dist/maclaw-data-srv_amd64_linux
+            dist/maclaw-data-srv_arm64_linux
             dist/srvdemo_amd64_linux
 
   # ============================================================

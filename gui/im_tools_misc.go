@@ -147,34 +147,14 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 	// validation. If the tool is not in the cache, skip validation (graceful
 	// degradation per Req 3.7).
 	var inputSchema map[string]interface{}
-	if isLocal {
-		if mgr := h.getLocalMCPManager(); mgr != nil {
-			for _, ts := range mgr.GetAllTools() {
-				if ts.ServerID == resolvedID {
-					for _, t := range ts.Tools {
-						if t.Name == toolName {
-							inputSchema = t.InputSchema
-							break
-						}
-					}
-					break
-				}
-			}
-		}
-	} else {
-		if registry := h.getMCPRegistry(); registry != nil {
-			for _, t := range registry.GetServerTools(resolvedID) {
-				if t.Name == toolName {
-					inputSchema = t.InputSchema
-					break
-				}
-			}
-		}
-	}
+	inputSchema = h.lookupMCPInputSchema(resolvedID, toolName, isLocal)
 
 	// Validate arguments against the InputSchema before making the RPC call.
 	if inputSchema != nil {
 		if validationErrs := mcputil.ValidateArgs(inputSchema, toolArgs); len(validationErrs) > 0 {
+			if h.emitMCPToolAgentView(serverRef, resolvedID, toolName, inputSchema, toolArgs, validationErrs) {
+				return mcpAgentViewCorrectionMessage
+			}
 			var msgs []string
 			for _, ve := range validationErrs {
 				msgs = append(msgs, ve.Message)
@@ -565,6 +545,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			if statusErr != nil {
 				b.WriteString(fmt.Sprintf("已启动（run_id=%s），但读取状态失败: %s", runID, statusErr.Error()))
 			} else {
+				emitSkillRunStatusAgentView(h, status, runID)
 				appendSkillRunSummary(&b, status, runID)
 			}
 		}
@@ -587,6 +568,16 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	}
 	b.WriteString(fmt.Sprintf("- skill: %s\n", status.Skill))
 	b.WriteString(fmt.Sprintf("- status: %s\n", status.Status))
+	if len(status.Warnings) > 0 {
+		b.WriteString("## Warnings\n")
+		for _, warning := range status.Warnings {
+			warning = strings.TrimSpace(warning)
+			if warning == "" {
+				continue
+			}
+			b.WriteString(fmt.Sprintf("- %s\n", warning))
+		}
+	}
 	// session_ready: explicit signal for callers to know if session_id is available.
 	// Only emit when the skill actually involves sessions to avoid confusing the
 	// LLM with "session_ready: false" on pure-bash skills like weather-query.
@@ -767,6 +758,13 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	}
 }
 
+func emitSkillRunStatusAgentView(h *IMMessageHandler, status *SkillRunStatus, runID string) {
+	if h == nil || h.app == nil {
+		return
+	}
+	h.app.emitAgentView(buildSkillRunStatusAgentView(status, runID))
+}
+
 func firstNonEmptySkillRunStatus(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -805,6 +803,9 @@ func normalizeSkillRunWaitSeconds(raw interface{}) time.Duration {
 		if v > 0 {
 			seconds = float64(v)
 		}
+	}
+	if seconds < 5 {
+		seconds = 5
 	}
 	if seconds > 30 {
 		seconds = 30
@@ -875,6 +876,9 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 	if name == "" {
 		return "缺少 name 参数"
 	}
+	if h.emitSkillRunAgentViewIfNeeded(name, args) {
+		return fmt.Sprintf("Skill「%s」需要补充结构化参数。请在右侧任务面板填写后提交。", name)
+	}
 	if onProgress != nil {
 		onProgress(fmt.Sprintf("🚀 正在启动 Skill「%s」...", name))
 	}
@@ -893,6 +897,7 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 	emitSkillRunProgress(onProgress, status)
 	var b strings.Builder
 	b.WriteString("✅ Skill 已启动\n")
+	emitSkillRunStatusAgentView(h, status, runID)
 	appendSkillRunSummary(&b, status, runID)
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -914,37 +919,15 @@ func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
 	}
 	var b strings.Builder
 	b.WriteString("🔎 Skill 状态查询结果\n")
+	emitSkillRunStatusAgentView(h, status, runID)
 	appendSkillRunSummary(&b, status, runID)
 	return strings.TrimRight(b.String(), "\n")
-}
-
-// buildRunSkillArgsExcludeKeys lists manage_skill parameters that are NOT
-// passed to the skill runner. Everything else is transparently forwarded,
-// so new run-time parameters (user_prompt, future additions) work without
-// touching this function.
-var buildRunSkillArgsExcludeKeys = map[string]bool{
-	"action":       true, // manage_skill dispatch key
-	"query":        true, // search action
-	"skill_id":     true, // install action
-	"hub_url":      true, // install action
-	"install_ref":  true, // install action (GitHub source)
-	"auto_run":     true, // install action
-	"wait_seconds": true, // handled by caller before StartRun
-	"run_id":       true, // status action
-	"auto_fix":     true, // validate action
-	"force":        true, // upload action
-	"name":         true, // consumed by caller to resolve skill
-	"skill_name":   true, // patch action
-	"mode":         true, // patch action
-	"step_index":   true, // patch step mode
-	"field":        true, // patch step mode
-	"value":        true, // patch step mode
 }
 
 func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
 	runArgs := map[string]interface{}{}
 	for k, v := range args {
-		if buildRunSkillArgsExcludeKeys[k] {
+		if cskill.IsManageSkillRunnerControlKey(k) {
 			continue
 		}
 		runArgs[k] = v

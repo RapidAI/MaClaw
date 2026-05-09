@@ -459,7 +459,7 @@ func firstWaveInputData(plan Plan, task FirstWaveTask) string {
 func NormalizePlan(tenantID string, input Plan) Plan {
 	now := time.Now().UTC()
 	plan := input
-	plan.TenantID = normalizeTenantID(firstNonEmpty(input.TenantID, tenantID))
+	plan.TenantID = normalizeTenantID(firstNonEmpty(tenantID, input.TenantID))
 	plan.CompanyName = strings.TrimSpace(plan.CompanyName)
 	if plan.CompanyName == "" {
 		plan.CompanyName = "New customer company"

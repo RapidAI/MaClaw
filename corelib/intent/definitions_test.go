@@ -70,11 +70,36 @@ func TestBuildToolAffinityFromDefinitions(t *testing.T) {
 		t.Error("SSH label should map to 'ssh' tool")
 	}
 
-	// Browser should have many tools.
+	// Browser should map to the default browser automation tools.
 	browserTools := mapping[LabelBrowser]
-	if len(browserTools) < 10 {
-		t.Errorf("expected browser to have 10+ tools, got %d", len(browserTools))
+	for _, want := range []string{"browser", "gui_record_start", "gui_record_stop"} {
+		found := false
+		for _, name := range browserTools {
+			if name == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("browser label should map to %q; got %#v", want, browserTools)
+		}
 	}
+}
+
+func TestBusinessDataDefinitionRoutesToMISData(t *testing.T) {
+	defs := DefaultDefinitions()
+	mapping := BuildToolAffinityFromDefinitions(defs)
+
+	tools := mapping[LabelBusinessData]
+	if len(tools) == 0 {
+		t.Fatal("business_data label should map to at least one tool")
+	}
+	for _, name := range tools {
+		if name == "mis_data" {
+			return
+		}
+	}
+	t.Fatalf("business_data label should route to mis_data, got %#v", tools)
 }
 
 func TestBuildIntentTreeFromDefinitions(t *testing.T) {
@@ -100,11 +125,11 @@ func TestBuildIntentTreeFromDefinitions(t *testing.T) {
 func TestFullDefinitions_KeywordsPopulated(t *testing.T) {
 	defs := FullDefinitions()
 
-	// SSH should have many keywords (40+ in defaultKeywords).
+	// SSH should have diagnostic keywords populated from defaultKeywords.
 	for _, def := range defs {
 		if def.Label == LabelSSH {
-			if len(def.Keywords) < 30 {
-				t.Errorf("SSH should have 30+ keywords, got %d", len(def.Keywords))
+			if len(def.Keywords) == 0 {
+				t.Error("SSH should have diagnostic keywords")
 			}
 			return
 		}

@@ -66,6 +66,7 @@ export function SkillMarketPage() {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [riskFilter, setRiskFilter] = useState('all');
+  const [packageFilter, setPackageFilter] = useState('all');
   const [draft, setDraft] = useState(emptyDraft());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -111,9 +112,10 @@ export function SkillMarketPage() {
         .some(value => String(value).toLowerCase().includes(normalized));
       const matchesStatus = statusFilter === 'all' || (skill.status || 'active') === statusFilter;
       const matchesRisk = riskFilter === 'all' || (skill.risk_level || 'low') === riskFilter;
-      return matchesQuery && matchesStatus && matchesRisk;
+      const matchesPackage = packageFilter === 'all' || (packageFilter === 'packaged' ? !!skill.package_sha256 : !skill.package_sha256);
+      return matchesQuery && matchesStatus && matchesRisk && matchesPackage;
     });
-  }, [skills, query, riskFilter, statusFilter]);
+  }, [packageFilter, skills, query, riskFilter, statusFilter]);
 
   const patchDraft = (key: keyof typeof draft, value: string | number) => setDraft(current => ({ ...current, [key]: value }));
 
@@ -254,6 +256,11 @@ export function SkillMarketPage() {
             <option value="medium">{riskLabel('medium')}</option>
             <option value="high">{riskLabel('high')}</option>
           </select>
+          <select value={packageFilter} onChange={event => setPackageFilter(event.target.value)}>
+            <option value="all">{t('skills.filters.allPackage')}</option>
+            <option value="packaged">{t('skills.filters.packaged')}</option>
+            <option value="unpackaged">{t('skills.filters.unpackaged')}</option>
+          </select>
           {loading ? <span className="hint">{t('common.loading')}</span> : null}
         </div>
         <div className="actions">
@@ -306,6 +313,7 @@ export function SkillMarketPage() {
               <span>{t('skills.downloads')}: {skill.download_count || skill.downloads || 0}</span>
               {skill.package_sha256 ? <span>sha256: {skill.package_sha256.slice(0, 12)}...</span> : <span>{t('skills.noPackage')}</span>}
             </div>
+            {(skill.status || 'active') === 'active' && !skill.package_sha256 ? <div className="notice info">{t('skills.packageWarning')}</div> : null}
             <div className="item-meta">{t('skills.updatedAt')}: {formatDate(skill.updated_at || skill.created_at)}</div>
             <div className="actions">
               <button className="btn-ghost" onClick={() => openEdit(skill)}>{t('common.edit')}</button>

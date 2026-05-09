@@ -1,7 +1,10 @@
 package security
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +18,29 @@ import (
 type Handler struct {
 	repo    *Repo
 	checker *Checker
+}
+
+const maxSecurityJSONBodyBytes = 128 << 10
+
+func decodeSecurityJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxSecurityJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxSecurityJSONBodyBytes {
+		return errors.New("security json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("security json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 // NewHandler creates a security Handler.
@@ -79,7 +105,7 @@ func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
 		Scope       string `json:"scope"`
 		Priority    int    `json:"priority"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeSecurityJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -129,7 +155,7 @@ func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, id string
 		Priority    int    `json:"priority"`
 		Status      string `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeSecurityJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -179,7 +205,7 @@ func (h *Handler) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CheckInput
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeSecurityJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}

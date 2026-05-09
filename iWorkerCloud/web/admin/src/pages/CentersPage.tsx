@@ -106,13 +106,29 @@ const runtimeContinuityClass = (runtime?: CenterRuntimeStatus) => {
   return runtime.ok ? 'ready' : 'watch';
 };
 
-const durationDays = (mode: LicenseDurationMode, customYears: string) => {
+const heartbeatContinuityClass = (runtime?: CenterRuntimeStatus) => {
+  const heartbeat = runtime?.cloud_heartbeat;
+  if (!heartbeat) return 'watch';
+  if (heartbeat.status === 'online') return 'ready';
+  return heartbeat.non_blocking ? 'ready' : 'watch';
+};
+
+const manualLicenseDays = (mode: LicenseDurationMode, customYears: string) => {
   if (mode === 'permanent') return 0;
   if (mode === 'month') return 30;
   if (mode === 'quarter') return 90;
   if (mode === 'year') return 365;
-  const years = Math.max(2, Number.parseInt(customYears, 10) || 2);
+  const normalized = customYears.trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const years = Number.parseInt(normalized, 10);
+  if (years < 2) return null;
   return years * 365;
+};
+
+const manualLicenseDurationDisplay = (mode: LicenseDurationMode, customYears: string, permanentLabel: string, invalidLabel: string) => {
+  const days = manualLicenseDays(mode, customYears);
+  if (days === null) return invalidLabel;
+  return days === 0 ? permanentLabel : String(days);
 };
 
 function createManualLicenseDraft(): ManualLicenseDraft {
@@ -147,6 +163,8 @@ export function CentersPage() {
   const [saving, setSaving] = useState<string | null>(null);
   const [manualLicenseDrafts, setManualLicenseDrafts] = useState<Record<string, ManualLicenseDraft>>({});
   const [licensing, setLicensing] = useState<string | null>(null);
+  const [deleteTargetId, setDeleteTargetId] = useState('');
+  const [deletingId, setDeletingId] = useState('');
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState<string>('');
 
@@ -161,12 +179,37 @@ export function CentersPage() {
   };
   const runtimeModeDisplay = (value?: CenterRuntimeStatus['runtime_provider_mode']) => t(`centers.runtimeModes.${runtimeModeLabel(value)}`);
   const runtimeContinuityText = (runtime?: CenterRuntimeStatus) => runtime?.message || t(`centers.runtimeContinuity.${runtimeContinuityKey(runtime)}`);
+  const heartbeatStatusLabel = (runtime?: CenterRuntimeStatus) => {
+    const status = runtime?.cloud_heartbeat?.status || 'not_reported';
+    return t(`centers.heartbeatStatus.${status}`, { defaultValue: status });
+  };
+  const heartbeatImpactText = (runtime?: CenterRuntimeStatus) => {
+    const heartbeat = runtime?.cloud_heartbeat;
+    if (!heartbeat) return t('centers.heartbeat.notReported');
+    if (heartbeat.business_impact === 'none_local_center_and_iworker_continue') return t('centers.heartbeat.localContinues');
+    return heartbeat.business_impact || t('centers.heartbeat.platformSignalOnly');
+  };
   const runtimeValue = (key: string, value?: string | boolean) => {
     const normalized = value === undefined || value === null || value === '' ? 'unknown' : String(value);
     return t(`centers.runtimeValues.${normalized}`, { defaultValue: normalized === 'unknown' ? t('centers.runtimeValues.unknown') : normalized });
   };
   const licenseModuleLabel = (module: string) => t(`licenses.moduleLabels.${module}`, { defaultValue: module });
   const closeCenterDetail = () => setDetailCenterId('');
+  const openCenterDetail = (id: string) => {
+    setFocusedCenterId(id);
+    setDetailCenterId(id);
+  };
+  const requestDeleteCenter = (id: string) => {
+    setNotice(null);
+    setError('');
+    setDeleteTargetId(id);
+  };
+  const clearFocus = () => {
+    setFocusedCenterId('');
+    if (query.trim() === focusedCenterId) {
+      setQuery('');
+    }
+  };
 
   const showError = (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
@@ -238,10 +281,20 @@ export function CentersPage() {
   }, [detailCenterId]);
 
   useEffect(() => {
+    if (!deleteTargetId) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !deletingId) setDeleteTargetId('');
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [deleteTargetId, deletingId]);
+
+  useEffect(() => {
     const focusId = sessionStorage.getItem(CENTER_FOCUS_KEY);
     if (!focusId) return;
     sessionStorage.removeItem(CENTER_FOCUS_KEY);
     setFocusedCenterId(focusId);
+    setDetailCenterId(focusId);
     setQuery(focusId);
     setStatusFilter('all');
     window.setTimeout(() => {
@@ -312,7 +365,12 @@ export function CentersPage() {
 
   const handleConfirmManual = async (center: Center) => {
     const draft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
-    const days = durationDays(draft.duration_mode, draft.custom_years);
+    const days = manualLicenseDays(draft.duration_mode, draft.custom_years);
+    if (days === null) {
+      setError(t('licenses.invalidCustomYears'));
+      setNotice({ tone: 'danger', text: t('licenses.invalidCustomYears') });
+      return;
+    }
     setLicensing(center.id);
     setError('');
     setNotice(null);
@@ -360,15 +418,20 @@ export function CentersPage() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm(t('centers.confirmDelete'))) return;
+    if (deletingId) return;
     setError('');
     setNotice(null);
+    setDeletingId(id);
     try {
       await deleteCenter(id);
+      if (detailCenterId === id) closeCenterDetail();
+      setDeleteTargetId('');
       setNotice({ tone: 'ok', text: t('centers.noticeDeleted') });
       load();
     } catch (err) {
       showError(err);
+    } finally {
+      setDeletingId('');
     }
   };
 
@@ -427,18 +490,38 @@ export function CentersPage() {
     return center.status === 'pending' || item?.issues.includes('no_active_license');
   }), [centers, management]);
 
+  const matchesCenterStatusFilter = (center: Center) => {
+    const item = management[center.id];
+    const runtime = probeRuntime[center.id] || item?.runtime_status;
+    switch (statusFilter) {
+      case 'all':
+        return true;
+      case 'ready':
+        return Boolean(item?.ready);
+      case 'needs_setup':
+        return Boolean(item && !item.ready);
+      case 'unlicensed':
+        return Boolean(item?.issues.includes('no_active_license'));
+      case 'heartbeat_degraded':
+        return runtime?.cloud_heartbeat?.status === 'degraded' || runtime?.cloud_heartbeat?.status === 'offline';
+      default:
+        return center.status === statusFilter;
+    }
+  };
+
   const filteredCenters = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return centers.filter(center => {
-      const matchesStatus = statusFilter === 'all' || center.status === statusFilter;
-      const matchesQuery = !normalized || [center.id, center.company_name, center.admin_email, center.admin_phone, center.base_url, center.last_sync_status]
+      const matchesStatus = matchesCenterStatusFilter(center);
+      const matchesQuery = !normalized || [center.id, center.company_name, center.admin_email, center.admin_phone, center.base_url, center.last_sync_status, center.machine_id, center.company_id, center.legal_person, center.address]
         .filter(Boolean)
         .some(value => String(value).toLowerCase().includes(normalized));
       return matchesStatus && matchesQuery;
     });
-  }, [centers, query, statusFilter]);
+  }, [centers, management, probeRuntime, query, statusFilter]);
 
   const detailCenter = detailCenterId ? filteredCenters.find(center => center.id === detailCenterId) : undefined;
+  const deleteTargetCenter = deleteTargetId ? centers.find(center => center.id === deleteTargetId) : undefined;
 
   const centerStats = summary ?? {
     total_centers: centers.length,
@@ -479,10 +562,14 @@ export function CentersPage() {
             <option value="pending">{t('centers.pending')}</option>
             <option value="active">{t('centers.active')}</option>
             <option value="disabled">{t('centers.disabled')}</option>
+            <option value="ready">{t('centers.filters.ready')}</option>
+            <option value="needs_setup">{t('centers.filters.needsSetup')}</option>
+            <option value="unlicensed">{t('centers.filters.unlicensed')}</option>
+            <option value="heartbeat_degraded">{t('centers.filters.heartbeatDegraded')}</option>
           </select>
         </div>
         <div className="actions">
-          {focusedCenterId ? <button className="btn-ghost" onClick={() => { setFocusedCenterId(''); setQuery(''); }}>{t('centers.clearFocus')}</button> : null}
+          {focusedCenterId ? <button className="btn-ghost" onClick={clearFocus}>{t('centers.clearFocus')}</button> : null}
           <button className="btn-ghost" onClick={load}>{loading ? t('common.loading') : t('common.refresh')}</button>
         </div>
       </div>
@@ -511,10 +598,34 @@ export function CentersPage() {
               <button className="btn-ghost" disabled={licensing === center.id} onClick={() => handleConfirmManual(center)}>
                 {t('centers.actions.issueManual')}
               </button>
+              <button className="btn-ghost" type="button" onClick={() => openCenterDetail(center.id)}>
+                {t('centers.actions.viewDetails')}
+              </button>
             </div>
           ))}
         </div>
       </section> : null}
+      {deleteTargetCenter ? <>
+        <div className="cloud-delete-confirm-backdrop" onClick={() => { if (!deletingId) setDeleteTargetId(''); }} />
+        <section className="cloud-delete-confirm-dialog" role="dialog" aria-modal="true" aria-label={t('centers.deleteConfirm.title')}>
+          <div>
+            <span>{t('centers.deleteConfirm.eyebrow')}</span>
+            <strong>{t('centers.deleteConfirm.title')}</strong>
+            <p>{t('centers.deleteConfirm.body')}</p>
+          </div>
+          <div className="cloud-delete-confirm-target">
+            <span>{deleteTargetCenter.company_name || deleteTargetCenter.id}</span>
+            <small>{deleteTargetCenter.id}</small>
+            <small>{deleteTargetCenter.machine_id || t('centers.notProvided')} / {deleteTargetCenter.company_id || t('centers.notProvided')}</small>
+          </div>
+          <div className="cloud-delete-confirm-actions">
+            <button className="btn-ghost" type="button" onClick={() => setDeleteTargetId('')}>{t('common.cancel')}</button>
+            <button className="btn-danger" type="button" disabled={deletingId === deleteTargetCenter.id} onClick={() => handleDelete(deleteTargetCenter.id)}>
+              {deletingId === deleteTargetCenter.id ? t('common.loading') : t('centers.deleteConfirm.confirm')}
+            </button>
+          </div>
+        </section>
+      </> : null}
       {detailCenter ? <div className="cloud-center-modal-backdrop" onClick={closeCenterDetail} /> : null}
       {filteredCenters.length === 0 ? <div className="hint">{centers.length === 0 ? t('centers.empty') : t('centers.noMatch')}</div> : <div className="list">
         {filteredCenters.map(center => {
@@ -524,6 +635,7 @@ export function CentersPage() {
           const runtime = probeRuntime[center.id] || managementItem?.runtime_status;
           const workload = managementItem?.iworker_readiness?.workload_summary;
           const manualLicenseDraft = manualLicenseDrafts[center.id] ?? createManualLicenseDraft();
+          const manualLicenseDaysValue = manualLicenseDays(manualLicenseDraft.duration_mode, manualLicenseDraft.custom_years);
           const isRuntimeRefreshing = runtimeRefreshing[center.id] === true;
           return (
             <div id={'center-' + center.id} key={center.id} className={`item cloud-center-card ${focusedCenterId === center.id ? 'focused' : ''} ${detailCenterId === center.id ? 'is-detail-open' : ''}`} role={detailCenterId === center.id ? 'dialog' : undefined} aria-modal={detailCenterId === center.id ? true : undefined}>
@@ -536,7 +648,7 @@ export function CentersPage() {
                   <span className={`badge ${center.status === 'active' ? 'ok' : center.status === 'pending' ? 'warn' : 'danger'}`}>
                     {t(`centers.${center.status}`)}
                   </span>
-                  <button className="btn-ghost cloud-center-detail-button" type="button" onClick={() => setDetailCenterId(center.id)}>
+                  <button className="btn-ghost cloud-center-detail-button" type="button" onClick={() => openCenterDetail(center.id)}>
                     {t('centers.actions.viewDetails')}
                   </button>
                   {detailCenterId === center.id ? (
@@ -564,7 +676,10 @@ export function CentersPage() {
                 <span>{t('centers.readiness.agentInstances')}: {workload?.agent_instance_count ?? center.iworker_agent_instance_count ?? managementItem?.iworker_readiness?.agent_instance_count ?? 0}</span>
                 <span>{t('centers.fields.tenantMode')}: {center.supports_multi_tenant === true ? t('centers.tenant.modeMulti') : center.supports_multi_tenant === false ? t('centers.tenant.modeDedicated') : t('centers.tenant.notReported')}</span>
                 {typeof center.tenant_count === 'number' && <span>{t('centers.fields.tenants')}: {center.tenant_count}</span>}
+                <span>{t('centers.fields.machineId')}: {center.machine_id || t('centers.notProvided')}</span>
+                <span>{t('centers.fields.companyId')}: {center.company_id || t('centers.notProvided')}</span>
                 <span>{t('centers.fields.lastHeartbeat')}: {formatDateTime(center.last_heartbeat) || t('centers.noHeartbeat')}</span>
+                <span className={`badge ${heartbeatContinuityClass(runtime) === 'ready' ? 'ok' : 'warn'}`}>{t('centers.fields.cloudHeartbeat')}: {heartbeatStatusLabel(runtime)}</span>
                 {center.created_at && <span>{t('centers.fields.registered')}: {new Date(center.created_at).toLocaleString()}</span>}
               </div>
 
@@ -581,6 +696,10 @@ export function CentersPage() {
                   <span>{t('centers.fields.lastHeartbeat')}</span>
                   <strong>{formatDateTime(center.last_heartbeat) || t('centers.noHeartbeat')}</strong>
                 </div>
+                <div>
+                  <span>{t('centers.fields.registrationKey')}</span>
+                  <strong>{center.machine_id || t('centers.notProvided')} / {center.company_id || t('centers.notProvided')}</strong>
+                </div>
                 {managementItem?.issues?.length ? <div className="cloud-center-summary-alert"><span>{t('centers.sections.recommendedActions')}</span><strong>{managementItem.issues.length}</strong></div> : null}
               </div>
 
@@ -596,6 +715,8 @@ export function CentersPage() {
                   <span>{t('centers.fields.email')}: {center.admin_email || t('centers.notProvided')}</span>
                   <span>{t('centers.fields.phone')}: {center.admin_phone || t('centers.notProvided')}</span>
                   <span>{t('centers.fields.address')}: {center.address || t('centers.notProvided')}</span>
+                  <span>{t('centers.fields.machineId')}: {center.machine_id || t('centers.notProvided')}</span>
+                  <span>{t('centers.fields.companyId')}: {center.company_id || t('centers.notProvided')}</span>
                 </div>
               </div>
 
@@ -662,6 +783,23 @@ export function CentersPage() {
                   <span>{runtime.compute_permission ? t('centers.runtime.selfManagementAllowed') : t('centers.runtime.cloudManaged')}</span>
                   {runtime.compute_sync_status?.last_sync_at ? <span>{t('centers.runtime.lastSync')}: {formatDateTime(runtime.compute_sync_status.last_sync_at)}</span> : null}
                   {runtime.compute_sync_status?.error ? <span className="warn">{runtime.compute_sync_status.error}</span> : null}
+                </div>
+              </div>}
+
+              {runtime && <div className={`cloud-posture-panel ${heartbeatContinuityClass(runtime)}`}>
+                <div>
+                  <label>{t('centers.sections.cloudHeartbeat')}</label>
+                  <strong>{heartbeatStatusLabel(runtime)}</strong>
+                  <span>{heartbeatImpactText(runtime)}</span>
+                </div>
+                <div className="cloud-issue-list">
+                  <span className={runtime.cloud_heartbeat?.non_blocking ? 'ok' : 'warn'}>{runtime.cloud_heartbeat?.non_blocking ? t('centers.heartbeat.nonBlocking') : t('centers.heartbeat.notConfirmed')}</span>
+                  {runtime.cloud_heartbeat?.last_success_at ? <span>{t('centers.heartbeat.lastSuccess')}: {formatDateTime(runtime.cloud_heartbeat.last_success_at)}</span> : null}
+                  {runtime.cloud_heartbeat?.last_attempt_at ? <span>{t('centers.heartbeat.lastAttempt')}: {formatDateTime(runtime.cloud_heartbeat.last_attempt_at)}</span> : null}
+                  {runtime.cloud_heartbeat?.last_failure_at ? <span className="warn">{t('centers.heartbeat.lastFailure')}: {formatDateTime(runtime.cloud_heartbeat.last_failure_at)}</span> : null}
+                  {typeof (runtime.cloud_heartbeat?.failure_count ?? runtime.cloud_heartbeat?.consecutive_failures) === 'number' ? <span>{t('centers.heartbeat.failureCount')}: {runtime.cloud_heartbeat?.failure_count ?? runtime.cloud_heartbeat?.consecutive_failures}</span> : null}
+                  {runtime.cloud_heartbeat?.last_error ? <span className="warn">{runtime.cloud_heartbeat.last_error}</span> : null}
+                  <span>{t('centers.heartbeat.boundary')}</span>
                 </div>
               </div>}
 
@@ -758,8 +896,12 @@ export function CentersPage() {
                     />
                   </label> : <label>
                     <span>{t('licenses.calculatedDays')}</span>
-                    <input readOnly value={durationDays(manualLicenseDraft.duration_mode, manualLicenseDraft.custom_years) === 0 ? t('licenses.permanentValue') : String(durationDays(manualLicenseDraft.duration_mode, manualLicenseDraft.custom_years))} />
+                    <input readOnly value={manualLicenseDurationDisplay(manualLicenseDraft.duration_mode, manualLicenseDraft.custom_years, t('licenses.permanentValue'), t('licenses.invalidCustomYears'))} />
                   </label>}
+                  {manualLicenseDraft.duration_mode === 'multi_year' ? <label>
+                    <span>{t('licenses.calculatedDays')}</span>
+                    <input readOnly value={manualLicenseDurationDisplay(manualLicenseDraft.duration_mode, manualLicenseDraft.custom_years, t('licenses.permanentValue'), t('licenses.invalidCustomYears'))} />
+                  </label> : null}
                   <div className="cloud-license-modules">
                     {licenseModuleOptions.map(module => (
                       <label key={module} className="module-check">
@@ -772,7 +914,7 @@ export function CentersPage() {
                       </label>
                     ))}
                   </div>
-                  <button className="btn-secondary" disabled={licensing === center.id} onClick={() => handleConfirmManual(center)}>
+                  <button className="btn-secondary" disabled={licensing === center.id || manualLicenseDaysValue === null} onClick={() => handleConfirmManual(center)}>
                     {licensing === center.id ? t('centers.actions.issuing') : t('centers.actions.issueManual')}
                   </button>
                 </div>
@@ -806,7 +948,7 @@ export function CentersPage() {
                 {center.status === 'pending' && <button className="btn-secondary" disabled={licensing === center.id} onClick={() => handleConfirmTrial(center)}>{licensing === center.id ? t('centers.actions.issuing') : t('centers.confirmTrial')}</button>}
                 {center.status === 'active' && <button className="btn-danger" onClick={() => { setNotice(null); disableCenter(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeDisabled') }); load(); }).catch(showError); }}>{t('centers.disable')}</button>}
                 {center.status === 'disabled' && <button className="btn-secondary" onClick={() => { setNotice(null); enableCenter(center.id).then(() => { setNotice({ tone: 'ok', text: t('centers.noticeEnabled') }); load(); }).catch(showError); }}>{t('centers.enable')}</button>}
-                <button className="btn-danger" onClick={() => handleDelete(center.id)}>{t('centers.delete')}</button>
+                <button className="btn-danger" onClick={() => requestDeleteCenter(center.id)}>{t('centers.delete')}</button>
               </div>
               </> : null}
             </div>
@@ -816,5 +958,3 @@ export function CentersPage() {
     </div>
   );
 }
-
-

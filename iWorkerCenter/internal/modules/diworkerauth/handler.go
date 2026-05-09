@@ -1,6 +1,7 @@
 package diworkerauth
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -8,6 +9,7 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -78,6 +80,29 @@ func (h *Handler) RegisterAuthRoutes(mux *http.ServeMux) {
 
 const ldapConfigKey = "diworker_ldap_config"
 const oidcConfigKey = "diworker_oidc_config"
+const maxDiWorkerAuthJSONBodyBytes = 64 << 10
+const maxAccountImportRows = 5000
+
+func decodeDiWorkerAuthJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxDiWorkerAuthJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxDiWorkerAuthJSONBodyBytes {
+		return errors.New("diworker auth json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("diworker auth json body contains trailing data")
+		}
+		return err
+	}
+	return nil
+}
 
 func (h *Handler) loadLDAPConfig() LDAPConfig {
 	var raw string
@@ -106,7 +131,7 @@ func (h *Handler) handleLDAP(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, h.loadLDAPConfig())
 	case http.MethodPost:
 		var cfg LDAPConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		if err := decodeDiWorkerAuthJSON(r.Body, &cfg); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
@@ -129,13 +154,13 @@ func (h *Handler) handleLDAPTest(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeDiWorkerAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
 	cfg := h.loadLDAPConfig()
 	if !cfg.Enabled || cfg.Host == "" {
-		response.OK(w, map[string]any{"success": false, "error": "LDAP 未配置或未启用"})
+		response.OK(w, map[string]any{"success": false, "error": "LDAP is not configured or enabled"})
 		return
 	}
 	if err := ldapBind(&cfg, req.Username, req.Password); err != nil {
@@ -144,8 +169,6 @@ func (h *Handler) handleLDAPTest(w http.ResponseWriter, r *http.Request) {
 	}
 	response.OK(w, map[string]any{"success": true})
 }
-
-// ── LDAP bind (lightweight ASN.1/BER) ──
 
 func ldapBind(cfg *LDAPConfig, username, password string) error {
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
@@ -161,7 +184,7 @@ func ldapBind(cfg *LDAPConfig, username, password string) error {
 		conn, err = dialer.Dial("tcp", addr)
 	}
 	if err != nil {
-		return fmt.Errorf("连接失败: %w", err)
+		return fmt.Errorf("LDAP connection failed: %w", err)
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -179,16 +202,16 @@ func ldapBind(cfg *LDAPConfig, username, password string) error {
 	packet := berWrap(0x30, envelope)
 
 	if _, err := conn.Write(packet); err != nil {
-		return fmt.Errorf("发送失败: %w", err)
+		return fmt.Errorf("LDAP bind request failed: %w", err)
 	}
 	buf := make([]byte, 1024)
 	n, err := conn.Read(buf)
 	if err != nil {
-		return fmt.Errorf("读取失败: %w", err)
+		return fmt.Errorf("LDAP bind response failed: %w", err)
 	}
 	// Parse result code from BindResponse
 	if rc := parseLDAPResult(buf[:n]); rc != 0 {
-		return fmt.Errorf("认证失败 (LDAP result code %d)", rc)
+		return fmt.Errorf("LDAP authentication failed (result code %d)", rc)
 	}
 	return nil
 }
@@ -337,7 +360,7 @@ func (h *Handler) createAccount(w http.ResponseWriter, r *http.Request) {
 		Identifier string `json:"identifier"`
 		ExpiryDays int    `json:"expiry_days"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeDiWorkerAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -383,7 +406,7 @@ func (h *Handler) updateAccount(w http.ResponseWriter, r *http.Request, id strin
 		ExpiryDays *int   `json:"expiry_days"` // nil=不修改, 0=永久, >0=天数
 		Disabled   bool   `json:"disabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeDiWorkerAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -470,6 +493,11 @@ func (h *Handler) handleImportCSV(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		line++
+		if line > maxAccountImportRows+1 {
+			res.Errors = append(res.Errors, fmt.Sprintf("import is limited to %d account rows", maxAccountImportRows))
+			res.Skipped++
+			break
+		}
 		if err != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("line %d: %v", line, err))
 			res.Skipped++
@@ -542,7 +570,7 @@ func (h *Handler) handleAuthenticate(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeDiWorkerAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -576,7 +604,7 @@ func (h *Handler) handleEnrollmentVerify(w http.ResponseWriter, r *http.Request)
 		Password string `json:"password"`
 		WorkerID string `json:"worker_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeDiWorkerAuthJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}

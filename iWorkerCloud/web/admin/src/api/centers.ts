@@ -60,6 +60,20 @@ export interface CenterComputeSyncStatus {
   runtime_impact?: string;
 }
 
+export interface CenterCloudHeartbeat {
+  enabled?: boolean;
+  configured?: boolean;
+  status?: 'online' | 'degraded' | 'disabled' | string;
+  last_attempt_at?: string;
+  last_success_at?: string;
+  last_failure_at?: string;
+  last_error?: string;
+  failure_count?: number;
+  consecutive_failures?: number;
+  non_blocking?: boolean;
+  business_impact?: string;
+}
+
 export interface CenterRuntimeStatus {
   ok?: boolean;
   message?: string;
@@ -69,6 +83,7 @@ export interface CenterRuntimeStatus {
   compute_permission?: boolean;
   cloud_provider_count?: number;
   compute_sync_status?: CenterComputeSyncStatus;
+  cloud_heartbeat?: CenterCloudHeartbeat;
 }
 
 export interface CenterProbeResult extends CenterRuntimeStatus {
@@ -110,6 +125,8 @@ export interface ManagementSummary {
   runtime_fallback_centers?: number;
   runtime_non_blocking_issues?: number;
   runtime_blocking_issues?: number;
+  heartbeat_degraded_centers?: number;
+  heartbeat_blocking_issues?: number;
 }
 
 export interface CenterManagement {
@@ -180,40 +197,4 @@ export function enableCenter(id: string): Promise<void> {
 
 export function deleteCenter(id: string): Promise<void> {
   return apiDelete(`/api/admin/centers/${id}`);
-}
-export interface CenterTenant {
-  id: string;
-  company_name: string;
-  legal_person: string;
-  email: string;
-  address: string;
-  status: string;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface CenterTenantRequest {
-  company_name: string;
-  legal_person?: string;
-  email: string;
-  address?: string;
-  status?: string;
-  admin_username?: string;
-  admin_password?: string;
-}
-
-export function listCenterTenants(centerId: string): Promise<{ tenants: CenterTenant[] }> {
-  return apiGet(`/api/admin/centers/${centerId}/tenants`);
-}
-
-export function createCenterTenant(centerId: string, req: CenterTenantRequest): Promise<CenterTenant> {
-  return apiPost(`/api/admin/centers/${centerId}/tenants`, req);
-}
-
-export function updateCenterTenant(centerId: string, tenantId: string, req: CenterTenantRequest): Promise<CenterTenant> {
-  return apiPut(`/api/admin/centers/${centerId}/tenants/${tenantId}`, req);
-}
-
-export function deleteCenterTenant(centerId: string, tenantId: string): Promise<void> {
-  return apiDelete(`/api/admin/centers/${centerId}/tenants/${tenantId}`);
 }

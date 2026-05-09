@@ -13,12 +13,15 @@ package main
 // so it works out of the box if the GUI has already been configured.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +37,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
+	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
@@ -54,8 +58,22 @@ func runConfigUI() {
 	}
 }
 
+type tuiStartupOptions struct {
+	forceInitialTab   []int
+	serviceRedeemCode string
+	onboardingEmail   string
+	mcpAddMode        string
+	focusSetupStatus  bool
+}
+
+const mcpAddModeAutoLocal = "auto-local"
+
 // runTUI starts the Bubble Tea interactive mode.
-func runTUI() {
+func runTUI(forceInitialTab ...int) {
+	runTUIWithOptions(tuiStartupOptions{forceInitialTab: forceInitialTab})
+}
+
+func runTUIWithOptions(startup tuiStartupOptions) {
 	logger := NewTUILogger()
 
 	// Data directory: ~/.maclaw (shared with GUI).
@@ -80,21 +98,19 @@ func runTUI() {
 
 	// Load full app config from ~/.maclaw/config.json (shared with GUI).
 	configStore := commands.NewFileConfigStore(dataDir)
-	appCfg, _ := configStore.LoadConfig()
+	appCfg, configLoadErr := configStore.LoadConfig()
+	if configLoadErr != nil {
+		logger.Warn("config load failed, using defaults: %v", configLoadErr)
+	}
 
 	// Build LLM config from the shared config file.
 	llmCfg := buildLLMConfigFromAppConfig(appCfg)
-	if llmCfg.URL == "" || llmCfg.Model == "" {
-		fmt.Fprintln(os.Stderr, "LLM not configured.")
-		fmt.Fprintln(os.Stderr, "Either configure via the maclaw GUI, or run: maclaw-tui llm setup")
-		os.Exit(1)
-	}
+	llmConfigured := tuiConfigLLMReady(appCfg)
 
 	// Hint: incomplete remote config (has email+hub but no credentials).
-	if appCfg.RemoteEmail != "" && appCfg.RemoteHubURL != "" &&
-		(appCfg.RemoteMachineID == "" || appCfg.RemoteMachineToken == "") {
-		fmt.Fprintln(os.Stderr, "提示: 远程模式配置不完整（有邮箱和 Hub URL 但缺少凭据）。")
-		fmt.Fprintf(os.Stderr, "运行 %s-tui remote activate 完成注册。\n", strings.ToLower(brand.Current().DisplayName))
+	if tuiRemoteActivationIncomplete(appCfg) {
+		fmt.Fprintln(os.Stderr, tuiText(tuiConfigLang(appCfg), "incompleteRemoteHint"))
+		fmt.Fprintln(os.Stderr, tuiFormat(tuiConfigLang(appCfg), "incompleteRemoteActivate", strings.ToLower(brand.Current().DisplayName)))
 	}
 
 	// Initialize memory store (shared with GUI — same ~/.maclaw/memory/).
@@ -190,11 +206,11 @@ func runTUI() {
 	root := views.NewRootModel(lang)
 	root.Chat.FocusInput()
 	// Show current LLM model in status bar.
-	modelLabel := llmCfg.Model
-	if llmCfg.ProviderName != "" {
-		modelLabel = llmCfg.ProviderName + " / " + llmCfg.Model
-	}
+	modelLabel := tuiModelDisplayLabel(lang, llmCfg.ProviderName, llmCfg.Model)
 	root.StatusBar.SetModelInfo(modelLabel)
+	if !llmConfigured {
+		root.StatusBar.SetMessage(tuiText(lang, "llmNotConfigured"))
+	}
 
 	// Restore previous conversation into the chat view.
 	if prevHistory := convMemory.Load("tui-user"); len(prevHistory) > 0 {
@@ -210,7 +226,7 @@ func runTUI() {
 		}
 		if len(restored) > 0 {
 			root.Chat.SetMessages(restored)
-			root.Chat.AppendSystemMessage(fmt.Sprintf("📜 已恢复 %d 条历史消息（/new 清除）", len(restored)))
+			root.Chat.AppendSystemMessage(tuiFormat(lang, "restoredHistory", len(restored)))
 		}
 	}
 
@@ -222,17 +238,37 @@ func runTUI() {
 	// Populate initial tool data from config.
 	tuiModel.refreshToolData()
 
-	// Populate config view from AppConfig.
+	// Populate config-backed setup views from AppConfig.
 	tuiModel.root.Config.LoadFromAppConfig(appCfg)
+	tuiModel.root.Onboarding.LoadFromAppConfig(appCfg)
+	tuiModel.root.Service.LoadFromAppConfig(appCfg)
+	tuiModel.configureInitialTab(appCfg, llmConfigured, lang)
+	if len(startup.forceInitialTab) > 0 {
+		tuiModel.applyForcedInitialTab(startup.forceInitialTab[0], appCfg, llmConfigured, lang)
+		if len(startup.forceInitialTab) > 1 && startup.forceInitialTab[0] == views.TabConfig {
+			tuiModel.root.Config.FocusTab(startup.forceInitialTab[1])
+		}
+		if len(startup.forceInitialTab) > 1 && startup.forceInitialTab[0] == views.TabTools {
+			tuiModel.root.Tools.FocusTab(startup.forceInitialTab[1])
+		}
+		if len(startup.forceInitialTab) > 1 && startup.forceInitialTab[0] == views.TabTasks {
+			tuiModel.root.Tasks.FocusTab(startup.forceInitialTab[1])
+		}
+	}
+	tuiModel.applyStartupPrefills(startup)
+	if startup.focusSetupStatus {
+		tuiModel.root.SetTab(views.TabConfig)
+		tuiModel.root.Config.FocusSetupStatus()
+		tuiModel.root.StatusBar.SetMessage(tuiText(lang, "slashOpenStatus"))
+	}
+	if configLoadErr != nil {
+		tuiModel.root.StatusBar.SetMessage(tuiFormat(lang, "configLoadWarning", configLoadErr.Error()))
+	}
 
-	// Populate memory view.
-	tuiModel.refreshMemoryData()
-
-	// Mark task sub-tabs and audit as loaded (no data source in standalone TUI yet).
+	// Mark task sub-tabs as loaded (no data source in standalone TUI yet).
 	tuiModel.root.Tasks.SetTasks(nil)
 	tuiModel.root.Tasks.SetRemoteTasks(nil)
 	tuiModel.root.Tasks.SetBackgroundTasks(nil)
-	tuiModel.root.Audit.SetEntries(nil)
 
 	p := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	tuiModel.program = p
@@ -270,13 +306,32 @@ func buildLLMConfigFromAppConfig(cfg corelib.AppConfig) corelib.MaclawLLMConfig 
 	// Resolve provider-specific fields from the current provider entry.
 	for _, p := range cfg.MaclawLLMProviders {
 		if p.Name == cfg.MaclawLLMCurrentProvider {
+			if strings.TrimSpace(llm.Key) == "" {
+				llm.Key = strings.TrimSpace(p.Key)
+			}
 			llm.AgentType = p.AgentType
 			llm.SupportsVision = p.SupportsVision
 			llm.WireAPI = p.WireAPI
 			break
 		}
 	}
+	if strings.TrimSpace(llm.Key) == "" && tuiAppConfigUsesHubLLMService(cfg) {
+		llm.Key = strings.TrimSpace(cfg.RemoteViewerToken)
+	}
 	return llm
+}
+
+func tuiAppConfigUsesHubLLMService(cfg corelib.AppConfig) bool {
+	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+	if current == tuiHubServiceProviderName || strings.EqualFold(current, "MaClaw Official") {
+		return true
+	}
+	for _, provider := range cfg.MaclawLLMProviders {
+		if provider.IsHubService && strings.TrimSpace(provider.Name) == current {
+			return true
+		}
+	}
+	return false
 }
 
 // TUIApp holds the TUI's agent infrastructure.
@@ -317,7 +372,7 @@ func (app *TUIApp) buildSystemPromptDeps() agent.SystemPromptDeps {
 	}
 	roleDesc := cfg.MaclawRoleDescription
 	if roleDesc == "" {
-		roleDesc = "一个尽心尽责无所不能的软件开发管家"
+		roleDesc = tuiText(tuiConfigLang(cfg), "defaultRoleDescription")
 	}
 
 	deps := agent.SystemPromptDeps{
@@ -357,21 +412,163 @@ type cancellable interface {
 
 // tuiModel is the Bubble Tea top-level model.
 type tuiModel struct {
-	app      *TUIApp
-	program  *tea.Program
-	root     views.RootModel
-	ready    bool
-	activeCb cancellable // non-nil while agent loop is running
+	app        *TUIApp
+	program    *tea.Program
+	root       views.RootModel
+	ready      bool
+	startupCmd tea.Cmd
+	activeCb   cancellable // non-nil while agent loop is running
 }
 
 func (m *tuiModel) Init() tea.Cmd {
-	return func() tea.Msg {
+	readyCmd := func() tea.Msg {
 		time.Sleep(100 * time.Millisecond)
 		return tuiReadyMsg{}
 	}
+	if m.startupCmd != nil {
+		return tea.Batch(readyCmd, m.startupCmd)
+	}
+	return readyCmd
 }
 
 type tuiReadyMsg struct{}
+
+func (m *tuiModel) configureInitialTab(cfg corelib.AppConfig, llmConfigured bool, lang string) {
+	if tuiConfigLLMNeedsKey(cfg) {
+		m.root.SetTab(views.TabConfig)
+		m.root.Config.FocusLLMKey()
+		m.root.StatusBar.SetMessage(tuiText(lang, "llmKeyMissing"))
+		return
+	}
+	if !tuiSetupReady(cfg, llmConfigured) {
+		m.root.SetTab(views.TabOnboarding)
+		m.root.StatusBar.SetMessage(tuiText(lang, "slashOpenSetup"))
+		return
+	}
+	if llmConfigured {
+		if !tuiMCPConfigured(cfg) {
+			m.root.StatusBar.SetMessage(tuiText(lang, "mcpOptionalReady"))
+		}
+		return
+	}
+	if tuiRemoteActivationIncomplete(cfg) {
+		m.root.SetTab(views.TabOnboarding)
+		m.root.StatusBar.SetMessage(tuiText(lang, "incompleteRemoteSetup"))
+		return
+	}
+	if tuiRemoteActivationReady(cfg) {
+		m.root.SetTab(views.TabServiceRedeem)
+		m.root.StatusBar.SetMessage(tuiText(lang, "serviceRedeemPrompt"))
+		m.startupCmd = m.refreshServiceStatusFromTUI()
+		return
+	}
+	m.root.SetTab(views.TabConfig)
+	m.root.Config.FocusLLMConfig()
+}
+
+func tuiSetupReady(cfg corelib.AppConfig, llmConfigured bool) bool {
+	return cfg.OnboardingDone || llmConfigured || tuiConfigLLMReady(cfg) || tuiRemoteActivationReady(cfg)
+}
+
+func tuiConfigLLMReady(cfg corelib.AppConfig) bool {
+	return views.ConfigLLMReady(cfg)
+}
+
+func tuiConfigLLMNeedsKey(cfg corelib.AppConfig) bool {
+	return views.ConfigLLMNeedsKey(cfg)
+}
+
+func tuiAppLLMReady(app *TUIApp) bool {
+	if app == nil {
+		return false
+	}
+	if !tuiRuntimeLLMConfigReady(app.llmConfig) {
+		return false
+	}
+	cfg := app.appConfig
+	if strings.TrimSpace(cfg.MaclawLLMUrl) != "" ||
+		strings.TrimSpace(cfg.MaclawLLMModel) != "" ||
+		strings.TrimSpace(cfg.MaclawLLMCurrentProvider) != "" {
+		return tuiConfigLLMReady(cfg)
+	}
+	return true
+}
+
+func tuiRuntimeLLMConfigReady(llm corelib.MaclawLLMConfig) bool {
+	return strings.TrimSpace(llm.URL) != "" && strings.TrimSpace(llm.Model) != ""
+}
+
+func tuiMCPConfigured(cfg corelib.AppConfig) bool {
+	return len(cfg.MCPServers)+len(cfg.LocalMCPServers) > 0
+}
+
+func (m *tuiModel) applyForcedInitialTab(tab int, cfg corelib.AppConfig, llmConfigured bool, lang string) {
+	m.root.SetTab(tab)
+	if tab != views.TabServiceRedeem {
+		m.startupCmd = nil
+	}
+	switch tab {
+	case views.TabOnboarding:
+		m.root.StatusBar.SetMessage(tuiText(lang, "slashOpenSetup"))
+	case views.TabServiceRedeem:
+		m.root.StatusBar.SetMessage(tuiText(lang, "slashOpenRedeem"))
+		if strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != "" && m.startupCmd == nil {
+			m.startupCmd = m.refreshServiceStatusFromTUI()
+		}
+	case views.TabConfig:
+		m.root.StatusBar.SetMessage(tuiText(lang, "slashOpenConfig"))
+	case views.TabTools:
+		m.root.StatusBar.SetMessage(tuiText(lang, "slashOpenTools"))
+	case views.TabTasks:
+		m.root.StatusBar.SetMessage(tuiText(lang, "slashOpenTasks"))
+	case views.TabChat:
+		m.root.StatusBar.SetMessage(tuiText(lang, "slashOpenChat"))
+	}
+}
+
+func (m *tuiModel) applyStartupPrefills(startup tuiStartupOptions) {
+	if startup.onboardingEmail != "" {
+		m.root.Onboarding.SetInitialEmail(startup.onboardingEmail)
+	}
+	if startup.serviceRedeemCode != "" {
+		m.root.Service.SetInitialCode(startup.serviceRedeemCode)
+		m.startupCmd = nil
+	}
+	switch startup.mcpAddMode {
+	case mcpAddModeAutoLocal:
+		m.root.SetTab(views.TabTools)
+		m.root.Tools.FocusMCP()
+		if m.app != nil && !tuiMCPConfigured(m.app.appConfig) {
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenTools"))
+			return
+		}
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenMCPList"))
+	case "local":
+		m.root.SetTab(views.TabTools)
+		m.root.Tools.StartMCPLocalTemplate()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenMCP"))
+	case "remote":
+		m.root.SetTab(views.TabTools)
+		m.root.Tools.StartMCPRemoteTemplate()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenMCP"))
+	}
+}
+
+func tuiRemoteActivationIncomplete(cfg corelib.AppConfig) bool {
+	if strings.TrimSpace(cfg.RemoteEmail) == "" {
+		return false
+	}
+	if tuiRemoteActivationReady(cfg) {
+		return false
+	}
+	return strings.TrimSpace(cfg.RemoteMachineID) == "" ||
+		strings.TrimSpace(cfg.RemoteMachineToken) == "" ||
+		strings.TrimSpace(cfg.RemoteViewerToken) == ""
+}
+
+func tuiRemoteActivationReady(cfg corelib.AppConfig) bool {
+	return strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
+}
 
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -383,11 +580,18 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+		if (msg.String() == "f3" || msg.String() == "alt+3") && m.shouldOpenMCPTemplateShortcut() {
+			m.root.Help.Hide()
+			m.root.SetTab(views.TabTools)
+			m.root.Tools.StartMCPLocalTemplate()
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenMCP"))
+			return m, nil
+		}
 		// Esc while waiting: cancel the running agent loop.
 		if msg.String() == "esc" && m.activeCb != nil {
 			m.activeCb.Cancel()
 			m.activeCb = nil
-			m.root.Chat.AppendSystemMessage("⏹ 已取消")
+			m.root.Chat.AppendSystemMessage(tuiText(m.uiLang(), "cancelled"))
 			return m, nil
 		}
 
@@ -397,10 +601,15 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// /btw requires an async agent loop — route through handleChatSend.
 			trimmedCmd := strings.TrimSpace(msg.Text)
 			if trimmedCmd == "/btw" || strings.HasPrefix(trimmedCmd, "/btw ") {
+				if m.llmMissing() {
+					return m, m.routeMissingLLMFromChat()
+				}
 				return m, m.handleChatSend(msg.Text)
 			}
-			m.handleSlashCommand(msg.Text)
-			return m, nil
+			return m, m.handleSlashCommand(msg.Text)
+		}
+		if m.llmMissing() {
+			return m, m.routeMissingLLMFromChat()
 		}
 		// Start the agent loop directly. The user message was already added
 		// to ChatModel.messages and rendered in the previous Update→View cycle
@@ -435,57 +644,221 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ToolOperationResultMsg:
 		// After successful MCP add, reload config and refresh data.
 		if msg.Success && msg.Tab == views.ToolSubMCP {
-			dataDir := commands.ResolveDataDir()
-			store := commands.NewFileConfigStore(dataDir)
-			if cfg, err := store.LoadConfig(); err == nil {
-				m.app.appConfig = cfg
-			}
+			m.reloadConfigBackedViews()
 			m.refreshToolData()
+			if strings.TrimSpace(msg.Message) != "" {
+				m.root.StatusBar.SetMessage(tuiFormat(m.uiLang(), "mcpAddedReady", msg.Message))
+			}
 		}
 
 	case views.ToolRefreshMsg:
 		m.refreshToolData()
-		m.refreshMemoryData()
 		return m, nil
 
-	case views.MemoryDeleteMsg:
-		return m, m.deleteMemory(msg.ID)
-
 	case views.ConfigSaveMsg:
-		return m, m.saveConfig(msg.Section, msg.Key, msg.Value)
+		return m, m.saveConfig(msg)
+
+	case views.ConfigSaveFailedMsg:
+		label := views.ConfigDisplayNameForLang(msg.Key, m.uiLang())
+		m.root.StatusBar.SetMessage(tuiFormat(m.uiLang(), "configSaveFailed", label, msg.Error))
+		return m, nil
 
 	case views.ConfigSavedMsg:
 		// Reload config from disk (the goroutine already saved it).
 		dataDir := commands.ResolveDataDir()
 		store := commands.NewFileConfigStore(dataDir)
+		savedMessage := tuiFormat(m.uiLang(), "configSaved", views.ConfigDisplayNameForLang(msg.Key, m.uiLang()))
+		var nextCmd tea.Cmd
 		if cfg, err := store.LoadConfig(); err == nil {
 			m.app.appConfig = cfg
 			if msg.Key == "language" {
 				m.root.SetLang(cfg.Language)
+				m.refreshStatusBarModelInfo()
+				savedMessage = tuiFormat(m.uiLang(), "configSaved", views.ConfigDisplayNameForLang(msg.Key, m.uiLang()))
 			}
 			m.root.Config.LoadFromAppConfig(cfg)
+			m.root.Onboarding.LoadFromAppConfig(cfg)
+			m.root.Service.LoadFromAppConfig(cfg)
+			if msg.Key == "onboarding" {
+				m.app.llmConfig = buildLLMConfigFromAppConfig(cfg)
+				m.refreshStatusBarModelInfo()
+				llmConfigured := tuiConfigLLMReady(cfg)
+				if !llmConfigured {
+					if strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != "" {
+						m.root.SetTab(views.TabServiceRedeem)
+						savedMessage = tuiText(m.uiLang(), "onboardingCheckService")
+						if !m.root.Service.HasPendingCode() {
+							nextCmd = m.refreshServiceStatusFromTUI()
+						}
+					} else {
+						m.root.SetTab(views.TabConfig)
+						m.root.Config.FocusLLMConfig()
+						savedMessage = tuiText(m.uiLang(), "onboardingNeedConfig")
+					}
+				} else {
+					m.root.SetTab(views.TabChat)
+					savedMessage = tuiText(m.uiLang(), "onboardingComplete")
+					if !tuiMCPConfigured(cfg) {
+						savedMessage = tuiText(m.uiLang(), "onboardingCompleteMCP")
+					}
+				}
+			}
 			if strings.HasPrefix(msg.Key, "maclaw_llm_") {
 				m.app.llmConfig = buildLLMConfigFromAppConfig(cfg)
-				label := m.app.llmConfig.Model
-				if m.app.llmConfig.ProviderName != "" {
-					label = m.app.llmConfig.ProviderName + " / " + m.app.llmConfig.Model
-				}
-				m.root.StatusBar.SetModelInfo(label)
+				m.refreshStatusBarModelInfo()
 			}
 		}
-		m.root.StatusBar.SetMessage(fmt.Sprintf("✅ 已保存: %s", msg.Key))
+		m.root.StatusBar.SetMessage(savedMessage)
+		if nextCmd != nil {
+			return m, nextCmd
+		}
+		return m, nil
+
+	case views.OnboardingActivateRemoteMsg:
+		return m, m.activateRemoteFromTUI(msg.Email, msg.HubCenterURL)
+
+	case views.OnboardingStartWeixinMsg:
+		return m, m.startWeixinFromTUI()
+
+	case views.OnboardingPollWeixinMsg:
+		return m, m.pollWeixinFromTUI(msg.Token)
+
+	case views.OnboardingLanguageChangedMsg:
+		return m, m.saveOnboardingLanguage(msg.Language)
+
+	case views.OnboardingRemoteResultMsg:
+		if msg.Success {
+			m.reloadConfigBackedViews()
+		}
+		var cmd tea.Cmd
+		m.root, cmd = m.root.Update(msg)
+		if msg.Success && (msg.HubServiceReady || msg.MachineReady) {
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "hubActivationSuccess"))
+		} else if msg.Success {
+			status := strings.TrimSpace(msg.Message)
+			if status == "" {
+				status = tuiText(m.uiLang(), "viewerTokenMissing")
+			}
+			m.root.StatusBar.SetMessage(status)
+		} else {
+			m.root.StatusBar.SetMessage(tuiFormat(m.uiLang(), "hubActivationFailed", msg.Message))
+		}
+		return m, cmd
+
+	case views.OnboardingWeixinQRMsg, views.OnboardingWeixinPollResultMsg:
+		var cmd tea.Cmd
+		m.root, cmd = m.root.Update(msg)
+		if result, ok := msg.(views.OnboardingWeixinPollResultMsg); ok && result.Success {
+			m.reloadConfigBackedViews()
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "weixinBound"))
+		}
+		return m, cmd
+
+	case views.OnboardingFinishMsg:
+		return m, m.finishOnboardingFromTUI()
+
+	case views.ConfigOpenSetupMsg:
+		m.root.SetTab(views.TabOnboarding)
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenSetup"))
+		return m, nil
+
+	case views.ConfigOpenServiceRedeemMsg:
+		m.root.SetTab(views.TabServiceRedeem)
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenRedeem"))
+		if m.serviceRedeemRefreshReady() {
+			return m, m.refreshServiceStatusFromTUI()
+		}
+		return m, nil
+
+	case views.ConfigOpenToolsMsg:
+		m.root.SetTab(views.TabTools)
+		m.root.Tools.FocusMCP()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenTools"))
+		return m, nil
+
+	case views.ServiceRedeemOpenSetupMsg:
+		m.root.SetTab(views.TabOnboarding)
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "serviceOpenSetup"))
+		return m, nil
+
+	case views.TaskOpenToolsMsg:
+		m.root.SetTab(views.TabTools)
+		m.root.Tools.FocusMCP()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenTools"))
+		return m, nil
+
+	case views.TaskOpenChatMsg:
+		m.root.SetTab(views.TabChat)
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenChat"))
+		return m, nil
+
+	case views.ServiceRedeemRefreshMsg:
+		return m, m.refreshServiceStatusFromTUI()
+
+	case views.ServiceRedeemSubmitMsg:
+		return m, m.redeemServiceFromTUI(msg.Code)
+
+	case views.ServiceRedeemResultMsg:
+		if msg.HasConfig && m.app != nil {
+			m.app.appConfig = msg.Config
+			m.app.llmConfig = buildLLMConfigFromAppConfig(msg.Config)
+			label := tuiModelDisplayLabel(m.uiLang(), m.app.llmConfig.ProviderName, m.app.llmConfig.Model)
+			m.root.StatusBar.SetModelInfo(label)
+			m.root.Config.LoadFromAppConfig(msg.Config)
+			m.root.Onboarding.LoadFromAppConfig(msg.Config)
+			m.root.Service.LoadFromAppConfig(msg.Config)
+		}
+		var cmd tea.Cmd
+		m.root, cmd = m.root.Update(msg)
+		if msg.Success {
+			if msg.FromRefresh {
+				m.root.Chat.AppendSystemMessage(tuiText(m.uiLang(), "serviceRefreshReadyChat"))
+			} else {
+				m.root.Chat.AppendSystemMessage(tuiText(m.uiLang(), "serviceRedeemSuccessChat"))
+			}
+		}
+		if strings.TrimSpace(msg.Message) != "" {
+			m.root.StatusBar.SetMessage(msg.Message)
+		}
+		return m, cmd
 	}
 
+	previousTab := m.root.ActiveTab()
 	var cmd tea.Cmd
 	m.root, cmd = m.root.Update(msg)
+	if previousTab != views.TabServiceRedeem && m.root.ActiveTab() == views.TabServiceRedeem && m.serviceRedeemRefreshReady() {
+		return m, tea.Batch(cmd, m.refreshServiceStatusFromTUI())
+	}
 	return m, cmd
 }
 
+func (m *tuiModel) refreshStatusBarModelInfo() {
+	if m == nil || m.app == nil {
+		return
+	}
+	label := tuiModelDisplayLabel(m.uiLang(), m.app.llmConfig.ProviderName, m.app.llmConfig.Model)
+	m.root.StatusBar.SetModelInfo(label)
+}
+
+func (m *tuiModel) serviceRedeemRefreshReady() bool {
+	if m == nil || m.app == nil {
+		return false
+	}
+	cfg := m.app.appConfig
+	return strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
+}
+
 // handleSlashCommand processes /commands. Only called when text starts with "/".
-func (m *tuiModel) handleSlashCommand(text string) {
+func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 	text = strings.TrimSpace(text)
+	fields := strings.Fields(text)
+	if len(fields) == 0 {
+		return nil
+	}
+	cmdName := fields[0]
+	args := fields[1:]
 	switch {
-	case text == "/new" || text == "/clear":
+	case cmdName == "/new" || cmdName == "/clear":
 		m.app.history.Clear("tui-user")
 		// Cancel active workflow if any (even if workflow is disabled,
 		// to clean up stale state from before the toggle was turned off).
@@ -499,73 +872,271 @@ func (m *tuiModel) handleSlashCommand(text string) {
 		m.app.pendingPhasePrompt = ""
 		m.app.workflowAgentLoop = false
 		m.app.workflowMu.Unlock()
-		m.root.Chat.ClearMessages("🗑 对话已清除")
+		m.root.Chat.ClearMessages(tuiText(m.uiLang(), "chatCleared"))
+		return nil
 
-	case text == "/model":
+	case cmdName == "/model":
 		cfg := m.app.llmConfig
-		info := fmt.Sprintf("🧠 当前模型: %s\n   服务商: %s\n   协议: %s\n   上下文: %d tokens",
-			cfg.Model, cfg.ProviderName, cfg.Protocol, cfg.ContextLength)
+		info := tuiFormat(m.uiLang(), "modelInfoFull", cfg.Model, tuiProviderDisplayName(m.uiLang(), cfg.ProviderName), cfg.Protocol, cfg.ContextLength)
 		if cfg.Protocol == "" {
-			info = fmt.Sprintf("🧠 当前模型: %s\n   服务商: %s", cfg.Model, cfg.ProviderName)
+			info = tuiFormat(m.uiLang(), "modelInfoBasic", cfg.Model, tuiProviderDisplayName(m.uiLang(), cfg.ProviderName))
 		}
 		m.root.Chat.AppendSystemMessage(info)
+		return nil
 
-	case text == "/memory":
-		if m.app.memoryStore == nil {
-			m.root.Chat.AppendSystemMessage("记忆存储未初始化")
-			return
+	case cmdName == "/setup" || cmdName == "/onboarding":
+		if email, ok := setupEmailFromArgs(args); ok {
+			m.root.SetTab(views.TabOnboarding)
+			m.root.Onboarding.SetInitialEmail(email)
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenSetup"))
+			return nil
 		}
-		entries := m.app.memoryStore.List("", "")
-		if len(entries) == 0 {
-			m.root.Chat.AppendSystemMessage("📭 记忆库为空")
-		} else {
-			var b strings.Builder
-			fmt.Fprintf(&b, "📚 记忆库（共 %d 条）:\n", len(entries))
-			shown := 0
-			for _, e := range entries {
-				if shown >= 10 {
-					fmt.Fprintf(&b, "  ... 还有 %d 条\n", len(entries)-shown)
-					break
+		statusKey := "slashOpenSetup"
+		if tab, subTab, ok := setupInitialRoute(args); ok {
+			m.root.SetTab(tab)
+			switch tab {
+			case views.TabConfig:
+				m.root.Config.FocusTab(subTab)
+			case views.TabTools:
+				m.root.Tools.FocusTab(subTab)
+				statusKey = "slashOpenTools"
+				if subTab == views.ToolSubMCP {
+					if m.startMCPDefaultAddModeFromArgs(args) {
+						statusKey = "slashOpenMCP"
+					}
 				}
-				content := e.Content
-				if len([]rune(content)) > 60 {
-					content = string([]rune(content)[:60]) + "…"
-				}
-				fmt.Fprintf(&b, "  [%s] %s\n", e.Category, content)
-				shown++
+			case views.TabTasks:
+				m.root.Tasks.FocusTab(subTab)
 			}
-			m.root.Chat.AppendSystemMessage(b.String())
+		} else {
+			m.root.SetTab(views.TabOnboarding)
 		}
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), statusKey))
+		return nil
 
-	case text == "/help":
-		help := `可用命令:
+	case cmdName == "/redeem" || cmdName == "/service":
+		if email, ok := serviceSetupEmailFromArgs(args); ok {
+			m.root.SetTab(views.TabOnboarding)
+			m.root.Onboarding.SetInitialEmail(email)
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenSetup"))
+			return nil
+		}
+		tab, subTab := serviceInitialRoute(args)
+		m.root.SetTab(tab)
+		switch tab {
+		case views.TabConfig:
+			m.root.Config.FocusTab(subTab)
+		case views.TabOnboarding:
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenSetup"))
+			return nil
+		}
+		prefilledCode := false
+		if code, ok := serviceRedeemCodeFromArgs(args); ok {
+			m.root.Service.SetInitialCode(code)
+			prefilledCode = true
+		}
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenRedeem"))
+		if tab == views.TabServiceRedeem && !prefilledCode && m.serviceRedeemRefreshReady() {
+			return m.refreshServiceStatusFromTUI()
+		}
+		return nil
 
-对话管理:
-  /new /clear    清除对话历史，开始新对话
-  /btw <查询>    侧查询（不打断当前任务上下文）
+	case cmdName == "/chat":
+		m.root.SetTab(views.TabChat)
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenChat"))
+		return nil
 
-信息查看:
-  /model         显示当前 LLM 模型信息
-  /memory        查看记忆库摘要
+	case cmdName == "/tools" || cmdName == "/tool" || cmdName == "/skill" || cmdName == "/skills":
+		m.root.SetTab(views.TabTools)
+		statusKey := "slashOpenTools"
+		if cmdName == "/skill" || cmdName == "/skills" {
+			m.root.Tools.FocusSkill()
+		} else if subTab, ok := toolsPageInitialSubTab(args); ok {
+			m.root.Tools.FocusTab(subTab)
+			if subTab == views.ToolSubMCP {
+				if mcpDefaultAddModeFromArgs(args) == mcpAddModeAutoLocal && m.app != nil && !tuiMCPConfigured(m.app.appConfig) {
+					m.root.Tools.FocusMCP()
+					m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenTools"))
+					return nil
+				}
+				if m.startMCPDefaultAddModeFromArgs(args) {
+					statusKey = "slashOpenMCP"
+				} else {
+					statusKey = "slashOpenMCPList"
+				}
+			}
+		}
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), statusKey))
+		return nil
 
-  /help          显示此帮助
+	case cmdName == "/mcp":
+		m.root.SetTab(views.TabTools)
+		if mcpDefaultAddModeFromArgs(args) == mcpAddModeAutoLocal && m.app != nil && !tuiMCPConfigured(m.app.appConfig) {
+			m.root.Tools.FocusMCP()
+			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "configOpenTools"))
+			return nil
+		}
+		statusKey := "slashOpenMCPList"
+		if !m.startMCPDefaultAddModeFromArgs(args) {
+			m.root.Tools.FocusMCP()
+		} else {
+			statusKey = "slashOpenMCP"
+		}
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), statusKey))
+		return nil
 
-快捷键:
-  Esc            取消正在执行的请求 / 退出输入框
-  i              聚焦输入框
-  c              清除对话（非输入状态）
-  ↑↓/jk         滚动消息
-  g/G            跳到顶部/底部`
-		m.root.Chat.AppendSystemMessage(help)
+	case cmdName == "/tasks" || cmdName == "/task":
+		m.root.SetTab(views.TabTasks)
+		if subTab, ok := tasksPageInitialSubTab(args); ok {
+			m.root.Tasks.FocusTab(subTab)
+		}
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenTasks"))
+		return nil
+
+	case cmdName == "/schedule":
+		m.root.SetTab(views.TabTasks)
+		m.root.Tasks.FocusScheduled()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenTasks"))
+		return nil
+
+	case cmdName == "/config" || cmdName == "/settings":
+		m.root.SetTab(views.TabConfig)
+		if tab, ok := configCommandInitialTab(args); ok {
+			m.root.Config.FocusTab(tab)
+		}
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenConfig"))
+		return nil
+
+	case cmdName == "/status" || cmdName == "/doctor" || cmdName == "/health":
+		m.root.SetTab(views.TabConfig)
+		m.root.Config.FocusSetupStatus()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenStatus"))
+		return nil
+
+	case cmdName == "/llm":
+		m.root.SetTab(views.TabConfig)
+		m.root.Config.FocusLLMConfig()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenConfig"))
+		return nil
+
+	case cmdName == "/security" || cmdName == "/policy":
+		m.root.SetTab(views.TabConfig)
+		m.root.Config.FocusSecurityConfig()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenConfig"))
+		return nil
+
+	case cmdName == "/memory":
+		m.root.Chat.AppendSystemMessage(tuiText(m.uiLang(), "memoryTUISimplified"))
+		return nil
+
+	case cmdName == "/help":
+		m.root.Help.Show()
+		m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "slashOpenHelp"))
+		return nil
 
 	default:
-		m.root.Chat.AppendSystemMessage(fmt.Sprintf("未知命令: %s（输入 /help 查看可用命令）", text))
+		m.root.Chat.AppendSystemMessage(tuiFormat(m.uiLang(), "unknownCommand", text))
+		return nil
 	}
+}
+
+func memoryCategorySummary(categories map[string]int) string {
+	if len(categories) == 0 {
+		return "n/a"
+	}
+	names := make([]string, 0, len(categories))
+	for name, count := range categories {
+		if name == "" {
+			name = "default"
+		}
+		names = append(names, fmt.Sprintf("%s:%d", name, count))
+	}
+	sort.Strings(names)
+	if len(names) > 4 {
+		names = append(names[:4], fmt.Sprintf("+%d", len(names)-4))
+	}
+	return strings.Join(names, ", ")
+}
+
+func (m *tuiModel) startMCPAddModeFromArgs(args []string) bool {
+	switch mcpAddModeFromArgs(args) {
+	case "local":
+		m.root.Tools.StartMCPLocalTemplate()
+		return true
+	case "remote":
+		m.root.Tools.StartMCPRemoteTemplate()
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *tuiModel) startMCPDefaultAddModeFromArgs(args []string) bool {
+	switch mcpDefaultAddModeFromArgs(args) {
+	case mcpAddModeAutoLocal:
+		m.root.Tools.FocusMCP()
+		return false
+	case "local":
+		m.root.Tools.StartMCPLocalTemplate()
+		return true
+	case "remote":
+		m.root.Tools.StartMCPRemoteTemplate()
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *tuiModel) llmMissing() bool {
+	if m == nil || m.app == nil {
+		return true
+	}
+	return !tuiAppLLMReady(m.app)
+}
+
+func (m *tuiModel) shouldOpenMCPTemplateShortcut() bool {
+	if m == nil || m.app == nil {
+		return false
+	}
+	return tuiAppLLMReady(m.app) && !tuiMCPConfigured(m.app.appConfig)
+}
+
+func (m *tuiModel) routeMissingLLMFromChat() tea.Cmd {
+	lang := m.uiLang()
+	m.root.Chat.AppendSystemMessage(tuiText(lang, "llmNotConfiguredChat"))
+	cfg := corelib.AppConfig{}
+	if m.app != nil {
+		cfg = m.app.appConfig
+	}
+	if tuiConfigLLMNeedsKey(cfg) {
+		m.root.SetTab(views.TabConfig)
+		m.root.Config.FocusLLMKey()
+		m.root.StatusBar.SetMessage(tuiText(lang, "llmKeyMissing"))
+		return nil
+	}
+	if !tuiSetupReady(cfg, false) || tuiRemoteActivationIncomplete(cfg) {
+		m.root.SetTab(views.TabOnboarding)
+		if tuiRemoteActivationIncomplete(cfg) {
+			m.root.StatusBar.SetMessage(tuiText(lang, "incompleteRemoteSetup"))
+		} else {
+			m.root.StatusBar.SetMessage(tuiText(lang, "configOpenSetup"))
+		}
+		return nil
+	}
+	if tuiRemoteActivationReady(cfg) {
+		m.root.SetTab(views.TabServiceRedeem)
+		m.root.StatusBar.SetMessage(tuiText(lang, "serviceRedeemPrompt"))
+		return m.refreshServiceStatusFromTUI()
+	}
+	m.root.SetTab(views.TabConfig)
+	m.root.Config.FocusLLMConfig()
+	m.root.StatusBar.SetMessage(tuiText(lang, "onboardingNeedConfig"))
+	return nil
 }
 
 func (m *tuiModel) View() string {
 	if !m.ready {
-		return "Initializing..."
+		return tuiText(m.uiLang(), "initializing")
 	}
 	return m.root.View()
 }
@@ -574,9 +1145,15 @@ func (m *tuiModel) View() string {
 func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 	prog := m.program
 	app := m.app
+	lang := m.uiLang()
 
 	// --- /btw side query: independent agent loop ---
 	trimmedText := strings.TrimSpace(text)
+	if !tuiAppLLMReady(app) {
+		return func() tea.Msg {
+			return views.ChatResponseMsg{Error: tuiText(lang, "llmNotConfiguredChat")}
+		}
+	}
 	if trimmedText == "/btw" || strings.HasPrefix(trimmedText, "/btw ") {
 		btwQuery := ""
 		if len(trimmedText) > 4 {
@@ -584,7 +1161,7 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 		}
 		if btwQuery == "" {
 			return func() tea.Msg {
-				return views.ChatResponseMsg{Text: "用法: /btw <查询内容>\n\n示例:\n  /btw 最新的 Go 1.23 有什么新特性\n  /btw React 19 的主要变化"}
+				return views.ChatResponseMsg{Text: tuiText(lang, "btwUsage")}
 			}
 		}
 		cb := newTuiBtwCallbacks(app, prog)
@@ -594,12 +1171,12 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 
 			responseText := result.Text
 			if responseText == "" && result.Error != "" {
-				return views.ChatResponseMsg{Error: fmt.Sprintf("/btw 查询失败: %s", result.Error)}
+				return views.ChatResponseMsg{Error: tuiFormat(lang, "btwFailed", result.Error)}
 			}
 			if responseText == "" {
-				responseText = "未找到相关信息。"
+				responseText = tuiText(lang, "btwNoInfo")
 			}
-			responseText = "🔍 **/btw 查询结果**\n\n" + responseText
+			responseText = tuiFormat(lang, "btwHeader", responseText)
 
 			// NOTE: /btw results are NOT appended to the main conversation
 			// history. The result is displayed in the chat UI via ChatResponseMsg
@@ -697,6 +1274,7 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 // --- Skill / MCP async handlers ---
 
 func (m *tuiModel) searchSkills(query string) tea.Cmd {
+	lang := m.uiLang()
 	return func() tea.Msg {
 		hubURL := m.app.appConfig.SkillHubBaseURL(remote.DefaultRemoteHubCenterURL)
 
@@ -711,7 +1289,7 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 		hubResults := client.SearchAll(ctx, hubURL, query)
 
 		if len(hubResults) == 0 {
-			return views.ToolSkillSearchResultMsg{Error: "未找到匹配的 Skill"}
+			return views.ToolSkillSearchResultMsg{Error: tuiText(lang, "skillNoMatch")}
 		}
 
 		results := make([]views.SkillSearchResult, 0, len(hubResults))
@@ -732,6 +1310,7 @@ func (m *tuiModel) searchSkills(query string) tea.Cmd {
 }
 
 func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRef string) tea.Cmd {
+	lang := m.uiLang()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -748,7 +1327,7 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 				if s.Source == "clawhub" && strings.EqualFold(s.Name, skillID) {
 					return views.ToolOperationResultMsg{
 						Tab: views.ToolSubSkill, Success: true,
-						Message: fmt.Sprintf("Skill '%s' 已安装", s.Name),
+						Message: tuiFormat(lang, "skillAlreadyInstalled", s.Name),
 					}
 				}
 			}
@@ -757,7 +1336,7 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 			if installRef == "" {
 				return views.ToolOperationResultMsg{
 					Tab: views.ToolSubSkill, Success: false,
-					Message: "GitHub Skill 缺少安装引用信息",
+					Message: tuiText(lang, "githubSkillMissingRef"),
 				}
 			}
 			entry, err = client.DownloadGitHub(ctx, installRef)
@@ -770,7 +1349,7 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 				if s.HubSkillID == skillID {
 					return views.ToolOperationResultMsg{
 						Tab: views.ToolSubSkill, Success: true,
-						Message: fmt.Sprintf("Skill '%s' 已安装", s.Name),
+						Message: tuiFormat(lang, "skillAlreadyInstalled", s.Name),
 					}
 				}
 			}
@@ -789,14 +1368,14 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 		if err != nil {
 			return views.ToolOperationResultMsg{
 				Tab: views.ToolSubSkill, Success: false,
-				Message: fmt.Sprintf("加载配置失败: %v", err),
+				Message: tuiFormat(lang, "configLoadFailed", err.Error()),
 			}
 		}
 		cfg.NLSkills = append(cfg.NLSkills, *entry)
 		if err := store.SaveConfig(cfg); err != nil {
 			return views.ToolOperationResultMsg{
 				Tab: views.ToolSubSkill, Success: false,
-				Message: fmt.Sprintf("保存失败: %v", err),
+				Message: tuiFormat(lang, "saveFailed", err.Error()),
 			}
 		}
 		m.app.appConfig = cfg
@@ -810,12 +1389,13 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 		}
 		return views.ToolOperationResultMsg{
 			Tab: views.ToolSubSkill, Success: true,
-			Message: fmt.Sprintf("已安装: %s (来源: %s)", entry.Name, sourceLabel),
+			Message: tuiFormat(lang, "installedFrom", entry.Name, sourceLabel),
 		}
 	}
 }
 
 func (m *tuiModel) addLocalMCP(entry corelib.LocalMCPServerEntry) tea.Cmd {
+	lang := m.uiLang()
 	return func() tea.Msg {
 		entry.ID = fmt.Sprintf("local_%s_%d", strings.ReplaceAll(entry.Name, " ", "_"), time.Now().Unix())
 		entry.CreatedAt = time.Now().Format(time.RFC3339)
@@ -824,18 +1404,19 @@ func (m *tuiModel) addLocalMCP(entry corelib.LocalMCPServerEntry) tea.Cmd {
 		store := commands.NewFileConfigStore(dataDir)
 		cfg, err := store.LoadConfig()
 		if err != nil {
-			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: "加载配置失败: " + err.Error()}
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configLoadFailed", err.Error())}
 		}
 		cfg.LocalMCPServers = append(cfg.LocalMCPServers, entry)
 		if err := store.SaveConfig(cfg); err != nil {
-			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: "保存配置失败: " + err.Error()}
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configSaveFailedPlain", err.Error())}
 		}
 		// Return success — the main loop will refresh data via ToolRefreshMsg.
-		return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: true, Message: "已添加: " + entry.Name}
+		return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: true, Message: tuiFormat(lang, "added", entry.Name)}
 	}
 }
 
 func (m *tuiModel) addRemoteMCP(entry corelib.MCPServerEntry) tea.Cmd {
+	lang := m.uiLang()
 	return func() tea.Msg {
 		entry.ID = fmt.Sprintf("remote_%s_%d", strings.ReplaceAll(entry.Name, " ", "_"), time.Now().Unix())
 		entry.CreatedAt = time.Now().Format(time.RFC3339)
@@ -844,13 +1425,13 @@ func (m *tuiModel) addRemoteMCP(entry corelib.MCPServerEntry) tea.Cmd {
 		store := commands.NewFileConfigStore(dataDir)
 		cfg, err := store.LoadConfig()
 		if err != nil {
-			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: "加载配置失败: " + err.Error()}
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configLoadFailed", err.Error())}
 		}
 		cfg.MCPServers = append(cfg.MCPServers, entry)
 		if err := store.SaveConfig(cfg); err != nil {
-			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: "保存配置失败: " + err.Error()}
+			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configSaveFailedPlain", err.Error())}
 		}
-		return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: true, Message: "已添加: " + entry.Name}
+		return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: true, Message: tuiFormat(lang, "added", entry.Name)}
 	}
 }
 
@@ -897,46 +1478,378 @@ func (m *tuiModel) refreshToolData() {
 	m.root.Tools.SetMCPServers(mcpServers)
 }
 
-func (m *tuiModel) refreshMemoryData() {
-	if m.app.memoryStore == nil {
+func (m *tuiModel) reloadConfigBackedViews() {
+	if m == nil || m.app == nil {
 		return
 	}
-	entries := m.app.memoryStore.List("", "")
-	var items []views.MemoryItem
-	for _, e := range entries {
-		items = append(items, views.MemoryItem{
-			ID:       e.ID,
-			Category: string(e.Category),
-			Content:  e.Content,
-			Access:   e.AccessCount,
-		})
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return
 	}
-	m.root.Memory.SetEntries(items)
+	m.app.appConfig = cfg
+	m.app.llmConfig = buildLLMConfigFromAppConfig(cfg)
+	m.root.Config.LoadFromAppConfig(cfg)
+	m.root.Onboarding.LoadFromAppConfig(cfg)
+	m.root.Service.LoadFromAppConfig(cfg)
+	m.refreshStatusBarModelInfo()
 }
 
-func (m *tuiModel) deleteMemory(id string) tea.Cmd {
-	return func() tea.Msg {
-		if m.app.memoryStore != nil {
-			m.app.memoryStore.Delete(id)
-		}
-		return views.ToolRefreshMsg{} // reuse refresh to update memory view
-	}
-}
-
-func (m *tuiModel) saveConfig(section, key, value string) tea.Cmd {
+func (m *tuiModel) saveConfig(msg views.ConfigSaveMsg) tea.Cmd {
 	return func() tea.Msg {
 		dataDir := commands.ResolveDataDir()
 		store := commands.NewFileConfigStore(dataDir)
 		cfg, err := store.LoadConfig()
 		if err != nil {
-			return nil
+			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
 		}
-		applyConfigValue(&cfg, key, value)
+		if msg.HasConfig {
+			cfg = msg.Config
+		} else {
+			applyConfigValue(&cfg, msg.Key, msg.Value)
+		}
 		if err := store.SaveConfig(cfg); err != nil {
-			return nil
+			return views.ConfigSaveFailedMsg{Key: msg.Key, Error: err.Error()}
 		}
-		return views.ConfigSavedMsg{Key: key, Value: value}
+		return views.ConfigSavedMsg{Key: msg.Key, Value: msg.Value}
 	}
+}
+
+func (m *tuiModel) activateRemoteFromTUI(email, hubCenterURL string) tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return views.OnboardingRemoteResultMsg{Success: false, Message: tuiFormat(lang, "loadConfigFailed", err.Error())}
+		}
+		hubCenterURL = strings.TrimRight(strings.TrimSpace(hubCenterURL), "/")
+		if hubCenterURL != "" && hubCenterURL != strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/") {
+			cfg.RemoteHubCenterURL = hubCenterURL
+			if err := store.SaveConfig(cfg); err != nil {
+				return views.OnboardingRemoteResultMsg{Success: false, Message: tuiFormat(lang, "saveHubCenterFailed", err.Error())}
+			}
+		}
+
+		profile := remote.BuildMachineProfile(version)
+		profile.Email = strings.TrimSpace(email)
+		profile.ClientID = cfg.RemoteClientID
+		// Hub URL is display-only in the TUI. Registration resolves the actual
+		// Hub from HubCenter + email so users do not need to guess or type it.
+		profile.HubURL = ""
+		profile.HubCenterURL = strings.TrimSpace(cfg.RemoteHubCenterURL)
+		profile.HubCenterURLs = cfg.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
+		result, err := remote.NewEnrollmentClient().Enroll(context.Background(), profile)
+		if err != nil {
+			return views.OnboardingRemoteResultMsg{Success: false, Message: err.Error()}
+		}
+		cfg.RemoteEmail = result.Email
+		cfg.RemoteSN = result.SN
+		cfg.RemoteUserID = result.UserID
+		cfg.RemoteMachineID = result.MachineID
+		cfg.RemoteMachineToken = result.MachineToken
+		cfg.RemoteHubURL = result.HubURL
+		cfg.RemoteEnabled = true
+		cfg.DefaultLaunchMode = "remote"
+		if result.ViewerToken != "" {
+			cfg.RemoteViewerToken = result.ViewerToken
+		}
+		if result.ClientID != "" && cfg.RemoteClientID == "" {
+			cfg.RemoteClientID = result.ClientID
+		}
+		if result.HubCenterURL != "" {
+			cfg.RemoteHubCenterURL = result.HubCenterURL
+		}
+		if len(result.DiscoveredURLs) > 0 {
+			cfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(result.DiscoveredURLs)
+		}
+		if err := store.SaveConfig(cfg); err != nil {
+			return views.OnboardingRemoteResultMsg{Success: false, Message: tuiFormat(lang, "saveConfigFailed", err.Error())}
+		}
+		m.app.appConfig = cfg
+		hubServiceReady := strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
+		machineReady := strings.TrimSpace(cfg.RemoteMachineID) != "" &&
+			strings.TrimSpace(cfg.RemoteMachineToken) != "" &&
+			strings.TrimSpace(cfg.RemoteViewerToken) != ""
+		message := tuiText(lang, "activated")
+		if !hubServiceReady && !machineReady {
+			message = tuiText(lang, "viewerTokenMissing")
+			if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+				message = tuiText(lang, "hubURLMissing")
+			}
+		}
+		return views.OnboardingRemoteResultMsg{
+			Success:         true,
+			Message:         message,
+			HubURL:          result.HubURL,
+			MachineID:       result.MachineID,
+			HubServiceReady: hubServiceReady,
+			MachineReady:    machineReady,
+		}
+	}
+}
+
+func (m *tuiModel) startWeixinFromTUI() tea.Cmd {
+	return func() tea.Msg {
+		cfg := m.app.appConfig
+		baseURL := strings.TrimSpace(cfg.WeixinBaseURL)
+		if baseURL == "" {
+			baseURL = weixin.DefaultBaseURL
+		}
+		qr, token, err := weixin.StartQRLogin(context.Background(), baseURL, weixin.DefaultBotType)
+		if err != nil {
+			return views.OnboardingWeixinQRMsg{Success: false, Message: err.Error()}
+		}
+		return views.OnboardingWeixinQRMsg{Success: true, QR: qr, Token: token}
+	}
+}
+
+func (m *tuiModel) pollWeixinFromTUI(token string) tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		time.Sleep(1 * time.Second)
+		cfg := m.app.appConfig
+		baseURL := strings.TrimSpace(cfg.WeixinBaseURL)
+		if baseURL == "" {
+			baseURL = weixin.DefaultBaseURL
+		}
+		result, status, err := weixin.PollQRStatus(context.Background(), baseURL, token)
+		if err != nil {
+			return views.OnboardingWeixinPollResultMsg{Status: "error", Message: err.Error(), Completed: true}
+		}
+		msg := status
+		if result != nil && result.Message != "" {
+			msg = result.Message
+		}
+		if status == "confirmed" {
+			if result == nil || !result.Connected {
+				return views.OnboardingWeixinPollResultMsg{Status: status, Message: msg, Completed: true}
+			}
+			store := commands.NewFileConfigStore(commands.ResolveDataDir())
+			cfg, _ := store.LoadConfig()
+			cfg.WeixinEnabled = true
+			cfg.WeixinToken = result.BotToken
+			cfg.WeixinAccountID = result.AccountID
+			if result.BaseURL != "" {
+				cfg.WeixinBaseURL = result.BaseURL
+			}
+			if cfg.WeixinLocalMode == nil {
+				local := true
+				cfg.WeixinLocalMode = &local
+			}
+			if err := store.SaveConfig(cfg); err != nil {
+				return views.OnboardingWeixinPollResultMsg{Status: status, Message: tuiFormat(lang, "saveConfigFailed", err.Error()), Completed: true}
+			}
+			m.app.appConfig = cfg
+			return views.OnboardingWeixinPollResultMsg{Status: status, Message: tuiText(lang, "weixinBoundShort"), Success: true, Completed: true, AccountID: result.AccountID}
+		}
+		if status == "expired" {
+			return views.OnboardingWeixinPollResultMsg{Status: status, Message: msg, Completed: true}
+		}
+		return views.OnboardingWeixinPollResultMsg{Status: status, Message: msg}
+	}
+}
+
+func (m *tuiModel) finishOnboardingFromTUI() tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return views.ConfigSaveFailedMsg{Key: "onboarding", Error: tuiFormat(lang, "loadConfigFailed", err.Error())}
+		}
+		cfg.OnboardingDone = true
+		if err := store.SaveConfig(cfg); err != nil {
+			return views.ConfigSaveFailedMsg{Key: "onboarding", Error: err.Error()}
+		}
+		m.app.appConfig = cfg
+		return views.ConfigSavedMsg{Key: "onboarding", Value: "done"}
+	}
+}
+
+func (m *tuiModel) saveOnboardingLanguage(lang string) tea.Cmd {
+	lang = tuiConfigLang(corelib.AppConfig{Language: lang})
+	m.root.SetLang(lang)
+	m.refreshStatusBarModelInfo()
+	return func() tea.Msg {
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return views.ConfigSaveFailedMsg{Key: "language", Error: err.Error()}
+		}
+		cfg.Language = lang
+		if err := store.SaveConfig(cfg); err != nil {
+			return views.ConfigSaveFailedMsg{Key: "language", Error: err.Error()}
+		}
+		m.app.appConfig = cfg
+		return views.ConfigSavedMsg{Key: "language", Value: lang}
+	}
+}
+
+const (
+	tuiHubServiceProviderName = "MaClaw官方"
+	tuiHubServiceAutoModel    = "auto"
+)
+
+type tuiHubLLMServiceStatus struct {
+	Active             bool    `json:"active"`
+	HubLLMBaseURL      string  `json:"hub_llm_base_url"`
+	DefaultModel       string  `json:"default_model,omitempty"`
+	CreditsRemaining   float64 `json:"credits_remaining,omitempty"`
+	CreditsAvailable   float64 `json:"credits_available,omitempty"`
+	EffectiveExpiresAt string  `json:"effective_expires_at,omitempty"`
+	NearestExpiresAt   string  `json:"nearest_expires_at,omitempty"`
+}
+
+type tuiHubLLMServiceRedeemResponse struct {
+	Success       bool                   `json:"success"`
+	ServiceStatus tuiHubLLMServiceStatus `json:"service_status"`
+}
+
+func (m *tuiModel) refreshServiceStatusFromTUI() tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiFormat(lang, "loadConfigFailed", err.Error()), FromRefresh: true}
+		}
+		if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiText(lang, "hubURLMissing"), FromRefresh: true}
+		}
+		if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiText(lang, "viewerTokenMissing"), FromRefresh: true}
+		}
+		req, err := http.NewRequest(http.MethodGet, strings.TrimRight(cfg.RemoteHubURL, "/")+"/api/llm/service/status", nil)
+		if err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: err.Error(), FromRefresh: true}
+		}
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: err.Error(), FromRefresh: true}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			var failure map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&failure); err == nil {
+				if msg, _ := failure["message"].(string); strings.TrimSpace(msg) != "" {
+					return views.ServiceRedeemResultMsg{Success: false, Message: msg, FromRefresh: true}
+				}
+			}
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiFormat(lang, "serviceStatusFailed", resp.Status), FromRefresh: true}
+		}
+		var status tuiHubLLMServiceStatus
+		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: err.Error(), FromRefresh: true}
+		}
+		if !status.Active || strings.TrimSpace(status.HubLLMBaseURL) == "" {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiText(lang, "officialServiceMissing"), FromRefresh: true}
+		}
+		applyTUIHubLLMServiceStatusToConfig(&cfg, status)
+		if err := store.SaveConfig(cfg); err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiFormat(lang, "saveConfigFailed", err.Error()), FromRefresh: true}
+		}
+		expires, credits := serviceStatusExpiryAndCredits(status)
+		return views.ServiceRedeemResultMsg{Success: true, Message: tuiText(lang, "officialServiceReady"), ProviderName: tuiHubServiceProviderName, CreditsRemaining: credits, ExpiresAt: expires, FromRefresh: true, Config: cfg, HasConfig: true}
+	}
+}
+
+func (m *tuiModel) redeemServiceFromTUI(code string) tea.Cmd {
+	lang := m.uiLang()
+	return func() tea.Msg {
+		store := commands.NewFileConfigStore(commands.ResolveDataDir())
+		cfg, err := store.LoadConfig()
+		if err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiFormat(lang, "loadConfigFailed", err.Error())}
+		}
+		if strings.TrimSpace(cfg.RemoteHubURL) == "" {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiText(lang, "hubURLMissing")}
+		}
+		if strings.TrimSpace(cfg.RemoteViewerToken) == "" {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiText(lang, "viewerTokenMissing")}
+		}
+		payload, _ := json.Marshal(map[string]string{"code": strings.TrimSpace(code)})
+		req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cfg.RemoteHubURL, "/")+"/api/llm/service/redeem", bytes.NewReader(payload))
+		if err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: err.Error()}
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: err.Error()}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			var failure map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&failure); err == nil {
+				if msg, _ := failure["message"].(string); strings.TrimSpace(msg) != "" {
+					return views.ServiceRedeemResultMsg{Success: false, Message: msg}
+				}
+			}
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiFormat(lang, "redeemFailed", resp.Status)}
+		}
+		var result tuiHubLLMServiceRedeemResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: err.Error()}
+		}
+		if !result.ServiceStatus.Active || strings.TrimSpace(result.ServiceStatus.HubLLMBaseURL) == "" {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiText(lang, "redeemNoActiveService")}
+		}
+		applyTUIHubLLMServiceStatusToConfig(&cfg, result.ServiceStatus)
+		if err := store.SaveConfig(cfg); err != nil {
+			return views.ServiceRedeemResultMsg{Success: false, Message: tuiFormat(lang, "saveConfigFailed", err.Error())}
+		}
+		expires, credits := serviceStatusExpiryAndCredits(result.ServiceStatus)
+		return views.ServiceRedeemResultMsg{Success: true, Message: tuiText(lang, "redeemSuccessStatus"), ProviderName: tuiHubServiceProviderName, CreditsRemaining: credits, ExpiresAt: expires, Config: cfg, HasConfig: true}
+	}
+}
+
+func serviceStatusExpiryAndCredits(status tuiHubLLMServiceStatus) (string, float64) {
+	expires := status.EffectiveExpiresAt
+	if expires == "" {
+		expires = status.NearestExpiresAt
+	}
+	credits := status.CreditsRemaining
+	if credits == 0 {
+		credits = status.CreditsAvailable
+	}
+	return expires, credits
+}
+
+func applyTUIHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status tuiHubLLMServiceStatus) {
+	model := strings.TrimSpace(status.DefaultModel)
+	if model == "" {
+		model = tuiHubServiceAutoModel
+	}
+	provider := corelib.MaclawLLMProvider{
+		Name:          tuiHubServiceProviderName,
+		IsHubService:  true,
+		URL:           strings.TrimRight(strings.TrimSpace(status.HubLLMBaseURL), "/"),
+		Key:           strings.TrimSpace(cfg.RemoteViewerToken),
+		Model:         model,
+		Protocol:      "openai",
+		ContextLength: corelib.DefaultContextTokens,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+		AgentType:     "openclaw",
+	}
+	providers := make([]corelib.MaclawLLMProvider, 0, len(cfg.MaclawLLMProviders)+1)
+	for i := range cfg.MaclawLLMProviders {
+		if cfg.MaclawLLMProviders[i].Name != tuiHubServiceProviderName {
+			providers = append(providers, cfg.MaclawLLMProviders[i])
+		}
+	}
+	cfg.MaclawLLMProviders = append([]corelib.MaclawLLMProvider{provider}, providers...)
+	cfg.MaclawLLMCurrentProvider = tuiHubServiceProviderName
+	cfg.MaclawLLMUrl = provider.URL
+	cfg.MaclawLLMKey = provider.Key
+	cfg.MaclawLLMModel = provider.Model
+	cfg.MaclawLLMProtocol = provider.Protocol
+	cfg.MaclawLLMContextLength = provider.ContextLength
+	cfg.MaclawLLMTimeoutSec = provider.TimeoutSec
 }
 
 // applyConfigValue sets a single config field by key name.
@@ -1002,7 +1915,7 @@ func (c *tuiCallbacks) BuildTools(userText string) []map[string]interface{} {
 func (c *tuiCallbacks) ExecuteTool(name, argsJSON string) string {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return fmt.Sprintf("参数解析失败: %v", err)
+		return tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
 	}
 	start := time.Now()
 	result := c.app.toolRegistry.Execute(name, args)
@@ -1111,13 +2024,14 @@ func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) s
 
 func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 	cfg := app.appConfig
+	lang := tuiConfigLang(cfg)
 	roleName := cfg.MaclawRoleName
 	if roleName == "" {
 		roleName = brand.Current().DisplayName
 	}
 	roleDesc := cfg.MaclawRoleDescription
 	if roleDesc == "" {
-		roleDesc = "一个尽心尽责无所不能的软件开发管家"
+		roleDesc = tuiText(lang, "defaultRoleDescription")
 	}
 
 	var b strings.Builder
@@ -1128,18 +2042,26 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 		selfIdentity = app.memoryStore.SelfIdentitySummary(600)
 	}
 	if selfIdentity != "" {
-		fmt.Fprintf(&b, "你的自我认知（来自记忆）：%s\n你的底层系统名为 %s。\n", selfIdentity, roleName)
+		if lang == "en" {
+			fmt.Fprintf(&b, "Your self-understanding (from memory): %s\nYour underlying system name is %s.\n", selfIdentity, roleName)
+		} else {
+			fmt.Fprintf(&b, "你的自我认知（来自记忆）：%s\n你的底层系统名为 %s。\n", selfIdentity, roleName)
+		}
 	} else {
-		fmt.Fprintf(&b, "你是 %s，%s。\n", roleName, roleDesc)
+		if lang == "en" {
+			fmt.Fprintf(&b, "You are %s, %s.\n", roleName, roleDesc)
+		} else {
+			fmt.Fprintf(&b, "你是 %s，%s。\n", roleName, roleDesc)
+		}
 	}
 
 	// /btw mode.
-	b.WriteString(tuiBtwSuffix)
+	b.WriteString(tuiBtwSuffixForLang(lang))
 
 	// User fact summary.
 	if app.memoryStore != nil {
 		if summary := app.memoryStore.UserFactSummary(400); summary != "" {
-			fmt.Fprintf(&b, "\n## 用户信息\n%s\n", summary)
+			fmt.Fprintf(&b, tuiBtwSectionFormat(lang, "userInfo"), summary)
 		}
 	}
 
@@ -1161,7 +2083,7 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 			relevant = relevant[:8]
 		}
 		if len(relevant) > 0 {
-			b.WriteString("\n## 相关记忆（自动召回）\n")
+			b.WriteString(tuiBtwSectionHeader(lang, "relevantMemory"))
 			for _, e := range relevant {
 				text := e.Content
 				if e.CompactForm != "" {
@@ -1188,19 +2110,19 @@ func (c *tuiBtwCallbacks) BuildTools(userText string) []map[string]interface{} {
 
 func (c *tuiBtwCallbacks) ExecuteTool(name, argsJSON string) string {
 	if !tuiBtwToolNames[name] {
-		return fmt.Sprintf("未知工具: %s（/btw 仅支持 web_search, web_fetch, read_file, memory, agent_status）", name)
+		return tuiFormat(tuiConfigLang(c.app.appConfig), "unknownBtwTool", name)
 	}
 
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return fmt.Sprintf("参数解析失败: %v", err)
+		return tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
 	}
 
 	// Mechanism-level enforcement: memory tool is recall-only in /btw.
 	if name == "memory" {
 		action, _ := args["action"].(string)
 		if action != "recall" {
-			return "错误: /btw 侧查询中 memory 工具仅支持 action=\"recall\"（只读查询）"
+			return tuiText(tuiConfigLang(c.app.appConfig), "btwMemoryReadOnly")
 		}
 	}
 
@@ -1246,6 +2168,47 @@ func (c *tuiBtwCallbacks) ShouldStop() bool {
 		return c.stopped
 	}
 }
+
+func tuiBtwSectionFormat(lang, key string) string {
+	if lang == "en" {
+		if key == "userInfo" {
+			return "\n## User Information\n%s\n"
+		}
+	}
+	return "\n## 用户信息\n%s\n"
+}
+
+func tuiBtwSectionHeader(lang, key string) string {
+	if lang == "en" {
+		if key == "relevantMemory" {
+			return "\n## Relevant Memory (Auto-recalled)\n"
+		}
+	}
+	return "\n## 相关记忆（自动召回）\n"
+}
+
+func tuiBtwSuffixForLang(lang string) string {
+	if lang == "en" {
+		return tuiBtwSuffixEN
+	}
+	return tuiBtwSuffix
+}
+
+const tuiBtwSuffixEN = `
+## /btw Side Query Mode (Current)
+
+You are handling a /btw side query. This is an independent, single-turn quick query, not part of the main task.
+
+Rules:
+1. If the user asks about task progress or runtime status, use the agent_status tool first.
+2. Use web_search for fresh information, then web_fetch for details.
+3. If the question involves local project files, use read_file.
+4. If the question involves previous conversation or memory, use memory(action=\"recall\").
+5. Keep the answer concise, structured, and direct.
+6. Include URLs when citing web sources.
+7. This is read-only: do not modify files.
+8. Try to finish within 2-3 tool turns.
+`
 
 const tuiBtwSuffix = `
 ## /btw 侧查询模式（当前生效）
@@ -1340,7 +2303,7 @@ func (app *TUIApp) tuiAgentStatus(args map[string]interface{}) string {
 			sessions := app.sshMgr.List()
 			if len(sessions) > 0 {
 				var b strings.Builder
-				b.WriteString("🔗 **SSH 连接**\n")
+				b.WriteString(tuiText(tuiConfigLang(app.appConfig), "agentStatusSSH") + "\n")
 				for _, s := range sessions {
 					summary := s.GetSummary()
 					fmt.Fprintf(&b, "- %s [%s] %s\n", s.ID, summary.Status, summary.HostLabel)
@@ -1351,7 +2314,7 @@ func (app *TUIApp) tuiAgentStatus(args map[string]interface{}) string {
 	}
 
 	if len(sections) == 0 {
-		return "当前没有活跃的 SSH 连接或后台任务。"
+		return tuiText(tuiConfigLang(app.appConfig), "agentStatusNoActive")
 	}
 
 	return strings.Join(sections, "\n\n")

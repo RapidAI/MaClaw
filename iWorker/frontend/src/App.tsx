@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import './i18n';
-import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchConfigBundle, FetchGoalPushes, FetchInstalledTools, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask } from '../wailsjs/go/main/App';
+import { AckGoalPush, ApplyCenterEnrollment, AutoHandleGoalPush, CheckCenterHealth, DeleteWorkerMemory, DiscoverCenterEnrollment, FetchAgentInstances, FetchConfigBundle, FetchCollaborations, FetchGoalPushes, FetchInstalledTools, FetchWorkflowInstances, FetchWorkerMemoryStats, GetGoalWatchAutoHandleStatus, HeartbeatAgentRuntime, LoadDiWorkerSettings, LoadTaskHistory, RecallWorkerMemories, RecoverGoalPush, SaveDiWorkerSettings, SaveTaskHistory, SaveWorkerMemory, SubmitTask, TransitionCollaborationTask, TransitionWorkflowStep } from '../wailsjs/go/main/App';
 import { main } from '../wailsjs/go/models';
 import { colleagues } from './mock/colleagues';
 import { SideNav } from './components/layout/SideNav';
@@ -11,7 +11,7 @@ import { NewTaskPage } from './pages/NewTaskPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { TaskHistoryPage } from './pages/TaskHistoryPage';
 import { recentTasks as mockRecentTasks } from './mock/tasks';
-import type { CenterAgentInstance, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, CenterConfigBundle, CenterInstalledTools, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
+import type { CenterAgentInstance, CenterCollabTask, CenterEnrollmentDiscovery, CenterGoalPush, CenterHealthStatus, CenterConfigBundle, CenterInstalledTools, CenterTaskContext, CenterWorkflowInstance, DiWorkerSettings, GoalWatchAutoHandleStatus, DiWorkerTab, HistoryTaskItem, SubmitTaskRequest, SubmitTaskResult, SaveWorkerMemoryRequest, TaskAttachment, UpstreamProvider, WorkerMemoryEntry, WorkerMemoryStats } from './types';
 
 const pageMeta: Record<DiWorkerTab, { titleKey: string; subtitleKey: string; fallbackTitle: string; fallbackSubtitle: string; focusKey: string; fallbackFocus: string }> = {
   home: { titleKey: 'pages.home.title', subtitleKey: 'pages.home.subtitle', fallbackTitle: 'Talk', fallbackSubtitle: 'Start from a conversation, Center push, or human handoff.', focusKey: 'status.home', fallbackFocus: 'New work' },
@@ -104,6 +104,9 @@ const fromWailsHistoryTask = (item: main.HistoryTaskItem): HistoryTaskItem => ({
   expectedOutput: item.expected_output,
   result: item.result,
   model: item.model,
+  sourceType: item.source_type as HistoryTaskItem['sourceType'],
+  centerHandoffId: item.center_handoff_id,
+  workflowStepInstanceId: item.workflow_step_instance_id,
 });
 
 const toWailsHistoryTask = (item: HistoryTaskItem): main.HistoryTaskItem => new main.HistoryTaskItem({
@@ -117,6 +120,9 @@ const toWailsHistoryTask = (item: HistoryTaskItem): main.HistoryTaskItem => new 
   expected_output: item.expectedOutput,
   result: item.result,
   model: item.model,
+  source_type: item.sourceType,
+  center_handoff_id: item.centerHandoffId,
+  workflow_step_instance_id: item.workflowStepInstanceId,
 });
 
 const fromWailsSettings = (item: main.DiWorkerSettings | null | undefined): DiWorkerSettings => ({
@@ -202,6 +208,7 @@ type WailsAgentInstanceWithWorkStatus = main.CenterAgentInstance & {
   source?: string;
   cached_at?: string;
   stale?: boolean;
+  runtime_skill_error?: string;
 };
 
 const fromWailsAgentInstance = (item: main.CenterAgentInstance): CenterAgentInstance => {
@@ -231,6 +238,7 @@ const fromWailsAgentInstance = (item: main.CenterAgentInstance): CenterAgentInst
     lastHeartbeatAt: source.last_heartbeat_at,
     heartbeatAgeSeconds: source.heartbeat_age_seconds || 0,
     effectiveStatus: source.effective_status || source.status,
+    runtimeSkillError: source.runtime_skill_error,
     source: source.source,
     cachedAt: source.cached_at,
     stale: Boolean(source.stale),
@@ -242,12 +250,16 @@ const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => {
   return {
   eventId: source.event_id,
   taskId: source.task_id,
+  workflowStepInstanceId: source.workflow_step_instance_id,
   title: source.title,
   toColleagueId: source.to_colleague_id,
   toRoleCode: source.to_role_code,
   status: source.status,
   reason: source.reason,
   recommendedAction: source.recommended_action,
+  recoveryAction: source.recovery_action,
+  recoveryMethod: source.recovery_method,
+  recoveryPath: source.recovery_path,
   ageSeconds: source.age_seconds || 0,
   executorStatus: source.executor_status,
   executorHeartbeatAgeSeconds: source.executor_heartbeat_age_seconds,
@@ -255,10 +267,56 @@ const fromWailsGoalPush = (item: main.CenterGoalPush): CenterGoalPush => {
   source: source.source,
   cachedAt: source.cached_at,
   stale: Boolean(source.stale),
-};
+  };
 };
 
+const fromWailsCollabTask = (item: main.CenterCollabTask): CenterCollabTask => ({
+  id: item.id,
+  title: item.title,
+  description: item.description,
+  fromColleagueId: item.from_colleague_id,
+  toColleagueId: item.to_colleague_id,
+  toRoleCode: item.to_role_code,
+  status: item.status,
+  priority: item.priority || 0,
+  result: item.result,
+  workflowStepInstanceId: (item as main.CenterCollabTask & { workflow_step_instance_id?: string }).workflow_step_instance_id,
+  createdAt: item.created_at,
+  updatedAt: item.updated_at,
+  source: (item as main.CenterCollabTask & { source?: string }).source,
+  cachedAt: (item as main.CenterCollabTask & { cached_at?: string }).cached_at,
+  stale: Boolean((item as main.CenterCollabTask & { stale?: boolean }).stale),
+});
+
+const fromWailsWorkflowInstance = (item: main.CenterWorkflowInstance): CenterWorkflowInstance => ({
+  id: item.id,
+  definitionId: item.definition_id,
+  title: item.title,
+  initiatorId: item.initiator_id,
+  currentStepId: item.current_step_id,
+  currentStepAssigneeColleagueId: (item as main.CenterWorkflowInstance & { current_step_assignee_colleague_id?: string }).current_step_assignee_colleague_id,
+  status: item.status,
+  createdAt: item.created_at,
+  updatedAt: item.updated_at,
+  source: (item as main.CenterWorkflowInstance & { source?: string }).source,
+  cachedAt: (item as main.CenterWorkflowInstance & { cached_at?: string }).cached_at,
+  stale: Boolean((item as main.CenterWorkflowInstance & { stale?: boolean }).stale),
+});
+
 const isCachedGoalPush = (push: CenterGoalPush) => push.source === 'cache' || Boolean(push.stale);
+const workflowRecoveryActions = ['start_workflow_step', 'resume_workflow_step'];
+const legacyTaskRecoveryActions = ['start_task', 'resume_task', 'accept_task'];
+const canRecoverGoalPush = (push?: CenterGoalPush) => {
+  if (!push?.workflowStepInstanceId) {
+    return false;
+  }
+  const recoveryAction = (push.recoveryAction || '').trim();
+  const recommendedAction = (push.recommendedAction || '').trim();
+  if (recoveryAction) {
+    return workflowRecoveryActions.includes(recoveryAction);
+  }
+  return workflowRecoveryActions.includes(recommendedAction) || legacyTaskRecoveryActions.includes(recommendedAction);
+};
 
 const staleSnapshotTime = () => new Date().toISOString();
 
@@ -275,6 +333,38 @@ const markGoalPushesStale = (items: CenterGoalPush[]) => items.map((item) => ({
   stale: true,
   cachedAt: item.cachedAt || staleSnapshotTime(),
 }));
+
+const markCollaborationTasksStale = (items: CenterCollabTask[]) => items.map((item) => ({
+  ...item,
+  source: 'cache',
+  stale: true,
+  cachedAt: item.cachedAt || staleSnapshotTime(),
+}));
+
+const markWorkflowInstancesStale = (items: CenterWorkflowInstance[]) => items.map((item) => ({
+  ...item,
+  source: 'cache',
+  stale: true,
+  cachedAt: item.cachedAt || staleSnapshotTime(),
+}));
+
+const applyCenterCollaborationTask = (items: CenterCollabTask[], updated: CenterCollabTask) => {
+  if (!updated.id) {
+    return items;
+  }
+  if (updated.status === 'completed' || updated.status === 'rejected') {
+    return items.filter((item) => item.id !== updated.id);
+  }
+  let replaced = false;
+  const next = items.map((item) => {
+    if (item.id !== updated.id) {
+      return item;
+    }
+    replaced = true;
+    return { ...updated, source: updated.source || 'center', stale: Boolean(updated.stale) };
+  });
+  return replaced ? next : [{ ...updated, source: updated.source || 'center', stale: Boolean(updated.stale) }, ...next];
+};
 
 const markInstalledToolsStale = (tools: CenterInstalledTools): CenterInstalledTools => ({
   ...tools,
@@ -498,6 +588,8 @@ type WailsConfigBundle = {
   source?: string;
   cached_at?: string;
   stale?: boolean;
+  apply_status?: string;
+  apply_message?: string;
 };
 
 const fromWailsConfigBundle = (item: WailsConfigBundle | null | undefined): CenterConfigBundle => ({
@@ -512,6 +604,8 @@ const fromWailsConfigBundle = (item: WailsConfigBundle | null | undefined): Cent
   source: item?.source || 'center',
   cachedAt: item?.cached_at || '',
   stale: Boolean(item?.stale),
+  applyStatus: item?.apply_status || '',
+  applyMessage: item?.apply_message || '',
 });
 
 
@@ -519,27 +613,30 @@ type WailsInstalledTools = {
   source?: string;
   cached_at?: string;
   stale?: boolean;
+  skill_error?: string;
+  mcp_error?: string;
+  cache_error?: string;
   skills?: Array<{
-    capability_id: string;
-    name: string;
-    source: string;
-    version: string;
-    risk_level: string;
+    capability_id?: string;
+    name?: string;
+    source?: string;
+    version?: string;
+    risk_level?: string;
     entry?: { name?: string; description?: string; triggers?: string[] };
   }>;
   mcp_servers?: Array<{
-    id: string;
-    name: string;
-    description: string;
-    server_type: string;
-    endpoint: string;
+    id?: string;
+    name?: string;
+    description?: string;
+    server_type?: string;
+    endpoint?: string;
     command?: string;
     args?: string[];
     env_keys?: string[];
-    department_id: string;
-    risk_level: string;
-    status: string;
-    installed_at: string;
+    department_id?: string;
+    risk_level?: string;
+    status?: string;
+    installed_at?: string;
   }>;
 };
 
@@ -547,27 +644,30 @@ const fromWailsInstalledTools = (item: WailsInstalledTools | null | undefined): 
   source: item?.source || 'center',
   cachedAt: item?.cached_at || '',
   stale: Boolean(item?.stale),
-  skills: (item?.skills || []).map((skill) => ({
-    capabilityId: skill.capability_id,
-    name: skill.name || skill.entry?.name || skill.capability_id,
+  skillError: item?.skill_error || '',
+  mcpError: item?.mcp_error || '',
+  cacheError: item?.cache_error || '',
+  skills: (item?.skills || []).map((skill, index) => ({
+    capabilityId: skill.capability_id || skill.name || skill.entry?.name || `skill-${index + 1}`,
+    name: skill.name || skill.entry?.name || skill.capability_id || `Skill ${index + 1}`,
     source: skill.source || 'iWorkerCenter',
     version: skill.version || '',
     riskLevel: skill.risk_level || 'low',
     entry: {
       name: skill.entry?.name || skill.name || '',
       description: skill.entry?.description || '',
-      triggers: skill.entry?.triggers || [],
+      triggers: Array.isArray(skill.entry?.triggers) ? skill.entry?.triggers || [] : [],
     },
   })),
-  mcpServers: (item?.mcp_servers || []).map((server) => ({
-    id: server.id,
-    name: server.name,
-    description: server.description,
-    serverType: server.server_type,
-    endpoint: server.endpoint,
+  mcpServers: (item?.mcp_servers || []).map((server, index) => ({
+    id: server.id || server.name || `mcp-${index + 1}`,
+    name: server.name || server.id || `MCP ${index + 1}`,
+    description: server.description || '',
+    serverType: server.server_type || 'http',
+    endpoint: server.endpoint || '',
     command: server.command,
-    args: server.args || [],
-    envKeys: server.env_keys || [],
+    args: Array.isArray(server.args) ? server.args : [],
+    envKeys: Array.isArray(server.env_keys) ? server.env_keys : [],
     departmentId: server.department_id || 'all',
     riskLevel: server.risk_level || 'medium',
     status: server.status || 'enabled',
@@ -581,6 +681,9 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<DiWorkerTab>('home');
   const [selectedTask, setSelectedTask] = useState('');
   const [selectedColleagueName, setSelectedColleagueName] = useState('');
+  const [activeCollaborationTaskId, setActiveCollaborationTaskId] = useState('');
+  const [activeCollaborationTask, setActiveCollaborationTask] = useState<CenterCollabTask | null>(null);
+  const [centerTaskContext, setCenterTaskContext] = useState<CenterTaskContext | null>(null);
   const [draft, setDraft] = useState('');
   const [expectedOutput, setExpectedOutput] = useState('summary');
   const [submitting, setSubmitting] = useState(false);
@@ -603,6 +706,9 @@ export default function App() {
   const [centerEnrollmentApplyingId, setCenterEnrollmentApplyingId] = useState('');
   const [centerEnrollmentMessage, setCenterEnrollmentMessage] = useState('');
   const [centerEnrollmentError, setCenterEnrollmentError] = useState('');
+  const [centerUsageSyncing, setCenterUsageSyncing] = useState(false);
+  const [centerUsageSyncMessage, setCenterUsageSyncMessage] = useState('');
+  const [centerUsageSyncError, setCenterUsageSyncError] = useState('');
   const [workerMemoryStats, setWorkerMemoryStats] = useState<WorkerMemoryStats | null>(null);
   const [workerMemoryStatsLoading, setWorkerMemoryStatsLoading] = useState(false);
   const [workerMemoryStatsError, setWorkerMemoryStatsError] = useState('');
@@ -623,6 +729,14 @@ export default function App() {
   const [goalPushLoading, setGoalPushLoading] = useState(false);
   const [goalPushError, setGoalPushError] = useState('');
   const [goalPushAckingId, setGoalPushAckingId] = useState('');
+  const [collaborationTasks, setCollaborationTasks] = useState<CenterCollabTask[]>([]);
+  const [collaborationTasksLoading, setCollaborationTasksLoading] = useState(false);
+  const [collaborationTasksError, setCollaborationTasksError] = useState('');
+  const [collaborationTaskBusyId, setCollaborationTaskBusyId] = useState('');
+  const [workflowInstances, setWorkflowInstances] = useState<CenterWorkflowInstance[]>([]);
+  const [workflowInstancesLoading, setWorkflowInstancesLoading] = useState(false);
+  const [workflowInstancesError, setWorkflowInstancesError] = useState('');
+  const [workflowStepBusyId, setWorkflowStepBusyId] = useState('');
   const [agentInstances, setAgentInstances] = useState<CenterAgentInstance[]>([]);
   const [agentInstancesLoading, setAgentInstancesLoading] = useState(false);
   const [agentInstancesError, setAgentInstancesError] = useState('');
@@ -637,6 +751,8 @@ export default function App() {
   const configBundleRefreshInFlight = useRef(false);
   const agentInstancesRefreshInFlight = useRef(false);
   const goalPushRefreshInFlight = useRef(false);
+  const collaborationTasksRefreshInFlight = useRef(false);
+  const workflowInstancesRefreshInFlight = useRef(false);
 
   useEffect(() => {
     if (!hasWailsBridge()) {
@@ -767,6 +883,10 @@ export default function App() {
       setAgentInstancesError('');
       return;
     }
+    if (agentInstancesRefreshInFlight.current) {
+      return agentInstances;
+    }
+    agentInstancesRefreshInFlight.current = true;
     setAgentInstancesLoading(true);
     setAgentInstancesError('');
     try {
@@ -790,6 +910,7 @@ export default function App() {
       setAgentInstances((current) => current.length ? markAgentInstancesStale(current) : current);
       return undefined;
     } finally {
+      agentInstancesRefreshInFlight.current = false;
       setAgentInstancesLoading(false);
     }
   };
@@ -815,6 +936,10 @@ export default function App() {
       setGoalPushError('');
       return;
     }
+    if (goalPushRefreshInFlight.current) {
+      return goalPushes;
+    }
+    goalPushRefreshInFlight.current = true;
     setGoalPushLoading(true);
     setGoalPushError('');
     try {
@@ -827,6 +952,7 @@ export default function App() {
       setGoalPushes((current) => current.length ? markGoalPushesStale(current) : current);
       return undefined;
     } finally {
+      goalPushRefreshInFlight.current = false;
       setGoalPushLoading(false);
     }
   };
@@ -843,6 +969,309 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl, settings.center.goalWatchAutoHandleEnabled, settings.center.goalWatchIntervalSec, settings.center.goalWatchMaxDurationSec]);
 
+  const refreshCollaborationTasks = async () => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setCollaborationTasks([]);
+      setCollaborationTasksError('');
+      return [];
+    }
+    if (collaborationTasksRefreshInFlight.current) {
+      return collaborationTasks;
+    }
+    collaborationTasksRefreshInFlight.current = true;
+    setCollaborationTasksLoading(true);
+    setCollaborationTasksError('');
+    try {
+      const tasks = await FetchCollaborations(settings.center.workerId || '');
+      const nextTasks = (tasks || []).map(fromWailsCollabTask);
+      setCollaborationTasks(nextTasks);
+      return nextTasks;
+    } catch (error) {
+      setCollaborationTasksError(error instanceof Error ? error.message : 'Failed to fetch collaboration tasks.');
+      setCollaborationTasks((current) => current.length ? markCollaborationTasksStale(current) : current);
+      return undefined;
+    } finally {
+      collaborationTasksRefreshInFlight.current = false;
+      setCollaborationTasksLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setCollaborationTasks([]);
+      return;
+    }
+    void refreshCollaborationTasks();
+    const timer = window.setInterval(() => {
+      void refreshCollaborationTasks();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl]);
+
+  const refreshWorkflowInstances = async () => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setWorkflowInstances([]);
+      setWorkflowInstancesError('');
+      return [];
+    }
+    if (workflowInstancesRefreshInFlight.current) {
+      return workflowInstances;
+    }
+    workflowInstancesRefreshInFlight.current = true;
+    setWorkflowInstancesLoading(true);
+    setWorkflowInstancesError('');
+    try {
+      const instances = await FetchWorkflowInstances();
+      const nextInstances = (instances || []).map(fromWailsWorkflowInstance);
+      setWorkflowInstances(nextInstances);
+      return nextInstances;
+    } catch (error) {
+      setWorkflowInstancesError(error instanceof Error ? error.message : 'Failed to fetch workflow instances.');
+      setWorkflowInstances((current) => current.length ? markWorkflowInstancesStale(current) : current);
+      return undefined;
+    } finally {
+      workflowInstancesRefreshInFlight.current = false;
+      setWorkflowInstancesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!hasWailsBridge() || !settings.center.enabled) {
+      setWorkflowInstances([]);
+      return;
+    }
+    void refreshWorkflowInstances();
+    const timer = window.setInterval(() => {
+      void refreshWorkflowInstances();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [settings.center.enabled, settings.center.workerId, settings.center.tenantId, settings.center.baseUrl]);
+
+  const handleTransitionCollaborationTask = async (taskId: string, action: 'accept' | 'start' | 'complete' | 'reject') => {
+    const task = collaborationTasks.find((item) => item.id === taskId);
+    setCollaborationTaskBusyId(`${taskId}:${action}`);
+    setCollaborationTasksError('');
+    try {
+      const result = action === 'complete' ? (task?.result || task?.description || task?.title || 'completed from iWorker workbench') : '';
+      const updatedTask = fromWailsCollabTask(await TransitionCollaborationTask(taskId, action, result, `iWorker client ${action}`));
+      setCollaborationTasks((items) => applyCenterCollaborationTask(items, updatedTask));
+      setActiveCollaborationTask((current) => {
+        if (!current || current.id !== taskId) {
+          return current;
+        }
+        const [next] = applyCenterCollaborationTask([current], updatedTask);
+        return next || null;
+      });
+      const refreshedTasks = await refreshCollaborationTasks();
+      if (refreshedTasks) {
+        setCollaborationTasks(applyCenterCollaborationTask(refreshedTasks, updatedTask));
+      }
+      void refreshAgentInstances();
+    } catch (error) {
+      setCollaborationTasksError(error instanceof Error ? error.message : 'Failed to update collaboration task.');
+    } finally {
+      setCollaborationTaskBusyId('');
+    }
+  };
+
+  const formatWorkflowStepTransitionError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (message.includes('STEP_ACTOR_FORBIDDEN')) {
+      return t('home.workflowStepActorForbidden', 'This workflow step is assigned to another iWorker. Refresh the workflow queue or ask iWorkerCenter to reassign it.');
+    }
+    return message || t('home.workflowStepUpdateFailed', 'Failed to update workflow step.');
+  };
+
+  const handleTransitionWorkflowStep = async (stepId: string, action: 'start' | 'resume' | 'complete' | 'reject') => {
+    if (!stepId) {
+      return;
+    }
+    const instance = workflowInstances.find((item) => item.currentStepId === stepId);
+    setWorkflowStepBusyId(`${stepId}:${action}`);
+    setWorkflowInstancesError('');
+    try {
+      const result = action === 'complete' ? `${instance?.title || stepId} completed from iWorker` : '';
+      const transition = await TransitionWorkflowStep(stepId, action, result, `iWorker client ${action}`);
+      const nextInstance = fromWailsWorkflowInstance(transition.instance);
+      setWorkflowInstances((items) => {
+        const exists = items.some((item) => item.id === nextInstance.id);
+        if (!exists) {
+          return [nextInstance, ...items];
+        }
+        return items.map((item) => item.id === nextInstance.id ? nextInstance : item);
+      });
+      const refreshed = await refreshWorkflowInstances();
+      if (refreshed && !refreshed.some((item) => item.id === nextInstance.id)) {
+        setWorkflowInstances([nextInstance, ...refreshed]);
+      }
+      void refreshAgentInstances();
+    } catch (error) {
+      setWorkflowInstancesError(formatWorkflowStepTransitionError(error));
+    } finally {
+      setWorkflowStepBusyId('');
+    }
+  };
+
+  const syncCenterUsageFlow = async (options?: { allowWhenDisabled?: boolean; message?: string }) => {
+    setCenterUsageSyncError('');
+    setCenterUsageSyncMessage(options?.message || t('settings.usageFlowSyncing', 'Syncing Center usage flow...'));
+    if (!hasWailsBridge()) {
+      setCenterUsageSyncError(t('settings.wailsBridgeNotConnected', 'Wails bridge is not connected.'));
+      setCenterUsageSyncMessage('');
+      return false;
+    }
+    if (!settings.center.enabled && !options?.allowWhenDisabled) {
+      setCenterUsageSyncError(t('settings.enableCenterBeforeUsageSync', 'Enable and bind iWorkerCenter before syncing the usage flow.'));
+      setCenterUsageSyncMessage('');
+      return false;
+    }
+    setCenterUsageSyncing(true);
+    const errors: string[] = [];
+    try {
+      try {
+        const status = await CheckCenterHealth();
+        setCenterHealthError('');
+        setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'manual'));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.centerHealthFailed', 'Center health check failed.');
+        setCenterHealthError(message);
+        errors.push(message);
+      }
+
+      try {
+        const stats = await FetchWorkerMemoryStats();
+        setWorkerMemoryStats(fromWailsMemoryStats(stats as main.WorkerMemoryStats));
+        setWorkerMemoryStatsError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.memoryStatsRefreshFailed', 'Failed to refresh memory stats.');
+        setWorkerMemoryStatsError(message);
+        setWorkerMemoryStats((current) => current ? markWorkerMemoryStatsStale(current) : current);
+        errors.push(message);
+      }
+
+      try {
+        await HeartbeatAgentRuntime();
+        const instances = await FetchAgentInstances();
+        setAgentInstances((instances || []).map(fromWailsAgentInstance));
+        setAgentInstancesError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.agentRuntimeSyncFailed', 'Failed to sync agent runtime.');
+        setAgentInstancesError(message);
+        setAgentInstances((current) => current.length ? markAgentInstancesStale(current) : current);
+        errors.push(message);
+      }
+
+      try {
+        const pushes = await FetchGoalPushes(20);
+        setGoalPushes((pushes || []).map(fromWailsGoalPush));
+        setGoalPushError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.goalWatchPushFetchFailed', 'Failed to fetch GoalWatch pushes.');
+        setGoalPushError(message);
+        setGoalPushes((current) => current.length ? markGoalPushesStale(current) : current);
+        errors.push(message);
+      }
+
+      try {
+        const collabTasks = await FetchCollaborations(settings.center.workerId || '');
+        setCollaborationTasks((collabTasks || []).map(fromWailsCollabTask));
+        setCollaborationTasksError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.collaborationTasksFetchFailed', 'Failed to fetch collaboration tasks.');
+        setCollaborationTasksError(message);
+        setCollaborationTasks((current) => current.length ? markCollaborationTasksStale(current) : current);
+        errors.push(message);
+      }
+
+      try {
+        const instances = await FetchWorkflowInstances();
+        setWorkflowInstances((instances || []).map(fromWailsWorkflowInstance));
+        setWorkflowInstancesError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.workflowInstancesFetchFailed', 'Failed to fetch workflow instances.');
+        setWorkflowInstancesError(message);
+        setWorkflowInstances((current) => current.length ? markWorkflowInstancesStale(current) : current);
+        errors.push(message);
+      }
+
+      try {
+        const tools = await FetchInstalledTools();
+        setInstalledTools(fromWailsInstalledTools(tools as unknown as WailsInstalledTools));
+        setInstalledToolsError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.installedToolsFetchFailed', 'Failed to fetch installed tools.');
+        setInstalledToolsError(message);
+        setInstalledTools((current) => current.skills.length || current.mcpServers.length ? markInstalledToolsStale(current) : current);
+        errors.push(message);
+      }
+
+      try {
+        const bundle = await FetchConfigBundle();
+        setConfigBundle(fromWailsConfigBundle(bundle as unknown as WailsConfigBundle));
+        setConfigBundleError('');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : t('settings.configBundleFetchFailed', 'Failed to fetch Center config bundle.');
+        setConfigBundleError(message);
+        setConfigBundle((current) => current.version ? markConfigBundleStale(current) : current);
+        errors.push(message);
+      }
+
+      void refreshGoalWatchAutoStatus();
+      if (errors.length > 0) {
+        setCenterUsageSyncError(errors[0]);
+        setCenterUsageSyncMessage(t('settings.usageFlowSyncedDegraded', 'Usage flow synced with degraded Center data. Cached snapshots remain available.'));
+        return false;
+      }
+      setCenterUsageSyncMessage(t('settings.usageFlowConnected', 'Usage flow connected: health, runtime, workflows, pushes, tools, config, and memory are refreshed.'));
+      return true;
+    } finally {
+      setCenterUsageSyncing(false);
+    }
+  };
+  const persistHistoryTasks = async (items: HistoryTaskItem[]) => {
+    if (!hasWailsBridge()) {
+      return;
+    }
+    await SaveTaskHistory(items.map(toWailsHistoryTask));
+  };
+
+  const recordGoalPushHistory = async (push: CenterGoalPush | undefined, status: string, note: string) => {
+    if (!push) {
+      return;
+    }
+    const nextItem: HistoryTaskItem = {
+      id: `center-push-${push.eventId || push.taskId}-${status}`,
+      title: push.title || push.taskId || 'Center push',
+      owner: push.toRoleCode || push.toColleagueId || 'iWorkerCenter',
+      status,
+      updatedAt: new Date().toLocaleString(),
+      description: `${push.reason || 'Center push'} / ${push.recommendedAction || 'action'}${push.recoveryAction ? ' / ' + push.recoveryAction : ''}`,
+      draft: [
+        `Center push: ${push.title || push.taskId}`,
+        `Event: ${push.eventId || ''}`,
+        `Task: ${push.taskId || ''}`,
+        `Workflow step: ${push.workflowStepInstanceId || ''}`,
+        `Action: ${push.recoveryAction || push.recommendedAction || ''}`,
+        `Note: ${note}`,
+      ].filter(Boolean).join('\n'),
+      expectedOutput: 'summary',
+      result: note,
+      model: 'iWorkerCenter',
+      sourceType: 'center_push',
+      workflowStepInstanceId: push.workflowStepInstanceId,
+    };
+    const nextHistory = [
+      nextItem,
+      ...historyTasks.filter((item) => item.id !== nextItem.id),
+    ].slice(0, 8);
+    setHistoryTasks(nextHistory);
+    try {
+      await persistHistoryTasks(nextHistory);
+    } catch {
+      // Local history persistence must not roll back a successful Center action.
+    }
+  };
+
   const handleAutoHandleGoalPush = async (eventId: string) => {
     if (!eventId || !hasWailsBridge()) {
       return;
@@ -850,7 +1279,14 @@ export default function App() {
     setGoalPushAckingId(eventId);
     setGoalPushError('');
     try {
-      await AutoHandleGoalPush(eventId);
+      const push = goalPushes.find((item) => item.eventId === eventId);
+      if (canRecoverGoalPush(push)) {
+        await RecoverGoalPush(eventId, 'interaction agent ran workflow recovery');
+        await recordGoalPushHistory(push, 'recovered', 'Workflow recovery was started from the iWorker workbench.');
+      } else {
+        await AutoHandleGoalPush(eventId);
+        await recordGoalPushHistory(push, 'completed', 'Center push was handled automatically by this iWorker.');
+      }
       setGoalPushes((items) => items.filter((item) => item.eventId !== eventId));
       void refreshAgentInstances();
       void refreshGoalWatchAutoStatus();
@@ -868,7 +1304,14 @@ export default function App() {
     setGoalPushAckingId(eventId);
     setGoalPushError('');
     try {
-      await AckGoalPush(eventId, status, status === 'resumed' ? 'interaction agent confirmed resume' : 'interaction agent reported blocked');
+      const push = goalPushes.find((item) => item.eventId === eventId);
+      if (status === 'resumed' && canRecoverGoalPush(push)) {
+        await RecoverGoalPush(eventId, 'interaction agent confirmed workflow recovery');
+        await recordGoalPushHistory(push, 'recovered', 'Human approved resume; workflow recovery was requested.');
+      } else {
+        await AckGoalPush(eventId, status, status === 'resumed' ? 'interaction agent confirmed resume' : 'interaction agent reported blocked');
+        await recordGoalPushHistory(push, status, status === 'resumed' ? 'Human approved resume; Center push was acknowledged.' : 'Human blocked this Center push from iWorker.');
+      }
       setGoalPushes((items) => items.filter((item) => item.eventId !== eventId));
     } catch (error) {
       setGoalPushError(error instanceof Error ? error.message : 'Failed to acknowledge GoalWatch push.');
@@ -877,15 +1320,11 @@ export default function App() {
     }
   };
 
-  const persistHistoryTasks = async (items: HistoryTaskItem[]) => {
-    if (!hasWailsBridge()) {
-      return;
-    }
-    await SaveTaskHistory(items.map(toWailsHistoryTask));
-  };
-
   const handlePickTask = (task: string, colleagueName?: string) => {
     setSelectedTask(task);
+    setActiveCollaborationTaskId('');
+    setActiveCollaborationTask(null);
+    setCenterTaskContext(null);
     if (colleagueName) {
       setSelectedColleagueName(colleagueName);
     }
@@ -904,23 +1343,94 @@ export default function App() {
     setActiveTab('new-task');
   };
 
+  const handleUseInstalledToolFromHistory = (prompt: string, toolName: string) => {
+    const name = toolName.trim() || t('history.installedToolTask', 'Center-installed tool');
+    setSelectedTask(name);
+    setActiveCollaborationTaskId('');
+    setActiveCollaborationTask(null);
+    setCenterTaskContext(null);
+    setSelectedColleagueName('');
+    setDraft(prompt);
+    setExpectedOutput('summary');
+    setAttachments([]);
+    setViewedHistoryTask(null);
+    setSubmitResult(null);
+    setSubmitError('');
+    setActiveTab('new-task');
+  };
+
   const handleOpenGoalPushTask = (push: CenterGoalPush) => {
-    const title = push.title || push.taskId || 'Center push intervention';
-    const reason = push.reason || push.status || 'needs human input';
-    const source = push.source === 'cache' || push.stale ? 'cached Center snapshot' : 'live Center push';
+    const title = push.title || push.taskId || t('home.draftPrompt.centerPushInterventionTitle', 'Center push intervention');
+    const reason = push.reason || push.status || t('home.draftPrompt.needsHumanInput', 'needs human input');
+    const isCached = push.source === 'cache' || Boolean(push.stale);
+    const source = isCached ? t('home.draftPrompt.cachedCenterSnapshot', 'cached Center snapshot') : t('home.draftPrompt.liveCenterPush', 'live Center push');
     const draftLines = [
-      'Task: ' + title,
+      t('home.draftPrompt.taskLine', 'Task: {{title}}', { title }),
       '',
-      'Source: ' + source + (push.eventId ? ' / event ' + push.eventId : ''),
-      'Reason: ' + reason,
-      'Recommended action: ' + (push.recommendedAction || 'human review'),
-      'Assigned to: ' + (push.toRoleCode || push.toColleagueId || 'this iWorker'),
+      t('home.draftPrompt.sourceLine', 'Source: {{source}}{{event}}', { source, event: push.eventId ? t('home.draftPrompt.eventSuffix', ' / event {{eventId}}', { eventId: push.eventId }) : '' }),
+      t('home.draftPrompt.reasonLine', 'Reason: {{reason}}', { reason }),
+      t('home.draftPrompt.recommendedActionLine', 'Recommended action: {{action}}', { action: push.recommendedAction || t('home.draftPrompt.humanReview', 'human review') }),
+      t('home.draftPrompt.assignedToLine', 'Assigned to: {{assignee}}', { assignee: push.toRoleCode || push.toColleagueId || t('home.draftPrompt.thisIWorker', 'this iWorker') }),
       '',
-      'Human intervention needed: review the pushed work, provide missing context or approval, then decide whether to resume or block the Center push.',
-      push.source === 'cache' || push.stale ? 'This push is cached. Reconnect iWorkerCenter before any Resume, Block, or Run action.' : 'When the decision is clear, return to the iWorker workbench and use Resume or Block on the push.',
+      t('home.draftPrompt.humanInterventionTaskLine', 'Human intervention needed: review the pushed work, provide missing context or approval, then decide whether to resume or block the Center push.'),
+      isCached ? t('home.draftPrompt.cachedPushLine', 'This push is cached. Reconnect iWorkerCenter before any Resume, Block, or Run action.') : t('home.draftPrompt.livePushLine', 'When the decision is clear, return to the iWorker workbench and use Resume or Block on the push.'),
     ];
     setSelectedTask(title);
+    setActiveCollaborationTaskId('');
+    setActiveCollaborationTask(null);
+    setCenterTaskContext({
+      kind: 'goal_push',
+      live: !isCached,
+      cached: isCached,
+      title,
+      sourceLabel: source,
+      eventId: push.eventId,
+      taskId: push.taskId,
+      workflowStepInstanceId: push.workflowStepInstanceId,
+    });
     setSelectedColleagueName(push.toRoleCode || push.toColleagueId || '');
+    setDraft(draftLines.join('\n'));
+    setExpectedOutput('summary');
+    setAttachments([]);
+    setViewedHistoryTask(null);
+    setSubmitResult(null);
+    setSubmitError('');
+    setActiveTab('new-task');
+  };
+
+  const handleOpenCollaborationTask = (task: CenterCollabTask) => {
+    const source = task.source === 'cache' || task.stale
+      ? t('home.draftPrompt.cachedCenterSnapshot', 'cached Center snapshot')
+      : task.workflowStepInstanceId
+        ? t('home.workflowCenterHandoff', 'Workflow handoff')
+        : t('home.centerHandoff', 'Center handoff');
+    const draftLines = [
+      t('home.draftPrompt.taskLine', 'Task: {{title}}', { title: task.title || task.id }),
+      t('home.draftPrompt.sourceLine', 'Source: {{source}}{{event}}', { source, event: task.id ? t('home.draftPrompt.eventSuffix', ' / event {{eventId}}', { eventId: task.id }) : '' }),
+      task.workflowStepInstanceId ? t('home.draftPrompt.workflowStepLine', 'Workflow step: {{stepId}}', { stepId: task.workflowStepInstanceId }) : '',
+      task.status ? t('home.draftPrompt.statusLine', 'Status: {{status}}', { status: task.status }) : '',
+      '',
+      task.description || task.title || '',
+    ].filter((line, index) => line || index === 4);
+    setSelectedTask(task.title || task.id);
+    setSelectedColleagueName(task.toRoleCode || task.toColleagueId || '');
+    setActiveCollaborationTaskId(task.source === 'cache' || task.stale ? '' : task.id);
+    setActiveCollaborationTask(task.source === 'cache' || task.stale ? null : task);
+    setCenterTaskContext({
+      kind: 'collaboration',
+      live: !(task.source === 'cache' || task.stale),
+      cached: task.source === 'cache' || Boolean(task.stale),
+      title: task.title || task.id,
+      sourceLabel: source,
+      detail: task.source === 'cache' || task.stale
+        ? t('newTask.cachedHandoffDetail', 'This is a cached Center handoff. Reconnect iWorkerCenter before starting or completing the shared task.')
+        : task.workflowStepInstanceId
+          ? t('newTask.workflowHandoffDetail', 'This workflow handoff is live. Complete the work here so iWorker can write the result back to Center.')
+          : t('newTask.centerHandoffDetail', 'This Center handoff is live. Complete the work here so iWorker can write the result back to Center.'),
+      eventId: task.id,
+      taskId: task.id,
+      workflowStepInstanceId: task.workflowStepInstanceId,
+    });
     setDraft(draftLines.join('\n'));
     setExpectedOutput('summary');
     setAttachments([]);
@@ -974,6 +1484,9 @@ export default function App() {
 
   const handleOpenHistoryTask = (task: HistoryTaskItem) => {
     setSelectedTask(task.title);
+    setActiveCollaborationTaskId('');
+    setActiveCollaborationTask(null);
+    setCenterTaskContext(null);
     setSelectedColleagueName(task.owner);
     setDraft(task.draft || task.description);
     setExpectedOutput(task.expectedOutput || 'summary');
@@ -1000,6 +1513,9 @@ export default function App() {
 
   const handleCloneHistoryTask = (task: HistoryTaskItem) => {
     setSelectedTask(task.title);
+    setActiveCollaborationTaskId('');
+    setActiveCollaborationTask(null);
+    setCenterTaskContext(null);
     setSelectedColleagueName('');
     setDraft(task.draft || task.description);
     setExpectedOutput(task.expectedOutput || 'summary');
@@ -1019,6 +1535,9 @@ export default function App() {
 
   const handleClearTask = () => {
     setSelectedTask('');
+    setActiveCollaborationTaskId('');
+    setActiveCollaborationTask(null);
+    setCenterTaskContext(null);
     setSelectedColleagueName('');
     setDraft('');
     setExpectedOutput('summary');
@@ -1046,6 +1565,25 @@ export default function App() {
     try {
       const result = await submitTaskViaBridge(payload);
       setSubmitResult(result);
+      const completedCollaborationTask = activeCollaborationTask || collaborationTasks.find((item) => item.id === activeCollaborationTaskId) || null;
+      const historySourceType: HistoryTaskItem['sourceType'] = completedCollaborationTask?.workflowStepInstanceId ? 'workflow_handoff' : completedCollaborationTask ? 'center_handoff' : 'local';
+      if (activeCollaborationTaskId) {
+        try {
+          const updatedTask = fromWailsCollabTask(await TransitionCollaborationTask(activeCollaborationTaskId, 'complete', result.content, 'completed from iWorker task workspace'));
+          setCollaborationTasks((items) => applyCenterCollaborationTask(items, updatedTask));
+          setActiveCollaborationTaskId('');
+          setActiveCollaborationTask(null);
+          const refreshedTasks = await refreshCollaborationTasks();
+          if (refreshedTasks) {
+            setCollaborationTasks(applyCenterCollaborationTask(refreshedTasks, updatedTask));
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to complete Center handoff.';
+          setCollaborationTasksError(message);
+          setSubmitError(message);
+          return;
+        }
+      }
       const nextHistory = [
         {
           id: `task-${Date.now()}`,
@@ -1058,6 +1596,9 @@ export default function App() {
           expectedOutput,
           result: result.content,
           model: result.model,
+          sourceType: historySourceType,
+          centerHandoffId: completedCollaborationTask?.id,
+          workflowStepInstanceId: completedCollaborationTask?.workflowStepInstanceId,
         },
         ...historyTasks,
       ].slice(0, 8);
@@ -1241,16 +1782,16 @@ export default function App() {
       const nextSettings = fromWailsSettings(applied as main.DiWorkerSettings);
       setSettings(nextSettings);
       setSavedSettingsSnapshot(settingsSnapshot(nextSettings));
-      setCenterEnrollmentMessage('Bound to ' + worker.name + '. Local iWorker is ready to use iWorkerCenter memory and GoalWatcher.');
-      try {
-        const status = await CheckCenterHealth();
-        setCenterHealthError('');
-        setCenterHealthStatus(fromWailsCenterHealth(status as main.CenterHealthStatus, 'auto-after-save'));
-        void handleRefreshWorkerMemoryStats();
-        void refreshAgentInstances();
-      } catch (error) {
-        setCenterHealthError(error instanceof Error ? error.message : 'Center health check failed.');
-      }
+      setCenterEnrollmentMessage(t('settings.centerBoundSyncingUsage', 'Bound to {{worker}}. Syncing Center usage flow...', { worker: worker.name }));
+      const usageReady = await syncCenterUsageFlow({
+        allowWhenDisabled: true,
+        message: t('settings.centerEnrollmentSavedSyncingUsage', 'Center enrollment saved. Syncing runtime, pushes, tools, config, and memory...'),
+      });
+      setCenterEnrollmentMessage(
+        usageReady
+          ? t('settings.centerBoundReadyUsage', 'Bound to {{worker}}. Local iWorker is ready to use iWorkerCenter memory, GoalWatcher, tools, and config.', { worker: worker.name })
+          : t('settings.centerBoundUsageDegraded', 'Bound to {{worker}}. Some Center sync steps need attention; review the Usage flow status.', { worker: worker.name }),
+      );
     } catch (error) {
       setCenterEnrollmentError(error instanceof Error ? error.message : 'Center enrollment apply failed.');
     } finally {
@@ -1319,6 +1860,7 @@ export default function App() {
             draft={draft}
             expectedOutput={expectedOutput}
             attachments={attachments}
+            centerTaskContext={centerTaskContext}
             submitting={submitting}
             submitError={submitError}
             submitResult={submitResult}
@@ -1333,7 +1875,7 @@ export default function App() {
           />
         );
       case 'history':
-        return <TaskHistoryPage tasks={historyTasks} viewedTask={viewedHistoryTask} installedTools={installedTools} installedToolsLoading={installedToolsLoading} installedToolsError={installedToolsError} onRefreshInstalledTools={refreshInstalledTools} onResumeTask={handleOpenHistoryTask} onViewResult={handleViewHistoryResult} onCloneTask={handleCloneHistoryTask} onDeleteTask={handleDeleteHistoryTask} />;
+        return <TaskHistoryPage tasks={historyTasks} viewedTask={viewedHistoryTask} installedTools={installedTools} installedToolsLoading={installedToolsLoading} installedToolsError={installedToolsError} onRefreshInstalledTools={refreshInstalledTools} onResumeTask={handleOpenHistoryTask} onViewResult={handleViewHistoryResult} onCloneTask={handleCloneHistoryTask} onDeleteTask={handleDeleteHistoryTask} onUseInstalledTool={handleUseInstalledToolFromHistory} />;
       case 'settings':
         return (
           <SettingsPage
@@ -1354,6 +1896,14 @@ export default function App() {
             memoryStats={workerMemoryStats}
             memoryStatsLoading={workerMemoryStatsLoading}
             memoryStatsError={workerMemoryStatsError}
+            centerSyncing={centerUsageSyncing}
+            centerSyncMessage={centerUsageSyncMessage}
+            centerSyncError={centerUsageSyncError}
+            agentInstances={agentInstances}
+            goalPushes={goalPushes}
+            installedTools={installedTools}
+            configBundle={configBundle}
+            onSyncCenterNow={syncCenterUsageFlow}
             onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
             memoryDraftScope={workerMemoryDraftScope}
             memoryDraftContent={workerMemoryDraftContent}
@@ -1421,6 +1971,14 @@ export default function App() {
           goalPushLoading={goalPushLoading}
           goalPushError={goalPushError}
           goalPushAckingId={goalPushAckingId}
+          collaborationTasks={collaborationTasks}
+          collaborationTasksLoading={collaborationTasksLoading}
+          collaborationTasksError={collaborationTasksError}
+          collaborationTaskBusyId={collaborationTaskBusyId}
+          workflowInstances={workflowInstances}
+          workflowInstancesLoading={workflowInstancesLoading}
+          workflowInstancesError={workflowInstancesError}
+          workflowStepBusyId={workflowStepBusyId}
           goalWatchAutoStatus={goalWatchAutoStatus}
           installedTools={installedTools}
           installedToolsLoading={installedToolsLoading}
@@ -1430,6 +1988,11 @@ export default function App() {
           configBundleError={configBundleError}
           submitting={submitting}
           onRefreshGoalPushes={refreshGoalPushes}
+          onRefreshCollaborationTasks={refreshCollaborationTasks}
+          onRefreshWorkflowInstances={refreshWorkflowInstances}
+          onTransitionCollaborationTask={handleTransitionCollaborationTask}
+          onTransitionWorkflowStep={handleTransitionWorkflowStep}
+          onOpenCollaborationTask={handleOpenCollaborationTask}
           onRefreshMemoryStats={handleRefreshWorkerMemoryStats}
           onRefreshInstalledTools={refreshInstalledTools}
           onRefreshConfigBundle={refreshConfigBundle}
@@ -1445,7 +2008,7 @@ export default function App() {
           onOpenSettings={() => setActiveTab('settings')}
         />;
     }
-  }, [activeTab, attachments, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, configBundle, configBundleLoading, configBundleError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask, centerEnrollmentDiscovery, centerEnrollmentDiscovering, centerEnrollmentApplyingId, centerEnrollmentMessage, centerEnrollmentError]);
+  }, [activeCollaborationTask, activeCollaborationTaskId, activeTab, attachments, centerTaskContext, centerHealthChecking, centerHealthError, centerHealthStatus, workerMemoryStats, workerMemoryStatsLoading, workerMemoryStatsError, workerMemoryDraftScope, workerMemoryDraftContent, workerMemoryDraftCategory, workerMemoryDraftTags, workerMemorySaving, workerMemorySaveMessage, workerMemorySaveError, workerMemoryRecallQuery, workerMemoryRecallItems, workerMemoryRecallLoading, workerMemoryRecallError, workerMemoryDeletingId, workerMemoryDeleteError, agentInstances, agentInstancesLoading, agentInstancesError, goalPushes, goalPushLoading, goalPushError, goalPushAckingId, collaborationTasks, collaborationTasksLoading, collaborationTasksError, collaborationTaskBusyId, workflowInstances, workflowInstancesLoading, workflowInstancesError, workflowStepBusyId, goalWatchAutoStatus, installedTools, installedToolsLoading, installedToolsError, configBundle, configBundleLoading, configBundleError, draft, expectedOutput, historyTasks, selectedColleagueName, selectedTask, settings, settingsError, settingsLoading, settingsSaveMessage, settingsSaving, submitError, submitResult, submitting, viewedHistoryTask, centerEnrollmentDiscovery, centerEnrollmentDiscovering, centerEnrollmentApplyingId, centerEnrollmentMessage, centerEnrollmentError, centerUsageSyncing, centerUsageSyncMessage, centerUsageSyncError]);
 
   const interventionSummary = useMemo(() => {
     const items = goalPushes.filter(isHumanInterventionGoalPush);

@@ -48,6 +48,82 @@ func TestApplyHubLLMServiceStatusToConfig_RemovesProviderWhenUnauthorized(t *tes
 	}
 }
 
+func TestApplyHubLLMServiceStatusToConfig_KeepsProviderWhenPeriodLimited(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: hubServiceProviderName, URL: "https://old.example.com/api/llm/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai"},
+			{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"},
+		},
+	}
+
+	changed := app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{
+		Active:        false,
+		HubLLMBaseURL: "https://hub.example.com/api/llm/v1/",
+		CreditGrants: []HubLLMActiveGrant{{
+			ServiceGroupID:    "coding-basic",
+			Active:            false,
+			Status:            "period_limited",
+			CreditsTotal:      100,
+			CreditsUsed:       10,
+			CreditsRemaining:  90,
+			RetryAfterSeconds: 3600,
+		}},
+	})
+	if !changed {
+		t.Fatal("applyHubLLMServiceStatusToConfig() changed = false, want true because provider URL is refreshed")
+	}
+	provider, ok := findProviderByName(cfg.MaclawLLMProviders, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("hub provider removed while period-limited: %+v", cfg.MaclawLLMProviders)
+	}
+	if !provider.IsHubService {
+		t.Fatal("provider IsHubService = false, want true")
+	}
+	if provider.URL != "https://hub.example.com/api/llm/v1" {
+		t.Fatalf("provider URL = %q, want refreshed hub URL", provider.URL)
+	}
+	if cfg.MaclawLLMCurrentProvider != hubServiceProviderName {
+		t.Fatalf("MaclawLLMCurrentProvider = %q, want %q", cfg.MaclawLLMCurrentProvider, hubServiceProviderName)
+	}
+}
+
+func TestApplyHubLLMServiceStatusToConfig_KeepsProviderWhenExpired(t *testing.T) {
+	app := &App{}
+	cfg := &corelib.AppConfig{
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: hubServiceProviderName, URL: "https://old.example.com/api/llm/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai"},
+			{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"},
+		},
+	}
+
+	changed := app.applyHubLLMServiceStatusToConfig(cfg, HubLLMServiceStatus{
+		Active:        false,
+		HubLLMBaseURL: "https://hub.example.com/api/llm/v1/",
+		CreditGrants: []HubLLMActiveGrant{{
+			ServiceGroupID: "coding-basic",
+			Active:         false,
+			Status:         "expired",
+			CreditsTotal:   100,
+			CreditsUsed:    10,
+		}},
+	})
+	if !changed {
+		t.Fatal("applyHubLLMServiceStatusToConfig() changed = false, want true because provider URL is refreshed")
+	}
+	provider, ok := findProviderByName(cfg.MaclawLLMProviders, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("hub provider removed while expired grant explains status: %+v", cfg.MaclawLLMProviders)
+	}
+	if !provider.IsHubService {
+		t.Fatal("provider IsHubService = false, want true")
+	}
+}
+
 func TestApplyHubLLMServiceStatusToConfig_AddsProviderWhenAuthorized(t *testing.T) {
 	app := &App{}
 	cfg := &corelib.AppConfig{
@@ -219,6 +295,52 @@ func TestGetMaclawLLMPanelState_RemovesHubProviderWhenAuthorizationRevoked(t *te
 	}
 	if _, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName); ok {
 		t.Fatalf("saved config still contains hub provider after revoked auth: %+v", saved.MaclawLLMProviders)
+	}
+}
+
+func TestGetMaclawLLMPanelState_KeepsHubProviderWhenPeriodLimited(t *testing.T) {
+	tmpHome := t.TempDir()
+	app := &App{testHomeDir: tmpHome}
+	var hubURL string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/llm/service/status" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":false,"hub_llm_base_url":"` + hubURL + `/api/llm/v1","credit_grants":[{"service_group_id":"coding-basic","active":false,"status":"period_limited","credits_total":100,"credits_used":10,"credits_remaining":90,"retry_after_seconds":3600}]}`))
+	}))
+	hubURL = hub.URL
+	defer hub.Close()
+
+	cfg := corelib.AppConfig{
+		RemoteHubURL:             hub.URL,
+		RemoteViewerToken:        "viewer-token",
+		MaclawLLMCurrentProvider: hubServiceProviderName,
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{
+			{Name: hubServiceProviderName, URL: hub.URL + "/v1", Key: "viewer-token", Model: hubServiceAutoModel, Protocol: "openai"},
+			{Name: "Custom1", URL: "https://example.com/v1", Model: "gpt-test"},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	state := app.GetMaclawLLMPanelState()
+	provider, ok := findProviderByName(state.Providers, hubServiceProviderName)
+	if !ok {
+		t.Fatalf("panel providers missing hub provider while period-limited: %+v", state.Providers)
+	}
+	if provider.URL != hub.URL+"/api/llm/v1" {
+		t.Fatalf("provider URL = %q, want %q", provider.URL, hub.URL+"/api/llm/v1")
+	}
+
+	saved, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if _, ok := findProviderByName(saved.MaclawLLMProviders, hubServiceProviderName); !ok {
+		t.Fatalf("saved config lost hub provider while period-limited: %+v", saved.MaclawLLMProviders)
 	}
 }
 

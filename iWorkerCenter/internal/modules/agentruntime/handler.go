@@ -1,13 +1,23 @@
 package agentruntime
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
+)
+
+const maxHeartbeatBodyBytes = 64 << 10
+
+var (
+	errHeartbeatJSONTooLarge = errors.New("heartbeat json body exceeds size limit")
+	errHeartbeatJSONTrailing = errors.New("heartbeat json body contains trailing data")
 )
 
 type Handler struct {
@@ -42,7 +52,7 @@ func (h *Handler) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req HeartbeatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeHeartbeatJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -76,4 +86,25 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 
 func requestTenantID(r *http.Request) string {
 	return tenant.RequestTenantID(r)
+}
+
+func decodeHeartbeatJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxHeartbeatBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxHeartbeatBodyBytes {
+		return errHeartbeatJSONTooLarge
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errHeartbeatJSONTrailing
+		}
+		return err
+	}
+	return nil
 }

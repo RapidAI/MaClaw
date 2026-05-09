@@ -81,12 +81,13 @@ type HubDiscussionSummary struct {
 }
 
 type HubDiscussionDetail struct {
-	Discussion HubDiscussionSummary `json:"discussion"`
-	Session    *Session             `json:"session,omitempty"`
-	Messages   []Message            `json:"messages,omitempty"`
-	Proposals  []Proposal           `json:"proposals,omitempty"`
-	Reviews    []Review             `json:"reviews,omitempty"`
-	Decision   *Decision            `json:"decision,omitempty"`
+	Discussion      HubDiscussionSummary     `json:"discussion"`
+	Session         *Session                 `json:"session,omitempty"`
+	Messages        []Message                `json:"messages,omitempty"`
+	Proposals       []Proposal               `json:"proposals,omitempty"`
+	Reviews         []Review                 `json:"reviews,omitempty"`
+	ReviewSummaries map[string]ReviewSummary `json:"review_summaries,omitempty"`
+	Decision        *Decision                `json:"decision,omitempty"`
 }
 
 type GroupInviteSummary struct {
@@ -279,6 +280,63 @@ func (c *HubClient) SubmitDiscussionResult(ctx context.Context, consultationID s
 		return fmt.Errorf("discussion result summary is required")
 	}
 	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/result", result, nil)
+}
+
+func (c *HubClient) AddDiscussionProposal(ctx context.Context, consultationID string, proposal Proposal) error {
+	consultationID = strings.TrimSpace(consultationID)
+	proposal.AuthorID = strings.TrimSpace(proposal.AuthorID)
+	proposal.Title = strings.TrimSpace(proposal.Title)
+	proposal.Content = strings.TrimSpace(proposal.Content)
+	if consultationID == "" {
+		return fmt.Errorf("consultation id is required")
+	}
+	if proposal.AuthorID == "" || proposal.Title == "" || proposal.Content == "" {
+		return fmt.Errorf("proposal author_id, title and content are required")
+	}
+	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/proposals", proposal, nil)
+}
+
+func (c *HubClient) AddDiscussionReview(ctx context.Context, consultationID string, review Review) error {
+	consultationID = strings.TrimSpace(consultationID)
+	review.ProposalID = strings.TrimSpace(review.ProposalID)
+	review.ReviewerID = strings.TrimSpace(review.ReviewerID)
+	if consultationID == "" {
+		return fmt.Errorf("consultation id is required")
+	}
+	if review.ProposalID == "" || review.ReviewerID == "" {
+		return fmt.Errorf("review proposal_id and reviewer_id are required")
+	}
+	if review.Position == "" {
+		review.Position = ReviewAbstain
+	}
+	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/reviews", review, nil)
+}
+
+func (c *HubClient) DecideDiscussion(ctx context.Context, consultationID string, decision Decision) error {
+	consultationID = strings.TrimSpace(consultationID)
+	decision.ProposalID = strings.TrimSpace(decision.ProposalID)
+	decision.Summary = strings.TrimSpace(decision.Summary)
+	if consultationID == "" {
+		return fmt.Errorf("consultation id is required")
+	}
+	if decision.ProposalID == "" {
+		return fmt.Errorf("decision proposal_id is required")
+	}
+	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/decide", decision, nil)
+}
+
+func (c *HubClient) EscalateDiscussion(ctx context.Context, consultationID string, escalation Escalation) error {
+	consultationID = strings.TrimSpace(consultationID)
+	escalation.RaisedBy = strings.TrimSpace(escalation.RaisedBy)
+	escalation.Reason = strings.TrimSpace(escalation.Reason)
+	escalation.Target = strings.TrimSpace(escalation.Target)
+	if consultationID == "" {
+		return fmt.Errorf("consultation id is required")
+	}
+	if escalation.RaisedBy == "" || escalation.Reason == "" {
+		return fmt.Errorf("escalation raised_by and reason are required")
+	}
+	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/escalate", escalation, nil)
 }
 
 func (c *HubClient) SetConsultationState(ctx context.Context, consultationID, action string) error {

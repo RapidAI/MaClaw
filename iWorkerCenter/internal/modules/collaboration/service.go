@@ -12,8 +12,9 @@ import (
 
 // Service handles collaboration task business logic.
 type Service struct {
-	repo        *Repo
-	colleagueRp *colleagueRepo.ColleagueRepo
+	repo                 *Repo
+	colleagueRp          *colleagueRepo.ColleagueRepo
+	workflowTransitioner WorkflowStepTransitioner
 }
 
 // NewService creates a Service.
@@ -23,6 +24,19 @@ func NewService(repo *Repo, colleagueRp *colleagueRepo.ColleagueRepo) *Service {
 
 // Repo exposes the underlying repo for transaction-aware callers (e.g. workflow engine).
 func (s *Service) Repo() *Repo { return s.repo }
+
+// WorkflowStepTransitioner lets workflow-backed handoffs advance their source step
+// without coupling the collaboration module to the workflow package.
+type WorkflowStepTransitioner interface {
+	StartOrResumeStep(tenantID string, stepInstanceID, actorID, note string) error
+	CompleteStep(tenantID string, stepInstanceID, actorID, result string) error
+	RejectStep(tenantID string, stepInstanceID, actorID, note string) error
+}
+
+// SetWorkflowStepTransitioner wires the optional workflow step adapter.
+func (s *Service) SetWorkflowStepTransitioner(transitioner WorkflowStepTransitioner) {
+	s.workflowTransitioner = transitioner
+}
 
 // CreateRequest holds fields for creating a collaboration task.
 const (
@@ -74,14 +88,24 @@ func (s *Service) Create(tenantID string, req CreateRequest) (*Task, error) {
 		UpdatedAt:       now,
 	}
 
-	if err := s.repo.InsertTask(tenantID, task); err != nil {
+	tx, err := s.repo.write.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin create task transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.repo.InsertTaskTx(tenantID, tx, task); err != nil {
 		return nil, fmt.Errorf("create task: %w", err)
 	}
 
-	_ = s.repo.InsertEvent(tenantID, &TaskEvent{
+	if err := s.repo.InsertEventTx(tenantID, tx, &TaskEvent{
 		ID: idgen.New("cevt"), TaskID: task.ID,
 		Event: "created", ActorID: task.FromColleagueID, CreatedAt: now,
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("record task creation event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit create task transaction: %w", err)
+	}
 
 	return task, nil
 }
@@ -225,19 +249,34 @@ func (s *Service) ExecuteRoleRoutingAction(tenantID, roleCode, action string) (R
 
 // validTransitions defines allowed status transitions.
 var validTransitions = map[string][]string{
-	StatusPending:    {StatusAccepted, StatusRejected},
-	StatusAccepted:   {StatusInProgress, StatusRejected},
+	StatusPending:    {StatusAccepted, StatusInProgress, StatusCompleted, StatusRejected},
+	StatusAccepted:   {StatusInProgress, StatusCompleted, StatusRejected},
 	StatusInProgress: {StatusCompleted, StatusRejected},
 }
 
 // Transition moves a task to a new status with validation.
 func (s *Service) Transition(tenantID string, taskID, newStatus, actorID, result, note string) error {
+	actorID = strings.TrimSpace(actorID)
+	if actorID == "" {
+		return fmt.Errorf("actor_id is required")
+	}
 	task, err := s.repo.GetByID(tenantID, taskID)
 	if err != nil {
 		return fmt.Errorf("task not found: %w", err)
 	}
 	if task.IsTerminal() {
 		return fmt.Errorf("task %s is in terminal status %s", taskID, task.Status)
+	}
+
+	if s.workflowTransitioner != nil && strings.TrimSpace(task.WorkflowStepInstanceID) != "" {
+		switch newStatus {
+		case StatusInProgress:
+			return s.workflowTransitioner.StartOrResumeStep(tenantID, task.WorkflowStepInstanceID, actorID, note)
+		case StatusCompleted:
+			return s.workflowTransitioner.CompleteStep(tenantID, task.WorkflowStepInstanceID, actorID, result)
+		case StatusRejected:
+			return s.workflowTransitioner.RejectStep(tenantID, task.WorkflowStepInstanceID, actorID, note)
+		}
 	}
 
 	allowed := validTransitions[task.Status]
@@ -252,14 +291,24 @@ func (s *Service) Transition(tenantID string, taskID, newStatus, actorID, result
 		return fmt.Errorf("cannot transition from %s to %s", task.Status, newStatus)
 	}
 
-	if err := s.repo.UpdateStatus(tenantID, taskID, newStatus, result); err != nil {
+	tx, err := s.repo.write.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transition transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.repo.UpdateStatusTx(tenantID, tx, taskID, newStatus, result); err != nil {
 		return err
 	}
 
-	_ = s.repo.InsertEvent(tenantID, &TaskEvent{
+	if err := s.repo.InsertEventTx(tenantID, tx, &TaskEvent{
 		ID: idgen.New("cevt"), TaskID: taskID,
 		Event: newStatus, ActorID: actorID, Note: note, CreatedAt: time.Now(),
-	})
+	}); err != nil {
+		return fmt.Errorf("record transition event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transition transaction: %w", err)
+	}
 
 	return nil
 }

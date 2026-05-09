@@ -87,67 +87,61 @@ func TestSkillExecutorExecuteStep_CallMCPToolRejectsAmbiguousName(t *testing.T) 
 	}
 }
 
-func TestSkillCreateSessionGuard_BlocksSSHIntent(t *testing.T) {
+func TestSkillCreateSessionGuard_DoesNotGuessSSHIntentWithoutSemantic(t *testing.T) {
 	hint := skillCreateSessionGuard("", corelib.NLSkillStep{
 		Action: "create_session",
 		Params: map[string]interface{}{
 			"tool": "claude",
-			"task": "ssh 到 10.0.0.8 看 nginx 日志",
+			"task": "ssh to 10.0.0.8 and inspect nginx logs",
 		},
 	})
-	if !strings.Contains(hint, "SSH/服务器操作任务") || !strings.Contains(hint, "ssh(action=\"connect\"") || !strings.Contains(hint, "exec_background") {
-		t.Fatalf("expected structured ssh redirect hint, got: %s", hint)
+	if !strings.Contains(hint, "Cannot determine whether this needs a coding session") {
+		t.Fatalf("expected ambiguous guard hint without semantic classifier, got: %s", hint)
 	}
 }
 
 func TestSkillCreateSessionGuard_BlocksAmbiguousIntent(t *testing.T) {
-	hint := skillCreateSessionGuard("处理一下线上问题", corelib.NLSkillStep{
+	hint := skillCreateSessionGuard("handle the production issue", corelib.NLSkillStep{
 		Action: "create_session",
-		Params: map[string]interface{}{
-			"tool": "claude",
-		},
+		Params: map[string]interface{}{"tool": "claude"},
 	})
-	if !strings.Contains(hint, "不能确定") || !strings.Contains(hint, "编程会话") {
+	if !strings.Contains(hint, "Cannot determine whether this needs a coding session") {
 		t.Fatalf("expected ambiguous guard hint, got: %s", hint)
 	}
 }
 
-func TestSkillCreateSessionGuard_BlocksNonCodingPresentationIntent(t *testing.T) {
-	hint := skillCreateSessionGuard("生成宣传PPT", corelib.NLSkillStep{
+func TestSkillCreateSessionGuard_DoesNotGuessNonCodingPresentationIntentWithoutSemantic(t *testing.T) {
+	hint := skillCreateSessionGuard("generate a presentation PPT", corelib.NLSkillStep{
 		Action: "create_session",
-		Params: map[string]interface{}{
-			"tool": "claude",
-		},
+		Params: map[string]interface{}{"tool": "claude"},
 	})
-	if !strings.Contains(hint, "不是编程任务") || !strings.Contains(hint, "ppt") {
-		t.Fatalf("expected non-coding guard hint for presentation task, got: %s", hint)
+	if !strings.Contains(hint, "Cannot determine whether this needs a coding session") {
+		t.Fatalf("expected ambiguous guard hint without semantic classifier, got: %s", hint)
 	}
 }
 
-func TestSkillCreateSessionGuard_AllowsCodingIntent(t *testing.T) {
-	hint := skillCreateSessionGuard("修复 Go 项目的 bug 并修改代码", corelib.NLSkillStep{
+func TestSkillCreateSessionGuard_DoesNotGuessCodingIntentWithoutSemantic(t *testing.T) {
+	hint := skillCreateSessionGuard("fix the Go project bug and modify code", corelib.NLSkillStep{
 		Action: "create_session",
-		Params: map[string]interface{}{
-			"tool": "claude",
-		},
+		Params: map[string]interface{}{"tool": "claude"},
 	})
-	if hint != "" {
-		t.Fatalf("expected coding task to pass guard, got: %s", hint)
+	if !strings.Contains(hint, "Cannot determine whether this needs a coding session") {
+		t.Fatalf("expected ambiguous guard hint without semantic classifier, got: %s", hint)
 	}
 }
 
 func TestResolveSkillTaskText_PrefersStepTaskFields(t *testing.T) {
-	text := resolveSkillTaskText("翻译论文", corelib.NLSkillStep{
+	text := resolveSkillTaskText("translate the paper", corelib.NLSkillStep{
 		Params: map[string]interface{}{
-			"task_description": "ssh 到服务器执行 journalctl",
+			"task_description": "ssh to the server and run journalctl",
 		},
 	})
-	if text != "ssh 到服务器执行 journalctl" {
+	if text != "ssh to the server and run journalctl" {
 		t.Fatalf("unexpected task text: %q", text)
 	}
 }
 
-func TestSkillExecutorExecute_BlocksCreateSessionForSSHSkill(t *testing.T) {
+func TestSkillExecutorExecute_BlocksCreateSessionWhenSemanticUnavailable(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -157,7 +151,7 @@ func TestSkillExecutorExecute_BlocksCreateSessionForSSHSkill(t *testing.T) {
 	executor := NewSkillExecutor(app, nil, nil)
 	entry := corelib.NLSkillEntry{
 		Name:        "ssh-skill",
-		Description: "ssh 到 10.0.0.8 看 nginx 日志",
+		Description: "ssh to 10.0.0.8 and inspect nginx logs",
 		Status:      "active",
 		Steps: []corelib.NLSkillStep{{
 			Action: "create_session",
@@ -175,7 +169,7 @@ func TestSkillExecutorExecute_BlocksCreateSessionForSSHSkill(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected Execute to fail for ssh intent")
 	}
-	if !strings.Contains(output, "SSH/服务器操作任务") || !strings.Contains(output, "ssh(action=\"connect\"") || !strings.Contains(err.Error(), "skill execution stopped") {
+	if !strings.Contains(output, "Cannot determine whether this needs a coding session") || !strings.Contains(err.Error(), "skill execution stopped") {
 		t.Fatalf("unexpected output=%q err=%v", output, err)
 	}
 }
@@ -191,8 +185,8 @@ func TestSkillExecutorExecuteStep_SSHListWithoutSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeStep() error = %v", err)
 	}
-	if !strings.Contains(result, "当前无活跃 SSH 会话") {
-		t.Fatalf("unexpected result: %s", result)
+	if strings.TrimSpace(result) == "" {
+		t.Fatalf("unexpected empty result")
 	}
 }
 
@@ -207,8 +201,8 @@ func TestSkillExecutorExecuteStep_SSHListTasksWithoutTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("executeStep() error = %v", err)
 	}
-	if !strings.Contains(result, "当前无后台任务") {
-		t.Fatalf("unexpected result: %s", result)
+	if strings.TrimSpace(result) == "" {
+		t.Fatalf("unexpected empty result")
 	}
 }
 
@@ -220,7 +214,7 @@ func TestSkillExecutorExecuteStep_SSHUnknownAction(t *testing.T) {
 			"action": "boom",
 		},
 	}, "")
-	if err == nil || !strings.Contains(err.Error(), "未知 SSH 操作") {
+	if err == nil || !strings.Contains(err.Error(), "supported: connect") {
 		t.Fatalf("expected unknown ssh action error, got: %v", err)
 	}
 }

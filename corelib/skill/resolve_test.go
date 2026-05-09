@@ -49,6 +49,70 @@ func TestResolveStep_AliasResolution(t *testing.T) {
 	}
 }
 
+func TestResolveStep_AliasParamCanSatisfyTemplatePlaceholder(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "process {{input}}",
+		},
+	}
+	params := CompleteParamsForRunner([]corelib.NLSkillParam{
+		{Name: "file", Aliases: []string{"input"}, CLIFlag: "--file"},
+	}, []corelib.NLSkillStep{step}, []string{"input"})
+
+	result, err := ResolveStep(step, map[string]string{"file": "report.md"}, "", params, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "process report.md" {
+		t.Fatalf("command = %q, want alias value substituted without duplicate CLI flag", cmd)
+	}
+}
+
+func TestResolveStep_CommonAliasCanSatisfyTemplatePlaceholder(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "process {{file}}",
+		},
+	}
+	params := CompleteParamsForRunner([]corelib.NLSkillParam{
+		{Name: "input"},
+	}, []corelib.NLSkillStep{step}, nil)
+
+	result, err := ResolveStep(step, map[string]string{"input": "report.md"}, "", params, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "process report.md" {
+		t.Fatalf("command = %q, want common alias placeholder substituted", cmd)
+	}
+}
+
+func TestResolveStep_CommonAliasDoesNotCollapseDeclaredTemplateParams(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "emit {{text}} {{content}}",
+		},
+	}
+	params := []corelib.NLSkillParam{
+		{Name: "text", Required: true},
+		{Name: "content", Required: true},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"text": "alpha", "content": "beta"}, "", params, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != "emit alpha beta" {
+		t.Fatalf("command = %q, want independent declared param values", cmd)
+	}
+}
+
 func TestResolveStep_RequiredParamMissing(t *testing.T) {
 	step := corelib.NLSkillStep{
 		Action: "bash",
@@ -59,7 +123,7 @@ func TestResolveStep_RequiredParamMissing(t *testing.T) {
 	params := []corelib.NLSkillParam{
 		{Name: "content", Required: true},
 	}
-	vars := map[string]string{"input": "some value"} // wrong name
+	vars := map[string]string{"unrelated": "some value"} // wrong name
 
 	_, err := ResolveStep(step, vars, "", params, nil)
 	if err == nil {
@@ -94,6 +158,36 @@ func TestResolveStep_CLIFlagAppending(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "--output") || !strings.Contains(cmd, "/tmp/out.png") {
 		t.Errorf("expected --output /tmp/out.png in command, got %q", cmd)
+	}
+}
+
+func TestResolveStep_CLIFlagAppendJoinStyles(t *testing.T) {
+	quoteFunc := func(s string) string { return `"` + s + `"` }
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "gen.js",
+		},
+	}
+	params := []corelib.NLSkillParam{
+		{Name: "format", CLIFlag: "--format="},
+		{Name: "output", CLIFlag: "/out:"},
+	}
+	vars := map[string]string{"format": "svg", "output": "out file.svg"}
+
+	result, err := ResolveStep(step, vars, "", params, quoteFunc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if !strings.Contains(cmd, `--format="svg"`) {
+		t.Fatalf("command = %q, want equals-style CLI flag rendered as one token", cmd)
+	}
+	if !strings.Contains(cmd, `/out:"out file.svg"`) {
+		t.Fatalf("command = %q, want slash-colon CLI flag rendered as one token", cmd)
+	}
+	if strings.Contains(cmd, `--format= "svg"`) || strings.Contains(cmd, `/out: "out file.svg"`) {
+		t.Fatalf("command = %q, contains invalid space after joined CLI flag", cmd)
 	}
 }
 
@@ -166,6 +260,19 @@ func TestResolveStep_CraftToolInjection(t *testing.T) {
 	}
 }
 
+func TestResolveStep_CraftToolInjectionHonorsAliases(t *testing.T) {
+	result, err := ResolveStep(corelib.NLSkillStep{
+		Action: "craft_tool",
+		Params: map[string]interface{}{"task": "convert file"},
+	}, map[string]string{"file": "in.md", "destination": "out.pdf"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Step.Params["input"] != "in.md" || result.Step.Params["output"] != "out.pdf" {
+		t.Fatalf("craft_tool injected params = %#v, want aliases promoted", result.Step.Params)
+	}
+}
+
 func TestResolveStep_WorkingDirResolution(t *testing.T) {
 	step := corelib.NLSkillStep{
 		Action: "bash",
@@ -224,6 +331,82 @@ func TestResolveStep_WithQuoteFunc(t *testing.T) {
 	cmd, _ := result.Step.Params["command"].(string)
 	if cmd != `echo "hello world"` {
 		t.Errorf("expected quoted value, got %q", cmd)
+	}
+}
+
+func TestResolveStep_QuotesOnlyShellCommandParam(t *testing.T) {
+	quoteFunc := func(s string) string { return `"` + s + `"` }
+	result, err := ResolveStep(corelib.NLSkillStep{
+		Action: "call_mcp_tool",
+		Params: map[string]interface{}{
+			"server_id": "search",
+			"tool_name": "query",
+			"arguments": map[string]interface{}{
+				"query": "{{input}}",
+			},
+		},
+	}, map[string]string{"input": "hello world"}, "", nil, quoteFunc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	args, ok := result.Step.Params["arguments"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("arguments type = %T", result.Step.Params["arguments"])
+	}
+	if args["query"] != "hello world" {
+		t.Fatalf("arguments.query = %#v, want unquoted structured value", args["query"])
+	}
+}
+
+func TestResolveStep_DoesNotShellQuoteCraftTask(t *testing.T) {
+	quoteFunc := func(s string) string { return `"` + s + `"` }
+	result, err := ResolveStep(corelib.NLSkillStep{
+		Action: "craft_tool",
+		Params: map[string]interface{}{
+			"task": "summarize {{input}}",
+		},
+	}, map[string]string{"input": "hello world"}, "", nil, quoteFunc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Step.Params["task"] != "summarize hello world" {
+		t.Fatalf("task = %#v, want unquoted craft task", result.Step.Params["task"])
+	}
+}
+
+func TestResolveStep_ReplacesCanonicalizedPlaceholders(t *testing.T) {
+	resolved, err := ResolveStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": "tool {{Input-File}} ${Output File} {{targetLanguage}}",
+		},
+	}, map[string]string{"input_file": "report.md", "output_file": "out.pdf", "target_language": "English"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := resolved.Step.Params["command"].(string)
+	if cmd != "tool report.md out.pdf English" {
+		t.Fatalf("command = %q, want canonical placeholder replacement", cmd)
+	}
+}
+
+func TestResolveStep_QuotedCanonicalPlaceholderDedup(t *testing.T) {
+	quoteFunc := func(s string) string { return `"` + s + `"` }
+	resolved, err := ResolveStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": `tool --input "{{Input-File}}" --output '${Output File}'`,
+		},
+	}, map[string]string{"input_file": "report path.md", "output_file": "out path.pdf"}, "", nil, quoteFunc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := resolved.Step.Params["command"].(string)
+	if strings.Contains(cmd, `""`) || strings.Contains(cmd, `''`) {
+		t.Fatalf("placeholder replacement double-quoted command: %q", cmd)
+	}
+	if !strings.Contains(cmd, `--input "report path.md"`) || !strings.Contains(cmd, `--output "out path.pdf"`) {
+		t.Fatalf("command = %q, want quoted canonical replacements", cmd)
 	}
 }
 
@@ -292,6 +475,46 @@ func TestResolveStep_UnresolvedPlaceholderStripped(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "file.txt") {
 		t.Errorf("resolved placeholder should be preserved, got %q", cmd)
+	}
+}
+
+func TestResolveStep_UnresolvedOptionalFlagRemoved(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": `python translate.py --text "{{text}}" --target_lang "{{target_lang}}"`,
+		},
+	}
+	vars := map[string]string{"text": "hello"}
+
+	result, err := ResolveStep(step, vars, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if strings.Contains(cmd, "--target_lang") || strings.Contains(cmd, "target_lang") {
+		t.Fatalf("optional unresolved target_lang flag was not removed: %q", cmd)
+	}
+	if !strings.Contains(cmd, `--text "hello"`) {
+		t.Fatalf("resolved text flag was not preserved: %q", cmd)
+	}
+}
+
+func TestResolveStep_PreservesAuthorQuotesWithoutQuoteFunc(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command": `tool --text "{{text}}"`,
+		},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"text": "hello world"}, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	if cmd != `tool --text "hello world"` {
+		t.Fatalf("command = %q, want author quotes preserved", cmd)
 	}
 }
 

@@ -98,8 +98,19 @@ export function EmbeddingConfigPanel({ lang }: Props) {
     const handleEmbToggle = async (on: boolean) => {
         setEmbEnabled(on);
         setEmbError('');
-        try { await SetVectorSearchEnabled(on); } catch (e: any) { setEmbError(e?.message || String(e)); return; }
-        if (on && !embModelExists && !embDownloading) { startEmbDownload(); }
+        if (on && !embModelExists) {
+            setEmbDownloading(true);
+        } else if (!on) {
+            setEmbDownloading(false);
+        }
+        try {
+            await SetVectorSearchEnabled(on);
+        } catch (e: any) {
+            setEmbEnabled(!on);
+            setEmbDownloading(false);
+            setEmbError(e?.message || String(e));
+            return;
+        }
     };
 
     const startEmbDownload = async () => {
@@ -115,8 +126,19 @@ export function EmbeddingConfigPanel({ lang }: Props) {
     const handleSpToggle = async (on: boolean) => {
         setSpEnabled(on);
         setSpError('');
-        try { await SetScreenParsingEnabled(on); } catch (e: any) { setSpError(e?.message || String(e)); return; }
-        if (on && !spModelExists && !spDownloading) { startSpDownload(); }
+        if (on && !spModelExists) {
+            setSpDownloading(true);
+        } else if (!on) {
+            setSpDownloading(false);
+        }
+        try {
+            await SetScreenParsingEnabled(on);
+        } catch (e: any) {
+            setSpEnabled(!on);
+            setSpDownloading(false);
+            setSpError(e?.message || String(e));
+            return;
+        }
     };
 
     const startSpDownload = async () => {
@@ -139,7 +161,7 @@ export function EmbeddingConfigPanel({ lang }: Props) {
             </h4>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
                 <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={spEnabled} onChange={e => handleSpToggle(e.target.checked)} disabled={spDownloading} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                    <input type='checkbox' checked={spEnabled} onChange={e => handleSpToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
                     {t('Enable Screen Parsing', '启用屏幕解析', '啟用螢幕解析')}
                 </label>
             </div>
@@ -165,7 +187,7 @@ export function EmbeddingConfigPanel({ lang }: Props) {
             </h4>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
                 <label style={{ fontSize: '0.82rem', color: colors.text, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <input type='checkbox' checked={embEnabled} onChange={e => handleEmbToggle(e.target.checked)} disabled={embDownloading} style={{ width: 16, height: 16, cursor: 'pointer' }} />
+                    <input type='checkbox' checked={embEnabled} onChange={e => handleEmbToggle(e.target.checked)} style={{ width: 16, height: 16, cursor: 'pointer' }} />
                     {t('Enable Vector Search', '启用向量搜索', '啟用向量搜索')}
                 </label>
             </div>

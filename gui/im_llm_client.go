@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -37,6 +38,9 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg corelib.MaclawLLMConfig, messa
 				"model": cfg.Model, "messages": messages, "tools": tools,
 			})
 			return nil, dumpLLMContext(500, err.Error(), data, h.getTempDir())
+		}
+		if friendlyMsg, ok := classifyOpenAICompatibleHTTPError(err, cfg.ProviderName); ok {
+			return nil, fmt.Errorf("%s", friendlyMsg)
 		}
 		return nil, err
 	}

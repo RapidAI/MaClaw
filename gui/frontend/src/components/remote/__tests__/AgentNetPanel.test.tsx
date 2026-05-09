@@ -119,7 +119,7 @@ describe('AgentNetPanel guard behavior', () => {
         });
         AgentNetEnsureDaemonWithDownloadMock.mockClear();
 
-        fireEvent.click(screen.getByLabelText('鍚敤铏剧綉'));
+        fireEvent.click(screen.getByLabelText(/启用智网/));
 
         expect(saveRemoteConfigField).toHaveBeenCalledWith({ agentnet_enabled: false });
         expect(AgentNetEnsureDaemonWithDownloadMock).not.toHaveBeenCalled();

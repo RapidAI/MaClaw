@@ -41,11 +41,11 @@ func DefaultClaudeProviders() []corelib.ModelConfig {
 func DefaultCodexProviders() []corelib.ModelConfig {
 	return []corelib.ModelConfig{
 		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", WireApi: "responses"},
-		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1"},
-		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4"},
-		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1"},
-		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1"},
-		{ModelName: "Custom", ModelId: "", ModelUrl: "", IsCustom: true},
+		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", WireApi: "responses"},
+		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", WireApi: "responses"},
+		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", WireApi: "responses"},
+		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", WireApi: "responses"},
+		{ModelName: "Custom", ModelId: "", ModelUrl: "", WireApi: "responses", IsCustom: true},
 	}
 }
 

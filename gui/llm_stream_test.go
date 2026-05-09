@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,123 @@ import (
 func TestGuiSSEIdleTimeoutIsConservative(t *testing.T) {
 	if guiSSEIdleTimeout < 4*time.Minute {
 		t.Fatalf("guiSSEIdleTimeout = %s, want at least 4m", guiSSEIdleTimeout)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorUsesConfiguredProviderName(t *testing.T) {
+	body := []byte(`{"error":{"message":"forbidden","type":"forbidden"}}`)
+	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
+	if !strings.Contains(got, "MaClaw官方 拒绝访问") {
+		t.Fatalf("expected configured provider name in error, got %q", got)
+	}
+	if strings.Contains(got, "OpenAI 拒绝访问") {
+		t.Fatalf("error should not present OpenAI as the provider: %q", got)
+	}
+}
+
+func TestClassifyResponsesAPIHTTPErrorUsesConfiguredProviderName(t *testing.T) {
+	body := []byte(`{"error":{"message":"forbidden","type":"forbidden"}}`)
+	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClaw官方")
+	if !strings.Contains(got, "MaClaw官方 拒绝访问") {
+		t.Fatalf("expected configured provider name in responses error, got %q", got)
+	}
+	if strings.Contains(got, "OpenAI 拒绝访问") || strings.Contains(got, "ChatGPT") {
+		t.Fatalf("responses error should not present protocol/product names as provider: %q", got)
+	}
+}
+
+func TestClassifyResponsesAPIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90}`)
+	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClaw\u5b98\u65b9")
+	if !strings.Contains(got, "\u5468\u671f\u9650\u6d41") || !strings.Contains(got, "2 \u5206\u949f") {
+		t.Fatalf("expected period-limit retry message, got %q", got)
+	}
+	if strings.Contains(got, "\u62d2\u7edd\u8bbf\u95ee") || strings.Contains(got, "Responses API") {
+		t.Fatalf("period limit should not be presented as a generic responses error: %q", got)
+	}
+}
+
+func TestClassifyResponsesAPIHTTPErrorParsesStringRetryAfterSeconds(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":"90"}`)
+	got := classifyResponsesAPIHTTPError(403, body, "https://example.test/v1/responses", "gpt-test", "MaClaw\u5b98\u65b9")
+	if !strings.Contains(got, "\u5468\u671f\u9650\u6d41") || !strings.Contains(got, "2 \u5206\u949f") {
+		t.Fatalf("expected period-limit retry message from string retry_after_seconds, got %q", got)
+	}
+}
+
+func TestClassifyResponsesAPIHTTPErrorSurfacesTopLevelHubUpstreamRateLimit(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_UPSTREAM_RATE_LIMITED","message":"官方上游通道限流，请稍后再试"}`)
+	got := classifyResponsesAPIHTTPError(429, body, "https://example.test/v1/responses", "gpt-test", "MaClaw\u5b98\u65b9")
+	if got != "官方上游通道限流，请稍后再试" {
+		t.Fatalf("expected top-level upstream rate-limit message, got %q", got)
+	}
+	if strings.Contains(got, "订阅额度") || strings.Contains(got, "Responses API") {
+		t.Fatalf("upstream rate limit should not be presented as a generic responses error: %q", got)
+	}
+}
+
+func TestClassifyOpenAICompatibleHTTPErrorUsesConfiguredProviderName(t *testing.T) {
+	got, ok := classifyOpenAICompatibleHTTPError(errors.New("[https://example.test/v1/chat/completions] HTTP 403: forbidden"), "MaClaw官方")
+	if !ok {
+		t.Fatal("expected HTTP error to be classified")
+	}
+	if !strings.Contains(got, "MaClaw官方 拒绝访问") {
+		t.Fatalf("expected configured provider name in normalized error, got %q", got)
+	}
+	if strings.Contains(got, "OpenAI 拒绝访问") {
+		t.Fatalf("normalized error should not present OpenAI as the provider: %q", got)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimit(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90,"retry_after_at":"2026-05-05T06:00:00Z"}`)
+	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
+	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
+		t.Fatalf("expected period-limit retry message, got %q", got)
+	}
+	if strings.Contains(got, "拒绝访问") || strings.Contains(got, "LLM 服务") {
+		t.Fatalf("period limit should not be presented as a generic service error: %q", got)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorReportsHubPeriodLimitFromHTTP429(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90}`)
+	got := classifyOpenAIHTTPError(429, body, "MaClaw官方")
+	if !strings.Contains(got, "周期限流") || !strings.Contains(got, "2 分钟") {
+		t.Fatalf("expected period-limit retry message from HTTP 429, got %q", got)
+	}
+	if strings.Contains(got, "请求频率") || strings.Contains(got, "rate_limit") {
+		t.Fatalf("period limit should not be presented as generic provider rate limit: %q", got)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorSurfacesTopLevelHubUpstreamAuthFailure(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_UPSTREAM_AUTH_FAILED","message":"官方上游服务认证失败，请联系管理员检查服务商配置"}`)
+	got := classifyOpenAIHTTPError(502, body, "MaClaw官方")
+	if got != "官方上游服务认证失败，请联系管理员检查服务商配置" {
+		t.Fatalf("expected top-level upstream auth message, got %q", got)
+	}
+	if strings.Contains(got, "网关错误") || strings.Contains(got, "HTTP 502") {
+		t.Fatalf("upstream auth failure should not be presented as generic gateway error: %q", got)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorReportsHubCreditsExhausted(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_SERVICE_CREDITS_EXHAUSTED","message":"selected model grant credits are exhausted"}`)
+	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
+	if !strings.Contains(got, "额度已用尽") {
+		t.Fatalf("expected credits exhausted message, got %q", got)
+	}
+}
+
+func TestClassifyOpenAIHTTPErrorReportsHubQueuedGrant(t *testing.T) {
+	body := []byte(`{"ok":false,"code":"LLM_SERVICE_GRANT_QUEUED","message":"selected model grant is not active yet","retry_after_seconds":7200}`)
+	got := classifyOpenAIHTTPError(403, body, "MaClaw官方")
+	if !strings.Contains(got, "授权尚未生效") || !strings.Contains(got, "2 小时") {
+		t.Fatalf("expected queued grant retry message, got %q", got)
+	}
+	if strings.Contains(got, "授权已过期") || strings.Contains(got, "拒绝访问") {
+		t.Fatalf("queued grant should not be presented as expired or forbidden: %q", got)
 	}
 }
 

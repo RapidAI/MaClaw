@@ -11,6 +11,7 @@ import { EventsOff, EventsOn } from '../../wailsjs/runtime';
 import './FloatingButton.css';
 import logoSrc from '../assets/images/maclaw2.png';
 import { defaultPetSize, defaultPetSkinId, getPetSkinOption, normalizePetSkinId, type PetSkinId } from './petSkins';
+import { normalizeMotionSoundPreset, type MotionSoundPreset } from './petMotionSounds';
 
 // Wails Go binding bridge
 // The floating window's WebView will have Wails bindings injected.
@@ -25,6 +26,7 @@ declare global {
                     OnFloatingButtonDragged(x: number, y: number): Promise<void>;
                     QuitApp(): Promise<void>;
                     LoadConfig(): Promise<Record<string, unknown>>;
+                    SaveConfig(config: Record<string, unknown>): Promise<void>;
                 };
             };
         };
@@ -70,12 +72,24 @@ function isAsrSource(source: unknown): boolean {
     return typeof source === 'string' && source.startsWith('asr:');
 }
 
+function clampContextMenuPosition(x: number, y: number): { x: number; y: number } {
+    const menuWidth = 152;
+    const menuHeight = 86;
+    const maxX = Math.max(0, window.innerWidth - menuWidth - 4);
+    const maxY = Math.max(0, window.innerHeight - menuHeight - 4);
+    return {
+        x: Math.max(4, Math.min(x, maxX)),
+        y: Math.max(4, Math.min(y, maxY)),
+    };
+}
+
 interface FloatingPetConfig {
     petEnabled: boolean;
     petSkin: PetSkinId;
     petSize: number;
     motionEnabled: boolean;
     motionSoundEnabled: boolean;
+    motionSoundPreset: MotionSoundPreset;
     quietMode: boolean;
     interactionMode: PetInteractionMode;
 }
@@ -86,6 +100,7 @@ const defaultPetConfig: FloatingPetConfig = {
     petSize: defaultPetSize,
     motionEnabled: true,
     motionSoundEnabled: true,
+    motionSoundPreset: 'classic',
     quietMode: false,
     interactionMode: 'balanced',
 };
@@ -117,9 +132,22 @@ function readPetConfig(cfg: Record<string, unknown>): FloatingPetConfig {
         petSize: clampPetSize(cfg.pet_size),
         motionEnabled: cfg.pet_motion_enabled !== false,
         motionSoundEnabled: cfg.pet_motion_sound_enabled !== false,
+        motionSoundPreset: normalizeMotionSoundPreset(cfg.pet_motion_sound_preset),
         quietMode: !!cfg.pet_quiet_mode,
         interactionMode: normalizeInteractionMode(cfg.pet_interaction_mode),
     };
+}
+
+async function savePetMotionSoundEnabled(enabled: boolean): Promise<FloatingPetConfig> {
+    const app = window.go?.main?.App;
+    if (!app?.LoadConfig || !app?.SaveConfig) {
+        throw new Error('Go config bindings not available');
+    }
+    const cfg = await app.LoadConfig();
+    const nextConfig = { ...cfg, pet_motion_sound_enabled: enabled };
+    await app.SaveConfig(nextConfig);
+    const savedConfig = await app.LoadConfig();
+    return readPetConfig(savedConfig ?? nextConfig);
 }
 
 type MotionSoundProfile = {
@@ -134,6 +162,9 @@ type MotionSoundProfile = {
     delaySeconds: number;
     delayGain: number;
     noiseGain: number;
+    pitchDrift: number;
+    filterDrift: number;
+    accentDelay: number;
 };
 
 function disconnectAudioNode(node: AudioNode | undefined): void {
@@ -189,8 +220,9 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
     const variantTail = variant === 'flutter' ? 0.72 : 1;
     const base = (state === 'thinking' ? 660 : state === 'listening' ? 820 : state === 'speaking' ? 920 : 760) * variantPitch;
 
+    let profile: MotionSoundProfile;
     if (config.petSkin === 'dev-claw') {
-        return {
+        profile = {
             firstType: 'square',
             secondType: 'sawtooth',
             baseHz: base * pitch,
@@ -202,10 +234,12 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
             delaySeconds: 0.035,
             delayGain: 0.12,
             noiseGain: 0.006 * variantGain,
+            pitchDrift: 0.03,
+            filterDrift: 0.08,
+            accentDelay: 0.04,
         };
-    }
-    if (config.petSkin === 'mini-claw') {
-        return {
+    } else if (config.petSkin === 'mini-claw') {
+        profile = {
             firstType: 'triangle',
             secondType: 'sine',
             baseHz: base * pitch,
@@ -217,10 +251,12 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
             delaySeconds: 0.028,
             delayGain: 0.1,
             noiseGain: 0.003 * variantGain,
+            pitchDrift: 0.03,
+            filterDrift: 0.08,
+            accentDelay: 0.034,
         };
-    }
-    if (config.petSkin === 'focus-claw') {
-        return {
+    } else if (config.petSkin === 'focus-claw') {
+        profile = {
             firstType: 'sine',
             secondType: 'triangle',
             baseHz: base * pitch,
@@ -232,21 +268,106 @@ function getMotionSoundProfile(config: FloatingPetConfig, state: PetState, varia
             delaySeconds: 0.045,
             delayGain: 0.08,
             noiseGain: 0.0015 * variantGain,
+            pitchDrift: 0.02,
+            filterDrift: 0.05,
+            accentDelay: 0.045,
+        };
+    } else {
+        profile = {
+            firstType: 'sine',
+            secondType: 'triangle',
+            baseHz: base * pitch,
+            glideHz: (base + 220) * pitch,
+            accentHz: (base + 460) * pitch,
+            peakGain: (config.interactionMode === 'active' ? 0.028 : 0.02) * variantGain,
+            tailSeconds: (state === 'speaking' ? 0.12 : 0.095) * variantTail,
+            filterHz: 3200,
+            delaySeconds: 0.032,
+            delayGain: 0.09,
+            noiseGain: 0.0025 * variantGain,
+            pitchDrift: 0.03,
+            filterDrift: 0.08,
+            accentDelay: 0.034,
         };
     }
-    return {
-        firstType: 'sine',
-        secondType: 'triangle',
-        baseHz: base * pitch,
-        glideHz: (base + 220) * pitch,
-        accentHz: (base + 460) * pitch,
-        peakGain: (config.interactionMode === 'active' ? 0.028 : 0.02) * variantGain,
-        tailSeconds: (state === 'speaking' ? 0.12 : 0.095) * variantTail,
-        filterHz: 3200,
-        delaySeconds: 0.032,
-        delayGain: 0.09,
-        noiseGain: 0.0025 * variantGain,
-    };
+
+    switch (config.motionSoundPreset) {
+        case 'bubble':
+            return {
+                ...profile,
+                firstType: 'sine',
+                secondType: 'triangle',
+                baseHz: profile.baseHz * 0.82,
+                glideHz: profile.glideHz * 1.18,
+                accentHz: profile.accentHz * 1.12,
+                peakGain: profile.peakGain * 0.86,
+                tailSeconds: profile.tailSeconds * 1.25,
+                filterHz: Math.min(5200, profile.filterHz * 1.35),
+                delaySeconds: 0.052,
+                delayGain: profile.delayGain * 1.7,
+                noiseGain: profile.noiseGain * 0.35,
+                pitchDrift: 0.045,
+                filterDrift: 0.12,
+                accentDelay: 0.052,
+            };
+        case 'chime':
+            return {
+                ...profile,
+                firstType: 'sine',
+                secondType: 'sine',
+                baseHz: profile.baseHz * 1.26,
+                glideHz: profile.glideHz * 1.42,
+                accentHz: profile.accentHz * 1.72,
+                peakGain: profile.peakGain * 0.74,
+                tailSeconds: profile.tailSeconds * 1.55,
+                filterHz: Math.min(6200, profile.filterHz * 1.55),
+                delaySeconds: 0.07,
+                delayGain: profile.delayGain * 1.95,
+                noiseGain: profile.noiseGain * 0.18,
+                pitchDrift: 0.018,
+                filterDrift: 0.05,
+                accentDelay: 0.065,
+            };
+        case 'synth':
+            return {
+                ...profile,
+                firstType: 'square',
+                secondType: 'sawtooth',
+                baseHz: profile.baseHz * 0.92,
+                glideHz: profile.glideHz * 1.06,
+                accentHz: profile.accentHz * 0.98,
+                peakGain: profile.peakGain * 0.9,
+                tailSeconds: profile.tailSeconds * 0.88,
+                filterHz: Math.max(1800, profile.filterHz * 0.78),
+                delaySeconds: 0.026,
+                delayGain: profile.delayGain * 0.8,
+                noiseGain: profile.noiseGain * 1.45,
+                pitchDrift: 0.025,
+                filterDrift: 0.09,
+                accentDelay: 0.026,
+            };
+        case 'soft':
+            return {
+                ...profile,
+                firstType: 'sine',
+                secondType: 'triangle',
+                baseHz: profile.baseHz * 0.72,
+                glideHz: profile.glideHz * 0.78,
+                accentHz: profile.accentHz * 0.82,
+                peakGain: profile.peakGain * 0.58,
+                tailSeconds: profile.tailSeconds * 1.65,
+                filterHz: Math.max(1100, profile.filterHz * 0.62),
+                delaySeconds: 0.06,
+                delayGain: profile.delayGain * 1.15,
+                noiseGain: profile.noiseGain * 0.12,
+                pitchDrift: 0.012,
+                filterDrift: 0.035,
+                accentDelay: 0.052,
+            };
+        case 'classic':
+        default:
+            return profile;
+    }
 }
 
 // Component
@@ -435,9 +556,9 @@ export function FloatingButton() {
             const soundConfig = petConfigRef.current;
             const soundState = petStateRef.current;
             const profile = getMotionSoundProfile(soundConfig, soundState, variant);
-            const pitchDrift = 0.985 + Math.random() * 0.03;
-            const filterDrift = 0.96 + Math.random() * 0.08;
-            const accentDelay = 0.034 + Math.random() * 0.012;
+            const pitchDrift = 1 - profile.pitchDrift / 2 + Math.random() * profile.pitchDrift;
+            const filterDrift = 1 - profile.filterDrift / 2 + Math.random() * profile.filterDrift;
+            const accentDelay = profile.accentDelay + Math.random() * 0.012;
             const now = ctx.currentTime;
             const endAt = now + profile.tailSeconds + profile.delaySeconds + 0.08;
             const output = ctx.createDynamicsCompressor();
@@ -694,7 +815,7 @@ export function FloatingButton() {
         e.stopPropagation();
         triggerPetGesture('menu', 760);
         if (motionSoundReady) playPetMotionSound('flutter');
-        setMenuPos({ x: e.clientX, y: e.clientY });
+        setMenuPos(clampContextMenuPosition(e.clientX, e.clientY));
         setShowMenu(true);
     }, [motionSoundReady, playPetMotionSound, triggerPetGesture]);
 
@@ -702,6 +823,27 @@ export function FloatingButton() {
         setShowMenu(false);
         callGoBinding('QuitApp');
     }, []);
+
+    const handleToggleSoundOff = useCallback(() => {
+        const nextSoundEnabled = !petConfig.motionSoundEnabled;
+        setShowMenu(false);
+        setPetConfig((current) => ({ ...current, motionSoundEnabled: nextSoundEnabled }));
+        void savePetMotionSoundEnabled(nextSoundEnabled)
+            .then((savedConfig) => {
+                setPetConfig(savedConfig);
+            })
+            .catch((err) => {
+                console.warn('[FloatingButton] Save pet sound-off setting failed:', err);
+                void window.go?.main?.App?.LoadConfig?.()
+                    .then((cfg) => {
+                        setPetConfig(cfg ? readPetConfig(cfg) : petConfigRef.current);
+                    })
+                    .catch((loadErr) => {
+                        console.warn('[FloatingButton] Reload pet config failed:', loadErr);
+                        setPetConfig(petConfigRef.current);
+                    });
+            });
+    }, [petConfig.motionSoundEnabled]);
 
     // Close context menu when clicking outside.
     useEffect(() => {
@@ -714,18 +856,25 @@ export function FloatingButton() {
                 setShowMenu(false);
             }
         };
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setShowMenu(false);
+        };
 
         // Use a short delay so the current right-click event doesn't
         // immediately close the menu.
         const timer = setTimeout(() => {
             document.addEventListener('mousedown', handleClickOutside);
+            document.addEventListener('keydown', handleKeyDown);
         }, 0);
 
         return () => {
             clearTimeout(timer);
             document.removeEventListener('mousedown', handleClickOutside);
+            document.removeEventListener('keydown', handleKeyDown);
         };
     }, [showMenu]);
+
+    const soundOff = !petConfig.motionSoundEnabled;
 
     return (
         <div
@@ -776,12 +925,29 @@ export function FloatingButton() {
             {showMenu && (
                 <div
                     className="floating-context-menu"
+                    role="menu"
                     style={{ top: menuPos.y, left: menuPos.x }}
+                    onMouseDown={(e) => e.stopPropagation()}
                 >
-                    <div
+                    <button
+                        type="button"
+                        className="floating-context-menu-item floating-context-menu-item--check"
+                        role="menuitemcheckbox"
+                        aria-checked={soundOff}
+                        onClick={handleToggleSoundOff}
+                    >
+                        <span className="floating-context-menu-check" aria-hidden="true">
+                            {soundOff ? "\u2713" : ""}
+                        </span>
+                        <span>{"\u97f3\u6548\u5173\u95ed"}</span>
+                    </button>
+                    <div className="floating-context-menu-separator" />
+                    <button
+                        type="button"
                         className="floating-context-menu-item"
+                        role="menuitem"
                         onClick={handleQuit}
-                    >{"\u9000\u51fa"}</div>
+                    >{"\u9000\u51fa"}</button>
                 </div>
             )}
         </div>

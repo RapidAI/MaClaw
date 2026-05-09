@@ -38,6 +38,11 @@ func TestIsSkillCompatibleWithPlatform(t *testing.T) {
 		{"case insensitive match", []string{"Windows"}, "windows", true},
 		{"single platform match", []string{"linux"}, "linux", true},
 		{"all platforms listed", []string{"windows", "macos", "linux"}, "macos", true},
+		{"explicit universal platform", []string{"universal"}, "windows", true},
+		{"all alias platform", []string{"all"}, "linux", true},
+		{"cross-platform alias", []string{"cross-platform"}, "macos", true},
+		{"darwin alias matches macos", []string{"darwin"}, "macos", true},
+		{"blank entries behave as unrestricted", []string{"", " "}, "windows", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,6 +86,13 @@ func TestScanSkillDir_PlatformFiltering(t *testing.T) {
 		"name: universal-skill\ndescription: universal\nsteps:\n  - action: bash\n    params:\n      command: echo hi\n",
 	), 0644)
 
+	// Skill with an explicit universal platform tag, as used by community skills.
+	universalTaggedDir := filepath.Join(root, "universal-tagged-skill")
+	os.MkdirAll(universalTaggedDir, 0755)
+	os.WriteFile(filepath.Join(universalTaggedDir, "skill.yaml"), []byte(
+		"name: universal-tagged-skill\ndescription: universal tag\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: echo hi\n",
+	), 0644)
+
 	results := ScanSkillDir(root)
 
 	// Should include compat-skill and universal-skill, but not incompat-skill
@@ -97,6 +109,9 @@ func TestScanSkillDir_PlatformFiltering(t *testing.T) {
 	}
 	if !names["universal-skill"] {
 		t.Error("expected universal-skill to be included")
+	}
+	if !names["universal-tagged-skill"] {
+		t.Error("expected universal-tagged-skill to be included")
 	}
 }
 

@@ -89,6 +89,8 @@ type AppConfig struct {
 	// MaClaw Role configuration
 	MaclawRoleName        string `json:"maclaw_role_name,omitempty"`
 	MaclawRoleDescription string `json:"maclaw_role_description,omitempty"`
+	// MIS data service configuration.
+	MISData MISDataConfig `json:"mis_data,omitempty"`
 	// Group Discussion configuration (current-Hub scoped collaboration).
 	GroupDiscussion GroupDiscussionConfig `json:"group_discussion,omitempty"`
 	// MCP Server registry
@@ -122,6 +124,7 @@ type AppConfig struct {
 	PetSize                int    `json:"pet_size,omitempty"`
 	PetMotionEnabled       *bool  `json:"pet_motion_enabled,omitempty"`
 	PetMotionSound         *bool  `json:"pet_motion_sound_enabled,omitempty"`
+	PetMotionSoundPreset   string `json:"pet_motion_sound_preset,omitempty"`
 	PetTextInteraction     *bool  `json:"pet_text_interaction_enabled,omitempty"`
 	PetVoiceInput          bool   `json:"pet_voice_input_enabled,omitempty"`
 	PetVoiceReadback       bool   `json:"pet_voice_readback_enabled,omitempty"`
@@ -155,6 +158,7 @@ type AppConfig struct {
 	LansengerAppID      string `json:"lansenger_app_id,omitempty"`
 	LansengerAppSecret  string `json:"lansenger_app_secret,omitempty"`
 	LansengerGatewayURL string `json:"lansenger_gateway_url,omitempty"` // API gateway base URL, default https://apigw.lx.qianxin.com
+	LansengerWSSURL     string `json:"lansenger_wss_url,omitempty"`     // optional WebSocket gateway override
 	// IM 闂?local mode toggles for QQ Bot and Telegram (same semantics as WeChat)
 	QQBotLocalMode     *bool `json:"qqbot_local_mode,omitempty"`     // nil = auto-detect, true = local, false = hub
 	TelegramLocalMode  *bool `json:"telegram_local_mode,omitempty"`  // nil = auto-detect, true = local, false = hub
@@ -235,6 +239,32 @@ type AppConfig struct {
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
 }
 
+// MISDataConfig stores the MaClawDataSrv connection used by MaClaw UI and agent tools.
+type MISDataConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Token    string `json:"token,omitempty"`
+	TenantID string `json:"tenant_id,omitempty"`
+	UserID   string `json:"user_id,omitempty"`
+	Role     string `json:"role,omitempty"`
+}
+
+func (c MISDataConfig) WithDefaults() MISDataConfig {
+	if strings.TrimSpace(c.Endpoint) == "" {
+		c.Endpoint = "http://127.0.0.1:18180"
+	}
+	if strings.TrimSpace(c.TenantID) == "" {
+		c.TenantID = "default"
+	}
+	if strings.TrimSpace(c.UserID) == "" {
+		c.UserID = "maclaw"
+	}
+	if strings.TrimSpace(c.Role) == "" {
+		c.Role = "data_user"
+	}
+	return c
+}
+
 // GroupDiscussionConfig controls current-Hub MaClaw-to-MaClaw consultations.
 // The feature is intentionally scoped to the current Hub and does not imply
 // AgentNet, HubCenter, or public discovery participation.
@@ -252,6 +282,7 @@ type GroupDiscussionConfig struct {
 	Languages                        []string `json:"languages,omitempty"`
 	InvitePolicy                     string   `json:"invite_policy,omitempty"`
 	AllowSecurityGroupFreeDiscussion bool     `json:"allow_security_group_free_discussion"`
+	UseCrossAgentExperience          *bool    `json:"use_cross_agent_experience,omitempty"`
 	AllowedRoles                     []string `json:"allowed_roles,omitempty"`
 	MaxRiskLevel                     string   `json:"max_risk_level,omitempty"`
 	ContextPolicy                    string   `json:"context_policy,omitempty"`
@@ -259,6 +290,12 @@ type GroupDiscussionConfig struct {
 	MaxRounds                        int      `json:"max_rounds,omitempty"`
 	TimeoutSeconds                   int      `json:"timeout_seconds,omitempty"`
 	ConcurrentLimit                  int      `json:"concurrent_limit,omitempty"`
+	ContributionScore                float64  `json:"contribution_score,omitempty"`
+	ContributionEvidence             int      `json:"contribution_evidence,omitempty"`
+}
+
+func (gd GroupDiscussionConfig) CrossAgentExperienceEnabled() bool {
+	return gd.UseCrossAgentExperience == nil || *gd.UseCrossAgentExperience
 }
 
 func (c AppConfig) MarshalJSON() ([]byte, error) {
@@ -444,6 +481,11 @@ func (c *AppConfig) LansengerApiGatewayURL() string {
 		return url
 	}
 	return "https://apigw.lx.qianxin.com"
+}
+
+// LansengerWebSocketGatewayURL returns the optional WebSocket gateway override.
+func (c *AppConfig) LansengerWebSocketGatewayURL() string {
+	return strings.TrimSpace(c.LansengerWSSURL)
 }
 
 // IsLansengerLocalMode returns the effective Lansenger local mode setting.

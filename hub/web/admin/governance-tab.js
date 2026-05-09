@@ -36,6 +36,13 @@
     creditsTotal: { zh: '\u62e5\u6709 Credits', en: 'Total Credits' },
     creditsUsed: { zh: '\u5df2\u6d88\u8d39', en: 'Used' },
     creditsRemaining: { zh: '\u5269\u4f59', en: 'Remaining' },
+    grantStatusActive: { zh: '\u751f\u6548\u4e2d', en: 'Active' },
+    grantStatusPeriodLimited: { zh: '\u5468\u671f\u9650\u6d41', en: 'Period limit' },
+    grantStatusQueued: { zh: '\u5f85\u751f\u6548', en: 'Pending start' },
+    grantStatusExhausted: { zh: '\u989d\u5ea6\u5df2\u7528\u5c3d', en: 'Credits exhausted' },
+    grantStatusExpired: { zh: '\u5df2\u8fc7\u671f', en: 'Expired' },
+    grantStatusInactive: { zh: '\u672a\u751f\u6548', en: 'Inactive' },
+    grantRetryAfterAt: { zh: '\u6062\u590d\u65f6\u95f4 {time}', en: 'Restores at {time}' },
     smartRouteLabel: { zh: '\u667a\u80fd\u63a7\u5236', en: 'Smart Route' },
     boundUsersSearchPlaceholder: { zh: '\u641c\u7d22\u90ae\u7bb1 / SN...', en: 'Search email / SN...' },
     noMatches: { zh: '\u65e0\u5339\u914d\u7ed3\u679c', en: 'No matches' },
@@ -84,9 +91,55 @@
     return String(Math.round(n * 100) / 100);
   }
 
+  function serviceCreditGrants(status) {
+    if (!status) return [];
+    if (Array.isArray(status.credit_grants) && status.credit_grants.length) return status.credit_grants;
+    return Array.isArray(status.active_grants) ? status.active_grants : [];
+  }
+
+  function grantStatusKey(grant) {
+    return String(grant && grant.status || '').trim().toLowerCase() || 'active';
+  }
+
+  function grantStatusRank(key, serviceActive) {
+    var ranks = serviceActive
+      ? { active: 0, period_limited: 1, queued: 2, exhausted: 3, expired: 4 }
+      : { period_limited: 0, queued: 1, exhausted: 2, expired: 3, active: 4 };
+    return Object.prototype.hasOwnProperty.call(ranks, key) ? ranks[key] : 5;
+  }
+
+  function grantStatusLabel(key) {
+    return gt({
+      active: 'grantStatusActive',
+      period_limited: 'grantStatusPeriodLimited',
+      queued: 'grantStatusQueued',
+      exhausted: 'grantStatusExhausted',
+      expired: 'grantStatusExpired'
+    }[key] || 'grantStatusInactive');
+  }
+
+  function userGrantStatusSummary(item) {
+    var status = item && item.service_status;
+    var grants = serviceCreditGrants(status);
+    if (!grants.length) return '';
+    if (status && status.active) {
+      var hasActiveGrant = grants.some(function(grant) { return grantStatusKey(grant) === 'active'; });
+      if (hasActiveGrant) return '';
+    }
+    var selected = grants.slice().sort(function(a, b) {
+      return grantStatusRank(grantStatusKey(a), !!(status && status.active)) - grantStatusRank(grantStatusKey(b), !!(status && status.active));
+    })[0];
+    var key = grantStatusKey(selected);
+    if (key === 'active') return '';
+    var detail = String(selected && selected.status_reason || '').trim();
+    var retryAfterAt = String(selected && selected.retry_after_at || '').trim();
+    if (retryAfterAt) detail = detail ? (detail + ' | ' + gt('grantRetryAfterAt').replace('{time}', retryAfterAt)) : gt('grantRetryAfterAt').replace('{time}', retryAfterAt);
+    return grantStatusLabel(key) + (detail ? (' | ' + detail) : '');
+  }
+
   function userCreditsSummary(item) {
     var status = item && item.service_status;
-    var grants = status && Array.isArray(status.active_grants) ? status.active_grants : [];
+    var grants = serviceCreditGrants(status);
     var total = 0;
     var used = 0;
     grants.forEach(function(grant) {
@@ -99,10 +152,14 @@
 
   function renderCreditsSummary(item) {
     var credits = userCreditsSummary(item);
-    return '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;padding:7px 8px;border-radius:8px;background:#f8fafc;border:1px solid rgba(31,34,48,.06)">'
+    var statusSummary = userGrantStatusSummary(item);
+    return '<div style="padding:7px 8px;border-radius:8px;background:#f8fafc;border:1px solid rgba(31,34,48,.06)">'
+      + '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px">'
       + '<div style="min-width:0"><div class="item-meta" style="font-size:9px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gt('creditsTotal')) + '</div><div class="mono" style="font-size:12px;font-weight:800;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(formatCreditsValue(credits.total)) + '</div></div>'
       + '<div style="min-width:0"><div class="item-meta" style="font-size:9px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gt('creditsUsed')) + '</div><div class="mono" style="font-size:12px;font-weight:800;color:#ef5b70;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(formatCreditsValue(credits.used)) + '</div></div>'
       + '<div style="min-width:0"><div class="item-meta" style="font-size:9px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gt('creditsRemaining')) + '</div><div class="mono" style="font-size:12px;font-weight:800;color:var(--ok);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(formatCreditsValue(credits.remaining)) + '</div></div>'
+      + '</div>'
+      + (statusSummary ? ('<div class="item-meta" style="margin-top:5px;color:#c05621;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="' + escapeHtml(statusSummary) + '">' + escapeHtml(statusSummary) + '</div>') : '')
       + '</div>';
   }
 

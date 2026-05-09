@@ -65,9 +65,11 @@ type SkillRunStatus struct {
 	SessionProgress   *SessionProgressInfo `json:"session_progress,omitempty"`
 	Summary           SkillRunSummary      `json:"summary,omitempty"`
 	ExpectedOutput    string               `json:"expected_output,omitempty"`
+	ExpectedArtifact  bool                 `json:"expected_artifact,omitempty"`
 	StartedAt         string               `json:"started_at"`
 	EndedAt           string               `json:"ended_at,omitempty"`
 	Error             string               `json:"error,omitempty"`
+	Warnings          []string             `json:"warnings,omitempty"`
 	DurationMs        int64                `json:"duration_ms,omitempty"`
 	TotalSteps        int                  `json:"total_steps,omitempty"`
 	FailedSteps       int                  `json:"failed_steps,omitempty"`
@@ -132,6 +134,7 @@ type skillRun struct {
 	cancel        context.CancelFunc
 	monitorCancel context.CancelFunc // cancels the session monitor goroutine
 	templateVars  map[string]string
+	runArgs       map[string]interface{}
 	selectedSteps []string          // api_workflow mode: only run steps with these labels
 	extraEnv      map[string]string // env vars from run_skill caller, injected into subprocesses
 }
@@ -221,47 +224,15 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	// Normalize community/imported skill shapes before pre-checks and execution.
 	cskill.NormalizeSkillForRunner(target)
 
+	if cskill.IsKnowledgeSkillType(target.Type) {
+		return "", fmt.Errorf("%s", cskill.FormatNoExecutableStepsMessage(skillName, target, cskill.RunnerBackendGUI))
+	}
+
 	templateVars := normalizeSkillRunVars(runArgs)
-	var extraEnv map[string]string
-	if len(runArgs) > 0 {
-		extraEnv = cskill.ExtractRunExtraEnv(runArgs["env"])
+	extraEnv := cskill.ExtractRunExtraEnvFromArgs(runArgs)
+	if cskill.IsPipelineSkill(target) {
+		return r.startPipelineRun(skillName, target, runArgs, templateVars, extraEnv)
 	}
-	if len(target.Params) == 0 {
-		target.Params = cskill.SynthesizeParams(target.Steps, target.RequiredArgs)
-	}
-	cskill.ApplyRunInputInference(target, templateVars, runArgs)
-
-	// ── Unified requirement pre-check ──
-	// ExtractRequirements bridges the old per-field declarations to the unified
-	// Requirement model. CheckContext carries caller-specific information
-	// (provided env vars, skill directory) so that ExtractRequirements can
-	// mark requirements appropriately — callers don't configure the Registry.
-	reqs := cskill.ExtractRequirements(target, cskill.BuildRunCheckContext(target, extraEnv))
-	if len(reqs) > 0 {
-		registry := cskill.DefaultRegistry()
-		violations := registry.CheckAll(reqs)
-
-		// FixAll handles all violations — it internally skips types without
-		// a registered Fixer. No pre-filtering needed.
-		remaining := registry.FixAll(violations)
-
-		// Separate remaining into errors (block execution) and warnings (log only).
-		errors := cskill.FilterErrors(remaining)
-		if len(errors) > 0 {
-			return "", fmt.Errorf("skill %q 前置条件未满足: %s", skillName, cskill.FormatViolations(errors))
-		}
-		for _, v := range remaining {
-			if v.Severity == "warning" {
-				log.Printf("[skill-runner] requirement warning for %q: %s", skillName, v.Message)
-			}
-		}
-	}
-
-	// 文件存在性检查（bash step 中引用的文件）
-	if err := checkFileReferences(target); err != nil {
-		return "", err
-	}
-
 	// ── Credential file pre-check: validate required credential files exist locally ──
 	if len(target.RequiredCredentialFiles) > 0 {
 		missing := remote.ValidateCredentialFiles(target.RequiredCredentialFiles)
@@ -287,10 +258,11 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 			}
 			// Build task description from user context + documentation.
 			var userContext string
-			if userPrompt, ok := runArgs["user_prompt"]; ok && fmt.Sprintf("%v", userPrompt) != "" {
-				userContext = fmt.Sprintf("%v", userPrompt)
-			} else if input, ok := runArgs["input"]; ok && fmt.Sprintf("%v", input) != "" {
-				userContext = fmt.Sprintf("%v", input)
+			for _, key := range []string{"user_prompt", "input", "query"} {
+				if value := strings.TrimSpace(templateVars[key]); value != "" {
+					userContext = value
+					break
+				}
 			}
 			task := docContent
 			if userContext != "" {
@@ -302,19 +274,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 				OnError: "stop",
 			}}
 		} else {
-			// Bug #5: Better error for skills with no executable steps
-			msg := fmt.Sprintf("skill %q has no executable steps", skillName)
-			if len(target.RequiredArgs) > 0 {
-				msg += fmt.Sprintf(". This skill requires parameters: %s", strings.Join(target.RequiredArgs, ", "))
-			}
-			desc := strings.TrimSpace(target.Description)
-			if desc != "" {
-				if len(desc) > 150 {
-					desc = desc[:150] + "..."
-				}
-				msg += fmt.Sprintf("\nDescription: %s", desc)
-			}
-			return "", fmt.Errorf("%s", msg)
+			return "", fmt.Errorf("%s", cskill.FormatNoExecutableStepsMessage(skillName, target, cskill.RunnerBackendGUI))
 		}
 	}
 
@@ -324,76 +284,21 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		}
 	}
 
-	// ── api_workflow mode: extract step selector from runArgs ──
-	var selectedSteps []string
-	if strings.EqualFold(target.Mode, "api_workflow") {
-		if stepsArg, ok := runArgs["steps"]; ok {
-			switch v := stepsArg.(type) {
-			case string:
-				for _, s := range strings.Split(v, ",") {
-					if t := strings.TrimSpace(s); t != "" {
-						selectedSteps = append(selectedSteps, t)
-					}
-				}
-			case []interface{}:
-				for _, item := range v {
-					if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
-						selectedSteps = append(selectedSteps, strings.TrimSpace(s))
-					}
-				}
-			case []string:
-				selectedSteps = v
-			}
-		}
-		// Operation-based routing: resolve operation name to step labels.
-		// This takes precedence over explicit step selection when both are provided.
-		if opName, ok := runArgs["operation"].(string); ok && strings.TrimSpace(opName) != "" {
-			opName = strings.TrimSpace(opName)
-			for _, op := range target.Operations {
-				if strings.EqualFold(op.Name, opName) {
-					selectedSteps = op.Labels
-					log.Printf("[skill-runner] operation %q resolved to labels: %v", opName, selectedSteps)
-					break
-				}
-			}
-		}
+	// Shared runner preparation handles step selection, parameter completion,
+	// requirements, implicit placeholders, and local file diagnostics.
+	prep, err := cskill.PrepareRunnerExecution(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI)
+	if err != nil {
+		return "", err
 	}
-
-	// ── P0: Validate required arguments before execution ──
-	if len(target.RequiredArgs) > 0 {
-		var missing []string
-		for _, arg := range target.RequiredArgs {
-			if templateVars == nil || strings.TrimSpace(templateVars[arg]) == "" {
-				missing = append(missing, arg)
-			}
-		}
-		if len(missing) > 0 {
-			return "", fmt.Errorf("skill %q 缺少必需参数: %s", skillName, strings.Join(missing, ", "))
-		}
+	selectedSteps := prep.SelectedSteps
+	warnings := prep.Warnings
+	fileWarnings := prep.FileWarnings
+	for _, v := range prep.RequirementWarnings {
+		log.Printf("[skill-runner] requirement warning for %q: %s", skillName, v.Message)
 	}
-
-	// ── Implicit required args: detect {{key}} placeholders in step commands
-	// that aren't provided via templateVars. This catches skills like
-	// xh-md-to-pdf that use {{input}}/{{output}} without declaring required_args.
-	if len(target.RequiredArgs) == 0 {
-		implicit := detectImplicitRequiredArgs(target.Steps, templateVars)
-		if len(implicit) > 0 {
-			desc := strings.TrimSpace(target.Description)
-			if len(desc) > 120 {
-				desc = desc[:120] + "..."
-			}
-			msg := fmt.Sprintf("skill %q 的命令中包含未提供的参数: %s。请在 args 中传入，例如: args={%s}", skillName, strings.Join(implicit, ", "), buildArgsExample(implicit))
-			if desc != "" {
-				msg += fmt.Sprintf("\n说明: %s", desc)
-			}
-			return "", fmt.Errorf("%s", msg)
-		}
+	for _, warning := range fileWarnings {
+		log.Printf("[skill-runner] file warning for %q: %s", skillName, warning)
 	}
-
-	// ── P2: Required environment variables are now checked by the unified
-	// requirement system above (ExtractRequirements + CheckAll). Env vars
-	// provided by the runtime (e.g., OPENAI_API_KEY from the proxy) are
-	// marked Provided=true via CheckContext.ProvidedEnvVars. ──
 
 	// 生成 runID
 	r.mu.Lock()
@@ -407,8 +312,11 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 			Skill:          skillName,
 			Status:         "running",
 			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
-			StartedAt:      time.Now().Format(time.RFC3339),
-			Steps:          make([]StepResult, len(target.Steps)),
+			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, prep.ExecutionSteps,
+				strings.TrimSpace(templateVars["output"]), len(prep.SelectedSteps) == 0),
+			StartedAt: time.Now().Format(time.RFC3339),
+			Steps:     make([]StepResult, len(target.Steps)),
+			Warnings:  warnings,
 		},
 		cancel:        cancel,
 		templateVars:  templateVars,
@@ -432,6 +340,159 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 }
 
 // GetRunStatus 返回指定 runID 的执行状态（深拷贝）。
+func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkillEntry, runArgs map[string]interface{}, templateVars map[string]string, extraEnv map[string]string) (string, error) {
+	if target == nil {
+		return "", fmt.Errorf("skill entry is nil")
+	}
+	if len(target.Pipeline) == 0 {
+		return "", fmt.Errorf("%s", cskill.FormatNoExecutableStepsMessage(skillName, target, cskill.RunnerBackendGUI))
+	}
+	if templateVars == nil {
+		templateVars = map[string]string{}
+	}
+	prep, err := cskill.PreparePipelineRunnerExecution(target, templateVars, runArgs, extraEnv, cskill.RunnerBackendGUI)
+	if err != nil {
+		return "", err
+	}
+	for _, warning := range prep.RequirementWarnings {
+		log.Printf("[skill-runner] pipeline requirement warning for %q: %s", skillName, warning.Message)
+	}
+	warnings := prep.Warnings
+
+	r.mu.Lock()
+	r.counter++
+	runID := fmt.Sprintf("run-%d-%d", time.Now().UnixMilli(), r.counter)
+	ctx, cancel := context.WithCancel(context.Background())
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:          runID,
+			Skill:          skillName,
+			Status:         "running",
+			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
+			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, nil,
+				strings.TrimSpace(templateVars["output"]), true),
+			StartedAt:  time.Now().Format(time.RFC3339),
+			Steps:      make([]StepResult, len(target.Pipeline)),
+			TotalSteps: len(target.Pipeline),
+			Warnings:   warnings,
+		},
+		cancel:       cancel,
+		templateVars: templateVars,
+		runArgs:      cloneSkillRunArgs(runArgs),
+		extraEnv:     extraEnv,
+	}
+	for i, step := range target.Pipeline {
+		run.status.Steps[i] = StepResult{
+			Index:  i,
+			Name:   step.Skill,
+			Action: "pipeline",
+			Status: "pending",
+		}
+	}
+	r.runs[runID] = run
+	r.mu.Unlock()
+
+	go r.executePipelineAsync(ctx, run, target)
+	return runID, nil
+}
+
+func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, entry *corelib.NLSkillEntry) {
+	execStart := time.Now()
+	globalTimeout := 5 * time.Minute
+	if entry.GlobalTimeout > 0 {
+		globalTimeout = time.Duration(entry.GlobalTimeout) * time.Second
+	}
+	globalCtx, cancel := context.WithTimeout(ctx, globalTimeout)
+	defer cancel()
+
+	baseArgs := cloneSkillRunArgs(run.runArgs)
+	if len(baseArgs) == 0 {
+		baseArgs = map[string]interface{}{}
+	}
+	if len(run.extraEnv) > 0 {
+		baseArgs["extra_env"] = run.extraEnv
+	}
+	baseRunArgs := cskill.WithPipelineRunStack(baseArgs, entry.Name)
+	pr := &cskill.PipelineRunner{Executor: skillExecutorPipelineExecutor{exec: r.executor, baseRunArgs: baseRunArgs}}
+	result, err := pr.Run(globalCtx, entry.Pipeline, run.templateVars)
+	if err == nil && result == nil {
+		err = fmt.Errorf("pipeline returned no result")
+	}
+
+	var execErr error
+	r.mu.Lock()
+	if err != nil {
+		execErr = err
+		for i := range run.status.Steps {
+			if run.status.Steps[i].Status == "pending" {
+				run.status.Steps[i].Status = "skipped"
+			}
+		}
+		run.status.Error = err.Error()
+		r.mu.Unlock()
+		r.updateUsageStats(entry, execErr)
+		r.mu.Lock()
+		run.status.Status = "failed"
+		run.status.EndedAt = time.Now().Format(time.RFC3339)
+		run.status.DurationMs = time.Since(execStart).Milliseconds()
+		r.mu.Unlock()
+		return
+	}
+
+	if result.Vars != nil {
+		run.templateVars = result.Vars
+	}
+	for i, stepResult := range result.StepResults {
+		if i >= len(run.status.Steps) {
+			break
+		}
+		run.status.Steps[i].Name = stepResult.Skill
+		switch stepResult.Status {
+		case "completed":
+			run.status.Steps[i].Status = "success"
+		case "failed":
+			run.status.Steps[i].Status = "failed"
+			run.status.Steps[i].Error = stepResult.Error
+		case "skipped":
+			run.status.Steps[i].Status = "skipped"
+		default:
+			run.status.Steps[i].Status = stepResult.Status
+		}
+		if stepResult.CapturedVars != nil {
+			run.status.Steps[i].Output = stepResult.CapturedVars["output"]
+		}
+	}
+	for i := len(result.StepResults); i < len(run.status.Steps); i++ {
+		if run.status.Steps[i].Status == "pending" {
+			run.status.Steps[i].Status = "skipped"
+		}
+	}
+	finalStatus := "failed"
+	switch result.Status {
+	case "completed":
+		finalStatus = "success"
+	case "cancelled":
+		finalStatus = "cancelled"
+	default:
+		if result.Error != "" {
+			run.status.Error = result.Error
+			execErr = fmt.Errorf("%s", result.Error)
+		}
+		if execErr == nil {
+			execErr = fmt.Errorf("pipeline status: %s", result.Status)
+		}
+	}
+	r.mu.Unlock()
+	if finalStatus != "cancelled" {
+		r.updateUsageStats(entry, execErr)
+	}
+	r.mu.Lock()
+	run.status.Status = finalStatus
+	run.status.EndedAt = time.Now().Format(time.RFC3339)
+	run.status.DurationMs = time.Since(execStart).Milliseconds()
+	r.mu.Unlock()
+}
+
 func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 	r.mu.RLock()
 	run, ok := r.runs[runID]
@@ -442,6 +503,9 @@ func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 	cp := run.status
 	cp.Steps = make([]StepResult, len(run.status.Steps))
 	copy(cp.Steps, run.status.Steps)
+	if len(run.status.Warnings) > 0 {
+		cp.Warnings = append([]string(nil), run.status.Warnings...)
+	}
 	// Deep copy SessionProgress to avoid the monitor goroutine mutating
 	// the returned snapshot's LastOutputLines slice.
 	if run.status.SessionProgress != nil {
@@ -482,6 +546,9 @@ func (r *SkillRunner) ListRuns() []SkillRunStatus {
 		cp := run.status
 		cp.Steps = make([]StepResult, len(run.status.Steps))
 		copy(cp.Steps, run.status.Steps)
+		if len(run.status.Warnings) > 0 {
+			cp.Warnings = append([]string(nil), run.status.Warnings...)
+		}
 		result = append(result, cp)
 	}
 	r.mu.RUnlock()
@@ -587,8 +654,12 @@ func summarizeSkillRun(status *SkillRunStatus) {
 		status.Summary.HasSessionBinding = true
 	}
 	artifactPath := strings.TrimSpace(status.ExpectedOutput)
+	artifactExpected := status.ExpectedArtifact || artifactPath != "" || isInstructionOnlySkillStatus(status)
 	if artifactPath == "" {
-		artifactPath = detectArtifactPathFromStatus(status)
+		detectedPath := detectArtifactPathFromStatus(status)
+		if detectedPath != "" && (artifactExpected || artifactExists(detectedPath)) {
+			artifactPath = detectedPath
+		}
 	}
 	if artifactPath != "" {
 		status.Summary.ArtifactPath = artifactPath
@@ -596,7 +667,7 @@ func summarizeSkillRun(status *SkillRunStatus) {
 			status.Summary.ArtifactStatus = "pending"
 		} else if artifactExists(artifactPath) {
 			status.Summary.ArtifactStatus = "verified"
-		} else {
+		} else if artifactExpected {
 			status.Summary.ArtifactStatus = "missing"
 		}
 	}
@@ -735,58 +806,25 @@ func normalizeSkillRunVars(runArgs map[string]interface{}) map[string]string {
 	return cskill.NormalizeRunVars(runArgs)
 }
 
+func cloneSkillRunArgs(runArgs map[string]interface{}) map[string]interface{} {
+	if len(runArgs) == 0 {
+		return nil
+	}
+	dst := make(map[string]interface{}, len(runArgs))
+	for key, value := range runArgs {
+		dst[key] = value
+	}
+	return dst
+}
+
 // detectImplicitRequiredArgs scans step commands for {{key}} placeholders
 // that are not provided in templateVars. Returns the list of missing keys.
 // This catches skills that use {{input}}/{{output}} without declaring
 // required_args in their frontmatter.
 func detectImplicitRequiredArgs(steps []corelib.NLSkillStep, vars map[string]string) []string {
-	seen := make(map[string]bool)
-	for _, step := range steps {
-		if step.Action != "bash" {
-			continue
-		}
-		cmd, _ := step.Params["command"].(string)
-		if cmd == "" {
-			continue
-		}
-		for _, m := range unresolvedSkillPlaceholderPattern.FindAllString(cmd, -1) {
-			// Extract key from {{key}}, ${key}, or {key}
-			key := strings.TrimPrefix(m, "{{")
-			key = strings.TrimPrefix(key, "${")
-			key = strings.TrimPrefix(key, "{")
-			key = strings.TrimSuffix(key, "}}")
-			key = strings.TrimSuffix(key, "}")
-			key = strings.TrimSpace(key)
-			if key == "" {
-				continue
-			}
-			if vars != nil && strings.TrimSpace(vars[key]) != "" {
-				continue // provided
-			}
-			if !seen[key] {
-				seen[key] = true
-			}
-		}
-	}
-	if len(seen) == 0 {
-		return nil
-	}
-	result := make([]string, 0, len(seen))
-	for key := range seen {
-		result = append(result, key)
-	}
+	result := cskill.DetectImplicitRequiredArgs(steps, vars)
 	slices.Sort(result)
 	return result
-}
-
-// buildArgsExample generates a JSON-like example string for missing args,
-// e.g. `"city": "<city 值>"` — helps the LLM understand the expected format.
-func buildArgsExample(keys []string) string {
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = fmt.Sprintf("%q: \"<%s 值>\"", k, k)
-	}
-	return strings.Join(parts, ", ")
 }
 
 func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir string, params []corelib.NLSkillParam) (corelib.NLSkillStep, error) {
@@ -794,11 +832,38 @@ func resolveSkillStep(step corelib.NLSkillStep, vars map[string]string, skillDir
 	// platform-aware quoteSkillInputForShell as the quoting function.
 	// This ensures alias resolution, CLI args, craft_tool injection,
 	// and working_dir resolution all use the single shared code path.
-	result, err := cskill.ResolveStep(step, vars, skillDir, params, quoteSkillInputForShell)
+	result, err := cskill.ResolveStep(step, vars, skillDir, params, quoteSkillInputForStep(step))
 	if err != nil {
 		return step, err
 	}
 	return result.Step, nil
+}
+
+func withSkillPreferredShell(step corelib.NLSkillStep, preferredShell string) corelib.NLSkillStep {
+	preferredShell = strings.TrimSpace(preferredShell)
+	if preferredShell == "" {
+		return step
+	}
+	if step.Params == nil {
+		step.Params = map[string]interface{}{}
+	} else {
+		cp := make(map[string]interface{}, len(step.Params)+1)
+		for k, v := range step.Params {
+			cp[k] = v
+		}
+		step.Params = cp
+	}
+	if _, exists := step.Params["preferred_shell"]; !exists {
+		step.Params["preferred_shell"] = preferredShell
+	}
+	return step
+}
+
+func quoteSkillInputForStep(step corelib.NLSkillStep) func(string) string {
+	preferredShell, _ := step.Params["preferred_shell"].(string)
+	return func(input string) string {
+		return cskill.QuoteForShellPreference(input, preferredShell)
+	}
 }
 
 func resolveSkillValue(value interface{}, vars map[string]string) interface{} {
@@ -827,50 +892,11 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 		return command
 	}
 	original := command
-	if len(vars) != 0 {
-		keys := make([]string, 0, len(vars))
-		for key := range vars {
-			keys = append(keys, key)
-		}
-		slices.Sort(keys)
-		for _, key := range keys {
-			value := quoteSkillInputForShell(vars[key])
-			// Order matters: replace {{key}} and ${key} first, then {key} last.
-			// If {key} were replaced first, it would partially consume {{key}}
-			// leaving stray braces.
-			for _, placeholder := range []string{"{{" + key + "}}", "${" + key + "}", "{" + key + "}"} {
-				// Replace quoted-placeholder patterns first (e.g. "{{text}}" → value),
-				// then replace any remaining bare placeholders ({{text}} → value).
-				// This avoids double-quoting when SKILL.md authors wrap placeholders
-				// in quotes that quoteSkillInputForShell would also add.
-				doubleQuoted := `"` + placeholder + `"`
-				singleQuoted := `'` + placeholder + `'`
-				command = strings.ReplaceAll(command, doubleQuoted, value)
-				command = strings.ReplaceAll(command, singleQuoted, value)
-				command = strings.ReplaceAll(command, placeholder, value)
-			}
-		}
-	}
-	// Log any remaining unresolved placeholders as warnings before stripping.
-	remaining := unresolvedSkillPlaceholderPattern.FindAllString(command, -1)
-	if len(remaining) > 0 {
-		log.Printf("[skill-runner] ⚠ unresolved placeholders (will be stripped): %v", remaining)
-	}
-	result := stripUnresolvedSkillPlaceholders(command)
-	// 记录变量替换结果，方便排查跨平台路径问题
+	result := cskill.SubstituteVariablesWithQuote(command, vars, quoteSkillInputForShell)
 	if result != original {
-		log.Printf("[skill-runner] variable substitution: %q → %q", original, result)
+		log.Printf("[skill-runner] variable substitution: %q 鈫?%q", original, result)
 	}
 	return result
-}
-
-var unresolvedSkillPlaceholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}|\$\{[^{}]+\}|\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
-
-func stripUnresolvedSkillPlaceholders(text string) string {
-	if text == "" {
-		return text
-	}
-	return unresolvedSkillPlaceholderPattern.ReplaceAllString(text, "")
 }
 
 // quoteSkillInputForShell wraps a user-supplied value for safe embedding
@@ -882,23 +908,7 @@ func stripUnresolvedSkillPlaceholders(text string) string {
 // the trailing backslash of {baseDir} merged with the opening single-quote.
 // We therefore use double-quotes on Windows and single-quotes elsewhere.
 func quoteSkillInputForShell(input string) string {
-	if input == "" {
-		if runtime.GOOS == "windows" {
-			return `""`
-		}
-		return "''"
-	}
-	if runtime.GOOS == "windows" {
-		// Double-quote for cmd.exe compatibility.
-		// Escape existing double-quotes with backslash (understood by C runtime
-		// argument parsing used by node, python, etc.).
-		// Also escape percent signs which cmd.exe interprets as variable expansion
-		// in .cmd batch files.
-		escaped := strings.ReplaceAll(input, `"`, `\"`)
-		escaped = strings.ReplaceAll(escaped, `%`, `%%`)
-		return `"` + escaped + `"`
-	}
-	return "'" + strings.ReplaceAll(input, "'", `'"'"'`) + "'"
+	return cskill.QuoteForRunnerShell(input)
 }
 
 func truncateSkillRunSnippet(text string) string {
@@ -971,6 +981,55 @@ func isInstructionOnlySkillEntry(skill *corelib.NLSkillEntry) bool {
 		}
 	}
 	return true
+}
+
+func skillRunExpectsArtifact(skill *corelib.NLSkillEntry, expectedOutput string) bool {
+	return skillRunExpectsArtifactForSteps(skill, nil, expectedOutput, true)
+}
+
+func skillRunExpectsArtifactForSteps(skill *corelib.NLSkillEntry, steps []corelib.NLSkillStep, expectedOutput string, useGlobalContract bool) bool {
+	if strings.TrimSpace(expectedOutput) != "" {
+		return true
+	}
+	if skill == nil {
+		return false
+	}
+	if useGlobalContract && (skill.ProducesArtifact || isInstructionOnlySkillEntry(skill)) {
+		return true
+	}
+	if steps == nil {
+		steps = skill.Steps
+	}
+	for _, step := range steps {
+		if stepExpectsArtifact(step) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepExpectsArtifact(step corelib.NLSkillStep) bool {
+	params := step.Params
+	if len(params) == 0 {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(stringVal(params, "verification_mode")), "artifact_required") {
+		return true
+	}
+	if strings.TrimSpace(stringVal(params, "output_path")) != "" {
+		return true
+	}
+	if raw, ok := params["expected_artifacts"]; ok {
+		switch typed := raw.(type) {
+		case []string:
+			return len(typed) > 0
+		case []interface{}:
+			return len(typed) > 0
+		case string:
+			return strings.TrimSpace(typed) != ""
+		}
+	}
+	return false
 }
 
 func isInstructionOnlySkillStatus(status *SkillRunStatus) bool {
@@ -1065,10 +1124,15 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 
 	defer func() {
 		if rec := recover(); rec != nil {
+			execErr := fmt.Errorf("panic: %v", rec)
+			r.mu.Lock()
+			run.status.Error = execErr.Error()
+			r.mu.Unlock()
+			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
 			run.status.Status = "failed"
-			run.status.Error = fmt.Sprintf("panic: %v", rec)
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
 		}
 	}()
@@ -1082,16 +1146,20 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		for i := range skill.Steps {
 			run.status.Steps[i].Status = "skipped"
 		}
-		run.status.Status = "success"
-		run.status.EndedAt = time.Now().Format(time.RFC3339)
 		r.mu.Unlock()
 		r.updateUsageStats(skill, nil)
+		r.mu.Lock()
+		run.status.Status = "success"
+		run.status.EndedAt = time.Now().Format(time.RFC3339)
+		run.status.DurationMs = time.Since(execStart).Milliseconds()
+		r.mu.Unlock()
 		return
 	}
 
 	var execErr error
 	hasFailure := false
 	isAPIWorkflow := strings.EqualFold(skill.Mode, "api_workflow")
+	executionSteps := cskill.SelectedExecutableSteps(skill.Steps, run.selectedSteps)
 
 	// ── Credential mounting for SSH execution ──
 	// If the skill declares required_credential_files and an SSH session manager
@@ -1126,7 +1194,19 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	// ClawHub skills that don't declare requires_env), and the user hasn't
 	// provided them via extra_env, start a local proxy that forwards requests
 	// to the currently configured LLM provider.
-	needsProxy := corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, run.extraEnv, skill.Steps, skill.SkillDir)
+	proxyProbeVars := r.templateVarsForRun(run.status.RunID)
+	if len(proxyProbeVars) == 0 && len(run.templateVars) > 0 {
+		proxyProbeVars = make(map[string]string, len(run.templateVars))
+		for key, value := range run.templateVars {
+			proxyProbeVars[key] = value
+		}
+	}
+	proxyProbeSteps := cskill.PrecheckExecutableSteps(executionSteps, proxyProbeVars)
+	proxyRequiredEnv := skill.RequiredEnv
+	if len(proxyProbeSteps) == 0 && len(executionSteps) > 0 {
+		proxyRequiredEnv = nil
+	}
+	needsProxy := corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, run.extraEnv, proxyProbeSteps, skill.SkillDir)
 	log.Printf("[skill-runner] openai proxy check: needsProxy=%v required_env=%v extraEnv_keys=%v processEnv_OPENAI_API_KEY=%q",
 		needsProxy, skill.RequiredEnv, mapKeys(run.extraEnv), truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
 	if needsProxy {
@@ -1142,22 +1222,56 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				WireAPI:  llmCfg.WireAPI,
 			}
 		}
+		if strings.TrimSpace(proxyCfg.URL) == "" || strings.TrimSpace(proxyCfg.Model) == "" {
+			errMsg := "skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because no LLM provider URL/model is configured [action: configure_llm]"
+			execErr := fmt.Errorf("%s", errMsg)
+			r.mu.Lock()
+			for i := range run.status.Steps {
+				if run.status.Steps[i].Status == "pending" {
+					run.status.Steps[i].Status = "skipped"
+				}
+			}
+			run.status.Error = errMsg
+			r.mu.Unlock()
+			r.updateUsageStats(skill, execErr)
+			r.mu.Lock()
+			run.status.Status = "failed"
+			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			run.status.DurationMs = time.Since(execStart).Milliseconds()
+			r.mu.Unlock()
+			return
+		}
 
 		proxy := corelib.NewOpenAIProxy(proxyCfg)
 		port, proxyErr := proxy.Start()
 		if proxyErr != nil {
-			log.Printf("[skill-runner] openai proxy start failed: %v (continuing without proxy)", proxyErr)
-		} else {
-			defer proxy.Stop()
-			// Inject environment variables for the skill
-			if run.extraEnv == nil {
-				run.extraEnv = make(map[string]string)
+			errMsg := fmt.Sprintf("skill requires OpenAI-compatible environment variables, but the GUI local proxy failed to start: %v [action: retry]", proxyErr)
+			execErr := fmt.Errorf("%s", errMsg)
+			r.mu.Lock()
+			for i := range run.status.Steps {
+				if run.status.Steps[i].Status == "pending" {
+					run.status.Steps[i].Status = "skipped"
+				}
 			}
-			run.extraEnv["OPENAI_API_KEY"] = "sk-maclaw-local-proxy"
-			run.extraEnv["OPENAI_BASE_URL"] = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
-			run.extraEnv["OPENAI_MODEL"] = proxyCfg.Model
-			log.Printf("[skill-runner] openai proxy started on port %d for skill %q", port, skill.Name)
+			run.status.Error = errMsg
+			r.mu.Unlock()
+			r.updateUsageStats(skill, execErr)
+			r.mu.Lock()
+			run.status.Status = "failed"
+			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			run.status.DurationMs = time.Since(execStart).Milliseconds()
+			r.mu.Unlock()
+			return
 		}
+		defer proxy.Stop()
+		// Inject environment variables for the skill
+		if run.extraEnv == nil {
+			run.extraEnv = make(map[string]string)
+		}
+		run.extraEnv["OPENAI_API_KEY"] = "sk-maclaw-local-proxy"
+		run.extraEnv["OPENAI_BASE_URL"] = fmt.Sprintf("http://127.0.0.1:%d/v1", port)
+		run.extraEnv["OPENAI_MODEL"] = proxyCfg.Model
+		log.Printf("[skill-runner] openai proxy started on port %d for skill %q", port, skill.Name)
 	}
 
 	// ── Dependency auto-install is now handled by the unified requirement
@@ -1182,18 +1296,37 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	// ── Parameter schema: ensure every skill has params (explicit or synthesized) ──
 	// This is the single path that ensures BindParams is called for all skills,
 	// closing the LLM↔Skill parameter name gap.
-	skillParams := skill.Params
-	if len(skillParams) == 0 {
-		skillParams = cskill.SynthesizeParams(skill.Steps, skill.RequiredArgs)
-		if len(skillParams) > 0 {
-			log.Printf("[skill-runner] synthesized %d params from command templates for %q", len(skillParams), skill.Name)
-		}
+	skillParams := cskill.CompleteParamsForRunner(skill.Params, executionSteps, skill.RequiredArgs)
+	if len(skillParams) > len(skill.Params) {
+		log.Printf("[skill-runner] completed param schema for %q: explicit=%d complete=%d", skill.Name, len(skill.Params), len(skillParams))
 	}
 
 	for i, step := range skill.Steps {
 		// Check for global timeout
 		select {
+		case <-ctx.Done():
+			r.mu.Lock()
+			for j := i; j < len(skill.Steps); j++ {
+				run.status.Steps[j].Status = "skipped"
+			}
+			run.status.Status = "cancelled"
+			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			run.status.DurationMs = time.Since(execStart).Milliseconds()
+			r.mu.Unlock()
+			return
 		case <-globalCtx.Done():
+			if ctx.Err() != nil {
+				r.mu.Lock()
+				for j := i; j < len(skill.Steps); j++ {
+					run.status.Steps[j].Status = "skipped"
+				}
+				run.status.Status = "cancelled"
+				run.status.EndedAt = time.Now().Format(time.RFC3339)
+				run.status.DurationMs = time.Since(execStart).Milliseconds()
+				r.mu.Unlock()
+				return
+			}
+			execErr := fmt.Errorf("skill execution exceeded global timeout of %v", globalTimeout)
 			r.mu.Lock()
 			for j := i; j < len(skill.Steps); j++ {
 				run.status.Steps[j].Status = "skipped"
@@ -1202,18 +1335,13 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 					run.status.Steps[j].Error = "global timeout exceeded"
 				}
 			}
-			run.status.Status = "failed"
-			run.status.Error = fmt.Sprintf("skill execution exceeded global timeout of %v", globalTimeout)
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			run.status.Error = execErr.Error()
 			r.mu.Unlock()
-			return
-		case <-ctx.Done():
+			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			for j := i; j < len(skill.Steps); j++ {
-				run.status.Steps[j].Status = "skipped"
-			}
-			run.status.Status = "cancelled"
+			run.status.Status = "failed"
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
 			return
 		default:
@@ -1236,7 +1364,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 
 		// api_workflow mode: skip steps not in selectedSteps (by label)
 		if isAPIWorkflow && len(run.selectedSteps) > 0 && step.Label != "" {
-			if !stepLabelSelected(step.Label, run.selectedSteps) {
+			if !cskill.StepLabelSelected(step.Label, run.selectedSteps) {
 				r.mu.Lock()
 				run.status.Steps[i].Status = "skipped"
 				r.mu.Unlock()
@@ -1257,8 +1385,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		// Allows steps to be conditionally executed based on runtime parameters.
 		if step.When != "" {
 			vars := r.templateVarsForRun(run.status.RunID)
-			resolved := substituteSkillVarsInString(step.When, vars)
-			if !evaluateSimpleCondition(resolved) {
+			if !cskill.EvaluateStepWhen(step.When, vars) {
 				r.mu.Lock()
 				run.status.Steps[i].Status = "skipped"
 				r.mu.Unlock()
@@ -1271,6 +1398,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		run.status.Steps[i].Status = "running"
 		r.mu.Unlock()
 
+		step = withSkillPreferredShell(step, skill.PreferredShell)
 		resolvedStep, resolveErr := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
 		if resolveErr != nil {
 			r.mu.Lock()
@@ -1283,9 +1411,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				log.Printf("[skill-runner] step %d/%d: param bind failed (on_error=%s): %v", i+1, len(skill.Steps), step.OnError, resolveErr)
 				continue
 			}
-			run.status.Status = "failed"
 			run.status.Error = resolveErr.Error()
-			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			r.mu.Unlock()
 			log.Printf("[skill-runner] step %d/%d: param bind failed, aborting: %v", i+1, len(skill.Steps), resolveErr)
 			break
@@ -1313,48 +1439,51 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 					resolvedStep.Params["user_prompt"] = prompt
 				}
 			}
+			if len(run.extraEnv) > 0 {
+				cskill.MergeExtraEnvParam(resolvedStep.Params, run.extraEnv)
+			}
 		}
 		// Propagate skill-level required_env to bash steps for auto-injection.
-		if resolvedStep.Action == "bash" && len(skill.RequiredEnv) > 0 {
-			if resolvedStep.Params == nil {
-				resolvedStep.Params = map[string]interface{}{}
-			}
-			mergeRequiredEnvParam(resolvedStep.Params, skill.RequiredEnv)
-		}
-		// Propagate caller-supplied extra env vars to subprocess steps.
-		// For bash steps, inject via params["extra_env"] (read by runBashStepWithContextFull).
-		// For craft_tool and other steps, temporarily set os env vars so child
-		// processes inherit them, then restore after step execution.
-		if resolvedStep.Action == "bash" && len(run.extraEnv) > 0 {
-			if resolvedStep.Params == nil {
-				resolvedStep.Params = map[string]interface{}{}
-			}
-			mergeExtraEnvParam(resolvedStep.Params, run.extraEnv)
-		}
-		// For non-bash steps (craft_tool, call_mcp_tool, etc.), use os.Setenv
-		// so that any subprocess spawned during execution inherits the env vars.
-		var envRestore []func()
-		if resolvedStep.Action != "bash" && len(run.extraEnv) > 0 {
-			for k, v := range run.extraEnv {
-				prev, hadPrev := os.LookupEnv(k)
-				os.Setenv(k, v)
-				// Capture loop variables for the restore closure.
-				capturedK, capturedPrev, capturedHad := k, prev, hadPrev
-				if capturedHad {
-					envRestore = append(envRestore, func() { os.Setenv(capturedK, capturedPrev) })
-				} else {
-					envRestore = append(envRestore, func() { os.Unsetenv(capturedK) })
-				}
-			}
-		}
+		resolvedStep = cskill.PrepareResolvedStepEnv(resolvedStep, skill.RequiredEnv, run.extraEnv)
+		restoreEnv := installSkillStepProcessEnv(resolvedStep.Action, run.extraEnv)
 		log.Printf("[skill-runner] step %d/%d: action=%s command=%q", i+1, len(skill.Steps), resolvedStep.Action, resolveCommandForDisplay(resolvedStep))
-		result, stepErr := r.executeStepWithPoll(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
-		// Restore env vars after non-bash step execution.
-		for _, restore := range envRestore {
-			restore()
+		result, stepErr := func() (string, error) {
+			defer restoreEnv()
+			return r.executeStepWithPoll(globalCtx, run.status.RunID, resolvedStep, skill.SkillDir)
+		}()
+		captured := map[string]string(nil)
+		if len(step.Capture) > 0 && result != "" {
+			captured = captureOutputVariables(result, step.Capture)
+		}
+		if ctx.Err() != nil {
+			r.mu.Lock()
+			run.status.Steps[i].Name = resolvedStep.Name
+			run.status.Steps[i].CommandResolved = resolveCommandForDisplay(resolvedStep)
+			run.status.Steps[i].Status = "skipped"
+			run.status.Steps[i].Error = ctx.Err().Error()
+			for j := i + 1; j < len(skill.Steps); j++ {
+				run.status.Steps[j].Status = "skipped"
+			}
+			run.status.Status = "cancelled"
+			run.status.EndedAt = time.Now().Format(time.RFC3339)
+			run.status.DurationMs = time.Since(execStart).Milliseconds()
+			if run.monitorCancel != nil {
+				run.monitorCancel()
+			}
+			r.mu.Unlock()
+			return
 		}
 
 		r.mu.Lock()
+		if len(captured) > 0 {
+			if run.templateVars == nil {
+				run.templateVars = make(map[string]string)
+			}
+			for k, v := range captured {
+				run.templateVars[k] = v
+				log.Printf("[skill-runner] captured %s=%q from step %d output", k, truncateSkillRunSnippet(v), i+1)
+			}
+		}
 		run.status.Steps[i].Name = resolvedStep.Name
 		run.status.Steps[i].CommandResolved = resolveCommandForDisplay(resolvedStep)
 		if stepErr != nil {
@@ -1371,9 +1500,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			}
 			hasFailure = true
 			if step.OnError != "continue" {
-				run.status.Status = "failed"
 				run.status.Error = fmt.Sprintf("step %d (%s) failed: %s", i+1, step.Action, stepErr.Error())
-				run.status.EndedAt = time.Now().Format(time.RFC3339)
 				execErr = stepErr
 				// 标记剩余 step 为 skipped
 				for j := i + 1; j < len(skill.Steps); j++ {
@@ -1389,51 +1516,59 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			run.status.Steps[i].Status = "success"
 			run.status.Steps[i].Output = result
 			log.Printf("[skill-runner] step %d/%d OK (output %d bytes)", i+1, len(skill.Steps), len(result))
-			// Output capture: extract variables from step output via regex
-			if len(step.Capture) > 0 && result != "" {
-				captured := captureOutputVariables(result, step.Capture)
-				if len(captured) > 0 {
-					if run.templateVars == nil {
-						run.templateVars = make(map[string]string)
-					}
-					for k, v := range captured {
-						run.templateVars[k] = v
-						log.Printf("[skill-runner] captured %s=%q from step %d output", k, truncateSkillRunSnippet(v), i+1)
-					}
-				}
-			}
 		}
 		r.mu.Unlock()
 	}
 
 	r.mu.Lock()
-	if run.status.Status == "running" {
-		if hasFailure {
-			run.status.Status = "failed"
-			if execErr != nil {
-				run.status.Error = execErr.Error()
+	if ctx.Err() != nil {
+		for i := range run.status.Steps {
+			if run.status.Steps[i].Status == "pending" || run.status.Steps[i].Status == "running" {
+				run.status.Steps[i].Status = "skipped"
+				run.status.Steps[i].Error = ctx.Err().Error()
 			}
-		} else {
-			run.status.Status = "success"
+		}
+		if run.monitorCancel != nil {
+			run.monitorCancel()
+		}
+		run.status.Status = "cancelled"
+		run.status.EndedAt = time.Now().Format(time.RFC3339)
+		run.status.DurationMs = time.Since(execStart).Milliseconds()
+		r.mu.Unlock()
+		return
+	}
+	finalStatus := "success"
+	if hasFailure {
+		finalStatus = "failed"
+		if execErr != nil && strings.TrimSpace(run.status.Error) == "" {
+			run.status.Error = execErr.Error()
 		}
 	}
-	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	// Stop session monitor if running.
 	if run.monitorCancel != nil {
 		run.monitorCancel()
 	}
 	log.Printf("[skill-runner] ◼ skill %q finished: status=%s steps=%d elapsed=%s",
-		skill.Name, run.status.Status, len(skill.Steps), time.Since(execStart).Truncate(time.Millisecond))
+		skill.Name, finalStatus, len(skill.Steps), time.Since(execStart).Truncate(time.Millisecond))
 	r.mu.Unlock()
 
 	// 更新 skill 使用统计
 	r.updateUsageStats(skill, execErr)
+
+	r.mu.Lock()
+	run.status.Status = finalStatus
+	run.status.EndedAt = time.Now().Format(time.RFC3339)
+	run.status.DurationMs = time.Since(execStart).Milliseconds()
+	r.mu.Unlock()
 
 	// 自动上传触发
 	r.tryAutoUpload(skill, run)
 }
 
 func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr error) {
+	if r == nil || r.executor == nil || r.executor.app == nil || skill == nil {
+		return
+	}
 	shouldEmit := false
 	var updatedEntry *corelib.NLSkillEntry
 	successfulSkillName := ""
@@ -1744,6 +1879,44 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 	}
 }
 
+var skillStepProcessEnvMu sync.Mutex
+
+func installSkillStepProcessEnv(action string, extraEnv map[string]string) func() {
+	normalizedAction := cskill.NormalizeStepActionName(action)
+	if normalizedAction == "bash" || normalizedAction == "craft_tool" || len(extraEnv) == 0 {
+		return func() {}
+	}
+	skillStepProcessEnvMu.Lock()
+	restores := make([]func(), 0, len(extraEnv))
+	for k, v := range extraEnv {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		prev, hadPrev := os.LookupEnv(key)
+		_ = os.Setenv(key, v)
+		capturedKey, capturedPrev, capturedHad := key, prev, hadPrev
+		if capturedHad {
+			restores = append(restores, func() { _ = os.Setenv(capturedKey, capturedPrev) })
+		} else {
+			restores = append(restores, func() { _ = os.Unsetenv(capturedKey) })
+		}
+	}
+	if len(restores) == 0 {
+		skillStepProcessEnvMu.Unlock()
+		return func() {}
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			for i := len(restores) - 1; i >= 0; i-- {
+				restores[i]()
+			}
+			skillStepProcessEnvMu.Unlock()
+		})
+	}
+}
+
 // tryAutoUpload 在 skill 执行完成后尝试自动上传到 SkillMarket。
 func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) {
 	if r.uploadTrigger == nil || r.executor == nil || r.executor.app == nil {
@@ -1818,6 +1991,10 @@ func skillDirHash(dir string) string {
 // ── Step 执行（带 context） ─────────────────────────────────────────────
 
 func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, step corelib.NLSkillStep, skillDir string) (string, error) {
+	if err := cskill.EnsureStepActionSupported(cskill.RunnerBackendGUI, step.Action); err != nil {
+		return "", err
+	}
+	step.Action = cskill.NormalizeStepActionName(step.Action)
 	switch step.Action {
 	case "create_session":
 		tool, _ := step.Params["tool"].(string)
@@ -1962,25 +2139,7 @@ func mergeExtraEnvParam(params map[string]interface{}, extraEnv map[string]strin
 }
 
 func skillParamSeconds(params map[string]interface{}, key string) (int, bool) {
-	if params == nil {
-		return 0, false
-	}
-	switch v := params[key].(type) {
-	case int:
-		return v, true
-	case int64:
-		return int(v), true
-	case float64:
-		return int(v), true
-	case float32:
-		return int(v), true
-	case string:
-		var parsed float64
-		if _, err := fmt.Sscanf(strings.TrimSpace(v), "%f", &parsed); err == nil {
-			return int(parsed), true
-		}
-	}
-	return 0, false
+	return cskill.SkillParamSeconds(params, key)
 }
 func resolveSkillWorkingDir(workDir, skillDir string) string {
 	workDir = strings.TrimSpace(workDir)
@@ -2005,17 +2164,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	// "'@echo' 不是内部或外部命令".
 	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
 
-	timeout := 120 // default 120 seconds per step
-	if t, ok := skillParamSeconds(params, "timeout"); ok && t > 0 {
-		timeout = t
-		if timeout > 600 {
-			timeout = 600
-		}
-	}
-	// Allow skill-level global_timeout to raise the per-step cap.
-	if gt, ok := skillParamSeconds(params, "global_timeout"); ok && gt > timeout {
-		timeout = gt
-	}
+	timeout := cskill.RunnerStepTimeoutSeconds(params, 120, 600)
 
 	// Expand portable home placeholders before Windows shell dispatch.
 	// AutoFixPortability intentionally writes $HOME to keep skill.yaml portable,
@@ -2382,13 +2531,16 @@ func formatExecErrorForStorage(execErr error) string {
 	if execErr == nil {
 		return ""
 	}
+	if formatted := strings.TrimSpace(execErr.Error()); strings.Contains(formatted, "[class:") {
+		return cskill.TruncateFormattedErrorForStorage(formatted, 2000)
+	}
 	if bErr, ok := execErr.(*bashStepError); ok {
 		ce := cskill.ClassifyStepError(bErr.ExitCode(), bErr.Stdout()+"\n"+bErr.Stderr(), bErr.Error(), "")
-		return cskill.FormatErrorForLLM(ce)
+		return cskill.TruncateFormattedErrorForStorage(cskill.FormatErrorForLLM(ce), 2000)
 	}
 	// Non-bash errors: classify with zero exit code and error message only.
 	ce := cskill.ClassifyStepError(0, "", execErr.Error(), "")
-	return cskill.FormatErrorForLLM(ce)
+	return cskill.TruncateFormattedErrorForStorage(cskill.FormatErrorForLLM(ce), 2000)
 }
 
 // extractExitCode extracts the exit code from an error if possible.
@@ -2664,82 +2816,6 @@ func hasSkillDocFile(skillDir string) bool {
 	return findSkillMarkdownDocPath(skillDir) != ""
 }
 
-// ── 文件引用存在性检查 ──────────────────────────────────────────────────
-//
-// Note: checkFileReferences is an execution-context check, not a system
-// requirement. It depends on skillDir resolution and template variable
-// substitution state, which aren't available at requirement-extraction time.
-// It stays in the Runner, outside the Registry system. See requirement.go
-// for the boundary definition.
-
-// checkFileReferences 检查 skill 中 bash step 引用的文件/命令是否存在。
-// 对于有 skillDir 的 skill，相对路径基于 skillDir 解析。
-func checkFileReferences(skill *corelib.NLSkillEntry) error {
-	for i, step := range skill.Steps {
-		if step.Action != "bash" {
-			continue
-		}
-		command, _ := step.Params["command"].(string)
-		if command == "" || strings.Contains(command, "{{") || strings.Contains(command, "${") {
-			continue
-		}
-
-		// 检查命令中是否引用了绝对路径的文件
-		refs := extractFileReferences(command)
-		for _, ref := range refs {
-			var fullPath string
-			if filepath.IsAbs(ref) {
-				fullPath = ref
-			} else if skill.SkillDir != "" {
-				fullPath = filepath.Join(skill.SkillDir, ref)
-			} else {
-				continue // 无法解析相对路径，跳过检查
-			}
-			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				return fmt.Errorf("skill %q step %d 引用的文件不存在: %s",
-					skill.Name, i+1, fullPath)
-			}
-		}
-	}
-	return nil
-}
-
-// extractFileReferences 从 bash 命令中提取可能的文件路径引用。
-// 识别模式：以 / 或 ./ 或 ../ 开头的路径，以及 .sh/.py/.js/.bat/.ps1 结尾的文件名。
-func extractFileReferences(command string) []string {
-	var refs []string
-	seen := make(map[string]bool)
-
-	fields := strings.Fields(command)
-	for _, f := range fields {
-		// 去掉常见的 shell 引号
-		f = strings.Trim(f, "'\"")
-
-		isPath := false
-		// 绝对路径
-		if filepath.IsAbs(f) {
-			isPath = true
-		}
-		// 相对路径
-		if strings.HasPrefix(f, "./") || strings.HasPrefix(f, "../") {
-			isPath = true
-		}
-		// 脚本文件扩展名
-		for _, ext := range []string{".sh", ".py", ".js", ".bat", ".ps1", ".rb", ".pl"} {
-			if strings.HasSuffix(f, ext) {
-				isPath = true
-				break
-			}
-		}
-
-		if isPath && !seen[f] {
-			refs = append(refs, f)
-			seen[f] = true
-		}
-	}
-	return refs
-}
-
 // ── poll / when / operation helpers ──────────────────────────────────────
 
 // executeStepWithPoll wraps executeStepWithContext with optional poll loop.
@@ -2798,14 +2874,10 @@ func (r *SkillRunner) executeStepWithPoll(ctx context.Context, runID string, ste
 	return lastOutput, fmt.Errorf("poll exhausted after %d attempts without matching condition", maxAttempts)
 }
 
-// substituteSkillVarsInString replaces {{key}} and ${key} placeholders in s
-// with values from vars.
+// substituteSkillVarsInString replaces runner placeholders in s with values
+// from vars. Kept as a GUI-local wrapper for older tests/callers.
 func substituteSkillVarsInString(s string, vars map[string]string) string {
-	for k, v := range vars {
-		s = strings.ReplaceAll(s, "{{"+k+"}}", v)
-		s = strings.ReplaceAll(s, "${"+k+"}", v)
-	}
-	return s
+	return cskill.SubstituteVarsInString(s, vars)
 }
 
 // evaluateSimpleCondition evaluates a simple condition expression.
@@ -2816,50 +2888,10 @@ func substituteSkillVarsInString(s string, vars map[string]string) string {
 //   - bare non-empty string → true
 //   - empty string → false
 func evaluateSimpleCondition(expr string) bool {
-	expr = strings.TrimSpace(expr)
-	if expr == "" {
-		return false
-	}
-	// Try "contains" operator (space-delimited)
-	if idx := strings.Index(expr, " contains "); idx > 0 {
-		left := strings.TrimSpace(expr[:idx])
-		right := strings.TrimSpace(expr[idx+len(" contains "):])
-		return strings.Contains(left, right)
-	}
-	// Try " != " operator (space-delimited to avoid matching inside values)
-	if idx := strings.Index(expr, " != "); idx > 0 {
-		left := strings.TrimSpace(expr[:idx])
-		right := strings.TrimSpace(expr[idx+len(" != "):])
-		return left != right
-	}
-	// Try " == " operator (space-delimited)
-	if idx := strings.Index(expr, " == "); idx > 0 {
-		left := strings.TrimSpace(expr[:idx])
-		right := strings.TrimSpace(expr[idx+len(" == "):])
-		return left == right
-	}
-	// Fallback: try without spaces for compact expressions like "a==b"
-	if parts := strings.SplitN(expr, "!=", 2); len(parts) == 2 {
-		return strings.TrimSpace(parts[0]) != strings.TrimSpace(parts[1])
-	}
-	if parts := strings.SplitN(expr, "==", 2); len(parts) == 2 {
-		return strings.TrimSpace(parts[0]) == strings.TrimSpace(parts[1])
-	}
-	// Bare truthy: non-empty = true
-	return true
+	return cskill.EvaluateSimpleCondition(expr)
 }
 
 // ── api_workflow helpers ─────────────────────────────────────────────────
-
-// stepLabelSelected checks if a step label matches any of the selected steps.
-func stepLabelSelected(label string, selected []string) bool {
-	for _, s := range selected {
-		if strings.EqualFold(label, s) {
-			return true
-		}
-	}
-	return false
-}
 
 // captureOutputVariables extracts variables from step output using regex patterns.
 // Each entry in captures maps a variable name to a regex pattern. The first
@@ -2900,21 +2932,7 @@ func normalizePathsInCommandGUI(command string) string {
 }
 
 func captureOutputVariables(output string, captures map[string]string) map[string]string {
-	result := make(map[string]string)
-	for varName, pattern := range captures {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			log.Printf("[skill-runner] capture: invalid regex for %s: %v", varName, err)
-			continue
-		}
-		m := re.FindStringSubmatch(output)
-		if len(m) > 1 {
-			result[varName] = m[1] // first submatch group
-		} else if len(m) == 1 {
-			result[varName] = m[0] // full match
-		}
-	}
-	return result
+	return cskill.CaptureOutputVariables(output, captures)
 }
 
 // ── poll action ─────────────────────────────────────────────────────────

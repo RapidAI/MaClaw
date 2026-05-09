@@ -31,7 +31,7 @@ type EnrollConfig struct {
 	MachineName    string   // e.g. hostname
 	Platform       string   // "windows", "mac", "linux"
 	Hostname       string
-	Arch           string   // e.g. "amd64", "arm64"
+	Arch           string // e.g. "amd64", "arm64"
 	AppVersion     string
 	HeartbeatSec   int
 }
@@ -60,12 +60,12 @@ type EnrollResult struct {
 // HubCenterResolveResult mirrors the JSON returned by POST /api/entry/resolve.
 // Exported so both GUI and TUI can use the same type for hub listing.
 type HubCenterResolveResult struct {
-	Email        string                 `json:"email"`
-	Mode         string                 `json:"mode"`
-	DefaultHubID string                 `json:"default_hub_id,omitempty"`
-	DefaultPWA   string                 `json:"default_pwa_url,omitempty"`
-	Hubs         []HubCenterResolveHub  `json:"hubs,omitempty"`
-	Message      string                 `json:"message,omitempty"`
+	Email        string                `json:"email"`
+	Mode         string                `json:"mode"`
+	DefaultHubID string                `json:"default_hub_id,omitempty"`
+	DefaultPWA   string                `json:"default_pwa_url,omitempty"`
+	Hubs         []HubCenterResolveHub `json:"hubs,omitempty"`
+	Message      string                `json:"message,omitempty"`
 }
 
 // HubCenterResolveHub describes a single hub returned by the resolve endpoint.
@@ -82,7 +82,8 @@ type HubCenterResolveHub struct {
 // EnrollmentClient performs the full HubCenter discovery → Hub resolve → Enroll flow.
 // Both GUI and TUI share this implementation.
 type EnrollmentClient struct {
-	HTTPClient *http.Client // if nil, a default TLS-skip client is created
+	HTTPClient    *http.Client  // if nil, a default TLS-skip client is created
+	EnrollTimeout time.Duration // if zero, EnrollTimeout is used
 }
 
 // NewEnrollmentClient creates an EnrollmentClient with a default HTTP client
@@ -235,7 +236,8 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 
 	// --- Step 5: Send enroll request ---
 	enrollURL := strings.TrimRight(hubURL, "/") + "/api/enroll/start"
-	enrollCtx, cancel := context.WithTimeout(ctx, EnrollTimeout)
+	enrollTimeout := c.enrollTimeout()
+	enrollCtx, cancel := context.WithTimeout(ctx, enrollTimeout)
 	defer cancel()
 
 	log.Printf("[enrollment] POST %s", enrollURL)
@@ -248,7 +250,7 @@ func (c *EnrollmentClient) Enroll(ctx context.Context, cfg EnrollConfig) (*Enrol
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || isTimeoutError(err) {
-			return nil, fmt.Errorf("registration timed out after %s", EnrollTimeout)
+			return nil, fmt.Errorf("registration timed out after %s", enrollTimeout)
 		}
 		return nil, fmt.Errorf("enroll request failed: %w", err)
 	}
@@ -411,10 +413,17 @@ func NormalizedPlatform() string {
 }
 
 func (c *EnrollmentClient) httpClient() *http.Client {
-	if c.HTTPClient != nil {
+	if c != nil && c.HTTPClient != nil {
 		return c.HTTPClient
 	}
 	return NewHubHTTPClient()
+}
+
+func (c *EnrollmentClient) enrollTimeout() time.Duration {
+	if c != nil && c.EnrollTimeout > 0 {
+		return c.EnrollTimeout
+	}
+	return EnrollTimeout
 }
 
 func isTimeoutError(err error) bool {

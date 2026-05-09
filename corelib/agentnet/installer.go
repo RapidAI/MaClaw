@@ -57,10 +57,26 @@ func InstallDir() (string, error) {
 	}
 	if runtime.GOOS == "windows" {
 		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
-			return filepath.Join(localAppData, "anet"), nil
+			if pathIsWithinOrEqual(localAppData, home) {
+				return filepath.Join(localAppData, "anet"), nil
+			}
+			return filepath.Join(home, "AppData", "Local", "anet"), nil
 		}
 	}
 	return filepath.Join(home, ".anet"), nil
+}
+
+func pathIsWithinOrEqual(path, parent string) bool {
+	path = strings.TrimSpace(path)
+	parent = strings.TrimSpace(parent)
+	if path == "" || parent == "" {
+		return false
+	}
+	rel, err := filepath.Rel(parent, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // LocalBinaryName returns "anet.exe" on Windows, "anet" otherwise.

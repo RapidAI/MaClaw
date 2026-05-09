@@ -120,7 +120,7 @@ func (m *SkillLifecycleManager) EnqueueUpload(ctx context.Context, skillName, sk
 		} else if ok {
 			return uploaded, nil
 		}
-		if reloaded, loadErr := loadImportedSkillEntry(skillDir); loadErr == nil {
+		if reloaded, loadErr := loadMarketPackageSkillEntry(skillDir, entry); loadErr == nil {
 			if strings.TrimSpace(reloaded.Name) == "" {
 				reloaded.Name = skillName
 			}
@@ -173,9 +173,13 @@ func (m *SkillLifecycleManager) UploadNow(ctx context.Context, skillName, reason
 		return "", fmt.Errorf("portability validation failed: %w", err)
 	}
 	target := m.findRegisteredSkill(skillName)
-	quality := evaluateSkillQuality(target, report, requireRuntimeProof)
+	qualityEntry, loadErr := loadMarketPackageSkillEntry(tmpDir, target)
+	if loadErr != nil {
+		return "", fmt.Errorf("load packaged skill entry: %w", loadErr)
+	}
+	quality := evaluateSkillQualityForDir(qualityEntry, report, requireRuntimeProof, tmpDir)
 	if target != nil && strings.TrimSpace(target.SkillDir) != "" {
-		writeSkillQualityStatus(target.SkillDir, target, quality, reasonStage(reason), requireRuntimeProof)
+		writeSkillQualityStatus(target.SkillDir, qualityEntry, quality, reasonStage(reason), requireRuntimeProof)
 	}
 	if !quality.MarketReady {
 		msg := fmt.Sprintf("upload blocked by quality gate: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
@@ -236,7 +240,7 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 	if err != nil {
 		return "", fmt.Errorf("prepare skill dir: %w", err)
 	}
-	entry, err := loadImportedSkillEntry(skillDir)
+	entry, err := loadMarketPackageSkillEntry(skillDir, nil)
 	if err != nil {
 		return "", fmt.Errorf("load skill entry: %w", err)
 	}
@@ -245,10 +249,7 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 	}
 	entry.SkillDir = skillDir
 	if registered := m.findRegisteredSkill(entry.Name); registered != nil {
-		entry.UsageCount = registered.UsageCount
-		entry.SuccessCount = registered.SuccessCount
-		entry.FailureCount = registered.FailureCount
-		entry.LastError = registered.LastError
+		mergeSkillPackagingRuntimeFields(entry, registered)
 	}
 	quality := evaluateSkillQuality(entry, report, requireRuntimeProof)
 	writeSkillQualityStatus(skillDir, entry, quality, reasonStage(reason), requireRuntimeProof)
@@ -277,7 +278,19 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 	if err := copyDirContents(skillDir, tmpDir); err != nil {
 		return "", fmt.Errorf("copy skill dir for package: %w", err)
 	}
-	if err := writeSkillPackageManifest(tmpDir, entry, quality, reasonStage(reason), requireRuntimeProof); err != nil {
+	if err := writePackageViewSkillYAML(tmpDir, entry); err != nil {
+		return "", err
+	}
+	tmpReport, err := skill.ValidateSkillPortability(tmpDir)
+	if err != nil {
+		return "", fmt.Errorf("validate skill package: %w", err)
+	}
+	packageQuality := evaluateSkillQualityForDir(entry, tmpReport, requireRuntimeProof, tmpDir)
+	if !packageQuality.MarketReady {
+		msg := fmt.Sprintf("upload blocked by package quality gate: score=%d reasons=%s", packageQuality.Score, strings.Join(packageQuality.Reasons, "; "))
+		return "", &skillUploadBlockedError{Message: msg, Score: packageQuality.Score}
+	}
+	if err := writeSkillPackageManifest(tmpDir, entry, packageQuality, reasonStage(reason), requireRuntimeProof); err != nil {
 		return "", fmt.Errorf("write skill package manifest: %w", err)
 	}
 	zipPath := filepath.Join(m.app.GetTempDir(), fmt.Sprintf("skill-%s-%d.zip", toKebabCase(entry.Name), time.Now().UnixMilli()))
@@ -361,11 +374,7 @@ func (m *SkillLifecycleManager) EvaluateInstalledSkills(requireRuntimeProof bool
 			continue
 		}
 		qualityEntry := entry
-		if reloaded, err := loadImportedSkillEntry(entry.SkillDir); err == nil {
-			reloaded.UsageCount = entry.UsageCount
-			reloaded.SuccessCount = entry.SuccessCount
-			reloaded.FailureCount = entry.FailureCount
-			reloaded.LastError = entry.LastError
+		if reloaded, err := loadMarketPackageSkillEntry(entry.SkillDir, entry); err == nil {
 			qualityEntry = reloaded
 		}
 		quality := evaluateSkillQuality(qualityEntry, report, requireRuntimeProof)
@@ -428,7 +437,7 @@ func (m *SkillLifecycleManager) reevaluateBlockedUploadItem(item SkillUploadQueu
 		item.UpdatedAt = now
 		return item, false
 	}
-	entry, err := loadImportedSkillEntry(item.SkillDir)
+	entry, err := loadMarketPackageSkillEntry(item.SkillDir, nil)
 	if err != nil {
 		item.LastError = "load skill entry failed: " + err.Error()
 		item.QualityScore = 0

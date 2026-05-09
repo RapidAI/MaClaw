@@ -49,7 +49,7 @@ func (a *App) ensureViewerToken(cfg corelib.AppConfig) (corelib.AppConfig, error
 	ensureViewerTokenMu.Lock()
 	defer ensureViewerTokenMu.Unlock()
 
-	// Double-check after lock — another goroutine may have completed recovery.
+	// Double-check after lock; another goroutine may have completed recovery.
 	freshCfg, err := a.LoadConfig()
 	if err != nil {
 		return cfg, fmt.Errorf("hub access token is missing")
@@ -85,14 +85,19 @@ type HubLLMAuthorizedModel struct {
 }
 
 type HubLLMActiveGrant struct {
-	ServiceGroupID   string  `json:"service_group_id"`
-	Source           string  `json:"source"`
-	StartsAt         string  `json:"starts_at"`
-	ExpiresAt        string  `json:"expires_at"`
-	Active           bool    `json:"active"`
-	CreditsTotal     float64 `json:"credits_total,omitempty"`
-	CreditsUsed      float64 `json:"credits_used,omitempty"`
-	CreditsRemaining float64 `json:"credits_remaining,omitempty"`
+	ServiceGroupID    string  `json:"service_group_id"`
+	Source            string  `json:"source"`
+	StartsAt          string  `json:"starts_at"`
+	ExpiresAt         string  `json:"expires_at"`
+	Active            bool    `json:"active"`
+	Status            string  `json:"status,omitempty"`
+	StatusReason      string  `json:"status_reason,omitempty"`
+	CreditsTotal      float64 `json:"credits_total,omitempty"`
+	CreditsUsed       float64 `json:"credits_used,omitempty"`
+	CreditsAvailable  float64 `json:"credits_available,omitempty"`
+	RetryAfterSeconds int64   `json:"retry_after_seconds,omitempty"`
+	RetryAfterAt      string  `json:"retry_after_at,omitempty"`
+	CreditsRemaining  float64 `json:"credits_remaining,omitempty"`
 }
 
 type HubLLMServiceStatus struct {
@@ -214,8 +219,8 @@ func (a *App) RedeemHubLLMService(code string) (HubLLMServiceStatus, error) {
 	// Notify frontend that the Hub LLM service status has changed so that
 	// LLMConfigPanel (and any other listener) can reload its provider list
 	// and hub service status. Without this event, the LLM config dialog
-	// shows stale data when the user redeems from the "服务兑换" tab and
-	// then switches to the "LLM 配置" tab.
+	// shows stale data when the user redeems from the service redemption tab and
+	// then switches to the LLM configuration tab.
 	if a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "hub-llm-service-changed")
 	}
@@ -323,7 +328,8 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 			break
 		}
 	}
-	if !status.Active || strings.TrimSpace(cfg.RemoteViewerToken) == "" || strings.TrimSpace(status.HubLLMBaseURL) == "" {
+	hasEntitlement := status.Active || len(status.CreditGrants) > 0 || len(status.ActiveGrants) > 0
+	if !hasEntitlement || strings.TrimSpace(cfg.RemoteViewerToken) == "" || strings.TrimSpace(status.HubLLMBaseURL) == "" {
 		if providerIndex >= 0 {
 			providers = append(providers[:providerIndex], providers[providerIndex+1:]...)
 			changed = true
@@ -383,6 +389,87 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 		cfg.MaclawLLMProviders = providers
 	}
 	return changed
+}
+
+func hubLLMServiceMissingProviderMessage(status HubLLMServiceStatus) string {
+	grant := primaryHubLLMServiceGrant(status)
+	switch strings.ToLower(strings.TrimSpace(grant.Status)) {
+	case "period_limited":
+		if retry := formatHubLLMServiceRetry(grant); retry != "" {
+			return "MaClaw 官方周期限流：当前周期额度已用尽，约 " + retry + " 后恢复；请刷新 Hub 服务状态。"
+		}
+		return "MaClaw 官方周期限流：当前周期额度已用尽；请刷新 Hub 服务状态。"
+	case "queued":
+		if retry := formatHubLLMServiceRetry(grant); retry != "" {
+			return "MaClaw 官方授权尚未生效：约 " + retry + " 后生效；请刷新 Hub 服务状态。"
+		}
+		return "MaClaw 官方授权尚未生效；请刷新 Hub 服务状态。"
+	case "exhausted":
+		return "MaClaw 官方额度已用尽：请兑换或等待新的授权额度。"
+	case "expired":
+		return "MaClaw 官方授权已过期：请兑换新的授权额度。"
+	}
+	return "MaClaw 官方服务商暂不可用：Hub 未返回可用服务入口，请刷新 Hub 服务状态后重试。"
+}
+
+func primaryHubLLMServiceGrant(status HubLLMServiceStatus) HubLLMActiveGrant {
+	grants := status.CreditGrants
+	if len(grants) == 0 {
+		grants = status.ActiveGrants
+	}
+	var best HubLLMActiveGrant
+	bestRank := 99
+	for _, grant := range grants {
+		rank := hubLLMServiceGrantStatusRank(grant.Status)
+		if rank < bestRank {
+			best = grant
+			bestRank = rank
+		}
+	}
+	return best
+}
+
+func hubLLMServiceGrantStatusRank(status string) int {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "period_limited":
+		return 0
+	case "queued":
+		return 1
+	case "exhausted":
+		return 2
+	case "expired":
+		return 3
+	case "active":
+		return 4
+	default:
+		return 9
+	}
+}
+
+func formatHubLLMServiceRetry(grant HubLLMActiveGrant) string {
+	seconds := grant.RetryAfterSeconds
+	if seconds <= 0 && strings.TrimSpace(grant.RetryAfterAt) != "" {
+		if retryAt, err := time.Parse(time.RFC3339, strings.TrimSpace(grant.RetryAfterAt)); err == nil {
+			seconds = int64(time.Until(retryAt).Seconds())
+		}
+	}
+	if seconds <= 0 {
+		return ""
+	}
+	if seconds >= int64(24*time.Hour/time.Second) {
+		return fmt.Sprintf("%d 天", (seconds+int64(24*time.Hour/time.Second)-1)/int64(24*time.Hour/time.Second))
+	}
+	if seconds >= int64(time.Hour/time.Second) {
+		return fmt.Sprintf("%d 小时", (seconds+int64(time.Hour/time.Second)-1)/int64(time.Hour/time.Second))
+	}
+	return fmt.Sprintf("%d 分钟", maxInt64(1, (seconds+int64(time.Minute/time.Second)-1)/int64(time.Minute/time.Second)))
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (a *App) isMaclawLLMConfiguredWithConfig(cfg corelib.AppConfig) bool {

@@ -79,7 +79,10 @@ export default function App() {
 
   const markAuthenticated = useCallback((tenantID?: string) => {
     setAuthenticated(true);
-    if (tenantID) { setCurrentTenantId(tenantID); rememberTenantID(tenantID); }
+    if (tenantID) {
+      setCurrentTenantId(tenantID);
+      rememberTenantID(tenantID);
+    }
     setBootstrapWizardOpen(false);
     void evaluateBootstrapForTenant(true);
   }, [evaluateBootstrapForTenant]);
@@ -119,11 +122,14 @@ export default function App() {
 
   const handleBootstrapChanged = (status: BootstrapStatus | null) => {
     setBootstrapStatus(status);
-    if (status?.tenant_id) { setCurrentTenantId(status.tenant_id); rememberTenantID(status.tenant_id); }
+    if (status?.tenant_id) {
+      setCurrentTenantId(status.tenant_id);
+      rememberTenantID(status.tenant_id);
+    }
     if (isBootstrapComplete(status)) setBootstrapWizardOpen(false);
   };
 
-  if (checking) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>加载中...</div>;
+  if (checking) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: '#888' }}>{t('加载中...', 'Loading...')}</div>;
   if (needsSetup) return <SetupTenantPage onSetupComplete={(tenantID) => { setNeedsSetup(false); setAuthenticated(false); if (tenantID) { setCurrentTenantId(tenantID); rememberTenantID(tenantID); } setActiveTab('bootstrap'); setBootstrapWizardOpen(false); }} />;
   if (!authenticated) return <LoginPage onLogin={(tenantID) => markAuthenticated(tenantID)} />;
 

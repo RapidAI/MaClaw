@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func TestToolRunSkill_MissingName(t *testing.T) {
@@ -48,18 +49,270 @@ func TestToolRunSkill_WaitSecondsInStructuredOutput(t *testing.T) {
 
 func TestToolRunSkill_BuildsRunArgs(t *testing.T) {
 	raw := map[string]interface{}{
-		"name":   "demo-skill",
-		"input":  "report.md",
-		"output": "report.pdf",
-		"args":   map[string]interface{}{"format": "A4", "count": 2},
+		"name":         "demo-skill",
+		"action":       "run",
+		"input":        "report.md",
+		"output":       "report.pdf",
+		"query":        "weather in Chengdu",
+		"mode":         "advanced",
+		"operation":    "safe",
+		"steps":        []interface{}{"safe-step"},
+		"wait_seconds": 30,
+		"auto_run":     true,
+		"auto_fix":     true,
+		"force":        true,
+		"field":        "command",
+		"value":        "patched",
+		"find":         "old",
+		"replace":      "new",
+		"reason":       "patch test",
+		"args":         map[string]interface{}{"format": "A4", "count": 2, "operation": "nested-safe"},
 	}
 	got := buildRunSkillArgs(raw)
 	argsMap, _ := got["args"].(map[string]interface{})
 	if got["input"] != "report.md" || got["output"] != "report.pdf" {
 		t.Fatalf("buildRunSkillArgs() = %#v, want input/output preserved", got)
 	}
-	if argsMap["format"] != "A4" {
-		t.Fatalf("buildRunSkillArgs args = %#v, want format preserved", argsMap)
+	if got["query"] != "weather in Chengdu" {
+		t.Fatalf("buildRunSkillArgs() = %#v, want query preserved for run-time inference", got)
+	}
+	if got["mode"] != "advanced" {
+		t.Fatalf("buildRunSkillArgs() = %#v, want mode preserved for run-time conditions", got)
+	}
+	if got["operation"] != "safe" || len(got["steps"].([]interface{})) != 1 {
+		t.Fatalf("buildRunSkillArgs() = %#v, want workflow selectors preserved", got)
+	}
+	for _, key := range []string{"name", "action", "wait_seconds", "auto_run", "auto_fix", "force", "field", "value", "find", "replace", "reason"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("buildRunSkillArgs() = %#v, want %s control key stripped", got, key)
+		}
+	}
+	if argsMap["format"] != "A4" || argsMap["operation"] != "nested-safe" {
+		t.Fatalf("buildRunSkillArgs args = %#v, want nested runtime args preserved", argsMap)
+	}
+}
+
+func TestToolRunSkill_OpensAgentViewForMissingRequiredParams(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "needs-input",
+		Description: "requires input",
+		Status:      "active",
+		Params: []corelib.NLSkillParam{{
+			Name:        "input",
+			Description: "Input file",
+			Required:    true,
+		}},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo {{input}}"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	got := h.toolRunSkill(map[string]interface{}{"name": "needs-input"}, nil)
+	if !strings.Contains(got, "需要补充结构化参数") {
+		t.Fatalf("expected task panel parameter prompt, got %s", got)
+	}
+}
+
+func TestBuildSkillRunAgentViewIncludesHiddenRunArgs(t *testing.T) {
+	view := buildSkillRunAgentView(corelib.NLSkillEntry{
+		Name:        "demo",
+		Description: "demo skill",
+	}, map[string]interface{}{"operation": "convert"}, []corelib.NLSkillParam{{
+		Name:     "input",
+		Required: true,
+	}}, []string{"input"})
+	if view == nil || view["type"] != "form" || view["id"] != "skill:run:demo" {
+		t.Fatalf("unexpected view: %#v", view)
+	}
+	fields, ok := view["fields"].([]map[string]interface{})
+	if !ok || len(fields) < 2 {
+		t.Fatalf("unexpected fields: %#v", view["fields"])
+	}
+	foundRunArgs := false
+	for _, field := range fields {
+		if field["type"] == "hidden" && field["name"] == "_run_args" {
+			foundRunArgs = true
+			break
+		}
+	}
+	if !foundRunArgs {
+		t.Fatalf("expected hidden run args field, got %#v", fields)
+	}
+}
+
+func TestToolRunSkill_ForwardsModeToWhenCondition(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "mode-skill",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			When:   "{{mode}} == advanced",
+			Params: map[string]interface{}{"command": "echo advanced-mode"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	got := h.toolRunSkill(map[string]interface{}{"name": "mode-skill", "mode": "advanced", "wait_seconds": float64(2)}, nil)
+	if !strings.Contains(got, "advanced-mode") {
+		t.Fatalf("mode was not forwarded into when-conditioned step, got %s", got)
+	}
+}
+
+func TestToolRunSkill_ForwardsQueryToWhenCondition(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "query-skill",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			When:   "{{query}} contains Chengdu",
+			Params: map[string]interface{}{"command": "echo query-city"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	got := h.toolRunSkill(map[string]interface{}{"name": "query-skill", "query": "weather in Chengdu", "wait_seconds": float64(2)}, nil)
+	if !strings.Contains(got, "query-city") {
+		t.Fatalf("query was not forwarded into when-conditioned step, got %s", got)
+	}
+}
+
+func TestToolRunSkill_PipelineRecursionSurfacesInRunStatus(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "pipeline-self",
+		Status: "active",
+		Mode:   "pipeline",
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill: "pipeline-self",
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	started := h.toolRunSkill(map[string]interface{}{
+		"name":         "pipeline-self",
+		"wait_seconds": float64(2),
+	}, nil)
+	if !strings.Contains(started, "- run_id:") {
+		t.Fatalf("expected run to start so async pipeline failure can surface, got %s", started)
+	}
+
+	runID := ""
+	for _, line := range strings.Split(started, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "- run_id:") {
+			runID = strings.TrimSpace(strings.TrimPrefix(line, "- run_id:"))
+			break
+		}
+	}
+	if runID == "" {
+		t.Fatalf("failed to parse run_id from %s", started)
+	}
+
+	status := h.toolGetSkillRun(map[string]interface{}{"run_id": runID, "wait_seconds": float64(2)})
+	if !strings.Contains(status, "pipeline recursion detected") {
+		t.Fatalf("expected recursion to surface in run status, got %s", status)
+	}
+}
+
+func TestToolRunSkill_ExternalPrivatePipelineStackDoesNotTripRecursion(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:   "child-stack",
+			Status: "active",
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "echo child-ok"},
+			}},
+		},
+		{
+			Name:   "pipeline-stack",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill: "child-stack",
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillRunner = NewSkillRunner(app.skillExecutor)
+	h := &IMMessageHandler{app: app}
+
+	got := h.toolRunSkill(map[string]interface{}{
+		"name":                     "pipeline-stack",
+		cskill.PipelineRunStackArg: []string{"pipeline-stack"},
+		"wait_seconds":             float64(2),
+	}, nil)
+	if strings.Contains(got, "pipeline recursion detected") || !strings.Contains(got, "child-ok") {
+		t.Fatalf("expected forged external stack to be ignored, got %s", got)
 	}
 }
 

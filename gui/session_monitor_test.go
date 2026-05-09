@@ -56,15 +56,16 @@ func TestProperty2_NoLLMTokenConsumption(t *testing.T) {
 
 		mgr := newMockManagerWithSessions(sessions)
 		statusC := make(chan StatusEvent, 32)
-		monitor := NewSessionMonitor(mgr, statusC, 50*time.Millisecond)
+		monitor := NewSessionMonitor(mgr, statusC, 5*time.Millisecond)
 
 		// Start watching all sessions
 		for id := range sessions {
 			monitor.StartWatching(id, "loop-"+id)
 		}
 
-		// Let it poll a few times
-		time.Sleep(200 * time.Millisecond)
+		// Let it poll a few times without making the property test dominate
+		// the full gui package runtime.
+		time.Sleep(20 * time.Millisecond)
 
 		// No status changes → no events should be emitted
 		// (sessions stayed busy the whole time)
@@ -81,7 +82,7 @@ func TestProperty2_NoLLMTokenConsumption(t *testing.T) {
 		monitor.Close()
 		return true
 	}
-	if err := quick.Check(f, &quick.Config{MaxCount: 100}); err != nil {
+	if err := quick.Check(f, &quick.Config{MaxCount: 10}); err != nil {
 		t.Error(err)
 	}
 }

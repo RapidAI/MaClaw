@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next';
 import type { HistoryTaskItem } from '../../types';
 
 type Props = {
@@ -6,11 +7,13 @@ type Props = {
 };
 
 export function RecentTaskList({ tasks, onOpenTask }: Props) {
+  const { t } = useTranslation();
+
   return (
     <section className="card dw-recent-task-card dw-recent-task-card-compact dw-embedded-list-card">
       <div className="dw-pane-head">
-        <strong>继续处理</strong>
-        <span>最近记录</span>
+        <strong>{t('recentTaskList.title', 'Continue work')}</strong>
+        <span>{t('recentTaskList.subtitle', 'Recent records')}</span>
       </div>
       <div className="dw-recent-task-stack dw-recent-task-stack-compact">
         {tasks.map((task) => (

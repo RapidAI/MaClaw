@@ -185,6 +185,7 @@ export namespace main {
 	    maclaw_llm_model: string;
 	    maclaw_role_name: string;
 	    maclaw_role_description: string;
+	    mis_data: any;
 	    group_discussion: any;
 	    maclaw_llm_protocol: string;
 	    maclaw_llm_context_length: number;
@@ -229,6 +230,7 @@ export namespace main {
 	    lansenger_app_id: string;
 	    lansenger_app_secret: string;
 	    lansenger_gateway_url: string;
+	    lansenger_wss_url: string;
 	    lansenger_local_mode?: boolean;
 	    thirdparty_gateway_enabled?: boolean;
 	    thirdparty_gateway_token: string;
@@ -245,6 +247,7 @@ export namespace main {
 	    pet_size?: number;
 	    pet_motion_enabled?: boolean;
 	    pet_motion_sound_enabled?: boolean;
+	    pet_motion_sound_preset?: string;
 	    pet_text_interaction_enabled?: boolean;
 	    pet_voice_input_enabled?: boolean;
 	    pet_voice_readback_enabled?: boolean;
@@ -347,6 +350,7 @@ export namespace main {
 	        this.maclaw_llm_model = source["maclaw_llm_model"];
 	        this.maclaw_role_name = source["maclaw_role_name"];
 	        this.maclaw_role_description = source["maclaw_role_description"];
+	        this.mis_data = source["mis_data"];
 	        this.group_discussion = source["group_discussion"];
 	        this.maclaw_llm_protocol = source["maclaw_llm_protocol"];
 	        this.maclaw_llm_context_length = source["maclaw_llm_context_length"];
@@ -391,6 +395,7 @@ export namespace main {
 	        this.lansenger_app_id = source["lansenger_app_id"];
 	        this.lansenger_app_secret = source["lansenger_app_secret"];
 	        this.lansenger_gateway_url = source["lansenger_gateway_url"];
+	        this.lansenger_wss_url = source["lansenger_wss_url"];
 	        this.lansenger_local_mode = source["lansenger_local_mode"];
 	        this.thirdparty_gateway_enabled = source["thirdparty_gateway_enabled"];
 	        this.thirdparty_gateway_token = source["thirdparty_gateway_token"];
@@ -406,6 +411,7 @@ export namespace main {
 	        this.pet_size = source["pet_size"];
 	        this.pet_motion_enabled = source["pet_motion_enabled"];
 	        this.pet_motion_sound_enabled = source["pet_motion_sound_enabled"];
+	        this.pet_motion_sound_preset = source["pet_motion_sound_preset"];
 	        this.pet_text_interaction_enabled = source["pet_text_interaction_enabled"];
 	        this.pet_voice_input_enabled = source["pet_voice_input_enabled"];
 	        this.pet_voice_readback_enabled = source["pet_voice_readback_enabled"];

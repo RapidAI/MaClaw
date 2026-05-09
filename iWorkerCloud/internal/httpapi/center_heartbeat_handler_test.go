@@ -127,6 +127,8 @@ func (r *heartbeatCenterRepo) UpdateRegistration(_ context.Context, c *store.Cen
 	item.TenantCount = c.TenantCount
 	item.CloudControlMode = c.CloudControlMode
 	item.LastSyncStatus = c.LastSyncStatus
+	item.SecretHash = c.SecretHash
+	item.ManagementSecret = c.ManagementSecret
 	return nil
 }
 
@@ -287,6 +289,31 @@ func TestProvisionTenantRouteIsNotRegistered(t *testing.T) {
 	mux.ServeHTTP(res, req)
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("status = %d body=%s, want 404 for removed cloud-side tenant provisioning route", res.Code, res.Body.String())
+	}
+}
+
+func TestRouterDoesNotExposeCenterTenantManagement(t *testing.T) {
+	repo := newHeartbeatCenterRepo(&store.Center{ID: "ctr_1", Status: "active", BaseURL: "https://center.example"})
+	svc := centers.NewService(repo, license.NewService(heartbeatLicenseRepo{}, nil))
+	router := NewRouter(nil, svc, nil, t.TempDir(), nil, nil)
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/admin/centers/ctr_1/tenants", ""},
+		{http.MethodPost, "/api/admin/centers/ctr_1/tenants", `{"company_name":"Acme","email":"admin@example.com"}`},
+		{http.MethodPut, "/api/admin/centers/ctr_1/tenants/tnt_1", `{"company_name":"Acme","email":"admin@example.com"}`},
+		{http.MethodDelete, "/api/admin/centers/ctr_1/tenants/tnt_1", ""},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		if res.Code != http.StatusNotFound && res.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s %s status = %d body=%s, want 404/405 for removed Cloud-side tenant management route", tc.method, tc.path, res.Code, res.Body.String())
+		}
 	}
 }
 

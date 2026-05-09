@@ -31,54 +31,16 @@ import {
     isCurrentOnboardingStep,
     isOnboardingComplete,
 } from "./onboardingFlow";
-
-interface HubLLMServiceStatus {
-    active?: boolean;
-    skip_llm_config?: boolean;
-}
-
-interface LLMProvider {
-    name: string;
-    url: string;
-    key: string;
-    model: string;
-    protocol?: string;
-    context_length?: number;
-    is_custom?: boolean;
-    auth_type?: string;
-    agent_type?: string;
-    supports_vision?: boolean;
-    wire_api?: string;
-}
-
-type Props = {
-    lang: string;
-    hubUrl: string;
-    email: string;
-    brandId?: string;
-    brandDisplayName?: string;
-    onClose: () => void;
-    onLLMConfigured: () => void;
-    onRegistered: () => void;
-    onSaveField: (patch: Record<string, any>) => void;
-};
-
-/* ── Hoisted style objects ── */
-const inputStyle: React.CSSProperties = {
-    width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-    border: `1px solid var(--theme-border)`, borderRadius: 4,
-    background: "var(--theme-surface)", color: "var(--theme-text-primary)", boxSizing: "border-box",
-};
-const readonlyInputStyle: React.CSSProperties = {
-    ...inputStyle, background: "var(--theme-surface-muted)", color: "var(--theme-text-muted)", cursor: "default",
-};
-const labelStyle: React.CSSProperties = {
-    fontSize: "0.76rem", color: "var(--theme-text-muted)", marginBottom: 4, display: "block",
-};
-
-const localizeText = (lang: string | undefined, en: string, zhHans: string, zhHant: string = zhHans) => (
-    lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
-);
+import {
+    inputStyle,
+    labelStyle,
+    localizeText,
+    readonlyInputStyle,
+    type HubLLMActiveGrant,
+    type HubLLMServiceStatus,
+    type LLMProvider,
+    type Props,
+} from "./OnboardingWizardShared";
 
 export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayName, onClose, onLLMConfigured, onRegistered, onSaveField }: Props) {
     const t = useCallback((zh: string, en: string, zhHant: string = zh) => localizeText(lang, en, zh, zhHant), [lang]);
@@ -87,10 +49,8 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     // 品牌显示名称（动态替换硬编码的 "MaClaw"）
     const displayName = brandDisplayName || 'MaClaw';
 
-    // ── Wizard step (1-based) ──
     const [step, setStep] = useState(1);
 
-    // ── Step 1: Registration（普通品牌）──
     const [regEmail, setRegEmail] = useState(email || "");
     const [invCode, setInvCode] = useState("");
     const [invRequired, setInvRequired] = useState(false);
@@ -103,12 +63,9 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const isTigerclaw = onboardingFlow.isTigerclaw;
     const totalSteps = onboardingFlow.totalSteps;
     const wxStep = onboardingFlow.wxStep;
-    // Whether the free trial LLM service has been verified as active on the Hub.
-    // Starts false; set to true only after GetHubLLMServiceStatus confirms Active=true.
     const [freeTrialVerified, setFreeTrialVerified] = useState(false);
     const [regResult, setRegResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
-    // ── SSO（TigerClaw Step 1）+ 注册状态（共用）──
     const [ssoBusy, setSsoBusy] = useState(false);
     const [ssoResult, setSsoResult] = useState<{ ok: boolean; msg: string } | null>(null);
     // regBusy/regDone 在两种流程中均使用：普通品牌=手动注册，tigerclaw=SSO后自动注册
@@ -116,14 +73,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [regDone, setRegDone] = useState(false);
     const [hubConnecting, setHubConnecting] = useState(false);
 
-    // ── 内嵌扫码状态（TigerClaw 品牌）──
     const [qrCodeURL, setQrCodeURL] = useState("");
     const [embeddedSSOLoading, setEmbeddedSSOLoading] = useState(false);
     const [embeddedSSOError, setEmbeddedSSOError] = useState("");
 
-    // ── Step 2: UI Mode — REMOVED (unified to single mode) ──
-
-    // ── Step 2: LLM（普通品牌 step2；tigerclaw 在 step1 SSO 后自动完成）──
     const [providers, setProviders] = useState<LLMProvider[]>([]);
     const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
     const [llmSaving, setLlmSaving] = useState(false);
@@ -131,7 +84,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
 
-    // ── TigerClaw 模型选择（SSO 成功后）──
     const [codegenModels, setCodegenModels] = useState<{ id: string; name: string }[]>([]);
     const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
     const [maclawModel, setMaclawModel] = useState("");        // MaClaw Agent 使用的模型
@@ -139,7 +91,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [modelSaving, setModelSaving] = useState(false);
     const [modelSaved, setModelSaved] = useState(false);
 
-    // ── Step 3: WeChat Binding ──
     const [wxDone, setWxDone] = useState(false);
     const [wxSkipped, setWxSkipped] = useState(false);
     const [wxQrUrl, setWxQrUrl] = useState("");
@@ -148,17 +99,14 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [wxLoading, setWxLoading] = useState(false);
     const wxPollingRef = useRef(false);
 
-    // wxDone = actually bound; wxSkipped = user chose to skip
     const wxCompleted = wxDone || wxSkipped;
 
-    // Step completion is derived from the centralized flow definition.
     const stepDone = useMemo(() => getOnboardingStepDone(onboardingFlow, {
         regDone,
         llmDone,
         wxCompleted,
     }), [onboardingFlow, regDone, llmDone, wxCompleted]);
 
-    // Navigation guards
     const getPrevStep = useCallback((currentStep: number) => {
         return Math.max(1, currentStep - 1);
     }, []);
@@ -184,14 +132,64 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         return shouldSkipLLM;
     }, [onLLMConfigured, t]);
 
-    // Load providers on mount
+    const formatHubRetryDuration = useCallback((seconds: number): string => {
+        const safeSeconds = Math.max(0, Math.ceil(Number(seconds || 0)));
+        if (safeSeconds < 60) return t(`${safeSeconds} 秒`, `${safeSeconds}s`);
+        const minutes = Math.ceil(safeSeconds / 60);
+        if (minutes < 60) return t(`${minutes} 分钟`, `${minutes}m`);
+        const hours = Math.ceil(minutes / 60);
+        if (hours < 24) return t(`${hours} 小时`, `${hours}h`);
+        const days = Math.ceil(hours / 24);
+        return t(`${days} 天`, `${days}d`);
+    }, [t]);
+
+    const hubGrantRetrySeconds = useCallback((grant?: HubLLMActiveGrant): number => {
+        if (!grant) return 0;
+        let seconds = Number(grant.retry_after_seconds || 0);
+        if ((!Number.isFinite(seconds) || seconds <= 0) && grant.retry_after_at) {
+            const retryAt = new Date(grant.retry_after_at).getTime();
+            if (Number.isFinite(retryAt)) seconds = Math.ceil((retryAt - Date.now()) / 1000);
+        }
+        return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+    }, []);
+
+    const hubInactiveRedeemMessage = useCallback((status?: HubLLMServiceStatus | null): string => {
+        const grants = (status?.credit_grants?.length ? status.credit_grants : status?.active_grants) || [];
+        const findGrant = (target: string) => grants.find(grant => String(grant.status || "").toLowerCase() === target);
+        const limited = findGrant("period_limited");
+        if (limited) {
+            const retrySeconds = hubGrantRetrySeconds(limited);
+            const retryText = retrySeconds > 0 ? formatHubRetryDuration(retrySeconds) : "";
+            return retryText
+                ? t(`服务兑换码已生效，但 MaClaw 官方当前周期限流，约 ${retryText} 后恢复。LLM 配置步骤暂不跳过。`, `Service code redeemed, but MaClaw Official is period limited and recovers in about ${retryText}. LLM setup is not skipped yet.`)
+                : t("服务兑换码已生效，但 MaClaw 官方当前周期限流。LLM 配置步骤暂不跳过。", "Service code redeemed, but MaClaw Official is period limited. LLM setup is not skipped yet.");
+        }
+        const queued = findGrant("queued");
+        if (queued) {
+            const retrySeconds = hubGrantRetrySeconds(queued);
+            const retryText = retrySeconds > 0 ? formatHubRetryDuration(retrySeconds) : "";
+            return retryText
+                ? t(`服务兑换码已生效，MaClaw 官方授权约 ${retryText} 后生效。LLM 配置步骤暂不跳过。`, `Service code redeemed. MaClaw Official authorization starts in about ${retryText}. LLM setup is not skipped yet.`)
+                : t("服务兑换码已生效，但 MaClaw 官方授权尚未生效。LLM 配置步骤暂不跳过。", "Service code redeemed, but MaClaw Official authorization is not active yet. LLM setup is not skipped yet.");
+        }
+        if (findGrant("exhausted")) {
+            return t("服务兑换码已生效，但 MaClaw 官方额度已用尽。请兑换更多额度或手动配置其它服务商。", "Service code redeemed, but MaClaw Official credits are exhausted. Redeem more credits or configure another provider manually.");
+        }
+        if (findGrant("expired")) {
+            return t("服务兑换码已生效，但 MaClaw 官方授权已过期。请兑换新的授权或手动配置其它服务商。", "Service code redeemed, but MaClaw Official authorization has expired. Redeem a new grant or configure another provider manually.");
+        }
+        const reason = (status?.inactive_reasons || []).filter(Boolean).join("; ");
+        return reason
+            ? t(`服务兑换码已生效，但 MaClaw 官方暂不可用：${reason}`, `Service code redeemed, but MaClaw Official is unavailable: ${reason}`)
+            : t("服务兑换码已生效，但 MaClaw 官方暂不可用。请在服务状态中查看原因。", "Service code redeemed, but MaClaw Official is unavailable. Check Service Status for details.");
+    }, [formatHubRetryDuration, hubGrantRetrySeconds, t]);
+
     useEffect(() => {
         GetMaclawLLMProviders().then(data => {
             if (data?.providers) setProviders(data.providers);
         }).catch(() => {});
     }, []);
 
-    // Probe hub for invitation code requirement
     const initialEmailRef = useRef(email);
     useEffect(() => {
         if (!hubUrl || !initialEmailRef.current) return;
@@ -276,18 +274,15 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         };
     }, [regDone, hubConnecting, t, applyHubServiceStatus]);
 
-    // Stop WeChat polling when leaving the WeChat step or unmounting
     useEffect(() => {
         if (step !== wxStep) wxPollingRef.current = false;
         return () => { wxPollingRef.current = false; };
     }, [step, wxStep]);
 
-    // Cancel embedded SSO polling on unmount
     useEffect(() => {
         return () => { CancelCodeGenSSOPolling().catch(() => {}); };
     }, []);
 
-    // Escape key to close (not if confirm dialog open)
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             if (e.key === "Escape") {
@@ -298,7 +293,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         return () => window.removeEventListener("keydown", onKey);
     }, [onClose, showConfirm]);
 
-    // Auto-close when all done
     useEffect(() => {
         const allDone = isOnboardingComplete(onboardingFlow, { regDone, llmDone, wxCompleted });
         if (allDone) {
@@ -413,12 +407,17 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             setCodegenModelsFetching(true);
             FetchCodeGenModels().then(models => {
                 setCodegenModels(models || []);
-                if (models && models.length > 0) {
-                    setMaclawModel(models[0].id);
-                    setClaudeCodeModel(models[0].id);
+                const preferredModel = (info as any)?.model_id || "";
+                const firstModel = preferredModel || (models && models.length > 0 ? models[0].id : "");
+                if (firstModel) {
+                    setMaclawModel(firstModel);
+                    setClaudeCodeModel(firstModel);
+                    return SaveCodeGenModelChoice(firstModel, firstModel).then(() => {
+                        setModelSaved(true);
+                    });
                 }
             }).catch(err => {
-                console.warn("[TigerClaw] FetchCodeGenModels failed:", err);
+                console.warn("[TigerClaw] Auto-select first CodeGen model failed:", err);
             }).finally(() => {
                 setCodegenModelsFetching(false);
             });
@@ -499,15 +498,23 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     const serviceStatus = await RedeemHubLLMService(trimmedRedeemCode) as HubLLMServiceStatus;
                     const skippedByStatus = applyHubServiceStatus(serviceStatus);
                     setRedeemCode("");
-                    // Backend's applyHubLLMServiceStatusToConfig has already
-                    // configured the hub LLM provider in config.json. Even if
-                    // skip_llm_config is false (e.g. provider registry filtering),
-                    // the LLM is ready — skip step 3.
+                    // Backend's applyHubLLMServiceStatusToConfig configures
+                    // the hub LLM provider when the Hub service is active.
+                    // Inactive grants (queued, period-limited, exhausted) must
+                    // remain visible instead of being treated as completed LLM setup.
                     if (!skippedByStatus) {
-                        setLlmDone(true);
-                        onLLMConfigured();
+                        if (serviceStatus?.active) {
+                            setLlmDone(true);
+                            onLLMConfigured();
+                        } else {
+                            setFreeTrial(false);
+                            setLlmDone(false);
+                            redeemNote = `\n${hubInactiveRedeemMessage(serviceStatus)}`;
+                        }
                     }
-                    redeemNote = `\n${t("✅ 服务兑换码已激活，LLM 配置步骤已自动跳过", "✅ Service code redeemed. LLM configuration step skipped automatically.", "✅ 服務兌換碼已啟用，LLM 配置步驟已自動跳過")}`;
+                    if (!redeemNote) {
+                        redeemNote = `\n${t("✅ 服务兑换码已激活，LLM 配置步骤已自动跳过", "✅ Service code redeemed. LLM configuration step skipped automatically.", "✅ 服務兌換碼已啟用，LLM 配置步驟已自動跳過")}`;
+                    }
                 } catch (redeemError) {
                     redeemNote = `\n${t("服务兑换码兑换失败，请稍后在服务状态中重试：", "Service redeem code failed. You can retry later in service status: ", "服務兌換碼兌換失敗，請稍後在服務狀態中重試：")}${String(redeemError)}`;
                 }
@@ -759,6 +766,20 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                             onLLMConfigured();
                                             const userEmail = (info as any)?.email || "";
                                             setSsoResult({ ok: true, msg: (info as any)?.message || "SSO OK" });
+                                            try {
+                                                const models = await FetchCodeGenModels();
+                                                setCodegenModels(models || []);
+                                                const preferredModel = (info as any)?.model_id || "";
+                                                const firstModel = preferredModel || (models && models.length > 0 ? models[0].id : "");
+                                                if (firstModel) {
+                                                    setMaclawModel(firstModel);
+                                                    setClaudeCodeModel(firstModel);
+                                                    await SaveCodeGenModelChoice(firstModel, firstModel);
+                                                    setModelSaved(true);
+                                                }
+                                            } catch (modelErr) {
+                                                console.warn("[TigerClaw] Auto-select first CodeGen model failed:", modelErr);
+                                            }
                                             if (userEmail) {
                                                 try {
                                                     await ActivateRemote(userEmail, "", "");

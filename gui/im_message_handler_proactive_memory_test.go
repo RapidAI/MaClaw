@@ -24,6 +24,20 @@ func newTestIMHandlerWithMemoryStore(t *testing.T) *IMMessageHandler {
 	return h
 }
 
+func TestSystemPrompt_IncludesMISDynamicAgentViewRules(t *testing.T) {
+	h := newTestIMHandler(map[string]*RemoteSession{})
+	prompt := h.buildSystemPrompt()
+
+	assertContainsAll(t, prompt, []string{
+		"## MIS Dynamic AgentView",
+		"mis_data(action=\"resolve_intent\"",
+		"mis_data(action=\"list_agent_transactions\")",
+		"right-side AgentView",
+		"directly operable UI",
+		"Standard skills remain immutable",
+	})
+}
+
 func assertContainsAll(t *testing.T, text string, parts []string) {
 	t.Helper()
 	for _, part := range parts {
@@ -138,4 +152,25 @@ func TestSystemPrompt_NoMemoryStore_NoProactiveInstruction(t *testing.T) {
 	h := newTestIMHandler(map[string]*RemoteSession{})
 	prompt := h.buildSystemPrompt()
 	assertContainsNone(t, prompt, []string{corememory.PromptSectionProactiveMemory})
+}
+
+func TestSystemPrompt_IncludesKnowledgeBaseTriggerRules(t *testing.T) {
+	h := newTestIMHandler(map[string]*RemoteSession{})
+	prompt := h.buildSystemPrompt()
+
+	assertContainsAll(t, prompt, []string{
+		"## 知识库外脑触发规则",
+		"明确长期保存意图",
+		"knowledge_save_url",
+		"knowledge_save_urls",
+		"knowledge_discover_urls",
+		"knowledge_import_files",
+		"knowledge_import_directory",
+		"knowledge_save_text",
+		"knowledge_context_pack",
+		"knowledge_source_digest",
+		"查询阶段默认不依赖 LLM",
+		"写入阶段允许",
+		"不要因为用户只是让你",
+	})
 }

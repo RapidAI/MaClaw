@@ -4,21 +4,27 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/url"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // RunRemote 执行 remote 子命令。
 func RunRemote(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui remote <status|activate|set-hub|set-email|deactivate>")
+		return NewUsageError("usage: maclaw-tui remote <status|activate|set-hubcenter|set-email|deactivate>")
 	}
 	switch args[0] {
 	case "status":
 		return remoteStatus(args[1:])
 	case "activate":
 		return remoteActivate(args[1:])
+	case "set-hubcenter":
+		return remoteSetHubCenter(args[1:])
 	case "set-hub":
 		return remoteSetHub(args[1:])
 	case "set-email":
@@ -40,36 +46,141 @@ func remoteStatus(args []string) error {
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
+	lang := i18n.NormalizeLang(cfg.Language)
 
 	info := map[string]interface{}{
-		"enabled":    cfg.RemoteEnabled,
-		"hub_url":    cfg.RemoteHubURL,
-		"email":      cfg.RemoteEmail,
-		"machine_id": cfg.RemoteMachineID,
-		"sn":         cfg.RemoteSN,
-		"user_id":    cfg.RemoteUserID,
+		"enabled":                  cfg.RemoteEnabled,
+		"activation_state":         remoteActivationState(cfg),
+		"hub_url":                  cfg.RemoteHubURL,
+		"hubcenter_url":            effectiveRemoteHubCenterURL(cfg),
+		"email":                    cfg.RemoteEmail,
+		"machine_id":               cfg.RemoteMachineID,
+		"sn":                       cfg.RemoteSN,
+		"user_id":                  cfg.RemoteUserID,
+		"hub_service_ready":        remoteHubServiceReady(cfg),
+		"viewer_token_ready":       cfg.RemoteViewerToken != "",
+		"machine_token_ready":      strings.TrimSpace(cfg.RemoteMachineToken) != "",
+		"machine_activation_ready": remoteMachineActivationReady(cfg),
+		"next_action":              remoteNextAction(cfg, lang),
+		"next_tui_command":         remoteNextTUICommand(cfg),
 	}
 
 	if *jsonOut {
 		return PrintJSON(info)
 	}
 
-	activated := cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != ""
+	printRemoteStatus(cfg, lang)
+	return nil
+}
+
+func printRemoteStatus(cfg corelib.AppConfig, lang string) {
+	if lang == "en" {
+		status := "inactive"
+		switch remoteActivationState(cfg) {
+		case "active":
+			status = "active"
+		case "service_ready":
+			status = "service credentials ready (remote machine not fully activated)"
+		case "incomplete":
+			status = "incomplete (run Setup again)"
+		}
+
+		fmt.Printf("Remote mode: %s\n", status)
+		fmt.Printf("  Enabled:   %v\n", cfg.RemoteEnabled)
+		fmt.Printf("  HubCenter: %s\n", effectiveRemoteHubCenterURL(cfg))
+		fmt.Printf("  Hub URL:   %s\n", orDefault(cfg.RemoteHubURL, "(auto-selected during registration)"))
+		fmt.Printf("  Email:     %s\n", orDefault(cfg.RemoteEmail, "(not set)"))
+		fmt.Printf("  Machine ID:%s\n", remoteAlignedValue(cfg.RemoteMachineID, "(not activated)"))
+		fmt.Printf("  SN:        %s\n", orDefault(cfg.RemoteSN, "(not activated)"))
+		if cfg.RemoteMachineToken != "" {
+			fmt.Printf("  Token:     %s****\n", cfg.RemoteMachineToken[:min(4, len(cfg.RemoteMachineToken))])
+		}
+		if cfg.RemoteViewerToken != "" {
+			fmt.Printf("  Viewer:    %s****\n", cfg.RemoteViewerToken[:min(4, len(cfg.RemoteViewerToken))])
+		} else if strings.TrimSpace(cfg.RemoteEmail) != "" {
+			fmt.Println("  Viewer:    (missing; run maclaw-tui setup again)")
+		}
+		fmt.Printf("  Service credentials: %s\n", yesNoEN(remoteHubServiceReady(cfg)))
+		fmt.Printf("  Machine activation:  %s\n", yesNoEN(remoteMachineActivationReady(cfg)))
+		fmt.Printf("  Next: %s\n", remoteNextAction(cfg, lang))
+		fmt.Printf("  TUI status: %s\n", remoteNextTUICommand(cfg))
+		fmt.Println("  Note: Hub URL is display-only. Change HubCenter, then register again if the entrypoint changes.")
+		return
+	}
+
 	status := "未激活"
-	if activated {
+	switch remoteActivationState(cfg) {
+	case "active":
 		status = "已激活"
+	case "service_ready":
+		status = "服务凭据可用（远程机器未完整激活）"
+	case "incomplete":
+		status = "未完成（请重新初始化）"
 	}
 
 	fmt.Printf("远程模式: %s\n", status)
 	fmt.Printf("  启用:     %v\n", cfg.RemoteEnabled)
-	fmt.Printf("  Hub URL:  %s\n", orDefault(cfg.RemoteHubURL, "(未设置)"))
+	fmt.Printf("  HubCenter: %s\n", effectiveRemoteHubCenterURL(cfg))
+	fmt.Printf("  Hub URL:  %s\n", orDefault(cfg.RemoteHubURL, "(注册时自动选择，当前未设置)"))
 	fmt.Printf("  邮箱:     %s\n", orDefault(cfg.RemoteEmail, "(未设置)"))
 	fmt.Printf("  机器 ID:  %s\n", orDefault(cfg.RemoteMachineID, "(未激活)"))
 	fmt.Printf("  SN:       %s\n", orDefault(cfg.RemoteSN, "(未激活)"))
 	if cfg.RemoteMachineToken != "" {
 		fmt.Printf("  Token:    %s****\n", cfg.RemoteMachineToken[:min(4, len(cfg.RemoteMachineToken))])
 	}
-	return nil
+	if cfg.RemoteViewerToken != "" {
+		fmt.Printf("  Viewer:   %s****\n", cfg.RemoteViewerToken[:min(4, len(cfg.RemoteViewerToken))])
+	} else if strings.TrimSpace(cfg.RemoteEmail) != "" {
+		fmt.Println("  Viewer:   (缺失，请运行 maclaw-tui setup 重新初始化)")
+	}
+	fmt.Printf("  服务凭据:  %s\n", yesNoCN(remoteHubServiceReady(cfg)))
+	fmt.Printf("  机器激活:  %s\n", yesNoCN(remoteMachineActivationReady(cfg)))
+	fmt.Printf("  下一步: %s\n", remoteNextAction(cfg, lang))
+	fmt.Printf("  TUI 状态总览: %s\n", remoteNextTUICommand(cfg))
+	fmt.Println("  提示: Hub URL 仅展示；如需更换入口，请设置 HubCenter 后重新注册。")
+}
+
+func remoteNextAction(cfg corelib.AppConfig, lang string) string {
+	cliName := remoteCLIName()
+	if lang == "en" {
+		switch remoteActivationState(cfg) {
+		case "active", "service_ready":
+			return fmt.Sprintf("Run %s redeem to check or redeem MaClaw official service, or run %s status for the full readiness overview.", cliName, cliName)
+		case "incomplete":
+			return fmt.Sprintf("Run %s setup to reactivate Hub credentials. Hub is selected automatically from HubCenter and email.", cliName)
+		default:
+			return fmt.Sprintf("Run %s setup, enter email, and choose HubCenter in the TUI.", cliName)
+		}
+	}
+	switch remoteActivationState(cfg) {
+	case "active", "service_ready":
+		return fmt.Sprintf("运行 %s redeem 检查或兑换 MaClaw 官方服务；也可运行 %s status 查看整体状态。", cliName, cliName)
+	case "incomplete":
+		return fmt.Sprintf("运行 %s setup 重新激活 Hub 凭据；Hub 会根据 HubCenter 和邮箱自动选择。", cliName)
+	default:
+		return fmt.Sprintf("运行 %s setup，在 TUI 中输入邮箱并选择 HubCenter。", cliName)
+	}
+}
+
+func remoteNextTUICommand(cfg corelib.AppConfig) string {
+	cliName := remoteCLIName()
+	switch remoteActivationState(cfg) {
+	case "active", "service_ready":
+		return cliName + " status"
+	}
+	return cliName + " setup"
+}
+
+func remoteCLIName() string {
+	return strings.ToLower(brand.Current().DisplayName) + "-tui"
+}
+
+func remoteAlignedValue(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = fallback
+	}
+	return " " + value
 }
 
 // remoteActivate performs the full HubCenter discovery → Hub resolve → Enroll flow.
@@ -92,25 +203,25 @@ func remoteActivate(args []string) error {
 		activateEmail = strings.TrimSpace(cfg.RemoteEmail)
 	}
 	if activateEmail == "" {
-		return fmt.Errorf("邮箱未配置。请使用 --email 参数或先运行: maclaw-tui remote set-email <email>")
+		cliName := remoteCLIName()
+		return fmt.Errorf("邮箱未配置。推荐运行 %s setup 在 TUI 中完成；脚本可使用 %s remote activate --email <email>", cliName, cliName)
 	}
+	if !validOnboardingEmailForCLI(activateEmail) {
+		return fmt.Errorf("邮箱格式无效: %s。推荐运行 %s setup 在 TUI 中重新输入", activateEmail, remoteCLIName())
+	}
+	activateEmail = strings.ToLower(activateEmail)
 
 	// Check if already activated.
-	if cfg.RemoteMachineID != "" && cfg.RemoteMachineToken != "" {
-		fmt.Printf("已激活 (machine_id=%s)。如需重新注册，请先运行: maclaw-tui remote deactivate\n", cfg.RemoteMachineID)
+	if remoteActivationComplete(cfg) {
+		fmt.Printf("已激活 (machine_id=%s)。如需重新注册，请先运行: %s remote deactivate\n", cfg.RemoteMachineID, remoteCLIName())
 		return nil
 	}
 
 	fmt.Printf("正在注册 %s ...\n", activateEmail)
 
-	// Build machine profile with TUI version.
-	profile := remote.BuildMachineProfile(resolveAppVersion())
-	profile.Email = activateEmail
-	profile.InvitationCode = strings.TrimSpace(*invCode)
-	profile.ClientID = cfg.RemoteClientID
-	profile.HubURL = strings.TrimSpace(cfg.RemoteHubURL)
-	profile.HubCenterURL = strings.TrimSpace(cfg.RemoteHubCenterURL)
-	profile.HubCenterURLs = cfg.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
+	// Build machine profile with TUI version. Hub URL is intentionally not
+	// supplied; HubCenter resolves the correct Hub from the registration email.
+	profile := buildRemoteEnrollmentProfile(cfg, activateEmail, strings.TrimSpace(*invCode))
 
 	client := remote.NewEnrollmentClient()
 	result, err := client.Enroll(context.Background(), profile)
@@ -119,7 +230,31 @@ func remoteActivate(args []string) error {
 	}
 
 	// Persist credentials to config.json (shared with GUI).
-	cfg.RemoteEmail = result.Email
+	cfg = applyRemoteEnrollResultToConfig(cfg, result)
+
+	if err := store.SaveConfig(cfg); err != nil {
+		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	fmt.Println("✅ 注册成功")
+	fmt.Printf("  Hub URL:    %s\n", result.HubURL)
+	fmt.Printf("  Machine ID: %s\n", result.MachineID)
+	fmt.Printf("  Email:      %s\n", result.Email)
+	if result.SN != "" {
+		fmt.Printf("  SN:         %s\n", result.SN)
+	}
+	fmt.Printf("  下一步: %s\n", remoteNextAction(cfg, i18n.NormalizeLang(cfg.Language)))
+	fmt.Printf("  TUI 状态总览: %s\n", remoteNextTUICommand(cfg))
+	return nil
+}
+
+func applyRemoteEnrollResultToConfig(cfg corelib.AppConfig, result *remote.EnrollResult) corelib.AppConfig {
+	if result == nil {
+		return cfg
+	}
+	if strings.TrimSpace(result.Email) != "" {
+		cfg.RemoteEmail = strings.TrimSpace(result.Email)
+	}
 	cfg.RemoteSN = result.SN
 	cfg.RemoteUserID = result.UserID
 	cfg.RemoteMachineID = result.MachineID
@@ -139,19 +274,19 @@ func remoteActivate(args []string) error {
 	if len(result.DiscoveredURLs) > 0 {
 		cfg.RemoteHubCenterURLs = remote.NormalizeHubCenterURLs(result.DiscoveredURLs)
 	}
+	cfg.OnboardingDone = remoteActivationComplete(cfg)
+	return cfg
+}
 
-	if err := store.SaveConfig(cfg); err != nil {
-		return fmt.Errorf("保存配置失败: %w", err)
-	}
-
-	fmt.Println("✅ 注册成功")
-	fmt.Printf("  Hub URL:    %s\n", result.HubURL)
-	fmt.Printf("  Machine ID: %s\n", result.MachineID)
-	fmt.Printf("  Email:      %s\n", result.Email)
-	if result.SN != "" {
-		fmt.Printf("  SN:         %s\n", result.SN)
-	}
-	return nil
+func buildRemoteEnrollmentProfile(cfg corelib.AppConfig, email, invCode string) remote.EnrollConfig {
+	profile := remote.BuildMachineProfile(resolveAppVersion())
+	profile.Email = strings.TrimSpace(email)
+	profile.InvitationCode = strings.TrimSpace(invCode)
+	profile.ClientID = cfg.RemoteClientID
+	profile.HubURL = ""
+	profile.HubCenterURL = strings.TrimSpace(cfg.RemoteHubCenterURL)
+	profile.HubCenterURLs = cfg.HubCenterBaseURLs(remote.DefaultRemoteHubCenterURL, remote.DefaultRemoteHubCenterURLs)
+	return profile
 }
 
 // resolveAppVersion returns the TUI app version string.
@@ -163,13 +298,21 @@ func resolveAppVersion() string {
 }
 
 func remoteSetHub(args []string) error {
-	fs := flag.NewFlagSet("remote set-hub", flag.ExitOnError)
+	cliName := remoteCLIName()
+	return NewUsageError("Hub URL 由 HubCenter 和注册邮箱自动选择，不再手动设置。请运行 %s remote set-hubcenter <url>，或直接运行 %s setup。", cliName, cliName)
+}
+
+func remoteSetHubCenter(args []string) error {
+	fs := flag.NewFlagSet("remote set-hubcenter", flag.ExitOnError)
 	fs.Parse(args)
 
 	if fs.NArg() == 0 {
-		return NewUsageError("usage: remote set-hub <hub-url>")
+		return NewUsageError("usage: remote set-hubcenter <hubcenter-url>")
 	}
-	hubURL := strings.TrimRight(fs.Arg(0), "/")
+	hubCenterURL := strings.TrimRight(strings.TrimSpace(fs.Arg(0)), "/")
+	if !validRemoteHubCenterURL(hubCenterURL) {
+		return fmt.Errorf("HubCenter must be a valid http(s) URL: %s", fs.Arg(0))
+	}
 
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
@@ -177,12 +320,78 @@ func remoteSetHub(args []string) error {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
 
-	cfg.RemoteHubURL = hubURL
+	cfg.RemoteHubCenterURL = hubCenterURL
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
-	fmt.Printf("Hub URL 已设为: %s\n", hubURL)
+	fmt.Printf("HubCenter 已设为 %s。下次注册会根据邮箱自动选择 Hub。\n", hubCenterURL)
+	fmt.Printf("下一步: 运行 %s setup 重新激活 Hub；Hub URL 会自动刷新。\n", remoteCLIName())
 	return nil
+}
+
+func validRemoteHubCenterURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+}
+
+func remoteMachineActivationReady(cfg corelib.AppConfig) bool {
+	return strings.TrimSpace(cfg.RemoteMachineID) != "" &&
+		strings.TrimSpace(cfg.RemoteMachineToken) != ""
+}
+
+func remoteHubServiceReady(cfg corelib.AppConfig) bool {
+	return strings.TrimSpace(cfg.RemoteHubURL) != "" &&
+		strings.TrimSpace(cfg.RemoteViewerToken) != ""
+}
+
+func remoteActivationComplete(cfg corelib.AppConfig) bool {
+	return remoteMachineActivationReady(cfg) && remoteHubServiceReady(cfg)
+}
+
+func remoteActivationIncomplete(cfg corelib.AppConfig) bool {
+	if strings.TrimSpace(cfg.RemoteEmail) == "" {
+		return false
+	}
+	return strings.TrimSpace(cfg.RemoteMachineID) == "" ||
+		strings.TrimSpace(cfg.RemoteMachineToken) == "" ||
+		strings.TrimSpace(cfg.RemoteViewerToken) == ""
+}
+
+func remoteActivationState(cfg corelib.AppConfig) string {
+	if remoteActivationComplete(cfg) {
+		return "active"
+	}
+	if remoteHubServiceReady(cfg) {
+		return "service_ready"
+	}
+	if remoteActivationIncomplete(cfg) {
+		return "incomplete"
+	}
+	return "inactive"
+}
+
+func yesNoCN(ok bool) string {
+	if ok {
+		return "是"
+	}
+	return "否"
+}
+
+func yesNoEN(ok bool) string {
+	if ok {
+		return "yes"
+	}
+	return "no"
+}
+
+func effectiveRemoteHubCenterURL(cfg corelib.AppConfig) string {
+	if value := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubCenterURL), "/"); value != "" {
+		return value
+	}
+	return remote.DefaultRemoteHubCenterURL
 }
 
 func remoteSetEmail(args []string) error {
@@ -192,7 +401,10 @@ func remoteSetEmail(args []string) error {
 	if fs.NArg() == 0 {
 		return NewUsageError("usage: remote set-email <email>")
 	}
-	email := fs.Arg(0)
+	email := strings.ToLower(strings.TrimSpace(fs.Arg(0)))
+	if !validOnboardingEmailForCLI(email) {
+		return fmt.Errorf("邮箱格式无效: %s。请运行 %s setup 在 TUI 中重新输入", fs.Arg(0), remoteCLIName())
+	}
 
 	store := NewFileConfigStore(ResolveDataDir())
 	cfg, err := store.LoadConfig()
@@ -205,6 +417,7 @@ func remoteSetEmail(args []string) error {
 		return err
 	}
 	fmt.Printf("远程邮箱已设为: %s\n", email)
+	fmt.Printf("下一步: 运行 %s setup 激活 Hub；Hub 会根据 HubCenter 和邮箱自动选择。\n", remoteCLIName())
 	return nil
 }
 
@@ -218,7 +431,7 @@ func remoteDeactivate(args []string) error {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
 
-	if cfg.RemoteMachineID == "" {
+	if !remoteHasAnyCredential(cfg) {
 		fmt.Println("远程模式未激活，无需取消。")
 		return nil
 	}
@@ -226,14 +439,29 @@ func remoteDeactivate(args []string) error {
 	cfg.RemoteMachineID = ""
 	cfg.RemoteMachineToken = ""
 	cfg.RemoteViewerToken = ""
+	cfg.RemoteHubURL = ""
 	cfg.RemoteEmail = ""
 	cfg.RemoteSN = ""
 	cfg.RemoteUserID = ""
 	cfg.RemoteEnabled = false
+	cfg.OnboardingDone = false
+	if strings.EqualFold(strings.TrimSpace(cfg.DefaultLaunchMode), "remote") {
+		cfg.DefaultLaunchMode = ""
+	}
 
 	if err := store.SaveConfig(cfg); err != nil {
 		return err
 	}
 	fmt.Println("远程模式已取消激活。")
 	return nil
+}
+
+func remoteHasAnyCredential(cfg corelib.AppConfig) bool {
+	return strings.TrimSpace(cfg.RemoteMachineID) != "" ||
+		strings.TrimSpace(cfg.RemoteMachineToken) != "" ||
+		strings.TrimSpace(cfg.RemoteViewerToken) != "" ||
+		strings.TrimSpace(cfg.RemoteHubURL) != "" ||
+		strings.TrimSpace(cfg.RemoteEmail) != "" ||
+		strings.TrimSpace(cfg.RemoteSN) != "" ||
+		strings.TrimSpace(cfg.RemoteUserID) != ""
 }

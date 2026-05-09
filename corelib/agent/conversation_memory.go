@@ -26,6 +26,8 @@ const (
 	MemoryPersistDebounce     = 150 * time.Millisecond
 	MemoryPersistSignalBuffer = 1
 	MemoryShardCount          = 16
+	InFlightTaskLease         = 30 * time.Minute
+	InFlightTaskRenewInterval = 2 * time.Minute
 )
 
 // ConversationEntry represents a single message in a conversation.
@@ -107,6 +109,8 @@ type conversationSession struct {
 	activeSlotID        string
 	inFlightTask        string // non-empty while an agent loop is executing; cleared on normal exit
 	inFlightProjectPath string // project path when the in-flight task was set
+	inFlightSetAt       time.Time
+	inFlightRunID       string
 }
 
 type persistedSession struct {
@@ -116,6 +120,8 @@ type persistedSession struct {
 	ActiveSlotID        string              `json:"active_slot_id,omitempty"`
 	InFlightTask        string              `json:"in_flight_task,omitempty"`
 	InFlightProjectPath string              `json:"in_flight_project_path,omitempty"`
+	InFlightSetAt       time.Time           `json:"in_flight_set_at,omitempty"`
+	InFlightRunID       string              `json:"in_flight_run_id,omitempty"`
 }
 
 type memorySnapshot struct {
@@ -188,6 +194,7 @@ func (cm *ConversationMemory) evictionLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			cm.ExpireStaleInFlightTasks(time.Now(), InFlightTaskLease)
 			cm.EvictExpired()
 		case <-cm.evictionStopCh:
 			return
@@ -577,22 +584,36 @@ func (cm *ConversationMemory) ClearConversationAndDismissSlot(userID string) {
 
 // --- In-flight task marker ---
 //
-// The in-flight task marker tracks whether an agent loop is currently
-// executing. It is set at the START of the agent loop and cleared at the
-// END (normal exit, cancel, max-rounds, etc.). If the process is killed
-// while the agent loop is running (e.g., by an updater), the marker
-// remains on disk. On the next app startup, the marker's presence tells
-// the system that the previous task was interrupted abnormally, and the
-// conversation history should be treated as an incomplete task — regardless
-// of what the user's next message says.
+// The in-flight task marker tracks an agent loop that has produced
+// recoverable intermediate state. It is set lazily after useful tool work is
+// committed to history, then cleared at the END (normal exit, cancel,
+// max-rounds, etc.). If the process is killed after that point (e.g., by an
+// updater), the marker remains on disk. On the next app startup, the marker's
+// presence tells the system that the previous task was interrupted
+// abnormally, and the conversation history should be treated as an incomplete
+// task regardless of what the user's next message says.
 
-// SetInFlightTask marks that an agent loop is currently executing for this
-// user. The task string is a brief description (e.g., the user's original
-// request, truncated). This must be followed by a synchronous FlushNow()
-// to ensure the marker survives a process kill.
-// The optional projectPath parameter records which project the task belongs to,
-// enabling project-aware recovery after process kill.
+// SetInFlightTask marks recoverable in-flight work for this user. The task
+// string is a brief description (e.g., the user's original request,
+// truncated). Callers that need crash recovery should follow this with a
+// synchronous FlushNow().
+//
+// Optional args are kept for older call sites: projectPath[0] records the
+// project path and projectPath[1], when supplied, records the loop run ID. New
+// code should prefer SetInFlightTaskForRun for clarity.
 func (cm *ConversationMemory) SetInFlightTask(userID, task string, projectPath ...string) {
+	runID := ""
+	if len(projectPath) > 1 {
+		runID = projectPath[1]
+	}
+	path := ""
+	if len(projectPath) > 0 {
+		path = projectPath[0]
+	}
+	cm.SetInFlightTaskForRun(userID, task, path, runID)
+}
+
+func (cm *ConversationMemory) SetInFlightTaskForRun(userID, task, projectPath, runID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
 	s := sh.sessions[userID]
@@ -600,15 +621,36 @@ func (cm *ConversationMemory) SetInFlightTask(userID, task string, projectPath .
 		s = &conversationSession{}
 		sh.sessions[userID] = s
 	}
+	now := time.Now()
 	s.inFlightTask = task
-	if len(projectPath) > 0 {
-		s.inFlightProjectPath = projectPath[0]
-	} else {
-		s.inFlightProjectPath = ""
-	}
-	s.lastAccess = time.Now()
+	s.inFlightSetAt = now
+	s.inFlightProjectPath = projectPath
+	s.inFlightRunID = strings.TrimSpace(runID)
+	s.lastAccess = now
 	sh.mu.Unlock()
 	cm.markDirtyAndScheduleFlush()
+}
+
+// RefreshInFlightTask extends the activity lease for an existing in-flight
+// marker. It returns false when there is no active marker for userID.
+func (cm *ConversationMemory) RefreshInFlightTask(userID string) bool {
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	s := sh.sessions[userID]
+	if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+		sh.mu.Unlock()
+		return false
+	}
+	now := time.Now()
+	if !s.inFlightSetAt.IsZero() && now.Sub(s.inFlightSetAt) < InFlightTaskRenewInterval {
+		sh.mu.Unlock()
+		return true
+	}
+	s.inFlightSetAt = now
+	s.lastAccess = now
+	sh.mu.Unlock()
+	cm.markDirtyAndScheduleFlush()
+	return true
 }
 
 // ClearInFlightTask removes the in-flight marker, indicating the agent
@@ -616,12 +658,120 @@ func (cm *ConversationMemory) SetInFlightTask(userID, task string, projectPath .
 func (cm *ConversationMemory) ClearInFlightTask(userID string) {
 	sh := cm.shard(userID)
 	sh.mu.Lock()
+	changed := false
 	if s := sh.sessions[userID]; s != nil {
-		s.inFlightTask = ""
-		s.inFlightProjectPath = ""
+		if s.inFlightTask != "" || s.inFlightProjectPath != "" || !s.inFlightSetAt.IsZero() || s.inFlightRunID != "" {
+			s.inFlightTask = ""
+			s.inFlightProjectPath = ""
+			s.inFlightSetAt = time.Time{}
+			s.inFlightRunID = ""
+			changed = true
+		}
 	}
 	sh.mu.Unlock()
-	cm.markDirtyAndScheduleFlush()
+	if changed {
+		cm.markDirtyAndScheduleFlush()
+	}
+}
+
+func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
+	runID = strings.TrimSpace(runID)
+	sh := cm.shard(userID)
+	sh.mu.Lock()
+	changed := false
+	if s := sh.sessions[userID]; s != nil {
+		if runID == "" || s.inFlightRunID == runID {
+			if s.inFlightTask != "" || s.inFlightProjectPath != "" || !s.inFlightSetAt.IsZero() || s.inFlightRunID != "" {
+				s.inFlightTask = ""
+				s.inFlightProjectPath = ""
+				s.inFlightSetAt = time.Time{}
+				s.inFlightRunID = ""
+				changed = true
+			}
+		}
+		if s.unfinishedSlot != nil &&
+			s.unfinishedSlot.Source == "in_flight_lease_expired" &&
+			s.unfinishedSlot.EvidenceScopeKey == inFlightRunScopeKey(runID) {
+			s.unfinishedSlot = nil
+			s.activeSlotID = ""
+			changed = true
+		}
+	}
+	sh.mu.Unlock()
+	if changed {
+		cm.markDirtyAndScheduleFlush()
+	}
+}
+
+// ExpireStaleInFlightTasks converts stale in-flight markers into unfinished
+// slots. This keeps the recoverability invariant while preventing a durable
+// busy flag from making the UI spin forever after a stuck or interrupted loop.
+func (cm *ConversationMemory) ExpireStaleInFlightTasks(now time.Time, lease time.Duration) int {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if lease <= 0 {
+		lease = InFlightTaskLease
+	}
+	expired := 0
+	for _, sh := range cm.shards {
+		sh.mu.Lock()
+		for userID, s := range sh.sessions {
+			if s == nil || strings.TrimSpace(s.inFlightTask) == "" {
+				continue
+			}
+			setAt := s.inFlightSetAt
+			if setAt.IsZero() {
+				setAt = s.lastAccess
+			}
+			if setAt.IsZero() || now.Sub(setAt) <= lease {
+				continue
+			}
+			cm.convertExpiredInFlightLocked(userID, s, now)
+			expired++
+		}
+		sh.mu.Unlock()
+	}
+	if expired > 0 {
+		cm.markDirtyAndScheduleFlush()
+	}
+	return expired
+}
+
+func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *conversationSession, now time.Time) {
+	task := s.inFlightTask
+	projectPath := s.inFlightProjectPath
+	runID := s.inFlightRunID
+	if s.unfinishedSlot == nil {
+		slotID := fmt.Sprintf("inflight-expired-%d", now.UnixMilli())
+		s.unfinishedSlot = &UnfinishedTaskSlot{
+			SlotID:           slotID,
+			UserID:           userID,
+			ProjectPath:      projectPath,
+			Tool:             "agent",
+			Status:           "interrupted",
+			Summary:          "Previous task stopped making progress and was moved to recovery.",
+			LastTask:         task,
+			ResumePrompt:     "The previous task stopped making progress. Continue from the saved conversation history and avoid repeating completed work.\n",
+			Source:           "in_flight_lease_expired",
+			EvidenceScopeKey: inFlightRunScopeKey(runID),
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}
+	}
+	s.inFlightTask = ""
+	s.inFlightProjectPath = ""
+	s.inFlightSetAt = time.Time{}
+	s.inFlightRunID = ""
+	s.lastAccess = now
+}
+
+func inFlightRunScopeKey(runID string) string {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ""
+	}
+	return "in_flight_run:" + runID
 }
 
 // ConsumeInFlightTask atomically reads and clears the in-flight marker.
@@ -642,6 +792,8 @@ func (cm *ConversationMemory) ConsumeInFlightTask(userID string) (string, string
 	projectPath := s.inFlightProjectPath
 	s.inFlightTask = ""
 	s.inFlightProjectPath = ""
+	s.inFlightSetAt = time.Time{}
+	s.inFlightRunID = ""
 	cm.markDirtyAndScheduleFlush()
 	return task, projectPath
 }
@@ -671,6 +823,8 @@ func (cm *ConversationMemory) saveToDisk() error {
 				ActiveSlotID:        session.activeSlotID,
 				InFlightTask:        session.inFlightTask,
 				InFlightProjectPath: session.inFlightProjectPath,
+				InFlightSetAt:       session.inFlightSetAt,
+				InFlightRunID:       session.inFlightRunID,
 			}
 		}
 		sh.mu.RUnlock()
@@ -731,6 +885,11 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			entries = deduped
 			needsRewrite = true
 		}
+		inFlightSetAt := session.InFlightSetAt
+		if strings.TrimSpace(session.InFlightTask) != "" && inFlightSetAt.IsZero() {
+			inFlightSetAt = session.LastAccess
+			needsRewrite = true
+		}
 
 		sh := cm.shard(userID)
 		sh.mu.Lock()
@@ -741,8 +900,13 @@ func (cm *ConversationMemory) loadFromDisk() error {
 			activeSlotID:        session.ActiveSlotID,
 			inFlightTask:        session.InFlightTask,
 			inFlightProjectPath: session.InFlightProjectPath,
+			inFlightSetAt:       inFlightSetAt,
+			inFlightRunID:       session.InFlightRunID,
 		}
 		sh.mu.Unlock()
+	}
+	if cm.ExpireStaleInFlightTasks(time.Now(), InFlightTaskLease) > 0 {
+		needsRewrite = true
 	}
 	if needsRewrite {
 		cm.persistStateMu.Lock()

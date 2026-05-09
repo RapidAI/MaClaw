@@ -1,6 +1,5 @@
 import type React from "react";
 import { BufferQueuePanel } from "./BufferQueuePanel";
-import { AssistantWorkflowDocsBar } from "./AssistantWorkflowDocsBar";
 import { AssistantInputComposer } from "./AssistantInputComposer";
 import type { Theme } from "./aiAssistantPanelTheme";
 
@@ -19,6 +18,7 @@ interface AssistantInputStackProps {
     handleCancelEdit: () => void;
     handlePaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
     handleSaveEdit: (id: string, text: string, attachments: any[]) => void;
+    handleFireEntry: (id: string) => void;
     handleSend: () => void;
     handleVoiceClick: () => void;
     handleVoicePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
@@ -50,21 +50,17 @@ interface AssistantInputStackProps {
     themeMode: "light" | "dark";
     updateInputValue: (value: string) => void;
     voiceInput: any;
-    workflowState: any;
-    dismissDocsBar: () => void;
-    handleSelectWorkflowDir: () => void;
-    openDocPreview: (doc: any) => void;
 }
 
 export function AssistantInputStack(props: AssistantInputStackProps) {
     const {
         browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composing, editingEntryId,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handlePaste,
-        handleSaveEdit, handleSend, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight,
+        handleSaveEdit, handleFireEntry, handleSend, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight,
         inputLocked, inputRef, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments,
         placeholderText, queue, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setComposing, setPendingAttachments, showBusySpinner, startInputResize, theme: t,
-        themeMode, updateInputValue, voiceInput, workflowState, dismissDocsBar, handleSelectWorkflowDir, openDocPreview,
+        themeMode, updateInputValue, voiceInput,
     } = props;
 
     return (
@@ -113,19 +109,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     onSaveEdit={handleSaveEdit}
                     onDelete={removeEntry}
                     onReorder={reorderEntry}
-                />
-                <AssistantWorkflowDocsBar
-                    currentPhaseID={workflowState.currentPhaseID}
-                    docsBarDismissed={workflowState.docsBarDismissed}
-                    lang={lang}
-                    onDismiss={dismissDocsBar}
-                    onOpenDocPreview={openDocPreview}
-                    onSelectWorkingDir={handleSelectWorkflowDir}
-                    phaseDocuments={workflowState.phaseDocuments}
-                    splitMode={workflowState.splitMode}
-                    theme={t}
-                    themeMode={themeMode}
-                    workingDir={workflowState.workingDir}
+                    onFireEntry={handleFireEntry}
                 />
                 <AssistantInputComposer
                     browseFile={browseFile}

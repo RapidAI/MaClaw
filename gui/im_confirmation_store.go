@@ -37,6 +37,16 @@ type pendingConfirmation struct {
 	// This gives the agent a clearer, more actionable directive than the
 	// user's raw conversational input.
 	EnhancedInstruction string `json:"enhanced_instruction,omitempty"`
+
+	// Workflow confirmation fields are set when the user is asked whether to
+	// start a matched multi-phase workflow. If the user declines, the original
+	// request falls through to the normal agent loop once.
+	WorkflowType        string   `json:"workflow_type,omitempty"`
+	WorkflowSummary     string   `json:"workflow_summary,omitempty"`
+	WorkflowGoals       []string `json:"workflow_goals,omitempty"`
+	WorkflowConstraints []string `json:"workflow_constraints,omitempty"`
+	WorkflowConfidence  float64  `json:"workflow_confidence,omitempty"`
+	WorkflowStartReply  string   `json:"workflow_start_reply,omitempty"`
 }
 
 type confirmationSnapshot struct {
@@ -70,6 +80,8 @@ func (s *aiConfirmationStore) get(userID string) *pendingConfirmation {
 	clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 	clone.RiskFlags = append([]string(nil), item.RiskFlags...)
 	clone.RevisionHints = append([]string(nil), item.RevisionHints...)
+	clone.WorkflowGoals = append([]string(nil), item.WorkflowGoals...)
+	clone.WorkflowConstraints = append([]string(nil), item.WorkflowConstraints...)
 	return &clone
 }
 
@@ -82,6 +94,8 @@ func (s *aiConfirmationStore) set(item *pendingConfirmation) {
 	clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 	clone.RiskFlags = append([]string(nil), item.RiskFlags...)
 	clone.RevisionHints = append([]string(nil), item.RevisionHints...)
+	clone.WorkflowGoals = append([]string(nil), item.WorkflowGoals...)
+	clone.WorkflowConstraints = append([]string(nil), item.WorkflowConstraints...)
 	s.mu.Lock()
 	s.items[item.UserID] = &clone
 	s.mu.Unlock()
@@ -127,6 +141,8 @@ func (s *aiConfirmationStore) saveToDisk() error {
 		clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 		clone.RiskFlags = append([]string(nil), item.RiskFlags...)
 		clone.RevisionHints = append([]string(nil), item.RevisionHints...)
+		clone.WorkflowGoals = append([]string(nil), item.WorkflowGoals...)
+		clone.WorkflowConstraints = append([]string(nil), item.WorkflowConstraints...)
 		snapshot.Items[userID] = &clone
 	}
 	s.mu.RUnlock()
@@ -170,6 +186,8 @@ func (s *aiConfirmationStore) loadFromDisk() error {
 		clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 		clone.RiskFlags = append([]string(nil), item.RiskFlags...)
 		clone.RevisionHints = append([]string(nil), item.RevisionHints...)
+		clone.WorkflowGoals = append([]string(nil), item.WorkflowGoals...)
+		clone.WorkflowConstraints = append([]string(nil), item.WorkflowConstraints...)
 		s.items[userID] = &clone
 	}
 	return nil

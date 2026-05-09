@@ -121,8 +121,8 @@ func filterAuthorizedModelsByProviderRegistry(status *llmservice.ServiceStatus, 
 	for _, model := range filtered {
 		filteredStatus.AvailableModels = append(filteredStatus.AvailableModels, model.Name)
 	}
-	filteredStatus.Active = len(filtered) > 0
-	filteredStatus.SkipLLMConfig = len(filtered) > 0
+	filteredStatus.Active = status.Active && len(filtered) > 0
+	filteredStatus.SkipLLMConfig = status.SkipLLMConfig && len(filtered) > 0
 	if len(filtered) > 0 {
 		if best := llmservice.SelectBestModelForRequest(nil, filtered); best != nil {
 			filteredStatus.DefaultModel = best.Name
@@ -139,9 +139,14 @@ func explainFilteredServiceStatusIssues(status *llmservice.ServiceStatus, filter
 	if status == nil {
 		return nil
 	}
-	reasons := make([]string, 0, 3)
+	reasons := append([]string(nil), status.InactiveReasons...)
+	grantStateReasons := serviceStatusGrantStateReasons(status)
 	if len(status.ServiceGroupIDs) == 0 {
-		reasons = append(reasons, "no service-group entitlement is active for this user")
+		if len(grantStateReasons) > 0 {
+			reasons = append(reasons, grantStateReasons...)
+		} else {
+			reasons = append(reasons, "no service-group entitlement is active for this user")
+		}
 	}
 	if len(status.AuthorizedModels) > 0 && len(filtered) == 0 {
 		reasons = append(reasons, "authorized service groups exist, but none route to a live LLM provider")
@@ -151,6 +156,34 @@ func explainFilteredServiceStatusIssues(status *llmservice.ServiceStatus, filter
 	}
 	if providerReg == nil || len(providerReg.Providers) == 0 {
 		reasons = append(reasons, "no LLM providers are currently configured")
+	}
+	return dedupeServiceStatusReasons(reasons)
+}
+
+func serviceStatusGrantStateReasons(status *llmservice.ServiceStatus) []string {
+	if status == nil {
+		return nil
+	}
+	reasons := make([]string, 0, len(status.CreditGrants))
+	for _, grant := range status.CreditGrants {
+		switch strings.ToLower(strings.TrimSpace(grant.Status)) {
+		case "period_limited":
+			reason := "current period credit limit is exhausted"
+			if grant.RetryAfterAt != "" {
+				reason += "; retry after " + grant.RetryAfterAt
+			}
+			reasons = append(reasons, reason)
+		case "exhausted":
+			reasons = append(reasons, "grant credits are exhausted")
+		case "queued":
+			reason := "grant is not active yet"
+			if grant.RetryAfterAt != "" {
+				reason += "; starts at " + grant.RetryAfterAt
+			}
+			reasons = append(reasons, reason)
+		case "expired":
+			reasons = append(reasons, "grant has expired")
+		}
 	}
 	return dedupeServiceStatusReasons(reasons)
 }

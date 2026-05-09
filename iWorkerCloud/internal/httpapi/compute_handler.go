@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -12,12 +11,30 @@ import (
 
 // ComputeHandler holds the dependencies for compute provider HTTP endpoints.
 type ComputeHandler struct {
-	store         *compute.ProviderStore
+	store         computeStore
 	tester        *compute.ProviderTester
 	centerSvc     CenterAuthService
 	usageStore    *compute.UsageStore
 	costEngine    *compute.CostEngine
 	forwardClient *http.Client
+}
+
+type computeStore interface {
+	CreateProvider(ctx context.Context, p *compute.ComputeProvider) error
+	ListProviders(ctx context.Context) ([]*compute.ComputeProvider, error)
+	GetProvider(ctx context.Context, id string) (*compute.ComputeProvider, error)
+	UpdateProvider(ctx context.Context, p *compute.ComputeProvider) error
+	DeleteProvider(ctx context.Context, id string) error
+	ToggleProvider(ctx context.Context, id string) error
+	SetComputePermission(ctx context.Context, centerID string, enabled bool) error
+	GetComputePermission(ctx context.Context, centerID string) (bool, error)
+	SetForceSync(ctx context.Context, centerID string, val bool) error
+	GetForceSync(ctx context.Context, centerID string) (bool, error)
+	ClearForceSync(ctx context.Context, centerID string) error
+	AssignProvider(ctx context.Context, centerID, providerID string) error
+	UnassignProvider(ctx context.Context, centerID, providerID string) error
+	ListAssignments(ctx context.Context, centerID string) ([]string, error)
+	ListAssignedProviders(ctx context.Context, centerID string) ([]*compute.ComputeProvider, error)
 }
 
 // CenterAuthService is the subset of centers.Service needed by ComputeHandler.
@@ -41,7 +58,7 @@ func NewComputeHandler(store *compute.ProviderStore, centerSvc CenterAuthService
 func (h *ComputeHandler) CreateProvider() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var p compute.ComputeProvider
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		if err := decodeJSON(r, &p); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -51,6 +68,10 @@ func (h *ComputeHandler) CreateProvider() http.HandlerFunc {
 		}
 		if err := h.store.CreateProvider(r.Context(), &p); err != nil {
 			writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
+			return
+		}
+		if err := h.markAllCentersForceSync(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "SET_FORCE_SYNC_FAILED", err.Error())
 			return
 		}
 		// Mask api_key in response
@@ -123,7 +144,7 @@ func (h *ComputeHandler) UpdateProvider() http.HandlerFunc {
 			return
 		}
 		var p compute.ComputeProvider
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		if err := decodeJSON(r, &p); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -134,6 +155,10 @@ func (h *ComputeHandler) UpdateProvider() http.HandlerFunc {
 		}
 		if err := h.store.UpdateProvider(r.Context(), &p); err != nil {
 			writeError(w, http.StatusInternalServerError, "UPDATE_FAILED", err.Error())
+			return
+		}
+		if err := h.markAllCentersForceSync(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "SET_FORCE_SYNC_FAILED", err.Error())
 			return
 		}
 		// Re-read to get the full record with updated timestamps
@@ -169,6 +194,10 @@ func (h *ComputeHandler) DeleteProvider() http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
 			return
 		}
+		if err := h.markAllCentersForceSync(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "SET_FORCE_SYNC_FAILED", err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -192,6 +221,10 @@ func (h *ComputeHandler) ToggleProvider() http.HandlerFunc {
 		}
 		if err := h.store.ToggleProvider(r.Context(), id); err != nil {
 			writeError(w, http.StatusInternalServerError, "TOGGLE_FAILED", err.Error())
+			return
+		}
+		if err := h.markAllCentersForceSync(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "SET_FORCE_SYNC_FAILED", err.Error())
 			return
 		}
 		// Re-read to return the updated state
@@ -248,7 +281,7 @@ func (h *ComputeHandler) SetComputePermission() http.HandlerFunc {
 		var body struct {
 			Enabled bool `json:"enabled"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := decodeJSON(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -269,9 +302,17 @@ func (h *ComputeHandler) SetComputePermission() http.HandlerFunc {
 			}
 		}
 
-		// Read back current values.
-		perm, _ := h.store.GetComputePermission(ctx, centerID)
-		fs, _ := h.store.GetForceSync(ctx, centerID)
+		// Read back current values so callers receive the persisted state.
+		perm, err := h.store.GetComputePermission(ctx, centerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "GET_PERMISSION_FAILED", err.Error())
+			return
+		}
+		fs, err := h.store.GetForceSync(ctx, centerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "GET_FORCE_SYNC_FAILED", err.Error())
+			return
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"compute_permission": perm,
@@ -297,7 +338,11 @@ func (h *ComputeHandler) ListCenterPermissions() http.HandlerFunc {
 		}
 		result := make([]centerPermission, 0, len(centers))
 		for _, c := range centers {
-			perm, _ := h.store.GetComputePermission(ctx, c.ID)
+			perm, err := h.store.GetComputePermission(ctx, c.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "GET_PERMISSION_FAILED", err.Error())
+				return
+			}
 			result = append(result, centerPermission{
 				CenterID:          c.ID,
 				CenterName:        c.CompanyName,
@@ -322,7 +367,7 @@ func (h *ComputeHandler) ToggleCenterPermission() http.HandlerFunc {
 		var body struct {
 			ComputePermission bool `json:"compute_permission"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := decodeJSON(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -341,14 +386,41 @@ func (h *ComputeHandler) ToggleCenterPermission() http.HandlerFunc {
 			}
 		}
 
-		perm, _ := h.store.GetComputePermission(ctx, centerID)
-		fs, _ := h.store.GetForceSync(ctx, centerID)
+		perm, err := h.store.GetComputePermission(ctx, centerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "GET_PERMISSION_FAILED", err.Error())
+			return
+		}
+		fs, err := h.store.GetForceSync(ctx, centerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "GET_FORCE_SYNC_FAILED", err.Error())
+			return
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"compute_permission": perm,
 			"force_sync":         fs,
 		})
 	}
+}
+
+func (h *ComputeHandler) markAllCentersForceSync(ctx context.Context) error {
+	if h.centerSvc == nil {
+		return nil
+	}
+	centers, err := h.centerSvc.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, center := range centers {
+		if center == nil || center.ID == "" {
+			continue
+		}
+		if err := h.store.SetForceSync(ctx, center.ID, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *ComputeHandler) ensureCenterExists(ctx context.Context, w http.ResponseWriter, centerID string) bool {
@@ -377,7 +449,7 @@ func (h *ComputeHandler) AssignProviderToCenter() http.HandlerFunc {
 		var body struct {
 			ProviderID string `json:"provider_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := decodeJSON(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -507,8 +579,24 @@ func (h *ComputeHandler) CenterComputeProviders() http.HandlerFunc {
 		}
 
 		// Read real permission and force_sync values.
-		perm, _ := h.store.GetComputePermission(ctx, centerID)
-		forceSync, _ := h.store.GetForceSync(ctx, centerID)
+		perm, err := h.store.GetComputePermission(ctx, centerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "GET_PERMISSION_FAILED", err.Error())
+			return
+		}
+		forceSync, err := h.store.GetForceSync(ctx, centerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "GET_FORCE_SYNC_FAILED", err.Error())
+			return
+		}
+
+		// Clear force_sync before responding so a delivered true signal is one-shot.
+		if forceSync {
+			if err := h.store.ClearForceSync(ctx, centerID); err != nil {
+				writeError(w, http.StatusInternalServerError, "CLEAR_FORCE_SYNC_FAILED", err.Error())
+				return
+			}
+		}
 
 		// NOTE: Do NOT mask api_key; centers need the full key for LLM requests.
 
@@ -518,9 +606,5 @@ func (h *ComputeHandler) CenterComputeProviders() http.HandlerFunc {
 			"force_sync":         forceSync,
 		})
 
-		// Clear force_sync after returning it as true, so it's a one-shot signal.
-		if forceSync {
-			_ = h.store.ClearForceSync(ctx, centerID)
-		}
 	}
 }

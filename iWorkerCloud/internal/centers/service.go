@@ -1,18 +1,17 @@
 package centers
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -53,6 +52,7 @@ type HeartbeatRequest struct {
 	ComputePermission   bool                     `json:"compute_permission,omitempty"`
 	CloudProviderCount  int                      `json:"cloud_provider_count,omitempty"`
 	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	CloudHeartbeat      *centerCloudHeartbeat    `json:"cloud_heartbeat,omitempty"`
 	IWorkerReadiness    *IWorkerReadinessReport  `json:"iworker_readiness,omitempty"`
 }
 
@@ -132,6 +132,8 @@ type ManagementSummary struct {
 	RuntimeFallbackCenters   int `json:"runtime_fallback_centers"`
 	RuntimeNonBlockingIssues int `json:"runtime_non_blocking_issues"`
 	RuntimeBlockingIssues    int `json:"runtime_blocking_issues"`
+	HeartbeatDegradedCenters int `json:"heartbeat_degraded_centers"`
+	HeartbeatBlockingIssues  int `json:"heartbeat_blocking_issues"`
 }
 
 type CenterManagement struct {
@@ -156,6 +158,7 @@ type CenterRuntimeStatus struct {
 	ComputePermission   bool                     `json:"compute_permission,omitempty"`
 	CloudProviderCount  int                      `json:"cloud_provider_count,omitempty"`
 	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	CloudHeartbeat      *centerCloudHeartbeat    `json:"cloud_heartbeat,omitempty"`
 }
 
 type RecommendedAction struct {
@@ -165,28 +168,6 @@ type RecommendedAction struct {
 	Priority    string `json:"priority"`
 }
 
-// ServiceReadiness describes whether Cloud may enable platform-level services for this Center.
-// It deliberately excludes customer tenant creation and customer business data.
-type CenterTenant struct {
-	ID          string `json:"id"`
-	CompanyName string `json:"company_name"`
-	LegalPerson string `json:"legal_person"`
-	Email       string `json:"email"`
-	Address     string `json:"address"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
-}
-
-type CenterTenantRequest struct {
-	CompanyName   string `json:"company_name"`
-	LegalPerson   string `json:"legal_person"`
-	Email         string `json:"email"`
-	Address       string `json:"address"`
-	Status        string `json:"status,omitempty"`
-	AdminUsername string `json:"admin_username,omitempty"`
-	AdminPassword string `json:"admin_password,omitempty"`
-}
 type ServiceReadiness struct {
 	Allowed       bool                `json:"allowed"`
 	Center        *store.Center       `json:"center"`
@@ -223,8 +204,20 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 
 	machineID := strings.TrimSpace(req.MachineID)
 	companyID := strings.TrimSpace(req.CompanyID)
+	if machineID == "" || companyID == "" {
+		return nil, fmt.Errorf("machine_id and company_id are required")
+	}
 	if machineID != "" && companyID != "" {
 		if existing, err := s.centers.GetByRegistrationKey(ctx, machineID, companyID); err == nil && existing != nil {
+			rawSecret := existing.ManagementSecret
+			if strings.TrimSpace(rawSecret) == "" || strings.TrimSpace(existing.SecretHash) == "" {
+				rawSecret, err = randomToken()
+				if err != nil {
+					return nil, err
+				}
+				existing.ManagementSecret = rawSecret
+				existing.SecretHash = hashSecret(rawSecret)
+			}
 			existing.CompanyName = strings.TrimSpace(req.CompanyName)
 			existing.AdminEmail = strings.TrimSpace(req.AdminEmail)
 			existing.AdminPhone = strings.TrimSpace(req.AdminPhone)
@@ -238,7 +231,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 			if err := s.centers.UpdateRegistration(ctx, existing); err != nil {
 				return nil, err
 			}
-			return &RegisterResult{CenterID: existing.ID, Secret: existing.ManagementSecret, Status: existing.Status, Message: "registration reused by machine_id and company_id", Reused: true}, nil
+			return &RegisterResult{CenterID: existing.ID, Secret: rawSecret, Status: existing.Status, Message: "registration reused by machine_id and company_id", Reused: true}, nil
 		}
 	}
 
@@ -284,20 +277,43 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest) (*RegisterR
 
 // ConfirmWithTrial approves a center and issues a 30-day trial license (email confirm path).
 func (s *Service) ConfirmWithTrial(ctx context.Context, centerID string) error {
-	if err := s.centers.UpdateStatus(ctx, centerID, "active"); err != nil {
+	if _, err := s.centers.GetByID(ctx, centerID); err != nil {
+		return ErrNotFound
+	}
+	if s.licenseSvc == nil {
+		return fmt.Errorf("license service is not configured")
+	}
+	lic, err := s.licenseSvc.IssueTrial(ctx, centerID)
+	if err != nil {
 		return err
 	}
-	_, err := s.licenseSvc.IssueTrial(ctx, centerID)
-	return err
+	if err := s.centers.UpdateStatus(ctx, centerID, "active"); err != nil {
+		_ = s.licenseSvc.Revoke(ctx, lic.ID)
+		return err
+	}
+	return nil
 }
 
 // ConfirmManual approves a center and issues a manual license with custom duration.
 func (s *Service) ConfirmManual(ctx context.Context, centerID string, modules []string, days int) error {
-	if err := s.centers.UpdateStatus(ctx, centerID, "active"); err != nil {
+	if days < 0 {
+		return license.ErrInvalidDuration
+	}
+	if _, err := s.centers.GetByID(ctx, centerID); err != nil {
+		return ErrNotFound
+	}
+	if s.licenseSvc == nil {
+		return fmt.Errorf("license service is not configured")
+	}
+	lic, err := s.licenseSvc.IssueManual(ctx, centerID, modules, days)
+	if err != nil {
 		return err
 	}
-	_, err := s.licenseSvc.IssueManual(ctx, centerID, modules, days)
-	return err
+	if err := s.centers.UpdateStatus(ctx, centerID, "active"); err != nil {
+		_ = s.licenseSvc.Revoke(ctx, lic.ID)
+		return err
+	}
+	return nil
 }
 
 // UpdateIntegration updates how Cloud connects to an iWorkerCenter service deployment.
@@ -342,7 +358,9 @@ func (s *Service) Heartbeat(ctx context.Context, centerID string, req HeartbeatR
 	}
 	if !req.serviceStatus().isIWorkerCenterService() {
 		c.LastSyncStatus = "heartbeat_not_iworkercenter"
-		_ = s.centers.UpdateIntegration(ctx, c)
+		if err := s.centers.UpdateIntegration(ctx, c); err != nil {
+			return fmt.Errorf("%w: failed to record service identity failure: %v", ErrInvalidServiceIdentity, err)
+		}
 		return ErrInvalidServiceIdentity
 	}
 	c.LastSyncStatus = "heartbeat_ok"
@@ -352,7 +370,7 @@ func (s *Service) Heartbeat(ctx context.Context, centerID string, req HeartbeatR
 }
 
 func (r HeartbeatRequest) runtimeStatus() *CenterRuntimeStatus {
-	if strings.TrimSpace(r.RuntimeProviderMode) == "" && strings.TrimSpace(r.ComputeSource) == "" && r.ProviderCount == 0 && r.CloudProviderCount == 0 && r.ComputeSyncStatus == nil {
+	if strings.TrimSpace(r.RuntimeProviderMode) == "" && strings.TrimSpace(r.ComputeSource) == "" && r.ProviderCount == 0 && r.CloudProviderCount == 0 && r.ComputeSyncStatus == nil && r.CloudHeartbeat == nil {
 		return nil
 	}
 	return &CenterRuntimeStatus{
@@ -362,10 +380,11 @@ func (r HeartbeatRequest) runtimeStatus() *CenterRuntimeStatus {
 		ComputePermission:   r.ComputePermission,
 		CloudProviderCount:  r.CloudProviderCount,
 		ComputeSyncStatus:   r.ComputeSyncStatus,
+		CloudHeartbeat:      sanitizeCloudHeartbeat(r.CloudHeartbeat),
 	}
 }
 func (r *ProbeResult) runtimeStatus() *CenterRuntimeStatus {
-	if r == nil || (strings.TrimSpace(r.RuntimeProviderMode) == "" && strings.TrimSpace(r.ComputeSource) == "" && r.ProviderCount == 0 && r.CloudProviderCount == 0 && r.ComputeSyncStatus == nil) {
+	if r == nil || (strings.TrimSpace(r.RuntimeProviderMode) == "" && strings.TrimSpace(r.ComputeSource) == "" && r.ProviderCount == 0 && r.CloudProviderCount == 0 && r.ComputeSyncStatus == nil && r.CloudHeartbeat == nil) {
 		return nil
 	}
 	return &CenterRuntimeStatus{
@@ -375,6 +394,7 @@ func (r *ProbeResult) runtimeStatus() *CenterRuntimeStatus {
 		ComputePermission:   r.ComputePermission,
 		CloudProviderCount:  r.CloudProviderCount,
 		ComputeSyncStatus:   r.ComputeSyncStatus,
+		CloudHeartbeat:      sanitizeCloudHeartbeat(r.CloudHeartbeat),
 	}
 }
 
@@ -384,6 +404,30 @@ func applyRuntimeStatus(center *store.Center, runtime *CenterRuntimeStatus) {
 	}
 	if raw, err := json.Marshal(runtime); err == nil {
 		center.RuntimeStatusJSON = string(raw)
+	}
+}
+
+func sanitizeCloudHeartbeat(heartbeat *centerCloudHeartbeat) *centerCloudHeartbeat {
+	if heartbeat == nil {
+		return nil
+	}
+	failureCount := heartbeat.FailureCount
+	if failureCount == 0 {
+		failureCount = heartbeat.ConsecutiveFailures
+	}
+	configured := heartbeat.Enabled || heartbeat.Configured
+	return &centerCloudHeartbeat{
+		Enabled:             configured,
+		Configured:          configured,
+		Status:              strings.TrimSpace(heartbeat.Status),
+		LastAttemptAt:       strings.TrimSpace(heartbeat.LastAttemptAt),
+		LastSuccessAt:       strings.TrimSpace(heartbeat.LastSuccessAt),
+		LastFailureAt:       strings.TrimSpace(heartbeat.LastFailureAt),
+		LastError:           strings.TrimSpace(heartbeat.LastError),
+		FailureCount:        failureCount,
+		ConsecutiveFailures: failureCount,
+		NonBlocking:         heartbeat.NonBlocking,
+		BusinessImpact:      strings.TrimSpace(heartbeat.BusinessImpact),
 	}
 }
 
@@ -493,6 +537,12 @@ func (s *Service) Management(ctx context.Context) (*ManagementReport, error) {
 					report.Summary.RuntimeBlockingIssues++
 				}
 			}
+			if heartbeat := managementItem.RuntimeStatus.CloudHeartbeat; heartbeat != nil && heartbeat.Status != "" && heartbeat.Status != "online" && heartbeat.Status != "disabled" {
+				report.Summary.HeartbeatDegradedCenters++
+				if !heartbeat.NonBlocking {
+					report.Summary.HeartbeatBlockingIssues++
+				}
+			}
 		}
 		if managementItem.IWorkerReadiness != nil && managementItem.IWorkerReadiness.WorkloadSummary != nil {
 			workload := managementItem.IWorkerReadiness.WorkloadSummary
@@ -516,6 +566,12 @@ func (s *Service) Get(ctx context.Context, id string) (*store.Center, error) {
 
 // Delete removes a center.
 func (s *Service) Delete(ctx context.Context, id string) error {
+	if _, err := s.centers.GetByID(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
 	return s.centers.Delete(ctx, id)
 }
 
@@ -534,6 +590,7 @@ type ProbeResult struct {
 	ComputePermission   bool                     `json:"compute_permission,omitempty"`
 	CloudProviderCount  int                      `json:"cloud_provider_count,omitempty"`
 	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	CloudHeartbeat      *centerCloudHeartbeat    `json:"cloud_heartbeat,omitempty"`
 	IWorkerReadiness    *IWorkerReadinessReport  `json:"iworker_readiness,omitempty"`
 }
 
@@ -544,6 +601,20 @@ type centerComputeSyncStatus struct {
 	ProviderCount int    `json:"provider_count"`
 	NonBlocking   bool   `json:"non_blocking,omitempty"`
 	RuntimeImpact string `json:"runtime_impact,omitempty"`
+}
+
+type centerCloudHeartbeat struct {
+	Enabled             bool   `json:"enabled,omitempty"`
+	Configured          bool   `json:"configured,omitempty"`
+	Status              string `json:"status,omitempty"`
+	LastAttemptAt       string `json:"last_attempt_at,omitempty"`
+	LastSuccessAt       string `json:"last_success_at,omitempty"`
+	LastFailureAt       string `json:"last_failure_at,omitempty"`
+	LastError           string `json:"last_error,omitempty"`
+	FailureCount        int    `json:"failure_count,omitempty"`
+	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
+	NonBlocking         bool   `json:"non_blocking,omitempty"`
+	BusinessImpact      string `json:"business_impact,omitempty"`
 }
 
 type centerServiceStatus struct {
@@ -557,6 +628,7 @@ type centerServiceStatus struct {
 	ComputePermission   bool                     `json:"compute_permission"`
 	CloudProviderCount  int                      `json:"cloud_provider_count"`
 	ComputeSyncStatus   *centerComputeSyncStatus `json:"compute_sync_status"`
+	CloudHeartbeat      *centerCloudHeartbeat    `json:"cloud_heartbeat,omitempty"`
 	IWorkerReadiness    *IWorkerReadinessReport  `json:"iworker_readiness,omitempty"`
 }
 
@@ -602,6 +674,7 @@ func (s *Service) fetchRuntimeSnapshot(ctx context.Context, center *store.Center
 	result.ComputePermission = serviceStatus.ComputePermission
 	result.CloudProviderCount = serviceStatus.CloudProviderCount
 	result.ComputeSyncStatus = serviceStatus.ComputeSyncStatus
+	result.CloudHeartbeat = sanitizeCloudHeartbeat(serviceStatus.CloudHeartbeat)
 	result.IWorkerReadiness = sanitizeIWorkerReadiness(serviceStatus.IWorkerReadiness)
 	if serviceStatus.isIWorkerCenterService() {
 		result.OK = true
@@ -644,8 +717,13 @@ func (s *Service) Probe(ctx context.Context, centerID string) (*ProbeResult, *st
 	} else {
 		center.LastSyncStatus = "probe_failed"
 	}
-	_ = s.centers.UpdateIntegration(ctx, center)
-	updated, _ := s.centers.GetByID(ctx, centerID)
+	if err := s.centers.UpdateIntegration(ctx, center); err != nil {
+		return nil, nil, fmt.Errorf("record probe result: %w", err)
+	}
+	updated, err := s.centers.GetByID(ctx, centerID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load updated center after probe: %w", err)
+	}
 	return result, updated, nil
 }
 
@@ -660,7 +738,11 @@ func (s *Service) ServiceReadiness(ctx context.Context, centerID string) (*Servi
 	}
 	var activeLicense *store.License
 	if s.licenseSvc != nil {
-		activeLicense, _ = s.licenseSvc.GetActive(ctx, centerID)
+		var licErr error
+		activeLicense, licErr = s.licenseSvc.GetActive(ctx, centerID)
+		if licErr != nil && !isLicenseNotFound(licErr) {
+			return nil, fmt.Errorf("load active license: %w", licErr)
+		}
 	}
 	management := buildCenterManagement(center, activeLicense)
 	allowed := center.Status == "active" &&
@@ -680,82 +762,15 @@ func (s *Service) ServiceReadiness(ctx context.Context, centerID string) (*Servi
 	}, nil
 }
 
-func (s *Service) ListCenterTenants(ctx context.Context, centerID string) ([]CenterTenant, error) {
-	var resp struct {
-		Tenants []CenterTenant `json:"tenants"`
+func isLicenseNotFound(err error) bool {
+	if err == nil {
+		return false
 	}
-	if err := s.centerTenantRequest(ctx, centerID, http.MethodGet, "/api/cloud/tenants", nil, &resp); err != nil {
-		return nil, err
+	if errors.Is(err, sql.ErrNoRows) {
+		return true
 	}
-	if resp.Tenants == nil {
-		resp.Tenants = []CenterTenant{}
-	}
-	return resp.Tenants, nil
-}
-
-func (s *Service) CreateCenterTenant(ctx context.Context, centerID string, req CenterTenantRequest) (*CenterTenant, error) {
-	var tenant CenterTenant
-	if err := s.centerTenantRequest(ctx, centerID, http.MethodPost, "/api/cloud/tenants", req, &tenant); err != nil {
-		return nil, err
-	}
-	return &tenant, nil
-}
-
-func (s *Service) UpdateCenterTenant(ctx context.Context, centerID, tenantID string, req CenterTenantRequest) (*CenterTenant, error) {
-	var tenant CenterTenant
-	if err := s.centerTenantRequest(ctx, centerID, http.MethodPut, "/api/cloud/tenants/"+url.PathEscape(strings.TrimSpace(tenantID)), req, &tenant); err != nil {
-		return nil, err
-	}
-	return &tenant, nil
-}
-
-func (s *Service) DeleteCenterTenant(ctx context.Context, centerID, tenantID string) error {
-	var resp map[string]any
-	return s.centerTenantRequest(ctx, centerID, http.MethodDelete, "/api/cloud/tenants/"+url.PathEscape(strings.TrimSpace(tenantID)), nil, &resp)
-}
-
-func (s *Service) centerTenantRequest(ctx context.Context, centerID, method, path string, body any, out any) error {
-	center, err := s.EnsureServiceManagementAllowed(ctx, centerID)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(center.ManagementSecret) == "" {
-		return fmt.Errorf("%w: center management secret is missing; re-register the Center", ErrServiceManagementNotAllowed)
-	}
-	baseURL := strings.TrimRight(strings.TrimSpace(center.BaseURL), "/")
-	if baseURL == "" {
-		return fmt.Errorf("%w: center base_url is missing", ErrServiceManagementNotAllowed)
-	}
-	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, reader)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("X-Center-ID", center.ID)
-	req.Header.Set("X-Center-Secret", center.ManagementSecret)
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("center tenant request failed: status %d, body: %s", resp.StatusCode, string(respBody))
-	}
-	if out == nil {
-		return nil
-	}
-	return json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "not found") || strings.Contains(msg, "no rows")
 }
 
 // EnsureServiceManagementAllowed returns the Center only when platform service management is allowed.

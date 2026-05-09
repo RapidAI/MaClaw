@@ -67,6 +67,15 @@ func TestAgentNetEnsureDaemonWithDownloadDisabledReturnsErrorWithoutInit(t *test
 	}
 }
 
+func TestAgentNetHiddenForTigerClawBrand(t *testing.T) {
+	if !agentNetHiddenForBrand("qianxin") {
+		t.Fatal("expected AgentNet to be hidden for qianxin/TigerClaw brand")
+	}
+	if agentNetHiddenForBrand("maclaw") {
+		t.Fatal("expected AgentNet to remain available for default brand")
+	}
+}
+
 func TestAgentNetAutoPickerConfigureRejectsEnableWhenAgentNetDisabled(t *testing.T) {
 	app := newAgentNetConfigTestApp(t)
 	saveAgentNetConfigForTest(t, app, func(cfg *corelib.AppConfig) {

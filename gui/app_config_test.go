@@ -53,6 +53,18 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	if !cfg.CheckUpdateOnStartup {
 		t.Fatal("CheckUpdateOnStartup = false, want true for first-run default config")
 	}
+	if !cfg.VectorSearchEnabled {
+		t.Fatal("VectorSearchEnabled = false, want true for first-run default config")
+	}
+	if !cfg.ASREnabled {
+		t.Fatal("ASREnabled = false, want true for first-run default config")
+	}
+	if !cfg.TTSEnabled {
+		t.Fatal("TTSEnabled = false, want true for first-run default config")
+	}
+	if cfg.ScreenParsingEnabled == nil || !*cfg.ScreenParsingEnabled {
+		t.Fatal("ScreenParsingEnabled = false/nil, want true for first-run default config")
+	}
 
 	matches, err := filepath.Glob(configPath + ".tmp*")
 	if err != nil {
@@ -60,6 +72,79 @@ func TestLoadConfigConcurrentFirstRun(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("temp files remain: %v", matches)
+	}
+}
+
+func TestLoadConfigDefaultsLocalAIModelsWhenFieldsAbsent(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".maclaw")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("MkdirAll config dir error = %v", err)
+	}
+	configPath := filepath.Join(configDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"active_tool":"message"}`), 0644); err != nil {
+		t.Fatalf("Write config.json error = %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !cfg.VectorSearchEnabled {
+		t.Fatal("absent vector_search_enabled should default to true")
+	}
+	if !cfg.ASREnabled {
+		t.Fatal("absent asr_enabled should default to true")
+	}
+	if !cfg.TTSEnabled {
+		t.Fatal("absent tts_enabled should default to true")
+	}
+	if cfg.ScreenParsingEnabled == nil || !*cfg.ScreenParsingEnabled {
+		t.Fatal("absent screen_parsing_enabled should default to true")
+	}
+}
+
+func TestLoadConfigPreservesExplicitLocalAIModelDisable(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".maclaw")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("MkdirAll config dir error = %v", err)
+	}
+	configPath := filepath.Join(configDir, "config.json")
+	raw := `{
+		"active_tool": "message",
+		"vector_search_enabled": false,
+		"asr_enabled": false,
+		"tts_enabled": false,
+		"screen_parsing_enabled": false
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0644); err != nil {
+		t.Fatalf("Write config.json error = %v", err)
+	}
+
+	app := &App{testHomeDir: tmpHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.VectorSearchEnabled {
+		t.Fatal("explicit vector_search_enabled=false should be preserved")
+	}
+	if cfg.ASREnabled {
+		t.Fatal("explicit asr_enabled=false should be preserved")
+	}
+	if cfg.TTSEnabled {
+		t.Fatal("explicit tts_enabled=false should be preserved")
+	}
+	if cfg.ScreenParsingEnabled == nil || *cfg.ScreenParsingEnabled {
+		t.Fatal("explicit screen_parsing_enabled=false should be preserved")
 	}
 }
 
@@ -290,6 +375,7 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	cfg.PetConversationMode = "free-chat"
 	cfg.PetReadbackMode = "everything"
 	cfg.PetVoiceReadback = true
+	cfg.PetMotionSoundPreset = "laser-horn"
 	motionSound := false
 	cfg.PetMotionSound = &motionSound
 	cfg.PetContinuousTimeout = 1
@@ -322,6 +408,9 @@ func TestSaveConfigSanitizesPetSettings(t *testing.T) {
 	}
 	if petMotionSoundEnabled(reloaded) {
 		t.Fatal("PetMotionSound should remain disabled")
+	}
+	if reloaded.PetMotionSoundPreset != "classic" {
+		t.Fatalf("PetMotionSoundPreset = %q, want classic", reloaded.PetMotionSoundPreset)
 	}
 	if reloaded.PetContinuousTimeout != 5 {
 		t.Fatalf("PetContinuousTimeout = %d, want 5", reloaded.PetContinuousTimeout)
@@ -376,6 +465,18 @@ func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
 	withSoundOff.PetMotionSound = &soundOff
 	if !floatingAppearanceChanged(base, withSoundOff) {
 		t.Fatal("expected motion sound toggle to refresh floating window")
+	}
+
+	withSoundPreset := base
+	withSoundPreset.PetMotionSoundPreset = "chime"
+	if !floatingAppearanceChanged(base, withSoundPreset) {
+		t.Fatal("expected motion sound preset change to refresh floating window")
+	}
+
+	withInvalidSoundPreset := base
+	withInvalidSoundPreset.PetMotionSoundPreset = "laser-horn"
+	if floatingAppearanceChanged(base, withInvalidSoundPreset) {
+		t.Fatal("invalid motion sound preset should normalize to classic without refreshing")
 	}
 
 	withQuiet := base

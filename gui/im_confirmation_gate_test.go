@@ -32,7 +32,7 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
 		Platform: "desktop",
-		Text:     "帮我修复这个项目里的登录 bug 并修改代码",
+		Text:     "fix the login bug in this project and update the code",
 	}, nil, nil, nil, nil)
 	if resp == nil {
 		t.Fatal("expected response")
@@ -55,48 +55,11 @@ func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution
 }
 
 func TestHandleIMMessageWithProgressAndStream_PresentationTaskSkipsCodingConfirmation(t *testing.T) {
-	tempHome := t.TempDir()
-	app := &App{testHomeDir: tempHome}
-	cfg, err := app.LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	cfg.MaclawLLMUrl = "http://example.com"
-	cfg.MaclawLLMModel = "test-model"
-	cfg.MaclawLLMProtocol = "openai"
-	cfg.UIMode = "pro"
-	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
-	cfg.CurrentProject = "p1"
-	if err := app.SaveConfig(cfg); err != nil {
-		t.Fatalf("SaveConfig: %v", err)
-	}
-
-	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
-	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
-		UserID:   "u1",
-		Platform: "desktop",
-		Text:     "生成宣传PPT",
-	}, nil, nil, nil, nil)
-	if resp == nil {
-		t.Fatal("expected response")
-	}
-	if resp.Confirmation != nil {
-		t.Fatalf("expected presentation task to skip coding confirmation, got %+v", resp.Confirmation)
-	}
-	if got := h.confirmationStore.get("u1"); got != nil {
-		t.Fatalf("expected no pending confirmation for presentation task, got %+v", got)
-	}
-	// Without UIC, classifyTaskIntent returns ambiguous (conservative).
-	// With UIC, it would return the correct semantic classification.
-	if got := classifyTaskIntent("生成宣传PPT"); got.Intent != intentAmbiguous {
-		t.Fatalf("expected presentation task to classify as ambiguous without UIC, got %+v", got)
-	}
-}
-
-func TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfirmation(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"non_coding\",\"confidence\":0.96,\"reason\":\"用户在让助手理解截图并整理宣传材料，不涉及代码或服务器\",\"evidence\":[\"截图分析\",\"宣传PPT\"]}"}}]}`)
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"non_coding\",\"confidence\":0.96,\"reason\":\"presentation task\",\"evidence\":[\"PPT\"]}"}}]}`)
 	}))
 	defer server.Close()
 
@@ -130,7 +93,62 @@ func TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfi
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
 		Platform: "desktop",
-		Text:     "搜索驱动开发网马勇的资料，使用skill生成精美的宣传ppt",
+		Text:     "鐢熸垚瀹ｄ紶PPT",
+	}, nil, nil, nil, nil)
+	if resp == nil {
+		t.Fatal("expected response")
+	}
+	if resp.Confirmation != nil {
+		t.Fatalf("expected presentation task to skip coding confirmation, got %+v", resp.Confirmation)
+	}
+	if got := h.confirmationStore.get("u1"); got != nil {
+		t.Fatalf("expected no pending confirmation for presentation task, got %+v", got)
+	}
+	// Without UIC, route absence is unknown and should fall through to the
+	// ordinary agent path instead of pre-execution confirmation.
+	if got := classifyTaskIntent("鐢熸垚瀹ｄ紶PPT"); got.Intent != intentUnknown {
+		t.Fatalf("expected presentation task to classify as unknown without UIC, got %+v", got)
+	}
+}
+
+func TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"non_coding\",\"confidence\":0.96,\"reason\":\"鐢ㄦ埛鍦ㄨ鍔╂墜鐞嗚В鎴浘骞舵暣鐞嗗浼犳潗鏂欙紝涓嶆秹鍙婁唬鐮佹垨鏈嶅姟鍣╘",\"evidence\":[\"鎴浘鍒嗘瀽\",\"瀹ｄ紶PPT\"]}"}}]}`)
+	}))
+	defer server.Close()
+
+	tempHome := t.TempDir()
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	cfg.MaclawLLMUrl = server.URL
+	cfg.MaclawLLMModel = "test-model"
+	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
+	cfg.UIMode = "pro"
+	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
+	cfg.CurrentProject = "p1"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	h := NewIMMessageHandler(app, &RemoteSessionManager{app: app, sessions: map[string]*RemoteSession{}})
+	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
+		UserID:   "u1",
+		Platform: "desktop",
+		Text:     "鎼滅储椹卞姩寮€鍙戠綉椹媷鐨勮祫鏂欙紝浣跨敤skill鐢熸垚绮剧編鐨勫浼爌pt",
 		Attachments: []MessageAttachment{
 			{Type: "image", FileName: "screen.png", MimeType: "image/png"},
 		},
@@ -146,7 +164,7 @@ func TestHandleIMMessageWithProgressAndStream_ScreenshotTaskUsesLLMAndSkipsConfi
 	}
 }
 
-func TestHandleIMMessageWithProgressAndStream_FallbackToRulesOnLLMFailure(t *testing.T) {
+func TestHandleIMMessageWithProgressAndStream_LLMFailureFallsThroughToAgent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
@@ -182,13 +200,16 @@ func TestHandleIMMessageWithProgressAndStream_FallbackToRulesOnLLMFailure(t *tes
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
 		Platform: "desktop",
-		Text:     "帮我修复这个项目里的登录 bug 并修改代码",
+		Text:     "fix the login bug and edit code",
 	}, nil, nil, nil, nil)
-	if resp == nil || resp.Confirmation == nil {
-		t.Fatalf("expected fallback confirmation, got %+v", resp)
+	if resp == nil {
+		t.Fatal("expected response")
 	}
-	if resp.Confirmation.TaskType != "coding" {
-		t.Fatalf("expected fallback to coding confirmation, got %+v", resp.Confirmation)
+	if resp.Confirmation != nil {
+		t.Fatalf("expected LLM failure to fall through to agent instead of confirmation, got %+v", resp.Confirmation)
+	}
+	if got := h.confirmationStore.get("u1"); got != nil {
+		t.Fatalf("expected no pending confirmation after route-classifier failure, got %+v", got)
 	}
 }
 
@@ -210,8 +231,8 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 	pending := &pendingConfirmation{
 		ID:           "c1",
 		UserID:       "u1",
-		OriginalText: "帮我修复 bug",
-		ResumeText:   "帮我修复 bug\n\n用户补充/修正：目录改成 D:/fixed/project",
+		OriginalText: "甯垜淇 bug",
+		ResumeText:   "甯垜淇 bug\n\n鐢ㄦ埛琛ュ厖/淇锛氱洰褰曟敼鎴?D:/fixed/project",
 		Summary:      "summary",
 		TaskType:     "coding",
 		Status:       "pending",
@@ -230,10 +251,10 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 		t.Fatal("expected response")
 	}
 	approvedText := confirmationApprovedText(pending)
-	if !strings.Contains(approvedText, "[执行上下文]") {
+	if !strings.Contains(approvedText, "[鎵ц涓婁笅鏂嘳") {
 		t.Fatalf("expected approved text to carry execution context, got %q", approvedText)
 	}
-	if !strings.Contains(approvedText, "用户已确认当前方案，请直接开始执行，不要再次请求确认") {
+	if !strings.Contains(approvedText, "鐢ㄦ埛宸茬‘璁ゅ綋鍓嶆柟妗堬紝璇风洿鎺ュ紑濮嬫墽琛岋紝涓嶈鍐嶆璇锋眰纭") {
 		t.Fatalf("expected approved text to include confirmation directive, got %q", approvedText)
 	}
 	if resp.Error == "" {
@@ -324,9 +345,9 @@ func TestHandleIMMessageWithProgressAndStream_RevisionKeepsPendingConfirmation(t
 	h.confirmationStore.set(&pendingConfirmation{
 		ID:           "c1",
 		UserID:       "u1",
-		OriginalText: "帮我修复 bug",
-		ResumeText:   "帮我修复 bug",
-		Summary:      "原始总结",
+		OriginalText: "甯垜淇 bug",
+		ResumeText:   "甯垜淇 bug",
+		Summary:      "鍘熷鎬荤粨",
 		TaskType:     "coding",
 		Status:       "pending",
 		CreatedAt:    testNow(),
@@ -336,7 +357,7 @@ func TestHandleIMMessageWithProgressAndStream_RevisionKeepsPendingConfirmation(t
 	resp := h.HandleIMMessageWithProgressAndStream(IMUserMessage{
 		UserID:   "u1",
 		Platform: "desktop",
-		Text:     "目录不对，应该在 D:/new/project",
+		Text:     "鐩綍涓嶅锛屽簲璇ュ湪 D:/new/project",
 	}, nil, nil, nil, nil)
 	if resp == nil || resp.Confirmation == nil {
 		t.Fatalf("expected updated confirmation response, got %+v", resp)
@@ -345,7 +366,7 @@ func TestHandleIMMessageWithProgressAndStream_RevisionKeepsPendingConfirmation(t
 	if stored == nil {
 		t.Fatal("expected pending confirmation to remain stored")
 	}
-	if stored.ResumeText == "帮我修复 bug" {
+	if stored.ResumeText == "甯垜淇 bug" {
 		t.Fatalf("expected resume text to include revision, got %+v", stored)
 	}
 }
@@ -368,8 +389,8 @@ func TestHandleIMMessageWithProgressAndStream_CancelPendingConfirmation(t *testi
 	h.confirmationStore.set(&pendingConfirmation{
 		ID:           "c1",
 		UserID:       "u1",
-		OriginalText: "帮我修复 bug",
-		ResumeText:   "帮我修复 bug",
+		OriginalText: "甯垜淇 bug",
+		ResumeText:   "甯垜淇 bug",
 		Summary:      "summary",
 		TaskType:     "coding",
 		Status:       "pending",

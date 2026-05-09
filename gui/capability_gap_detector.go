@@ -1,11 +1,11 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/security"
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -201,7 +201,7 @@ func (d *CapabilityGapDetector) Resolve(
 			})
 		}
 
-		execResult, execErr := d.skillExecutor.Execute(imported.Name)
+		execResult, execErr := d.skillExecutor.ExecuteWithArgs(imported.Name, skillExecutionRunArgs(userMessage))
 		return imported.Name, execResult, execErr
 	}
 
@@ -266,7 +266,7 @@ func (d *CapabilityGapDetector) Resolve(
 
 	// Step 7: Execute immediately.
 	sendStatus(fmt.Sprintf("正在执行 Skill: %s ...", skill.Name))
-	execResult, execErr := d.skillExecutor.Execute(skill.Name)
+	execResult, execErr := d.skillExecutor.ExecuteWithArgs(skill.Name, skillExecutionRunArgs(userMessage))
 
 	// Audit log.
 	if d.auditLog != nil {

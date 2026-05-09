@@ -31,6 +31,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"gopkg.in/yaml.v3"
 )
@@ -231,46 +232,66 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 // --- run ---
 
 func skillRun(app *TUIApp, args map[string]interface{}) string {
+	return skillRunDetailed(app, args).Output
+}
+
+type tuiSkillRunResult struct {
+	Output   string
+	OK       bool
+	Captured map[string]string
+}
+
+func skillRunDetailed(app *TUIApp, args map[string]interface{}) tuiSkillRunResult {
+	internalPipelineCall := skill.IsInternalPipelineRunArgs(args)
 	name := sval(args, "name")
 	if name == "" {
-		return "缺少 name 参数"
+		return tuiSkillRunResult{Output: "缺少 name 参数"}
 	}
 	entry := findSkillEntry(app, name)
 	if entry == nil {
 		// Fuzzy match fallback.
 		if similar, score := skill.FindSimilarSkill(name, 0.3); similar != nil {
-			return fmt.Sprintf("Skill '%s' 不存在。你是否指的是 %q？(%.0f%% 匹配)", name, similar.Name, score*100)
+			return tuiSkillRunResult{Output: fmt.Sprintf("Skill '%s' 不存在。你是否指的是 %q？(%.0f%% 匹配)", name, similar.Name, score*100)}
 		}
-		return fmt.Sprintf("Skill '%s' 不存在", name)
+		return tuiSkillRunResult{Output: fmt.Sprintf("Skill '%s' 不存在", name)}
 	}
 	// Status checks (aligned with GUI StartRun).
 	if entry.Status == "needs_setup" {
-		return fmt.Sprintf("Skill '%s' 需要设置。安装未完成（缺少依赖或文件）。请检查 Skill 目录并完成配置", name)
+		return tuiSkillRunResult{Output: fmt.Sprintf("Skill '%s' 需要设置。安装未完成（缺少依赖或文件）。请检查 Skill 目录并完成配置", name)}
 	}
 	if entry.Status == "disabled" {
-		return fmt.Sprintf("Skill '%s' 已禁用", name)
+		return tuiSkillRunResult{Output: fmt.Sprintf("Skill '%s' 已禁用", name)}
 	}
 	if entry.SkillDir != "" {
 		if err := skill.HydrateRunMetadataFromDir(entry); err != nil {
 			log.Printf("[skill-run-tui] hydrate skill metadata from %q failed: %v", entry.SkillDir, err)
 		}
 	}
-	if len(entry.Steps) == 0 {
-		msg := fmt.Sprintf("Skill '%s' 没有可执行步骤", name)
-		if len(entry.RequiredArgs) > 0 {
-			msg += fmt.Sprintf("。需要参数: %s", strings.Join(entry.RequiredArgs, ", "))
-		}
-		return msg
+	if skill.IsKnowledgeSkillType(entry.Type) {
+		return tuiSkillRunResult{Output: skill.FormatNoExecutableStepsMessage(name, entry, skill.RunnerBackendTUI)}
 	}
 	skill.NormalizeSkillForRunner(entry)
 	templateVars := normalizeTUIRunSkillVars(args)
-	extraEnv := extractTUIRunExtraEnv(args["env"])
-	if len(entry.Params) == 0 {
-		entry.Params = skill.SynthesizeParams(entry.Steps, entry.RequiredArgs)
+	extraEnv := extractTUIRunExtraEnv(args)
+	if skill.IsPipelineSkill(entry) {
+		result := skillRunPipelineDetailed(app, entry, args, templateVars)
+		if !internalPipelineCall {
+			updateTUISkillRunStats(name, entry, result.OK, result.Output)
+		}
+		return result
 	}
-	applyTUIRunInputInference(entry, templateVars, args)
+	if len(entry.Steps) == 0 {
+		return tuiSkillRunResult{Output: skill.FormatNoExecutableStepsMessage(name, entry, skill.RunnerBackendTUI)}
+	}
 
-	// ── Pre-checks (aligned with GUI StartRun) ──
+	if len(entry.RequiredCredentialFiles) > 0 {
+		missing := remote.ValidateCredentialFiles(entry.RequiredCredentialFiles)
+		if len(missing) > 0 {
+			log.Printf("[skill-run-tui] credential pre-check: %d missing credential file(s)", len(missing))
+			return tuiSkillRunResult{Output: fmt.Sprintf("Skill '%s' needs setup: missing credential file(s): %s. Please create the required credential files before running this skill",
+				name, strings.Join(missing, ", "))}
+		}
+	}
 
 	// Windows 8.3 short path normalization — must happen before requirement
 	// checks so that NpmChecker/NpmFixer get the resolved long path.
@@ -280,52 +301,20 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 		}
 	}
 
-	// ── Unified requirement pre-check (aligned with GUI StartRun) ──
-	reqs := skill.ExtractRequirements(entry, skill.BuildRunCheckContext(entry, extraEnv))
-	if len(reqs) > 0 {
-		registry := skill.DefaultRegistry()
-		violations := registry.CheckAll(reqs)
-		remaining := registry.FixAll(violations)
-		errors := skill.FilterErrors(remaining)
-		if len(errors) > 0 {
-			return fmt.Sprintf("Skill '%s' 前置条件未满足: %s", name, skill.FormatViolations(errors))
-		}
-		for _, v := range remaining {
-			if v.Severity == "warning" {
-				log.Printf("[skill-run-tui] requirement warning for %q: %s", name, v.Message)
-			}
-		}
+	prep, prepErr := skill.PrepareRunnerExecution(entry, templateVars, args, extraEnv, skill.RunnerBackendTUI)
+	if prepErr != nil {
+		return tuiSkillRunResult{Output: prepErr.Error()}
 	}
-
-	// Parameter binding via SynthesizeParams + BindParams (aligned with GUI).
-	skillParams := entry.Params
-	if len(skillParams) == 0 {
-		skillParams = skill.SynthesizeParams(entry.Steps, entry.RequiredArgs)
+	selectedSteps := prep.SelectedSteps
+	skillParams := prep.Params
+	warnings := prep.Warnings
+	fileWarnings := prep.FileWarnings
+	for _, v := range prep.RequirementWarnings {
+		log.Printf("[skill-run-tui] requirement warning for %q: %s", name, v.Message)
 	}
-
-	// Required args validation.
-	if len(entry.RequiredArgs) > 0 {
-		var missing []string
-		for _, arg := range entry.RequiredArgs {
-			if strings.TrimSpace(templateVars[arg]) == "" {
-				missing = append(missing, arg)
-			}
-		}
-		if len(missing) > 0 {
-			return fmt.Sprintf("Skill '%s' 缺少必需参数: %s", name, strings.Join(missing, ", "))
-		}
+	for _, warning := range fileWarnings {
+		log.Printf("[skill-run-tui] file warning for %q: %s", name, warning)
 	}
-
-	// Implicit required args detection.
-	if len(entry.RequiredArgs) == 0 {
-		implicit := skill.DetectImplicitRequiredArgs(entry.Steps, templateVars)
-		if len(implicit) > 0 {
-			return fmt.Sprintf("Skill '%s' 的命令中包含未提供的参数: %s。请在 args 中传入", name, strings.Join(implicit, ", "))
-		}
-	}
-
-	// ── Environment variables are now checked by the unified requirement
-	// system above (EnvVarChecker). ──
 
 	// ── Step execution with variable capture ──
 	vars := make(map[string]string)
@@ -334,12 +323,26 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 	}
 
 	var results []string
+	if warningOutput := skill.PrefixOutputWithWarnings("", warnings); warningOutput != "" {
+		results = append(results, warningOutput)
+	}
 	ok := true
+	execCtx := context.Background()
+	execCancel := func() {}
+	if entry.GlobalTimeout > 0 {
+		execCtx, execCancel = context.WithTimeout(context.Background(), time.Duration(entry.GlobalTimeout)*time.Second)
+	}
+	defer execCancel()
 	for i, step := range entry.Steps {
+		if len(selectedSteps) > 0 {
+			if step.Label == "" || !skill.StepLabelSelected(step.Label, selectedSteps) {
+				results = append(results, fmt.Sprintf("[Step %d/%d] ⏭ skipped (not selected)", i+1, len(entry.Steps)))
+				continue
+			}
+		}
 		// Conditional execution (when field).
 		if step.When != "" {
-			resolved := skill.SubstituteVarsInString(step.When, vars)
-			if !skill.EvaluateSimpleCondition(resolved) {
+			if !skill.EvaluateStepWhen(step.When, vars) {
 				results = append(results, fmt.Sprintf("[Step %d/%d] ⏭ skipped (when=%q)", i+1, len(entry.Steps), step.When))
 				continue
 			}
@@ -347,7 +350,8 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 
 		// Resolve step: parameter binding + template substitution + CLI args + working_dir.
 		// Uses the shared corelib/skill.ResolveStep for full parameter contract support.
-		resolveResult, resolveErr := skill.ResolveStep(step, vars, entry.SkillDir, skillParams, nil)
+		step = withTUISkillPreferredShell(step, entry.PreferredShell)
+		resolveResult, resolveErr := skill.ResolveStep(step, vars, entry.SkillDir, skillParams, quoteTUIRunValueForStep(step))
 		if resolveErr != nil {
 			results = append(results, fmt.Sprintf("[Step %d/%d] ✗ %s", i+1, len(entry.Steps), resolveErr.Error()))
 			ok = false
@@ -357,16 +361,16 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 			continue
 		}
 		step = resolveResult.Step
-		if step.Action == "bash" {
-			if len(entry.RequiredEnv) > 0 {
-				mergeTUIRequiredEnvParam(step.Params, entry.RequiredEnv)
-			}
-			if len(extraEnv) > 0 {
-				mergeTUIExtraEnvParam(step.Params, extraEnv)
+		step = skill.PrepareResolvedStepEnv(step, entry.RequiredEnv, extraEnv)
+
+		out, err := execStepWithContext(execCtx, step, entry.SkillDir)
+		if len(step.Capture) > 0 && out != "" {
+			captured := skill.CaptureOutputVariables(out, step.Capture)
+			for k, v := range captured {
+				vars[k] = v
+				log.Printf("[skill-run-tui] captured %s=%q from step %d", k, v, i+1)
 			}
 		}
-
-		out, err := execStep(step, entry.SkillDir)
 
 		if err != nil {
 			// Classify the error for actionable feedback.
@@ -385,15 +389,6 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 				break
 			}
 		} else {
-			// Output variable capture (aligned with GUI captureOutputVariables).
-			if len(step.Capture) > 0 && out != "" {
-				captured := skill.CaptureOutputVariables(out, step.Capture)
-				for k, v := range captured {
-					vars[k] = v
-					log.Printf("[skill-run-tui] captured %s=%q from step %d", k, v, i+1)
-				}
-			}
-
 			if len(out) > 500 {
 				out = out[:500] + "..."
 			}
@@ -401,24 +396,13 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 		}
 	}
 
-	// Update usage stats.
-	entry.UsageCount++
-	entry.LastUsedAt = time.Now().Format(time.RFC3339)
-	if ok {
-		entry.SuccessCount++
-		entry.LastError = ""
-	} else {
-		entry.FailureCount++
-		// Store the last error for self-repair eligibility.
+	if !internalPipelineCall {
+		lastError := ""
 		if len(results) > 0 {
-			lastResult := results[len(results)-1]
-			if len(lastResult) > 500 {
-				lastResult = lastResult[:500]
-			}
-			entry.LastError = lastResult
+			lastError = results[len(results)-1]
 		}
+		updateTUISkillRunStats(name, entry, ok, lastError)
 	}
-	persistStats(name, entry)
 
 	var b strings.Builder
 	for _, r := range results {
@@ -429,7 +413,47 @@ func skillRun(app *TUIApp, args map[string]interface{}) string {
 	} else {
 		b.WriteString("✗ 执行失败")
 	}
-	return b.String()
+	return tuiSkillRunResult{Output: b.String(), OK: ok, Captured: cloneTUIStringMap(vars)}
+}
+
+func cloneTUIStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func updateTUISkillRunStats(name string, entry *corelib.NLSkillEntry, ok bool, lastError string) {
+	if entry == nil {
+		return
+	}
+	entry.UsageCount++
+	entry.LastUsedAt = time.Now().Format(time.RFC3339)
+	if ok {
+		entry.SuccessCount++
+		entry.LastError = ""
+	} else {
+		entry.FailureCount++
+		entry.LastError = formatTUISkillRunLastError(lastError)
+	}
+	persistStats(name, entry)
+}
+
+func formatTUISkillRunLastError(lastError string) string {
+	lastError = strings.TrimSpace(lastError)
+	if lastError == "" {
+		return ""
+	}
+	if strings.Contains(lastError, "[class:") {
+		return skill.TruncateFormattedErrorForStorage(lastError, 500)
+	}
+	ce := skill.ClassifyStepError(0, "", lastError, "")
+	formatted := skill.FormatErrorForLLM(ce)
+	return skill.TruncateFormattedErrorForStorage(formatted, 500)
 }
 
 func skillStatus(args map[string]interface{}) string {
@@ -440,14 +464,93 @@ func skillStatus(args map[string]interface{}) string {
 	return fmt.Sprintf("TUI 模式下 Skill 同步执行，run_id '%s' 的结果已在 run 返回值中。", runID)
 }
 
+func skillRunPipeline(app *TUIApp, entry *corelib.NLSkillEntry, args map[string]interface{}, vars map[string]string) string {
+	return skillRunPipelineDetailed(app, entry, args, vars).Output
+}
+
+func skillRunPipelineDetailed(app *TUIApp, entry *corelib.NLSkillEntry, args map[string]interface{}, vars map[string]string) tuiSkillRunResult {
+	if entry == nil {
+		return tuiSkillRunResult{Output: "skill entry is nil"}
+	}
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	extraEnv := extractTUIRunExtraEnv(args)
+	prep, err := skill.PreparePipelineRunnerExecution(entry, vars, args, extraEnv, skill.RunnerBackendTUI)
+	if err != nil {
+		return tuiSkillRunResult{Output: err.Error()}
+	}
+	for _, warning := range prep.RequirementWarnings {
+		log.Printf("[skill-run-tui] pipeline requirement warning for %q: %s", entry.Name, warning.Message)
+	}
+	pipelineArgs := skill.WithPipelineRunStack(args, entry.Name)
+	runCtx := context.Background()
+	cancel := func() {}
+	if entry.GlobalTimeout > 0 {
+		runCtx, cancel = context.WithTimeout(runCtx, time.Duration(entry.GlobalTimeout)*time.Second)
+	}
+	defer cancel()
+	runner := &skill.PipelineRunner{Executor: tuiSkillPipelineExecutor{app: app, baseArgs: pipelineArgs}}
+	result, err := runner.Run(runCtx, entry.Pipeline, vars)
+	output := skill.PrefixOutputWithWarnings(skill.FormatPipelineResult(result), prep.Warnings)
+	if err != nil {
+		if strings.TrimSpace(output) == "" || output == "Pipeline status: unknown\n" {
+			output = err.Error()
+		} else if !strings.Contains(output, err.Error()) {
+			output = strings.TrimRight(output, "\n") + "\n" + err.Error()
+		}
+		return tuiSkillRunResult{Output: output, Captured: pipelineCapturedVars(result)}
+	}
+	return tuiSkillRunResult{Output: output, OK: result != nil && result.Status == "completed", Captured: pipelineCapturedVars(result)}
+}
+
+func pipelineCapturedVars(result *skill.PipelineResult) map[string]string {
+	if result == nil || len(result.Vars) == 0 {
+		return nil
+	}
+	return cloneTUIStringMap(result.Vars)
+}
+
+type tuiSkillPipelineExecutor struct {
+	app      *TUIApp
+	baseArgs map[string]interface{}
+}
+
+func (e tuiSkillPipelineExecutor) RunSubSkill(ctx context.Context, skillName string, params map[string]string) (map[string]string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	args := skill.BuildPipelineSubSkillRunArgs(e.baseArgs, params)
+	args["name"] = skillName
+	result := skillRunDetailed(e.app, args)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, result.Output, ctxErr
+	}
+	captured := cloneTUIStringMap(result.Captured)
+	if captured == nil {
+		captured = map[string]string{}
+	}
+	if strings.TrimSpace(result.Output) != "" {
+		captured["output"] = result.Output
+	}
+	if !result.OK {
+		return captured, result.Output, fmt.Errorf("%s", result.Output)
+	}
+	return captured, result.Output, nil
+}
+
 // --- helpers ---
 
 func normalizeTUIRunSkillVars(args map[string]interface{}) map[string]string {
 	return skill.NormalizeRunVars(args)
 }
 
-func extractTUIRunExtraEnv(raw interface{}) map[string]string {
-	return skill.ExtractRunExtraEnv(raw)
+func extractTUIRunExtraEnv(args map[string]interface{}) map[string]string {
+	return skill.ExtractRunExtraEnvFromArgs(args)
+}
+
+func mergeTUIExtraEnvParam(params map[string]interface{}, extraEnv map[string]string) {
+	skill.MergeExtraEnvParam(params, extraEnv)
 }
 
 func collectTUISkillProvidedEnv(entry *corelib.NLSkillEntry) map[string]string {
@@ -456,14 +559,6 @@ func collectTUISkillProvidedEnv(entry *corelib.NLSkillEntry) map[string]string {
 
 func applyTUIRunInputInference(entry *corelib.NLSkillEntry, vars map[string]string, args map[string]interface{}) {
 	skill.ApplyRunInputInference(entry, vars, args)
-}
-
-func mergeTUIRequiredEnvParam(params map[string]interface{}, required []string) {
-	skill.MergeRequiredEnvParam(params, required)
-}
-
-func mergeTUIExtraEnvParam(params map[string]interface{}, extraEnv map[string]string) {
-	skill.MergeExtraEnvParam(params, extraEnv)
 }
 
 func substVars(cmd string, sa map[string]interface{}, in, out string) string {
@@ -481,28 +576,106 @@ func substVars(cmd string, sa map[string]interface{}, in, out string) string {
 	return cmd
 }
 
+func quoteTUIRunValueForShell(input string) string {
+	return quoteTUIRunValueForPreferredShell(input, defaultTUIShellPreference())
+}
+
+func quoteTUIRunValueForStep(step corelib.NLSkillStep) func(string) string {
+	preferred, _ := step.Params["preferred_shell"].(string)
+	return func(input string) string {
+		return quoteTUIRunValueForPreferredShell(input, preferred)
+	}
+}
+
+func quoteTUIRunValueForPreferredShell(input, preferredShell string) string {
+	preferredShell = normalizeTUIShellPreference(preferredShell)
+	return skill.QuoteForShellPreference(input, preferredShell)
+}
+
+func normalizeTUIShellPreference(preferredShell string) string {
+	preferredShell = strings.ToLower(strings.TrimSpace(preferredShell))
+	switch preferredShell {
+	case "cmd", "cmd.exe", "windows", "win_cmd":
+		return "cmd"
+	case "powershell", "pwsh", "ps", "ps1":
+		return "powershell"
+	case "bash", "sh", "zsh":
+		return "bash"
+	default:
+		return defaultTUIShellPreference()
+	}
+}
+
+func defaultTUIShellPreference() string {
+	if runtime.GOOS == "windows" {
+		return "powershell"
+	}
+	return "bash"
+}
+
+func withTUISkillPreferredShell(step corelib.NLSkillStep, preferredShell string) corelib.NLSkillStep {
+	preferredShell = strings.TrimSpace(preferredShell)
+	if preferredShell == "" {
+		return step
+	}
+	if step.Params == nil {
+		step.Params = map[string]interface{}{}
+	} else {
+		cp := make(map[string]interface{}, len(step.Params)+1)
+		for k, v := range step.Params {
+			cp[k] = v
+		}
+		step.Params = cp
+	}
+	if _, exists := step.Params["preferred_shell"]; !exists {
+		step.Params["preferred_shell"] = preferredShell
+	}
+	return step
+}
+
 func execStep(step corelib.NLSkillStep, dir string) (string, error) {
+	return execStepWithContext(context.Background(), step, dir)
+}
+
+func execStepWithContext(parentCtx context.Context, step corelib.NLSkillStep, dir string) (string, error) {
+	if err := skill.EnsureStepActionSupported(skill.RunnerBackendTUI, step.Action); err != nil {
+		return "", err
+	}
+	step.Action = skill.NormalizeStepActionName(step.Action)
 	cmd, _ := step.Params["command"].(string)
-	if step.Action != "bash" || cmd == "" {
-		return "", fmt.Errorf("action %q 在 TUI 下不支持", step.Action)
+	if strings.TrimSpace(cmd) == "" {
+		return "", fmt.Errorf("bash step missing command parameter")
 	}
-	timeout := 30
-	if t, ok := step.Params["timeout"].(float64); ok && t > 0 {
-		timeout = int(t)
-	}
-	if timeout > 120 {
-		timeout = 120
-	}
+	timeout := skill.RunnerStepTimeoutSeconds(step.Params, 120, 600)
 	wd, _ := step.Params["working_dir"].(string)
 	if wd == "" {
 		wd = dir
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, time.Duration(timeout)*time.Second)
 	defer cancel()
 	var sh string
 	var sa []string
 	if runtime.GOOS == "windows" {
-		sh, sa = "powershell", []string{"-NoProfile", "-NonInteractive", "-Command", cmd}
+		switch normalizeTUIShellPreference(sval(step.Params, "preferred_shell")) {
+		case "bash":
+			var err error
+			sh, err = exec.LookPath("bash.exe")
+			if err != nil {
+				sh, err = exec.LookPath("sh.exe")
+			}
+			if err != nil {
+				return "", fmt.Errorf("bash shell not found for TUI skill step; install Git for Windows or set preferred_shell: powershell")
+			}
+			sa = []string{"-lc", cmd}
+		case "cmd":
+			sh = os.Getenv("ComSpec")
+			if sh == "" {
+				sh = "cmd.exe"
+			}
+			sa = []string{"/d", "/s", "/c", cmd}
+		default:
+			sh, sa = "powershell", []string{"-NoProfile", "-NonInteractive", "-Command", cmd}
+		}
 	} else {
 		sh, sa = "bash", []string{"-c", cmd}
 	}
@@ -510,7 +683,7 @@ func execStep(step corelib.NLSkillStep, dir string) (string, error) {
 	if wd != "" {
 		c.Dir = wd
 	}
-	c.Env = skill.BuildCommandEnv(os.Environ(), step.Params)
+	c.Env = skill.BuildCommandEnv(tuiBaseCommandEnv(), step.Params)
 	var so, se bytes.Buffer
 	c.Stdout, c.Stderr = &so, &se
 	err := c.Run()
@@ -533,6 +706,14 @@ func execStep(step corelib.NLSkillStep, dir string) (string, error) {
 		b.WriteString("[stderr] " + errOut)
 	}
 	return b.String(), err
+}
+
+func tuiBaseCommandEnv() []string {
+	return tuiBaseCommandEnvFrom(os.Environ())
+}
+
+func tuiBaseCommandEnvFrom(base []string) []string {
+	return coretool.AppendUTF8Env(base)
 }
 
 func persistStats(name string, e *corelib.NLSkillEntry) {

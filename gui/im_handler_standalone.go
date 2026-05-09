@@ -7,8 +7,9 @@ package main
 // See docs/agent-unification-design.md Phase 1.
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"net"
 	"net/http"
 	"time"
@@ -118,6 +119,14 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 		confirmStore = newAIConfirmationStore("")
 	}
 
+	localClassifier := cfg.UnifiedClassifier
+	if localClassifier == nil {
+		localClassifier = intent.New(intent.Config{
+			Embedder:   embedding.NoopEmbedder{},
+			LLMTimeout: 15 * time.Second,
+		})
+	}
+
 	h := &IMMessageHandler{
 		// app is nil — all access goes through direct fields + accessors.
 		app:               nil,
@@ -128,7 +137,7 @@ func NewIMMessageHandlerStandalone(cfg StandaloneConfig) *IMMessageHandler {
 		taskClient:        chatClient, // TUI shares one pool
 		agentActivity:     NewAgentActivityStore(),
 		workflowEngine:    cfg.WorkflowEngine,
-		unifiedClassifier: cfg.UnifiedClassifier,
+		unifiedClassifier: localClassifier,
 		steeringStore:     cfg.SteeringStore,
 	}
 

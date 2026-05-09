@@ -71,3 +71,11 @@ func TestShouldAutoAcceptGroupInvitation(t *testing.T) {
 		t.Fatal("reject_all should override same-security-group auto-accept")
 	}
 }
+
+func TestGroupProfileDiscoveryViewClampsContributionScore(t *testing.T) {
+	profile := GroupProfile{AgentID: "maclaw-a", ContributionScore: 1.5, ContributionEvidence: -2}
+	view := profile.DiscoveryView("")
+	if view.ContributionScore != 1 || view.ContributionEvidence != 0 {
+		t.Fatalf("contribution fields = score %.2f evidence %d, want clamped", view.ContributionScore, view.ContributionEvidence)
+	}
+}

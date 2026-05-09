@@ -4,10 +4,9 @@ import (
 	"testing"
 )
 
-// TestRunGridSearch_KeywordOnly runs calibration using only the keyword channel
-// (simulating embedding scores from keyword confidence). This validates the
-// grid search mechanics without requiring a real embedder or LLM.
-func TestRunGridSearch_KeywordOnly(t *testing.T) {
+// TestRunGridSearch_KeywordOnlyDisabled verifies that the retained keyword
+// compatibility entrypoint does not act as a semantic scoring channel.
+func TestRunGridSearch_KeywordOnlyDisabled(t *testing.T) {
 	cases := ProductionCases()
 	if len(cases) < 50 {
 		t.Fatalf("expected at least 50 calibration cases, got %d", len(cases))
@@ -16,9 +15,6 @@ func TestRunGridSearch_KeywordOnly(t *testing.T) {
 	registry := NewKeywordRegistry()
 	affinity := NewToolAffinityRegistry()
 
-	// Build a keyword-based scorer that returns L1 classification as a
-	// single-element score list (simulating a channel that always returns
-	// the keyword result).
 	keywordScorer := func(text string) []labelScore {
 		result, _ := classifyByKeywords(registry, affinity, MessageContext{Text: text})
 		if result.Primary == LabelUnknown {
@@ -29,8 +25,8 @@ func TestRunGridSearch_KeywordOnly(t *testing.T) {
 
 	report := RunGridSearch(
 		cases,
-		keywordScorer, // embedding channel = keyword scores
-		nil,           // no tree channel
+		keywordScorer,  // embedding channel = keyword scores
+		nil,            // no tree channel
 		[]float64{1.0}, // alpha=1.0 (embedding only since no tree)
 		[]float64{0.05, 0.10, 0.15},
 	)
@@ -39,17 +35,14 @@ func TestRunGridSearch_KeywordOnly(t *testing.T) {
 		report.Best.Alpha, report.Best.Delta,
 		report.Best.Accuracy, report.Best.Correct, report.Best.Total)
 
-	// Keyword-only should get at least 60% accuracy on production cases.
-	if report.Best.Accuracy < 0.60 {
-		t.Errorf("keyword-only accuracy too low: %.3f", report.Best.Accuracy)
+	if report.Best.ClearCount != 0 {
+		t.Errorf("keyword-only disabled scorer produced %d clear decisions", report.Best.ClearCount)
 	}
-
-	if len(report.Errors) > 0 {
-		t.Logf("Errors (%d):", len(report.Errors))
-		for _, e := range report.Errors {
-			t.Logf("  %q: expected=%s got=%s (score=%.3f)", 
-				truncateText(e.Message, 40), e.Expected, e.Got, e.Score)
-		}
+	if report.Best.LowCount != report.Best.Total {
+		t.Errorf("keyword-only disabled scorer low count=%d total=%d", report.Best.LowCount, report.Best.Total)
+	}
+	if report.Best.Accuracy > 0.10 {
+		t.Errorf("keyword-only disabled scorer accuracy unexpectedly high: %.3f", report.Best.Accuracy)
 	}
 }
 

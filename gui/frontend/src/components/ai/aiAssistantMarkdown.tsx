@@ -2,6 +2,7 @@ import React from "react";
 import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatUnfinishedSlot } from "./useAIAssistant";
+import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
 
 export interface Theme {
     text: string;
@@ -75,6 +76,32 @@ function renderPathLink(filePath: string, key: number, t: Theme, trimTrailing = 
            title={display}
         >{"\uD83D\uDCC2 "}{display}</a>
     );
+}
+
+
+const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|]+\.\w+)/g;
+
+function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
+    const display = filePath.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
+    return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer" }} title={display}>{display}</a>;
+}
+
+function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let idx = 0;
+    codeBlockPathPattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = codeBlockPathPattern.exec(text)) !== null) {
+        if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+        const raw = match[0];
+        const display = raw.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
+        if (display.length !== raw.length) codeBlockPathPattern.lastIndex -= raw.length - display.length;
+        parts.push(renderCodePathLink(display, "code-path-" + idx++, t));
+        lastIndex = codeBlockPathPattern.lastIndex;
+    }
+    if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+    return parts;
 }
 
 function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[] {
@@ -305,7 +332,7 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
                     lineHeight: 1.5,
                 }}>
                     {codeBlockLang && <div style={{ color: t.codeBlockLang, fontSize: "0.85em", marginBottom: "4px" }}>{codeBlockLang}</div>}
-                    <code>{codeBlockLines.join("\n")}</code>
+                    <code>{renderCodeBlockText(codeBlockLines.join("\n"), t)}</code>
                 </pre>
             );
         }
@@ -411,7 +438,15 @@ function renderActions(
                         borderColor: a.style === "danger" ? t.errorText : t.btnBorder,
                         fontSize: "12px",
                         padding: "4px 10px",
+                        width: "auto",
+                        height: "auto",
+                        maxWidth: "100%",
+                        minWidth: "36px",
                         minHeight: "28px",
+                        lineHeight: 1.35,
+                        overflowWrap: "anywhere",
+                        textAlign: "center",
+                        whiteSpace: "normal",
                     }}
                 >
                     {a.label}
@@ -481,10 +516,22 @@ function renderConfirmationCard(
     );
 }
 
+function formatUnfinishedSlotStatus(status: string, lang: string) {
+    const normalized = status.replace(/_/g, " ");
+    if (!lang.startsWith("zh")) return `Status: ${normalized}`;
+    const labels: Record<string, string> = {
+        pending_resume: "\u5f85\u7ee7\u7eed",
+        resumed: "\u5df2\u6062\u590d",
+        dismissed: "\u5df2\u5ffd\u7565",
+    };
+    return `\u72b6\u6001\uff1a${labels[status] || normalized}`;
+}
+
 function renderUnfinishedSlotCard(
     slot: ChatUnfinishedSlot,
     executeAction: (command: string) => void,
     t: Theme,
+    lang: string,
 ): React.ReactNode {
     const actions = slot.actions || [];
     return (
@@ -503,7 +550,7 @@ function renderUnfinishedSlotCard(
             </div>
             {slot.status && (
                 <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
-                    {"\u72b6\u6001"}: {slot.status}
+                    {formatUnfinishedSlotStatus(slot.status, lang)}
                 </div>
             )}
             {slot.title && (
@@ -518,7 +565,14 @@ function renderUnfinishedSlotCard(
             )}
             {slot.projectPath && (
                 <div data-testid="unfinished-slot-project" style={{ color: t.pathColor, marginTop: "6px", wordBreak: "break-all" }}>
-                    {"\u{1F4C1}"} {slot.projectPath}
+                    <a
+                        href="#"
+                        onClick={(event) => openFileInFolder(event, slot.projectPath!)}
+                        style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }}
+                        title={slot.projectPath}
+                    >
+                        {"\u{1F4C1}"} {slot.projectPath}
+                    </a>
                 </div>
             )}
             {actions.length > 0 && renderActions(actions, executeAction, t)}
@@ -533,7 +587,7 @@ function openFileInFolder(event: React.MouseEvent, filePath: string) {
 
 /* Render a single ChatMessage */
 
-export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string): React.ReactNode {
+export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => void, t: Theme, isLastAssistant: boolean, savedFileLabel: string, lang = "en"): React.ReactNode {
     switch (msg.role) {
         case "user":
             return (
@@ -544,7 +598,10 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     </div>
                 </div>
             );
-        case "assistant":
+        case "assistant": {
+            const savedPaths = msg.localFilePaths && msg.localFilePaths.length > 0
+                ? msg.localFilePaths
+                : (msg.localFilePath ? [msg.localFilePath] : []);
             return (
                 <div key={msg.id} style={{
                     padding: "4px 0 4px 8px",
@@ -553,7 +610,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     color: t.text,
                 }}>
                     {/* Streaming: show blinking cursor only on the last assistant message */}
-                    {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && !msg.localFilePaths?.length && (
+                    {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && savedPaths.length === 0 && (
                         <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>{"|"}</span>
                     )}
                     {msg.thumbnailBase64 && msg.localFilePath && (
@@ -575,16 +632,16 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     )}
                     {renderContentWithCodeBlocks(msg.content, t)}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t)}
-                    {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t)}
-                    {msg.localFilePaths && msg.localFilePaths.length > 0 && (
+                    {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
+                    {savedPaths.length > 0 && (
                         <div style={{ margin: "4px 0" }}>
-                            {msg.localFilePaths.map((fp, i) => (
+                            {savedPaths.map((fp, i) => (
                                 <div key={i} style={{ padding: "2px 0" }}>
                                     <a href="#"
                                        onClick={(event) => openFileInFolder(event, fp)}
                                        style={{ color: t.pathColor, textDecoration: "underline", cursor: "pointer", wordBreak: "break-all" }}
                                        title={fp}>
-                                        {"\u{1F4BE}"} {savedFileLabel}: {"\u{1F4C1}"} {fp}
+                                        {"\u{1F4C4}"} {savedFileLabel}: {"\u{1F4C1}"} {fp}
                                     </a>
                                 </div>
                             ))}
@@ -594,10 +651,15 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     {!msg.confirmation && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t)}
                 </div>
             );
+        }
         case "progress":
+            {
+                const codingAgentProgress = renderCodingAgentProgressStatus(msg, t, lang);
+                if (codingAgentProgress) return codingAgentProgress;
+            }
             return (
                 <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "1px 0", fontStyle: "italic" }}>
-                        {">"} {msg.content}
+                    {msg.content}
                 </div>
             );
         case "system":

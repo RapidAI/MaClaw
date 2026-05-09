@@ -256,6 +256,39 @@ type AuditEvent struct {
 	CreatedAt    time.Time         `json:"created_at"`
 }
 
+type StructuredRecord struct {
+	ID         string         `json:"id"`
+	TenantID   string         `json:"tenant_id"`
+	UserID     string         `json:"user_id"`
+	Collection string         `json:"collection"`
+	Title      string         `json:"title,omitempty"`
+	Tags       []string       `json:"tags,omitempty"`
+	Data       map[string]any `json:"data"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+}
+
+type ListStructuredRecordsInput struct {
+	Collection string `json:"collection,omitempty"`
+	Tag        string `json:"tag,omitempty"`
+	Q          string `json:"q,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	Before     string `json:"before,omitempty"`
+}
+
+type CreateStructuredRecordInput struct {
+	Collection string         `json:"collection,omitempty"`
+	Title      string         `json:"title,omitempty"`
+	Tags       []string       `json:"tags,omitempty"`
+	Data       map[string]any `json:"data"`
+}
+
+type UpdateStructuredRecordInput struct {
+	Title *string        `json:"title,omitempty"`
+	Tags  []string       `json:"tags,omitempty"`
+	Data  map[string]any `json:"data,omitempty"`
+}
+
 type ListAuditEventsInput struct {
 	TenantID     string     `json:"tenant_id,omitempty"`
 	UserID       string     `json:"user_id,omitempty"`

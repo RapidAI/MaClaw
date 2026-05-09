@@ -52,7 +52,7 @@ type RemoteHubCenterHub struct {
 	Status         string `json:"status"`
 }
 
-const remoteEnrollTimeout = 25 * time.Second
+var remoteEnrollTimeout = remote.EnrollTimeout
 
 func (a *App) ProbeRemoteHub(hubURL string, email string) (RemoteProbeResult, error) {
 	hubURL = strings.TrimSpace(hubURL)
@@ -152,7 +152,7 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	}
 
 	// Delegate to shared enrollment client.
-	enrollClient := &remote.EnrollmentClient{HTTPClient: hubHTTPClient}
+	enrollClient := &remote.EnrollmentClient{HTTPClient: hubHTTPClient, EnrollTimeout: remoteEnrollTimeout}
 	enrollResult, err := enrollClient.Enroll(context.Background(), enrollCfg)
 	if err != nil {
 		return RemoteActivationResult{}, err

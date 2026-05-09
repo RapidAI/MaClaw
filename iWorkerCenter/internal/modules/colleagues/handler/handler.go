@@ -1,8 +1,12 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/domain"
@@ -19,6 +23,29 @@ type Handler struct {
 	svc      *service.ColleagueService
 	roleRepo *roleRepo.RoleRepo
 	roleSvc  *roleSvc.RoleService
+}
+
+const maxColleagueJSONBodyBytes = 128 << 10
+
+func decodeColleagueJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxColleagueJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxColleagueJSONBodyBytes {
+		return errors.New("colleague json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("colleague json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 // New creates a Handler.
@@ -49,7 +76,7 @@ func (h *Handler) handleAdminColleagues(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) handleAdminColleagueByID(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+	path := r.URL.EscapedPath()
 	id := extractID(path, "/admin/colleagues/")
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "colleague id is required")
@@ -146,7 +173,7 @@ func (h *Handler) createColleague(w http.ResponseWriter, r *http.Request) {
 	tid := tenant.RequestTenantID(r)
 
 	var req service.CreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeColleagueJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -173,7 +200,7 @@ func (h *Handler) updateColleague(w http.ResponseWriter, r *http.Request, id str
 	tid := tenant.RequestTenantID(r)
 
 	var req service.UpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeColleagueJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -191,7 +218,7 @@ func (h *Handler) setStatus(w http.ResponseWriter, r *http.Request, id string) {
 	var req struct {
 		Status string `json:"status"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeColleagueJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -206,7 +233,7 @@ func (h *Handler) assignRole(w http.ResponseWriter, r *http.Request, id string) 
 	tid := tenant.RequestTenantID(r)
 
 	var req service.AssignRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeColleagueJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -334,5 +361,9 @@ func extractID(path, prefix string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return parts[0]
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		return ""
+	}
+	return id
 }

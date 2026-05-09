@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -25,6 +24,7 @@ const (
 )
 
 var logDetailEnabled atomic.Bool
+var routeLogPathOverride atomic.Value
 
 func init() {
 	logDetailEnabled.Store(false)
@@ -45,89 +45,30 @@ var CoreToolNames = map[string]bool{
 	"send_and_observe": true, "get_session_output": true, "get_session_events": true,
 	"control_session": true,
 	"bash":            true, "read_file": true, "FileRead": true, "ripgrep": true, "Glob": true, "write_file": true, "edit_file": true, "list_directory": true,
-	"call_mcp_tool":  true,
-	"manage_skill":   true,
-	"screenshot": true,
-	"memory":     true,
-	"web_fetch":  true,
-	"set_nickname": true,
-	"discover_tool": true,
-	"task":          true,
-	"async_wait":    true,
+	"call_mcp_tool":    true,
+	"manage_skill":     true,
+	"screenshot":       true,
+	"memory":           true,
+	"web_fetch":        true,
+	"set_nickname":     true,
+	"discover_tool":    true,
+	"task":             true,
+	"async_wait":       true,
 	"compress_context": true,
-	"tts":           true,
+	"tts":              true,
 }
 
 type conditionalKeepRule struct {
-	keepTools              []string
-	matches                func(string) bool
-	needsSemanticConfirm   bool   // when true, keyword match is tentative; requires IntentClassifier confirmation
-	confirmIntent          string // the Intent* constant that confirms this rule (e.g. IntentBrowser)
+	keepTools []string
 	// noMemoryPin when true means tools from this rule should NOT be pinned
-	// via memory-driven pinning or eager pinning during Route(). They should
-	// only be pinned after actual successful use (ActivateSessionTool in the
-	// tool execution path). Set this for rules whose keywords are prone to
-	// false-positive matches in recalled memory content (e.g. "窗口" from a
-	// previous GUI task, "浏览器" from a server process list).
+	// via memory-driven pinning or eager pinning during Route(). They are pinned
+	// after actual successful use through ActivateSessionTool.
 	noMemoryPin bool
 }
 
-var sshIntentIPv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
-
-var sshIntentKeywords = []string{
-	"ssh", "服务器", "服务端", "主机", "远程机器", "远程主机", "云服务器", "线上机器",
-	"登录服务器", "连上服务器", "连接服务器", "远程登录", "看日志", "查看日志", "日志", "tail -f",
-	"journalctl", "systemctl", "service ", "nginx", "docker", "docker compose", "k8s", "kubectl",
-	"pm2", "supervisor", "重启服务", "重启 nginx", "重启进程", "上传到服务器", "下载服务器文件",
-	"sftp", "scp", "rsync", "端口", "进程", "服务器文件", "服务器上", "远程执行",
-	"host", "user", "label", "initial_command",
-}
-
-// containsAnyKeyword returns true if msg contains any of the given keywords (case-insensitive).
-func containsAnyKeyword(msg string, keywords []string) bool {
-	lower := strings.ToLower(msg)
-	for _, kw := range keywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			return true
-		}
-	}
-	return false
-}
-
-var searchIntentKeywords = []string{
-	"搜索", "search", "查找", "网页", "web", "google", "papers", "paper", "huggingface",
-}
-
-var documentDeliveryKeywords = []string{
-	"pdf", "报告", "综述", "附件", "发送文件", "文件发我", "发给我", "导出",
-}
-
-// screenshotExcludeKeywords prevents the document delivery conditional rule
-// from activating craft_tool when the message is a screenshot request.
-// Without this exclusion, "发给我" in "帮我截屏桌面发给我图片" would
-// activate craft_tool and compete with the built-in screenshot tool.
-var screenshotExcludeKeywords = []string{"截屏", "截图", "screenshot"}
-
-var codingWorkflowDocKeywords = []string{
-	"需求文档", "设计文档", "任务文档", "任务拆分", "任务计划", "技术设计",
-	"需求分析", "架构设计", "模块设计", "接口设计",
-	"生成需求", "生成设计", "生成任务",
-	"开发游戏", "开发应用", "开发工具", "开发系统", "开发程序", "开发项目",
-	"写代码", "改代码", "编程", "实现功能", "新增功能", "添加功能",
-	"修 bug", "修bug", "修复bug", "重构代码",
-}
-
-var browserIntentKeywords = []string{
-	"浏览器", "browser", "chrome", "chromium", "playwright",
-	"录制", "回放", "replay", "record",
-	"browser_", // tool name prefix in follow-up messages
-}
-var browserPageKeywords = []string{"页面", "网页", "网站", "url", "page", "site"}
-var browserActionKeywords = []string{"访问", "导航", "点击", "观察", "打开", "输入", "填写"}
-
 // allBrowserToolNames is the complete list of browser automation tools used
-// by both the strong and weak conditional keep rules. The core 22 browser
-// actions are merged into a single "browser" tool (see unified_tool.go).
+// by browser conditional keep rules. The core browser actions are merged into
+// a single "browser" tool (see unified_tool.go).
 // Task/recorder/OCR/GUI tools remain as individual tools.
 var allBrowserToolNames = []string{
 	// Unified browser tool (replaces 22 individual browser_* tools).
@@ -154,101 +95,24 @@ func NoEagerPinToolNames() []string {
 
 // IsNoEagerPinTool returns true if the named tool is in the noEagerPinTools
 // set (derived from conditionalKeepRules with noMemoryPin=true). Such tools
-// should not be session-pinned via keyword matching or memory-driven pinning.
+// should not be session-pinned via local matching or memory-driven pinning.
 func IsNoEagerPinTool(name string) bool {
 	return noEagerPinTools[name]
 }
 
-var excelKeywords = []string{
-	"xlsx", "csv", "spreadsheet", "表格", "电子表格", "excel",
-}
-
-var pptxReadKeywords = []string{
-	"pptx", "幻灯片", "演示文稿", "powerpoint", "ppt", "读取ppt",
-}
-
 // NOTE: Desktop GUI tools (gui_observe, gui_verify, gui_record_start, gui_record_stop)
 // are NOT in conditionalKeepRules. They live in DeferredToolNames, discoverable
-// via discover_tool. This avoids false-positive keyword activation (#87).
+// via discover_tool. This avoids false-positive local activation (#87).
 
 var conditionalKeepRules = []conditionalKeepRule{
-	{
-		keepTools: []string{"ssh"},
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, sshIntentKeywords) || sshIntentIPv4Pattern.MatchString(msg)
-		},
-	},
-	{
-		keepTools: []string{"web_search"},
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, searchIntentKeywords)
-		},
-	},
-	{
-		keepTools: []string{"send_file", "open"},
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, documentDeliveryKeywords)
-		},
-	},
-	{
-		keepTools: []string{"craft_tool"},
-		matches: func(msg string) bool {
-			// Do not activate craft_tool for screenshot requests even when
-			// document delivery keywords like "发给我" are present.
-			// send_file and open are split into a separate rule above so they
-			// remain available for "截屏发给我" (screenshot + send).
-			if containsAnyKeyword(msg, screenshotExcludeKeywords) {
-				return false
-			}
-			return containsAnyKeyword(msg, documentDeliveryKeywords)
-		},
-	},
-	// Browser tools — strong intent keywords (user explicitly mentions browser/chrome/playwright).
-	// These are high-confidence signals that don't need semantic confirmation.
-	{
-		keepTools:    allBrowserToolNames,
-		noMemoryPin: true,
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, browserIntentKeywords)
-		},
-	},
-	// Browser tools — weak keyword combination (page + action words).
-	// These are ambiguous signals prone to false positives (e.g. "页面上直接
-	// 打开即玩" in a game description). Requires IntentClassifier confirmation.
-	{
-		keepTools:            allBrowserToolNames,
-		needsSemanticConfirm: true,
-		confirmIntent:        IntentBrowser,
-		noMemoryPin:          true,
-		matches: func(msg string) bool {
-			// Weak signal: generic page + action words that often appear in
-			// non-browser contexts (e.g. game descriptions mentioning "页面"
-			// and "打开"). Only activate if IntentClassifier confirms browser intent.
-			// Skip if strong keywords already matched (handled by the rule above).
-			if containsAnyKeyword(msg, browserIntentKeywords) {
-				return false
-			}
-			return containsAnyKeyword(msg, browserPageKeywords) && containsAnyKeyword(msg, browserActionKeywords)
-		},
-	},
-	{
-		keepTools: []string{"office"},
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, excelKeywords)
-		},
-	},
-	{
-		keepTools: []string{"office"},
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, pptxReadKeywords)
-		},
-	},
-	{
-		keepTools: []string{"generate_pdf", "office"},
-		matches: func(msg string) bool {
-			return containsAnyKeyword(msg, codingWorkflowDocKeywords)
-		},
-	},
+	{keepTools: []string{"mis_data"}},
+	{keepTools: []string{"ssh"}},
+	{keepTools: []string{"web_search"}},
+	{keepTools: []string{"send_file", "open"}},
+	{keepTools: []string{"craft_tool"}},
+	{keepTools: allBrowserToolNames, noMemoryPin: true},
+	{keepTools: []string{"office"}},
+	{keepTools: []string{"generate_pdf", "office"}},
 }
 
 // CodingSessionToolNames lists tools that require a coding LLM session provider.
@@ -295,9 +159,9 @@ var BuiltinToolNames = map[string]bool{
 	"list_providers":    true,
 	"send_input":        true,
 	"interrupt_session": true, "kill_session": true,
-	"list_mcp_tools":   true,
-	"manage_skill":     true,
-	"list_skills": true, "run_skill": true, "get_skill_run": true,
+	"list_mcp_tools": true,
+	"manage_skill":   true,
+	"list_skills":    true, "run_skill": true, "get_skill_run": true,
 	"search_skill_hub": true, "install_skill_hub": true,
 	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
 	"open":            true,
@@ -316,12 +180,13 @@ var BuiltinToolNames = map[string]bool{
 	"query_audit_log":          true,
 	"session_search":           true,
 	"office":                   true,
+	"mis_data":                 true,
 	// Browser automation: unified "browser" tool + individual task/recorder tools.
-	"browser":              true,
-	"browser_task_run":     true, "browser_task_replay": true,
-	"browser_task_verify":  true, "browser_task_status": true,
+	"browser":          true,
+	"browser_task_run": true, "browser_task_replay": true,
+	"browser_task_verify": true, "browser_task_status": true,
 	"browser_record_start": true, "browser_record_stop": true, "browser_list_flows": true,
-	"browser_ocr":          true,
+	"browser_ocr": true,
 }
 
 func init() {
@@ -367,19 +232,19 @@ type SkillProvider interface {
 
 // Router selects the most relevant tools for a given user message.
 type Router struct {
-	generator     *DefinitionGenerator
-	registry      *Registry
-	recommender   SkillRecommender
-	skillProvider SkillProvider
-	bm25Index     *bm25.Index
-	skillBM25     *bm25.Index // separate index for skill trigger matching
-	hybrid        *HybridRetriever
-	enrichStore   *EnrichmentStore
-	tracker       *UsageTracker
-	reranker      Reranker // nil when reranking is disabled
-	sessionTools  map[string]bool
-	intentClassifier *IntentClassifier // hybrid intent classifier (Layer 1+2+3)
-	unifiedClassifier *intent.UnifiedIntentClassifier // UIC — replaces conditionalKeepRules when non-nil
+	generator         *DefinitionGenerator
+	registry          *Registry
+	recommender       SkillRecommender
+	skillProvider     SkillProvider
+	bm25Index         *bm25.Index
+	skillBM25         *bm25.Index // separate index for skill trigger matching
+	hybrid            *HybridRetriever
+	enrichStore       *EnrichmentStore
+	tracker           *UsageTracker
+	reranker          Reranker // nil when reranking is disabled
+	sessionTools      map[string]bool
+	intentClassifier  *IntentClassifier               // hybrid intent classifier (Layer 1+2+3)
+	unifiedClassifier *intent.UnifiedIntentClassifier // UIC replaces conditionalKeepRules when non-nil
 }
 
 func NewRouter(generator *DefinitionGenerator) *Router {
@@ -424,7 +289,7 @@ func (r *Router) skillMatchScore(userMessage string) (float64, []string) {
 	if r.skillProvider == nil {
 		return 0, nil
 	}
-	// Index is built on SetSkillProvider / RefreshSkillIndex — no rebuild here.
+	// Index is built on SetSkillProvider / RefreshSkillIndex; no rebuild here.
 
 	scores := r.skillBM25.Score(userMessage)
 	if len(scores) == 0 {
@@ -450,7 +315,7 @@ func (r *Router) skillMatchScore(userMessage string) (float64, []string) {
 	// Normalize: clamp raw BM25 score to [0,1] using sigmoid-like mapping.
 	// Raw BM25 scores vary widely; a score > 1.0 indicates strong match.
 	bestRaw := sorted[0].score
-	normBest := clampFloat(bestRaw/3.0, 0, 1) // scale: 3.0 raw → 1.0 normalized
+	normBest := clampFloat(bestRaw/3.0, 0, 1) // scale: 3.0 raw => 1.0 normalized
 
 	n := 3
 	if len(sorted) < n {
@@ -478,7 +343,7 @@ func buildAvailableToolsMap(allTools []map[string]interface{}) map[string]bool {
 
 // filterSkillsByConditions filters matched skill names through tool availability
 // conditions. Only skills whose conditions are satisfied (or have no conditions)
-// are retained. This implements the AND logic: keyword match AND conditions met.
+// are retained.
 func (r *Router) filterSkillsByConditions(matchedSkills []string, availableTools map[string]bool) []string {
 	if r.skillProvider == nil {
 		return matchedSkills
@@ -494,7 +359,7 @@ func (r *Router) filterSkillsByConditions(matchedSkills []string, availableTools
 	for _, name := range matchedSkills {
 		s, ok := condByName[name]
 		if !ok {
-			// Skill not found in provider — include it (defensive).
+			// Skill not found in provider; include it defensively.
 			filtered = append(filtered, name)
 			continue
 		}
@@ -562,7 +427,7 @@ func (r *Router) IntentClassifier() *IntentClassifier {
 
 // SetUnifiedClassifier sets the Unified Intent Classifier used for
 // intent-driven conditional tool selection. When non-nil, Route() uses
-// UIC results instead of evaluating conditionalKeepRules keyword matches.
+// UIC results instead of evaluating local conditional keep rules.
 func (r *Router) SetUnifiedClassifier(uic *intent.UnifiedIntentClassifier) {
 	r.unifiedClassifier = uic
 }
@@ -677,29 +542,29 @@ func init() {
 }
 
 // IsConditionalTool returns true if the tool is governed by a conditional keep
-// rule. Such tools are only included when the user message matches certain
-// keywords. Once actually used in a session, callers should pin them via
+// rule. Such tools are included only when semantic routing selects them.
+// Once actually used in a session, callers should pin them via
 // ActivateSessionTool so they remain available for follow-up messages.
 func IsConditionalTool(name string) bool {
 	return allConditionalKeepTools[name]
 }
 
 // noPinConditionalTools lists conditional tools that should NOT be session-pinned
-// after use. These tools should only appear when the current message matches
-// their keywords, and should disappear when the conversation topic changes.
+// after use. These tools should only appear for the current routed task and
+// should disappear when the conversation topic changes.
 var noPinConditionalTools = map[string]bool{
 	"generate_pdf": true,
 	"office":       true,
 }
 
 // noEagerPinTools lists conditional tools that should NOT be eagerly pinned
-// during Route() keyword matching or memory-driven pinning, but SHOULD be
+// during Route() local matching or memory-driven pinning, but SHOULD be
 // pinned after actual successful use (via ActivateSessionTool in the tool
 // execution path).
 //
 // This set is derived automatically from conditionalKeepRules: any rule with
 // noMemoryPin=true contributes all its keepTools to this set. This ensures
-// the protection is co-located with the rule definition — adding a new rule
+// the protection is co-located with the rule definition: adding a new rule
 // with noMemoryPin=true automatically protects its tools, with zero changes
 // needed in MatchConditionalTools, Route(), or any other consumer.
 var noEagerPinTools map[string]bool
@@ -724,121 +589,60 @@ func ShouldPinConditionalTool(name string) bool {
 
 // isBrowserDiagTool returns true if the tool name is a browser-related or
 // desktop GUI tool for diagnostic logging purposes. Uses noEagerPinTools
-// as the canonical set — any tool protected from memory-driven pinning is
+// as the canonical set; any tool protected from memory-driven pinning is
 // worth diagnostic logging.
 func isBrowserDiagTool(name string) bool {
 	return noEagerPinTools[name]
 }
 
-// MatchConditionalTools returns the set of conditional tool names that match
-// the given text. This is used to pin tools based on recalled memory content
-// (e.g. when memory mentions "服务器" or "SSH", the ssh tool should be pinned).
-//
-// Tools from rules with noMemoryPin=true are excluded. This is the mechanism
-// that prevents false-positive memory-driven pinning of GUI tools — the
-// protection is declared on the rule itself, not maintained in a separate list.
-//
-// These tools are only pinned after actual successful use via
-// ActivateSessionTool in the tool execution path (im_message_handler.go).
+// MatchConditionalTools intentionally does not infer execution tools from
+// recalled memory text. Memory recall can surface context, but pinning SSH,
+// browser, or similar tools from lexical mentions in past summaries is too
+// error-prone. Conditional tools are activated by UIC/semantic routing for the
+// current user message, or after actual successful use via ActivateSessionTool.
 func MatchConditionalTools(text string) map[string]bool {
-	keep, _, needsConfirm := matchConditionalKeepRules(text)
-	// Promote needsConfirm tools that are NOT in noEagerPinTools.
-	for name := range needsConfirm {
-		if !noEagerPinTools[name] {
-			keep[name] = true
-		}
-	}
-	// Remove noEagerPinTools entries from keep — these tools are from rules
-	// with noMemoryPin=true, prone to false-positive keyword matches in
-	// memory content. They should only be pinned after actual successful use.
-	// Iterate over the (usually small) keep set rather than the larger
-	// noEagerPinTools map for efficiency.
-	for name := range keep {
-		if noEagerPinTools[name] {
-			delete(keep, name)
-		}
-	}
-	return keep
+	return map[string]bool{}
 }
 
-// matchConditionalKeepRules returns the set of tool names to conditionally keep,
-// the set to filter out, and the set that matched keywords but need semantic
-// confirmation before being activated (needsSemanticConfirm rules).
-//
-// Tools in needsConfirm are NOT added to keep — the caller must verify them
-// with the IntentClassifier before promoting to keep.
+// matchConditionalKeepRules keeps the legacy API shape for callers and tests,
+// but local wording is no longer an execution-routing authority. Conditional
+// tools start filtered and are promoted only by semantic classifiers in Route.
 func matchConditionalKeepRules(userMessage string) (keep map[string]bool, filterOut map[string]bool, needsConfirm map[string]string) {
+	_ = userMessage
 	keep = make(map[string]bool)
 	filterOut = make(map[string]bool)
-	needsConfirm = make(map[string]string) // tool name → required intent
-	msg := strings.ToLower(strings.TrimSpace(userMessage))
-	if msg == "" {
-		// Empty message: filter out ALL conditionally-kept tools.
-		for name := range allConditionalKeepTools {
-			filterOut[name] = true
-		}
-		return keep, filterOut, needsConfirm
-	}
-	for _, rule := range conditionalKeepRules {
-		if rule.matches(msg) {
-			if rule.needsSemanticConfirm {
-				// Keyword matched but this rule requires semantic confirmation.
-				// Park tools in needsConfirm instead of keep.
-				for _, name := range rule.keepTools {
-					needsConfirm[name] = rule.confirmIntent
-				}
-			} else {
-				for _, name := range rule.keepTools {
-					keep[name] = true
-				}
-			}
-		}
-	}
-	// Filter out tools that are conditionally kept but NOT matched this time.
-	// Tools in needsConfirm are also filtered out for now — they'll be promoted
-	// to keep only after semantic confirmation succeeds.
+	needsConfirm = make(map[string]string)
 	for name := range allConditionalKeepTools {
-		if !keep[name] {
-			filterOut[name] = true
-		}
+		filterOut[name] = true
 	}
 	return keep, filterOut, needsConfirm
 }
 
 // Route selects the most relevant tools for userMessage from allTools.
 func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
-	if len(allTools) <= MaxToolBudget {
-		return allTools
-	}
-
 	var condKeep map[string]bool
 	var condFilterOut map[string]bool
-	var condNeedsConfirm map[string]string
 	var cachedICResult *IntentResult
 
 	if r.unifiedClassifier != nil {
 		// UIC path: use UnifiedIntentClassifier to determine which conditional
-		// tools to keep, replacing the keyword-based matchConditionalKeepRules.
+		// tools to keep, replacing local matchConditionalKeepRules.
 		condKeep = make(map[string]bool)
 		condFilterOut = make(map[string]bool)
-		condNeedsConfirm = make(map[string]string)
 
 		uicResult := r.unifiedClassifier.Classify(intent.MessageContext{Text: userMessage})
 
-		// Use ToolNames from the UIC result to populate condKeep.
-		for _, toolName := range uicResult.ToolNames {
-			condKeep[toolName] = true
-		}
+		const uicToolActivationThreshold = 0.90
+		uicClear := !uicResult.Degraded &&
+			uicResult.Primary != intent.LabelUnknown &&
+			uicResult.Primary != intent.LabelAmbiguous &&
+			uicResult.Confidence >= uicToolActivationThreshold
 
-		// Preserve needsSemanticConfirm mechanism for browser weak signals:
-		// Layer 1 weak browser combo produces confidence < 0.90. When UIC
-		// returns Primary=LabelBrowser with Confidence < 0.90, treat browser
-		// tools as needing semantic confirmation (same as the weak keyword rule).
-		if uicResult.Primary == intent.LabelBrowser && uicResult.Confidence < 0.90 {
-			// Move browser tools from condKeep to condNeedsConfirm.
+		if uicClear {
+			// Use ToolNames from the UIC result to populate condKeep. UIC is an
+			// execution-routing authority only when it is non-degraded and clear.
 			for _, toolName := range uicResult.ToolNames {
-				delete(condKeep, toolName)
-				condNeedsConfirm[toolName] = IntentBrowser
+				condKeep[toolName] = true
 			}
 		}
 
@@ -849,114 +653,48 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			}
 		}
 
-		// Use existing IntentClassifier for semantic confirmation of needsConfirm tools.
-		if r.intentClassifier != nil {
-			result := r.intentClassifier.Classify(userMessage)
-			cachedICResult = &result
-		}
-
-		if len(condNeedsConfirm) > 0 {
-			if cachedICResult != nil {
-				for name, requiredIntent := range condNeedsConfirm {
-					if cachedICResult.Intent == requiredIntent && cachedICResult.Confidence >= 0.50 {
-						condKeep[name] = true
-						delete(condFilterOut, name)
-					}
-				}
-			} else {
-				// No IntentClassifier available — fall back to keyword match.
-				for name := range condNeedsConfirm {
-					condKeep[name] = true
-					delete(condFilterOut, name)
-				}
-			}
-		}
 	} else {
-		// Fallback path: UIC not available, use existing conditionalKeepRules.
-		condKeep, condFilterOut, condNeedsConfirm = matchConditionalKeepRules(userMessage)
+		// Fallback path: UIC not available. Local conditional rules are not an
+		// execution-routing authority, so keep every conditional tool filtered
+		// unless the semantic IntentClassifier below explicitly promotes it.
+		condKeep = make(map[string]bool)
+		condFilterOut = make(map[string]bool)
+		for name := range allConditionalKeepTools {
+			condFilterOut[name] = true
+		}
 
-		// Semantic intent confirmation: when a conditional rule matched keywords
-		// but requires semantic confirmation (needsSemanticConfirm=true), use the
-		// IntentClassifier to verify the user's actual intent before activating
-		// those tools. This prevents false positives like "浏览器直接打开即玩"
-		// (describing a game's runtime) from activating 25+ browser tools.
-		//
-		// When the IntentClassifier is unavailable, fall back to keyword match
-		// (promote all needsConfirm tools to keep) to maintain existing behavior.
-		//
-		// The classification result is cached and reused by the semantic intent
-		// enhancement below to avoid double classification.
 		if r.intentClassifier != nil {
 			result := r.intentClassifier.Classify(userMessage)
 			cachedICResult = &result
 		}
 
-		if len(condNeedsConfirm) > 0 {
-			if cachedICResult != nil {
-				// Group needsConfirm tools by their required intent.
-				for name, requiredIntent := range condNeedsConfirm {
-					if cachedICResult.Intent == requiredIntent && cachedICResult.Confidence >= 0.50 {
-						// Semantic confirmation passed — promote to keep.
-						condKeep[name] = true
-						delete(condFilterOut, name)
-					}
-					// Otherwise: tool stays in filterOut (keyword was a false positive).
-				}
-				if logDetailEnabled.Load() {
-					promoted := 0
-					for name := range condNeedsConfirm {
-						if condKeep[name] {
-							promoted++
-						}
-					}
-					log.Printf("[Router] semantic confirm: intent=%s conf=%.2f, %d/%d tools promoted",
-						cachedICResult.Intent, cachedICResult.Confidence, promoted, len(condNeedsConfirm))
-				}
-			} else {
-				// No IntentClassifier available — fall back to keyword match.
-				for name := range condNeedsConfirm {
-					condKeep[name] = true
-					delete(condFilterOut, name)
-				}
-			}
-		}
-
-		// Semantic intent enhancement: when keyword matching misses but the
+		// Semantic intent enhancement: when local matching yields nothing but the
 		// IntentClassifier detects a specific intent, activate the corresponding
-		// conditional tools. This catches cases like "帮我搞个能自动抢票的东西"
-		// where no SSH/browser keywords appear but embedding detects the intent.
+		// conditional tools without consulting local lexical heuristics.
 		//
-		// For tool sets in noEagerPinTools (e.g. 25+ browser tools), a higher
-		// confidence threshold is required to prevent false positives from
-		// injecting many tool definitions into the LLM context. This is a
-		// mechanism-level control: any future high-cost tool set only needs
-		// to be added to noEagerPinTools to automatically get the higher bar.
+		// Semantic promotion requires a clear high-confidence result. Unknown,
+		// query, short-command, and low-confidence classifications fail closed.
 		if cachedICResult != nil {
+			const semanticToolActivationThreshold = 0.78
 			if cachedICResult.Intent != IntentQuery && cachedICResult.Intent != IntentShortCommand &&
 				cachedICResult.Intent != IntentUnknown &&
-				cachedICResult.Confidence >= 0.50 {
+				cachedICResult.Confidence >= semanticToolActivationThreshold {
 				var intentTools []string
 				switch cachedICResult.Intent {
 				case IntentSSH:
 					intentTools = []string{"ssh"}
 				case IntentBrowser:
 					for name := range allConditionalKeepTools {
-						if strings.HasPrefix(name, "browser_") || name == "gui_record_start" || name == "gui_record_stop" {
+						if name == "browser" || strings.HasPrefix(name, "browser_") || name == "gui_record_start" || name == "gui_record_stop" {
 							intentTools = append(intentTools, name)
 						}
 					}
 				}
 				// For tools in noEagerPinTools (high-cost sets like browser_*),
 				// require higher confidence to avoid false-positive activation.
-				// The threshold 0.78 matches embeddingHighThreshold — only
-				// high-confidence intent detection should inject 25+ tools.
-				const highCostConfidenceThreshold = 0.78
 				for _, name := range intentTools {
 					if condKeep[name] {
 						continue
-					}
-					if noEagerPinTools[name] && cachedICResult.Confidence < highCostConfidenceThreshold {
-						continue // skip: low-confidence activation of high-cost tool
 					}
 					condKeep[name] = true
 					delete(condFilterOut, name)
@@ -965,12 +703,11 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	// Eager pin: when a conditional tool matches the current message,
+	// Eager pin: when semantic routing selects a conditional tool,
 	// pin it to the session immediately so it survives follow-up messages
-	// that lack the triggering keywords (e.g. user says "回忆下" after
-	// asking about a server — ssh should stay available).
+	// in the same task.
 	// Tools from noMemoryPin rules are excluded (noEagerPinTools) because
-	// keyword matching is prone to false positives. They get pinned after
+	// eager pinning is prone to false positives. They get pinned after
 	// actual successful use via ActivateSessionTool in the tool execution path.
 	for name := range condKeep {
 		if ShouldPinConditionalTool(name) && !noEagerPinTools[name] {
@@ -997,7 +734,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			if r.unifiedClassifier != nil {
 				source = "UIC"
 			} else {
-				source = "keyword_rules"
+				source = "semantic_intent"
 			}
 			log.Printf("[browser-diag] Route_condKeep: source=%s browserInKeep=%v browserInSession=%v",
 				source, browserInKeep, browserInSession)
@@ -1017,7 +754,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			core = append(core, t)
 		} else if condFilterOut[name] {
 			// This tool has a conditional keep rule that did NOT match this
-			// message — exclude it from candidates entirely.
+			// message; exclude it from candidates entirely.
 			continue
 		} else {
 			candidates = append(candidates, t)
@@ -1092,8 +829,9 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 
 	type scored struct {
-		index int
-		score float64
+		index                 int
+		score                 float64
+		routingHintAdjustment float64
 	}
 	scoredList := make([]scored, len(candidates))
 	for i, name := range candidateNames {
@@ -1112,6 +850,10 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 				priorityBonus = clampFloat(float64(t.Priority)*0.1, 0, 1)
 			}
 		}
+		var routingHintAdjustment float64
+		if r.tracker != nil {
+			routingHintAdjustment = r.tracker.RoutingHintAdjustment(name, queryTokens)
+		}
 
 		// Skill match bonus: only applies to manage_skill tool.
 		var skillBonus float64
@@ -1121,17 +863,18 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 
 		var finalScore float64
 		if r.skillProvider != nil && r.tracker != nil {
-			// Five signals: α=0.45 retrieval + β=0.20 experience + γ=0.15 skill_match + δ=0.10 outcome + ε=0.10 priority
+			// Five signals: retrieval + experience + skill match + outcome + priority.
 			finalScore = 0.45*retrievalScore + 0.20*expScore + 0.15*skillBonus + 0.10*outcomeScore + 0.10*priorityBonus
 		} else if r.tracker != nil {
-			// α=0.50 retrieval + β=0.25 experience + γ=0.15 outcome + δ=0.10 priority
+			// Four signals: retrieval + experience + outcome + priority.
 			finalScore = 0.50*retrievalScore + 0.25*expScore + 0.15*outcomeScore + 0.10*priorityBonus
 		} else {
-			// No tracker: α=0.9 retrieval + γ=0.1 priority
+			// No tracker: retrieval + priority.
 			finalScore = 0.9*retrievalScore + 0.1*priorityBonus
 		}
+		finalScore = clampFloat(finalScore+routingHintAdjustment, 0, 1)
 
-		scoredList[i] = scored{index: i, score: finalScore}
+		scoredList[i] = scored{index: i, score: finalScore, routingHintAdjustment: routingHintAdjustment}
 	}
 	sort.SliceStable(scoredList, func(i, j int) bool {
 		return scoredList[i].score > scoredList[j].score
@@ -1167,7 +910,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 			if err != nil {
 				log.Printf("[Router] WARN: reranker failed: %v, falling back to fused scores", err)
 			}
-			// Fall back to fused score ordering — no change to scoredList
+			// Fall back to fused score ordering; no change to scoredList.
 		} else {
 			rerankerResult = reranked
 			// Promote reranked results to front of scored list.
@@ -1205,7 +948,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	copy(result, core)
 
 	// seenNames (built during core/candidate split above) already tracks all
-	// tool names in core + candidates. Reuse it for downstream dedup — any
+	// tool names in core + candidates. Reuse it for downstream dedup; any
 	// tool appended to result must check seenNames first.
 
 	// Enhance manage_skill description with matched skill names.
@@ -1247,9 +990,11 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 	}
 	rankedNames := make([]string, len(scoredList))
 	rankedScores := make([]float64, len(scoredList))
+	rankedRoutingHintAdjustments := make([]float64, len(scoredList))
 	for i, s := range scoredList {
 		rankedNames[i] = candidateNames[s.index]
 		rankedScores[i] = s.score
+		rankedRoutingHintAdjustments[i] = s.routingHintAdjustment
 	}
 
 	// Compute bodyAware: true when hybrid is active and any candidate has non-empty BodySummary.
@@ -1263,7 +1008,7 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 		}
 	}
 
-	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, selectedNames, rerankerResult, skillScore, matchedSkills)
+	go writeRouteLog(userMessage, len(allTools), len(core), len(candidates), r.hybrid != nil, bodyAware, rankedNames, rankedScores, rankedRoutingHintAdjustments, selectedNames, rerankerResult, skillScore, matchedSkills)
 
 	return result
 }
@@ -1358,6 +1103,7 @@ func writeRouteLog(
 	bodyAware bool,
 	rankedNames []string,
 	rankedScores []float64,
+	rankedRoutingHintAdjustments []float64,
 	selectedNames []string,
 	rerankerResult []string,
 	skillMatchScore float64,
@@ -1366,13 +1112,12 @@ func writeRouteLog(
 	if !logDetailEnabled.Load() {
 		return
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	logPath, ok := routeLogPath()
+	if !ok {
 		return
 	}
-	logDir := filepath.Join(home, ".maclaw", "logs")
+	logDir := filepath.Dir(logPath)
 	os.MkdirAll(logDir, 0755)
-	logPath := filepath.Join(logDir, "tool_route.log")
 
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -1384,7 +1129,7 @@ func writeRouteLog(
 	if info, e := f.Stat(); e == nil && info.Size() > 5*1024*1024 {
 		f.Truncate(0)
 		f.Seek(0, 0)
-		fmt.Fprintln(f, "[log truncated — exceeded 5MB]")
+		fmt.Fprintln(f, "[log truncated: exceeded 5MB]")
 	}
 
 	now := time.Now().Format("2006-01-02 15:04:05")
@@ -1405,6 +1150,14 @@ func writeRouteLog(
 	}
 	fmt.Fprintf(f, "Top-%d candidates by fused score:\n", n)
 	for i := 0; i < n; i++ {
+		adjustment := 0.0
+		if i < len(rankedRoutingHintAdjustments) {
+			adjustment = rankedRoutingHintAdjustments[i]
+		}
+		if adjustment != 0 {
+			fmt.Fprintf(f, "  #%d %s = %.4f (routing_hint %+0.4f)\n", i+1, rankedNames[i], rankedScores[i], adjustment)
+			continue
+		}
 		fmt.Fprintf(f, "  #%d %s = %.4f\n", i+1, rankedNames[i], rankedScores[i])
 	}
 
@@ -1429,6 +1182,19 @@ func writeRouteLog(
 	}
 
 	fmt.Fprintln(f, "---")
+}
+
+func routeLogPath() (string, bool) {
+	if value := routeLogPathOverride.Load(); value != nil {
+		if path, ok := value.(string); ok && strings.TrimSpace(path) != "" {
+			return path, true
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(home, ".maclaw", "logs", "tool_route.log"), true
 }
 
 // clampFloat clamps v to [lo, hi].

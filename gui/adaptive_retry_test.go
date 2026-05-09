@@ -17,6 +17,38 @@ func TestClassify_Transient_429(t *testing.T) {
 	}
 }
 
+func TestClassify_HubPeriodLimit_NotTransient(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	err := errors.New(`HTTP 429: {"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted"}`)
+	cat := r.Classify("llm_request", err)
+	if cat != FailurePeriodLimit {
+		t.Fatalf("expected FailurePeriodLimit, got %s", cat)
+	}
+}
+
+func TestClassify_HubPeriodLimitEnglishText_NotTransient(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	err := errors.New("HTTP 429: MaClaw Official period quota is exhausted; recovers in about 1h")
+	cat := r.Classify("llm_request", err)
+	if cat != FailurePeriodLimit {
+		t.Fatalf("expected FailurePeriodLimit, got %s", cat)
+	}
+	if isRetryableLLMError(err) {
+		t.Fatal("period quota text should not be retryable")
+	}
+}
+
+func TestDecide_HubPeriodLimit_SkipsRetry(t *testing.T) {
+	r := NewAdaptiveRetry(nil)
+	d := r.Decide("llm_request", FailurePeriodLimit, 0)
+	if d.Action != "skip" {
+		t.Fatalf("expected skip for Hub period limit, got %s", d.Action)
+	}
+	if d.Delay != 0 {
+		t.Fatalf("expected no delay for Hub period limit, got %v", d.Delay)
+	}
+}
+
 func TestClassify_Transient_TooManyRequests(t *testing.T) {
 	r := NewAdaptiveRetry(nil)
 	err := errors.New("Error: Too Many Requests")
@@ -184,6 +216,23 @@ func TestIsRetryableLLMError_Includes429(t *testing.T) {
 	err := errors.New("OpenAI API 请求过于频繁 (HTTP 429)")
 	if !isRetryableLLMError(err) {
 		t.Error("expected true for 429")
+	}
+}
+
+func TestIsRetryableLLMError_ExcludesHubPeriodLimit(t *testing.T) {
+	err := errors.New("MaClaw 官方周期限流：当前周期额度已用尽，约 2 小时 后恢复。")
+	if isRetryableLLMError(err) {
+		t.Error("expected false for Hub period limit")
+	}
+	if isTransientServerError(err) {
+		t.Error("period limit should not be classified as transient")
+	}
+}
+
+func TestIsRetryableLLMError_ExcludesHubPeriodLimitCode(t *testing.T) {
+	err := errors.New(`HTTP 429: {"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted"}`)
+	if isRetryableLLMError(err) {
+		t.Error("expected false for Hub period limit code")
 	}
 }
 

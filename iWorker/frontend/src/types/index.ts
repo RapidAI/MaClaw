@@ -228,6 +228,21 @@ export type HistoryTaskItem = TaskItem & {
   expectedOutput?: string;
   result?: string;
   model?: string;
+  sourceType?: 'local' | 'center_push' | 'center_handoff' | 'workflow_handoff';
+  centerHandoffId?: string;
+  workflowStepInstanceId?: string;
+};
+
+export type CenterTaskContext = {
+  kind: 'goal_push' | 'collaboration';
+  live: boolean;
+  cached: boolean;
+  title: string;
+  sourceLabel: string;
+  detail?: string;
+  eventId?: string;
+  taskId?: string;
+  workflowStepInstanceId?: string;
 };
 
 
@@ -267,6 +282,9 @@ export type CenterInstalledTools = {
   source: string;
   cachedAt: string;
   stale: boolean;
+  skillError?: string;
+  mcpError?: string;
+  cacheError?: string;
 };
 
 export type CenterConfigBundle = {
@@ -281,21 +299,60 @@ export type CenterConfigBundle = {
   source: string;
   cachedAt: string;
   stale: boolean;
+  applyStatus?: string;
+  applyMessage?: string;
 };
 
 export type CenterGoalPush = {
   eventId?: string;
   taskId: string;
+  workflowStepInstanceId?: string;
   title: string;
   toColleagueId: string;
   toRoleCode: string;
   status: string;
   reason: string;
   recommendedAction: string;
+  recoveryAction?: string;
+  recoveryMethod?: string;
+  recoveryPath?: string;
   ageSeconds: number;
   executorStatus?: string;
   executorHeartbeatAgeSeconds?: number;
   createdAt: string;
+  source?: string;
+  cachedAt?: string;
+  stale?: boolean;
+};
+
+export type CenterCollabTask = {
+  id: string;
+  title: string;
+  description: string;
+  fromColleagueId: string;
+  toColleagueId: string;
+  toRoleCode: string;
+  status: string;
+  priority: number;
+  result: string;
+  workflowStepInstanceId?: string;
+  createdAt: string;
+  updatedAt: string;
+  source?: string;
+  cachedAt?: string;
+  stale?: boolean;
+};
+
+export type CenterWorkflowInstance = {
+  id: string;
+  definitionId: string;
+  title: string;
+  initiatorId: string;
+  currentStepId: string;
+  currentStepAssigneeColleagueId?: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
   source?: string;
   cachedAt?: string;
   stale?: boolean;
@@ -327,6 +384,7 @@ export type CenterAgentInstance = {
   lastHeartbeatAt: string;
   heartbeatAgeSeconds: number;
   effectiveStatus: string;
+  runtimeSkillError?: string;
   source?: string;
   cachedAt?: string;
   stale?: boolean;

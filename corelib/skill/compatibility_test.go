@@ -33,6 +33,24 @@ func TestNormalizeStepForRunner_ActionAndParamAliases(t *testing.T) {
 	}
 }
 
+func TestNormalizeStepForRunner_IgnoresInvalidNumericStrings(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "run",
+		Params: map[string]interface{}{
+			"cmd":             "echo hello",
+			"timeout_seconds": "30s",
+		},
+	}
+
+	got := NormalizeStepForRunner(step, "")
+	if got.Params["timeout"] != "30s" || got.Params["timeout_seconds"] != "30s" {
+		t.Fatalf("invalid timeout string was parsed unexpectedly: %#v", got.Params)
+	}
+	if timeout := RunnerStepTimeoutSeconds(got.Params, 120, 600); timeout != 120 {
+		t.Fatalf("RunnerStepTimeoutSeconds() = %d, want default 120 for invalid timeout", timeout)
+	}
+}
+
 func TestNormalizeStepForRunner_LanguageActions(t *testing.T) {
 	skillDir := filepath.Join("tmp", "skill")
 	step := corelib.NLSkillStep{
@@ -112,6 +130,21 @@ func TestNormalizeStepForRunner_DoesNotDoubleWrapInterpreterCommand(t *testing.T
 	cmd, _ := got.Params["command"].(string)
 	if strings.Count(cmd, "python") != 1 || strings.HasPrefix(cmd, "python \"python3") {
 		t.Fatalf("interpreter command was double-wrapped: %q", cmd)
+	}
+}
+
+func TestNormalizeStepForRunner_QuotesResolvedBaseDirScriptWithSpaces(t *testing.T) {
+	step := corelib.NLSkillStep{
+		Action: "run",
+		Params: map[string]interface{}{"command": "node {baseDir}/translate.js {content}"},
+	}
+
+	got := NormalizeStepForRunnerCopy(step, `C:\Users\test\My Skills\babeldoc`)
+	cmd, _ := got.Params["command"].(string)
+
+	want := `node "C:/Users/test/My Skills/babeldoc/translate.js" {content}`
+	if cmd != want {
+		t.Fatalf("command = %q, want %q", cmd, want)
 	}
 }
 
@@ -319,8 +352,61 @@ env:
 	if len(sf.RequiredEnv) != 1 || sf.RequiredEnv[0] != "API_TOKEN" {
 		t.Fatalf("required env from env map = %#v, want [API_TOKEN]", sf.RequiredEnv)
 	}
+	envMap, ok := sf.Steps[0].Params["env"].(map[string]interface{})
+	if !ok || envMap["API_TOKEN"] != "value" {
+		t.Fatalf("synthesized step env = %#v, want API_TOKEN value", sf.Steps[0].Params["env"])
+	}
+	if got := BuildCommandEnv(nil, sf.Steps[0].Params); !containsEnv(got, "API_TOKEN=value") {
+		t.Fatalf("BuildCommandEnv() = %#v, want API_TOKEN injected from top-level env map", got)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:        sf.Name,
+		RequiredEnv: sf.RequiredEnv,
+		Steps:       convertSkillYAMLSteps(sf.Steps),
+	}
+	ctx := BuildRunCheckContext(entry, nil)
+	if !ctx.ProvidedEnvVars["API_TOKEN"] {
+		t.Fatalf("BuildRunCheckContext() = %#v, want env map key marked provided", ctx.ProvidedEnvVars)
+	}
 }
 
+func TestParseSkillYAMLFile_TopLevelCommandWithEmptyStepsBecomesExecutableStep(t *testing.T) {
+	data := []byte(`name: drawio-skill
+description: command with explicit empty steps
+command: node {baseDir}/generate.js {content}
+platforms: [universal]
+steps: []
+`)
+
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile error: %v", err)
+	}
+	if len(sf.Steps) != 1 {
+		t.Fatalf("steps = %#v, want one synthesized step", sf.Steps)
+	}
+	if sf.Steps[0].Action != "run" || sf.Steps[0].Params["command"] != "node {baseDir}/generate.js {content}" {
+		t.Fatalf("step = %#v, want synthesized run command", sf.Steps[0])
+	}
+}
+
+func TestResolveStep_ResolvesBaseDirInYAMLCommand(t *testing.T) {
+	skillDir := filepath.Join("tmp", "drawio-skill")
+	step := corelib.NLSkillStep{
+		Action: "run",
+		Params: map[string]interface{}{"command": "node {baseDir}/generate.js {content}"},
+	}
+
+	result, err := ResolveStep(step, map[string]string{"content": "flowchart"}, skillDir, nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep error: %v", err)
+	}
+	cmd, _ := result.Step.Params["command"].(string)
+	wantPath := filepath.ToSlash(filepath.Join(skillDir, "generate.js"))
+	if !strings.Contains(cmd, wantPath) || strings.Contains(cmd, "{baseDir}") || strings.Contains(cmd, "{content}") || !strings.Contains(cmd, "flowchart") {
+		t.Fatalf("command = %q, want baseDir/content resolved", cmd)
+	}
+}
 func TestParseSkillYAMLFile_ToleratesMapParamSchemaAndStringLists(t *testing.T) {
 	data := []byte(`name: compat-schema
 required_env: API_TOKEN, OTHER_TOKEN

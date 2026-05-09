@@ -144,6 +144,9 @@ func TestAppConfig_GroupDiscussionDefaultsWhenAbsent(t *testing.T) {
 	if gd.AllowSecurityGroupFreeDiscussion {
 		t.Error("absent group_discussion should not allow same-security-group free discussion by default")
 	}
+	if !gd.CrossAgentExperienceEnabled() {
+		t.Error("absent group_discussion should allow cross-agent experience by default for compatibility")
+	}
 	if gd.InvitePolicy != "ask_always" {
 		t.Errorf("InvitePolicy = %q, want ask_always", gd.InvitePolicy)
 	}
@@ -169,7 +172,8 @@ func TestAppConfig_GroupDiscussionExplicitFalseSurvivesUnmarshal(t *testing.T) {
 			"suggest_consultation": false,
 			"confirm_before_start": false,
 			"reject_when_dnd": false,
-			"allow_security_group_free_discussion": true
+			"allow_security_group_free_discussion": true,
+			"use_cross_agent_experience": false
 		}
 	}`
 
@@ -184,6 +188,9 @@ func TestAppConfig_GroupDiscussionExplicitFalseSurvivesUnmarshal(t *testing.T) {
 	}
 	if !gd.AllowSecurityGroupFreeDiscussion {
 		t.Fatal("allow_security_group_free_discussion=true should be preserved")
+	}
+	if gd.CrossAgentExperienceEnabled() {
+		t.Fatal("use_cross_agent_experience=false should be preserved")
 	}
 	if gd.InvitePolicy != "ask_always" {
 		t.Errorf("InvitePolicy = %q, want ask_always", gd.InvitePolicy)

@@ -11,9 +11,10 @@ type ToolAffinityRegistry struct {
 func NewToolAffinityRegistry() *ToolAffinityRegistry {
 	return &ToolAffinityRegistry{
 		mapping: map[IntentLabel][]string{
-			LabelSSH:    {"ssh"},
-			LabelSearch: {"web_search"},
+			LabelSSH:              {"ssh"},
+			LabelSearch:           {"web_search"},
 			LabelDocumentDelivery: {"send_file", "open", "craft_tool"},
+			LabelBusinessData:     {"mis_data"},
 			LabelBrowser: {
 				"browser",
 				"gui_record_start", "gui_record_stop",

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -113,6 +114,56 @@ func TestInstallHubSkillSucceedsWhenHubExtractsFileBackedSkillDir(t *testing.T) 
 	if fileCount != 0 {
 		t.Fatalf("file entry count = %d, want 0; skills = %#v", fileCount, skills)
 	}
+}
+
+func TestInstallHubSkillUsesExplicitHubURLWhenConfiguredHubCenterUnreachable(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skills/direct-only/download" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "direct-only",
+			"name": "direct-only-skill",
+			"description": "downloaded from explicit hub url",
+			"version": "1.0.0",
+			"trust_level": "trusted",
+			"triggers": ["direct"],
+			"steps": [{"action": "noop", "params": {}, "on_error": "stop"}]
+		}`))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteHubCenterURL = "http://127.0.0.1:1"
+	cfg.RemoteHubCenterURLs = nil
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillHubClient = NewSkillHubClient(app)
+
+	if err := app.InstallHubSkill("direct-only", server.URL); err != nil {
+		t.Fatalf("InstallHubSkill() error = %v", err)
+	}
+
+	skills := app.skillExecutor.loadSkills()
+	for _, s := range skills {
+		if s.Name == "direct-only-skill" && s.Source == "hub" && s.SourceProject == server.URL {
+			return
+		}
+	}
+	t.Fatalf("explicit hubURL skill not installed; skills = %#v", skills)
 }
 
 func TestInstallHubSkillWrapsFileBackedSkillAsCraftTool(t *testing.T) {
@@ -724,6 +775,18 @@ func TestImportNLSkillZipPathRejectsInvalidZipWithoutKnownSkillFormat(t *testing
 	}
 	if !strings.Contains(err.Error(), "skill.md") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveImportedSkillPackageRootsUsesSentinelForUnknownLayout(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("not a skill"), 0o644); err != nil {
+		t.Fatalf("WriteFile(README.txt) error = %v", err)
+	}
+
+	_, err := resolveImportedSkillPackageRoots(dir)
+	if !errors.Is(err, errNoRecognizableSkillDefinition) {
+		t.Fatalf("resolveImportedSkillPackageRoots() error = %v, want errNoRecognizableSkillDefinition", err)
 	}
 }
 

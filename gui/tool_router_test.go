@@ -109,14 +109,28 @@ func TestToolRouter_AboveBudget_KeepsCoreTools(t *testing.T) {
 		t.Errorf("expected at most %d tools, got %d", maxToolBudget, len(result))
 	}
 
-	// Verify all core tools are present.
+	// Verify core tools keep a protected share of the budget. The core set can
+	// grow larger than the budget, so the router cannot keep every core tool.
 	resultNames := make(map[string]bool)
 	for _, tool := range result {
 		resultNames[extractToolName(tool)] = true
 	}
+	corePresent := 0
 	for name := range coreToolNames {
+		if resultNames[name] {
+			corePresent++
+		}
+	}
+	minCore := maxToolBudget - maxDynamicRouted
+	if minCore < 1 {
+		minCore = 1
+	}
+	if corePresent < minCore {
+		t.Errorf("expected at least %d core tools within budget, got %d", minCore, corePresent)
+	}
+	for _, name := range []string{"bash", "read_file", "write_file", "edit_file", "memory", "manage_skill"} {
 		if !resultNames[name] {
-			t.Errorf("core tool %q missing from result", name)
+			t.Errorf("critical core tool %q missing from result", name)
 		}
 	}
 }

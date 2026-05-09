@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"gopkg.in/yaml.v3"
 )
@@ -78,13 +79,20 @@ func PersistCraftedSkill(skillsRoot, taskDescription, scriptContent, scriptLang 
 		return nil, fmt.Errorf("write script: %w", err)
 	}
 
-	// Build the command to execute the script.
-	command := buildCraftedScriptCommand(scriptLang, scriptPath)
+	// Build the command to execute the script, then append extracted
+	// parameter placeholders so persisted crafted skills remain reusable
+	// after app restart.
+	skillParams := ExtractScriptParams(scriptContent, scriptLang)
+	portableScriptPath := "{baseDir}/main" + ext
+	command := AppendRunParamPlaceholders(buildCraftedScriptCommand(scriptLang, portableScriptPath), skillParams)
 
 	// Write skill.yaml.
 	sf := SkillYAMLFile{
 		Name:        skillName,
 		Description: taskDescription,
+		Params:      skillYAMLParamsFromCore(skillParams),
+		RequiredEnv: ExtractScriptRequiredEnv(scriptContent, scriptLang),
+		Requires:    ExtractScriptRequires(scriptContent, scriptLang),
 		Steps: []SkillYAMLStep{
 			{
 				Action: "bash",
@@ -214,6 +222,8 @@ func craftedScriptExtension(lang string) string {
 		return ".js"
 	case "bash", "sh":
 		return ".sh"
+	case "powershell", "pwsh", "ps1":
+		return ".ps1"
 	default:
 		return ".py" // default to Python
 	}
@@ -228,9 +238,29 @@ func buildCraftedScriptCommand(lang, scriptPath string) string {
 		return fmt.Sprintf("node %q", scriptPath)
 	case "bash", "sh":
 		return fmt.Sprintf("bash %q", scriptPath)
+	case "powershell", "pwsh", "ps1":
+		return fmt.Sprintf("powershell -NoProfile -ExecutionPolicy Bypass -File %q", scriptPath)
 	default:
 		return fmt.Sprintf("python %q", scriptPath)
 	}
+}
+
+func skillYAMLParamsFromCore(params []corelib.NLSkillParam) []SkillYAMLParam {
+	if len(params) == 0 {
+		return nil
+	}
+	result := make([]SkillYAMLParam, 0, len(params))
+	for _, param := range params {
+		result = append(result, SkillYAMLParam{
+			Name:        param.Name,
+			Description: param.Description,
+			Aliases:     append([]string(nil), param.Aliases...),
+			CLIFlag:     param.CLIFlag,
+			Default:     param.Default,
+			Required:    param.Required,
+		})
+	}
+	return result
 }
 
 // readExistingSkillName reads the skill name from an existing skill.yaml.

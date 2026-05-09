@@ -19,6 +19,8 @@ type SkillMarketHandler struct {
 
 type CloudSkill = marketschema.Skill
 
+const skillMarketJSONBodyLimit = 2 << 20
+
 func NewSkillMarketHandler(centerAuth centerAuthenticator, licenses *license.Service, skills *skillmarket.Service) *SkillMarketHandler {
 	return &SkillMarketHandler{centerAuth: centerAuth, licenses: licenses, skills: skills}
 }
@@ -37,7 +39,7 @@ func (h *SkillMarketHandler) ListAdminSkills() http.HandlerFunc {
 func (h *SkillMarketHandler) CreateAdminSkill() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input skillmarket.SkillInput
-		if err := decodeJSON(r, &input); err != nil {
+		if err := decodeJSONLimit(r, &input, skillMarketJSONBodyLimit); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -53,7 +55,7 @@ func (h *SkillMarketHandler) CreateAdminSkill() http.HandlerFunc {
 func (h *SkillMarketHandler) UpdateAdminSkill() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input skillmarket.SkillInput
-		if err := decodeJSON(r, &input); err != nil {
+		if err := decodeJSONLimit(r, &input, skillMarketJSONBodyLimit); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -84,7 +86,7 @@ func (h *SkillMarketHandler) PublishCenterSkill() http.HandlerFunc {
 			return
 		}
 		var input skillmarket.SkillInput
-		if err := decodeJSON(r, &input); err != nil {
+		if err := decodeJSONLimit(r, &input, skillMarketJSONBodyLimit); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -126,7 +128,7 @@ func (h *SkillMarketHandler) GetCenterSkill() http.HandlerFunc {
 			return
 		}
 
-		skill, err := h.skills.GetActive(r.Context(), r.PathValue("skill_id"))
+		skill, err := h.skills.GetInstallable(r.Context(), r.PathValue("skill_id"))
 		if err != nil {
 			writeError(w, http.StatusNotFound, "SKILL_NOT_FOUND", "skill not found")
 			return

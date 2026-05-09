@@ -61,6 +61,10 @@ func BuildGroupProfileFromConfig(cfg corelib.AppConfig, now time.Time) (GroupPro
 		Available:       availability == "available",
 		UpdatedAt:       now,
 	}
+	if gd.CrossAgentExperienceEnabled() {
+		profile.ContributionScore = gd.ContributionScore
+		profile.ContributionEvidence = gd.ContributionEvidence
+	}
 	return profile.DiscoveryView(gd.ModelVisibility), nil
 }
 

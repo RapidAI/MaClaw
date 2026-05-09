@@ -83,13 +83,11 @@ func TestBugCondition_Section4_DefaultInput_PPTContentOutline(t *testing.T) {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 
-	// Advance to content_outline (phase index 1) by injecting output and confirming.
-	engine.mu.Lock()
-	engine.workflows["u_bug3"].PhaseOutputs["audience_goal"] = "mock audience doc"
-	engine.mu.Unlock()
-	_, err = engine.HandleInput("u_bug3", "确认")
-	if err != nil {
-		t.Fatalf("HandleInput confirm failed: %v", err)
+	// Advance to content_outline (phase index 1) through the classified review
+	// transition path.
+	saveReviewOutputForCurrentPhase(t, engine, "u_bug3")
+	if _, err = engine.ApplyReviewIntent("u_bug3", ReviewIntentConfirm, ""); err != nil {
+		t.Fatalf("ApplyReviewIntent confirm failed: %v", err)
 	}
 
 	state := engine.GetActiveWorkflow("u_bug3")
@@ -189,5 +187,3 @@ func TestBugCondition_Section4_DefaultInput_Property(t *testing.T) {
 		t.Errorf("Property 1 (Bug Condition: section 4 DefaultInput=true) failed: %v", err)
 	}
 }
-
-

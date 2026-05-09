@@ -547,12 +547,18 @@ func TestActivateRemote_TimesOutSlowEnrollRequest(t *testing.T) {
 	t.Setenv("USERPROFILE", tmpHome)
 	t.Setenv("HOME", tmpHome)
 
+	previousTimeout := remoteEnrollTimeout
+	remoteEnrollTimeout = 100 * time.Millisecond
+	t.Cleanup(func() {
+		remoteEnrollTimeout = previousTimeout
+	})
+
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/enroll/start" {
 			http.NotFound(w, r)
 			return
 		}
-		time.Sleep(remoteEnrollTimeout + 200*time.Millisecond)
+		time.Sleep(remoteEnrollTimeout + 50*time.Millisecond)
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":        "approved",
 			"user_id":       "u_slow",
@@ -577,7 +583,7 @@ func TestActivateRemote_TimesOutSlowEnrollRequest(t *testing.T) {
 	if !strings.Contains(err.Error(), "registration timed out") {
 		t.Fatalf("expected timeout error, got %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > remoteEnrollTimeout+2*time.Second {
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("ActivateRemote() took too long: %s", elapsed)
 	}
 }
@@ -589,6 +595,10 @@ func TestClearRemoteActivation_DisconnectsHubClient(t *testing.T) {
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			http.NotFound(w, r)
+			return
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade websocket: %v", err)

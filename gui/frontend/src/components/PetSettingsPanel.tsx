@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+﻿import { useEffect, useRef, useState } from 'react';
 import { main } from '../../wailsjs/go/models';
 import { defaultPetSize, getPetSkinOption, petSkinOptions } from './petSkins';
+import { motionSoundPresetOptionIds, normalizeMotionSoundPreset, type MotionSoundPreset } from './petMotionSounds';
 
 type Lang = 'en' | 'zh-Hans' | 'zh-Hant' | string;
 type PetPreviewState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -63,6 +64,85 @@ function readbackModeLabel(lang: Lang, id: string): string {
     }
 }
 
+function motionSoundPresetLabel(lang: Lang, id: string): string {
+    switch (id) {
+        case 'bubble':
+            return text(lang, '气泡', '氣泡', 'Bubble');
+        case 'chime':
+            return text(lang, '铃音', '鈴音', 'Chime');
+        case 'synth':
+            return text(lang, '合成器', '合成器', 'Synth');
+        case 'soft':
+            return text(lang, '柔和', '柔和', 'Soft');
+        case 'classic':
+        default:
+            return text(lang, '经典', '經典', 'Classic');
+    }
+}
+
+function motionSoundPresetDescription(lang: Lang, id: string): string {
+    switch (id) {
+        case 'bubble':
+            return text(lang, '轻快弹跳，适合 mini 形象。', '輕快彈跳，適合 mini 形象。', 'Bouncy and playful.');
+        case 'chime':
+            return text(lang, '清脆、有尾音，像提示铃。', '清脆、有尾音，像提示鈴。', 'Bright with a small ring tail.');
+        case 'synth':
+            return text(lang, '更电子、更利落，适合开发者风格。', '更電子、更俐落，適合開發者風格。', 'Sharper electronic texture.');
+        case 'soft':
+            return text(lang, '低存在感，适合专注或夜间。', '低存在感，適合專注或夜間。', 'Gentle and low-distraction.');
+        case 'classic':
+        default:
+            return text(lang, '当前默认漫画动作音效。', '目前預設漫畫動作音效。', 'The current comic motion sound.');
+    }
+}
+
+function playMotionSoundPresetPreview(preset: MotionSoundPreset): void {
+    try {
+        const AudioContextCtor = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (!AudioContextCtor) return;
+        const ctx = new AudioContextCtor();
+        const now = ctx.currentTime;
+        const output = ctx.createGain();
+        output.gain.setValueAtTime(0.0001, now);
+        output.gain.exponentialRampToValueAtTime(preset === 'soft' ? 0.016 : 0.024, now + 0.012);
+        output.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+        output.connect(ctx.destination);
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = preset === 'soft' ? 'lowpass' : 'bandpass';
+        filter.frequency.setValueAtTime(preset === 'chime' ? 4200 : preset === 'synth' ? 1800 : preset === 'soft' ? 1400 : 3200, now);
+        filter.Q.setValueAtTime(preset === 'bubble' ? 0.55 : 0.9, now);
+        filter.connect(output);
+
+        const tones: Array<[number, number, OscillatorType]> = preset === 'bubble'
+            ? [[620, 0, 'sine'], [980, 0.045, 'triangle']]
+            : preset === 'chime'
+                ? [[1047, 0, 'sine'], [1568, 0.065, 'sine']]
+                : preset === 'synth'
+                    ? [[740, 0, 'square'], [520, 0.04, 'sawtooth']]
+                    : preset === 'soft'
+                        ? [[440, 0, 'sine'], [660, 0.07, 'triangle']]
+                        : [[760, 0, 'sine'], [1120, 0.045, 'triangle']];
+
+        tones.forEach(([hz, delay, type]) => {
+            const osc = ctx.createOscillator();
+            osc.type = type;
+            osc.frequency.setValueAtTime(hz, now + delay);
+            osc.connect(filter);
+            osc.start(now + delay);
+            osc.stop(now + delay + (preset === 'chime' || preset === 'soft' ? 0.18 : 0.11));
+        });
+
+        window.setTimeout(() => {
+            output.disconnect();
+            filter.disconnect();
+            void ctx.close().catch(() => undefined);
+        }, 320);
+    } catch {
+        // Preview sound is best-effort and should not block saving settings.
+    }
+}
+
 function previewStateLabel(lang: Lang, id: PetPreviewState): string {
     switch (id) {
         case 'listening':
@@ -118,7 +198,6 @@ function skinPreviewLine(lang: Lang, id: string): string {
             return text(lang, '抓住问题，把有效信号拎出来。', '抓住問題，把有效訊號拎出來。', 'Catches the problem and pulls out the signal.');
     }
 }
-
 function clampPetSize(value: number): number {
     if (!Number.isFinite(value)) return defaultPetSize;
     return Math.min(120, Math.max(56, Math.round(value)));
@@ -135,6 +214,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
     const petSize = clampPetSize((config as any).pet_size || defaultPetSize);
     const selectedSkin = (config as any).pet_skin || 'clawmate';
     const interactionMode = (config as any).pet_interaction_mode || 'balanced';
+    const motionSoundPreset = normalizeMotionSoundPreset((config as any).pet_motion_sound_preset);
     const conversationMode = (config as any).pet_conversation_mode || 'text-first';
     const readbackMode = (config as any).pet_readback_mode || ((config as any).pet_voice_readback_enabled ? 'summary' : 'off');
     const continuousTimeout = Math.min(120, Math.max(5, Number((config as any).pet_continuous_timeout_sec || 30)));
@@ -142,6 +222,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
     const ttsReady = !!(config as any).tts_enabled;
     const selectedSkinOption = getPetSkinOption(selectedSkin);
     const motionEnabled = (config as any).pet_motion_enabled !== false;
+    const motionSoundPreviewEnabled = (config as any).pet_motion_sound_enabled !== false && !(config as any).pet_quiet_mode;
     const saveStateLabel = saveState === 'pending'
         ? text(lang, '\u5f85\u4fdd\u5b58', '\u5f85\u5132\u5b58', 'Pending')
         : saveState === 'saving'
@@ -338,6 +419,29 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                         </div>
                     </div>
 
+                    <div className="pet-form-section">
+                        <label className="form-label">{text(lang, '动作音效', '動作音效', 'Motion Sound')}</label>
+                        <div className={`pet-sound-grid ${motionSoundPreviewEnabled ? '' : 'pet-sound-grid--muted'}`}>
+                            {motionSoundPresetOptionIds.map((preset) => (
+                                <button
+                                    key={preset}
+                                    type="button"
+                                    className={`pet-sound-option ${motionSoundPreset === preset ? 'active' : ''}`}
+                                    onClick={() => {
+                                        updatePetConfig({ pet_motion_sound_preset: preset });
+                                        if (motionSoundPreviewEnabled) {
+                                            playMotionSoundPresetPreview(preset);
+                                        }
+                                    }}
+                                    aria-pressed={motionSoundPreset === preset}
+                                >
+                                    <strong>{motionSoundPresetLabel(lang, preset)}</strong>
+                                    <span>{motionSoundPresetDescription(lang, preset)}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
                     <div className="pet-voice-card">
                         <div className="pet-voice-card-header">
                             <div>
@@ -412,7 +516,7 @@ export function PetSettingsPanel({ config, lang, setConfig, saveConfig }: PetSet
                     <div className="pet-toggle-grid">
                         {[
                             ['pet_motion_enabled', text(lang, '\u52a8\u4f5c\u52a8\u753b', '\u52d5\u4f5c\u52d5\u756b', 'Motion')],
-                            ['pet_motion_sound_enabled', text(lang, '\u52a8\u6548\u97f3\u6548', '\u52d5\u6548\u97f3\u6548', 'Motion SFX')],
+                            ['pet_motion_sound_enabled', text(lang, '\u52a8\u4f5c\u97f3\u6548', '\u52d5\u4f5c\u97f3\u6548', 'Motion SFX')],
                             ['pet_text_interaction_enabled', text(lang, '\u6587\u5b57\u4ea4\u6d41', '\u6587\u5b57\u4ea4\u6d41', 'Text Chat')],
                             ['pet_voice_input_enabled', text(lang, '\u8bed\u97f3\u8f93\u5165', '\u8a9e\u97f3\u8f38\u5165', 'Voice Input')],
                             ['pet_voice_readback_enabled', text(lang, '\u8bed\u97f3\u64ad\u62a5', '\u8a9e\u97f3\u64ad\u5831', 'Voice Readback')],

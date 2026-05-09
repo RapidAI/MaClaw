@@ -77,7 +77,14 @@ export function isBootstrapComplete(status: BootstrapStatus | null | undefined) 
 async function requestJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init);
   const text = await resp.text();
-  const data = text ? JSON.parse(text) : null;
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text.trim() };
+    }
+  }
   if (!resp.ok) {
     throw new Error(data?.error?.message || data?.message || 'Request failed: ' + resp.status);
   }
@@ -135,4 +142,3 @@ export function applyBootstrapPlan(plan: BootstrapPlan) {
 export function startBootstrapFirstWave() {
   return requestJSON<{ run: BootstrapRun }>('/admin/bootstrap/start-first-wave', { method: 'POST' });
 }
-

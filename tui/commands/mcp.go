@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // applyMCPAuth sets authentication and custom headers on an MCP HTTP request.
@@ -77,24 +79,44 @@ func mcpList(args []string) error {
 	if err != nil {
 		return fmt.Errorf("加载配置失败: %w", err)
 	}
+	lang := i18n.NormalizeLang(cfg.Language)
 
 	type mcpView struct {
-		Remote []corelib.MCPServerEntry      `json:"remote"`
-		Local  []corelib.LocalMCPServerEntry `json:"local"`
+		Remote         []corelib.MCPServerEntry      `json:"remote"`
+		Local          []corelib.LocalMCPServerEntry `json:"local"`
+		NextAction     string                        `json:"next_action,omitempty"`
+		NextTUICommand string                        `json:"next_tui_command,omitempty"`
 	}
-	view := mcpView{Remote: cfg.MCPServers, Local: cfg.LocalMCPServers}
+	view := mcpView{
+		Remote:         cfg.MCPServers,
+		Local:          cfg.LocalMCPServers,
+		NextAction:     mcpNextAction(cfg, lang),
+		NextTUICommand: mcpNextTUICommand(cfg),
+	}
 
 	if *jsonOut {
 		return PrintJSON(view)
 	}
 
 	if len(cfg.MCPServers) == 0 && len(cfg.LocalMCPServers) == 0 {
+		if lang == "en" {
+			fmt.Println("No MCP servers configured.")
+			fmt.Printf("Next: %s\n", mcpNextAction(cfg, lang))
+			fmt.Printf("TUI add: %s\n", mcpNextTUICommand(cfg))
+			return nil
+		}
 		fmt.Println("未配置 MCP 服务器。")
+		fmt.Printf("下一步: %s\n", mcpNextAction(cfg, lang))
+		fmt.Printf("TUI 添加: %s\n", mcpNextTUICommand(cfg))
 		return nil
 	}
 
 	if len(cfg.MCPServers) > 0 {
-		fmt.Println("远程 MCP 服务器:")
+		if lang == "en" {
+			fmt.Println("Remote MCP servers:")
+		} else {
+			fmt.Println("远程 MCP 服务器:")
+		}
 		fmt.Printf("  %-20s %-10s %-8s %s\n", "NAME", "AUTH", "SOURCE", "URL")
 		fmt.Println("  " + strings.Repeat("-", 70))
 		for _, s := range cfg.MCPServers {
@@ -110,7 +132,11 @@ func mcpList(args []string) error {
 		if len(cfg.MCPServers) > 0 {
 			fmt.Println()
 		}
-		fmt.Println("本地 MCP 服务器:")
+		if lang == "en" {
+			fmt.Println("Local MCP servers:")
+		} else {
+			fmt.Println("本地 MCP 服务器:")
+		}
 		fmt.Printf("  %-20s %-8s %s\n", "NAME", "DISABLED", "COMMAND")
 		fmt.Println("  " + strings.Repeat("-", 60))
 		for _, s := range cfg.LocalMCPServers {
@@ -128,7 +154,38 @@ func mcpList(args []string) error {
 				TruncateDisplay(cmd, 50))
 		}
 	}
+	if lang == "en" {
+		fmt.Printf("\nNext: %s\n", mcpNextAction(cfg, lang))
+	} else {
+		fmt.Printf("\n下一步: %s\n", mcpNextAction(cfg, lang))
+	}
 	return nil
+}
+
+func mcpNextAction(cfg corelib.AppConfig, lang string) string {
+	cliName := mcpTUIName()
+	if lang == "en" {
+		if len(cfg.MCPServers) == 0 && len(cfg.LocalMCPServers) == 0 {
+			return fmt.Sprintf("Run %s mcp to add MCP from TUI templates; use %s mcp remote for remote endpoints.", cliName, cliName)
+		}
+		return fmt.Sprintf("Run %s mcp to view/add MCP in the TUI; scripted checks can use %s mcp health-check.", cliName, cliName)
+	}
+	if len(cfg.MCPServers) == 0 && len(cfg.LocalMCPServers) == 0 {
+		return fmt.Sprintf("运行 %s mcp 从模板添加 MCP；远程端点可用 %s mcp remote。", cliName, cliName)
+	}
+	return fmt.Sprintf("运行 %s mcp 在 TUI 中查看和添加 MCP；脚本检查可用 %s mcp health-check。", cliName, cliName)
+}
+
+func mcpNextTUICommand(cfg corelib.AppConfig) string {
+	cliName := mcpTUIName()
+	if len(cfg.MCPServers) == 0 && len(cfg.LocalMCPServers) == 0 {
+		return cliName + " mcp"
+	}
+	return cliName + " mcp"
+}
+
+func mcpTUIName() string {
+	return strings.ToLower(brand.Current().DisplayName) + "-tui"
 }
 
 func mcpAdd(args []string) error {
@@ -142,10 +199,30 @@ func mcpAdd(args []string) error {
 	fs.Parse(args)
 
 	if *name == "" {
-		return NewUsageError("usage: mcp add --name <name> (--url <endpoint> | --command <cmd>)")
+		return NewUsageError("usage: mcp add --name <name> (--url <endpoint> | --command <cmd>)\n推荐: 运行 maclaw-tui mcp，在 TUI 中从模板选择。")
 	}
 	if *endpoint == "" && *command == "" {
-		return NewUsageError("必须指定 --url（远程）或 --command（本地）")
+		return NewUsageError("必须指定 --url（远程）或 --command（本地）。推荐运行 maclaw-tui mcp，在 TUI 中从模板选择。")
+	}
+	if *endpoint != "" && *command != "" {
+		return NewUsageError("--url 和 --command 只能二选一。推荐运行 maclaw-tui mcp local 或 maclaw-tui mcp remote，在 TUI 中选择模板。")
+	}
+	auth := strings.TrimSpace(*authType)
+	if auth == "" {
+		auth = "none"
+	}
+	secret := strings.TrimSpace(*authSecret)
+	if *endpoint != "" {
+		switch auth {
+		case "none":
+			secret = ""
+		case "api_key", "bearer":
+			if secret == "" {
+				return NewUsageError("认证类型 %s 需要 --secret。推荐运行 maclaw-tui mcp remote，在 TUI 中选择认证方式并填写密钥。", auth)
+			}
+		default:
+			return NewUsageError("不支持的 MCP 认证类型 %q（可用: none/api_key/bearer）。推荐运行 maclaw-tui mcp remote。", auth)
+		}
 	}
 
 	store := NewFileConfigStore(ResolveDataDir())
@@ -173,8 +250,8 @@ func mcpAdd(args []string) error {
 			ID:          fmt.Sprintf("remote-%s-%d", *name, time.Now().UnixMilli()),
 			Name:        *name,
 			EndpointURL: *endpoint,
-			AuthType:    *authType,
-			AuthSecret:  *authSecret,
+			AuthType:    auth,
+			AuthSecret:  secret,
 			CreatedAt:   time.Now().Format(time.RFC3339),
 			Source:      corelib.MCPSourceManual,
 		}

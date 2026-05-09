@@ -32,6 +32,22 @@ func isRetryableLLMError(err error) bool {
 		strings.Contains(s, "SSE stream idle timeout")
 }
 
+func isHubPeriodLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "llm_service_period_limited") ||
+		strings.Contains(s, "current period credit limit") ||
+		strings.Contains(s, "period limit") ||
+		strings.Contains(s, "period quota") ||
+		strings.Contains(s, "period credit") ||
+		strings.Contains(s, "\u5468\u671f\u9650\u6d41") ||
+		strings.Contains(s, "\u5f53\u524d\u5468\u671f\u989d\u5ea6\u5df2\u7528\u5c3d") ||
+		strings.Contains(s, "鍛ㄦ湡闄愭祦") ||
+		strings.Contains(s, "褰撳墠鍛ㄦ湡棰濆害宸茬敤灏")
+}
+
 // isTransientServerError returns true for recoverable server-side errors.
 // These are errors where the server is temporarily unable to process the
 // request, but may succeed if retried after a delay.
@@ -54,6 +70,13 @@ func isTransientServerError(err error) bool {
 		return false
 	}
 	s := strings.ToLower(err.Error())
+
+	// Hub grant period limits are quota-window state, not a short transient
+	// provider throttle. Retrying immediately only delays the clear user
+	// message that already includes the recovery time.
+	if isHubPeriodLimitError(err) {
+		return false
+	}
 
 	// --- Rate limit (429) ---
 	if strings.Contains(s, "429") ||

@@ -3,6 +3,8 @@ package audit
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
@@ -56,7 +58,13 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tenantID := tenant.RequestTenantID(r)
-	logs, err := h.repo.ListRecent(tenantID, limit)
+	logs, err := h.repo.ListRecentFiltered(tenantID, LogFilter{
+		Limit:    limit,
+		Status:   strings.TrimSpace(r.URL.Query().Get("status")),
+		WorkType: strings.TrimSpace(r.URL.Query().Get("work_type")),
+		Query:    strings.TrimSpace(r.URL.Query().Get("q")),
+		Category: strings.TrimSpace(r.URL.Query().Get("category")),
+	})
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -75,7 +83,7 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 			"input_tokens": l.InputTokens,
 			"summary":      l.Summary,
 			"error_msg":    l.ErrorMsg,
-			"created_at":   l.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			"created_at":   l.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	response.OK(w, map[string]any{"logs": dtos})

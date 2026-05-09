@@ -1,3 +1,6 @@
+import type { CodingAgentProgress } from '../ai/CodingAgentProgressStatus';
+import { CodingAgentCompactStatus } from './CodingAgentCompactStatus';
+
 type AppStatusMessageBarProps = {
     status: string;
     lang: string;
@@ -5,10 +8,13 @@ type AppStatusMessageBarProps = {
     qqBotStatus: string;
     telegramStatus: string;
     weixinStatus: string;
+    lansengerStatus: string;
     maclawLLMOnline: boolean;
     maclawLLMConfigured: boolean;
     remoteActivated: boolean;
     agentNetRunning: boolean;
+    hideAgentNet?: boolean;
+    showLansenger?: boolean;
     navTab: string;
     settingsTab: string;
     backgroundInstallStatus: string;
@@ -16,6 +22,7 @@ type AppStatusMessageBarProps = {
     lobsterHalf: string;
     onOpenIMSettings: () => void;
     onOpenLLMSettings: () => void;
+    codingAgentProgress?: CodingAgentProgress | null;
 };
 
 export const AppStatusMessageBar = ({
@@ -25,10 +32,13 @@ export const AppStatusMessageBar = ({
     qqBotStatus,
     telegramStatus,
     weixinStatus,
+    lansengerStatus,
     maclawLLMOnline,
     maclawLLMConfigured,
     remoteActivated,
     agentNetRunning,
+    hideAgentNet = false,
+    showLansenger = false,
     navTab,
     settingsTab,
     backgroundInstallStatus,
@@ -36,12 +46,17 @@ export const AppStatusMessageBar = ({
     lobsterHalf,
     onOpenIMSettings,
     onOpenLLMSettings,
+    codingAgentProgress = null,
 }: AppStatusMessageBarProps) => {
-    const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected';
-    const anyImConfigured = !!config?.qqbot_enabled || !!config?.telegram_enabled || !!config?.weixin_enabled;
+    const lansengerConnected = showLansenger && lansengerStatus === 'connected';
+    const lansengerConfigured = showLansenger && !!config?.lansenger_enabled;
+    const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerConnected;
+    const anyImConfigured = !!config?.qqbot_enabled || !!config?.telegram_enabled || !!config?.weixin_enabled || lansengerConfigured;
     const showImWarning = anyImConfigured && !imConnected;
-    const showWarning = (!maclawLLMOnline || !remoteActivated || !agentNetRunning || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm');
-    const isImIssue = maclawLLMOnline && remoteActivated && agentNetRunning && showImWarning;
+    const agentNetRequired = !hideAgentNet && !!config?.agentnet_enabled;
+    const agentNetIssue = agentNetRequired && !agentNetRunning;
+    const showWarning = (!maclawLLMOnline || !remoteActivated || agentNetIssue || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm');
+    const isImIssue = maclawLLMOnline && remoteActivated && !agentNetIssue && showImWarning;
     const successMarker = backgroundInstallStatus.startsWith('?') || backgroundInstallStatus.startsWith('??');
 
     return (
@@ -56,17 +71,20 @@ export const AppStatusMessageBar = ({
                         onClick={() => { if (isImIssue) { onOpenIMSettings(); } else { onOpenLLMSettings(); } }}
                         title={lang?.startsWith('zh') ? 'Click to configure' : 'Click to configure'}
                     >
-                        <img src={(!maclawLLMOnline && !remoteActivated && !agentNetRunning) ? lobsterOffline : lobsterHalf} alt="" style={{ width: '14px', height: '14px' }} />
+                        <img src={(!maclawLLMOnline && !remoteActivated && agentNetIssue) ? lobsterOffline : lobsterHalf} alt="" style={{ width: '14px', height: '14px' }} />
                         {!maclawLLMOnline
                             ? (maclawLLMConfigured
                                 ? (lang?.startsWith('zh') ? 'LLM unreachable, remote commands unavailable' : 'LLM unreachable, remote commands unavailable')
                                 : (lang?.startsWith('zh') ? 'LLM not configured, remote commands unavailable' : 'LLM not configured, remote commands unavailable'))
                             : !remoteActivated
                                 ? (lang?.startsWith('zh') ? 'Mobile not registered' : 'Mobile not registered')
-                                : !agentNetRunning
+                                : agentNetIssue
                                     ? (lang?.startsWith('zh') ? 'AgentNet not connected' : 'AgentNet not connected')
                                     : (lang?.startsWith('zh') ? 'IM not connected' : 'IM not connected')}
                     </span>
+                )}
+                {codingAgentProgress && (
+                    <CodingAgentCompactStatus progress={codingAgentProgress} lang={lang} testId="app-status-coding-agent" variant="status-bar" />
                 )}
                 {backgroundInstallStatus && (
                     <span style={{

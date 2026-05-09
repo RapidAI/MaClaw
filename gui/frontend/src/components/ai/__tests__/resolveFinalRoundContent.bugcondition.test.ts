@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { resolveFinalRoundContent, type ChatMessage } from '../useAIAssistant';
 
 /**
@@ -124,5 +124,89 @@ describe('resolveFinalRoundContent — Bug Condition Exploration', () => {
 
         expect(result).toBe(answer);
         expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 6: final response text with Browser prefix is stripped before display', () => {
+        const finalText = 'Browser: PPT 已生成并打开！文件 113KB，暗色主题。';
+
+        const result = resolveFinalRoundContent(makeMessage(''), { text: finalText });
+
+        expect(result).toBe('PPT 已生成并打开！文件 113KB，暗色主题。');
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 7: streamed Browser prefix is stripped even when the final text is empty', () => {
+        const streamedContent = 'Browser: PPT 已生成并打开！文件 113KB，暗色主题。';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), { text: '' });
+
+        expect(result).toBe('PPT 已生成并打开！文件 113KB，暗色主题。');
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 8: file delivery ignores streamed Browser residue and uses final delivery text', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: '',
+            response_source: 'file_delivery',
+            local_file_paths: ['C:/tmp/demo.pptx'],
+        });
+
+        expect(result).toBe('');
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 9: file paths suppress streamed Browser residue even if response_source is missing', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: '',
+            LocalFilePaths: ['C:/tmp/demo.pptx'],
+        });
+
+        expect(result).toBe('');
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 10: file delivery honors Go-style ResponseSource casing', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: '',
+            ResponseSource: 'file_delivery',
+            LocalFilePath: 'C:/tmp/demo.pptx',
+        });
+
+        expect(result).toBe('');
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 11: role-prefix diagnostics do not log content snippets', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
+        try {
+            resolveFinalRoundContent(makeMessage('Browser: sensitive generated text'), { text: '' });
+            const rolePrefixCall = warnSpy.mock.calls.find(call => call[0] === '[ai-role-prefix]');
+            expect(rolePrefixCall).toBeTruthy();
+            const payload = rolePrefixCall?.[1] as Record<string, unknown>;
+            expect(payload.beforeSnippet).toBeUndefined();
+            expect(payload.afterSnippet).toBeUndefined();
+            expect(payload.beforeHasRolePrefix).toBe(true);
+            expect(payload.beforeRolePrefixKind).toBe('Browser');
+        } finally {
+            warnSpy.mockRestore();
+        }
+    });
+
+    it('Case 12: role-prefix diagnostics ignore inline Browser mentions', () => {
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
+        try {
+            const result = resolveFinalRoundContent(makeMessage('The Browser: tool already closed cleanly.'), { text: '' });
+
+            expect(result).toBe('The Browser: tool already closed cleanly.');
+            expect(warnSpy).not.toHaveBeenCalledWith('[ai-role-prefix]', expect.anything());
+        } finally {
+            warnSpy.mockRestore();
+        }
     });
 });

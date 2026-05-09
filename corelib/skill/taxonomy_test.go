@@ -90,6 +90,25 @@ func TestFormatSkillForContext_Executable_Compact(t *testing.T) {
 	}
 }
 
+func TestFormatSkillForContext_CompletesPartialParamSchema(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Name: "partial-schema",
+		Params: []corelib.NLSkillParam{
+			{Name: "format", Description: "Output format"},
+		},
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Params: map[string]interface{}{"command": "convert {{input}} --format {{format}}"}},
+		},
+		RequiredArgs: []string{"input"},
+	}
+
+	text := FormatSkillForContext(skill, TaxonomyExecutable, "")
+
+	if !strings.Contains(text, "format") || !strings.Contains(text, "input") {
+		t.Fatalf("context did not include complete param schema:\n%s", text)
+	}
+}
+
 func TestFormatSkillForContext_Knowledge_Full(t *testing.T) {
 	skill := &corelib.NLSkillEntry{
 		Name:        "coding-guide",

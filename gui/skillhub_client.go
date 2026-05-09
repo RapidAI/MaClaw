@@ -204,7 +204,7 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targetDir string) (*corelib.NLSkillEntry, error) {
 	path := "/api/v1/skills/" + url.PathEscape(skillID) + "/download"
 	var full hubSkillFull
-	base, _, err := c.getJSON(ctx, path, &full)
+	base, _, err := c.getJSONFromExplicitHubURL(ctx, hubURL, path, &full)
 	if err != nil {
 		return nil, fmt.Errorf("download skill failed: %v", err)
 	}
@@ -532,6 +532,14 @@ func (c *SkillHubClient) GetRecommendations() []HubSkillMeta {
 
 func (c *SkillHubClient) getJSON(ctx context.Context, path string, dest interface{}) (string, []string, error) {
 	return c.app.getHubCenterJSON(ctx, c.client, path, maxDownloadSize, dest)
+}
+
+func (c *SkillHubClient) getJSONFromExplicitHubURL(ctx context.Context, hubURL string, path string, dest interface{}) (string, []string, error) {
+	base := strings.TrimSpace(hubURL)
+	if base == "" {
+		return c.getJSON(ctx, path, dest)
+	}
+	return c.app.getHubCenterJSONFromCandidates(ctx, c.client, []string{base}, path, maxDownloadSize, dest)
 }
 
 func (c *SkillHubClient) cacheResults(query string, results []HubSkillMeta) {

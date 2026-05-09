@@ -42,6 +42,28 @@ func TestConcernBlocksDecision(t *testing.T) {
 	}
 }
 
+func TestReviewSummaryUsesLatestReviewAndSortedReviewers(t *testing.T) {
+	now := time.Now()
+	s, err := NewSession("a2a-review", "deployment", "pick rollout", []Participant{{ID: "zeta"}, {ID: "alpha"}, {ID: "ops"}}, PolicyMajority, now)
+	if err != nil {
+		t.Fatalf("NewSession returned error: %v", err)
+	}
+	if err := s.AddProposal(Proposal{ID: "prop-1", AuthorID: "ops", Title: "staged", Content: "ship behind gates", CreatedAt: now}); err != nil {
+		t.Fatalf("AddProposal returned error: %v", err)
+	}
+	_ = s.AddReview(Review{ID: "rev-1", ProposalID: "prop-1", ReviewerID: "zeta", Position: ReviewReject, CreatedAt: now})
+	_ = s.AddReview(Review{ID: "rev-2", ProposalID: "prop-1", ReviewerID: "alpha", Position: ReviewApprove, CreatedAt: now})
+	_ = s.AddReview(Review{ID: "rev-3", ProposalID: "prop-1", ReviewerID: "zeta", Position: ReviewConcern, CreatedAt: now})
+	summary := s.ReviewSummary("prop-1")
+	if summary.Approvals != 1 || summary.Rejections != 0 || summary.Concerns != 1 || summary.Abstains != 0 {
+		t.Fatalf("summary counts = %+v", summary)
+	}
+	want := []string{"alpha", "zeta"}
+	if len(summary.ReviewedBy) != len(want) || summary.ReviewedBy[0] != want[0] || summary.ReviewedBy[1] != want[1] {
+		t.Fatalf("reviewed_by = %v, want %v", summary.ReviewedBy, want)
+	}
+}
+
 func TestEscalationClosesLocalDecisionPath(t *testing.T) {
 	s, err := NewSession("a2a-3", "budget", "approve spend", []Participant{{ID: "ops"}}, PolicyMajority, time.Now())
 	if err != nil {

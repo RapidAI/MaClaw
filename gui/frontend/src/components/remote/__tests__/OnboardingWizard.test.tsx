@@ -120,6 +120,25 @@ describe('OnboardingWizard registration', () => {
         expect(GetHubLLMServiceStatusMock).not.toHaveBeenCalled();
     });
 
+    it('auto-saves the first available TigerClaw model after SSO login', async () => {
+        StartCodeGenSSOEmbeddedMock.mockResolvedValue(undefined);
+        WaitCodeGenSSOResultMock.mockResolvedValue({ email: 'tiger@example.com', message: 'SSO OK', model_id: 'sso-first-model' });
+        FetchCodeGenModelsMock.mockResolvedValue([
+            { id: 'alphabetically-first-model', name: 'Alphabetically first model' },
+            { id: 'second-model', name: 'Second model' },
+        ]);
+        SaveCodeGenModelChoiceMock.mockResolvedValue(undefined);
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+
+        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="TigerClaw" />);
+
+        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
+
+        await waitFor(() => {
+            expect(SaveCodeGenModelChoiceMock).toHaveBeenCalledWith('sso-first-model', 'sso-first-model');
+        });
+    });
+
     it('lets TigerClaw browser SSO fallback continue to WeChat without LLM setup', async () => {
         StartCodeGenSSOEmbeddedMock.mockRejectedValue(new Error('embedded unavailable'));
         StartCodeGenSSOMock.mockResolvedValue({ message: 'Browser SSO OK' });
@@ -201,6 +220,77 @@ describe('OnboardingWizard registration', () => {
         await waitFor(() => {
             expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
         });
+    });
+
+    it('does not skip LLM step when redeemed official service is queued', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        RedeemHubLLMServiceMock.mockResolvedValue({
+            active: false,
+            skip_llm_config: false,
+            credit_grants: [{
+                status: 'queued',
+                retry_after_seconds: 7200,
+            }],
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'WAITCODE' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        await waitFor(() => {
+            expect(RedeemHubLLMServiceMock).toHaveBeenCalledWith('WAITCODE');
+        });
+        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
+        expect(await screen.findByText(/authorization starts in about 2h/i)).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        expect(await screen.findByText(/Pick a provider/i)).toBeTruthy();
+    });
+
+    it('prioritizes queued redeem status over exhausted older grants', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        RedeemHubLLMServiceMock.mockResolvedValue({
+            active: false,
+            skip_llm_config: false,
+            credit_grants: [
+                { status: 'exhausted' },
+                { status: 'queued', retry_after_seconds: 7200 },
+            ],
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'WAITCODE' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        expect(await screen.findByText(/authorization starts in about 2h/i)).toBeTruthy();
+        expect(screen.queryByText(/credits are exhausted/i)).toBeNull();
+        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
+    });
+
+    it('does not show a zero-second retry when inactive redeem has no retry metadata', async () => {
+        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        RedeemHubLLMServiceMock.mockResolvedValue({
+            active: false,
+            skip_llm_config: false,
+            credit_grants: [{ status: 'period_limited' }],
+        });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.change(screen.getByPlaceholderText('name@example.com'), { target: { value: 'user@example.com' } });
+        fireEvent.change(screen.getByPlaceholderText('Enter service redeem code (optional)'), { target: { value: 'LIMITED' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm & Register' }));
+
+        expect(await screen.findByText(/period limited\. LLM setup is not skipped yet/i)).toBeTruthy();
+        expect(screen.queryByText(/0s|0 seconds/i)).toBeNull();
+        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
     });
 
     it('marks registration done after activation succeeds', async () => {

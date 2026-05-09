@@ -42,6 +42,40 @@ func TestValidateSkillPortabilityChecksRunActionAliases(t *testing.T) {
 	}
 }
 
+func TestValidateSkillPortabilityAcceptsRequiresBins(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: declared-bin\ndescription: A package declaring its command binary dependency.\ntriggers:\n  - declared-bin\nplatforms:\n  - universal\nrequires:\n  bins:\n    - python\nsteps:\n  - action: run\n    params:\n      command: python {baseDir}/scripts/run.py\n")
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(script) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	report, err := ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	for _, issue := range report.Issues {
+		if issue.Category == "undeclared_dependency" {
+			t.Fatalf("declared requires.bins should satisfy dependency checker: %+v", report.Issues)
+		}
+	}
+}
+
+func TestParseSkillYAMLFileAcceptsOpenClawRequiresBins(t *testing.T) {
+	data := []byte("name: openclaw-bin\nmetadata:\n  openclaw:\n    requires:\n      bins:\n        - python\nsteps:\n  - action: run\n    params:\n      command: python {baseDir}/scripts/run.py\n")
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile() error = %v", err)
+	}
+	if sf.Requires == nil || len(sf.Requires.Bins) != 1 || sf.Requires.Bins[0] != "python" {
+		t.Fatalf("Requires = %#v, want bins=[python]", sf.Requires)
+	}
+}
+
 func TestAutoFixPortabilityFixesRunActionAliases(t *testing.T) {
 	dir := t.TempDir()
 	absScript := filepath.Join(dir, "scripts", "run.py")
@@ -261,6 +295,57 @@ func TestValidateSkillPortabilityAcceptsLowercaseReadmeDocumentation(t *testing.
 		t.Fatalf("readme.md portability issue not reported with readme.md file name: %+v", report.Issues)
 	}
 }
+
+func TestValidateSkillPortabilityWarnsInvalidUTF8Script(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("name: encoding-check\ndescription: A skill with script encoding damage.\ntriggers:\n  - encoding-check\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: python scripts/run.py\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.py"), []byte{0xff, 0xfe, 'p', 'r', 'i', 'n', 't'}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	for _, issue := range report.Issues {
+		if issue.Category == "encoding" && issue.File == "scripts/run.py" {
+			return
+		}
+	}
+	t.Fatalf("encoding issue not reported: %+v", report.Issues)
+}
+
+func TestValidateSkillPortabilityWarnsEncodingDamageMarker(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("name: mojibake-check\ndescription: A skill with script text damage.\ntriggers:\n  - mojibake-check\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: python scripts/run.py\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "run.py"), []byte("# 锟斤拷\nprint('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	for _, issue := range report.Issues {
+		if issue.Category == "encoding" && strings.Contains(issue.Message, "encoding damage") {
+			return
+		}
+	}
+	t.Fatalf("encoding damage issue not reported: %+v", report.Issues)
+}
+
 func TestAutoFixPortabilityIgnoresJSONDefinition(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "skill.json"), []byte(`{"name":"json-portability"}`), 0o644); err != nil {

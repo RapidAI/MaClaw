@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,39 @@ func setTestHome(t *testing.T) string {
 	return home
 }
 
+func TestWriteJSONFileDurableReplacesExistingJSON(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested")
+	path := filepath.Join(dir, "snapshot.json")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"old":true}`), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	if err := writeJSONFileDurable(path, map[string]any{"new": true, "count": 2}); err != nil {
+		t.Fatalf("writeJSONFileDurable returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("cache file is not valid JSON: %v", err)
+	}
+	if got["new"] != true || got["old"] != nil || got["count"].(float64) != 2 {
+		t.Fatalf("cache JSON = %+v", got)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "snapshot.json.*.tmp"))
+	if err != nil {
+		t.Fatalf("Glob returned error: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temporary files left behind: %v", matches)
+	}
+}
+
 func TestLoadTaskHistoryReturnsEmptyWhenFileMissing(t *testing.T) {
 	setTestHome(t)
 
@@ -44,16 +78,19 @@ func TestSaveTaskHistoryRoundTrip(t *testing.T) {
 	app := NewApp()
 	want := []HistoryTaskItem{
 		{
-			ID:             "task-1",
-			Title:          "daily report",
-			Owner:          "xiao-di",
-			Status:         "completed",
-			UpdatedAt:      "04-07 09:30",
-			Description:    "prepare today report",
-			Draft:          "prepare a report from raw notes",
-			ExpectedOutput: "summary",
-			Result:         "report generated",
-			Model:          "test-model",
+			ID:                     "task-1",
+			Title:                  "daily report",
+			Owner:                  "xiao-di",
+			Status:                 "completed",
+			UpdatedAt:              "04-07 09:30",
+			Description:            "prepare today report",
+			Draft:                  "prepare a report from raw notes",
+			ExpectedOutput:         "summary",
+			Result:                 "report generated",
+			Model:                  "test-model",
+			SourceType:             "workflow_handoff",
+			CenterHandoffID:        "collab-submit",
+			WorkflowStepInstanceID: "wf-step-submit",
 		},
 	}
 
@@ -115,6 +152,48 @@ func TestSaveTaskHistorySendsWorkStatusHeartbeat(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("SaveTaskHistory did not send work status heartbeat")
+	}
+}
+
+func TestHeartbeatAgentRuntimeSurfacesRuntimeSkillError(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []any{}})
+		case "/client/mcp-servers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"mcp_servers": []any{}})
+		case "/runtime/iworker/instances/heartbeat":
+			var req CenterAgentInstanceHeartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode heartbeat: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(CenterAgentInstanceHeartbeatResult{
+				Instance:          CenterAgentInstance{TenantID: r.Header.Get("X-Tenant-ID"), WorkerID: req.WorkerID, InstanceID: req.InstanceID, Role: req.Role, Status: req.Status},
+				RuntimeSkillError: "decode installed runtime entry for cap-bad: invalid character",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{
+		RoleProfile: RoleProfile{Name: "Ops iWorker", Description: "Operations"},
+		Center:      CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "ops", WorkerID: "worker-a", TimeoutSec: 5},
+	}); err != nil {
+		t.Fatalf("writeDiWorkerSettings: %v", err)
+	}
+
+	instances, err := NewApp().HeartbeatAgentRuntime()
+	if err == nil || !strings.Contains(err.Error(), "runtime skill sync failed") {
+		t.Fatalf("HeartbeatAgentRuntime err = %v, want runtime skill sync failure", err)
+	}
+	if len(instances) == 0 || !strings.Contains(instances[0].RuntimeSkillError, "cap-bad") {
+		t.Fatalf("instances = %+v, want runtime skill error on returned instance", instances)
+	}
+	cached, ok := readAgentInstancesCache("tenant-a", "ops", "worker-a")
+	if !ok || len(cached) == 0 || !strings.Contains(cached[0].RuntimeSkillError, "cap-bad") {
+		t.Fatalf("cached instances = %+v ok=%v, want runtime skill error cached", cached, ok)
 	}
 }
 
@@ -589,6 +668,46 @@ func TestSaveWorkerMemoryDoesNotCacheWhenCenterFails(t *testing.T) {
 	}
 }
 
+func TestSaveWorkerMemoryRejectsTrailingJSONWithoutCaching(t *testing.T) {
+	home := setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"mem-live","content":"live memory","scope":"personal"} {"id":"mem-injected"}`))
+	}))
+	defer server.Close()
+
+	_, err := saveWorkerMemory(server.URL, "tenant-a", "sales", "worker-a", SaveWorkerMemoryRequest{Content: "must stay remote first"}, 5)
+	if !errors.Is(err, errCenterJSONTrailing) {
+		t.Fatalf("saveWorkerMemory error = %v, want errCenterJSONTrailing", err)
+	}
+	cachePath := filepath.Join(home, ".iworker", "cache", "memories", "tenant-a__sales__worker-a.json")
+	if _, statErr := os.Stat(cachePath); !os.IsNotExist(statErr) {
+		t.Fatalf("cache should not exist after invalid save response, statErr=%v", statErr)
+	}
+}
+
+func TestSaveWorkerMemoryReportsCacheWriteFailureAfterCenterSuccess(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write home blocker: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+	t.Setenv("USERPROFILE", homeFile)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"mem-1","tenant_id":"tenant-a","department_id":"sales","worker_id":"worker-a","scope":"personal","content":"Remember Alpha","category":"project_knowledge","tags":["alpha"]}`))
+	}))
+	defer server.Close()
+
+	saved, err := saveWorkerMemory(server.URL, "tenant-a", "sales", "worker-a", SaveWorkerMemoryRequest{Content: "Remember Alpha"}, 5)
+	if err == nil || !strings.Contains(err.Error(), "local cache update failed") {
+		t.Fatalf("saveWorkerMemory err = %v, want cache update failure", err)
+	}
+	if saved.ID != "mem-1" {
+		t.Fatalf("saved = %+v, want authoritative Center memory returned", saved)
+	}
+}
+
 func TestFetchWorkerMemoriesUsesTenantDepartmentCache(t *testing.T) {
 	setTestHome(t)
 	if err := writeWorkerMemoryCache("tenant-a", "sales", "worker-a", []WorkerMemoryEntry{{
@@ -642,6 +761,48 @@ func TestFetchWorkerMemoriesSendsTenantHeader(t *testing.T) {
 	}
 }
 
+func TestFetchWorkerMemoriesReportsCacheWriteFailureAfterCenterSuccess(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write home blocker: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+	t.Setenv("USERPROFILE", homeFile)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"memories":[{"id":"mem-live","tenant_id":"tenant-a","department_id":"sales","worker_id":"worker-a","scope":"personal","content":"remote memory","category":"project_knowledge","tags":[]}]}`))
+	}))
+	defer server.Close()
+
+	memories, err := fetchWorkerMemoriesResult(server.URL, "tenant-a", "sales", "worker-a", "remote", 10, 5)
+	if err == nil || !strings.Contains(err.Error(), "local cache update failed") {
+		t.Fatalf("fetchWorkerMemoriesResult err = %v, want cache update failure", err)
+	}
+	if len(memories) != 1 || memories[0].ID != "mem-live" {
+		t.Fatalf("memories = %+v, want authoritative Center memories returned", memories)
+	}
+}
+
+func TestFetchWorkerMemoriesRejectsTrailingJSONAndKeepsCache(t *testing.T) {
+	setTestHome(t)
+	if err := writeWorkerMemoryCache("tenant-a", "sales", "worker-a", []WorkerMemoryEntry{{ID: "mem-cache", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", Content: "cached memory"}}); err != nil {
+		t.Fatalf("write memory cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"memories":[{"id":"mem-live","content":"live memory"}]} {"memories":[]}`))
+	}))
+	defer server.Close()
+
+	memories := fetchWorkerMemories(server.URL, "tenant-a", "sales", "worker-a", "", 10, 5)
+	if len(memories) != 1 || memories[0].ID != "mem-cache" {
+		t.Fatalf("memories = %+v, want cached memory after invalid Center response", memories)
+	}
+	cached := readWorkerMemoryCache("tenant-a", "sales", "worker-a")
+	if len(cached) != 1 || cached[0].ID != "mem-cache" {
+		t.Fatalf("cache was overwritten by invalid response: %+v", cached)
+	}
+}
+
 func TestFetchWorkerMemoryStatsUsesCenterContext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/client/iworker/memory-stats" {
@@ -670,6 +831,18 @@ func TestFetchWorkerMemoryStatsUsesCenterContext(t *testing.T) {
 	}
 	if stats.Total != 3 || stats.ByScope["company"] != 1 || stats.ByScope["department"] != 1 || stats.ByScope["personal"] != 1 {
 		t.Fatalf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestFetchWorkerMemoryStatsRejectsTrailingJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"tenant_id":"tenant-a","worker_id":"worker-a","total":1} {"tenant_id":"tenant-b"}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchWorkerMemoryStats(server.URL, "tenant-a", "sales", "worker-a", 5)
+	if !errors.Is(err, errCenterJSONTrailing) {
+		t.Fatalf("fetchWorkerMemoryStats error = %v, want errCenterJSONTrailing", err)
 	}
 }
 
@@ -754,6 +927,25 @@ func TestDeleteWorkerMemorySendsCenterContextAndClearsCache(t *testing.T) {
 	}
 }
 
+func TestDeleteWorkerMemoryReportsCacheWriteFailureAfterCenterSuccess(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write home blocker: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+	t.Setenv("USERPROFILE", homeFile)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"deleted"}`))
+	}))
+	defer server.Close()
+
+	err := deleteWorkerMemory(server.URL, "tenant-a", "sales", "worker-a", "mem-1", 5)
+	if err == nil || !strings.Contains(err.Error(), "local cache update failed") {
+		t.Fatalf("deleteWorkerMemory err = %v, want cache update failure", err)
+	}
+}
+
 func TestFetchSharedMemoriesSendsTenantHeader(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/client/memories" || r.Method != http.MethodGet {
@@ -773,6 +965,59 @@ func TestFetchSharedMemoriesSendsTenantHeader(t *testing.T) {
 	memories := fetchSharedMemories(server.URL, "tenant-a", "quality", 5)
 	if len(memories) != 1 || memories[0].ID != "mem-1" {
 		t.Fatalf("unexpected memories: %+v", memories)
+	}
+}
+
+func TestFetchSharedMemoriesResultRejectsTrailingJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"memories":[{"id":"mem-live","title":"Live","content":"ok"}]} {"memories":[]}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchSharedMemoriesResult(server.URL, "tenant-a", "ops", 5)
+	if !errors.Is(err, errCenterJSONTrailing) {
+		t.Fatalf("fetchSharedMemoriesResult err = %v, want errCenterJSONTrailing", err)
+	}
+}
+
+func TestSubmitTaskFailsWhenSharedMemoriesUnavailable(t *testing.T) {
+	setTestHome(t)
+	original := doSimpleLLMRequest
+	defer func() { doSimpleLLMRequest = original }()
+	llmCalled := false
+	doSimpleLLMRequest = func(corelib.MaclawLLMConfig, []interface{}, *http.Client, time.Duration) (*agent.LLMSimpleResponse, error) {
+		llmCalled = true
+		return &agent.LLMSimpleResponse{Content: "should not run"}, nil
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/colleagues":
+			_ = json.NewEncoder(w).Encode(map[string]any{"colleagues": []map[string]any{{"id": "worker-a", "name": "Worker A", "role_code": "ops"}}})
+		case "/client/recommend":
+			_ = json.NewEncoder(w).Encode(map[string]any{"recommendations": []map[string]any{{"colleague_id": "worker-a", "name": "Worker A", "role_code": "ops", "score": 0.9}}})
+		case "/client/memories":
+			http.Error(w, `{"error":"memory db unavailable"}`, http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{
+		RoleProfile: RoleProfile{Name: "Worker A", Description: "Ops worker"},
+		Center:      CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "ops", WorkerID: "worker-a", TimeoutSec: 5},
+		Routing:     RoutingPolicy{DefaultProvider: "office-openai"},
+		Providers:   []UpstreamProvider{{ID: "office-openai", Enabled: true, APIKey: "token"}},
+	}); err != nil {
+		t.Fatalf("writeDiWorkerSettings: %v", err)
+	}
+
+	_, err := NewApp().SubmitTask(SubmitTaskRequest{TaskType: "brief", Draft: "Prepare daily operating brief", ExpectedOutput: "summary"})
+	if err == nil || !strings.Contains(err.Error(), "shared memories failed") {
+		t.Fatalf("SubmitTask err = %v, want shared memories failure", err)
+	}
+	if llmCalled {
+		t.Fatal("LLM was called after shared memory dependency failed")
 	}
 }
 
@@ -797,6 +1042,9 @@ func TestCenterOrganizationClientsSendTenantHeader(t *testing.T) {
 		case "/client/collaborations":
 			_, _ = w.Write([]byte(`{"tasks":[{"id":"task-a","title":"Task A"}]}`))
 		case "/client/workflow-instances":
+			if got := r.URL.Query().Get("colleague_id"); got != "" && got != "worker-a" {
+				t.Fatalf("workflow colleague_id = %q, want empty or worker-a", got)
+			}
 			_, _ = w.Write([]byte(`{"instances":[{"id":"wf-a","title":"Workflow A"}]}`))
 		case "/client/recommend":
 			if r.Method != http.MethodPost {
@@ -824,13 +1072,179 @@ func TestCenterOrganizationClientsSendTenantHeader(t *testing.T) {
 	if got := fetchCenterWorkflowInstances(server.URL, "tenant-a", 5); len(got) != 1 {
 		t.Fatalf("workflow instances = %+v", got)
 	}
+	if got, err := fetchCenterWorkflowInstancesResult(context.Background(), server.URL, "tenant-a", "", 5); err != nil || len(got) != 1 {
+		t.Fatalf("workflow instances result = %+v err=%v", got, err)
+	}
+	if got, err := fetchCenterWorkflowInstancesResult(context.Background(), server.URL, "tenant-a", "worker-a", 5); err != nil || len(got) != 1 {
+		t.Fatalf("filtered workflow instances result = %+v err=%v", got, err)
+	}
 	if got := fetchRecommendations(server.URL, "tenant-a", "assign task", 1, 5); len(got) != 1 {
 		t.Fatalf("recommendations = %+v", got)
+	}
+	if got, err := fetchRecommendationsResult(context.Background(), server.URL, "tenant-a", "assign task", 1, 5); err != nil || len(got) != 1 {
+		t.Fatalf("recommendations result = %+v err=%v", got, err)
 	}
 	for _, path := range []string{"/client/colleagues", "/client/roles", "/client/capabilities", "/client/collaborations", "/client/workflow-instances", "/client/recommend"} {
 		if !seen[path] {
 			t.Fatalf("path %s was not requested", path)
 		}
+	}
+}
+
+func TestFetchCenterWorkflowInstancesResultReturnsCenterErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "workflow store unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	_, err := fetchCenterWorkflowInstancesResult(context.Background(), server.URL, "tenant-a", "", 5)
+	if err == nil || !strings.Contains(err.Error(), "workflow instances failed") || !strings.Contains(err.Error(), "workflow store unavailable") {
+		t.Fatalf("workflow instances error = %v, want Center failure", err)
+	}
+}
+
+func TestFetchRecommendationsResultReturnsInvalidJSONError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"recommendations":[{"colleague_id":"worker-a"}]} {"recommendations":[]}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchRecommendationsResult(context.Background(), server.URL, "tenant-a", "assign task", 1, 5)
+	if !errors.Is(err, errCenterJSONTrailing) {
+		t.Fatalf("recommendations error = %v, want errCenterJSONTrailing", err)
+	}
+}
+
+func TestAppWorkflowAndRecommendationMethodsReturnErrors(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/client/workflow-instances":
+			http.Error(w, "workflow db down", http.StatusInternalServerError)
+		case "/client/recommend":
+			http.Error(w, "recommend db down", http.StatusInternalServerError)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	if _, err := (&App{}).FetchWorkflowInstances(); err == nil || !strings.Contains(err.Error(), "workflow db down") {
+		t.Fatalf("FetchWorkflowInstances err = %v, want Center workflow error", err)
+	}
+	if _, err := (&App{}).RecommendColleague("assign task"); err == nil || !strings.Contains(err.Error(), "recommend db down") {
+		t.Fatalf("RecommendColleague err = %v, want Center recommend error", err)
+	}
+}
+
+func TestFetchWorkflowInstancesFallsBackToCache(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/workflow-instances" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		http.Error(w, "workflow db down", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := writeWorkflowInstancesCache("tenant-a", "sales", "worker-a", []CenterWorkflowInstance{{
+		ID:                             "wf-cache",
+		DefinitionID:                   "def-cache",
+		Title:                          "Cached workflow",
+		InitiatorID:                    "planner",
+		CurrentStepID:                  "review",
+		CurrentStepAssigneeColleagueID: "worker-a",
+		Status:                         "running",
+	}, {
+		ID:                             "wf-other",
+		DefinitionID:                   "def-other",
+		Title:                          "Other worker workflow",
+		InitiatorID:                    "planner",
+		CurrentStepID:                  "archive",
+		CurrentStepAssigneeColleagueID: "worker-b",
+		Status:                         "running",
+	}}); err != nil {
+		t.Fatalf("writeWorkflowInstancesCache returned error: %v", err)
+	}
+
+	instances, err := (&App{}).FetchWorkflowInstances()
+	if err != nil {
+		t.Fatalf("FetchWorkflowInstances returned error: %v", err)
+	}
+	if len(instances) != 1 || instances[0].ID != "wf-cache" || instances[0].Source != "cache" || !instances[0].Stale || instances[0].CachedAt == "" {
+		t.Fatalf("workflow instances = %+v, want stale cached workflow", instances)
+	}
+}
+
+func TestTransitionWorkflowStepCallsCenterAndUpdatesCache(t *testing.T) {
+	setTestHome(t)
+	var gotActor string
+	var gotResult string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/workflows/steps/step-a/complete" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-Tenant-ID") != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", r.Header.Get("X-Tenant-ID"))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		gotActor, _ = body["actor_id"].(string)
+		gotResult, _ = body["result"].(string)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","step":{"id":"step-a","instance_id":"wf-a","assignee_colleague_id":"worker-a","status":"completed","result":"done","created_at":"2026-05-01T00:00:00Z","updated_at":"2026-05-01T00:02:00Z"},"instance":{"id":"wf-a","definition_id":"def-a","title":"Approve invoice","initiator_id":"planner","current_step_id":"step-b","current_step_assignee_colleague_id":"worker-a","status":"running","created_at":"2026-05-01T00:00:00Z","updated_at":"2026-05-01T00:02:00Z"}}`))
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "finance", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	transition, err := (&App{}).TransitionWorkflowStep("step-a", "complete", "done", "from test")
+	if err != nil {
+		t.Fatalf("TransitionWorkflowStep returned error: %v", err)
+	}
+	if gotActor != "worker-a" || gotResult != "done" {
+		t.Fatalf("transition body actor/result = %q/%q", gotActor, gotResult)
+	}
+	if transition.Step.ID != "step-a" || transition.Instance.ID != "wf-a" || transition.Instance.CurrentStepID != "step-b" {
+		t.Fatalf("transition = %+v", transition)
+	}
+	cached, ok := readWorkflowInstancesCache("tenant-a", "finance", "worker-a")
+	if !ok || len(cached) != 1 || cached[0].ID != "wf-a" || cached[0].CurrentStepID != "step-b" {
+		t.Fatalf("cached workflow instances = %+v, ok=%v", cached, ok)
+	}
+}
+
+func TestTransitionWorkflowStepReturnsStructuredCenterError(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/workflows/steps/step-a/resume" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"STEP_ACTOR_FORBIDDEN","message":"actor worker-a cannot operate workflow step step-a assigned to worker-b"}}`))
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "finance", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	_, err := (&App{}).TransitionWorkflowStep("step-a", "resume", "", "from test")
+	if err == nil {
+		t.Fatalf("expected transition error")
+	}
+	errText := err.Error()
+	if !strings.Contains(errText, "status=403") || !strings.Contains(errText, "STEP_ACTOR_FORBIDDEN") || strings.Contains(errText, `{"error"`) {
+		t.Fatalf("error = %q, want structured forbidden detail without raw JSON", errText)
 	}
 }
 
@@ -887,12 +1301,18 @@ func TestSubmitTaskSyncsCompletedTaskToCenter(t *testing.T) {
 	setTestHome(t)
 	original := doSimpleLLMRequest
 	defer func() { doSimpleLLMRequest = original }()
+	var firstSystemPrompt string
+	llmCalls := 0
 	doSimpleLLMRequest = func(cfg corelib.MaclawLLMConfig, messages []interface{}, _ *http.Client, _ time.Duration) (*agent.LLMSimpleResponse, error) {
+		llmCalls++
 		if cfg.Model != "office-openai" {
 			t.Fatalf("model = %q, want office-openai", cfg.Model)
 		}
 		if len(messages) != 2 {
 			t.Fatalf("messages len = %d, want 2", len(messages))
+		}
+		if llmCalls == 1 {
+			firstSystemPrompt = fmt.Sprint(messages[0])
 		}
 		return &agent.LLMSimpleResponse{Content: "completed operating brief"}, nil
 	}
@@ -922,6 +1342,57 @@ func TestSubmitTaskSyncsCompletedTaskToCenter(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"memories": []any{}})
 		case "/client/iworker/memories":
 			_ = json.NewEncoder(w).Encode(map[string]any{"memories": []any{}})
+		case "/client/config/latest":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":           "cfgb-submit",
+				"version":      12,
+				"content_type": "work_mode",
+				"payload":      `{"tone":"operational","human_intervention":"ask before external send"}`,
+				"status":       "published",
+				"note":         "Use operations-safe working mode",
+				"published_at": "2026-05-01T00:01:00Z",
+			})
+		case "/client/config/apply-result":
+			if r.Method != http.MethodPost {
+				t.Fatalf("apply-result method = %s, want POST", r.Method)
+			}
+			var applyResult map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&applyResult); err != nil {
+				t.Fatalf("decode apply result: %v", err)
+			}
+			if applyResult["worker_id"] != "worker-a" || applyResult["department_id"] != "ops" || applyResult["status"] != "success" {
+				t.Fatalf("unexpected apply result: %+v", applyResult)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/client/capabilities":
+			if r.URL.Query().Get("runtime") != "1" || r.URL.Query().Get("colleague_id") != "worker-a" {
+				t.Fatalf("capability query = %s", r.URL.RawQuery)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []map[string]any{{
+				"capability_id": "skill-brief",
+				"name":          "Brief Writer",
+				"version":       "1.0.0",
+				"risk_level":    "low",
+				"entry": map[string]any{
+					"name":        "Brief Writer",
+					"description": "Writes operating briefs",
+					"triggers":    []string{"brief"},
+				},
+			}}})
+		case "/client/mcp-servers":
+			if r.URL.Query().Get("department_id") != "ops" {
+				t.Fatalf("department_id = %q", r.URL.Query().Get("department_id"))
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"mcp_servers": []map[string]any{{
+				"id":            "mcp-crm",
+				"name":          "CRM MCP",
+				"server_type":   "http",
+				"endpoint":      "https://mcp.example/crm",
+				"department_id": "ops",
+				"risk_level":    "medium",
+				"status":        "enabled",
+				"env_keys":      []string{"CRM_TOKEN"},
+			}}})
 		case "/runtime/collaboration/create":
 			if r.Method != http.MethodPost {
 				t.Fatalf("create method = %s, want POST", r.Method)
@@ -938,7 +1409,7 @@ func TestSubmitTaskSyncsCompletedTaskToCenter(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&completed); err != nil {
 				t.Fatalf("decode complete: %v", err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "task": map[string]any{"id": "task-1", "title": created.Title, "to_colleague_id": created.ToColleagueID, "status": "completed", "result": completed.Result}})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -960,6 +1431,15 @@ func TestSubmitTaskSyncsCompletedTaskToCenter(t *testing.T) {
 	}
 	if result.Content != "completed operating brief" || result.CenterTaskID != "task-1" || result.CenterTaskStatus != "completed" || result.CenterTaskSyncError != "" {
 		t.Fatalf("unexpected submit result: %+v", result)
+	}
+	if !strings.Contains(firstSystemPrompt, "Center-installed tools available to this iWorker") || !strings.Contains(firstSystemPrompt, "Skill Brief Writer") || !strings.Contains(firstSystemPrompt, "MCP CRM MCP") || !strings.Contains(firstSystemPrompt, "env_keys=CRM_TOKEN") {
+		t.Fatalf("system prompt missing installed tools context: %s", firstSystemPrompt)
+	}
+	if !strings.Contains(firstSystemPrompt, "iWorkerCenter configuration bundle") || !strings.Contains(firstSystemPrompt, "Config snapshot source=center / version=12") || !strings.Contains(firstSystemPrompt, "human_intervention") {
+		t.Fatalf("system prompt missing config bundle context: %s", firstSystemPrompt)
+	}
+	if strings.Contains(firstSystemPrompt, "CRM_TOKEN=") {
+		t.Fatalf("system prompt leaked env secret shape: %s", firstSystemPrompt)
 	}
 	if created.ToColleagueID != "worker-a" || created.FromColleagueID != "human_operator" || created.SourceType != "human_iworker_interaction" {
 		t.Fatalf("unexpected created task: %+v", created)
@@ -1037,6 +1517,37 @@ func TestInstalledToolCapabilityLabelsSanitizeAndDedupe(t *testing.T) {
 	}
 }
 
+func TestInstalledToolCapabilityLabelsForHeartbeatOnlyUsesLiveSections(t *testing.T) {
+	labels := installedToolCapabilityLabelsForHeartbeat(CenterInstalledTools{
+		Source:     "partial-cache",
+		Skills:     []CenterRuntimeCapability{{CapabilityID: "fresh-skill"}},
+		MCPServers: []CenterMCPServer{{ID: "cached-mcp"}},
+		MCPError:   "mcp temporarily unavailable",
+	})
+	if len(labels) != 1 || labels[0] != "skill:fresh-skill" {
+		t.Fatalf("labels = %+v, want only live skills", labels)
+	}
+
+	labels = installedToolCapabilityLabelsForHeartbeat(CenterInstalledTools{
+		Source:     "partial-cache",
+		Skills:     []CenterRuntimeCapability{{CapabilityID: "cached-skill"}},
+		MCPServers: []CenterMCPServer{{ID: "fresh-mcp"}},
+		SkillError: "skills temporarily unavailable",
+	})
+	if len(labels) != 1 || labels[0] != "mcp:fresh-mcp" {
+		t.Fatalf("labels = %+v, want only live MCP", labels)
+	}
+
+	labels = installedToolCapabilityLabelsForHeartbeat(CenterInstalledTools{
+		Source:     "cache",
+		Skills:     []CenterRuntimeCapability{{CapabilityID: "cached-skill"}},
+		MCPServers: []CenterMCPServer{{ID: "cached-mcp"}},
+	})
+	if len(labels) != 0 {
+		t.Fatalf("labels = %+v, want no cached capabilities in heartbeat", labels)
+	}
+}
+
 func testContainsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -1090,6 +1601,57 @@ func TestFetchConfigBundleFallsBackToScopedCache(t *testing.T) {
 	}
 }
 
+func TestFetchConfigBundleReportsFailedApplyWhenLocalCacheWriteFails(t *testing.T) {
+	home := setTestHome(t)
+	cacheRoot := filepath.Join(home, ".iworker", "cache")
+	if err := os.MkdirAll(cacheRoot, 0o755); err != nil {
+		t.Fatalf("mkdir cache root: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheRoot, "config_bundles"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write blocking cache path: %v", err)
+	}
+
+	applyResult := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		switch {
+		case r.URL.Path == "/client/config/latest" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "cfgb-cache-fail", "version": 8, "content_type": "full", "payload": `{"local_continuity":true}`, "status": "published", "note": "rollout"})
+		case r.URL.Path == "/client/config/apply-result" && r.Method == http.MethodPost:
+			var req map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode apply result: %v", err)
+			}
+			applyResult <- req
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "recorded"})
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	settings := DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}
+	bundle := fetchConfigBundleForSettings(settings, 5)
+	if bundle.Source != "center" || bundle.Version != 8 || bundle.ID != "cfgb-cache-fail" {
+		t.Fatalf("bundle = %+v", bundle)
+	}
+	if bundle.ApplyStatus != "failed" || !strings.Contains(bundle.ApplyMessage, "local cache write failed") {
+		t.Fatalf("bundle apply fields = status %q message %q", bundle.ApplyStatus, bundle.ApplyMessage)
+	}
+	select {
+	case req := <-applyResult:
+		if req["status"] != "failed" || !strings.Contains(fmt.Sprint(req["message"]), "local cache write failed") {
+			t.Fatalf("apply result = %+v, want failed cache-write report", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected config apply result report")
+	}
+}
+
 func TestFetchConfigBundleTreatsMissingPublishedBundleAsReadyEmptyState(t *testing.T) {
 	setTestHome(t)
 	applyReported := false
@@ -1115,16 +1677,58 @@ func TestFetchConfigBundleTreatsMissingPublishedBundleAsReadyEmptyState(t *testi
 	if applyReported {
 		t.Fatal("missing published bundle should not report apply result")
 	}
-	if _, ok := readConfigBundleCache("tenant-a"); ok {
+	if _, ok := readConfigBundleCache("tenant-a", "sales", "worker-a"); ok {
 		t.Fatal("missing published bundle should not overwrite cache")
+	}
+}
+
+func TestConfigBundleCacheIsScopedByDepartmentAndWorkerWithLegacyFallback(t *testing.T) {
+	home := setTestHome(t)
+	if err := writeConfigBundleCache("tenant-a", "sales", "worker-a", CenterConfigBundle{ID: "cfgb-sales", Version: 1, ApplyStatus: "success"}); err != nil {
+		t.Fatalf("write sales cache: %v", err)
+	}
+	if err := writeConfigBundleCache("tenant-a", "quality", "worker-b", CenterConfigBundle{ID: "cfgb-quality", Version: 2, ApplyStatus: "failed"}); err != nil {
+		t.Fatalf("write quality cache: %v", err)
+	}
+
+	sales, ok := readConfigBundleCache("tenant-a", "sales", "worker-a")
+	if !ok || sales.ID != "cfgb-sales" || sales.ApplyStatus != "success" {
+		t.Fatalf("sales cache = %+v ok=%v", sales, ok)
+	}
+	quality, ok := readConfigBundleCache("tenant-a", "quality", "worker-b")
+	if !ok || quality.ID != "cfgb-quality" || quality.ApplyStatus != "failed" {
+		t.Fatalf("quality cache = %+v ok=%v", quality, ok)
+	}
+	if _, ok := readConfigBundleCache("tenant-a", "sales", "worker-b"); ok {
+		t.Fatal("different worker should not read another worker scoped config cache")
+	}
+
+	legacyDir := filepath.Join(home, ".iworker", "cache", "config_bundles")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy cache dir: %v", err)
+	}
+	legacy := CenterConfigBundle{ID: "cfgb-legacy", Version: 3, ApplyStatus: "success"}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(filepath.Join(legacyDir, "tenant-b.json"), data, 0o644); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+	migrated, ok := readConfigBundleCache("tenant-b", "default", "worker-c")
+	if !ok || migrated.ID != "cfgb-legacy" {
+		t.Fatalf("legacy cache fallback = %+v ok=%v", migrated, ok)
 	}
 }
 
 func TestFetchInstalledToolsFetchesSkillsAndMCPConcurrently(t *testing.T) {
 	setTestHome(t)
+	started := make(chan string, 2)
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		time.Sleep(250 * time.Millisecond)
+		started <- r.URL.Path
+		select {
+		case <-release:
+		case <-time.After(2 * time.Second):
+		}
 		switch r.URL.Path {
 		case "/client/capabilities":
 			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []map[string]any{{"capability_id": "cap-fast", "name": "Fast Skill"}}})
@@ -1136,15 +1740,29 @@ func TestFetchInstalledToolsFetchesSkillsAndMCPConcurrently(t *testing.T) {
 	}))
 	defer server.Close()
 
-	startedAt := time.Now()
-	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
-	elapsed := time.Since(startedAt)
+	resultCh := make(chan CenterInstalledTools, 1)
+	go func() {
+		resultCh <- fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
+	}()
+
+	seen := map[string]bool{}
+	for len(seen) < 2 {
+		select {
+		case path := <-started:
+			seen[path] = true
+		case <-time.After(750 * time.Millisecond):
+			close(release)
+			t.Fatalf("installed tools fetch did not start both requests concurrently; started=%v", seen)
+		}
+	}
+	close(release)
+	tools := <-resultCh
 
 	if tools.Source != "center" || tools.Stale || len(tools.Skills) != 1 || len(tools.MCPServers) != 1 {
 		t.Fatalf("tools = %+v", tools)
 	}
-	if elapsed > 450*time.Millisecond {
-		t.Fatalf("installed tools fetch took %s; expected skill and MCP requests to run concurrently", elapsed)
+	if !seen["/client/capabilities"] || !seen["/client/mcp-servers"] {
+		t.Fatalf("installed tools fetch started unexpected paths: %v", seen)
 	}
 }
 func TestFetchInstalledToolsFallsBackToScopedCache(t *testing.T) {
@@ -1212,6 +1830,16 @@ func TestFetchInstalledToolsMergesFreshSkillsWithCachedMCP(t *testing.T) {
 	if len(tools.MCPServers) != 1 || tools.MCPServers[0].ID != "mcp-old" {
 		t.Fatalf("mcp = %+v, want cached MCP", tools.MCPServers)
 	}
+	if tools.MCPError == "" || tools.SkillError != "" {
+		t.Fatalf("sync errors = skill:%q mcp:%q, want MCP error only", tools.SkillError, tools.MCPError)
+	}
+	prompt := buildInstalledToolsSystemPrompt(tools)
+	if !strings.Contains(prompt, "Tool snapshot source=partial-cache") || !strings.Contains(prompt, "context only until iWorkerCenter reconnects") || !strings.Contains(prompt, "MCP sync issue=") {
+		t.Fatalf("prompt missing partial-cache guardrails: %s", prompt)
+	}
+	if !strings.Contains(prompt, "Skill Fresh Skill") || !strings.Contains(prompt, "MCP Old MCP") {
+		t.Fatalf("prompt missing merged tool entries: %s", prompt)
+	}
 }
 
 func TestFetchInstalledToolsMergesFreshMCPWithCachedSkills(t *testing.T) {
@@ -1246,6 +1874,9 @@ func TestFetchInstalledToolsMergesFreshMCPWithCachedSkills(t *testing.T) {
 	if len(tools.MCPServers) != 1 || tools.MCPServers[0].ID != "mcp-fresh" {
 		t.Fatalf("mcp = %+v, want fresh MCP", tools.MCPServers)
 	}
+	if tools.SkillError == "" || tools.MCPError != "" {
+		t.Fatalf("sync errors = skill:%q mcp:%q, want skill error only", tools.SkillError, tools.MCPError)
+	}
 }
 
 func TestFetchInstalledToolsCenterEmptyOverridesStaleCache(t *testing.T) {
@@ -1268,6 +1899,72 @@ func TestFetchInstalledToolsCenterEmptyOverridesStaleCache(t *testing.T) {
 	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
 	if tools.Source != "center" || tools.Stale || len(tools.Skills) != 0 || len(tools.MCPServers) != 0 {
 		t.Fatalf("tools = %+v", tools)
+	}
+}
+
+func TestFetchInstalledToolsReportsCacheWriteFailureAfterCenterSuccess(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write home blocker: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+	t.Setenv("USERPROFILE", homeFile)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []map[string]any{{"capability_id": "cap-a", "name": "Skill A"}}})
+		case "/client/mcp-servers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"mcp_servers": []map[string]any{{"id": "mcp-a", "name": "MCP A", "server_type": "http", "endpoint": "https://mcp.example"}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
+	if tools.Source != "center-cache-error" || !tools.Stale {
+		t.Fatalf("tools source = %+v, want cache error snapshot", tools)
+	}
+	if len(tools.Skills) != 1 || len(tools.MCPServers) != 1 {
+		t.Fatalf("fresh tools were not preserved: %+v", tools)
+	}
+	if tools.SkillError != "" || tools.MCPError != "" || !strings.Contains(tools.CacheError, "cache update failed") {
+		t.Fatalf("cache errors not surfaced cleanly: skill=%q mcp=%q cache=%q", tools.SkillError, tools.MCPError, tools.CacheError)
+	}
+}
+
+func TestFetchInstalledToolsReportsPartialCacheWriteFailure(t *testing.T) {
+	homeFile := filepath.Join(t.TempDir(), "home-file")
+	if err := os.WriteFile(homeFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("write home blocker: %v", err)
+	}
+	t.Setenv("HOME", homeFile)
+	t.Setenv("USERPROFILE", homeFile)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/client/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"runtime_entries": []map[string]any{{"capability_id": "cap-a", "name": "Skill A"}}})
+		case "/client/mcp-servers":
+			http.Error(w, "mcp unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	tools := fetchInstalledToolsForSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}, 5)
+	if tools.Source != "partial-cache" || !tools.Stale {
+		t.Fatalf("tools source = %+v, want partial cache snapshot", tools)
+	}
+	if len(tools.Skills) != 1 || tools.Skills[0].CapabilityID != "cap-a" {
+		t.Fatalf("fresh skill not preserved: %+v", tools.Skills)
+	}
+	if tools.SkillError != "" || !strings.Contains(tools.MCPError, "mcp unavailable") || !strings.Contains(tools.CacheError, "cache update failed") {
+		t.Fatalf("errors not surfaced: skill=%q mcp=%q cache=%q", tools.SkillError, tools.MCPError, tools.CacheError)
 	}
 }
 
@@ -1304,6 +2001,193 @@ func TestFetchGoalPushesFallsBackToCache(t *testing.T) {
 	}
 	if len(pushes) != 1 || pushes[0].Source != "cache" || !pushes[0].Stale || pushes[0].CachedAt == "" || pushes[0].EventID != "event-a" {
 		t.Fatalf("pushes = %+v", pushes)
+	}
+}
+
+func TestFetchCollaborationsFallsBackToCache(t *testing.T) {
+	setTestHome(t)
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: "http://127.0.0.1:1", TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 1}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := writeCollaborationTasksCache("tenant-a", "sales", "worker-a", []CenterCollabTask{{ID: "collab-a", Title: "Cached handoff", ToColleagueID: "worker-a", Status: "pending", CreatedAt: "2026-05-02T00:00:00Z"}}); err != nil {
+		t.Fatalf("write collaboration cache: %v", err)
+	}
+
+	tasks, err := (&App{}).FetchCollaborations("worker-a")
+	if err != nil {
+		t.Fatalf("FetchCollaborations returned error: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Source != "cache" || !tasks[0].Stale || tasks[0].CachedAt == "" || tasks[0].ID != "collab-a" {
+		t.Fatalf("tasks = %+v", tasks)
+	}
+}
+
+func TestTransitionCollaborationTaskRemovesTerminalCachedTask(t *testing.T) {
+	setTestHome(t)
+	if err := writeCollaborationTasksCache("tenant-a", "sales", "worker-a", []CenterCollabTask{
+		{ID: "collab-a", Title: "A", Status: "in_progress", CreatedAt: "2026-05-02T00:00:00Z"},
+		{ID: "collab-b", Title: "B", Status: "pending", CreatedAt: "2026-05-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("write collaboration cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/collaboration/collab-a/complete" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","task":{"id":"collab-a","title":"A","status":"completed","result":"done","updated_at":"2026-05-02T00:01:00Z"}}`))
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	if _, err := (&App{}).TransitionCollaborationTask("collab-a", "complete", "done", "test"); err != nil {
+		t.Fatalf("TransitionCollaborationTask returned error: %v", err)
+	}
+	cached, ok := readCollaborationTasksCache("tenant-a", "sales", "worker-a")
+	if !ok || len(cached) != 1 || cached[0].ID != "collab-b" {
+		t.Fatalf("cached tasks = %+v ok=%v", cached, ok)
+	}
+}
+
+func TestTransitionCollaborationTaskUpdatesNonTerminalCachedTask(t *testing.T) {
+	setTestHome(t)
+	if err := writeCollaborationTasksCache("tenant-a", "sales", "worker-a", []CenterCollabTask{
+		{ID: "collab-a", Title: "A", Status: "pending", CreatedAt: "2026-05-02T00:00:00Z"},
+		{ID: "collab-b", Title: "B", Status: "pending", CreatedAt: "2026-05-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("write collaboration cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/collaboration/collab-a/accept" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","task":{"id":"collab-a","title":"A from Center","status":"accepted","updated_at":"2026-05-02T00:01:00Z"}}`))
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	if _, err := (&App{}).TransitionCollaborationTask("collab-a", "accept", "", "test"); err != nil {
+		t.Fatalf("TransitionCollaborationTask returned error: %v", err)
+	}
+	cached, ok := readCollaborationTasksCache("tenant-a", "sales", "worker-a")
+	if !ok || len(cached) != 2 {
+		t.Fatalf("cached tasks = %+v ok=%v", cached, ok)
+	}
+	byID := map[string]CenterCollabTask{}
+	for _, task := range cached {
+		byID[task.ID] = task
+	}
+	if byID["collab-a"].Status != "accepted" || byID["collab-a"].UpdatedAt == "" {
+		t.Fatalf("collab-a cache = %+v", byID["collab-a"])
+	}
+	if byID["collab-b"].Status != "pending" {
+		t.Fatalf("collab-b cache = %+v", byID["collab-b"])
+	}
+}
+
+func TestTransitionCollaborationTaskUpdatesStartedCachedTask(t *testing.T) {
+	setTestHome(t)
+	if err := writeCollaborationTasksCache("tenant-a", "sales", "worker-a", []CenterCollabTask{
+		{ID: "collab-a", Title: "A", Status: "accepted", CreatedAt: "2026-05-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("write collaboration cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/collaboration/collab-a/start" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","task":{"id":"collab-a","title":"A","status":"in_progress","updated_at":"2026-05-02T00:01:00Z"}}`))
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	if _, err := (&App{}).TransitionCollaborationTask("collab-a", "start", "", "test"); err != nil {
+		t.Fatalf("TransitionCollaborationTask returned error: %v", err)
+	}
+	cached, ok := readCollaborationTasksCache("tenant-a", "sales", "worker-a")
+	if !ok || len(cached) != 1 || cached[0].Status != "in_progress" || cached[0].UpdatedAt == "" {
+		t.Fatalf("cached tasks = %+v ok=%v", cached, ok)
+	}
+}
+
+func TestTransitionCollaborationTaskCreatesCacheFromAuthoritativeTask(t *testing.T) {
+	setTestHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/collaboration/collab-a/accept" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","task":{"id":"collab-a","title":"Authoritative handoff","description":"Loaded from Center transition","from_colleague_id":"worker-office","to_colleague_id":"worker-a","to_role_code":"sales","status":"accepted","priority":5,"workflow_step_instance_id":"wf-step-a","created_at":"2026-05-02T00:00:00Z","updated_at":"2026-05-02T00:01:00Z"}}`))
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	updated, err := (&App{}).TransitionCollaborationTask("collab-a", "accept", "", "test")
+	if err != nil {
+		t.Fatalf("TransitionCollaborationTask returned error: %v", err)
+	}
+	if updated.Title != "Authoritative handoff" || updated.Status != "accepted" {
+		t.Fatalf("updated task = %+v", updated)
+	}
+	cached, ok := readCollaborationTasksCache("tenant-a", "sales", "worker-a")
+	if !ok || len(cached) != 1 {
+		t.Fatalf("cached tasks = %+v ok=%v", cached, ok)
+	}
+	if cached[0].Title != "Authoritative handoff" || cached[0].Status != "accepted" || cached[0].WorkflowStepID != "wf-step-a" {
+		t.Fatalf("cached task = %+v", cached[0])
+	}
+}
+
+func TestTransitionCollaborationTaskUsesResolvedWorkerIDAsActor(t *testing.T) {
+	setTestHome(t)
+	if err := writeCollaborationTasksCache("tenant-a", "sales", "Xiao_Di", []CenterCollabTask{
+		{ID: "collab-a", Title: "A", Status: "pending", CreatedAt: "2026-05-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("write collaboration cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/runtime/collaboration/collab-a/accept" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var req struct {
+			ActorID string `json:"actor_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if req.ActorID != "Xiao_Di" {
+			t.Fatalf("actor_id = %q, want Xiao_Di", req.ActorID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","task":{"id":"collab-a","title":"A","status":"accepted","updated_at":"2026-05-02T00:01:00Z"}}`))
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	if _, err := (&App{}).TransitionCollaborationTask("collab-a", "accept", "", "test"); err != nil {
+		t.Fatalf("TransitionCollaborationTask returned error: %v", err)
+	}
+	cached, ok := readCollaborationTasksCache("tenant-a", "sales", "Xiao_Di")
+	if !ok || len(cached) != 1 || cached[0].Status != "accepted" {
+		t.Fatalf("cached tasks = %+v ok=%v", cached, ok)
 	}
 }
 
@@ -1350,6 +2234,42 @@ func TestAckGoalPushRemovesCachedPush(t *testing.T) {
 		t.Fatalf("AckGoalPush returned error: %v", err)
 	}
 	if result.AckEventID != "ack-a" {
+		t.Fatalf("result = %+v", result)
+	}
+	cached, ok := readGoalPushesCache("tenant-a", "sales", "worker-a")
+	if !ok || len(cached) != 1 || cached[0].EventID != "event-b" {
+		t.Fatalf("cached pushes = %+v ok=%v", cached, ok)
+	}
+}
+
+func TestRecoverGoalPushRemovesCachedPush(t *testing.T) {
+	setTestHome(t)
+	if err := writeGoalPushesCache("tenant-a", "sales", "worker-a", []CenterGoalPush{
+		{EventID: "event-a", TaskID: "task-a", Title: "A", Status: "open", WorkflowStepInstanceID: "wfsi-a", RecoveryAction: "resume_workflow_step", CreatedAt: "2026-05-02T00:00:00Z"},
+		{EventID: "event-b", TaskID: "task-b", Title: "B", Status: "open", CreatedAt: "2026-05-02T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("write push cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/client/goalwatch/pushes/event-a/recover" || r.Method != http.MethodPost {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q, want tenant-a", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(CenterGoalPushRecoverResult{Push: CenterGoalPush{EventID: "event-a", TaskID: "task-a", WorkflowStepInstanceID: "wfsi-a", RecoveryAction: "resume_workflow_step"}, Ack: CenterGoalPushAckResult{EventID: "event-a", TaskID: "task-a", AckEventID: "ack-a", Status: "recovered", CreatedAt: "2026-05-02T00:00:00Z"}, RecoveryAction: "resume_workflow_step", RecoveryMethod: "POST", RecoveryPath: "/runtime/workflows/steps/wfsi-a/resume", Status: "recovered"})
+	}))
+	defer server.Close()
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, BaseURL: server.URL, TenantID: "tenant-a", DepartmentID: "sales", WorkerID: "worker-a", TimeoutSec: 5}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+
+	result, err := (&App{}).RecoverGoalPush("event-a", "approved")
+	if err != nil {
+		t.Fatalf("RecoverGoalPush returned error: %v", err)
+	}
+	if result.Ack.AckEventID != "ack-a" || result.Status != "recovered" {
 		t.Fatalf("result = %+v", result)
 	}
 	cached, ok := readGoalPushesCache("tenant-a", "sales", "worker-a")

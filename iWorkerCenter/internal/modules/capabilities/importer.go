@@ -1,6 +1,7 @@
 package capabilities
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
@@ -67,7 +68,7 @@ func (imp *Importer) SearchCloud(query string) ([]CloudSkill, error) {
 	var result struct {
 		Results []CloudSkill `json:"results"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+	if err := decodeCloudCapabilityJSON(resp.Body, 1<<20, &result); err != nil {
 		return nil, fmt.Errorf("decode cloud skill search: %w", err)
 	}
 	if result.Results == nil {
@@ -109,23 +110,12 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 	}
 
 	var skill CloudSkill
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&skill); err != nil {
+	if err := decodeCloudCapabilityJSON(resp.Body, 1<<20, &skill); err != nil {
 		return nil, fmt.Errorf("decode cloud skill: %w", err)
 	}
-	packageStatus := "metadata_only"
-	var packageFormat string
-	var packageSHA string
-	var packageSize int64
-	var packageContent string
-	if pkg, err := imp.DownloadPackage(skillID); err == nil {
-		packageStatus = "package_cached"
-		packageFormat = pkg.Format
-		packageSHA = pkg.SHA256
-		packageSize = pkg.Size
-		packageContent = pkg.ContentBase64
-	} else {
-		packageStatus = "package_unavailable"
-		log.Printf("[importer] cloud skill %q package unavailable: %v", skillID, err)
+	pkg, err := imp.DownloadPackage(skillID)
+	if err != nil {
+		return nil, fmt.Errorf("download cloud skill package: %w", err)
 	}
 
 	source := "iworkercloud:" + skillID
@@ -133,7 +123,7 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 	err = imp.write.QueryRow(`SELECT id FROM capability_packages WHERE tenant_id=? AND source=?`, tenantID, source).Scan(&existingID)
 	if err == nil {
 		log.Printf("[importer] cloud skill %q already imported as %s", skill.Name, existingID)
-		return &CapabilityPackage{ID: existingID, Name: skill.Name, Source: source, Status: "active"}, nil
+		return imp.lookupCapability(tenantID, existingID)
 	}
 	if err != sql.ErrNoRows {
 		return nil, fmt.Errorf("check existing capability: %w", err)
@@ -147,7 +137,7 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 
 	_, err = imp.write.Exec(`INSERT INTO capability_packages (id, tenant_id, name, description, category, version, source, risk_level, status, package_status, package_format, package_sha256, package_size, package_content, local_skill_origin, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?, 'cloud_imported', ?, ?)`,
-		id, tenantID, skill.Name, skill.Description, category, version, source, riskLevel, packageStatus, packageFormat, packageSHA, packageSize, packageContent, now, now)
+		id, tenantID, skill.Name, skill.Description, category, version, source, riskLevel, "package_cached", pkg.Format, pkg.SHA256, pkg.Size, pkg.ContentBase64, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("insert capability: %w", err)
 	}
@@ -156,11 +146,20 @@ func (imp *Importer) ImportFromCloud(skillID, tenantID string) (*CapabilityPacka
 	return &CapabilityPackage{
 		ID: id, Name: skill.Name, Description: skill.Description,
 		Category: category, Version: version, Source: source,
-		RiskLevel: riskLevel, Status: "pending_review", PackageStatus: packageStatus,
-		PackageFormat: packageFormat, PackageSHA256: packageSHA, PackageSize: packageSize,
+		RiskLevel: riskLevel, Status: "pending_review", PackageStatus: "package_cached",
+		PackageFormat: pkg.Format, PackageSHA256: pkg.SHA256, PackageSize: pkg.Size,
 		LocalSkillOrigin: "cloud_imported",
 		CreatedAt:        now, UpdatedAt: now,
 	}, nil
+}
+
+func (imp *Importer) lookupCapability(tenantID, id string) (*CapabilityPackage, error) {
+	var cp CapabilityPackage
+	err := imp.write.QueryRow(capabilitySelectSQL+" WHERE tenant_id=? AND id=?", tenantID, strings.TrimSpace(id)).Scan(&cp.ID, &cp.Name, &cp.Description, &cp.Category, &cp.Version, &cp.Source, &cp.RiskLevel, &cp.Status, &cp.PackageStatus, &cp.PackageFormat, &cp.PackageSHA256, &cp.PackageSize, &cp.LocalSkillOrigin, &cp.CloudPublishStatus, &cp.CloudSkillID, &cp.CloudPublishedAt, &cp.CloudPublishError, &cp.SafetyStatus, &cp.SafetyReason, &cp.SafetyReviewedAt, &cp.CreatedAt, &cp.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &cp, nil
 }
 
 func (imp *Importer) DownloadPackage(skillID string) (*marketschema.PackageDownload, error) {
@@ -187,7 +186,7 @@ func (imp *Importer) DownloadPackage(skillID string) (*marketschema.PackageDownl
 		return nil, fmt.Errorf("cloud skill package returned %d: %s", resp.StatusCode, string(body))
 	}
 	var pkg marketschema.PackageDownload
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&pkg); err != nil {
+	if err := decodeCloudCapabilityJSON(resp.Body, 8<<20, &pkg); err != nil {
 		return nil, fmt.Errorf("decode cloud skill package: %w", err)
 	}
 	if err := validatePackageDownload(&pkg); err != nil {
@@ -212,6 +211,27 @@ func validatePackageDownload(pkg *marketschema.PackageDownload) error {
 		if fmt.Sprintf("%x", sum[:]) != strings.ToLower(pkg.SHA256) {
 			return fmt.Errorf("skill package sha256 mismatch")
 		}
+	}
+	return nil
+}
+
+func decodeCloudCapabilityJSON(body io.Reader, limit int64, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > limit {
+		return fmt.Errorf("cloud capability JSON exceeds %d bytes", limit)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("cloud capability JSON contains trailing data")
+		}
+		return err
 	}
 	return nil
 }

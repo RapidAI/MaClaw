@@ -63,6 +63,8 @@ export function OverviewPage() {
     runtime_fallback_centers: 0,
     runtime_non_blocking_issues: 0,
     runtime_blocking_issues: 0,
+    heartbeat_degraded_centers: 0,
+    heartbeat_blocking_issues: 0,
   };
 
   const cloudStats = useMemo<CloudStat[]>(() => [
@@ -139,6 +141,16 @@ export function OverviewPage() {
       value: String(summary.runtime_blocking_issues ?? 0),
       hint: t('cloudOverview.ops.blockingRuntimeHint'),
     },
+    {
+      label: t('cloudOverview.ops.heartbeatDegraded'),
+      value: String(summary.heartbeat_degraded_centers ?? 0),
+      hint: t('cloudOverview.ops.heartbeatDegradedHint'),
+    },
+    {
+      label: t('cloudOverview.ops.heartbeatBlocking'),
+      value: String(summary.heartbeat_blocking_issues ?? 0),
+      hint: t('cloudOverview.ops.heartbeatBlockingHint'),
+    },
   ], [summary]);
 
   const actionQueue = useMemo<ActionQueueItem[]>(() => {
@@ -147,15 +159,22 @@ export function OverviewPage() {
     for (const item of items) {
       const center = item.center;
       const runtimeBlocking = item.runtime_status?.compute_sync_status?.status === 'failure' && !item.runtime_status.compute_sync_status.non_blocking;
+      const heartbeatBlocking = item.runtime_status?.cloud_heartbeat?.status && !['online', 'disabled'].includes(item.runtime_status.cloud_heartbeat.status) && !item.runtime_status.cloud_heartbeat.non_blocking;
+      const heartbeatNonBlocking = item.runtime_status?.cloud_heartbeat?.status && !['online', 'disabled'].includes(item.runtime_status.cloud_heartbeat.status) && item.runtime_status.cloud_heartbeat.non_blocking;
       const workload = item.iworker_readiness?.workload_summary;
       const facts = [
         center.last_sync_status ? t('cloudOverview.queue.sync', { status: center.last_sync_status }) : '',
         center.last_heartbeat ? t('cloudOverview.queue.heartbeat', { time: formatRelativeTime(center.last_heartbeat) }) : '',
+        item.runtime_status?.cloud_heartbeat?.status ? t('cloudOverview.queue.cloudHeartbeat', { status: item.runtime_status.cloud_heartbeat.status }) : '',
         workload ? t('cloudOverview.queue.workload', { active: workload.active_count, blocked: workload.blocked_count, review: workload.review_count }) : '',
       ].filter(Boolean);
 
       if (runtimeBlocking) {
         queued.push({ center, tone: 'danger', title: t('cloudOverview.queue.runtimeBlocking'), reason: item.runtime_status?.compute_sync_status?.error || t('cloudOverview.queue.runtimeBlockingHint'), facts });
+        continue;
+      }
+      if (heartbeatBlocking) {
+        queued.push({ center, tone: 'danger', title: t('cloudOverview.queue.heartbeatBlocking'), reason: item.runtime_status?.cloud_heartbeat?.last_error || t('cloudOverview.queue.heartbeatBlockingHint'), facts });
         continue;
       }
       if (center.status === 'pending') {
@@ -173,6 +192,10 @@ export function OverviewPage() {
       }
       if (!item.iworker_operational_ready && center.iworker_readiness_status) {
         queued.push({ center, tone: 'info', title: t('cloudOverview.queue.iworkerSetup'), reason: t('cloudOverview.queue.iworkerSetupHint'), facts });
+        continue;
+      }
+      if (heartbeatNonBlocking) {
+        queued.push({ center, tone: 'info', title: t('cloudOverview.queue.heartbeatNonBlocking'), reason: t('cloudOverview.queue.heartbeatNonBlockingHint'), facts });
       }
     }
     return queued.slice(0, 5);

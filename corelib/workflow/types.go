@@ -9,18 +9,18 @@ const (
 	// WorkflowNone indicates the task is NOT a workflow (e.g., content processing).
 	WorkflowNone WorkflowType = "none"
 
-	WorkflowCoding          WorkflowType = "coding"
-	WorkflowProductDesign   WorkflowType = "product_design"
-	WorkflowInnovation      WorkflowType = "innovation"
-	WorkflowBusinessPlan    WorkflowType = "business_plan"
-	WorkflowTesting         WorkflowType = "testing"
-	WorkflowLiteratureReview WorkflowType = "literature_review"
-	WorkflowResearchReport  WorkflowType = "research_report"
-	WorkflowExperimentDesign   WorkflowType = "experiment_design"
-	WorkflowGrantProposal      WorkflowType = "grant_proposal"
-	WorkflowPaperWriting       WorkflowType = "paper_writing"
-	WorkflowProjectProposal    WorkflowType = "project_proposal"
-	WorkflowEventPlanning      WorkflowType = "event_planning"
+	WorkflowCoding              WorkflowType = "coding"
+	WorkflowProductDesign       WorkflowType = "product_design"
+	WorkflowInnovation          WorkflowType = "innovation"
+	WorkflowBusinessPlan        WorkflowType = "business_plan"
+	WorkflowTesting             WorkflowType = "testing"
+	WorkflowLiteratureReview    WorkflowType = "literature_review"
+	WorkflowResearchReport      WorkflowType = "research_report"
+	WorkflowExperimentDesign    WorkflowType = "experiment_design"
+	WorkflowGrantProposal       WorkflowType = "grant_proposal"
+	WorkflowPaperWriting        WorkflowType = "paper_writing"
+	WorkflowProjectProposal     WorkflowType = "project_proposal"
+	WorkflowEventPlanning       WorkflowType = "event_planning"
 	WorkflowCompetitiveAnalysis WorkflowType = "competitive_analysis"
 	WorkflowPresentationDesign  WorkflowType = "presentation_design"
 	WorkflowBidResponse         WorkflowType = "bid_response"
@@ -34,11 +34,11 @@ const (
 // used in codingTemplate().Phases[].ID. Other code should reference these
 // constants instead of hardcoding string literals.
 const (
-	PhaseCodingRequirements  = "requirements"
-	PhaseCodingTechDesign    = "tech_design"
-	PhaseCodingTaskBreakdown = "task_breakdown"
+	PhaseCodingRequirements   = "requirements"
+	PhaseCodingTechDesign     = "tech_design"
+	PhaseCodingTaskBreakdown  = "task_breakdown"
 	PhaseCodingImplementation = "implementation"
-	PhaseCodingReview        = "review"
+	PhaseCodingReview         = "review"
 )
 
 // StructuredIntent is the output of the intent understanding phase.
@@ -57,8 +57,8 @@ type ToolFilterPolicy string
 
 const (
 	ToolFilterNone    ToolFilterPolicy = "none"     // no tool restrictions
-	ToolFilterDocOnly ToolFilterPolicy = "doc_only"  // documentation tools only
-	ToolFilterFull    ToolFilterPolicy = "full"      // full tool list
+	ToolFilterDocOnly ToolFilterPolicy = "doc_only" // documentation tools only
+	ToolFilterFull    ToolFilterPolicy = "full"     // full tool list
 )
 
 // DocOnlyAllowedTools is the canonical set of tool names permitted during
@@ -130,7 +130,7 @@ type PhaseTemplate struct {
 	Prompt       string           `json:"prompt"`
 	Deliverable  string           `json:"deliverable"`
 	Checklist    []string         `json:"checklist"`
-	NeedsConfirm bool            `json:"needs_confirm"`
+	NeedsConfirm bool             `json:"needs_confirm"`
 	CanSkip      bool             `json:"can_skip"`
 	ToolPolicy   ToolFilterPolicy `json:"tool_policy"`
 }
@@ -171,12 +171,13 @@ type WorkflowResponse struct {
 	// deliverable regardless of the user's message content.
 	DefaultInput bool
 
-	// PendingConfirm is true when the phase has output and the user's
-	// message is being delegated to the LLM for intent classification
-	// (confirm vs modify). After the agent loop completes, the caller
-	// should check whether the LLM produced a new phase document:
-	//   - No new document → treat as confirmation, call AdvancePhase()
-	//   - New document    → treat as modification, wait for next confirm
+	// PendingReview is true when the phase has output and the next user
+	// message must be classified into a ReviewIntent before the workflow can
+	// advance, regenerate, skip, cancel, or switch tasks.
+	PendingReview bool
+
+	// PendingConfirm is kept for older GUI/TUI callers and mirrors
+	// PendingReview. New code should use PendingReview and ApplyReviewIntent.
 	PendingConfirm bool
 
 	// ActivateOrchestrator is true when the workflow has advanced into an
@@ -191,6 +192,21 @@ type WorkflowResponse struct {
 	DesignContext        string // truncated middle-phase outputs (design/specification)
 }
 
+// ReviewIntent is the classified user intent while a NeedsConfirm phase is
+// waiting for user review. The engine accepts only this typed intent for review
+// transitions; callers are responsible for classifying free-form text before
+// invoking ApplyReviewIntent.
+type ReviewIntent string
+
+const (
+	ReviewIntentConfirm    ReviewIntent = "confirm"
+	ReviewIntentSupplement ReviewIntent = "supplement"
+	ReviewIntentSkip       ReviewIntent = "skip"
+	ReviewIntentCancel     ReviewIntent = "cancel"
+	ReviewIntentSwitchTask ReviewIntent = "switch_task"
+	ReviewIntentOther      ReviewIntent = "other"
+)
+
 // WorkflowStatus tracks the lifecycle state of a workflow.
 type WorkflowStatus string
 
@@ -202,17 +218,17 @@ const (
 
 // WorkflowState holds the runtime state of an active workflow.
 type WorkflowState struct {
-	ID           string                       `json:"id"`
-	UserID       string                       `json:"user_id"`
-	Type         WorkflowType                 `json:"type"`
-	Intent       StructuredIntent             `json:"intent"`
-	CurrentPhase string                       `json:"current_phase"`
-	PhaseIndex   int                          `json:"phase_index"`
-	PhaseOutputs map[string]string            `json:"phase_outputs"`
+	ID           string                        `json:"id"`
+	UserID       string                        `json:"user_id"`
+	Type         WorkflowType                  `json:"type"`
+	Intent       StructuredIntent              `json:"intent"`
+	CurrentPhase string                        `json:"current_phase"`
+	PhaseIndex   int                           `json:"phase_index"`
+	PhaseOutputs map[string]string             `json:"phase_outputs"`
 	GateResults  map[string]*QualityGateResult `json:"gate_results"`
-	Status       WorkflowStatus               `json:"status"`
-	CreatedAt    time.Time                    `json:"created_at"`
-	UpdatedAt    time.Time                    `json:"updated_at"`
+	Status       WorkflowStatus                `json:"status"`
+	CreatedAt    time.Time                     `json:"created_at"`
+	UpdatedAt    time.Time                     `json:"updated_at"`
 
 	// InputReceived is true when the user has provided the required input
 	// document (for workflows with RequiresInput). The engine sets this
@@ -224,6 +240,12 @@ type WorkflowState struct {
 	// (e.g., the project root for coding workflows). Used for artifact
 	// tagging and context scoping.
 	ProjectPath string `json:"project_path,omitempty"`
+
+	// PendingReviewPhaseID is set after a NeedsConfirm phase output has been
+	// saved and cleared only when the user explicitly confirms, modifies, or
+	// cancels the review. This makes the confirmation/supplement step an engine
+	// state instead of an agent-loop heuristic.
+	PendingReviewPhaseID string `json:"pending_review_phase_id,omitempty"`
 }
 
 // QualityGateResult records the outcome of a phase quality gate check.
@@ -245,7 +267,6 @@ type GateCheckItem struct {
 type FilterResult string
 
 const (
-	FilterSmallTalk           FilterResult = "small_talk"
 	FilterSimpleDirective     FilterResult = "simple_directive"
 	FilterActiveWorkflow      FilterResult = "active_workflow"
 	FilterActiveUnderstanding FilterResult = "active_understanding"
@@ -264,13 +285,13 @@ const (
 
 // UnderstandingSession holds the state of a multi-round intent clarification.
 type UnderstandingSession struct {
-	ID        string             `json:"id"`
-	UserID    string             `json:"user_id"`
-	Intent    StructuredIntent   `json:"intent"`
+	ID        string               `json:"id"`
+	UserID    string               `json:"user_id"`
+	Intent    StructuredIntent     `json:"intent"`
 	Rounds    []UnderstandingRound `json:"rounds"`
-	State     UnderstandingState `json:"state"`
-	CreatedAt time.Time          `json:"created_at"`
-	UpdatedAt time.Time          `json:"updated_at"`
+	State     UnderstandingState   `json:"state"`
+	CreatedAt time.Time            `json:"created_at"`
+	UpdatedAt time.Time            `json:"updated_at"`
 }
 
 // UnderstandingRound records one exchange in an intent understanding session.

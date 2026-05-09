@@ -105,10 +105,13 @@ type RegisterCenterRequest struct {
 
 // RegisterCenterResponse is returned by iWorkerCloud.
 type RegisterCenterResponse struct {
-	CenterID string `json:"center_id"`
-	Secret   string `json:"secret"`
-	Status   string `json:"status"`
-	Message  string `json:"message"`
+	CenterID       string `json:"center_id"`
+	Secret         string `json:"secret"`
+	Status         string `json:"status"`
+	Message        string `json:"message"`
+	Reused         bool   `json:"reused,omitempty"`
+	HeartbeatSent  bool   `json:"heartbeat_sent,omitempty"`
+	HeartbeatError string `json:"heartbeat_error,omitempty"`
 }
 
 // CloudLicense is the active license record returned by iWorkerCloud.
@@ -147,12 +150,21 @@ func (c *CloudClient) RegisterCenter(ctx context.Context, req RegisterCenterRequ
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("register center: status %d, body: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("register center: status %d: %s", resp.StatusCode, cloudErrorMessage(resp.Body))
 	}
 	var result RegisterCenterResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := decodeLimitedJSON(resp.Body, &result, cloudJSONBodyLimit, false); err != nil {
 		return nil, fmt.Errorf("decode register response: %w", err)
+	}
+	result.CenterID = strings.TrimSpace(result.CenterID)
+	result.Secret = strings.TrimSpace(result.Secret)
+	result.Status = strings.TrimSpace(result.Status)
+	result.Message = strings.TrimSpace(result.Message)
+	if result.CenterID == "" {
+		return nil, fmt.Errorf("register center response missing center_id")
+	}
+	if result.Secret == "" {
+		return nil, fmt.Errorf("register center response missing secret")
 	}
 	return &result, nil
 }
@@ -184,12 +196,11 @@ func (c *CloudClient) FetchCenterLicense(ctx context.Context, centerID, centerSe
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("fetch center license: status %d, body: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("fetch center license: status %d: %s", resp.StatusCode, cloudErrorMessage(resp.Body))
 	}
 
 	var result CloudLicense
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+	if err := decodeLimitedJSON(resp.Body, &result, cloudJSONBodyLimit, false); err != nil {
 		return nil, fmt.Errorf("decode center license response: %w", err)
 	}
 	return &result, nil
@@ -251,7 +262,7 @@ func (c *CloudClient) FetchCenterComputeProviders(ctx context.Context, centerID,
 	}
 
 	var result CenterComputeProvidersResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&result); err != nil {
+	if err := decodeLimitedJSON(resp.Body, &result, cloudJSONBodyLimit, false); err != nil {
 		return nil, fmt.Errorf("decode center compute providers response: %w", err)
 	}
 	if result.Providers == nil {
@@ -272,6 +283,7 @@ type CenterHeartbeatRequest struct {
 	ComputePermission   bool                    `json:"compute_permission,omitempty"`
 	CloudProviderCount  int                     `json:"cloud_provider_count,omitempty"`
 	ComputeSyncStatus   *CloudComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	CloudHeartbeat      *CloudHeartbeatSnapshot `json:"cloud_heartbeat,omitempty"`
 	IWorkerReadiness    *CloudIWorkerReadiness  `json:"iworker_readiness,omitempty"`
 }
 
@@ -291,6 +303,7 @@ type CloudCenterRuntime struct {
 	ComputePermission   bool                    `json:"compute_permission,omitempty"`
 	CloudProviderCount  int                     `json:"cloud_provider_count,omitempty"`
 	ComputeSyncStatus   *CloudComputeSyncStatus `json:"compute_sync_status,omitempty"`
+	CloudHeartbeat      *CloudHeartbeatSnapshot `json:"cloud_heartbeat,omitempty"`
 }
 
 // CloudIWorkerReadiness is the customer-side iWorker operating readiness sent to Cloud.
@@ -316,6 +329,23 @@ func NewCenterHeartbeatRequest(centerSecret string) CenterHeartbeatRequest {
 	return CenterHeartbeatRequest{Secret: centerSecret, RuntimeType: "service", ProductKind: "iworkercenter", AdminConsole: "web_console"}
 }
 
+func cloudErrorMessage(body io.Reader) string {
+	data, _ := io.ReadAll(io.LimitReader(body, 4096))
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" {
+		return "empty response"
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err == nil {
+		for _, key := range []string{"error", "message"} {
+			if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+	}
+	return trimmed
+}
+
 func NewCenterHeartbeatRequestWithReadiness(centerSecret string, readiness *CloudIWorkerReadiness, runtime *CloudCenterRuntime) CenterHeartbeatRequest {
 	req := NewCenterHeartbeatRequest(centerSecret)
 	req.IWorkerReadiness = readiness
@@ -326,6 +356,7 @@ func NewCenterHeartbeatRequestWithReadiness(centerSecret string, readiness *Clou
 		req.ComputePermission = runtime.ComputePermission
 		req.CloudProviderCount = runtime.CloudProviderCount
 		req.ComputeSyncStatus = runtime.ComputeSyncStatus
+		req.CloudHeartbeat = runtime.CloudHeartbeat
 	}
 	return req
 }
@@ -361,8 +392,7 @@ func (c *CloudClient) SendCenterHeartbeat(ctx context.Context, centerID, centerS
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("send center heartbeat: status %d, body: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("send center heartbeat: status %d: %s", resp.StatusCode, cloudErrorMessage(resp.Body))
 	}
 	return nil
 }

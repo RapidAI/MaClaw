@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"testing"
 )
@@ -113,6 +114,26 @@ func TestToolRegistry_DefaultStatus(t *testing.T) {
 	tool, _ := r.Get("x")
 	if tool.Status != RegToolAvailable {
 		t.Errorf("default Status = %q, want available", tool.Status)
+	}
+}
+
+func TestRegisterBuiltinToolsIncludesMISDataWorkspace(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+
+	tool, ok := r.Get("mis_data")
+	if !ok {
+		t.Fatal("mis_data tool is not registered")
+	}
+	if tool.Handler == nil {
+		t.Fatal("mis_data handler is nil")
+	}
+	action, ok := tool.InputSchema["action"].(map[string]string)
+	if !ok {
+		t.Fatalf("mis_data action schema has unexpected type: %#v", tool.InputSchema["action"])
+	}
+	if !strings.Contains(action["description"], "list_agent_transactions") {
+		t.Fatalf("action schema should mention list_agent_transactions, got %q", action["description"])
 	}
 }
 

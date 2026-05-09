@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +54,32 @@ func TestCreateAndPublishBundle(t *testing.T) {
 	}
 	if latest.Version != 1 || latest.Status != "published" {
 		t.Errorf("unexpected: version=%d status=%s", latest.Version, latest.Status)
+	}
+}
+
+func TestPublishBundleHTTPSupportsEscapedID(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb/team a", Version: 1, ContentType: "full", Payload: "{}", Status: "draft", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterAdminRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/admin/config-bundles/cfgb%2Fteam%20a/publish", nil)
+	req.Header.Set("X-Tenant-ID", testTID)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	latest, err := repo.GetLatestPublished(testTID)
+	if err != nil {
+		t.Fatalf("get latest: %v", err)
+	}
+	if latest.ID != "cfgb/team a" || latest.Status != "published" {
+		t.Fatalf("unexpected latest bundle: %+v", latest)
 	}
 }
 
@@ -130,6 +157,52 @@ func TestRecordApplyResult(t *testing.T) {
 	}
 }
 
+func TestRecordApplyKeepsSameWorkerSeparateByDepartment(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-dept-scope", Version: 5, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+	if err := repo.RecordApply(ApplyRecord{TenantID: testTID, BundleID: bundle.ID, WorkerID: "worker-a", DepartmentID: "sales", Status: "success", Message: "sales ok"}); err != nil {
+		t.Fatalf("record sales apply: %v", err)
+	}
+	if err := repo.RecordApply(ApplyRecord{TenantID: testTID, BundleID: bundle.ID, WorkerID: "worker-a", DepartmentID: "quality", Status: "failed", Message: "quality failed"}); err != nil {
+		t.Fatalf("record quality apply: %v", err)
+	}
+	records, err := repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records = %+v, want two department-scoped records", records)
+	}
+	seen := map[string]string{}
+	for _, record := range records {
+		seen[record.DepartmentID] = record.Status
+	}
+	if seen["sales"] != "success" || seen["quality"] != "failed" {
+		t.Fatalf("department records = %+v", records)
+	}
+	if err := repo.RecordApply(ApplyRecord{TenantID: testTID, BundleID: bundle.ID, WorkerID: "worker-a", DepartmentID: "sales", Status: "failed", Message: "sales retry"}); err != nil {
+		t.Fatalf("update sales apply: %v", err)
+	}
+	records, err = repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list records after update: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("records after update = %+v, want still two records", records)
+	}
+	seen = map[string]string{}
+	for _, record := range records {
+		seen[record.DepartmentID] = record.Status
+	}
+	if seen["sales"] != "failed" || seen["quality"] != "failed" {
+		t.Fatalf("department records after update = %+v", records)
+	}
+}
+
 func TestRecordApplyRejectsUnknownBundle(t *testing.T) {
 	p := setupTestDB(t)
 	repo := NewRepo(p.Write, p.Read)
@@ -162,6 +235,32 @@ func TestRecordApplyNormalizesStatusAndVersion(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].Version != 9 || records[0].Status != "failed" {
 		t.Fatalf("unexpected normalized record: %+v", records)
+	}
+}
+
+func TestRecordApplyTruncatesLongMessage(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-long-message", Version: 1, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+	longMessage := strings.Repeat("错", maxApplyMessageLen+20)
+	if err := repo.RecordApply(ApplyRecord{TenantID: testTID, BundleID: bundle.ID, WorkerID: "worker-a", Status: "failed", Message: "  " + longMessage + "  "}); err != nil {
+		t.Fatalf("record apply: %v", err)
+	}
+	records, err := repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records = %+v", records)
+	}
+	if got := len([]rune(records[0].Message)); got != maxApplyMessageLen+3 {
+		t.Fatalf("message rune length = %d, want %d", got, maxApplyMessageLen+3)
+	}
+	if !strings.HasSuffix(records[0].Message, "...") {
+		t.Fatalf("message was not marked truncated: %q", records[0].Message)
 	}
 }
 
@@ -213,6 +312,80 @@ func TestClientApplyResultHTTPRecordsPublishedBundle(t *testing.T) {
 	}
 }
 
+func TestAdminCreateBundleRejectsOversizedBody(t *testing.T) {
+	p := setupTestDB(t)
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterAdminRoutes(mux)
+
+	body := `{"content_type":"full","payload":{"blob":"` + strings.Repeat("x", maxConfigBundleBodyBytes+1024)
+	req := httptest.NewRequest(http.MethodPost, "/admin/config-bundles", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", testTID)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "INVALID_BODY")
+	bundles, err := NewRepo(p.Write, p.Read).List(testTID)
+	if err != nil {
+		t.Fatalf("list bundles: %v", err)
+	}
+	if len(bundles) != 0 {
+		t.Fatalf("unexpected bundles: %+v", bundles)
+	}
+}
+
+func TestAdminCreateBundleRejectsTrailingJSON(t *testing.T) {
+	p := setupTestDB(t)
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterAdminRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/config-bundles", bytes.NewBufferString(`{"content_type":"full","payload":{}} {}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", testTID)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "INVALID_BODY")
+	bundles, err := NewRepo(p.Write, p.Read).List(testTID)
+	if err != nil {
+		t.Fatalf("list bundles: %v", err)
+	}
+	if len(bundles) != 0 {
+		t.Fatalf("unexpected bundles: %+v", bundles)
+	}
+}
+
+func TestAdminCreateBundleRejectsValidJSONWithOversizedTrailingBody(t *testing.T) {
+	p := setupTestDB(t)
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterAdminRoutes(mux)
+
+	body := `{"content_type":"full","payload":{}}` + strings.Repeat(" ", maxConfigBundleBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/admin/config-bundles", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", testTID)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "INVALID_BODY")
+	bundles, err := NewRepo(p.Write, p.Read).List(testTID)
+	if err != nil {
+		t.Fatalf("list bundles: %v", err)
+	}
+	if len(bundles) != 0 {
+		t.Fatalf("unexpected bundles: %+v", bundles)
+	}
+}
+
 func TestClientApplyResultHTTPRejectsUnknownBundle(t *testing.T) {
 	p := setupTestDB(t)
 	mux := http.NewServeMux()
@@ -249,6 +422,36 @@ func TestClientApplyResultHTTPRejectsDraftBundle(t *testing.T) {
 	}
 	assertErrorCode(t, rec.Body.Bytes(), "BUNDLE_NOT_PUBLISHED")
 
+	records, err := repo.ListApplyRecords(testTID, 10)
+	if err != nil {
+		t.Fatalf("list records: %v", err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("unexpected records: %+v", records)
+	}
+}
+
+func TestClientApplyResultHTTPRejectsOversizedBody(t *testing.T) {
+	p := setupTestDB(t)
+	repo := NewRepo(p.Write, p.Read)
+	bundle := &Bundle{ID: "cfgb-oversized", Version: 1, ContentType: "full", Payload: "{}", Status: "published", CreatedAt: time.Now()}
+	if err := repo.Insert(bundle, testTID); err != nil {
+		t.Fatalf("insert bundle: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	NewHandler(p.Write, p.Read).RegisterClientRoutes(mux)
+	body := `{"bundle_id":"cfgb-oversized","worker_id":"worker-a","status":"failed","message":"` + strings.Repeat("x", maxApplyResultBodyBytes+1024)
+	req := httptest.NewRequest(http.MethodPost, "/client/config/apply-result", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Tenant-ID", testTID)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	assertErrorCode(t, rec.Body.Bytes(), "INVALID_BODY")
 	records, err := repo.ListApplyRecords(testTID, 10)
 	if err != nil {
 		t.Fatalf("list records: %v", err)

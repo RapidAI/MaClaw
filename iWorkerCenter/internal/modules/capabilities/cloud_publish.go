@@ -17,6 +17,8 @@ import (
 
 const cloudPublishRuleKey = "capability_cloud_publish_rule"
 
+const cloudPublishSkillJSONBodyLimit = 2 << 20
+
 type CloudPublishRule struct {
 	Enabled              bool    `json:"enabled"`
 	AllowCloudImported   bool    `json:"allow_cloud_imported"`
@@ -238,6 +240,9 @@ func cloudSkillAuthorEmail(centerID string) string {
 
 func (h *Handler) publishSkillInputToCloud(ctx context.Context, centerID, centerSecret string, input marketschema.SkillInput) (*marketschema.Skill, error) {
 	data, _ := json.Marshal(input)
+	if len(data) > cloudPublishSkillJSONBodyLimit {
+		return nil, fmt.Errorf("cloud publish payload exceeds %d bytes", cloudPublishSkillJSONBodyLimit)
+	}
 	endpoint := fmt.Sprintf("%s/api/centers/%s/skills", h.cloudURL, url.PathEscape(centerID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
@@ -256,7 +261,7 @@ func (h *Handler) publishSkillInputToCloud(ctx context.Context, centerID, center
 		return nil, fmt.Errorf("cloud publish returned %d: %s", resp.StatusCode, string(body))
 	}
 	var skill marketschema.Skill
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&skill); err != nil {
+	if err := decodeCloudCapabilityJSON(resp.Body, 1<<20, &skill); err != nil {
 		return nil, err
 	}
 	return &skill, nil

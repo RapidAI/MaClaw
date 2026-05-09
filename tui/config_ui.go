@@ -30,7 +30,7 @@ func newConfigUIModel(cfg corelib.AppConfig) configUIModel {
 	return configUIModel{
 		config: cm,
 		cfg:    cfg,
-		status: "Enter edits a field, Space toggles booleans, Ctrl+S saves and quits, q quits.",
+		status: configUIStatusReady(lang),
 		width:  80,
 	}
 }
@@ -50,16 +50,32 @@ func (m configUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Sequence(m.saveCmd(), tea.Quit)
 			}
 		}
+	case views.ConfigOpenSetupMsg:
+		m.status = configUIStatusOpenFullTUI(m.cfg.Language, "setup")
+		return m, nil
+	case views.ConfigOpenServiceRedeemMsg:
+		m.status = configUIStatusOpenFullTUI(m.cfg.Language, "redeem")
+		return m, nil
+	case views.ConfigOpenToolsMsg:
+		m.status = configUIStatusOpenFullTUI(m.cfg.Language, "tools")
+		return m, nil
 	case views.ConfigSaveMsg:
-		views.ApplyConfigValue(&m.cfg, msg.Key, msg.Value)
+		if msg.HasConfig {
+			m.cfg = msg.Config
+		} else {
+			views.ApplyConfigValue(&m.cfg, msg.Key, msg.Value)
+		}
 		if msg.Key == "language" {
 			m.config.SetLang(m.cfg.Language)
 		}
 		m.config.LoadFromAppConfig(m.cfg)
-		m.status = fmt.Sprintf("Changed %s. Press Ctrl+S to save, or keep editing.", msg.Key)
+		m.status = configUIStatusChanged(m.cfg.Language, views.ConfigDisplayNameForLang(msg.Key, m.cfg.Language))
+		return m, nil
+	case views.ConfigSaveFailedMsg:
+		m.status = configUIStatusSaveFailed(m.cfg.Language, views.ConfigDisplayNameForLang(msg.Key, m.cfg.Language), msg.Error)
 		return m, nil
 	case views.ConfigSavedMsg:
-		m.status = fmt.Sprintf("Saved %s", msg.Key)
+		m.status = configUIStatusSaved(m.cfg.Language, views.ConfigDisplayNameForLang(msg.Key, m.cfg.Language))
 		return m, nil
 	}
 
@@ -69,8 +85,83 @@ func (m configUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m configUIModel) View() string {
-	footer := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("  " + m.status)
+	footerText := "  " + m.status
+	if m.width > 0 {
+		footerText = configUIFitDisplay(footerText, m.width)
+	}
+	footer := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("245")).
+		Width(m.width).
+		Render(footerText)
 	return m.config.View() + "\n" + footer
+}
+
+func configUIFitDisplay(s string, width int) string {
+	if width <= 0 || lipgloss.Width(s) <= width {
+		return s
+	}
+	if width <= 1 {
+		return "…"
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if used+rw > width-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += rw
+	}
+	b.WriteString("…")
+	return b.String()
+}
+
+func configUIStatusReady(lang string) string {
+	if lang == "en" {
+		return "Enter opens choices/actions, Space cycles options, Ctrl+S saves and quits, q quits."
+	}
+	return "Enter 打开选择/执行，Space 切换/套用建议，Ctrl+S 保存并退出，q 退出。"
+}
+
+func configUIStatusOpenFullTUI(lang, target string) string {
+	if lang == "en" {
+		if target == "tools" {
+			return "Tools/MCP templates are in the full TUI: run maclaw-tui mcp, press F3 in maclaw-tui, or type /mcp in chat."
+		}
+		if target == "redeem" {
+			return "Service Redeem is in the full TUI: run maclaw-tui redeem, press F5 in maclaw-tui, or type /redeem in chat."
+		}
+		return "Setup is in the full TUI: run maclaw-tui setup, press F1 in maclaw-tui, or type /setup in chat."
+	}
+	if target == "tools" {
+		return "工具/MCP 模板在完整 TUI 中：运行 maclaw-tui mcp，或在 maclaw-tui 中按 F3，也可在聊天中输入 /mcp。"
+	}
+	if target == "redeem" {
+		return "服务兑换在完整 TUI 中：运行 maclaw-tui redeem，或在 maclaw-tui 中按 F5，也可在聊天中输入 /redeem。"
+	}
+	return "初始化在完整 TUI 中：运行 maclaw-tui setup，或在 maclaw-tui 中按 F1，也可在聊天中输入 /setup。"
+}
+
+func configUIStatusChanged(lang, key string) string {
+	if lang == "en" {
+		return fmt.Sprintf("Changed %s. Press Ctrl+S to save, or keep adjusting.", key)
+	}
+	return fmt.Sprintf("已修改 %s。按 Ctrl+S 保存，或继续调整。", key)
+}
+
+func configUIStatusSaveFailed(lang, key, errText string) string {
+	if lang == "en" {
+		return fmt.Sprintf("Save failed for %s: %s", key, errText)
+	}
+	return fmt.Sprintf("保存 %s 失败：%s", key, errText)
+}
+
+func configUIStatusSaved(lang, key string) string {
+	if lang == "en" {
+		return fmt.Sprintf("Saved %s", key)
+	}
+	return fmt.Sprintf("已保存 %s", key)
 }
 
 func (m configUIModel) saveCmd() tea.Cmd {
@@ -79,12 +170,8 @@ func (m configUIModel) saveCmd() tea.Cmd {
 		store := commands.NewFileConfigStore(commands.ResolveDataDir())
 		if err := store.SaveConfig(cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "save config failed: %v\n", err)
-			return nil
+			return views.ConfigSaveFailedMsg{Key: "configuration", Error: err.Error()}
 		}
-		model := strings.TrimSpace(cfg.MaclawLLMModel)
-		if model == "" {
-			model = "configuration"
-		}
-		return views.ConfigSavedMsg{Key: model, Value: "saved"}
+		return views.ConfigSavedMsg{Key: "configuration", Value: "saved"}
 	}
 }

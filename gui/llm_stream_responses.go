@@ -6,7 +6,6 @@ package main
 // (event: + data: pairs) instead of bare data: lines.
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/freeproxy"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -31,19 +31,23 @@ type responsesItemAccum struct {
 
 // classifyResponsesAPIHTTPError maps HTTP error status codes from the
 // Responses API to user-friendly Chinese error messages.
-func classifyResponsesAPIHTTPError(statusCode int, body []byte, endpoint, model string) string {
+func classifyResponsesAPIHTTPError(statusCode int, body []byte, endpoint, model, providerName string) string {
+	providerDisplay := llmProviderDisplayName(providerName)
+	if friendly := classifyHubErrorBody(body); friendly != "" {
+		return friendly
+	}
 	switch statusCode {
 	case 401:
-		return "OAuth token 已过期，请重新登录 OpenAI 账号 (HTTP 401)"
+		return fmt.Sprintf("%s OAuth token 已过期，请重新登录账号 (HTTP 401)", providerDisplay)
 	case 429:
-		return "ChatGPT 订阅额度已达上限，请稍后再试 (HTTP 429)"
+		return fmt.Sprintf("%s 订阅额度已达上限，请稍后再试 (HTTP 429)", providerDisplay)
 	case 403:
 		if strings.Contains(strings.ToLower(string(body)), "insufficient_quota") {
-			return "ChatGPT 订阅状态异常，请检查订阅是否有效 (HTTP 403)"
+			return fmt.Sprintf("%s 订阅状态异常，请检查订阅是否有效 (HTTP 403)", providerDisplay)
 		}
-		return "OpenAI 拒绝访问 (HTTP 403)"
+		return fmt.Sprintf("%s 拒绝访问 (HTTP 403)", providerDisplay)
 	default:
-		return fmt.Sprintf("Responses API 错误 (HTTP %d): %s [url=%s model=%s]", statusCode, truncateLLMBody(body, 512), endpoint, model)
+		return fmt.Sprintf("%s Responses API 错误 (HTTP %d): %s [url=%s model=%s]", providerDisplay, statusCode, truncateLLMBody(body, 512), endpoint, model)
 	}
 }
 
@@ -68,9 +72,9 @@ func (h *IMMessageHandler) doResponsesAPILLMRequest(cfg corelib.MaclawLLMConfig,
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if resp.StatusCode == http.StatusInternalServerError {
-			return nil, dumpLLMContext(resp.StatusCode, classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model), data, h.app.GetTempDir())
+			return nil, dumpLLMContext(resp.StatusCode, classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName), data, h.app.GetTempDir())
 		}
-		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model))
+		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
 	}
 
 	return llm.ParseNonStreamResponsesAPIResponse(resp)
@@ -120,11 +124,11 @@ func (h *IMMessageHandler) doResponsesAPILLMRequestStream(
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model))
+		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model))
+		return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, cfg.Model, cfg.ProviderName))
 	}
 
 	// -----------------------------------------------------------------------

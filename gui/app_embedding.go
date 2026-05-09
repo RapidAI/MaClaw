@@ -28,27 +28,25 @@ const embeddingModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/dow
 // embeddingDownloadMu prevents concurrent model downloads.
 var embeddingDownloadMu sync.Mutex
 
-// initEarlyClassifier creates a UnifiedIntentClassifier with L1 keywords only
-// (no embedding, no LLM). This is called synchronously during app startup so
-// that intent classification is available from the very first user message.
+// initEarlyClassifier creates the shared classifier instances during app
+// startup. Until embeddings or LLM routing are wired in, they return
+// conservative unknown/ambiguous results instead of using keyword fallbacks.
 //
 // L2 (embedding) and L3 (LLM) are wired in later by activateEmbedderAsync
 // via SetEmbedder/SetLLMFunc on the same instance. The UIC's Classify()
 // method automatically uses whatever layers are available at call time:
-//   - Before embedding loads: L1 keyword only (instant, ~85% accuracy)
-//   - After embedding loads: L1 + L2 parallel fusion (~92% accuracy)
-//   - After LLM wired: L1 + L2 + L3 full fusion (~97% accuracy)
-//
-// This eliminates the "classifier not ready" degraded mode entirely.
+//   - Before semantic classifiers are ready: conservative unknown
+//   - After embedding loads: embedding classification
+//   - After LLM is wired: embedding + LLM fusion
 func (a *App) initEarlyClassifier() {
-	// Create UIC with noop embedder — L1 keywords are always available.
+	// Create UIC with noop embedder; no local keyword fallback is enabled.
 	uic := intent.New(intent.Config{
 		Embedder:   embedding.NoopEmbedder{},
 		LLMTimeout: 15 * time.Second,
 	})
 	a.unifiedClassifier = uic
 
-	// Create GIC with nil embedder — Layer 1 keyword rules only.
+	// Create GIC with nil embedder; it delegates to UIC or LLM when available.
 	gic := NewGateIntentClassifier(nil)
 	gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
 	gic.SetUnifiedClassifier(uic)
@@ -63,7 +61,7 @@ func (a *App) initEarlyClassifier() {
 	}
 	setUnifiedClassifierForIM(uic)
 
-	log.Println("[classifier] early init complete: L1 keywords available, L2/L3 pending async wiring")
+	log.Println("[classifier] early init complete: semantic classifiers pending async wiring")
 }
 
 // embeddingModelsDir returns ~/.maclaw/models, creating it if needed.
@@ -166,8 +164,9 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 		modelPath := embedding.DefaultModelPath()
 		emb := embedding.NewDefaultEmbedder(modelPath)
 		if embedding.IsNoop(emb) {
-			// Model file not found — config is saved but embedder stays inactive.
-			// backgroundPreloadEmbeddingModel will pick it up later.
+			// Model file not found 鈥?config is saved but embedder stays inactive.
+			// Download it in the background, then verify and activate it.
+			go a.backgroundPreloadEmbeddingModel()
 			return nil
 		}
 		go a.activateEmbedderAsync(emb)
@@ -185,11 +184,9 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 			}
 		}
 		// Do NOT clear a.gateIntentClassifier or a.unifiedClassifier.
-		// initEarlyClassifier created them with L1 keyword support which
-		// does not depend on embedding. Clearing them would leave the
-		// Coding Tool Gate with no classifier at all (fail-closed safety net).
-		// The UIC's Classify() already handles noop embedder gracefully:
-		// canEmb=false → skips L2, uses L1 (or L1+L3 if LLM is available).
+		// initEarlyClassifier created conservative classifier instances that
+		// fail closed until semantic channels are available. Clearing them
+		// would leave the Coding Tool Gate with no classifier at all.
 	}
 	return nil
 }
@@ -218,7 +215,7 @@ func (a *App) CheckEmbeddingModel() map[string]interface{} {
 //
 // This method blocks until download completes or fails.
 func (a *App) DownloadEmbeddingModel() error {
-	// Prevent concurrent downloads — second caller is silently ignored.
+	// Prevent concurrent downloads 鈥?second caller is silently ignored.
 	if !embeddingDownloadMu.TryLock() {
 		return nil
 	}
@@ -230,9 +227,9 @@ func (a *App) DownloadEmbeddingModel() error {
 	}
 	destPath := filepath.Join(dir, embeddingModelFilename)
 
-	// 1) Try default GitHub URL first (silent — don't emit errors to UI).
+	// 1) Try default GitHub URL first (silent 鈥?don't emit errors to UI).
 	if err := a.downloadModelFrom(embeddingModelDefaultURL, destPath, false); err == nil {
-		return nil
+		return a.verifyDownloadedEmbeddingModel(destPath)
 	}
 
 	// 2) Fallback: Hub URL (emit progress & errors to UI).
@@ -242,10 +239,23 @@ func (a *App) DownloadEmbeddingModel() error {
 	}
 	hubURL := strings.TrimRight(cfg.RemoteHubURL, "/")
 	if hubURL == "" {
-		return fmt.Errorf("默认下载地址不可用，且 Hub URL 未配置")
+		return fmt.Errorf("default download URL is unavailable and Hub URL is not configured")
 	}
 	fallbackURL := hubURL + "/api/v1/models/" + embeddingModelFilename
-	return a.downloadModelFrom(fallbackURL, destPath, true)
+	if err := a.downloadModelFrom(fallbackURL, destPath, true); err != nil {
+		return err
+	}
+	return a.verifyDownloadedEmbeddingModel(destPath)
+}
+
+func (a *App) verifyDownloadedEmbeddingModel(modelPath string) error {
+	if !a.vectorSearchConfiguredEnabled() {
+		return nil
+	}
+	if !a.verifyAndEnableEmbedding(modelPath) {
+		return fmt.Errorf("embedding model downloaded but verification failed")
+	}
+	return nil
 }
 
 // downloadModelFrom downloads a file from url to destPath, emitting progress events.
@@ -386,24 +396,18 @@ func (a *App) emitDownloadProgressNamed(eventName string, pct int, downloaded, t
 }
 
 // backgroundPreloadEmbeddingModel silently downloads the embedding model in the
-// background when vector search is not yet enabled and the model file is missing.
-// On success it verifies the model by loading it, then auto-enables vector search.
+// background when vector search is enabled and the model file is missing.
+// On success it verifies the model by loading it, then wires the embedder into
+// the running app if vector search is still configured on.
 // Supports resume: if a previous .tmp file exists, the download continues from
 // where it left off (HTTP Range).
 func (a *App) backgroundPreloadEmbeddingModel() {
 	a.logMemorySnapshot("embeddingPreload:start")
-	// Wait for core infrastructure to be ready instead of a fixed sleep.
-	// Poll remoteInfraReady with a short interval; give up after 30s.
-	for i := 0; i < 60; i++ {
-		if a.remoteInfraReady.Load() {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
 
-	// Only run if vector search is currently OFF and model doesn't exist.
+	// Only run when vector search is configured on. Missing models are downloaded
+	// first, then verified before the runtime embedder is activated.
 	cfg, err := a.LoadConfig()
-	if err != nil || cfg.VectorSearchEnabled {
+	if err != nil || !cfg.VectorSearchEnabled {
 		return
 	}
 
@@ -413,11 +417,14 @@ func (a *App) backgroundPreloadEmbeddingModel() {
 	}
 	destPath := filepath.Join(dir, embeddingModelFilename)
 	if _, err := os.Stat(destPath); err == nil {
-		// Model file already exists — just verify and auto-enable.
+		// Model file already exists; verify and wire it into the runtime.
 		if a.verifyAndEnableEmbedding(destPath) {
 			return
 		}
-		// Verification failed — file is corrupt, remove and re-download.
+		// Verification failed 鈥?file is corrupt, remove and re-download.
+		if !a.vectorSearchConfiguredEnabled() {
+			return
+		}
 		os.Remove(destPath)
 	}
 
@@ -444,18 +451,20 @@ func (a *App) backgroundPreloadEmbeddingModel() {
 		}
 	}
 
-	// Verify and auto-enable.
+	// Verify and activate unless the user disabled vector search while the
+	// download was running.
+	if !a.vectorSearchConfiguredEnabled() {
+		return
+	}
 	a.verifyAndEnableEmbedding(destPath)
 }
 
-// verifyAndEnableEmbedding loads the model to verify integrity, then auto-enables
-// vector search if successful. Returns true on success.
+// verifyAndEnableEmbedding loads the model to verify integrity, then activates
+// vector search runtime wiring if the config is still enabled. Returns true on
+// success.
 //
-// The embedder is activated asynchronously: the config flag is saved immediately
-// so subsequent startups know vector search is enabled, but the heavy work
-// (loading the model into router/memoryStore and pre-warming the tool embedding
-// cache) happens in a background goroutine. This ensures the AI assistant
-// remains responsive while the vector index is being built.
+// The embedder is activated asynchronously so the AI assistant remains
+// responsive while the vector index is being built.
 func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 	a.logMemorySnapshot("verifyAndEnableEmbedding:start")
 	// Ensure infrastructure is ready before enabling.
@@ -477,16 +486,7 @@ func (a *App) verifyAndEnableEmbedding(modelPath string) bool {
 
 	fmt.Println("[embedding] model verified, enabling vector search asynchronously")
 
-	// Persist the config flag synchronously so the next startup picks it up.
-	cfg, cfgErr := a.LoadConfig()
-	if cfgErr != nil {
-		fmt.Printf("[embedding] auto-enable failed (load config): %v\n", cfgErr)
-		emb.Close()
-		return false
-	}
-	cfg.VectorSearchEnabled = true
-	if cfgErr = a.SaveConfig(cfg); cfgErr != nil {
-		fmt.Printf("[embedding] auto-enable failed (save config): %v\n", cfgErr)
+	if !a.vectorSearchConfiguredEnabled() {
 		emb.Close()
 		return false
 	}
@@ -510,6 +510,11 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 			fmt.Printf("[embedding] activateEmbedderAsync panic: %v\n", r)
 		}
 	}()
+
+	if !a.vectorSearchConfiguredEnabled() {
+		emb.Close()
+		return
+	}
 
 	a.logMemorySnapshot("activateEmbedderAsync:start")
 	t0 := time.Now()
@@ -535,10 +540,10 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	}
 
 	// Upgrade existing UIC with real embedder (enables Layer 2 + Layer 3).
-	// initEarlyClassifier created the UIC with a noop embedder (L1-only).
-	// Now we wire in the real embedder and LLM, upgrading it in-place.
+	// initEarlyClassifier created the UIC in conservative mode. Now we wire
+	// in the real embedder and LLM, upgrading it in-place.
 	// All consumers (including GIC, which delegates to UIC) already hold
-	// a reference to this UIC instance — no re-wiring needed.
+	// a reference to this UIC instance 鈥?no re-wiring needed.
 	if a.unifiedClassifier != nil {
 		a.unifiedClassifier.SetEmbedder(emb)
 		a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
@@ -577,7 +582,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	}
 
 	// Pre-warm tool embedding cache by running a dummy route. This triggers
-	// FuseScores → GetBatch which synchronously computes and caches embeddings
+	// FuseScores 鈫?GetBatch which synchronously computes and caches embeddings
 	// for all candidate tools, so the first real user message is fast.
 	var handler *IMMessageHandler
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {

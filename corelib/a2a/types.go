@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -302,6 +303,7 @@ func (s *Session) ReviewSummary(proposalID string) ReviewSummary {
 			out.Abstains++
 		}
 	}
+	slices.Sort(out.ReviewedBy)
 	return out
 }
 

@@ -170,7 +170,9 @@ func TestUsageTracker_Persistence(t *testing.T) {
 
 	t1, _ := NewUsageTracker(path)
 	t1.Record("bash", []string{"hello"}, true)
-	time.Sleep(100 * time.Millisecond) // wait for async save
+	if err := t1.Save(); err != nil {
+		t.Fatal(err)
+	}
 
 	t2, err := NewUsageTracker(path)
 	if err != nil {
@@ -231,5 +233,170 @@ func TestJaccardTokens(t *testing.T) {
 		if diff > 0.001 {
 			t.Errorf("case %d: jaccardTokens = %.4f, want %.4f", i, got, tt.want)
 		}
+	}
+}
+
+func TestUsageTracker_RecordExperiencePersistsRichFields(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	tracker.RecordExperience(ToolExperience{
+		ToolName:     "browser_click",
+		QueryTokens:  []string{"browser", "click", "button", "extra", "tokens", "ignored"},
+		Success:      false,
+		FollowUp:     "retry",
+		TaskType:     "browser_automation",
+		ToolSequence: []string{"browser_navigate", "browser_click", "browser_click"},
+		ErrorClass:   "element_missing",
+		RetryCount:   2,
+		RecoveryTool: "screenshot",
+		FinalOutcome: "recovered",
+	})
+
+	tracker.mu.RLock()
+	defer tracker.mu.RUnlock()
+	if len(tracker.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(tracker.records))
+	}
+	record := tracker.records[0]
+	if record.TaskType != "browser_automation" || record.ErrorClass != "element_missing" || record.RecoveryTool != "screenshot" {
+		t.Fatalf("rich fields not preserved: %+v", record)
+	}
+	if len(record.QueryTokens) != 5 {
+		t.Fatalf("QueryTokens length = %d, want capped at 5", len(record.QueryTokens))
+	}
+	if len(record.ToolSequence) != 2 {
+		t.Fatalf("ToolSequence = %v, want deduplicated sequence", record.ToolSequence)
+	}
+}
+
+func TestUsageTracker_DistillRoutingHints(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		tracker.RecordExperience(ToolExperience{ToolName: "browser_observe", QueryTokens: []string{"browser", "button"}, TaskType: "browser_automation", Success: true, Timestamp: now})
+	}
+	for i := 0; i < 3; i++ {
+		tracker.RecordExperience(ToolExperience{ToolName: "browser_click", QueryTokens: []string{"browser", "button"}, TaskType: "browser_automation", Success: false, RecoveryTool: "browser_observe", Timestamp: now})
+	}
+
+	hints := tracker.DistillRoutingHints(7, 3)
+	if len(hints) != 1 {
+		t.Fatalf("hints = %+v, want one hint", hints)
+	}
+	hint := hints[0]
+	if hint.TaskType != "browser_automation" || hint.Evidence != 7 || hint.Confidence <= 0 {
+		t.Fatalf("unexpected hint metadata: %+v", hint)
+	}
+	if len(hint.PreferTools) != 1 || hint.PreferTools[0] != "browser_observe" {
+		t.Fatalf("PreferTools = %v, want browser_observe", hint.PreferTools)
+	}
+	if len(hint.AvoidTools) != 1 || hint.AvoidTools[0] != "browser_click" {
+		t.Fatalf("AvoidTools = %v, want browser_click", hint.AvoidTools)
+	}
+	if len(hint.RecoveryTools) != 1 || hint.RecoveryTools[0] != "browser_observe" {
+		t.Fatalf("RecoveryTools = %v, want browser_observe", hint.RecoveryTools)
+	}
+}
+
+func TestUsageTracker_RoutingHintAdjustment(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		tracker.RecordExperience(ToolExperience{ToolName: "browser_observe", QueryTokens: []string{"browser", "button"}, Success: true, Timestamp: now})
+	}
+	for i := 0; i < 4; i++ {
+		tracker.RecordExperience(ToolExperience{ToolName: "browser_click", QueryTokens: []string{"browser", "button"}, Success: false, RecoveryTool: "browser_observe", Timestamp: now})
+	}
+
+	prefer := tracker.RoutingHintAdjustment("browser_observe", []string{"browser", "button"})
+	avoid := tracker.RoutingHintAdjustment("browser_click", []string{"browser", "button"})
+	if prefer <= 0 {
+		t.Fatalf("browser_observe adjustment = %.4f, want positive", prefer)
+	}
+	if avoid >= 0 {
+		t.Fatalf("browser_click adjustment = %.4f, want negative", avoid)
+	}
+	if prefer > maxRoutingHintAdjustment || avoid < -maxRoutingHintAdjustment {
+		t.Fatalf("adjustments out of bounds: prefer %.4f avoid %.4f", prefer, avoid)
+	}
+	if unrelated := tracker.RoutingHintAdjustment("browser_observe", []string{"spreadsheet"}); unrelated != 0 {
+		t.Fatalf("unrelated adjustment = %.4f, want 0", unrelated)
+	}
+}
+
+func TestUsageTracker_DistillSkillNudgeCandidates(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		tracker.RecordExperience(ToolExperience{
+			ToolName:     "browser_verify",
+			QueryTokens:  []string{"browser", "checkout"},
+			TaskType:     "browser_automation",
+			ToolSequence: []string{"browser_observe", "browser_click", "browser_verify"},
+			Success:      true,
+			FinalOutcome: "completed",
+			Timestamp:    now,
+		})
+	}
+	tracker.RecordExperience(ToolExperience{
+		ToolName:     "browser_click",
+		QueryTokens:  []string{"browser", "checkout"},
+		TaskType:     "browser_automation",
+		ToolSequence: []string{"browser_observe", "browser_click", "browser_verify"},
+		Success:      false,
+		FinalOutcome: "failed",
+		Timestamp:    now,
+	})
+	tracker.RecordExperience(ToolExperience{ToolName: "bash", QueryTokens: []string{"browser"}, ToolSequence: []string{"bash"}, Success: true, Timestamp: now})
+
+	candidates := tracker.DistillSkillNudgeCandidates(14, 3)
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v, want one", candidates)
+	}
+	c := candidates[0]
+	if c.TaskType != "browser_automation" || c.Evidence != 5 || c.SuccessRate != 0.8 || c.Confidence <= 0 {
+		t.Fatalf("unexpected candidate metadata: %+v", c)
+	}
+	if len(c.ToolSequence) != 3 || c.ToolSequence[0] != "browser_observe" || c.SuggestedName == "" {
+		t.Fatalf("unexpected candidate sequence/name: %+v", c)
+	}
+}
+
+func TestUsageTracker_DistillRecoveryPatterns(t *testing.T) {
+	tracker, _ := NewUsageTracker("")
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		tracker.RecordExperience(ToolExperience{
+			ToolName:     "browser_click",
+			QueryTokens:  []string{"browser", "button"},
+			TaskType:     "browser_automation",
+			ToolSequence: []string{"browser_click", "browser_observe"},
+			Success:      false,
+			ErrorClass:   "element_missing",
+			RecoveryTool: "browser_observe",
+			FinalOutcome: "recovered",
+			Timestamp:    now,
+		})
+	}
+	tracker.RecordExperience(ToolExperience{
+		ToolName:     "browser_click",
+		QueryTokens:  []string{"browser", "button"},
+		TaskType:     "browser_automation",
+		Success:      false,
+		ErrorClass:   "element_missing",
+		RecoveryTool: "browser_observe",
+		FinalOutcome: "failed",
+		Timestamp:    now,
+	})
+
+	patterns := tracker.DistillRecoveryPatterns(14, 3)
+	if len(patterns) != 1 {
+		t.Fatalf("patterns = %+v, want one", patterns)
+	}
+	p := patterns[0]
+	if p.FailedTool != "browser_click" || p.RecoveryTool != "browser_observe" || p.ErrorClass != "element_missing" {
+		t.Fatalf("unexpected recovery pattern identity: %+v", p)
+	}
+	if p.Evidence != 5 || p.SuccessRate != 0.8 || p.Confidence <= 0 || len(p.ToolSequence) < 2 {
+		t.Fatalf("unexpected recovery pattern metadata: %+v", p)
 	}
 }

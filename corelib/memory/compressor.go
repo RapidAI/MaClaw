@@ -52,6 +52,7 @@ type Compressor struct {
 	lastRun               time.Time
 	lastResult            *CompressResult
 	lastError             string
+	experienceProtection  string
 	consecutiveFailures   int  // circuit breaker: consecutive compress failures
 	circuitBreakerTripped bool // true when failures >= maxConsecutiveCompressFailures
 }
@@ -72,6 +73,22 @@ func (mc *Compressor) SetLLM(llm LLMChatCaller) {
 	mc.mu.Lock()
 	mc.llm = llm
 	mc.mu.Unlock()
+}
+
+// SetExperienceProtectionSamples installs a bounded, read-only prompt prelude
+// from the memory experience distiller. It does not change compression
+// eligibility; it only tells LLM-backed maintenance which concrete evidence is
+// unsafe to flatten.
+func (mc *Compressor) SetExperienceProtectionSamples(samples []ProtectedExperienceCandidate) {
+	mc.mu.Lock()
+	mc.experienceProtection = FormatExperienceProtectionPrompt(samples)
+	mc.mu.Unlock()
+}
+
+func (mc *Compressor) experienceProtectionPrompt() string {
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	return mc.experienceProtection
 }
 
 // SetGCThreshold sets the active entry count threshold that triggers GC.
@@ -440,7 +457,7 @@ func (mc *Compressor) mergeBatch(ctx context.Context, batch []Entry) (int, error
 
 	var sb strings.Builder
 	for i, e := range batch {
-		fmt.Fprintf(&sb, "[%d] %s\n", i, truncStr(e.Content, 500))
+		sb.WriteString(formatExperiencePromptEntry(i, e, 500))
 	}
 
 	systemPrompt := `You are a memory compression assistant. You will receive a numbered list of memory entries from the same category.
@@ -461,9 +478,14 @@ Rules:
 - Indices are 0-based, matching the [N] labels.
 - If nothing can be merged, return an empty array: []`
 
+	userPrompt := sb.String()
+	if protection := mc.experienceProtectionPrompt(); protection != "" {
+		userPrompt = protection + "\n\nEntries:\n" + userPrompt
+	}
+
 	messages := []map[string]string{
 		{"role": "system", "content": systemPrompt},
-		{"role": "user", "content": sb.String()},
+		{"role": "user", "content": userPrompt},
 	}
 
 	resp, err := mc.llm.ChatCall(messages)
@@ -702,6 +724,12 @@ func (mc *Compressor) compressEntry(ctx context.Context, entry Entry) (string, e
 
 	userPrompt := fmt.Sprintf("Category: %s\nTags: %s\n\nOriginal content to compress:\n%s",
 		entry.Category, strings.Join(entry.Tags, ", "), entry.Content)
+	if protection := mc.experienceProtectionPrompt(); protection != "" {
+		userPrompt = protection + "\n\n" + userPrompt
+	}
+	if hint := CompressionProtectionHint(entry); hint != "" {
+		userPrompt = fmt.Sprintf("Protection hint: %s\n\n%s", hint, userPrompt)
+	}
 
 	messages := []map[string]string{
 		{"role": "system", "content": systemPrompt},

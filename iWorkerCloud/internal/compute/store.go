@@ -158,7 +158,7 @@ func (s *ProviderStore) UpdateProvider(ctx context.Context, p *ComputeProvider) 
 		return err
 	}
 
-	// APIKey empty → keep existing encrypted key.
+	// APIKey empty: keep existing encrypted key.
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE compute_providers SET
 			name = ?, base_url = ?,
@@ -175,16 +175,57 @@ func (s *ProviderStore) UpdateProvider(ctx context.Context, p *ComputeProvider) 
 	return err
 }
 
-// DeleteProvider removes a ComputeProvider by ID and cleans up any
-// center_provider_assignments referencing it.
+// DeleteProvider removes a ComputeProvider by ID, cleans up any
+// center_provider_assignments referencing it, and marks affected centers for
+// compute sync so they do not keep using a stale local routing snapshot.
 func (s *ProviderStore) DeleteProvider(ctx context.Context, id string) error {
-	if _, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT DISTINCT center_id FROM center_provider_assignments WHERE provider_id = ?`, id)
+	if err != nil {
+		return err
+	}
+
+	var centerIDs []string
+	for rows.Next() {
+		var centerID string
+		if err := rows.Scan(&centerID); err != nil {
+			rows.Close()
+			return err
+		}
+		centerIDs = append(centerIDs, centerID)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM center_provider_assignments WHERE provider_id = ?`, id); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM compute_providers WHERE id = ?`, id)
-	return err
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM compute_providers WHERE id = ?`, id); err != nil {
+		return err
+	}
+
+	for _, centerID := range centerIDs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO compute_settings (key, value) VALUES (?, ?)
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			"force_sync_"+centerID, "true"); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // ToggleProvider flips the enabled state of a provider.

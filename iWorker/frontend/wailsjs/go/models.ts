@@ -67,12 +67,36 @@ export namespace main {
 	    }
 	}
 
+	export class CenterAuthMethodStatus {
+	    method: string;
+	    label: string;
+	    enabled: boolean;
+	    implemented: boolean;
+	    status: string;
+	    description: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterAuthMethodStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.method = source["method"];
+	        this.label = source["label"];
+	        this.enabled = source["enabled"];
+	        this.implemented = source["implemented"];
+	        this.status = source["status"];
+	        this.description = source["description"];
+	    }
+	}
+
 	export class CenterEnrollmentDiscovery {
 	    base_url: string;
 	    selected_tenant_id: string;
 	    tenants: CenterTenantOption[];
 	    roles: CenterRole[];
 	    colleagues: CenterColleague[];
+	    auth_methods: CenterAuthMethodStatus[];
 
 	    static createFrom(source: any = {}) {
 	        return new CenterEnrollmentDiscovery(source);
@@ -85,6 +109,7 @@ export namespace main {
 	        this.tenants = this.convertValues(source["tenants"], CenterTenantOption);
 	        this.roles = this.convertValues(source["roles"], CenterRole);
 	        this.colleagues = this.convertValues(source["colleagues"], CenterColleague);
+	        this.auth_methods = this.convertValues(source["auth_methods"], CenterAuthMethodStatus);
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -339,6 +364,10 @@ export namespace main {
 	    source: string;
 	    cached_at: string;
 	    stale: boolean;
+	    apply_status?: string;
+	    apply_message?: string;
+	    skill_error?: string;
+	    mcp_error?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new CenterConfigBundle(source);
@@ -357,6 +386,10 @@ export namespace main {
 	        this.source = source["source"];
 	        this.cached_at = source["cached_at"];
 	        this.stale = source["stale"];
+	        this.apply_status = source["apply_status"];
+	        this.apply_message = source["apply_message"];
+	        this.skill_error = source["skill_error"];
+	        this.mcp_error = source["mcp_error"];
 	    }
 	}
 
@@ -366,6 +399,9 @@ export namespace main {
 	    source: string;
 	    cached_at: string;
 	    stale: boolean;
+	    skill_error?: string;
+	    mcp_error?: string;
+	    cache_error?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new CenterInstalledTools(source);
@@ -378,6 +414,9 @@ export namespace main {
 	        this.source = source["source"];
 	        this.cached_at = source["cached_at"];
 	        this.stale = source["stale"];
+	        this.skill_error = source["skill_error"];
+	        this.mcp_error = source["mcp_error"];
+	        this.cache_error = source["cache_error"];
 	    }
 
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -411,6 +450,7 @@ export namespace main {
 	    last_heartbeat_at: string;
 	    heartbeat_age_seconds: number;
 	    effective_status: string;
+	    runtime_skill_error?: string;
     source?: string;
     cached_at?: string;
     stale?: boolean;
@@ -437,21 +477,189 @@ export namespace main {
 	        this.last_heartbeat_at = source["last_heartbeat_at"];
 	        this.heartbeat_age_seconds = source["heartbeat_age_seconds"];
 	        this.effective_status = source["effective_status"];
+	        this.runtime_skill_error = source["runtime_skill_error"];
         this.source = source["source"];
         this.cached_at = source["cached_at"];
         this.stale = source["stale"];
 	    }
 	}
 
+	export class CenterCollabTask {
+	    id: string;
+	    title: string;
+	    description: string;
+	    from_colleague_id: string;
+	    to_colleague_id: string;
+	    to_role_code: string;
+	    status: string;
+	    priority: number;
+	    result: string;
+	    workflow_step_instance_id?: string;
+	    created_at: string;
+	    updated_at: string;
+	    source?: string;
+	    cached_at?: string;
+	    stale?: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterCollabTask(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.description = source["description"];
+	        this.from_colleague_id = source["from_colleague_id"];
+	        this.to_colleague_id = source["to_colleague_id"];
+	        this.to_role_code = source["to_role_code"];
+	        this.status = source["status"];
+	        this.priority = source["priority"];
+	        this.result = source["result"];
+	        this.workflow_step_instance_id = source["workflow_step_instance_id"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.source = source["source"];
+	        this.cached_at = source["cached_at"];
+	        this.stale = source["stale"];
+	    }
+	}
+
+	export class CenterWorkflowInstance {
+	    id: string;
+	    definition_id: string;
+	    title: string;
+	    initiator_id: string;
+	    current_step_id: string;
+	    current_step_assignee_colleague_id: string;
+	    status: string;
+	    created_at: string;
+	    updated_at: string;
+	    source?: string;
+	    cached_at?: string;
+	    stale?: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterWorkflowInstance(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.definition_id = source["definition_id"];
+	        this.title = source["title"];
+	        this.initiator_id = source["initiator_id"];
+	        this.current_step_id = source["current_step_id"];
+	        this.current_step_assignee_colleague_id = source["current_step_assignee_colleague_id"];
+	        this.status = source["status"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.source = source["source"];
+	        this.cached_at = source["cached_at"];
+	        this.stale = source["stale"];
+	    }
+	}
+
+	export class CenterWorkflowStepInstance {
+	    id: string;
+	    instance_id: string;
+	    step_definition_id: string;
+	    assignee_colleague_id: string;
+	    collaboration_task_id: string;
+	    status: string;
+	    result: string;
+	    sort_order: number;
+	    created_at: string;
+	    updated_at: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterWorkflowStepInstance(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.instance_id = source["instance_id"];
+	        this.step_definition_id = source["step_definition_id"];
+	        this.assignee_colleague_id = source["assignee_colleague_id"];
+	        this.collaboration_task_id = source["collaboration_task_id"];
+	        this.status = source["status"];
+	        this.result = source["result"];
+	        this.sort_order = source["sort_order"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
+
+	export class CenterWorkflowStepTransitionResult {
+	    status: string;
+	    step: CenterWorkflowStepInstance;
+	    instance: CenterWorkflowInstance;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterWorkflowStepTransitionResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.status = source["status"];
+	        this.step = this.convertValues(source["step"], CenterWorkflowStepInstance);
+	        this.instance = this.convertValues(source["instance"], CenterWorkflowInstance);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class CenterRecommendation {
+	    colleague_id: string;
+	    name: string;
+	    role_code: string;
+	    score: number;
+	    reason: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterRecommendation(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.colleague_id = source["colleague_id"];
+	        this.name = source["name"];
+	        this.role_code = source["role_code"];
+	        this.score = source["score"];
+	        this.reason = source["reason"];
+	    }
+	}
+
 	export class CenterGoalPush {
 	    event_id?: string;
 	    task_id: string;
+	    workflow_step_instance_id?: string;
 	    title: string;
 	    to_colleague_id: string;
 	    to_role_code: string;
 	    status: string;
 	    reason: string;
 	    recommended_action: string;
+	    recovery_action?: string;
+	    recovery_method?: string;
+	    recovery_path?: string;
 	    age_seconds: number;
 	    executor_status?: string;
 	    executor_heartbeat_age_seconds?: number;
@@ -468,12 +676,16 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.event_id = source["event_id"];
 	        this.task_id = source["task_id"];
+	        this.workflow_step_instance_id = source["workflow_step_instance_id"];
 	        this.title = source["title"];
 	        this.to_colleague_id = source["to_colleague_id"];
 	        this.to_role_code = source["to_role_code"];
 	        this.status = source["status"];
 	        this.reason = source["reason"];
 	        this.recommended_action = source["recommended_action"];
+	        this.recovery_action = source["recovery_action"];
+	        this.recovery_method = source["recovery_method"];
+	        this.recovery_path = source["recovery_path"];
 	        this.age_seconds = source["age_seconds"];
 	        this.executor_status = source["executor_status"];
 	        this.executor_heartbeat_age_seconds = source["executor_heartbeat_age_seconds"];
@@ -504,6 +716,49 @@ export namespace main {
 	        this.note = source["note"];
 	        this.created_at = source["created_at"];
 	    }
+	}
+
+
+
+	export class CenterGoalPushRecoverResult {
+	    push: CenterGoalPush;
+	    ack: CenterGoalPushAckResult;
+	    recovery_action: string;
+	    recovery_method: string;
+	    recovery_path: string;
+	    status: string;
+
+	    static createFrom(source: any = {}) {
+	        return new CenterGoalPushRecoverResult(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.push = this.convertValues(source["push"], CenterGoalPush);
+	        this.ack = this.convertValues(source["ack"], CenterGoalPushAckResult);
+	        this.recovery_action = source["recovery_action"];
+	        this.recovery_method = source["recovery_method"];
+	        this.recovery_path = source["recovery_path"];
+	        this.status = source["status"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 
@@ -867,6 +1122,9 @@ export namespace main {
 	    expected_output?: string;
 	    result?: string;
 	    model?: string;
+	    source_type?: string;
+	    center_handoff_id?: string;
+	    workflow_step_instance_id?: string;
 
 	    static createFrom(source: any = {}) {
 	        return new HistoryTaskItem(source);
@@ -884,6 +1142,9 @@ export namespace main {
 	        this.expected_output = source["expected_output"];
 	        this.result = source["result"];
 	        this.model = source["model"];
+	        this.source_type = source["source_type"];
+	        this.center_handoff_id = source["center_handoff_id"];
+	        this.workflow_step_instance_id = source["workflow_step_instance_id"];
 	    }
 	}
 

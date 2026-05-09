@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,168 @@ func TestPersistCraftedSkill_Basic(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(result.SkillDir, "main.py")); err != nil {
 		t.Errorf("main.py should exist: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(result.SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), result.SkillDir) || !strings.Contains(string(data), "{baseDir}/main.py") {
+		t.Fatalf("skill.yaml command should use portable {baseDir} script path, got:\n%s", string(data))
+	}
+}
+
+func TestPersistCraftedSkill_WritesExtractedParamsIntoCommand(t *testing.T) {
+	root := t.TempDir()
+	script := `
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--input", required=True)
+parser.add_argument("--format", default="pdf")
+parser.add_argument("--verbose", action="store_true")
+`
+
+	result, err := PersistCraftedSkill(root, "Convert file", script, "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(result.SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, _ := sf.Steps[0].Params["command"].(string)
+	if !strings.Contains(command, "--input {{input}}") || !strings.Contains(command, "--format {{format}}") {
+		t.Fatalf("persisted command = %q, want extracted argparse placeholders", command)
+	}
+	if strings.Contains(command, "verbose") {
+		t.Fatalf("persisted command = %q, store_true flag should not become a value placeholder", command)
+	}
+	byName := map[string]SkillYAMLParam{}
+	for _, param := range sf.Params {
+		byName[param.Name] = param
+	}
+	if !byName["input"].Required || byName["input"].CLIFlag != "--input" {
+		t.Fatalf("persisted params = %#v, want required input CLI param", sf.Params)
+	}
+	if byName["format"].Required || byName["format"].CLIFlag != "--format" {
+		t.Fatalf("persisted params = %#v, want optional format CLI param", sf.Params)
+	}
+	if _, ok := byName["verbose"]; ok {
+		t.Fatalf("persisted params = %#v, store_true should not become a value param", sf.Params)
+	}
+}
+
+func TestPersistCraftedSkill_WritesExtractedRequires(t *testing.T) {
+	root := t.TempDir()
+	script := `
+import os
+import requests
+from bs4 import BeautifulSoup
+`
+
+	result, err := PersistCraftedSkill(root, "Fetch and parse HTML", script, "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(result.SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sf.Requires == nil || len(sf.Requires.Python) != 2 || sf.Requires.Python[0] != "requests" || sf.Requires.Python[1] != "beautifulsoup4" {
+		t.Fatalf("persisted requires = %#v, want requests + beautifulsoup4", sf.Requires)
+	}
+}
+
+func TestPersistCraftedSkill_WritesExtractedRequiredEnv(t *testing.T) {
+	root := t.TempDir()
+	script := `
+import os
+print(os.environ["OPENAI_API_KEY"])
+print(os.getenv("OPENAI_BASE_URL"))
+`
+
+	result, err := PersistCraftedSkill(root, "Call OpenAI", script, "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(result.SkillDir, "skill.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sf, err := ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sf.RequiredEnv) != 2 || sf.RequiredEnv[0] != "OPENAI_API_KEY" || sf.RequiredEnv[1] != "OPENAI_BASE_URL" {
+		t.Fatalf("persisted required_env = %#v, want OpenAI env vars", sf.RequiredEnv)
+	}
+	entry, _, err := loadSkillFromDir(result.SkillDir, filepath.Base(result.SkillDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guiCtx := BuildRunCheckContextForRunner(entry, nil, RunnerBackendGUI)
+	tuiCtx := BuildRunCheckContextForRunner(entry, nil, RunnerBackendTUI)
+	if !guiCtx.ProvidedEnvVars["OPENAI_API_KEY"] || !guiCtx.ProvidedEnvVars["OPENAI_BASE_URL"] {
+		t.Fatalf("GUI check context = %#v, want OpenAI env provided by proxy", guiCtx.ProvidedEnvVars)
+	}
+	if tuiCtx.ProvidedEnvVars["OPENAI_API_KEY"] || tuiCtx.ProvidedEnvVars["OPENAI_BASE_URL"] {
+		t.Fatalf("TUI check context = %#v, should not mark GUI proxy env provided", tuiCtx.ProvidedEnvVars)
+	}
+}
+
+func TestPersistCraftedSkill_LoadsAndResolvesPersistedParamContract(t *testing.T) {
+	root := t.TempDir()
+	script := `
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--input", required=True)
+parser.add_argument("--format")
+parser.add_argument("--verbose", action="store_true")
+`
+
+	result, err := PersistCraftedSkill(root, "Convert file with optional format", script, "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entry, _, err := loadSkillFromDir(result.SkillDir, filepath.Base(result.SkillDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("loaded steps = %d, want 1", len(entry.Steps))
+	}
+	params := CompleteParamsForRunner(entry.Params, entry.Steps, entry.RequiredArgs)
+	if missing := MissingRunRequiredArgs(entry.RequiredArgs, params, nil); len(missing) != 1 || missing[0] != "input" {
+		t.Fatalf("MissingRunRequiredArgs() = %#v, want [input]", missing)
+	}
+
+	resolved, err := ResolveStep(entry.Steps[0], map[string]string{"input": "report.md"}, entry.SkillDir, params, nil)
+	if err != nil {
+		t.Fatalf("ResolveStep() error = %v", err)
+	}
+	command, _ := resolved.Step.Params["command"].(string)
+	if strings.Contains(command, "{baseDir}") || !strings.Contains(filepath.ToSlash(command), filepath.ToSlash(result.SkillDir)) {
+		t.Fatalf("resolved command = %q, want baseDir placeholder resolved to skill dir", command)
+	}
+	if !strings.Contains(command, "--input report.md") {
+		t.Fatalf("resolved command = %q, want required input substituted", command)
+	}
+	if strings.Contains(command, "--format") || strings.Contains(command, "verbose") || strings.Contains(command, "{{") {
+		t.Fatalf("resolved command = %q, want omitted optional placeholders stripped and no switch param", command)
+	}
+	if strings.Count(command, "--input") != 1 {
+		t.Fatalf("resolved command = %q, want CLI flag consumed once", command)
 	}
 }
 
@@ -134,6 +297,8 @@ func TestPersistCraftedSkill_ScriptLanguages(t *testing.T) {
 		{"node", ".js"},
 		{"javascript", ".js"},
 		{"bash", ".sh"},
+		{"powershell", ".ps1"},
+		{"ps1", ".ps1"},
 		{"unknown", ".py"}, // default
 	}
 
@@ -154,13 +319,22 @@ func TestPersistCraftedSkill_ScriptLanguages(t *testing.T) {
 	}
 }
 
+func TestBuildCraftedScriptCommandPowershell(t *testing.T) {
+	command := buildCraftedScriptCommand("powershell", `C:\skills\demo\main.ps1`)
+	if !strings.Contains(command, "powershell") ||
+		!strings.Contains(command, "-ExecutionPolicy Bypass") ||
+		!strings.Contains(command, `main.ps1`) {
+		t.Fatalf("buildCraftedScriptCommand(powershell) = %q", command)
+	}
+}
+
 func TestCraftedSkillName(t *testing.T) {
 	tests := []struct {
-		desc     string
+		desc      string
 		wantExact string // exact match when non-empty; empty means just check non-empty
 	}{
 		{"Convert markdown to PDF", "Convert-markdown-to-PDF"},
-		{"", ""},  // empty desc → timestamp-based fallback, can't predict exact value
+		{"", ""}, // empty desc → timestamp-based fallback, can't predict exact value
 		{"a very long description that exceeds the forty character limit for skill names", "a-very-long-description-that-exceeds-the"},
 	}
 
@@ -200,6 +374,7 @@ func TestIsRepairableError(t *testing.T) {
 		{"network_error", false},
 		{"auth_error", false},
 		{"missing_env_var", false},
+		{"missing_dependency", false},
 	}
 
 	for _, tt := range tests {

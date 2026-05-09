@@ -5,10 +5,16 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/store"
+)
+
+var (
+	ErrInvalidDuration     = errors.New("license duration days must be zero or positive")
+	ErrSignerNotConfigured = errors.New("license signer private key is not configured")
 )
 
 // CertificatePayload is the signed content of a license certificate.
@@ -47,6 +53,12 @@ func (s *Service) IssueManual(ctx context.Context, centerID string, modules []st
 }
 
 func (s *Service) issue(ctx context.Context, centerID string, modules []string, licType string, days int) (*store.License, error) {
+	if days < 0 {
+		return nil, ErrInvalidDuration
+	}
+	if s == nil || s.privKey == nil {
+		return nil, ErrSignerNotConfigured
+	}
 	now := time.Now()
 	isLongTerm := days == 0
 	var expiresAt time.Time

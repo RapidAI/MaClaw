@@ -554,6 +554,25 @@ var migrations = []string{
 	);
 	CREATE INDEX IF NOT EXISTS idx_config_apply_bundle ON config_apply_records(tenant_id, bundle_id, applied_at);
 	CREATE INDEX IF NOT EXISTS idx_config_apply_worker ON config_apply_records(tenant_id, worker_id, applied_at);`,
+	// 42: config_apply_records scope includes department to avoid cross-department worker status overwrites
+	`CREATE TABLE IF NOT EXISTS config_apply_records_v2 (
+		tenant_id     TEXT NOT NULL,
+		bundle_id     TEXT NOT NULL,
+		version       INTEGER NOT NULL DEFAULT 0,
+		worker_id     TEXT NOT NULL DEFAULT '',
+		department_id TEXT NOT NULL DEFAULT '',
+		status        TEXT NOT NULL DEFAULT 'success',
+		message       TEXT NOT NULL DEFAULT '',
+		applied_at    TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (tenant_id, bundle_id, department_id, worker_id)
+	);
+	INSERT OR REPLACE INTO config_apply_records_v2 (tenant_id, bundle_id, version, worker_id, department_id, status, message, applied_at)
+		SELECT tenant_id, bundle_id, version, worker_id, department_id, status, message, applied_at FROM config_apply_records;
+	DROP TABLE config_apply_records;
+	ALTER TABLE config_apply_records_v2 RENAME TO config_apply_records;
+	CREATE INDEX IF NOT EXISTS idx_config_apply_bundle ON config_apply_records(tenant_id, bundle_id, applied_at);
+	CREATE INDEX IF NOT EXISTS idx_config_apply_worker ON config_apply_records(tenant_id, worker_id, applied_at);
+	CREATE INDEX IF NOT EXISTS idx_config_apply_department_worker ON config_apply_records(tenant_id, department_id, worker_id, applied_at);`,
 }
 
 // Migrate applies all pending migrations inside a transaction.

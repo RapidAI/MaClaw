@@ -53,7 +53,7 @@ type FusionResult struct {
 type IntentDefinition struct {
 	Label              IntentLabel
 	Domain             string         // grouping for tree reasoning (e.g., "Coding", "Remote")
-	Keywords           []KeywordEntry // Layer 1: keyword rules
+	Keywords           []KeywordEntry // recall/diagnostic terms; not an execution-route authority
 	EmbedTexts         []string       // Layer 2: anchor sentences for embedding cosine
 	TreeText           string         // Layer 3: descriptive text for LLM tree reasoning
 	ToolNames          []string       // tool affinity: tools to activate when this intent wins
@@ -64,10 +64,10 @@ type IntentDefinition struct {
 // Fusion parameters — defaults calibrated for MacLaw's intent space.
 // Override via FusionConfig or offline calibration.
 const (
-	DefaultAlpha                    = 0.15 // embedding weight (tree-dominant, like intent-fusion's 0.10)
-	DefaultDelta                    = 0.10 // gap threshold for CLEAR vs AMBIGUOUS
-	DefaultLowThreshold             = 0.15 // minimum score for any match
-	DefaultWorkflowRejectThreshold  = 0.70 // min confidence to fast-reject non-workflow before IUM
+	DefaultAlpha                   = 0.15 // embedding weight (tree-dominant, like intent-fusion's 0.10)
+	DefaultDelta                   = 0.10 // gap threshold for CLEAR vs AMBIGUOUS
+	DefaultLowThreshold            = 0.15 // minimum score for any match
+	DefaultWorkflowRejectThreshold = 0.70 // min confidence to fast-reject non-workflow before IUM
 )
 
 // FusionConfig holds tunable parameters for the fusion algorithm.

@@ -1019,6 +1019,8 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
 		// Keep group discussion available after late tool registration rebuilds.
 		registerGroupDiscussionTools(handler.registry, a, handler)
+		// Keep local knowledge tools available after late tool registration rebuilds.
+		registerKnowledgeTools(handler.registry, a)
 		// Rebuild the tool builder so it picks up the newly registered GUI tools.
 		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
 		// Wire skill-aware routing to the tool builder.
@@ -1060,7 +1062,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			// Show a quiet notification when the task starts executing.
 			if ShowNotification != nil {
 				ShowNotification(
-					"????????",
+					"\u5b9a\u65f6\u4efb\u52a1\u5f00\u59cb",
 					fmt.Sprintf("%s: %s", task.Name, scheduler.TruncateStr(task.Action, 100)),
 					1, // info icon
 				)
@@ -1120,9 +1122,9 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 				if FlashAndBeep != nil {
 					FlashAndBeep()
 				}
-				notifTitle := "?????"
+				notifTitle := "\u5b9a\u65f6\u4efb\u52a1\u5b8c\u6210"
 				if hasError {
-					notifTitle = "???????"
+					notifTitle = "\u5b9a\u65f6\u4efb\u52a1\u5931\u8d25"
 				}
 				if ShowNotification != nil {
 					ShowNotification(
@@ -1241,14 +1243,10 @@ func (a *App) startup(ctx context.Context) {
 		// Auto-start local MCP servers that are enabled for app launch.
 		a.autoStartLocalMCPServers(config.LocalMCPServers)
 
-		// Background preload YOLO model for screen parsing (default: enabled).
-		// Downloads silently from GitHub 鈫?Hub fallback. ~77MB, no startup delay.
-		go a.backgroundPreloadYOLOModel()
+		// Ensure local AI models are ready for features the user has not
+		// explicitly disabled. Missing assets are downloaded and then enabled.
+		go a.ensureConfiguredAIModels()
 
-		// Do not eagerly preload the embedding model on startup. Loading or
-		// downloading it here causes a large idle RSS spike on first install.
-		// The existing explicit vector-search enable flow will initialize it
-		// on demand when the user actually turns the feature on.
 		// Keep the AI assistant in a lightweight "connecting" state until the
 		// user actually opens or uses it; avoid pre-warming the full interaction
 		// stack during startup because it eagerly loads memory-heavy services.
@@ -1270,6 +1268,8 @@ func (a *App) startup(ctx context.Context) {
 		go func() {
 			if err := a.ensureCodeGenToken(); err != nil {
 				log.Printf("[CodeGen] startup token check failed: %v", err)
+			} else if err := a.ensureCodeGenConfiguredModelAvailable(); err != nil {
+				log.Printf("[CodeGen] startup model availability check failed: %v", err)
 			}
 			a.ensureCodeGenProxyIfNeeded()
 		}()
@@ -1301,17 +1301,11 @@ func (a *App) startup(ctx context.Context) {
 		go a.initWorkflowEngine()
 		// Initialize steering store (declarative rule injection from ~/.maclaw/steering/).
 		go a.initSteeringStore()
-		// Initialize TTS manager (lazy-loaded, model downloaded on demand).
-		go func() {
-			a.initTTSManager()
-			a.backgroundPreloadTTSModel()
-		}()
+		// Initialize TTS manager if assets are already present.
+		go a.initTTSManager()
 
-		// Create UnifiedIntentClassifier synchronously with L1 keywords only.
-		// This ensures intent classification is available from the very first
-		// user message 鈥?L1 keyword rules need no embedding model or LLM.
-		// L2 (embedding) and L3 (LLM) are wired in later by activateEmbedderAsync
-		// via SetEmbedder/SetLLMFunc, upgrading the same instance in-place.
+		// Create shared intent classifiers synchronously. Until semantic classifiers are ready,
+		// they return conservative unknown/ambiguous results instead of local keyword decisions.
 		a.initEarlyClassifier()
 
 		return
@@ -1682,14 +1676,14 @@ func (a *App) buildCodexLaunchEnv(
 		// Surgical update: persist provider config to ~/.codex/auth.json and
 		// ~/.codex/config.toml so Codex subprocesses pick up the settings.
 		// Preserves user's MCP servers, profiles, and other config.
-		if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, "responses"); err != nil {
-			log.Printf("[buildCodexLaunchEnv] Codex: failed to write provider config: %v", err)
+		if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel)); err != nil {
+			return nil, fmt.Errorf("prepare codex provider switch: %w", err)
 		}
 	} else {
 		// Surgical cleanup: remove only third-party auth/provider entries,
 		// preserving all other user state (MCP servers, profiles, etc.).
 		if err := configfile.ClearCodexThirdPartySettings(); err != nil {
-			log.Printf("[LaunchTool] Codex: ClearCodexThirdPartySettings error: %v", err)
+			return nil, fmt.Errorf("prepare codex builtin switch: %w", err)
 		}
 
 		// Backward-compat migration: if a pre-fix backup directory exists
@@ -2644,6 +2638,9 @@ func effectiveToolWireAPI(toolName string, model corelib.ModelConfig) string {
 		}
 		return "anthropic"
 	}
+	if strings.EqualFold(toolName, "codex") {
+		return "responses"
+	}
 	return ""
 }
 
@@ -2842,48 +2839,24 @@ func (a *App) syncToCodexSettings(config corelib.AppConfig, projectDir string, i
 	if selectedModel == nil {
 		return fmt.Errorf("selected codex model not found")
 	}
-	dir, authPath := a.getCodexConfigPaths(projectDir, instanceID)
+	dir, _ := a.getCodexConfigPaths(projectDir, instanceID)
 	if selectedModel.IsBuiltin {
 		// Surgical cleanup: remove third-party auth and provider config,
 		// preserving MCP servers, profiles, and other user settings.
-		if err := configfile.ClearCodexThirdPartySettings(); err != nil {
+		if err := configfile.ClearCodexThirdPartySettingsAt(dir); err != nil {
 			log.Printf("[syncToCodexSettings] Codex: ClearCodexThirdPartySettings error: %v", err)
+			return err
 		}
 		return nil
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	// Create auth.json
-	authData := map[string]string{
-		"OPENAI_API_KEY": selectedModel.ApiKey,
-	}
-	authJson, err := json.MarshalIndent(authData, "", "  ")
-	if err != nil {
-		return err
-	}
-	// Check if auth.json needs update
-	if existingData, err := os.ReadFile(authPath); err == nil {
-		if bytes.Equal(existingData, authJson) {
-			// Auth file is already up to date, skip writing
-			goto writeConfigToml
-		}
-	}
-	if err := os.WriteFile(authPath, authJson, 0644); err != nil {
-		return err
-	}
-	// Create config.toml
-writeConfigToml:
-	configPath := filepath.Join(dir, "config.toml")
-	configToml := remote.BuildCodexConfigToml(selectedModel)
-	configBytes := []byte(configToml)
-	// Check if config.toml needs update
-	if existingData, err := os.ReadFile(configPath); err == nil {
-		if bytes.Equal(existingData, configBytes) {
-			return nil
-		}
-	}
-	return os.WriteFile(configPath, configBytes, 0644)
+	return configfile.WriteCodexConfigAt(
+		dir,
+		selectedModel.ApiKey,
+		selectedModel.ModelUrl,
+		selectedModel.ModelId,
+		selectedModel.ModelName,
+		effectiveToolWireAPI("codex", *selectedModel),
+	)
 }
 func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string, instanceID string) error {
 	var selectedModel *corelib.ModelConfig
@@ -3416,8 +3389,8 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 	}
 	if selectedModel == nil || toolCfg.CurrentModel == "" {
-		title := "??"
-		message := "??????????"
+		title := "\u63d0\u793a"
+		message := "\u8bf7\u5148\u9009\u62e9\u670d\u52a1\u5546"
 		if a.CurrentLanguage == "en" {
 			title = "Notice"
 			message = "Please select a provider first."
@@ -3557,8 +3530,9 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			// Surgically update ~/.codex/auth.json and ~/.codex/config.toml with provider config,
 			// preserving user's MCP servers, profiles, and other settings.
-			if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, "responses"); err != nil {
-				log.Printf("Codex: failed to write provider config: %v", err)
+			if err := configfile.WriteCodexConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName, effectiveToolWireAPI("codex", *selectedModel)); err != nil {
+				a.log("Codex provider switch failed: " + err.Error())
+				return
 			}
 			a.log("Codex: Updated config with provider settings (preserving user state)")
 		case "opencode":
@@ -3633,7 +3607,8 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 		case "codex":
 			if err := configfile.ClearCodexThirdPartySettings(); err != nil {
-				log.Printf("[LaunchTool-desktop] Codex: ClearCodexThirdPartySettings error: %v", err)
+				a.log("Codex builtin switch failed: " + err.Error())
+				return
 			}
 			backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
@@ -3803,21 +3778,21 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	defaultCodexModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
 		{ModelName: "ChatFire", ModelId: "gpt-5.1-codex-mini", ModelUrl: "https://api.chatfire.cn/v1", ApiKey: "", WireApi: "responses"},
-		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: ""},
-		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: ""},
-		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: ""},
+		{ModelName: "DeepSeek", ModelId: "deepseek-chat", ModelUrl: "https://api.deepseek.com/v1", ApiKey: "", WireApi: "responses"},
+		{ModelName: "GLM", ModelId: "glm-5-turbo", ModelUrl: "https://open.bigmodel.cn/api/coding/paas/v4", ApiKey: "", WireApi: "responses"},
+		{ModelName: "Doubao", ModelId: "doubao-seed-code-preview-latest", ModelUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", ApiKey: "", WireApi: "responses"},
 		{ModelName: "iFlytek", ModelId: "astron-code-latest", ModelUrl: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", ApiKey: "", WireApi: "responses", HasSubscription: true},
-		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: ""},
-		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: ""},
-		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", HasSubscription: true},
-		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", HasSubscription: true},
-		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
-		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", IsCustom: true},
+		{ModelName: "Kimi", ModelId: "kimi-for-coding", ModelUrl: "https://api.kimi.com/coding/v1", ApiKey: "", WireApi: "responses"},
+		{ModelName: "MiniMax", ModelId: "MiniMax-M2.1", ModelUrl: "https://api.minimaxi.com/v1", ApiKey: "", WireApi: "responses"},
+		{ModelName: "Tencent Cloud", ModelId: "glm-5", ModelUrl: "https://api.lkeap.cloud.tencent.com/coding/v3", ApiKey: "", WireApi: "responses", HasSubscription: true},
+		{ModelName: "Moore Threads", ModelId: "GLM-4.7", ModelUrl: "https://coding-plan-endpoint.kuaecloud.net/v1", ApiKey: "", WireApi: "responses", HasSubscription: true},
+		{ModelName: "Kuaishou", ModelId: "kat-coder-pro-v1", ModelUrl: "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", ApiKey: "", WireApi: "responses", HasSubscription: true},
+		{ModelName: "Custom", ModelId: "", ModelUrl: "", ApiKey: "", WireApi: "responses", IsCustom: true},
+		{ModelName: "Custom1", ModelId: "", ModelUrl: "", ApiKey: "", WireApi: "responses", IsCustom: true},
+		{ModelName: "Custom2", ModelId: "", ModelUrl: "", ApiKey: "", WireApi: "responses", IsCustom: true},
+		{ModelName: "Custom3", ModelId: "", ModelUrl: "", ApiKey: "", WireApi: "responses", IsCustom: true},
+		{ModelName: "Custom4", ModelId: "", ModelUrl: "", ApiKey: "", WireApi: "responses", IsCustom: true},
+		{ModelName: "Custom5", ModelId: "", ModelUrl: "", ApiKey: "", WireApi: "responses", IsCustom: true},
 	}
 	defaultOpencodeModels := []corelib.ModelConfig{
 		{ModelName: "Original", ModelId: "", ModelUrl: "", ApiKey: "", IsBuiltin: true},
@@ -4043,6 +4018,10 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			GossipEnabled:        true,
 			FileOutboundEnabled:  true,
 			ImageOutboundEnabled: true,
+			VectorSearchEnabled:  true,
+			ASREnabled:           true,
+			TTSEnabled:           true,
+			ScreenParsingEnabled: boolPtr(true),
 			NetworkLevel:         "full",
 			SandboxMode:          "none",
 		}
@@ -4111,6 +4090,22 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if _, ok := rawConfig["image_outbound_enabled"]; ok {
 		hasImageOutboundEnabled = true
 	}
+	hasVectorSearchEnabled := false
+	if _, ok := rawConfig["vector_search_enabled"]; ok {
+		hasVectorSearchEnabled = true
+	}
+	hasASREnabled := false
+	if _, ok := rawConfig["asr_enabled"]; ok {
+		hasASREnabled = true
+	}
+	hasTTSEnabled := false
+	if _, ok := rawConfig["tts_enabled"]; ok {
+		hasTTSEnabled = true
+	}
+	hasScreenParsingEnabled := false
+	if _, ok := rawConfig["screen_parsing_enabled"]; ok {
+		hasScreenParsingEnabled = true
+	}
 
 	err = json.Unmarshal(data, &config)
 	if err != nil {
@@ -4144,6 +4139,18 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	}
 	if !hasImageOutboundEnabled {
 		config.ImageOutboundEnabled = true
+	}
+	if !hasVectorSearchEnabled {
+		config.VectorSearchEnabled = true
+	}
+	if !hasASREnabled {
+		config.ASREnabled = true
+	}
+	if !hasTTSEnabled {
+		config.TTSEnabled = true
+	}
+	if !hasScreenParsingEnabled {
+		config.ScreenParsingEnabled = boolPtr(true)
 	}
 	if config.NetworkLevel == "" {
 		config.NetworkLevel = "full"
@@ -4302,16 +4309,21 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	ensureModel(&config.Claude.Models, "Aliyun", "https://coding.dashscope.aliyuncs.com/apps/anthropic", "glm-5", "anthropic", true)
 	ensureModel(&config.Gemini.Models, "ChatFire", "https://api.chatfire.cn/v1beta/models/gemini-2.5-pro:generateContent", "gemini-2.5-pro", "")
 	ensureModel(&config.Codex.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-5.1-codex-mini", "responses")
-	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
-	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5-turbo", "")
-	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "")
+	ensureModel(&config.Codex.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "responses")
+	ensureModel(&config.Codex.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5-turbo", "responses")
+	ensureModel(&config.Codex.Models, "Doubao", "https://ark.cn-beijing.volces.com/api/coding/v3", "doubao-seed-code-preview-latest", "responses")
 	ensureModel(&config.Codex.Models, "iFlytek", "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", "astron-code-latest", "responses", true)
-	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "")
-	ensureModel(&config.Codex.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "")
-	ensureModel(&config.Codex.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "")
-	ensureModel(&config.Codex.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "", true)
-	ensureModel(&config.Codex.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "", true)
-	ensureModel(&config.Codex.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "", true)
+	ensureModel(&config.Codex.Models, "Kimi", "https://api.kimi.com/coding/v1", "kimi-for-coding", "responses")
+	ensureModel(&config.Codex.Models, "MiniMax", "https://api.minimaxi.com/v1", "MiniMax-M2.1", "responses")
+	ensureModel(&config.Codex.Models, "XiaoMi", "https://api.xiaomimimo.com/v1", "mimo-v2-flash", "responses")
+	ensureModel(&config.Codex.Models, "Tencent Cloud", "https://api.lkeap.cloud.tencent.com/coding/v3", "glm-5", "responses", true)
+	ensureModel(&config.Codex.Models, "Moore Threads", "https://coding-plan-endpoint.kuaecloud.net/v1", "GLM-4.7", "responses", true)
+	ensureModel(&config.Codex.Models, "Kuaishou", "https://wanqing.streamlakeapi.com/api/gateway/coding/v1", "kat-coder-pro-v1", "responses", true)
+	for i := range config.Codex.Models {
+		if !config.Codex.Models[i].IsBuiltin && strings.TrimSpace(config.Codex.Models[i].WireApi) == "" {
+			config.Codex.Models[i].WireApi = "responses"
+		}
+	}
 	ensureModel(&config.Opencode.Models, "DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "")
 	ensureModel(&config.Opencode.Models, "ChatFire", "https://api.chatfire.cn/v1", "gpt-4o", "")
 	ensureModel(&config.Opencode.Models, "GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "")
@@ -4700,6 +4712,9 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	var oldConfig corelib.AppConfig
 	if data, err := os.ReadFile(path); err == nil {
 		json.Unmarshal(data, &oldConfig)
+	}
+	if strings.TrimSpace(oldConfig.DefaultLaunchMode) != "" {
+		config.DefaultLaunchMode = oldConfig.DefaultLaunchMode
 	}
 	// Sync all apikeys across all tools before saving
 	syncStart := time.Now()
@@ -6508,16 +6523,16 @@ var translations = map[string]map[string]string{
 		"zh-Hant": "妞ゎ垳銇?AI 閸斺晜澧滈幐澶愬灔",
 	},
 	"Service Redeem": {
-		"zh-Hans": "????",
-		"zh-Hant": "????",
+		"zh-Hans": "\u670d\u52a1\u5151\u6362",
+		"zh-Hant": "\u670d\u52d9\u5151\u63db",
 	},
 	"Security": {
-		"zh-Hans": "????",
-		"zh-Hant": "????",
+		"zh-Hans": "\u5b89\u5168",
+		"zh-Hant": "\u5b89\u5168",
 	},
 	"New version %s is available. Open About to download the update.": {
-		"zh-Hans": "????? %s?????????????",
-		"zh-Hant": "????? %s?????????????",
+		"zh-Hans": "\u53d1\u73b0\u65b0\u7248\u672c %s\uff0c\u53ef\u524d\u5f80\u5173\u4e8e\u9875\u9762\u4e0b\u8f7d\u66f4\u65b0\u3002",
+		"zh-Hant": "\u767c\u73fe\u65b0\u7248\u672c %s\uff0c\u53ef\u524d\u5f80\u95dc\u65bc\u9801\u9762\u4e0b\u8f09\u66f4\u65b0\u3002",
 	},
 }
 
@@ -6611,7 +6626,7 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	}
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		result["reason"] = "URL ????"
+		result["reason"] = "URL \u4e0d\u80fd\u4e3a\u7a7a"
 		return result
 	}
 
@@ -6651,12 +6666,12 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 		resp.Body.Close()
 		if resp.StatusCode < 400 {
 			result["type"] = "mirror"
-			result["reason"] = "???????????????"
+			result["reason"] = "\u7ad9\u70b9\u53ef\u8bbf\u95ee\uff0c\u4f46\u672a\u8bc6\u522b\u4e3a\u6807\u51c6 SkillHub API"
 			return result
 		}
 	}
 
-	result["reason"] = "???????????"
+	result["reason"] = "\u672a\u8bc6\u522b\u4e3a\u53ef\u7528\u7684 SkillHub API"
 	return result
 }
 

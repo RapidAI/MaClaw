@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,45 +9,30 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// gateContPhrases are known short continuation phrases that indicate the user
-// wants to start or continue a previously discussed task. Used by the
-// short-message continuation detection in Classify.
-var gateContPhrases = []string{
-	"继续", "开工", "开干", "动手", "搞起来", "搞起", "干吧", "做吧",
-	"开始吧", "开始做", "开始干", "开始搞",
-	"let's go", "start working", "go ahead", "continue",
-	"start", "begin", "go", "ok", "好的", "嗯",
-}
-
 // gateClassifierSystemPrompt is the system prompt for the Layer 3 LLM
 // refinement call. It instructs the LLM to classify user messages into one
 // of five gate-specific categories with structured JSON output.
-const gateClassifierSystemPrompt = `你是一个编程任务分类器，负责判断用户请求属于哪种编程工作流类别。
+const gateClassifierSystemPrompt = `You are a coding workflow gate intent classifier.
 
-分类目标：
-- new_project：创建新应用、新功能、新工具、新游戏、新系统（需要走需求→设计→任务分解流程）
-- bug_fix：修复bug、调试、排查错误、解决崩溃/白屏/闪退/卡住等问题（直接修复，不需要三阶段流程）
-- maintenance：重构代码、优化性能、清理代码、升级依赖、改善结构（直接执行，不需要三阶段流程）
-- non_coding：翻译、整理资料、搜索论文、总结文章、生成报告等非编程任务
-- continuation：用户想继续之前讨论的任务（如"开工"、"继续"、"动手"）
+Classify the user's request into exactly one gate_intent:
+- new_project: create a new app, feature, tool, game, script, API, or system.
+- bug_fix: debug, repair, troubleshoot, or fix a failing existing codebase.
+- maintenance: refactor, optimize, clean up, upgrade, or improve existing code.
+- non_coding: translation, summarization, research, reports, documents, presentations, or other non-coding work.
+- continuation: continue a previously discussed coding task.
+- unknown: not enough information or no safe classification.
 
-规则：
-- 如果消息同时包含创建和修复信号（如"开发一个bug追踪系统"），判为 new_project（主要意图是创建）
-- 如果消息同时包含修复和维护信号（如"修复bug然后重构"），判为 bug_fix（主要动作是修复）
-- 如果消息同时包含编码和非编码信号（如"翻译代码注释"），判为 non_coding（主要动作是翻译）
-- 信息不足时输出 unknown
-- 只输出 JSON，不要输出任何额外解释
-
-输出格式：
-{"gate_intent": "...", "confidence": 0.0-1.0, "reason": "..."}`
+Use semantic intent. Do not rely on keyword matching. If the request is ambiguous, return unknown with low confidence.
+Return only one JSON object matching this shape:
+{"gate_intent":"new_project|bug_fix|maintenance|non_coding|continuation|unknown","confidence":0.0,"reason":"short reason"}`
 
 // gateClassifierJSONSchema defines the expected JSON output schema for the
 // LLM gate classification response. Used with OpenAI-compatible structured
@@ -70,23 +54,9 @@ var gateClassifierJSONSchema = map[string]interface{}{
 	"required": []string{"gate_intent", "confidence", "reason"},
 }
 
-// ---------------------------------------------------------------------------
-// Gate Intent Classifier — semantic, multi-layer classification for the
-// Coding Tool Gate decision.
-//
-// Replaces the keyword-only approach with a three-layer pipeline:
-//   Layer 1: keyword rules (fast path, <1ms)
-//   Layer 2: embedding cosine similarity against gate-specific anchors (<500ms)
-//   Layer 3: LLM refinement for ambiguous cases (3s timeout)
-//
-// Five gate-specific categories:
-//   new_project   — activate three-phase workflow
-//   bug_fix       — bypass gate, execute directly
-//   maintenance   — bypass gate, execute directly
-//   non_coding    — bypass gate, not a coding task
-//   continuation  — bypass gate, continue previous task
-//   unknown       — fallback / low confidence
-// ---------------------------------------------------------------------------
+// Gate Intent Classifier performs semantic, multi-layer classification for the
+// coding tool gate. It uses UIC first, then embedding and LLM classifiers.
+// It returns unknown when semantic classifiers are unavailable or inconclusive.
 
 // GateIntent represents the five-category classification result for the Gate.
 type GateIntent string
@@ -103,9 +73,9 @@ const (
 // GateIntentResult holds the classification output from GateIntentClassifier.
 type GateIntentResult struct {
 	Intent     GateIntent             // one of the GateIntent constants
-	Confidence float64                // [0, 1] — higher means more certain
+	Confidence float64                // [0, 1], higher means more certain
 	Gap        float64                // score gap between top-1 and top-2 category
-	Layer      int                    // 1=keyword, 2=embedding, 3=LLM
+	Layer      int                    // classifier layer reported by UIC/embedding/LLM
 	Reason     string                 // human-readable explanation
 	AllScores  map[GateIntent]float64 // diagnostic: scores for all five categories
 	Degraded   bool                   // true when UIC fusion was in degraded mode (one channel failed)
@@ -126,26 +96,22 @@ type gateAnchor struct {
 	Vecs   [][]float32
 }
 
-// GateIntentClassifier performs three-layer gate intent classification:
-//
-//	Layer 1: keyword rules (fast path)
-//	Layer 2: embedding cosine similarity against gate-specific anchors
-//	Layer 3: LLM refinement for ambiguous cases
+// GateIntentClassifier performs semantic gate intent classification.
 type GateIntentClassifier struct {
-	embedder           embedding.Embedder
-	anchors            []gateAnchor
-	queryCache         *tool.QueryEmbeddingCache
-	ctxProvider        ConversationContextProvider
-	llmConfig          func() corelib.MaclawLLMConfig // lazy access to LLM config
-	httpClient         *http.Client
-	unifiedClassifier  *intent.UnifiedIntentClassifier
-	ready              bool
-	mu                 sync.RWMutex
+	embedder          embedding.Embedder
+	anchors           []gateAnchor
+	queryCache        *tool.QueryEmbeddingCache
+	ctxProvider       ConversationContextProvider
+	llmConfig         func() corelib.MaclawLLMConfig // lazy access to LLM config
+	httpClient        *http.Client
+	unifiedClassifier *intent.UnifiedIntentClassifier
+	ready             bool
+	mu                sync.RWMutex
 }
 
 // NewGateIntentClassifier creates a new gate intent classifier. If emb is nil
-// or a NoopEmbedder, only Layer 1 (keyword rules) is available. A background
-// goroutine pre-computes anchor embeddings; Ready() returns true once complete.
+// or a NoopEmbedder, local embedding classification is unavailable and callers
+// receive unknown unless UIC or LLM classification is configured.
 func NewGateIntentClassifier(emb embedding.Embedder) *GateIntentClassifier {
 	g := &GateIntentClassifier{
 		embedder: emb,
@@ -202,11 +168,10 @@ func (g *GateIntentClassifier) SetUnifiedClassifier(uic *intent.UnifiedIntentCla
 }
 
 // Classify determines the gate intent for a user message. userID is used for
-// conversation context lookup (continuation detection).
+// conversation context lookup.
 //
-// Layer 1 (keyword rules) is attempted first. If it produces a high-confidence
-// result (≥ 0.90), the result is returned immediately. Otherwise, the result
-// falls through to Layer 2/3 (implemented in later tasks).
+// Classification uses UIC first, then semantic embedding and LLM classifiers.
+// If semantic classifiers are unavailable or inconclusive, it returns unknown.
 func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentResult {
 	// --- UIC delegation: when the Unified Intent Classifier is available,
 	// delegate to it and map the result to GateIntentResult. ---
@@ -227,56 +192,16 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 			Reason:     reason,
 			Degraded:   uicResult.Degraded,
 		}
-		log.Printf("[GateIntentClassifier] classify(%q): UIC delegation intent=%s conf=%.2f layer=%d",
-			text, result.Intent, result.Confidence, result.Layer)
-		return result
-	}
-
-	// --- Fallback: local three-layer pipeline when UIC is nil ---
-
-	// --- Short-message continuation detection (before keyword classification) ---
-	// Detect short messages (≤10 runes covers both ≤4 Chinese chars and ≤10
-	// English chars since Chinese characters are 1 rune each) and check if
-	// they match known continuation phrases with conversation context.
-	trimmed := strings.TrimSpace(text)
-	lowConfContinuation := false // tracks whether we saw a continuation phrase without coding context
-	if utf8.RuneCountInString(trimmed) <= 10 && trimmed != "" {
-		lower := strings.ToLower(trimmed)
-		if matchesContinuationPhrase(lower) {
-			// Check conversation context for coding signals.
-			hasCodingCtx := false
-			if g.ctxProvider != nil {
-				msgs := g.ctxProvider.RecentMessages(userID, 10)
-				hasCodingCtx = hasCodingSignals(msgs)
-			}
-			if hasCodingCtx {
-				result := GateIntentResult{
-					Intent:     GateIntentContinuation,
-					Confidence: 0.65,
-					Layer:      1,
-					Reason:     "short continuation phrase with coding context in conversation history",
-				}
-				log.Printf("[GateIntentClassifier] continuation detected(%q): codingContext=true conf=%.2f", text, result.Confidence)
-				return result
-			}
-			// No coding context (or no context provider) — low confidence.
-			// Don't return immediately; fall through to Layer 2/3 so
-			// embedding/LLM can attempt a better classification.
-			// (Requirement 6.4: defer to embedding/LLM layers)
-			lowConfContinuation = true
-			log.Printf("[GateIntentClassifier] continuation detected(%q): codingContext=false conf=0.40, deferring to layer 2/3", text)
+		if shouldAcceptGateResult(result) {
+			log.Printf("[GateIntentClassifier] classify(%q): UIC delegation intent=%s conf=%.2f layer=%d",
+				text, result.Intent, result.Confidence, result.Layer)
+			return result
 		}
-		// Short message but not a continuation phrase — fall through to
-		// keyword classification below.
+		log.Printf("[GateIntentClassifier] classify(%q): UIC inconclusive intent=%s conf=%.2f degraded=%v; escalating",
+			text, result.Intent, result.Confidence, result.Degraded)
 	}
 
-	// Layer 1: keyword-based classification (fast path).
-	if result, ok := g.classifyByKeywords(text); ok {
-		log.Printf("[GateIntentClassifier] classify(%q): layer=1 intent=%s conf=%.2f reason=%s",
-			text, result.Intent, result.Confidence, result.Reason)
-		return result
-	}
-
+	// --- Fallback: local semantic pipeline when UIC is nil ---
 	// Layer 2: embedding cosine similarity (when ready).
 	var layer2Result GateIntentResult
 	var hasLayer2 bool
@@ -287,7 +212,7 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 			logTop2Scores(text, result.AllScores)
 			return result
 		} else if result.Intent != "" {
-			// Layer 2 returned an ambiguous result — save it for fallback.
+			// Layer 2 returned an ambiguous result; save it for fallback.
 			layer2Result = result
 			hasLayer2 = true
 			log.Printf("[GateIntentClassifier] classify(%q): layer=2 ambiguous intent=%s conf=%.2f gap=%.2f, escalating to layer 3",
@@ -318,237 +243,34 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 		return layer2Result
 	}
 
-	// No strong match from any layer.
-	// If we detected a continuation phrase earlier but had no coding context,
-	// return it as low-confidence continuation (Req 6.4) so the caller knows
-	// the phrase was recognized but ambiguous.
-	if lowConfContinuation {
-		result := GateIntentResult{
-			Intent:     GateIntentContinuation,
-			Confidence: 0.40,
-			Layer:      1,
-			Reason:     "short continuation phrase, no coding context, layer 2/3 did not override",
-		}
-		log.Printf("[GateIntentClassifier] classify(%q): final fallback to low-conf continuation intent=%s conf=%.2f",
-			text, result.Intent, result.Confidence)
-		return result
-	}
-
-	// Truly unknown — no continuation phrase, no keyword match, no embedding/LLM result.
+	// Truly unknown: no semantic classifier result.
 	result := GateIntentResult{
 		Intent:     GateIntentUnknown,
 		Confidence: 0.30,
 		Layer:      1,
-		Reason:     "no strong keyword match",
+		Reason:     "semantic classifiers unavailable or inconclusive",
 	}
-	log.Printf("[GateIntentClassifier] classify(%q): layer=1 intent=%s conf=%.2f reason=%s",
+	log.Printf("[GateIntentClassifier] classify(%q): layer=semantic-unavailable intent=%s conf=%.2f reason=%s",
 		text, result.Intent, result.Confidence, result.Reason)
 	return result
 }
 
-// matchesContinuationPhrase returns true if the lowercased text matches any
-// known continuation phrase (exact match or substring).
-func matchesContinuationPhrase(lower string) bool {
-	for _, phrase := range gateContPhrases {
-		if strings.Contains(lower, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
-// hasCodingSignals scans a list of recent messages for coding-related keywords.
-// Returns true if any message contains a coding keyword from codingKeywords.
-func hasCodingSignals(messages []string) bool {
-	for _, msg := range messages {
-		lower := strings.ToLower(msg)
-		for _, kw := range codingKeywords {
-			if strings.Contains(lower, kw) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// gateMaintenanceKeywords are coding keywords specifically about
-// refactoring/optimization, not creation or bug-fix. Used by Layer 1
-// keyword classification to distinguish maintenance from other coding tasks.
-var gateMaintenanceKeywords = []string{
-	"重构", "refactor", "优化", "清理", "升级", "改善",
-	"clean up", "optimize", "upgrade", "improve",
-}
-
-// classifyByKeywords performs Layer 1 keyword-based classification using the
-// existing keyword lists from coding_tool_gate.go and im_tools_session.go.
-//
-// Returns (result, true) when a high-confidence match is found, or
-// (zero, false) when no strong match exists and classification should
-// fall through to Layer 2.
-func (g *GateIntentClassifier) classifyByKeywords(text string) (GateIntentResult, bool) {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return GateIntentResult{}, false
-	}
-
-	// Count keyword matches for each category.
-	nonCodingCount := countSubstringMatches(lower, nonCodingKeywords)
-	codingCount := countSubstringMatches(lower, codingKeywords)
-	creationCount := countSubstringMatches(lower, creationCodingKeywords)
-	bugFixCount := countMapSubstringMatches(lower, bugFixKeywords)
-
-	// Maintenance signals: coding keywords that are specifically about
-	// refactoring/optimization, not creation or bug-fix.
-	maintenanceCount := countSubstringMatches(lower, gateMaintenanceKeywords)
-
-	hasNonCoding := nonCodingCount > 0
-	hasCoding := codingCount > 0
-	hasCreation := creationCount > 0
-	hasBugFix := bugFixCount > 0
-	hasMaintenance := maintenanceCount > 0
-
-	// --- Mixed-intent dominance rules (Requirement 10) ---
-
-	// Rule 1: Non-coding + no coding keywords → non_coding.
-	// "翻译文档" → non_coding; "翻译这段代码的注释" → non_coding
-	// (primary action is non-coding even if "代码" appears as object).
-	if hasNonCoding && !hasCoding {
-		return GateIntentResult{
-			Intent:     GateIntentNonCoding,
-			Confidence: 0.92,
-			Layer:      1,
-			Reason:     fmt.Sprintf("non-coding keywords matched (%d hits), no coding keywords", nonCodingCount),
-		}, true
-	}
-
-	// Non-coding dominates coding when the primary action is non-coding.
-	// e.g. "翻译这段代码的注释" — "翻译" is the verb/action, "代码" is the object.
-	// We detect this by checking if a non-coding keyword appears before any
-	// coding keyword in the text, indicating the primary action is non-coding.
-	if hasNonCoding && hasCoding && !hasCreation && !hasBugFix {
-		if primaryActionIsNonCoding(lower) {
-			return GateIntentResult{
-				Intent:     GateIntentNonCoding,
-				Confidence: 0.92,
-				Layer:      1,
-				Reason:     fmt.Sprintf("non-coding primary action dominates coding context (%d non-coding, %d coding)", nonCodingCount, codingCount),
-			}, true
-		}
-	}
-
-	// Rule 2: Creation keywords → new_project (creation dominates bug-fix).
-	// "开发一个bug追踪系统" → new_project (has creation "开发" + bug "bug").
-	if hasCreation {
-		return GateIntentResult{
-			Intent:     GateIntentNewProject,
-			Confidence: 0.92,
-			Layer:      1,
-			Reason:     fmt.Sprintf("creation keywords matched (%d hits), creation dominates", creationCount),
-		}, true
-	}
-
-	// Rule 3: Bug-fix keywords without creation → bug_fix.
-	// "修复这个bug然后重构代码" → bug_fix (bugfix dominates maintenance).
-	if hasBugFix && !hasCreation {
-		return GateIntentResult{
-			Intent:     GateIntentBugFix,
-			Confidence: 0.92,
-			Layer:      1,
-			Reason:     fmt.Sprintf("bug-fix keywords matched (%d hits), no creation keywords", bugFixCount),
-		}, true
-	}
-
-	// Rule 4: Maintenance keywords without creation/bugfix → maintenance.
-	if hasMaintenance && !hasCreation && !hasBugFix {
-		return GateIntentResult{
-			Intent:     GateIntentMaintenance,
-			Confidence: 0.85,
-			Layer:      1,
-			Reason:     fmt.Sprintf("maintenance keywords matched (%d hits), catch-all coding", maintenanceCount),
-		}, true
-	}
-
-	// Rule 5: General coding keywords (not creation, not bugfix, not maintenance)
-	// → maintenance as catch-all for generic coding that isn't specific enough.
-	if hasCoding && !hasCreation && !hasBugFix && !hasMaintenance {
-		return GateIntentResult{
-			Intent:     GateIntentMaintenance,
-			Confidence: 0.85,
-			Layer:      1,
-			Reason:     fmt.Sprintf("general coding keywords matched (%d hits), no specific category", codingCount),
-		}, true
-	}
-
-	// No strong keyword match — fall through to Layer 2.
-	return GateIntentResult{}, false
-}
-
-// countSubstringMatches counts how many keywords from the list appear as
-// substrings in the lowercased text.
-func countSubstringMatches(lower string, keywords []string) int {
-	count := 0
-	for _, kw := range keywords {
-		if strings.Contains(lower, kw) {
-			count++
-		}
-	}
-	return count
-}
-
-// countMapSubstringMatches counts how many keys from the map appear as
-// substrings in the lowercased text. This handles bugFixKeywords which is
-// a map[string]bool — we do substring matching rather than exact map lookup
-// because the map keys include multi-word phrases.
-func countMapSubstringMatches(lower string, keywords map[string]bool) int {
-	count := 0
-	for kw := range keywords {
-		if strings.Contains(lower, kw) {
-			count++
-		}
-	}
-	return count
-}
-
-// primaryActionIsNonCoding returns true when the first matching non-coding
-// keyword appears before the first matching coding keyword in the text,
-// indicating the primary action/verb is non-coding. For example:
-//
-//	"翻译这段代码的注释" → "翻译" at pos 0, "代码" at pos 9 → true
-//	"写代码然后翻译注释" → "代码" at pos 3, "翻译" at pos 15 → false
-func primaryActionIsNonCoding(lower string) bool {
-	firstNonCoding := -1
-	for _, kw := range nonCodingKeywords {
-		if idx := strings.Index(lower, kw); idx >= 0 {
-			if firstNonCoding < 0 || idx < firstNonCoding {
-				firstNonCoding = idx
-			}
-		}
-	}
-	if firstNonCoding < 0 {
+func shouldAcceptGateResult(result GateIntentResult) bool {
+	if result.Degraded {
 		return false
 	}
-
-	firstCoding := -1
-	for _, kw := range codingKeywords {
-		if idx := strings.Index(lower, kw); idx >= 0 {
-			if firstCoding < 0 || idx < firstCoding {
-				firstCoding = idx
-			}
-		}
+	if result.Intent == GateIntentUnknown {
+		return false
 	}
-	if firstCoding < 0 {
-		return true // non-coding found, no coding found
-	}
-
-	return firstNonCoding < firstCoding
+	return result.Confidence >= 0.60
 }
 
 // classifyByEmbedding performs Layer 2 embedding-based classification using
 // cosine similarity between the user message embedding and pre-computed anchor
 // vectors for each gate intent category.
 //
-// Returns (result, true) when a high-confidence match is found (confidence ≥ 0.78
-// and gap ≥ 0.10), or (result, false) when the result is ambiguous and should
+// Returns (result, true) when a high-confidence match is found (confidence >= 0.78
+// and gap >= 0.10), or (result, false) when the result is ambiguous and should
 // fall through to Layer 3.
 func (g *GateIntentClassifier) classifyByEmbedding(text string) (GateIntentResult, bool) {
 	// 1. Get query embedding from cache.
@@ -602,7 +324,7 @@ func (g *GateIntentClassifier) classifyByEmbedding(text string) (GateIntentResul
 		}, true
 	}
 
-	// Ambiguous — fall through to Layer 3 (or return as-is if Layer 3 not available).
+	// Ambiguous: fall through to Layer 3 (or return as-is if Layer 3 is not available).
 	return GateIntentResult{
 		Intent:     top1Intent,
 		Confidence: top1Score,
@@ -708,10 +430,10 @@ func parseGateLLMResponse(body string) (GateIntentResult, error) {
 	intent := GateIntent(resp.GateIntent)
 	switch intent {
 	case GateIntentNewProject, GateIntentBugFix, GateIntentMaintenance,
-		GateIntentNonCoding, GateIntentContinuation:
-		// valid — keep as-is
+		GateIntentNonCoding, GateIntentContinuation, GateIntentUnknown:
+		// valid; keep as-is
 	default:
-		intent = GateIntentUnknown
+		return GateIntentResult{}, fmt.Errorf("invalid gate_intent %q", resp.GateIntent)
 	}
 
 	// Clamp confidence to [0, 1].
@@ -797,15 +519,6 @@ func gateAnchors() []gateAnchor {
 		{
 			Intent: GateIntentNewProject,
 			Texts: []string{
-				// Chinese (creation-oriented)
-				"开发一个贪吃蛇游戏",
-				"写一个爬虫程序",
-				"帮我开发一个聊天应用",
-				"实现一个REST API服务",
-				"创建一个命令行工具",
-				"写一个自动化脚本",
-				"开发一个数据可视化面板",
-				// English (creation-oriented)
 				"build a web application",
 				"create a CLI tool",
 				"develop a REST API",
@@ -818,20 +531,11 @@ func gateAnchors() []gateAnchor {
 		{
 			Intent: GateIntentBugFix,
 			Texts: []string{
-				// Chinese (fix/debug-oriented)
-				"有bug，一直显示加载中",
-				"修复崩溃问题",
-				"页面白屏了",
-				"程序闪退",
-				"调试一下这个问题",
-				"排查报错原因",
-				"修复登录失败的bug",
-				// English (fix/debug-oriented)
 				"fix the loading issue",
 				"debug this crash",
 				"the app keeps crashing on startup",
 				"fix the authentication error",
-				"there's a bug in the payment flow",
+				"there is a bug in the payment flow",
 				"troubleshoot the memory leak",
 				"resolve the null pointer exception",
 			},
@@ -839,14 +543,6 @@ func gateAnchors() []gateAnchor {
 		{
 			Intent: GateIntentMaintenance,
 			Texts: []string{
-				// Chinese (refactor/optimize)
-				"重构这个函数",
-				"优化性能",
-				"清理无用代码",
-				"升级依赖版本",
-				"改善代码结构",
-				"优化数据库查询速度",
-				// English (refactor/optimize)
 				"refactor the auth module",
 				"clean up dead code",
 				"optimize the database queries",
@@ -858,14 +554,6 @@ func gateAnchors() []gateAnchor {
 		{
 			Intent: GateIntentNonCoding,
 			Texts: []string{
-				// Chinese (non-coding tasks)
-				"翻译文档",
-				"搜索论文",
-				"总结这篇文章",
-				"帮我整理资料",
-				"生成PDF报告",
-				"把这段话翻译成英文",
-				// English (non-coding tasks)
 				"summarize this article",
 				"translate this document",
 				"search for papers on AI",
@@ -877,17 +565,10 @@ func gateAnchors() []gateAnchor {
 		{
 			Intent: GateIntentContinuation,
 			Texts: []string{
-				// Chinese (short action phrases)
-				"继续",
-				"开工",
-				"开干",
-				"动手",
-				"搞起来",
-				// English (short action phrases)
-				"let's go",
-				"start working",
-				"go ahead",
-				"continue",
+				"continue the previous implementation",
+				"start working on the discussed task",
+				"go ahead with the plan",
+				"proceed with the coding task",
 			},
 		},
 	}

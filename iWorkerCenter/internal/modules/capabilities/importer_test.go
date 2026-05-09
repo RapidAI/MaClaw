@@ -39,6 +39,22 @@ func TestImporterSearchCloudUsesCenterSecretHeader(t *testing.T) {
 	}
 }
 
+func TestImporterSearchCloudRejectsTrailingJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/centers/center-1/skills/search" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"id":"goal-recovery-loop","name":"Goal recovery loop"}]} {"results":[{"id":"extra"}]}`))
+	}))
+	defer srv.Close()
+
+	imp := NewImporter(nil, srv.URL, "center-1", "secret-abc")
+	if _, err := imp.SearchCloud("goal"); err == nil {
+		t.Fatal("SearchCloud() error = nil, want trailing JSON rejection")
+	}
+}
+
 func TestImporterImportFromCloudWritesTenantScopedCapability(t *testing.T) {
 	provider, err := db.Open(":memory:")
 	if err != nil {
@@ -96,6 +112,91 @@ func TestImporterImportFromCloudWritesTenantScopedCapability(t *testing.T) {
 	}
 	if tenantID != "tenant-a" || source != "iworkercloud:skill-1" || status != "pending_review" || packageStatus != "package_cached" || packageContent == "" {
 		t.Fatalf("tenant/source/status/package = %q/%q/%q/%q", tenantID, source, status, packageStatus)
+	}
+
+	again, err := imp.ImportFromCloud("skill-1", "tenant-a")
+	if err != nil {
+		t.Fatalf("ImportFromCloud() duplicate error: %v", err)
+	}
+	if again.ID != capability.ID || again.Status != "pending_review" || again.PackageStatus != "package_cached" {
+		t.Fatalf("duplicate import returned %+v, want existing pending_review/package_cached", again)
+	}
+}
+
+func TestImporterImportFromCloudRejectsTrailingSkillJSONWithoutSaving(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/centers/center-1/skills/skill-1":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"skill-1","name":"Skill One","category":"ops"} {"id":"extra"}`))
+		default:
+			t.Fatalf("unexpected path = %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	imp := NewImporter(provider.Write, srv.URL, "center-1", "secret-abc")
+	if _, err := imp.ImportFromCloud("skill-1", "tenant-a"); err == nil {
+		t.Fatal("ImportFromCloud() error = nil, want trailing JSON rejection")
+	}
+
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM capability_packages WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("query capability count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("capability count = %d, want 0", count)
+	}
+}
+
+func TestImporterImportFromCloudRequiresDownloadablePackage(t *testing.T) {
+	provider, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer provider.Close()
+	if err := db.Migrate(provider.Write); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/centers/center-1/skills/skill-no-package":
+			_ = json.NewEncoder(w).Encode(CloudSkill{
+				ID:        "skill-no-package",
+				Name:      "Skill Without Package",
+				Category:  "ops",
+				Version:   "1.0.0",
+				RiskLevel: "low",
+			})
+		case "/api/centers/center-1/skills/skill-no-package/package":
+			http.Error(w, "package not found", http.StatusNotFound)
+		default:
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	imp := NewImporter(provider.Write, srv.URL, "center-1", "secret-abc")
+	if _, err := imp.ImportFromCloud("skill-no-package", "tenant-a"); err == nil {
+		t.Fatal("ImportFromCloud() error = nil, want package download failure")
+	}
+
+	var count int
+	if err := provider.Read.QueryRow(`SELECT COUNT(*) FROM capability_packages WHERE tenant_id=?`, "tenant-a").Scan(&count); err != nil {
+		t.Fatalf("query capability count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("capability count = %d, want 0", count)
 	}
 }
 

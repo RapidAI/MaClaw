@@ -124,7 +124,7 @@ type LocalMCPServerEntry struct {
 // StepPollConfig configures repeated execution of a step until a condition is met.
 // Used for async tasks where the runner needs to poll for completion.
 type StepPollConfig struct {
-	Interval    int    `json:"interval"`              // poll interval in seconds (default 5)
+	Interval    int    `json:"interval"`               // poll interval in seconds (default 5)
 	MaxAttempts int    `json:"max_attempts"`           // max poll attempts (default 20)
 	UntilMatch  string `json:"until_match,omitempty"`  // regex: stop when output matches
 	UntilStatus string `json:"until_status,omitempty"` // shorthand: stop when output contains this string
@@ -138,22 +138,22 @@ type StepPollConfig struct {
 // execute → verify → fix → repeat until verification passes or max iterations.
 type StepLoopConfig struct {
 	// MaxIterations is the hard upper bound on loop iterations. Required.
-	MaxIterations int    `json:"max_iterations" yaml:"max_iterations"`
+	MaxIterations int `json:"max_iterations" yaml:"max_iterations"`
 	// UntilStep is the label of the verification step. After each loop body
 	// execution, this step runs. If its output matches UntilMatch, the loop exits.
-	UntilStep     string `json:"until_step,omitempty" yaml:"until_step,omitempty"`
+	UntilStep string `json:"until_step,omitempty" yaml:"until_step,omitempty"`
 	// UntilMatch is a regex pattern. When the verification step's output matches,
 	// the loop exits successfully.
-	UntilMatch    string `json:"until_match,omitempty" yaml:"until_match,omitempty"`
+	UntilMatch string `json:"until_match,omitempty" yaml:"until_match,omitempty"`
 	// OnFailStep is the label of the repair step (optional). When verification
 	// fails, this step runs before the next iteration.
-	OnFailStep    string `json:"on_fail_step,omitempty" yaml:"on_fail_step,omitempty"`
+	OnFailStep string `json:"on_fail_step,omitempty" yaml:"on_fail_step,omitempty"`
 }
 
 type NLSkillStep struct {
 	Action    string                 `json:"action"`
 	Params    map[string]interface{} `json:"params"`
-	OnError   string                 `json:"on_error"`   // "stop" (default), "continue"
+	OnError   string                 `json:"on_error"`            // "stop" (default), "continue"
 	Name      string                 `json:"name,omitempty"`      // optional descriptive name
 	Condition string                 `json:"condition,omitempty"` // "" (always), "on_failure", "on_success"
 	When      string                 `json:"when,omitempty"`      // conditional expression, e.g. "{{operation}} == generate"
@@ -162,11 +162,11 @@ type NLSkillStep struct {
 	Poll      *StepPollConfig        `json:"poll,omitempty"`      // poll config for async steps
 	// Loop configures iterative execution with verification gate.
 	// See StepLoopConfig for the "do → verify → improve" cycle.
-	Loop     *StepLoopConfig          `json:"loop,omitempty"`
+	Loop *StepLoopConfig `json:"loop,omitempty"`
 	// FallbackStep holds the original step before solidification promotion.
 	// When a promoted bash step fails, the Runner reverts to this step.
 	// See corelib/skill/solidify.go for the revert mechanism.
-	FallbackStep *NLSkillStep         `json:"fallback_step,omitempty"`
+	FallbackStep *NLSkillStep `json:"fallback_step,omitempty"`
 }
 
 // NLSkillOperation describes a named operation within an api_workflow skill.
@@ -182,7 +182,7 @@ type NLSkillOperation struct {
 // NLSkillEntry 描述一个自然语言技能条目。
 type NLSkillEntry struct {
 	Name          string        `json:"name"`
-	DirName       string        `json:"dir_name,omitempty"`     // 目录名（当与 Name 不同时用于别名查找）
+	DirName       string        `json:"dir_name,omitempty"` // 目录名（当与 Name 不同时用于别名查找）
 	Description   string        `json:"description"`
 	Triggers      []string      `json:"triggers"`
 	Steps         []NLSkillStep `json:"steps"`
@@ -193,10 +193,10 @@ type NLSkillEntry struct {
 	HubSkillID    string        `json:"hub_skill_id,omitempty"`
 	HubVersion    string        `json:"hub_version,omitempty"`
 	TrustLevel    string        `json:"trust_level,omitempty"`
-	Type          string        `json:"type,omitempty"`          // "executable" (default) | "knowledge"
-	Content       string        `json:"content,omitempty"`       // Markdown content for knowledge-type skills
-	Platforms        []string      `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
-	RequiresGUI      bool          `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
+	Type          string        `json:"type,omitempty"`         // "executable" (default) | "knowledge"
+	Content       string        `json:"content,omitempty"`      // Markdown content for knowledge-type skills
+	Platforms     []string      `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
+	RequiresGUI   bool          `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
 
 	// Tool availability conditions
 	RequiresTools       []string `json:"requires_tools,omitempty"`
@@ -210,28 +210,29 @@ type NLSkillEntry struct {
 	// Dependency auto-install
 	RequiresPython []string `json:"requires_python,omitempty"` // pip packages to auto-install
 	RequiresNode   []string `json:"requires_node,omitempty"`   // npm packages to auto-install
+	RequiresBins   []string `json:"requires_bins,omitempty"`   // command-line binaries expected on PATH
 
 	// Plugin namespace
 	Publisher string `json:"publisher,omitempty"` // e.g. "lovstudio"
 
-	SkillDir         string        `json:"skill_dir,omitempty"`    // 自包含 skill 目录的绝对路径（运行时填充）
-	Mode             string        `json:"mode,omitempty"`         // "sequential" (default) | "interactive" | "api_workflow"
-	ExecMode         string        `json:"exec_mode,omitempty"`    // "all" (default) | "first" | "named"
-	GlobalTimeout    int           `json:"global_timeout,omitempty"` // per-skill global timeout in seconds (0 = use default 300s)
-	ProducesArtifact bool                `json:"produces_artifact"`          // true = expects file output (default); false = diagnostic/instruction only
-	Operations       []NLSkillOperation  `json:"operations,omitempty"`       // named operations for api_workflow mode
-	RequiredArgs     []string      `json:"required_args,omitempty"`  // required template variables (e.g. "input", "output")
-	RequiredEnv      []string      `json:"required_env,omitempty"`   // required environment variables (e.g. "API_KEY")
-	PreferredShell   string        `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect
-	UsageCount       int           `json:"usage_count"`
-	SuccessCount     int           `json:"success_count"`
-	FailureCount     int           `json:"failure_count"`
-	WorkaroundCount  int           `json:"workaround_count"`
-	LastUsedAt       string        `json:"last_used_at,omitempty"`
-	LastError        string        `json:"last_error,omitempty"`
-	RepairAttemptCount int         `json:"repair_attempt_count,omitempty"`
-	LastRepairAt     string        `json:"last_repair_at,omitempty"`
-	RepairHistory    []SkillRepairRecord `json:"repair_history,omitempty"`
+	SkillDir           string              `json:"skill_dir,omitempty"`       // 自包含 skill 目录的绝对路径（运行时填充）
+	Mode               string              `json:"mode,omitempty"`            // "sequential" (default) | "interactive" | "api_workflow"
+	ExecMode           string              `json:"exec_mode,omitempty"`       // "all" (default) | "first" | "named"
+	GlobalTimeout      int                 `json:"global_timeout,omitempty"`  // per-skill global timeout in seconds (0 = use default 300s)
+	ProducesArtifact   bool                `json:"produces_artifact"`         // true = expects file output (default); false = diagnostic/instruction only
+	Operations         []NLSkillOperation  `json:"operations,omitempty"`      // named operations for api_workflow mode
+	RequiredArgs       []string            `json:"required_args,omitempty"`   // required template variables (e.g. "input", "output")
+	RequiredEnv        []string            `json:"required_env,omitempty"`    // required environment variables (e.g. "API_KEY")
+	PreferredShell     string              `json:"preferred_shell,omitempty"` // "bash" or "cmd"; empty = auto-detect
+	UsageCount         int                 `json:"usage_count"`
+	SuccessCount       int                 `json:"success_count"`
+	FailureCount       int                 `json:"failure_count"`
+	WorkaroundCount    int                 `json:"workaround_count"`
+	LastUsedAt         string              `json:"last_used_at,omitempty"`
+	LastError          string              `json:"last_error,omitempty"`
+	RepairAttemptCount int                 `json:"repair_attempt_count,omitempty"`
+	LastRepairAt       string              `json:"last_repair_at,omitempty"`
+	RepairHistory      []SkillRepairRecord `json:"repair_history,omitempty"`
 
 	// Params is the parameter schema for this skill. When explicitly declared
 	// in skill.yaml, it provides aliases, CLI flags, defaults, and descriptions.
@@ -266,11 +267,11 @@ type NLSkillEntry struct {
 type NLSkillParam struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description,omitempty"`
-	Aliases     []string `json:"aliases,omitempty"`     // alternative names the LLM might use
-	CLIFlag     string   `json:"cli_flag,omitempty"`    // e.g. "--format" — appended to command
-	Default     string   `json:"default,omitempty"`     // default value when not provided
-	Required    bool     `json:"required,omitempty"`    // must be provided for execution
-	Synthetic   bool     `json:"synthetic,omitempty"`   // true = auto-generated from template
+	Aliases     []string `json:"aliases,omitempty"`   // alternative names the LLM might use
+	CLIFlag     string   `json:"cli_flag,omitempty"`  // e.g. "--format" — appended to command
+	Default     string   `json:"default,omitempty"`   // default value when not provided
+	Required    bool     `json:"required,omitempty"`  // must be provided for execution
+	Synthetic   bool     `json:"synthetic,omitempty"` // true = auto-generated from template
 }
 
 // SolidificationCandidate tracks a craft_tool step's promotion progress
@@ -286,8 +287,8 @@ type SolidificationCandidate struct {
 	// Consecutive successes only count toward promotion when all scripts
 	// share the same signature (same code structure, different parameters).
 	// A signature change resets the streak.
-	Signature    string   `json:"signature,omitempty"`
-	LastUsed     string   `json:"last_used,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	LastUsed  string `json:"last_used,omitempty"`
 }
 
 // SkillRepairRecord stores a single self-repair attempt for audit trail.
@@ -386,11 +387,11 @@ type MaclawLLMProvider struct {
 	SupportsVision bool   `json:"supports_vision"`
 	AgentType      string `json:"agent_type,omitempty"` // "openclaw" (default) or "claude" → controls User-Agent header
 	// ── 新增 OAuth 字段 ──
-	AuthType         string `json:"auth_type,omitempty"`
-	RefreshToken     string `json:"refresh_token,omitempty"`
-	TokenExpiresAt   int64  `json:"token_expires_at,omitempty"`
-	OAuthAccessToken string `json:"oauth_access_token,omitempty"` // 原始 access_token，仅用于 Costs/Usage API 查询
-	WireAPI          string `json:"wire_api,omitempty"`           // "chat" or "responses"; empty defaults to "chat"
+	AuthType                 string  `json:"auth_type,omitempty"`
+	RefreshToken             string  `json:"refresh_token,omitempty"`
+	TokenExpiresAt           int64   `json:"token_expires_at,omitempty"`
+	OAuthAccessToken         string  `json:"oauth_access_token,omitempty"` // 原始 access_token，仅用于 Costs/Usage API 查询
+	WireAPI                  string  `json:"wire_api,omitempty"`           // "chat" or "responses"; empty defaults to "chat"
 	InputPricePerMTokensRMB  float64 `json:"input_price_per_m_tokens_rmb,omitempty"`
 	OutputPricePerMTokensRMB float64 `json:"output_price_per_m_tokens_rmb,omitempty"`
 }

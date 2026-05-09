@@ -26,6 +26,7 @@ type Config struct {
 
 type Service struct {
 	store            Store
+	records          RecordStore
 	executor         Executor
 	tokens           *TokenManager
 	dataRoot         string
@@ -52,6 +53,7 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	if strings.TrimSpace(cfg.DataRoot) == "" {
 		return nil, fmt.Errorf("data root is required")
 	}
+	useFileStores := store == nil
 	if store == nil {
 		fileStore, err := NewFileStore(filepath.Join(cfg.DataRoot, "state", "store.json"))
 		if err != nil {
@@ -65,7 +67,17 @@ func NewService(cfg Config, store Store, executor Executor) (*Service, error) {
 	if err := secureMkdirAll(cfg.DataRoot); err != nil {
 		return nil, fmt.Errorf("create data root: %w", err)
 	}
-	return &Service{store: store, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}, nil
+	var records RecordStore
+	if useFileStores {
+		sqliteRecords, err := NewSQLiteRecordStore(filepath.Join(cfg.DataRoot, "records", "records.db"))
+		if err != nil {
+			return nil, fmt.Errorf("create record store: %w", err)
+		}
+		records = sqliteRecords
+	} else {
+		records = NewMemoryRecordStore()
+	}
+	return &Service{store: store, records: records, executor: executor, tokens: NewTokenManager(cfg.TokenSecret, cfg.TokenTTL), dataRoot: cfg.DataRoot, credentialPepper: cfg.CredentialPepper, now: time.Now}, nil
 }
 
 func (s *Service) DataRoot() string { return s.dataRoot }

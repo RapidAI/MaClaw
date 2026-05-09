@@ -99,7 +99,8 @@ func FetchHubCenterDiscovery(ctx context.Context, client *http.Client, baseURL s
 }
 
 // DiscoverHubCenterURLs merges local seed URLs with a live list fetched from any reachable HubCenter node.
-// The merged result is re-ranked by health so clients can refresh their local fallback list.
+// Seed URLs are ranked first because they include the user's configured HubCenter and the node that
+// successfully served discovery. Discovered URLs are ranked only as fallback addresses.
 func DiscoverHubCenterURLs(ctx context.Context, client *http.Client, seedURLs []string, preferred string) []string {
 	seeds := NormalizeHubCenterURLs(seedURLs)
 	if len(seeds) == 0 {
@@ -133,7 +134,11 @@ func DiscoverHubCenterURLs(ctx context.Context, client *http.Client, seedURLs []
 	if !hasNewURLs(orderedSeeds, merged) {
 		return orderedSeeds
 	}
-	return SelectBestCenter(ctx, client, merged, preferred)
+	extras := newHubCenterURLs(orderedSeeds, merged)
+	if len(extras) > 1 {
+		extras = SelectBestCenter(ctx, client, extras, preferred)
+	}
+	return append(append([]string(nil), orderedSeeds...), extras...)
 }
 
 // hasNewURLs returns true if merged contains URLs not present in base.
@@ -148,4 +153,25 @@ func hasNewURLs(base, merged []string) bool {
 		}
 	}
 	return false
+}
+
+// newHubCenterURLs returns URLs from merged that are not present in base.
+func newHubCenterURLs(base, merged []string) []string {
+	set := make(map[string]struct{}, len(base))
+	for _, u := range base {
+		set[NormalizeHubCenterURL(u)] = struct{}{}
+	}
+	out := make([]string, 0, len(merged))
+	for _, u := range merged {
+		normalized := NormalizeHubCenterURL(u)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := set[normalized]; ok {
+			continue
+		}
+		set[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
 }

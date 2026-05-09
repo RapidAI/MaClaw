@@ -91,11 +91,13 @@ func (r *Repo) GetByID(tenantID string, id string) (*Task, error) {
 	return scanTask(row)
 }
 
-// ListByColleague returns tasks assigned to a colleague (inbox).
+// ListByColleague returns non-terminal tasks assigned to a colleague (client inbox).
 func (r *Repo) ListByColleague(tenantID string, colleagueID string) ([]*Task, error) {
 	rows, err := r.read.Query(`SELECT id, title, description, from_colleague_id, to_colleague_id, to_role_code,
 		status, priority, result, workflow_step_instance_id, created_at, updated_at
-		FROM collaboration_tasks WHERE to_colleague_id=? AND tenant_id=? ORDER BY created_at DESC`, colleagueID, tenantID)
+		FROM collaboration_tasks
+		WHERE to_colleague_id=? AND tenant_id=? AND status NOT IN ('completed','rejected')
+		ORDER BY created_at DESC`, colleagueID, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +184,11 @@ func (r *Repo) ListEvents(tenantID string, taskID string) ([]*TaskEvent, error) 
 		if err := rows.Scan(&e.ID, &e.TaskID, &e.Event, &e.ActorID, &e.Note, &at); err != nil {
 			return nil, err
 		}
-		e.CreatedAt, _ = time.Parse(time.RFC3339, at)
+		createdAt, err := time.Parse(time.RFC3339, at)
+		if err != nil {
+			return nil, fmt.Errorf("parse collaboration event %s created_at: %w", e.ID, err)
+		}
+		e.CreatedAt = createdAt
 		result = append(result, &e)
 	}
 	return result, rows.Err()
@@ -195,8 +201,16 @@ func scanTask(row *sql.Row) (*Task, error) {
 		&t.ToRoleCode, &t.Status, &t.Priority, &t.Result, &t.WorkflowStepInstanceID, &ca, &ua); err != nil {
 		return nil, err
 	}
-	t.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-	t.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+	createdAt, err := time.Parse(time.RFC3339, ca)
+	if err != nil {
+		return nil, fmt.Errorf("parse collaboration task %s created_at: %w", t.ID, err)
+	}
+	updatedAt, err := time.Parse(time.RFC3339, ua)
+	if err != nil {
+		return nil, fmt.Errorf("parse collaboration task %s updated_at: %w", t.ID, err)
+	}
+	t.CreatedAt = createdAt
+	t.UpdatedAt = updatedAt
 	return &t, nil
 }
 
@@ -209,8 +223,16 @@ func scanTasks(rows *sql.Rows) ([]*Task, error) {
 			&t.ToRoleCode, &t.Status, &t.Priority, &t.Result, &t.WorkflowStepInstanceID, &ca, &ua); err != nil {
 			return nil, err
 		}
-		t.CreatedAt, _ = time.Parse(time.RFC3339, ca)
-		t.UpdatedAt, _ = time.Parse(time.RFC3339, ua)
+		createdAt, err := time.Parse(time.RFC3339, ca)
+		if err != nil {
+			return nil, fmt.Errorf("parse collaboration task %s created_at: %w", t.ID, err)
+		}
+		updatedAt, err := time.Parse(time.RFC3339, ua)
+		if err != nil {
+			return nil, fmt.Errorf("parse collaboration task %s updated_at: %w", t.ID, err)
+		}
+		t.CreatedAt = createdAt
+		t.UpdatedAt = updatedAt
 		result = append(result, &t)
 	}
 	return result, rows.Err()

@@ -10,23 +10,24 @@ import (
 type FailureCategory string
 
 const (
-	FailureTransient  FailureCategory = "transient"  // recoverable server-side errors (429, 408, 5xx, overload)
-	FailureNetwork    FailureCategory = "network"    // client-side connectivity (timeout, refused, reset)
-	FailurePermission FailureCategory = "permission"
-	FailureArgs       FailureCategory = "args"
-	FailureLogic      FailureCategory = "logic"
-	FailureUnknown    FailureCategory = "unknown"
+	FailureTransient   FailureCategory = "transient" // recoverable server-side errors (429, 408, 5xx, overload)
+	FailureNetwork     FailureCategory = "network"   // client-side connectivity (timeout, refused, reset)
+	FailurePeriodLimit FailureCategory = "period_limit"
+	FailurePermission  FailureCategory = "permission"
+	FailureArgs        FailureCategory = "args"
+	FailureLogic       FailureCategory = "logic"
+	FailureUnknown     FailureCategory = "unknown"
 
 	// Kept as alias for backward compatibility in tests and trace logs.
 	FailureRateLimit = FailureTransient
 )
 
 const (
-	defaultMaxFailures   = 5
-	maxNetworkRetries    = 3
-	maxTransientRetries  = 3
-	baseRetryDelay       = 1 * time.Second
-	baseTransientDelay   = 5 * time.Second // transient errors need longer backoff
+	defaultMaxFailures  = 5
+	maxNetworkRetries   = 3
+	maxTransientRetries = 3
+	baseRetryDelay      = 1 * time.Second
+	baseTransientDelay  = 5 * time.Second // transient errors need longer backoff
 )
 
 // RetryDecision 重试决策。
@@ -39,9 +40,9 @@ type RetryDecision struct {
 
 // AdaptiveRetry 分析 tool_call 失败并决定重试策略。
 type AdaptiveRetry struct {
-	failureCounts map[string]int    // toolName → 累计失败次数
-	maxFailures   int               // 单工具最大失败次数 (默认 5)
-	disabledTools map[string]bool   // 已禁用的工具
+	failureCounts map[string]int  // toolName → 累计失败次数
+	maxFailures   int             // 单工具最大失败次数 (默认 5)
+	disabledTools map[string]bool // 已禁用的工具
 	recorder      *TrajectoryRecorder
 }
 
@@ -85,18 +86,23 @@ var logicKeywords = []string{
 // Classify 分析错误信息，返回失败分类。
 //
 // Classification priority (highest first):
-//  1. Transient — recoverable server-side errors (429, 408, 5xx, overload).
+//  1. Period limit — Hub quota window is exhausted; do not retry.
+//  2. Transient — recoverable server-side errors (429, 408, 5xx, overload).
 //     Delegates to isTransientServerError() as single source of truth.
-//  2. Network — client-side connectivity (timeout, refused, reset).
-//  3. Permission — auth/authz failures (401, 403).
-//  4. Args — bad request / invalid parameters (400).
-//  5. Logic — application-level conflicts.
-//  6. Unknown — fallback.
+//  3. Network — client-side connectivity (timeout, refused, reset).
+//  4. Permission — auth/authz failures (401, 403).
+//  5. Args — bad request / invalid parameters (400).
+//  6. Logic — application-level conflicts.
+//  7. Unknown — fallback.
 func (r *AdaptiveRetry) Classify(toolName string, err error) FailureCategory {
 	if err == nil {
 		return FailureUnknown
 	}
 	msg := strings.ToLower(err.Error())
+
+	if isHubPeriodLimitError(err) {
+		return FailurePeriodLimit
+	}
 
 	// Transient server errors must be checked first — they may contain
 	// network-related substrings (e.g. "http 502") but need longer backoff.
@@ -139,6 +145,13 @@ func (r *AdaptiveRetry) Decide(toolName string, category FailureCategory, attemp
 	}
 
 	switch category {
+	case FailurePeriodLimit:
+		return RetryDecision{
+			Action:       "skip",
+			ErrorContext: fmt.Sprintf("MaClaw 官方周期限流：工具 %s 当前周期额度已用尽，请等待周期恢复或手动切换服务商。", toolName),
+			Attempt:      attempt,
+		}
+
 	case FailureTransient:
 		if attempt >= maxTransientRetries {
 			return RetryDecision{

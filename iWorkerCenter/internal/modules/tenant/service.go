@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -25,10 +26,9 @@ var (
 	ErrCloudNotConfigured      = errors.New("iWorkerCloud not configured")
 	ErrTenantNotFound          = errors.New("tenant not found")
 	ErrCloudCredentialsMissing = errors.New("tenant cloud credentials missing")
-	ErrMultiTenantDisabled     = errors.New("multi-tenant mode is disabled")
 )
 
-// CreateTenantRequest is used for both setup-tenant and provision.
+// CreateTenantRequest is used for local Center tenant setup and administration.
 type CreateTenantRequest struct {
 	CompanyName   string `json:"company_name"`
 	LegalPerson   string `json:"legal_person"`
@@ -189,32 +189,6 @@ func (s *TenantService) UpdateMultiTenantSettings(ctx context.Context, mode stri
 	return s.MultiTenantSettings(ctx)
 }
 
-func (s *TenantService) AuthenticateCloudCenter(ctx context.Context, centerID, secret string) error {
-	centerID = strings.TrimSpace(centerID)
-	secret = strings.TrimSpace(secret)
-	if centerID == "" || secret == "" {
-		return ErrCloudCredentialsMissing
-	}
-	t, err := s.tenantRepo.GetByCloudCenterID(ctx, centerID)
-	if err != nil {
-		return err
-	}
-	if t == nil || strings.TrimSpace(t.CloudSecret) != secret {
-		return ErrCloudCredentialsMissing
-	}
-	return nil
-}
-func (s *TenantService) RequireMultiTenantEnabled(ctx context.Context) error {
-	settings, err := s.MultiTenantSettings(ctx)
-	if err != nil {
-		return err
-	}
-	if !settings.MultiTenant {
-		return ErrMultiTenantDisabled
-	}
-	return nil
-}
-
 // CloudRegistrationStatus summarizes local Cloud registration state without exposing secrets.
 type CloudComputeStatus struct {
 	ProviderCount     int    `json:"provider_count"`
@@ -226,14 +200,25 @@ type CloudComputeStatus struct {
 type CloudRegistrationStatus struct {
 	Configured    bool                `json:"configured"`
 	Registered    bool                `json:"registered"`
+	MachineID     string              `json:"machine_id,omitempty"`
+	CompanyID     string              `json:"company_id,omitempty"`
 	CenterID      string              `json:"center_id,omitempty"`
 	Status        string              `json:"status"`
 	License       *CloudLicense       `json:"license,omitempty"`
 	Compute       *CloudComputeStatus `json:"compute,omitempty"`
 	LicenseError  string              `json:"license_error,omitempty"`
+	CacheError    string              `json:"cache_error,omitempty"`
+	LicenseCached bool                `json:"license_cached,omitempty"`
+	ComputeCached bool                `json:"compute_cached,omitempty"`
 	NonBlocking   bool                `json:"non_blocking"`
 	ControlPlane  string              `json:"control_plane"`
 	BusinessScope string              `json:"business_scope"`
+}
+
+type cloudStatusCache struct {
+	License   *CloudLicense       `json:"license,omitempty"`
+	Compute   *CloudComputeStatus `json:"compute,omitempty"`
+	UpdatedAt string              `json:"updated_at,omitempty"`
 }
 
 // UpdateCloudConfigRequest updates the iWorkerCloud connection settings.
@@ -367,11 +352,15 @@ func (s *TenantService) CloudStatus(ctx context.Context, tenantID string) (*Clou
 	status := &CloudRegistrationStatus{
 		Configured:    strings.TrimSpace(s.CloudConfig(ctx).BaseURL) != "",
 		Registered:    strings.TrimSpace(t.CloudCenterID) != "" && strings.TrimSpace(t.CloudSecret) != "",
+		CompanyID:     strings.TrimSpace(t.ID),
 		CenterID:      strings.TrimSpace(t.CloudCenterID),
 		Status:        "unregistered",
 		NonBlocking:   true,
 		ControlPlane:  "registration_authorization_compute_distribution",
 		BusinessScope: "isolated_in_iworkercenter_and_iworker",
+	}
+	if machineID, err := ensureMachineID(); err == nil {
+		status.MachineID = machineID
 	}
 	if !status.Configured {
 		status.Status = "not_configured"
@@ -385,6 +374,9 @@ func (s *TenantService) CloudStatus(ctx context.Context, tenantID string) (*Clou
 	if err != nil {
 		status.Status = classifyCloudLicenseError(err)
 		status.LicenseError = err.Error()
+		if shouldUseCloudStatusCache(status.Status) {
+			s.applyCloudStatusCache(ctx, t.ID, status)
+		}
 		return status, nil
 	}
 	status.Status = "licensed"
@@ -393,8 +385,83 @@ func (s *TenantService) CloudStatus(ctx context.Context, tenantID string) (*Clou
 		status.Compute = &CloudComputeStatus{ProviderCount: len(computeStatus.Providers), ComputePermission: computeStatus.ComputePermission, ForceSync: computeStatus.ForceSync}
 	} else if err != nil {
 		status.Compute = &CloudComputeStatus{Error: err.Error()}
+		s.applyCloudStatusCache(ctx, t.ID, status)
 	}
+	s.saveCloudStatusCache(ctx, t.ID, status)
 	return status, nil
+}
+
+func shouldUseCloudStatusCache(status string) bool {
+	switch status {
+	case "offline", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func tenantCloudStatusCacheKey(tenantID string) string {
+	return "cloud_status_cache:" + strings.TrimSpace(tenantID)
+}
+
+func (s *TenantService) loadCloudStatusCache(ctx context.Context, tenantID string) (*cloudStatusCache, error) {
+	if s == nil || s.adminDB == nil {
+		return nil, nil
+	}
+	var raw string
+	if err := s.adminDB.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key=?`, tenantCloudStatusCacheKey(tenantID)).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var cache cloudStatusCache
+	if err := json.Unmarshal([]byte(raw), &cache); err != nil {
+		return nil, err
+	}
+	return &cache, nil
+}
+
+func (s *TenantService) saveCloudStatusCache(ctx context.Context, tenantID string, status *CloudRegistrationStatus) {
+	if s == nil || s.adminDB == nil || status == nil || status.License == nil {
+		return
+	}
+	cache := cloudStatusCache{License: status.License, Compute: status.Compute, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	data, err := json.Marshal(cache)
+	if err != nil {
+		log.Printf("[tenant] marshal cloud status cache failed for %s: %v", tenantID, err)
+		return
+	}
+	if _, err := s.adminDB.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=datetime('now')`, tenantCloudStatusCacheKey(tenantID), string(data)); err != nil {
+		log.Printf("[tenant] save cloud status cache failed for %s: %v", tenantID, err)
+	}
+}
+
+func (s *TenantService) applyCloudStatusCache(ctx context.Context, tenantID string, status *CloudRegistrationStatus) {
+	cache, err := s.loadCloudStatusCache(ctx, tenantID)
+	if err != nil {
+		log.Printf("[tenant] load cloud status cache failed for %s: %v", tenantID, err)
+		status.CacheError = err.Error()
+		return
+	}
+	if cache == nil {
+		return
+	}
+	if status.License == nil && cache.License != nil {
+		status.License = cache.License
+		status.LicenseCached = true
+	}
+	if status.Compute == nil && cache.Compute != nil {
+		status.Compute = cache.Compute
+		status.ComputeCached = true
+	}
+	if status.Compute != nil && status.Compute.Error != "" && cache.Compute != nil {
+		status.Compute = cache.Compute
+		status.ComputeCached = true
+	}
 }
 
 func classifyCloudLicenseError(err error) string {
@@ -464,8 +531,14 @@ func (s *TenantService) RegisterTenantToCloud(ctx context.Context, tenantID stri
 	}
 
 	cfg := s.cloudClient.Config()
-	tenantMode, _ := s.MultiTenantSettings(ctx)
-	tenantCount, _ := s.TenantCount(ctx)
+	tenantMode, err := s.MultiTenantSettings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load tenant mode for cloud registration: %w", err)
+	}
+	tenantCount, err := s.TenantCount(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("count tenants for cloud registration: %w", err)
+	}
 	machineID, err := ensureMachineID()
 	if err != nil {
 		return nil, err
@@ -498,9 +571,23 @@ func (s *TenantService) RegisterTenantToCloud(ctx context.Context, tenantID stri
 	if err := s.tenantRepo.UpdateCloudInfo(ctx, t.ID, resp.CenterID, resp.Secret); err != nil {
 		return nil, err
 	}
-	if err := s.cloudClient.SendCenterHeartbeat(ctx, resp.CenterID, resp.Secret, nil, nil); err != nil {
+	runtime := &CloudCenterRuntime{CloudHeartbeat: &CloudHeartbeatSnapshot{
+		Configured:     true,
+		Status:         "online",
+		LastAttemptAt:  time.Now().UTC(),
+		NonBlocking:    true,
+		BusinessImpact: "none_local_center_and_iworker_continue",
+		RuntimeType:    "service",
+		ProductKind:    "iworkercenter",
+		AdminConsole:   "web_console",
+	}}
+	if err := s.cloudClient.SendCenterHeartbeat(ctx, resp.CenterID, resp.Secret, nil, runtime); err != nil {
+		resp.HeartbeatSent = false
+		resp.HeartbeatError = err.Error()
 		log.Printf("[tenant] cloud heartbeat after registration failed for %s: %v", t.ID, err)
+		return resp, nil
 	}
+	resp.HeartbeatSent = true
 	return resp, nil
 }
 

@@ -32,22 +32,27 @@ type CheckContext struct {
 	SkillDir string
 }
 
-// DefaultCheckContext returns a CheckContext with the standard provided env
-// vars (OPENAI_API_KEY from the local proxy). This is the common case for
-// all Runner callers — use it instead of constructing CheckContext manually.
+// DefaultCheckContext returns an empty execution context. Runner-specific
+// virtual env providers, such as the GUI OpenAI proxy, are added by
+// BuildRunCheckContextForRunner so prechecks only skip env requirements that
+// the selected runner can actually provide.
 func DefaultCheckContext() *CheckContext {
 	return &CheckContext{
-		ProvidedEnvVars: map[string]bool{"OPENAI_API_KEY": true},
+		ProvidedEnvVars: map[string]bool{},
 	}
 }
 
 // ExtractRequirements extracts all requirements from a skill entry.
 // Sources:
-//   1. Explicit fields: RequiresPython, RequiresNode, RequiredEnv, Platforms
-//   2. Inferred from step commands: system commands used in bash steps
+//  1. Explicit fields: RequiresPython, RequiresNode, RequiresBins, RequiredEnv, Platforms
+//  2. Inferred from step commands: system commands used in bash steps
 //
 // ctx may be nil for callers that don't need context-aware extraction.
 func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Requirement {
+	if skill == nil {
+		return nil
+	}
+
 	var cc *CheckContext
 	if len(ctx) > 0 {
 		cc = ctx[0]
@@ -75,9 +80,17 @@ func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Re
 		reqs = append(reqs, req)
 	}
 
-	for _, env := range skill.RequiredEnv {
+	for _, bin := range skill.RequiresBins {
+		bin = strings.TrimSpace(bin)
+		if bin == "" {
+			continue
+		}
+		reqs = append(reqs, Requirement{Type: "command", Name: bin, Source: "explicit"})
+	}
+
+	for _, env := range extractRequiredEnvNames(skill) {
 		req := Requirement{Type: "env", Name: env, Source: "explicit"}
-		if cc != nil && cc.ProvidedEnvVars[env] {
+		if checkContextProvidesEnv(cc, env) {
 			req.Provided = true
 		}
 		reqs = append(reqs, req)
@@ -97,14 +110,64 @@ func ExtractRequirements(skill *corelib.NLSkillEntry, ctx ...*CheckContext) []Re
 	return reqs
 }
 
+func extractRequiredEnvNames(skill *corelib.NLSkillEntry) []string {
+	if skill == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		key := strings.ToUpper(name)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		names = append(names, name)
+	}
+
+	for _, env := range skill.RequiredEnv {
+		add(env)
+	}
+	for _, step := range skill.Steps {
+		step = NormalizeStepForRunnerCopy(step, "")
+		for _, env := range stringListParam(firstNonNilStepParam(step.Params, "required_env", "requires_env", "required_environment")) {
+			add(env)
+		}
+	}
+	return names
+}
+
+func checkContextProvidesEnv(cc *CheckContext, name string) bool {
+	if cc == nil || cc.ProvidedEnvVars == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, candidate := range []string{name, strings.ToUpper(name), strings.ToLower(name)} {
+		if cc.ProvidedEnvVars[candidate] {
+			return true
+		}
+	}
+	for provided, ok := range cc.ProvidedEnvVars {
+		if ok && strings.EqualFold(provided, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // inferCommandRequirements scans bash step commands for system commands.
 // Commands that are covered by explicit RequiresPython/RequiresNode are
 // excluded dynamically (not via a hardcoded skip list).
 //
-// Limitation: only extracts the first command word from each step. Piped
-// commands (cmd1 | cmd2) and chained commands (cmd1 && cmd2) only yield
-// cmd1. This is acceptable because inferred requirements are warnings,
-// not errors — they don't block execution.
+// Inferred command requirements are warnings in generic validation; runners
+// can promote them when they are checking a skill that is about to execute.
 func inferCommandRequirements(skill *corelib.NLSkillEntry) []Requirement {
 	coveredRuntimes := buildCoveredRuntimes(skill)
 
@@ -112,6 +175,7 @@ func inferCommandRequirements(skill *corelib.NLSkillEntry) []Requirement {
 	var reqs []Requirement
 
 	for _, step := range skill.Steps {
+		step = NormalizeStepForRunnerCopy(step, "")
 		if step.Action != "bash" {
 			continue
 		}
@@ -119,24 +183,184 @@ func inferCommandRequirements(skill *corelib.NLSkillEntry) []Requirement {
 		if cmd == "" {
 			continue
 		}
-		first := extractFirstWord(strings.TrimSpace(cmd))
-		if first == "" || seen[first] {
-			continue
+		for _, first := range extractCommandWords(cmd) {
+			first = normalizeInferredCommandName(first)
+			seenKey := strings.ToLower(first)
+			if first == "" || seen[seenKey] {
+				continue
+			}
+			lower := strings.ToLower(first)
+			if shellBuiltins[lower] || coveredRuntimes[lower] || skipInferredCommand(first) {
+				continue
+			}
+			seen[seenKey] = true
+			reqs = append(reqs, Requirement{Type: "command", Name: first, Source: "inferred"})
 		}
-		lower := strings.ToLower(first)
-		if shellBuiltins[lower] || coveredRuntimes[lower] {
-			continue
-		}
-		seen[first] = true
-		reqs = append(reqs, Requirement{Type: "command", Name: first, Source: "inferred"})
 	}
 	return reqs
+}
+
+func normalizeInferredCommandName(command string) string {
+	return strings.Trim(strings.TrimSpace(command), "\"'`")
+}
+
+func extractCommandWords(command string) []string {
+	seen := map[string]bool{}
+	var words []string
+	for _, line := range commandPrecheckLines(command) {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, segment := range splitCommandSegments(line) {
+			for _, first := range extractCommandWordsFromSegment(strings.TrimSpace(segment)) {
+				if first == "" {
+					continue
+				}
+				key := strings.ToLower(first)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				words = append(words, first)
+			}
+		}
+	}
+	return words
+}
+
+func extractCommandWordsFromSegment(segment string) []string {
+	fields := splitCommandFields(segment)
+	commandIndex := firstShellCommandFieldIndex(fields)
+	if commandIndex < 0 {
+		return nil
+	}
+	var words []string
+	for commandIndex >= 0 && commandIndex < len(fields) {
+		first := normalizeInferredCommandName(fields[commandIndex])
+		first = strings.TrimLeft(first, "(")
+		first = strings.TrimRight(first, ")")
+		if first == "" {
+			return words
+		}
+		words = append(words, first)
+		nextIndex := wrappedCommandIndex(fields, commandIndex)
+		if nextIndex <= commandIndex {
+			return words
+		}
+		commandIndex = nextIndex
+	}
+	return words
+}
+
+func wrappedCommandIndex(fields []string, commandIndex int) int {
+	if commandIndex < 0 || commandIndex >= len(fields) {
+		return -1
+	}
+	switch strings.ToLower(normalizeInferredCommandName(fields[commandIndex])) {
+	case "env":
+		for i := commandIndex + 1; i < len(fields); i++ {
+			field := strings.TrimSpace(fields[i])
+			if field == "" {
+				continue
+			}
+			if field == "--" || isShellEnvAssignmentField(field) {
+				continue
+			}
+			if envOptionConsumesNext(field) {
+				i++
+				continue
+			}
+			if strings.HasPrefix(field, "-") {
+				continue
+			}
+			return i
+		}
+	case "exec", "time", "nohup", "sudo", "doas":
+		return nextWrappedCommandField(fields, commandIndex+1, strings.ToLower(normalizeInferredCommandName(fields[commandIndex])))
+	}
+	return -1
+}
+
+func nextWrappedCommandField(fields []string, start int, wrapper string) int {
+	for i := start; i < len(fields); i++ {
+		field := strings.TrimSpace(fields[i])
+		if field == "" {
+			continue
+		}
+		if field == "--" || isShellEnvAssignmentField(field) {
+			continue
+		}
+		if wrapperOptionConsumesNext(wrapper, field) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(field, "-") {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func wrapperOptionConsumesNext(wrapper, field string) bool {
+	field = strings.TrimSpace(field)
+	if strings.Contains(field, "=") {
+		return false
+	}
+	switch wrapper {
+	case "exec":
+		return field == "-a"
+	case "time":
+		return field == "-f" || field == "--format" || field == "-o" || field == "--output"
+	case "sudo":
+		switch field {
+		case "-A", "-b", "-B", "-C", "-c", "-D", "-g", "-h", "-p", "-R", "-r", "-T", "-t", "-U", "-u":
+			return true
+		case "--askpass", "--close-from", "--chdir", "--group", "--host", "--prompt", "--role", "--type", "--other-user", "--user":
+			return true
+		}
+	case "doas":
+		return field == "-u"
+	}
+	return false
+}
+
+func envOptionConsumesNext(field string) bool {
+	field = strings.TrimSpace(field)
+	switch field {
+	case "-u", "--unset", "-C", "--chdir", "-S", "--split-string":
+		return true
+	default:
+		return false
+	}
+}
+
+func skipInferredCommand(command string) bool {
+	command = strings.Trim(strings.TrimSpace(command), "\"'`")
+	if command == "" {
+		return true
+	}
+	if strings.ContainsAny(command, "{}$") {
+		return true
+	}
+	if strings.HasPrefix(command, "-") {
+		return true
+	}
+	if strings.HasPrefix(command, ".") || strings.HasPrefix(command, "/") || strings.HasPrefix(command, `\`) {
+		return true
+	}
+	if strings.Contains(command, "/") || strings.Contains(command, `\`) {
+		return true
+	}
+	return false
 }
 
 // buildCoveredRuntimes returns the set of command names that are already
 // covered by the skill's explicit dependency declarations. This is data-driven:
 // if RequiresPython is non-empty, python/python3/pip/pip3 are covered.
 // If RequiresNode is non-empty, node/npm/npx are covered.
+// RequiresBins covers the exact command names it declares.
 //
 // When a new dependency type is added (e.g., RequiresCargo → cargo/rustc),
 // add a block here. This is O(dependency_types), not O(commands).
@@ -152,6 +376,11 @@ func buildCoveredRuntimes(skill *corelib.NLSkillEntry) map[string]bool {
 			covered[cmd] = true
 		}
 	}
+	for _, bin := range skill.RequiresBins {
+		if bin = strings.ToLower(strings.TrimSpace(bin)); bin != "" {
+			covered[bin] = true
+		}
+	}
 	return covered
 }
 
@@ -165,6 +394,12 @@ var shellBuiltins = map[string]bool{
 	"source": true, "chmod": true, "chown": true, "touch": true,
 	"head": true, "tail": true, "grep": true, "sed": true, "awk": true,
 	"sort": true, "uniq": true, "wc": true, "tee": true, "xargs": true,
+	"then": true, "else": true, "elif": true, "fi": true, "do": true,
+	"done": true, "case": true, "esac": true, "function": true,
+	"command": true, "exec": true, "printf": true, "read": true,
+	"unset": true, "alias": true, "unalias": true, "type": true,
+	"trap": true, "pushd": true, "popd": true, "dirs": true,
+	"declare": true, "local": true, "let": true,
 }
 
 // splitPkgVersion splits "pdfplumber>=0.9" into ("pdfplumber", ">=0.9").

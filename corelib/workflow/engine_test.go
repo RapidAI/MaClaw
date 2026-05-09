@@ -104,19 +104,20 @@ func TestEngine_CompleteWorkflowLifecycle(t *testing.T) {
 				t.Errorf("phase %d: non-confirm input should not advance NeedsConfirm phase", i)
 			}
 
-			// HandleInput requires PhaseOutputs to exist before confirm can advance,
-			// so inject a mock output for the current phase.
-			engine.mu.Lock()
-			engine.workflows["u1"].PhaseOutputs[phase.ID] = "mock output for " + phase.ID
-			engine.mu.Unlock()
-
-			// Now confirm to advance
+			saveReviewOutputForCurrentPhase(t, engine, "u1")
 			resp, err = engine.HandleInput("u1", "确认")
 			if err != nil {
 				t.Fatalf("HandleInput confirm at phase %d failed: %v", i, err)
 			}
+			if !resp.PendingConfirm {
+				t.Errorf("phase %d: HandleInput should request review intent classification", i)
+			}
+			resp, err = engine.ApplyReviewIntent("u1", ReviewIntentConfirm, "")
+			if err != nil {
+				t.Fatalf("ApplyReviewIntent confirm at phase %d failed: %v", i, err)
+			}
 			if !resp.Advance {
-				t.Errorf("phase %d: confirm should advance NeedsConfirm phase", i)
+				t.Errorf("phase %d: classified confirm should advance NeedsConfirm phase", i)
 			}
 		} else {
 			// Non-NeedsConfirm phase (e.g., implementation): advance via advancePhase directly
@@ -176,17 +177,21 @@ func TestEngine_SQLiteUnavailableDegradation(t *testing.T) {
 		t.Errorf("expected active, got %s", state.Status)
 	}
 
-	// HandleInput should work — inject phase output before confirming
-	engine.mu.Lock()
-	engine.workflows["u1"].PhaseOutputs["requirements"] = "mock output"
-	engine.mu.Unlock()
+	saveReviewOutputForCurrentPhase(t, engine, "u1")
 
 	resp, err := engine.HandleInput("u1", "确认")
 	if err != nil {
 		t.Fatalf("HandleInput with NullStore failed: %v", err)
 	}
+	if !resp.PendingConfirm {
+		t.Error("HandleInput should request review intent classification")
+	}
+	resp, err = engine.ApplyReviewIntent("u1", ReviewIntentConfirm, "")
+	if err != nil {
+		t.Fatalf("ApplyReviewIntent with NullStore failed: %v", err)
+	}
 	if !resp.Advance {
-		t.Error("confirm should advance phase")
+		t.Error("classified confirm should advance phase")
 	}
 
 	// RestoreFromStore with NullStore should be no-op

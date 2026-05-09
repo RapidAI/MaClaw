@@ -9,7 +9,6 @@ package main
 //
 // Current limitations vs GUI:
 // - No doc preview panel (TUI is text-only — documents shown inline)
-// - No lightweight LLM confirm classifier (uses keyword matching only)
 // - No SteeringWorkflowDetector (steering rules still work via agent loop)
 // - No SubAgent (TUI uses direct mode via agent.RunLoop)
 //
@@ -161,7 +160,7 @@ func (app *TUIApp) handleWorkflowInterception(text string) string {
 		}
 		return app.handleNeedsUnderstandingTUI(text)
 
-	case workflow.FilterSmallTalk, workflow.FilterSimpleDirective:
+	case workflow.FilterSimpleDirective:
 		return "" // pass through to normal agent loop
 	}
 
@@ -180,12 +179,8 @@ func (app *TUIApp) handleActiveWorkflowTUI(text string) string {
 		return ""
 	}
 
-	if resp.PendingConfirm {
-		// TUI uses keyword matching for confirm detection.
-		// The engine's isOnlyConfirmWord already handles this correctly.
-		// If we reach PendingConfirm, the engine didn't match a pure confirm
-		// word — treat as modify/other and fall through to agent loop.
-		return ""
+	if resp.PendingReview || resp.PendingConfirm {
+		return app.handleWorkflowReviewTUI(userID, text)
 	}
 
 	if !resp.RunAgentLoop {
@@ -211,6 +206,91 @@ func (app *TUIApp) handleActiveWorkflowTUI(text string) string {
 		return resp.Text
 	}
 	return "" // fall through to agent loop with stashed phase prompt
+}
+
+func (app *TUIApp) handleWorkflowReviewTUI(userID, text string) string {
+	intent := workflow.ReviewIntentOther
+	if strings.TrimSpace(app.llmConfig.URL) != "" && strings.TrimSpace(app.llmConfig.Model) != "" {
+		raw, err := app.classifyWorkflowReviewIntentTUI(userID, text)
+		if err != nil {
+			log.Printf("[TUI-workflow] review intent classification failed: %v", err)
+		} else {
+			intent = workflow.ParseReviewIntent(raw)
+		}
+	}
+
+	resp, err := app.workflowEngine.ApplyReviewIntent(userID, intent, text)
+	if err != nil {
+		log.Printf("[TUI-workflow] ApplyReviewIntent error: intent=%s err=%v", intent, err)
+		return app.workflowReviewBarrierText(userID)
+	}
+	if intent == workflow.ReviewIntentSwitchTask {
+		return app.handleWorkflowInterception(text)
+	}
+	return app.handleWorkflowResponseTUI(userID, resp)
+}
+
+func (app *TUIApp) classifyWorkflowReviewIntentTUI(userID, text string) (string, error) {
+	messages := []interface{}{
+		map[string]string{
+			"role": "system",
+			"content": `You are a user intent classifier for a workflow review step.
+
+The user has just seen a phase deliverable and the workflow must wait for an explicit review decision before continuing.
+
+Classify the user's response into exactly one category. Reply with ONLY the category word:
+- "confirm" — approve and continue to the next phase.
+- "supplement" — provide additions, corrections, questions, or requested changes for the current phase deliverable.
+- "skip" — skip the current phase if the workflow template allows it.
+- "cancel" — abandon the current workflow.
+- "switch_task" — abandon this workflow and start a clearly different task.
+- "other" — unrelated request that should not advance or execute tools while review is pending.`,
+		},
+		map[string]string{
+			"role":    "user",
+			"content": text,
+		},
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := agent.DoSimpleLLMRequest(app.llmConfig, messages, client, 10*time.Second)
+	if err != nil || resp == nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
+func (app *TUIApp) handleWorkflowResponseTUI(userID string, resp *workflow.WorkflowResponse) string {
+	if resp == nil {
+		return ""
+	}
+	if !resp.RunAgentLoop {
+		if resp.Complete {
+			app.workflowMu.Lock()
+			app.workflowAgentLoop = false
+			app.pendingPhasePrompt = ""
+			app.workflowMu.Unlock()
+		}
+		return resp.Text
+	}
+	if resp.PhasePrompt != "" {
+		app.workflowMu.Lock()
+		app.pendingPhasePrompt = resp.PhasePrompt
+		app.workflowAgentLoop = true
+		app.workflowMu.Unlock()
+	}
+	return ""
+}
+
+func (app *TUIApp) workflowReviewBarrierText(userID string) string {
+	ws := app.workflowEngine.GetActiveWorkflow(userID)
+	if ws == nil {
+		return ""
+	}
+	phaseName := ws.CurrentPhase
+	if tmpl := app.workflowEngine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
+		phaseName = tmpl.Phases[ws.PhaseIndex].Name
+	}
+	return fmt.Sprintf("Current workflow is waiting for review at phase %q. Please confirm, supplement, skip if allowed, cancel, or start a clearly different task.", phaseName)
 }
 
 func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {

@@ -19,8 +19,8 @@ package intent
 func DefaultDefinitions() []IntentDefinition {
 	return []IntentDefinition{
 		{
-			Label:  LabelCoding,
-			Domain: "编码开发 (Coding)",
+			Label:              LabelCoding,
+			Domain:             "编码开发 (Coding)",
 			MayTriggerWorkflow: true, // coding workflow (needs → design → tasks → implement → review)
 			WorkflowTypes:      []string{"coding"},
 			TreeText: "用户要从零创建软件/应用/游戏/工具/脚本，需要完整开发流程。" +
@@ -203,8 +203,30 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{"send_file", "open", "craft_tool"},
 		},
 		{
-			Label:  LabelOffice,
-			Domain: "内容处理 (Content)",
+			Label:  LabelBusinessData,
+			Domain: "Business Data",
+			TreeText: "The user wants to create, continue, validate, approve, query, or store structured enterprise business data through a runtime form or transaction workspace. " +
+				"This includes expense reimbursement, travel reimbursement, purchase requests, leave requests, invoices, contracts, assets, customers, tickets, approvals, and unfinished business entries. " +
+				"Do not decide the exact business object by keyword; this label only routes to the semantic MIS runtime, which resolves the object and action.",
+			EmbedTexts: []string{
+				"continue the unfinished expense reimbursement entry",
+				"open my pending business transaction form",
+				"submit a travel reimbursement with invoices",
+				"create a purchase request and send it for approval",
+				"record structured business data for an invoice",
+				"validate this business form before committing it",
+				"resume the saved approval transaction",
+				"store this contract record in the business system",
+				"fill in a leave request form",
+				"query the local transaction workspace",
+				"write structured MIS data from an agent-generated form",
+				"collect required fields for an enterprise business object",
+			},
+			ToolNames: []string{"mis_data"},
+		},
+		{
+			Label:              LabelOffice,
+			Domain:             "内容处理 (Content)",
 			MayTriggerWorkflow: true, // presentation_design workflow
 			WorkflowTypes:      []string{"presentation_design"},
 			TreeText: "用户要创建需要设计决策的演示文稿（PPT/幻灯片/slide）。" +
@@ -230,8 +252,8 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{"office"},
 		},
 		{
-			Label:  LabelWorkflowTask,
-			Domain: "多阶段工作流 (Workflow)",
+			Label:              LabelWorkflowTask,
+			Domain:             "多阶段工作流 (Workflow)",
 			MayTriggerWorkflow: true,
 			WorkflowTypes: []string{
 				"product_design", "innovation", "business_plan", "testing",
@@ -300,16 +322,16 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{},
 		},
 		{
-			Label:  LabelAmbiguous,
-			Domain: "特殊 (Special)",
-			TreeText: "消息不明确，可能属于多个类别，没有主导信号。",
+			Label:      LabelAmbiguous,
+			Domain:     "特殊 (Special)",
+			TreeText:   "消息不明确，可能属于多个类别，没有主导信号。",
 			EmbedTexts: nil, // no anchors for ambiguous
 			ToolNames:  []string{},
 		},
 		{
-			Label:  LabelUnknown,
-			Domain: "特殊 (Special)",
-			TreeText: "不属于任何已知类别。",
+			Label:      LabelUnknown,
+			Domain:     "特殊 (Special)",
+			TreeText:   "不属于任何已知类别。",
 			EmbedTexts: nil, // no anchors for unknown
 			ToolNames:  []string{},
 		},

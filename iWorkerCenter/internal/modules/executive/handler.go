@@ -1,10 +1,13 @@
 package executive
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -23,6 +26,29 @@ type Handler struct {
 	read        *sql.DB
 	audit       *audit.Repo
 	workflowSvc *workflow.Service
+}
+
+const maxExecutiveJSONBodyBytes = 128 << 10
+
+func decodeExecutiveJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxExecutiveJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxExecutiveJSONBodyBytes {
+		return errors.New("executive json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("executive json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 func NewHandler(read *sql.DB, auditRepo *audit.Repo) *Handler {
@@ -197,7 +223,7 @@ func (h *Handler) handleRunSkill(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		SkillID string `json:"skill_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeExecutiveJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -231,7 +257,7 @@ func (h *Handler) handleRecordManagementDecision(w http.ResponseWriter, r *http.
 		Detail       string `json:"detail"`
 		DisplayTime  string `json:"display_time"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeExecutiveJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -267,7 +293,7 @@ func (h *Handler) handleConfirmAutonomyReturn(w http.ResponseWriter, r *http.Req
 		Detail      string `json:"detail"`
 		DisplayTime string `json:"display_time"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeExecutiveJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -302,7 +328,7 @@ func (h *Handler) handleGenerateDepositionDrafts(w http.ResponseWriter, r *http.
 		ActionTitle string `json:"action_title"`
 		Detail      string `json:"detail"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeExecutiveJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -338,7 +364,7 @@ func (h *Handler) handlePublishDepositionRollout(w http.ResponseWriter, r *http.
 		WorkflowID string `json:"workflow_id"`
 		Detail     string `json:"detail"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeExecutiveJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}

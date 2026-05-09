@@ -121,10 +121,20 @@ func (r *TenantRepo) UpdateStatus(ctx context.Context, id, status string) error 
 }
 
 func (r *TenantRepo) UpdateCloudInfo(ctx context.Context, id, centerID, secret string) error {
-	_, err := r.write.ExecContext(ctx,
+	res, err := r.write.ExecContext(ctx,
 		`UPDATE tenants SET cloud_center_id = ?, cloud_secret = ?, updated_at = datetime('now') WHERE id = ?`,
 		centerID, secret, id)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrTenantNotFound
+	}
+	return nil
 }
 
 func (r *TenantRepo) scanOne(row *sql.Row) (*Tenant, error) {

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -131,7 +132,7 @@ func TestMergeRequiredEnvParamPreservesStepEnv(t *testing.T) {
 	}
 }
 
-func TestMergeExtraEnvParamPreservesStepValues(t *testing.T) {
+func TestMergeExtraEnvParamLetsRunEnvOverrideStepDefaults(t *testing.T) {
 	params := map[string]interface{}{
 		"extra_env": map[string]interface{}{
 			"STEP_ONLY": "1",
@@ -144,7 +145,7 @@ func TestMergeExtraEnvParamPreservesStepValues(t *testing.T) {
 	if !ok {
 		t.Fatalf("extra_env type = %T, want map[string]interface{}", params["extra_env"])
 	}
-	if got["SHARED"] != "from-step" || got["STEP_ONLY"] != "1" || got["RUN_ONLY"] != "2" {
+	if got["SHARED"] != "from-run" || got["STEP_ONLY"] != "1" || got["RUN_ONLY"] != "2" {
 		t.Fatalf("extra_env merge = %#v", got)
 	}
 }
@@ -176,6 +177,1384 @@ func TestSkillRunnerStartRun_RejectsSkillWithoutExecutableSteps(t *testing.T) {
 	}
 }
 
+func TestSkillRunnerStartRun_RejectsKnowledgeSkillWithoutCraftFallback(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	skillDir := filepath.Join(tempHome, "knowledge-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.md"), []byte("# Knowledge\n\n```bash\necho example-only\n```\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "knowledge",
+		Type:        "knowledge_skill",
+		Description: "Reference docs",
+		Status:      "active",
+		SkillDir:    skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo stale-cache"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("knowledge", nil)
+	if err == nil || !strings.Contains(err.Error(), "knowledge skill") || !strings.Contains(err.Error(), "not directly executable") {
+		t.Fatalf("expected knowledge skill error, got %v", err)
+	}
+}
+
+func TestSkillRunnerStartRun_RejectsMissingRequiredParamSchema(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "schema-required",
+		Status: "active",
+		Mode:   "interactive",
+		Steps: []corelib.NLSkillStep{{
+			Action: "craft_tool",
+			Params: map[string]interface{}{"task": "write about {{topic}}"},
+		}},
+		Params: []corelib.NLSkillParam{{Name: "topic", Required: true}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("schema-required", nil)
+	if err == nil || !strings.Contains(err.Error(), "topic") {
+		t.Fatalf("expected required param schema error, got %v", err)
+	}
+}
+
+func TestSkillRunnerStartRun_BlocksMissingInferredCommand(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	missingCommand := "definitely-missing-skill-runner-command-gui"
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "missing-command-skill",
+		Status: "active",
+		Mode:   "interactive",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": missingCommand + " --version",
+			},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("missing-command-skill", nil)
+	if err == nil || !strings.Contains(err.Error(), missingCommand) {
+		t.Fatalf("expected missing inferred command precheck error, got %v", err)
+	}
+}
+
+func TestSkillRunnerStartRun_AllowsGUIOpenAIProxyEnv(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("OPENAI_API_KEY", "")
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "openai-env-skill",
+		Status:      "active",
+		RequiredEnv: []string{"OPENAI_API_KEY"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo ok"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("openai-env-skill", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; GUI runner should satisfy OPENAI_API_KEY via local proxy", err)
+	}
+	_ = runner.CancelRun(runID)
+}
+
+func TestSkillRunnerRunFailsWhenOpenAIProxyConfigMissing(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	skill := &corelib.NLSkillEntry{
+		Name:        "openai-env-missing-config",
+		Status:      "active",
+		RequiredEnv: []string{"OPENAI_API_KEY"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo should-not-run"},
+		}},
+	}
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:  "proxy-missing-config",
+			Skill:  skill.Name,
+			Status: "running",
+			Steps: []StepResult{{
+				Index:  0,
+				Action: "bash",
+				Status: "pending",
+			}},
+		},
+	}
+	runner := NewSkillRunner(&SkillExecutor{})
+
+	runner.executeAsync(context.Background(), run, skill)
+
+	if run.status.Status != "failed" {
+		t.Fatalf("status = %+v, want failed proxy configuration error", run.status)
+	}
+	if !strings.Contains(run.status.Error, "configure_llm") {
+		t.Fatalf("status error = %q, want configure_llm action", run.status.Error)
+	}
+	if len(run.status.Steps) != 1 || run.status.Steps[0].Status != "skipped" {
+		t.Fatalf("steps = %#v, want step skipped before execution", run.status.Steps)
+	}
+	if run.status.EndedAt == "" || run.status.DurationMs < 0 {
+		t.Fatalf("terminal timing not recorded: %+v", run.status)
+	}
+}
+
+func TestSkillRunnerRunRecordsStatsForOpenAIProxyConfigFailure(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("OPENAI_API_KEY", "")
+
+	skill := corelib.NLSkillEntry{
+		Name:        "openai-env-stats-failure",
+		Status:      "active",
+		RequiredEnv: []string{"OPENAI_API_KEY"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo should-not-run"},
+		}},
+	}
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{skill}
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:     "Empty",
+		IsCustom: true,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Empty"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	runner := NewSkillRunner(NewSkillExecutor(app, nil, nil))
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:  "proxy-missing-config-stats",
+			Skill:  skill.Name,
+			Status: "running",
+			Steps: []StepResult{{
+				Index:  0,
+				Action: "bash",
+				Status: "pending",
+			}},
+		},
+	}
+	runner.runs[run.status.RunID] = run
+
+	runner.executeAsync(context.Background(), run, &skill)
+
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after run error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 {
+		t.Fatalf("skills = %#v, want one skill", cfg.NLSkills)
+	}
+	got := cfg.NLSkills[0]
+	if got.UsageCount != 1 || got.FailureCount != 1 || got.SuccessCount != 0 {
+		t.Fatalf("stats = usage:%d success:%d failure:%d, want usage=1 success=0 failure=1", got.UsageCount, got.SuccessCount, got.FailureCount)
+	}
+	if !strings.Contains(got.LastError, "configure_llm") {
+		t.Fatalf("LastError = %q, want configure_llm action", got.LastError)
+	}
+}
+
+func TestSkillRunnerRunSkipsProxyForInactiveOpenAIStep(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	skill := &corelib.NLSkillEntry{
+		Name:   "inactive-openai-step",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Params: map[string]interface{}{"command": "echo runtime-ok"}},
+			{Action: "bash", When: "{{mode}} == openai", Params: map[string]interface{}{"command": "echo $OPENAI_API_KEY"}},
+		},
+	}
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{*skill}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	runner := NewSkillRunner(NewSkillExecutor(app, nil, nil))
+	run := &skillRun{
+		status: SkillRunStatus{
+			RunID:  "inactive-openai-step-run",
+			Skill:  skill.Name,
+			Status: "running",
+			Steps: []StepResult{
+				{Index: 0, Action: "bash", Status: "pending"},
+				{Index: 1, Action: "bash", Status: "pending"},
+			},
+		},
+		templateVars: map[string]string{"mode": "basic"},
+	}
+	runner.runs[run.status.RunID] = run
+
+	runner.executeAsync(context.Background(), run, skill)
+
+	if run.status.Status != "success" {
+		t.Fatalf("status = %+v, want success without proxy configuration", run.status)
+	}
+	if len(run.status.Steps) != 2 || run.status.Steps[0].Status != "success" || run.status.Steps[1].Status != "skipped" {
+		t.Fatalf("steps = %#v, want first success and inactive OpenAI step skipped", run.status.Steps)
+	}
+	if !strings.Contains(run.status.Steps[0].Output, "runtime-ok") {
+		t.Fatalf("first step output = %q, want runtime-ok", run.status.Steps[0].Output)
+	}
+}
+
+func TestSkillRunnerStartRun_AllowsEnvDerivedFromRunParam(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("API_TOKEN", "")
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "env-from-param",
+		Status:      "active",
+		RequiredEnv: []string{"API_TOKEN"},
+		Params:      []corelib.NLSkillParam{{Name: "api_token", Required: true}},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command":   "echo ok",
+				"extra_env": map[string]interface{}{"API_TOKEN": "{{api_token}}"},
+			},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("env-from-param", map[string]interface{}{"api_token": "secret"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; env derived from run params should satisfy API_TOKEN", err)
+	}
+	_ = runner.CancelRun(runID)
+}
+
+func TestSkillRunnerStartRun_AcceptsRunProvidedExtraEnvAlias(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("API_TOKEN", "")
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "extra-env-alias",
+		Status:      "active",
+		RequiredEnv: []string{"API_TOKEN"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "echo ok",
+			},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("extra-env-alias", map[string]interface{}{
+		"extra_env": map[string]interface{}{"API_TOKEN": "secret"},
+	})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; extra_env alias should satisfy API_TOKEN", err)
+	}
+	_ = runner.CancelRun(runID)
+}
+
+func TestSkillRunnerStartRun_ExecutesPipelineSkillWithoutSteps(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:        "child-echo",
+			Status:      "active",
+			RequiredEnv: []string{"API_TOKEN"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": pipelineTestEchoCommand()},
+			}},
+		},
+		{
+			Name:   "pipeline-demo",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill:  "child-echo",
+				Params: map[string]string{"input": "{{input}}"},
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-demo", map[string]interface{}{
+		"input":     "pipeline-ok",
+		"extra_env": map[string]interface{}{"API_TOKEN": "secret-from-parent"},
+	})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; pipeline skills should not need direct steps", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var status *SkillRunStatus
+	for time.Now().Before(deadline) {
+		status, err = runner.GetRunStatus(runID)
+		if err != nil {
+			t.Fatalf("GetRunStatus() error = %v", err)
+		}
+		if status.Status != "running" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status == nil || status.Status != "success" {
+		t.Fatalf("pipeline status = %+v, want success", status)
+	}
+	if len(status.Steps) != 1 || status.Steps[0].Status != "success" || !strings.Contains(status.Steps[0].Output, "pipeline-ok") || !strings.Contains(status.Steps[0].Output, "secret-from-parent") {
+		t.Fatalf("pipeline steps = %#v, want child output captured", status.Steps)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineCarriesNestedArgsContextToSubSkills(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("API_TOKEN", "")
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:         "child-nested-context",
+			Status:       "active",
+			RequiredArgs: []string{"input"},
+			RequiredEnv:  []string{"API_TOKEN"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": pipelineTestEchoCommand()},
+			}},
+		},
+		{
+			Name:   "pipeline-nested-context",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill: "child-nested-context",
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-nested-context", map[string]interface{}{
+		"args": map[string]interface{}{
+			"input":     "nested-pipeline-ok",
+			"extra_env": map[string]interface{}{"API_TOKEN": "secret-from-nested-parent"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; nested args context should satisfy pipeline child", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var status *SkillRunStatus
+	for time.Now().Before(deadline) {
+		status, err = runner.GetRunStatus(runID)
+		if err != nil {
+			t.Fatalf("GetRunStatus() error = %v", err)
+		}
+		if status.Status != "running" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if status == nil || status.Status != "success" {
+		t.Fatalf("pipeline status = %+v, want success", status)
+	}
+	if len(status.Steps) != 1 || status.Steps[0].Status != "success" || !strings.Contains(status.Steps[0].Output, "nested-pipeline-ok") || !strings.Contains(status.Steps[0].Output, "secret-from-nested-parent") {
+		t.Fatalf("pipeline steps = %#v, want nested context in child output", status.Steps)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineCarriesTextAliasToSubSkills(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:         "child-text",
+			Status:       "active",
+			RequiredArgs: []string{"text"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "echo text={{text}}"},
+			}},
+		},
+		{
+			Name:   "pipeline-text",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill: "child-text",
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-text", map[string]interface{}{"text": "translate me"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; parent text should satisfy pipeline child", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" {
+		t.Fatalf("pipeline status = %+v, want success", status)
+	}
+	if len(status.Steps) != 1 || !strings.Contains(status.Steps[0].Output, "translate me") {
+		t.Fatalf("pipeline steps = %#v, want text alias in child output", status.Steps)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineCarriesPlainArgsToTextSubSkill(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:         "child-text",
+			Status:       "active",
+			RequiredArgs: []string{"text"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "echo text={{text}}"},
+			}},
+		},
+		{
+			Name:   "pipeline-plain-args",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill: "child-text",
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-plain-args", map[string]interface{}{"args": "translate me"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; plain args should satisfy child text", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" {
+		t.Fatalf("pipeline status = %+v, want success", status)
+	}
+	if len(status.Steps) != 1 || !strings.Contains(status.Steps[0].Output, "translate me") {
+		t.Fatalf("pipeline steps = %#v, want plain args in child output", status.Steps)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelinePropagatesCapturedVars(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:   "capture-file",
+			Status: "active",
+			Steps: []corelib.NLSkillStep{{
+				Action:  "bash",
+				Params:  map[string]interface{}{"command": "echo file=report.md"},
+				Capture: map[string]string{"file": `(?m)^file=([^\r\n]+)`},
+			}},
+		},
+		{
+			Name:         "use-input",
+			Status:       "active",
+			RequiredArgs: []string{"input"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "echo using {{input}}"},
+			}},
+		},
+		{
+			Name:   "pipeline-capture",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{
+				{Skill: "capture-file"},
+				{Skill: "use-input", Params: map[string]string{"input": "{{capture-file.input}}"}},
+			},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-capture", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" {
+		t.Fatalf("pipeline status = %+v, want success", status)
+	}
+	if len(status.Steps) != 2 || !strings.Contains(status.Steps[1].Output, "report.md") || strings.Contains(status.Steps[1].Output, "{{capture-file.input}}") {
+		t.Fatalf("pipeline steps = %#v, want async downstream step to receive captured alias", status.Steps)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineChecksParentRequiredEnv(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("API_TOKEN", "")
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:   "child-never",
+			Status: "active",
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "echo should-not-run"},
+			}},
+		},
+		{
+			Name:        "pipeline-env",
+			Status:      "active",
+			Mode:        "pipeline",
+			RequiredEnv: []string{"API_TOKEN"},
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill: "child-never",
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	if _, err := runner.StartRun("pipeline-env", nil); err == nil || !strings.Contains(err.Error(), "API_TOKEN") {
+		t.Fatalf("StartRun() error = %v, want parent required_env precheck", err)
+	}
+
+	runID, err := runner.StartRun("pipeline-env", map[string]interface{}{"env": map[string]interface{}{"API_TOKEN": "secret"}})
+	if err != nil {
+		t.Fatalf("StartRun() with env error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" || !strings.Contains(status.Steps[0].Output, "should-not-run") {
+		t.Fatalf("pipeline status = %+v, want run-provided env to satisfy parent pipeline", status)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineContinueOnFailKeepsParentSuccess(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:   "child-fail",
+			Status: "active",
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: pipelineTestFailParams(),
+			}},
+		},
+		{
+			Name:   "child-ok",
+			Status: "active",
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{
+					"command": "echo recovered",
+				},
+			}},
+		},
+		{
+			Name:   "pipeline-continue",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{
+				{Skill: "child-fail", ContinueOnFail: true},
+				{Skill: "child-ok"},
+			},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-continue", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" {
+		t.Fatalf("pipeline status = %+v, want success despite continue_on_fail child", status)
+	}
+	if len(status.Steps) != 2 || status.Steps[0].Status != "failed" || status.Steps[1].Status != "success" {
+		t.Fatalf("pipeline steps = %#v, want failed then success", status.Steps)
+	}
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after run error = %v", err)
+	}
+	var parent *corelib.NLSkillEntry
+	for i := range cfg.NLSkills {
+		if cfg.NLSkills[i].Name == "pipeline-continue" {
+			parent = &cfg.NLSkills[i]
+			break
+		}
+	}
+	if parent == nil || parent.SuccessCount != 1 || parent.FailureCount != 0 {
+		t.Fatalf("parent usage stats = %+v, want success counted", parent)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineContinueOnFailPropagatesFailedCapture(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:   "child-fail-capture",
+			Status: "active",
+			Steps: []corelib.NLSkillStep{{
+				Action:  "bash",
+				Params:  pipelineTestFailCapturedParams(),
+				Capture: map[string]string{"file": `(?m)^file=([^\r\n]+)`},
+			}},
+		},
+		{
+			Name:         "child-use-input",
+			Status:       "active",
+			RequiredArgs: []string{"input"},
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "echo using {{input}}"},
+			}},
+		},
+		{
+			Name:   "pipeline-continue-capture",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{
+				{Skill: "child-fail-capture", ContinueOnFail: true},
+				{Skill: "child-use-input", Params: map[string]string{"input": "{{child-fail-capture.input}}"}},
+			},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-continue-capture", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" {
+		t.Fatalf("pipeline status = %+v, want success despite failed capture step", status)
+	}
+	if len(status.Steps) != 2 || status.Steps[0].Status != "failed" || !strings.Contains(status.Steps[1].Output, "report.md") {
+		t.Fatalf("pipeline steps = %#v, want failed-step capture to feed second step", status.Steps)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineStepParamsSelectChildAPIWorkflowOperation(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	missingCommand := "definitely-missing-pipeline-child-workflow-command"
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:   "child-workflow",
+			Status: "active",
+			Mode:   "api_workflow",
+			Operations: []corelib.NLSkillOperation{
+				{Name: "safe", Labels: []string{"safe-step"}},
+				{Name: "danger", Labels: []string{"danger-step"}},
+			},
+			Steps: []corelib.NLSkillStep{
+				{Action: "bash", Label: "safe-step", Params: map[string]interface{}{"command": "echo child-safe"}},
+				{Action: "bash", Label: "danger-step", Params: map[string]interface{}{"command": missingCommand + " --version"}},
+			},
+		},
+		{
+			Name:   "pipeline-child-workflow",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill:  "child-workflow",
+				Params: map[string]string{"operation": "safe"},
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-child-workflow", map[string]interface{}{"operation": "parent-danger"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; child operation step param should select safe step", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" || len(status.Steps) != 1 || !strings.Contains(status.Steps[0].Output, "child-safe") || strings.Contains(status.Steps[0].Output, missingCommand) {
+		t.Fatalf("pipeline status = %+v, want child api_workflow safe operation", status)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineRejectsRecursion(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "pipeline-self",
+		Status: "active",
+		Mode:   "pipeline",
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill: "pipeline-self",
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-self", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "failed" || !strings.Contains(status.Error, "pipeline recursion detected") {
+		t.Fatalf("pipeline status = %+v, want recursion failure", status)
+	}
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after run error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].UsageCount != 1 || cfg.NLSkills[0].FailureCount != 1 {
+		t.Fatalf("usage stats = %+v, want one visible failed run", cfg.NLSkills)
+	}
+}
+
+func TestSkillRunnerStartRun_PipelineRecursionPrecedesRequirementChecks(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("API_TOKEN", "")
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "pipeline-self-env",
+		Status:      "active",
+		Mode:        "pipeline",
+		RequiredEnv: []string{"API_TOKEN"},
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill: "pipeline-self-env",
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+	runArgs := cskill.WithPipelineRunStack(map[string]interface{}{}, "pipeline-self-env")
+
+	_, err = runner.StartRun("pipeline-self-env", runArgs)
+	if err == nil {
+		t.Fatal("StartRun() error = nil, want recursion failure")
+	}
+	if !strings.Contains(err.Error(), "pipeline recursion detected") || strings.Contains(err.Error(), "API_TOKEN") {
+		t.Fatalf("StartRun() error = %v, want recursion to short-circuit requirement checks", err)
+	}
+}
+
+func TestSkillRunnerStartRun_ExternalPrivatePipelineStackDoesNotTripRecursion(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{
+		{
+			Name:   "child-stack",
+			Status: "active",
+			Steps: []corelib.NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "echo child-ok"},
+			}},
+		},
+		{
+			Name:   "pipeline-stack",
+			Status: "active",
+			Mode:   "pipeline",
+			Pipeline: []corelib.SkillPipelineStep{{
+				Skill: "child-stack",
+			}},
+		},
+	}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("pipeline-stack", map[string]interface{}{
+		cskill.PipelineRunStackArg: []string{"pipeline-stack"},
+	})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; external private stack must not be trusted", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "success" || !strings.Contains(status.Steps[0].Output, "child-ok") {
+		t.Fatalf("pipeline status = %+v, want forged external stack ignored", status)
+	}
+}
+
+func waitSkillRunDoneForTest(t *testing.T, runner *SkillRunner, runID string) *SkillRunStatus {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var status *SkillRunStatus
+	var err error
+	for time.Now().Before(deadline) {
+		status, err = runner.GetRunStatus(runID)
+		if err != nil {
+			t.Fatalf("GetRunStatus() error = %v", err)
+		}
+		if status.Status != "running" {
+			return status
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("run %s did not finish, last status = %+v", runID, status)
+	return nil
+}
+
+func pipelineTestEchoCommand() string {
+	if runtime.GOOS == "windows" {
+		return "echo %API_TOKEN% {{input}}"
+	}
+	return "echo $API_TOKEN {{input}}"
+}
+
+func pipelineTestFailParams() map[string]interface{} {
+	if runtime.GOOS == "windows" {
+		return map[string]interface{}{
+			"command":         "echo diagnostic & exit /b 7",
+			"preferred_shell": "cmd",
+		}
+	}
+	return map[string]interface{}{"command": "echo diagnostic; exit 7"}
+}
+
+func pipelineTestFailCapturedParams() map[string]interface{} {
+	if runtime.GOOS == "windows" {
+		return map[string]interface{}{
+			"command":         "echo file=report.md & exit /b 7",
+			"preferred_shell": "cmd",
+		}
+	}
+	return map[string]interface{}{"command": "echo file=report.md; exit 7"}
+}
+
+func pipelineTestSlowParams() map[string]interface{} {
+	return map[string]interface{}{"command": `python -c "import time; time.sleep(1.2); print('slow-done')"`}
+}
+
+func TestSkillRunnerStartRun_PrechecksOnlySelectedAPIWorkflowSteps(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	missingCommand := "definitely-missing-skill-runner-command-unselected"
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:         "workflow-selected",
+		Status:       "active",
+		Mode:         "api_workflow",
+		RequiredArgs: []string{"danger_input"},
+		Operations: []corelib.NLSkillOperation{{
+			Name:   "safe",
+			Labels: []string{"safe-step"},
+		}},
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Label: "safe-step", Params: map[string]interface{}{"command": "echo ok"}},
+			{Action: "bash", Label: "bad-step", Params: map[string]interface{}{"command": missingCommand + " --version {{danger_input}}"}},
+		},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("workflow-selected", map[string]interface{}{"operation": "safe"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; unselected command %q should not block precheck", err, missingCommand)
+	}
+	if status := waitSkillRunDoneForTest(t, runner, runID); status.Status != "success" {
+		t.Fatalf("status = %+v, want success", status)
+	}
+}
+
+func TestSkillRunnerStartRun_ReadsOperationFromNestedArgs(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	missingCommand := "definitely-missing-skill-runner-command-nested-op"
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "workflow-nested-op",
+		Status: "active",
+		Mode:   "api_workflow",
+		Operations: []corelib.NLSkillOperation{
+			{Name: "safe", Labels: []string{"safe-step"}},
+			{Name: "danger", Labels: []string{"danger-step"}},
+		},
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Label: "safe-step", Params: map[string]interface{}{"command": "echo ok"}},
+			{Action: "bash", Label: "danger-step", Params: map[string]interface{}{"command": missingCommand + " --version"}},
+		},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("workflow-nested-op", map[string]interface{}{
+		"args": map[string]interface{}{"operation": "safe"},
+	})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; nested operation should select safe step before checking %q", err, missingCommand)
+	}
+	_ = runner.CancelRun(runID)
+}
+
+func TestSkillRunnerStartRun_PrechecksOnlyWhenActiveSteps(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	skillDir := t.TempDir()
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:         "conditional-precheck",
+		Status:       "active",
+		SkillDir:     skillDir,
+		RequiredArgs: []string{"advanced_input"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			When:   "{{mode}} == advanced",
+			Params: map[string]interface{}{"command": "python missing.py {{advanced_input}}"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("conditional-precheck", map[string]interface{}{"mode": "basic"})
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; when=false step should not block precheck", err)
+	}
+	if status := waitSkillRunDoneForTest(t, runner, runID); status.Status != "success" {
+		t.Fatalf("status = %+v, want success with skipped step", status)
+	}
+}
+
+func TestSkillRunnerStartRun_PrechecksResolvedWorkingDir(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	skillDir := t.TempDir()
+	missingDir := filepath.Join(skillDir, "missing-project")
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:     "dynamic-working-dir",
+		Status:   "active",
+		SkillDir: skillDir,
+		Params:   []corelib.NLSkillParam{{Name: "project_dir", Required: true}},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"working_dir": "{{project_dir}}", "command": "echo ok"},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("dynamic-working-dir", map[string]interface{}{"project_dir": missingDir})
+	if err == nil || !strings.Contains(err.Error(), missingDir) {
+		t.Fatalf("StartRun() error = %v, want resolved missing working_dir", err)
+	}
+}
+
+func TestSkillRunnerStartRun_DefaultsSingleAPIWorkflowOperation(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	missingCommand := "definitely-missing-skill-runner-command-default-op"
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "workflow-default-op",
+		Status: "active",
+		Mode:   "api_workflow",
+		Operations: []corelib.NLSkillOperation{{
+			Name:   "safe",
+			Labels: []string{"safe-step"},
+		}},
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Label: "safe-step", Params: map[string]interface{}{"command": "echo ok"}},
+			{Action: "bash", Label: "bad-step", Params: map[string]interface{}{"command": missingCommand + " --version"}},
+		},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("workflow-default-op", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v; single operation should default to safe step and ignore %q", err, missingCommand)
+	}
+	_ = runner.CancelRun(runID)
+}
+
+func TestSkillRunnerStartRun_RequiresOperationForMultipleAPIWorkflowOperations(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "workflow-choose-op",
+		Status: "active",
+		Mode:   "api_workflow",
+		Operations: []corelib.NLSkillOperation{
+			{Name: "safe", Labels: []string{"safe-step"}},
+			{Name: "danger", Labels: []string{"danger-step"}},
+		},
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Label: "safe-step", Params: map[string]interface{}{"command": "echo ok"}},
+			{Action: "bash", Label: "danger-step", Params: map[string]interface{}{"command": "echo danger"}},
+		},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("workflow-choose-op", nil)
+	if err == nil || !strings.Contains(err.Error(), "requires an operation") || !strings.Contains(err.Error(), "safe") || !strings.Contains(err.Error(), "[action: choose_operation]") {
+		t.Fatalf("expected choose operation error, got %v", err)
+	}
+}
+
+func TestSkillRunnerCancelDoesNotRecordFailureStats(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "cancel-stats",
+		Status: "active",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: pipelineTestSlowParams(),
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	runID, err := runner.StartRun("cancel-stats", nil)
+	if err != nil {
+		t.Fatalf("StartRun() error = %v", err)
+	}
+	if err := runner.CancelRun(runID); err != nil {
+		t.Fatalf("CancelRun() error = %v", err)
+	}
+	status := waitSkillRunDoneForTest(t, runner, runID)
+	if status.Status != "cancelled" {
+		t.Fatalf("status = %+v, want cancelled", status)
+	}
+	cfg, err = app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after cancel error = %v", err)
+	}
+	if len(cfg.NLSkills) != 1 || cfg.NLSkills[0].UsageCount != 0 || cfg.NLSkills[0].FailureCount != 0 || cfg.NLSkills[0].SuccessCount != 0 {
+		t.Fatalf("cancelled run stats = %+v, want no usage/success/failure count", cfg.NLSkills)
+	}
+}
+
+func TestSkillRunnerStartRun_RejectsUnknownAPIWorkflowOperation(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:   "workflow-unknown-op",
+		Status: "active",
+		Mode:   "api_workflow",
+		Operations: []corelib.NLSkillOperation{{
+			Name:   "safe",
+			Labels: []string{"safe-step"},
+		}},
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Label: "safe-step", Params: map[string]interface{}{"command": "echo ok"}},
+		},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	_, err = runner.StartRun("workflow-unknown-op", map[string]interface{}{"operation": "missing"})
+	if err == nil || !strings.Contains(err.Error(), `operation "missing" not found`) || !strings.Contains(err.Error(), "safe") {
+		t.Fatalf("expected unknown operation error with available operations, got %v", err)
+	}
+}
+
+func TestSkillRunnerExecuteStepWithContext_UnsupportedActionIsClassified(t *testing.T) {
+	runner := NewSkillRunner(&SkillExecutor{})
+	_, err := runner.executeStepWithContext(context.Background(), "run-test", corelib.NLSkillStep{
+		Action: "python",
+		Params: map[string]interface{}{},
+	}, "")
+	if err == nil {
+		t.Fatal("expected unsupported action error")
+	}
+	classified := cskill.ClassifyStepError(0, "", err.Error(), "")
+	if classified.Class != cskill.ErrUnsupportedAction {
+		t.Fatalf("Class = %s, err = %v", classified.Class, err)
+	}
+}
+func TestSkillRunnerExecuteStepWithContext_NormalizesSupportedActionSpelling(t *testing.T) {
+	runner := NewSkillRunner(&SkillExecutor{app: &App{}})
+	_, err := runner.executeStepWithContext(context.Background(), "run-test", corelib.NLSkillStep{
+		Action: "craft-tool",
+		Params: map[string]interface{}{},
+	}, "")
+	if err == nil || !strings.Contains(err.Error(), "missing task parameter") {
+		t.Fatalf("expected craft_tool dispatch after action normalization, got: %v", err)
+	}
+}
 func TestSkillRunnerExecuteStepWithContext_CraftToolAcceptsLegacyInstructions(t *testing.T) {
 	runner := NewSkillRunner(&SkillExecutor{app: &App{}})
 	_, err := runner.executeStepWithContext(context.Background(), "run-test", corelib.NLSkillStep{
@@ -226,6 +1605,105 @@ func TestIsInstructionOnlySkillStatus(t *testing.T) {
 	}
 }
 
+func TestSummarizeSkillRunDoesNotMarkStdoutOnlyPathMissing(t *testing.T) {
+	missingReport := filepath.Join(t.TempDir(), "gold-report.md")
+	status := &SkillRunStatus{
+		Status: "success",
+		Steps: []StepResult{{
+			Action: "bash",
+			Status: "success",
+			Output: "Gold price report generated on stdout\n" + missingReport + "\n",
+		}},
+	}
+
+	summarizeSkillRun(status)
+
+	if status.Summary.ArtifactPath != "" || status.Summary.ArtifactStatus != "" || status.Summary.NeedsArtifactVerification {
+		t.Fatalf("stdout-only summary = %#v, want no missing artifact", status.Summary)
+	}
+	if status.Summary.LastOutputSnippet == "" {
+		t.Fatalf("stdout-only summary lost output snippet: %#v", status.Summary)
+	}
+}
+
+func TestSummarizeSkillRunMarksExpectedArtifactMissing(t *testing.T) {
+	missingReport := filepath.Join(t.TempDir(), "deck.pptx")
+	status := &SkillRunStatus{
+		Status:           "success",
+		ExpectedArtifact: true,
+		ExpectedOutput:   missingReport,
+		Steps: []StepResult{{
+			Action: "bash",
+			Status: "success",
+			Output: "render completed",
+		}},
+	}
+
+	summarizeSkillRun(status)
+
+	if status.Summary.ArtifactPath != missingReport || status.Summary.ArtifactStatus != "missing" {
+		t.Fatalf("expected artifact summary = %#v, want missing %s", status.Summary, missingReport)
+	}
+}
+
+func TestSkillRunExpectsArtifactFromContract(t *testing.T) {
+	if !skillRunExpectsArtifact(&corelib.NLSkillEntry{ProducesArtifact: true}, "") {
+		t.Fatal("produces_artifact should expect an artifact")
+	}
+	if !skillRunExpectsArtifact(&corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{"verification_mode": "artifact_required"},
+	}}}, "") {
+		t.Fatal("artifact_required step should expect an artifact")
+	}
+	if skillRunExpectsArtifact(&corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{"verification_mode": "artifact_optional"},
+	}}}, "") {
+		t.Fatal("artifact_optional stdout-only step should not expect an artifact")
+	}
+}
+
+func TestSkillRunExpectsArtifactUsesSelectedExecutionSteps(t *testing.T) {
+	skill := &corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{
+		{
+			Action: "bash",
+			Label:  "stdout",
+			Params: map[string]interface{}{"command": "echo report"},
+		},
+		{
+			Action: "bash",
+			Label:  "artifact",
+			Params: map[string]interface{}{"verification_mode": "artifact_required"},
+		},
+	}}
+
+	if skillRunExpectsArtifactForSteps(skill, []corelib.NLSkillStep{skill.Steps[0]}, "", false) {
+		t.Fatal("unselected artifact step should not make this run expect an artifact")
+	}
+	if !skillRunExpectsArtifactForSteps(skill, []corelib.NLSkillStep{skill.Steps[1]}, "", false) {
+		t.Fatal("selected artifact step should make this run expect an artifact")
+	}
+}
+
+func TestSkillRunExpectsArtifactSelectedStepsDoNotUseGlobalContract(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		ProducesArtifact: true,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Label:  "stdout",
+			Params: map[string]interface{}{"command": "echo report"},
+		}},
+	}
+
+	if skillRunExpectsArtifactForSteps(skill, skill.Steps, "", false) {
+		t.Fatal("selected stdout step should not inherit global produces_artifact")
+	}
+	if !skillRunExpectsArtifactForSteps(skill, skill.Steps, "", true) {
+		t.Fatal("unselected/full run should still honor global produces_artifact")
+	}
+}
+
 func TestNormalizeSkillRunVars_ArgsOverrideLegacy(t *testing.T) {
 	got := normalizeSkillRunVars(map[string]interface{}{
 		"args":   map[string]interface{}{"input": "new-in", "output": "new-out"},
@@ -247,6 +1725,16 @@ func TestNormalizeSkillRunVars_CoercesNonStringArgs(t *testing.T) {
 	}
 }
 
+func TestNormalizeSkillRunVars_CanonicalizesKeyShape(t *testing.T) {
+	got := normalizeSkillRunVars(map[string]interface{}{
+		"User Prompt": "请查询成都天气",
+		"Args":        map[string]interface{}{"Input-File": "report.md"},
+	})
+	if got["user_prompt"] != "请查询成都天气" || got["input_file"] != "report.md" {
+		t.Fatalf("normalizeSkillRunVars() = %#v, want canonical key shapes", got)
+	}
+}
+
 func TestApplySkillRunInputInference_FillsRequiredCityFromInput(t *testing.T) {
 	vars := normalizeSkillRunVars(map[string]interface{}{"input": "成都"})
 	skill := &corelib.NLSkillEntry{RequiredArgs: []string{"city"}}
@@ -262,6 +1750,47 @@ func TestApplySkillRunInputInference_FillsRequiredArgFromNamedPrompt(t *testing.
 	cskill.ApplyRunInputInference(skill, vars, map[string]interface{}{"user_prompt": "请查询 city: 上海 的天气"})
 	if vars["city"] != "上海" {
 		t.Fatalf("city = %q, want named value", vars["city"])
+	}
+}
+
+func TestApplySkillRunInputInference_PromotesFileAliasToInput(t *testing.T) {
+	vars := normalizeSkillRunVars(map[string]interface{}{"file": "report.md"})
+	skill := &corelib.NLSkillEntry{
+		RequiredArgs: []string{"input"},
+		Params:       []corelib.NLSkillParam{{Name: "input", Aliases: []string{"file"}, Required: true}},
+	}
+	cskill.ApplyRunInputInference(skill, vars, map[string]interface{}{"file": "report.md"})
+	if vars["input"] != "report.md" {
+		t.Fatalf("input = %q, want file alias promoted", vars["input"])
+	}
+}
+
+func TestMissingRequiredArgsHonorsCanonicalKeysAndAliases(t *testing.T) {
+	missing := cskill.MissingRequiredArgs([]string{"Input-File", "text"}, map[string]string{
+		"input_file": "report.md",
+		"content":    "hello",
+	})
+	if len(missing) != 0 {
+		t.Fatalf("missing = %#v, want canonical keys and aliases to satisfy required args", missing)
+	}
+}
+func TestDetectImplicitRequiredArgsHonorsCommonAliases(t *testing.T) {
+	missing := detectImplicitRequiredArgs([]corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{"command": "cat {{input}}"},
+	}}, map[string]string{"file": "report.md"})
+	if len(missing) != 0 {
+		t.Fatalf("missing = %#v, want file alias to satisfy input", missing)
+	}
+}
+
+func TestDetectImplicitRequiredArgsHonorsTextAliases(t *testing.T) {
+	missing := detectImplicitRequiredArgs([]corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{"command": "translate {{text}}"},
+	}}, map[string]string{"content": "hello"})
+	if len(missing) != 0 {
+		t.Fatalf("missing = %#v, want content alias to satisfy text", missing)
 	}
 }
 
@@ -389,6 +1918,119 @@ func TestQuoteSkillInputForShell_EscapesQuotes(t *testing.T) {
 	}
 	if got != `'a'"'"'b'` {
 		t.Fatalf("quoteSkillInputForShell() = %q, want %q", got, `'a'"'"'b'`)
+	}
+}
+
+func TestResolveSkillStepUsesPreferredShellQuoting(t *testing.T) {
+	resolved, err := resolveSkillStep(corelib.NLSkillStep{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command":         "echo {{text}}",
+			"preferred_shell": "powershell",
+		},
+	}, map[string]string{"text": "a'b"}, "", nil)
+	if err != nil {
+		t.Fatalf("resolveSkillStep() error = %v", err)
+	}
+	command, _ := resolved.Params["command"].(string)
+	if !strings.Contains(command, "'a''b'") {
+		t.Fatalf("command = %q, want PowerShell single-quote escaping", command)
+	}
+}
+
+func TestWithSkillPreferredShellCopiesParams(t *testing.T) {
+	params := map[string]interface{}{"command": "echo ok"}
+	step := withSkillPreferredShell(corelib.NLSkillStep{Action: "bash", Params: params}, "powershell")
+	if step.Params["preferred_shell"] != "powershell" {
+		t.Fatalf("preferred_shell = %#v, want powershell", step.Params["preferred_shell"])
+	}
+	if _, mutated := params["preferred_shell"]; mutated {
+		t.Fatalf("withSkillPreferredShell mutated original params: %#v", params)
+	}
+}
+
+func TestInstallSkillStepProcessEnvRestoresLegacyNonBashEnv(t *testing.T) {
+	const key = "MACLAW_SKILL_RUNNER_TEST_EXTRA_ENV"
+	t.Setenv(key, "before")
+
+	restore := installSkillStepProcessEnv("create_session", map[string]string{key: "during"})
+	if got := os.Getenv(key); got != "during" {
+		t.Fatalf("env during step = %q, want during", got)
+	}
+	restore()
+	if got := os.Getenv(key); got != "before" {
+		t.Fatalf("env after restore = %q, want before", got)
+	}
+	restore()
+	if got := os.Getenv(key); got != "before" {
+		t.Fatalf("env after second restore = %q, want before", got)
+	}
+}
+
+func TestInstallSkillStepProcessEnvDoesNotInstallForCraftTool(t *testing.T) {
+	const key = "MACLAW_SKILL_RUNNER_TEST_CRAFT_ENV"
+	t.Setenv(key, "before")
+
+	restore := installSkillStepProcessEnv("craft_tool", map[string]string{key: "during"})
+	if got := os.Getenv(key); got != "before" {
+		t.Fatalf("craft_tool env = %q, want unchanged before restore", got)
+	}
+	restore()
+	if got := os.Getenv(key); got != "before" {
+		t.Fatalf("craft_tool env after restore = %q, want before", got)
+	}
+}
+
+func TestInstallSkillStepProcessEnvDoesNotInstallForBash(t *testing.T) {
+	const key = "MACLAW_SKILL_RUNNER_TEST_BASH_ENV"
+	t.Setenv(key, "before")
+
+	restore := installSkillStepProcessEnv("bash", map[string]string{key: "during"})
+	if got := os.Getenv(key); got != "before" {
+		t.Fatalf("bash env = %q, want unchanged before restore", got)
+	}
+	restore()
+	if got := os.Getenv(key); got != "before" {
+		t.Fatalf("bash env after restore = %q, want before", got)
+	}
+}
+
+func TestInstallSkillStepProcessEnvSerializesNonBashEnv(t *testing.T) {
+	const key = "MACLAW_SKILL_RUNNER_TEST_SERIAL_ENV"
+	t.Setenv(key, "before")
+
+	restoreFirst := installSkillStepProcessEnv("create_session", map[string]string{key: "first"})
+	if got := os.Getenv(key); got != "first" {
+		t.Fatalf("first env = %q, want first", got)
+	}
+
+	acquired := make(chan func(), 1)
+	go func() {
+		acquired <- installSkillStepProcessEnv("create_session", map[string]string{key: "second"})
+	}()
+
+	select {
+	case restoreSecond := <-acquired:
+		restoreSecond()
+		t.Fatal("second env overlay acquired before first restore")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	restoreFirst()
+
+	var restoreSecond func()
+	select {
+	case restoreSecond = <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second env overlay did not acquire after first restore")
+	}
+	if got := os.Getenv(key); got != "second" {
+		restoreSecond()
+		t.Fatalf("second env = %q, want second", got)
+	}
+	restoreSecond()
+	if got := os.Getenv(key); got != "before" {
+		t.Fatalf("env after serialized restores = %q, want before", got)
 	}
 }
 

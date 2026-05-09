@@ -14,6 +14,10 @@ import (
 // testCleanLastUpdate removes the timestamp file before/after a test.
 func testCleanLastUpdate(t *testing.T) string {
 	t.Helper()
+	home := t.TempDir()
+	overridePath := filepath.Join(home, "agentnet", ".last_update")
+	agentnetLastUpdatePathOverride.Store(overridePath)
+	t.Cleanup(func() { agentnetLastUpdatePathOverride.Store("") })
 	p := agentnetLastUpdatePath()
 	if p == "" {
 		t.Skip("cannot determine home dir")

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -154,21 +155,46 @@ func TestCloudHeartbeatMonitorSnapshotTracksSuccessAndFailure(t *testing.T) {
 	}, time.Hour)
 
 	initial := monitor.Snapshot()
-	if initial.Status != "waiting_for_credentials" || !initial.Configured {
+	if initial.Status != "waiting_for_credentials" || !initial.Configured || !initial.NonBlocking || initial.BusinessImpact == "" {
 		t.Fatalf("initial snapshot = %+v", initial)
 	}
 
 	monitor.recordAttempt("center-1", time.Now().UTC())
 	monitor.recordFailure("network down")
 	failed := monitor.Snapshot()
-	if failed.Status != "error" || failed.LastError != "network down" || failed.ConsecutiveFailures != 1 {
+	if failed.Status != "error" || failed.LastError != "network down" || failed.ConsecutiveFailures != 1 || !failed.NonBlocking {
 		t.Fatalf("failed snapshot = %+v", failed)
 	}
 
 	monitor.recordSuccess(time.Now().UTC())
 	succeeded := monitor.Snapshot()
-	if succeeded.Status != "online" || succeeded.LastError != "" || succeeded.ConsecutiveFailures != 0 || succeeded.CenterID != "center-1" {
+	if succeeded.Status != "online" || succeeded.LastError != "" || succeeded.ConsecutiveFailures != 0 || succeeded.CenterID != "center-1" || !succeeded.NonBlocking {
 		t.Fatalf("success snapshot = %+v", succeeded)
+	}
+}
+
+func TestCloudHeartbeatMonitorSnapshotDocumentsNoBusinessImpact(t *testing.T) {
+	snapshot := (*CloudHeartbeatMonitor)(nil).Snapshot()
+	if snapshot.Status != "disabled" || !snapshot.NonBlocking {
+		t.Fatalf("disabled snapshot = %+v, want non-blocking disabled state", snapshot)
+	}
+	if snapshot.BusinessImpact != "none_local_center_and_iworker_continue" {
+		t.Fatalf("BusinessImpact = %q", snapshot.BusinessImpact)
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	body := string(data)
+	for _, required := range []string{"non_blocking", "business_impact"} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("snapshot JSON missing %q: %s", required, body)
+		}
+	}
+	for _, forbidden := range []string{"tenant business", "workflow", "collaboration_tasks", "work_status_json"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("snapshot leaked business detail %q: %s", forbidden, body)
+		}
 	}
 }
 

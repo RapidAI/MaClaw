@@ -9,5 +9,5 @@ package skill
 // add it here — both GUI and TUI will pick it up.
 var RunVarFallbackKeys = []string{
 	"input", "output", "query", "url", "text", "file", "path", "format",
-	"operation", "user_prompt",
+	"user_prompt",
 }

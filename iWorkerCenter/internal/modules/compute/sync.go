@@ -1,6 +1,7 @@
 package compute
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,13 @@ import (
 
 // ErrWaitingForCredentials indicates sync is configured but Center registration credentials are not ready yet.
 var ErrWaitingForCredentials = errors.New("center credentials are not configured")
+
+var (
+	errSyncResponseTooLarge = errors.New("sync response exceeds size limit")
+	errSyncTrailingData     = errors.New("sync response contains trailing data")
+)
+
+const syncResponseBodyLimit = 1 << 20
 
 // ComputeProvider mirrors the iWorkerCloud compute provider configuration.
 type ComputeProvider struct {
@@ -51,6 +59,10 @@ type CredentialResolver func() (centerID, centerSecret string)
 // StatusObserver is called after compute sync state changes.
 type StatusObserver func(ComputeSyncStatus)
 
+// ForceSyncObserver is called after Cloud asks this Center to return to
+// cloud-managed compute configuration.
+type ForceSyncObserver func()
+
 // syncResponse is the JSON shape returned by the Cloud compute-providers API.
 type syncResponse struct {
 	Providers         []ComputeProvider `json:"providers"`
@@ -73,6 +85,7 @@ type SyncManager struct {
 	computePermission bool
 	forceSync         bool
 	statusObserver    StatusObserver
+	forceSyncObserver ForceSyncObserver
 
 	stopCh   chan struct{}
 	client   *http.Client
@@ -140,6 +153,15 @@ func (sm *SyncManager) SetStatusObserver(observer StatusObserver) {
 	sm.mu.Unlock()
 }
 
+func (sm *SyncManager) SetForceSyncObserver(observer ForceSyncObserver) {
+	if sm == nil {
+		return
+	}
+	sm.mu.Lock()
+	sm.forceSyncObserver = observer
+	sm.mu.Unlock()
+}
+
 // GetProviders returns the current provider list (thread-safe copy).
 func (sm *SyncManager) GetProviders() []ComputeProvider {
 	sm.mu.RLock()
@@ -199,15 +221,6 @@ func (sm *SyncManager) loop() {
 	}
 }
 
-func (sm *SyncManager) notifyStatusChange(status ComputeSyncStatus) {
-	sm.mu.RLock()
-	observer := sm.statusObserver
-	sm.mu.RUnlock()
-	if observer != nil {
-		observer(status)
-	}
-}
-
 func (sm *SyncManager) currentCredentials() (string, string) {
 	if sm.resolveCredentials != nil {
 		centerID, centerSecret := sm.resolveCredentials()
@@ -254,14 +267,8 @@ func (sm *SyncManager) doSync() error {
 		return syncErr
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB limit
-	if err != nil {
-		sm.recordFailure(err)
-		return fmt.Errorf("read sync response: %w", err)
-	}
-
 	var sr syncResponse
-	if err := json.Unmarshal(data, &sr); err != nil {
+	if err := decodeSyncResponse(resp.Body, &sr); err != nil {
 		sm.recordFailure(err)
 		return fmt.Errorf("decode sync response: %w", err)
 	}
@@ -279,8 +286,15 @@ func (sm *SyncManager) doSync() error {
 	sm.computePermission = sr.ComputePermission
 	sm.forceSync = sr.ForceSync
 	sm.syncStatus = status
+	forceSyncObserver := sm.forceSyncObserver
+	statusObserver := sm.statusObserver
 	sm.mu.Unlock()
-	sm.notifyStatusChange(status)
+	if sr.ForceSync && forceSyncObserver != nil {
+		forceSyncObserver()
+	}
+	if statusObserver != nil {
+		statusObserver(status)
+	}
 
 	log.Printf("[compute/sync] synced %d providers from cloud", len(sr.Providers))
 	return nil
@@ -297,8 +311,11 @@ func (sm *SyncManager) recordWaitingForCredentials(err error) {
 		RuntimeImpact: runtimeImpactForProviderCount(len(sm.providers)),
 	}
 	sm.syncStatus = status
+	statusObserver := sm.statusObserver
 	sm.mu.Unlock()
-	sm.notifyStatusChange(status)
+	if statusObserver != nil {
+		statusObserver(status)
+	}
 }
 
 // recordFailure updates syncStatus with an error while preserving existing providers.
@@ -314,8 +331,11 @@ func (sm *SyncManager) recordFailure(err error) {
 		RuntimeImpact: runtimeImpactForProviderCount(providerCount),
 	}
 	sm.syncStatus = status
+	statusObserver := sm.statusObserver
 	sm.mu.Unlock()
-	sm.notifyStatusChange(status)
+	if statusObserver != nil {
+		statusObserver(status)
+	}
 }
 
 func runtimeImpactForProviderCount(providerCount int) string {
@@ -323,4 +343,25 @@ func runtimeImpactForProviderCount(providerCount int) string {
 		return "using_cached_cloud_providers"
 	}
 	return "local_settings_fallback"
+}
+
+func decodeSyncResponse(r io.Reader, v interface{}) error {
+	body, err := io.ReadAll(io.LimitReader(r, syncResponseBodyLimit+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > syncResponseBodyLimit {
+		return errSyncResponseTooLarge
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errSyncTrailingData
+		}
+		return err
+	}
+	return nil
 }

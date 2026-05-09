@@ -111,6 +111,20 @@ export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageCha
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
                 <input
                     type="checkbox"
+                    checked={config?.gossip_auto_publish !== false}
+                    onChange={(e) => saveConfigPatch(config, setConfig, { gossip_auto_publish: e.target.checked })}
+                />
+                <span>{textForLang(lang, 'Auto-post Chat Gossip', '\u804a\u5929\u516b\u5366\u81ea\u52a8\u53d1\u5e03', '\u804a\u5929\u516b\u5366\u81ea\u52d5\u767c\u4f48')}</span>
+            </label>
+            <span style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)' }}>
+                {textForLang(lang, 'Automatically publish selected chat highlights to the Gossip community.', '\u81ea\u52a8\u5c06\u7b5b\u9009\u540e\u7684\u804a\u5929\u4eae\u70b9\u53d1\u5e03\u5230\u516b\u5366\u793e\u533a\u3002', '\u81ea\u52d5\u5c07\u7be9\u9078\u5f8c\u7684\u804a\u5929\u4eae\u9ede\u767c\u4f48\u5230\u516b\u5366\u793e\u7fa4\u3002')}
+            </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem' }}>
+                <input
+                    type="checkbox"
                     checked={config?.log_detail_enabled || false}
                     onChange={(e) => saveConfigPatch(config, setConfig, { log_detail_enabled: e.target.checked })}
                 />

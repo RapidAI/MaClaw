@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
-	"strings"
 )
 
 // Handler provides HTTP endpoints for tenant management.
@@ -32,12 +30,6 @@ func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/cloud/status", h.handleCloudStatus)
 	mux.HandleFunc("/admin/cloud/register", h.handleCloudRegister)
 	mux.HandleFunc("/admin/cloud/license", h.handleCloudLicense)
-}
-
-// RegisterCloudRoutes registers Cloud-to-Center tenant management routes.
-func (h *Handler) RegisterCloudRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/cloud/tenants", h.handleCloudTenants)
-	mux.HandleFunc("/api/cloud/tenants/", h.handleCloudTenantByID)
 }
 
 // handleTenantStatus returns {count, needs_setup}.
@@ -86,7 +78,7 @@ func (h *Handler) handleSetupTenant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateTenantRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+	if err := decodeLimitedJSON(r.Body, &req, adminJSONBodyLimit, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 		return
 	}
@@ -121,7 +113,7 @@ func (h *Handler) handleCloudConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, h.svc.CloudConfig(r.Context()))
 	case http.MethodPut:
 		var req UpdateCloudConfigRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		if err := decodeLimitedJSON(r.Body, &req, adminJSONBodyLimit, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 			return
 		}
@@ -160,7 +152,10 @@ func (h *Handler) handleCloudRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	var req RegisterCenterRequest
 	if r.Body != nil {
-		_ = json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req)
+		if err := decodeLimitedJSON(r.Body, &req, adminJSONBodyLimit, true); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
+			return
+		}
 	}
 	resp, err := h.svc.RegisterTenantToCloud(r.Context(), RequestTenantID(r), req)
 	if err != nil {
@@ -174,7 +169,14 @@ func (h *Handler) handleCloudRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"center_id": resp.CenterID, "status": resp.Status, "message": resp.Message})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"center_id":       resp.CenterID,
+		"status":          resp.Status,
+		"message":         resp.Message,
+		"reused":          resp.Reused,
+		"heartbeat_sent":  resp.HeartbeatSent,
+		"heartbeat_error": resp.HeartbeatError,
+	})
 }
 func (h *Handler) handleCloudLicense(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -219,7 +221,7 @@ func (h *Handler) handleTenantMode(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Mode string `json:"mode"`
 		}
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+		if err := decodeLimitedJSON(r.Body, &req, adminJSONBodyLimit, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 			return
 		}
@@ -229,98 +231,6 @@ func (h *Handler) handleTenantMode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, settings)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (h *Handler) requireCloudTenantManagement(w http.ResponseWriter, r *http.Request) bool {
-	if err := h.svc.AuthenticateCloudCenter(r.Context(), r.Header.Get("X-Center-ID"), r.Header.Get("X-Center-Secret")); err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "invalid center credentials"})
-		return false
-	}
-	if err := h.svc.RequireMultiTenantEnabled(r.Context()); err != nil {
-		status := http.StatusForbidden
-		if !errors.Is(err, ErrMultiTenantDisabled) {
-			status = http.StatusInternalServerError
-		}
-		writeJSON(w, status, map[string]any{"error": err.Error()})
-		return false
-	}
-	return true
-}
-
-func (h *Handler) handleCloudTenants(w http.ResponseWriter, r *http.Request) {
-	if !h.requireCloudTenantManagement(w, r) {
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		tenants, err := h.svc.ListTenants(r.Context())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
-	case http.MethodPost:
-		var req CreateTenantRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
-			return
-		}
-		tenant, err := h.svc.CreateTenant(r.Context(), req)
-		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, ErrCompanyExists) {
-				status = http.StatusConflict
-			}
-			writeJSON(w, status, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, tenant)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (h *Handler) handleCloudTenantByID(w http.ResponseWriter, r *http.Request) {
-	if !h.requireCloudTenantManagement(w, r) {
-		return
-	}
-	tenantID := strings.TrimPrefix(r.URL.Path, "/api/cloud/tenants/")
-	if strings.TrimSpace(tenantID) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "tenant id is required"})
-		return
-	}
-	switch r.Method {
-	case http.MethodPut:
-		var req UpdateTenantRequest
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
-			return
-		}
-		tenant, err := h.svc.UpdateTenant(r.Context(), tenantID, req)
-		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, ErrTenantNotFound) {
-				status = http.StatusNotFound
-			} else if errors.Is(err, ErrCompanyExists) {
-				status = http.StatusConflict
-			}
-			writeJSON(w, status, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, tenant)
-	case http.MethodDelete:
-		if err := h.svc.DeleteTenant(r.Context(), tenantID); err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, ErrTenantNotFound) {
-				status = http.StatusNotFound
-			}
-			writeJSON(w, status, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}

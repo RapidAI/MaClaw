@@ -2,8 +2,10 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -94,6 +96,819 @@ func TestEvaluateSkillPackageCompletenessRejectsJSONDefinition(t *testing.T) {
 	}
 	if !fatal || len(reasons) == 0 || reasons[0] != "package lacks skill definition or skill documentation" {
 		t.Fatalf("unexpected completeness result: fatal=%v reasons=%v", fatal, reasons)
+	}
+}
+
+func TestEvaluateSkillPackageCompletenessAcceptsBaseDirPackageRefs(t *testing.T) {
+	dir := t.TempDir()
+	skillYAML := `name: codex-switcher
+description: Codex provider switcher used to verify market packaging.
+command: python {baseDir}/switch_provider.py
+platforms:
+  - universal
+triggers:
+  - codex switch
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - python
+`
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte(skillYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Codex Provider Switcher\n\nRun the bundled script.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "switch_provider.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(switch_provider.py) error = %v", err)
+	}
+
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("len(entry.Steps) = %d, want 1", len(entry.Steps))
+	}
+	command, _ := entry.Steps[0].Params["command"].(string)
+	if filepath.IsAbs(command) || !strings.Contains(command, "{baseDir}/switch_provider.py") {
+		t.Fatalf("package command = %q, want unresolved package-relative baseDir reference", command)
+	}
+	if len(entry.RequiresBins) != 1 || entry.RequiresBins[0] != "python" {
+		t.Fatalf("RequiresBins = %#v, want [python]", entry.RequiresBins)
+	}
+
+	_, report, err := prepareSkillDirForMarket(dir, true)
+	if err != nil {
+		t.Fatalf("prepareSkillDirForMarket() error = %v", err)
+	}
+	quality := evaluateSkillQuality(entry, report, false)
+	if !quality.MarketReady {
+		t.Fatalf("quality.MarketReady = false, score=%d reasons=%v missing=%v", quality.Score, quality.Reasons, quality.Package.ReferencedMissing)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %v, want none", quality.Package.ReferencedMissing)
+	}
+	if !quality.Package.HasSkillMD {
+		t.Fatalf("HasSkillMD = false, want SKILL.md to count as documentation")
+	}
+}
+
+func TestEvaluateSkillPackageCompletenessRejectsAbsoluteRefsOutsideSkillDir(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "external.py")
+	if err := os.WriteFile(outside, []byte("print('outside')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(external.py) error = %v", err)
+	}
+	writeLifecycleTestSkill(t, dir, "external-ref-skill")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# External Ref\n\nShould not package outside files.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:        "external-ref-skill",
+		Description: "A skill with an external script reference.",
+		Triggers:    []string{"external-ref"},
+		SkillDir:    dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python " + outside},
+		}},
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality.MarketReady = true, want external absolute ref to block upload")
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || !strings.Contains(filepath.ToSlash(quality.Package.ReferencedMissing[0]), "external.py") {
+		t.Fatalf("ReferencedMissing = %v, want external.py", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestEvaluateSkillPackageCompletenessChecksFallbackStepRefs(t *testing.T) {
+	dir := t.TempDir()
+	writeLifecycleTestSkill(t, dir, "fallback-ref-skill")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Fallback Ref\n\nFallback script must be packaged.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "fallback-ref-skill",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "echo promoted"},
+			FallbackStep: &corelib.NLSkillStep{
+				Action: "bash",
+				Params: map[string]interface{}{"command": "python {baseDir}/scripts/fallback.py"},
+			},
+		}},
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality.MarketReady = true, want missing fallback script to block upload")
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "scripts/fallback.py" {
+		t.Fatalf("ReferencedMissing = %v, want scripts/fallback.py", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestEvaluateSkillPackageCompletenessChecksPipelinePathRefs(t *testing.T) {
+	dir := t.TempDir()
+	writeLifecycleTestSkill(t, dir, "pipeline-ref-skill")
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Pipeline Ref\n\nPipeline input must be packaged.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:        "pipeline-ref-skill",
+		Description: "A portable pipeline skill used to verify package-local pipeline file references.",
+		Triggers:    []string{"pipeline ref"},
+		SkillDir:    dir,
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill: "child",
+			Params: map[string]string{
+				"input_path": "data/input.json",
+				"note":       "Mentions scripts/not-a-real-ref.py as prose only.",
+			},
+		}},
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality.MarketReady = true, want missing pipeline input to block upload")
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "data/input.json" {
+		t.Fatalf("ReferencedMissing = %v, want only data/input.json", quality.Package.ReferencedMissing)
+	}
+
+	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(data) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "data", "input.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(input.json) error = %v", err)
+	}
+	quality = evaluateSkillQualityForDir(entry, nil, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality.MarketReady = false, score=%d reasons=%v missing=%v", quality.Score, quality.Reasons, quality.Package.ReferencedMissing)
+	}
+}
+
+func TestLoadMarketPackageSkillEntryRewritesMarkdownRuntimePaths(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(run.py) error = %v", err)
+	}
+	md := `# markdown-only-skill
+
+Portable markdown-only skill used by package view tests.
+
+` + "```bash\npython {baseDir}/scripts/run.py\n```\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	runtimeEntry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	if len(runtimeEntry.Steps) == 0 {
+		t.Fatalf("runtime entry has no steps")
+	}
+	runtimeCommand, _ := runtimeEntry.Steps[0].Params["command"].(string)
+	if !strings.Contains(filepath.ToSlash(runtimeCommand), filepath.ToSlash(filepath.Join(dir, "scripts", "run.py"))) {
+		t.Fatalf("runtime command = %q, want resolved script path", runtimeCommand)
+	}
+
+	packageEntry, err := loadMarketPackageSkillEntry(dir, runtimeEntry)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+	packageCommand, _ := packageEntry.Steps[0].Params["command"].(string)
+	if !strings.Contains(packageCommand, "{baseDir}/scripts/run.py") {
+		t.Fatalf("package command = %q, want package-relative baseDir reference", packageCommand)
+	}
+	if workingDir, _ := packageEntry.Steps[0].Params["working_dir"].(string); workingDir != "" {
+		t.Fatalf("package working_dir = %q, want package root/empty", workingDir)
+	}
+
+	quality := evaluateSkillQualityForDir(packageEntry, nil, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality.MarketReady = false, score=%d reasons=%v missing=%v", quality.Score, quality.Reasons, quality.Package.ReferencedMissing)
+	}
+}
+
+func TestBuildSkillYAMLFileFromPackageEntryPreservesExecutableMetadata(t *testing.T) {
+	entry := &corelib.NLSkillEntry{
+		Name:                    "metadata-rich-skill",
+		Description:             "A package-view skill with executable metadata.",
+		Triggers:                []string{"metadata rich"},
+		Status:                  "active",
+		Platforms:               []string{"windows"},
+		Mode:                    "pipeline",
+		ExecMode:                "all",
+		GlobalTimeout:           90,
+		RequiredArgs:            []string{"input_path"},
+		RequiredEnv:             []string{"API_KEY"},
+		PreferredShell:          "powershell",
+		ProducesArtifact:        false,
+		RequiresPython:          []string{"requests"},
+		RequiresNode:            []string{"playwright"},
+		RequiresBins:            []string{"python"},
+		RequiresTools:           []string{"browser"},
+		FallbackForTools:        []string{"web_fetch"},
+		RequiresToolsets:        []string{"desktop"},
+		FallbackForToolsets:     []string{"terminal"},
+		RequiredCredentialFiles: []string{"credentials/api.json"},
+		Stateful:                true,
+		Operations: []corelib.NLSkillOperation{{
+			Name:        "generate",
+			Description: "Generate the output.",
+			Params:      []string{"input_path"},
+			Labels:      []string{"run"},
+		}},
+		Params: []corelib.NLSkillParam{{
+			Name:        "input_path",
+			Description: "Input file path.",
+			Aliases:     []string{"input"},
+			CLIFlag:     "--input",
+			Default:     "data/input.json",
+			Required:    true,
+		}},
+		Steps: []corelib.NLSkillStep{{
+			Action:    "bash",
+			Params:    map[string]interface{}{"command": "python {baseDir}/scripts/run.py", "working_dir": ""},
+			OnError:   "continue",
+			Name:      "run-script",
+			Condition: "on_success",
+			When:      "{{input_path}} != ''",
+			Label:     "run",
+			Capture:   map[string]string{"artifact": `artifact=(.+)`},
+			Poll:      &corelib.StepPollConfig{Interval: 2, MaxAttempts: 5, UntilStatus: "done"},
+			Loop:      &corelib.StepLoopConfig{MaxIterations: 3, UntilStep: "verify", UntilMatch: "ok", OnFailStep: "repair"},
+		}},
+		Pipeline: []corelib.SkillPipelineStep{{
+			Skill:              "child-skill",
+			Params:             map[string]string{"input_path": "{baseDir}/data/input.json"},
+			Checkpoint:         true,
+			CheckpointMessage:  "Review generated output",
+			ContinueOnFail:     true,
+			TimeImpactOnReject: "repeat",
+		}},
+	}
+
+	sf := buildSkillYAMLFileFromPackageEntry(entry)
+	if sf.ProducesArtifact == nil || *sf.ProducesArtifact {
+		t.Fatalf("ProducesArtifact = %v, want explicit false", sf.ProducesArtifact)
+	}
+	data, err := skill.FormatSkillYAMLFile(sf)
+	if err != nil {
+		t.Fatalf("FormatSkillYAMLFile() error = %v", err)
+	}
+	parsed, err := skill.ParseSkillYAMLFile(data)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile() error = %v", err)
+	}
+
+	if parsed.Mode != "pipeline" || parsed.ExecMode != "all" || parsed.GlobalTimeout != 90 || parsed.PreferredShell != "powershell" {
+		t.Fatalf("execution metadata not preserved: mode=%q exec=%q timeout=%d shell=%q", parsed.Mode, parsed.ExecMode, parsed.GlobalTimeout, parsed.PreferredShell)
+	}
+	if len(parsed.RequiredArgs) != 1 || parsed.RequiredArgs[0] != "input_path" || len(parsed.RequiredEnv) != 1 || parsed.RequiredEnv[0] != "API_KEY" {
+		t.Fatalf("required metadata not preserved: args=%v env=%v", parsed.RequiredArgs, parsed.RequiredEnv)
+	}
+	if parsed.Requires == nil || len(parsed.Requires.Python) != 1 || parsed.Requires.Python[0] != "requests" || len(parsed.Requires.Node) != 1 || parsed.Requires.Node[0] != "playwright" || len(parsed.Requires.Bins) != 1 || parsed.Requires.Bins[0] != "python" {
+		t.Fatalf("dependency metadata not preserved: %+v", parsed.Requires)
+	}
+	if len(parsed.Operations) != 1 || parsed.Operations[0].Name != "generate" || len(parsed.Params) != 1 || parsed.Params[0].Name != "input_path" || !parsed.Params[0].Required {
+		t.Fatalf("operation/param metadata not preserved: ops=%+v params=%+v", parsed.Operations, parsed.Params)
+	}
+	if len(parsed.Steps) != 1 || parsed.Steps[0].Params["command"] != "python {baseDir}/scripts/run.py" || parsed.Steps[0].Poll == nil || parsed.Steps[0].Loop == nil {
+		t.Fatalf("step metadata not preserved: %+v", parsed.Steps)
+	}
+	if len(parsed.Pipeline) != 1 || parsed.Pipeline[0].Params["input_path"] != "{baseDir}/data/input.json" || !parsed.Pipeline[0].Checkpoint {
+		t.Fatalf("pipeline metadata not preserved: %+v", parsed.Pipeline)
+	}
+	if len(parsed.RequiredCredentialFiles) != 1 || parsed.RequiredCredentialFiles[0] != "credentials/api.json" || !parsed.Stateful {
+		t.Fatalf("credential/state metadata not preserved: credentials=%v stateful=%v", parsed.RequiredCredentialFiles, parsed.Stateful)
+	}
+}
+
+func TestBuildSkillYAMLFileFromPackageViewRewritesRuntimeCredentialFiles(t *testing.T) {
+	dir := t.TempDir()
+	credential := filepath.Join(dir, "credentials", "api.json")
+	runtimeEntry := &corelib.NLSkillEntry{
+		Name:                    "credential-package-view",
+		Description:             "A skill with a runtime credential path.",
+		Triggers:                []string{"credential package view"},
+		Platforms:               []string{"universal"},
+		RequiredCredentialFiles: []string{credential},
+	}
+
+	packageEntry := skill.PackageViewFromRuntimeEntry(runtimeEntry, dir)
+	data, err := skill.FormatSkillYAMLFile(buildSkillYAMLFileFromPackageEntry(packageEntry))
+	if err != nil {
+		t.Fatalf("FormatSkillYAMLFile() error = %v", err)
+	}
+	yamlText := string(data)
+	if strings.Contains(filepath.ToSlash(yamlText), filepath.ToSlash(dir)) || !strings.Contains(yamlText, "{baseDir}/credentials/api.json") {
+		t.Fatalf("generated skill.yaml = %s, want package-relative credential file without local path", yamlText)
+	}
+}
+
+func TestSkillQualityBlocksAbsoluteRequiredCredentialFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: absolute-credential\ndescription: A skill that declares a non-portable credential file.\ntriggers:\n  - absolute credential\nplatforms:\n  - universal\nrequired_credential_files:\n  - C:/Users/example/.secrets/api.json\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Absolute credential\n\nDeclares a credential file.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block absolute required credential file: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "C:/Users/example/.secrets/api.json" {
+		t.Fatalf("ReferencedMissing = %+v, want absolute credential file", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityBlocksEscapingBaseDirRequiredCredentialFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: escaping-credential\ndescription: A skill that declares an escaping credential file.\ntriggers:\n  - escaping credential\nplatforms:\n  - universal\nrequired_credential_files:\n  - \"{baseDir}/../secrets/api.json\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Escaping credential\n\nDeclares a credential file.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block escaping required credential file: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "../secrets/api.json" {
+		t.Fatalf("ReferencedMissing = %+v, want normalized escaping credential file", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityChecksParamDefaultFileRefs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: param-default-ref\ndescription: A skill with a default input path.\ntriggers:\n  - param default ref\nplatforms:\n  - universal\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Param default ref\n\nUses a declared default input file.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:        "param-default-ref",
+		Description: "A skill with a default input path.",
+		Triggers:    []string{"param default ref"},
+		SkillDir:    dir,
+		Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo ok"}}},
+		Params: []corelib.NLSkillParam{{
+			Name:    "input_path",
+			Default: "{baseDir}/data/missing.json",
+		}},
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block missing param default file: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "data/missing.json" {
+		t.Fatalf("ReferencedMissing = %+v, want data/missing.json", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestLoadMarketPackageSkillEntryPreservesStructuredStepControls(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte(`name: structured-controls
+description: A structured skill whose step controls must survive package loading.
+triggers:
+  - structured-controls
+platforms:
+  - universal
+steps:
+  - action: bash
+    name: controlled-step
+    on_error: continue
+    timeout: 17
+    params:
+      command: python {baseDir}/scripts/run.py
+    capture:
+      artifact: "artifact=(.+)"
+    poll:
+      interval: 2
+      max_attempts: 5
+      until_status: done
+    loop:
+      max_iterations: 3
+      until_step: verify
+      until_match: ok
+      on_fail_step: repair
+`)
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+	if len(entry.Steps) != 1 {
+		t.Fatalf("len(entry.Steps) = %d, want 1", len(entry.Steps))
+	}
+	step := entry.Steps[0]
+	if step.OnError != "continue" || step.Name != "controlled-step" || step.Capture["artifact"] != "artifact=(.+)" {
+		t.Fatalf("basic step controls not preserved: %+v", step)
+	}
+	if timeout, ok := step.Params["timeout"].(float64); !ok || timeout != 17 {
+		t.Fatalf("timeout param = %#v, want float64(17)", step.Params["timeout"])
+	}
+	if step.Poll == nil || step.Poll.Interval != 2 || step.Poll.MaxAttempts != 5 || step.Poll.UntilStatus != "done" {
+		t.Fatalf("poll config not preserved: %+v", step.Poll)
+	}
+	if step.Loop == nil || step.Loop.MaxIterations != 3 || step.Loop.UntilStep != "verify" || step.Loop.UntilMatch != "ok" || step.Loop.OnFailStep != "repair" {
+		t.Fatalf("loop config not preserved: %+v", step.Loop)
+	}
+}
+
+func TestNormalizeInstalledSkillEntryWritesPackageViewQuality(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(run.py) error = %v", err)
+	}
+	md := `# markdown-normalize-skill
+
+Portable markdown skill used by normalize quality tests.
+
+` + "```bash\npython {baseDir}/scripts/run.py\n```\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	runtimeEntry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	runtimeCommand, _ := runtimeEntry.Steps[0].Params["command"].(string)
+	if !strings.Contains(filepath.ToSlash(runtimeCommand), filepath.ToSlash(filepath.Join(dir, "scripts", "run.py"))) {
+		t.Fatalf("runtime command = %q, want resolved script path", runtimeCommand)
+	}
+
+	normalizeInstalledSkillEntry(runtimeEntry)
+
+	statusData, err := os.ReadFile(filepath.Join(dir, "quality_status.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(quality_status.json) error = %v", err)
+	}
+	var status SkillQualityStatus
+	if err := json.Unmarshal(statusData, &status); err != nil {
+		t.Fatalf("Unmarshal(quality_status.json) error = %v", err)
+	}
+	if !status.MarketReady {
+		t.Fatalf("MarketReady = false, score=%d reasons=%v missing=%v", status.Score, status.Reasons, status.PackageSummary.ReferencedMissing)
+	}
+	if len(status.PackageSummary.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %v, want none", status.PackageSummary.ReferencedMissing)
+	}
+}
+
+func TestLoadMarketPackageSkillEntryRewritesClaudeSkillRuntimePaths(t *testing.T) {
+	dir := t.TempDir()
+	scriptsDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "generate.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(generate.py) error = %v", err)
+	}
+	md := `---
+name: claude-package-skill
+description: Claude style skill used by package view tests.
+allowed-tools:
+  - bash
+  - python
+tools:
+  - name: generate
+    script: scripts/generate.py
+    description: Generate something.
+---
+# Claude Package Skill
+
+Run the tool.
+`
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+
+	runtimeEntry, err := loadImportedSkillEntry(dir)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry() error = %v", err)
+	}
+	if len(runtimeEntry.Steps) == 0 {
+		t.Fatalf("runtime entry has no steps")
+	}
+	runtimeCommand, _ := runtimeEntry.Steps[0].Params["command"].(string)
+	if !strings.Contains(filepath.ToSlash(runtimeCommand), filepath.ToSlash(filepath.Join(dir, "scripts", "generate.py"))) {
+		t.Fatalf("runtime command = %q, want resolved Claude script path", runtimeCommand)
+	}
+
+	packageEntry, err := loadMarketPackageSkillEntry(dir, runtimeEntry)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+	packageCommand, _ := packageEntry.Steps[0].Params["command"].(string)
+	if !strings.Contains(packageCommand, "{baseDir}/scripts/generate.py") {
+		t.Fatalf("package command = %q, want package-relative Claude script reference", packageCommand)
+	}
+	if workingDir, _ := packageEntry.Steps[0].Params["working_dir"].(string); workingDir != "" {
+		t.Fatalf("package working_dir = %q, want package root/empty", workingDir)
+	}
+
+	quality := evaluateSkillQualityForDir(packageEntry, nil, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality.MarketReady = false, score=%d reasons=%v missing=%v", quality.Score, quality.Reasons, quality.Package.ReferencedMissing)
+	}
+}
+
+func TestPackageSkillForMarketGeneratesPackageViewYAML(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
+
+	skillDir := filepath.Join(home, "source-skills", "markdown-package")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(scripts) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(run.py) error = %v", err)
+	}
+	md := `# markdown-package
+
+A portable markdown package used to verify generated package-view YAML.
+
+` + "```bash\npython {baseDir}/scripts/run.py\n```\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	staleYAML := "name: markdown-package\n" +
+		"description: A portable markdown package used to verify generated package-view YAML.\n" +
+		"triggers:\n  - markdown package\n" +
+		"platforms:\n  - universal\n" +
+		"metadata:\n  openclaw:\n    requires:\n      bins:\n        - python\n" +
+		"steps:\n  - action: bash\n    params:\n      command: python " + filepath.ToSlash(filepath.Join(skillDir, "scripts", "run.py")) + "\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(staleYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+
+	app := &App{testHomeDir: home}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	if err := app.SaveConfig(corelib.AppConfig{NLSkills: []corelib.NLSkillEntry{{
+		Name:        "markdown-package",
+		Description: "A portable markdown package used to verify generated package-view YAML.",
+		Triggers:    []string{"markdown package"},
+		Status:      "active",
+		SkillDir:    skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python " + filepath.Join(skillDir, "scripts", "run.py"),
+			},
+		}},
+	}}}); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+
+	zipPath, tmpDir, err := app.packageSkillForMarketWithDir("markdown-package")
+	if err != nil {
+		t.Fatalf("packageSkillForMarketWithDir() error = %v", err)
+	}
+	defer os.Remove(zipPath)
+	defer os.RemoveAll(tmpDir)
+
+	yamlData, err := os.ReadFile(filepath.Join(tmpDir, "skill.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(skill.yaml) error = %v", err)
+	}
+	yamlText := string(yamlData)
+	for _, leaked := range []string{filepath.ToSlash(skillDir), filepath.ToSlash(tmpDir)} {
+		if strings.Contains(filepath.ToSlash(yamlText), leaked) {
+			t.Fatalf("generated skill.yaml leaked local path %q:\n%s", leaked, yamlText)
+		}
+	}
+	if !strings.Contains(yamlText, "{baseDir}/scripts/run.py") {
+		t.Fatalf("generated skill.yaml = %s, want package-relative baseDir script reference", yamlText)
+	}
+	parsedPackageYAML, err := skill.ParseSkillYAMLFile(yamlData)
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile(generated skill.yaml) error = %v", err)
+	}
+	if parsedPackageYAML.Requires == nil || len(parsedPackageYAML.Requires.Bins) != 1 || parsedPackageYAML.Requires.Bins[0] != "python" {
+		t.Fatalf("generated skill.yaml requires = %+v, want bins=[python]", parsedPackageYAML.Requires)
+	}
+
+	statusData, err := os.ReadFile(filepath.Join(tmpDir, "quality_status.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(quality_status.json) error = %v", err)
+	}
+	var status SkillQualityStatus
+	if err := json.Unmarshal(statusData, &status); err != nil {
+		t.Fatalf("Unmarshal(quality_status.json) error = %v", err)
+	}
+	if !status.MarketReady || len(status.PackageSummary.ReferencedMissing) != 0 {
+		t.Fatalf("quality status = %+v, want market ready package without missing refs", status)
+	}
+	zipReader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		t.Fatalf("OpenReader(zipPath) error = %v", err)
+	}
+	defer zipReader.Close()
+	var zippedYAML string
+	for _, f := range zipReader.File {
+		if f.Name != "skill.yaml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("Open(skill.yaml in zip) error = %v", err)
+		}
+		data, err := io.ReadAll(rc)
+		closeErr := rc.Close()
+		if err != nil {
+			t.Fatalf("ReadAll(skill.yaml in zip) error = %v", err)
+		}
+		if closeErr != nil {
+			t.Fatalf("Close(skill.yaml in zip) error = %v", closeErr)
+		}
+		zippedYAML = string(data)
+		break
+	}
+	if zippedYAML == "" {
+		t.Fatalf("zip did not contain skill.yaml")
+	}
+	if strings.Contains(filepath.ToSlash(zippedYAML), filepath.ToSlash(skillDir)) || !strings.Contains(zippedYAML, "{baseDir}/scripts/run.py") {
+		t.Fatalf("zipped skill.yaml = %s, want package-relative baseDir script without local path", zippedYAML)
+	}
+	parsedZippedYAML, err := skill.ParseSkillYAMLFile([]byte(zippedYAML))
+	if err != nil {
+		t.Fatalf("ParseSkillYAMLFile(zipped skill.yaml) error = %v", err)
+	}
+	if parsedZippedYAML.Requires == nil || len(parsedZippedYAML.Requires.Bins) != 1 || parsedZippedYAML.Requires.Bins[0] != "python" {
+		t.Fatalf("zipped skill.yaml requires = %+v, want bins=[python]", parsedZippedYAML.Requires)
+	}
+}
+
+func TestSkillLifecycleUploadNowUsesPackageViewForQuality(t *testing.T) {
+	originalDefaultCenter := defaultRemoteHubCenterURL
+	originalDefaultCenters := remote.DefaultRemoteHubCenterURLs
+	defaultRemoteHubCenterURL = ""
+	remote.DefaultRemoteHubCenterURLs = nil
+	defer func() {
+		defaultRemoteHubCenterURL = originalDefaultCenter
+		remote.DefaultRemoteHubCenterURLs = originalDefaultCenters
+	}()
+
+	home := t.TempDir()
+	app := &App{testHomeDir: home}
+	skillDir := filepath.Join(home, "skills", "upload-now-package-view")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(skillDir) error = %v", err)
+	}
+	scriptPath := filepath.Join(skillDir, "run.py")
+	if err := os.WriteFile(scriptPath, []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(run.py) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Upload now package view\n\nA portable skill used to verify direct upload packaging.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	staleYAML := "name: upload-now-package-view\n" +
+		"description: A portable skill used to verify direct upload packaging.\n" +
+		"triggers:\n  - upload-now-package-view\n" +
+		"platforms:\n  - universal\n" +
+		"steps:\n  - action: bash\n    params:\n      command: python " + filepath.ToSlash(scriptPath) + "\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte(staleYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+
+	var submittedYAML string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/client/hubcenters":
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{server.URL}})
+		case "/api/v1/skills/submit":
+			file, _, err := r.FormFile("zip")
+			if err != nil {
+				t.Errorf("FormFile(zip) error = %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			data, err := io.ReadAll(file)
+			closeErr := file.Close()
+			if err != nil {
+				t.Errorf("ReadAll(zip) error = %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if closeErr != nil {
+				t.Errorf("Close(zip) error = %v", closeErr)
+				http.Error(w, closeErr.Error(), http.StatusBadRequest)
+				return
+			}
+			zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+			if err != nil {
+				t.Errorf("NewReader(zip) error = %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			for _, f := range zr.File {
+				if f.Name != "skill.yaml" {
+					continue
+				}
+				rc, err := f.Open()
+				if err != nil {
+					t.Errorf("Open(skill.yaml) error = %v", err)
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				yamlData, err := io.ReadAll(rc)
+				closeErr := rc.Close()
+				if err != nil {
+					t.Errorf("ReadAll(skill.yaml) error = %v", err)
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if closeErr != nil {
+					t.Errorf("Close(skill.yaml) error = %v", closeErr)
+					http.Error(w, closeErr.Error(), http.StatusBadRequest)
+					return
+				}
+				submittedYAML = string(yamlData)
+				break
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-upload-now"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	cfg.RemoteEmail = "user@example.com"
+	cfg.RemoteViewerToken = "test-token"
+	cfg.RemoteHubCenterURL = server.URL
+	cfg.RemoteHubCenterURLs = []string{server.URL}
+	cfg.NLSkills = []corelib.NLSkillEntry{{
+		Name:        "upload-now-package-view",
+		Description: "A portable skill used to verify direct upload packaging.",
+		Triggers:    []string{"upload-now-package-view"},
+		Status:      "active",
+		SkillDir:    skillDir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python " + scriptPath},
+		}},
+	}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	app.skillMarketClient = NewSkillMarketClient(app)
+	m := NewSkillLifecycleManager(app)
+	app.skillLifecycle = m
+
+	submissionID, err := m.UploadNow(context.Background(), "upload-now-package-view", "test", false)
+	if err != nil {
+		t.Fatalf("UploadNow() error = %v", err)
+	}
+	if submissionID != "sub-upload-now" {
+		t.Fatalf("submissionID = %q, want sub-upload-now", submissionID)
+	}
+	if submittedYAML == "" {
+		t.Fatalf("submitted zip did not contain skill.yaml")
+	}
+	if strings.Contains(filepath.ToSlash(submittedYAML), filepath.ToSlash(skillDir)) || !strings.Contains(submittedYAML, "{baseDir}/run.py") {
+		t.Fatalf("submitted skill.yaml = %s, want package-relative baseDir script without local path", submittedYAML)
 	}
 }
 
@@ -196,6 +1011,56 @@ func TestCopyDirContentsExcludesRuntimeArtifacts(t *testing.T) {
 	}
 }
 
+func TestCopySkillPackageRootAtomicallyRemovesTempOnCopyError(t *testing.T) {
+	packageRoot := t.TempDir()
+	primaryDir := t.TempDir()
+	writeLifecycleTestSkill(t, packageRoot, "copy-atomic-cleanup")
+	target := filepath.Join(packageRoot, "target.txt")
+	if err := os.WriteFile(target, []byte("target"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+	link := filepath.Join(packageRoot, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation not available in this environment: %v", err)
+	}
+	destDir := filepath.Join(primaryDir, "copy-atomic-cleanup")
+	if err := copySkillPackageRootAtomically(packageRoot, destDir, primaryDir); err == nil {
+		t.Fatalf("copySkillPackageRootAtomically() succeeded, want symlink rejection")
+	}
+	if _, err := os.Stat(destDir); !os.IsNotExist(err) {
+		t.Fatalf("destination dir should not be left behind, stat err=%v", err)
+	}
+	tmpMatches, err := filepath.Glob(filepath.Join(primaryDir, ".skill-import-*"))
+	if err != nil {
+		t.Fatalf("Glob(temp imports) error = %v", err)
+	}
+	if len(tmpMatches) != 0 {
+		t.Fatalf("temporary import dirs left behind: %v", tmpMatches)
+	}
+}
+
+func TestCleanupImportedSkillDirsRemovesInstalledDirs(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: cleanup\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", dir, err)
+		}
+	}
+
+	cleanupImportedSkillDirs([]string{first, second})
+
+	for _, dir := range []string{first, second} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("cleanup left %s behind, stat err=%v", dir, err)
+		}
+	}
+}
+
 func TestZipDirectoryExcludesRuntimeFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeLifecycleTestSkill(t, dir, "zip-runtime-skill")
@@ -228,6 +1093,26 @@ func TestZipDirectoryExcludesRuntimeFiles(t *testing.T) {
 		if seen[ignored] {
 			t.Fatalf("zip included runtime file %s: %+v", ignored, seen)
 		}
+	}
+}
+
+func TestZipDirectoryRemovesPartialArchiveOnError(t *testing.T) {
+	dir := t.TempDir()
+	writeLifecycleTestSkill(t, dir, "zip-partial-cleanup")
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("target"), 0o644); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation not available in this environment: %v", err)
+	}
+	zipPath := filepath.Join(t.TempDir(), "skill.zip")
+	if err := zipDirectory(dir, zipPath); err == nil {
+		t.Fatalf("zipDirectory() succeeded, want symlink rejection")
+	}
+	if _, err := os.Stat(zipPath); !os.IsNotExist(err) {
+		t.Fatalf("partial zip was not removed, stat err=%v", err)
 	}
 }
 
@@ -594,6 +1479,37 @@ func TestSkillQualityDetectsMissingStructuredCommandScriptPathWithSpaces(t *test
 	}
 }
 
+func TestSkillQualityChecksInterfaceKeyStructuredCommandMap(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: interface-command-map\ndescription: A skill with a legacy interface-key command map.\ntriggers:\n  - interface command map\nplatforms:\n  - universal\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Interface command map\n\nUses a legacy command map.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "interface-command-map",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": map[interface{}]interface{}{
+					"program": "python",
+					"args":    []interface{}{"scripts/missing.py"},
+				},
+			},
+		}},
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block missing interface-key structured command script: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "scripts/missing.py" {
+		t.Fatalf("ReferencedMissing = %+v, want scripts/missing.py", quality.Package.ReferencedMissing)
+	}
+}
+
 func TestSkillQualityResolvesReferencesAgainstWorkingDir(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
@@ -680,6 +1596,128 @@ func TestSkillQualityBlocksAbsoluteCommandScriptPath(t *testing.T) {
 	}
 }
 
+func TestSkillQualityBlocksPOSIXAbsoluteCommandPath(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: posix-absolute-path\ndescription: A skill with a POSIX absolute command input path.\ntriggers:\n  - posix-absolute-path\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: cat /home/user/input-data\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# POSIX absolute path\n\nUses a hard-coded absolute input path.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+	report, err := skill.ValidateSkillPortability(dir)
+	if err != nil {
+		t.Fatalf("ValidateSkillPortability() error = %v", err)
+	}
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block POSIX absolute command path: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "/home/user/input-data" {
+		t.Fatalf("ReferencedMissing = %+v, want /home/user/input-data", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityAcceptsPackageRootBaseDirRefs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: package-root\ndescription: A skill that uses the package root as its working directory.\ntriggers:\n  - package-root\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      working_dir: {baseDir}\n      command: ls {baseDir}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Package root\n\nUses the package root.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality should accept package-root baseDir refs: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %+v, want none", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityAcceptsPackageRootEnvBaseDirRefs(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: env-package-root\ndescription: A skill that uses BASE_DIR aliases for the package root.\ntriggers:\n  - env-package-root\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: printf '%s' $BASE_DIR ${BASE_DIR}\n      output_path: ${BASE_DIR}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Env package root\n\nUses BASE_DIR aliases.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if !quality.MarketReady {
+		t.Fatalf("quality should accept package-root BASE_DIR refs: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 0 {
+		t.Fatalf("ReferencedMissing = %+v, want none", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityBlocksUNCCommandPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: unc-path\nplatforms:\n  - windows\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# UNC path\n\nUses a non-package UNC script path.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "unc-path",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": `powershell -File \\server\share\run.ps1`},
+		}},
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block UNC command path: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "//server/share/run.ps1" {
+		t.Fatalf("ReferencedMissing = %+v, want //server/share/run.ps1", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityBlocksWindowsDriveRelativeCommandPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: drive-relative\nplatforms:\n  - windows\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Drive-relative path\n\nUses a drive-qualified script path.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "drive-relative",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": `powershell -File C:scripts\run.ps1`},
+		}},
+	}
+
+	quality := evaluateSkillQualityForDir(entry, nil, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block Windows drive-relative command path: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "C:scripts/run.ps1" {
+		t.Fatalf("ReferencedMissing = %+v, want C:scripts/run.ps1", quality.Package.ReferencedMissing)
+	}
+}
+
 func TestSkillQualityBlocksEscapingWorkingDir(t *testing.T) {
 	dir := t.TempDir()
 	data := []byte("name: escaping-cwd\ndescription: A skill with a non-portable working directory.\ntriggers:\n  - escaping-cwd\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      working_dir: ../shared-scripts\n      command: echo ok\n")
@@ -703,6 +1741,33 @@ func TestSkillQualityBlocksEscapingWorkingDir(t *testing.T) {
 	}
 	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "../shared-scripts" {
 		t.Fatalf("ReferencedMissing = %+v, want ../shared-scripts", quality.Package.ReferencedMissing)
+	}
+}
+
+func TestSkillQualityBlocksEscapingCommandScriptPath(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("name: escaping-command\ndescription: A skill with a command that escapes the package directory.\ntriggers:\n  - escaping-command\nplatforms:\n  - universal\nsteps:\n  - action: bash\n    params:\n      command: python ../shared-scripts/run.py\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile(skill.yaml) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Escaping command\n\nUses a non-portable command path.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
+	}
+	entry, err := loadMarketPackageSkillEntry(dir, nil)
+	if err != nil {
+		t.Fatalf("loadMarketPackageSkillEntry() error = %v", err)
+	}
+	_, report, err := prepareSkillDirForMarket(dir, true)
+	if err != nil {
+		t.Fatalf("prepareSkillDirForMarket() error = %v", err)
+	}
+
+	quality := evaluateSkillQualityForDir(entry, report, false, dir)
+	if quality.MarketReady {
+		t.Fatalf("quality should block escaping command script path: %+v", quality)
+	}
+	if len(quality.Package.ReferencedMissing) != 1 || quality.Package.ReferencedMissing[0] != "../shared-scripts/run.py" {
+		t.Fatalf("ReferencedMissing = %+v, want ../shared-scripts/run.py", quality.Package.ReferencedMissing)
 	}
 }
 
@@ -1000,11 +2065,23 @@ func TestSkillLifecycleRetryBlockedAndProcessUploadsReadySkill(t *testing.T) {
 	app := &App{testHomeDir: tempHome}
 	dir := filepath.Join(tempHome, "skills", "ready-after-proof")
 	writeLifecycleTestSkill(t, dir, "ready-after-proof")
+	if err := os.WriteFile(filepath.Join(dir, "run.py"), []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(run.py) error = %v", err)
+	}
+	staleYAML := "name: ready-after-proof\n" +
+		"description: A portable skill that uploads once runtime proof exists.\n" +
+		"triggers:\n  - ready-after-proof\n" +
+		"platforms:\n  - universal\n" +
+		"steps:\n  - action: bash\n    params:\n      command: python " + filepath.ToSlash(filepath.Join(dir, "run.py")) + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte(staleYAML), 0o644); err != nil {
+		t.Fatalf("WriteFile(stale skill.yaml) error = %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Ready after proof\n\nA portable skill that uploads once runtime proof exists.\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile(SKILL.md) error = %v", err)
 	}
 
 	var submitCount int
+	var submittedYAML string
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -1012,6 +2089,55 @@ func TestSkillLifecycleRetryBlockedAndProcessUploadsReadySkill(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "urls": []string{server.URL}})
 		case "/api/v1/skills/submit":
 			submitCount++
+			file, _, err := r.FormFile("zip")
+			if err != nil {
+				t.Errorf("FormFile(zip) error = %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			data, err := io.ReadAll(file)
+			closeErr := file.Close()
+			if err != nil {
+				t.Errorf("ReadAll(zip) error = %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if closeErr != nil {
+				t.Errorf("Close(zip) error = %v", closeErr)
+				http.Error(w, closeErr.Error(), http.StatusBadRequest)
+				return
+			}
+			zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+			if err != nil {
+				t.Errorf("NewReader(zip) error = %v", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			for _, f := range zr.File {
+				if f.Name != "skill.yaml" {
+					continue
+				}
+				rc, err := f.Open()
+				if err != nil {
+					t.Errorf("Open(skill.yaml) error = %v", err)
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				yamlData, err := io.ReadAll(rc)
+				closeErr := rc.Close()
+				if err != nil {
+					t.Errorf("ReadAll(skill.yaml) error = %v", err)
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if closeErr != nil {
+					t.Errorf("Close(skill.yaml) error = %v", closeErr)
+					http.Error(w, closeErr.Error(), http.StatusBadRequest)
+					return
+				}
+				submittedYAML = string(yamlData)
+				break
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"submission_id": "sub-ready"})
 		default:
 			http.NotFound(w, r)
@@ -1082,6 +2208,12 @@ func TestSkillLifecycleRetryBlockedAndProcessUploadsReadySkill(t *testing.T) {
 	}
 	if submitCount != 1 {
 		t.Fatalf("submitCount = %d, want only target upload", submitCount)
+	}
+	if submittedYAML == "" {
+		t.Fatalf("submitted zip did not contain skill.yaml")
+	}
+	if strings.Contains(filepath.ToSlash(submittedYAML), filepath.ToSlash(dir)) || !strings.Contains(submittedYAML, "{baseDir}/run.py") {
+		t.Fatalf("submitted skill.yaml = %s, want package-relative baseDir script without local path", submittedYAML)
 	}
 }
 

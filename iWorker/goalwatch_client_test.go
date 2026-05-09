@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,6 +49,47 @@ func TestFetchCenterGoalPushes(t *testing.T) {
 	}
 }
 
+func TestFetchCenterGoalPushesRejectsTrailingJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pushes":[{"event_id":"gpush_1","task_id":"task_1"}]} {"pushes":[]}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchCenterGoalPushes(server.URL, "tenant-a", "worker-a", 10, 1)
+	if !errors.Is(err, errCenterJSONTrailing) {
+		t.Fatalf("fetchCenterGoalPushes error = %v, want errCenterJSONTrailing", err)
+	}
+}
+
+func TestFetchGoalPushesFallsBackToCacheWhenCenterReturnsInvalidJSON(t *testing.T) {
+	setTestHome(t)
+	if err := writeDiWorkerSettings(DiWorkerSettings{Center: CenterConfig{Enabled: true, TenantID: "tenant-a", DepartmentID: "ops", WorkerID: "worker-a", TimeoutSec: 1}}); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	if err := writeGoalPushesCache("tenant-a", "ops", "worker-a", []CenterGoalPush{{EventID: "cached-push", TaskID: "cached-task", Title: "cached work"}}); err != nil {
+		t.Fatalf("write goal push cache: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"pushes":[{"event_id":"live-push","task_id":"live-task"}]} {"pushes":[]}`))
+	}))
+	defer server.Close()
+	settings, _ := readDiWorkerSettings()
+	settings.Center.BaseURL = server.URL
+	if err := writeDiWorkerSettings(settings); err != nil {
+		t.Fatalf("write settings with server URL: %v", err)
+	}
+
+	app := NewApp()
+	pushes, err := app.FetchGoalPushes(10)
+	if err != nil {
+		t.Fatalf("FetchGoalPushes returned error: %v", err)
+	}
+	if len(pushes) != 1 || pushes[0].EventID != "cached-push" || pushes[0].Source != "cache" || !pushes[0].Stale {
+		t.Fatalf("pushes = %+v, want stale cached push", pushes)
+	}
+}
+
 func TestAckCenterGoalPush(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -80,6 +122,96 @@ func TestAckCenterGoalPush(t *testing.T) {
 	}
 	if result.AckEventID != "gack_1" || result.Status != "resumed" {
 		t.Fatalf("unexpected ack result: %+v", result)
+	}
+}
+
+func TestAckCenterGoalPushEscapesEventID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.URL.EscapedPath() != "/client/goalwatch/pushes/gpush%2Fteam%201/ack" {
+			t.Fatalf("escaped path = %s", r.URL.EscapedPath())
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"event_id": "gpush/team 1", "task_id": "task_1", "ack_event_id": "gack_1", "status": "resumed"})
+	}))
+	defer server.Close()
+
+	result, err := ackCenterGoalPush(server.URL, "tenant-a", CenterGoalPushAckRequest{EventID: "gpush/team 1", ColleagueID: "worker-a", Status: "resumed"}, 1)
+	if err != nil {
+		t.Fatalf("ackCenterGoalPush returned error: %v", err)
+	}
+	if result.EventID != "gpush/team 1" {
+		t.Fatalf("event_id = %q, want escaped event id round trip", result.EventID)
+	}
+}
+
+func TestAckCenterGoalPushRejectsMissingAckResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	}))
+	defer server.Close()
+
+	_, err := ackCenterGoalPush(server.URL, "tenant-a", CenterGoalPushAckRequest{EventID: "gpush_1", ColleagueID: "worker-a", Status: "resumed"}, 1)
+	if err == nil || !strings.Contains(err.Error(), "missing ack result") {
+		t.Fatalf("ackCenterGoalPush error = %v, want missing ack result", err)
+	}
+}
+
+func TestRecoverCenterGoalPush(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/client/goalwatch/pushes/gpush_1/recover" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.Header.Get("X-Tenant-ID"); got != "tenant-a" {
+			t.Fatalf("X-Tenant-ID = %q", got)
+		}
+		var req struct {
+			ColleagueID string `json:"colleague_id"`
+			Status      string `json:"status"`
+			Note        string `json:"note"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("Decode returned error: %v", err)
+		}
+		if req.ColleagueID != "worker-a" || req.Status != "recovered" || req.Note != "human approved resume" {
+			t.Fatalf("unexpected recover request: %+v", req)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"push":            map[string]any{"event_id": "gpush_1", "task_id": "task_1", "workflow_step_instance_id": "wfsi-1", "recovery_action": "resume_workflow_step", "recovery_method": "POST", "recovery_path": "/runtime/workflows/steps/wfsi-1/resume"},
+			"ack":             map[string]any{"event_id": "gpush_1", "task_id": "task_1", "ack_event_id": "gack_1", "status": "recovered"},
+			"recovery_action": "resume_workflow_step",
+			"recovery_method": "POST",
+			"recovery_path":   "/runtime/workflows/steps/wfsi-1/resume",
+			"status":          "recovered",
+		})
+	}))
+	defer server.Close()
+
+	result, err := recoverCenterGoalPush(server.URL, "tenant-a", CenterGoalPushAckRequest{EventID: "gpush_1", ColleagueID: "worker-a", Note: "human approved resume"}, 1)
+	if err != nil {
+		t.Fatalf("recoverCenterGoalPush returned error: %v", err)
+	}
+	if result.Status != "recovered" || result.Ack.Status != "recovered" || result.Push.WorkflowStepInstanceID != "wfsi-1" || result.RecoveryPath == "" {
+		t.Fatalf("unexpected recover result: %+v", result)
+	}
+}
+
+func TestRecoverCenterGoalPushRejectsMissingRecoveryResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ack":    map[string]any{"event_id": "gpush_1", "task_id": "task_1", "ack_event_id": "gack_1", "status": "recovered"},
+			"status": "recovered",
+		})
+	}))
+	defer server.Close()
+
+	_, err := recoverCenterGoalPush(server.URL, "tenant-a", CenterGoalPushAckRequest{EventID: "gpush_1", ColleagueID: "worker-a"}, 1)
+	if err == nil || !strings.Contains(err.Error(), "missing recovery result") {
+		t.Fatalf("recoverCenterGoalPush error = %v, want missing recovery result", err)
 	}
 }
 
@@ -138,6 +270,19 @@ func TestFetchCenterAgentInstances(t *testing.T) {
 	}
 	if len(instances) != 1 || instances[0].Role != "executor" {
 		t.Fatalf("unexpected instances: %+v", instances)
+	}
+}
+
+func TestFetchCenterAgentInstancesRejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"instances":[],"padding":"` + strings.Repeat("x", centerClientJSONLimit) + `"}`))
+	}))
+	defer server.Close()
+
+	_, err := fetchCenterAgentInstances(server.URL, "tenant-a", "worker-a", 1)
+	if !errors.Is(err, errCenterJSONTooLarge) {
+		t.Fatalf("fetchCenterAgentInstances error = %v, want errCenterJSONTooLarge", err)
 	}
 }
 

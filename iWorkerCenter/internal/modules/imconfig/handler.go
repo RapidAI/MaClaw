@@ -1,7 +1,10 @@
 package imconfig
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -49,6 +52,29 @@ type Handler struct{}
 // NewHandler creates an IM config Handler.
 func NewHandler() *Handler { return &Handler{} }
 
+const maxIMConfigJSONBodyBytes = 64 << 10
+
+func decodeIMConfigJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxIMConfigJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxIMConfigJSONBodyBytes {
+		return errors.New("im config json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("im config json body contains trailing data")
+		}
+		return err
+	}
+	return nil
+}
+
 // RegisterAdminRoutes registers admin-facing routes.
 func (h *Handler) RegisterAdminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/im-config", h.handle)
@@ -61,7 +87,7 @@ func (h *Handler) handle(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, cfg)
 	case http.MethodPut:
 		var cfg IMConfig
-		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		if err := decodeIMConfigJSON(r.Body, &cfg); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}

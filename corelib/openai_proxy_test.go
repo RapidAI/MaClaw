@@ -55,10 +55,10 @@ func TestNeedsOpenAIProxy(t *testing.T) {
 			want:        false,
 		},
 		{
-			name:        "user provides OPENAI_BASE_URL in extra_env",
+			name:        "base url alone does not satisfy required OPENAI_API_KEY",
 			requiredEnv: []string{"OPENAI_API_KEY"},
 			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com/v1"},
-			want:        false,
+			want:        true,
 		},
 		{
 			name:        "user provides both OPENAI_API_KEY and OPENAI_BASE_URL",
@@ -85,10 +85,10 @@ func TestNeedsOpenAIProxy(t *testing.T) {
 			want:        true,
 		},
 		{
-			name:        "case sensitive - lowercase openai_api_key not matched",
+			name:        "lowercase openai_api_key is matched",
 			requiredEnv: []string{"openai_api_key"},
 			extraEnv:    map[string]string{},
-			want:        false,
+			want:        true,
 		},
 	}
 
@@ -136,9 +136,82 @@ print("hello world")
 			want:        true,
 		},
 		{
+			name:        "explicit RequiredEnv is case-insensitive",
+			requiredEnv: []string{"openai_api_key"},
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "",
+			want:        true,
+		},
+		{
+			name:        "explicit OPENAI_BASE_URL uses proxy when missing",
+			requiredEnv: []string{"OPENAI_BASE_URL"},
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "",
+			want:        true,
+		},
+		{
+			name:        "provided OPENAI_BASE_URL satisfies base-url-only requirement",
+			requiredEnv: []string{"OPENAI_BASE_URL"},
+			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com/v1"},
+			steps:       nil,
+			skillDir:    "",
+			want:        false,
+		},
+		{
+			name:        "api key alone does not satisfy explicit base url requirement",
+			requiredEnv: []string{"OPENAI_API_KEY", "OPENAI_BASE_URL"},
+			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
+			steps:       nil,
+			skillDir:    "",
+			want:        true,
+		},
+		{
+			name:        "both explicit OpenAI env vars are satisfied",
+			requiredEnv: []string{"OPENAI_API_KEY", "OPENAI_BASE_URL"},
+			extraEnv: map[string]string{
+				"OPENAI_API_KEY":  "sk-user",
+				"OPENAI_BASE_URL": "https://api.example.com/v1",
+			},
+			steps:    nil,
+			skillDir: "",
+			want:     false,
+		},
+		{
+			name:        "step-level required_env triggers proxy",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps: []NLSkillStep{{
+				Action: "bash",
+				Params: map[string]interface{}{"required_env": "OPENAI_API_KEY"},
+			}},
+			skillDir: "",
+			want:     true,
+		},
+		{
+			name:        "step-level requires_env alias is case-insensitive",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps: []NLSkillStep{{
+				Action: "run",
+				Params: map[string]interface{}{"requires_env": []interface{}{"openai_api_key"}},
+			}},
+			skillDir: "",
+			want:     true,
+		},
+		{
 			name:        "user provided key overrides explicit RequiredEnv",
 			requiredEnv: []string{"OPENAI_API_KEY"},
 			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
+			steps:       nil,
+			skillDir:    "",
+			want:        false,
+		},
+		{
+			name:        "user provided key override is case-insensitive",
+			requiredEnv: []string{"OPENAI_API_KEY"},
+			extraEnv:    map[string]string{"openai_api_key": "sk-user"},
 			steps:       nil,
 			skillDir:    "",
 			want:        false,
@@ -149,6 +222,26 @@ print("hello world")
 			extraEnv:    map[string]string{},
 			steps: []NLSkillStep{
 				{Action: "bash", Params: map[string]interface{}{"command": `python translate.py --key "$OPENAI_API_KEY"`}},
+			},
+			skillDir: "",
+			want:     true,
+		},
+		{
+			name:        "auto-detect from lowercase step command",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps: []NLSkillStep{
+				{Action: "bash", Params: map[string]interface{}{"command": `python translate.py --key "$openai_api_key"`}},
+			},
+			skillDir: "",
+			want:     true,
+		},
+		{
+			name:        "auto-detect from node code",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps: []NLSkillStep{
+				{Action: "node", Params: map[string]interface{}{"code": `console.log(process.env.OPENAI_API_KEY)`}},
 			},
 			skillDir: "",
 			want:     true,
@@ -198,12 +291,22 @@ print("hello world")
 			want:        false,
 		},
 		{
-			name:        "user provided base_url overrides auto-detection",
+			name:        "user provided base_url overrides passive auto-detection",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com"},
 			steps:       nil,
 			skillDir:    tmpDir,
 			want:        false,
+		},
+		{
+			name:        "base url satisfies base-url-only auto-detection",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com"},
+			steps: []NLSkillStep{
+				{Action: "bash", Params: map[string]interface{}{"command": `curl $OPENAI_BASE_URL/chat/completions`}},
+			},
+			skillDir: "",
+			want:     false,
 		},
 		{
 			name:        "empty everything returns false",
@@ -225,12 +328,17 @@ print("hello world")
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Clear process-level OPENAI_API_KEY to avoid interference
+			// Clear process-level OpenAI env to avoid interference.
 			prev, had := os.LookupEnv("OPENAI_API_KEY")
 			os.Unsetenv("OPENAI_API_KEY")
+			prevBaseURL, hadBaseURL := os.LookupEnv("OPENAI_BASE_URL")
+			os.Unsetenv("OPENAI_BASE_URL")
 			defer func() {
 				if had {
 					os.Setenv("OPENAI_API_KEY", prev)
+				}
+				if hadBaseURL {
+					os.Setenv("OPENAI_BASE_URL", prevBaseURL)
 				}
 			}()
 

@@ -10,10 +10,6 @@ import (
 	"time"
 )
 
-// cancelWords are Chinese phrases that indicate the user wants to cancel
-// the current intent understanding session.
-var cancelWords = []string{"算了", "取消", "不做了"}
-
 // sessionExpiryDuration is the maximum inactivity time before a session
 // is considered expired and eligible for cleanup.
 const sessionExpiryDuration = 30 * time.Minute
@@ -128,13 +124,6 @@ func (m *IntentUnderstandingManager) Start(userID, text string) (*StartResult, e
 // Returns: reply text, whether the user is ready to start the workflow,
 // whether the user cancelled, the confirmed intent (when ready=true), and any error.
 func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply string, ready bool, cancelled bool, intent *StructuredIntent, err error) {
-	// Check for cancel words first
-	trimmed := strings.TrimSpace(text)
-	if isCancelMessage(trimmed) {
-		m.cleanupSession(userID)
-		return "", false, true, nil, nil
-	}
-
 	m.mu.RLock()
 	sess := m.sessions[userID]
 	m.mu.RUnlock()
@@ -182,6 +171,14 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 		}
 
 		return fallbackReply, false, false, nil, nil
+	}
+
+	if parsedIntent.Category == WorkflowType("cancel") {
+		m.cleanupSession(userID)
+		if strings.TrimSpace(replyText) == "" {
+			replyText = "已取消。"
+		}
+		return replyText, false, true, nil, nil
 	}
 
 	// Update session
@@ -273,6 +270,12 @@ func (m *IntentUnderstandingManager) RestoreSession(userID string) error {
 	return nil
 }
 
+// CancelSession cancels and removes an active understanding session without
+// going through the LLM. Use this for explicit external reset/cancel flows.
+func (m *IntentUnderstandingManager) CancelSession(userID string) {
+	m.cleanupSession(userID)
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -292,16 +295,6 @@ func (m *IntentUnderstandingManager) cleanupSession(userID string) {
 	if m.store != nil {
 		_ = m.store.DeleteUnderstandingSession(userID)
 	}
-}
-
-// isCancelMessage checks if the message contains any cancel words.
-func isCancelMessage(text string) bool {
-	for _, w := range cancelWords {
-		if strings.Contains(text, w) {
-			return true
-		}
-	}
-	return false
 }
 
 // buildInitialMessages constructs the LLM message array for the first round.
@@ -344,6 +337,8 @@ func (m *IntentUnderstandingManager) buildConversationMessages(sess *Understandi
 func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	var b strings.Builder
 	b.Grow(4096) // pre-allocate to avoid repeated buffer growth
+
+	b.WriteString("Cancellation rule: if the user wants to cancel or abandon the current clarification, return JSON with intent.category=\"cancel\", ready=false, and a short acknowledgement in reply.\n\n")
 
 	b.WriteString("你是一个智能助手的意图理解模块。你的任务是判断用户消息是否需要启动一个多阶段工作流，如果需要，将其分类到合适的工作流类型。\n\n")
 

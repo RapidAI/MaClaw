@@ -54,7 +54,7 @@ func (e *ClaudeEventExtractor) Consume(session *RemoteSession, lines []string) [
 
 func (e *ClaudeEventExtractor) detectFileRead(session *RemoteSession, line string) *ImportantEvent {
 	lower := strings.ToLower(line)
-	if !containsAny(lower, []string{"reading ", "read file", "inspecting ", "opened "}) {
+	if !eventContainsAny(lower, []string{"reading ", "read file", "inspecting ", "opened "}) {
 		return nil
 	}
 
@@ -64,7 +64,7 @@ func (e *ClaudeEventExtractor) detectFileRead(session *RemoteSession, line strin
 
 func (e *ClaudeEventExtractor) detectFileChanged(session *RemoteSession, line string) *ImportantEvent {
 	lower := strings.ToLower(line)
-	if !containsAny(lower, []string{"editing ", "modified ", "updated ", "patched ", "created ", "wrote ", "rewrote "}) {
+	if !eventContainsAny(lower, []string{"editing ", "modified ", "updated ", "patched ", "created ", "wrote ", "rewrote "}) {
 		return nil
 	}
 
@@ -108,7 +108,7 @@ func (e *ClaudeEventExtractor) detectInputRequired(session *RemoteSession, line 
 
 func (e *ClaudeEventExtractor) detectError(session *RemoteSession, line string) *ImportantEvent {
 	lower := strings.ToLower(line)
-	if containsAny(lower, []string{"0 errors", "without errors", "no error", "error count: 0"}) {
+	if eventContainsAny(lower, []string{"0 errors", "without errors", "no error", "error count: 0"}) {
 		return nil
 	}
 
@@ -206,7 +206,7 @@ func newEvent(session *RemoteSession, typ, severity, title, summary, relatedFile
 	}
 }
 
-func containsAny(value string, keywords []string) bool {
+func eventContainsAny(value string, keywords []string) bool {
 	for _, kw := range keywords {
 		if strings.Contains(value, kw) {
 			return true

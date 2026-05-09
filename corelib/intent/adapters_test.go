@@ -49,6 +49,27 @@ func TestToTaskIntent_SSH(t *testing.T) {
 	}
 }
 
+func TestToTaskIntent_LowConfidenceExecutableLabelsBecomeAmbiguous(t *testing.T) {
+	for _, label := range []IntentLabel{LabelCoding, LabelBugFix, LabelMaintenance, LabelSSH} {
+		r := &ClassificationResult{
+			Primary:    label,
+			Confidence: 0.50,
+			Layer:      1,
+			Reason:     "weak keyword only",
+		}
+		intent, matched, _, _, conf := r.ToTaskIntent()
+		if intent != "ambiguous" {
+			t.Errorf("ToTaskIntent(%s): got intent=%q, want ambiguous", label, intent)
+		}
+		if matched != string(label) {
+			t.Errorf("ToTaskIntent(%s): got matched=%q, want %q", label, matched, string(label))
+		}
+		if conf != 0.50 {
+			t.Errorf("ToTaskIntent(%s): got confidence=%f, want 0.50", label, conf)
+		}
+	}
+}
+
 func TestToTaskIntent_NonCodingLabels(t *testing.T) {
 	for _, label := range []IntentLabel{LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice} {
 		r := &ClassificationResult{

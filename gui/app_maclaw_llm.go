@@ -294,6 +294,44 @@ func (a *App) SaveMaclawLLMProviders(providers []corelib.MaclawLLMProvider, curr
 	for i := range providers {
 		providers[i] = markHubServiceProvider(normalizeMaclawLLMProvider(providers[i]))
 	}
+	if current == hubServiceProviderName {
+		hasHubProvider := false
+		var hubStatus HubLLMServiceStatus
+		haveHubStatus := false
+		for _, p := range providers {
+			if p.Name == hubServiceProviderName {
+				hasHubProvider = true
+				break
+			}
+		}
+		if !hasHubProvider && strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != "" {
+			syncCfg := cfg
+			syncCfg.MaclawLLMProviders = providers
+			syncCfg.MaclawLLMCurrentProvider = current
+			if status, err := a.fetchHubLLMServiceStatusWithTimeout(syncCfg, hubServiceStatusTimeout); err == nil {
+				hubStatus = status
+				haveHubStatus = true
+				a.applyHubLLMServiceStatusToConfig(&syncCfg, status)
+				providers = syncCfg.MaclawLLMProviders
+			} else {
+				log.Printf("[LLM] SaveMaclawLLMProviders:hub_provider_sync_failed err=%v", err)
+			}
+		}
+		if !hasHubProvider {
+			for _, p := range providers {
+				if p.Name == hubServiceProviderName {
+					hasHubProvider = true
+					break
+				}
+			}
+		}
+		if !hasHubProvider {
+			if haveHubStatus {
+				return fmt.Errorf("%s", hubLLMServiceMissingProviderMessage(hubStatus))
+			}
+			return fmt.Errorf("MaClaw 官方服务商暂不可用：请刷新 Hub 服务状态后重试")
+		}
+	}
 	cfg.MaclawLLMProviders = providers
 	cfg.MaclawLLMCurrentProvider = current
 	for _, p := range providers {
@@ -600,7 +638,7 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	var textResult string
 	var err error
 	if llm.IsResponsesAPI() {
-		textResult, err = a.testResponsesAPILLM(url, key, model, llm.UserAgent())
+		textResult, err = a.testResponsesAPILLM(url, key, model, llm.UserAgent(), llm.ProviderName)
 	} else if protocol == "anthropic" {
 		textResult, err = a.testAnthropicLLM(url, key, model, llm.UserAgent())
 	} else {
@@ -671,8 +709,8 @@ func (a *App) testAnthropicLLM(url, key, model, userAgent string) (string, error
 }
 
 // testResponsesAPILLM tests an OpenAI Responses API endpoint.
-func (a *App) testResponsesAPILLM(url, key, model, userAgent string) (string, error) {
-	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, AgentType: userAgent, WireAPI: "responses"}
+func (a *App) testResponsesAPILLM(url, key, model, userAgent, providerName string) (string, error) {
+	cfg := corelib.MaclawLLMConfig{URL: url, Key: key, Model: model, AgentType: userAgent, WireAPI: "responses", ProviderName: providerName}
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
 	client := &http.Client{Timeout: 30 * time.Second}
 
@@ -695,7 +733,7 @@ func (a *App) testResponsesAPILLM(url, key, model, userAgent string) (string, er
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, model)
+		msg := classifyResponsesAPIHTTPError(resp.StatusCode, body, endpoint, model, cfg.ProviderName)
 		return "", fmt.Errorf("%s", msg)
 	}
 
@@ -1258,17 +1296,17 @@ func (a *App) ensureCodeGenToken() error {
 		}
 		// 同步更新编程工具模型列表中 CodeGen 条目的 api_key
 		if cfg, loadErr := a.LoadConfig(); loadErr == nil {
-			toolConfigs := []*corelib.ToolConfig{
-				&cfg.Claude, &cfg.Codex, &cfg.Opencode,
-				&cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
-			}
 			changed := false
+			if updateCodeGenToolAPIKey(&cfg.Claude, codeGenToolTarget(updated, "anthropic")) {
+				changed = true
+			}
+			openaiTarget := codeGenToolTarget(updated, "responses")
+			toolConfigs := []*corelib.ToolConfig{
+				&cfg.Codex, &cfg.Opencode, &cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
+			}
 			for _, tc := range toolConfigs {
-				for i, m := range tc.Models {
-					if m.ModelName == codegenProviderName && m.ApiKey != updated.Key {
-						tc.Models[i].ApiKey = updated.Key
-						changed = true
-					}
+				if updateCodeGenToolAPIKey(tc, openaiTarget) {
+					changed = true
 				}
 			}
 			if changed {
@@ -1289,12 +1327,98 @@ func (a *App) ensureCodeGenToken() error {
 	return nil
 }
 
+func (a *App) ensureCodeGenConfiguredModelAvailable() error {
+	if shouldSkipCodeGenSSO(brand.Current().ID) {
+		return nil
+	}
+	models, err := a.FetchCodeGenModels()
+	if err != nil {
+		return err
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	firstModel := strings.TrimSpace(models[0].ID)
+	if firstModel == "" {
+		return nil
+	}
+	available := make(map[string]bool, len(models))
+	for _, m := range models {
+		if id := strings.TrimSpace(m.ID); id != "" {
+			available[id] = true
+		}
+	}
+
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	changed := false
+	var codegenProvider *corelib.MaclawLLMProvider
+	for i := range cfg.MaclawLLMProviders {
+		if cfg.MaclawLLMProviders[i].Name != codegenProviderName {
+			continue
+		}
+		codegenProvider = &cfg.MaclawLLMProviders[i]
+		if model := strings.TrimSpace(cfg.MaclawLLMProviders[i].Model); model == "" || !available[model] {
+			cfg.MaclawLLMProviders[i].Model = firstModel
+			changed = true
+		}
+		break
+	}
+	if codegenProvider == nil {
+		return nil
+	}
+
+	openaiTarget := codeGenToolTarget(*codegenProvider, "responses")
+	openaiTarget.ModelName = firstModel
+	openaiTarget.ModelId = firstModel
+	anthropicTarget := codeGenToolTarget(*codegenProvider, "anthropic")
+	anthropicTarget.ModelName = firstModel
+	anthropicTarget.ModelId = firstModel
+
+	if ensureCodeGenToolModelAvailable(&cfg.Claude, anthropicTarget, available) {
+		changed = true
+	}
+	toolConfigs := []*corelib.ToolConfig{
+		&cfg.Codex, &cfg.Opencode, &cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
+	}
+	for _, tc := range toolConfigs {
+		if ensureCodeGenToolModelAvailable(tc, openaiTarget, available) {
+			changed = true
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+	if err := a.SaveConfig(cfg); err != nil {
+		return err
+	}
+	if cfg.MaclawLLMCurrentProvider == codegenProviderName {
+		result := configfile.WriteAllToolConfigs(configfile.ToolConfigParams{
+			Token:            codegenProvider.Key,
+			BaseURL:          codegenProvider.URL,
+			AnthropicBaseURL: codegenAnthropicBaseURL(codegenProvider.URL),
+			ModelID:          firstModel,
+			ProviderName:     codegenProviderName,
+		})
+		for _, f := range result.Failed {
+			log.Printf("[CodeGen] startup model fallback tool file sync failed: %s: %v", f.Tool, f.Error)
+		}
+	}
+	return nil
+}
+
 // CodeGenSSOInfo 是 StartCodeGenSSO 的返回结果，包含 SSO 认证成功后的关键信息。
 type CodeGenSSOInfo struct {
 	// Message 是面向用户的成功/警告消息。
 	Message string `json:"message"`
 	// Email 是从 id_token 解析出的用户邮件地址，用于自动注册 Hub。
 	Email string `json:"email"`
+	// ModelID is the first usable model selected during SSO login.
+	ModelID string `json:"model_id"`
 }
 
 // StartCodeGenSSO 执行企业 SSO 扫码登录流程，成功后：
@@ -1360,6 +1484,7 @@ func (a *App) StartCodeGenSSO() (CodeGenSSOInfo, error) {
 	return CodeGenSSOInfo{
 		Message: msg,
 		Email:   result.Email,
+		ModelID: result.ModelID,
 	}, nil
 }
 
@@ -1415,10 +1540,11 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 
 	openaiURL := result.BaseURL
 	anthropicURL := codegenAnthropicBaseURL(openaiURL)
+	modelName := codeGenToolModelName(result.ModelID)
 
 	// Claude Code 使用 anthropic 协议端点
 	claudeModel := corelib.ModelConfig{
-		ModelName: codegenProviderName,
+		ModelName: modelName,
 		ModelId:   result.ModelID,
 		ModelUrl:  anthropicURL,
 		ApiKey:    result.AccessToken,
@@ -1428,7 +1554,7 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 
 	// 其他工具使用 openai 协议端点
 	openaiModel := corelib.ModelConfig{
-		ModelName: codegenProviderName,
+		ModelName: modelName,
 		ModelId:   result.ModelID,
 		ModelUrl:  openaiURL,
 		ApiKey:    result.AccessToken,
@@ -1450,31 +1576,129 @@ func (a *App) injectCodeGenModelIntoToolConfigs(result oauth.CodeGenSSOResult) {
 	}
 }
 
-// upsertModelInToolConfig 在 ToolConfig 的 Models 列表中插入或更新指定名称的模型。
-// 如果已存在同名条目则更新其字段；否则插入到第一个 IsCustom 条目之前。
-func upsertModelInToolConfig(tc *corelib.ToolConfig, model corelib.ModelConfig) {
+func codeGenToolModelName(modelID string) string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID != "" {
+		return modelID
+	}
+	return codegenProviderName
+}
+
+func codeGenToolTarget(provider corelib.MaclawLLMProvider, wireAPI string) corelib.ModelConfig {
+	modelName := codeGenToolModelName(provider.Model)
+	modelURL := provider.URL
+	if wireAPI == "anthropic" {
+		modelURL = codegenAnthropicBaseURL(provider.URL)
+	}
+	return corelib.ModelConfig{
+		ModelName: modelName,
+		ModelId:   modelName,
+		ModelUrl:  modelURL,
+		ApiKey:    provider.Key,
+		WireApi:   wireAPI,
+	}
+}
+
+func updateCodeGenToolAPIKey(tc *corelib.ToolConfig, target corelib.ModelConfig) bool {
+	changed := false
 	for i, m := range tc.Models {
-		if m.ModelName == model.ModelName {
-			tc.Models[i].ModelId = model.ModelId
-			tc.Models[i].ModelUrl = model.ModelUrl
-			tc.Models[i].ApiKey = model.ApiKey
-			tc.Models[i].WireApi = model.WireApi
-			return
+		if isCodeGenToolModel(m, target) {
+			if tc.Models[i].ApiKey != target.ApiKey {
+				tc.Models[i].ApiKey = target.ApiKey
+				changed = true
+			}
 		}
 	}
-	// 插入到第一个 Custom 条目之前
-	insertIdx := len(tc.Models)
+	return changed
+}
+
+func ensureCodeGenToolModelAvailable(tc *corelib.ToolConfig, target corelib.ModelConfig, available map[string]bool) bool {
+	changed := false
 	for i, m := range tc.Models {
+		if !isCodeGenToolModel(m, target) {
+			continue
+		}
+		currentWasThisEntry := tc.CurrentModel == m.ModelName
+		modelID := strings.TrimSpace(m.ModelId)
+		if modelID == "" {
+			modelID = strings.TrimSpace(m.ModelName)
+		}
+		if available[modelID] {
+			continue
+		}
+		tc.Models[i].ModelName = target.ModelName
+		tc.Models[i].ModelId = target.ModelId
+		tc.Models[i].ModelUrl = target.ModelUrl
+		tc.Models[i].ApiKey = target.ApiKey
+		tc.Models[i].WireApi = target.WireApi
+		if currentWasThisEntry {
+			tc.CurrentModel = target.ModelName
+		}
+		changed = true
+	}
+	return changed
+}
+
+// upsertModelInToolConfig 在 ToolConfig 的 Models 列表中插入或更新指定名称的模型。
+// 如果已存在同名条目则更新其字段；否则插入到第一个 IsCustom 条目之前。
+func upsertModelInToolConfig(tc *corelib.ToolConfig, model corelib.ModelConfig) bool {
+	changed := false
+	found := false
+	if tc.CurrentModel != model.ModelName {
+		tc.CurrentModel = model.ModelName
+		changed = true
+	}
+	updatedModels := make([]corelib.ModelConfig, 0, len(tc.Models)+1)
+	for _, m := range tc.Models {
+		if isCodeGenToolModel(m, model) {
+			if found {
+				changed = true
+				continue
+			}
+			if m.ModelName != model.ModelName || m.ModelId != model.ModelId || m.ModelUrl != model.ModelUrl || m.ApiKey != model.ApiKey || m.WireApi != model.WireApi {
+				changed = true
+			}
+			m.ModelName = model.ModelName
+			m.ModelId = model.ModelId
+			m.ModelUrl = model.ModelUrl
+			m.ApiKey = model.ApiKey
+			m.WireApi = model.WireApi
+			updatedModels = append(updatedModels, m)
+			found = true
+			continue
+		}
+		updatedModels = append(updatedModels, m)
+	}
+	if found {
+		tc.Models = updatedModels
+		return changed
+	}
+	// 插入到第一个 Custom 条目之前
+	insertIdx := len(updatedModels)
+	for i, m := range updatedModels {
 		if m.IsCustom {
 			insertIdx = i
 			break
 		}
 	}
-	newModels := make([]corelib.ModelConfig, 0, len(tc.Models)+1)
-	newModels = append(newModels, tc.Models[:insertIdx]...)
+	newModels := make([]corelib.ModelConfig, 0, len(updatedModels)+1)
+	newModels = append(newModels, updatedModels[:insertIdx]...)
 	newModels = append(newModels, model)
-	newModels = append(newModels, tc.Models[insertIdx:]...)
+	newModels = append(newModels, updatedModels[insertIdx:]...)
 	tc.Models = newModels
+	return true
+}
+
+func isCodeGenToolModel(existing, target corelib.ModelConfig) bool {
+	if strings.EqualFold(strings.TrimSpace(existing.ModelName), codegenProviderName) {
+		return true
+	}
+	if existing.IsCustom {
+		return false
+	}
+	existingURL := strings.TrimRight(strings.TrimSpace(existing.ModelUrl), "/")
+	targetURL := strings.TrimRight(strings.TrimSpace(target.ModelUrl), "/")
+	return existingURL != "" && existingURL == targetURL && strings.TrimSpace(existing.WireApi) == strings.TrimSpace(target.WireApi)
 }
 
 // ---------------------------------------------------------------------------
@@ -1506,26 +1730,18 @@ func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 		return nil, fmt.Errorf("CodeGen SSO 未完成，请先完成企业认证")
 	}
 
-	if strings.TrimSpace(codeGenProvider.URL) == "" {
-		return nil, fmt.Errorf("CodeGen base_url 未配置")
-	}
-
-	// CodeGen 同时设置 Bearer 和 anthropic-version，protocol 传 "openai" 让
-	// FetchProviderModels 使用 Bearer 头（CodeGen 的 /models 端点接受 Bearer）。
-	items, err := a.FetchProviderModels(codeGenProvider.URL, codeGenProvider.Key, "openai")
+	models, _, err := oauth.FetchCodeGenModels(codeGenProvider.Key)
 	if err != nil {
-		// 若服务端返回空列表或出错，至少用 SSO 返回的默认模型填充
-		if codeGenProvider.Model != "" {
-			return []CodeGenModelItem{{ID: codeGenProvider.Model, Name: codeGenProvider.Model}}, nil
-		}
 		return nil, err
 	}
 
-	// 若服务端返回空列表，至少用 SSO 返回的默认模型填充
-	if len(items) == 0 && codeGenProvider.Model != "" {
-		items = append(items, CodeGenModelItem{ID: codeGenProvider.Model, Name: codeGenProvider.Model})
+	items := make([]CodeGenModelItem, 0, len(models))
+	for _, model := range models {
+		items = append(items, CodeGenModelItem{
+			ID:   model.ID,
+			Name: model.Name,
+		})
 	}
-
 	return items, nil
 }
 
@@ -1537,6 +1753,7 @@ func (a *App) FetchCodeGenModels() ([]CodeGenModelItem, error) {
 func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error {
 	maclawModel = strings.TrimSpace(maclawModel)
 	claudeCodeModel = strings.TrimSpace(claudeCodeModel)
+	var codegenKey, codegenURL string
 
 	// 1. 更新 MaClaw CodeGen provider 的 model 字段
 	if maclawModel != "" {
@@ -1544,6 +1761,8 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 		updated := false
 		for i := range data.Providers {
 			if data.Providers[i].Name == codegenProviderName {
+				codegenKey = data.Providers[i].Key
+				codegenURL = data.Providers[i].URL
 				data.Providers[i].Model = maclawModel
 				updated = true
 				break
@@ -1565,18 +1784,33 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 	if cfg, err := a.LoadConfig(); err == nil {
 		changed := false
 		var claudeEntry *corelib.ModelConfig
+		if codegenKey == "" || codegenURL == "" {
+			for _, p := range cfg.MaclawLLMProviders {
+				if p.Name == codegenProviderName {
+					codegenKey = p.Key
+					codegenURL = p.URL
+					break
+				}
+			}
+		}
 
 		if claudeTargetModel != "" {
-			if cfg.Claude.CurrentModel != codegenProviderName {
-				cfg.Claude.CurrentModel = codegenProviderName
+			if cfg.Claude.CurrentModel != claudeTargetModel {
+				cfg.Claude.CurrentModel = claudeTargetModel
+				changed = true
+			}
+			claudeTargetEntry := corelib.ModelConfig{
+				ModelName: claudeTargetModel,
+				ModelId:   claudeTargetModel,
+				ModelUrl:  codegenAnthropicBaseURL(codegenURL),
+				ApiKey:    codegenKey,
+				WireApi:   "anthropic",
+			}
+			if upsertModelInToolConfig(&cfg.Claude, claudeTargetEntry) {
 				changed = true
 			}
 			for i := range cfg.Claude.Models {
-				if cfg.Claude.Models[i].ModelName == codegenProviderName {
-					if cfg.Claude.Models[i].ModelId != claudeTargetModel {
-						cfg.Claude.Models[i].ModelId = claudeTargetModel
-						changed = true
-					}
+				if cfg.Claude.Models[i].ModelName == claudeTargetModel {
 					claudeEntry = &cfg.Claude.Models[i]
 					break
 				}
@@ -1584,16 +1818,20 @@ func (a *App) SaveCodeGenModelChoice(maclawModel, claudeCodeModel string) error 
 		}
 
 		if maclawModel != "" {
+			openaiTargetEntry := corelib.ModelConfig{
+				ModelName: maclawModel,
+				ModelId:   maclawModel,
+				ModelUrl:  codegenURL,
+				ApiKey:    codegenKey,
+				WireApi:   "responses",
+			}
 			toolConfigs := []*corelib.ToolConfig{
 				&cfg.Codex, &cfg.Opencode,
 				&cfg.CodeBuddy, &cfg.IFlow, &cfg.Kilo,
 			}
 			for _, tc := range toolConfigs {
-				for i := range tc.Models {
-					if tc.Models[i].ModelName == codegenProviderName && tc.Models[i].ModelId != maclawModel {
-						tc.Models[i].ModelId = maclawModel
-						changed = true
-					}
+				if upsertModelInToolConfig(tc, openaiTargetEntry) {
+					changed = true
 				}
 			}
 		}
@@ -1719,7 +1957,7 @@ func (a *App) StartCodeGenSSOEmbedded() (CodeGenSSOEmbeddedResult, error) {
 		}
 
 		resultCh <- ssoPollingResult{
-			info: CodeGenSSOInfo{Message: msg, Email: result.Email},
+			info: CodeGenSSOInfo{Message: msg, Email: result.Email, ModelID: result.ModelID},
 		}
 	}()
 
@@ -1769,6 +2007,69 @@ func (a *App) CancelCodeGenSSOPolling() {
 // 复用 CodeGenModelItem 的结构，但语义上是通用的。
 type ProviderModelItem = CodeGenModelItem
 
+type providerModelEntry struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	OwnedBy     string `json:"owned_by"`
+	Available   *bool  `json:"available,omitempty"`
+	Enabled     *bool  `json:"enabled,omitempty"`
+	Active      *bool  `json:"active,omitempty"`
+	Disabled    bool   `json:"disabled,omitempty"`
+	Status      string `json:"status,omitempty"`
+}
+
+func providerModelEntryID(m providerModelEntry) string {
+	return strings.TrimSpace(m.ID)
+}
+
+func providerModelEntryName(m providerModelEntry) string {
+	for _, name := range []string{m.DisplayName, m.Name, m.ID} {
+		if trimmed := strings.TrimSpace(name); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func isUsableProviderModel(m providerModelEntry) bool {
+	if providerModelEntryID(m) == "" {
+		return false
+	}
+	if m.Disabled {
+		return false
+	}
+	if m.Available != nil && !*m.Available {
+		return false
+	}
+	if m.Enabled != nil && !*m.Enabled {
+		return false
+	}
+	if m.Active != nil && !*m.Active {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(m.Status)) {
+	case "", "ok", "ready", "enabled", "available", "active":
+		return true
+	case "disabled", "unavailable", "inactive", "denied", "forbidden", "no_permission", "no-permission":
+		return false
+	default:
+		return true
+	}
+}
+
+func providerModelItemFromEntry(m providerModelEntry) (ProviderModelItem, bool) {
+	if !isUsableProviderModel(m) {
+		return ProviderModelItem{}, false
+	}
+	id := providerModelEntryID(m)
+	name := providerModelEntryName(m)
+	if name == "" {
+		name = id
+	}
+	return ProviderModelItem{ID: id, Name: name}, true
+}
+
 // FetchProviderModels 通过 {baseURL}/models 端点获取服务商可用的模型列表。
 // 适用于所有 OpenAI / Anthropic 兼容的 API 服务商。
 //
@@ -1780,6 +2081,10 @@ type ProviderModelItem = CodeGenModelItem
 // 前端在 MaClaw LLM 配置面板和编程工具配置面板中调用此函数，
 // 让用户从服务商实际支持的模型中选择，而非手动输入模型名。
 func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderModelItem, error) {
+	return a.fetchProviderModels(baseURL, apiKey, protocol, true)
+}
+
+func (a *App) fetchProviderModels(baseURL, apiKey, protocol string, sortModels bool) ([]ProviderModelItem, error) {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 	protocol = strings.TrimSpace(protocol)
@@ -1848,14 +2153,8 @@ func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderM
 
 	// 先尝试解析为 JSON 对象（OpenAI / Anthropic 格式）
 	var objResult struct {
-		Data []struct {
-			ID      string `json:"id"`
-			OwnedBy string `json:"owned_by"`
-		} `json:"data"`
-		Models []struct {
-			ID          string `json:"id"`
-			DisplayName string `json:"display_name"`
-		} `json:"models"`
+		Data   []providerModelEntry `json:"data"`
+		Models []providerModelEntry `json:"models"`
 	}
 
 	parsed := false
@@ -1863,16 +2162,16 @@ func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderM
 		// 优先 Anthropic 格式
 		if len(objResult.Models) > 0 {
 			for _, m := range objResult.Models {
-				name := m.DisplayName
-				if name == "" {
-					name = m.ID
+				if item, ok := providerModelItemFromEntry(m); ok {
+					items = append(items, item)
 				}
-				items = append(items, ProviderModelItem{ID: m.ID, Name: name})
 			}
 			parsed = true
 		} else if len(objResult.Data) > 0 {
 			for _, m := range objResult.Data {
-				items = append(items, ProviderModelItem{ID: m.ID, Name: m.ID})
+				if item, ok := providerModelItemFromEntry(m); ok {
+					items = append(items, item)
+				}
 			}
 			parsed = true
 		}
@@ -1880,18 +2179,11 @@ func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderM
 
 	// 对象格式未解析出结果时，尝试解析为简单数组格式：[{"id": "..."}, ...]
 	if !parsed {
-		var arr []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		}
+		var arr []providerModelEntry
 		if err := json.Unmarshal(body, &arr); err == nil && len(arr) > 0 {
 			for _, m := range arr {
-				name := m.Name
-				if name == "" {
-					name = m.ID
-				}
-				if m.ID != "" {
-					items = append(items, ProviderModelItem{ID: m.ID, Name: name})
+				if item, ok := providerModelItemFromEntry(m); ok {
+					items = append(items, item)
 				}
 			}
 		}
@@ -1901,10 +2193,12 @@ func (a *App) FetchProviderModels(baseURL, apiKey, protocol string) ([]ProviderM
 		return nil, fmt.Errorf("服务商返回了空的模型列表")
 	}
 
-	// 按 ID 排序，方便用户浏览
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].ID < items[j].ID
-	})
+	if sortModels {
+		// 按 ID 排序，方便普通服务商模型浏览；CodeGen 调用保留服务端顺序。
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].ID < items[j].ID
+		})
+	}
 
 	return items, nil
 }

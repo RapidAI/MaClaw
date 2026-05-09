@@ -35,11 +35,19 @@ func main() {
 	// Migrate ~/.maclaw/skills → ~/.maclaw/data/skills (one-time).
 	skill.MigrateSkillsDir()
 
+	// TUI is a terminal subcommand, not a desktop startup mode. Dispatch it
+	// before constructing the desktop App path so it cannot fall through into
+	// platform/window initialization.
+	args := os.Args
+	if len(args) > 1 && (args[1] == "tui" || args[1] == "ui") {
+		runTUIMode(nil)
+		return
+	}
+
 	// Create an instance of the app structure
 	app := NewApp()
 
 	// Check for command line arguments
-	args := os.Args
 	if len(args) > 1 {
 		if args[1] == "remote-smoke" {
 			code := runRemoteSmoke(app, args[2:])
@@ -174,7 +182,7 @@ func main() {
 			// decorations enabled so DWM provides native rounded corners.
 			DisableFramelessWindowDecorations: disableFramelessDecorations,
 		},
-		Mac:   macOpts,
+		Mac: macOpts,
 		Linux: &linux.Options{
 			Icon: icon,
 		},

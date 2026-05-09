@@ -1,16 +1,23 @@
 package configfile
 
 import (
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestWriteCodexConfigAvoidsOpenAIReservedProviderName(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	if err := WriteCodexConfig("sk-test", "http://127.0.0.1:20128/v1", "codex/gpt-5.4", "openai", "responses"); err != nil {
 		t.Fatalf("WriteCodexConfig: %v", err)
@@ -28,10 +35,27 @@ func TestWriteCodexConfigAvoidsOpenAIReservedProviderName(t *testing.T) {
 	}
 }
 
+func TestCodexProviderKeyNormalizesKnownProviderNames(t *testing.T) {
+	cases := map[string]string{
+		"openai":                   "openai-compatible",
+		"\u8baf\u98de\u661f\u8fb0": "xfyun",
+		"\u963f\u91cc\u4e91":       "aliyun",
+		"\u767e\u5ea6\u5343\u5e06": "qianfan",
+		" custom provider! ":       "customprovider",
+		"\u2603\u2603":             "custom",
+	}
+	for input, want := range cases {
+		if got := CodexProviderKey(input); got != want {
+			t.Fatalf("CodexProviderKey(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestClearCodexThirdPartySettings_ClearsAuthJSON(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	// Create .codex directory and seed auth.json with an API key.
 	codexDir := filepath.Join(tmpHome, ".codex")
@@ -62,6 +86,7 @@ func TestClearCodexThirdPartySettings_ResetsProviderPreservingMCPServersAndProfi
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	codexDir := filepath.Join(tmpHome, ".codex")
 	if err := os.MkdirAll(codexDir, 0755); err != nil {
@@ -151,12 +176,12 @@ responses_websockets_v2 = true
 		t.Error("[profile.default] should be preserved")
 	}
 
-	// Features should be preserved.
+	// Non-Codex-websocket features should be preserved.
 	if !strings.Contains(content, "[features]") {
 		t.Error("[features] section should be preserved")
 	}
-	if !strings.Contains(content, "responses_websockets_v2 = true") {
-		t.Error("responses_websockets_v2 feature should be preserved")
+	if strings.Contains(content, "responses_websockets_v2 = true") {
+		t.Error("responses_websockets_v2 should have been removed because configured providers do not support websockets")
 	}
 
 	// Non-provider top-level fields should be preserved.
@@ -172,6 +197,12 @@ func TestClearCodexThirdPartySettings_NoOpWhenFilesDoNotExist(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
+	restore := stubCodexProcessHooks(t)
+	defer restore()
+	findCodexProcessesFunc = func() ([]codexProcess, error) {
+		t.Fatal("process check should not run when there is no codex config to clear")
+		return nil, nil
+	}
 
 	// Don't create any files — CodexAuthPath() and CodexConfigPath() point to non-existent files.
 	err := ClearCodexThirdPartySettings()
@@ -192,6 +223,7 @@ func TestClearCodexThirdPartySettings_HandlesConfigTomlWithOnlyUserContent(t *te
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	codexDir := filepath.Join(tmpHome, ".codex")
 	if err := os.MkdirAll(codexDir, 0755); err != nil {
@@ -237,7 +269,384 @@ responses_websockets_v2 = true
 	if !strings.Contains(content, "[features]") {
 		t.Error("[features] section should be preserved")
 	}
-	if !strings.Contains(content, "responses_websockets_v2 = true") {
-		t.Error("responses_websockets_v2 should be preserved")
+	if strings.Contains(content, "responses_websockets_v2 = true") {
+		t.Error("responses_websockets_v2 should have been removed because configured providers do not support websockets")
+	}
+}
+
+func TestWriteCodexConfigPreservesNonTargetSectionsAndUpdatesProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	configContent := `model_provider = "old"
+model = "old-model"
+model_reasoning_effort = "high"
+
+[model_providers.custom]
+name = "custom"
+base_url = "https://old.example/v1"
+supports_websockets = true
+requires_openai_auth = true
+
+[model_providers.openai-compatible]
+name = "openai-compatible"
+wire_api = "responses"
+supports_websockets = true
+requires_openai_auth = true
+
+[profile.default]
+model = "profile-model"
+
+[features]
+responses_websockets_v2 = true
+
+[mcp_servers.filesystem]
+command = "npx"
+`
+	if err := AtomicWrite(CodexConfigPath(), []byte(configContent)); err != nil {
+		t.Fatalf("seed config.toml: %v", err)
+	}
+
+	if err := WriteCodexConfig("sk-test", "https://new.example/v1", "gpt-5.5", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(CodexConfigPath())
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`model_provider = "custom"`,
+		`model = "gpt-5.5"`,
+		`base_url = "https://new.example/v1"`,
+		`wire_api = "responses"`,
+		`supports_websockets = false`,
+		`[model_providers.openai-compatible]`,
+		`[profile.default]`,
+		`model = "profile-model"`,
+		`[mcp_servers.filesystem]`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("config.toml missing %q:\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{
+		`requires_openai_auth = true`,
+		`supports_websockets = true`,
+		`responses_websockets_v2 = true`,
+	} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("OpenAI/websocket marker %q should have been removed:\n%s", forbidden, content)
+		}
+	}
+}
+
+func TestWriteCodexConfigAtUsesScopedDirAndRemovesStaleAuthWhenKeyEmpty(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	scopedDir := filepath.Join(tmpHome, "project", ".aicoder", "codex", "instance-1")
+	if err := os.MkdirAll(scopedDir, 0755); err != nil {
+		t.Fatalf("create scoped dir: %v", err)
+	}
+	if err := AtomicWriteJSON(filepath.Join(scopedDir, "auth.json"), map[string]string{"OPENAI_API_KEY": "sk-stale"}); err != nil {
+		t.Fatalf("seed scoped auth: %v", err)
+	}
+	configContent := `model_provider = "old"
+model = "old-model"
+
+[mcp_servers.filesystem]
+command = "npx"
+`
+	if err := AtomicWrite(filepath.Join(scopedDir, "config.toml"), []byte(configContent)); err != nil {
+		t.Fatalf("seed scoped config: %v", err)
+	}
+
+	if err := WriteCodexConfigAt(scopedDir, "", "https://new.example/v1", "gpt-5.5", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfigAt: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(scopedDir, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale scoped auth.json should be removed, stat err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(scopedDir, "config.toml"))
+	if err != nil {
+		t.Fatalf("read scoped config: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`model_provider = "custom"`,
+		`model = "gpt-5.5"`,
+		`base_url = "https://new.example/v1"`,
+		`[mcp_servers.filesystem]`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("scoped config missing %q:\n%s", want, content)
+		}
+	}
+}
+
+func TestWriteCodexConfigSyncsSessionJSONLAndNewestStateDB(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	codexDir := filepath.Join(tmpHome, ".codex")
+	sessionDir := filepath.Join(codexDir, "sessions", "2026", "05", "08")
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		t.Fatalf("create session dir: %v", err)
+	}
+	jsonlPath := filepath.Join(sessionDir, "rollout-test.jsonl")
+	jsonl := strings.Join([]string{
+		`{"type":"session_meta","payload":{"id":"s1","model_provider":"old"}}`,
+		`{"type":"turn_context","payload":{"model":"old-model","collaboration_mode":{"settings":{"model":"old-model"}}}}`,
+		`not-json`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(jsonlPath, []byte(jsonl), 0644); err != nil {
+		t.Fatalf("seed jsonl: %v", err)
+	}
+
+	oldDB := filepath.Join(codexDir, "state_1.sqlite")
+	newDB := filepath.Join(codexDir, "state_2.sqlite")
+	createCodexStateDB(t, oldDB, "old", "old-model")
+	createCodexStateDB(t, newDB, "old", "old-model")
+	oldTime := time.Now().Add(-1 * time.Hour)
+	newTime := time.Now()
+	if err := os.Chtimes(oldDB, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old db: %v", err)
+	}
+	if err := os.Chtimes(newDB, newTime, newTime); err != nil {
+		t.Fatalf("chtimes new db: %v", err)
+	}
+
+	if err := WriteCodexConfigAt(codexDir, "sk-test", "https://new.example/v1", "gpt-5.5", "custom", "responses"); err != nil {
+		t.Fatalf("WriteCodexConfigAt: %v", err)
+	}
+
+	data, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("read jsonl: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{
+		`"model_provider":"custom"`,
+		`"model":"gpt-5.5"`,
+		`"settings":{"model":"gpt-5.5"}`,
+		`not-json`,
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("jsonl missing %q:\n%s", want, content)
+		}
+	}
+
+	assertCodexStateRow(t, newDB, "custom", "gpt-5.5")
+	assertCodexStateRow(t, oldDB, "old", "old-model")
+}
+
+func TestSyncCodexSessionStateCanBeSkipped(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("AICODER_SKIP_CODEX_SESSION_SYNC", "1")
+	codexDir := filepath.Join(tmpHome, ".codex")
+	sessionDir := filepath.Join(codexDir, "sessions")
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		t.Fatalf("create session dir: %v", err)
+	}
+	jsonlPath := filepath.Join(sessionDir, "rollout-test.jsonl")
+	original := `{"type":"session_meta","payload":{"model_provider":"old"}}` + "\n"
+	if err := os.WriteFile(jsonlPath, []byte(original), 0644); err != nil {
+		t.Fatalf("seed jsonl: %v", err)
+	}
+
+	if err := syncCodexSessionState(codexDir, "custom", "gpt-5.5"); err != nil {
+		t.Fatalf("syncCodexSessionState: %v", err)
+	}
+	data, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		t.Fatalf("read jsonl: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("jsonl changed despite skip env:\n%s", data)
+	}
+}
+
+func TestDiscoverCodexStateDBsHandlesSpecialPathCharacters(t *testing.T) {
+	codexDir := filepath.Join(t.TempDir(), "codex home #1")
+	if err := os.MkdirAll(codexDir, 0755); err != nil {
+		t.Fatalf("create codex dir: %v", err)
+	}
+	dbPath := filepath.Join(codexDir, "state_5.sqlite")
+	createCodexStateDB(t, dbPath, "old", "old-model")
+
+	dbs, err := discoverCodexStateDBs(codexDir)
+	if err != nil {
+		t.Fatalf("discoverCodexStateDBs: %v", err)
+	}
+	if len(dbs) != 1 || dbs[0] != dbPath {
+		t.Fatalf("dbs = %#v, want [%s]", dbs, dbPath)
+	}
+}
+
+func TestParseCodexProcessLinesSkipsCurrentProcessAndDeduplicates(t *testing.T) {
+	current := os.Getpid()
+	input := strings.Join([]string{
+		"1234\tcodex.exe\tcodex exec --json",
+		"1234\tcodex.exe\tduplicate",
+		"2345\tcodex.test.exe\tgo test ./corelib/configfile",
+		"3456\tnotcodex.exe\tunrelated process with codex in the name",
+		strconv.Itoa(current) + "\tcodex.test.exe\tcurrent test process",
+		"bad\tcodex.exe\tbad pid",
+	}, "\n")
+
+	got := parseCodexProcessLines(input)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].PID != 1234 || got[0].Name != "codex.exe" || !strings.Contains(got[0].CommandLine, "codex exec") {
+		t.Fatalf("unexpected parsed process: %#v", got[0])
+	}
+}
+
+func TestIsCodexProcessCandidateMatchesCLIButNotIncidentalNames(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want bool
+	}{
+		{name: "codex.exe", cmd: "codex exec --json", want: true},
+		{name: "node.exe", cmd: `node C:\Users\me\AppData\Roaming\npm\node_modules\@openai\codex\bin\codex.js exec`, want: true},
+		{name: "powershell.exe", cmd: `powershell -Command codex exec --json`, want: true},
+		{name: "openai.exe", cmd: `openai api request`, want: false},
+		{name: "codex.test.exe", cmd: "go test ./corelib/configfile", want: false},
+		{name: "notcodex.exe", cmd: "unrelated", want: false},
+	}
+	for _, tc := range cases {
+		if got := isCodexProcessCandidate(tc.name, tc.cmd); got != tc.want {
+			t.Fatalf("isCodexProcessCandidate(%q, %q) = %v, want %v", tc.name, tc.cmd, got, tc.want)
+		}
+	}
+}
+
+func TestEnsureCodexProcessesStoppedKillsThenVerifies(t *testing.T) {
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "")
+	restore := stubCodexProcessHooks(t)
+	defer restore()
+
+	calls := 0
+	findCodexProcessesFunc = func() ([]codexProcess, error) {
+		calls++
+		if calls == 1 {
+			return []codexProcess{{PID: 1234, Name: "codex.exe", CommandLine: "codex exec --json"}}, nil
+		}
+		return nil, nil
+	}
+	var killed []int
+	killProcessTreeFunc = func(pid int) error {
+		killed = append(killed, pid)
+		return nil
+	}
+
+	if err := ensureCodexProcessesStopped(); err != nil {
+		t.Fatalf("ensureCodexProcessesStopped: %v", err)
+	}
+	if len(killed) != 1 || killed[0] != 1234 {
+		t.Fatalf("killed = %#v, want [1234]", killed)
+	}
+	if calls < 2 {
+		t.Fatalf("find calls = %d, want initial check plus verification", calls)
+	}
+}
+
+func TestEnsureCodexProcessesStoppedFailsWhenKillFails(t *testing.T) {
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "")
+	restore := stubCodexProcessHooks(t)
+	defer restore()
+
+	findCodexProcessesFunc = func() ([]codexProcess, error) {
+		return []codexProcess{{PID: 1234, Name: "codex.exe", CommandLine: "codex exec --json"}}, nil
+	}
+	killProcessTreeFunc = func(pid int) error {
+		return errors.New("access denied")
+	}
+
+	err := ensureCodexProcessesStopped()
+	if err == nil {
+		t.Fatal("expected kill failure")
+	}
+	if !strings.Contains(err.Error(), "kill codex process pid=1234") || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureCodexProcessesStoppedFailsWhenProcessRemains(t *testing.T) {
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "")
+	restore := stubCodexProcessHooks(t)
+	defer restore()
+
+	findCodexProcessesFunc = func() ([]codexProcess, error) {
+		return []codexProcess{{PID: 1234, Name: "codex.exe", CommandLine: "codex exec --json"}}, nil
+	}
+	killProcessTreeFunc = func(pid int) error { return nil }
+
+	err := ensureCodexProcessesStopped()
+	if err == nil {
+		t.Fatal("expected remaining process failure")
+	}
+	if !strings.Contains(err.Error(), "codex processes still running after kill") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func stubCodexProcessHooks(t *testing.T) func() {
+	t.Helper()
+	oldFind := findCodexProcessesFunc
+	oldKill := killProcessTreeFunc
+	oldSleep := codexProcessStopSleep
+	codexProcessStopSleep = func(time.Duration) {}
+	return func() {
+		findCodexProcessesFunc = oldFind
+		killProcessTreeFunc = oldKill
+		codexProcessStopSleep = oldSleep
+	}
+}
+
+func createCodexStateDB(t *testing.T, path, provider, model string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("CREATE TABLE threads (id TEXT PRIMARY KEY, model_provider TEXT, model TEXT)"); err != nil {
+		t.Fatalf("create threads: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO threads (id, model_provider, model) VALUES ('t1', ?, ?)", provider, model); err != nil {
+		t.Fatalf("insert thread: %v", err)
+	}
+}
+
+func assertCodexStateRow(t *testing.T, path, wantProvider, wantModel string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open state db: %v", err)
+	}
+	defer db.Close()
+	var gotProvider, gotModel string
+	if err := db.QueryRow("SELECT model_provider, model FROM threads WHERE id = 't1'").Scan(&gotProvider, &gotModel); err != nil {
+		t.Fatalf("query thread: %v", err)
+	}
+	if gotProvider != wantProvider || gotModel != wantModel {
+		t.Fatalf("%s row = %s/%s, want %s/%s", path, gotProvider, gotModel, wantProvider, wantModel)
 	}
 }

@@ -197,6 +197,124 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if !foundResourceID || !foundActorType || !foundAuditSince || !foundAuditUntil {
 		t.Fatalf("expected audit resource/time filters in OpenAPI: %#v", auditParams)
 	}
+	recordsPath, ok := doc.Paths["/api/v1/records/{collection}"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected records collection path object")
+	}
+	getRecords, ok := recordsPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET records operation")
+	}
+	recordParams, ok := getRecords["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected records parameters")
+	}
+	foundTag := false
+	foundQ := false
+	for _, item := range recordParams {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		schema, _ := param["schema"].(map[string]any)
+		if name == "tag" && schema["type"] == "string" {
+			foundTag = true
+		}
+		if name == "q" && schema["type"] == "string" {
+			foundQ = true
+		}
+	}
+	if !foundTag || !foundQ {
+		t.Fatalf("expected record tag and q filters in OpenAPI: %#v", recordParams)
+	}
+}
+
+func TestStructuredRecordsCRUDAndFiltering(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret")
+
+	body := strings.NewReader(`{"title":"March payroll","tags":["payroll","finance"],"data":{"amount":12000,"currency":"CNY","department":"R&D","items":[{"name":"base","amount":10000}]}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/records/finance", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create record status = %d body = %s", w.Code, w.Body.String())
+	}
+	var created agentservice.StructuredRecord
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created record: %v", err)
+	}
+	if created.Collection != "finance" || created.Data["department"] != "R&D" || len(created.Tags) != 2 {
+		t.Fatalf("unexpected created record: %#v", created)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/records/finance?tag=payroll&q=12000", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list records status = %d body = %s", w.Code, w.Body.String())
+	}
+	var listed struct {
+		Items []agentservice.StructuredRecord `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode list records: %v", err)
+	}
+	if len(listed.Items) != 1 || listed.Items[0].ID != created.ID {
+		t.Fatalf("unexpected filtered records: %#v", listed.Items)
+	}
+
+	patchBody := strings.NewReader(`{"data":{"amount":13000,"currency":"CNY","department":"Finance"}}`)
+	req = httptest.NewRequest(http.MethodPatch, "/api/v1/records/finance/"+created.ID, patchBody)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update record status = %d body = %s", w.Code, w.Body.String())
+	}
+	var updated agentservice.StructuredRecord
+	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated record: %v", err)
+	}
+	if updated.Data["amount"] != float64(13000) || !updated.UpdatedAt.After(updated.CreatedAt) && !updated.UpdatedAt.Equal(updated.CreatedAt) {
+		t.Fatalf("unexpected updated record: %#v", updated)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/records/hr/"+created.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected cross-collection 404, got %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/records/finance/"+created.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete record status = %d body = %s", w.Code, w.Body.String())
+	}
 }
 
 type blockingExecutor struct {

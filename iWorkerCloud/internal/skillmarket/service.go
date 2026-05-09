@@ -19,6 +19,8 @@ type Service struct {
 
 type SkillInput = marketschema.SkillInput
 
+const maxSkillPackageBytes = 1 << 20
+
 func NewService(repo store.SkillRepository) *Service {
 	return &Service{repo: repo}
 }
@@ -44,7 +46,17 @@ func (s *Service) List(ctx context.Context) ([]*store.Skill, error) {
 }
 
 func (s *Service) SearchActive(ctx context.Context, query string) ([]*store.Skill, error) {
-	return s.repo.SearchActive(ctx, query)
+	items, err := s.repo.SearchActive(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*store.Skill, 0, len(items))
+	for _, item := range items {
+		if isCenterInstallableSkill(item) {
+			out = append(out, item)
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) GetActive(ctx context.Context, id string) (*store.Skill, error) {
@@ -58,13 +70,30 @@ func (s *Service) GetActive(ctx context.Context, id string) (*store.Skill, error
 	return skill, nil
 }
 
-func (s *Service) DownloadPackage(ctx context.Context, id string) (*marketschema.PackageDownload, error) {
+func (s *Service) GetInstallable(ctx context.Context, id string) (*store.Skill, error) {
 	skill, err := s.GetActive(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(skill.PackageContent) == "" {
+	if !isCenterInstallableSkill(skill) {
 		return nil, fmt.Errorf("skill package is not available")
+	}
+	return skill, nil
+}
+
+func isCenterInstallableSkill(skill *store.Skill) bool {
+	if skill == nil {
+		return false
+	}
+	return skill.Status == "active" &&
+		strings.TrimSpace(skill.PackageContent) != "" &&
+		strings.TrimSpace(skill.PackageSHA256) != ""
+}
+
+func (s *Service) DownloadPackage(ctx context.Context, id string) (*marketschema.PackageDownload, error) {
+	skill, err := s.GetInstallable(ctx, id)
+	if err != nil {
+		return nil, err
 	}
 	return &marketschema.PackageDownload{
 		SkillID:        skill.ID,
@@ -91,10 +120,15 @@ func (s *Service) Create(ctx context.Context, input SkillInput) (*store.Skill, e
 
 func (s *Service) Update(ctx context.Context, id string, input SkillInput) (*store.Skill, error) {
 	input.ID = id
+	existing, err := s.repo.GetByID(ctx, strings.TrimSpace(id))
+	if err != nil {
+		return nil, err
+	}
 	skill, err := buildSkill(input, false)
 	if err != nil {
 		return nil, err
 	}
+	mergeExistingSkillFields(skill, existing)
 	if err := s.repo.Update(ctx, skill); err != nil {
 		return nil, err
 	}
@@ -169,6 +203,9 @@ func buildSkill(input SkillInput, create bool) (*store.Skill, error) {
 		if len(decoded) == 0 {
 			return nil, fmt.Errorf("package_content_base64 is empty")
 		}
+		if len(decoded) > maxSkillPackageBytes {
+			return nil, fmt.Errorf("package_content_base64 exceeds %d bytes", maxSkillPackageBytes)
+		}
 		if packageFormat == "" {
 			packageFormat = "skill.md"
 		}
@@ -197,6 +234,23 @@ func buildSkill(input SkillInput, create bool) (*store.Skill, error) {
 		CreatedAt:      createdAt,
 		UpdatedAt:      now,
 	}, nil
+}
+
+func mergeExistingSkillFields(next *store.Skill, existing *store.Skill) {
+	if next == nil || existing == nil {
+		return
+	}
+	next.AvgRating = existing.AvgRating
+	next.DownloadCount = existing.DownloadCount
+	if strings.TrimSpace(next.SourceCenterID) == "" {
+		next.SourceCenterID = existing.SourceCenterID
+	}
+	if strings.TrimSpace(next.PackageContent) == "" {
+		next.PackageFormat = existing.PackageFormat
+		next.PackageContent = existing.PackageContent
+		next.PackageSHA256 = existing.PackageSHA256
+		next.PackageSize = existing.PackageSize
+	}
 }
 
 func DefaultSkills() []SkillInput {

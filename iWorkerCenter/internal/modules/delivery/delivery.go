@@ -1,11 +1,14 @@
 package delivery
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -40,6 +43,12 @@ type ApplyRecord struct {
 
 // ErrBundleNotPublished is returned when an iWorker reports a draft bundle.
 var ErrBundleNotPublished = errors.New("config bundle is not published")
+
+const (
+	maxApplyMessageLen       = 1000
+	maxConfigBundleBodyBytes = 2 << 20
+	maxApplyResultBodyBytes  = 64 << 10
+)
 
 // Repo provides persistence for config bundles.
 type Repo struct {
@@ -134,9 +143,9 @@ func (r *Repo) RecordApply(record ApplyRecord) error {
 	}
 	_, err = r.write.Exec(`INSERT INTO config_apply_records (tenant_id, bundle_id, version, worker_id, department_id, status, message, applied_at)
 		VALUES (?,?,?,?,?,?,?,?)
-		ON CONFLICT(tenant_id, bundle_id, worker_id) DO UPDATE SET
+		ON CONFLICT(tenant_id, bundle_id, department_id, worker_id) DO UPDATE SET
 			version=excluded.version, department_id=excluded.department_id, status=excluded.status, message=excluded.message, applied_at=excluded.applied_at`,
-		record.TenantID, record.BundleID, record.Version, record.WorkerID, record.DepartmentID, normalizeApplyStatus(record.Status), strings.TrimSpace(record.Message), now.Format(time.RFC3339))
+		record.TenantID, record.BundleID, record.Version, record.WorkerID, record.DepartmentID, normalizeApplyStatus(record.Status), normalizeApplyMessage(record.Message), now.Format(time.RFC3339))
 	return err
 }
 
@@ -235,7 +244,7 @@ func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 			Payload     any    `json:"payload"`
 			Note        string `json:"note"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeLimitedJSON(r.Body, maxConfigBundleBodyBytes, &req); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}
@@ -263,10 +272,14 @@ func (h *Handler) handleBundles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleBundleByID(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/admin/config-bundles/")
+	rest := strings.TrimPrefix(r.URL.EscapedPath(), "/admin/config-bundles/")
 	rest = strings.TrimRight(rest, "/")
 	parts := strings.SplitN(rest, "/", 2)
-	id := parts[0]
+	id, err := url.PathUnescape(parts[0])
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid config bundle id")
+		return
+	}
 
 	if len(parts) == 2 && parts[1] == "publish" && r.Method == http.MethodPost {
 		tenantID := tenant.RequestTenantID(r)
@@ -324,7 +337,7 @@ func (h *Handler) handleClientApplyResult(w http.ResponseWriter, r *http.Request
 		Status       string `json:"status"`
 		Message      string `json:"message"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeLimitedJSON(r.Body, maxApplyResultBodyBytes, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -427,6 +440,37 @@ func normalizeApplyStatus(status string) string {
 	default:
 		return "failed"
 	}
+}
+
+func normalizeApplyMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if len([]rune(message)) <= maxApplyMessageLen {
+		return message
+	}
+	runes := []rune(message)
+	return string(runes[:maxApplyMessageLen]) + "..."
+}
+
+func decodeLimitedJSON(body io.Reader, limit int64, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) > limit {
+		return fmt.Errorf("JSON body exceeds %d bytes", limit)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("JSON body contains multiple values")
+		}
+		return err
+	}
+	return nil
 }
 
 func defaultStr(val, def string) string {

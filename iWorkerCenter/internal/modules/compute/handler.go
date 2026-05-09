@@ -1,8 +1,10 @@
 package compute
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -14,6 +16,29 @@ type Handler struct {
 	syncMgr    *SyncManager
 	sourceMgr  *SourceManager
 	localStore *LocalStore
+}
+
+const maxComputeJSONBodyBytes = 64 << 10
+
+func decodeComputeJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxComputeJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxComputeJSONBodyBytes {
+		return errors.New("compute json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("compute json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 // NewHandler creates a compute Handler.
@@ -68,7 +93,7 @@ func (h *Handler) setSource(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Source string `json:"source"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeComputeJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -83,7 +108,13 @@ func (h *Handler) setSource(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	response.OK(w, map[string]string{"source": h.sourceMgr.GetSource()})
+	if h.sourceMgr.GetSource() == "local" {
+		if err := h.applyLocalProvidersSnapshot(); err != nil {
+			response.Internal(w, err.Error())
+			return
+		}
+	}
+	h.writeSourceSnapshot(w, http.StatusOK)
 }
 
 // --- /admin/compute/providers ---
@@ -178,7 +209,7 @@ func (h *Handler) createLocalProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var p ComputeProvider
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := decodeComputeJSON(r.Body, &p); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -187,8 +218,12 @@ func (h *Handler) createLocalProvider(w http.ResponseWriter, r *http.Request) {
 		response.Internal(w, err.Error())
 		return
 	}
-	// Return the full list so the caller sees the generated ID
-	response.Created(w, map[string]any{"providers": h.localStore.ListProviders()})
+	providers, err := h.applyLocalProvidersSnapshotAndList()
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.Created(w, map[string]any{"providers": providers, "active_provider_count": len(providers), "source": h.sourceMgr.GetSource()})
 }
 
 // --- /admin/compute/local-providers/{id} ---
@@ -215,7 +250,7 @@ func (h *Handler) updateLocalProvider(w http.ResponseWriter, r *http.Request, id
 		return
 	}
 	var p ComputeProvider
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := decodeComputeJSON(r.Body, &p); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -224,7 +259,12 @@ func (h *Handler) updateLocalProvider(w http.ResponseWriter, r *http.Request, id
 		response.Internal(w, err.Error())
 		return
 	}
-	response.OK(w, map[string]string{"status": "ok"})
+	providers, err := h.applyLocalProvidersSnapshotAndList()
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"status": "ok", "providers": providers, "active_provider_count": len(providers), "source": h.sourceMgr.GetSource()})
 }
 
 func (h *Handler) deleteLocalProvider(w http.ResponseWriter, _ *http.Request, id string) {
@@ -236,7 +276,12 @@ func (h *Handler) deleteLocalProvider(w http.ResponseWriter, _ *http.Request, id
 		response.NotFound(w, "NOT_FOUND", err.Error())
 		return
 	}
-	response.OK(w, map[string]string{"status": "ok"})
+	providers, err := h.applyLocalProvidersSnapshotAndList()
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
+	response.OK(w, map[string]any{"status": "ok", "providers": providers, "active_provider_count": len(providers), "source": h.sourceMgr.GetSource()})
 }
 
 // --- /admin/compute/test ---
@@ -247,7 +292,7 @@ func (h *Handler) handleTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var p ComputeProvider
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	if err := decodeComputeJSON(r.Body, &p); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -264,4 +309,42 @@ func extractTrailingID(path, prefix string) string {
 		return ""
 	}
 	return parts[0]
+}
+
+func (h *Handler) applyLocalProvidersSnapshot() error {
+	if h == nil || h.localStore == nil || h.sourceMgr == nil {
+		return nil
+	}
+	return h.sourceMgr.SetLocalProviders(h.localStore.ListProviders())
+}
+
+func (h *Handler) applyLocalProvidersSnapshotAndList() ([]ComputeProvider, error) {
+	if h == nil || h.localStore == nil {
+		return []ComputeProvider{}, nil
+	}
+	providers := h.localStore.ListProviders()
+	if providers == nil {
+		providers = []ComputeProvider{}
+	}
+	if h.sourceMgr != nil {
+		if err := h.sourceMgr.SetLocalProviders(providers); err != nil {
+			return nil, err
+		}
+	}
+	return providers, nil
+}
+
+func (h *Handler) writeSourceSnapshot(w http.ResponseWriter, status int) {
+	syncStatus := h.syncMgr.GetSyncStatus()
+	activeProviders, effectiveSource, fallbackActive := h.sourceMgr.GetActiveProviderSnapshot()
+	response.JSON(w, status, map[string]any{
+		"source":                h.sourceMgr.GetSource(),
+		"effective_source":      effectiveSource,
+		"fallback_active":       fallbackActive,
+		"active_provider_count": len(activeProviders),
+		"compute_permission":    h.syncMgr.GetComputePermission(),
+		"sync_status":           syncStatus,
+		"last_sync_at":          syncStatus.LastSyncAt,
+		"provider_count":        syncStatus.ProviderCount,
+	})
 }

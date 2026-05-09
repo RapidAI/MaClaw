@@ -54,7 +54,7 @@ export function AssistantConversationBody({
                 </div>
             ) : !ready ? (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "12px" }}>
-                    <div style={{ border: `3px solid ${t.inputBarBorder}`, borderTop: `3px solid ${t.promptColor}`, borderRadius: "50%", animation: "maclaw-spin 0.8s linear infinite" }} />
+                    <div style={{ width: "24px", height: "24px", border: `4px solid ${t.inputBarBorder}`, borderTopColor: t.promptColor, borderRadius: "50%", boxSizing: "border-box", animation: "maclaw-spin 0.8s linear infinite" }} />
                     <div style={{ color: t.textMuted, fontSize: "12px" }}>{initLabel}</div>
                 </div>
             ) : messages.length === 0 ? (

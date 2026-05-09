@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,25 @@ func TestFetchCenterLicenseReturnsStatusError(t *testing.T) {
 	}
 }
 
+func TestRegisterCenterRejectsTrailingResponseDocument(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"center_id":"center-1","secret":"secret-1","status":"pending"} {"center_id":"center-2"}`))
+	}))
+	defer srv.Close()
+
+	client := NewCloudClient(CloudConfig{BaseURL: srv.URL})
+	_, err := client.RegisterCenter(context.Background(), RegisterCenterRequest{
+		MachineID:   "machine-1",
+		CompanyID:   "company-1",
+		CompanyName: "Acme",
+		AdminEmail:  "admin@example.com",
+	})
+	if !errors.Is(err, errJSONTrailingData) {
+		t.Fatalf("RegisterCenter() error = %v, want errJSONTrailingData", err)
+	}
+}
+
 func TestSendCenterHeartbeatUsesServiceIdentity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/centers/center-1/heartbeat" {
@@ -100,6 +120,39 @@ func TestSendCenterHeartbeatUsesServiceIdentity(t *testing.T) {
 	client := NewCloudClient(CloudConfig{BaseURL: srv.URL + "/"})
 	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil, nil); err != nil {
 		t.Fatalf("SendCenterHeartbeat() error: %v", err)
+	}
+}
+
+func TestSendCenterHeartbeatIncludesCloudContinuitySnapshot(t *testing.T) {
+	seen := make(chan CenterHeartbeatRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CenterHeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		seen <- req
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer srv.Close()
+
+	client := NewCloudClient(CloudConfig{BaseURL: srv.URL})
+	runtime := &CloudCenterRuntime{
+		ProviderCount:       1,
+		RuntimeProviderMode: "local_settings_fallback",
+		ComputeSource:       "cloud",
+		CloudProviderCount:  0,
+		ComputeSyncStatus:   &CloudComputeSyncStatus{Status: "failure", ProviderCount: 0, NonBlocking: true, RuntimeImpact: "local_settings_fallback"},
+		CloudHeartbeat:      &CloudHeartbeatSnapshot{Configured: true, Status: "degraded", ConsecutiveFailures: 2, NonBlocking: true, BusinessImpact: "none_local_center_and_iworker_continue"},
+	}
+	if err := client.SendCenterHeartbeat(context.Background(), "center-1", "secret-abc", nil, runtime); err != nil {
+		t.Fatalf("SendCenterHeartbeat() error: %v", err)
+	}
+	req := <-seen
+	if req.CloudHeartbeat == nil || !req.CloudHeartbeat.NonBlocking || req.CloudHeartbeat.BusinessImpact != "none_local_center_and_iworker_continue" {
+		t.Fatalf("CloudHeartbeat = %+v, want non-blocking local continuity", req.CloudHeartbeat)
+	}
+	if req.ComputeSyncStatus == nil || !req.ComputeSyncStatus.NonBlocking {
+		t.Fatalf("ComputeSyncStatus = %+v, want non-blocking fallback", req.ComputeSyncStatus)
 	}
 }
 

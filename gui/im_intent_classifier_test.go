@@ -3,60 +3,180 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
-// ---------------------------------------------------------------------------
-// classifyTaskIntent without UIC — all return ambiguous (degraded mode)
-// ---------------------------------------------------------------------------
-
-// When UIC is nil, classifyTaskIntent returns ambiguous for all inputs.
-// This is by design: keyword-based classification is unreliable and has been
-// disabled in favor of UIC semantic classification.
-func TestClassifyTaskIntent_WithoutUIC_ReturnsAmbiguous(t *testing.T) {
+func TestClassifyTaskIntent_WithoutUIC_ReturnsUnknown(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	tests := []struct {
 		name string
 		text string
 	}{
-		{"coding task", "帮我修复这个 Go 项目的 bug 并修改代码"},
-		{"ssh task", "ssh 到 10.0.0.8 看 nginx 日志"},
-		{"non-coding task", "帮我翻译这篇论文"},
-		{"ambiguous task", "帮我处理一下线上问题"},
-		{"knowledge base", "现在帮我把桌面上的 AI 编程评测报告放入知识库"},
-		{"promo ppt", "生成宣传PPT"},
-		{"product intro ppt", "帮我做一个产品介绍PPT"},
-		{"presentation doc", "把这份内容整理成演示文稿"},
+		{"coding task", "fix the Go project bug and edit code"},
+		{"ssh task", "ssh to 10.0.0.8 and inspect nginx logs"},
+		{"non-coding task", "translate this paper"},
+		{"ambiguous task", "handle the production issue"},
+		{"knowledge base", "save this AI coding benchmark report into the knowledge base"},
+		{"promo ppt", "generate a promotional PPT"},
+		{"product intro ppt", "make a product introduction PPT"},
+		{"presentation doc", "organize this content into a presentation draft"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := classifyTaskIntent(tt.text)
-			if result.Intent != intentAmbiguous {
-				t.Fatalf("without UIC, expected ambiguous for %q, got %q", tt.text, result.Intent)
+			if result.Intent != intentUnknown {
+				t.Fatalf("without UIC, expected unknown for %q, got %q", tt.text, result.Intent)
 			}
-			if result.Source != "rules-degraded" {
-				t.Fatalf("expected rules-degraded source, got %q", result.Source)
+			if result.Source != "semantic-unavailable" {
+				t.Fatalf("expected semantic-unavailable source, got %q", result.Source)
 			}
 		})
 	}
 }
 
-// Empty message still returns unknown (not ambiguous).
 func TestClassifyTaskIntent_Empty(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
 	result := classifyTaskIntent("")
-	if result.Intent != intentAmbiguous {
-		t.Fatalf("expected ambiguous for empty text, got %q", result.Intent)
+	if result.Intent != intentUnknown {
+		t.Fatalf("expected unknown for empty text, got %q", result.Intent)
+	}
+	if result.Reason != "empty task text; no execution route classified" {
+		t.Fatalf("expected empty task fallback reason, got %q", result.Reason)
+	}
+	if result.Confidence != 0.3 {
+		t.Fatalf("expected empty task confidence 0.3, got %v", result.Confidence)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Tests that don't depend on keyword classification
-// ---------------------------------------------------------------------------
+func TestClassifyTaskIntentWithoutSemantic_DoesNotGuessWithoutSemantic(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "coding-looking", text: "fix the crash and edit code"},
+		{name: "ssh-looking", text: "ssh to the server and inspect nginx logs"},
+		{name: "non-coding-looking", text: "translate this paper"},
+		{name: "knowledge base", text: "save this report into the knowledge base"},
+		{name: "chinese coding-looking", text: "\u4fee\u6539\u4ee3\u7801\u5e76\u4fee\u590d bug"},
+		{name: "chinese knowledge base", text: "\u628a\u8fd9\u4efd\u62a5\u544a\u653e\u5165\u77e5\u8bc6\u5e93"},
+		{name: "empty", text: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := classifyTaskIntentWithoutSemantic(tt.text)
+			if result.Intent != intentUnknown {
+				t.Fatalf("intent = %q, want %q (%#v)", result.Intent, intentUnknown, result)
+			}
+			if result.Source != "semantic-unavailable" {
+				t.Fatalf("expected semantic-unavailable source, got %q", result.Source)
+			}
+			if len(result.Evidence) != 0 || result.Matched != "" {
+				t.Fatalf("expected no local evidence, got matched=%q evidence=%#v", result.Matched, result.Evidence)
+			}
+		})
+	}
+}
+
+func TestClassifyTaskIntentForSessionGuard_UsesHandlerUICWhenGlobalUnavailable(t *testing.T) {
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
+	h := &IMMessageHandler{
+		unifiedClassifier: intent.New(intent.Config{
+			Embedder:   embedding.NoopEmbedder{},
+			LLMTimeout: time.Second,
+		}),
+	}
+
+	result := h.classifyTaskIntentForSessionGuard("anything")
+	if result.Source != "uic" {
+		t.Fatalf("expected handler UIC source, got %#v", result)
+	}
+}
+
+func TestClassifyTaskIntentWithUIC_UsesAppUICWhenHandlerFieldEmpty(t *testing.T) {
+	h := &IMMessageHandler{
+		app: &App{
+			unifiedClassifier: intent.New(intent.Config{
+				Embedder:   embedding.NoopEmbedder{},
+				LLMTimeout: time.Second,
+			}),
+		},
+	}
+
+	result, ok := h.classifyTaskIntentWithUIC("anything")
+	if !ok {
+		t.Fatal("expected app UIC to be used")
+	}
+	if result.Source != "uic" {
+		t.Fatalf("expected uic source, got %#v", result)
+	}
+}
+
+func TestClassifyTaskIntentWithUIC_NilHandlerReturnsFalse(t *testing.T) {
+	var h *IMMessageHandler
+	result, ok := h.classifyTaskIntentWithUIC("anything")
+	if ok {
+		t.Fatalf("expected nil handler to have no UIC, got %#v", result)
+	}
+}
+
+func TestShouldConsiderExecutionConfirmation(t *testing.T) {
+	if !shouldConsiderExecutionConfirmation(true, IMUserMessage{Text: "  fix bug  "}, "fix bug") {
+		t.Fatal("expected fresh foreground task with text to be considered")
+	}
+	if shouldConsiderExecutionConfirmation(false, IMUserMessage{Text: "fix bug"}, "fix bug") {
+		t.Fatal("non-fresh task should not be considered")
+	}
+	if shouldConsiderExecutionConfirmation(true, IMUserMessage{Text: "fix bug", IsBackground: true}, "fix bug") {
+		t.Fatal("background task should not be considered")
+	}
+	if shouldConsiderExecutionConfirmation(true, IMUserMessage{Text: "   "}, "") {
+		t.Fatal("empty text should not be considered")
+	}
+}
+
+func TestShouldRequireExecutionConfirmationForIntent(t *testing.T) {
+	msg := IMUserMessage{Text: "fix bug"}
+	if !shouldRequireExecutionConfirmationForIntent(msg, nil, taskIntentResult{Intent: intentCoding}) {
+		t.Fatal("coding task should require confirmation")
+	}
+	if !shouldRequireExecutionConfirmationForIntent(msg, nil, taskIntentResult{Intent: intentSSH}) {
+		t.Fatal("ssh task should require confirmation")
+	}
+	if shouldRequireExecutionConfirmationForIntent(msg, nil, taskIntentResult{Intent: intentAmbiguous}) {
+		t.Fatal("ambiguous task should use ordinary agent path, not pre-execution confirmation")
+	}
+	if shouldRequireExecutionConfirmationForIntent(msg, nil, taskIntentResult{Intent: intentUnknown}) {
+		t.Fatal("unknown task should use ordinary agent path, not pre-execution confirmation")
+	}
+	if shouldRequireExecutionConfirmationForIntent(msg, nil, taskIntentResult{Intent: intentNonCoding}) {
+		t.Fatal("non-coding task should not require coding execution confirmation")
+	}
+	if shouldRequireExecutionConfirmationForIntent(msg, nil, taskIntentResult{Intent: intentCoding, Matched: "continuation"}) {
+		t.Fatal("continuation should not require a new execution confirmation")
+	}
+	if shouldRequireExecutionConfirmationForIntent(IMUserMessage{Text: "fix bug", IsBackground: true}, nil, taskIntentResult{Intent: intentCoding}) {
+		t.Fatal("background task should not require confirmation")
+	}
+	if shouldRequireExecutionConfirmationForIntent(IMUserMessage{Text: "   "}, nil, taskIntentResult{Intent: intentCoding}) {
+		t.Fatal("empty task text should not require confirmation")
+	}
+	if shouldRequireExecutionConfirmationForIntent(msg, &pendingConfirmation{}, taskIntentResult{Intent: intentCoding}) {
+		t.Fatal("existing pending confirmation should block a new one")
+	}
+}
 
 func TestNormalizeIntentClassification(t *testing.T) {
 	result, err := normalizeIntentClassification(llmIntentClassification{
 		Intent:     "non_coding",
 		Confidence: 0.92,
-		Reason:     "用户是在整理资料并生成宣传 PPT，不涉及代码或服务器",
-		Evidence:   []string{"整理资料", "宣传PPT"},
+		Reason:     "user is organizing source material and generating a promotional PPT",
+		Evidence:   []string{"organizing material", "promotional PPT"},
 	})
 	if err != nil {
 		t.Fatalf("normalizeIntentClassification: %v", err)
@@ -76,7 +196,7 @@ func TestNormalizeIntentClassification(t *testing.T) {
 }
 
 func TestDecodeIntentClassificationContent_StripsCodeFence(t *testing.T) {
-	parsed, err := decodeIntentClassificationContent("```json\n{\"intent\":\"coding\",\"confidence\":0.8,\"reason\":\"明确要修改代码\",\"evidence\":[\"修改代码\"]}\n```")
+	parsed, err := decodeIntentClassificationContent("```json\n{\"intent\":\"coding\",\"confidence\":0.8,\"reason\":\"explicitly asks to edit code\",\"evidence\":[\"edit code\"]}\n```")
 	if err != nil {
 		t.Fatalf("decodeIntentClassificationContent: %v", err)
 	}
@@ -101,40 +221,19 @@ func TestSummarizeAttachmentTypesAndNames(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Confirmation gate test — presentation tasks without UIC
-// ---------------------------------------------------------------------------
-
 func TestConfirmationGate_PresentationTask_WithoutUIC(t *testing.T) {
-	// Without UIC, classifyTaskIntent returns ambiguous for PPT tasks.
-	// This means the confirmation gate WILL trigger (ambiguous → requires confirmation).
-	// This is the conservative behavior we want.
-	result := classifyTaskIntent("生成宣传PPT")
-	if result.Intent != intentAmbiguous {
-		t.Fatalf("expected ambiguous for PPT task without UIC, got %q", result.Intent)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Helper function tests (not dependent on keyword classification)
-// ---------------------------------------------------------------------------
-
-func TestHasOnlyWeakCodingEvidence(t *testing.T) {
-	if !hasOnlyWeakCodingEvidence([]string{"代码"}) {
-		t.Fatal("expected true for weak evidence '代码'")
-	}
-	if hasOnlyWeakCodingEvidence([]string{"开发"}) {
-		t.Fatal("expected false for strong evidence '开发'")
-	}
-	if hasOnlyWeakCodingEvidence([]string{"代码", "开发"}) {
-		t.Fatal("expected false for mixed evidence")
+	setUnifiedClassifierForIM(nil)
+	t.Cleanup(func() { setUnifiedClassifierForIM(nil) })
+	result := classifyTaskIntent("generate a promotional PPT")
+	if result.Intent != intentUnknown {
+		t.Fatalf("expected unknown for PPT task without UIC, got %q", result.Intent)
 	}
 }
 
 func TestFormatIntentEvidence(t *testing.T) {
-	r := taskIntentResult{Evidence: []string{"ssh", "服务器"}}
+	r := taskIntentResult{Evidence: []string{"semantic evidence"}}
 	formatted := formatIntentEvidence(r)
-	if !strings.Contains(formatted, "ssh") {
-		t.Fatalf("expected evidence to contain 'ssh', got %q", formatted)
+	if !strings.Contains(formatted, "semantic evidence") {
+		t.Fatalf("expected evidence to be formatted, got %q", formatted)
 	}
 }

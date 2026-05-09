@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import type { QualityGateResult } from "./useWorkflowState";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { PhaseInfo, QualityGateResult } from "./useWorkflowState";
 
 // ── Mermaid (local npm package, no network required) ──
 
@@ -172,6 +172,9 @@ export interface DocPreviewTheme {
 interface WorkflowDocPreviewProps {
     phaseDocuments: Map<string, string>;
     currentPhaseID: string;
+    latestDocumentPhaseID?: string;
+    phases?: PhaseInfo[];
+    workflowType?: string;
     gateResults: Map<string, QualityGateResult>;
     onClose: () => void;
     theme: DocPreviewTheme;
@@ -297,6 +300,372 @@ const phaseLabels: Record<string, string> = {
     design: "设计",
     tasks: "任务",
 };
+
+const workflowPhaseOrders: Record<string, string[]> = {
+    coding: ["requirements", "design", "tasks", "implementation", "review"],
+    product_design: ["problem_discovery", "solution_design", "prd", "prototype"],
+    innovation: ["opportunity", "ideation", "validation", "roadmap", "action_plan"],
+    business_plan: ["bp_requirement", "bp_content", "bp_structure", "bp_visual_design", "bp_doc_generation"],
+    testing: ["test_strategy", "test_design", "test_environment", "test_execution", "defect_report"],
+    literature_review: ["topic_definition", "literature_search", "screening_classification", "content_extraction", "review_writing"],
+    research_report: ["requirement_scoping", "source_mapping", "report_collection", "insight_extraction", "synthesis_report"],
+    experiment_design: ["hypothesis_formulation", "experiment_design", "variable_control", "data_collection", "analysis_plan"],
+    grant_proposal: ["topic_justification", "research_status", "research_plan", "expected_outcomes", "budget_plan"],
+    paper_writing: ["outline_design", "methodology", "results_presentation", "discussion_analysis", "submission_prep"],
+    project_proposal: ["background_analysis", "goal_definition", "solution_design", "resource_assessment", "risk_contingency"],
+    event_planning: ["requirement_confirm", "scheme_planning", "process_design", "material_checklist", "execution_manual"],
+    competitive_analysis: ["target_definition", "competitor_identification", "dimension_comparison", "gap_analysis", "strategy_recommendation"],
+    presentation_design: ["audience_goal", "content_outline", "style_specification", "slide_scripting", "ppt_generation"],
+    bid_response: ["tender_analysis", "qualification_response", "technical_proposal", "commercial_proposal", "bid_document_assembly"],
+    contract_review: ["contract_parsing", "clause_risk_analysis", "compliance_check", "modification_suggestions", "review_summary"],
+    due_diligence: ["target_profiling", "business_dd", "financial_dd", "legal_dd", "dd_conclusion"],
+    compliance_audit: ["audit_scope", "compliance_assessment", "risk_rating", "remediation_plan", "audit_report"],
+    patent_analysis: ["tech_disclosure", "prior_art_search", "infringement_assessment", "strategy_recommendation", "patent_report"],
+};
+
+const fallbackNonDocumentPhaseIDs = new Set([
+    "implementation",
+    "test_execution",
+    "ppt_generation",
+    "bp_doc_generation",
+]);
+
+function phaseIDsFromMetadata(phases: PhaseInfo[] | undefined): string[] {
+    if (!phases || phases.length === 0) return [];
+    const seen = new Set<string>();
+    const phaseIDs: string[] = [];
+    for (const phase of [...phases].sort((a, b) => a.index - b.index)) {
+        if (!phase.id || seen.has(phase.id)) continue;
+        seen.add(phase.id);
+        phaseIDs.push(phase.id);
+    }
+    return phaseIDs;
+}
+
+export function workflowProgressPhaseIDs(workflowType: string | undefined, phaseDocuments: Map<string, string>, currentPhaseID: string, phases?: PhaseInfo[]): string[] {
+    const metadataPhaseIDs = phaseIDsFromMetadata(phases);
+    const base = metadataPhaseIDs.length > 0
+        ? metadataPhaseIDs
+        : workflowType ? [...(workflowPhaseOrders[workflowType] || [])] : [];
+    for (const pid of phaseDocuments.keys()) {
+        if (!base.includes(pid)) base.push(pid);
+    }
+    if (currentPhaseID && !base.includes(currentPhaseID)) base.push(currentPhaseID);
+    return base;
+}
+
+function workflowPhaseExpectsDocument(phaseID: string, phaseDocumentExpectationMap: Map<string, boolean>): boolean {
+    if (phaseDocumentExpectationMap.has(phaseID)) return phaseDocumentExpectationMap.get(phaseID) !== false;
+    return !fallbackNonDocumentPhaseIDs.has(phaseID);
+}
+
+export function workflowProgressPhaseCardState({
+    expectsDocument = true,
+    gatePassed,
+    hasDoc,
+    isCurrent,
+    isPast,
+}: {
+    expectsDocument?: boolean;
+    gatePassed?: boolean;
+    hasDoc: boolean;
+    isCurrent: boolean;
+    isPast: boolean;
+}): { status: string; tone: "attention" | "current" | "done" | "pending"; emphasized: boolean } {
+    if (typeof gatePassed === "boolean") {
+        return {
+            status: gatePassed ? "质检通过" : "需调整",
+            tone: gatePassed ? "done" : "attention",
+            emphasized: true,
+        };
+    }
+    if (!expectsDocument) {
+        if (isCurrent) {
+            return { status: hasDoc ? "有产出" : "执行中", tone: "current", emphasized: true };
+        }
+        if (hasDoc) {
+            return { status: "有产出", tone: "done", emphasized: true };
+        }
+        if (isPast) {
+            return { status: "已执行", tone: "done", emphasized: true };
+        }
+        return { status: "待执行", tone: "pending", emphasized: false };
+    }
+    if (isCurrent) {
+        return {
+            status: hasDoc ? "待确认" : "生成中",
+            tone: "current",
+            emphasized: true,
+        };
+    }
+    if (hasDoc) {
+        return { status: "已完成", tone: "done", emphasized: true };
+    }
+    if (isPast) {
+        return { status: "缺文档", tone: "attention", emphasized: true };
+    }
+    return { status: "待开始", tone: "pending", emphasized: false };
+}
+
+function WorkflowProgressBoard({
+    activePhaseID,
+    currentPhaseID,
+    gateResults,
+    onSelectPhase,
+    phaseDocuments,
+    phaseDocumentExpectationMap,
+    phaseIDs,
+    phaseLabelMap,
+    theme,
+}: {
+    activePhaseID: string;
+    currentPhaseID: string;
+    gateResults: Map<string, QualityGateResult>;
+    onSelectPhase: (phaseID: string) => void;
+    phaseDocuments: Map<string, string>;
+    phaseDocumentExpectationMap: Map<string, boolean>;
+    phaseIDs: string[];
+    phaseLabelMap: Map<string, string>;
+    theme: DocPreviewTheme;
+}) {
+    if (phaseIDs.length === 0) return null;
+
+    const currentIndex = currentPhaseID ? phaseIDs.indexOf(currentPhaseID) : -1;
+    const documentPhaseIDs = phaseIDs.filter(pid => workflowPhaseExpectsDocument(pid, phaseDocumentExpectationMap));
+    const collectedCount = documentPhaseIDs.filter(pid => phaseDocuments.has(pid)).length;
+    const documentSummaryText = documentPhaseIDs.length > 0
+        ? `${collectedCount}/${documentPhaseIDs.length} 个文档`
+        : "执行阶段";
+    const latestCollectedIndex = phaseIDs.reduce((latest, pid, index) => phaseDocuments.has(pid) ? index : latest, -1);
+    const progressIndex = Math.max(currentIndex, latestCollectedIndex, 0);
+    const progressPercent = phaseIDs.length > 1 ? Math.min(100, Math.max(0, (progressIndex / (phaseIDs.length - 1)) * 100)) : 0;
+    const cardPaddingX = 10;
+    const cardPaddingY = 8;
+    const nodeSize = 24;
+    const trackInset = cardPaddingX + nodeSize / 2;
+    const trackTop = cardPaddingY + nodeSize / 2;
+    const trackInsetTotal = trackInset * 2;
+    const shouldFitTrack = phaseIDs.length <= 4;
+    const shouldCapCards = phaseIDs.length <= 2;
+    return (
+        <div style={{
+            padding: "10px 14px 11px",
+            borderBottom: `1px solid ${theme.border}`,
+            background: theme.headerBg,
+            flexShrink: 0,
+        }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "9px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                    <div style={{ fontSize: "12px", fontWeight: 700, color: theme.text }}>工作流进度</div>
+                    <div style={{ width: "4px", height: "4px", borderRadius: "50%", background: theme.textMuted, opacity: 0.65 }} />
+                    <div style={{ fontSize: "11px", color: theme.textMuted, whiteSpace: "nowrap" }}>
+                        {phaseIDs.length} 个阶段
+                    </div>
+                </div>
+                <div style={{
+                    fontSize: "11px",
+                    color: theme.textMuted,
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: "999px",
+                    padding: "2px 8px",
+                    background: theme.bg,
+                    whiteSpace: "nowrap",
+                }}>{documentSummaryText}</div>
+            </div>
+            <div style={{
+                overflowX: shouldFitTrack && !shouldCapCards ? "hidden" : "auto",
+                padding: shouldFitTrack && !shouldCapCards ? "2px 2px 0" : "2px 2px 6px",
+                scrollbarWidth: "thin",
+            }}>
+                <div style={{
+                    display: shouldFitTrack ? "grid" : "inline-grid",
+                    gridAutoFlow: shouldFitTrack ? undefined : "column",
+                    gridAutoColumns: shouldFitTrack ? undefined : "minmax(132px, 156px)",
+                    gridTemplateColumns: shouldFitTrack
+                        ? `repeat(${phaseIDs.length}, minmax(112px, ${shouldCapCards ? "220px" : "1fr"}))`
+                        : undefined,
+                    gap: "10px",
+                    alignItems: "stretch",
+                    justifyContent: shouldCapCards ? "start" : undefined,
+                    position: "relative",
+                    minWidth: shouldFitTrack && !shouldCapCards ? "100%" : "max-content",
+                }}>
+                {phaseIDs.length > 1 && (
+                    <>
+                        <div style={{
+                            position: "absolute",
+                            left: `${trackInset}px`,
+                            right: `${trackInset}px`,
+                            top: `${trackTop}px`,
+                            height: "1px",
+                            background: theme.border,
+                            opacity: 0.7,
+                            pointerEvents: "none",
+                        }} />
+                        <div style={{
+                            position: "absolute",
+                            left: `${trackInset}px`,
+                            top: `${trackTop}px`,
+                            width: progressPercent <= 0 ? "0px" : `calc(${progressPercent}% - ${trackInsetTotal * progressPercent / 100}px)`,
+                            height: "1px",
+                            background: theme.accentColor,
+                            opacity: 0.75,
+                            pointerEvents: "none",
+                        }} />
+                    </>
+                )}
+                {phaseIDs.map((pid, index) => {
+                    const hasDoc = phaseDocuments.has(pid);
+                    const expectsDocument = workflowPhaseExpectsDocument(pid, phaseDocumentExpectationMap);
+                    const gate = gateResults.get(pid);
+                    const isCurrent = pid === currentPhaseID;
+                    const isViewing = pid === activePhaseID;
+                    const isPast = currentIndex >= 0 && index < currentIndex;
+                    const cardState = workflowProgressPhaseCardState({
+                        expectsDocument,
+                        gatePassed: gate?.passed,
+                        hasDoc,
+                        isCurrent,
+                        isPast,
+                    });
+                    const accent = cardState.tone === "current"
+                        ? theme.accentColor
+                        : cardState.tone === "done"
+                            ? "#10b981"
+                            : cardState.tone === "attention"
+                                ? "#f59e0b"
+                                : theme.textMuted;
+                    const nodeLabel = cardState.tone === "done" ? "✓" : cardState.tone === "attention" ? "!" : String(index + 1);
+                    const softToneBg = cardState.tone === "current"
+                        ? theme.accentBg
+                        : cardState.tone === "done"
+                            ? "rgba(16, 185, 129, 0.10)"
+                            : cardState.tone === "attention"
+                                ? "rgba(245, 158, 11, 0.11)"
+                                : "transparent";
+                    const phaseLabel = phaseLabelMap.get(pid) || phaseLabels[pid] || pid;
+                    return (
+                        <button
+                            key={pid}
+                            type="button"
+                            aria-label={`${phaseLabel}，${cardState.status}`}
+                            aria-pressed={isViewing}
+                            onClick={() => onSelectPhase(pid)}
+                            style={{
+                                minHeight: "68px",
+                                padding: "8px 10px",
+                                borderRadius: "8px",
+                                border: `1px solid ${isViewing ? theme.accentColor : theme.border}`,
+                                background: isViewing ? theme.accentBg : `linear-gradient(180deg, ${softToneBg}, ${theme.bg})`,
+                                boxShadow: isViewing ? `0 0 0 1px ${theme.accentColor} inset` : "none",
+                                color: theme.text,
+                                cursor: "pointer",
+                                opacity: cardState.emphasized ? 1 : 0.64,
+                                textAlign: "left",
+                                display: "grid",
+                                gridTemplateRows: "auto 1fr",
+                                gap: "7px",
+                                minWidth: 0,
+                                position: "relative",
+                                zIndex: 1,
+                                '--wails-draggable': 'no-drag',
+                            } as any}
+                            title={`${phaseLabel} · ${cardState.status}`}
+                        >
+                            <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", minWidth: 0 }}>
+                                <span style={{
+                                    width: "24px",
+                                    height: "24px",
+                                    borderRadius: "50%",
+                                    border: `1px solid ${accent}`,
+                                    background: cardState.emphasized ? accent : "transparent",
+                                    color: cardState.emphasized ? "#fff" : accent,
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    fontSize: "11px",
+                                    fontWeight: 800,
+                                    lineHeight: 1,
+                                    flexShrink: 0,
+                                }}>{nodeLabel}</span>
+                                <span style={{
+                                    fontSize: "10px",
+                                    color: accent,
+                                    border: `1px solid ${accent}`,
+                                    borderRadius: "999px",
+                                    padding: "1px 6px",
+                                    background: softToneBg,
+                                    maxWidth: "82px",
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                }}>
+                                    {cardState.status}
+                                </span>
+                            </span>
+                            <span style={{ fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {phaseLabel}
+                            </span>
+                        </button>
+                    );
+                })}
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function latestAvailablePhaseID(phaseIDs: string[], phaseDocuments: Map<string, string>): string {
+    for (let i = phaseIDs.length - 1; i >= 0; i--) {
+        const pid = phaseIDs[i];
+        if (phaseDocuments.has(pid)) return pid;
+    }
+    return "";
+}
+
+function MissingWorkflowDocPlaceholder({
+    activePhaseID,
+    currentPhaseID,
+    phaseDocuments,
+    phaseDocumentExpectationMap,
+    phaseIDs,
+    phaseLabelMap,
+    theme,
+}: {
+    activePhaseID: string;
+    currentPhaseID: string;
+    phaseDocuments: Map<string, string>;
+    phaseDocumentExpectationMap: Map<string, boolean>;
+    phaseIDs: string[];
+    phaseLabelMap: Map<string, string>;
+    theme: DocPreviewTheme;
+}) {
+    const label = phaseLabelMap.get(activePhaseID) || phaseLabels[activePhaseID] || activePhaseID || "当前阶段";
+    const isCurrent = activePhaseID === currentPhaseID;
+    const available = phaseIDs.filter(pid => phaseDocuments.has(pid));
+    const expectsDocument = workflowPhaseExpectsDocument(activePhaseID, phaseDocumentExpectationMap);
+    return (
+        <div style={{
+            border: `1px dashed ${theme.border}`,
+            borderRadius: "8px",
+            padding: "18px",
+            background: theme.quoteBg,
+            color: theme.text,
+        }}>
+            <div style={{ fontSize: "15px", fontWeight: 700, marginBottom: "8px", color: theme.headingColor }}>
+                {expectsDocument ? `${label}文档尚未生成` : `${label}暂无预览文档`}
+            </div>
+            <div style={{ fontSize: "13px", lineHeight: 1.7, color: theme.textMuted }}>
+                {expectsDocument
+                    ? isCurrent ? "该阶段正在推进或等待产出，生成后会自动显示在这里。" : "该阶段还没有收集到文档内容。"
+                    : isCurrent ? "该阶段主要执行工具或生成外部产物，进展请以左侧对话和任务输出为准。" : "该阶段通常不会生成 Markdown 预览文档。"}
+                {available.length > 0 && (
+                    <span> 当前已收集：{available.map(pid => phaseLabelMap.get(pid) || phaseLabels[pid] || pid).join("、")}。</span>
+                )}
+            </div>
+        </div>
+    );
+}
 
 // ── Lightweight Markdown renderer (no external deps) ──
 
@@ -607,6 +976,11 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
     return parts.length === 1 ? parts[0] : <>{parts}</>;
 }
 
+function isPreviewHeaderInteractiveTarget(target: EventTarget | null, currentTarget: HTMLElement): boolean {
+    if (!(target instanceof HTMLElement) || target === currentTarget) return false;
+    return !!target.closest('button, a, input, select, textarea, [role="button"], [data-preview-no-maximize="true"]');
+}
+
 /**
  * WorkflowDocPreview renders the right-side document preview panel
  * during workflow execution. Supports Markdown rendering, dark mode,
@@ -615,22 +989,90 @@ function renderInline(text: string, theme: DocPreviewTheme): React.ReactNode {
 export function WorkflowDocPreview({
     phaseDocuments,
     currentPhaseID,
+    latestDocumentPhaseID,
+    phases,
+    workflowType,
     gateResults,
     onClose,
     theme,
     onResizeStart,
     onToggleMaximize,
 }: WorkflowDocPreviewProps) {
-    const [viewingPhaseID, setViewingPhaseID] = useState(currentPhaseID);
+    const [viewingPhaseID, setViewingPhaseID] = useState(latestDocumentPhaseID || currentPhaseID);
+    const userSelectedPhaseRef = useRef("");
+    const lastLatestDocumentPhaseRef = useRef(latestDocumentPhaseID || "");
+    const suppressNextHeaderDoubleClickRef = useRef(false);
+    const phaseIDs = useMemo(
+        () => workflowProgressPhaseIDs(workflowType, phaseDocuments, currentPhaseID, phases),
+        [workflowType, phaseDocuments, currentPhaseID, phases],
+    );
+    const phaseLabelMap = useMemo(() => {
+        const labels = new Map<string, string>();
+        for (const phase of phases || []) {
+            if (phase.id && phase.name) labels.set(phase.id, phase.name);
+        }
+        return labels;
+    }, [phases]);
+    const phaseDocumentExpectationMap = useMemo(() => {
+        const expectations = new Map<string, boolean>();
+        for (const phase of phases || []) {
+            if (phase.id && typeof phase.expectsDocument === "boolean") {
+                expectations.set(phase.id, phase.expectsDocument);
+            }
+        }
+        return expectations;
+    }, [phases]);
+    const fallbackPhaseID = useMemo(
+        () => latestAvailablePhaseID(phaseIDs, phaseDocuments),
+        [phaseIDs, phaseDocuments],
+    );
 
     useEffect(() => {
-        if (currentPhaseID) setViewingPhaseID(currentPhaseID);
-    }, [currentPhaseID]);
+        if (phaseDocuments.size === 0 && !latestDocumentPhaseID) {
+            userSelectedPhaseRef.current = "";
+            lastLatestDocumentPhaseRef.current = "";
+        } else if (userSelectedPhaseRef.current && !phaseIDs.includes(userSelectedPhaseRef.current)) {
+            userSelectedPhaseRef.current = "";
+        }
+        if (
+            latestDocumentPhaseID &&
+            latestDocumentPhaseID !== lastLatestDocumentPhaseRef.current &&
+            phaseDocuments.has(latestDocumentPhaseID)
+        ) {
+            userSelectedPhaseRef.current = "";
+            lastLatestDocumentPhaseRef.current = latestDocumentPhaseID;
+        }
+        if (userSelectedPhaseRef.current) return;
+        const nextPhaseID =
+            latestDocumentPhaseID && phaseDocuments.has(latestDocumentPhaseID)
+                ? latestDocumentPhaseID
+                : currentPhaseID && phaseDocuments.has(currentPhaseID)
+                    ? currentPhaseID
+                    : fallbackPhaseID;
+        if (nextPhaseID && nextPhaseID !== viewingPhaseID) {
+            setViewingPhaseID(nextPhaseID);
+        }
+    }, [currentPhaseID, fallbackPhaseID, latestDocumentPhaseID, phaseDocuments, phaseIDs, viewingPhaseID]);
 
-    const activePhaseID = viewingPhaseID || currentPhaseID;
+    const activePhaseID = viewingPhaseID || fallbackPhaseID || currentPhaseID;
     const content = phaseDocuments.get(activePhaseID) || "";
     const gateResult = gateResults.get(activePhaseID);
-    const phaseIDs = Array.from(phaseDocuments.keys());
+    const gateItems = Array.isArray(gateResult?.items) ? gateResult.items : [];
+    const handleHeaderMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (isPreviewHeaderInteractiveTarget(e.target, e.currentTarget)) return;
+        if (e.detail !== 2) return;
+        e.preventDefault();
+        suppressNextHeaderDoubleClickRef.current = true;
+        onToggleMaximize?.();
+    };
+    const handleHeaderDoubleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (isPreviewHeaderInteractiveTarget(e.target, e.currentTarget)) return;
+        if (suppressNextHeaderDoubleClickRef.current) {
+            suppressNextHeaderDoubleClickRef.current = false;
+            return;
+        }
+        onToggleMaximize?.();
+    };
 
     return (
         <div style={{
@@ -665,9 +1107,10 @@ export function WorkflowDocPreview({
                 background: theme.bg,
                 color: theme.text,
             }}>
-                {/* Header: phase tabs + close button — draggable for window move */}
+                {/* Header: title + close button — draggable for window move */}
                 <div
-                    onDoubleClick={() => onToggleMaximize?.()}
+                    onMouseDown={handleHeaderMouseDown}
+                    onDoubleClick={handleHeaderDoubleClick}
                     style={{
                     display: "flex",
                     alignItems: "center",
@@ -679,25 +1122,9 @@ export function WorkflowDocPreview({
                     flexShrink: 0,
                     '--wails-draggable': 'drag',
                 } as any}>
-                    {phaseIDs.map(pid => (
-                        <button
-                            key={pid}
-                            onClick={() => setViewingPhaseID(pid)}
-                            style={{
-                                padding: "4px 10px",
-                                fontSize: "12px",
-                                fontWeight: pid === activePhaseID ? 600 : 400,
-                                border: pid === activePhaseID ? `1px solid ${theme.accentColor}` : `1px solid transparent`,
-                                borderRadius: "4px",
-                                background: pid === activePhaseID ? theme.accentBg : "transparent",
-                                cursor: "pointer",
-                                color: pid === activePhaseID ? theme.accentColor : theme.textMuted,
-                                '--wails-draggable': 'no-drag',
-                            } as any}
-                        >
-                            {phaseLabels[pid] || pid}
-                        </button>
-                    ))}
+                    <div style={{ fontSize: "13px", fontWeight: 700, color: theme.text }}>
+                        文档预览
+                    </div>
                     <div style={{ flex: 1 }} />
                     <button
                         onClick={onClose}
@@ -718,6 +1145,21 @@ export function WorkflowDocPreview({
                     </button>
                 </div>
 
+                <WorkflowProgressBoard
+                    activePhaseID={activePhaseID}
+                    currentPhaseID={currentPhaseID}
+                    gateResults={gateResults}
+                    onSelectPhase={(phaseID) => {
+                        userSelectedPhaseRef.current = phaseID;
+                        setViewingPhaseID(phaseID);
+                    }}
+                    phaseDocuments={phaseDocuments}
+                    phaseDocumentExpectationMap={phaseDocumentExpectationMap}
+                    phaseIDs={phaseIDs}
+                    phaseLabelMap={phaseLabelMap}
+                    theme={theme}
+                />
+
                 {/* Quality gate banner */}
                 {gateResult && (
                     <div style={{
@@ -729,7 +1171,10 @@ export function WorkflowDocPreview({
                         flexShrink: 0,
                     }}>
                         {gateResult.passed ? "✅" : "⚠️"} 质量门禁：
-                        {gateResult.items.map((item, i) => (
+                        {gateItems.length === 0 && (
+                            <span style={{ marginLeft: "8px", color: theme.textMuted }}>暂无检查项</span>
+                        )}
+                        {gateItems.map((item, i) => (
                             <span key={i} style={{ marginLeft: "8px" }}>
                                 {item.passed ? "✅" : "⚠️"} {item.description}
                             </span>
@@ -753,7 +1198,17 @@ export function WorkflowDocPreview({
                 }}>
                     {content
                         ? renderMarkdown(content, theme)
-                        : <span style={{ color: theme.textMuted }}>暂无文档内容</span>
+                        : (
+                            <MissingWorkflowDocPlaceholder
+                                activePhaseID={activePhaseID}
+                                currentPhaseID={currentPhaseID}
+                                phaseDocuments={phaseDocuments}
+                                phaseDocumentExpectationMap={phaseDocumentExpectationMap}
+                                phaseIDs={phaseIDs}
+                                phaseLabelMap={phaseLabelMap}
+                                theme={theme}
+                            />
+                        )
                     }
                 </div>
             </div>

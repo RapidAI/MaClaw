@@ -63,6 +63,8 @@ export const SidebarNavRail = ({
     setSidebarExpanded,
 }: SidebarNavRailProps) => {
     const aiAssistantLabel = lang === 'zh-Hans' ? zhHans.aiAssistant : lang === 'zh-Hant' ? zhHant.aiAssistant : 'AI Asst';
+    const isTigerClaw = brandInfo?.id === 'qianxin';
+    const agentNetHealthy = isTigerClaw || agentNetRunning;
     const navItems = [
         {
             id: 'remote',
@@ -73,7 +75,7 @@ export const SidebarNavRail = ({
         { id: 'skills', configKey: 'show_nav_skills', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>{icon.skills}</span>, label: t('skills') },
         { id: 'mcp', configKey: 'show_nav_mcp', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>{icon.mcp}</span>, label: 'MCP' },
         ...(gossipAllowed ? [{ id: 'gossip', configKey: 'show_nav_gossip', icon: <span className="sidebar-icon" style={{ margin: 0, fontSize: '1rem' }}>{icon.gossip}</span>, label: t('gossip') }] : []),
-        { id: 'agentnet', configKey: 'show_nav_agentnet', icon: <img src={agentnetIcon} alt="AgentNet" style={{ width: '18px', height: '18px', margin: 0 }} />, label: lang === 'zh-Hans' ? zhHans.agentNet : lang === 'zh-Hant' ? zhHant.agentNet : 'AgentNet' },
+        ...(!isTigerClaw ? [{ id: 'agentnet', configKey: 'show_nav_agentnet', icon: <img src={agentnetIcon} alt="AgentNet" style={{ width: '18px', height: '18px', margin: 0 }} />, label: lang === 'zh-Hans' ? zhHans.agentNet : lang === 'zh-Hant' ? zhHant.agentNet : 'AgentNet' }] : []),
     ];
     const isPinned = (item: typeof navItems[0]) => (config as any)?.[item.configKey] !== false;
     const pinnedItems = navItems.filter(isPinned);
@@ -113,7 +115,7 @@ export const SidebarNavRail = ({
                 style={{ flexDirection: 'column', padding: '6px 0', width: '100%', gap: '4px', borderLeft: 'none', borderRight: navTab === 'ai' ? '3px solid var(--primary-color)' : '3px solid transparent', justifyContent: 'center' }}
                 title={aiAssistantLabel}
             >
-                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '2.22rem', height: '2.22rem', borderRadius: '50%', padding: '4px', background: (() => { const llm = maclawLLMOnline; const net = agentNetRunning; const mob = remoteActivationStatus?.activated; return (llm && net && mob) ? 'var(--theme-primary-strong)' : (!llm && !net && !mob) ? 'var(--theme-text-muted)' : 'var(--theme-primary)'; })(), boxShadow: navTab === 'ai' ? '0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent), 0 0 14px color-mix(in srgb, var(--theme-primary) 72%, transparent), 0 0 30px color-mix(in srgb, var(--theme-primary) 48%, transparent)' : '0 0 12px color-mix(in srgb, var(--theme-primary) 24%, transparent)', transition: 'box-shadow 0.24s ease, background 0.3s ease, filter 0.24s ease', filter: navTab === 'ai' ? 'saturate(1.16)' : 'none' }}>
+                <span className="sidebar-icon" style={{ margin: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '2.22rem', height: '2.22rem', borderRadius: '50%', padding: '4px', background: (() => { const llm = maclawLLMOnline; const net = agentNetHealthy; const mob = remoteActivationStatus?.activated; return (llm && net && mob) ? 'var(--theme-primary-strong)' : (!llm && !net && !mob) ? 'var(--theme-text-muted)' : 'var(--theme-primary)'; })(), boxShadow: navTab === 'ai' ? '0 0 0 2px color-mix(in srgb, var(--theme-primary) 28%, transparent), 0 0 14px color-mix(in srgb, var(--theme-primary) 72%, transparent), 0 0 30px color-mix(in srgb, var(--theme-primary) 48%, transparent)' : '0 0 12px color-mix(in srgb, var(--theme-primary) 24%, transparent)', transition: 'box-shadow 0.24s ease, background 0.3s ease, filter 0.24s ease', filter: navTab === 'ai' ? 'saturate(1.16)' : 'none' }}>
                     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', borderRadius: '50%', background: 'var(--theme-surface)', fontSize: '1.42rem', lineHeight: 1 }}>{icon.lobster}</span>
                 </span>
                 <span style={{ fontSize: '0.72rem', lineHeight: 1, fontWeight: 700 }}>{aiAssistantLabel}</span>

@@ -301,6 +301,22 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 	}
 
 	// ---------- AgentNet tools (dynamic — only when daemon is running) ----------
+	// ---------- MIS structured data and AgentView transaction workspace ----------
+	defs = append(defs,
+		toolDef("mis_data", "Structured MIS data tool for semantic business intents, business actions, and local AgentView transaction workspace.",
+			map[string]interface{}{
+				"action":             map[string]string{"type": "string", "description": "Action name. Use list_agent_transactions to open the local right-side transaction workspace without requiring the MIS service."},
+				"query":              map[string]string{"type": "string", "description": "Natural-language business intent query for resolve_intent."},
+				"domain":             map[string]string{"type": "string", "description": "Optional MIS domain filter."},
+				"business_action_id": map[string]string{"type": "string", "description": "Business action id for get_business_action, execute_business_action, or transaction filtering."},
+				"dataset_id":         map[string]string{"type": "string", "description": "Dataset/business object id for data actions or transaction filtering."},
+				"record_id":          map[string]string{"type": "string", "description": "Record id for record-level operations."},
+				"data":               map[string]string{"type": "object", "description": "Structured payload for writes, validation, imports, queries, or action execution."},
+				"limit":              map[string]string{"type": "integer", "description": "Optional result limit."},
+				"dry_run":            map[string]string{"type": "boolean", "description": "Validate business action execution without committing."},
+			}, []string{"action"}),
+	)
+
 	if h.app != nil && h.app.agentNetClient != nil && h.app.agentNetClient.IsRunning() {
 		defs = append(defs,
 			toolDef("agentnet_search", "在智网（AgentNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",

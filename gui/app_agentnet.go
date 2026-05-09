@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentnet"
+	"github.com/RapidAI/CodeClaw/corelib/brand"
 	wailsrt "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -27,7 +28,17 @@ func (a *App) initAgentNet() *AgentNetClient {
 	return a.agentNetClient
 }
 
+func (a *App) initAgentNetForBrand() (*AgentNetClient, map[string]interface{}) {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return nil, agentNetUnavailableForBrandResult()
+	}
+	return a.initAgentNet(), nil
+}
+
 func (a *App) agentNetStartAllowed() error {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return fmt.Errorf("agentnet is unavailable for this brand")
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -36,6 +47,14 @@ func (a *App) agentNetStartAllowed() error {
 		return fmt.Errorf("agentnet is disabled in settings")
 	}
 	return nil
+}
+
+func agentNetHiddenForBrand(brandID string) bool {
+	return brandID == "qianxin"
+}
+
+func agentNetUnavailableForBrandResult() map[string]interface{} {
+	return map[string]interface{}{"ok": false, "error": "agentnet is unavailable for this brand"}
 }
 
 func (a *App) agentNetEnabled() bool {
@@ -49,7 +68,10 @@ func (a *App) AgentNetEnsureDaemon() map[string]interface{} {
 	if err := a.agentNetStartAllowed(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.EnsureDaemon(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -70,13 +92,19 @@ func (a *App) AgentNetStopDaemon() {
 // daemon that was started externally (e.g. by the OS or a previous run)
 // without requiring the user to visit the settings panel first.
 func (a *App) AgentNetIsRunning() bool {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return false
+	}
 	c := a.initAgentNet()
 	return c.IsRunning()
 }
 
 // AgentNetGetStatus returns node status.
 func (a *App) AgentNetGetStatus() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	s, err := c.GetStatus()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -93,7 +121,10 @@ func (a *App) AgentNetGetStatus() map[string]interface{} {
 
 // AgentNetGetPeers returns connected peers.
 func (a *App) AgentNetGetPeers() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	peers, err := c.GetPeers()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -103,7 +134,10 @@ func (a *App) AgentNetGetPeers() map[string]interface{} {
 
 // AgentNetListTasks lists tasks with optional status filter.
 func (a *App) AgentNetListTasks(status string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	tasks, err := c.ListTasks(status)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -113,7 +147,10 @@ func (a *App) AgentNetListTasks(status string) map[string]interface{} {
 
 // AgentNetCreateTask posts a new task to the network.
 func (a *App) AgentNetCreateTask(title string, reward float64) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	task, err := c.CreateTask(title, reward)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -123,7 +160,10 @@ func (a *App) AgentNetCreateTask(title string, reward float64) map[string]interf
 
 // AgentNetCreateTaskFull creates a task with description, tags, and optional target peer.
 func (a *App) AgentNetCreateTaskFull(title, description string, reward float64, tags []string, targetPeer string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	task, err := c.CreateTaskFull(title, description, reward, tags, targetPeer)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -133,7 +173,10 @@ func (a *App) AgentNetCreateTaskFull(title, description string, reward float64, 
 
 // AgentNetGetCredits returns Shell balance and tier info.
 func (a *App) AgentNetGetCredits() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	credits, err := c.GetCredits()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -150,7 +193,10 @@ func (a *App) AgentNetGetCredits() map[string]interface{} {
 
 // AgentNetSearchKnowledge searches the knowledge mesh.
 func (a *App) AgentNetSearchKnowledge(query string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entries, err := c.SearchKnowledge(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -160,7 +206,10 @@ func (a *App) AgentNetSearchKnowledge(query string) map[string]interface{} {
 
 // AgentNetPublishKnowledge publishes a knowledge entry.
 func (a *App) AgentNetPublishKnowledge(title, body string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entry, err := c.PublishKnowledge(title, body)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -170,7 +219,10 @@ func (a *App) AgentNetPublishKnowledge(title, body string) map[string]interface{
 
 // AgentNetPublishKnowledgeFull publishes a knowledge entry with domain tags.
 func (a *App) AgentNetPublishKnowledgeFull(title, body string, domains []string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entry, err := c.PublishKnowledgeFull(title, body, domains)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -180,7 +232,10 @@ func (a *App) AgentNetPublishKnowledgeFull(title, body string, domains []string)
 
 // AgentNetSendDM sends an encrypted direct message.
 func (a *App) AgentNetSendDM(peerID, body string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.SendDM(peerID, body); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -189,7 +244,10 @@ func (a *App) AgentNetSendDM(peerID, body string) map[string]interface{} {
 
 // AgentNetGetDMInbox returns the DM inbox.
 func (a *App) AgentNetGetDMInbox() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	inbox, err := c.GetDMInbox()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -199,7 +257,10 @@ func (a *App) AgentNetGetDMInbox() map[string]interface{} {
 
 // AgentNetListSwarmSessions lists active Swarm Think sessions.
 func (a *App) AgentNetListSwarmSessions() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	sessions, err := c.ListSwarmSessions()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -209,7 +270,10 @@ func (a *App) AgentNetListSwarmSessions() map[string]interface{} {
 
 // AgentNetCreateSwarmSession starts a new Swarm Think session.
 func (a *App) AgentNetCreateSwarmSession(topic, question string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	session, err := c.CreateSwarmSession(topic, question)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -219,7 +283,10 @@ func (a *App) AgentNetCreateSwarmSession(topic, question string) map[string]inte
 
 // AgentNetGetResume returns the agent's profile (with local cache fallback).
 func (a *App) AgentNetGetResume() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	r, err := c.GetResume()
 	if err != nil {
 		// Fallback to local cache on API failure.
@@ -253,7 +320,10 @@ func (a *App) AgentNetGetResume() map[string]interface{} {
 
 // AgentNetListPredictions lists active prediction markets.
 func (a *App) AgentNetListPredictions() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	preds, err := c.ListPredictions()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -264,6 +334,9 @@ func (a *App) AgentNetListPredictions() map[string]interface{} {
 // AgentNetInstallBinary downloads the anet binary via official installer.
 // Emits "agentnet-install-progress" events to the frontend during download.
 func (a *App) AgentNetInstallBinary() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	emitter := func(stage string, pct int, msg string) {
 		a.emitEvent("agentnet-install-progress", map[string]interface{}{
 			"stage":   stage,
@@ -284,7 +357,10 @@ func (a *App) AgentNetEnsureDaemonWithDownload() map[string]interface{} {
 	if err := a.agentNetStartAllowed(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	emitter := func(stage string, pct int, msg string) {
 		a.emitEvent("agentnet-install-progress", map[string]interface{}{
 			"stage":   stage,
@@ -304,7 +380,13 @@ func (a *App) AgentNetEnsureDaemonWithDownload() map[string]interface{} {
 // downloads it if available, and restarts the daemon.
 // Returns {ok, updated, message, error}.
 func (a *App) AgentNetManualUpdate() map[string]interface{} {
-	c := a.initAgentNet()
+	if err := a.agentNetStartAllowed(); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	a.log("AgentNet: manual update triggered")
 
 	emitter := func(stage string, pct int, msg string) {
@@ -360,6 +442,9 @@ func (a *App) AgentNetManualUpdate() map[string]interface{} {
 
 // AgentNetGetBinaryPath returns the resolved agentnet binary path (for diagnostics).
 func (a *App) AgentNetGetBinaryPath() string {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return "unavailable for this brand"
+	}
 	c := a.initAgentNet()
 	if c.binPath != "" {
 		return c.binPath
@@ -442,7 +527,10 @@ func writeProfileCacheFields(name *string, bio *string, motto *string, skills []
 }
 
 func (a *App) AgentNetGetProfile() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	p, err := c.GetProfile()
 	if err != nil {
 		// Fallback to local cache on API failure.
@@ -475,7 +563,10 @@ func (a *App) AgentNetGetProfile() map[string]interface{} {
 }
 
 func (a *App) AgentNetUpdateProfile(name, bio string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.UpdateProfile(name, bio); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -485,7 +576,10 @@ func (a *App) AgentNetUpdateProfile(name, bio string) map[string]interface{} {
 }
 
 func (a *App) AgentNetSetMotto(motto string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.SetMotto(motto); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -499,7 +593,13 @@ func (a *App) AgentNetSetMotto(motto string) map[string]interface{} {
 // Returns PID (if we launched it), binary path, and version.
 // The caller (frontend) already knows the alive/running state from AgentNetIsRunning.
 func (a *App) AgentNetGetDaemonInfo() map[string]interface{} {
-	c := a.initAgentNet()
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	binPath := c.binPath
 	if binPath == "" {
 		binPath = c.findBinary()
@@ -522,7 +622,10 @@ func (a *App) AgentNetGetDaemonInfo() map[string]interface{} {
 // ---------- Topic Rooms ----------
 
 func (a *App) AgentNetListTopics() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	topics, err := c.ListTopics()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -531,7 +634,10 @@ func (a *App) AgentNetListTopics() map[string]interface{} {
 }
 
 func (a *App) AgentNetCreateTopic(name, description string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.CreateTopic(name, description); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -539,7 +645,10 @@ func (a *App) AgentNetCreateTopic(name, description string) map[string]interface
 }
 
 func (a *App) AgentNetGetTopicMessages(topicName string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	msgs, err := c.GetTopicMessages(topicName)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -548,7 +657,10 @@ func (a *App) AgentNetGetTopicMessages(topicName string) map[string]interface{} 
 }
 
 func (a *App) AgentNetPostTopicMessage(topicName, body string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.PostTopicMessage(topicName, body); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -558,7 +670,10 @@ func (a *App) AgentNetPostTopicMessage(topicName, body string) map[string]interf
 // ---------- Task Bazaar (extended) ----------
 
 func (a *App) AgentNetBidOnTask(id string, amount float64, message string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.BidOnTask(id, amount, message); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -566,7 +681,10 @@ func (a *App) AgentNetBidOnTask(id string, amount float64, message string) map[s
 }
 
 func (a *App) AgentNetSubmitTaskDeliverable(id, result string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	task, err := c.GetTask(id)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -581,7 +699,10 @@ func (a *App) AgentNetSubmitTaskDeliverable(id, result string) map[string]interf
 }
 
 func (a *App) AgentNetApproveTask(id string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.ApproveTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -589,7 +710,10 @@ func (a *App) AgentNetApproveTask(id string) map[string]interface{} {
 }
 
 func (a *App) AgentNetRejectTask(id string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.RejectTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -597,7 +721,10 @@ func (a *App) AgentNetRejectTask(id string) map[string]interface{} {
 }
 
 func (a *App) AgentNetCancelTask(id string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.CancelTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -605,7 +732,10 @@ func (a *App) AgentNetCancelTask(id string) map[string]interface{} {
 }
 
 func (a *App) AgentNetGetTaskBids(id string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	bids, err := c.GetTaskBids(id)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -614,7 +744,10 @@ func (a *App) AgentNetGetTaskBids(id string) map[string]interface{} {
 }
 
 func (a *App) AgentNetMatchTasks() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	tasks, err := c.MatchTasks()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -623,7 +756,10 @@ func (a *App) AgentNetMatchTasks() map[string]interface{} {
 }
 
 func (a *App) AgentNetGetTaskBoard() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	board, err := c.GetTaskBoard()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -634,7 +770,10 @@ func (a *App) AgentNetGetTaskBoard() map[string]interface{} {
 // ---------- Credits (extended) ----------
 
 func (a *App) AgentNetGetLeaderboard() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	lb, err := c.GetLeaderboard()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -645,7 +784,10 @@ func (a *App) AgentNetGetLeaderboard() map[string]interface{} {
 // ---------- Diagnostics ----------
 
 func (a *App) AgentNetGetDiagnostics() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	diag, err := c.GetDiagnostics()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -654,7 +796,13 @@ func (a *App) AgentNetGetDiagnostics() map[string]interface{} {
 }
 
 func (a *App) AgentNetSelfUpdate() map[string]interface{} {
-	c := a.initAgentNet()
+	if err := a.agentNetStartAllowed(); err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.SelfUpdate(); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -664,7 +812,10 @@ func (a *App) AgentNetSelfUpdate() map[string]interface{} {
 // ---------- Knowledge Feed ----------
 
 func (a *App) AgentNetGetKnowledgeFeed(domain string, limit int) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entries, err := c.GetKnowledgeFeed(domain, limit)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -675,7 +826,10 @@ func (a *App) AgentNetGetKnowledgeFeed(domain string, limit int) map[string]inte
 // ---------- DM Thread ----------
 
 func (a *App) AgentNetGetDMThread(peerID string, limit int) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	thread, err := c.GetDMThread(peerID, limit)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -696,6 +850,9 @@ func agentnetIdentityKeyPath() (string, error) {
 
 // AgentNetHasIdentity checks whether an identity.key file exists.
 func (a *App) AgentNetHasIdentity() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	keyPath, err := agentnet.IdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -716,6 +873,9 @@ func (a *App) AgentNetHasIdentity() map[string]interface{} {
 
 // AgentNetExportIdentity copies identity.key to a user-chosen location via save dialog.
 func (a *App) AgentNetExportIdentity() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	keyPath, err := agentnetIdentityKeyPath()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -747,6 +907,9 @@ func (a *App) AgentNetExportIdentity() map[string]interface{} {
 // AgentNetImportIdentity restores identity.key from a user-chosen file via open dialog.
 // Stops daemon before importing, and only restarts if AgentNet is enabled.
 func (a *App) AgentNetImportIdentity() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	src, err := wailsrt.OpenFileDialog(a.ctx, wailsrt.OpenDialogOptions{
 		Title: "Import AgentNet Identity Key",
 		Filters: []wailsrt.FileFilter{
@@ -807,7 +970,10 @@ func (a *App) AgentNetImportIdentity() map[string]interface{} {
 		a.log("AgentNet: daemon restart skipped after identity import because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 	}
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.EnsureDaemon(); err != nil {
 		a.log(fmt.Sprintf("AgentNet: daemon restart after import failed: %v", err))
 	} else {
@@ -850,6 +1016,9 @@ func agentnetCopyFile(src, dst string) error {
 // AgentNetOnlineBackupKey encrypts the identity key with the user's password
 // and uploads it to the Hub, bound to the user's email.
 func (a *App) AgentNetOnlineBackupKey(password string) map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	config, err := a.LoadConfig()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": "failed to load config"}
@@ -903,6 +1072,9 @@ func (a *App) AgentNetOnlineBackupKey(password string) map[string]interface{} {
 // AgentNetOnlineRestoreKey downloads and decrypts the identity key from the Hub.
 // Stops daemon before replacing key, and only restarts if AgentNet is enabled.
 func (a *App) AgentNetOnlineRestoreKey(password string) map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	config, err := a.LoadConfig()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": "failed to load config"}
@@ -985,7 +1157,10 @@ func (a *App) AgentNetOnlineRestoreKey(password string) map[string]interface{} {
 		a.log("AgentNet: daemon restart skipped after online restore because agentnet_enabled=false")
 		return map[string]interface{}{"ok": true, "path": keyPath, "restarted": restarted}
 	}
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.EnsureDaemon(); err != nil {
 		a.log(fmt.Sprintf("AgentNet: daemon restart after online restore failed: %v", err))
 	} else {
@@ -1000,7 +1175,10 @@ func (a *App) AgentNetOnlineRestoreKey(password string) map[string]interface{} {
 
 // AgentNetUpdateResume updates the agent's resume/skills profile.
 func (a *App) AgentNetUpdateResume(skills []string, domains []string, bio string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	resume := &AgentNetResume{Skills: skills, Domains: domains, Bio: bio}
 	if err := c.UpdateResume(resume); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1012,7 +1190,10 @@ func (a *App) AgentNetUpdateResume(skills []string, domains []string, bio string
 
 // AgentNetAssignTask assigns a task to a specific bidder.
 func (a *App) AgentNetAssignTask(id, peerID string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.AssignTask(id, peerID); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1021,7 +1202,10 @@ func (a *App) AgentNetAssignTask(id, peerID string) map[string]interface{} {
 
 // AgentNetClaimTask claims an open task.
 func (a *App) AgentNetClaimTask(id string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.ClaimTask(id); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1030,7 +1214,10 @@ func (a *App) AgentNetClaimTask(id string) map[string]interface{} {
 
 // AgentNetCreatePrediction creates a new prediction market question.
 func (a *App) AgentNetCreatePrediction(question string, options []string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	pred, err := c.CreatePrediction(question, options)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1040,7 +1227,10 @@ func (a *App) AgentNetCreatePrediction(question string, options []string) map[st
 
 // AgentNetPlaceBet places a bet on a prediction.
 func (a *App) AgentNetPlaceBet(predID, option string, stake float64) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.PlaceBet(predID, option, stake); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1049,7 +1239,10 @@ func (a *App) AgentNetPlaceBet(predID, option string, stake float64) map[string]
 
 // AgentNetResolvePrediction resolves a prediction with the winning option.
 func (a *App) AgentNetResolvePrediction(predID, result string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.ResolvePrediction(predID, result); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1058,7 +1251,10 @@ func (a *App) AgentNetResolvePrediction(predID, result string) map[string]interf
 
 // AgentNetAppealPrediction files an appeal against a prediction resolution.
 func (a *App) AgentNetAppealPrediction(predID, reason string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.AppealPrediction(predID, reason); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1067,7 +1263,10 @@ func (a *App) AgentNetAppealPrediction(predID, reason string) map[string]interfa
 
 // AgentNetGetPredictionLeaderboard returns the prediction market leaderboard.
 func (a *App) AgentNetGetPredictionLeaderboard() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	lb, err := c.GetPredictionLeaderboard()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1077,7 +1276,10 @@ func (a *App) AgentNetGetPredictionLeaderboard() map[string]interface{} {
 
 // AgentNetJoinSwarm joins an existing swarm session.
 func (a *App) AgentNetJoinSwarm(sessionID string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.JoinSwarm(sessionID); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1086,7 +1288,10 @@ func (a *App) AgentNetJoinSwarm(sessionID string) map[string]interface{} {
 
 // AgentNetContributeToSwarm adds a contribution to a swarm session.
 func (a *App) AgentNetContributeToSwarm(sessionID, message, stance string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.ContributeToSwarm(sessionID, message, stance); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1095,7 +1300,10 @@ func (a *App) AgentNetContributeToSwarm(sessionID, message, stance string) map[s
 
 // AgentNetSynthesizeSwarm triggers synthesis for a swarm session.
 func (a *App) AgentNetSynthesizeSwarm(sessionID string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	result, err := c.SynthesizeSwarm(sessionID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1105,7 +1313,10 @@ func (a *App) AgentNetSynthesizeSwarm(sessionID string) map[string]interface{} {
 
 // AgentNetReactKnowledge reacts to a knowledge entry.
 func (a *App) AgentNetReactKnowledge(id, reaction string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.ReactKnowledge(id, reaction); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1114,7 +1325,10 @@ func (a *App) AgentNetReactKnowledge(id, reaction string) map[string]interface{}
 
 // AgentNetReplyKnowledge replies to a knowledge entry.
 func (a *App) AgentNetReplyKnowledge(id, body string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.ReplyKnowledge(id, body); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1123,7 +1337,10 @@ func (a *App) AgentNetReplyKnowledge(id, body string) map[string]interface{} {
 
 // AgentNetGetKnowledgeReplies returns replies for a knowledge entry.
 func (a *App) AgentNetGetKnowledgeReplies(id string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	replies, err := c.GetKnowledgeReplies(id)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1133,7 +1350,10 @@ func (a *App) AgentNetGetKnowledgeReplies(id string) map[string]interface{} {
 
 // AgentNetGetCreditsAudit returns the credit audit log.
 func (a *App) AgentNetGetCreditsAudit() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	audit, err := c.GetCreditsAudit()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1143,7 +1363,10 @@ func (a *App) AgentNetGetCreditsAudit() map[string]interface{} {
 
 // AgentNetMatchAgentsForTask finds agents matching a task's requirements.
 func (a *App) AgentNetMatchAgentsForTask(taskID string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	agents, err := c.MatchAgentsForTask(taskID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1155,7 +1378,10 @@ func (a *App) AgentNetMatchAgentsForTask(taskID string) map[string]interface{} {
 
 // AgentNetSubmitTaskWork submits work for an auction-style task.
 func (a *App) AgentNetSubmitTaskWork(id, result string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.SubmitTaskWork(id, result); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1164,7 +1390,10 @@ func (a *App) AgentNetSubmitTaskWork(id, result string) map[string]interface{} {
 
 // AgentNetGetTaskSubmissions returns all submissions for an auction-style task.
 func (a *App) AgentNetGetTaskSubmissions(id string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	subs, err := c.GetTaskSubmissions(id)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1174,7 +1403,10 @@ func (a *App) AgentNetGetTaskSubmissions(id string) map[string]interface{} {
 
 // AgentNetPickTaskWinner selects the winning submission for an auction-style task.
 func (a *App) AgentNetPickTaskWinner(id, winnerPeerID string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.PickTaskWinner(id, winnerPeerID); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1185,7 +1417,10 @@ func (a *App) AgentNetPickTaskWinner(id, winnerPeerID string) map[string]interfa
 
 // AgentNetGetOverlayStatus returns the overlay mesh network status.
 func (a *App) AgentNetGetOverlayStatus() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	status, err := c.GetOverlayStatus()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1195,7 +1430,10 @@ func (a *App) AgentNetGetOverlayStatus() map[string]interface{} {
 
 // AgentNetGetOverlayPeersGeo returns overlay peers with geographic info.
 func (a *App) AgentNetGetOverlayPeersGeo() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	peers, err := c.GetOverlayPeersGeo()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1208,7 +1446,10 @@ func (a *App) AgentNetGetOverlayPeersGeo() map[string]interface{} {
 // AgentNetBrowseNetworkTasks fetches tasks from the Hub bulletin board
 // (tasks published by other AgentNet peers) and merges them with local tasks.
 func (a *App) AgentNetBrowseNetworkTasks() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil || cfg.RemoteHubURL == "" {
 		return map[string]interface{}{"ok": false, "error": "Hub URL not configured"}
@@ -1226,7 +1467,10 @@ func (a *App) AgentNetBrowseNetworkTasks() map[string]interface{} {
 // AgentNetPublishTasksToHub pushes local open tasks to the Hub bulletin board
 // so other peers can discover them.
 func (a *App) AgentNetPublishTasksToHub() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	cfg, err := a.LoadConfig()
 	if err != nil || cfg.RemoteHubURL == "" {
 		return map[string]interface{}{"ok": false, "error": "Hub URL not configured"}
@@ -1243,6 +1487,14 @@ func (a *App) AgentNetPublishTasksToHub() map[string]interface{} {
 
 // AgentNetAutoPickerGetStatus returns the current auto-task-picker status.
 func (a *App) AgentNetAutoPickerGetStatus() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return map[string]interface{}{
+			"ok":      true,
+			"enabled": false,
+			"running": false,
+			"error":   "agentnet is unavailable for this brand",
+		}
+	}
 	a.ensureAutoTaskPicker()
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{
@@ -1258,6 +1510,9 @@ func (a *App) AgentNetAutoPickerGetStatus() map[string]interface{} {
 
 // AgentNetAutoPickerConfigure enables/disables and configures the auto-task-picker.
 func (a *App) AgentNetAutoPickerConfigure(enabled bool, pollMinutes int, minReward float64, tags []string) map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	a.ensureAutoTaskPicker()
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
@@ -1301,6 +1556,9 @@ func (a *App) AgentNetAutoPickerConfigure(enabled bool, pollMinutes int, minRewa
 
 // AgentNetAutoPickerTriggerNow forces an immediate task poll (for testing/manual trigger).
 func (a *App) AgentNetAutoPickerTriggerNow() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	a.ensureAutoTaskPicker()
 	if a.autoTaskPicker == nil {
 		return map[string]interface{}{"ok": false, "error": "auto-task-picker not initialized"}
@@ -1313,6 +1571,9 @@ func (a *App) AgentNetAutoPickerTriggerNow() map[string]interface{} {
 // AgentNetManualPickTask manually picks a specific task: claim -> execute -> submit.
 // Returns detailed status/error for the frontend to display.
 func (a *App) AgentNetManualPickTask(taskID string) map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	if taskID == "" {
 		return map[string]interface{}{"ok": false, "error": "task ID is required"}
 	}
@@ -1428,12 +1689,18 @@ func (a *App) bundleMgr() *agentnet.BundleManager {
 
 // AgentNetBundleStatus checks whether anet pack/unpack is available.
 func (a *App) AgentNetBundleStatus() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return map[string]interface{}{"ok": false, "installed": false, "error": "agentnet is unavailable for this brand"}
+	}
 	st := a.bundleMgr().IsInstalled()
 	return map[string]interface{}{"ok": true, "installed": st.Installed, "version": st.Version, "error": st.Error}
 }
 
 // AgentNetBundleInstall installs anet when pack/unpack is not available.
 func (a *App) AgentNetBundleInstall() map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	emitter := func(stage string, pct int, msg string) {
 		a.emitEvent("agentnet-bundle-install-progress", map[string]interface{}{
 			"stage":   stage,
@@ -1450,6 +1717,9 @@ func (a *App) AgentNetBundleInstall() map[string]interface{} {
 
 // AgentNetBundlePack creates a .nut bundle file. peerID is optional for encryption.
 func (a *App) AgentNetBundlePack(dir, outputFile, peerID string) map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	out, err := a.bundleMgr().Pack(dir, outputFile, peerID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1459,6 +1729,9 @@ func (a *App) AgentNetBundlePack(dir, outputFile, peerID string) map[string]inte
 
 // AgentNetBundleUnpack extracts a .nut bundle file.
 func (a *App) AgentNetBundleUnpack(nutFile, outputDir string) map[string]interface{} {
+	if agentNetHiddenForBrand(brand.Current().ID) {
+		return agentNetUnavailableForBrandResult()
+	}
 	out, err := a.bundleMgr().Unpack(nutFile, outputDir)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error(), "output": out}
@@ -1470,7 +1743,10 @@ func (a *App) AgentNetBundleUnpack(nutFile, outputDir string) map[string]interfa
 
 // AgentNetListServices returns locally registered P2P services.
 func (a *App) AgentNetListServices() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	svcs, err := c.ListServices()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1480,7 +1756,10 @@ func (a *App) AgentNetListServices() map[string]interface{} {
 
 // AgentNetRegisterService registers a local HTTP service on the P2P network.
 func (a *App) AgentNetRegisterService(name, localURL, description string, tags []string, modes []string, billing string, price float64, freeTier int) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	reg := &AgentNetServiceRegistration{
 		Name: name, URL: localURL, Description: description,
 		Tags: tags, Modes: modes, Billing: billing,
@@ -1494,7 +1773,10 @@ func (a *App) AgentNetRegisterService(name, localURL, description string, tags [
 
 // AgentNetUnregisterService removes a registered service.
 func (a *App) AgentNetUnregisterService(name string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.UnregisterService(name); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1503,7 +1785,10 @@ func (a *App) AgentNetUnregisterService(name string) map[string]interface{} {
 
 // AgentNetCallService calls a remote peer's service (request-response).
 func (a *App) AgentNetCallService(peer, service, method, path string, headers map[string]string, body string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	result, err := c.CallService(peer, service, method, path, headers, body)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1513,7 +1798,10 @@ func (a *App) AgentNetCallService(peer, service, method, path string, headers ma
 
 // AgentNetDiscoverServices discovers services on a remote peer.
 func (a *App) AgentNetDiscoverServices(peer string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	svcs, err := c.DiscoverServices(peer)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1525,7 +1813,10 @@ func (a *App) AgentNetDiscoverServices(peer string) map[string]interface{} {
 
 // AgentNetANSRegister registers an ANS name with skill tags.
 func (a *App) AgentNetANSRegister(name, tags string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entry, err := c.ANSRegister(name, tags)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1535,7 +1826,10 @@ func (a *App) AgentNetANSRegister(name, tags string) map[string]interface{} {
 
 // AgentNetANSResolve resolves an ANS name to a DID.
 func (a *App) AgentNetANSResolve(name string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entry, err := c.ANSResolve(name)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1545,7 +1839,10 @@ func (a *App) AgentNetANSResolve(name string) map[string]interface{} {
 
 // AgentNetANSLookup finds agents by skill tags.
 func (a *App) AgentNetANSLookup(tags string, limit int) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entries, err := c.ANSLookup(tags, limit)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1557,7 +1854,10 @@ func (a *App) AgentNetANSLookup(tags string, limit int) map[string]interface{} {
 
 // AgentNetDiscoverAgents performs full-text agent search.
 func (a *App) AgentNetDiscoverAgents(query string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	agents, err := c.DiscoverAgents(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1567,7 +1867,10 @@ func (a *App) AgentNetDiscoverAgents(query string) map[string]interface{} {
 
 // AgentNetCrossDomainSearch performs cross-domain search.
 func (a *App) AgentNetCrossDomainSearch(query string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	results, err := c.CrossDomainSearch(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1577,7 +1880,10 @@ func (a *App) AgentNetCrossDomainSearch(query string) map[string]interface{} {
 
 // AgentNetFindClaw performs semantic knowledge search (FindClaw).
 func (a *App) AgentNetFindClaw(query string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	entries, err := c.FindAgent(query)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1589,7 +1895,10 @@ func (a *App) AgentNetFindClaw(query string) map[string]interface{} {
 
 // AgentNetGetReputation returns the reputation score for a DID.
 func (a *App) AgentNetGetReputation(did string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	rep, err := c.GetReputation(did)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1601,7 +1910,10 @@ func (a *App) AgentNetGetReputation(did string) map[string]interface{} {
 
 // AgentNetListPoIChallenges returns available PoI challenges.
 func (a *App) AgentNetListPoIChallenges() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	challenges, err := c.ListPoIChallenges()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1611,7 +1923,10 @@ func (a *App) AgentNetListPoIChallenges() map[string]interface{} {
 
 // AgentNetRespondToPoI submits a response to a PoI challenge.
 func (a *App) AgentNetRespondToPoI(challengeID, response string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.RespondToPoI(challengeID, map[string]interface{}{"response": response}); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1620,7 +1935,10 @@ func (a *App) AgentNetRespondToPoI(challengeID, response string) map[string]inte
 
 // AgentNetGetPoIScores returns PoI intelligence ranking scores.
 func (a *App) AgentNetGetPoIScores() map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	scores, err := c.GetPoIScores()
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1632,7 +1950,10 @@ func (a *App) AgentNetGetPoIScores() map[string]interface{} {
 
 // AgentNetPublishAgentCard publishes the agent's profile card to the network.
 func (a *App) AgentNetPublishAgentCard(name, desc string, skills []string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.PublishAgentCard(name, desc, skills); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1641,7 +1962,10 @@ func (a *App) AgentNetPublishAgentCard(name, desc string, skills []string) map[s
 
 // AgentNetInitAgent initializes the agent identity and profile.
 func (a *App) AgentNetInitAgent(name string, skills []string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.InitAgent(name, skills); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1652,7 +1976,10 @@ func (a *App) AgentNetInitAgent(name string, skills []string) map[string]interfa
 
 // AgentNetTransferCredits transfers Shell credits to another agent.
 func (a *App) AgentNetTransferCredits(toDID string, amount float64, reason string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.TransferCredits(toDID, amount, reason); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1667,7 +1994,10 @@ func (a *App) AgentNetAttachBundle(taskID, base64Data string) map[string]interfa
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": "invalid base64: " + err.Error()}
 	}
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.AttachBundle(taskID, data); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1676,7 +2006,10 @@ func (a *App) AgentNetAttachBundle(taskID, base64Data string) map[string]interfa
 
 // AgentNetDownloadBundle downloads a .nut bundle from a task (returns base64).
 func (a *App) AgentNetDownloadBundle(taskID string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	data, err := c.DownloadBundle(taskID)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1688,7 +2021,10 @@ func (a *App) AgentNetDownloadBundle(taskID string) map[string]interface{} {
 
 // AgentNetCreateSplitTask creates a multi-slot task.
 func (a *App) AgentNetCreateSplitTask(title string, reward float64, slots int) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	task, err := c.CreateSplitTask(title, reward, slots)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1700,7 +2036,10 @@ func (a *App) AgentNetCreateSplitTask(title string, reward float64, slots int) m
 
 // AgentNetFileDispute files a dispute for a rejected task.
 func (a *App) AgentNetFileDispute(taskID, reason string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	if err := c.FileDispute(taskID, reason); err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
 	}
@@ -1711,7 +2050,10 @@ func (a *App) AgentNetFileDispute(taskID, reason string) map[string]interface{} 
 
 // AgentNetExtractDAG extracts a structured DAG from task steps.
 func (a *App) AgentNetExtractDAG(intent string, steps []string, outputs []string) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	nodes, err := c.ExtractDAG(intent, steps, outputs)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}
@@ -1721,7 +2063,10 @@ func (a *App) AgentNetExtractDAG(intent string, steps []string, outputs []string
 
 // AgentNetQueryOntology queries the knowledge graph for a subgraph.
 func (a *App) AgentNetQueryOntology(query string, depth int) map[string]interface{} {
-	c := a.initAgentNet()
+	c, unavailable := a.initAgentNetForBrand()
+	if unavailable != nil {
+		return unavailable
+	}
 	result, err := c.QueryOntology(query, depth)
 	if err != nil {
 		return map[string]interface{}{"ok": false, "error": err.Error()}

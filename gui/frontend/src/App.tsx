@@ -5,11 +5,12 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
+import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
 import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
 import { useRemotePanel } from './components/remote/useRemotePanel';
 import { TERMINAL_SESSION_STATUSES } from './components/remote/types';
@@ -26,11 +27,13 @@ import { GroupDiscussionSettingsPanel } from './components/remote/GroupDiscussio
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
+import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { PetSettingsPanel } from './components/PetSettingsPanel';
 import { useAIAssistant } from './components/ai/useAIAssistant';
 import { useDialog } from './components/CustomDialog';
 import { buildHubCreditsURL } from './utils/hubCredits';
+import { normalizeSidebarHubCredits } from './utils/sidebarHubCredits';
 import { translations } from './i18n/appTranslations';
 import { ToolConfiguration } from './components/tools/ToolConfiguration';
 import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, sidebarProviderAliases, subscriptionUrls, getModelDisplayName, type ProviderEndpoint } from './config/providerCatalog';
@@ -38,6 +41,8 @@ import { TOOL_NAMES, isToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, type SettingsTabId } from './config/settingsTabs';
 import { SettingsTabsRail } from './components/settings/SettingsTabsRail';
 import { GeneralSettingsPanel } from './components/settings/GeneralSettingsPanel';
+import { KnowledgeSettingsPanel } from './components/settings/KnowledgeSettingsPanel';
+import { MISDataSettingsPanel } from './components/settings/MISDataSettingsPanel';
 import { UISettingsPanel } from './components/settings/UISettingsPanel';
 import { ProgrammingToolsSettingsPanel } from './components/settings/ProgrammingToolsSettingsPanel';
 import { GeneralAdvancedSettingsPanel } from './components/settings/GeneralAdvancedSettingsPanel';
@@ -65,7 +70,7 @@ import { InstallSkillModal } from './components/modals/InstallSkillModal';
 import { RemoteActivationDialog } from './components/modals/RemoteActivationDialog';
 import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDialog';
 import { ConfirmDialog } from './components/modals/ConfirmDialog';
-import type { RemoteCenterHubOption, SidebarHubCredits, SidebarHubServiceStatus, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
+import type { RemoteCenterHubOption, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 
 
 
@@ -91,6 +96,7 @@ function App() {
     const [lastUpdateTime, setLastUpdateTime] = useState<string>("");
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
+    const [codexConfigUpdateCount, setCodexConfigUpdateCount] = useState(0);
     const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(180);
     const [isRecentTasksResizing, setIsRecentTasksResizing] = useState(false);
     const recentTasksResizeStartX = useRef(0);
@@ -105,7 +111,8 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<SettingsTabId>('general');
-    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'thirdparty'>('qq');
+    const [memoryTraceFocus, setMemoryTraceFocus] = useState<{ value: string; seq: number }>({ value: "", seq: 0 });
+    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');
@@ -114,6 +121,8 @@ function App() {
     const [weixinLocalMode, setWeixinLocalModeState] = useState<boolean>(true);
     const [thirdPartyGatewayStatus, setThirdPartyGatewayStatus] = useState<string>('disconnected');
     const [thirdPartyGatewayLocalMode, setThirdPartyGatewayLocalModeState] = useState<boolean>(true);
+    const [lansengerStatus, setLansengerStatus] = useState<string>('disconnected');
+    const [lansengerLocalMode, setLansengerLocalModeState] = useState<boolean>(true);
     const [imAuditPlatform, setIMAuditPlatform] = useState<string | null>(null);
     const [weixinQRCode, setWeixinQRCode] = useState<string>('');
     const [weixinQRLoading, setWeixinQRLoading] = useState<boolean>(false);
@@ -153,12 +162,15 @@ function App() {
 
     // Brand info from backend
     const [brandInfo, setBrandInfo] = useState<{id: string, displayName: string, displayNameCN: string, slogan: string, author: string, businessContact: string, websiteURL: string, githubURL: string, iconPath: string} | null>(null);
+    const [brandInfoLoaded, setBrandInfoLoaded] = useState(false);
     const currentIcon = brandInfo?.id === 'qianxin' ? qianxinIcon : appIcon;
     const [aiThemeMode, setAIThemeMode] = useState<'light' | 'dark'>(() => {
         return readStoredAssistantThemeMode();
     });
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
+    const isTigerClawBrand = brandInfo?.id === 'qianxin';
+    const agentNetAllowedForBrand = brandInfoLoaded && !isTigerClawBrand;
 
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
@@ -466,7 +478,11 @@ function App() {
         // Load brand info from backend
         GetBrandInfo().then((info: any) => {
             setBrandInfo(info);
-        }).catch(() => {});
+        }).catch(() => {
+            setBrandInfo(null);
+        }).finally(() => {
+            setBrandInfoLoaded(true);
+        });
 
         // Detect OS from backend for Windows Terminal check
         GetSystemInfo().then(info => {
@@ -794,6 +810,23 @@ function App() {
         };
     }, []);
 
+    useEffect(() => {
+        if (!brandInfoLoaded) return;
+        if (!isTigerClawBrand) {
+            setLansengerStatus('disconnected');
+            setLansengerLocalModeState(true);
+            return;
+        }
+        EventsOn("lansenger-status-changed", (status: string) => {
+            setLansengerStatus(status);
+        });
+        GetLansengerStatus().then(setLansengerStatus).catch(() => {});
+        GetLansengerLocalMode().then(setLansengerLocalModeState).catch(() => {});
+        return () => {
+            EventsOff("lansenger-status-changed");
+        };
+    }, [brandInfoLoaded, isTigerClawBrand]);
+
     // Poll AgentNet running status so the globe indicator lights up without
     // requiring the user to visit the settings panel first.
     // When the settings tab is active, AgentNetPanel also polls — but the
@@ -803,7 +836,7 @@ function App() {
     const agentNetAutoStarted = useRef(false);
     const agentNetPrevUp = useRef(false);
     const agentNetEnabledRef = useRef(!!config?.agentnet_enabled);
-    useEffect(() => { agentNetEnabledRef.current = !!config?.agentnet_enabled; }, [config?.agentnet_enabled]);
+    useEffect(() => { agentNetEnabledRef.current = !!config?.agentnet_enabled && agentNetAllowedForBrand; }, [config?.agentnet_enabled, agentNetAllowedForBrand]);
     useEffect(() => {
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
         const clearRetry = () => {
@@ -854,8 +887,15 @@ function App() {
     useEffect(() => {
         // Skip when config hasn't loaded yet — don't kill a daemon before
         // we know the user's preference.
-        if (!config) return;
+        if (!config || !brandInfoLoaded) return;
+        if (isTigerClawBrand) {
+            agentNetAutoStarted.current = false;
+            agentNetPrevUp.current = false;
+            setAgentNetRunning(false);
+            return;
+        }
         if (!config.agentnet_enabled) {
+            agentNetAutoStarted.current = false;
             // Disabled — stop residual daemon if it's still running.
             AgentNetIsRunning().then(up => {
                 if (up) {
@@ -877,7 +917,7 @@ function App() {
                 setAgentNetRunning(true);
             }
         }).catch(() => {});
-    }, [config?.agentnet_enabled]);
+    }, [config?.agentnet_enabled, brandInfoLoaded, isTigerClawBrand]);
 
     // Poll MaClaw LLM status every 60 seconds.
     // Also re-ping immediately when the user navigates to/from the LLM settings
@@ -943,6 +983,11 @@ function App() {
     };
 
     const switchTool = (tool: string) => {
+        if (isTigerClawBrand && tool === 'agentnet') {
+            setNavTab('ai');
+            setToolDropdownOpen(false);
+            return;
+        }
         setNavTab(tool);
         setToolDropdownOpen(false);
         if (isToolTab(tool)) {
@@ -981,6 +1026,22 @@ function App() {
             }
         }
     };
+
+    useEffect(() => {
+        if (isTigerClawBrand && navTab === 'agentnet') {
+            setNavTab('ai');
+        }
+        const visibleSettingsTabs = getSettingsTabOptions(lang, { hideAgentNet: isTigerClawBrand });
+        if (!visibleSettingsTabs.some((tab) => tab.id === settingsTab)) {
+            setSettingsTab('general');
+        }
+    }, [isTigerClawBrand, lang, navTab, settingsTab]);
+
+    useEffect(() => {
+        if (!isTigerClawBrand && imSubTab === 'lansenger') {
+            setImSubTab('qq');
+        }
+    }, [isTigerClawBrand, imSubTab]);
 
     const handleSkillContext = (e: React.MouseEvent, skillName: string) => {
         e.preventDefault();
@@ -1188,6 +1249,12 @@ function App() {
         await refreshGroupDiscussionStatus();
     }, [refreshGroupDiscussionStatus]);
 
+    const handleOpenExperienceTrace = useCallback((focus?: string) => {
+        setMemoryTraceFocus((prev) => ({ value: String(focus || "").trim(), seq: prev.seq + 1 }));
+        setNavTab('settings');
+        setSettingsTab('memory');
+    }, []);
+
     useEffect(() => {
         if (!config) return;
         if (groupDiscussionConfig.enabled === false) {
@@ -1207,6 +1274,14 @@ function App() {
     }, [config, groupDiscussionConfig.enabled, groupDiscussionConfig.discoverable, publishGroupDiscussionProfile]);
 
     const aiAssistant = useAIAssistant({ refreshSessionsOnly });
+    const codingAgentTurnSnapshot = useMemo(
+        () => aiAssistant.sending ? latestCodingAgentTurnSnapshot(aiAssistant.progressMessages || []) : null,
+        [aiAssistant.sending, aiAssistant.progressMessages],
+    );
+    const codingAgentProgress = useMemo(
+        () => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(aiAssistant.progressMessages || [], aiAssistant.sending),
+        [codingAgentTurnSnapshot, aiAssistant.sending, aiAssistant.progressMessages],
+    );
     const refreshRecentProjects = useCallback(() => {
         SearchProjects("", 10).then((r: any) => setRecentProjects(r || [])).catch(() => setRecentProjects([]));
     }, []);
@@ -1238,6 +1313,26 @@ function App() {
             console.error("ResumeProject failed:", error);
         }
     }, [aiAssistant]);
+
+    const createRecentTask = useCallback(async (name: string) => {
+        const taskName = name.trim();
+        if (!taskName) return;
+        try {
+            const created = await CreateRecentTask(taskName);
+            if (created?.project_path) {
+                setRecentProjects(prev => [created, ...prev.filter(item => item.project_path !== created.project_path)].slice(0, 10));
+            } else {
+                refreshRecentProjects();
+                return;
+            }
+            switchTool('ai');
+            await aiAssistant.sendMessage('/clear');
+            await aiAssistant.sendMessage(created.name || taskName);
+            refreshRecentProjects();
+        } catch (error) {
+            console.error("CreateRecentTask failed:", error);
+        }
+    }, [aiAssistant, refreshRecentProjects, switchTool]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1285,31 +1380,6 @@ function App() {
             }
             return providerWithUsage || currentProviderName || providerNames[0] || '';
         };
-        const normalizeHubCredits = (status?: SidebarHubServiceStatus | null): SidebarHubCredits | null => {
-            const active = status?.active ?? status?.Active ?? false;
-            if (!active) return { authorized: false, total: 0, used: 0, remaining: 0, tokensPerCredit: 0, expiresAt: '', unlimited: false };
-            const grants = status?.credit_grants ?? status?.CreditGrants ?? status?.active_grants ?? status?.ActiveGrants ?? [];
-            let total = 0;
-            let used = 0;
-            let remaining = 0;
-            for (const grant of grants) {
-                total += Number(grant.credits_total ?? grant.CreditsTotal ?? 0);
-                used += Number(grant.credits_used ?? grant.CreditsUsed ?? 0);
-                remaining += Number(grant.credits_remaining ?? grant.CreditsRemaining ?? 0);
-            }
-            total = Number(status?.credits_total ?? status?.CreditsTotal ?? total);
-            used = Number(status?.credits_used ?? status?.CreditsUsed ?? used);
-            remaining = Number(status?.credits_remaining ?? status?.CreditsRemaining ?? remaining);
-            const available = Number(status?.credits_available ?? status?.CreditsAvailable ?? 0);
-            if (remaining <= 0 && available > 0) remaining = available;
-            if (total <= 0 && remaining > 0) total = used + remaining;
-            const unlimited = total <= 0;
-            const nearestGrantExpiry = grants
-                .map((grant) => String(grant.expires_at ?? grant.ExpiresAt ?? ''))
-                .filter(Boolean)
-                .sort()[0] || '';
-            return { authorized: true, total, used, remaining, tokensPerCredit: Number(status?.tokens_per_credit ?? status?.TokensPerCredit ?? 0), expiresAt: String(status?.effective_expires_at ?? status?.EffectiveExpiresAt ?? status?.nearest_expires_at ?? status?.NearestExpiresAt ?? nearestGrantExpiry), unlimited };
-        };
         const normalizeProviderURL = (value?: string) => String(value || '').trim().replace(/\/+$/, '');
         const refreshSidebarTokenUsage = async () => {
             try {
@@ -1334,16 +1404,16 @@ function App() {
                 );
                 const currentProviderUsage = getUsageForProvider(normalizedMap, currentProviderName);
                 const currentProvider = providerSummaries.find((provider) => provider.name === currentProviderName);
-                let hubStatus: SidebarHubServiceStatus | null = null;
+                let hubStatus: Awaited<ReturnType<typeof GetHubLLMServiceStatus>> | null = null;
                 try {
-                    hubStatus = await GetHubLLMServiceStatus() as SidebarHubServiceStatus;
+                    hubStatus = await GetHubLLMServiceStatus();
                 } catch {
                     hubStatus = null;
                 }
                 const hubServiceURL = normalizeProviderURL(hubStatus?.hub_llm_base_url ?? hubStatus?.HubLLMBaseURL);
                 const currentProviderURL = normalizeProviderURL(currentProvider?.url);
                 const currentProviderIsHubService = !!currentProvider?.isHubService || (!!hubServiceURL && !!currentProviderURL && hubServiceURL === currentProviderURL);
-                const hubCredits = currentProviderIsHubService ? normalizeHubCredits(hubStatus) : null;
+                const hubCredits = currentProviderIsHubService ? normalizeSidebarHubCredits(hubStatus) : null;
                 if (!cancelled) {
                     setSidebarCurrentProviderTokenUsage({ provider: currentProviderName, isHubService: currentProviderIsHubService, ...currentProviderUsage });
                     setSidebarHubCredits(hubCredits);
@@ -1691,6 +1761,13 @@ function App() {
         setConfig(newConfig);
     };
 
+    const getWireApiValue = () => {
+        if (!config) return "";
+        const model = (config as any)[activeTool]?.models?.[activeTab];
+        const wireApi = model?.wire_api || "";
+        return activeTool === "codex" && !wireApi ? "responses" : wireApi;
+    };
+
     const getDefaultModelId = (tool: string, provider: string) => {
         const p = provider.toLowerCase();
         if (tool === "claude") {
@@ -1728,6 +1805,7 @@ function App() {
         if (!config) return;
 
         const toolCfg = (config as any)[activeTool];
+        if (!toolCfg || toolCfg.current_model === modelName) return;
         const targetModel = toolCfg.models.find((m: any) => m.model_name === modelName);
         if (modelName !== "Original" && (!targetModel || !targetModel.api_key || targetModel.api_key.trim() === "")) {
             setStatus("Please configure API Key first!");
@@ -1741,13 +1819,21 @@ function App() {
 
         const newToolCfg = { ...toolCfg, current_model: modelName };
         const newConfig = new main.AppConfig({ ...config, [activeTool]: newToolCfg });
+        const isCodexProviderSwitch = activeTool === "codex";
         setConfig(newConfig);
         setStatus(t("syncing"));
+        if (isCodexProviderSwitch) {
+            setCodexConfigUpdateCount((count) => count + 1);
+        }
         SaveConfig(newConfig).then(() => {
             setStatus(t("switched"));
             setTimeout(() => setStatus(""), 1500);
         }).catch(err => {
             setStatus("Error syncing: " + err);
+        }).finally(() => {
+            if (isCodexProviderSwitch) {
+                setCodexConfigUpdateCount((count) => Math.max(0, count - 1));
+            }
         });
     };
 
@@ -2116,12 +2202,13 @@ ${instruction}`;
         : null;
 
     const currentProject = getCurrentProject();
-    const settingsTabOptions = getSettingsTabOptions(lang);
+    const settingsTabOptions = getSettingsTabOptions(lang, { hideAgentNet: isTigerClawBrand });
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
     const launchMode = config?.default_launch_mode === 'remote' ? 'remote' : 'local';
     const launchRemoteEnabled = launchMode === 'remote';
+    const codexConfigUpdating = codexConfigUpdateCount > 0;
     return (
         <div
             className="app-viewport"
@@ -2140,10 +2227,12 @@ ${instruction}`;
                 lang={lang}
                 maclawLLMOnline={maclawLLMOnline}
                 agentNetRunning={agentNetRunning}
+                showLansenger={isTigerClawBrand}
                 remoteActivationStatus={remoteActivationStatus}
                 qqBotStatus={qqBotStatus}
                 telegramStatus={telegramStatus}
                 weixinStatus={weixinStatus}
+                lansengerStatus={lansengerStatus}
                 runningTaskCount={runningTaskCount}
                 t={t}
                 gossipAllowed={gossipAllowed}
@@ -2159,6 +2248,9 @@ ${instruction}`;
                 renameValue={renameValue}
                 setRenameValue={setRenameValue}
                 resumeRecentProject={resumeRecentProject}
+                assistantReady={aiAssistant.ready}
+                onRecentTaskSwitchBlocked={() => showToastMessage(lang === 'zh-Hans' || lang === 'zh' ? '系统正在预热中，请稍后切换' : lang === 'zh-Hant' ? '系統正在預熱中，請稍後切換' : 'System is warming up. Please switch later.')}
+                createRecentTask={createRecentTask}
                 refreshRecentProjects={refreshRecentProjects}
                 taskContextMenu={taskContextMenu}
                 setTaskContextMenu={setTaskContextMenu}
@@ -2176,6 +2268,8 @@ ${instruction}`;
                 noHubAuthorizationText={noHubAuthorizationText}
                 showHubCreditAction={showHubCreditAction}
                 openHubCreditsPage={openHubCreditsPage}
+                codingAgentProgress={codingAgentProgress}
+                codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                 handleRecentTasksResizeStart={handleRecentTasksResizeStart}
                 isRecentTasksResizing={isRecentTasksResizing}
             />
@@ -2198,6 +2292,7 @@ ${instruction}`;
                                 onPublishProfile: publishGroupDiscussionProfile,
                                 onAcceptInvite: handleGroupDiscussionAcceptInvite,
                                 onRejectInvite: handleGroupDiscussionRejectInvite,
+                                onOpenExperienceTrace: handleOpenExperienceTrace,
                             }}
                             state={{
                                 messages: aiAssistant.messages,
@@ -2221,6 +2316,7 @@ ${instruction}`;
                                 clearSelectedFile: aiAssistant.clearSelectedFile,
                                 removeSelectedFile: (aiAssistant as any).removeSelectedFile,
                                 sendMessage: aiAssistant.sendMessage,
+                                injectSupplementary: (aiAssistant as any).injectSupplementary,
                                 clearHistory: aiAssistant.clearHistory,
                                 recordSubmittedPrompt: aiAssistant.recordSubmittedPrompt,
                                 setDraftInputValue: aiAssistant.setDraftInputValue,
@@ -2365,6 +2461,10 @@ ${instruction}`;
                                 />
                             </div>
 
+                            <div className="settings-panel" style={{ display: settingsTab === 'searchEngine' ? 'block' : 'none' }}>
+                                <WebSearchConfigPanel lang={lang} />
+                            </div>
+
                             <div className="settings-panel" style={{ display: settingsTab === 'pet' ? 'block' : 'none' }}>
                                 <PetSettingsPanel
                                     config={config}
@@ -2393,9 +2493,16 @@ ${instruction}`;
                             </div>
 
                             <div className="settings-panel" style={{ display: settingsTab === 'memory' ? 'block' : 'none' }}>
-                                <MemoryManagementPanel lang={lang} />
+                                <MemoryManagementPanel lang={lang} traceFocus={memoryTraceFocus} />
                             </div>
 
+                            <div className="settings-panel" style={{ display: settingsTab === 'knowledge' ? 'block' : 'none' }}>
+                                <KnowledgeSettingsPanel lang={lang} />
+                            </div>
+
+                            <div className="settings-panel" style={{ display: settingsTab === 'misData' ? 'block' : 'none' }}>
+                                <MISDataSettingsPanel lang={lang} />
+                            </div>
                             <div className="settings-panel" style={{ display: settingsTab === 'embedding' ? 'block' : 'none' }}>
                                 <EmbeddingConfigPanel lang={lang} />
                                 <ASRConfigPanel lang={lang} />
@@ -2403,17 +2510,17 @@ ${instruction}`;
                             </div>
 
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'agentnet' ? 'block' : 'none' }}>
+                            {!isTigerClawBrand && <div className="settings-panel" style={{ display: settingsTab === 'agentnet' ? 'block' : 'none' }}>
                                 <AgentNetPanel
                                     lang={lang}
                                     config={config}
                                     saveRemoteConfigField={saveRemoteConfigField}
                                     onRunningChange={setAgentNetRunning}
                                 />
-                            </div>
+                            </div>}
 
                             <div className="settings-panel" style={{ display: settingsTab === 'groupDiscussion' ? 'block' : 'none' }}>
-                                <GroupDiscussionSettingsPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
+                                <GroupDiscussionSettingsPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} onOpenExperienceTrace={handleOpenExperienceTrace} />
                             </div>
 
                             <IMSettingsPanel
@@ -2444,6 +2551,11 @@ ${instruction}`;
                                 setThirdPartyGatewayStatus={setThirdPartyGatewayStatus}
                                 thirdPartyGatewayLocalMode={thirdPartyGatewayLocalMode}
                                 setThirdPartyGatewayLocalModeState={setThirdPartyGatewayLocalModeState}
+                                showLansenger={isTigerClawBrand}
+                                lansengerStatus={lansengerStatus}
+                                setLansengerStatus={setLansengerStatus}
+                                lansengerLocalMode={lansengerLocalMode}
+                                setLansengerLocalModeState={setLansengerLocalModeState}
                                 weixinQRCode={weixinQRCode}
                                 setWeixinQRCode={setWeixinQRCode}
                                 weixinQRLoading={weixinQRLoading}
@@ -2479,6 +2591,7 @@ ${instruction}`;
                                     chatFontSize={chatFontSize}
                                     setChatFontSize={setChatFontSize}
                                     gossipAllowed={gossipAllowed}
+                                    hideAgentNet={isTigerClawBrand}
                                     updateSidebarNavVisibility={updateSidebarNavVisibility}
                                 />
                             </div>
@@ -2507,7 +2620,7 @@ ${instruction}`;
                         </div>
                     )}
 
-                    {navTab === 'agentnet' && (
+                    {!isTigerClawBrand && navTab === 'agentnet' && (
                         <AgentNetTabContainer lang={lang} agentNetRunning={agentNetRunning} />
                     )}
 
@@ -3014,6 +3127,23 @@ ${instruction}`;
                     </div>
                 )}
 
+                {codexConfigUpdating && (
+                    <div className="codex-config-progress-overlay" role="status" aria-live="polite">
+                        <div className="codex-config-progress-panel">
+                            <div className="codex-config-progress-title">
+                                {lang === 'zh-Hans' || lang === 'zh'
+                                    ? '正在更新 Codex 配置'
+                                    : lang === 'zh-Hant'
+                                        ? '正在更新 Codex 配置'
+                                        : 'Updating Codex configuration'}
+                            </div>
+                            <div className="codex-config-progress-track" aria-hidden="true">
+                                <div className="codex-config-progress-bar" />
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 <AppStatusMessageBar
                     status={status}
                     lang={lang}
@@ -3021,10 +3151,13 @@ ${instruction}`;
                     qqBotStatus={qqBotStatus}
                     telegramStatus={telegramStatus}
                     weixinStatus={weixinStatus}
+                    lansengerStatus={lansengerStatus}
                     maclawLLMOnline={maclawLLMOnline}
                     maclawLLMConfigured={maclawLLMConfigured}
                     remoteActivated={!!remoteActivationStatus?.activated}
                     agentNetRunning={agentNetRunning}
+                    hideAgentNet={isTigerClawBrand}
+                    showLansenger={isTigerClawBrand}
                     navTab={navTab}
                     settingsTab={settingsTab}
                     backgroundInstallStatus={backgroundInstallStatus}
@@ -3032,6 +3165,7 @@ ${instruction}`;
                     lobsterHalf={lobsterHalf}
                     onOpenIMSettings={() => { setNavTab('settings'); setSettingsTab('im'); }}
                     onOpenLLMSettings={() => { setNavTab('settings'); setSettingsTab('llm'); }}
+                    codingAgentProgress={codingAgentProgress}
                 />
             </>)}
             </div>
@@ -3291,14 +3425,14 @@ ${instruction}`;
                             {activeTool === "codex" && (
                                 <div className="form-group" style={{ flex: 0, minWidth: '140px' }}>
                                     <label className="form-label">Wire API</label>
-                                    <input
-                                        type="text"
-                                        className="form-input"
-                                        data-field="wire-api"
-                                        value={(config as any)[activeTool].models[activeTab].wire_api || ""}
-                                        onChange={(e) => handleWireApiChange(e.target.value)}
-                                        placeholder="chat"
-                                        spellCheck={false}
+                    <input
+                        type="text"
+                        className="form-input"
+                        data-field="wire-api"
+                        value={getWireApiValue()}
+                        onChange={(e) => handleWireApiChange(e.target.value)}
+                        placeholder="responses"
+                        spellCheck={false}
                                         autoComplete="off"
                                     />
                                 </div>
@@ -3417,7 +3551,7 @@ ${instruction}`;
                                                 model_id: "",
                                                 model_url: "",
                                                 api_key: "",
-                                                wire_api: "",
+                                                wire_api: activeTool === "codex" ? "responses" : "",
                                                 is_custom: true
                                             };
                                             // Ensure custom models are always at the end

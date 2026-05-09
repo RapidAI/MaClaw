@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -79,6 +80,8 @@ type CompleteStepInput struct {
 	QualityScore        int
 	QualityReason       string
 }
+
+var ErrStepActorForbidden = errors.New("workflow step actor is not assigned")
 
 // --- Definition management ---
 
@@ -244,7 +247,7 @@ func (s *Service) StartInstance(tenantID string, req StartInstanceRequest) (*Ins
 	collabTask := &collaboration.Task{
 		ID:                     idgen.New("collab"),
 		Title:                  fmt.Sprintf("[%s] %s", inst.Title, firstStep.StepName),
-		Description:            fmt.Sprintf("鐎规悶鍎扮紞鏂棵规担璇″妱濡? %s", firstStep.StepName),
+		Description:            fmt.Sprintf("Workflow step is ready for processing: %s", firstStep.StepName),
 		FromColleagueID:        inst.InitiatorID,
 		ToColleagueID:          assigneeID,
 		ToRoleCode:             firstStep.AssigneeRoleCode,
@@ -314,6 +317,9 @@ func (s *Service) StartOrResumeStep(tenantID string, stepInstanceID, actorID, no
 	if inst.Status != InstStatusRunning {
 		return fmt.Errorf("workflow instance is not running (status=%s)", inst.Status)
 	}
+	if err := ensureStepActorAuthorized(stepInst, actorID); err != nil {
+		return err
+	}
 	var collabTask *collaboration.Task
 	if strings.TrimSpace(stepInst.CollaborationTaskID) != "" {
 		collabTask, err = s.collabRepo.GetByID(tenantID, stepInst.CollaborationTaskID)
@@ -339,7 +345,9 @@ func (s *Service) StartOrResumeStep(tenantID string, stepInstanceID, actorID, no
 			if err := s.collabRepo.UpdateStatusTx(tenantID, tx, collabTask.ID, collaboration.StatusInProgress, collabTask.Result); err != nil {
 				return fmt.Errorf("update collaboration task: %w", err)
 			}
-			_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{ID: idgen.New("cevt"), TaskID: collabTask.ID, Event: collaboration.StatusInProgress, ActorID: actorID, Note: firstNonEmpty(note, eventName), CreatedAt: now})
+			if err := s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{ID: idgen.New("cevt"), TaskID: collabTask.ID, Event: collaboration.StatusInProgress, ActorID: actorID, Note: firstNonEmpty(note, eventName), CreatedAt: now}); err != nil {
+				return fmt.Errorf("record collaboration start event: %w", err)
+			}
 		}
 		return s.repo.InsertEventTx(tenantID, tx, &InstanceEvent{ID: idgen.New("wfevt"), InstanceID: inst.ID, StepID: stepInst.ID, Event: eventName, ActorID: actorID, Note: strings.TrimSpace(note), CreatedAt: now})
 	})
@@ -348,6 +356,9 @@ func (s *Service) StartOrResumeStep(tenantID string, stepInstanceID, actorID, no
 // CompleteStepWithInput marks a step completed and records optional capability execution feedback.
 func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, input CompleteStepInput) error {
 	actorID := strings.TrimSpace(input.ActorID)
+	if actorID == "" {
+		return fmt.Errorf("actor_id is required")
+	}
 	result := input.Result
 	stepInst, err := s.repo.GetStepInstance(tenantID, stepInstanceID)
 	if err != nil {
@@ -363,6 +374,9 @@ func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, 
 	}
 	if inst.Status != InstStatusRunning {
 		return fmt.Errorf("workflow instance is not running (status=%s)", inst.Status)
+	}
+	if err := ensureStepActorAuthorized(stepInst, actorID); err != nil {
+		return err
 	}
 
 	stepDef, err := s.repo.GetStepDefinition(tenantID, stepInst.StepDefinitionID)
@@ -400,10 +414,18 @@ func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, 
 			if err := s.collabRepo.UpdateStatusTx(tenantID, tx, stepInst.CollaborationTaskID, collaboration.StatusCompleted, result); err != nil {
 				return fmt.Errorf("complete collab task: %w", err)
 			}
-			_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
+			if err := s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
 				ID: idgen.New("cevt"), TaskID: stepInst.CollaborationTaskID,
 				Event: "completed", ActorID: actorID, Note: "workflow step completed", CreatedAt: now,
-			})
+			}); err != nil {
+				return fmt.Errorf("record collab complete event: %w", err)
+			}
+		}
+		if err := s.repo.InsertEventTx(tenantID, tx, &InstanceEvent{
+			ID: idgen.New("wfevt"), InstanceID: inst.ID, StepID: stepInst.ID,
+			Event: "step_completed", ActorID: actorID, CreatedAt: now,
+		}); err != nil {
+			return err
 		}
 
 		if nextStepDef == nil {
@@ -440,7 +462,7 @@ func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, 
 		nextCollab := &collaboration.Task{
 			ID:                     idgen.New("collab"),
 			Title:                  fmt.Sprintf("[%s] %s", inst.Title, nextStepDef.StepName),
-			Description:            fmt.Sprintf("鐎规悶鍎扮紞鏂棵规担璇″妱濡? %s", nextStepDef.StepName),
+			Description:            fmt.Sprintf("Workflow step is ready for processing: %s", nextStepDef.StepName),
 			FromColleagueID:        stepInst.AssigneeColleagueID,
 			ToColleagueID:          nextAssignee,
 			ToRoleCode:             nextStepDef.AssigneeRoleCode,
@@ -457,10 +479,12 @@ func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, 
 		if err := s.collabRepo.InsertTaskTx(tenantID, tx, nextCollab); err != nil {
 			return fmt.Errorf("insert next collab: %w", err)
 		}
-		_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
+		if err := s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
 			ID: idgen.New("cevt"), TaskID: nextCollab.ID,
 			Event: "created", ActorID: actorID, Note: "workflow auto-advanced", CreatedAt: now,
-		})
+		}); err != nil {
+			return fmt.Errorf("record next collab event: %w", err)
+		}
 
 		// 5. Update instance current step
 		inst.CurrentStepID = nextStepInst.ID
@@ -482,11 +506,19 @@ func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, 
 	capabilityID := strings.TrimSpace(input.CapabilityID)
 	if capabilityID != "" {
 		status := normalizeCapabilityUsageStatus(input.CapabilityStatus, input.CapabilityError)
+		var recorderErrs []error
 		if s.capRecorder != nil {
-			_ = s.capRecorder.RecordCapabilityUsage(context.Background(), tenantID, capabilityID, actorID, inst.ID, stepInst.ID, status, result, input.CapabilityError, input.CapabilityLatencyMs, input.QualityScore, input.QualityReason)
+			if err := s.capRecorder.RecordCapabilityUsage(context.Background(), tenantID, capabilityID, actorID, inst.ID, stepInst.ID, status, result, input.CapabilityError, input.CapabilityLatencyMs, input.QualityScore, input.QualityReason); err != nil {
+				recorderErrs = append(recorderErrs, fmt.Errorf("record capability usage: %w", err))
+			}
 		}
 		if s.memRecorder != nil {
-			_ = s.memRecorder.RecordCapabilityExecutionMemory(context.Background(), tenantID, actorID, stepDef.AssigneeRoleCode, capabilityID, stepDef.StepName, inst.Title, status, result, input.CapabilityError)
+			if err := s.memRecorder.RecordCapabilityExecutionMemory(context.Background(), tenantID, actorID, stepDef.AssigneeRoleCode, capabilityID, stepDef.StepName, inst.Title, status, result, input.CapabilityError); err != nil {
+				recorderErrs = append(recorderErrs, fmt.Errorf("record capability execution memory: %w", err))
+			}
+		}
+		if len(recorderErrs) > 0 {
+			return errors.Join(recorderErrs...)
 		}
 	}
 
@@ -506,6 +538,10 @@ func (s *Service) CompleteStepWithInput(tenantID string, stepInstanceID string, 
 
 // RejectStep rejects a step and terminates the workflow.
 func (s *Service) RejectStep(tenantID string, stepInstanceID, actorID, note string) error {
+	actorID = strings.TrimSpace(actorID)
+	if actorID == "" {
+		return fmt.Errorf("actor_id is required")
+	}
 	stepInst, err := s.repo.GetStepInstance(tenantID, stepInstanceID)
 	if err != nil {
 		return fmt.Errorf("step instance not found: %w", err)
@@ -521,6 +557,9 @@ func (s *Service) RejectStep(tenantID string, stepInstanceID, actorID, note stri
 	if inst.Status != InstStatusRunning {
 		return fmt.Errorf("workflow instance is not running (status=%s)", inst.Status)
 	}
+	if err := ensureStepActorAuthorized(stepInst, actorID); err != nil {
+		return err
+	}
 
 	now := time.Now()
 
@@ -534,11 +573,15 @@ func (s *Service) RejectStep(tenantID string, stepInstanceID, actorID, note stri
 
 		// 2. Reject collaboration task
 		if stepInst.CollaborationTaskID != "" {
-			_ = s.collabRepo.UpdateStatusTx(tenantID, tx, stepInst.CollaborationTaskID, collaboration.StatusRejected, "")
-			_ = s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
+			if err := s.collabRepo.UpdateStatusTx(tenantID, tx, stepInst.CollaborationTaskID, collaboration.StatusRejected, ""); err != nil {
+				return fmt.Errorf("reject collab task: %w", err)
+			}
+			if err := s.collabRepo.InsertEventTx(tenantID, tx, &collaboration.TaskEvent{
 				ID: idgen.New("cevt"), TaskID: stepInst.CollaborationTaskID,
 				Event: "rejected", ActorID: actorID, Note: note, CreatedAt: now,
-			})
+			}); err != nil {
+				return fmt.Errorf("record collab reject event: %w", err)
+			}
 		}
 
 		// 3. Reject workflow instance
@@ -561,9 +604,23 @@ func (s *Service) GetInstance(tenantID string, id string) (*Instance, error) {
 	return s.repo.GetInstance(tenantID, id)
 }
 
+// GetStepInstance returns a workflow step instance by ID.
+func (s *Service) GetStepInstance(tenantID string, id string) (*StepInstance, error) {
+	return s.repo.GetStepInstance(tenantID, id)
+}
+
 // ListInstances returns all instances.
 func (s *Service) ListInstances(tenantID string) ([]*Instance, error) {
 	return s.repo.ListInstances(tenantID)
+}
+
+// ListInstancesForColleague returns workflow instances visible to one iWorker.
+func (s *Service) ListInstancesForColleague(tenantID string, colleagueID string) ([]*Instance, error) {
+	colleagueID = strings.TrimSpace(colleagueID)
+	if colleagueID == "" {
+		return s.ListInstances(tenantID)
+	}
+	return s.repo.ListInstancesForColleague(tenantID, colleagueID)
 }
 
 // ListStepInstances returns step instances for a workflow instance.
@@ -574,6 +631,20 @@ func (s *Service) ListStepInstances(tenantID string, instanceID string) ([]*Step
 // ListEvents returns events for a workflow instance.
 func (s *Service) ListEvents(tenantID string, instanceID string) ([]*InstanceEvent, error) {
 	return s.repo.ListEvents(tenantID, instanceID)
+}
+
+func ensureStepActorAuthorized(stepInst *StepInstance, actorID string) error {
+	if stepInst == nil {
+		return fmt.Errorf("workflow step is required")
+	}
+	assigneeID := strings.TrimSpace(stepInst.AssigneeColleagueID)
+	if assigneeID == "" {
+		return fmt.Errorf("workflow step %s has no assigned colleague", stepInst.ID)
+	}
+	if strings.TrimSpace(actorID) != assigneeID {
+		return fmt.Errorf("%w: actor %s cannot operate workflow step %s assigned to %s", ErrStepActorForbidden, actorID, stepInst.ID, assigneeID)
+	}
+	return nil
 }
 
 // resolveAssignee finds the colleague to assign a step to.

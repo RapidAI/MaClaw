@@ -38,7 +38,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
     }),
 }));
 
-import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
+import { useAIAssistant, buildOutgoingMessage, buildOutgoingMessageMulti, AI_ASSISTANT_HISTORY_STORAGE_KEY, AI_ASSISTANT_PROMPT_HISTORY_STORAGE_KEY, CANCELED_BY_USER_LINE, isPinnedNewsMessage, type ChatAction } from '../useAIAssistant';
 import { ClearAIAssistantHistory, SendAIAssistantMessage, CancelAIAssistantSession, CancelAIAssistantTask, StartAIAssistantBackgroundTask, FetchNews, SelectAIAssistantFiles, GetAIAssistantInitStatus, GetTrialReflectEnabled, GetAIAssistantTrace, IsAIAssistantReady, LoadConfig, ListRemoteSessions } from '../../../../wailsjs/go/main/App';
 
 function renderAssistantHook() {
@@ -1357,7 +1357,7 @@ describe('useAIAssistant property tests', () => {
         });
     });
 
-    it('cancelSession removes only the active round placeholder and ignores stale completion', async () => {
+    it('cancelSession preserves active round content, marks it cancelled, and ignores stale completion', async () => {
         const first = deferred<{ text: string; error: string; fields: null; actions: null }>();
         const second = deferred<{ text: string; error: string; fields: null; actions: null }>();
         (SendAIAssistantMessage as any)
@@ -1385,7 +1385,8 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(cancelResult).toEqual({ canceledText: 'retry first request' });
-        expect(assistantMessages(result.current.messages)).toHaveLength(0);
+        expect(assistantMessages(result.current.messages)).toHaveLength(1);
+        expect(assistantMessages(result.current.messages)[0].content).toBe(`partial\n${CANCELED_BY_USER_LINE}`);
         expect(result.current.sending).toBe(false);
 
         await act(async () => {
@@ -1399,8 +1400,8 @@ describe('useAIAssistant property tests', () => {
 
         expect(messageContents(result.current.messages)).toContain('first request');
         expect(messageContents(result.current.messages)).toContain('second request');
+        expect(messageContents(result.current.messages)).toContain(`partial\n${CANCELED_BY_USER_LINE}`);
         expect(messageContents(result.current.messages)).toContain('fresh reply');
-        expect(messageContents(result.current.messages)).not.toContain('partial');
 
         await act(async () => {
             first.resolve({ text: 'stale reply', error: '', fields: null, actions: null });
@@ -1408,8 +1409,11 @@ describe('useAIAssistant property tests', () => {
         });
 
         expect(messageContents(result.current.messages)).not.toContain('stale reply');
-        expect(assistantMessages(result.current.messages)).toHaveLength(1);
-        expect(assistantMessages(result.current.messages)[0].content).toBe('fresh reply');
+        expect(assistantMessages(result.current.messages)).toHaveLength(2);
+        expect(assistantMessages(result.current.messages).map(m => m.content)).toEqual([
+            `partial\n${CANCELED_BY_USER_LINE}`,
+            'fresh reply',
+        ]);
     });
 
     it('cancelSession skips backend cancel when already idle', async () => {
@@ -1698,6 +1702,9 @@ describe('useAIAssistant property tests', () => {
             expect(LoadConfig).toHaveBeenCalled();
             expect(result.current.messages).toEqual([]);
         });
+        act(() => {
+            emitRuntimeEvent('config-changed', new main.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
+        });
 
         await act(async () => {
             await result.current.sendMessage('show token usage');
@@ -1758,6 +1765,9 @@ describe('useAIAssistant property tests', () => {
         await waitFor(() => {
             expect(LoadConfig).toHaveBeenCalled();
             expect(result.current.messages).toEqual([]);
+        });
+        act(() => {
+            emitRuntimeEvent('config-changed', new main.AppConfig({ show_ai_trace_entry: true, trial_reflect_enabled: false }));
         });
 
         await act(async () => {
@@ -2128,6 +2138,82 @@ describe('useAIAssistant property tests', () => {
 
         expect(result.current.progressMessages).toHaveLength(1);
         expect(result.current.progressMessages[0].content).toBe('right progress');
+
+        await act(async () => {
+            pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });
+            await pending.promise;
+        });
+    });
+
+    it('opens and clears AgentView from lifecycle events', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'open',
+                view: {
+                    id: 'expense-form',
+                    type: 'form',
+                    title: 'Expense',
+                    fields: [{ name: 'amount', label: 'Amount', type: 'number', value: 86 }],
+                },
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('expense-form');
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', { action: 'dismiss', view_id: 'expense-form' });
+        });
+
+        expect(result.current.agentView).toBeNull();
+    });
+
+    it('keeps lifecycle complete result views visible', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'complete',
+                view: {
+                    id: 'tool-result',
+                    type: 'result_browser',
+                    title: 'Result',
+                    results: [{ title: 'Status', status: 'Committed' }],
+                },
+            });
+        });
+
+        expect(result.current.agentView?.id).toBe('tool-result');
+    });
+
+    it('keeps coding agent progress events visible in live progress state', async () => {
+        const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
+        (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            void result.current.sendMessage('fix stale edit guard');
+        });
+
+        const req = requestEvent();
+        await act(async () => {
+            emitRuntimeEvent('ai-assistant-progress', { request_id: req.request_id, text: 'Coding Agent: running T2 - Fix stale edit guard' });
+        });
+
+        expect(result.current.progressMessages).toHaveLength(1);
+        expect(result.current.progressMessages[0].role).toBe('progress');
+        expect(result.current.progressMessages[0].content).toBe('Coding Agent: running T2 - Fix stale edit guard');
+        expect(result.current.sending).toBe(true);
 
         await act(async () => {
             pending.resolve({ text: '', error: '', fields: null, actions: null, request_id: req.request_id, local_file_path: '/tmp/review.pdf' });

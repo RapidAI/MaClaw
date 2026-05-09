@@ -1,8 +1,11 @@
 package modelrouting
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -47,6 +50,29 @@ type RoutingPolicy struct {
 type Handler struct {
 	write *sql.DB
 	read  *sql.DB
+}
+
+const maxModelRoutingJSONBodyBytes = 128 << 10
+
+func decodeModelRoutingJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxModelRoutingJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxModelRoutingJSONBodyBytes {
+		return errors.New("model routing json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("model routing json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 // NewHandler creates a model routing Handler.
@@ -139,7 +165,7 @@ func (h *Handler) getEndpoint(w http.ResponseWriter, r *http.Request, id string)
 
 func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 	var req Endpoint
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeModelRoutingJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -180,7 +206,7 @@ func (h *Handler) createEndpoint(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updateEndpoint(w http.ResponseWriter, r *http.Request, id string) {
 	var req Endpoint
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeModelRoutingJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -255,7 +281,7 @@ func (h *Handler) listPolicies(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
 	var req RoutingPolicy
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeModelRoutingJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}
@@ -290,7 +316,7 @@ func (h *Handler) createPolicy(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updatePolicy(w http.ResponseWriter, r *http.Request, id string) {
 	var req RoutingPolicy
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeModelRoutingJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}

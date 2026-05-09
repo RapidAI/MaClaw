@@ -14,6 +14,7 @@ func TestExtractRequirements_ExplicitFields(t *testing.T) {
 	skill := &corelib.NLSkillEntry{
 		RequiresPython: []string{"pdfplumber>=0.9", "requests"},
 		RequiresNode:   []string{"puppeteer"},
+		RequiresBins:   []string{"python"},
 		RequiredEnv:    []string{"API_KEY"},
 		Platforms:      []string{"windows", "linux"},
 	}
@@ -30,6 +31,9 @@ func TestExtractRequirements_ExplicitFields(t *testing.T) {
 	}
 	if counts["npm"] != 1 {
 		t.Errorf("expected 1 npm requirement, got %d", counts["npm"])
+	}
+	if counts["command"] != 1 {
+		t.Errorf("expected 1 command requirement, got %d", counts["command"])
 	}
 	if counts["env"] != 1 {
 		t.Errorf("expected 1 env requirement, got %d", counts["env"])
@@ -57,6 +61,151 @@ func TestExtractRequirements_ExplicitFields(t *testing.T) {
 				t.Errorf("expected Values=[windows,linux], got %v", r.Values)
 			}
 		}
+	}
+}
+
+func TestExtractRequirements_RequiresBinsCoversInferredCommand(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiresBins: []string{"python"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "python {baseDir}/run.py"},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	var explicitCommands, inferredCommands int
+	for _, r := range reqs {
+		if r.Type != "command" || r.Name != "python" {
+			continue
+		}
+		switch r.Source {
+		case "explicit":
+			explicitCommands++
+		case "inferred":
+			inferredCommands++
+		}
+	}
+	if explicitCommands != 1 || inferredCommands != 0 {
+		t.Fatalf("command requirements explicit=%d inferred=%d all=%+v", explicitCommands, inferredCommands, reqs)
+	}
+}
+
+func TestExtractRequirements_StepRequiredEnv(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{
+			{
+				Action: "run",
+				Params: map[string]interface{}{
+					"cmd":          "node script.js",
+					"required_env": []interface{}{"STEP_TOKEN", "OTHER_TOKEN"},
+				},
+			},
+			{
+				Action: "bash",
+				Params: map[string]interface{}{
+					"command":      "echo ok",
+					"requires_env": "ALIAS_TOKEN",
+				},
+			},
+		},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := map[string]bool{}
+	for _, r := range reqs {
+		if r.Type == "env" {
+			names[r.Name] = true
+		}
+	}
+	for _, want := range []string{"STEP_TOKEN", "OTHER_TOKEN", "ALIAS_TOKEN"} {
+		if !names[want] {
+			t.Fatalf("env requirements = %#v, missing %q", names, want)
+		}
+	}
+}
+
+func TestExtractRequirements_StepRequiredEnvDeduplicatesWithSkillLevel(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		RequiredEnv: []string{"API_TOKEN"},
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command":      "echo ok",
+				"required_env": "api_token",
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	var envReqs []Requirement
+	for _, r := range reqs {
+		if r.Type == "env" {
+			envReqs = append(envReqs, r)
+		}
+	}
+	if len(envReqs) != 1 {
+		t.Fatalf("env requirements = %#v, want exactly one deduplicated env requirement", envReqs)
+	}
+	if envReqs[0].Name != "API_TOKEN" {
+		t.Fatalf("deduplicated env name = %q, want top-level spelling API_TOKEN", envReqs[0].Name)
+	}
+}
+
+func TestExtractRequirements_StepRequiredEnvCanBeProvidedByStepEnv(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command":      "echo ok",
+				"required_env": "STEP_TOKEN",
+				"extra_env": map[string]interface{}{
+					"STEP_TOKEN": "secret",
+				},
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill, BuildRunCheckContext(skill, nil))
+	for _, r := range reqs {
+		if r.Type == "env" && r.Name == "STEP_TOKEN" {
+			if !r.Provided {
+				t.Fatalf("STEP_TOKEN requirement = %#v, want Provided=true", r)
+			}
+			return
+		}
+	}
+	t.Fatalf("requirements = %#v, want STEP_TOKEN env requirement", reqs)
+}
+
+func TestCheckRunnerRequirementsUsesResolvedStepEnvFromRunParam(t *testing.T) {
+	orig := envLookup
+	defer func() { envLookup = orig }()
+	envLookup = func(string) string { return "" }
+
+	params := []corelib.NLSkillParam{{Name: "api_token", Required: true}}
+	steps := []corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{
+			"command":      "echo ok",
+			"required_env": "API_TOKEN",
+			"extra_env":    map[string]interface{}{"API_TOKEN": "{{api_token}}"},
+		},
+	}}
+	resolved, err := ResolveStepsForRunnerPrecheck(steps, map[string]string{"api_token": "secret"}, "", params)
+	if err != nil {
+		t.Fatalf("ResolveStepsForRunnerPrecheck() error = %v", err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:        "run-param-env",
+		RequiredEnv: []string{"API_TOKEN"},
+		Steps:       resolved,
+	}
+
+	remaining := CheckRunnerRequirements(entry, nil, RunnerBackendTUI)
+
+	if errors := FilterErrors(remaining); len(errors) > 0 {
+		t.Fatalf("CheckRunnerRequirements() errors = %#v, want resolved step env to satisfy API_TOKEN", errors)
 	}
 }
 
@@ -97,6 +246,295 @@ func TestExtractRequirements_InferredCommands(t *testing.T) {
 	}
 	if names["echo"] {
 		t.Error("echo should be skipped (builtin)")
+	}
+}
+
+func TestExtractRequirements_InferredCommandsFromPipesAndChains(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": `echo "a|b" | jq '.data' && FOO=1 xparse-cli parse report.pdf || ffmpeg -version`,
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	for _, want := range []string{"jq", "xparse-cli", "ffmpeg"} {
+		if !names[want] {
+			t.Fatalf("inferred command requirements = %#v, missing %q", names, want)
+		}
+	}
+	if names["echo"] || names["FOO=1"] {
+		t.Fatalf("inferred command requirements = %#v, want builtins/assignments skipped", names)
+	}
+}
+
+func TestExtractRequirements_InferredCommandsSkipQuotedEnvAssignments(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": `TOKEN="a b" xparse-cli parse report.pdf && FOO='c d' jq '.data' file.json`,
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	for _, want := range []string{"xparse-cli", "jq"} {
+		if !names[want] {
+			t.Fatalf("inferred command requirements = %#v, missing %q", names, want)
+		}
+	}
+	for _, unexpected := range []string{"b", "b\"", "d", "d'", "TOKEN=a b", "FOO=c d"} {
+		if names[unexpected] {
+			t.Fatalf("inferred command requirements = %#v, contains assignment fragment %q", names, unexpected)
+		}
+	}
+}
+
+func TestExtractRequirements_InferredCommandsIncludeEnvWrappedCommand(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": `env TOKEN="a b" xparse-cli parse report.pdf`,
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if !names["env"] || !names["xparse-cli"] {
+		t.Fatalf("inferred command requirements = %#v, want both env wrapper and wrapped command", names)
+	}
+}
+
+func TestExtractRequirements_SkipsHeredocBodyCommands(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "cat <<'PY'\nmissing-tool run\nPY\nnode run.js",
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if names["missing-tool"] || names["PY"] {
+		t.Fatalf("inferred command requirements = %#v, want heredoc body skipped", names)
+	}
+	if !names["node"] {
+		t.Fatalf("inferred command requirements = %#v, want command after heredoc", names)
+	}
+}
+
+func TestExtractRequirements_SkipsBackslashQuotedHeredocBodyCommands(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "cat <<\\PY\nmissing-tool run\nPY\nnode run.js",
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if names["missing-tool"] || names["PY"] {
+		t.Fatalf("inferred command requirements = %#v, want backslash-quoted heredoc body skipped", names)
+	}
+	if !names["node"] {
+		t.Fatalf("inferred command requirements = %#v, want command after heredoc", names)
+	}
+}
+
+func TestExtractRequirements_SkipsContinuationFlagLines(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python run.py \\\n  --input report.pdf \\\n  --output out.pdf",
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if names["--input"] || names["--output"] {
+		t.Fatalf("inferred command requirements = %#v, want continuation flag lines skipped", names)
+	}
+	if !names["python"] {
+		t.Fatalf("inferred command requirements = %#v, want python command", names)
+	}
+}
+
+func TestExtractRequirements_JoinsContinuationCommand(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": "python \\\n  helper \\\n  --input report.pdf",
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if names["helper"] || names["--input"] {
+		t.Fatalf("inferred command requirements = %#v, want continuation arguments kept with python", names)
+	}
+	if !names["python"] {
+		t.Fatalf("inferred command requirements = %#v, want python command", names)
+	}
+}
+
+func TestExtractRequirements_SkipsCommonShellBuiltins(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{
+				"command": `command -v ffmpeg && printf ok && pushd scripts && popd && exec python run.py`,
+			},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	for _, unexpected := range []string{"command", "printf", "pushd", "popd", "exec"} {
+		if names[unexpected] {
+			t.Fatalf("inferred command requirements = %#v, contains shell builtin %q", names, unexpected)
+		}
+	}
+	if !names["python"] {
+		t.Fatalf("inferred command requirements = %#v, want real command python", names)
+	}
+}
+
+func TestExtractRequirements_SkipsLocalExecutablePaths(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": `./scripts/run.sh && C:/tools/local.exe && node script.js`},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if names["./scripts/run.sh"] || names["C:/tools/local.exe"] {
+		t.Fatalf("local executable paths should not become command requirements: %#v", names)
+	}
+	if !names["node"] {
+		t.Fatalf("expected node requirement, got %#v", names)
+	}
+}
+
+func TestExtractRequirements_TrimsQuotedCommandName(t *testing.T) {
+	skill := &corelib.NLSkillEntry{Steps: []corelib.NLSkillStep{{
+		Action: "bash",
+		Params: map[string]interface{}{"command": `"xparse-cli" parse report.pdf`},
+	}}}
+
+	reqs := ExtractRequirements(skill)
+	for _, r := range reqs {
+		if r.Type == "command" && r.Name == "xparse-cli" {
+			return
+		}
+	}
+	t.Fatalf("requirements = %#v, want command name xparse-cli without quotes", reqs)
+}
+
+func TestExtractRequirements_InferredCommandsNormalizeStepActions(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{
+			{Action: "run", Params: map[string]interface{}{"command": "ffmpeg -i input.mp4 output.mp3"}},
+			{Action: "node", Params: map[string]interface{}{"code": "console.log('ok')"}},
+		},
+	}
+
+	reqs := ExtractRequirements(skill)
+	names := make(map[string]bool)
+	for _, r := range reqs {
+		if r.Type == "command" {
+			names[r.Name] = true
+		}
+	}
+	if !names["ffmpeg"] || !names["node"] {
+		t.Fatalf("command requirements = %#v, want normalized run/node actions inferred", names)
+	}
+}
+func TestExtractRequirements_DoesNotMutateStepParams(t *testing.T) {
+	skill := &corelib.NLSkillEntry{
+		Steps: []corelib.NLSkillStep{{
+			Action: "run",
+			Params: map[string]interface{}{"cmd": "ffmpeg -version"},
+		}},
+	}
+
+	reqs := ExtractRequirements(skill)
+
+	found := false
+	for _, req := range reqs {
+		if req.Type == "command" && req.Name == "ffmpeg" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ExtractRequirements() = %#v, want inferred ffmpeg", reqs)
+	}
+	if skill.Steps[0].Action != "run" {
+		t.Fatalf("ExtractRequirements mutated action: %q", skill.Steps[0].Action)
+	}
+	if skill.Steps[0].Params["command"] != nil || skill.Steps[0].Params["cmd"] != "ffmpeg -version" {
+		t.Fatalf("ExtractRequirements mutated params: %#v", skill.Steps[0].Params)
 	}
 }
 
@@ -257,6 +695,91 @@ func TestFilterErrors(t *testing.T) {
 	errors := FilterErrors(violations)
 	if len(errors) != 2 {
 		t.Errorf("expected 2 errors, got %d", len(errors))
+	}
+}
+
+func TestFormatViolationsAddsActionHints(t *testing.T) {
+	got := FormatViolations([]Violation{
+		{
+			Requirement: Requirement{Type: "command", Name: "xparse-cli", Source: "inferred"},
+			Message:     "命令 xparse-cli 未找到",
+			Severity:    "error",
+		},
+		{
+			Requirement: Requirement{Type: "env", Name: "OPENAI_API_KEY", Source: "explicit"},
+			Message:     "环境变量 OPENAI_API_KEY 未设置",
+			Severity:    "error",
+		},
+	})
+	for _, want := range []string{"required command xparse-cli was not found on PATH", "[action: install_dependency]", "required environment variable OPENAI_API_KEY is not set", "[action: provide_env]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("FormatViolations() = %q, missing %q", got, want)
+		}
+	}
+	for _, bad := range []string{"命令 xparse-cli 未找到", "环境变量 OPENAI_API_KEY 未设置"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("FormatViolations() = %q, should not leak raw checker message %q", got, bad)
+		}
+	}
+}
+
+func TestFormatViolationPreservesExistingActionHint(t *testing.T) {
+	got := FormatViolation(Violation{
+		Requirement: Requirement{Type: "command", Name: "tool"},
+		Message:     "custom message [action: inspect_skill]",
+		Severity:    "error",
+	})
+	if got != "custom message [action: inspect_skill]" {
+		t.Fatalf("FormatViolation() = %q, want existing action hint preserved", got)
+	}
+}
+
+func TestFormatViolationsUsesLineBoundariesForActionHints(t *testing.T) {
+	got := FormatViolations([]Violation{
+		{
+			Requirement: Requirement{Type: "command", Name: "xparse-cli", Source: "inferred"},
+			Severity:    "error",
+		},
+		{
+			Requirement: Requirement{Type: "pip", Name: "weasyprint", Version: ">=61", Source: "explicit"},
+			Severity:    "error",
+		},
+	})
+	if strings.Count(got, "\n") != 1 {
+		t.Fatalf("FormatViolations() = %q, want one violation per line", got)
+	}
+	lines := strings.Split(got, "\n")
+	if !strings.Contains(lines[0], "xparse-cli") || !strings.Contains(lines[0], "[action: install_dependency]") {
+		t.Fatalf("first violation line = %q, want command action hint", lines[0])
+	}
+	if !strings.Contains(lines[1], "weasyprint>=61") || !strings.Contains(lines[1], "[action: install_dependency]") {
+		t.Fatalf("second violation line = %q, want package action hint", lines[1])
+	}
+}
+
+func TestPromoteRunnerBlockingViolationsPromotesInferredCommands(t *testing.T) {
+	violations := []Violation{
+		{
+			Requirement: Requirement{Type: "command", Name: "missing-tool", Source: "inferred"},
+			Message:     "missing-tool missing",
+			Severity:    "warning",
+		},
+		{
+			Requirement: Requirement{Type: "unknown_type", Name: "soft"},
+			Message:     "soft warning",
+			Severity:    "warning",
+		},
+	}
+
+	promoted := PromoteRunnerBlockingViolations(violations)
+	if promoted[0].Severity != "error" {
+		t.Fatalf("inferred command severity = %q, want error", promoted[0].Severity)
+	}
+	if promoted[1].Severity != "warning" {
+		t.Fatalf("non-command warning severity = %q, want warning", promoted[1].Severity)
+	}
+	if violations[0].Severity != "warning" {
+		t.Fatalf("PromoteRunnerBlockingViolations mutated input: %#v", violations[0])
 	}
 }
 

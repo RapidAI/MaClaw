@@ -2,17 +2,14 @@ package main
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -219,6 +216,7 @@ func cloneSkillEntries(in []corelib.NLSkillEntry) []corelib.NLSkillEntry {
 		out[i].RequiredCredentialFiles = cloneStringSlice(out[i].RequiredCredentialFiles)
 		out[i].RequiresPython = cloneStringSlice(out[i].RequiresPython)
 		out[i].RequiresNode = cloneStringSlice(out[i].RequiresNode)
+		out[i].RequiresBins = cloneStringSlice(out[i].RequiresBins)
 		out[i].RequiredEnv = cloneStringSlice(out[i].RequiredEnv)
 		out[i].RepairHistory = append([]corelib.SkillRepairRecord(nil), out[i].RepairHistory...)
 		out[i].SolidificationCandidates = cloneSolidificationCandidates(out[i].SolidificationCandidates)
@@ -363,7 +361,7 @@ func (e *SkillExecutor) scanSkillYAMLFiles() []corelib.NLSkillEntry {
 // File-based skills (source == "file") are saved as stats-only stubs so that
 // usage statistics survive across restarts. The full definition (steps,
 // triggers, description, etc.) is always loaded from the YAML file at runtime
-// via loadSkills → scanSkillYAMLFiles (directory-path identity matching).
+// via loadSkills -> scanSkillYAMLFiles (directory-path identity matching).
 func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	cfg, err := e.app.LoadConfig()
 	if err != nil {
@@ -372,7 +370,7 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	filtered := make([]corelib.NLSkillEntry, 0, len(skills))
 	for _, s := range skills {
 		if s.Source == "file" {
-			// Only persist the stats overlay — strip definition data so
+			// Only persist the stats overlay; strip definition data so
 			// config.json is not polluted with YAML-managed content.
 			if s.UsageCount > 0 || s.SuccessCount > 0 || s.FailureCount > 0 || s.WorkaroundCount > 0 {
 				filtered = append(filtered, corelib.NLSkillEntry{
@@ -554,7 +552,7 @@ func (e *SkillExecutor) Delete(name string) error {
 			// Always remove from config regardless of source.
 			// Previously file-based skills were skipped here, leaving
 			// orphaned stats-only stubs in config.json when the on-disk
-			// directory was already deleted — the "ghost skill" bug.
+			// directory was already deleted; the "ghost skill" bug.
 			skills = append(skills[:i], skills[i+1:]...)
 			if err := e.saveSkills(skills); err != nil {
 				return err
@@ -572,8 +570,8 @@ func (e *SkillExecutor) Delete(name string) error {
 }
 
 // removeSkillDirs removes on-disk skill directories whose resolved name
-// matches the given name. It delegates discovery to skill.ScanSkillDirAll —
-// the unfiltered variant of the same scanner that loadSkills uses — so
+// matches the given name. It delegates discovery to skill.ScanSkillDirAll,
+// the unfiltered variant of the same scanner that loadSkills uses, so
 // any format the scanner can parse is automatically covered, and platform-
 // incompatible skills can still be deleted.
 // Errors are silently ignored so that config deletion is never blocked
@@ -765,23 +763,73 @@ func readSkillMarkdownBody(skillDir, skillName string) string {
 	return string(data)
 }
 
-func (e *SkillExecutor) executeSkillSteps(skill *corelib.NLSkillEntry) (string, error) {
+func (e *SkillExecutor) executeSkillSteps(entry *corelib.NLSkillEntry) (string, error) {
+	result := e.executeSkillStepsDetailed(entry, nil)
+	return result.Output, result.Err
+}
+
+func (e *SkillExecutor) executeSkillStepsWithArgs(entry *corelib.NLSkillEntry, runArgs map[string]interface{}) (string, error) {
+	result := e.executeSkillStepsDetailed(entry, runArgs)
+	return result.Output, result.Err
+}
+
+type skillExecutionResult struct {
+	Output   string
+	Captured map[string]string
+	Err      error
+}
+
+func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, runArgs map[string]interface{}) skillExecutionResult {
+	if entry == nil {
+		return skillExecutionResult{Err: fmt.Errorf("skill entry is nil")}
+	}
 	var results []string
 	var execErr error
 	lastSessionID := ""
 	// Maintain a vars map for output capture, mirroring the SkillRunner's
 	// templateVars. This allows bash steps that output sessionId (e.g. via
 	// Python scripts) to propagate state to subsequent steps.
-	vars := make(map[string]string)
+	vars := skill.NormalizeRunVars(runArgs)
+	if vars == nil {
+		vars = make(map[string]string)
+	}
+	extraEnv := skillExecutionExtraEnv(runArgs)
 
-	// ── OpenAI Proxy for skills requiring OPENAI_API_KEY ──
+	preparedEntry := *entry
+	preparedEntry.Steps = append([]corelib.NLSkillStep(nil), entry.Steps...)
+	preparedEntry.Params = append([]corelib.NLSkillParam(nil), entry.Params...)
+	skill.NormalizeSkillForRunner(&preparedEntry)
+	if skill.IsPipelineSkill(&preparedEntry) {
+		return e.executePipelineSkillDetailed(&preparedEntry, vars, runArgs)
+	}
+	prep, err := skill.PrepareRunnerExecution(&preparedEntry, vars, runArgs, extraEnv, skill.RunnerBackendGUI)
+	if err != nil {
+		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: err}
+	}
+	for _, warning := range prep.RequirementWarnings {
+		log.Printf("[skill-executor] requirement warning for %q: %s", preparedEntry.Name, warning.Message)
+	}
+	for _, warning := range prep.FileWarnings {
+		log.Printf("[skill-executor] file warning for %q: %s", preparedEntry.Name, warning)
+	}
+	executionSteps := prep.ExecutionSteps
+	if len(executionSteps) == 0 {
+		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("%s", skill.FormatNoExecutableStepsMessage(preparedEntry.Name, &preparedEntry, skill.RunnerBackendGUI))}
+	}
+
+	// OpenAI proxy for skills requiring OPENAI_API_KEY.
 	// This synchronous path (used by capability_gap_detector and auto-install)
 	// also needs proxy support, mirroring the async SkillRunner.executeAsync path.
 	// Note: uses os.Setenv because executeBashStep inherits process env.
 	// Save/restore previous values to avoid clobbering user-set env vars.
-	needsProxy := corelib.NeedsOpenAIProxyAuto(skill.RequiredEnv, nil, skill.Steps, skill.SkillDir)
+	proxyProbeSteps := skill.PrecheckExecutableSteps(executionSteps, vars)
+	proxyRequiredEnv := preparedEntry.RequiredEnv
+	if len(proxyProbeSteps) == 0 && len(executionSteps) > 0 {
+		proxyRequiredEnv = nil
+	}
+	needsProxy := corelib.NeedsOpenAIProxyAuto(proxyRequiredEnv, extraEnv, proxyProbeSteps, preparedEntry.SkillDir)
 	log.Printf("[skill-executor] openai proxy check: needsProxy=%v required_env=%v processEnv_OPENAI_API_KEY=%q",
-		needsProxy, skill.RequiredEnv, truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
+		needsProxy, preparedEntry.RequiredEnv, truncateEnvForLog(os.Getenv("OPENAI_API_KEY")))
 	if needsProxy {
 		var proxyCfg corelib.OpenAIProxyConfig
 		if e.app != nil {
@@ -794,41 +842,59 @@ func (e *SkillExecutor) executeSkillSteps(skill *corelib.NLSkillEntry) (string, 
 				WireAPI:  llmCfg.WireAPI,
 			}
 		}
+		if strings.TrimSpace(proxyCfg.URL) == "" || strings.TrimSpace(proxyCfg.Model) == "" {
+			return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("skill requires OpenAI-compatible environment variables, but the GUI local proxy cannot start because no LLM provider URL/model is configured [action: configure_llm]")}
+		}
 		proxy := corelib.NewOpenAIProxy(proxyCfg)
 		port, proxyErr := proxy.Start()
 		if proxyErr != nil {
-			log.Printf("[skill-executor] openai proxy start failed: %v (continuing without proxy)", proxyErr)
-		} else {
-			defer proxy.Stop()
-			// Save previous values for restore
-			prevKey, hadKey := os.LookupEnv("OPENAI_API_KEY")
-			prevURL, hadURL := os.LookupEnv("OPENAI_BASE_URL")
-			prevModel, hadModel := os.LookupEnv("OPENAI_MODEL")
-			os.Setenv("OPENAI_API_KEY", "sk-maclaw-local-proxy")
-			os.Setenv("OPENAI_BASE_URL", fmt.Sprintf("http://127.0.0.1:%d/v1", port))
-			os.Setenv("OPENAI_MODEL", proxyCfg.Model)
-			defer func() {
-				if hadKey {
-					os.Setenv("OPENAI_API_KEY", prevKey)
-				} else {
-					os.Unsetenv("OPENAI_API_KEY")
-				}
-				if hadURL {
-					os.Setenv("OPENAI_BASE_URL", prevURL)
-				} else {
-					os.Unsetenv("OPENAI_BASE_URL")
-				}
-				if hadModel {
-					os.Setenv("OPENAI_MODEL", prevModel)
-				} else {
-					os.Unsetenv("OPENAI_MODEL")
-				}
-			}()
-			log.Printf("[skill-executor] openai proxy started on port %d for skill %q", port, skill.Name)
+			return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: fmt.Errorf("skill requires OpenAI-compatible environment variables, but the GUI local proxy failed to start: %v [action: retry]", proxyErr)}
 		}
+		defer proxy.Stop()
+		// Save previous values for restore
+		prevKey, hadKey := os.LookupEnv("OPENAI_API_KEY")
+		prevURL, hadURL := os.LookupEnv("OPENAI_BASE_URL")
+		prevModel, hadModel := os.LookupEnv("OPENAI_MODEL")
+		os.Setenv("OPENAI_API_KEY", "sk-maclaw-local-proxy")
+		os.Setenv("OPENAI_BASE_URL", fmt.Sprintf("http://127.0.0.1:%d/v1", port))
+		os.Setenv("OPENAI_MODEL", proxyCfg.Model)
+		defer func() {
+			if hadKey {
+				os.Setenv("OPENAI_API_KEY", prevKey)
+			} else {
+				os.Unsetenv("OPENAI_API_KEY")
+			}
+			if hadURL {
+				os.Setenv("OPENAI_BASE_URL", prevURL)
+			} else {
+				os.Unsetenv("OPENAI_BASE_URL")
+			}
+			if hadModel {
+				os.Setenv("OPENAI_MODEL", prevModel)
+			} else {
+				os.Unsetenv("OPENAI_MODEL")
+			}
+		}()
+		log.Printf("[skill-executor] openai proxy started on port %d for skill %q", port, preparedEntry.Name)
 	}
 
-	for i, step := range skill.Steps {
+	hasFailure := false
+	for _, warning := range prep.Warnings {
+		results = append(results, "[Warning] "+warning)
+	}
+	for i, step := range executionSteps {
+		if step.Condition == "on_failure" && !hasFailure {
+			results = append(results, fmt.Sprintf("step %d (%s) skipped: waiting for prior failure", i+1, step.Action))
+			continue
+		}
+		if step.Condition == "on_success" && hasFailure {
+			results = append(results, fmt.Sprintf("step %d (%s) skipped: prior failure", i+1, step.Action))
+			continue
+		}
+		if step.When != "" && !skill.EvaluateStepWhen(step.When, vars) {
+			results = append(results, fmt.Sprintf("step %d (%s) skipped: when=%q", i+1, step.Action, step.When))
+			continue
+		}
 		stepCopy := step
 		if stepCopy.Action == "send_input" || stepCopy.Action == "send_and_observe" {
 			resolvedSessionID := resolveSkillStepSessionID(stepCopy, lastSessionID, e.manager)
@@ -839,48 +905,47 @@ func (e *SkillExecutor) executeSkillSteps(skill *corelib.NLSkillEntry) (string, 
 				stepCopy.Params["session_id"] = resolvedSessionID
 			}
 		}
-		// Substitute captured variables into step params.
-		// The GUI's executeStep/executeBashStep does NOT perform variable
-		// substitution on the command string (unlike the TUI path), so we
-		// must substitute all params here including "command".
-		if len(vars) > 0 && stepCopy.Params != nil {
-			newParams := make(map[string]interface{}, len(stepCopy.Params))
-			for k, v := range stepCopy.Params {
-				if s, ok := v.(string); ok {
-					for vk, vv := range vars {
-						s = strings.ReplaceAll(s, "{{"+vk+"}}", vv)
-						s = strings.ReplaceAll(s, "${"+vk+"}", vv)
-					}
-					newParams[k] = s
-				} else {
-					newParams[k] = v
-				}
+		stepCopy = withSkillPreferredShell(stepCopy, preparedEntry.PreferredShell)
+		resolvedStep, resolveErr := resolveSkillStep(stepCopy, vars, preparedEntry.SkillDir, prep.Params)
+		if resolveErr != nil {
+			hasFailure = true
+			errMsg := fmt.Sprintf("step %d (%s) parameter binding failed: %s", i+1, step.Action, resolveErr.Error())
+			if step.OnError == "continue" || step.OnError == "skip" {
+				results = append(results, errMsg)
+				continue
 			}
-			stepCopy.Params = newParams
+			results = append(results, errMsg)
+			execErr = fmt.Errorf("skill execution stopped at step %d: %w", i+1, resolveErr)
+			break
 		}
-		result, err := e.executeStep(stepCopy, skill.Description)
+		stepCopy = resolvedStep
+		if stepCopy.Action == "craft_tool" && len(extraEnv) > 0 {
+			if stepCopy.Params == nil {
+				stepCopy.Params = map[string]interface{}{}
+			}
+			skill.MergeExtraEnvParam(stepCopy.Params, extraEnv)
+		}
+		stepCopy = skill.PrepareResolvedStepEnv(stepCopy, preparedEntry.RequiredEnv, extraEnv)
+		restoreEnv := installSkillStepProcessEnv(stepCopy.Action, extraEnv)
+		result, err := func() (string, error) {
+			defer restoreEnv()
+			return e.executeStep(stepCopy, preparedEntry.Description)
+		}()
 		if stepCopy.Action == "create_session" {
 			if sessionID := parseCreatedSessionID(result); sessionID != "" {
 				lastSessionID = sessionID
 			}
 		}
-		// Output capture: extract variables from step output via regex
-		if err == nil && len(step.Capture) > 0 && result != "" {
-			for varName, pattern := range step.Capture {
-				re, reErr := regexp.Compile(pattern)
-				if reErr != nil {
-					continue
-				}
-				m := re.FindStringSubmatch(result)
-				if len(m) > 1 {
-					vars[varName] = m[1]
-				} else if len(m) == 1 {
-					vars[varName] = m[0]
-				}
+		// Capture before error handling so on_error/continue_on_fail paths can
+		// still pass structured diagnostics to later steps.
+		if len(step.Capture) > 0 && result != "" {
+			for varName, value := range skill.CaptureOutputVariables(result, step.Capture) {
+				vars[varName] = value
 			}
 		}
 		if err != nil {
-			errMsg := fmt.Sprintf("步骤 %d (%s) 失败: %s", i+1, step.Action, err.Error())
+			hasFailure = true
+			errMsg := fmt.Sprintf("step %d (%s) failed: %s", i+1, step.Action, err.Error())
 			if step.OnError == "continue" {
 				results = append(results, errMsg)
 				continue
@@ -893,47 +958,80 @@ func (e *SkillExecutor) executeSkillSteps(skill *corelib.NLSkillEntry) (string, 
 	}
 	output := strings.Join(results, "\n")
 	if execErr != nil {
-		return output, execErr
+		return skillExecutionResult{Output: output, Captured: cloneStringMapGUI(vars), Err: execErr}
 	}
-	return output, nil
+	return skillExecutionResult{Output: output, Captured: cloneStringMapGUI(vars)}
+}
+
+func cloneStringMapGUI(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func parseCreatedSessionID(result string) string {
-	const prefix = "会话已创建: ID="
 	trimmed := strings.TrimSpace(result)
-	if !strings.HasPrefix(trimmed, prefix) {
-		return ""
+	for _, prefix := range []string{"会话已创建: ID=", "session created: ID="} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		}
 	}
-	return strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+	return ""
+}
+
+func skillExecutionRunArgs(userPrompt string) map[string]interface{} {
+	userPrompt = strings.TrimSpace(userPrompt)
+	if userPrompt == "" {
+		return nil
+	}
+	return map[string]interface{}{
+		"args":        userPrompt,
+		"input":       userPrompt,
+		"user_prompt": userPrompt,
+	}
+}
+
+func skillExecutionExtraEnv(runArgs map[string]interface{}) map[string]string {
+	return skill.ExtractRunExtraEnvFromArgs(runArgs)
 }
 
 // Execute runs a Skill by name. Steps are executed sequentially; if a step
 // fails and OnError is "stop" (default), execution halts.
 // Usage statistics (count, success rate, last error) are updated after execution.
 func (e *SkillExecutor) Execute(name string) (string, error) {
-	e.mu.RLock()
-	var target *corelib.NLSkillEntry
-	for _, s := range e.loadSkills() {
-		if s.MatchesName(name) && s.Status == "active" {
-			cp := s
-			target = &cp
-			break
+	return e.ExecuteWithArgs(name, nil)
+}
+
+// ExecuteWithArgs runs a Skill by name with caller-provided run arguments.
+// It is used by automatic skill installation paths so the original user
+// request can satisfy required_args through the shared runner inference layer.
+func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interface{}) (string, error) {
+	internalPipelineCall := skill.IsInternalPipelineRunArgs(runArgs)
+	namedResult := e.executeSkillByNameDetailed(name, runArgs)
+	if namedResult.Entry == nil {
+		return namedResult.Output, namedResult.Err
+	}
+	target := namedResult.Entry
+	output, execErr := namedResult.Output, namedResult.Err
+
+	if internalPipelineCall {
+		if execErr != nil {
+			return output, execErr
 		}
+		return output, nil
 	}
-	e.mu.RUnlock()
-
-	if target == nil {
-		return "", fmt.Errorf("skill %q not found or disabled", name)
-	}
-
-	output, execErr := e.executeSkillSteps(target)
 
 	// Update usage statistics under write lock.
 	e.mu.Lock()
 	skills := e.loadSkills()
 	shouldEmitUsageEvent := false
 	for i, s := range skills {
-		if s.Name == name {
+		if s.Name == target.Name || s.MatchesName(name) {
 			skills[i].UsageCount++
 			skills[i].LastUsedAt = time.Now().Format(time.RFC3339)
 			if execErr == nil {
@@ -941,7 +1039,7 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 				skills[i].LastError = ""
 			} else {
 				skills[i].FailureCount++
-				skills[i].LastError = execErr.Error()
+				skills[i].LastError = formatExecErrorForStorage(execErr)
 			}
 			_ = e.saveSkills(skills)
 			shouldEmitUsageEvent = true
@@ -966,6 +1064,136 @@ func (e *SkillExecutor) Execute(name string) (string, error) {
 		return output, execErr
 	}
 	return output, nil
+}
+
+type namedSkillExecutionResult struct {
+	skillExecutionResult
+	Entry *corelib.NLSkillEntry
+}
+
+func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[string]interface{}) namedSkillExecutionResult {
+	e.mu.RLock()
+	var target *corelib.NLSkillEntry
+	for _, s := range e.loadSkills() {
+		if s.MatchesName(name) && s.Status == "active" {
+			cp := s
+			target = &cp
+			break
+		}
+	}
+	e.mu.RUnlock()
+
+	if target == nil {
+		return namedSkillExecutionResult{skillExecutionResult: skillExecutionResult{Err: fmt.Errorf("skill %q not found or disabled", name)}}
+	}
+
+	execResult := e.executeSkillStepsDetailed(target, runArgs)
+	return namedSkillExecutionResult{skillExecutionResult: execResult, Entry: target}
+}
+
+func (e *SkillExecutor) executePipelineSkillWithArgs(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}) (string, error) {
+	result := e.executePipelineSkillDetailed(entry, vars, runArgs)
+	return result.Output, result.Err
+}
+
+func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry, vars map[string]string, runArgs map[string]interface{}) skillExecutionResult {
+	if entry == nil {
+		return skillExecutionResult{Err: fmt.Errorf("skill entry is nil")}
+	}
+	if len(entry.Pipeline) == 0 {
+		return skillExecutionResult{Err: fmt.Errorf("%s", skill.FormatNoExecutableStepsMessage(entry.Name, entry, skill.RunnerBackendGUI))}
+	}
+	if vars == nil {
+		vars = map[string]string{}
+	}
+	extraEnv := skill.ExtractRunExtraEnvFromArgs(runArgs)
+	prep, err := skill.PreparePipelineRunnerExecution(entry, vars, runArgs, extraEnv, skill.RunnerBackendGUI)
+	if err != nil {
+		return skillExecutionResult{Captured: cloneStringMapGUI(vars), Err: err}
+	}
+	for _, warning := range prep.RequirementWarnings {
+		log.Printf("[skill-executor] pipeline requirement warning for %q: %s", entry.Name, warning.Message)
+	}
+	pipelineRunArgs := skill.WithPipelineRunStack(runArgs, entry.Name)
+	runCtx := context.Background()
+	cancel := func() {}
+	if entry.GlobalTimeout > 0 {
+		runCtx, cancel = context.WithTimeout(runCtx, time.Duration(entry.GlobalTimeout)*time.Second)
+	}
+	defer cancel()
+	runner := &skill.PipelineRunner{Executor: skillExecutorPipelineExecutor{exec: e, baseRunArgs: pipelineRunArgs}}
+	result, err := runner.Run(runCtx, entry.Pipeline, vars)
+	output := skill.FormatPipelineResult(result)
+	output = skill.PrefixOutputWithWarnings(output, prep.Warnings)
+	captured := cloneStringMapGUI(vars)
+	if result != nil && len(result.Vars) > 0 {
+		captured = cloneStringMapGUI(result.Vars)
+	}
+	if err != nil {
+		return skillExecutionResult{Output: output, Captured: captured, Err: err}
+	}
+	if result == nil {
+		return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("pipeline returned no result")}
+	}
+	if result.Status != "completed" {
+		if result.Error != "" {
+			return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("%s", result.Error)}
+		}
+		return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("pipeline status: %s", result.Status)}
+	}
+	return skillExecutionResult{Output: output, Captured: captured}
+}
+
+type skillExecutorPipelineExecutor struct {
+	exec        *SkillExecutor
+	baseRunArgs map[string]interface{}
+}
+
+func (e skillExecutorPipelineExecutor) RunSubSkill(ctx context.Context, skillName string, params map[string]string) (map[string]string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	runArgs := skill.BuildPipelineSubSkillRunArgs(e.baseRunArgs, params)
+	result := e.exec.executeSkillByNameDetailed(skillName, runArgs)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, result.Output, ctxErr
+	}
+	if result.Err != nil {
+		return result.Captured, result.Output, result.Err
+	}
+	captured := cloneStringMapGUI(result.Captured)
+	if captured == nil {
+		captured = map[string]string{}
+	}
+	if strings.TrimSpace(result.Output) != "" {
+		captured["output"] = result.Output
+	}
+	return captured, result.Output, nil
+}
+
+func (e *SkillExecutor) RunSubSkill(ctx context.Context, skillName string, params map[string]string) (map[string]string, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	runArgs := make(map[string]interface{}, len(params))
+	for key, value := range params {
+		runArgs[key] = value
+	}
+	result := e.executeSkillByNameDetailed(skillName, runArgs)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, result.Output, ctxErr
+	}
+	if result.Err != nil {
+		return result.Captured, result.Output, result.Err
+	}
+	captured := cloneStringMapGUI(result.Captured)
+	if captured == nil {
+		captured = map[string]string{}
+	}
+	if strings.TrimSpace(result.Output) != "" {
+		captured["output"] = result.Output
+	}
+	return captured, result.Output, nil
 }
 
 // executeStep runs a single skill step.
@@ -1017,7 +1245,7 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 		if err := e.manager.WriteInput(sessionID, text); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("已发送到会话 %s", sessionID), nil
+		return fmt.Sprintf("sent input to session %s", sessionID), nil
 
 	case "send_and_observe":
 		sessionID, _ := step.Params["session_id"].(string)
@@ -1078,7 +1306,7 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 		if command == "" {
 			return "", fmt.Errorf("missing command parameter")
 		}
-		return executeBashStep(command, step.Params)
+		return executeBashStep(command, step.Params, e.app)
 
 	case "craft_tool":
 		if e.app == nil {
@@ -1125,66 +1353,43 @@ func (e *SkillExecutor) executeSSHStep(args map[string]interface{}) (string, err
 	case "close":
 		return e.sshClose(args), nil
 	default:
-		return "", fmt.Errorf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close）", action)
+		return "", fmt.Errorf("未知 SSH 操作 %s; supported: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close", action)
 	}
 }
 
 func (e *SkillExecutor) sshConnect(args map[string]interface{}) string {
 	mgr := e.ensureSSHManager()
-
 	host, _ := args["host"].(string)
 	user, _ := args["user"].(string)
 	label, _ := args["label"].(string)
-
 	if host == "" || user == "" {
-		return "错误: connect 需要 host 和 user 参数"
+		return "ssh connect requires host and user"
 	}
-
 	port := 22
 	if p, ok := args["port"].(float64); ok && p > 0 {
 		port = int(p)
 	}
-
-	cfg := remote.SSHHostConfig{
-		Host:       host,
-		User:       user,
-		Port:       port,
-		AuthMethod: sshSkillStrArg(args, "auth_method"),
-		KeyPath:    sshSkillStrArg(args, "key_path"),
-		Password:   sshSkillStrArg(args, "password"),
-		Label:      label,
+	password, _ := args["password"].(string)
+	keyPath, _ := args["key_path"].(string)
+	if keyPath == "" {
+		keyPath, _ = args["private_key_path"].(string)
 	}
-
-	spec := remote.SSHSessionSpec{
-		HostConfig:     cfg,
-		InitialCommand: sshSkillStrArg(args, "initial_command"),
-		Cols:           120,
-		Rows:           40,
-	}
-
+	cfg := remote.SSHHostConfig{Host: host, Port: port, User: user, Password: password, KeyPath: keyPath, Label: label}
+	spec := remote.SSHSessionSpec{HostConfig: cfg, InitialCommand: sshSkillStrArg(args, "initial_command"), Cols: 120, Rows: 40}
 	session, err := mgr.Create(spec)
 	if err != nil {
-		return fmt.Sprintf("SSH 连接失败: %v", err)
+		return fmt.Sprintf("ssh connect failed: %v", err)
 	}
-
-	time.Sleep(2 * time.Second)
-	preview := strings.Join(session.PreviewTail(20), "\n")
-	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: running", session.ID, cfg.SSHHostID())
-	if preview != "" {
-		result += "\n\n--- 初始输出 ---\n" + preview
-	}
-	return result
+	return fmt.Sprintf("ssh connected: session_id=%s host=%s", session.ID, session.GetSummary().HostLabel)
 }
 
 func (e *SkillExecutor) sshExec(args map[string]interface{}) string {
 	mgr := e.ensureSSHManager()
-
 	sessionID, _ := args["session_id"].(string)
 	command, _ := args["command"].(string)
 	if sessionID == "" || command == "" {
-		return "错误: exec 需要 session_id 和 command 参数"
+		return "ssh exec requires session_id and command"
 	}
-
 	waitSec := 5
 	if w, ok := args["wait_seconds"].(float64); ok && w > 0 {
 		waitSec = int(w)
@@ -1192,87 +1397,78 @@ func (e *SkillExecutor) sshExec(args map[string]interface{}) string {
 	if remote.IsLongRunningCommand(command) && waitSec <= 30 {
 		return e.sshExecBackground(args)
 	}
-
 	session, ok := mgr.Get(sessionID)
 	if !ok {
-		return fmt.Sprintf("错误: SSH 会话 %s 不存在", sessionID)
+		return fmt.Sprintf("ssh session %s not found", sessionID)
 	}
-
 	reconnectNote := ""
 	status, _ := mgr.GetSessionStatus(sessionID)
 	sessionDead := status == remote.SessionExited || status == remote.SessionError
 	if sessionDead {
 		if err := mgr.ReconnectByID(sessionID); err != nil {
-			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+			return fmt.Sprintf("ssh reconnect failed: %v", err)
 		}
-		reconnectNote = "⚠️ 连接已断开并自动重连\n"
+		reconnectNote = "reconnected; "
 		time.Sleep(2 * time.Second)
 	}
-
 	linesBefore := session.LineCount()
 	if sessionDead {
 		if err := mgr.WriteInput(sessionID, command); err != nil {
-			return fmt.Sprintf("%s发送命令失败: %v", reconnectNote, err)
+			return fmt.Sprintf("%sssh write failed: %v", reconnectNote, err)
 		}
 	} else {
 		reconnected, err := mgr.WriteInputChecked(sessionID, command)
 		if err != nil {
-			return fmt.Sprintf("发送命令失败: %v", err)
+			return fmt.Sprintf("ssh write failed: %v", err)
 		}
 		if reconnected {
-			reconnectNote = "⚠️ 连接已断开并自动重连\n"
+			reconnectNote = "reconnected; "
 			time.Sleep(2 * time.Second)
 			linesBefore = session.LineCount()
 		}
 	}
-
 	if waitSec > 600 {
 		waitSec = 600
 	}
 	newLines, status := mgr.WaitForOutput(sessionID, linesBefore, time.Duration(waitSec)*time.Second)
 	output := strings.Join(newLines, "\n")
 	if output == "" {
-		output = "(无新输出)"
+		output = "(no output)"
 	}
 	if len(output) > 8000 {
-		output = output[:4000] + "\n... (截断) ...\n" + output[len(output)-4000:]
+		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
 	}
-	return fmt.Sprintf("%s[%s] 状态: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output)
+	return fmt.Sprintf("%s[%s] status: %s\n$ %s\n%s", reconnectNote, sessionID, string(status), command, output)
 }
 
 func (e *SkillExecutor) sshExecBackground(args map[string]interface{}) string {
 	mgr := e.ensureSSHManager()
-
 	sessionID, _ := args["session_id"].(string)
 	command, _ := args["command"].(string)
 	if sessionID == "" || command == "" {
-		return "错误: exec_background 需要 session_id 和 command 参数"
+		return "ssh exec_background requires session_id and command"
 	}
-
 	status, _ := mgr.GetSessionStatus(sessionID)
 	if status == remote.SessionExited || status == remote.SessionError {
 		if err := mgr.ReconnectByID(sessionID); err != nil {
-			return fmt.Sprintf("SSH 会话已断开，自动重连失败: %v", err)
+			return fmt.Sprintf("ssh reconnect failed: %v", err)
 		}
 		time.Sleep(2 * time.Second)
 	}
-
 	task, err := e.bgTaskMgr.Submit(sessionID, command)
 	if err != nil {
-		return fmt.Sprintf("提交后台任务失败: %v", err)
+		return fmt.Sprintf("background task submit failed: %v", err)
 	}
-
-	return fmt.Sprintf("✅ 后台任务已提交\n任务 ID: %s\n命令: %s\n日志文件: %s\nPID: %s\n状态: running\n\n💡 使用 check_task (task_id=%s) 查看进度\n💡 SSH 断连不影响任务执行，重连后可继续查看",
-		task.TaskID, task.Command, task.LogFile, task.PID, task.TaskID)
+	return fmt.Sprintf("background task started\ntask_id: %s\ncommand: %s\nlog_file: %s\npid: %s\nstatus: running", task.TaskID, task.Command, task.LogFile, task.PID)
 }
 
 func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
 	if e.bgTaskMgr == nil {
-		return "错误: 无后台任务"
+		return "background task manager is not initialized"
 	}
 	taskID, _ := args["task_id"].(string)
 	if taskID == "" {
-		return "错误: check_task 需要 task_id 参数"
+		return "ssh check_task requires task_id"
 	}
 	tailLines := 50
 	if t, ok := args["tail_lines"].(float64); ok && t > 0 {
@@ -1280,28 +1476,16 @@ func (e *SkillExecutor) sshCheckTask(args map[string]interface{}) string {
 	}
 	result, err := e.bgTaskMgr.CheckTask(taskID, tailLines)
 	if err != nil {
-		return fmt.Sprintf("检查任务失败: %v", err)
-	}
-	statusEmoji := "🔄"
-	switch result.Status {
-	case "completed":
-		statusEmoji = "✅"
-	case "failed":
-		statusEmoji = "❌"
-	case "killed":
-		statusEmoji = "🛑"
-	case "unknown":
-		statusEmoji = "❓"
+		return fmt.Sprintf("check task failed: %v", err)
 	}
 	logTail := result.LogTail
 	if logTail == "" {
-		logTail = "(无日志输出)"
+		logTail = "(no log output)"
 	}
 	if len(logTail) > 6000 {
-		logTail = logTail[:3000] + "\n... (截断) ...\n" + logTail[len(logTail)-3000:]
+		logTail = logTail[:3000] + "\n... (truncated) ...\n" + logTail[len(logTail)-3000:]
 	}
-	return fmt.Sprintf("%s 任务 %s\n命令: %s\n状态: %s\n进程存活: %v\n已运行: %s\n\n--- 最新日志 ---\n%s",
-		statusEmoji, result.TaskID, result.Command, result.Status, result.IsAlive, result.Elapsed, logTail)
+	return fmt.Sprintf("task_id: %s\ncommand: %s\nstatus: %s\nalive: %v\nelapsed: %s\n\n--- log tail ---\n%s", result.TaskID, result.Command, result.Status, result.IsAlive, result.Elapsed, logTail)
 }
 
 func (e *SkillExecutor) sshListTasks() string {
@@ -1313,26 +1497,26 @@ func (e *SkillExecutor) sshListTasks() string {
 		return "当前无后台任务"
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("后台任务（%d 个）:\n", len(tasks)))
+	sb.WriteString(fmt.Sprintf("background tasks: %d\n", len(tasks)))
 	for _, t := range tasks {
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
-		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | 状态: %s | 已运行: %s\n    命令: %s\n", t.TaskID, t.PID, t.Status, elapsed, t.Command))
+		sb.WriteString(fmt.Sprintf("  - %s | PID: %s | status: %s | elapsed: %s\n    command: %s\n", t.TaskID, t.PID, t.Status, elapsed, t.Command))
 	}
 	return sb.String()
 }
 
 func (e *SkillExecutor) sshKillTask(args map[string]interface{}) string {
 	if e.bgTaskMgr == nil {
-		return "错误: 无后台任务"
+		return "background task manager is not initialized"
 	}
 	taskID, _ := args["task_id"].(string)
 	if taskID == "" {
-		return "错误: kill_task 需要 task_id 参数"
+		return "ssh kill_task requires task_id"
 	}
 	if err := e.bgTaskMgr.KillTask(taskID); err != nil {
-		return fmt.Sprintf("终止任务失败: %v", err)
+		return fmt.Sprintf("kill task failed: %v", err)
 	}
-	return fmt.Sprintf("✅ 后台任务 %s 已终止", taskID)
+	return fmt.Sprintf("background task %s killed", taskID)
 }
 
 func (e *SkillExecutor) sshUpload(args map[string]interface{}) string {
@@ -1341,13 +1525,13 @@ func (e *SkillExecutor) sshUpload(args map[string]interface{}) string {
 	localPath, _ := args["local_path"].(string)
 	remotePath, _ := args["remote_path"].(string)
 	if sessionID == "" || localPath == "" || remotePath == "" {
-		return "错误: upload 需要 session_id、local_path 和 remote_path 参数"
+		return "ssh upload requires session_id, local_path, and remote_path"
 	}
 	result, err := mgr.SFTPTransfer(sessionID, "upload", localPath, remotePath)
 	if err != nil {
-		return fmt.Sprintf("上传失败: %v", err)
+		return fmt.Sprintf("upload failed: %v", err)
 	}
-	return fmt.Sprintf("✅ 上传完成: %s → %s\n%s", localPath, remotePath, result)
+	return fmt.Sprintf("uploaded %s -> %s\n%s", localPath, remotePath, result)
 }
 
 func (e *SkillExecutor) sshDownload(args map[string]interface{}) string {
@@ -1356,13 +1540,13 @@ func (e *SkillExecutor) sshDownload(args map[string]interface{}) string {
 	localPath, _ := args["local_path"].(string)
 	remotePath, _ := args["remote_path"].(string)
 	if sessionID == "" || localPath == "" || remotePath == "" {
-		return "错误: download 需要 session_id、local_path 和 remote_path 参数"
+		return "ssh download requires session_id, local_path, and remote_path"
 	}
 	result, err := mgr.SFTPTransfer(sessionID, "download", localPath, remotePath)
 	if err != nil {
-		return fmt.Sprintf("下载失败: %v", err)
+		return fmt.Sprintf("download failed: %v", err)
 	}
-	return fmt.Sprintf("✅ 下载完成: %s → %s\n%s", remotePath, localPath, result)
+	return fmt.Sprintf("downloaded %s -> %s\n%s", remotePath, localPath, result)
 }
 
 func (e *SkillExecutor) sshList() string {
@@ -1374,16 +1558,16 @@ func (e *SkillExecutor) sshList() string {
 		return "当前无活跃 SSH 会话"
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("SSH 会话（%d 个）:\n", len(sessions)))
+	sb.WriteString(fmt.Sprintf("ssh sessions: %d\n", len(sessions)))
 	for _, s := range sessions {
 		summary := s.GetSummary()
-		sb.WriteString(fmt.Sprintf("  - %s | %s | 状态: %s\n", s.ID, summary.HostLabel, summary.Status))
+		sb.WriteString(fmt.Sprintf("  - %s | %s | status: %s\n", s.ID, summary.HostLabel, summary.Status))
 	}
 	poolStats := e.sshMgr.Pool().Stats()
 	if len(poolStats) > 0 {
-		sb.WriteString("连接池:\n")
+		sb.WriteString("connection pool:\n")
 		for hostID, ref := range poolStats {
-			sb.WriteString(fmt.Sprintf("  - %s (引用: %d)\n", hostID, ref))
+			sb.WriteString(fmt.Sprintf("  - %s (refs: %d)\n", hostID, ref))
 		}
 	}
 	return sb.String()
@@ -1391,18 +1575,17 @@ func (e *SkillExecutor) sshList() string {
 
 func (e *SkillExecutor) sshClose(args map[string]interface{}) string {
 	if e.sshMgr == nil {
-		return "错误: SSH 会话管理器未初始化"
+		return "ssh manager is not initialized"
 	}
 	sessionID, _ := args["session_id"].(string)
 	if sessionID == "" {
-		return "错误: close 需要 session_id 参数"
+		return "ssh close requires session_id"
 	}
 	if err := e.sshMgr.Kill(sessionID); err != nil {
-		return fmt.Sprintf("关闭失败: %v", err)
+		return fmt.Sprintf("close ssh session failed: %v", err)
 	}
-	return fmt.Sprintf("✅ SSH 会话 %s 已关闭", sessionID)
+	return fmt.Sprintf("ssh session %s closed", sessionID)
 }
-
 func sshSkillStrArg(args map[string]interface{}, key string) string {
 	s, _ := args[key].(string)
 	return s
@@ -1415,19 +1598,11 @@ func skillCreateSessionGuard(skillDescription string, step corelib.NLSkillStep) 
 	case intentCoding:
 		return ""
 	case intentSSH:
-		return fmt.Sprintf(`⚠️ 任务类型检测：当前 Skill 步骤更像 SSH/服务器操作任务（检测到特征：%s），不要创建编程会话。
-
-请改用 ssh 工具处理远程操作：
-- ssh(action="connect", ...)：连接服务器
-- ssh(action="exec", session_id="...", command="...")：执行短命令
-- ssh(action="exec_background", session_id="...", command="...")：执行长命令/部署/安装/编译
-- ssh(action="upload"/"download", ...)：传输文件
-
-只有明确需要修改项目代码时，才调用 create_session。`, formatIntentEvidence(result))
+		return fmt.Sprintf("SSH/server operation task detected (%s). Use ssh(action=\"connect\", ...), ssh(action=\"exec\", ...), ssh(action=\"exec_background\", ...), and upload/download/check_task before create_session.", formatIntentEvidence(result))
 	case intentNonCoding:
-		return fmt.Sprintf("⚠️ 任务类型检测：当前 Skill 步骤看起来不是编程任务（检测到特征：%s），不要创建编程会话。", formatIntentEvidence(result))
+		return fmt.Sprintf("Not a coding task (%s). Prefer direct file/tool execution before opening a coding session.", formatIntentEvidence(result))
 	case intentUnknown, intentAmbiguous:
-		return fmt.Sprintf("⚠️ 任务类型检测：当前 Skill 步骤还不能确定是编程任务还是 SSH/服务器操作（检测到特征：%s），先澄清后再决定是否创建编程会话。", formatIntentEvidence(result))
+		return fmt.Sprintf("Cannot determine whether this needs a coding session (%s). Clarify before creating a coding session.", formatIntentEvidence(result))
 	default:
 		return ""
 	}
@@ -1474,25 +1649,25 @@ func (a *App) ListNLSkills() []NLSkillDefinition {
 func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 	skillsRoot, err := skill.PrimarySkillsDir()
 	if err != nil {
-		return []SkillDiagEntry{{Dir: "~", Reason: "无法获取用户主目录: " + err.Error()}}
+		return []SkillDiagEntry{{Dir: "~", Reason: "cannot resolve user skills directory: " + err.Error()}}
 	}
 
 	// Check if directory exists at all.
 	if info, err := os.Stat(skillsRoot); err != nil {
 		if os.IsNotExist(err) {
-			return []SkillDiagEntry{{Dir: skillsRoot, Reason: "skills 目录不存在，请创建 " + skillsRoot}}
+			return []SkillDiagEntry{{Dir: skillsRoot, Reason: "skills directory does not exist: " + skillsRoot}}
 		}
-		return []SkillDiagEntry{{Dir: skillsRoot, Reason: "无法访问 skills 目录: " + err.Error()}}
+		return []SkillDiagEntry{{Dir: skillsRoot, Reason: "cannot access skills directory: " + err.Error()}}
 	} else if !info.IsDir() {
-		return []SkillDiagEntry{{Dir: skillsRoot, Reason: skillsRoot + " 不是目录"}}
+		return []SkillDiagEntry{{Dir: skillsRoot, Reason: skillsRoot + " is not a directory"}}
 	}
 
 	entries, err := os.ReadDir(skillsRoot)
 	if err != nil {
-		return []SkillDiagEntry{{Dir: skillsRoot, Reason: "无法读取 skills 目录: " + err.Error()}}
+		return []SkillDiagEntry{{Dir: skillsRoot, Reason: "cannot read skills directory: " + err.Error()}}
 	}
 	if len(entries) == 0 {
-		return []SkillDiagEntry{{Dir: skillsRoot, Reason: "skills 目录为空，没有子目录"}}
+		return []SkillDiagEntry{{Dir: skillsRoot, Reason: "skills directory is empty"}}
 	}
 
 	var result []SkillDiagEntry
@@ -1500,13 +1675,13 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 		dirName := entry.Name()
 		dirPath := filepath.Join(skillsRoot, dirName)
 		if !entry.IsDir() {
-			result = append(result, SkillDiagEntry{Dir: dirName, Reason: "不是目录，已跳过"})
+			result = append(result, SkillDiagEntry{Dir: dirName, Reason: "not a directory, skipped"})
 			continue
 		}
 		yamlPath := filepath.Join(dirPath, "skill.yaml")
 		data, err := os.ReadFile(yamlPath)
 		if err != nil {
-			// No skill.yaml — try SKILL.md / skill.md fallback (mirrors loadSkillFromDir logic).
+			// No skill.yaml; try SKILL.md / skill.md fallback (mirrors loadSkillFromDir logic).
 			name, diagReason := diagTryMarkdownFallback(dirPath, dirName)
 			if diagReason != "" {
 				result = append(result, SkillDiagEntry{Dir: dirName, Reason: diagReason})
@@ -1517,7 +1692,7 @@ func (a *App) DiagnoseSkillFiles() []SkillDiagEntry {
 		}
 		var sf skill.SkillYAMLFile
 		if err := yaml.Unmarshal(data, &sf); err != nil {
-			result = append(result, SkillDiagEntry{Dir: dirName, Reason: "YAML 解析失败: " + err.Error()})
+			result = append(result, SkillDiagEntry{Dir: dirName, Reason: "YAML parse failed: " + err.Error()})
 			continue
 		}
 		name := strings.TrimSpace(sf.Name)
@@ -1565,7 +1740,7 @@ func diagTryMarkdownFallback(dirPath, dirName string) (string, string) {
 				return name, ""
 			}
 		}
-		// Has a markdown file but couldn't parse it — still a valid skill
+		// Has a markdown file but couldn't parse it; still a valid skill.
 		// candidate (craft_tool LLM fallback would handle it at runtime).
 		return dirName, ""
 	}
@@ -1578,11 +1753,11 @@ func diagTryMarkdownFallback(dirPath, dirName string) (string, string) {
 		}
 	}
 
-	return "", "找不到 skill.yaml 或 SKILL.md"
+	return "", "missing skill.yaml or SKILL.md"
 }
 
 // ---------------------------------------------------------------------------
-// External Skill Directories — Wails bindings
+// External Skill Directories - Wails bindings
 // ---------------------------------------------------------------------------
 
 // ListExternalSkillDirs returns the user-configured external skill directories (Wails binding).
@@ -1716,26 +1891,26 @@ func (a *App) ImportNLSkillZip() (string, error) {
 }
 
 func (a *App) importNLSkillZipPath(selection string) (string, error) {
-	if name, err := a.importFileBackedSkillZipPath(selection); err == nil {
+	name, importErr := a.importFileBackedSkillZipPath(selection)
+	if importErr == nil {
 		return name, nil
 	}
-	if err := a.validateSkillZip(selection); err == nil {
-		return a.importFileBackedSkillZipPath(selection)
+	if validationErr := a.validateSkillZip(selection); validationErr != nil && errors.Is(importErr, errNoRecognizableSkillDefinition) {
+		return "", validationErr
 	}
-	if name, err := a.importFileBackedSkillZipPath(selection); err == nil {
-		return name, nil
-	}
-	return "", fmt.Errorf("zip package contains no recognizable Skill definition file (need skill.yaml/skill.yml or markdown docs such as skill.md/SKILL.md/README.md; legacy SKILL.md/_meta.json must be migrated)")
+	return "", importErr
 }
+
+var errNoRecognizableSkillDefinition = errors.New("no recognizable skill definition")
 
 func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "skill-import-*")
 	if err != nil {
-		return "", fmt.Errorf("创建临时目录失败: %v", err)
+		return "", fmt.Errorf("create temporary skill import directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 	if err := a.unzip(selection, tmpDir); err != nil {
-		return "", fmt.Errorf("解压技能包失败: %v", err)
+		return "", fmt.Errorf("unzip skill package: %w", err)
 	}
 
 	packageRoots, err := resolveImportedSkillPackageRoots(tmpDir)
@@ -1763,31 +1938,65 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 
 	primaryDir, err := skill.PrimarySkillsDir()
 	if err != nil {
-		return "", fmt.Errorf("无法确定技能目录: %v", err)
+		return "", fmt.Errorf("resolve primary skills directory: %w", err)
 	}
 	if err := os.MkdirAll(primaryDir, 0o755); err != nil {
-		return "", fmt.Errorf("创建技能目录失败: %v", err)
+		return "", fmt.Errorf("create primary skills directory: %w", err)
 	}
 
+	var installedDirs []string
 	for i, packageRoot := range packageRoots {
 		entry := entries[i]
 		destDir := filepath.Join(primaryDir, entry.Name)
 		if _, err := os.Stat(destDir); err == nil {
+			cleanupImportedSkillDirs(installedDirs)
 			return "", fmt.Errorf("skill %q already exists", entry.Name)
 		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("检查技能目录失败: %v", err)
+			cleanupImportedSkillDirs(installedDirs)
+			return "", fmt.Errorf("check destination skill directory: %w", err)
 		}
 		if err := os.Rename(packageRoot, destDir); err != nil {
-			if err := os.MkdirAll(destDir, 0o755); err != nil {
-				return "", fmt.Errorf("创建技能目标目录失败: %v", err)
+			if err := copySkillPackageRootAtomically(packageRoot, destDir, primaryDir); err != nil {
+				cleanupImportedSkillDirs(installedDirs)
+				return "", err
 			}
-			if err := copyDirContents(packageRoot, destDir); err != nil {
-				return "", fmt.Errorf("复制技能目录失败: %v", err)
-			}
+			installedDirs = append(installedDirs, destDir)
+			continue
 		}
+		installedDirs = append(installedDirs, destDir)
 	}
 
 	return entries[0].Name, nil
+}
+
+func cleanupImportedSkillDirs(paths []string) {
+	for i := len(paths) - 1; i >= 0; i-- {
+		if strings.TrimSpace(paths[i]) == "" {
+			continue
+		}
+		_ = os.RemoveAll(paths[i])
+	}
+}
+
+func copySkillPackageRootAtomically(packageRoot, destDir, primaryDir string) error {
+	tmpDest, err := os.MkdirTemp(primaryDir, ".skill-import-*")
+	if err != nil {
+		return fmt.Errorf("create temporary skill import directory: %w", err)
+	}
+	cleanupTmpDest := true
+	defer func() {
+		if cleanupTmpDest {
+			_ = os.RemoveAll(tmpDest)
+		}
+	}()
+	if err := copyDirContents(packageRoot, tmpDest); err != nil {
+		return fmt.Errorf("copy skill package into temporary import directory: %w", err)
+	}
+	if err := os.Rename(tmpDest, destDir); err != nil {
+		return fmt.Errorf("install copied skill package: %w", err)
+	}
+	cleanupTmpDest = false
+	return nil
 }
 
 func resolveImportedSkillPackageRoots(sandboxDir string) ([]string, error) {
@@ -1796,7 +2005,7 @@ func resolveImportedSkillPackageRoots(sandboxDir string) ([]string, error) {
 	}
 	entries, err := os.ReadDir(sandboxDir)
 	if err != nil {
-		return nil, fmt.Errorf("读取技能包目录失败: %v", err)
+		return nil, fmt.Errorf("read extracted skill package directory: %w", err)
 	}
 	var roots []string
 	for _, e := range entries {
@@ -1812,7 +2021,7 @@ func resolveImportedSkillPackageRoots(sandboxDir string) ([]string, error) {
 		}
 	}
 	if len(roots) == 0 {
-		return nil, fmt.Errorf("zip package contains no recognizable Skill definition file (need skill.yaml/skill.yml or markdown docs such as skill.md/SKILL.md/README.md)")
+		return nil, fmt.Errorf("%w: zip package contains no recognizable Skill definition file (need skill.yaml/skill.yml or markdown docs such as skill.md/SKILL.md/README.md)", errNoRecognizableSkillDefinition)
 	}
 	return roots, nil
 }
@@ -1848,11 +2057,11 @@ func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 	if defPath, defFormat := importedStructuredSkillDefinitionPath(skillDir); defPath != "" {
 		data, err := os.ReadFile(defPath)
 		if err != nil {
-			return nil, fmt.Errorf("读取 Skill 定义文件失败: %v", err)
+			return nil, fmt.Errorf("read skill definition file: %w", err)
 		}
 		sf, err := skill.ParseSkillDefinitionFile(data, defFormat)
 		if err != nil {
-			return nil, fmt.Errorf("%s 格式无效: %v", filepath.Base(defPath), err)
+			return nil, fmt.Errorf("invalid %s format: %w", filepath.Base(defPath), err)
 		}
 		name := strings.TrimSpace(sf.Name)
 		if name == "" {
@@ -1908,6 +2117,92 @@ func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 		return nil, fmt.Errorf("skill package has no importable markdown docs and no compatible skill.yaml/skill.yml: %v", err)
 	}
 	return parsed, nil
+}
+
+func loadMarketPackageSkillEntry(skillDir string, runtimeStats *corelib.NLSkillEntry) (*corelib.NLSkillEntry, error) {
+	if defPath, defFormat := importedStructuredSkillDefinitionPath(skillDir); defPath != "" {
+		data, err := os.ReadFile(defPath)
+		if err != nil {
+			return nil, fmt.Errorf("read skill definition file: %w", err)
+		}
+		sf, err := skill.ParseSkillDefinitionFile(data, defFormat)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s format: %w", filepath.Base(defPath), err)
+		}
+		name := strings.TrimSpace(sf.Name)
+		if name == "" {
+			name = filepath.Base(skillDir)
+		}
+		status := strings.TrimSpace(sf.Status)
+		if status == "" {
+			status = "active"
+		}
+		steps := make([]corelib.NLSkillStep, 0, len(sf.Steps))
+		for _, s := range sf.Steps {
+			steps = append(steps, skillYAMLStepToEntryStep(s))
+		}
+		entry := importedSkillEntryFromDefinition(sf, name, status, skillDir, steps, defPath)
+		rewriteRoot := skillDir
+		if runtimeStats != nil && strings.TrimSpace(runtimeStats.SkillDir) != "" {
+			rewriteRoot = runtimeStats.SkillDir
+		}
+		entry = skill.PackageViewFromRuntimeEntry(entry, rewriteRoot)
+		entry.SkillDir = skillDir
+		mergeSkillPackagingRuntimeFields(entry, runtimeStats)
+		return entry, nil
+	}
+	entry, err := loadImportedSkillEntry(skillDir)
+	if err != nil {
+		return nil, err
+	}
+	entry = skill.PackageViewFromRuntimeEntry(entry, skillDir)
+	mergeSkillPackagingRuntimeFields(entry, runtimeStats)
+	return entry, nil
+}
+
+func skillYAMLStepToEntryStep(s skill.SkillYAMLStep) corelib.NLSkillStep {
+	params := cloneInterfaceMap(s.Params)
+	if params == nil {
+		params = map[string]interface{}{}
+	}
+	if s.TimeoutSeconds > 0 {
+		params["timeout"] = float64(s.TimeoutSeconds)
+	}
+	onError := s.OnError
+	if onError == "" {
+		if s.ContinueOnErr {
+			onError = "continue"
+		} else {
+			onError = "stop"
+		}
+	}
+	step := corelib.NLSkillStep{
+		Action:    s.Action,
+		Params:    params,
+		OnError:   onError,
+		Name:      s.Name,
+		Condition: s.Condition,
+		When:      s.When,
+		Label:     s.Label,
+		Capture:   cloneStringMap(s.Capture),
+	}
+	if s.Poll != nil {
+		step.Poll = &corelib.StepPollConfig{
+			Interval:    s.Poll.Interval,
+			MaxAttempts: s.Poll.MaxAttempts,
+			UntilMatch:  s.Poll.UntilMatch,
+			UntilStatus: s.Poll.UntilStatus,
+		}
+	}
+	if s.Loop != nil {
+		step.Loop = &corelib.StepLoopConfig{
+			MaxIterations: s.Loop.MaxIterations,
+			UntilStep:     s.Loop.UntilStep,
+			UntilMatch:    s.Loop.UntilMatch,
+			OnFailStep:    s.Loop.OnFailStep,
+		}
+	}
+	return step
 }
 
 func importedSkillEntryFromDefinition(sf *skill.SkillYAMLFile, name, status, skillDir string, steps []corelib.NLSkillStep, defPath string) *corelib.NLSkillEntry {
@@ -1996,6 +2291,9 @@ func applyImportedSkillDefinitionFields(entry *corelib.NLSkillEntry, sf *skill.S
 	if reqs := importedRequiresNode(sf.Requires); len(reqs) > 0 {
 		entry.RequiresNode = reqs
 	}
+	if reqs := importedRequiresBins(sf.Requires); len(reqs) > 0 {
+		entry.RequiresBins = reqs
+	}
 	if sf.Stateful {
 		entry.Stateful = true
 	}
@@ -2046,6 +2344,13 @@ func importedRequiresNode(req *skill.SkillYAMLRequires) []string {
 		return nil
 	}
 	return req.Node
+}
+
+func importedRequiresBins(req *skill.SkillYAMLRequires) []string {
+	if req == nil {
+		return nil
+	}
+	return req.Bins
 }
 
 func importedSkillPipeline(yamlSteps []skill.SkillYAMLPipelineStep) []corelib.SkillPipelineStep {
@@ -2129,9 +2434,9 @@ func (a *App) CleanupStaleNLSkills() []string {
 	return a.skillExecutor.CleanupStaleSkills()
 }
 
-// ── Skill Runner Wails 绑定 ─────────────────────────────────────────────
+// Skill Runner Wails bindings.
 
-// RunNLSkillAsync 异步启动 skill 执行，返回 runID（Wails binding）。
+// RunNLSkillAsync starts a skill run asynchronously for Wails.
 func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) (string, error) {
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
@@ -2140,7 +2445,7 @@ func (a *App) RunNLSkillAsync(skillName string, runArgs map[string]interface{}) 
 	return a.skillRunner.StartRun(skillName, runArgs)
 }
 
-// GetNLSkillRunStatus 获取 skill 执行状态（Wails binding）。
+// GetNLSkillRunStatus returns the status of an async skill run for Wails.
 func (a *App) GetNLSkillRunStatus(runID string) (*SkillRunStatus, error) {
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
@@ -2149,7 +2454,7 @@ func (a *App) GetNLSkillRunStatus(runID string) (*SkillRunStatus, error) {
 	return a.skillRunner.GetRunStatus(runID)
 }
 
-// CancelNLSkillRun 取消正在执行的 skill（Wails binding）。
+// CancelNLSkillRun cancels an async skill run for Wails.
 func (a *App) CancelNLSkillRun(runID string) error {
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
@@ -2158,7 +2463,7 @@ func (a *App) CancelNLSkillRun(runID string) error {
 	return a.skillRunner.CancelRun(runID)
 }
 
-// UploadNLSkillToMarket 手动打包并上传 skill 到 SkillMarket（Wails binding）。
+// UploadNLSkillToMarket manually packages and uploads a skill to SkillMarket.
 func (a *App) UploadNLSkillToMarket(skillName string) (string, error) {
 	a.ensureSkillLifecycleManager()
 	if a.skillLifecycle == nil {
@@ -2207,9 +2512,7 @@ func (a *App) RetrySkillUploadQueue() error {
 	return a.skillLifecycle.ProcessPendingUploads(context.Background(), 0)
 }
 
-// packageSkillForMarket 将 skill 打包为 SkillMarket 规范的 zip 文件。
-// 对于 file-based skill，直接打包 skill 目录。
-// 对于 config-based skill，仅生成 skill.yaml 到临时目录后打包。
+// packageSkillForMarket packages a skill as a SkillMarket-compatible zip file.
 func (a *App) packageSkillForMarket(skillName string) (string, error) {
 	zipPath, tmpDir, err := a.packageSkillForMarketWithDir(skillName)
 	if err != nil {
@@ -2238,7 +2541,6 @@ func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, er
 		return "", "", fmt.Errorf("skill %q not found", skillName)
 	}
 
-	// 验证平台字段
 	if len(target.Platforms) == 0 {
 		target.Platforms = []string{"universal"}
 	}
@@ -2248,51 +2550,31 @@ func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, er
 		return "", "", err
 	}
 
-	// 如果是 file-based skill，复制整个 skill 目录内容
+	// Copy the source skill directory into a temporary package workspace.
 	if target.SkillDir != "" {
 		if err := copyDirContents(target.SkillDir, tmpDir); err != nil {
 			os.RemoveAll(tmpDir)
-			return "", "", fmt.Errorf("复制 skill 目录失败: %w", err)
+			return "", "", fmt.Errorf("copy skill directory: %w", err)
 		}
 	}
 
-	// 清除运行时字段，避免泄露本机路径
+	// Reload the copied package and convert runtime-local paths to package refs.
+	if target.SkillDir != "" {
+		packagedEntry, loadErr := loadMarketPackageSkillEntry(tmpDir, target)
+		if loadErr != nil {
+			os.RemoveAll(tmpDir)
+			return "", "", fmt.Errorf("load packaged skill definition: %w", loadErr)
+		}
+		target = packagedEntry
+	}
+
 	target.SkillDir = ""
 	target.LastError = ""
 
-	// 确保 skill.yaml 始终存在，作为主格式
-	yamlPath := filepath.Join(tmpDir, "skill.yaml")
-	if _, statErr := os.Stat(yamlPath); statErr != nil {
-		skillYAML := &skill.SkillYAMLFile{
-			Name:        target.Name,
-			Description: target.Description,
-			Triggers:    target.Triggers,
-			Status:      target.Status,
-			Platforms:   target.Platforms,
-			RequiresGUI: target.RequiresGUI,
-		}
-		if skillYAML.Status == "" {
-			skillYAML.Status = "active"
-		}
-		for _, step := range target.Steps {
-			skillYAML.Steps = append(skillYAML.Steps, skill.SkillYAMLStep{
-				Action:  step.Action,
-				Params:  step.Params,
-				OnError: step.OnError,
-			})
-		}
-		yamlData, err := skill.FormatSkillYAMLFile(skillYAML)
-		if err != nil {
-			os.RemoveAll(tmpDir)
-			return "", "", fmt.Errorf("生成 skill.yaml 失败: %w", err)
-		}
-		if err := os.WriteFile(yamlPath, yamlData, 0644); err != nil {
-			os.RemoveAll(tmpDir)
-			return "", "", err
-		}
+	if err := writePackageViewSkillYAML(tmpDir, target); err != nil {
+		os.RemoveAll(tmpDir)
+		return "", "", err
 	}
-
-	// 打包为 zip
 
 	_, report, err := prepareSkillDirForMarket(tmpDir, true)
 	if err != nil {
@@ -2317,89 +2599,176 @@ func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, er
 	}
 	return zipPath, tmpDir, nil
 }
-
-// executeBashStep runs a shell command as a skill step.
-// Supports optional "working_dir" and "timeout" params.
-func executeBashStep(command string, params map[string]interface{}) (string, error) {
-	timeout := 120 // default 120 seconds
-	if t, ok := params["timeout"].(float64); ok && t > 0 {
-		timeout = int(t)
-		if timeout > 300 {
-			timeout = 300
-		}
+func writePackageViewSkillYAML(dir string, entry *corelib.NLSkillEntry) error {
+	if strings.TrimSpace(dir) == "" {
+		return fmt.Errorf("skill package directory is empty")
 	}
-
-	workDir, _ := params["working_dir"].(string)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-	defer cancel()
-
-	var shellName string
-	var shellArgs []string
-	if runtime.GOOS == "windows" {
-		// Use same smart shell selection as runBashStepWithContext.
-		if needsBashShell(command) {
-			shellName = "sh.exe"
-			shellArgs = []string{"-c", command}
-		} else {
-			cmdPath := os.Getenv("ComSpec")
-			if cmdPath == "" {
-				cmdPath = "cmd.exe"
-			}
-			shellName = cmdPath
-			shellArgs = []string{"/c", command}
-		}
-	} else {
-		shellName = "bash"
-		shellArgs = []string{"-c", command}
-	}
-
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
-	if workDir != "" {
-		cmd.Dir = workDir
-	}
-	cmd.Env = skill.BuildCommandEnv(os.Environ(), params)
-	hideCommandWindow(cmd)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	var b strings.Builder
-	if stdout.Len() > 0 {
-		out := stdout.String()
-		if len(out) > 8192 {
-			out = out[:8192] + "\n... (truncated)"
-		}
-		b.WriteString(out)
-	}
-	if stderr.Len() > 0 {
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		errOut := stderr.String()
-		if len(errOut) > 4096 {
-			errOut = errOut[:4096] + "\n... (truncated)"
-		}
-		b.WriteString("[stderr] ")
-		b.WriteString(errOut)
-	}
+	skillYAML := buildSkillYAMLFileFromPackageEntry(entry)
+	yamlData, err := skill.FormatSkillYAMLFile(skillYAML)
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			b.WriteString(fmt.Sprintf("\n[error] timeout after %ds", timeout))
-		} else {
-			b.WriteString(fmt.Sprintf("\n[error] %v", err))
-		}
-		return b.String(), err
+		return fmt.Errorf("generate skill.yaml failed: %w", err)
 	}
-	if b.Len() == 0 {
-		return "(completed, no output)", nil
-	}
-	return b.String(), nil
+	return os.WriteFile(filepath.Join(dir, "skill.yaml"), yamlData, 0o644)
 }
 
-// ── 文件系统 helper ─────────────────────────────────────────────────────
+func buildSkillYAMLFileFromPackageEntry(entry *corelib.NLSkillEntry) *skill.SkillYAMLFile {
+	if entry == nil {
+		return &skill.SkillYAMLFile{Status: "active"}
+	}
+	producesArtifact := entry.ProducesArtifact
+	sf := &skill.SkillYAMLFile{
+		Name:                    entry.Name,
+		Description:             entry.Description,
+		Triggers:                append([]string(nil), entry.Triggers...),
+		Status:                  entry.Status,
+		Platforms:               append([]string(nil), entry.Platforms...),
+		RequiresGUI:             entry.RequiresGUI,
+		ProducesArtifact:        &producesArtifact,
+		Mode:                    entry.Mode,
+		ExecMode:                entry.ExecMode,
+		GlobalTimeout:           entry.GlobalTimeout,
+		RequiredArgs:            append([]string(nil), entry.RequiredArgs...),
+		RequiredEnv:             append([]string(nil), entry.RequiredEnv...),
+		PreferredShell:          entry.PreferredShell,
+		Type:                    entry.Type,
+		Content:                 entry.Content,
+		RequiresTools:           append([]string(nil), entry.RequiresTools...),
+		FallbackForTools:        append([]string(nil), entry.FallbackForTools...),
+		RequiresToolsets:        append([]string(nil), entry.RequiresToolsets...),
+		FallbackForToolsets:     append([]string(nil), entry.FallbackForToolsets...),
+		RequiredCredentialFiles: append([]string(nil), entry.RequiredCredentialFiles...),
+		Stateful:                entry.Stateful,
+	}
+	if sf.Status == "" {
+		sf.Status = "active"
+	}
+	if len(sf.Platforms) == 0 {
+		sf.Platforms = []string{"universal"}
+	}
+	if len(entry.RequiresPython) > 0 || len(entry.RequiresNode) > 0 || len(entry.RequiresBins) > 0 {
+		sf.Requires = &skill.SkillYAMLRequires{
+			Python: append([]string(nil), entry.RequiresPython...),
+			Node:   append([]string(nil), entry.RequiresNode...),
+			Bins:   append([]string(nil), entry.RequiresBins...),
+		}
+	}
+	sf.Operations = skillYAMLOperationsFromEntry(entry.Operations)
+	sf.Params = skillYAMLParamsFromEntry(entry.Params)
+	sf.Steps = skillYAMLStepsFromEntry(entry.Steps)
+	sf.Pipeline = skillYAMLPipelineFromEntry(entry.Pipeline)
+	return sf
+}
+
+func skillYAMLOperationsFromEntry(ops []corelib.NLSkillOperation) []skill.SkillYAMLOperation {
+	if len(ops) == 0 {
+		return nil
+	}
+	out := make([]skill.SkillYAMLOperation, 0, len(ops))
+	for _, op := range ops {
+		out = append(out, skill.SkillYAMLOperation{
+			Name:        op.Name,
+			Description: op.Description,
+			Params:      append([]string(nil), op.Params...),
+			Labels:      append([]string(nil), op.Labels...),
+		})
+	}
+	return out
+}
+
+func skillYAMLParamsFromEntry(params []corelib.NLSkillParam) []skill.SkillYAMLParam {
+	if len(params) == 0 {
+		return nil
+	}
+	out := make([]skill.SkillYAMLParam, 0, len(params))
+	for _, param := range params {
+		out = append(out, skill.SkillYAMLParam{
+			Name:        param.Name,
+			Description: param.Description,
+			Aliases:     append([]string(nil), param.Aliases...),
+			CLIFlag:     param.CLIFlag,
+			Default:     param.Default,
+			Required:    param.Required,
+		})
+	}
+	return out
+}
+
+func skillYAMLStepsFromEntry(steps []corelib.NLSkillStep) []skill.SkillYAMLStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]skill.SkillYAMLStep, 0, len(steps))
+	for _, step := range steps {
+		yamlStep := skill.SkillYAMLStep{
+			Action:    step.Action,
+			Params:    cloneInterfaceMap(step.Params),
+			OnError:   step.OnError,
+			Name:      step.Name,
+			Condition: step.Condition,
+			When:      step.When,
+			Label:     step.Label,
+			Capture:   cloneStringMap(step.Capture),
+		}
+		if step.Poll != nil {
+			yamlStep.Poll = &skill.SkillYAMLStepPoll{
+				Interval:    step.Poll.Interval,
+				MaxAttempts: step.Poll.MaxAttempts,
+				UntilMatch:  step.Poll.UntilMatch,
+				UntilStatus: step.Poll.UntilStatus,
+			}
+		}
+		if step.Loop != nil {
+			yamlStep.Loop = &skill.SkillYAMLStepLoop{
+				MaxIterations: step.Loop.MaxIterations,
+				UntilStep:     step.Loop.UntilStep,
+				UntilMatch:    step.Loop.UntilMatch,
+				OnFailStep:    step.Loop.OnFailStep,
+			}
+		}
+		out = append(out, yamlStep)
+	}
+	return out
+}
+
+func skillYAMLPipelineFromEntry(steps []corelib.SkillPipelineStep) []skill.SkillYAMLPipelineStep {
+	if len(steps) == 0 {
+		return nil
+	}
+	out := make([]skill.SkillYAMLPipelineStep, 0, len(steps))
+	for _, step := range steps {
+		out = append(out, skill.SkillYAMLPipelineStep{
+			Skill:              step.Skill,
+			Params:             cloneStringMap(step.Params),
+			Checkpoint:         step.Checkpoint,
+			CheckpointMessage:  step.CheckpointMessage,
+			ContinueOnFail:     step.ContinueOnFail,
+			TimeImpactOnReject: step.TimeImpactOnReject,
+		})
+	}
+	return out
+}
+
+func mergeSkillPackagingRuntimeFields(dst, src *corelib.NLSkillEntry) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.UsageCount = src.UsageCount
+	dst.SuccessCount = src.SuccessCount
+	dst.FailureCount = src.FailureCount
+	dst.WorkaroundCount = src.WorkaroundCount
+	dst.LastUsedAt = src.LastUsedAt
+	dst.RepairAttemptCount = src.RepairAttemptCount
+	dst.LastRepairAt = src.LastRepairAt
+	dst.RepairHistory = append([]corelib.SkillRepairRecord(nil), src.RepairHistory...)
+}
+
+// executeBashStep runs a shell command as a skill step.
+// Keep this synchronous path on the same shell/runtime mechanics as SkillRunner.
+func executeBashStep(command string, params map[string]interface{}, app *App) (string, error) {
+	return runBashStepWithContextFull(context.Background(), command, params, "", app)
+}
+
+// File system helpers.
 
 // copyDirContents copies src contents into dst without following links.
 func copyDirContents(src, dst string) error {
@@ -2477,7 +2846,7 @@ func pathWithinDir(root, target string) bool {
 }
 
 // zipDirectory packages srcDir into a zip file without following links.
-func zipDirectory(srcDir, zipPath string) error {
+func zipDirectory(srcDir, zipPath string) (err error) {
 	srcAbs, err := filepath.Abs(srcDir)
 	if err != nil {
 		return err
@@ -2487,10 +2856,22 @@ func zipDirectory(srcDir, zipPath string) error {
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
+	defer func() {
+		if err != nil {
+			_ = os.Remove(zipPath)
+		}
+	}()
+	outClosed := false
+	defer func() {
+		if outClosed {
+			return
+		}
+		if closeErr := outFile.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 	zw := zip.NewWriter(outFile)
-	defer zw.Close()
-	return filepath.WalkDir(srcAbs, func(path string, entry os.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(srcAbs, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -2538,8 +2919,23 @@ func zipDirectory(srcDir, zipPath string) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
-		_, err = io.Copy(w, f)
-		return err
+		_, copyErr := io.Copy(w, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
+	if walkErr != nil {
+		_ = zw.Close()
+		return walkErr
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	if err := outFile.Close(); err != nil {
+		return err
+	}
+	outClosed = true
+	return nil
 }

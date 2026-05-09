@@ -8,15 +8,6 @@ import (
 	"time"
 )
 
-// Confirm words — user wants to advance to the next phase.
-var confirmWords = []string{"下一步", "确认", "继续", "没问题", "可以", "好的", "通过"}
-
-// Skip words — user wants to skip the current phase.
-var skipWords = []string{"跳过", "skip"}
-
-// Modify indicators — user wants to modify the current phase output.
-var modifyIndicators = []string{"改一下", "修改", "调整", "更新"}
-
 // workflowExpiry is the duration after which completed/cancelled workflows
 // are eligible for cleanup.
 const workflowExpiry = 7 * 24 * time.Hour
@@ -150,7 +141,9 @@ func (e *WorkflowEngine) StartWorkflow(userID string, intent StructuredIntent) (
 }
 
 // HandleInput processes user input within an active workflow.
-// It parses confirm/skip/modify requests and controls phase advancement.
+// Free-form review decisions are intentionally not parsed here. When a phase is
+// awaiting review, the engine returns PendingConfirm so the caller can classify
+// the user's intent and feed the typed ReviewIntent to ApplyReviewIntent.
 func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -174,7 +167,7 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 	// the document yet, we gate phase execution until we detect that the
 	// user has supplied content (file attachment or substantial text).
 	if ws.IsWaitingForInput(tmpl) {
-		if isSubstantialInput(trimmed) {
+		if trimmed != "" {
 			// User has provided the document content — mark as received and
 			// proceed to run the first phase with the content as context.
 			ws.InputReceived = true
@@ -200,58 +193,17 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 		}
 	}
 
-	// 1. Check for skip words.
-	if containsAny(trimmed, skipWords) {
-		if phase.CanSkip {
-			// Only allow skip if the phase has output or is explicitly skippable
-			// without output (CanSkip is already checked above).
-			resp := e.advancePhase(userID, ws, tmpl)
-			return resp, nil
-		}
-		return &WorkflowResponse{
-			Text:         fmt.Sprintf("该阶段（%s）不可跳过，请完成后再继续。", phase.Name),
-			RunAgentLoop: false,
-		}, nil
-	}
-
-	// 2. Check for confirm words (only meaningful when NeedsConfirm=true).
-	//
-	// IMPORTANT: Only use the keyword shortcut when the message is purely
-	// a confirm word (no substantial additional content). When the user
-	// says "好的，但是把技术栈改成React", the "好的" matches a confirmWord
-	// but the message also contains a modification request. In this case,
-	// delegate to the LLM classifier (PendingConfirm path) which can
-	// distinguish "pure confirm" from "confirm + modify".
 	_, hasOutput := ws.PhaseOutputs[ws.CurrentPhase]
-	if phase.NeedsConfirm && hasOutput && isOnlyConfirmWord(trimmed, confirmWords) {
-		resp := e.advancePhase(userID, ws, tmpl)
-		return resp, nil
-	}
-	// When NeedsConfirm but no output yet, confirm words are treated as
-	// "start generating" signals — fall through to the default branch.
-
-	// 3. LLM-delegated confirm/modify (Kiro-style).
-	//
-	// When the phase requires confirmation and already has output, we do NOT
-	// try to classify the user's intent with keyword matching. Instead, we
-	// return PendingConfirm=true so the caller can make a lightweight LLM
-	// call (~200 tokens) to classify the intent as confirm/modify/other.
-	//
-	// The caller (handleActiveWorkflow) uses LLMClassify() with a minimal
-	// system prompt — no tools, no conversation history, no streaming.
-	// Based on the result:
-	//   - "confirm" → caller calls AdvancePhase()
-	//   - "modify"  → caller runs agent loop with modify prompt
-	//   - "other"   → caller lets the message fall through to normal handling
 	if phase.NeedsConfirm && hasOutput {
-		log.Printf("[WorkflowEngine] pending confirm: user=%s phase=%s msg=%q",
+		log.Printf("[WorkflowEngine] pending review: user=%s phase=%s msg=%q",
 			userID, ws.CurrentPhase, truncateForLog(trimmed, 50))
 		return &WorkflowResponse{
+			PendingReview:  true,
 			PendingConfirm: true,
 		}, nil
 	}
 
-	// 4. Default: normal phase input — run agent loop with phase prompt.
+	// Default: normal phase input — run agent loop with phase prompt.
 	phasePrompt := BuildPhaseSystemPrompt(ws, phase, e.registry)
 
 	// When the phase has no output yet, this is the first execution request
@@ -266,8 +218,8 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 }
 
 // AdvancePhase is the public entry point for advancing the workflow to the
-// next phase. Called by the GUI layer after the agent loop completes when
-// PendingConfirm was set (LLM-delegated confirm: no new doc = confirm).
+// next phase. Review-state transitions should normally use ApplyReviewIntent so
+// user free-form text is classified before it can affect the state machine.
 func (e *WorkflowEngine) AdvancePhase(userID string) (*WorkflowResponse, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -283,11 +235,110 @@ func (e *WorkflowEngine) AdvancePhase(userID string) (*WorkflowResponse, error) 
 	return e.advancePhase(userID, ws, tmpl), nil
 }
 
+// ApplyReviewIntent applies a classified review intent to the active workflow.
+// This is the only engine entry point that may advance, regenerate, skip, or
+// cancel a NeedsConfirm review state. Free-form user text must be classified by
+// the caller before this method is invoked.
+func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, feedback string) (*WorkflowResponse, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive {
+		return nil, fmt.Errorf("no active workflow for user %s", userID)
+	}
+	tmpl := e.registry.Match(ws.Type)
+	if tmpl == nil || ws.PhaseIndex >= len(tmpl.Phases) {
+		return nil, fmt.Errorf("workflow template or phase index is invalid")
+	}
+	phase := &tmpl.Phases[ws.PhaseIndex]
+	if ws.PendingReviewPhaseID == "" || ws.PendingReviewPhaseID != ws.CurrentPhase {
+		return nil, fmt.Errorf("workflow is not awaiting review")
+	}
+
+	switch intent {
+	case ReviewIntentConfirm:
+		if output := ws.PhaseOutputs[ws.CurrentPhase]; strings.TrimSpace(output) == "" {
+			return e.regenerateCurrentPhaseResponse(ws, phase, feedback), nil
+		}
+		return e.advancePhase(userID, ws, tmpl), nil
+
+	case ReviewIntentSupplement:
+		return e.regenerateCurrentPhaseResponse(ws, phase, feedback), nil
+
+	case ReviewIntentSkip:
+		if !phase.CanSkip {
+			return &WorkflowResponse{
+				Text:         fmt.Sprintf("Current phase %q cannot be skipped. Please confirm it, provide supplements, or cancel the workflow.", phase.Name),
+				RunAgentLoop: false,
+			}, nil
+		}
+		return e.advancePhase(userID, ws, tmpl), nil
+
+	case ReviewIntentCancel:
+		ws.Status = WorkflowCancelled
+		ws.PendingReviewPhaseID = ""
+		ws.UpdatedAt = time.Now()
+		delete(e.workflows, userID)
+		if e.store != nil {
+			_ = e.store.SaveWorkflowState(ws)
+		}
+		if e.callbacks != nil {
+			_ = e.callbacks.EmitPhaseUpdate(userID, ws)
+		}
+		return &WorkflowResponse{
+			Text:         "Current workflow has been cancelled.",
+			RunAgentLoop: false,
+			Complete:     true,
+		}, nil
+
+	case ReviewIntentSwitchTask:
+		ws.Status = WorkflowCancelled
+		ws.PendingReviewPhaseID = ""
+		ws.UpdatedAt = time.Now()
+		delete(e.workflows, userID)
+		if e.store != nil {
+			_ = e.store.SaveWorkflowState(ws)
+		}
+		if e.callbacks != nil {
+			_ = e.callbacks.EmitPhaseUpdate(userID, ws)
+		}
+		return &WorkflowResponse{
+			Text:         "",
+			RunAgentLoop: false,
+			Complete:     true,
+		}, nil
+
+	case ReviewIntentOther:
+		return &WorkflowResponse{
+			Text:         fmt.Sprintf("Current workflow is waiting for review at phase %q. Please confirm to continue, provide supplements to revise this phase, skip if allowed, or cancel the workflow.", phase.Name),
+			RunAgentLoop: false,
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unknown review intent %q", intent)
+	}
+}
+
+func (e *WorkflowEngine) regenerateCurrentPhaseResponse(ws *WorkflowState, phase *PhaseTemplate, feedback string) *WorkflowResponse {
+	phasePrompt := BuildPhaseSystemPrompt(ws, phase, e.registry)
+	if strings.TrimSpace(feedback) != "" {
+		phasePrompt += fmt.Sprintf("\n\nUser supplement/change request for this review round:\n%s\n\nRegenerate the current phase deliverable incorporating this feedback. Do not advance to the next phase.", feedback)
+	}
+	return &WorkflowResponse{
+		Text:         fmt.Sprintf("Received your supplement. Updating current phase: %s.", phase.Name),
+		PhasePrompt:  phasePrompt,
+		ToolFilter:   phase.ToolPolicy,
+		RunAgentLoop: true,
+	}
+}
+
 // advancePhase moves the workflow to the next phase, or marks it completed
 // if the current phase is the last one. Must be called with e.mu held.
 func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *WorkflowTemplate) *WorkflowResponse {
 	nextIndex := ws.PhaseIndex + 1
 	now := time.Now()
+	ws.PendingReviewPhaseID = ""
 
 	if nextIndex >= len(tmpl.Phases) {
 		// Last phase — mark workflow completed.
@@ -500,6 +551,19 @@ func (e *WorkflowEngine) IsPhaseNeedsConfirm(userID string) bool {
 	return tmpl.Phases[ws.PhaseIndex].NeedsConfirm
 }
 
+// IsAwaitingReview returns true when a NeedsConfirm phase has produced output
+// and the workflow is waiting for explicit user confirmation or modification.
+func (e *WorkflowEngine) IsAwaitingReview(userID string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ws := e.workflows[userID]
+	return ws != nil &&
+		ws.Status == WorkflowActive &&
+		ws.PendingReviewPhaseID != "" &&
+		ws.PendingReviewPhaseID == ws.CurrentPhase
+}
+
 // ---------------------------------------------------------------------------
 // Persistence restore / cleanup
 // ---------------------------------------------------------------------------
@@ -662,6 +726,9 @@ func (e *WorkflowEngine) SavePhaseOutput(userID, content string) string {
 			}
 		}
 		if phase != nil {
+			if phase.NeedsConfirm {
+				ws.PendingReviewPhaseID = phaseID
+			}
 			if gateResult := RunQualityGate(phase, content); gateResult != nil {
 				ws.GateResults[phaseID] = gateResult
 				if e.callbacks != nil {

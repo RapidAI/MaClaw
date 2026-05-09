@@ -19,15 +19,25 @@ export interface SidebarTokenUsageStat {
 
 export interface SidebarHubCreditGrant {
     active?: boolean;
+    status?: string;
+    status_reason?: string;
     credits_total?: number;
     credits_used?: number;
     credits_remaining?: number;
+    credits_available?: number;
+    retry_after_seconds?: number;
+    retry_after_at?: string;
     starts_at?: string;
     expires_at?: string;
     Active?: boolean;
+    Status?: string;
+    StatusReason?: string;
     CreditsTotal?: number;
     CreditsUsed?: number;
     CreditsRemaining?: number;
+    CreditsAvailable?: number;
+    RetryAfterSeconds?: number;
+    RetryAfterAt?: string;
     StartsAt?: string;
     ExpiresAt?: string;
 }
@@ -65,6 +75,9 @@ export interface SidebarHubCredits {
     tokensPerCredit: number;
     expiresAt: string;
     unlimited: boolean;
+    status: string;
+    retryAfterSeconds: number;
+    retryAfterAt: string;
 }
 
 export interface SidebarLLMProviderSummary {

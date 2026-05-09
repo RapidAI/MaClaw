@@ -177,6 +177,50 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	case "proposals":
+		var req AddProposalRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		session, err := h.svc.AddProposal(tid, id, req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "PROPOSAL_REJECTED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	case "reviews":
+		var req AddReviewRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		session, err := h.svc.AddReview(tid, id, req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "REVIEW_REJECTED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	case "decide":
+		var req DecideRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		session, err := h.svc.Decide(tid, id, req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "DECISION_REJECTED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
+	case "escalate":
+		var req EscalateRequest
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+		session, err := h.svc.Escalate(tid, id, req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "ESCALATION_REJECTED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
 	case "result":
 		var result corea2a.GroupDiscussionResult
 		if !decodeJSON(w, r, &result) {

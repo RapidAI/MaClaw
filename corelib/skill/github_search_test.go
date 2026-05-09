@@ -355,6 +355,9 @@ requires_gui: "true"
 global_timeout: "300"
 pip: requests
 npm: playwright
+requires:
+  bins:
+    - python
 params:
   input:
     desc: Input file
@@ -381,8 +384,8 @@ steps:
 	if skill.Mode != "api_workflow" || !skill.RequiresGUI || skill.GlobalTimeout != 300 {
 		t.Fatalf("GitHub mode/scalars were not normalized: mode=%q gui=%v timeout=%d", skill.Mode, skill.RequiresGUI, skill.GlobalTimeout)
 	}
-	if len(skill.RequiresPython) != 1 || skill.RequiresPython[0] != "requests" || len(skill.RequiresNode) != 1 || skill.RequiresNode[0] != "playwright" {
-		t.Fatalf("GitHub requires aliases were not preserved: python=%#v node=%#v", skill.RequiresPython, skill.RequiresNode)
+	if len(skill.RequiresPython) != 1 || skill.RequiresPython[0] != "requests" || len(skill.RequiresNode) != 1 || skill.RequiresNode[0] != "playwright" || len(skill.RequiresBins) != 1 || skill.RequiresBins[0] != "python" {
+		t.Fatalf("GitHub requires aliases were not preserved: python=%#v node=%#v bins=%#v", skill.RequiresPython, skill.RequiresNode, skill.RequiresBins)
 	}
 	if len(skill.Params) != 1 || skill.Params[0].Name != "input" || !skill.Params[0].Required || skill.Params[0].Description != "Input file" {
 		t.Fatalf("GitHub params were not normalized: %#v", skill.Params)
@@ -425,6 +428,9 @@ name: github-md
 requires_gui: "true"
 global_timeout: "120"
 pip: requests
+requires:
+  bins:
+    - python
 params:
   input:
     desc: Input file
@@ -447,8 +453,8 @@ Use this skill.
 	if skill.Name != "github-md" || !skill.RequiresGUI || skill.GlobalTimeout != 120 {
 		t.Fatalf("GitHub markdown scalars were not preserved: name=%q gui=%v timeout=%d", skill.Name, skill.RequiresGUI, skill.GlobalTimeout)
 	}
-	if len(skill.RequiresPython) != 1 || skill.RequiresPython[0] != "requests" {
-		t.Fatalf("GitHub markdown requires not preserved: %#v", skill.RequiresPython)
+	if len(skill.RequiresPython) != 1 || skill.RequiresPython[0] != "requests" || len(skill.RequiresBins) != 1 || skill.RequiresBins[0] != "python" {
+		t.Fatalf("GitHub markdown requires not preserved: python=%#v bins=%#v", skill.RequiresPython, skill.RequiresBins)
 	}
 	if len(skill.Params) != 1 || skill.Params[0].Name != "input" || !skill.Params[0].Required {
 		t.Fatalf("GitHub markdown params not preserved: %#v", skill.Params)

@@ -5,7 +5,6 @@ package main
 // but uses WebSocket (wss://) instead of HTTP+SSE.
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/freeproxy"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
@@ -122,7 +122,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 		if resp != nil {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			resp.Body.Close()
-			return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, wsURL, cfg.Model))
+			return nil, fmt.Errorf("%s", classifyResponsesAPIHTTPError(resp.StatusCode, body, wsURL, cfg.Model, cfg.ProviderName))
 		}
 		return nil, fmt.Errorf("WebSocket dial failed: %w [url=%s]", err, wsURL)
 	}

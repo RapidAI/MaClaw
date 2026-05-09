@@ -2,10 +2,8 @@ package main
 
 import (
 	"math/rand"
-	"strings"
 	"testing"
 	"testing/quick"
-	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -160,8 +158,8 @@ func TestCodingGateProperty2_TextContentPreservation(t *testing.T) {
 // Feature: coding-workflow-gate, Property 3: Gate inactivity
 // Validates: Requirements 1.4, 1.5, 7.1
 //
-// Without classifiers, only LoopKindBackground is guaranteed inactive.
-// All other scenarios are fail-closed (active=true) by design.
+// Without classifiers, the gate must not infer workflow intent. Background is
+// still guaranteed inactive.
 // ---------------------------------------------------------------------------
 func TestCodingGateProperty3_GateInactivity(t *testing.T) {
 	f := func(seed int64) bool {
@@ -190,11 +188,11 @@ func TestCodingGateProperty3_GateInactivity(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Property 3b: Fail-closed for all non-background loops without classifiers
-// Feature: coding-workflow-gate, Property 3b: Fail-closed default
-// Validates: fail-closed design — without classifiers, gate is always active
+// Property 3b: Ordinary-agent fallback for loops without classifiers
+// Feature: coding-workflow-gate, Property 3b: No workflow inference by absence
+// Validates: without classifiers, the workflow gate stays inactive
 // ---------------------------------------------------------------------------
-func TestCodingGateProperty3b_FailClosedWithoutClassifiers(t *testing.T) {
+func TestCodingGateProperty3b_OrdinaryAgentFallbackWithoutClassifiers(t *testing.T) {
 	f := func(seed int64) bool {
 		rng := rand.New(rand.NewSource(seed))
 
@@ -208,8 +206,8 @@ func TestCodingGateProperty3b_FailClosedWithoutClassifiers(t *testing.T) {
 		userText := texts[rng.Intn(len(texts))]
 
 		cfg := newCodingToolGateConfig(userText, LoopKindChat)
-		if !cfg.active {
-			t.Logf("without classifiers, gate should be fail-closed (active=true) for userText=%q, but active=false reason=%s", userText, cfg.reason)
+		if cfg.active {
+			t.Logf("without classifiers, gate should be inactive for userText=%q, but active=true reason=%s", userText, cfg.reason)
 			return false
 		}
 		return true
@@ -258,52 +256,3 @@ func TestCodingGateProperty4_ToolClassificationDeterminism(t *testing.T) {
 // Feature: coding-workflow-gate, Property 5: Skip signal detection
 // Validates: Requirements 3.1, 3.2, 3.3, 3.4
 // ---------------------------------------------------------------------------
-func TestCodingGateProperty5_SkipSignalDetection(t *testing.T) {
-	allSignals := append(append([]string{}, skipSignalsChinese...), skipSignalsEnglish...)
-
-	f := func(seed int64) bool {
-		rng := rand.New(rand.NewSource(seed))
-		signal := allSignals[rng.Intn(len(allSignals))]
-
-		// Random case variation.
-		varied := randomCaseVariation(rng, signal)
-
-		// Random prefix and suffix.
-		prefix := randomASCIIString(rng, rng.Intn(20))
-		suffix := randomASCIIString(rng, rng.Intn(20))
-		msg := prefix + varied + suffix
-
-		if !containsSkipSignal(msg) {
-			t.Logf("containsSkipSignal(%q) = false, signal=%q", msg, signal)
-			return false
-		}
-		return true
-	}
-	if err := quick.Check(f, quickConfig()); err != nil {
-		t.Errorf("Property 5 failed: %v", err)
-	}
-}
-
-// randomCaseVariation randomly changes the case of ASCII letters in s.
-func randomCaseVariation(rng *rand.Rand, s string) string {
-	runes := []rune(s)
-	for i, r := range runes {
-		if unicode.IsLetter(r) && rng.Intn(2) == 0 {
-			if unicode.IsUpper(r) {
-				runes[i] = unicode.ToLower(r)
-			} else {
-				runes[i] = unicode.ToUpper(r)
-			}
-		}
-	}
-	return string(runes)
-}
-
-// randomASCIIString generates a random string of printable ASCII characters.
-func randomASCIIString(rng *rand.Rand, n int) string {
-	var b strings.Builder
-	for i := 0; i < n; i++ {
-		b.WriteByte(byte(32 + rng.Intn(95))) // printable ASCII
-	}
-	return b.String()
-}

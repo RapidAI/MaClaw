@@ -45,7 +45,7 @@
     "marketPoint3": "Center entitlement",
     "tenantEyebrow": "Center integration",
     "tenantTitle": "iWorkerCenter service control",
-    "tenantSummary": "Cloud integrates with iWorkerCenter instances, then manages registration, authorization, commercial access, modules, upgrades, compute, and skill services at the Center boundary.",
+    "tenantSummary": "Cloud integrates with iWorkerCenter instances, then manages registration, service entitlements, modules, upgrades, compute, and skill services at the Center boundary.",
     "tenantDetail": "This is the management-center view for our company: Cloud does not recreate tenant organizations and does not participate in enterprise operations. It manages connected iWorkerCenter instances and their system-service capabilities.",
     "tenantPoint1": "Center registration",
     "tenantPoint2": "Service authorization",
@@ -76,6 +76,10 @@
       "nonBlockingRuntimeHint": "Runtime sync issues explicitly marked non-blocking for existing Center/iWorker execution.",
       "blockingRuntime": "Blocking runtime",
       "blockingRuntimeHint": "Platform runtime sync issues not marked as safe fallback and requiring operator attention.",
+      "heartbeatDegraded": "Heartbeat degraded",
+      "heartbeatDegradedHint": "Centers reporting degraded Cloud heartbeat while keeping the business path isolated.",
+      "heartbeatBlocking": "Heartbeat blocking risk",
+      "heartbeatBlockingHint": "Cloud heartbeat issues not confirmed as non-blocking by the Center.",
       "radar": "Service control radar",
       "readinessTitle": "Center service readiness",
       "readinessDesc": "Cloud should know which connected iWorkerCenters are commercially authorized, reachable, identity-verified, and ready for platform service coordination. It does not participate in customer company management, tenant administration, or enterprise operations."
@@ -88,6 +92,10 @@
       "empty": "No Centers need immediate action right now.",
       "runtimeBlocking": "Runtime blocking risk",
       "runtimeBlockingHint": "Runtime sync issue is not marked non-blocking. Check Center fallback policy.",
+      "heartbeatBlocking": "Cloud heartbeat risk",
+      "heartbeatBlockingHint": "Center did not confirm local continuity for the Cloud heartbeat issue.",
+      "heartbeatNonBlocking": "Cloud heartbeat degraded",
+      "heartbeatNonBlockingHint": "Center reports Cloud heartbeat trouble, but the local Center/iWorker path continues.",
       "pendingActivation": "Pending activation",
       "pendingActivationHint": "Registration reached Cloud and is waiting for trial confirmation or commercial authorization.",
       "unlicensed": "Unlicensed",
@@ -98,6 +106,7 @@
       "iworkerSetupHint": "Center reported iWorker status, but it is not yet ready to reliably receive pushed work.",
       "sync": "sync: {{status}}",
       "heartbeat": "heartbeat: {{time}}",
+      "cloudHeartbeat": "Cloud heartbeat: {{status}}",
       "workload": "workload: active {{active}} / blocked {{blocked}} / review {{review}}"
     }
   },
@@ -151,6 +160,7 @@
     "downloads": "Downloads",
     "noPackage": "No package",
     "updatedAt": "Updated",
+    "packageWarning": "Published without a downloadable package. Centers can discover it, but runtime installation will be blocked until a package is uploaded.",
     "packagePlaceholder": "Paste skill package content here. It will be encoded and stored as the downloadable package.",
     "fields": {
       "id": "Skill ID",
@@ -169,7 +179,10 @@
     },
     "filters": {
       "allStatus": "All status",
-      "allRisk": "All risk"
+      "allRisk": "All risk",
+      "allPackage": "All packages",
+      "packaged": "Packaged",
+      "unpackaged": "Missing package"
     },
     "stats": {
       "active": "Published",
@@ -234,6 +247,12 @@
     "boundaryNote": "Employees, workflows, MCP rollout, human collaboration, and tenant business stay inside iWorkerCenter. Cloud maintains platform service capabilities and entitlement only.",
     "search": "Search Center, company, email, phone, or service URL",
     "allStatus": "All status",
+    "filters": {
+      "ready": "Ready",
+      "needsSetup": "Needs setup",
+      "unlicensed": "Unlicensed",
+      "heartbeatDegraded": "Heartbeat degraded"
+    },
     "noMatch": "No iWorkerCenters match the current filters.",
     "stats": {
       "total": "Total Centers",
@@ -246,6 +265,12 @@
       "unlicensed": "unlicensed"
     },
     "confirmDelete": "Delete this iWorkerCenter registration record?",
+    "deleteConfirm": {
+      "eyebrow": "Delete registration",
+      "title": "Remove this iWorkerCenter?",
+      "body": "This removes the Cloud registration record and cleans linked authorization, compute distribution, usage, cost, and source-skill references. Enterprise business data remains inside iWorkerCenter.",
+      "confirm": "Delete Center"
+    },
     "useServiceActions": "Use the service action buttons below.",
     "controlPlaneHint": "iWorkerCloud is the iWorkerCenter management control plane. It handles authorization, connectivity, compute distribution, upgrades, and skill entitlement, but does not participate in customer organization, tenant, planning, or enterprise operations.",
     "refreshingRuntime": "Refreshing platform runtime snapshots...",
@@ -261,6 +286,7 @@
       "managementReadiness": "Management readiness",
       "iworkerReadiness": "iWorker operating readiness",
       "runtimeSnapshot": "Platform runtime snapshot",
+      "cloudHeartbeat": "Cloud heartbeat continuity",
       "recommendedActions": "Recommended service-control actions",
       "manualAuthorization": "Manual authorization",
       "serviceGate": "Service coordination gate"
@@ -283,7 +309,9 @@
       "id": "ID",
       "machineId": "Machine ID",
       "companyId": "Company ID",
-      "iworker": "iWorker"
+      "registrationKey": "Registration key",
+      "iworker": "iWorker",
+      "cloudHeartbeat": "Cloud heartbeat"
     },
     "actions": {
       "activateTrial": "Activate trial",
@@ -422,6 +450,25 @@
       "selfManaged": "Center is intentionally managing its compute provider routing locally.",
       "platformOnly": "Runtime status is available for platform coordination only and contains no enterprise business payload."
     },
+    "heartbeatStatus": {
+      "online": "online",
+      "degraded": "degraded",
+      "offline": "offline",
+      "disabled": "disabled",
+      "not_reported": "not reported"
+    },
+    "heartbeat": {
+      "notReported": "Center has not reported Cloud heartbeat continuity yet.",
+      "localContinues": "Business impact: none. Center and iWorker continue through the local path.",
+      "platformSignalOnly": "Heartbeat is a platform control-plane signal only.",
+      "nonBlocking": "Non-blocking for local Center/iWorker execution",
+      "notConfirmed": "Non-blocking impact has not been confirmed",
+      "lastSuccess": "last success",
+      "lastAttempt": "last attempt",
+      "lastFailure": "last failure",
+      "failureCount": "failure count",
+      "boundary": "Cloud sees only service health and continuity; enterprise work stays inside iWorkerCenter."
+    },
     "eyebrow": "Center Control",
     "noticeIntegrationSaved": "Center integration settings saved.",
     "noticeManualAuthorized": "Manual service authorization issued for this Center.",
@@ -526,6 +573,7 @@
     "customYears": "Years",
     "calculatedDays": "Calculated days",
     "permanentValue": "0 (permanent)",
+    "invalidCustomYears": "Enter a whole number of at least 2 years.",
     "durationOptions": {
       "month": "Monthly / 30 days",
       "quarter": "Quarterly / 90 days",

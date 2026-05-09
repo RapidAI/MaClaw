@@ -16,87 +16,11 @@ import {
 } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
+import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, hubCreditGrants, hubOfficialStatus, inputStyle, labelStyle, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
-
-interface LLMProvider {
-    name: string;
-    url: string;
-    key: string;
-    model: string;
-    protocol?: string; // "openai" (default) or "anthropic"
-    context_length?: number; // max context tokens (0 = default 128k)
-    is_custom?: boolean;
-    auth_type?: string;
-    agent_type?: string; // "openclaw" (default) or "claude_code"
-    supports_vision?: boolean; // whether the model supports image input
-    wire_api?: string; // "chat" (default), "responses", or "responses-ws"
-}
-
-const NONE_PROVIDER = "__none__";
-const HUB_SERVICE_PROVIDER_NAME = "MaClaw\u5b98\u65b9"; // "MaClaw官方" — must match Go hubServiceProviderName
-const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
-
-/** Known OpenAI-compatible providers for quick-fill in custom provider config. */
-const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number; protocol?: string; agent_type?: string }[] = [
-    { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
-    { name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
-    { name: "智谱龙虾", url: "https://open.bigmodel.cn/api/coding/paas/v4", model: "glm-5-turbo", context_length: 180000 },
-    { name: "智谱编程", url: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.1", context_length: 180000, protocol: "anthropic", agent_type: "claude-code/2.0.0" },
-    { name: "Kimi (月之暗面)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
-    { name: "讯飞星辰", url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", model: "astron-code-latest", context_length: 128000 },
-    { name: "Doubao (豆包)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
-    { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
-    { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
-    { name: "xAI (Grok)", url: "https://api.x.ai/v1", model: "grok-3", context_length: 131072 },
-    { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },
-    { name: "Together AI", url: "https://api.together.xyz/v1", model: "meta-llama/Llama-3-70b-chat-hf", context_length: 128000 },
-    { name: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", context_length: 128000 },
-    { name: "Perplexity", url: "https://api.perplexity.ai", model: "sonar-pro", context_length: 128000 },
-    { name: "阿里云 (百炼)", url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.5-plus", context_length: 128000 },
-    { name: "ChatFire", url: "https://api.chatfire.cn/v1", model: "gpt-4o", context_length: 128000 },
-];
-
-/* ── Hoisted style objects (avoid re-creation per render) ── */
-const inputStyle: React.CSSProperties = {
-    width: "100%", padding: "7px 10px", fontSize: "0.8rem",
-    border: `1px solid ${colors.border}`, borderRadius: 4,
-    background: colors.surface, color: colors.text, boxSizing: "border-box",
-};
-const labelStyle: React.CSSProperties = {
-    fontSize: "0.76rem", color: colors.textSecondary, marginBottom: 4, display: "block",
-};
-const readonlyStyle: React.CSSProperties = {
-    ...inputStyle, background: colors.bg, color: colors.textMuted, cursor: "default",
-};
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-        const timer = window.setTimeout(() => {
-            reject(new Error(`${label} timeout`));
-        }, timeoutMs);
-        promise.then(
-            value => {
-                window.clearTimeout(timer);
-                resolve(value);
-            },
-            error => {
-                window.clearTimeout(timer);
-                reject(error);
-            },
-        );
-    });
-}
-
-interface HubLLMServiceStatus {
-    active?: boolean;
-    skip_llm_config?: boolean;
-    hub_llm_base_url?: string;
-    available_models?: string[];
-    default_model?: string;
-}
 
 interface Props {
     lang?: string;
@@ -238,7 +162,10 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
     }, [loadProviders]);
 
     const isNone = currentName === NONE_PROVIDER;
-    const hasHubManagedService = !!hubServiceStatus?.active && !!hubServiceStatus?.skip_llm_config;
+    const hasHubEntitlement = !!hubServiceStatus?.active || hubCreditGrants(hubServiceStatus).length > 0;
+    const hubOfficial = hubOfficialStatus(hubServiceStatus, lang, t);
+    const hasHubProviderInDialog = dlgProviders.some(p => p.name === HUB_SERVICE_PROVIDER_NAME);
+    const hubSelectionAlreadySynced = currentName === HUB_SERVICE_PROVIDER_NAME && hasHubProviderInDialog;
     const hubAvailableModels = (hubServiceStatus?.available_models || []).filter(Boolean);
     const hubModelLabel = hubAvailableModels.length ? hubAvailableModels.join(", ") : (hubServiceStatus?.default_model || "auto");
 
@@ -248,12 +175,12 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         const snapshot = providers.map(p => ({ ...p }));
         setDlgProviders(snapshot);
         // When the current provider is the Hub service, pre-select the dedicated Hub button
-        if (currentName === HUB_SERVICE_PROVIDER_NAME && hasHubManagedService) {
+        if (currentName === HUB_SERVICE_PROVIDER_NAME && hasHubEntitlement) {
             setDlgSelectedIdx(null);
             setDlgHubSelected(true);
         } else {
             const idx = currentName === NONE_PROVIDER ? null : snapshot.findIndex(p => p.name === currentName);
-            const shouldSelectHub = (idx === null || idx === -1) && hasHubManagedService;
+            const shouldSelectHub = (idx === null || idx === -1) && hasHubEntitlement;
             setDlgSelectedIdx(shouldSelectHub ? null : (idx === -1 ? null : idx));
             setDlgHubSelected(shouldSelectHub);
         }
@@ -262,7 +189,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
         setDlgDirty(false);
         setDlgTested(false);
         setDlgOpen(true);
-    }, [providers, currentName, hasHubManagedService]);
+    }, [providers, currentName, hasHubEntitlement]);
 
     const closeDialog = useCallback(async () => {
         if (oauthBusy) return;
@@ -364,13 +291,21 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
 
     /** Save Hub service as the current LLM provider (no test needed — Hub-managed). */
     const dlgHandleSaveHubService = useCallback(async () => {
-        if (currentName === HUB_SERVICE_PROVIDER_NAME) return; // already active
+        if (hubSelectionAlreadySynced) return; // already active and synced
         setDlgSaving(true);
         setDlgTestResult(null);
         try {
             await SaveMaclawLLMProviders(dlgProviders, HUB_SERVICE_PROVIDER_NAME);
-            setProviders(dlgProviders.map(p => ({ ...p })));
-            setCurrentName(HUB_SERVICE_PROVIDER_NAME);
+            try {
+                const freshData = await GetMaclawLLMProviders();
+                const fresh = (freshData?.providers || dlgProviders).map((p: LLMProvider) => ({ ...p }));
+                setDlgProviders(fresh);
+                setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
+                setCurrentName(freshData?.current || HUB_SERVICE_PROVIDER_NAME);
+            } catch {
+                setProviders(dlgProviders.map(p => ({ ...p })));
+                setCurrentName(HUB_SERVICE_PROVIDER_NAME);
+            }
             onStatusChange?.(true, true);
             setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
             setTimeout(() => setDlgOpen(false), 800);
@@ -378,7 +313,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
             setDlgTestResult({ ok: false, msg: String(e) });
         }
         setDlgSaving(false);
-    }, [dlgProviders, currentName, t, onStatusChange]);
+    }, [dlgProviders, currentName, hubSelectionAlreadySynced, t, onStatusChange]);
 
     const dlgQuickFill = useCallback((epName: string) => {
         const ep = KNOWN_OPENAI_ENDPOINTS.find(x => x.name === epName);
@@ -527,9 +462,9 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 <span style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
                     {t("Provider", "当前服务商")}
                 </span>
-                <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubManagedService ? colors.success : colors.danger) : colors.text }}>
+                <span style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.warning : colors.danger) : colors.text }}>
                     {isNone
-                        ? (hasHubManagedService ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
+                        ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
                         : currentName}
                 </span>
             </div>
@@ -574,7 +509,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                 </div>
             </div>
 
-            {isNone && !hasHubManagedService && (
+            {isNone && !hasHubEntitlement && (
                 <div style={{
                     padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
                     background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", color: colors.danger,
@@ -611,8 +546,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                         <div style={{ marginBottom: 16 }}>
                             <label style={labelStyle}>{t("Select Provider", "选择服务商")}</label>
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                                {/* Hub-managed MaClaw Official — shown first when available */}
-                                {hasHubManagedService && (
+                                {hasHubEntitlement && !hasHubProviderInDialog && (
                                     <button onClick={dlgSelectHubService} style={{
                                         fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                         background: dlgHubSelected ? colors.primaryLight : colors.surface,
@@ -621,23 +555,25 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                         borderRadius: 4, transition: "all 0.15s",
                                         display: "inline-flex", alignItems: "center", gap: 5,
                                     }}>
-                                        <span style={{ fontSize: "0.7rem" }}>🌐</span>
-                                        {t("MaClaw Official", "MaClaw 官方")}
+                                        {t("MaClaw Official", "MaClaw \u5b98\u65b9")}
+                                        {hubOfficial.kind !== "active" && (
+                                            <span style={{ fontSize: "0.6rem", lineHeight: 1, padding: "2px 5px", borderRadius: 6, background: colors.warningBg, color: colors.warning, border: `1px solid ${colors.warning}` }}>
+                                                {hubOfficial.label}
+                                            </span>
+                                        )}
                                     </button>
                                 )}
                                 {dlgProviders.map((p, i) => {
-                                    // Hide the Hub-managed provider from the regular list when
-                                    // it is already shown as the dedicated Hub service button above.
-                                    if (hasHubManagedService && p.name === HUB_SERVICE_PROVIDER_NAME) return null;
-                                    const active = dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = { "OpenAI": "富家小子", "智谱龙虾": "聪明伶俐", "智谱编程": "写码飞快", "MiniMax": "憨厚老实", "讯飞星辰": "星辰大海" };
-                                    const tag = badge[p.name];
+                                    const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
+                                    const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
+                                    const badge: Record<string, string> = { "OpenAI": "\u5bcc\u5bb6\u5c0f\u5b50", "\u667a\u8c31\u9f99\u867e": "\u806a\u660e\u4f36\u4fd0", "\u667a\u8c31\u7f16\u7a0b": "\u5199\u7801\u98de\u5feb", "MiniMax": "\u61a8\u539a\u8001\u5b9e", "\u8baf\u98de\u661f\u8fb0": "\u661f\u8fb0\u5927\u6d77" };
+                                    const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
                                     return (
-                                        <button key={i} onClick={() => dlgSelectProvider(i)} style={{
+                                        <button key={i} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
                                             fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
                                             background: active ? colors.primaryLight : colors.surface,
                                             color: active ? colors.primaryDark : colors.text,
-                                            border: `1px solid ${active ? colors.primary : colors.border}`,
+                                            border: `1px solid ${active ? colors.primary : isHubProvider ? colors.success : colors.border}`,
                                             borderRadius: 4, transition: "all 0.15s",
                                             position: "relative" as const,
                                             display: "inline-flex", alignItems: "center", gap: 5,
@@ -648,8 +584,8 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                                     position: "absolute", top: -8, right: -10,
                                                     fontSize: "0.56rem", lineHeight: 1, padding: "2px 5px",
                                                     borderRadius: 6, whiteSpace: "nowrap",
-                                                    background: active ? colors.warningBg : colors.primaryLight,
-                                                    color: active ? colors.warning : colors.primaryDark, border: `1px solid ${active ? colors.warning : colors.primary}`, fontWeight: 600, pointerEvents: "none",
+                                                    background: isHubProvider ? colors.warningBg : active ? colors.warningBg : colors.primaryLight,
+                                                    color: isHubProvider ? colors.warning : active ? colors.warning : colors.primaryDark, border: `1px solid ${isHubProvider || active ? colors.warning : colors.primary}`, fontWeight: 600, pointerEvents: "none",
                                                 }}>{tag}</span>
                                             )}
                                         </button>
@@ -680,7 +616,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                         )}
 
                         {/* Hub-managed MaClaw Official details */}
-                        {dlgHubSelected && hasHubManagedService && (
+                        {dlgHubSelected && hasHubEntitlement && (
                             <div style={{
                                 marginBottom: 16,
                                 padding: "18px 20px",
@@ -717,14 +653,14 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                             fontSize: "0.68rem",
                                             fontWeight: 800,
                                         }}>
-                                            {t("Managed", "\u6258\u7ba1\u4e2d")}
+                                            {hubOfficial.label}
                                         </span>
                                     </div>
 
                                     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10 }}>
                                         <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Service Status", "\u670d\u52a1\u72b6\u6001")}</div>
-                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{t("Enabled", "\u5df2\u542f\u7528")}</div>
+                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{hubOfficial.label}</div>
                                         </div>
                                         <div style={{ padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.12)", border: "1px solid var(--theme-border-subtle)" }}>
                                             <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Model", "\u6a21\u578b")}</div>
@@ -737,7 +673,7 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                     </div>
 
                                     <div style={{ fontSize: "0.72rem", color: colors.textMuted, lineHeight: 1.6 }}>
-                                        {t("Use this managed service directly, or select another provider above if you need to override it.", "\u53ef\u76f4\u63a5\u4f7f\u7528\u6b64\u6258\u7ba1\u670d\u52a1\uff1b\u5982\u9700\u6539\u7528\u5176\u4ed6\u670d\u52a1\u5546\uff0c\u53ef\u5728\u4e0a\u65b9\u5207\u6362\u3002")}
+                                        {hubOfficial.detail || t("Use this managed service directly, or select another provider above if you need to override it.", "可直接使用此托管服务；如需改用其他服务商，可在上方切换。")}
                                     </div>
                                 </div>
                             </div>
@@ -1101,15 +1037,15 @@ export function LLMConfigPanel({ lang, onStatusChange }: Props) {
                                 {t("Cancel", "取消")}
                             </button>
                             {dlgHubSelected ? (
-                                <button onClick={dlgHandleSaveHubService} disabled={dlgSaving || currentName === HUB_SERVICE_PROVIDER_NAME} style={{
+                                <button onClick={dlgHandleSaveHubService} disabled={dlgSaving || hubSelectionAlreadySynced} style={{
                                     fontSize: "0.76rem", padding: "6px 18px",
-                                    cursor: (dlgSaving || currentName === HUB_SERVICE_PROVIDER_NAME) ? "default" : "pointer",
-                                    background: currentName === HUB_SERVICE_PROVIDER_NAME ? colors.bg : colors.primaryLight,
-                                    color: currentName === HUB_SERVICE_PROVIDER_NAME ? colors.textMuted : colors.primaryDark,
-                                    border: `1px solid ${currentName === HUB_SERVICE_PROVIDER_NAME ? colors.border : colors.primary}`, borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
+                                    cursor: (dlgSaving || hubSelectionAlreadySynced) ? "default" : "pointer",
+                                    background: hubSelectionAlreadySynced ? colors.bg : colors.primaryLight,
+                                    color: hubSelectionAlreadySynced ? colors.textMuted : colors.primaryDark,
+                                    border: `1px solid ${hubSelectionAlreadySynced ? colors.border : colors.primary}`, borderRadius: 4, opacity: dlgSaving ? 0.6 : 1,
                                 }}>
                                     {dlgSaving ? t("Saving...", "保存中...")
-                                        : currentName === HUB_SERVICE_PROVIDER_NAME ? t("Currently Active", "当前已启用")
+                                        : hubSelectionAlreadySynced ? t("Currently Active", "当前已启用")
                                         : t("Use This Service", "使用此服务")}
                                 </button>
                             ) : (

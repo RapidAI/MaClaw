@@ -57,15 +57,16 @@ type StepDefinition struct {
 
 // Instance is a running instance of a workflow.
 type Instance struct {
-	ID            string
-	DefinitionID  string
-	Title         string
-	InitiatorID   string
-	CurrentStepID string
-	Status        string
-	InputData     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                             string
+	DefinitionID                   string
+	Title                          string
+	InitiatorID                    string
+	CurrentStepID                  string
+	CurrentStepAssigneeColleagueID string
+	Status                         string
+	InputData                      string
+	CreatedAt                      time.Time
+	UpdatedAt                      time.Time
 }
 
 // StepInstance is an individual step execution record.

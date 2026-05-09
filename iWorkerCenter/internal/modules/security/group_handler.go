@@ -46,7 +46,7 @@ func (h *GroupHandler) handleGroups(w http.ResponseWriter, r *http.Request) {
 			Name     string `json:"name"`
 			ParentID string `json:"parent_id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeSecurityJSON(r.Body, &req); err != nil {
 			response.BadRequest(w, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -118,7 +118,7 @@ func (h *GroupHandler) handleGroupByID(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name string `json:"name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeSecurityJSON(r.Body, &req); err != nil {
 			response.BadRequest(w, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -164,7 +164,7 @@ func (h *GroupHandler) handleMembers(w http.ResponseWriter, r *http.Request, ten
 		var req struct {
 			Email string `json:"email"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeSecurityJSON(r.Body, &req); err != nil {
 			response.BadRequest(w, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -209,7 +209,7 @@ func (h *GroupHandler) handlePolicy(w http.ResponseWriter, r *http.Request, tena
 		var req struct {
 			Policy map[string]interface{} `json:"policy"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeSecurityJSON(r.Body, &req); err != nil {
 			response.BadRequest(w, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -307,7 +307,7 @@ func (h *GroupHandler) handleSettings(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, settings)
 	case http.MethodPut:
 		var req SecuritySettings
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeSecurityJSON(r.Body, &req); err != nil {
 			response.BadRequest(w, "INVALID_JSON", "invalid request body")
 			return
 		}
@@ -330,7 +330,7 @@ func (h *GroupHandler) handleDefaultGroup(w http.ResponseWriter, r *http.Request
 	var req struct {
 		GroupID string `json:"group_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeSecurityJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_JSON", "invalid request body")
 		return
 	}

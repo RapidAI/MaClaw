@@ -1,7 +1,10 @@
 package recommend
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	colleagueRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/repo"
@@ -14,6 +17,29 @@ import (
 type Handler struct {
 	colleagueRp *colleagueRepo.ColleagueRepo
 	roleRp      *roleRepo.RoleRepo
+}
+
+const maxRecommendJSONBodyBytes = 64 << 10
+
+func decodeRecommendJSON(body io.Reader, dst any) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxRecommendJSONBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > maxRecommendJSONBodyBytes {
+		return errors.New("recommend json body exceeds size limit")
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("recommend json body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }
 
 // NewHandler creates a Handler.
@@ -36,7 +62,7 @@ func (h *Handler) handleRecommend(w http.ResponseWriter, r *http.Request) {
 		TaskDescription string `json:"task_description"`
 		TopN            int    `json:"top_n"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeRecommendJSON(r.Body, &req); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 		return
 	}

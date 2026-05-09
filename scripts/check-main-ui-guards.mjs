@@ -129,7 +129,6 @@ requireFile('gui/frontend/src/components/ai/useAssistantInputHistory.ts');
 requireFile('gui/frontend/src/components/ai/usePastedImageAttachments.ts');
 requireFile('gui/frontend/src/components/ai/useGroupDiscussionControls.ts');
 requireFile('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx');
-requireFile('gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantConversationBody.tsx');
 requireFile('gui/frontend/src/components/ai/AssistantInputActions.tsx');
@@ -187,7 +186,6 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/ai/usePastedImageAttachments.ts', 80],
   ['gui/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
   ['gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 140],
-  ['gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx', 80],
   ['gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 80],
   ['gui/frontend/src/components/ai/AssistantConversationBody.tsx', 100],
   ['gui/frontend/src/components/ai/AssistantInputActions.tsx', 80],
@@ -336,10 +334,10 @@ requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-tes
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'from "./AssistantAttachmentsStrip"', 'AI attachments strip import');
 requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'title={att.filePath}', 'pasted image path tooltip');
 requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'thumbnailDataUrl', 'pasted image thumbnail rendering');
-requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-workflow-docs-bar"', 'inline AI workflow docs bar; use components/ai/AssistantWorkflowDocsBar.tsx');
-requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantWorkflowDocsBar"', 'AI workflow docs bar import');
-requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx', 'data-testid="ai-workflow-docs-bar"', 'workflow docs bar wrapper');
-requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowDocsBar.tsx', 'onSelectWorkingDir', 'workflow docs working dir action');
+requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-workflow-docs-bar"', 'old left-side AI workflow docs bar');
+requireExcludes('gui/frontend/src/components/ai/AssistantInputStack.tsx', 'AssistantWorkflowDocsBar', 'old left-side workflow docs bar wiring');
+requireIncludes('gui/frontend/src/components/ai/WorkflowDocPreview.tsx', 'WorkflowProgressBoard', 'right-side workflow progress board');
+requireIncludes('gui/frontend/src/components/ai/WorkflowDocPreview.tsx', 'workflowPhaseOrders', 'workflow phase order map');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'className="pinned-news-card"', 'inline pinned news cards; use components/ai/AssistantPinnedNewsCards.tsx');
 requireIncludes('gui/frontend/src/components/ai/AssistantConversationBody.tsx', 'from "./AssistantPinnedNewsCards"', 'AI pinned news cards import');
 requireIncludes('gui/frontend/src/components/ai/AssistantPinnedNewsCards.tsx', 'className="pinned-news-card"', 'pinned news card rendering');
@@ -375,7 +373,7 @@ requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggest
 requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 'onToggleMaximize(); onDismiss();', 'workflow maximize action preserves dismiss');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-input"', 'inline AI input composer; use components/ai/AssistantInputComposer.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'rememberHistoryEdit(e.target.value)', 'inline AI input history handling; use components/ai/AssistantInputComposer.tsx');
-requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantInputComposer"', 'AI input composer import');
+requireIncludes('gui/frontend/src/components/ai/AssistantInputStack.tsx', 'from "./AssistantInputComposer"', 'AI input composer import');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'data-testid="ai-input"', 'AI input textarea');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'AssistantAttachmentsStrip', 'AI input attachments strip wiring');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'AssistantInputActions', 'AI input action buttons wiring');

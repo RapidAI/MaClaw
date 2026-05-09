@@ -15,9 +15,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// bashBlockRe matches fenced bash code blocks in markdown.
-// Captures the content between ```bash (or ```bash.norun) and ```.
-var bashBlockRe = regexp.MustCompile("(?s)```bash(\\.norun)?\\s*\n(.*?)```")
+// bashBlockRe matches fenced shell code blocks in markdown.
+// Captures the fence language, optional fence attributes, and block content.
+var (
+	bashBlockRe        = regexp.MustCompile("(?ims)^```[ \t]*(bash|sh|shell|zsh|cmd|bat|powershell|pwsh)([^\n`]*)\n(.*?)^```[ \t]*$")
+	anglePlaceholderRe = regexp.MustCompile(`<[^>\s]+>`)
+)
 
 // hasUnresolvedPlaceholders checks if a line contains template-like
 // placeholders such as {{input}}, {baseDir}, etc. that were not resolved.
@@ -29,6 +32,9 @@ func hasUnresolvedPlaceholders(line string) bool {
 	// as these are typically usage examples, not runtime template variables.
 	if strings.Contains(line, "{{/") || strings.Contains(line, "{{\\") ||
 		strings.Contains(line, "}}.pdf") || strings.Contains(line, "}}.md") {
+		return true
+	}
+	if anglePlaceholderRe.MatchString(line) {
 		return true
 	}
 	return false
@@ -102,10 +108,9 @@ func extractAllBashBlocksFromMarkdown(content string) []string {
 	matches := bashBlockRe.FindAllStringSubmatch(content, -1)
 	var blocks []string
 	for _, m := range matches {
-		// m[1] = ".norun" or "" (the optional suffix capture group)
-		// m[2] = block content
-		if len(m) > 2 && m[1] == "" {
-			trimmed := strings.TrimSpace(m[2])
+		// m[1] = fence language, m[2] = attributes, m[3] = block content.
+		if len(m) > 3 && !markdownShellFenceNoRun(m[1], m[2]) {
+			trimmed := strings.TrimSpace(m[3])
 			if trimmed != "" {
 				blocks = append(blocks, trimmed)
 			}
@@ -158,6 +163,9 @@ func isResolvedBlockExecutable(block, skillDir string) bool {
 			strings.Contains(line, "}}.pdf") || strings.Contains(line, "}}.md") {
 			return false
 		}
+		if hasUnsafeAnglePlaceholder(line) {
+			return false
+		}
 	}
 	return true
 }
@@ -174,6 +182,550 @@ func extractBashBlocksFromMarkdown(content string) []string {
 		}
 	}
 	return result
+}
+
+type markdownBashBlockContext struct {
+	Block    string
+	Headings []string
+	Shell    string
+}
+
+func extractBashBlockContexts(content string) []markdownBashBlockContext {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	matches := bashBlockRe.FindAllStringSubmatchIndex(content, -1)
+	contexts := make([]markdownBashBlockContext, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 8 || m[2] < 0 || m[3] < 0 || m[4] < 0 || m[5] < 0 || m[6] < 0 || m[7] < 0 {
+			continue
+		}
+		lang := content[m[2]:m[3]]
+		attrs := content[m[4]:m[5]]
+		if markdownShellFenceNoRun(lang, attrs) {
+			continue
+		}
+		block := strings.TrimSpace(content[m[6]:m[7]])
+		if block == "" {
+			continue
+		}
+		contexts = append(contexts, markdownBashBlockContext{
+			Block:    block,
+			Headings: markdownHeadingStackBefore(content[:m[0]]),
+			Shell:    markdownShellFencePreferredShell(lang),
+		})
+	}
+	return contexts
+}
+
+func markdownShellFenceNoRun(lang, attrs string) bool {
+	text := strings.ToLower(strings.TrimSpace(lang + " " + attrs))
+	return strings.Contains(text, ".norun") || strings.Contains(text, " norun") || strings.Contains(text, " no-run")
+}
+
+func markdownShellFencePreferredShell(lang string) string {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "cmd", "bat":
+		return "cmd"
+	case "powershell", "pwsh":
+		return "powershell"
+	default:
+		return ""
+	}
+}
+
+func parseMarkdownShellFenceStart(line string) (string, bool, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "````") {
+		return "", false, false
+	}
+	info := strings.TrimSpace(strings.TrimPrefix(trimmed, "```"))
+	if info == "" {
+		return "", false, false
+	}
+	fields := strings.Fields(info)
+	if len(fields) == 0 {
+		return "", false, false
+	}
+	rawLang := strings.ToLower(strings.Trim(fields[0], " \t.,;:()[]{}"))
+	norun := strings.Contains(rawLang, ".norun") || strings.Contains(rawLang, ".no-run")
+	rawLang = strings.TrimSuffix(strings.TrimSuffix(rawLang, ".norun"), ".no-run")
+	rawLang = strings.Trim(rawLang, ".")
+	if !isMarkdownShellFenceLanguage(rawLang) {
+		return "", false, false
+	}
+	for _, field := range fields[1:] {
+		field = strings.ToLower(strings.Trim(field, " \t.,;:()[]{}"))
+		if field == "norun" || field == "no-run" || field == ".norun" || field == ".no-run" {
+			norun = true
+			break
+		}
+	}
+	return rawLang, norun, true
+}
+
+func isMarkdownShellFenceLanguage(lang string) bool {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "bash", "sh", "shell", "zsh", "cmd", "bat", "powershell", "pwsh":
+		return true
+	default:
+		return false
+	}
+}
+
+func markdownHeadingStackBefore(prefix string) []string {
+	var stack [6]string
+	for _, line := range strings.Split(prefix, "\n") {
+		level, text, ok := parseMarkdownHeading(line)
+		if !ok {
+			continue
+		}
+		stack[level-1] = text
+		for i := level; i < len(stack); i++ {
+			stack[i] = ""
+		}
+	}
+	result := make([]string, 0, len(stack))
+	for _, heading := range stack {
+		if strings.TrimSpace(heading) != "" {
+			result = append(result, heading)
+		}
+	}
+	return result
+}
+
+func parseMarkdownHeading(line string) (int, string, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "#") {
+		return 0, "", false
+	}
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level >= len(line) {
+		return 0, "", false
+	}
+	if line[level] != ' ' && line[level] != '\t' {
+		return 0, "", false
+	}
+	text := strings.TrimSpace(line[level:])
+	if text == "" {
+		return 0, "", false
+	}
+	return level, text, true
+}
+
+func shouldAutoSelectSingleMarkdownAlternative(execMode, mode string, operations []corelib.NLSkillOperation, opBlocks map[string]string, steps []corelib.NLSkillStep, contexts []markdownBashBlockContext) bool {
+	if len(steps) <= 1 || len(contexts) < len(steps) {
+		return false
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "api_workflow" || len(operations) > 0 || len(opBlocks) > 0 {
+		return false
+	}
+	execMode = strings.ToLower(strings.TrimSpace(execMode))
+	if execMode != "" && execMode != "auto" {
+		return false
+	}
+
+	usageContext := false
+	var commonTarget string
+	for i, step := range steps {
+		if NormalizeStepActionName(step.Action) != "bash" || len(step.Capture) > 0 {
+			return false
+		}
+		cmd, _ := step.Params["command"].(string)
+		if countSignificantCommandLines(cmd) != 1 {
+			return false
+		}
+		target, ok := markdownCommandExecutionTarget(cmd)
+		if !ok || target == "" {
+			return false
+		}
+		if commonTarget == "" {
+			commonTarget = target
+		} else if commonTarget != target {
+			return false
+		}
+
+		if markdownHeadingsHaveWorkflowMarker(contexts[i].Headings) {
+			return false
+		}
+		if markdownHeadingsHaveUsageMarker(contexts[i].Headings) {
+			usageContext = true
+		}
+	}
+	return usageContext
+}
+
+func preferredMarkdownAlternativeStepIndex(steps []corelib.NLSkillStep, requiredArgs []string) int {
+	bestIdx := 0
+	bestMissingRequired := int(^uint(0) >> 1)
+	bestPlaceholderCount := int(^uint(0) >> 1)
+	for i, step := range steps {
+		cmd, _ := step.Params["command"].(string)
+		placeholders := markdownCommandPlaceholderSet(cmd)
+		missingRequired := markdownMissingRequiredPlaceholderCount(placeholders, requiredArgs)
+		count := len(placeholders)
+		if missingRequired < bestMissingRequired || (missingRequired == bestMissingRequired && count < bestPlaceholderCount) {
+			bestIdx = i
+			bestMissingRequired = missingRequired
+			bestPlaceholderCount = count
+		}
+	}
+	return bestIdx
+}
+
+func markdownCommandPlaceholderCount(command string) int {
+	return len(markdownCommandPlaceholderSet(command))
+}
+
+func markdownCommandPlaceholderSet(command string) map[string]bool {
+	seen := make(map[string]bool)
+	for _, key := range ExtractPlaceholderKeys(firstSignificantLine(command)) {
+		canonical := canonicalRunVarKey(key)
+		if canonical != "" {
+			seen[canonical] = true
+		}
+	}
+	return seen
+}
+
+func markdownMissingRequiredPlaceholderCount(placeholders map[string]bool, requiredArgs []string) int {
+	missing := 0
+	for _, arg := range requiredArgs {
+		canonical := canonicalRunVarKey(arg)
+		if canonical != "" && !placeholders[canonical] {
+			missing++
+		}
+	}
+	return missing
+}
+
+func parameterizeMarkdownUsageCommand(block string, context markdownBashBlockContext) (string, bool) {
+	if !markdownHeadingsHaveUsageMarker(context.Headings) || markdownHeadingsHaveWorkflowMarker(context.Headings) {
+		return "", false
+	}
+	line := stripInlineShellComment(firstSignificantLine(block))
+	if line == "" || len(ExtractPlaceholderKeys(line)) > 0 {
+		return "", false
+	}
+	fields := splitMarkdownCommandFields(line)
+	if len(fields) < 2 {
+		return "", false
+	}
+	for i := 1; i < len(fields); i++ {
+		field := strings.TrimSpace(fields[i])
+		if field == "" {
+			continue
+		}
+		if replacement, ok := parameterizeMarkdownInputFlagAssignment(field); ok {
+			fields[i] = replacement
+			return strings.Join(fields, " "), true
+		}
+		if strings.HasPrefix(field, "-") || isNonInputMarkdownCommandOptionValue(fields, i) {
+			continue
+		}
+		if !looksLikeMarkdownSampleInputPath(field) {
+			continue
+		}
+		fields[i] = "{{input}}"
+		return strings.Join(fields, " "), true
+	}
+	return "", false
+}
+
+func parameterizeMarkdownInputFlagAssignment(field string) (string, bool) {
+	flag, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+	if !ok || !strings.HasPrefix(flag, "-") || !isInputOptionFlag(flag) {
+		return "", false
+	}
+	if !looksLikeMarkdownSampleInputPath(value) {
+		return "", false
+	}
+	return flag + "={{input}}", true
+}
+
+func isNonInputMarkdownCommandOptionValue(fields []string, idx int) bool {
+	if idx <= 0 || idx >= len(fields) {
+		return false
+	}
+	prev := strings.TrimSpace(fields[idx-1])
+	if prev == "" || !strings.HasPrefix(prev, "-") {
+		return false
+	}
+	return !strings.Contains(prev, "=") && !isInputOptionFlag(prev)
+}
+
+func isInputOptionFlag(flag string) bool {
+	flag = strings.TrimLeft(strings.ToLower(strings.TrimSpace(flag)), "-")
+	flag = strings.ReplaceAll(flag, "_", "-")
+	switch flag {
+	case "input", "in", "i", "file", "f", "path", "source", "src", "document", "pdf", "image":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeMarkdownSampleInputPath(raw string) bool {
+	value := strings.Trim(strings.TrimSpace(raw), "\"'`")
+	if strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
+		return looksLikeMarkdownSampleInputName(strings.Trim(value, "<>"))
+	}
+	if value == "" || strings.Contains(value, "://") || strings.ContainsAny(value, "{}") {
+		return false
+	}
+	if strings.ContainsAny(value, "<>") {
+		matches := anglePlaceholderRe.FindAllString(value, -1)
+		if len(matches) != 1 {
+			return false
+		}
+		expanded := strings.Replace(value, matches[0], strings.Trim(matches[0], "<>"), 1)
+		if strings.ContainsAny(expanded, "<>") {
+			return false
+		}
+		return looksLikeMarkdownSampleInputName(expanded) || looksLikeMarkdownSampleInputName(matches[0])
+	}
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(value, `\`, `/`)))
+	if base == "" || strings.HasPrefix(base, "-") {
+		return false
+	}
+	if looksLikeMarkdownSampleInputName(base) {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp", ".md", ".txt", ".csv", ".json", ".docx", ".xlsx", ".pptx":
+		stem := strings.TrimSuffix(base, filepath.Ext(base))
+		return looksLikeMarkdownSampleInputName(stem)
+	default:
+		return false
+	}
+}
+
+func looksLikeMarkdownSampleInputName(raw string) bool {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	name = strings.Trim(name, "\"'`<>")
+	if name == "" {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(name, `\`, `/`)))
+	if base == "" || strings.HasPrefix(base, "-") {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(base))
+	stem := strings.TrimSuffix(base, ext)
+	normalized := strings.NewReplacer("_", "-", " ", "-", ".", "-").Replace(stem)
+	switch normalized {
+	case "input", "file", "document", "doc", "report", "sample", "example", "photo", "image",
+		"pdf", "markdown", "text", "csv", "json", "your-file", "your-input", "your-document",
+		"your-pdf", "input-file", "input-document", "input-pdf", "input-image", "source-file",
+		"source-document", "source-pdf", "pdf-file", "image-file", "document-file":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasUnsafeAnglePlaceholder(line string) bool {
+	for _, match := range anglePlaceholderRe.FindAllString(line, -1) {
+		if !looksLikeMarkdownSampleInputPath(match) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripInlineShellComment(line string) string {
+	line = strings.TrimSpace(line)
+	var quote rune
+	for i, r := range line {
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+		case '#':
+			if i == 0 || line[i-1] == ' ' || line[i-1] == '\t' {
+				return strings.TrimSpace(line[:i])
+			}
+		}
+	}
+	return line
+}
+
+func markdownHeadingsHaveUsageMarker(headings []string) bool {
+	markers := []string{
+		"usage", "example", "examples", "quick start", "quickstart", "how to run",
+		"commands", "invocation", "use case", "use cases", "recommended execution",
+		"execution method", "execution methods", "run method", "run methods",
+		"\u4f7f\u7528", "\u7528\u6cd5", "\u793a\u4f8b", "\u4f8b\u5b50", "\u8303\u4f8b",
+		"\u5feb\u901f\u5f00\u59cb", "\u547d\u4ee4", "\u6267\u884c\u65b9\u5f0f",
+		"\u63a8\u8350\u6267\u884c",
+	}
+	return markdownHeadingsContainAny(headings, markers)
+}
+
+func markdownHeadingsHaveWorkflowMarker(headings []string) bool {
+	markers := []string{
+		"step", "phase", "stage", "workflow", "pipeline", "sequence",
+		"setup", "prepare", "cleanup", "teardown", "verify", "validate",
+		"\u6b65\u9aa4", "\u9636\u6bb5", "\u6d41\u7a0b", "\u7b2c",
+	}
+	return markdownHeadingsContainAny(headings, markers)
+}
+
+func markdownHeadingsContainAny(headings, markers []string) bool {
+	for _, heading := range headings {
+		lower := strings.ToLower(strings.TrimSpace(heading))
+		for _, marker := range markers {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func countSignificantCommandLines(block string) int {
+	count := 0
+	for _, line := range strings.Split(block, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func markdownCommandExecutionTarget(command string) (string, bool) {
+	fields := splitMarkdownCommandFields(firstSignificantLine(command))
+	if len(fields) == 0 {
+		return "", false
+	}
+	exe := normalizeCommandExecutable(fields[0])
+	switch exe {
+	case "python", "py":
+		return interpreterCommandTarget("python", fields[1:])
+	case "node", "deno", "bun":
+		return interpreterCommandTarget(exe, fields[1:])
+	case "bash", "sh", "pwsh", "powershell":
+		return interpreterCommandTarget(exe, fields[1:])
+	default:
+		target := normalizeCommandTargetPath(fields[0])
+		if target == "" {
+			return "", false
+		}
+		if isScriptFileName(filepath.Base(target)) || strings.Contains(target, "/") {
+			return target, true
+		}
+		return "", false
+	}
+}
+
+func interpreterCommandTarget(exe string, args []string) (string, bool) {
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			continue
+		}
+		if arg == "-m" && i+1 < len(args) {
+			module := strings.ToLower(strings.TrimSpace(args[i+1]))
+			if module != "" {
+				return exe + "|-m|" + module, true
+			}
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		path := normalizeCommandTargetPath(arg)
+		if path == "" {
+			continue
+		}
+		base := filepath.Base(path)
+		if isScriptFileName(base) || strings.Contains(path, "/") {
+			return exe + "|" + path, true
+		}
+		return exe + "|" + path, true
+	}
+	return exe, exe != ""
+}
+
+func normalizeCommandExecutable(s string) string {
+	s = normalizeCommandTargetPath(s)
+	base := filepath.Base(s)
+	switch base {
+	case "python3", "python.exe", "python3.exe":
+		return "python"
+	case "py.exe":
+		return "py"
+	case "node.exe":
+		return "node"
+	case "powershell.exe":
+		return "powershell"
+	case "pwsh.exe":
+		return "pwsh"
+	default:
+		return base
+	}
+}
+
+func normalizeCommandTargetPath(s string) string {
+	s = strings.Trim(strings.TrimSpace(s), "\"'`")
+	s = strings.ReplaceAll(s, `\`, "/")
+	for strings.HasPrefix(s, "./") {
+		s = strings.TrimPrefix(s, "./")
+	}
+	return strings.ToLower(s)
+}
+
+func splitMarkdownCommandFields(line string) []string {
+	var fields []string
+	var current strings.Builder
+	var quote rune
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		fields = append(fields, current.String())
+		current.Reset()
+	}
+	runes := []rune(line)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if quote != 0 {
+			if quote != '\'' && r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
+				current.WriteRune(runes[i+1])
+				i++
+				continue
+			}
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			continue
+		}
+		if r == '\\' && i+1 < len(runes) && isEscapableShellRune(runes[i+1]) {
+			current.WriteRune(runes[i+1])
+			i++
+			continue
+		}
+		switch r {
+		case '\'', '"', '`':
+			quote = r
+		case ' ', '\t':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	flush()
+	return fields
 }
 
 type MarkdownSkillOptions struct {
@@ -237,6 +789,9 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 	} else if parsed.requiresGUI != nil {
 		requiresGUI = *parsed.requiresGUI
 	}
+	if isKnowledgeSkillType(parsed.skillType) {
+		return buildMarkdownKnowledgeSkillEntry(parsed, opts, triggers, platforms, requiresGUI, time.Now().Format(time.RFC3339)), nil
+	}
 	return &corelib.NLSkillEntry{
 		Name:                    parsed.name,
 		Description:             parsed.description,
@@ -259,6 +814,7 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		PreferredShell:          parsed.preferredShell,
 		RequiresPython:          parsed.requiresPython,
 		RequiresNode:            parsed.requiresNode,
+		RequiresBins:            parsed.requiresBins,
 		Operations:              parsed.operations,
 		Params:                  parsed.params,
 		Pipeline:                parsed.pipeline,
@@ -269,6 +825,39 @@ func ParseMarkdownSkill(content string, opts MarkdownSkillOptions) (*corelib.NLS
 		RequiredCredentialFiles: parsed.requiredCredentialFiles,
 		Stateful:                parsed.stateful,
 	}, nil
+}
+
+func buildMarkdownKnowledgeSkillEntry(parsed *parsedSkillMarkdown, opts MarkdownSkillOptions, triggers, platforms []string, requiresGUI bool, createdAt string) *corelib.NLSkillEntry {
+	if strings.TrimSpace(createdAt) == "" {
+		createdAt = time.Now().Format(time.RFC3339)
+	}
+	skillDir := strings.TrimSpace(opts.SkillDir)
+	var references []corelib.SkillReference
+	if skillDir != "" {
+		references = scanReferences(skillDir)
+	}
+	return &corelib.NLSkillEntry{
+		Name:                    parsed.name,
+		Description:             parsed.description,
+		Triggers:                triggers,
+		Status:                  "active",
+		CreatedAt:               createdAt,
+		Source:                  firstNonEmpty(strings.TrimSpace(opts.Source), "file"),
+		SourceProject:           firstNonEmpty(strings.TrimSpace(opts.SourceProject), parsed.compatibility),
+		TrustLevel:              strings.TrimSpace(opts.TrustLevel),
+		SkillDir:                skillDir,
+		Platforms:               platforms,
+		RequiresGUI:             requiresGUI,
+		Type:                    "knowledge",
+		Content:                 parsed.markdown,
+		RequiresTools:           parsed.requiresTools,
+		FallbackForTools:        parsed.fallbackForTools,
+		RequiresToolsets:        parsed.requiresToolsets,
+		FallbackForToolsets:     parsed.fallbackForToolsets,
+		RequiredCredentialFiles: parsed.requiredCredentialFiles,
+		Stateful:                parsed.stateful,
+		References:              references,
+	}
 }
 
 func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*corelib.NLSkillEntry, error) {
@@ -304,6 +893,9 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	} else if parsed.requiresGUI != nil {
 		requiresGUI = *parsed.requiresGUI
 	}
+	if isKnowledgeSkillType(parsed.skillType) {
+		return buildMarkdownKnowledgeSkillEntry(parsed, opts, triggers, platforms, requiresGUI, fileModTime(mdPath)), nil
+	}
 	steps := make([]corelib.NLSkillStep, 0)
 	scriptsDir := filepath.Join(skillDir, "scripts")
 
@@ -320,8 +912,13 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	// process them in document order. This ensures step execution order matches
 	// the SKILL.md definition order.
 	var allBlocks []string
+	var blockContexts []markdownBashBlockContext
 	if strings.TrimSpace(parsed.markdown) != "" {
-		allBlocks = extractAllBashBlocksFromMarkdown(parsed.markdown)
+		blockContexts = extractBashBlockContexts(parsed.markdown)
+		allBlocks = make([]string, 0, len(blockContexts))
+		for _, ctx := range blockContexts {
+			allBlocks = append(allBlocks, ctx.Block)
+		}
 	}
 
 	// Extract capture directives (<!-- extract: VAR=regex -->) for each bash block.
@@ -330,6 +927,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	if strings.TrimSpace(parsed.markdown) != "" {
 		captureDirectives = extractCaptureDirectives(parsed.markdown)
 	}
+	stepContexts := make([]markdownBashBlockContext, 0)
 
 	if len(allBlocks) > 0 {
 		log.Printf("[skill-parser] %s: found %d bash blocks in SKILL.md, %d scripts in scripts/",
@@ -347,6 +945,10 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			if !isResolvedBlockExecutable(resolved, skillDir) {
 				continue
 			}
+			if currentBlockIdx < len(blockContexts) && isMarkdownDependencyInstallBlock(resolved, blockContexts[currentBlockIdx]) {
+				log.Printf("[skill-parser] %s: skipping dependency/install example block", parsed.name)
+				continue
+			}
 
 			// Check if this block references a local script in scripts/.
 			// If so, use the script-based command (with proper quoting etc.)
@@ -356,7 +958,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 				if line == "" || strings.HasPrefix(line, "#") {
 					continue
 				}
-				for _, field := range strings.Fields(line) {
+				for _, field := range splitMarkdownCommandFields(line) {
 					field = strings.Trim(field, "\"'`")
 					base := filepath.Base(field)
 					if isScriptFileName(base) && localScripts[base] {
@@ -371,16 +973,18 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 
 			var command string
 			if localScriptPath != "" {
-				// Block references a local script — use the resolved command
-				// from commandFromSkillMarkdown (handles quoting, {baseDir}, etc.)
-				cmd, ok := scriptExecutionCommandFromMarkdown(localScriptPath, parsed.markdown, skillDir)
-				if !ok {
+				// Use the current bash block, not the first matching line in the
+				// whole document, so alternative invocations keep their own args.
+				command = normalizeImportedScriptCommand(rewriteImportedLocalScriptCommand(resolved, localScriptPath))
+				if strings.TrimSpace(command) == "" {
 					continue
 				}
-				command = cmd
 				log.Printf("[skill-parser] %s: step from script ref: %s", parsed.name, filepath.Base(localScriptPath))
+			} else if parameterized, ok := parameterizeMarkdownUsageCommand(resolved, blockContexts[currentBlockIdx]); ok {
+				command = parameterized
+				log.Printf("[skill-parser] %s: step from parameterized usage example: %s", parsed.name, command)
 			} else {
-				// Direct bash command block — use the resolved content.
+				// Direct bash command block uses the resolved content.
 				command = resolved
 				snippet := resolved
 				if len(snippet) > 60 {
@@ -393,6 +997,9 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 			if strings.TrimSpace(skillDir) != "" {
 				params["working_dir"] = skillDir
 			}
+			if currentBlockIdx < len(blockContexts) && blockContexts[currentBlockIdx].Shell != "" {
+				params["preferred_shell"] = blockContexts[currentBlockIdx].Shell
+			}
 			// Attach capture directives from <!-- extract: VAR=regex --> comments
 			// preceding this bash block, enabling step-to-step variable passing.
 			var capture map[string]string
@@ -401,6 +1008,11 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 				log.Printf("[skill-parser] %s: step %d has capture directives: %v", parsed.name, len(steps)+1, capture)
 			}
 			steps = append(steps, corelib.NLSkillStep{Action: "bash", Params: params, OnError: "stop", Capture: capture})
+			if currentBlockIdx < len(blockContexts) {
+				stepContexts = append(stepContexts, blockContexts[currentBlockIdx])
+			} else {
+				stepContexts = append(stepContexts, markdownBashBlockContext{})
+			}
 		}
 	}
 
@@ -452,14 +1064,25 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 	} else if parsed.producesArtifact != nil {
 		producesArtifact = *parsed.producesArtifact
 	}
-	// Apply execMode: "first" — only keep the first bash step.
-	if parsed.execMode == "first" && len(steps) > 1 {
+	effectiveExecMode := parsed.execMode
+	opBlocks := extractOperationLabeledBlocks(parsed.markdown)
+	// Apply execMode: "first" when declared explicitly.
+	if strings.EqualFold(strings.TrimSpace(parsed.execMode), "first") && len(steps) > 1 {
 		log.Printf("[skill-parser] %s: exec_mode=first, keeping only first step out of %d", parsed.name, len(steps))
 		steps = steps[:1]
+		if len(stepContexts) > 1 {
+			stepContexts = stepContexts[:1]
+		}
+		effectiveExecMode = "first"
+	} else if shouldAutoSelectSingleMarkdownAlternative(parsed.execMode, parsed.mode, parsed.operations, opBlocks, steps, stepContexts) {
+		selectedIdx := preferredMarkdownAlternativeStepIndex(steps, parsed.requiredArgs)
+		log.Printf("[skill-parser] %s: usage-style alternatives detected, keeping step %d out of %d", parsed.name, selectedIdx+1, len(steps))
+		steps = steps[selectedIdx : selectedIdx+1]
+		stepContexts = stepContexts[selectedIdx : selectedIdx+1]
+		effectiveExecMode = "first"
 	}
 
 	// Apply operation labels from <!-- operation: xxx --> comments.
-	opBlocks := extractOperationLabeledBlocks(parsed.markdown)
 	if len(opBlocks) > 0 {
 		for i := range steps {
 			if steps[i].Action != "bash" {
@@ -500,7 +1123,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		Platforms:               platforms,
 		RequiresGUI:             requiresGUI,
 		Mode:                    parsed.mode,
-		ExecMode:                parsed.execMode,
+		ExecMode:                effectiveExecMode,
 		GlobalTimeout:           parsed.timeout,
 		ProducesArtifact:        producesArtifact,
 		RequiredArgs:            parsed.requiredArgs,
@@ -508,6 +1131,7 @@ func ImportMarkdownSkillDir(skillDir string, opts MarkdownSkillOptions) (*coreli
 		PreferredShell:          parsed.preferredShell,
 		RequiresPython:          parsed.requiresPython,
 		RequiresNode:            parsed.requiresNode,
+		RequiresBins:            parsed.requiresBins,
 		Operations:              parsed.operations,
 		Params:                  parsed.params,
 		Pipeline:                parsed.pipeline,
@@ -584,7 +1208,215 @@ func normalizeImportedScriptCommand(command string) string {
 		`'/path/to/input.md'`, "{{input}}",
 		`'/path/to/output.pdf'`, "{{output}}",
 	)
-	return replacer.Replace(command)
+	return parameterizeMarkdownSampleCommandArgs(replacer.Replace(command))
+}
+
+func rewriteImportedLocalScriptCommand(block, localScriptPath string) string {
+	command := joinMarkdownShellContinuationLines(block)
+	if command == "" {
+		return ""
+	}
+	base := filepath.Base(localScriptPath)
+	for _, field := range splitMarkdownCommandFields(command) {
+		token := strings.Trim(field, "\"'`")
+		if filepath.Base(strings.ReplaceAll(token, `\`, `/`)) != base {
+			continue
+		}
+		return replaceMarkdownCommandTokenOnce(command, token, quoteScriptPath(localScriptPath))
+	}
+	return command
+}
+
+func replaceMarkdownCommandTokenOnce(command, token, replacement string) string {
+	if token == "" || replacement == "" {
+		return command
+	}
+	candidates := []string{
+		`"` + token + `"`,
+		`'` + token + `'`,
+		"`" + token + "`",
+		strings.ReplaceAll(token, " ", `\ `),
+		token,
+	}
+	for _, candidate := range candidates {
+		if candidate != "" && strings.Contains(command, candidate) {
+			return strings.Replace(command, candidate, replacement, 1)
+		}
+	}
+	return command
+}
+
+func joinMarkdownShellContinuationLines(block string) string {
+	var commands []string
+	var current strings.Builder
+	for _, rawLine := range strings.Split(strings.ReplaceAll(block, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		continued := strings.HasSuffix(line, `\`) || strings.HasSuffix(line, "`")
+		if continued {
+			line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(line, `\`), "`"))
+		}
+		if current.Len() > 0 {
+			current.WriteByte(' ')
+		}
+		current.WriteString(line)
+		if continued {
+			continue
+		}
+		if strings.TrimSpace(current.String()) != "" {
+			commands = append(commands, strings.TrimSpace(current.String()))
+		}
+		current.Reset()
+	}
+	if strings.TrimSpace(current.String()) != "" {
+		commands = append(commands, strings.TrimSpace(current.String()))
+	}
+	return strings.Join(commands, "\n")
+}
+
+func parameterizeMarkdownSampleCommandArgs(command string) string {
+	fields := strings.Fields(command)
+	result := command
+	for i, field := range fields {
+		if replacement, ok := parameterizeMarkdownFlagAssignment(field); ok {
+			result = replaceCommandTokenOnce(result, field, replacement)
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(field), "-") || i+1 >= len(fields) {
+			continue
+		}
+		next := fields[i+1]
+		switch {
+		case isInputOptionFlag(field) && looksLikeMarkdownSampleInputPath(next):
+			result = replaceCommandTokenOnce(result, next, "{{input}}")
+		case isOutputOptionFlag(field) && looksLikeMarkdownSampleOutputPath(next):
+			result = replaceCommandTokenOnce(result, next, "{{output}}")
+		}
+	}
+	return result
+}
+
+func parameterizeMarkdownFlagAssignment(field string) (string, bool) {
+	flag, value, ok := strings.Cut(strings.TrimSpace(field), "=")
+	if !ok || !strings.HasPrefix(flag, "-") {
+		return "", false
+	}
+	switch {
+	case isInputOptionFlag(flag) && looksLikeMarkdownSampleInputPath(value):
+		return flag + "={{input}}", true
+	case isOutputOptionFlag(flag) && looksLikeMarkdownSampleOutputPath(value):
+		return flag + "={{output}}", true
+	default:
+		return "", false
+	}
+}
+
+func replaceCommandTokenOnce(command, token, replacement string) string {
+	if token == "" || replacement == "" {
+		return command
+	}
+	return strings.Replace(command, token, replacement, 1)
+}
+
+func isOutputOptionFlag(flag string) bool {
+	flag = strings.TrimLeft(strings.ToLower(strings.TrimSpace(flag)), "-")
+	flag = strings.ReplaceAll(flag, "_", "-")
+	switch flag {
+	case "output", "out", "o", "dest", "destination", "target", "output-file", "output-path", "pdf-output", "save-as":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeMarkdownSampleOutputPath(raw string) bool {
+	value := strings.Trim(strings.TrimSpace(raw), "\"'`")
+	if strings.HasPrefix(value, "<") && strings.HasSuffix(value, ">") {
+		return looksLikeMarkdownSampleOutputName(strings.Trim(value, "<>"))
+	}
+	if value == "" || strings.Contains(value, "://") || strings.ContainsAny(value, "{}") {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(strings.ReplaceAll(value, `\`, `/`)))
+	if base == "" || strings.HasPrefix(base, "-") {
+		return false
+	}
+	if looksLikeMarkdownSampleOutputName(base) {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".pdf", ".md", ".txt", ".csv", ".json", ".docx", ".xlsx", ".pptx", ".png", ".jpg", ".jpeg", ".webp":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeMarkdownSampleOutputName(raw string) bool {
+	name := strings.ToLower(strings.TrimSpace(raw))
+	name = strings.Trim(name, "\"'`<>")
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	normalized := strings.NewReplacer("_", "-", " ", "-", ".", "-").Replace(name)
+	switch normalized {
+	case "output", "out", "result", "target", "destination", "dest", "report", "document",
+		"output-file", "output-document", "output-pdf", "result-file", "result-pdf",
+		"your-output", "your-output-file", "your-pdf":
+		return true
+	default:
+		return false
+	}
+}
+
+func isMarkdownDependencyInstallBlock(block string, context markdownBashBlockContext) bool {
+	if markdownHeadingsHaveUsageMarker(context.Headings) || markdownHeadingsHaveWorkflowMarker(context.Headings) {
+		return false
+	}
+	if !markdownHeadingsHaveDependencyMarker(context.Headings) {
+		return false
+	}
+	return isDependencyInstallCommand(firstSignificantLine(joinMarkdownShellContinuationLines(block)))
+}
+
+func markdownHeadingsHaveDependencyMarker(headings []string) bool {
+	markers := []string{
+		"install", "installation", "setup", "dependency", "dependencies", "requirement", "requirements",
+		"compatibility", "environment", "prerequisite", "prerequisites",
+		"\u5b89\u88c5", "\u4f9d\u8d56", "\u73af\u5883", "\u524d\u7f6e", "\u51c6\u5907",
+	}
+	for _, heading := range headings {
+		heading = strings.ToLower(strings.TrimSpace(heading))
+		for _, marker := range markers {
+			if strings.Contains(heading, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isDependencyInstallCommand(line string) bool {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(line)))
+	if len(fields) == 0 {
+		return false
+	}
+	if len(fields) >= 3 && (fields[0] == "python" || fields[0] == "python3" || fields[0] == "py") && fields[1] == "-m" && fields[2] == "pip" {
+		return len(fields) >= 4 && fields[3] == "install"
+	}
+	if len(fields) >= 2 {
+		switch fields[0] {
+		case "pip", "pip3":
+			return fields[1] == "install"
+		case "npm", "pnpm":
+			return fields[1] == "install" || fields[1] == "add"
+		case "yarn":
+			return fields[1] == "add" || fields[1] == "install"
+		case "uv":
+			return len(fields) >= 3 && fields[1] == "pip" && fields[2] == "install"
+		}
+	}
+	return false
 }
 
 func scriptExecutionCommand(scriptPath string) (string, bool) {
@@ -642,6 +1474,7 @@ type parsedSkillMarkdown struct {
 	name           string
 	description    string
 	compatibility  string
+	skillType      string
 	frontmatter    map[string]string
 	requiredArgs   []string // from frontmatter required_args
 	requiredEnv    []string // from frontmatter required_env (alias: requires_env)
@@ -656,6 +1489,7 @@ type parsedSkillMarkdown struct {
 	producesArtifact        *bool    // from frontmatter produces_artifact (YAML bool)
 	requiresPython          []string // from frontmatter requires.python (YAML list)
 	requiresNode            []string // from frontmatter requires.node (YAML list)
+	requiresBins            []string // from frontmatter requires.bins (YAML list)
 	operations              []corelib.NLSkillOperation
 	params                  []corelib.NLSkillParam
 	pipeline                []corelib.SkillPipelineStep
@@ -709,6 +1543,7 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 		name:                    name,
 		description:             description,
 		compatibility:           strings.TrimSpace(yamlString(yamlFM["compatibility"])),
+		skillType:               meta.skillType,
 		frontmatter:             simpleFM,
 		requiredArgs:            meta.requiredArgs,
 		requiredEnv:             meta.requiredEnv,
@@ -722,6 +1557,7 @@ func parseSkillMarkdownDocument(content, nameFallback, descriptionFallback strin
 		producesArtifact:        meta.producesArtifact,
 		requiresPython:          meta.requiresPython,
 		requiresNode:            meta.requiresNode,
+		requiresBins:            meta.requiresBins,
 		operations:              meta.operations,
 		params:                  meta.params,
 		pipeline:                meta.pipeline,
@@ -841,6 +1677,7 @@ type skillFrontmatterMetadata struct {
 	producesArtifact        *bool
 	requiresPython          []string
 	requiresNode            []string
+	requiresBins            []string
 	operations              []corelib.NLSkillOperation
 	params                  []corelib.NLSkillParam
 	pipeline                []corelib.SkillPipelineStep
@@ -850,6 +1687,7 @@ type skillFrontmatterMetadata struct {
 	fallbackForToolsets     []string
 	requiredCredentialFiles []string
 	stateful                bool
+	skillType               string
 }
 
 // extractSkillMetadata extracts all typed skill metadata from a YAML
@@ -882,9 +1720,11 @@ func extractSkillMetadata(yamlFM map[string]interface{}) skillFrontmatterMetadat
 		m.requiresGUI = yamlBool(normalized["requires_gui"])
 	}
 	m.mode = firstNonEmpty(strings.TrimSpace(sf.Mode), yamlString(normalized["mode"]))
+	m.skillType = firstNonEmpty(strings.TrimSpace(sf.Type), yamlString(normalized["type"]))
 	m.producesArtifact = yamlBool(normalized["produces_artifact"])
 	m.requiresPython = requiresPythonFromYAML(sf.Requires)
 	m.requiresNode = requiresNodeFromYAML(sf.Requires)
+	m.requiresBins = requiresBinsFromYAML(sf.Requires)
 	m.operations = convertSkillYAMLOperations(sf.Operations)
 	m.params = convertSkillYAMLParams(sf.Params)
 	m.pipeline = convertPipelineSteps(sf.Pipeline)
@@ -1193,15 +2033,15 @@ func extractCaptureDirectives(content string) []map[string]string {
 			continue
 		}
 
-		// Check for bash block start (exclude .norun)
-		if strings.HasPrefix(trimmed, "```bash") && !strings.Contains(trimmed, ".norun") {
+		// Check for executable shell block start (exclude .norun/no-run).
+		if _, norun, ok := parseMarkdownShellFenceStart(trimmed); ok && !norun {
 			inBashBlock = true
 			blockContent.Reset()
 			continue
 		}
 
-		// .norun blocks: consume them without emitting, and clear pending captures
-		if strings.HasPrefix(trimmed, "```bash") && strings.Contains(trimmed, ".norun") {
+		// .norun/no-run shell blocks: consume them without emitting, and clear pending captures.
+		if _, norun, ok := parseMarkdownShellFenceStart(trimmed); ok && norun {
 			pendingCaptures = make(map[string]string)
 			continue
 		}

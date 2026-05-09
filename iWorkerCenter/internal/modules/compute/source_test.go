@@ -34,6 +34,29 @@ func TestNewSourceManagerDefaultsToCloud(t *testing.T) {
 	}
 }
 
+func TestSourceManagerHandlesMissingSyncManager(t *testing.T) {
+	src := NewSourceManager(nil)
+	src.SetFallbackProvidersResolver(func() []ComputeProvider {
+		return []ComputeProvider{{ID: "local-1", Name: "Local Backup"}}
+	})
+
+	if err := src.SetSource("local"); err != ErrNoPermission {
+		t.Fatalf("SetSource(local) with nil sync manager: err = %v, want ErrNoPermission", err)
+	}
+	if src.IsLocalEditAllowed() {
+		t.Fatal("IsLocalEditAllowed should be false without sync manager permission")
+	}
+	src.CheckForceSync()
+
+	providers, effectiveSource, fallback := src.GetActiveProviderSnapshot()
+	if !fallback || effectiveSource != "local_fallback" {
+		t.Fatalf("snapshot effectiveSource=%q fallback=%v, want local_fallback true", effectiveSource, fallback)
+	}
+	if len(providers) != 1 || providers[0].ID != "local-1" {
+		t.Fatalf("providers = %+v, want local fallback provider", providers)
+	}
+}
+
 func TestSetSourceToLocalRequiresPermission(t *testing.T) {
 	sm, srv := newTestSyncManager(nil, false, false)
 	defer srv.Close()
@@ -203,6 +226,44 @@ func TestCheckForceSyncTriggersRevert(t *testing.T) {
 	}
 	if len(src.GetLocalProviders()) != 0 {
 		t.Fatal("local providers should be cleared after CheckForceSync")
+	}
+}
+
+func TestBackgroundSyncForceSyncRevertsSource(t *testing.T) {
+	forceSync := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := syncResponse{
+			Providers:         []ComputeProvider{{ID: "cp1", Name: "Cloud Provider"}},
+			ComputePermission: true,
+			ForceSync:         forceSync,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	sm := NewSyncManager(srv.URL, "center-1", "secret")
+	src := NewSourceManager(sm)
+	if err := sm.SyncNow(); err != nil {
+		t.Fatalf("initial SyncNow: %v", err)
+	}
+	if err := src.SetSource("local"); err != nil {
+		t.Fatalf("SetSource(local): %v", err)
+	}
+	if err := src.SetLocalProviders([]ComputeProvider{{ID: "local-1"}}); err != nil {
+		t.Fatalf("SetLocalProviders: %v", err)
+	}
+
+	forceSync = true
+	if err := sm.SyncNow(); err != nil {
+		t.Fatalf("force SyncNow: %v", err)
+	}
+
+	if src.GetSource() != "cloud" {
+		t.Fatalf("source = %q after force sync, want cloud", src.GetSource())
+	}
+	if len(src.GetLocalProviders()) != 0 {
+		t.Fatal("local providers should be cleared after force sync")
 	}
 }
 

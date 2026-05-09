@@ -74,7 +74,7 @@ func (c *Center) RuntimeStatusSnapshot() RuntimeStatus {
 	}
 	if c.ComputeSourceManager != nil {
 		status.ComputeSource = c.ComputeSourceManager.GetSource()
-		providers, effectiveSource, fallback := c.ComputeSourceManager.GetActiveProviderSnapshot()
+		providers, effectiveSource, _ := c.ComputeSourceManager.GetActiveProviderSnapshot()
 		switch effectiveSource {
 		case "cloud":
 			status.RuntimeProviderMode = "cloud_sync"
@@ -83,16 +83,14 @@ func (c *Center) RuntimeStatusSnapshot() RuntimeStatus {
 		case "local_fallback":
 			status.RuntimeProviderMode = "local_settings_fallback"
 		}
-		if fallback || effectiveSource == "local" || effectiveSource == "local_fallback" {
-			status.ProviderCount = len(providers)
-		}
+		status.ProviderCount = len(providers)
 	}
 	if c.ComputeSyncManager != nil {
 		syncStatus := c.ComputeSyncManager.GetSyncStatus()
 		status.ComputeSyncStatus = &syncStatus
 		status.ComputePermission = c.ComputeSyncManager.GetComputePermission()
 		status.CloudProviderCount = len(c.ComputeSyncManager.GetProviders())
-		if status.CloudProviderCount > 0 {
+		if c.ComputeSourceManager == nil && status.CloudProviderCount > 0 {
 			status.ProviderCount = status.CloudProviderCount
 		}
 	}
@@ -141,6 +139,11 @@ func (c *Center) IWorkerReadinessSnapshot() IWorkerReadiness {
 			"/client/goalwatch/pushes",
 			"/client/iworker/instances",
 			"/client/iworker/memory-stats",
+			"/client/config/version",
+			"/client/config/latest",
+			"/client/config/apply-result",
+			"/client/capabilities",
+			"/client/mcp-servers",
 			"/diworker-auth/methods",
 			"/diworker-auth/enrollment/verify",
 		},
@@ -202,6 +205,7 @@ func (c *Center) CloudRuntimeStatusSnapshot() *tenant.CloudCenterRuntime {
 			RuntimeImpact: status.ComputeSyncStatus.RuntimeImpact,
 		}
 	}
+	runtime.CloudHeartbeat = status.CloudHeartbeat
 	return runtime
 }
 

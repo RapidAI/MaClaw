@@ -190,3 +190,94 @@ func TestPhaseGateAndDirectMode_NoOverlap(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveExecutionModeForTaskRunRejectsStaleRun(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.ExternalChecker = &fakeExternalChecker{available: true}
+	oldTask := &TaskItem{Index: 0, Title: "old"}
+	o.Activate([]*TaskItem{oldTask}, "", "", "/proj", "claude")
+	task, runID := o.CurrentTaskHandle()
+
+	o.Activate([]*TaskItem{{Index: 0, Title: "new"}}, "", "", "/proj", "claude")
+	mode, ok := o.ResolveExecutionModeForTaskRun(task, runID)
+	if ok {
+		t.Fatalf("expected stale run to be rejected, got mode %s", mode)
+	}
+	if oldTask.ExecMode != "" {
+		t.Fatalf("stale task mode should not be resolved, got %s", oldTask.ExecMode)
+	}
+}
+
+func TestResolveExecutionModeForTaskRunCachesCurrentTask(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.ExternalChecker = &fakeExternalChecker{available: true}
+	o.Activate([]*TaskItem{{Index: 0, Title: "T1"}}, "", "", "/proj", "claude")
+	task, runID := o.CurrentTaskHandle()
+
+	mode, ok := o.ResolveExecutionModeForTaskRun(task, runID)
+	if !ok || mode != TaskExecModeExternal {
+		t.Fatalf("expected current run external mode, got %s ok=%v", mode, ok)
+	}
+
+	o.ExternalChecker = &fakeExternalChecker{available: false}
+	mode, ok = o.ResolveExecutionModeForTaskRun(task, runID)
+	if !ok || mode != TaskExecModeExternal {
+		t.Fatalf("expected cached external mode, got %s ok=%v", mode, ok)
+	}
+}
+
+func TestDegradeTaskToDirectModeForRunTargetsTask(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	tasks := []*TaskItem{
+		{Index: 0, Title: "T1", ExecMode: TaskExecModeExternal},
+		{Index: 1, Title: "T2", ExecMode: TaskExecModeExternal},
+	}
+	o.Activate(tasks, "", "", "/proj", "claude")
+	tasks[0].ExecMode = TaskExecModeExternal
+	tasks[1].ExecMode = TaskExecModeExternal
+	runID := o.RunID
+	o.CurrentIndex = 1
+
+	if !o.DegradeTaskToDirectModeForRun(tasks[0], runID) {
+		t.Fatal("expected degradation for target task")
+	}
+	if tasks[0].ExecMode != TaskExecModeDirect {
+		t.Fatalf("expected target task direct mode, got %s", tasks[0].ExecMode)
+	}
+	if tasks[1].ExecMode != TaskExecModeExternal {
+		t.Fatalf("current task should remain external, got %s", tasks[1].ExecMode)
+	}
+}
+
+func TestTaskExecutionModeForRunRejectsForeignTask(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.Activate([]*TaskItem{{Index: 0, Title: "T1", ExecMode: TaskExecModeExternal}}, "", "", "/proj", "claude")
+	_, runID := o.CurrentTaskHandle()
+	foreign := &TaskItem{Index: 99, Title: "foreign", ExecMode: TaskExecModeExternal}
+
+	mode, ok := o.TaskExecutionModeForRun(foreign, runID)
+	if ok {
+		t.Fatalf("expected foreign task to be rejected, got mode %s", mode)
+	}
+	if o.DegradeTaskToDirectModeForRun(foreign, runID) {
+		t.Fatal("expected foreign task degradation to be rejected")
+	}
+}
+
+func TestRunAwareExecutionModeRejectsDeactivatedRun(t *testing.T) {
+	o := NewTaskExecutionOrchestrator()
+	o.ExternalChecker = &fakeExternalChecker{available: true}
+	o.Activate([]*TaskItem{{Index: 0, Title: "T1"}}, "", "", "/proj", "claude")
+	task, runID := o.CurrentTaskHandle()
+	o.Deactivate()
+
+	if _, ok := o.ResolveExecutionModeForTaskRun(task, runID); ok {
+		t.Fatal("expected deactivated run to reject mode resolution")
+	}
+	if _, ok := o.TaskExecutionModeForRun(task, runID); ok {
+		t.Fatal("expected deactivated run to reject mode read")
+	}
+	if o.DegradeTaskToDirectModeForRun(task, runID) {
+		t.Fatal("expected deactivated run to reject degradation")
+	}
+}

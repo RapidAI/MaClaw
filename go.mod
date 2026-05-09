@@ -3,6 +3,7 @@ module github.com/RapidAI/CodeClaw
 go 1.25.5
 
 require (
+	github.com/RapidAI/CodeClaw/datasrv v0.0.0
 	github.com/UserExistsError/conpty v0.1.4
 	github.com/VantageDataChat/GoExcel v0.0.0-20260217221828-9e17ca484c06
 	github.com/VantageDataChat/GoPDF2 v0.0.0-20260403061807-87cb97c2bda2
@@ -16,10 +17,13 @@ require (
 	github.com/go-lark/lark/v2 v2.0.0-beta.6
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pkg/sftp v1.13.10
 	github.com/refraction-networking/utls v1.8.2
+	github.com/shakinm/xlsReader v0.9.12
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/stretchr/testify v1.10.0
 	github.com/tetratelabs/wazero v1.11.0
 	github.com/viterin/vek v0.4.3
@@ -64,11 +68,11 @@ require (
 	github.com/leaanthony/gosod v1.0.4 // indirect
 	github.com/leaanthony/slicer v1.6.0 // indirect
 	github.com/leaanthony/u v1.1.1 // indirect
-	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
+	github.com/metakeule/fmtdate v1.1.2 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
@@ -95,6 +99,10 @@ require (
 )
 
 replace github.com/energye/systray v1.0.2 => ./gui/internal/systray
+
+replace github.com/RapidAI/CodeClaw/datasrv => ./datasrv
+
+replace github.com/shakinm/xlsReader => github.com/Vantagics/LegacyOfficeReader v0.0.0-20260227214529-f028c77dd3e8
 
 // replace github.com/VantageDataChat/GoPDF2 => ../GoPDF2
 

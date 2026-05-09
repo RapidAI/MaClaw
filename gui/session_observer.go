@@ -44,18 +44,25 @@ func SendAndObserveSession(manager *RemoteSessionManager, sessionID, text string
 			ts = 120.0
 		}
 		targetMs := int(ts * 1000)
-		base := []int{500, 500, 1000, 1000, 1500, 1500, 2000}
-		sum := 0
-		for _, v := range base {
-			sum += v
+		if targetMs < 500 {
+			targetMs = 500
 		}
-		custom := make([]int, len(base))
-		copy(custom, base)
-		for sum < targetMs {
-			custom = append(custom, 3000)
-			sum += 3000
+		if targetMs <= 500 {
+			waitMs = []int{targetMs}
+		} else {
+			base := []int{500, 500, 1000, 1000, 1500, 1500, 2000}
+			sum := 0
+			for _, v := range base {
+				sum += v
+			}
+			custom := make([]int, len(base))
+			copy(custom, base)
+			for sum < targetMs {
+				custom = append(custom, 3000)
+				sum += 3000
+			}
+			waitMs = custom
 		}
-		waitMs = custom
 	}
 	for _, ms := range waitMs {
 		time.Sleep(time.Duration(ms) * time.Millisecond)

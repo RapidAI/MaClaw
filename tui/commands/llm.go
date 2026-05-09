@@ -3,14 +3,18 @@ package commands
 import (
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
-	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 )
 
@@ -45,6 +49,10 @@ func RunLLM(args []string) error {
 	}
 }
 
+func llmTUISetupHint() string {
+	return llmTUISetupHintForLang("zh")
+}
+
 // LoadLLMConfig 从本地配置文件加载 LLM 配置（供外部复用）。
 func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 	store := NewFileConfigStore(ResolveDataDir())
@@ -59,14 +67,22 @@ func LoadLLMConfig() (corelib.MaclawLLMConfig, error) {
 		Protocol:      cfg.MaclawLLMProtocol,
 		ContextLength: cfg.MaclawLLMContextLength,
 		TimeoutSec:    cfg.MaclawLLMTimeoutSec,
+		ProviderName:  cfg.MaclawLLMCurrentProvider,
 	}
 	// Resolve AgentType and SupportsVision from the current provider (not stored as flat fields).
 	for _, p := range cfg.MaclawLLMProviders {
 		if p.Name == cfg.MaclawLLMCurrentProvider {
+			if strings.TrimSpace(llm.Key) == "" {
+				llm.Key = strings.TrimSpace(p.Key)
+			}
 			llm.AgentType = p.AgentType
 			llm.SupportsVision = p.SupportsVision
+			llm.WireAPI = p.WireAPI
 			break
 		}
+	}
+	if strings.TrimSpace(llm.Key) == "" && llmConfigUsesHubService(cfg) {
+		llm.Key = strings.TrimSpace(cfg.RemoteViewerToken)
 	}
 	return llm, nil
 }
@@ -126,8 +142,18 @@ func presetProviders() []presetProvider {
 			AuthType: "apikey", Hint: "console.anthropic.com 获取 API Key",
 		},
 		{
+			Name: "Ollama Local", URL: "http://localhost:11434/v1",
+			Model: "qwen2.5-coder:32b", ContextLength: 32000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "none", Hint: "本机/内网 Ollama，通常不需要 API Key",
+		},
+		{
+			Name: "LM Studio Local", URL: "http://localhost:1234/v1",
+			Model: "auto", ContextLength: 32000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "none", Hint: "本机 LM Studio OpenAI 兼容接口",
+		},
+		{
 			Name: "自定义", URL: "", Model: "",
-			AuthType: "apikey", Hint: "手动输入 URL、Model、API Key",
+			AuthType: "apikey", Hint: "手动输入 URL、Model；本地/内网地址可跳过 API Key",
 		},
 	}
 }
@@ -194,13 +220,22 @@ func llmSetup(args []string) error {
 		}
 	}
 
-	// 输入 API Key
-	fmt.Print("  API Key: ")
+	// 输入 API Key；本地/内网兼容接口可以跳过。
+	apiKeyRequired := selected.AuthType != "none" && llmURLUsuallyNeedsKey(apiURL)
+	if apiKeyRequired {
+		fmt.Print("  API Key: ")
+	} else {
+		fmt.Print("  API Key（可选，直接回车跳过）: ")
+	}
 	var apiKey string
 	fmt.Scanln(&apiKey)
 	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
+	if apiKey == "" && apiKeyRequired {
 		return fmt.Errorf("API Key 不能为空")
+	}
+	providerAuthType := selected.AuthType
+	if selected.AuthType == "none" || (!apiKeyRequired && apiKey == "") {
+		providerAuthType = "none"
 	}
 
 	// 保存到配置
@@ -224,6 +259,8 @@ func llmSetup(args []string) error {
 			appCfg.MaclawLLMProviders[i].Model = model
 			appCfg.MaclawLLMProviders[i].Protocol = protocol
 			appCfg.MaclawLLMProviders[i].AgentType = agentType
+			appCfg.MaclawLLMProviders[i].AuthType = providerAuthType
+			appCfg.MaclawLLMProviders[i].IsCustom = selected.Name == "自定义"
 			if contextLength > 0 {
 				appCfg.MaclawLLMProviders[i].ContextLength = contextLength
 			}
@@ -241,6 +278,7 @@ func llmSetup(args []string) error {
 			AgentType:     agentType,
 			ContextLength: contextLength,
 			TimeoutSec:    selected.TimeoutSec,
+			AuthType:      providerAuthType,
 			IsCustom:      selected.Name == "自定义",
 		}
 		appCfg.MaclawLLMProviders = append(appCfg.MaclawLLMProviders, p)
@@ -275,12 +313,29 @@ func llmStatus(args []string) error {
 
 	llm, err := LoadLLMConfig()
 	configured := err == nil && strings.TrimSpace(llm.URL) != "" && strings.TrimSpace(llm.Model) != ""
+	store := NewFileConfigStore(ResolveDataDir())
+	cfg, cfgErr := store.LoadConfig()
+	hubServiceReady := cfgErr == nil && remoteHubServiceReady(cfg)
+	missingKey := false
+	mcpCount := 0
+	lang := "zh"
+	if cfgErr == nil {
+		lang = i18n.NormalizeLang(cfg.Language)
+		mcpCount = len(cfg.MCPServers) + len(cfg.LocalMCPServers)
+		configured = llmConfiguredFromAppConfig(cfg)
+		missingKey = llmMissingProviderKey(cfg)
+	}
 
 	info := map[string]interface{}{
-		"configured": configured,
-		"url":        llm.URL,
-		"model":      llm.Model,
-		"protocol":   llm.Protocol,
+		"configured":        configured,
+		"url":               llm.URL,
+		"model":             llm.Model,
+		"protocol":          llm.Protocol,
+		"hub_service_ready": hubServiceReady,
+		"missing_key":       missingKey,
+		"mcp_count":         mcpCount,
+		"next_action":       llmNextAction(configured, hubServiceReady, mcpCount, lang),
+		"next_tui_command":  llmNextTUICommand(configured, hubServiceReady, mcpCount),
 	}
 	if llm.ContextLength > 0 {
 		info["context_length"] = llm.ContextLength
@@ -288,9 +343,18 @@ func llmStatus(args []string) error {
 	if *jsonOut {
 		return PrintJSON(info)
 	}
+	if lang == "en" {
+		printLLMStatusEN(llm, configured, hubServiceReady, mcpCount, missingKey)
+		return nil
+	}
 	if !configured {
 		fmt.Println("LLM 状态: 未配置")
-		fmt.Println("  请在 GUI 设置或 config set --local 中配置 maclaw_llm_url 和 maclaw_llm_model")
+		if missingKey {
+			fmt.Println("  " + llmMissingKeyHint(lang))
+		} else {
+			fmt.Println("  " + llmUnconfiguredHint(hubServiceReady, lang))
+		}
+		fmt.Printf("  下一步: %s\n", llmNextAction(false, hubServiceReady, mcpCount, lang))
 		return nil
 	}
 	fmt.Println("LLM 状态: 已配置")
@@ -303,7 +367,231 @@ func llmStatus(args []string) error {
 	if llm.Key != "" {
 		fmt.Printf("  API Key:  %s****\n", llm.Key[:min(4, len(llm.Key))])
 	}
+	fmt.Printf("  下一步: %s\n", llmNextAction(true, hubServiceReady, mcpCount, lang))
 	return nil
+}
+
+func printLLMStatusEN(llm corelib.MaclawLLMConfig, configured bool, hubServiceReady bool, mcpCount int, missingKey bool) {
+	if !configured {
+		fmt.Println("LLM status: not configured")
+		if missingKey {
+			fmt.Println("  " + llmMissingKeyHint("en"))
+		} else {
+			fmt.Println("  " + llmUnconfiguredHint(hubServiceReady, "en"))
+		}
+		fmt.Printf("  Next: %s\n", llmNextAction(false, hubServiceReady, mcpCount, "en"))
+		return
+	}
+	fmt.Println("LLM status: configured")
+	fmt.Printf("  URL:      %s\n", llm.URL)
+	fmt.Printf("  Model:    %s\n", llm.Model)
+	fmt.Printf("  Protocol: %s\n", orDefault(llm.Protocol, "openai"))
+	if llm.ContextLength > 0 {
+		fmt.Printf("  Context:  %d tokens\n", llm.ContextLength)
+	}
+	if llm.Key != "" {
+		fmt.Printf("  API Key:  %s****\n", llm.Key[:min(4, len(llm.Key))])
+	}
+	fmt.Printf("  Next: %s\n", llmNextAction(true, hubServiceReady, mcpCount, "en"))
+}
+
+func llmConfiguredFromAppConfig(cfg corelib.AppConfig) bool {
+	if strings.TrimSpace(cfg.MaclawLLMUrl) == "" || strings.TrimSpace(cfg.MaclawLLMModel) == "" {
+		return false
+	}
+	if llmConfigUsesHubService(cfg) {
+		return currentLLMProviderKeyFromAppConfig(cfg) != "" || strings.TrimSpace(cfg.RemoteViewerToken) != ""
+	}
+	if llmProviderNeedsKeyFromAppConfig(cfg) {
+		return currentLLMProviderKeyFromAppConfig(cfg) != ""
+	}
+	return true
+}
+
+func llmMissingProviderKey(cfg corelib.AppConfig) bool {
+	if strings.TrimSpace(cfg.MaclawLLMUrl) == "" || strings.TrimSpace(cfg.MaclawLLMModel) == "" {
+		return false
+	}
+	if llmConfigUsesHubService(cfg) {
+		return false
+	}
+	return llmProviderNeedsKeyFromAppConfig(cfg) && currentLLMProviderKeyFromAppConfig(cfg) == ""
+}
+
+func currentLLMProviderKeyFromAppConfig(cfg corelib.AppConfig) string {
+	if key := strings.TrimSpace(cfg.MaclawLLMKey); key != "" {
+		return key
+	}
+	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+	for _, provider := range cfg.MaclawLLMProviders {
+		if strings.TrimSpace(provider.Name) == current {
+			return strings.TrimSpace(provider.Key)
+		}
+	}
+	return ""
+}
+
+func llmConfigUsesHubService(cfg corelib.AppConfig) bool {
+	current := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+	if llmProviderNameIsOfficial(current) {
+		return true
+	}
+	for _, provider := range cfg.MaclawLLMProviders {
+		if strings.TrimSpace(provider.Name) != current {
+			continue
+		}
+		return provider.IsHubService || llmProviderNameIsOfficial(provider.Name)
+	}
+	return false
+}
+
+func llmProviderNameIsOfficial(name string) bool {
+	name = strings.TrimSpace(name)
+	lower := strings.ToLower(name)
+	return name == "MaClaw官方" || (strings.Contains(name, "MaClaw") && (strings.Contains(name, "官方") || strings.Contains(lower, "official")))
+}
+
+func llmProviderNeedsKeyFromAppConfig(cfg corelib.AppConfig) bool {
+	provider := strings.TrimSpace(cfg.MaclawLLMCurrentProvider)
+	if provider == "" {
+		return llmURLUsuallyNeedsKey(cfg.MaclawLLMUrl)
+	}
+	for _, saved := range cfg.MaclawLLMProviders {
+		if strings.TrimSpace(saved.Name) == provider {
+			authType := strings.TrimSpace(saved.AuthType)
+			if authType != "" {
+				return !strings.EqualFold(authType, "none")
+			}
+			break
+		}
+	}
+	switch provider {
+	case "Ollama Local", "LM Studio Local":
+		return false
+	case "Custom":
+		return llmURLUsuallyNeedsKey(cfg.MaclawLLMUrl)
+	case "OpenAI API Key", "OpenAI (API Key)", "Anthropic",
+		"Zhipu GLM Lobster", "Zhipu GLM Coding", "智谱 GLM (龙虾)", "智谱 GLM (Coding)",
+		"MiniMax", "Kimi", "Xfyun Astron", "讯飞星辰":
+		return true
+	}
+	return llmURLUsuallyNeedsKey(cfg.MaclawLLMUrl)
+}
+
+func llmURLUsuallyNeedsKey(rawURL string) bool {
+	host := llmURLHost(rawURL)
+	if host == "" {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	lower := strings.ToLower(host)
+	if lower == "localhost" || lower == "host.docker.internal" || strings.HasSuffix(lower, ".local") {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return true
+	}
+	return !(addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsUnspecified())
+}
+
+func llmURLHost(rawURL string) string {
+	value := strings.TrimSpace(rawURL)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		return parsed.Hostname()
+	}
+	if cut, _, ok := strings.Cut(value, "/"); ok {
+		value = cut
+	}
+	if cut, _, ok := strings.Cut(value, "?"); ok {
+		value = cut
+	}
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		return host
+	}
+	if strings.Count(value, ":") == 1 {
+		if host, _, ok := strings.Cut(value, ":"); ok {
+			return host
+		}
+	}
+	return value
+}
+
+func llmUnconfiguredHint(hubServiceReady bool, lang string) string {
+	cliName := llmTUIName()
+	if lang == "en" {
+		if hubServiceReady {
+			return fmt.Sprintf("Hub service credentials are ready. Recommended: run %s redeem for MaClaw official service; or run %s llm setup for a local/custom LLM.", cliName, cliName)
+		}
+		return llmTUISetupHintForLang(lang)
+	}
+	if hubServiceReady {
+		return fmt.Sprintf("Hub 服务凭据已可用。推荐运行 %s redeem 兑换 MaClaw 官方服务；也可运行 %s llm setup 选择本地/自定义 LLM。", cliName, cliName)
+	}
+	return llmTUISetupHintForLang(lang)
+}
+
+func llmMissingKeyHint(lang string) string {
+	cliName := llmTUIName()
+	if lang == "en" {
+		return fmt.Sprintf("Selected provider needs an API key. Run %s llm setup to open the TUI key field, or run %s redeem for MaClaw official service.", cliName, cliName)
+	}
+	return fmt.Sprintf("当前服务商需要 API Key。运行 %s llm setup 打开 TUI 密钥配置；也可运行 %s redeem 兑换 MaClaw 官方服务。", cliName, cliName)
+}
+
+func llmNextAction(configured bool, hubServiceReady bool, mcpCount int, lang string) string {
+	cliName := llmTUIName()
+	if lang == "en" {
+		if !configured {
+			if hubServiceReady {
+				return fmt.Sprintf("Run %s redeem to redeem or check MaClaw official service, or run %s status for the full readiness overview.", cliName, cliName)
+			}
+			return fmt.Sprintf("Run %s llm setup to open TUI LLM settings, or run %s status for the full readiness overview.", cliName, cliName)
+		}
+		if mcpCount == 0 {
+			return fmt.Sprintf("Run %s llm test to verify the connection; optional: run %s mcp to add tool templates.", cliName, cliName)
+		}
+		return fmt.Sprintf("Run %s llm test to verify the connection, or run %s status for the full readiness overview.", cliName, cliName)
+	}
+	if !configured {
+		if hubServiceReady {
+			return fmt.Sprintf("运行 %s redeem 兑换或检查 MaClaw 官方服务；也可运行 %s status 查看整体状态。", cliName, cliName)
+		}
+		return fmt.Sprintf("运行 %s llm setup 打开 TUI LLM 设置；或运行 %s status 查看整体初始化状态。", cliName, cliName)
+	}
+	if mcpCount == 0 {
+		return fmt.Sprintf("运行 %s llm test 验证连接；可选：运行 %s mcp 从模板添加工具能力。", cliName, cliName)
+	}
+	return fmt.Sprintf("运行 %s llm test 验证连接；或运行 %s status 查看整体初始化状态。", cliName, cliName)
+}
+
+func llmNextTUICommand(configured bool, hubServiceReady bool, mcpCount int) string {
+	cliName := llmTUIName()
+	if configured {
+		if mcpCount == 0 {
+			return cliName + " mcp"
+		}
+		return cliName + " status"
+	}
+	if hubServiceReady {
+		return cliName + " redeem"
+	}
+	return cliName + " llm setup"
+}
+
+func llmTUIName() string {
+	return strings.ToLower(brand.Current().DisplayName) + "-tui"
+}
+
+func llmTUISetupHintForLang(lang string) string {
+	cliName := llmTUIName()
+	if lang == "en" {
+		return fmt.Sprintf("Run %s llm setup to open TUI LLM settings; scripted text wizard: %s llm setup cli.", cliName, cliName)
+	}
+	return fmt.Sprintf("运行 %s llm setup 打开 TUI LLM 设置；脚本/文字向导可用 %s llm setup cli。", cliName, cliName)
 }
 
 // ensureTUIoAuthToken 在 TUI 的 LLM 请求前检查并刷新 OAuth token。
@@ -354,7 +642,7 @@ func llmTest(args []string) error {
 		return fmt.Errorf("加载 LLM 配置失败: %w", err)
 	}
 	if strings.TrimSpace(llm.URL) == "" || strings.TrimSpace(llm.Model) == "" {
-		return fmt.Errorf("LLM 未配置")
+		return fmt.Errorf("LLM 未配置。%s", llmTUISetupHint())
 	}
 
 	fmt.Printf("测试 LLM: %s (%s)...\n", llm.Model, llm.URL)
@@ -394,7 +682,7 @@ func llmPing(args []string) error {
 		return fmt.Errorf("加载 LLM 配置失败: %w", err)
 	}
 	if strings.TrimSpace(llm.URL) == "" {
-		return fmt.Errorf("LLM URL 未配置")
+		return fmt.Errorf("LLM URL 未配置。%s", llmTUISetupHint())
 	}
 
 	// 简单 HTTP GET 检测端点可达性
@@ -451,6 +739,7 @@ func llmProviders(args []string) error {
 	}
 	if len(cfg.MaclawLLMProviders) == 0 {
 		fmt.Println("未配置 LLM 提供商。")
+		fmt.Println("  " + llmTUISetupHint())
 		if cfg.MaclawLLMUrl != "" {
 			fmt.Printf("  当前直接配置: %s (%s)\n", cfg.MaclawLLMModel, cfg.MaclawLLMUrl)
 		}
@@ -521,7 +810,7 @@ func llmSetProvider(args []string) error {
 			names = append(names, p.Name)
 		}
 		if len(names) == 0 {
-			return fmt.Errorf("未配置任何 LLM 提供商，请先在 GUI 中添加")
+			return fmt.Errorf("未配置任何 LLM 提供商。%s", llmTUISetupHint())
 		}
 		return fmt.Errorf("提供商 '%s' 不存在，可用: %s", name, strings.Join(names, ", "))
 	}

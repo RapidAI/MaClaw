@@ -160,6 +160,10 @@ func DeleteCenterHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if err := svc.Delete(r.Context(), id); err != nil {
+			if errors.Is(err, centers.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "CENTER_NOT_FOUND", "center not found")
+				return
+			}
 			writeError(w, http.StatusBadRequest, "DELETE_FAILED", err.Error())
 			return
 		}
@@ -183,58 +187,6 @@ func HeartbeatHandler(svc *centers.Service) http.HandlerFunc {
 	}
 }
 
-func ListCenterTenantsHandler(svc *centers.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		tenants, err := svc.ListCenterTenants(r.Context(), r.PathValue("id"))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "CENTER_TENANTS_FAILED", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"tenants": tenants})
-	}
-}
-
-func CreateCenterTenantHandler(svc *centers.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req centers.CenterTenantRequest
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
-			return
-		}
-		tenant, err := svc.CreateCenterTenant(r.Context(), r.PathValue("id"), req)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "CREATE_CENTER_TENANT_FAILED", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, tenant)
-	}
-}
-
-func UpdateCenterTenantHandler(svc *centers.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req centers.CenterTenantRequest
-		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
-			return
-		}
-		tenant, err := svc.UpdateCenterTenant(r.Context(), r.PathValue("id"), r.PathValue("tenant_id"), req)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "UPDATE_CENTER_TENANT_FAILED", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, tenant)
-	}
-}
-
-func DeleteCenterTenantHandler(svc *centers.Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if err := svc.DeleteCenterTenant(r.Context(), r.PathValue("id"), r.PathValue("tenant_id")); err != nil {
-			writeError(w, http.StatusBadRequest, "DELETE_CENTER_TENANT_FAILED", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	}
-}
 func ServiceReadinessHandler(svc *centers.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		readiness, err := svc.ServiceReadiness(r.Context(), r.PathValue("id"))

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/compute"
@@ -93,6 +94,26 @@ func TestCreateProviderValidationError(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestCreateProviderRejectsOversizedBody(t *testing.T) {
+	h, store := setupComputeTest(t)
+
+	body := `{"name":"large-provider","base_url":"https://api.example.com","protocol":"openai","description":"` + strings.Repeat("x", 1<<16+1024)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/compute/providers", bytes.NewBufferString(body))
+	w := httptest.NewRecorder()
+	h.CreateProvider().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	providers, err := store.ListProviders(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 0 {
+		t.Fatalf("unexpected providers after oversized body: %+v", providers)
 	}
 }
 
@@ -298,6 +319,74 @@ func TestToggleProvider(t *testing.T) {
 	if resp.APIKey != "" {
 		t.Error("api_key should be masked")
 	}
+}
+
+func TestProviderMutationsMarkCentersForceSync(t *testing.T) {
+	h, computeStore := setupComputeTest(t)
+	h.centerSvc = &mockCenterAuthService{centers: map[string]*cloudstore.Center{
+		"center-1": {ID: "center-1", Status: "active"},
+		"center-2": {ID: "center-2", Status: "active"},
+	}}
+
+	assertForceSync := func(label string) {
+		t.Helper()
+		for _, centerID := range []string{"center-1", "center-2"} {
+			forceSync, err := computeStore.GetForceSync(context.Background(), centerID)
+			if err != nil {
+				t.Fatalf("%s: GetForceSync(%s): %v", label, centerID, err)
+			}
+			if !forceSync {
+				t.Fatalf("%s: expected force_sync for %s", label, centerID)
+			}
+			if err := computeStore.ClearForceSync(context.Background(), centerID); err != nil {
+				t.Fatalf("%s: ClearForceSync(%s): %v", label, centerID, err)
+			}
+		}
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/admin/compute/providers", h.CreateProvider())
+	mux.HandleFunc("PUT /api/admin/compute/providers/{id}", h.UpdateProvider())
+	mux.HandleFunc("POST /api/admin/compute/providers/{id}/toggle", h.ToggleProvider())
+	mux.HandleFunc("DELETE /api/admin/compute/providers/{id}", h.DeleteProvider())
+
+	createBody := `{"name":"new-provider","base_url":"https://api.example.com","api_key":"sk-123","protocol":"openai","user_agent":"openclaw","compute_type":"general","model":"gpt-4","enabled":true}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/compute/providers", bytes.NewBufferString(createBody))
+	createRes := httptest.NewRecorder()
+	mux.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRes.Code, createRes.Body.String())
+	}
+	var created compute.ComputeProvider
+	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	assertForceSync("create")
+
+	updateBody := `{"name":"updated-provider","base_url":"https://api.updated.example.com","protocol":"openai","user_agent":"openclaw","compute_type":"general","model":"gpt-4o","enabled":true}`
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/admin/compute/providers/"+created.ID, bytes.NewBufferString(updateBody))
+	updateRes := httptest.NewRecorder()
+	mux.ServeHTTP(updateRes, updateReq)
+	if updateRes.Code != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", updateRes.Code, updateRes.Body.String())
+	}
+	assertForceSync("update")
+
+	toggleReq := httptest.NewRequest(http.MethodPost, "/api/admin/compute/providers/"+created.ID+"/toggle", nil)
+	toggleRes := httptest.NewRecorder()
+	mux.ServeHTTP(toggleRes, toggleReq)
+	if toggleRes.Code != http.StatusOK {
+		t.Fatalf("toggle status = %d body=%s", toggleRes.Code, toggleRes.Body.String())
+	}
+	assertForceSync("toggle")
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/admin/compute/providers/"+created.ID, nil)
+	deleteRes := httptest.NewRecorder()
+	mux.ServeHTTP(deleteRes, deleteReq)
+	if deleteRes.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", deleteRes.Code, deleteRes.Body.String())
+	}
+	assertForceSync("delete")
 }
 
 func TestToggleProviderNotFound(t *testing.T) {

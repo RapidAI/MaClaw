@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -454,7 +455,7 @@ func (s *Service) AckPush(tenantID, colleagueID, eventID, status, note string, n
 				return AckResult{}, fmt.Errorf("push already acknowledged: %s", eventID)
 			}
 			ackEventID := idgen.New("gack")
-			ackNote := fmt.Sprintf("ack_event_id=%s status=%s note=%s", eventID, status, sanitizeNote(note))
+			ackNote := fmt.Sprintf("ack_event_id=%s status=%s note=%s", url.QueryEscape(eventID), status, sanitizeNote(note))
 			if err := s.collabRepo.InsertEvent(tenantID, &collaboration.TaskEvent{ID: ackEventID, TaskID: task.ID, Event: EventGoalPushAck, ActorID: colleagueID, Note: ackNote, CreatedAt: now}); err != nil {
 				return AckResult{}, err
 			}
@@ -510,15 +511,15 @@ func (s *Service) recordPush(tenantID string, task *collaboration.Task, push Pus
 		return false, nil
 	}
 	push = enrichRecoveryFields(push)
-	note := fmt.Sprintf("reason=%s recommended_action=%s age_seconds=%d to_colleague_id=%s role_code=%s", push.Reason, firstNonEmpty(push.RecommendedAction, recommendedActionFor(push.Reason, push.Status)), push.AgeSeconds, strings.TrimSpace(push.ToColleagueID), strings.TrimSpace(push.ToRoleCode))
+	note := fmt.Sprintf("reason=%s recommended_action=%s age_seconds=%d to_colleague_id=%s role_code=%s", noteValue(push.Reason), noteValue(firstNonEmpty(push.RecommendedAction, recommendedActionFor(push.Reason, push.Status))), push.AgeSeconds, noteValue(push.ToColleagueID), noteValue(push.ToRoleCode))
 	if strings.TrimSpace(push.WorkflowStepInstanceID) != "" {
-		note += fmt.Sprintf(" workflow_step_instance_id=%s", strings.TrimSpace(push.WorkflowStepInstanceID))
+		note += fmt.Sprintf(" workflow_step_instance_id=%s", noteValue(push.WorkflowStepInstanceID))
 	}
 	if strings.TrimSpace(push.RecoveryAction) != "" {
-		note += fmt.Sprintf(" recovery_action=%s recovery_method=%s recovery_path=%s", strings.TrimSpace(push.RecoveryAction), strings.TrimSpace(push.RecoveryMethod), strings.TrimSpace(push.RecoveryPath))
+		note += fmt.Sprintf(" recovery_action=%s recovery_method=%s recovery_path=%s", noteValue(push.RecoveryAction), noteValue(push.RecoveryMethod), noteValue(push.RecoveryPath))
 	}
 	if strings.TrimSpace(push.ExecutorStatus) != "" {
-		note += fmt.Sprintf(" executor_status=%s executor_heartbeat_age_seconds=%d", strings.TrimSpace(push.ExecutorStatus), push.ExecutorHeartbeatAgeSeconds)
+		note += fmt.Sprintf(" executor_status=%s executor_heartbeat_age_seconds=%d", noteValue(push.ExecutorStatus), push.ExecutorHeartbeatAgeSeconds)
 	}
 	eventID := deterministicPushEventID(tenantID, task.ID, now, s.config.PushCooldown)
 	err := s.collabRepo.InsertEvent(tenantID, &collaboration.TaskEvent{ID: eventID, TaskID: task.ID, Event: EventGoalPush, ActorID: "iworkercenter.goalwatch", Note: note, CreatedAt: now})
@@ -637,11 +638,12 @@ func recoveryPathForWorkflowAction(action, workflowStepID string) string {
 	if workflowStepID == "" {
 		return ""
 	}
+	escapedStepID := url.PathEscape(workflowStepID)
 	switch strings.TrimSpace(action) {
 	case "start_workflow_step":
-		return "/runtime/workflows/steps/" + workflowStepID + "/start"
+		return "/runtime/workflows/steps/" + escapedStepID + "/start"
 	case "resume_workflow_step":
-		return "/runtime/workflows/steps/" + workflowStepID + "/resume"
+		return "/runtime/workflows/steps/" + escapedStepID + "/resume"
 	default:
 		return ""
 	}
@@ -829,13 +831,23 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 			m.recordStatus(status)
 			return
 		}
-		defer svc.releaseShardLease(context.Background(), tenantID, 0, 1, owner)
 		result, err := svc.CheckTenant(tenantID, now)
 		if err != nil {
+			if releaseErr := svc.releaseShardLease(context.Background(), tenantID, 0, 1, owner); releaseErr != nil {
+				log.Printf("[goalwatch] release tenant %s shard=0/1 lease failed after check error: %v", tenantID, releaseErr)
+			}
 			log.Printf("[goalwatch] check tenant %s failed: %v", tenantID, err)
 			status.Error = err.Error()
 			status.FinishedAt = time.Now().UTC()
 			status.ShardStatuses = append(status.ShardStatuses, MonitorShardStatus{ShardIndex: 0, ShardCount: 1, LeaseOwner: owner, LeaseHeld: true, Error: err.Error()})
+			m.recordStatus(status)
+			return
+		}
+		if err := svc.releaseShardLease(context.Background(), tenantID, 0, 1, owner); err != nil {
+			log.Printf("[goalwatch] release tenant %s shard=0/1 lease failed: %v", tenantID, err)
+			status.Error = err.Error()
+			status.FinishedAt = time.Now().UTC()
+			status.ShardStatuses = append(status.ShardStatuses, MonitorShardStatus{ShardIndex: 0, ShardCount: 1, Checked: result.Checked, Pushed: result.Pushed, LeaseOwner: owner, LeaseHeld: true, Error: err.Error()})
 			m.recordStatus(status)
 			return
 		}
@@ -866,11 +878,18 @@ func (m *Monitor) checkTenantSharded(tenantID string, now time.Time) {
 				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount}
 				return
 			}
-			defer svc.releaseShardLease(context.Background(), tenantID, shard, shardCount, owner)
 			result, err := svc.CheckTenantShard(tenantID, now, shard, shardCount)
 			if err != nil {
+				if releaseErr := svc.releaseShardLease(context.Background(), tenantID, shard, shardCount, owner); releaseErr != nil {
+					log.Printf("[goalwatch] release tenant %s shard=%d/%d lease failed after check error: %v", tenantID, shard, shardCount, releaseErr)
+				}
 				log.Printf("[goalwatch] check tenant %s shard=%d/%d failed: %v", tenantID, shard, shardCount, err)
 				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, LeaseOwner: owner, LeaseHeld: true, Error: err.Error()}
+				return
+			}
+			if err := svc.releaseShardLease(context.Background(), tenantID, shard, shardCount, owner); err != nil {
+				log.Printf("[goalwatch] release tenant %s shard=%d/%d lease failed: %v", tenantID, shard, shardCount, err)
+				results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, Checked: result.Checked, Pushed: result.Pushed, LeaseOwner: owner, LeaseHeld: true, Error: err.Error()}
 				return
 			}
 			results <- MonitorShardStatus{ShardIndex: shard, ShardCount: shardCount, Checked: result.Checked, Pushed: result.Pushed, LeaseOwner: owner, LeaseHeld: true}
@@ -963,7 +982,10 @@ func (s *Service) acquireShardLease(ctx context.Context, tenantID string, shardI
 	var raw string
 	err = tx.QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key=?`, key).Scan(&raw)
 	if err == sql.ErrNoRows {
-		data, _ := json.Marshal(shardLease{Owner: owner, ExpiresAt: expiresAt})
+		data, err := json.Marshal(shardLease{Owner: owner, ExpiresAt: expiresAt})
+		if err != nil {
+			return "", false, err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, datetime('now'))`, key, string(data)); err != nil {
 			return "", false, err
 		}
@@ -977,12 +999,17 @@ func (s *Service) acquireShardLease(ctx context.Context, tenantID string, shardI
 	}
 	var current shardLease
 	if strings.TrimSpace(raw) != "" {
-		_ = json.Unmarshal([]byte(raw), &current)
+		if err := json.Unmarshal([]byte(raw), &current); err != nil {
+			return "", false, fmt.Errorf("parse goalwatch shard lease %s: %w", key, err)
+		}
 	}
 	if expires, err := time.Parse(time.RFC3339Nano, current.ExpiresAt); err == nil && expires.After(now) && current.Owner != owner {
 		return "", false, nil
 	}
-	data, _ := json.Marshal(shardLease{Owner: owner, ExpiresAt: expiresAt})
+	data, err := json.Marshal(shardLease{Owner: owner, ExpiresAt: expiresAt})
+	if err != nil {
+		return "", false, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE system_settings SET value_json=?, updated_at=datetime('now') WHERE key=?`, string(data), key); err != nil {
 		return "", false, err
 	}
@@ -992,21 +1019,31 @@ func (s *Service) acquireShardLease(ctx context.Context, tenantID string, shardI
 	return owner, true, nil
 }
 
-func (s *Service) releaseShardLease(ctx context.Context, tenantID string, shardIndex, shardCount int, owner string) {
+func (s *Service) releaseShardLease(ctx context.Context, tenantID string, shardIndex, shardCount int, owner string) error {
 	if s == nil || s.collabRepo == nil || s.collabRepo.WriteDB() == nil || s.collabRepo.ReadDB() == nil || strings.TrimSpace(owner) == "" {
-		return
+		return nil
 	}
 	key := goalWatchShardLeaseKey(tenantID, shardIndex, shardCount)
 	var raw string
 	if err := s.collabRepo.ReadDB().QueryRowContext(ctx, `SELECT value_json FROM system_settings WHERE key=?`, key).Scan(&raw); err != nil {
-		return
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
 	}
 	var current shardLease
-	if err := json.Unmarshal([]byte(raw), &current); err != nil || current.Owner != owner {
-		return
+	if err := json.Unmarshal([]byte(raw), &current); err != nil {
+		return fmt.Errorf("parse goalwatch shard lease %s: %w", key, err)
 	}
-	data, _ := json.Marshal(shardLease{Owner: owner, ExpiresAt: time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)})
-	_, _ = s.collabRepo.WriteDB().ExecContext(ctx, `UPDATE system_settings SET value_json=?, updated_at=datetime('now') WHERE key=?`, string(data), key)
+	if current.Owner != owner {
+		return nil
+	}
+	data, err := json.Marshal(shardLease{Owner: owner, ExpiresAt: time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)})
+	if err != nil {
+		return err
+	}
+	_, err = s.collabRepo.WriteDB().ExecContext(ctx, `UPDATE system_settings SET value_json=?, updated_at=datetime('now') WHERE key=?`, string(data), key)
+	return err
 }
 
 func goalWatchTenantPolicyKey(tenantID string) string {
@@ -1104,11 +1141,21 @@ func sanitizeNote(note string) string {
 	return strings.ReplaceAll(note, " ", "_")
 }
 
+func noteValue(value string) string {
+	return url.QueryEscape(strings.TrimSpace(value))
+}
+
 func parseNoteValue(note, key string) string {
 	prefix := key + "="
 	for _, field := range strings.Fields(note) {
 		if strings.HasPrefix(field, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(field, prefix))
+			value := strings.TrimSpace(strings.TrimPrefix(field, prefix))
+			if strings.ContainsAny(value, "%+") {
+				if decoded, err := url.QueryUnescape(value); err == nil {
+					return strings.TrimSpace(decoded)
+				}
+			}
+			return value
 		}
 	}
 	return ""

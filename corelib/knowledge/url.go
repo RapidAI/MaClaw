@@ -1,0 +1,909 @@
+package knowledge
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"html"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/websearch"
+)
+
+const (
+	defaultURLFetchBytes = 5 * 1024 * 1024
+	maxURLFetchBytes     = 10 * 1024 * 1024
+	defaultURLTimeoutSec = 30
+)
+
+var (
+	absoluteURLPattern = regexp.MustCompile(`(?i)\bhttps?://[^\s<>"'(){}\[\]\x{FF0C}\x{FF1B}\x{3001}]+`)
+	attrURLPattern     = regexp.MustCompile(`(?i)\b(?:href|src|data-url)\s*=\s*["']([^"']+)["']`)
+	locURLPattern      = regexp.MustCompile(`(?is)<loc>\s*([^<]+?)\s*</loc>`)
+)
+
+func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, error) {
+	if err := enforceURLDomainPolicy(ctx, s, req.URL); err != nil {
+		return Source{}, err
+	}
+	source, nodes, err := buildURLSourceAndNodes(req, Source{})
+	if err != nil {
+		return Source{}, err
+	}
+	if err := enforceURLDomainPolicy(ctx, s, fallbackText(source.CanonicalURI, source.URI)); err != nil {
+		return Source{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Source{}, err
+	}
+	defer tx.Rollback()
+	if existing, ok, err := findExistingURLSourceForSave(ctx, tx, source); err != nil {
+		return Source{}, err
+	} else if ok {
+		source.ID = existing.ID
+		source.CreatedAt = existing.CreatedAt
+		if err := deleteSourceDerivedRows(ctx, tx, existing.ID); err != nil {
+			return Source{}, err
+		}
+		for i := range nodes {
+			nodes[i].SourceID = source.ID
+		}
+	}
+	if err := insertSource(ctx, tx, source); err != nil {
+		return Source{}, err
+	}
+	if err := addSourceLabelsTx(ctx, tx, source.ID, ingestLabelsForSource(source, req.Labels, req.AutoLabels)); err != nil {
+		return Source{}, err
+	}
+	if err := insertDocumentNodes(ctx, tx, nodes); err != nil {
+		return Source{}, err
+	}
+	source, err = s.DistillAndSaveCardsWithMode(ctx, tx, source, nodes, req.DistillMode)
+	if err != nil {
+		return Source{}, err
+	}
+	if err := insertSourceVersionTx(ctx, tx, source, "save_url"); err != nil {
+		return Source{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Source{}, err
+	}
+	_, _ = s.RefreshSourceTopicLinks(ctx, source.ID, 8)
+	sources := []Source{source}
+	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
+		return Source{}, err
+	}
+	if err := s.hydrateSourceLabels(ctx, sources); err != nil {
+		return Source{}, err
+	}
+	return sources[0], nil
+}
+
+func (s *SQLiteStore) SaveURLs(ctx context.Context, req URLBatchSaveRequest) URLBatchSaveResult {
+	result := URLBatchSaveResult{}
+	seen := make(map[string]struct{}, len(req.URLs))
+	for _, rawURL := range splitURLBatchInputs(req.URLs) {
+		if _, ok := seen[rawURL]; ok {
+			result.Skipped++
+			result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, Status: "skipped_duplicate"})
+			continue
+		}
+		seen[rawURL] = struct{}{}
+		result.Requested++
+		source, err := s.SaveURL(ctx, URLSaveRequest{
+			URL:         rawURL,
+			OwnerID:     req.OwnerID,
+			TenantID:    req.TenantID,
+			ProjectPath: req.ProjectPath,
+			TopicHint:   req.TopicHint,
+			DistillMode: req.DistillMode,
+			SaveScope:   req.SaveScope,
+			Labels:      req.Labels,
+			AutoLabels:  req.AutoLabels,
+			MaxBytes:    req.MaxBytes,
+			TimeoutSec:  req.TimeoutSec,
+		})
+		if err != nil {
+			result.Failed++
+			result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, Status: StatusFailed, Error: err.Error()})
+			continue
+		}
+		result.Saved++
+		result.Sources = append(result.Sources, source)
+		result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, SourceID: source.ID, Title: source.Title, Status: source.Status})
+	}
+	return result
+}
+
+func splitURLBatchInputs(values []string) []string {
+	urls := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range strings.FieldsFunc(value, isKnowledgeListSeparator) {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				urls = append(urls, part)
+			}
+		}
+	}
+	return urls
+}
+
+func (s *SQLiteStore) DiscoverURLs(ctx context.Context, req URLDiscoveryRequest) (URLDiscoveryResult, error) {
+	result := DiscoverURLsFromText(req)
+	for i := range result.Items {
+		if result.Items[i].Status != "candidate" {
+			continue
+		}
+		if err := enforceURLDomainPolicy(ctx, s, result.Items[i].URL); err != nil {
+			result.Items[i].Status = "rejected"
+			result.Items[i].Reason = err.Error()
+			result.Candidates--
+			result.Rejected++
+			continue
+		}
+		result.URLs = append(result.URLs, result.Items[i].URL)
+	}
+	return result, nil
+}
+
+func DiscoverURLsFromText(req URLDiscoveryRequest) URLDiscoveryResult {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	text := strings.TrimSpace(req.Text)
+	base, _ := ValidatePublicHTTPURL(req.BaseURL)
+	rawCandidates := extractURLCandidates(text)
+	result := URLDiscoveryResult{}
+	seen := make(map[string]struct{}, len(rawCandidates))
+	for _, raw := range rawCandidates {
+		if result.Candidates >= limit {
+			break
+		}
+		result.Requested++
+		normalized, host, err := normalizeDiscoveredURL(raw, base)
+		if err != nil {
+			result.Rejected++
+			result.Items = append(result.Items, URLDiscoveryItem{URL: strings.TrimSpace(raw), Status: "rejected", Reason: err.Error()})
+			continue
+		}
+		if req.SameDomainOnly && base != nil && !sameOrSubdomain(host, strings.ToLower(base.Hostname())) {
+			result.Rejected++
+			result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: "rejected", Reason: "outside base domain"})
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			result.Skipped++
+			result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: "skipped_duplicate"})
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result.Candidates++
+		result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: "candidate"})
+	}
+	return result
+}
+
+func extractURLCandidates(text string) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	candidates := make([]string, 0)
+	add := func(value string) {
+		value = strings.TrimSpace(html.UnescapeString(value))
+		if value != "" {
+			candidates = append(candidates, value)
+		}
+	}
+	for _, match := range absoluteURLPattern.FindAllString(text, -1) {
+		add(match)
+	}
+	for _, match := range attrURLPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			add(match[1])
+		}
+	}
+	for _, match := range locURLPattern.FindAllStringSubmatch(text, -1) {
+		if len(match) > 1 {
+			add(match[1])
+		}
+	}
+	for _, token := range strings.FieldsFunc(text, isKnowledgeListSeparator) {
+		token = strings.TrimSpace(token)
+		if looksLikeBarePublicHost(token) {
+			add(token)
+		}
+	}
+	return candidates
+}
+
+func normalizeDiscoveredURL(raw string, base *url.URL) (string, string, error) {
+	raw = strings.TrimSpace(html.UnescapeString(raw))
+	raw = strings.TrimFunc(raw, isURLCandidateBoundary)
+	if raw == "" {
+		return "", "", fmt.Errorf("empty URL")
+	}
+	if strings.HasPrefix(raw, "//") {
+		raw = "https:" + raw
+	}
+	if !strings.Contains(raw, "://") && base != nil && (strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "./") || strings.HasPrefix(raw, "../")) {
+		rel, err := url.Parse(raw)
+		if err != nil {
+			return "", "", err
+		}
+		raw = base.ResolveReference(rel).String()
+	}
+	u, err := ValidatePublicHTTPURL(raw)
+	if err != nil {
+		return "", "", err
+	}
+	return u.String(), strings.ToLower(u.Hostname()), nil
+}
+
+func looksLikeBarePublicHost(value string) bool {
+	value = strings.TrimFunc(value, isURLCandidateBoundary)
+	if value == "" || strings.Contains(value, "://") || strings.ContainsAny(value, " \\") {
+		return false
+	}
+	host := value
+	if slash := strings.Index(host, "/"); slash >= 0 {
+		host = host[:slash]
+	}
+	if colon := strings.LastIndex(host, ":"); colon > -1 {
+		host = host[:colon]
+	}
+	return strings.Contains(host, ".") && !IsBlockedHost(host)
+}
+
+func isURLCandidateBoundary(r rune) bool {
+	switch r {
+	case ' ', '\t', '\r', '\n', '"', '\'', '<', '>', ')', ',', '.', ';', ']', '}', '\uFF0C', '\uFF1B', '\u3001':
+		return true
+	default:
+		return false
+	}
+}
+
+func sameOrSubdomain(host, baseHost string) bool {
+	host = strings.Trim(strings.ToLower(host), ".")
+	baseHost = strings.Trim(strings.ToLower(baseHost), ".")
+	return host == baseHost || strings.HasSuffix(host, "."+baseHost)
+}
+
+func findExistingURLSourceForSave(ctx context.Context, tx *sql.Tx, source Source) (Source, bool, error) {
+	uri := strings.TrimSpace(source.URI)
+	canonicalURI := strings.TrimSpace(source.CanonicalURI)
+	if uri == "" && canonicalURI == "" {
+		return Source{}, false, nil
+	}
+	q := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
+		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
+		FROM knowledge_sources
+		WHERE kind IN (?, ?) AND COALESCE(owner_id, '') = ? AND COALESCE(tenant_id, '') = ? AND COALESCE(project_path, '') = ?
+		AND (uri = ? OR canonical_uri = ? OR uri = ? OR canonical_uri = ?)
+		ORDER BY updated_at DESC LIMIT 1`
+	existing, err := scanSource(tx.QueryRowContext(ctx, q,
+		SourceKindURL, SourceKindHTML, source.OwnerID, source.TenantID, source.ProjectPath,
+		uri, uri, canonicalURI, canonicalURI,
+	))
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Source{}, false, nil
+		}
+		return Source{}, false, err
+	}
+	return existing, true, nil
+}
+
+func (s *SQLiteStore) RefreshSource(ctx context.Context, id string) (Source, error) {
+	existing, err := s.GetSource(ctx, id)
+	if err != nil {
+		return Source{}, err
+	}
+	if existing.Kind == SourceKindURL || existing.Kind == SourceKindHTML {
+		return s.refreshURLSource(ctx, existing)
+	}
+	if isRefreshableFileSource(existing.Kind) {
+		return s.refreshFileSource(ctx, existing)
+	}
+	return Source{}, fmt.Errorf("source %s kind %q is not refreshable", id, existing.Kind)
+}
+
+func (s *SQLiteStore) PreviewSourceRefresh(ctx context.Context, id string) (SourceChangePreview, error) {
+	existing, err := s.GetSource(ctx, id)
+	if err != nil {
+		return SourceChangePreview{}, err
+	}
+	preview := SourceChangePreview{
+		SourceID:    existing.ID,
+		Source:      existing,
+		Refreshable: existing.Kind == SourceKindURL || existing.Kind == SourceKindHTML || isRefreshableFileSource(existing.Kind),
+		OldHash:     existing.ContentHash,
+		OldStatus:   existing.Status,
+		GeneratedAt: time.Now().UTC(),
+	}
+	if !preview.Refreshable {
+		preview.Error = fmt.Sprintf("source %s kind %q is not refreshable", existing.ID, existing.Kind)
+		return preview, nil
+	}
+	oldNodes, err := s.ListNodesBySource(ctx, existing.ID, 5000)
+	if err != nil {
+		return SourceChangePreview{}, err
+	}
+	preview.OldNodeCount = len(oldNodes)
+
+	var next Source
+	var nextNodes []DocumentNode
+	if existing.Kind == SourceKindURL || existing.Kind == SourceKindHTML {
+		if err := enforceURLDomainPolicy(ctx, s, fallbackText(existing.CanonicalURI, existing.URI)); err != nil {
+			preview.Error = err.Error()
+			return preview, nil
+		}
+		next, nextNodes, err = buildURLSourceAndNodes(URLSaveRequest{
+			URL:         fallbackText(existing.CanonicalURI, existing.URI),
+			OwnerID:     existing.OwnerID,
+			TenantID:    existing.TenantID,
+			ProjectPath: existing.ProjectPath,
+			TopicHint:   existing.TopicHint,
+		}, existing)
+	} else {
+		var distill bool
+		next, nextNodes, distill, err = buildFileRefreshSourceAndNodes(existing)
+		_ = distill
+	}
+	if err != nil {
+		preview.Error = err.Error()
+		return preview, nil
+	}
+	if next.Status == StatusParsed && len(nextNodes) > 0 {
+		next.Status = StatusDistilled
+	}
+	preview.NextSource = next
+	preview.NewHash = next.ContentHash
+	preview.NewStatus = next.Status
+	preview.NewNodeCount = len(nextNodes)
+	preview.HashChanged = strings.TrimSpace(preview.OldHash) != strings.TrimSpace(preview.NewHash)
+	preview.AddedNodes, preview.RemovedNodes, preview.UnchangedNodes, preview.Samples = compareSourceNodes(oldNodes, nextNodes, 6)
+	preview.Changed = preview.HashChanged || preview.AddedNodes > 0 || preview.RemovedNodes > 0 || preview.OldStatus != preview.NewStatus || strings.TrimSpace(existing.ErrorMessage) != strings.TrimSpace(next.ErrorMessage)
+	preview.RequiresRefresh = preview.Changed
+	if next.ErrorMessage != "" {
+		preview.Error = next.ErrorMessage
+	}
+	return preview, nil
+}
+
+func (s *SQLiteStore) PreviewSourcesRefresh(ctx context.Context, ids []string) SourceChangePreviewResult {
+	result := SourceChangePreviewResult{}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		result.Requested++
+		preview, err := s.PreviewSourceRefresh(ctx, id)
+		if err != nil {
+			result.Failed++
+			result.Failures = append(result.Failures, SourceChangePreviewFailure{SourceID: id, Error: err.Error()})
+			continue
+		}
+		if preview.Error != "" && (!preview.Refreshable || preview.NewStatus == "") {
+			result.Failed++
+			result.Failures = append(result.Failures, SourceChangePreviewFailure{SourceID: id, Error: preview.Error})
+		} else if preview.Changed {
+			result.Changed++
+		} else {
+			result.Unchanged++
+		}
+		result.Previews = append(result.Previews, preview)
+	}
+	return result
+}
+
+func (s *SQLiteStore) PreviewSourcesRefreshByFilter(ctx context.Context, opts ListSourcesOptions) (SourceChangePreviewResult, error) {
+	opts.Limit = sourceFilterLimit(opts, 100, 500, 5000)
+	sources, err := s.ListSources(ctx, opts)
+	if err != nil {
+		return SourceChangePreviewResult{}, err
+	}
+	ids := make([]string, 0, len(sources))
+	for _, source := range sources {
+		ids = append(ids, source.ID)
+	}
+	return s.PreviewSourcesRefresh(ctx, ids), nil
+}
+
+func (s *SQLiteStore) RefreshChangedSources(ctx context.Context, ids []string) ChangedSourceRefreshResult {
+	preview := s.PreviewSourcesRefresh(ctx, ids)
+	changedIDs := sourceIDsFromChangedPreviews(preview.Previews)
+	return ChangedSourceRefreshResult{
+		Preview:   preview,
+		Refresh:   s.RefreshSources(ctx, changedIDs),
+		SourceIDs: changedIDs,
+	}
+}
+
+func (s *SQLiteStore) RefreshChangedSourcesByFilter(ctx context.Context, opts ListSourcesOptions) (ChangedSourceRefreshResult, error) {
+	preview, err := s.PreviewSourcesRefreshByFilter(ctx, opts)
+	if err != nil {
+		return ChangedSourceRefreshResult{}, err
+	}
+	changedIDs := sourceIDsFromChangedPreviews(preview.Previews)
+	return ChangedSourceRefreshResult{
+		Preview:   preview,
+		Refresh:   s.RefreshSources(ctx, changedIDs),
+		SourceIDs: changedIDs,
+	}, nil
+}
+
+func sourceIDsFromChangedPreviews(previews []SourceChangePreview) []string {
+	ids := make([]string, 0, len(previews))
+	seen := make(map[string]struct{}, len(previews))
+	for _, preview := range previews {
+		id := strings.TrimSpace(preview.SourceID)
+		if id == "" || !preview.Changed || preview.Error != "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (s *SQLiteStore) RefreshSources(ctx context.Context, ids []string) SourceRefreshResult {
+	result := SourceRefreshResult{}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		result.Requested++
+		source, err := s.RefreshSource(ctx, id)
+		if err != nil {
+			result.Failed++
+			appendSourceRefreshFailure(&result, id, err)
+			continue
+		}
+		result.Refreshed++
+		result.Sources = append(result.Sources, source)
+	}
+	return result
+}
+
+func (s *SQLiteStore) RefreshSourcesByFilter(ctx context.Context, opts ListSourcesOptions) (SourceRefreshResult, error) {
+	opts.Limit = sourceFilterLimit(opts, 100, 500, 5000)
+	sources, err := s.ListSources(ctx, opts)
+	if err != nil {
+		return SourceRefreshResult{}, err
+	}
+	ids := make([]string, 0, len(sources))
+	for _, source := range sources {
+		ids = append(ids, source.ID)
+	}
+	return s.RefreshSources(ctx, ids), nil
+}
+
+func appendSourceRefreshFailure(result *SourceRefreshResult, sourceID string, err error) {
+	if result == nil || err == nil {
+		return
+	}
+	result.Failures = append(result.Failures, SourceRefreshFailure{SourceID: sourceID, Error: err.Error()})
+	if IsSQLiteLockedError(err) {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("%s: transient sqlite lock during refresh; retry later", sourceID))
+	}
+}
+
+func (s *SQLiteStore) refreshURLSource(ctx context.Context, existing Source) (Source, error) {
+	if err := enforceURLDomainPolicy(ctx, s, fallbackText(existing.CanonicalURI, existing.URI)); err != nil {
+		return Source{}, err
+	}
+	source, nodes, err := buildURLSourceAndNodes(URLSaveRequest{
+		URL:         fallbackText(existing.CanonicalURI, existing.URI),
+		OwnerID:     existing.OwnerID,
+		TenantID:    existing.TenantID,
+		ProjectPath: existing.ProjectPath,
+		TopicHint:   existing.TopicHint,
+	}, existing)
+	if err != nil {
+		return Source{}, err
+	}
+	return s.replaceSourceDerivedRows(ctx, source, nodes, true, "refresh")
+}
+
+func (s *SQLiteStore) refreshFileSource(ctx context.Context, existing Source) (Source, error) {
+	source, nodes, distill, err := buildFileRefreshSourceAndNodes(existing)
+	if err != nil {
+		return Source{}, err
+	}
+	return s.replaceSourceDerivedRows(ctx, source, nodes, distill, "refresh")
+}
+
+func buildFileRefreshSourceAndNodes(existing Source) (Source, []DocumentNode, bool, error) {
+	path := strings.TrimSpace(existing.URI)
+	if path == "" {
+		return Source{}, nil, false, fmt.Errorf("source %s has no file path", existing.ID)
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return Source{}, nil, false, err
+	}
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return Source{}, nil, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return Source{}, nil, false, fmt.Errorf("source %s points to a symbolic link", existing.ID)
+	}
+	if !info.Mode().IsRegular() {
+		return Source{}, nil, false, fmt.Errorf("source %s is not a regular file", existing.ID)
+	}
+	kind := existing.Kind
+	if extKind := kindForExt(filepath.Ext(absPath)); extKind != "" {
+		kind = extKind
+	}
+	if !isRefreshableFileSource(kind) {
+		return Source{}, nil, false, fmt.Errorf("source %s kind %q is not refreshable", existing.ID, kind)
+	}
+	hash, err := fileSHA256(absPath)
+	if err != nil {
+		return Source{}, nil, false, err
+	}
+	now := time.Now().UTC()
+	source := existing
+	source.Kind = kind
+	source.URI = absPath
+	source.FetchedAt = now
+	source.ContentHash = hash
+	source.Status = StatusParsed
+	source.ErrorMessage = ""
+	source.UpdatedAt = now
+	if source.Title == "" {
+		source.Title = strings.TrimSuffix(filepath.Base(absPath), filepath.Ext(absPath))
+	}
+	if source.RelativePath == "" {
+		source.RelativePath = filepath.Base(absPath)
+	}
+	if source.SourceTrust == 0 {
+		source.SourceTrust = 0.9
+	}
+
+	nodes, parseErr := ParseDocumentNodes(source, absPath, kind)
+	if parseErr != nil && IsUnsupportedParserError(parseErr) {
+		source.Status = StatusPending
+		source.ErrorMessage = parseErr.Error()
+		return source, nil, false, nil
+	}
+	if parseErr != nil {
+		source.Status = StatusFailed
+		source.ErrorMessage = parseErr.Error()
+		return source, nil, false, nil
+	}
+	return source, nodes, true, nil
+}
+
+func compareSourceNodes(oldNodes, newNodes []DocumentNode, sampleLimit int) (int, int, int, []SourceChangeSample) {
+	if sampleLimit <= 0 {
+		sampleLimit = 5
+	}
+	oldCounts := make(map[string]int, len(oldNodes))
+	newCounts := make(map[string]int, len(newNodes))
+	oldBySig := make(map[string]DocumentNode, len(oldNodes))
+	newBySig := make(map[string]DocumentNode, len(newNodes))
+	for _, node := range oldNodes {
+		sig := documentNodeSignature(node)
+		oldCounts[sig]++
+		if _, ok := oldBySig[sig]; !ok {
+			oldBySig[sig] = node
+		}
+	}
+	for _, node := range newNodes {
+		sig := documentNodeSignature(node)
+		newCounts[sig]++
+		if _, ok := newBySig[sig]; !ok {
+			newBySig[sig] = node
+		}
+	}
+	added := 0
+	removed := 0
+	unchanged := 0
+	samples := make([]SourceChangeSample, 0, sampleLimit)
+	for sig, newCount := range newCounts {
+		oldCount := oldCounts[sig]
+		if newCount <= oldCount {
+			unchanged += newCount
+			continue
+		}
+		unchanged += oldCount
+		added += newCount - oldCount
+		if len(samples) < sampleLimit {
+			samples = append(samples, sourceChangeSample("added", newBySig[sig]))
+		}
+	}
+	for sig, oldCount := range oldCounts {
+		newCount := newCounts[sig]
+		if oldCount <= newCount {
+			continue
+		}
+		removed += oldCount - newCount
+		if len(samples) < sampleLimit {
+			samples = append(samples, sourceChangeSample("removed", oldBySig[sig]))
+		}
+	}
+	return added, removed, unchanged, samples
+}
+
+func documentNodeSignature(node DocumentNode) string {
+	parts := []string{
+		strings.TrimSpace(node.Type),
+		strings.TrimSpace(node.Title),
+		strings.TrimSpace(node.Text),
+		fmt.Sprintf("%d", node.Page),
+		strings.TrimSpace(node.SheetName),
+		strings.TrimSpace(node.RowRange),
+		strings.TrimSpace(node.ColRange),
+	}
+	return sha256String(strings.Join(parts, "\x00"))
+}
+
+func sourceChangeSample(kind string, node DocumentNode) SourceChangeSample {
+	return SourceChangeSample{
+		Kind:    kind,
+		Title:   fallbackText(node.Title, node.Type),
+		Snippet: truncateChangeSnippet(node.Text),
+	}
+}
+
+func truncateChangeSnippet(text string) string {
+	text = normalizeWhitespace(text)
+	runes := []rune(text)
+	if len(runes) <= 220 {
+		return text
+	}
+	return string(runes[:220])
+}
+
+func (s *SQLiteStore) replaceSourceDerivedRows(ctx context.Context, source Source, nodes []DocumentNode, distill bool, reason string) (Source, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Source{}, err
+	}
+	defer tx.Rollback()
+	if err := deleteSourceDerivedRows(ctx, tx, source.ID); err != nil {
+		return Source{}, err
+	}
+	if err := insertSource(ctx, tx, source); err != nil {
+		return Source{}, err
+	}
+	if len(nodes) > 0 {
+		if err := insertDocumentNodes(ctx, tx, nodes); err != nil {
+			return Source{}, err
+		}
+	}
+	if distill && len(nodes) > 0 {
+		nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, nodes, DistillModeAuto)
+		if err != nil {
+			return Source{}, err
+		}
+		source = nextSource
+	}
+	if err := insertSourceVersionTx(ctx, tx, source, reason); err != nil {
+		return Source{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Source{}, err
+	}
+	sources := []Source{source}
+	if err := s.hydrateSourceCounts(ctx, sources); err != nil {
+		return Source{}, err
+	}
+	return sources[0], nil
+}
+
+func isRefreshableFileSource(kind string) bool {
+	switch kind {
+	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindXLSX, SourceKindCSV, SourceKindDOC, SourceKindXLS:
+		return true
+	default:
+		return false
+	}
+}
+
+func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []DocumentNode, error) {
+	u, err := ValidatePublicHTTPURL(req.URL)
+	if err != nil {
+		return Source{}, nil, err
+	}
+	maxBytes := req.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultURLFetchBytes
+	}
+	if maxBytes > maxURLFetchBytes {
+		maxBytes = maxURLFetchBytes
+	}
+	timeoutSec := req.TimeoutSec
+	if timeoutSec <= 0 {
+		timeoutSec = defaultURLTimeoutSec
+	}
+	if timeoutSec > 120 {
+		timeoutSec = 120
+	}
+	client := newPublicHTTPClient(time.Duration(timeoutSec) * time.Second)
+	result, err := websearch.FetchWithClient(u.String(), &websearch.FetchOptions{MaxBytes: maxBytes, TimeoutS: timeoutSec}, client)
+	if err != nil {
+		return Source{}, nil, err
+	}
+	finalURL, err := ValidatePublicHTTPURL(result.URL)
+	if err != nil {
+		return Source{}, nil, fmt.Errorf("final URL rejected: %w", err)
+	}
+	text := strings.TrimSpace(result.Content)
+	if text == "" {
+		return Source{}, nil, fmt.Errorf("no readable text extracted from URL")
+	}
+	now := time.Now().UTC()
+	title := strings.TrimSpace(result.Title)
+	if title == "" {
+		title = finalURL.Hostname()
+	}
+	source := Source{
+		ID:           existing.ID,
+		Kind:         SourceKindURL,
+		URI:          u.String(),
+		CanonicalURI: finalURL.String(),
+		Title:        title,
+		SiteName:     finalURL.Hostname(),
+		FetchedAt:    now,
+		ContentHash:  sha256String(finalURL.String() + "\x00" + text),
+		OwnerID:      strings.TrimSpace(req.OwnerID),
+		TenantID:     strings.TrimSpace(req.TenantID),
+		ProjectPath:  strings.TrimSpace(req.ProjectPath),
+		TopicHint:    strings.TrimSpace(req.TopicHint),
+		SourceTrust:  0.6,
+		Status:       StatusParsed,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if source.ID == "" {
+		source.ID = NewID("ksrc")
+	}
+	if !existing.CreatedAt.IsZero() {
+		source.CreatedAt = existing.CreatedAt
+	}
+	node := DocumentNode{
+		ID:       NewID("kdn"),
+		SourceID: source.ID,
+		Type:     "webpage",
+		Title:    title,
+		Text:     text,
+		Metadata: map[string]string{
+			"url":          u.String(),
+			"final_url":    finalURL.String(),
+			"content_type": result.ContentType,
+		},
+		TokenCount: estimateTokens(text),
+	}
+	return source, []DocumentNode{node}, nil
+}
+
+func newPublicHTTPClient(timeout time.Duration) *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           publicDialContext(dialer),
+		MaxIdleConns:          10,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		DisableCompression:    true,
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			if err := validateResolvedPublicURL(req.Context(), req.URL); err != nil {
+				return err
+			}
+			if len(via) > 0 {
+				req.Header.Set("User-Agent", via[0].Header.Get("User-Agent"))
+			}
+			return nil
+		},
+	}
+}
+
+func publicDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		ips, err := resolvePublicIPs(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		var lastErr error
+		for _, ip := range ips {
+			conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+		}
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, fmt.Errorf("no public address found for %s", host)
+	}
+}
+
+func validateResolvedPublicURL(ctx context.Context, u *url.URL) error {
+	if u == nil {
+		return fmt.Errorf("URL is required")
+	}
+	if _, err := ValidatePublicHTTPURL(u.String()); err != nil {
+		return err
+	}
+	_, err := resolvePublicIPs(ctx, u.Hostname())
+	return err
+}
+
+func resolvePublicIPs(ctx context.Context, host string) ([]net.IP, error) {
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return nil, fmt.Errorf("host is required")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return nil, fmt.Errorf("host %s resolves to non-public IP", host)
+		}
+		return []net.IP{ip}, nil
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("resolve %s: no addresses", host)
+	}
+	public := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		if isBlockedIP(addr.IP) {
+			return nil, fmt.Errorf("host %s resolves to non-public IP %s", host, addr.IP.String())
+		}
+		public = append(public, addr.IP)
+	}
+	return public, nil
+}
+
+func fallbackText(primary, secondary string) string {
+	if strings.TrimSpace(primary) != "" {
+		return strings.TrimSpace(primary)
+	}
+	return strings.TrimSpace(secondary)
+}

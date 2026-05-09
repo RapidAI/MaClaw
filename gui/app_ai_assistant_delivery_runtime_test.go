@@ -102,6 +102,9 @@ func TestSendAIAssistantMessage_PromiseOnlyDeliverableReplyCompletesInSameReques
 	if resp.LocalFilePath == "" {
 		t.Fatalf("LocalFilePath empty, resp=%+v", resp)
 	}
+	if resp.ResponseSource != "file_delivery" {
+		t.Fatalf("ResponseSource = %q, want file_delivery", resp.ResponseSource)
+	}
 	if resp.TraceSummary == "" {
 		t.Fatal("expected trace summary")
 	}
@@ -222,6 +225,14 @@ func TestIsVisibleAIAssistantProgressText(t *testing.T) {
 		text string
 		want bool
 	}{
+		{name: "visible coding agent starting", text: "Coding Agent: starting T1 - Implement parser", want: true},
+		{name: "visible coding agent running", text: "Coding Agent: running T1 - Implement parser", want: true},
+		{name: "visible coding agent completed", text: "Coding Agent: completed T1 - Implement parser", want: true},
+		{name: "visible coding agent failed", text: "Coding Agent: failed T1 - Implement parser", want: true},
+		{name: "visible coding agent retrying", text: "Coding Agent: retrying T1 - Implement parser (1/2)", want: true},
+		{name: "visible coding agent skipped", text: "Coding Agent: skipped T1 - Implement parser", want: true},
+		{name: "visible coding agent result", text: "Coding Agent: result T1 - Implement parser (passed)", want: true},
+		{name: "visible coding agent structured event", text: `Coding Agent Event: {"version":1,"agent":"coding","event":"task_status","phase":"running","task_id":"T1","title":"Implement parser"}`, want: true},
 		{name: "visible zh status", text: "正在生成 PDF，请稍候", want: true},
 		{name: "visible emoji status", text: "⏳ 已接近最大推理轮次，正在基于现有信息收尾并生成最终结果…", want: true},
 		{name: "hide internal tool narration", text: "正在执行工具，请稍候...", want: false},

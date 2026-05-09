@@ -1,7 +1,7 @@
 package main
 
 // TaskExecutionOrchestrator manages per-task execution during the coding
-// workflow's Execution Phase (第六步). Instead of letting the LLM dump the
+// workflow's Execution Phase (绗叚姝?. Instead of letting the LLM dump the
 // entire project description into a single session, the orchestrator tracks
 // which task is currently being executed and constructs focused prompts that
 // include only the current task's description plus minimal context from
@@ -10,6 +10,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -20,7 +21,7 @@ import (
 // (single-user), there's effectively only one entry.
 type TaskOrchestratorRegistry struct {
 	mu              sync.RWMutex
-	orchestrators   map[string]*TaskExecutionOrchestrator // userID → orchestrator
+	orchestrators   map[string]*TaskExecutionOrchestrator // userID 鈫?orchestrator
 	externalChecker ExternalToolChecker                   // shared across all orchestrators
 }
 
@@ -99,6 +100,7 @@ type TaskItem struct {
 	Description        string
 	Files              []string // expected files to create/modify
 	ActualFiles        []string // files actually modified during execution (populated by SubAgent)
+	ActualCreatedFiles []string // files newly created during execution (populated by SubAgent)
 	AcceptanceCriteria []string // TDD test criteria
 	DependsOn          []int    // indices of prerequisite tasks
 	Status             TaskExecStatus
@@ -146,6 +148,9 @@ type TaskExecutionOrchestrator struct {
 	// ExternalChecker tests external tool availability at runtime.
 	// nil means always use direct mode.
 	ExternalChecker ExternalToolChecker
+
+	// RunID increments each time Activate starts a fresh execution wave.
+	RunID int
 }
 
 // NewTaskExecutionOrchestrator creates an orchestrator with default settings.
@@ -162,6 +167,7 @@ func (o *TaskExecutionOrchestrator) Activate(tasks []*TaskItem, requirementsCtx,
 	defer o.mu.Unlock()
 
 	o.Active = true
+	o.RunID++
 	o.Tasks = tasks
 	o.CurrentIndex = 0
 	o.RequirementsContext = requirementsCtx
@@ -170,9 +176,22 @@ func (o *TaskExecutionOrchestrator) Activate(tasks []*TaskItem, requirementsCtx,
 	o.Tool = tool
 
 	for _, t := range o.Tasks {
-		t.Status = TaskExecPending
+		resetTaskExecutionState(t)
 	}
 	log.Printf("[task-orchestrator] activated with %d tasks, tool=%s, project=%s", len(tasks), tool, projectPath)
+}
+
+func resetTaskExecutionState(t *TaskItem) {
+	if t == nil {
+		return
+	}
+	t.Status = TaskExecPending
+	t.RetryCount = 0
+	t.SessionID = ""
+	t.ErrorSummary = ""
+	t.ExecMode = ""
+	t.ActualFiles = nil
+	t.ActualCreatedFiles = nil
 }
 
 // Deactivate exits execution mode.
@@ -190,11 +209,67 @@ func (o *TaskExecutionOrchestrator) IsActive() bool {
 	return o.Active
 }
 
+// SnapshotTasks returns a copy of task state for read-only reporting.
+func (o *TaskExecutionOrchestrator) SnapshotTasks() []*TaskItem {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return cloneTaskItems(o.Tasks)
+}
+
+func cloneTaskItems(tasks []*TaskItem) []*TaskItem {
+	if len(tasks) == 0 {
+		return nil
+	}
+	out := make([]*TaskItem, 0, len(tasks))
+	for _, task := range tasks {
+		out = append(out, cloneTaskItem(task))
+	}
+	return out
+}
+
+func cloneTaskItem(task *TaskItem) *TaskItem {
+	if task == nil {
+		return nil
+	}
+	copyTask := *task
+	copyTask.Files = append([]string(nil), task.Files...)
+	copyTask.ActualFiles = append([]string(nil), task.ActualFiles...)
+	copyTask.ActualCreatedFiles = append([]string(nil), task.ActualCreatedFiles...)
+	copyTask.AcceptanceCriteria = append([]string(nil), task.AcceptanceCriteria...)
+	copyTask.DependsOn = append([]int(nil), task.DependsOn...)
+	return &copyTask
+}
+
+// CurrentTaskHandle returns the current task plus the active run token.
+func (o *TaskExecutionOrchestrator) CurrentTaskHandle() (*TaskItem, int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.Active || o.CurrentIndex >= len(o.Tasks) {
+		return nil, 0
+	}
+	return o.Tasks[o.CurrentIndex], o.RunID
+}
+
+func (o *TaskExecutionOrchestrator) validTaskRunLocked(task *TaskItem, runID int) bool {
+	return o.Active && runID == o.RunID && o.taskIndexLocked(task) >= 0
+}
+
+func (o *TaskExecutionOrchestrator) validTaskLocked(task *TaskItem) bool {
+	return o.Active && o.taskIndexLocked(task) >= 0
+}
+
 // CurrentTask returns the task currently being executed, or nil if done.
 func (o *TaskExecutionOrchestrator) CurrentTask() *TaskItem {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if !o.Active || o.CurrentIndex >= len(o.Tasks) {
+		return nil
+	}
+	return o.Tasks[o.CurrentIndex]
+}
+
+func (o *TaskExecutionOrchestrator) currentTaskLocked() *TaskItem {
+	if !o.Active || o.CurrentIndex < 0 || o.CurrentIndex >= len(o.Tasks) {
 		return nil
 	}
 	return o.Tasks[o.CurrentIndex]
@@ -214,16 +289,170 @@ func (o *TaskExecutionOrchestrator) AdvanceToNext() bool {
 	return false
 }
 
+func (o *TaskExecutionOrchestrator) taskIndexLocked(target *TaskItem) int {
+	if target == nil {
+		return -1
+	}
+	for i, task := range o.Tasks {
+		if task == target {
+			return i
+		}
+	}
+	return -1
+}
+
+func applyTaskStatus(task *TaskItem, status TaskExecStatus, errSummary string) {
+	if task == nil {
+		return
+	}
+	task.Status = status
+	switch {
+	case errSummary != "":
+		task.ErrorSummary = compactSubAgentErrorSummary(errSummary)
+	case status == TaskExecPassed || status == TaskExecInProgress || status == TaskExecTesting:
+		task.ErrorSummary = ""
+	}
+}
+
+func updateTaskActualArtifacts(task *TaskItem, filesModified, filesCreated []string) {
+	if task == nil {
+		return
+	}
+	if len(filesModified) > 0 {
+		task.ActualFiles = limitSubAgentStringSlice(uniqueSortedSubAgentStrings(filesModified), codingSubAgentResultFilesMax)
+	}
+	if len(filesCreated) > 0 {
+		task.ActualCreatedFiles = limitSubAgentStringSlice(uniqueSortedSubAgentStrings(filesCreated), codingSubAgentResultFilesMax)
+	}
+}
+
+// RecordTaskActualArtifactsForRun records files for a task if the run token is still current.
+func (o *TaskExecutionOrchestrator) RecordTaskActualArtifactsForRun(task *TaskItem, runID int, filesModified, filesCreated []string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return false
+	}
+	updateTaskActualArtifacts(task, filesModified, filesCreated)
+	return true
+}
+
+// RecordTaskActualArtifacts records files touched by a specific task pointer.
+func (o *TaskExecutionOrchestrator) RecordTaskActualArtifacts(task *TaskItem, filesModified, filesCreated []string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskLocked(task) {
+		return false
+	}
+	updateTaskActualArtifacts(task, filesModified, filesCreated)
+	return true
+}
+
+// RecordCurrentActualArtifacts records files touched by the current task.
+func (o *TaskExecutionOrchestrator) RecordCurrentActualArtifacts(filesModified, filesCreated []string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	task := o.currentTaskLocked()
+	if task == nil {
+		return
+	}
+	updateTaskActualArtifacts(task, filesModified, filesCreated)
+}
+
+// TaskStatusForRun returns task status only when the run token is still current.
+func (o *TaskExecutionOrchestrator) TaskStatusForRun(task *TaskItem, runID int) (TaskExecStatus, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return "", false
+	}
+	return task.Status, true
+}
+
+// TaskStatus returns the status for a specific task pointer.
+func (o *TaskExecutionOrchestrator) TaskStatus(task *TaskItem) (TaskExecStatus, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskLocked(task) {
+		return "", false
+	}
+	return task.Status, true
+}
+
+func isTerminalTaskStatus(status TaskExecStatus) bool {
+	switch status {
+	case TaskExecPassed, TaskExecFailed, TaskExecSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsTaskTerminalForRun reports terminal status only for the current run token.
+func (o *TaskExecutionOrchestrator) IsTaskTerminalForRun(task *TaskItem, runID int) bool {
+	status, ok := o.TaskStatusForRun(task, runID)
+	return ok && isTerminalTaskStatus(status)
+}
+
+// IsTaskTerminal reports whether a specific task has reached a terminal status.
+func (o *TaskExecutionOrchestrator) IsTaskTerminal(task *TaskItem) bool {
+	status, ok := o.TaskStatus(task)
+	return ok && isTerminalTaskStatus(status)
+}
+
+// MarkTaskStatusForRun updates a task only when the run token is still current.
+func (o *TaskExecutionOrchestrator) MarkTaskStatusForRun(task *TaskItem, runID int, status TaskExecStatus, errSummary string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return false
+	}
+	applyTaskStatus(task, status, errSummary)
+	return true
+}
+
+// MarkTaskStatus updates a specific task pointer if it still belongs to this orchestrator.
+func (o *TaskExecutionOrchestrator) MarkTaskStatus(task *TaskItem, status TaskExecStatus, errSummary string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskLocked(task) {
+		return false
+	}
+	applyTaskStatus(task, status, errSummary)
+	return true
+}
+
+// IncrementTaskRetryForRun increments retry only when the run token is still current.
+func (o *TaskExecutionOrchestrator) IncrementTaskRetryForRun(task *TaskItem, runID int) (retryCount int, allowed bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return 0, false
+	}
+	task.RetryCount++
+	return task.RetryCount, task.RetryCount <= o.MaxRetries
+}
+
+// IncrementTaskRetry increments retry count on a specific task pointer.
+func (o *TaskExecutionOrchestrator) IncrementTaskRetry(task *TaskItem) (retryCount int, allowed bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskLocked(task) {
+		return 0, false
+	}
+	task.RetryCount++
+	return task.RetryCount, task.RetryCount <= o.MaxRetries
+}
+
 // MarkCurrentStatus updates the current task's status.
 func (o *TaskExecutionOrchestrator) MarkCurrentStatus(status TaskExecStatus, errSummary string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.CurrentIndex < len(o.Tasks) {
-		o.Tasks[o.CurrentIndex].Status = status
-		if errSummary != "" {
-			o.Tasks[o.CurrentIndex].ErrorSummary = errSummary
-		}
+	task := o.currentTaskLocked()
+	if task == nil {
+		return
 	}
+	applyTaskStatus(task, status, errSummary)
 }
 
 // IncrementRetry increments the retry count for the current task.
@@ -231,19 +460,42 @@ func (o *TaskExecutionOrchestrator) MarkCurrentStatus(status TaskExecStatus, err
 func (o *TaskExecutionOrchestrator) IncrementRetry() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return false
 	}
-	o.Tasks[o.CurrentIndex].RetryCount++
-	return o.Tasks[o.CurrentIndex].RetryCount <= o.MaxRetries
+	task.RetryCount++
+	return task.RetryCount <= o.MaxRetries
+}
+
+// SetTaskSessionIDForRun records session only when the run token is still current.
+func (o *TaskExecutionOrchestrator) SetTaskSessionIDForRun(task *TaskItem, runID int, sessionID string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return false
+	}
+	task.SessionID = sessionID
+	return true
+}
+
+// SetTaskSessionID records which session is handling a specific task pointer.
+func (o *TaskExecutionOrchestrator) SetTaskSessionID(task *TaskItem, sessionID string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskLocked(task) {
+		return false
+	}
+	task.SessionID = sessionID
+	return true
 }
 
 // SetCurrentSessionID records which session is handling the current task.
 func (o *TaskExecutionOrchestrator) SetCurrentSessionID(sessionID string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.CurrentIndex < len(o.Tasks) {
-		o.Tasks[o.CurrentIndex].SessionID = sessionID
+	if task := o.currentTaskLocked(); task != nil {
+		task.SessionID = sessionID
 	}
 }
 
@@ -273,52 +525,101 @@ func (o *TaskExecutionOrchestrator) BuildTaskPrompt() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return ""
 	}
-	task := o.Tasks[o.CurrentIndex]
+	return o.buildTaskPromptLocked(task)
+}
+
+// BuildTaskPromptForTaskRun constructs a focused prompt only when the run token is still current.
+func (o *TaskExecutionOrchestrator) BuildTaskPromptForTaskRun(task *TaskItem, runID int) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return ""
+	}
+	return o.buildTaskPromptLocked(task)
+}
+
+// BuildTaskPromptForTask constructs a focused prompt for a specific task pointer.
+func (o *TaskExecutionOrchestrator) BuildTaskPromptForTask(task *TaskItem) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskLocked(task) {
+		return ""
+	}
+	return o.buildTaskPromptLocked(task)
+}
+
+func (o *TaskExecutionOrchestrator) buildTaskPromptLocked(task *TaskItem) string {
+	if task == nil {
+		return ""
+	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("## 任务 %d/%d: %s\n\n", task.Index+1, len(o.Tasks), task.Title))
-	b.WriteString(task.Description)
+	b.WriteString(fmt.Sprintf("## \u4efb\u52a1 %d/%d: %s\n\n", task.Index+1, len(o.Tasks), compactSubAgentTaskTitle(task.Title)))
+	b.WriteString(compactSubAgentTaskDescription(task.Description))
 	b.WriteString("\n")
 
 	if len(task.Files) > 0 {
-		b.WriteString("\n### 涉及文件\n")
-		for _, f := range task.Files {
+		b.WriteString("\n### Files\n")
+		files := uniqueSortedSubAgentStrings(task.Files)
+		shown := len(files)
+		if shown > codingSubAgentTaskFilesMax {
+			shown = codingSubAgentTaskFilesMax
+		}
+		for _, f := range files[:shown] {
 			b.WriteString(fmt.Sprintf("- %s\n", f))
+		}
+		if remaining := len(files) - shown; remaining > 0 {
+			b.WriteString(fmt.Sprintf("- ... %d more files omitted\n", remaining))
 		}
 	}
 
 	if len(task.AcceptanceCriteria) > 0 {
-		b.WriteString("\n### 验收标准（完成后必须通过这些测试）\n")
-		for i, ac := range task.AcceptanceCriteria {
-			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, ac))
+		b.WriteString("\n### Acceptance Criteria\n")
+		criteria := uniqueSubAgentStrings(task.AcceptanceCriteria)
+		shown := len(criteria)
+		if shown > codingSubAgentAcceptanceCriteriaMax {
+			shown = codingSubAgentAcceptanceCriteriaMax
+		}
+		for i, ac := range criteria[:shown] {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, truncateRunesForSubAgent(ac, codingSubAgentPromptBulletMaxRunes)))
+		}
+		if remaining := len(criteria) - shown; remaining > 0 {
+			b.WriteString(fmt.Sprintf("... %d more acceptance criteria omitted\n", remaining))
 		}
 	}
 
-	// Add dependency context: list what previous tasks produced
 	if len(task.DependsOn) > 0 {
-		b.WriteString("\n### 前置任务产出\n")
+		b.WriteString("\n### \u524d\u7f6e\u4efb\u52a1\u4ea7\u51fa\n")
+		shownDeps := 0
 		for _, depIdx := range task.DependsOn {
+			if shownDeps >= codingSubAgentDependencySummaryMax {
+				break
+			}
 			if depIdx >= 0 && depIdx < len(o.Tasks) {
 				dep := o.Tasks[depIdx]
-				b.WriteString(fmt.Sprintf("- 任务 %d「%s」: %s\n", dep.Index+1, dep.Title, dep.Status))
-				if len(dep.Files) > 0 {
-					b.WriteString(fmt.Sprintf("  产出文件: %s\n", strings.Join(dep.Files, ", ")))
+				shownDeps++
+				b.WriteString(fmt.Sprintf("- Task %d %q: %s\n", dep.Index+1, compactSubAgentTaskTitle(dep.Title), dep.Status))
+				if files := taskIntegrationFiles(dep); len(files) > 0 {
+					b.WriteString(fmt.Sprintf("  files: %s\n", compactSubAgentFileList(files, codingSubAgentTaskFilesMax)))
 				}
 			}
 		}
+		if remaining := len(task.DependsOn) - shownDeps; remaining > 0 {
+			b.WriteString(fmt.Sprintf("- ... \u8fd8\u6709 %d \u4e2a\u524d\u7f6e\u4efb\u52a1\u672a\u5c55\u5f00\n", remaining))
+		}
 	}
 
-	// Append condensed requirements/design context (not the full docs)
 	if o.RequirementsContext != "" {
-		b.WriteString("\n### 需求上下文（摘要）\n")
+		b.WriteString("\n### Requirements Summary\n")
 		b.WriteString(truncateRunes(o.RequirementsContext, 500))
 		b.WriteString("\n")
 	}
 	if o.DesignContext != "" {
-		b.WriteString("\n### 设计上下文（摘要）\n")
+		b.WriteString("\n### Design Summary\n")
 		b.WriteString(truncateRunes(o.DesignContext, 500))
 		b.WriteString("\n")
 	}
@@ -331,24 +632,50 @@ func (o *TaskExecutionOrchestrator) BuildTDDPrompt() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return ""
 	}
-	task := o.Tasks[o.CurrentIndex]
+	return o.buildTDDPromptLocked(task)
+}
 
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("任务 %d「%s」的代码已完成。\n\n", task.Index+1, task.Title))
-	b.WriteString("请运行以下验收测试来验证实现是否正确：\n\n")
+// BuildTDDPromptForTaskRun constructs a TDD prompt only when the run token is still current.
+func (o *TaskExecutionOrchestrator) BuildTDDPromptForTaskRun(task *TaskItem, runID int) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return ""
+	}
+	return o.buildTDDPromptLocked(task)
+}
 
-	if len(task.AcceptanceCriteria) > 0 {
-		for i, ac := range task.AcceptanceCriteria {
-			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, ac))
-		}
-	} else {
-		b.WriteString("运行项目的测试套件，确保新增代码不破坏现有功能。\n")
+func (o *TaskExecutionOrchestrator) buildTDDPromptLocked(task *TaskItem) string {
+	if task == nil {
+		return ""
 	}
 
-	b.WriteString("\n如果测试失败，请修复代码并重新运行测试。")
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Task %d %q is implemented.\n\n", task.Index+1, compactSubAgentTaskTitle(task.Title)))
+	b.WriteString("Run the acceptance checks below to verify the implementation:\n\n")
+
+	if len(task.AcceptanceCriteria) > 0 {
+		criteria := uniqueSubAgentStrings(task.AcceptanceCriteria)
+		shown := len(criteria)
+		if shown > codingSubAgentAcceptanceCriteriaMax {
+			shown = codingSubAgentAcceptanceCriteriaMax
+		}
+		for i, ac := range criteria[:shown] {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, truncateRunesForSubAgent(ac, codingSubAgentPromptBulletMaxRunes)))
+		}
+		if remaining := len(criteria) - shown; remaining > 0 {
+			b.WriteString(fmt.Sprintf("... %d more acceptance criteria omitted\n", remaining))
+		}
+	} else {
+		b.WriteString("Run the project test suite and ensure existing behavior is preserved.\n")
+	}
+
+	appendTaskActualArtifactPrompt(&b, task)
+	b.WriteString("\nIf tests fail, fix the code and rerun the relevant checks.")
 	return b.String()
 }
 
@@ -357,18 +684,54 @@ func (o *TaskExecutionOrchestrator) BuildFixPrompt(testOutput string) string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return ""
 	}
-	task := o.Tasks[o.CurrentIndex]
+	return o.buildFixPromptLocked(task, testOutput)
+}
+
+// BuildFixPromptForTaskRun constructs a fix prompt only when the run token is still current.
+func (o *TaskExecutionOrchestrator) BuildFixPromptForTaskRun(task *TaskItem, runID int, testOutput string) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return ""
+	}
+	return o.buildFixPromptLocked(task, testOutput)
+}
+
+func (o *TaskExecutionOrchestrator) buildFixPromptLocked(task *TaskItem, testOutput string) string {
+	if task == nil {
+		return ""
+	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("任务 %d「%s」的测试失败（第 %d/%d 次重试）。\n\n",
-		task.Index+1, task.Title, task.RetryCount, o.MaxRetries))
-	b.WriteString("测试输出：\n")
+	b.WriteString(fmt.Sprintf("Task %d %q failed tests (retry %d/%d).\n\n",
+		task.Index+1, compactSubAgentTaskTitle(task.Title), task.RetryCount, o.MaxRetries))
+	b.WriteString("Test output:\n")
 	b.WriteString(truncateRunes(testOutput, 1000))
-	b.WriteString("\n\n请分析失败原因，修复代码，然后重新运行测试。")
+	appendTaskActualArtifactPrompt(&b, task)
+	b.WriteString("\n\nAnalyze the failure, fix the code, and rerun the relevant checks.")
 	return b.String()
+}
+
+func appendTaskActualArtifactPrompt(b *strings.Builder, task *TaskItem) {
+	if b == nil || task == nil {
+		return
+	}
+	modified := uniqueSortedSubAgentStrings(task.ActualFiles)
+	created := uniqueSortedSubAgentStrings(task.ActualCreatedFiles)
+	if len(modified) == 0 && len(created) == 0 {
+		return
+	}
+	b.WriteString("\n### Actual Artifacts From This Task\n")
+	if len(created) > 0 {
+		b.WriteString(fmt.Sprintf("Created: %s\n", compactSubAgentFileList(created, codingSubAgentTaskFilesMax)))
+	}
+	if len(modified) > 0 {
+		b.WriteString(fmt.Sprintf("Modified: %s\n", compactSubAgentFileList(modified, codingSubAgentTaskFilesMax)))
+	}
 }
 
 // BuildIntegrationPrompt constructs the prompt for the integration phase
@@ -380,54 +743,54 @@ func (o *TaskExecutionOrchestrator) BuildIntegrationPrompt() string {
 	defer o.mu.Unlock()
 
 	var b strings.Builder
-	b.WriteString("## 集成联调阶段\n\n")
-	b.WriteString("所有子任务已完成，现在需要将各模块集成为一个可运行的整体。\n\n")
+	b.WriteString("## \u96c6\u6210\u8054\u8c03\n\n")
+	b.WriteString("All subtasks have completed. Integrate the outputs into a buildable, runnable whole.\n\n")
 
-	// List all completed tasks and their output files
-	b.WriteString("### 已完成的子任务及产出文件\n")
+	b.WriteString("### Completed Subtasks And Outputs\n")
 	var failedNames []string
 	for _, t := range o.Tasks {
-		icon := "✅"
+		icon := "\u2713"
 		if t.Status == TaskExecFailed {
-			icon = "❌"
-			failedNames = append(failedNames, fmt.Sprintf("任务 %d「%s」", t.Index+1, t.Title))
+			icon = "\u274c"
+			failedNames = append(failedNames, fmt.Sprintf("Task %d %q", t.Index+1, compactSubAgentTaskTitle(t.Title)))
 		} else if t.Status == TaskExecSkipped {
-			icon = "⏭️"
+			icon = "SKIPPED"
 		}
-		b.WriteString(fmt.Sprintf("%s 任务 %d: %s\n", icon, t.Index+1, t.Title))
-		if len(t.Files) > 0 {
-			b.WriteString(fmt.Sprintf("   文件: %s\n", strings.Join(t.Files, ", ")))
+		b.WriteString(fmt.Sprintf("%s task %d: %s\n", icon, t.Index+1, compactSubAgentTaskTitle(t.Title)))
+		if files := taskIntegrationFiles(t); len(files) > 0 {
+			b.WriteString(fmt.Sprintf("   files: %s\n", compactSubAgentFileList(files, codingSubAgentTaskFilesMax)))
 		}
 	}
 
-	// Warn about failed tasks whose files may be incomplete
 	if len(failedNames) > 0 {
-		b.WriteString("\n⚠️ 以下任务未通过测试，其产出文件可能不完整或有错误：\n")
-		for _, name := range failedNames {
+		b.WriteString("\n### Failed Tasks\n")
+		shownFailed := len(failedNames)
+		if shownFailed > codingSubAgentTaskListSummaryMax {
+			shownFailed = codingSubAgentTaskListSummaryMax
+		}
+		for _, name := range failedNames[:shownFailed] {
 			b.WriteString(fmt.Sprintf("- %s\n", name))
 		}
-		b.WriteString("集成时请检查这些模块，必要时补全或修复。\n")
+		b.WriteString("Check these modules during integration: \u4e0d\u5b8c\u6574 outputs may need repair.\n")
 	}
 
-	b.WriteString("\n### 集成要求\n")
-	b.WriteString("请按以下顺序完成集成：\n")
-	b.WriteString("1. 检查所有模块间的 import/依赖关系，补全缺失的引用\n")
-	b.WriteString("2. 确保 main 入口文件正确引用并初始化所有模块\n")
-	b.WriteString("3. 检查模块间的接口是否匹配（函数签名、数据类型、参数顺序）\n")
-	b.WriteString("4. 补全任何缺失的胶水代码（路由注册、依赖注入、配置加载等）\n")
-	b.WriteString("5. 运行编译/构建命令，修复所有编译错误\n")
-	b.WriteString("6. 运行项目，确保基本功能可用\n")
+	b.WriteString("\n### Integration Requirements\n")
+	b.WriteString("1. Check imports/dependencies between modules.\n")
+	b.WriteString("2. Ensure entry points initialize and reference all required modules.\n")
+	b.WriteString("3. Verify interface compatibility across module boundaries.\n")
+	b.WriteString("4. Fill missing glue code such as routing, dependency injection, and config loading.\n")
+	b.WriteString("5. Run build/compile checks and fix all \u7f16\u8bd1 errors.\n")
+	b.WriteString("6. Run relevant tests or smoke checks.\n")
 
-	// Design context is more important than requirements for integration —
-	// it contains architecture, module boundaries, and interface definitions.
-	if o.DesignContext != "" {
-		b.WriteString("\n### 设计上下文（摘要）\n")
-		b.WriteString(truncateRunes(o.DesignContext, 500))
+	if o.RequirementsContext != "" {
+		b.WriteString("\n### Requirements Context Summary\n")
+		b.WriteString(truncateRunes(o.RequirementsContext, 800))
 		b.WriteString("\n")
 	}
-	if o.RequirementsContext != "" {
-		b.WriteString("\n### 需求上下文（摘要）\n")
-		b.WriteString(truncateRunes(o.RequirementsContext, 300))
+
+	if o.DesignContext != "" {
+		b.WriteString("\n### Design Context Summary\n")
+		b.WriteString(truncateRunes(o.DesignContext, 800))
 		b.WriteString("\n")
 	}
 
@@ -440,10 +803,28 @@ func (o *TaskExecutionOrchestrator) BuildIntegrationPrompt() string {
 func (o *TaskExecutionOrchestrator) ResolveExecutionMode() TaskExecMode {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return TaskExecModeDirect
 	}
-	task := o.Tasks[o.CurrentIndex]
+	return o.resolveExecutionModeForTaskLocked(task)
+}
+
+// ResolveExecutionModeForTaskRun determines and caches a task's execution mode
+// only when the task still belongs to the active run.
+func (o *TaskExecutionOrchestrator) ResolveExecutionModeForTaskRun(task *TaskItem, runID int) (TaskExecMode, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return TaskExecModeDirect, false
+	}
+	return o.resolveExecutionModeForTaskLocked(task), true
+}
+
+func (o *TaskExecutionOrchestrator) resolveExecutionModeForTaskLocked(task *TaskItem) TaskExecMode {
+	if task == nil {
+		return TaskExecModeDirect
+	}
 	// Return cached mode if already resolved. Re-resolution only happens
 	// when AdvanceToNext moves to a new task (ExecMode is "" on fresh tasks).
 	if task.ExecMode != "" {
@@ -474,11 +855,26 @@ func (o *TaskExecutionOrchestrator) resolveModeLocked() TaskExecMode {
 func (o *TaskExecutionOrchestrator) DegradeCurrentToDirectMode() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return false
 	}
-	task := o.Tasks[o.CurrentIndex]
-	if task.ExecMode != TaskExecModeExternal {
+	return o.degradeTaskToDirectModeLocked(task)
+}
+
+// DegradeTaskToDirectModeForRun switches a task to direct mode only when the
+// task still belongs to the active run.
+func (o *TaskExecutionOrchestrator) DegradeTaskToDirectModeForRun(task *TaskItem, runID int) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return false
+	}
+	return o.degradeTaskToDirectModeLocked(task)
+}
+
+func (o *TaskExecutionOrchestrator) degradeTaskToDirectModeLocked(task *TaskItem) bool {
+	if task == nil || task.ExecMode != TaskExecModeExternal {
 		return false
 	}
 	task.ExecMode = TaskExecModeDirect
@@ -490,13 +886,29 @@ func (o *TaskExecutionOrchestrator) DegradeCurrentToDirectMode() bool {
 func (o *TaskExecutionOrchestrator) CurrentExecutionMode() TaskExecMode {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return TaskExecModeDirect
 	}
-	if o.Tasks[o.CurrentIndex].ExecMode == "" {
+	return currentTaskExecModeLocked(task)
+}
+
+// TaskExecutionModeForRun returns a task's resolved mode only when the run
+// token is still current.
+func (o *TaskExecutionOrchestrator) TaskExecutionModeForRun(task *TaskItem, runID int) (TaskExecMode, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return TaskExecModeDirect, false
+	}
+	return currentTaskExecModeLocked(task), true
+}
+
+func currentTaskExecModeLocked(task *TaskItem) TaskExecMode {
+	if task == nil || task.ExecMode == "" {
 		return TaskExecModeDirect
 	}
-	return o.Tasks[o.CurrentIndex].ExecMode
+	return task.ExecMode
 }
 
 // BuildSystemInjection returns a system message to inject into the conversation
@@ -505,98 +917,114 @@ func (o *TaskExecutionOrchestrator) BuildSystemInjection() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
-	if !o.Active || o.CurrentIndex >= len(o.Tasks) {
+	task := o.currentTaskLocked()
+	if task == nil {
 		return ""
 	}
+	return o.buildSystemInjectionLocked(task)
+}
 
+// BuildSystemInjectionForTaskRun builds task guidance only when the task still
+// belongs to the active run. It prevents stale execution loops from injecting
+// guidance for whichever task happens to be current now.
+func (o *TaskExecutionOrchestrator) BuildSystemInjectionForTaskRun(task *TaskItem, runID int) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.validTaskRunLocked(task, runID) {
+		return ""
+	}
+	return o.buildSystemInjectionLocked(task)
+}
+
+func (o *TaskExecutionOrchestrator) buildSystemInjectionLocked(task *TaskItem) string {
+	if task == nil {
+		return ""
+	}
 	var b strings.Builder
-	b.WriteString(o.buildTaskContextLocked())
-	b.WriteString(o.buildExecutionGuideLocked())
+	b.WriteString(o.buildTaskContextLocked(task))
+	b.WriteString(o.buildExecutionGuideLocked(task))
 	return b.String()
 }
 
 // buildTaskContextLocked writes pure task context: current task, task list,
 // progress stats. No tool-specific instructions. Caller holds mu.
-func (o *TaskExecutionOrchestrator) buildTaskContextLocked() string {
-	task := o.Tasks[o.CurrentIndex]
+func (o *TaskExecutionOrchestrator) buildTaskContextLocked(task *TaskItem) string {
+	if task == nil {
+		return ""
+	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("🔧 [任务执行调度器] 当前正在执行任务 %d/%d: 「%s」\n", task.Index+1, len(o.Tasks), task.Title))
+	b.WriteString(fmt.Sprintf("[task-orchestrator] executing task %d/%d (\u4efb\u52a1 %d/%d): %q\n", task.Index+1, len(o.Tasks), task.Index+1, len(o.Tasks), compactSubAgentTaskTitle(task.Title)))
 
-	// Full task list with status
-	b.WriteString("\n📋 任务清单：\n")
-	for _, t := range o.Tasks {
+	b.WriteString("\nTask list:\n")
+	shownTasks := len(o.Tasks)
+	if shownTasks > codingSubAgentTaskListSummaryMax {
+		shownTasks = codingSubAgentTaskListSummaryMax
+	}
+	for _, t := range o.Tasks[:shownTasks] {
+		title := compactSubAgentTaskTitle(t.Title)
 		switch t.Status {
 		case TaskExecPassed:
-			b.WriteString(fmt.Sprintf("T%d: %s ✓\n", t.Index+1, t.Title))
+			b.WriteString(fmt.Sprintf("T%d: %s [passed]\n", t.Index+1, title))
 		case TaskExecFailed:
-			b.WriteString(fmt.Sprintf("T%d: %s ✗", t.Index+1, t.Title))
+			b.WriteString(fmt.Sprintf("T%d: %s [failed]", t.Index+1, title))
 			if t.ErrorSummary != "" {
-				b.WriteString(fmt.Sprintf(" — %s", t.ErrorSummary))
+				b.WriteString(fmt.Sprintf(" - %s", compactSubAgentErrorSummary(t.ErrorSummary)))
 			}
 			b.WriteString("\n")
 		case TaskExecSkipped:
-			b.WriteString(fmt.Sprintf("T%d: %s (跳过)\n", t.Index+1, t.Title))
+			b.WriteString(fmt.Sprintf("T%d: %s [skipped]\n", t.Index+1, title))
 		case TaskExecInProgress, TaskExecTesting:
-			b.WriteString(fmt.Sprintf("T%d: %s ⟳\n", t.Index+1, t.Title))
+			b.WriteString(fmt.Sprintf("T%d: %s [active]\n", t.Index+1, title))
 		default:
-			b.WriteString(fmt.Sprintf("T%d: %s\n", t.Index+1, t.Title))
+			b.WriteString(fmt.Sprintf("T%d: %s\n", t.Index+1, title))
 		}
+	}
+	if remaining := len(o.Tasks) - shownTasks; remaining > 0 {
+		b.WriteString(fmt.Sprintf("... \u8fd8\u6709 %d \u4e2a\u4efb\u52a1\u672a\u5c55\u5f00\n", remaining))
 	}
 
 	passed, failed, remaining := o.countStatusLocked()
-	b.WriteString(fmt.Sprintf("\n📊 进度：✅ %d 通过 | ❌ %d 失败 | ⏳ %d 剩余\n", passed, failed, remaining))
-
-	b.WriteString("\n📝 向用户汇报进度时，请严格按以下格式输出（每个任务独占一行）：\n")
-	b.WriteString("T1: 任务描述 ✓\n")
-	b.WriteString("T2: 任务描述 ⟳\n")
-	b.WriteString("T3: 任务描述\n")
-	b.WriteString("已完成的任务后面加 ✓，正在执行的加 ⟳，未开始的不加标记。不要把多个任务写在同一行。\n")
-
+	b.WriteString(fmt.Sprintf("\nProgress: %d passed | %d failed | %d remaining\n", passed, failed, remaining))
+	b.WriteString("\nWhen reporting progress to the user, use one line per task: T1: description [passed|active|pending].\n")
 	return b.String()
 }
 
 // buildExecutionGuideLocked writes tool-specific execution instructions
 // based on the current task's execution mode. Caller holds mu.
-func (o *TaskExecutionOrchestrator) buildExecutionGuideLocked() string {
-	task := o.Tasks[o.CurrentIndex]
+func (o *TaskExecutionOrchestrator) buildExecutionGuideLocked(task *TaskItem) string {
+	if task == nil {
+		return ""
+	}
 	mode := task.ExecMode
 	if mode == "" {
-		mode = TaskExecModeDirect // default if not yet resolved
+		mode = TaskExecModeDirect
 	}
 
 	var b strings.Builder
-
 	if mode == TaskExecModeDirect {
-		// Direct coding mode: maclaw's own agent loop writes code.
 		switch task.Status {
 		case TaskExecPending:
-			b.WriteString("\n📌 执行模式：直接编码\n")
-			b.WriteString("操作步骤：\n")
-			b.WriteString("1. 先用 read_file 理解涉及文件的现有代码结构\n")
-			b.WriteString("2. 用 write_file 创建新文件，用 edit_file 修改现有文件\n")
-			b.WriteString("3. 每个文件修改后用 bash 编译/lint 检查\n")
-			b.WriteString("4. 全部完成后用 bash 运行验收标准中的测试\n")
-			b.WriteString("⚠️ 优先用 edit_file 做增量修改，避免 write_file 全文覆盖已有文件。\n")
-			b.WriteString("⚠️ 单次 write_file 内容不超过 200 行，超过时分多次写入。\n")
+			b.WriteString("\nExecution mode: direct coding (\u76f4\u63a5\u7f16\u7801).\n")
+			b.WriteString("1. Read existing files before changing them.\n")
+			b.WriteString("2. Use write_file for new files and edit_file/edit_lines for existing files.\n")
+			b.WriteString("3. Run build, lint, or focused tests after edits.\n")
+			b.WriteString("4. Complete only the assigned task and summarize changed files.\n")
 		case TaskExecInProgress:
-			b.WriteString("📌 继续用 write_file/edit_file 完成当前任务的编码。\n")
+			b.WriteString("Continue coding the current task with focused file edits.\n")
 		case TaskExecTesting:
-			b.WriteString("📌 用 bash 运行验收测试，验证任务完成质量。\n")
+			b.WriteString("Run acceptance checks and fix failures before marking the task done.\n")
 		}
 	} else {
-		// External tool mode: delegate to create_session → send_and_observe.
 		switch task.Status {
 		case TaskExecPending:
-			b.WriteString("📌 操作：调用 create_session 创建编程会话，然后用 send_and_observe 发送本任务的编程指令。\n")
-			b.WriteString("⚠️ 只发送当前任务的描述，不要发送整个项目的需求。系统会自动构造包含上下文的任务 prompt。\n")
+			b.WriteString("Use create_session and send_and_observe to delegate only the current task to the external coding tool.\n")
 		case TaskExecInProgress:
-			b.WriteString("📌 操作：用 get_session_output 检查编程工具的进度。\n")
+			b.WriteString("Use get_session_output to observe external coding progress.\n")
 		case TaskExecTesting:
-			b.WriteString("📌 操作：用 send_and_observe 发送 TDD 测试指令，验证任务完成质量。\n")
+			b.WriteString("Use send_and_observe to run the TDD/verification instructions in the external coding session.\n")
 		}
 	}
-
 	return b.String()
 }
 
@@ -606,28 +1034,35 @@ func (o *TaskExecutionOrchestrator) ProgressSummary() string {
 	defer o.mu.Unlock()
 
 	var b strings.Builder
-	for _, t := range o.Tasks {
-		b.WriteString(fmt.Sprintf("T%d: %s", t.Index+1, t.Title))
+	shownTasks := len(o.Tasks)
+	if shownTasks > codingSubAgentTaskListSummaryMax {
+		shownTasks = codingSubAgentTaskListSummaryMax
+	}
+	for _, t := range o.Tasks[:shownTasks] {
+		b.WriteString(fmt.Sprintf("T%d: %s", t.Index+1, compactSubAgentTaskTitle(t.Title)))
 		switch t.Status {
 		case TaskExecPassed:
-			b.WriteString(" ✓")
+			b.WriteString(" \u2713")
 		case TaskExecFailed:
-			b.WriteString(" ✗")
+			b.WriteString(" \u274c")
 			if t.ErrorSummary != "" {
-				b.WriteString(fmt.Sprintf(" — %s", t.ErrorSummary))
+				b.WriteString(fmt.Sprintf(" - %s", compactSubAgentErrorSummary(t.ErrorSummary)))
 			}
 		case TaskExecSkipped:
-			b.WriteString(" (跳过)")
+			b.WriteString(" [skipped]")
 		case TaskExecInProgress, TaskExecTesting:
-			b.WriteString(" ⟳")
+			b.WriteString(" \u27f3")
 		}
 		b.WriteString("\n")
 	}
+	if remaining := len(o.Tasks) - shownTasks; remaining > 0 {
+		b.WriteString(fmt.Sprintf("... \u8fd8\u6709 %d \u4e2a\u4efb\u52a1\u672a\u5c55\u5f00\n", remaining))
+	}
 
 	passed, failed, _ := o.countStatusLocked()
-	b.WriteString(fmt.Sprintf("\n总计: %d/%d 通过", passed, len(o.Tasks)))
+	b.WriteString(fmt.Sprintf("\nTotal: %d/%d passed", passed, len(o.Tasks)))
 	if failed > 0 {
-		b.WriteString(fmt.Sprintf(", %d 失败", failed))
+		b.WriteString(fmt.Sprintf(", %d failed", failed))
 	}
 	return b.String()
 }
@@ -658,30 +1093,79 @@ func (o *TaskExecutionOrchestrator) FinalReport() string {
 			passed++
 		case TaskExecFailed:
 			failed++
-			failedTasks = append(failedTasks, fmt.Sprintf("- 任务 %d「%s」: %s", t.Index+1, t.Title, t.ErrorSummary))
+			failedTasks = append(failedTasks, fmt.Sprintf("- Task %d %q: %s", t.Index+1, compactSubAgentTaskTitle(t.Title), compactSubAgentErrorSummary(t.ErrorSummary)))
 		case TaskExecSkipped:
 			skipped++
 		}
 	}
 
 	var b strings.Builder
-	b.WriteString("## 编码任务执行报告\n\n")
-	b.WriteString(fmt.Sprintf("- 总任务数: %d\n", len(o.Tasks)))
-	b.WriteString(fmt.Sprintf("- 成功: %d ✅\n", passed))
-	b.WriteString(fmt.Sprintf("- 失败: %d ❌\n", failed))
+	b.WriteString("## Coding Task Execution Report\n\n")
+	b.WriteString(fmt.Sprintf("- Total tasks: %d\n", len(o.Tasks)))
+	b.WriteString(fmt.Sprintf("- \u6210\u529f: %d\n", passed))
+	b.WriteString(fmt.Sprintf("- \u5931\u8d25: %d\n", failed))
 	if skipped > 0 {
-		b.WriteString(fmt.Sprintf("- 跳过: %d ⏭️\n", skipped))
+		b.WriteString(fmt.Sprintf("- Skipped: %d\n", skipped))
 	}
+	appendFinalReportArtifactSummary(&b, o.Tasks)
 
 	if len(failedTasks) > 0 {
-		b.WriteString("\n### 失败任务详情\n")
-		for _, ft := range failedTasks {
+		b.WriteString("\n### Failed Tasks\n")
+		shownFailed := len(failedTasks)
+		if shownFailed > codingSubAgentTaskListSummaryMax {
+			shownFailed = codingSubAgentTaskListSummaryMax
+		}
+		for _, ft := range failedTasks[:shownFailed] {
 			b.WriteString(ft + "\n")
 		}
-		b.WriteString("\n建议：可以针对失败的任务单独重试，或检查错误信息后手动修复。\n")
+		b.WriteString("\nRecommendation: retry failed tasks individually or inspect the error summary and repair manually.\n")
 	}
 
 	return b.String()
+}
+
+func appendFinalReportArtifactSummary(b *strings.Builder, tasks []*TaskItem) {
+	if b == nil {
+		return
+	}
+	var modified []string
+	var created []string
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		modified = append(modified, task.ActualFiles...)
+		created = append(created, task.ActualCreatedFiles...)
+	}
+	modified = uniqueSortedSubAgentStrings(modified)
+	created = uniqueSortedSubAgentStrings(created)
+	if len(modified) == 0 && len(created) == 0 {
+		return
+	}
+	b.WriteString("\n### \u5b9e\u9645\u4ea7\u7269\n")
+	b.WriteString(fmt.Sprintf("- \u5b9e\u9645\u4fee\u6539\u6587\u4ef6: %d", len(modified)))
+	if len(modified) > 0 {
+		b.WriteString(fmt.Sprintf(" (%s)", compactSubAgentFileList(modified, codingSubAgentFileChangeSummaryMax)))
+	}
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("- \u65b0\u5efa\u6587\u4ef6: %d", len(created)))
+	if len(created) > 0 {
+		b.WriteString(fmt.Sprintf(" (%s)", compactSubAgentFileList(created, codingSubAgentFileChangeSummaryMax)))
+	}
+	b.WriteString("\n")
+}
+
+func taskIntegrationFiles(t *TaskItem) []string {
+	if t == nil {
+		return nil
+	}
+	files := uniqueSubAgentStrings(append([]string{}, t.ActualFiles...))
+	files = append(files, t.ActualCreatedFiles...)
+	files = uniqueSortedSubAgentStrings(files)
+	if len(files) > 0 {
+		return files
+	}
+	return uniqueSortedSubAgentStrings(t.Files)
 }
 
 // countStatusLocked counts task statuses. Must be called with mu held.
@@ -715,44 +1199,30 @@ func ParseTaskListFromText(text string) []*TaskItem {
 			continue
 		}
 
-		// Detect numbered task headers: "1. xxx", "1) xxx", "任务 1: xxx"
 		if isTaskHeader(trimmed) {
 			if current != nil {
 				tasks = append(tasks, current)
 			}
-			title := extractTaskTitle(trimmed)
-			current = &TaskItem{
-				Index:  len(tasks),
-				Title:  title,
-				Status: TaskExecPending,
-			}
+			current = &TaskItem{Index: len(tasks), Title: extractTaskTitle(trimmed), Status: TaskExecPending}
 			inCriteria = false
 			continue
 		}
-
 		if current == nil {
 			continue
 		}
 
-		// Detect acceptance criteria section
 		lowerTrimmed := strings.ToLower(trimmed)
-		if strings.Contains(lowerTrimmed, "验收") || strings.Contains(lowerTrimmed, "测试") ||
-			strings.Contains(lowerTrimmed, "acceptance") || strings.Contains(lowerTrimmed, "test") {
-			if strings.HasPrefix(trimmed, "#") || strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "：") {
+		if strings.Contains(lowerTrimmed, "acceptance") || strings.Contains(lowerTrimmed, "criteria") || strings.Contains(lowerTrimmed, "test") || strings.Contains(trimmed, "\u9a8c\u6536") || strings.Contains(trimmed, "\u6d4b\u8bd5") {
+			if strings.HasPrefix(trimmed, "#") || strings.HasSuffix(trimmed, ":") {
 				inCriteria = true
 				continue
 			}
 		}
 
-		// Detect file references
-		if strings.Contains(lowerTrimmed, "文件") || strings.Contains(lowerTrimmed, "file") {
-			if strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "*") {
-				file := strings.TrimLeft(trimmed, "-* ")
-				if strings.Contains(file, ".") && !strings.Contains(file, " ") {
-					current.Files = append(current.Files, file)
-					continue
-				}
-			}
+		if isTaskFileListItem(trimmed, inCriteria, lowerTrimmed) {
+			file := strings.TrimSpace(strings.TrimLeft(trimmed, "-* "))
+			current.Files = append(current.Files, file)
+			continue
 		}
 
 		if inCriteria {
@@ -760,79 +1230,101 @@ func ParseTaskListFromText(text string) []*TaskItem {
 			if criterion != "" {
 				current.AcceptanceCriteria = append(current.AcceptanceCriteria, criterion)
 			}
-		} else {
-			// Append to description
-			if current.Description != "" {
-				current.Description += "\n"
-			}
-			current.Description += trimmed
+			continue
 		}
+		if current.Description != "" {
+			current.Description += "\n"
+		}
+		current.Description += trimmed
 	}
 
 	if current != nil {
 		tasks = append(tasks, current)
 	}
-
 	return tasks
+}
+
+func isTaskFileListItem(trimmed string, inCriteria bool, lowerTrimmed string) bool {
+	if inCriteria || !(strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "*")) {
+		return false
+	}
+	item := strings.TrimSpace(strings.TrimLeft(trimmed, "-* "))
+	if item == "" || strings.ContainsAny(item, " 	") {
+		return false
+	}
+	if strings.Contains(lowerTrimmed, "file") || strings.Contains(trimmed, "\u6587\u4ef6") {
+		return strings.Contains(item, ".")
+	}
+	return looksLikeTaskFilePath(item)
+}
+
+func looksLikeTaskFilePath(item string) bool {
+	if item == "" || strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+		return false
+	}
+	if strings.ContainsAny(item, "<>|?*") {
+		return false
+	}
+	base := filepath.Base(filepath.ToSlash(item))
+	if base == "." || base == "/" || base == "" {
+		return false
+	}
+	return strings.Contains(base, ".")
 }
 
 // isTaskHeader checks if a line looks like a numbered task header.
 func isTaskHeader(line string) bool {
-	// "1. xxx", "1) xxx", "1、xxx"
-	if len(line) >= 2 && line[0] >= '0' && line[0] <= '9' {
-		for i := 1; i < len(line) && i < 4; i++ {
-			if line[i] == '.' || line[i] == ')' {
-				return true
-			}
-			if line[i] >= '0' && line[i] <= '9' {
-				continue
-			}
-			break
-		}
-		// Check for Chinese period "、"
-		if strings.Contains(line[:min(6, len(line))], "、") {
-			return true
-		}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
 	}
-	// "任务 1:", "任务1:", "Task 1:", "Task1:"
-	// Must have a digit after the prefix to avoid matching "任务完成后..." in descriptions.
+	if hasNumericTaskPrefix(line) {
+		return true
+	}
 	lower := strings.ToLower(line)
-	for _, prefix := range []string{"任务", "task"} {
-		if strings.HasPrefix(lower, prefix) {
-			rest := strings.TrimSpace(line[len(prefix):])
-			if len(rest) > 0 && rest[0] >= '0' && rest[0] <= '9' {
-				return true
-			}
+	for _, prefix := range []string{"\u4efb\u52a1", "task"} {
+		if !strings.HasPrefix(lower, prefix) {
+			continue
 		}
+		rest := strings.TrimSpace(line[len(prefix):])
+		return len(rest) > 0 && rest[0] >= '0' && rest[0] <= '9'
 	}
 	return false
 }
 
+func hasNumericTaskPrefix(line string) bool {
+	sawDigit := false
+	for _, r := range line {
+		if r >= '0' && r <= '9' {
+			sawDigit = true
+			continue
+		}
+		if !sawDigit {
+			return false
+		}
+		return isTaskHeaderDelimiter(r)
+	}
+	return false
+}
+
+func isTaskHeaderDelimiter(r rune) bool {
+	switch r {
+	case '.', ')', ':', '\uff1a', '\u3001', '\uff0e':
+		return true
+	default:
+		return false
+	}
+}
+
 // extractTaskTitle extracts the title from a task header line.
 func extractTaskTitle(line string) string {
-	// Remove leading number and punctuation
+	line = strings.TrimSpace(line)
 	for i, r := range line {
-		if r == '.' || r == ')' || r == ':' || r == '：' {
+		if isTaskHeaderDelimiter(r) {
 			rest := strings.TrimSpace(line[i+utf8RuneWidth(r):])
 			if rest != "" {
 				return rest
 			}
-		}
-		// Handle "、"
-		if r == '、' {
-			rest := strings.TrimSpace(line[i+utf8RuneWidth(r):])
-			if rest != "" {
-				return rest
-			}
-		}
-	}
-	// Remove "任务 N:" or "Task N:" prefix
-	lower := strings.ToLower(line)
-	if strings.HasPrefix(lower, "任务") || strings.HasPrefix(lower, "task") {
-		idx := strings.IndexAny(line, ":：")
-		if idx >= 0 {
-			_, size := utf8DecodeRuneInString(line[idx:])
-			return strings.TrimSpace(line[idx+size:])
 		}
 	}
 	return line

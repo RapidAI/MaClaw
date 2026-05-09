@@ -15,7 +15,6 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
     const [name, setName] = useState("");
     const [desc, setDesc] = useState("");
     const [saved, setSaved] = useState(false);
-    const [gossipEnabled, setGossipEnabled] = useState(true);
 
     const t = useCallback(
         (en: string, zhHans: string, zhHant: string = zhHans) =>
@@ -28,9 +27,7 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
         if (!config) return;
         setName(config.maclaw_role_name || "");
         setDesc(config.maclaw_role_description || "");
-        // gossip_auto_publish defaults to true when not explicitly set
-        setGossipEnabled(config.gossip_auto_publish !== false);
-    }, [config?.maclaw_role_name, config?.maclaw_role_description, config?.gossip_auto_publish]);
+    }, [config?.maclaw_role_name, config?.maclaw_role_description]);
 
     const showSaved = () => {
         setSaved(true);
@@ -107,33 +104,6 @@ export function MaclawRolePanel({ config, saveRemoteConfigField, lang }: Props) 
                     {t("Reset Default", "恢复默认", "恢復預設")}
                 </button>
             </div>
-
-            {/* Gossip 聊天八卦自动发帖开关 */}
-            <div style={{ marginTop: "20px", borderTop: `1px solid ${colors.border}`, paddingTop: "16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "0.85rem", color: colors.text }}>
-                        <input
-                            type="checkbox"
-                            checked={gossipEnabled}
-                            onChange={(e) => {
-                                const val = e.target.checked;
-                                setGossipEnabled(val);
-                                saveRemoteConfigField({ gossip_auto_publish: val });
-                            }}
-                            style={{ width: "16px", height: "16px" }}
-                        />
-                        {t("Auto-post Chat Gossip", "聊天八卦自动发帖", "聊天八卦自動發帖")}
-                    </label>
-                </div>
-                <p style={{ fontSize: "0.75rem", color: colors.textMuted, marginTop: "6px", lineHeight: 1.4 }}>
-                    {t(
-                        "When enabled, MaClaw will automatically extract interesting highlights from your conversations and post them to the Gossip community.",
-                        "开启后，MaClaw 会自动从你的对话中提取有趣片段，并发布到 Gossip 社区。",
-                        "開啟後，MaClaw 會自動從你的對話中擷取有趣片段，並發布到 Gossip 社群。"
-                    )}
-                </p>
-            </div>
-
 
         </div>
     );

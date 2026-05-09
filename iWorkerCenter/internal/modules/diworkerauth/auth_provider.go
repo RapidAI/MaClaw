@@ -76,7 +76,7 @@ func (p oidcAuthProvider) Authenticate(credential AuthCredential) AuthResult {
 	if !cfg.Enabled || strings.TrimSpace(cfg.IssuerURL) == "" {
 		return AuthResult{Authenticated: false, Error: "OIDC/OAuth SSO is not configured"}
 	}
-	return AuthResult{Authenticated: false, Error: "OIDC/OAuth SSO is reserved but not implemented yet"}
+	return AuthResult{Authenticated: false, Error: "OIDC/OAuth SSO is a reserved adapter; live sign-in is not enabled in this version"}
 }
 
 func (h *Handler) authProviders() map[string]AuthProvider {
@@ -128,7 +128,7 @@ func (h *Handler) handleOIDC(w http.ResponseWriter, r *http.Request) {
 		response.OK(w, cfg)
 	case http.MethodPost:
 		var req OIDCConfig
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeDiWorkerAuthJSON(r.Body, &req); err != nil {
 			response.BadRequest(w, "INVALID_BODY", "invalid JSON")
 			return
 		}

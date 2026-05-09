@@ -1,0 +1,128 @@
+package knowledge
+
+import "time"
+
+func Capabilities() KnowledgeCapabilities {
+	docLegacyStatus := "supported_native"
+	docLegacyNotes := "Parsed natively via built-in pure-Go DOC reader (LegacyOfficeReader). Full paragraph/heading/header/footer extraction."
+	xlsLegacyStatus := "supported_native"
+	xlsLegacyNotes := "Parsed natively via built-in pure-Go BIFF reader (LegacyOfficeReader). Full sheet/row/cell extraction."
+	return KnowledgeCapabilities{
+		DefaultIncludeExts: append([]string(nil), DefaultIncludeExts...),
+		DefaultAutoLabels:  true,
+		AutoLabelRules:     []string{"kind:*", "scope:*", "domain:*", "folder:*"},
+		QueryRequiresLLM:   false,
+		WriteLLMOptional:   true,
+		DistillModes:       []string{DistillModeAuto, DistillModeRules, DistillModeLLMIfAny},
+		CoverageFilters:    coverageFilters(),
+		CoverageAliases:    coverageAliases(),
+		LocalIndexes:       []string{"cards_fts", "facts_fts", "document_nodes_fts", "search_facets", "fact_graph", "fact_index_entities", "fact_index_predicates", "entity_profile"},
+		StorageBackend:     "sqlite",
+		SearchBackend:      "sqlite_fts5_cards_facts_nodes",
+		GeneratedAt:        time.Now().UTC(),
+		Formats: []FormatCapability{
+			{
+				Kind:          SourceKindURL,
+				Extensions:    []string{"http", "https"},
+				Parser:        "public_http_fetch_text",
+				SearchUnit:    "document_nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: false,
+				Notes:         "Public HTTP(S) only; private, localhost, and unsafe redirects are blocked.",
+			},
+			{
+				Kind:          SourceKindMarkdown,
+				Extensions:    []string{".md", ".markdown"},
+				Parser:        "markdown_heading_sections",
+				SearchUnit:    "section nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: true,
+			},
+			{
+				Kind:          SourceKindText,
+				Extensions:    []string{".txt", ".text"},
+				Parser:        "paragraph_chunks",
+				SearchUnit:    "paragraph nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: true,
+			},
+			{
+				Kind:          SourceKindDOCX,
+				Extensions:    []string{".docx"},
+				Parser:        "docx_xml_paragraphs",
+				SearchUnit:    "paragraph nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: true,
+			},
+			{
+				Kind:          SourceKindPDF,
+				Extensions:    []string{".pdf"},
+				Parser:        "pdf_text_pages",
+				SearchUnit:    "page/paragraph nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: true,
+				Notes:         "Text PDFs are supported; OCR for scanned image PDFs is a later enhancement.",
+			},
+			{
+				Kind:          SourceKindXLSX,
+				Extensions:    []string{".xlsx"},
+				Parser:        "spreadsheet_row_blocks",
+				SearchUnit:    "sheet row-range nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: true,
+			},
+			{
+				Kind:          SourceKindCSV,
+				Extensions:    []string{".csv"},
+				Parser:        "csv_row_blocks",
+				SearchUnit:    "row-range nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: true,
+			},
+			{
+				Kind:          SourceKindDOC,
+				Extensions:    []string{".doc"},
+				Parser:        "native_legacy_doc_reader",
+				SearchUnit:    "paragraph nodes/cards/facts",
+				Status:        docLegacyStatus,
+				Refreshable:   true,
+				DefaultImport: true,
+				Notes:         docLegacyNotes,
+			},
+			{
+				Kind:          SourceKindXLS,
+				Extensions:    []string{".xls"},
+				Parser:        "native_biff_xls_reader",
+				SearchUnit:    "sheet row-range nodes/cards/facts",
+				Status:        xlsLegacyStatus,
+				Refreshable:   true,
+				DefaultImport: true,
+				Notes:         xlsLegacyNotes,
+			},
+			{
+				Kind:          SourceKindConversation,
+				Parser:        "explicit_text_save",
+				SearchUnit:    "paragraph nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   false,
+				DefaultImport: false,
+				Notes:         "Only saved when the user explicitly asks to remember or add text knowledge.",
+			},
+			{
+				Kind:          SourceKindWorkflowArtifact,
+				Parser:        "explicit_text_save",
+				SearchUnit:    "paragraph nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   false,
+				DefaultImport: false,
+			},
+		},
+	}
+}

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/domain"
 	colRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/repo"
 	colSvc "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/colleagues/service"
 	roleRepo "github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/roles/repo"
@@ -29,6 +32,11 @@ func newTenantRequest(method, target string, body *bytes.Buffer) *http.Request {
 }
 
 func setup(t *testing.T) (*http.ServeMux, *roleSvc.RoleService) {
+	mux, rs, _ := setupWithProvider(t)
+	return mux, rs
+}
+
+func setupWithProvider(t *testing.T) (*http.ServeMux, *roleSvc.RoleService, *db.Provider) {
 	t.Helper()
 	p, err := db.Open(":memory:")
 	if err != nil {
@@ -48,7 +56,7 @@ func setup(t *testing.T) (*http.ServeMux, *roleSvc.RoleService) {
 	mux := http.NewServeMux()
 	h.RegisterAdminRoutes(mux)
 	h.RegisterClientRoutes(mux)
-	return mux, rs
+	return mux, rs, p
 }
 
 // createRole is a test helper that creates a role and returns its ID.
@@ -130,6 +138,45 @@ func TestCreateRequiresRole(t *testing.T) {
 	mux.ServeHTTP(w2, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body2)))
 	if w2.Code != http.StatusBadRequest {
 		t.Fatalf("bad role status = %d, want 400", w2.Code)
+	}
+}
+
+func TestCreateColleagueRejectsInvalidJSONWithoutSaving(t *testing.T) {
+	mux, rs, p := setupWithProvider(t)
+	_ = createRole(t, rs, "office")
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(`{"name":`)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	if err := p.Read.QueryRow(`SELECT COUNT(*) FROM colleagues WHERE tenant_id=?`, testTenant).Scan(&count); err != nil {
+		t.Fatalf("count colleagues: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("colleagues saved after invalid JSON: %d", count)
+	}
+}
+
+func TestCreateColleagueRejectsOversizedJSONWithoutSaving(t *testing.T) {
+	mux, rs, p := setupWithProvider(t)
+	roleID := createRole(t, rs, "office")
+
+	body := `{"name":"` + strings.Repeat("x", maxColleagueJSONBodyBytes+1024) + `","role_id":"` + roleID + `"}`
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, newTenantRequest(http.MethodPost, "/admin/colleagues", bytes.NewBufferString(body)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	if err := p.Read.QueryRow(`SELECT COUNT(*) FROM colleagues WHERE tenant_id=?`, testTenant).Scan(&count); err != nil {
+		t.Fatalf("count colleagues: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("colleagues saved after oversized JSON: %d", count)
 	}
 }
 
@@ -264,5 +311,38 @@ func TestSetStatus(t *testing.T) {
 	_ = json.Unmarshal(w3.Body.Bytes(), &clientResp)
 	if len(clientResp.Colleagues) != 0 {
 		t.Fatalf("client colleagues after disable = %d, want 0", len(clientResp.Colleagues))
+	}
+}
+
+func TestSetStatusSupportsEscapedColleagueID(t *testing.T) {
+	mux, rs, p := setupWithProvider(t)
+	roleID := createRole(t, rs, "support")
+	now := time.Now()
+	cr := colRepo.New(p.Write, p.Read)
+	if err := cr.Insert(testTenant, &domain.Colleague{
+		ID:        "col/team a",
+		Name:      "Team A Worker",
+		RoleID:    roleID,
+		Strengths: []string{},
+		Tasks:     []string{},
+		Status:    domain.StatusActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("insert colleague: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, newTenantRequest(http.MethodPost, "/admin/colleagues/col%2Fteam%20a/status", bytes.NewBufferString(`{"status":"disabled"}`)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("set status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	updated, err := cr.GetByID(testTenant, "col/team a")
+	if err != nil {
+		t.Fatalf("get colleague: %v", err)
+	}
+	if updated.Status != domain.StatusDisabled {
+		t.Fatalf("status = %q, want disabled", updated.Status)
 	}
 }

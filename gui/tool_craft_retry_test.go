@@ -13,6 +13,15 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func withFastCraftRetryBackoff(t *testing.T) {
+	t.Helper()
+	old := craftToolRetryInitialBackoff
+	craftToolRetryInitialBackoff = time.Millisecond
+	t.Cleanup(func() {
+		craftToolRetryInitialBackoff = old
+	})
+}
+
 // --- Sub-task 5.1 [PBT-exploration] + 5.2 [PBT-fix] ---
 //
 // Originally an exploration test that would have failed on unfixed code
@@ -27,12 +36,11 @@ import (
 // transient "网络错误" error. The mock server always returns this error,
 // so all retries are exhausted and the returned error should be the
 // human-readable exhaustion message (not the raw JSON).
-//
-// Expected duration: ~14 seconds (2s + 4s + 8s retry backoff sleeps).
 func TestGenerateScript_Code1234_RetriesOnTransientError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow retry test in short mode")
 	}
+	withFastCraftRetryBackoff(t)
 
 	tests := []struct {
 		name     string
@@ -74,9 +82,7 @@ func TestGenerateScript_Code1234_RetriesOnTransientError(t *testing.T) {
 			previous := craftAttemptResult{}
 			client := srv.Client()
 
-			start := time.Now()
 			_, err := generateScript(cfg, request, runtimes, previous, client)
-			elapsed := time.Since(start)
 
 			if err == nil {
 				t.Fatal("expected error from generateScript, got nil")
@@ -86,11 +92,6 @@ func TestGenerateScript_Code1234_RetriesOnTransientError(t *testing.T) {
 			count := atomic.LoadInt32(&requestCount)
 			if count != 4 {
 				t.Errorf("expected 4 requests (1 + 3 retries), got %d", count)
-			}
-
-			// Verify elapsed time indicates retries occurred (at least 2+4=6 seconds)
-			if elapsed < 6*time.Second {
-				t.Errorf("expected at least 6s of backoff sleep, elapsed %v", elapsed)
 			}
 
 			// Verify the error message is the human-readable exhaustion message
@@ -197,12 +198,11 @@ func TestGenerateScript_NonRetryableErrors_FailImmediately(t *testing.T) {
 // 429 retry behavior.
 //
 // **Validates: Requirements 3.1**
-//
-// Expected duration: ~14 seconds (2s + 4s + 8s retry backoff sleeps).
 func TestGenerateScript_429_StillRetries(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow retry test in short mode")
 	}
+	withFastCraftRetryBackoff(t)
 
 	var requestCount int32
 
@@ -228,9 +228,7 @@ func TestGenerateScript_429_StillRetries(t *testing.T) {
 	previous := craftAttemptResult{}
 	client := srv.Client()
 
-	start := time.Now()
 	_, err := generateScript(cfg, request, runtimes, previous, client)
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("expected error from generateScript, got nil")
@@ -240,11 +238,6 @@ func TestGenerateScript_429_StillRetries(t *testing.T) {
 	count := atomic.LoadInt32(&requestCount)
 	if count != 4 {
 		t.Errorf("expected 4 requests (1 + 3 retries), got %d", count)
-	}
-
-	// Verify elapsed time indicates retries occurred
-	if elapsed < 6*time.Second {
-		t.Errorf("expected at least 6s of backoff sleep, elapsed %v", elapsed)
 	}
 
 	// Verify the error message mentions 429
@@ -260,6 +253,7 @@ func TestGenerateScript_SuccessAfterRetry(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping slow retry test in short mode")
 	}
+	withFastCraftRetryBackoff(t)
 
 	var requestCount int32
 	expectedScript := "print('hello world')"
@@ -376,6 +370,7 @@ func TestGenerateScript_Code1234WithoutWangluoCuowu_NoRetry(t *testing.T) {
 //
 // **Validates: Requirements 2.1, 3.1, 3.2**
 func TestGenerateScript_ErrorPatterns_TableDriven(t *testing.T) {
+	withFastCraftRetryBackoff(t)
 	tests := []struct {
 		name          string
 		statusCode    int

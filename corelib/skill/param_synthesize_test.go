@@ -126,6 +126,89 @@ func TestSynthesizeParams_RequiredArgs(t *testing.T) {
 	}
 }
 
+func TestSynthesizeParams_CanonicalizesPlaceholderNames(t *testing.T) {
+	steps := []corelib.NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{
+			"command": "tool {{Input-File}} ${Output File}",
+		}},
+	}
+	params := SynthesizeParams(steps, []string{"input_file"})
+
+	nameSet := make(map[string]corelib.NLSkillParam)
+	for _, p := range params {
+		nameSet[p.Name] = p
+	}
+	if _, ok := nameSet["input_file"]; !ok || !nameSet["input_file"].Required {
+		t.Fatalf("input_file param not synthesized as required: %#v", params)
+	}
+	if _, ok := nameSet["output_file"]; !ok {
+		t.Fatalf("output_file param not synthesized: %#v", params)
+	}
+}
+
+func TestCompleteParamsForRunnerMergesMissingTemplateParams(t *testing.T) {
+	steps := []corelib.NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{
+			"command": "tool {{input}} --format {{format}}",
+		}},
+	}
+	explicit := []corelib.NLSkillParam{
+		{Name: "format", Description: "Output format", Default: "pdf", CLIFlag: "--format"},
+	}
+
+	params := CompleteParamsForRunner(explicit, steps, []string{"input"})
+
+	if len(params) != 2 {
+		t.Fatalf("expected explicit format plus synthesized input, got %d: %#v", len(params), params)
+	}
+	if params[0].Name != "format" || params[0].Description != "Output format" || params[0].Default != "pdf" || params[0].CLIFlag != "--format" {
+		t.Fatalf("explicit param was not preserved: %#v", params[0])
+	}
+	if params[1].Name != "input" || !params[1].Required || !params[1].Synthetic {
+		t.Fatalf("expected required synthetic input, got %#v", params[1])
+	}
+}
+
+func TestCompleteParamsForRunnerDoesNotDuplicateExplicitAlias(t *testing.T) {
+	steps := []corelib.NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{
+			"command": "tool {{input}}",
+		}},
+	}
+	explicit := []corelib.NLSkillParam{
+		{Name: "file", Aliases: []string{"input"}, Description: "Input file"},
+	}
+
+	params := CompleteParamsForRunner(explicit, steps, []string{"input"})
+
+	if len(params) != 1 {
+		t.Fatalf("expected alias to cover synthesized input, got %d: %#v", len(params), params)
+	}
+	if params[0].Name != "file" || !params[0].Required || params[0].Description != "Input file" {
+		t.Fatalf("explicit alias param not preserved/upgraded: %#v", params[0])
+	}
+}
+
+func TestCompleteParamsForRunnerDoesNotDuplicateCommonAlias(t *testing.T) {
+	steps := []corelib.NLSkillStep{
+		{Action: "bash", Params: map[string]interface{}{
+			"command": "tool {{input}}",
+		}},
+	}
+	explicit := []corelib.NLSkillParam{
+		{Name: "input", Aliases: []string{"file"}, Description: "Input"},
+	}
+
+	params := CompleteParamsForRunner(explicit, steps, nil)
+
+	if len(params) != 1 {
+		t.Fatalf("expected explicit input to cover synthesized input, got %d: %#v", len(params), params)
+	}
+	if params[0].Aliases[0] != "file" || params[0].Synthetic {
+		t.Fatalf("explicit param fields changed unexpectedly: %#v", params[0])
+	}
+}
+
 func paramNames(params []corelib.NLSkillParam) []string {
 	out := make([]string, len(params))
 	for i, p := range params {

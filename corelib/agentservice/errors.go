@@ -12,6 +12,7 @@ var (
 	ErrSessionNotFound    = errors.New("session not found")
 	ErrRunNotFound        = errors.New("run not found")
 	ErrSnapshotNotFound   = errors.New("snapshot not found")
+	ErrRecordNotFound     = errors.New("record not found")
 	ErrRunNotRunning      = errors.New("run is not running")
 	ErrInstanceBusy       = errors.New("instance has running runs")
 	ErrUserBusy           = errors.New("user has running runs")

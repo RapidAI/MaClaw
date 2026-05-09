@@ -13,9 +13,9 @@ import (
 // It bridges the IM gateway's interrupt signal to the running agent loop's
 // cancel mechanism.
 //
-// Three-signal scheduling: relevance (embedding cosine) + domain match
-// (L1 keyword) + structure (negation/length). All four ScheduleActions
-// have execution paths: Replace, Merge, StatusQuery, Queue.
+// Three-signal scheduling: relevance (embedding cosine) + semantic domain
+// match + structure (negation/length). All four ScheduleActions have
+// execution paths: Replace, Merge, StatusQuery, Queue.
 type imInterruptHandler struct {
 	handler *IMMessageHandler
 
@@ -101,7 +101,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 	if tracker != nil {
 		taskIntent := tracker.Buffer().TaskIntent()
 		if taskIntent != "" {
-			// Classify the new message's intent using L1 keywords.
+			// Classify the new message's intent through the semantic intent path.
 			newMsgResult := classifyTaskIntent(messageText)
 			newMsgIntent := string(newMsgResult.Intent)
 			// Same intent label = same domain.

@@ -52,11 +52,21 @@ export function GroupDiscussionCreateConsultation(arg1:any):Promise<any>;
 
 export function GroupDiscussionStartAuthorizedConsultation(arg1:any):Promise<any>;
 
+export function GroupDiscussionRankExperts(arg1:any):Promise<any>;
+
 export function GroupDiscussionGetConsultation(arg1:string):Promise<any>;
 
 export function GroupDiscussionGetConsultationDetail(arg1:string):Promise<any>;
 
 export function GroupDiscussionGetReadiness(arg1:string):Promise<any>;
+
+export function GroupDiscussionGetWorkflowState(arg1:string):Promise<any>;
+
+export function GroupDiscussionSuggestEscalationRoute(arg1:string):Promise<any>;
+
+export function GroupDiscussionBuildWorkflowActionDraft(arg1:string):Promise<any>;
+
+export function GroupDiscussionGetRollbackReadiness(arg1:string,arg2:string):Promise<any>;
 
 export function GroupDiscussionSummarizeResult(arg1:any):Promise<any>;
 
@@ -67,6 +77,14 @@ export function GroupDiscussionAcceptInvite(arg1:string,arg2:any):Promise<void>;
 export function GroupDiscussionRejectInvite(arg1:string,arg2:any):Promise<void>;
 
 export function GroupDiscussionSendMessage(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionAddProposal(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionAddReview(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionDecide(arg1:string,arg2:any):Promise<void>;
+
+export function GroupDiscussionEscalate(arg1:string,arg2:any):Promise<void>;
 
 export function GroupDiscussionSubmitResult(arg1:string,arg2:any):Promise<void>;
 
@@ -87,6 +105,8 @@ export function GetRemoteToolLaunchProbe(arg1:string,arg2:string,arg3:boolean):P
 export function GetRemotePTYProbe():Promise<any>;
 
 export function SearchProjects(arg1:string,arg2:number):Promise<Array<main.ProjectSearchResult>>;
+
+export function CreateRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
 
 export function ResumeProject(arg1:string):Promise<string>;
 
@@ -410,6 +430,32 @@ export function GetMemoryHealth():Promise<any>;
 
 export function GetMemoryStatus():Promise<any>;
 
+export function GetExperienceLearningSnapshot():Promise<any>;
+
+export function GetExperienceGovernanceSummary(arg1:any):Promise<any>;
+
+export function QueryExperienceFollowUpActions(arg1:any):Promise<any>;
+
+export function ReviewExperienceTrace(arg1:string, arg2:any):Promise<any>;
+
+export function BuildExperienceTraceFollowUp(arg1:string):Promise<any>;
+
+export function BuildExperienceMemoryMaintenanceDraft(arg1:any):Promise<any>;
+
+export function BuildExperienceRoutingAdjustmentDraft(arg1:any):Promise<any>;
+
+export function BuildExperienceSkillDraft(arg1:string):Promise<any>;
+
+export function BuildExperienceRollbackWorkflowDraft(arg1:string):Promise<any>;
+
+export function BuildExperienceEscalationBrief(arg1:string):Promise<any>;
+
+export function BuildExperienceConflictReconciliationDraft(arg1:string):Promise<any>;
+
+export function RecordExperienceTraceFollowUp(arg1:string, arg2:any):Promise<any>;
+
+export function RecordExperienceDraftReview(arg1:any):Promise<any>;
+
 export function ListArchiveMemories(arg1:string, arg2:string):Promise<Array<any>>;
 
 export function RestoreArchiveMemory(arg1:string):Promise<void>;
@@ -567,6 +613,10 @@ export function IsAIAssistantReady():Promise<boolean>;
 export function GetAIAssistantInitStatus():Promise<string>;
 
 export function SendAIAssistantMessage(arg1:any):Promise<any>;
+
+export function SubmitAgentView(arg1:any):Promise<any>;
+
+export function DismissAgentView(arg1:any):Promise<any>;
 
 export function SendBtwQuery(arg1:string, arg2:string):Promise<any>;
 
@@ -743,3 +793,180 @@ export function ExportIMAuditCSV(arg1:string,arg2:string,arg3:string):Promise<st
 export function GetIMAuditStats():Promise<any>;
 export function GetIMAuditUsers(arg1:string):Promise<Array<string>>;
 export function QueryIMAuditMessages(arg1:string,arg2:string,arg3:string,arg4:number):Promise<any>;
+
+export function KnowledgeStats():Promise<any>;
+
+export function KnowledgeDoctor():Promise<any>;
+
+export function KnowledgeHealth(arg1:any):Promise<any>;
+
+export function KnowledgeSourceQualityReport(arg1:any):Promise<any>;
+
+export function KnowledgeSourceQualityMaintenancePlan(arg1:any):Promise<any>;
+
+export function KnowledgeQualityMaintenancePolicies():Promise<any>;
+
+export function KnowledgeExecuteSourceQualityMaintenancePlan(arg1:any):Promise<any>;
+
+export function KnowledgeCapabilities():Promise<any>;
+
+export function KnowledgeListURLDomainPolicies():Promise<Array<any>>;
+
+export function KnowledgeUpdateURLDomainPolicies(arg1:any):Promise<any>;
+
+export function KnowledgeCheckURLDomainPolicy(arg1:string):Promise<any>;
+
+export function KnowledgeMaintain(arg1:boolean):Promise<any>;
+
+export function KnowledgeExportSnapshot(arg1:string,arg2:boolean):Promise<any>;
+
+export function KnowledgeExportSnapshotWithOptions(arg1:any):Promise<any>;
+
+export function KnowledgeImportSnapshot(arg1:any):Promise<any>;
+
+export function KnowledgeListSources(arg1:any):Promise<Array<any>>;
+
+export function KnowledgeListSourceLabels(arg1:any):Promise<Array<any>>;
+
+export function KnowledgeGetSource(arg1:string):Promise<any>;
+
+export function KnowledgeUpdateSourceMetadata(arg1:any):Promise<any>;
+
+export function KnowledgeUpdateSourceLabels(arg1:any):Promise<any>;
+
+export function KnowledgeBackfillSourceAutoLabels(arg1:any):Promise<any>;
+
+export function KnowledgeSearch(arg1:any):Promise<Array<any>>;
+
+export function KnowledgeExplain(arg1:any):Promise<any>;
+
+export function KnowledgeSearchFacets(arg1:any):Promise<any>;
+
+export function KnowledgeTopicRelevance(arg1:any):Promise<any>;
+
+export function KnowledgeContextPack(arg1:any):Promise<any>;
+
+export function KnowledgeFactGraph(arg1:any):Promise<any>;
+
+export function KnowledgeFactIndex(arg1:any):Promise<any>;
+
+export function KnowledgeEntityProfile(arg1:any):Promise<any>;
+
+export function KnowledgeSuggest(arg1:any):Promise<any>;
+
+export function KnowledgeDeleteSource(arg1:string):Promise<void>;
+
+export function KnowledgeDisableSource(arg1:string):Promise<any>;
+
+export function KnowledgeDisableSources(arg1:Array<string>):Promise<any>;
+
+export function KnowledgeDisableSourcesByFilter(arg1:any):Promise<any>;
+
+export function KnowledgeEnableSource(arg1:string):Promise<any>;
+
+export function KnowledgeEnableSources(arg1:Array<string>):Promise<any>;
+
+export function KnowledgeEnableSourcesByFilter(arg1:any):Promise<any>;
+
+export function KnowledgeRefreshSource(arg1:string):Promise<any>;
+
+export function KnowledgePreviewSourceRefresh(arg1:string):Promise<any>;
+
+export function KnowledgePreviewSourcesRefresh(arg1:Array<string>):Promise<any>;
+
+export function KnowledgePreviewSourcesRefreshByFilter(arg1:any):Promise<any>;
+
+export function KnowledgeRefreshChangedSources(arg1:Array<string>):Promise<any>;
+
+export function KnowledgeRefreshChangedSourcesByFilter(arg1:any):Promise<any>;
+
+export function KnowledgeRefreshSources(arg1:Array<string>):Promise<any>;
+
+export function KnowledgeRefreshSourcesByFilter(arg1:any):Promise<any>;
+
+export function KnowledgeRebuildSourceDerived(arg1:string,arg2:string):Promise<any>;
+
+export function KnowledgeRebuildSourcesDerived(arg1:Array<string>,arg2:string):Promise<any>;
+
+export function KnowledgeRebuildSourcesDerivedByFilter(arg1:any,arg2:string):Promise<any>;
+
+export function KnowledgeScanDirectory(arg1:any):Promise<any>;
+
+export function KnowledgeScanFiles(arg1:any,arg2:Array<string>):Promise<any>;
+
+export function KnowledgeImportDirectory(arg1:any):Promise<any>;
+
+export function KnowledgeImportFiles(arg1:any,arg2:Array<string>):Promise<any>;
+
+export function KnowledgeListImportBatches(arg1:number):Promise<Array<any>>;
+
+export function KnowledgeListImportItems(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function KnowledgeRetryImportBatch(arg1:any):Promise<any>;
+
+export function KnowledgeListNodesBySource(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function KnowledgeListSourceVersions(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function KnowledgeListCardsBySource(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function KnowledgeListFactsBySource(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function KnowledgeListSourceLinks(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function KnowledgeSourceGraph(arg1:any,arg2:number):Promise<any>;
+
+export function KnowledgeSourceNeighborhood(arg1:string,arg2:number,arg3:number,arg4:number):Promise<any>;
+
+export function KnowledgeSourcePath(arg1:string,arg2:string,arg3:number,arg4:number):Promise<any>;
+
+export function KnowledgePreviewSourceTopicLinks(arg1:string,arg2:number):Promise<any>;
+
+export function KnowledgeLinkSources(arg1:any):Promise<any>;
+
+export function KnowledgeUnlinkSources(arg1:string,arg2:string,arg3:string):Promise<any>;
+
+export function KnowledgeListSourceLinkEvents(arg1:string,arg2:number):Promise<Array<any>>;
+
+export function KnowledgeSourceTimeline(arg1:string,arg2:number):Promise<any>;
+
+export function KnowledgeSourceDigest(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number):Promise<any>;
+
+export function KnowledgeRefreshSourceTopicLinks(arg1:string,arg2:number):Promise<any>;
+
+export function KnowledgeRefreshSourceTopicLinksByFilter(arg1:any,arg2:number):Promise<any>;
+
+export function KnowledgeListDuplicateCards(arg1:number):Promise<Array<any>>;
+
+export function KnowledgeSuppressDuplicateCards(arg1:any):Promise<any>;
+
+export function KnowledgeSuppressCards(arg1:Array<string>,arg2:string):Promise<any>;
+
+export function KnowledgeRestoreSuppressedCards(arg1:Array<string>):Promise<any>;
+
+export function KnowledgeListSuppressedCards(arg1:number):Promise<Array<any>>;
+
+export function KnowledgeScanSensitiveContent(arg1:number):Promise<any>;
+
+export function KnowledgeDisableSensitiveSources(arg1:number):Promise<any>;
+
+export function KnowledgeStartImportDirectory(arg1:any):Promise<any>;
+
+export function KnowledgeImportJobStatus(arg1:string):Promise<any>;
+
+export function KnowledgeSaveURL(arg1:string,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:boolean):Promise<any>;
+
+export function KnowledgeSaveURLs(arg1:Array<string>,arg2:string,arg3:string,arg4:string,arg5:Array<string>,arg6:boolean):Promise<any>;
+
+export function KnowledgeDiscoverURLs(arg1:any):Promise<any>;
+
+export function KnowledgeSaveText(arg1:any):Promise<any>;
+
+export function SelectKnowledgeDirectory():Promise<string>;
+
+export function SelectKnowledgeFiles():Promise<Array<string>>;
+
+// MIS data service bindings
+export function GetMISDataConfig():Promise<any>;
+export function SaveMISDataConfig(arg1:any):Promise<void>;
+export function TestMISDataConnection(arg1:any):Promise<any>;

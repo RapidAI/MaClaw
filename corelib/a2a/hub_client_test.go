@@ -138,6 +138,18 @@ func TestHubClientInviteAndResultEndpoints(t *testing.T) {
 	if err := client.SendDiscussionMessage(ctx, "disc-1", GroupDiscussionMessage{Content: "Prefer staged rollout", CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("SendDiscussionMessage: %v", err)
 	}
+	if err := client.AddDiscussionProposal(ctx, "disc-1", Proposal{AuthorID: "maclaw-a", Title: "Use staged rollout", Content: "Ship behind gates"}); err != nil {
+		t.Fatalf("AddDiscussionProposal: %v", err)
+	}
+	if err := client.AddDiscussionReview(ctx, "disc-1", Review{ProposalID: "prop-1", ReviewerID: "maclaw-a", Position: ReviewApprove}); err != nil {
+		t.Fatalf("AddDiscussionReview: %v", err)
+	}
+	if err := client.DecideDiscussion(ctx, "disc-1", Decision{ProposalID: "prop-1", Summary: "Use staged rollout"}); err != nil {
+		t.Fatalf("DecideDiscussion: %v", err)
+	}
+	if err := client.EscalateDiscussion(ctx, "disc-1", Escalation{RaisedBy: "maclaw-a", Reason: "Needs owner decision"}); err != nil {
+		t.Fatalf("EscalateDiscussion: %v", err)
+	}
 	if err := client.SubmitDiscussionResult(ctx, "disc-1", GroupDiscussionResult{Summary: "Use staged rollout"}); err != nil {
 		t.Fatalf("SubmitDiscussionResult: %v", err)
 	}
@@ -146,6 +158,10 @@ func TestHubClientInviteAndResultEndpoints(t *testing.T) {
 		"POST /api/a2a/consultations/disc-1/invites",
 		"POST /api/a2a/invites/invite-1/accept",
 		"POST /api/a2a/consultations/disc-1/messages",
+		"POST /api/a2a/consultations/disc-1/proposals",
+		"POST /api/a2a/consultations/disc-1/reviews",
+		"POST /api/a2a/consultations/disc-1/decide",
+		"POST /api/a2a/consultations/disc-1/escalate",
 		"POST /api/a2a/consultations/disc-1/result",
 	} {
 		if !strings.Contains(joined, want) {

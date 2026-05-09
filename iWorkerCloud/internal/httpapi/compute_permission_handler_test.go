@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,34 @@ import (
 
 	"github.com/RapidAI/CodeClaw/iWorkerCloud/internal/store"
 )
+
+type failingComputeStore struct {
+	computeStore
+	getPermissionErr error
+	getForceSyncErr  error
+	clearForceErr    error
+}
+
+func (s *failingComputeStore) GetComputePermission(ctx context.Context, centerID string) (bool, error) {
+	if s.getPermissionErr != nil {
+		return false, s.getPermissionErr
+	}
+	return s.computeStore.GetComputePermission(ctx, centerID)
+}
+
+func (s *failingComputeStore) GetForceSync(ctx context.Context, centerID string) (bool, error) {
+	if s.getForceSyncErr != nil {
+		return false, s.getForceSyncErr
+	}
+	return s.computeStore.GetForceSync(ctx, centerID)
+}
+
+func (s *failingComputeStore) ClearForceSync(ctx context.Context, centerID string) error {
+	if s.clearForceErr != nil {
+		return s.clearForceErr
+	}
+	return s.computeStore.ClearForceSync(ctx, centerID)
+}
 
 func TestSetComputePermission_Grant(t *testing.T) {
 	cs := newTestComputeStore(t)
@@ -41,6 +70,54 @@ func TestSetComputePermission_Grant(t *testing.T) {
 	}
 	if resp.ForceSync {
 		t.Error("expected force_sync=false when granting permission")
+	}
+}
+
+func TestSetComputePermissionFailsWhenPermissionReadbackFails(t *testing.T) {
+	cs := newTestComputeStore(t)
+	mock := &mockCenterAuthService{centers: map[string]*store.Center{}}
+	h := NewComputeHandler(cs, mock)
+	h.store = &failingComputeStore{
+		computeStore:     cs,
+		getPermissionErr: errors.New("permission read failed"),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/admin/centers/{id}/compute-permission", h.SetComputePermission())
+
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/centers/ctr_1/compute-permission", bytes.NewBufferString(`{"enabled":true}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GET_PERMISSION_FAILED") {
+		t.Fatalf("expected GET_PERMISSION_FAILED response: %s", w.Body.String())
+	}
+}
+
+func TestSetComputePermissionFailsWhenForceSyncReadbackFails(t *testing.T) {
+	cs := newTestComputeStore(t)
+	mock := &mockCenterAuthService{centers: map[string]*store.Center{}}
+	h := NewComputeHandler(cs, mock)
+	h.store = &failingComputeStore{
+		computeStore:    cs,
+		getForceSyncErr: errors.New("force sync read failed"),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/admin/centers/{id}/compute-permission", h.SetComputePermission())
+
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/centers/ctr_1/compute-permission", bytes.NewBufferString(`{"enabled":true}`))
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GET_FORCE_SYNC_FAILED") {
+		t.Fatalf("expected GET_FORCE_SYNC_FAILED response: %s", w.Body.String())
 	}
 }
 
@@ -185,6 +262,73 @@ func TestCenterComputeProviders_ForceSyncClearedAfterRead(t *testing.T) {
 	}
 }
 
+func TestCenterComputeProvidersFailsWhenPermissionReadFails(t *testing.T) {
+	cs := newTestComputeStore(t)
+	ctx := context.Background()
+	if err := cs.CreateProvider(ctx, sampleTestProvider()); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockCenterAuthService{centers: map[string]*store.Center{
+		"ctr_1": {ID: "ctr_1", Status: "active", SecretHash: hashTestSecret("my-secret")},
+	}}
+	h := NewComputeHandler(cs, mock)
+	h.store = &failingComputeStore{
+		computeStore:     cs,
+		getPermissionErr: errors.New("permission read failed"),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "my-secret")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GET_PERMISSION_FAILED") {
+		t.Fatalf("expected GET_PERMISSION_FAILED response: %s", w.Body.String())
+	}
+}
+
+func TestCenterComputeProvidersFailsWhenClearForceSyncFails(t *testing.T) {
+	cs := newTestComputeStore(t)
+	ctx := context.Background()
+	if err := cs.CreateProvider(ctx, sampleTestProvider()); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.SetForceSync(ctx, "ctr_1", true); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockCenterAuthService{centers: map[string]*store.Center{
+		"ctr_1": {ID: "ctr_1", Status: "active", SecretHash: hashTestSecret("my-secret")},
+	}}
+	h := NewComputeHandler(cs, mock)
+	h.store = &failingComputeStore{
+		computeStore:  cs,
+		clearForceErr: errors.New("clear failed"),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/centers/{id}/compute-providers", h.CenterComputeProviders())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/centers/ctr_1/compute-providers", nil)
+	req.Header.Set("X-Center-Secret", "my-secret")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "CLEAR_FORCE_SYNC_FAILED") {
+		t.Fatalf("expected CLEAR_FORCE_SYNC_FAILED response: %s", w.Body.String())
+	}
+}
+
 func TestListCenterPermissionsUsesCenterName(t *testing.T) {
 	cs := newTestComputeStore(t)
 	ctx := context.Background()
@@ -212,5 +356,31 @@ func TestListCenterPermissionsUsesCenterName(t *testing.T) {
 	}
 	if strings.Contains(body, "company_name") {
 		t.Fatalf("compute permissions response leaked legacy company_name: %s", body)
+	}
+}
+
+func TestListCenterPermissionsFailsWhenPermissionReadFails(t *testing.T) {
+	cs := newTestComputeStore(t)
+	mock := &mockCenterAuthService{centers: map[string]*store.Center{
+		"ctr_1": {ID: "ctr_1", CompanyName: "Center Service East", Status: "active"},
+	}}
+	h := NewComputeHandler(cs, mock)
+	h.store = &failingComputeStore{
+		computeStore:     cs,
+		getPermissionErr: errors.New("permission read failed"),
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/admin/compute/permissions", h.ListCenterPermissions())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/compute/permissions", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "GET_PERMISSION_FAILED") {
+		t.Fatalf("expected GET_PERMISSION_FAILED response: %s", w.Body.String())
 	}
 }

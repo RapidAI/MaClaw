@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"runtime"
 	"testing"
 )
 
@@ -30,6 +31,23 @@ func TestSubstituteVariables_MultipleKeys(t *testing.T) {
 	result := SubstituteVariables("cp {{input}} {{output}}", vars)
 	if result != "cp a.txt b.txt" {
 		t.Errorf("expected 'cp a.txt b.txt', got %q", result)
+	}
+}
+
+func TestSubstituteVariables_CanonicalKeyShapes(t *testing.T) {
+	result := SubstituteVariables("cp {{Input-File}} ${Output File}", map[string]string{
+		"input_file":  "report.md",
+		"output_file": "out.pdf",
+	})
+	if result != "cp report.md out.pdf" {
+		t.Fatalf("expected canonical placeholder substitution, got %q", result)
+	}
+}
+
+func TestSubstituteVariables_PreservesAuthorQuotes(t *testing.T) {
+	result := SubstituteVariables(`"{{mode}}" == "fast"`, map[string]string{"mode": "fast"})
+	if result != `"fast" == "fast"` {
+		t.Fatalf("expected author quotes to be preserved, got %q", result)
 	}
 }
 
@@ -65,12 +83,67 @@ func TestStripUnresolvedPlaceholders(t *testing.T) {
 		{"echo hello", "echo hello"},
 		{"{{a}} and {{b}}", " and "},
 		{"no placeholders", "no placeholders"},
+		{`tool --target_lang "{{target_lang}}"`, "tool "},
+		{"tool --format=${format}", "tool "},
+		{"tool --format:${format}", "tool "},
+		{"tool -o {output}", "tool "},
+		{"tool --input file.txt --optional {{missing}}", "tool --input file.txt "},
+		{`tool "{{optional}}"`, "tool "},
+		{"tool '{{optional}}'", "tool "},
+		{"tool `{{optional}}`", "tool "},
+		{"tool /out {{output}}", "tool "},
+		{"tool /out:{output}", "tool "},
+		{`tool /out="${output}"`, "tool "},
+		{"tool /tmp/{{input}}", "tool /tmp/"},
 	}
 	for _, tt := range tests {
 		got := StripUnresolvedPlaceholders(tt.input)
 		if got != tt.want {
 			t.Errorf("StripUnresolvedPlaceholders(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestSubstituteVariablesWithQuoteDeduplicatesAuthorQuotes(t *testing.T) {
+	quote := func(value string) string { return `"` + value + `"` }
+	got := SubstituteVariablesWithQuote(`python translate.py --text "{{text}}" --city ${city}`, map[string]string{
+		"text": "hello world",
+		"city": "New York",
+	}, quote)
+	want := `python translate.py --text "hello world" --city "New York"`
+	if got != want {
+		t.Fatalf("SubstituteVariablesWithQuote() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteVariablesWithQuoteDeduplicatesBacktickPlaceholder(t *testing.T) {
+	quote := func(value string) string { return `"` + value + `"` }
+	got := SubstituteVariablesWithQuote("tool --text `{{text}}`", map[string]string{
+		"text": "hello world",
+	}, quote)
+	want := `tool --text "hello world"`
+	if got != want {
+		t.Fatalf("SubstituteVariablesWithQuote() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteVariablesWithQuoteStripsOptionalFlag(t *testing.T) {
+	got := SubstituteVariablesWithQuote(`tool --input "{{input}}" --target_lang "{{target_lang}}"`, map[string]string{
+		"input": "hello",
+	}, nil)
+	want := `tool --input "hello" `
+	if got != want {
+		t.Fatalf("SubstituteVariablesWithQuote() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteVariablesWithQuoteStripsOptionalQuotedToken(t *testing.T) {
+	got := SubstituteVariablesWithQuote(`tool --input "{{input}}" "{{optional}}"`, map[string]string{
+		"input": "hello",
+	}, nil)
+	want := `tool --input "hello" `
+	if got != want {
+		t.Fatalf("SubstituteVariablesWithQuote() = %q, want %q", got, want)
 	}
 }
 
@@ -101,6 +174,19 @@ func TestExtractPlaceholderKeys_Deduplicates(t *testing.T) {
 	}
 }
 
+func TestExtractPlaceholderKeys_AcceptsCanonicalKeyShapes(t *testing.T) {
+	keys := ExtractPlaceholderKeys("tool {{Input-File}} ${Output File} {base-dir}")
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys, got %d: %v", len(keys), keys)
+	}
+	expected := map[string]bool{"Input-File": true, "Output File": true}
+	for _, key := range keys {
+		if !expected[key] {
+			t.Fatalf("unexpected key %q from %v", key, keys)
+		}
+	}
+}
+
 func TestQuoteForShell_Simple(t *testing.T) {
 	if got := QuoteForShell("hello"); got != "hello" {
 		t.Errorf("simple value should not be quoted, got %q", got)
@@ -124,5 +210,30 @@ func TestQuoteForShell_WithQuotes(t *testing.T) {
 	got := QuoteForShell(`say "hello"`)
 	if got != `"say \"hello\""` {
 		t.Errorf("expected escaped quotes, got %q", got)
+	}
+}
+
+func TestQuoteForRunnerShell_PlatformQuoting(t *testing.T) {
+	got := QuoteForRunnerShell(`hello "world"`)
+	if runtime.GOOS == "windows" {
+		if got != `"hello \"world\""` {
+			t.Fatalf("QuoteForRunnerShell() = %q, want Windows double quotes", got)
+		}
+		return
+	}
+	if got != `'hello "world"'` {
+		t.Fatalf("QuoteForRunnerShell() = %q, want POSIX single quotes", got)
+	}
+}
+
+func TestQuoteForShellPreference(t *testing.T) {
+	if got := QuoteForShellPreference("a'b", "powershell"); got != "'a''b'" {
+		t.Fatalf("PowerShell quote = %q, want doubled single quote", got)
+	}
+	if got := QuoteForShellPreference("a'b", "bash"); got != `'a'"'"'b'` {
+		t.Fatalf("bash quote = %q, want POSIX single quote escape", got)
+	}
+	if got := QuoteForShellPreference("a b", "cmd"); got != `"a b"` {
+		t.Fatalf("cmd quote = %q, want double quotes", got)
 	}
 }

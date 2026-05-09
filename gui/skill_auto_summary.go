@@ -469,7 +469,7 @@ func RunAutoUpload(
 		if err != nil {
 			return fmt.Errorf("auto-upload: portability preparation failed: %w", err)
 		}
-		entry, loadErr := loadImportedSkillEntry(skillDir)
+		entry, loadErr := loadMarketPackageSkillEntry(skillDir, nil)
 		if loadErr == nil {
 			quality := evaluateSkillQuality(entry, report, false)
 			writeSkillQualityStatus(skillDir, entry, quality, "generated_upload", false)

@@ -1,6 +1,7 @@
 // Package intent provides a unified intent classification service for user messages.
-// It replaces scattered keyword-based classification modules with a single three-layer
-// pipeline (keywords → embedding cosine → LLM).
+// It replaces scattered keyword-based classification modules with semantic
+// embedding and LLM classification. Keyword registries may still support
+// diagnostics or candidate recall, but they are not an execution-route authority.
 package intent
 
 // IntentLabel represents a classified user intent.
@@ -13,11 +14,12 @@ const (
 	LabelBrowser          IntentLabel = "browser"
 	LabelSearch           IntentLabel = "search"
 	LabelDocumentDelivery IntentLabel = "document_delivery"
+	LabelBusinessData     IntentLabel = "business_data"
 	LabelBugFix           IntentLabel = "bug_fix"
 	LabelContinuation     IntentLabel = "continuation"
 	LabelMaintenance      IntentLabel = "maintenance"
 	LabelOffice           IntentLabel = "office"
-	LabelWorkflowTask    IntentLabel = "workflow_task"
+	LabelWorkflowTask     IntentLabel = "workflow_task"
 	LabelAmbiguous        IntentLabel = "ambiguous"
 	LabelUnknown          IntentLabel = "unknown"
 )
@@ -31,6 +33,7 @@ func AllLabels() []IntentLabel {
 		LabelBrowser,
 		LabelSearch,
 		LabelDocumentDelivery,
+		LabelBusinessData,
 		LabelBugFix,
 		LabelContinuation,
 		LabelMaintenance,
@@ -55,12 +58,12 @@ func (l IntentLabel) IsValid() bool {
 	return validLabels[l]
 }
 
-// KeywordStrength indicates how strongly a keyword signals an intent.
+// KeywordStrength indicates how strongly a keyword can annotate recall evidence.
 type KeywordStrength int
 
 const (
-	Strong KeywordStrength = iota // single match → high confidence
-	Weak                          // needs additional signal or Layer 2 confirmation
+	Strong KeywordStrength = iota // strong recall evidence; not an execution-route decision
+	Weak                          // weak recall evidence; requires semantic confirmation
 )
 
 // KeywordEntry is a single entry in the keyword registry.
@@ -68,7 +71,7 @@ type KeywordEntry struct {
 	Keyword  string
 	Label    IntentLabel
 	Strength KeywordStrength
-	Creation bool // true for creation-oriented coding keywords (开发/创建/实现 etc.)
+	Creation bool // true for creation-oriented coding recall evidence
 }
 
 // ClassificationResult is the structured output of the UIC.
@@ -90,9 +93,7 @@ type ClassificationResult struct {
 
 	// Degraded is true when the classification was produced in degraded mode
 	// (one or both fusion channels failed). Consumers can use this to adjust
-	// confidence thresholds — e.g., the Coding Tool Gate lowers its activation
-	// threshold in degraded mode because embedding-only confidence is capped
-	// lower than dual-channel confidence.
+	// confidence thresholds.
 	Degraded bool
 }
 

@@ -5,6 +5,7 @@ import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
 import { QQBotSettings } from './QQBotSettings';
 import { TelegramBotSettings } from './TelegramBotSettings';
 import { WeixinSettings } from './WeixinSettings';
+import { LansengerSettings } from './LansengerSettings';
 import { IMSubTabs, type IMSubTab } from './IMSubTabs';
 type IMSettingsPanelProps = {
     settingsTab: string;
@@ -18,30 +19,21 @@ type IMSettingsPanelProps = {
     imAuditBtnStyle: CSSProperties;
     saveRemoteConfigField: (patch: Record<string, any>) => any;
     showToastMessage: (message: string) => void;
-    qqBotStatus: string;
-    setQQBotStatus: Dispatch<SetStateAction<string>>;
-    qqBotLocalMode: boolean;
-    setQQBotLocalModeState: Dispatch<SetStateAction<boolean>>;
-    telegramStatus: string;
-    setTelegramStatus: Dispatch<SetStateAction<string>>;
-    telegramLocalMode: boolean;
-    setTelegramLocalModeState: Dispatch<SetStateAction<boolean>>;
-    weixinStatus: string;
-    setWeixinStatus: Dispatch<SetStateAction<string>>;
-    weixinLocalMode: boolean;
-    setWeixinLocalModeState: Dispatch<SetStateAction<boolean>>;
-    thirdPartyGatewayStatus: string;
-    setThirdPartyGatewayStatus: Dispatch<SetStateAction<string>>;
-    thirdPartyGatewayLocalMode: boolean;
-    setThirdPartyGatewayLocalModeState: Dispatch<SetStateAction<boolean>>;
-    weixinQRCode: string;
-    setWeixinQRCode: Dispatch<SetStateAction<string>>;
-    weixinQRLoading: boolean;
-    setWeixinQRLoading: Dispatch<SetStateAction<boolean>>;
-    weixinQRWaiting: boolean;
-    setWeixinQRWaiting: Dispatch<SetStateAction<boolean>>;
-    weixinQRError: string;
-    setWeixinQRError: Dispatch<SetStateAction<string>>;
+    qqBotStatus: string; setQQBotStatus: Dispatch<SetStateAction<string>>;
+    qqBotLocalMode: boolean; setQQBotLocalModeState: Dispatch<SetStateAction<boolean>>;
+    telegramStatus: string; setTelegramStatus: Dispatch<SetStateAction<string>>;
+    telegramLocalMode: boolean; setTelegramLocalModeState: Dispatch<SetStateAction<boolean>>;
+    weixinStatus: string; setWeixinStatus: Dispatch<SetStateAction<string>>;
+    weixinLocalMode: boolean; setWeixinLocalModeState: Dispatch<SetStateAction<boolean>>;
+    thirdPartyGatewayStatus: string; setThirdPartyGatewayStatus: Dispatch<SetStateAction<string>>;
+    thirdPartyGatewayLocalMode: boolean; setThirdPartyGatewayLocalModeState: Dispatch<SetStateAction<boolean>>;
+    showLansenger?: boolean;
+    lansengerStatus: string; setLansengerStatus: Dispatch<SetStateAction<string>>;
+    lansengerLocalMode: boolean; setLansengerLocalModeState: Dispatch<SetStateAction<boolean>>;
+    weixinQRCode: string; setWeixinQRCode: Dispatch<SetStateAction<string>>;
+    weixinQRLoading: boolean; setWeixinQRLoading: Dispatch<SetStateAction<boolean>>;
+    weixinQRWaiting: boolean; setWeixinQRWaiting: Dispatch<SetStateAction<boolean>>;
+    weixinQRError: string; setWeixinQRError: Dispatch<SetStateAction<string>>;
 };
 
 export const IMSettingsPanel = ({
@@ -72,6 +64,11 @@ export const IMSettingsPanel = ({
     setThirdPartyGatewayStatus,
     thirdPartyGatewayLocalMode,
     setThirdPartyGatewayLocalModeState,
+    showLansenger = false,
+    lansengerStatus,
+    setLansengerStatus,
+    lansengerLocalMode,
+    setLansengerLocalModeState,
     weixinQRCode,
     setWeixinQRCode,
     weixinQRLoading,
@@ -82,9 +79,8 @@ export const IMSettingsPanel = ({
     setWeixinQRError,
 }: IMSettingsPanelProps) => (
                             <div className="settings-panel" style={{ display: settingsTab === 'im' ? 'block' : 'none' }}>
-                                <IMSubTabs lang={lang} imSubTab={imSubTab} setImSubTab={setImSubTab} />
+                                <IMSubTabs lang={lang} imSubTab={imSubTab} setImSubTab={setImSubTab} showLansenger={showLansenger} />
 
-                                {/* QQ Bot tab */}
                                 {imSubTab === 'qq' && (
                                     <QQBotSettings
                                         config={config}
@@ -100,7 +96,6 @@ export const IMSettingsPanel = ({
                                     />
                                 )}
 
-                                {/* Telegram Bot tab */}
                                 {imSubTab === 'telegram' && (
                                     <TelegramBotSettings
                                         config={config}
@@ -116,7 +111,6 @@ export const IMSettingsPanel = ({
                                     />
                                 )}
 
-                                {/* WeChat tab */}
                                 {imSubTab === 'weixin' && (
                                     <WeixinSettings
                                         config={config}
@@ -136,6 +130,21 @@ export const IMSettingsPanel = ({
                                         setWeixinQRWaiting={setWeixinQRWaiting}
                                         weixinQRError={weixinQRError}
                                         setWeixinQRError={setWeixinQRError}
+                                    />
+                                )}
+
+                                {showLansenger && imSubTab === 'lansenger' && (
+                                    <LansengerSettings
+                                        config={config}
+                                        setConfig={setConfig}
+                                        lang={lang}
+                                        imAuditBtnStyle={imAuditBtnStyle}
+                                        saveRemoteConfigField={saveRemoteConfigField}
+                                        lansengerStatus={lansengerStatus}
+                                        setLansengerStatus={setLansengerStatus}
+                                        lansengerLocalMode={lansengerLocalMode}
+                                        setLansengerLocalModeState={setLansengerLocalModeState}
+                                        setIMAuditPlatform={setIMAuditPlatform}
                                     />
                                 )}
 
@@ -162,6 +171,4 @@ export const IMSettingsPanel = ({
                                     />
                                 )}
                             </div>
-
-
 );

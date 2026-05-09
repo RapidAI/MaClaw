@@ -136,6 +136,7 @@ func Bootstrap() (*Center, error) {
 	wfSvc.SetCapabilityExecutionMemoryRecorder(workerMemHandler)
 	modelCaller := modelrouting.NewLLMCaller(provider.Read, auditRepo)
 	wfSvc.SetExperienceExtractor(experience.NewTenantExtractor(provider.Write, modelCaller.TenantExtractFunc()))
+	collabSvc.SetWorkflowStepTransitioner(wfSvc)
 	wfHandler := workflow.NewHandler(wfSvc)
 
 	// --- wire enterprise bootstrap module ---
@@ -291,7 +292,6 @@ func Bootstrap() (*Center, error) {
 	dwAuthHandler.RegisterAuthRoutes(mux)
 	tenantHandler.RegisterRoutes(mux)
 	tenantHandler.RegisterAdminRoutes(mux)
-	tenantHandler.RegisterCloudRoutes(mux)
 	computeHandler.RegisterAdminRoutes(mux)
 
 	// dedup/expiry endpoint

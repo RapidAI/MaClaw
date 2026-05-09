@@ -43,11 +43,12 @@ type ChatMessage struct {
 // ChatModel 是 AI 助手聊天视图。
 //
 // 渲染管线设计：
-//   renderLines() 是 O(messages × width) 的纯计算函数（Markdown 渲染、文本换行）。
-//   为避免在一个 View() 调用中重复计算，引入 cachedLines 缓存。
-//   任何修改 messages/width 的操作通过 invalidateCache() 标记缓存失效。
-//   getLines() 是唯一的缓存入口——首次调用时计算并缓存，后续调用直接返回。
-//   scrollToBottom/scrollDown/View 全部通过 getLines() 读取，零重复计算。
+//
+//	renderLines() 是 O(messages × width) 的纯计算函数（Markdown 渲染、文本换行）。
+//	为避免在一个 View() 调用中重复计算，引入 cachedLines 缓存。
+//	任何修改 messages/width 的操作通过 invalidateCache() 标记缓存失效。
+//	getLines() 是唯一的缓存入口——首次调用时计算并缓存，后续调用直接返回。
+//	scrollToBottom/scrollDown/View 全部通过 getLines() 读取，零重复计算。
 type ChatModel struct {
 	messages    []ChatMessage
 	input       textinput.Model
@@ -88,8 +89,28 @@ func NewChatModel(lang string) ChatModel {
 }
 
 func (m *ChatModel) SetLang(lang string) {
+	oldLang := m.lang
 	m.lang = i18n.NormalizeLang(lang)
 	m.input.Placeholder = i18n.T(i18n.MsgTUIChatInputPlaceholder, m.lang)
+	for i := range m.messages {
+		m.messages[i].Content = translateChatSystemMessage(m.messages[i].Content, oldLang, m.lang)
+	}
+	m.invalidateCache()
+}
+
+func translateChatSystemMessage(text, oldLang, newLang string) string {
+	keys := []string{
+		i18n.MsgTUIChatSystemReady,
+		i18n.MsgTUIChatClearedMessage,
+	}
+	for _, key := range keys {
+		for _, lang := range []string{oldLang, "zh", "en"} {
+			if text == i18n.T(key, lang) {
+				return i18n.T(key, newLang)
+			}
+		}
+	}
+	return text
 }
 
 // FocusInput 聚焦输入框。
@@ -161,10 +182,7 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if m.height < 1 {
 			m.height = 1
 		}
-		m.input.Width = m.width - 6
-		if m.input.Width < 20 {
-			m.input.Width = 20
-		}
+		m.input.Width = min(60, max(8, m.width-4))
 		m.invalidateCache() // width 变化影响换行
 		// 终端缩小时 scroll 可能超出新的 maxScroll，钳位但不强制到底部
 		m.clampScroll()
@@ -383,10 +401,7 @@ func (m ChatModel) renderLines() []string {
 	sysStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	toolStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // orange for tool calls
 
-	maxWidth := m.width - 6
-	if maxWidth < 20 {
-		maxWidth = 60
-	}
+	maxWidth := m.contentWidth()
 
 	var lines []string
 	for _, msg := range m.messages {
@@ -413,7 +428,7 @@ func (m ChatModel) renderLines() []string {
 			lines = append(lines, assistStyle.Render(prefix))
 			mdLines := RenderMarkdown(msg.Content, maxWidth-2)
 			for _, ml := range mdLines {
-				lines = append(lines, "  "+ml)
+				lines = append(lines, truncateToWidthVisible("  "+ml, maxWidth))
 			}
 			continue
 		}
@@ -445,6 +460,14 @@ func (m ChatModel) renderLines() []string {
 		lines = append(lines, sysStyle.Render("  "+frame+" "+i18n.T(i18n.MsgTUIChatSpinnerLabel, m.lang)))
 	}
 	return lines
+}
+
+func (m ChatModel) contentWidth() int {
+	width := m.width
+	if width <= 0 {
+		width = 80
+	}
+	return max(8, width-6)
 }
 
 // wrapLine 自动换行：将超长行按 maxW 显示宽度折行，返回多行。
@@ -555,12 +578,14 @@ func (m ChatModel) View() string {
 		for i := 0; i < visibleCount; i++ {
 			line := lines[start+i]
 			if needsScrollBar {
+				line = truncateToWidthVisible(line, max(1, m.width-4))
 				trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 				if scrollTrack[i] == '█' {
 					trackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
 				}
 				b.WriteString("  " + line + " " + trackStyle.Render(string(scrollTrack[i])) + "\n")
 			} else {
+				line = truncateToWidthVisible(line, max(1, m.width-2))
 				b.WriteString("  " + line + "\n")
 			}
 		}
@@ -568,7 +593,7 @@ func (m ChatModel) View() string {
 		for i := visibleCount; i < viewHeight; i++ {
 			if needsScrollBar && i < len(scrollTrack) {
 				trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-				b.WriteString(strings.Repeat(" ", m.width-2) + trackStyle.Render(string(scrollTrack[i])) + "\n")
+				b.WriteString(strings.Repeat(" ", max(0, m.width-2)) + trackStyle.Render(string(scrollTrack[i])) + "\n")
 			} else {
 				b.WriteString("\n")
 			}
@@ -576,8 +601,8 @@ func (m ChatModel) View() string {
 	}
 
 	w := m.width - 4
-	if w < 20 {
-		w = 60
+	if w < 1 {
+		w = 1
 	}
 	b.WriteString("  " + strings.Repeat("─", w) + "\n")
 	b.WriteString("  " + m.input.View() + "\n")
@@ -607,7 +632,8 @@ func (m ChatModel) View() string {
 		scrollInfo = fmt.Sprintf("  ↕%d%%", pct)
 	}
 
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  %s  [%s]  %s%s", hint, modeLabel, i18n.Tf(i18n.MsgTUIChatMessageCount, m.lang, len(m.messages)-1), scrollInfo)))
+	statusText := fmt.Sprintf("%s  [%s]  %s%s", hint, modeLabel, i18n.Tf(i18n.MsgTUIChatMessageCount, m.lang, len(m.messages)-1), scrollInfo)
+	b.WriteString("  " + dimStyle.Render(fitDisplay(statusText, max(1, m.width-2))))
 
 	return b.String()
 }
@@ -656,6 +682,24 @@ func buildScrollTrack(viewHeight, totalLines, scroll int) []rune {
 	return track
 }
 
+func chatLocalText(lang, key string) string {
+	if i18n.NormalizeLang(lang) == "en" {
+		texts := map[string]string{
+			"welcomeHint": "Type a message to start, or type /help to view commands",
+		}
+		if text, ok := texts[key]; ok {
+			return text
+		}
+	}
+	texts := map[string]string{
+		"welcomeHint": "输入消息开始对话，或输入 /help 查看命令",
+	}
+	if text, ok := texts[key]; ok {
+		return text
+	}
+	return key
+}
+
 // renderWelcomeView renders the MaClaw logo centered in the chat area.
 func (m ChatModel) renderWelcomeView(b *strings.Builder, viewHeight int) {
 	logoStyle := lipgloss.NewStyle().
@@ -663,6 +707,11 @@ func (m ChatModel) renderWelcomeView(b *strings.Builder, viewHeight int) {
 		Bold(true)
 	hintStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("245"))
+
+	if m.width > 0 && m.width < 84 {
+		m.renderCompactWelcomeView(b, viewHeight)
+		return
+	}
 
 	logoLines := []string{
 		"  ███╗   ███╗ █████╗  ██████╗██╗      █████╗ ██╗    ██╗",
@@ -683,14 +732,37 @@ func (m ChatModel) renderWelcomeView(b *strings.Builder, viewHeight int) {
 		b.WriteString("\n")
 	}
 	for _, line := range logoLines {
-		b.WriteString(logoStyle.Render(line) + "\n")
+		b.WriteString(logoStyle.Render(fitDisplay(line, max(1, m.width))) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(hintStyle.Render("  " + i18n.T(i18n.MsgTUIChatSystemReady, m.lang)) + "\n")
-	b.WriteString(hintStyle.Render("  输入消息开始对话，或输入 /help 查看命令") + "\n")
+	b.WriteString(hintStyle.Render("  "+fitDisplay(i18n.T(i18n.MsgTUIChatSystemReady, m.lang), max(1, m.width-2))) + "\n")
+	b.WriteString(hintStyle.Render("  "+fitDisplay(chatLocalText(m.lang, "welcomeHint"), max(1, m.width-2))) + "\n")
 
 	used := topPad + contentLines
 	for i := used; i < viewHeight; i++ {
+		b.WriteString("\n")
+	}
+}
+
+func (m ChatModel) renderCompactWelcomeView(b *strings.Builder, viewHeight int) {
+	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	lines := []string{
+		titleStyle.Render("  MaClaw"),
+		hintStyle.Render("  " + fitDisplay(i18n.T(i18n.MsgTUIChatSystemReady, m.lang), max(1, m.width-2))),
+		hintStyle.Render("  " + fitDisplay(chatLocalText(m.lang, "welcomeHint"), max(1, m.width-2))),
+	}
+	topPad := (viewHeight - len(lines)) / 2
+	if topPad < 0 {
+		topPad = 0
+	}
+	for i := 0; i < topPad; i++ {
+		b.WriteString("\n")
+	}
+	for _, line := range lines {
+		b.WriteString(truncateToWidthVisible(line, max(1, m.width)) + "\n")
+	}
+	for i := topPad + len(lines); i < viewHeight; i++ {
 		b.WriteString("\n")
 	}
 }

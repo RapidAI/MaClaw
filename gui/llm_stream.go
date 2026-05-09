@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,8 +148,50 @@ func detectTruncatedRequiredField(toolName string, parsed map[string]interface{}
 	return ""
 }
 
-// classifyOpenAIHTTPError 解析 OpenAI API 错误响应，返回友好的中文提示。
-func classifyOpenAIHTTPError(statusCode int, body []byte) string {
+func llmProviderDisplayName(providerName string) string {
+	providerName = strings.TrimSpace(providerName)
+	if providerName != "" {
+		return providerName
+	}
+	return "模型服务"
+}
+
+func classifyHubErrorBody(body []byte) string {
+	var hubErr map[string]any
+	_ = json.Unmarshal(body, &hubErr)
+	hubCode, _ := hubErr["code"].(string)
+	if hubCode == "" {
+		return ""
+	}
+	hubMessage, _ := hubErr["message"].(string)
+	retryAfterAt, _ := hubErr["retry_after_at"].(string)
+	retryAfterSeconds := int64(0)
+	switch v := hubErr["retry_after_seconds"].(type) {
+	case float64:
+		retryAfterSeconds = int64(v)
+	case int64:
+		retryAfterSeconds = v
+	case int:
+		retryAfterSeconds = int64(v)
+	case string:
+		if parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+			retryAfterSeconds = parsed
+		}
+	}
+	if friendly := classifyHubLLMServiceError(hubCode, hubMessage, retryAfterSeconds, retryAfterAt); friendly != "" {
+		return friendly
+	}
+	if strings.HasPrefix(hubCode, "LLM_UPSTREAM_") && strings.TrimSpace(hubMessage) != "" {
+		return hubMessage
+	}
+	return ""
+}
+
+// classifyOpenAIHTTPError parses OpenAI-compatible API error responses and
+// returns a user-friendly message that names the configured provider, not the
+// wire protocol.
+func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) string {
+	providerDisplay := llmProviderDisplayName(providerName)
 	// 尝试解析 OpenAI 标准错误格式
 	var errBody struct {
 		Error struct {
@@ -162,6 +205,10 @@ func classifyOpenAIHTTPError(statusCode int, body []byte) string {
 	typ := errBody.Error.Type
 	msg := errBody.Error.Message
 
+	if friendly := classifyHubErrorBody(body); friendly != "" {
+		return friendly
+	}
+
 	// Hub wraps upstream provider auth failures as LLM_UPSTREAM_AUTH_FAILED
 	// and rate limits as LLM_UPSTREAM_RATE_LIMITED with descriptive Chinese
 	// messages. Surface them directly so the user (or admin) knows the
@@ -172,16 +219,16 @@ func classifyOpenAIHTTPError(statusCode int, body []byte) string {
 
 	switch {
 	case code == "insufficient_quota" || typ == "insufficient_quota":
-		return "OpenAI 账号额度不足，请检查账单和付费计划 (insufficient_quota)"
+		return fmt.Sprintf("%s 账号额度不足，请检查账单和付费计划 (insufficient_quota)", providerDisplay)
 	case statusCode == http.StatusTooManyRequests:
 		if strings.Contains(string(body), "rate_limit") {
-			return "OpenAI API 请求频率超限，请稍后再试 (rate_limit)"
+			return fmt.Sprintf("%s API 请求频率超限，请稍后再试 (rate_limit)", providerDisplay)
 		}
-		return "OpenAI API 请求过于频繁，请稍后再试 (HTTP 429)"
+		return fmt.Sprintf("%s API 请求过于频繁，请稍后再试 (HTTP 429)", providerDisplay)
 	case statusCode == http.StatusUnauthorized:
-		return "OpenAI 认证失败，API Key 无效或已过期，请重新登录 (HTTP 401)"
+		return fmt.Sprintf("%s 认证失败，API Key 无效或已过期，请重新登录 (HTTP 401)", providerDisplay)
 	case statusCode == http.StatusForbidden:
-		return "OpenAI 拒绝访问，账号可能被限制或无权使用该模型 (HTTP 403)"
+		return fmt.Sprintf("%s 拒绝访问，账号可能被限制或无权使用该模型 (HTTP 403)", providerDisplay)
 	case statusCode == http.StatusBadGateway:
 		// Hub wraps upstream provider errors with specific error codes.
 		if code == "LLM_UPSTREAM_AUTH_FAILED" || code == "LLM_UPSTREAM_FAILED" || code == "LLM_UPSTREAM_RATE_LIMITED" {
@@ -197,8 +244,79 @@ func classifyOpenAIHTTPError(statusCode int, body []byte) string {
 	case statusCode >= 500:
 		return fmt.Sprintf("API 服务端错误，请稍后再试 (HTTP %d)", statusCode)
 	default:
-		return fmt.Sprintf("OpenAI API 错误 (HTTP %d): %s", statusCode, truncateLLMBody(body, 200))
+		return fmt.Sprintf("%s API 错误 (HTTP %d): %s", providerDisplay, statusCode, truncateLLMBody(body, 200))
 	}
+}
+
+func classifyHubLLMServiceError(code, message string, retryAfterSeconds int64, retryAfterAt string) string {
+	switch code {
+	case "LLM_SERVICE_PERIOD_LIMITED":
+		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
+		if retryText != "" {
+			return "MaClaw 官方周期限流：当前周期额度已用尽，约 " + retryText + " 后恢复。若官方还有其它可用通道会自动切换；不会静默切到你的私有服务商。"
+		}
+		return "MaClaw 官方周期限流：当前周期额度已用尽。若官方还有其它可用通道会自动切换；不会静默切到你的私有服务商。"
+	case "LLM_SERVICE_CREDITS_EXHAUSTED":
+		return "MaClaw 官方额度已用尽：请兑换更多额度，或手动切换到其它服务商。"
+	case "LLM_SERVICE_GRANT_QUEUED":
+		retryText := formatHubRetryText(retryAfterSeconds, retryAfterAt)
+		if retryText != "" {
+			return "MaClaw 官方授权尚未生效：约 " + retryText + " 后生效。"
+		}
+		return "MaClaw 官方授权尚未生效，请稍后再试。"
+	case "LLM_SERVICE_GRANT_EXPIRED":
+		return "MaClaw 官方授权已过期：请兑换新的授权，或手动切换到其它服务商。"
+	case "LLM_SERVICE_CREDITS_REQUIRED":
+		return "MaClaw 官方需要有效授权额度：请先兑换授权，或手动切换到其它服务商。"
+	}
+	if strings.HasPrefix(code, "LLM_SERVICE_") && message != "" {
+		return message
+	}
+	return ""
+}
+
+func formatHubRetryText(seconds int64, retryAfterAt string) string {
+	if seconds <= 0 && retryAfterAt != "" {
+		if retryAt, err := time.Parse(time.RFC3339, retryAfterAt); err == nil {
+			seconds = int64((time.Until(retryAt) + time.Second - 1) / time.Second)
+		}
+	}
+	if seconds <= 0 {
+		return ""
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%d 秒", seconds)
+	}
+	minutes := (seconds + 59) / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%d 分钟", minutes)
+	}
+	hours := (minutes + 59) / 60
+	if hours < 24 {
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	days := (hours + 23) / 24
+	return fmt.Sprintf("%d 天", days)
+}
+
+func classifyOpenAICompatibleHTTPError(err error, providerName string) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := err.Error()
+	idx := strings.Index(msg, "HTTP ")
+	if idx < 0 {
+		return "", false
+	}
+	var statusCode int
+	if _, scanErr := fmt.Sscanf(msg[idx:], "HTTP %d:", &statusCode); scanErr != nil || statusCode <= 0 {
+		return "", false
+	}
+	body := ""
+	if colon := strings.Index(msg[idx:], ":"); colon >= 0 {
+		body = strings.TrimSpace(msg[idx+colon+1:])
+	}
+	return classifyOpenAIHTTPError(statusCode, []byte(body), providerName), true
 }
 
 // truncateLLMBody 截断错误 body 用于日志显示。
@@ -617,7 +735,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		log.Printf("[LLM Stream] HTTP %d: endpoint=%s content_type=%q body=%s", resp.StatusCode, endpoint, resp.Header.Get("Content-Type"), truncateLLMBody(body, 500))
-		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body)
+		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
 		return nil, fmt.Errorf("%s [url=%s model=%s]", friendlyMsg, endpoint, cfg.Model)
 	}
 
@@ -832,7 +950,7 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 		rpf.Halted(), rpf.SuppressedRunes(),
 		repf.Halted(), repf.SuppressedRunes(),
 		rpf.Halted(),
-		browserDiagHasBrowserPrefix(filteredStr),
+		browserDiagHasBrowserRolePrefix(filteredStr),
 		filteredStr,
 	)
 	reasoning := reasoningBuf.String()
@@ -958,7 +1076,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 	// 对 HTTP 错误提供友好提示，避免 HTML 错误页面透传到聊天界面。
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body)
+		friendlyMsg := classifyOpenAIHTTPError(resp.StatusCode, body, cfg.ProviderName)
 		return nil, fmt.Errorf("%s [url=%s model=%s protocol=anthropic]", friendlyMsg, endpoint, cfg.Model)
 	}
 
@@ -1160,7 +1278,7 @@ anthDone:
 		rpfAnth.Halted(), rpfAnth.SuppressedRunes(),
 		repfAnth.Halted(), repfAnth.SuppressedRunes(),
 		rpfAnth.Halted(),
-		browserDiagHasBrowserPrefix(filteredStrAnth),
+		browserDiagHasBrowserRolePrefix(filteredStrAnth),
 		filteredStrAnth,
 	)
 

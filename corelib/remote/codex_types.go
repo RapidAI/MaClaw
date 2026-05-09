@@ -2,7 +2,6 @@ package remote
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -10,7 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 )
 
-// CodexEvent 表示 `codex exec --json` 的单个 JSONL 事件。
+// CodexEvent represents one JSONL event from `codex exec --json`.
 type CodexEvent struct {
 	Type     string      `json:"type"`
 	ThreadID string      `json:"thread_id,omitempty"`
@@ -19,7 +18,7 @@ type CodexEvent struct {
 	Error    string      `json:"error,omitempty"`
 }
 
-// CodexItem 表示 Codex 事件中的一个条目。
+// CodexItem represents an item carried by a Codex event.
 type CodexItem struct {
 	ID               string `json:"id"`
 	ItemType         string `json:"item_type"`
@@ -34,29 +33,29 @@ type CodexItem struct {
 	Query            string `json:"query,omitempty"`
 }
 
-// CodexUsage 表示 turn.completed 事件中的 token 使用量。
+// CodexUsage represents token usage from a turn.completed event.
 type CodexUsage struct {
 	InputTokens       int `json:"input_tokens"`
 	CachedInputTokens int `json:"cached_input_tokens"`
 	OutputTokens      int `json:"output_tokens"`
 }
 
-// CodexEventToText 将 Codex JSONL 事件转换为可读文本。
+// CodexEventToText converts a Codex JSONL event into readable text.
 func CodexEventToText(event CodexEvent) string {
 	switch event.Type {
 	case "thread.started", "turn.started":
 		return ""
 	case "turn.completed":
 		if event.Usage != nil {
-			return fmt.Sprintf("✓ Turn completed (tokens: %d in, %d out)",
+			return fmt.Sprintf("Turn completed (tokens: %d in, %d out)",
 				event.Usage.InputTokens, event.Usage.OutputTokens)
 		}
-		return "✓ Turn completed"
+		return "Turn completed"
 	case "turn.failed":
 		if event.Error != "" {
-			return fmt.Sprintf("✗ Turn failed: %s", event.Error)
+			return fmt.Sprintf("Turn failed: %s", event.Error)
 		}
-		return "✗ Turn failed"
+		return "Turn failed"
 	case "item.started", "item.updated", "item.completed":
 		return codexItemToText(event)
 	default:
@@ -78,7 +77,7 @@ func codexItemToText(event CodexEvent) string {
 		return ""
 	case "reasoning":
 		if item.Text != "" {
-			return fmt.Sprintf("💭 %s", item.Text)
+			return fmt.Sprintf("Reasoning: %s", item.Text)
 		}
 		return ""
 	case "command_execution":
@@ -89,7 +88,7 @@ func codexItemToText(event CodexEvent) string {
 				if len(cmd) > 100 {
 					cmd = cmd[:100] + "..."
 				}
-				return fmt.Sprintf("⚡ %s", cmd)
+				return fmt.Sprintf("Command: %s", cmd)
 			}
 		case "item.completed":
 			if item.AggregatedOutput != "" {
@@ -109,22 +108,22 @@ func codexItemToText(event CodexEvent) string {
 		switch event.Type {
 		case "item.started":
 			if item.FilePath != "" {
-				return fmt.Sprintf("📝 Editing %s", item.FilePath)
+				return fmt.Sprintf("Editing %s", item.FilePath)
 			}
 		case "item.completed":
 			if item.FilePath != "" {
-				return fmt.Sprintf("✓ Modified %s", item.FilePath)
+				return fmt.Sprintf("Modified %s", item.FilePath)
 			}
 		}
 		return ""
 	case "mcp_tool_call":
 		if item.ToolName != "" {
-			return fmt.Sprintf("🔧 MCP: %s", item.ToolName)
+			return fmt.Sprintf("MCP: %s", item.ToolName)
 		}
 		return ""
 	case "web_search":
 		if item.Query != "" {
-			return fmt.Sprintf("🔍 Searching: %s", item.Query)
+			return fmt.Sprintf("Searching: %s", item.Query)
 		}
 		return ""
 	default:
@@ -132,7 +131,7 @@ func codexItemToText(event CodexEvent) string {
 	}
 }
 
-// BuildCodexToolUseEvent 从 Codex item 事件创建 ImportantEvent。
+// BuildCodexToolUseEvent creates an ImportantEvent from a Codex item event.
 func BuildCodexToolUseEvent(sessionID string, event CodexEvent) ImportantEvent {
 	if event.Item == nil {
 		return ImportantEvent{}
@@ -179,67 +178,14 @@ func BuildCodexToolUseEvent(sessionID string, event CodexEvent) ImportantEvent {
 	return evt
 }
 
-// tomlKeySanitize strips characters that are invalid in a bare TOML key,
-// keeping only ASCII letters, digits, hyphens, and underscores.
-var tomlKeyRe = regexp.MustCompile(`[^a-z0-9_-]`)
-
-func sanitizeTomlKey(s string) string {
-	s = strings.ToLower(strings.TrimSpace(s))
-	s = tomlKeyRe.ReplaceAllString(s, "")
-	if s == "" {
-		return "custom"
-	}
-	return s
-}
-
-// BuildCodexConfigToml generates a unified config.toml content for Codex CLI.
-// It replaces the deprecated OPENAI_BASE_URL env var approach with proper
-// model_providers configuration, including WebSocket support.
-// This is shared between GUI and TUI to avoid duplication.
 func BuildCodexConfigToml(m *corelib.ModelConfig) string {
-	providerName := strings.ToLower(strings.TrimSpace(m.ModelName))
-	if providerName == "" || providerName == "custom" {
-		providerName = "custom"
+	if m == nil {
+		return configfile.BuildCodexConfigTomlContent("", "", "custom", "responses")
 	}
-	// Normalize Chinese names to ASCII provider keys
-	switch providerName {
-	case "讯飞星辰":
-		providerName = "xfyun"
-	case "阿里云":
-		providerName = "aliyun"
-	}
-	// Sanitize for use as TOML bare key and avoid Codex reserved provider names.
-	providerName = configfile.CodexProviderKey(providerName)
-
-	modelId := strings.TrimSpace(m.ModelId)
-	if modelId == "" {
-		modelId = "gpt-5.4"
-	}
-
-	baseUrl := strings.TrimSpace(m.ModelUrl)
-
-	wireApi := strings.TrimSpace(m.WireApi)
-	if wireApi == "" {
-		wireApi = "responses"
-	}
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "model_provider = %q\n", providerName)
-	fmt.Fprintf(&sb, "model = %q\n", modelId)
-	sb.WriteString("model_reasoning_effort = \"xhigh\"\n")
-	sb.WriteString("disable_response_storage = true\n")
-
-	fmt.Fprintf(&sb, "\n[model_providers.%s]\n", providerName)
-	fmt.Fprintf(&sb, "name = %q\n", providerName)
-	if baseUrl != "" {
-		fmt.Fprintf(&sb, "base_url = %q\n", baseUrl)
-	}
-	fmt.Fprintf(&sb, "wire_api = %q\n", wireApi)
-	sb.WriteString("supports_websockets = true\n")
-	sb.WriteString("requires_openai_auth = true\n")
-
-	sb.WriteString("\n[features]\n")
-	sb.WriteString("responses_websockets_v2 = true\n")
-
-	return sb.String()
+	return configfile.BuildCodexConfigTomlContent(
+		strings.TrimSpace(m.ModelUrl),
+		strings.TrimSpace(m.ModelId),
+		strings.TrimSpace(m.ModelName),
+		strings.TrimSpace(m.WireApi),
+	)
 }

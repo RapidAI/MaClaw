@@ -27,6 +27,8 @@ type CloudHeartbeatSnapshot struct {
 	RuntimeType         string    `json:"runtime_type"`
 	ProductKind         string    `json:"product_kind"`
 	AdminConsole        string    `json:"admin_console"`
+	NonBlocking         bool      `json:"non_blocking"`
+	BusinessImpact      string    `json:"business_impact"`
 }
 
 // CloudHeartbeatMonitor keeps iWorkerCloud aware that this process is an iWorkerCenter service.
@@ -135,7 +137,7 @@ func (m *CloudHeartbeatMonitor) Stop() {
 
 func (m *CloudHeartbeatMonitor) Snapshot() CloudHeartbeatSnapshot {
 	if m == nil {
-		return CloudHeartbeatSnapshot{Configured: false, Status: "disabled", RuntimeType: "service", ProductKind: "iworkercenter", AdminConsole: "web_console"}
+		return CloudHeartbeatSnapshot{Configured: false, Status: "disabled", RuntimeType: "service", ProductKind: "iworkercenter", AdminConsole: "web_console", NonBlocking: true, BusinessImpact: "none_local_center_and_iworker_continue"}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -158,6 +160,8 @@ func (m *CloudHeartbeatMonitor) Snapshot() CloudHeartbeatSnapshot {
 		RuntimeType:         "service",
 		ProductKind:         "iworkercenter",
 		AdminConsole:        "web_console",
+		NonBlocking:         true,
+		BusinessImpact:      "none_local_center_and_iworker_continue",
 	}
 }
 

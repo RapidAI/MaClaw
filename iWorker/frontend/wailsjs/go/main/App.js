@@ -38,8 +38,20 @@ export function FetchConfigBundle() {
   return window['go']['main']['App']['FetchConfigBundle']();
 }
 
+export function FetchCollaborations(arg1) {
+  return window['go']['main']['App']['FetchCollaborations'](arg1);
+}
+
 export function FetchGoalPushes(arg1) {
   return window['go']['main']['App']['FetchGoalPushes'](arg1);
+}
+
+export function FetchWorkflowInstances() {
+  return window['go']['main']['App']['FetchWorkflowInstances']();
+}
+
+export function RecoverGoalPush(arg1, arg2) {
+  return window['go']['main']['App']['RecoverGoalPush'](arg1, arg2);
 }
 
 export function FetchInstalledTools() {
@@ -82,6 +94,10 @@ export function RecallWorkerMemories(arg1) {
   return window['go']['main']['App']['RecallWorkerMemories'](arg1);
 }
 
+export function RecommendColleague(arg1) {
+  return window['go']['main']['App']['RecommendColleague'](arg1);
+}
+
 export function SaveDiWorkerSettings(arg1) {
   return window['go']['main']['App']['SaveDiWorkerSettings'](arg1);
 }
@@ -96,4 +112,12 @@ export function SaveWorkerMemory(arg1) {
 
 export function SubmitTask(arg1) {
   return window['go']['main']['App']['SubmitTask'](arg1);
+}
+
+export function TransitionCollaborationTask(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['TransitionCollaborationTask'](arg1, arg2, arg3, arg4);
+}
+
+export function TransitionWorkflowStep(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['TransitionWorkflowStep'](arg1, arg2, arg3, arg4);
 }

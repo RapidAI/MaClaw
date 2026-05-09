@@ -7,15 +7,25 @@ package intent
 // Mapping:
 //   - coding, bug_fix, maintenance -> "coding"
 //   - ssh -> "ssh"
-//   - non_coding, browser, search, document_delivery, office -> "non_coding"
+//   - non_coding, browser, search, document_delivery, business_data, office -> "non_coding"
 //   - ambiguous, unknown, continuation -> "ambiguous"
 func (r *ClassificationResult) ToTaskIntent() (intent, matched string, evidence []string, reason string, confidence float64) {
+	const executableIntentThreshold = 0.90
+
 	switch r.Primary {
 	case LabelCoding, LabelBugFix, LabelMaintenance:
-		intent = "coding"
+		if r.Confidence >= executableIntentThreshold {
+			intent = "coding"
+		} else {
+			intent = "ambiguous"
+		}
 	case LabelSSH:
-		intent = "ssh"
-	case LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice:
+		if r.Confidence >= executableIntentThreshold {
+			intent = "ssh"
+		} else {
+			intent = "ambiguous"
+		}
+	case LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelBusinessData, LabelOffice:
 		intent = "non_coding"
 	default:
 		// ambiguous, unknown, continuation
@@ -43,7 +53,7 @@ func (r *ClassificationResult) ToTaskIntent() (intent, matched string, evidence 
 //   - coding (without creation signals) -> "maintenance"
 //   - bug_fix -> "bug_fix"
 //   - maintenance -> "maintenance"
-//   - non_coding, search, document_delivery, office, browser -> "non_coding"
+//   - non_coding, search, document_delivery, business_data, office, browser -> "non_coding"
 //   - continuation -> "continuation"
 //   - ambiguous, unknown -> "unknown"
 func (r *ClassificationResult) ToGateIntent() (intent string, confidence float64, gap float64, layer int, reason string) {
@@ -58,7 +68,7 @@ func (r *ClassificationResult) ToGateIntent() (intent string, confidence float64
 		intent = "bug_fix"
 	case LabelMaintenance:
 		intent = "maintenance"
-	case LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelOffice, LabelBrowser:
+	case LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelBusinessData, LabelOffice, LabelBrowser:
 		intent = "non_coding"
 	case LabelContinuation:
 		intent = "continuation"
@@ -85,10 +95,10 @@ func (r *ClassificationResult) IsCodingLike() bool {
 }
 
 // IsNonCodingLike returns true if the primary intent indicates a non-coding task
-// (non_coding, browser, search, document_delivery, or office).
+// (non_coding, browser, search, document_delivery, business_data, or office).
 func (r *ClassificationResult) IsNonCodingLike() bool {
 	switch r.Primary {
-	case LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelOffice:
+	case LabelNonCoding, LabelBrowser, LabelSearch, LabelDocumentDelivery, LabelBusinessData, LabelOffice:
 		return true
 	}
 	return false
@@ -102,7 +112,7 @@ func (r *ClassificationResult) IsNonCodingLike() bool {
 //  2. If secondary contains bug_fix or maintenance, return false.
 //  3. For fusion results (Layer 23) or tree-only (Layer 3), CreationOriented is
 //     derived from WorkflowType="coding". If it was not set, check counter-signals.
-//  4. For degraded mode (Layer 1), no reliable creation detection is available,
+//  4. For degraded mode, no reliable creation detection is available,
 //     so default to true when no counter-signals exist.
 func hasCreationSignals(r *ClassificationResult) bool {
 	if r.CreationOriented {

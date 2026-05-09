@@ -58,6 +58,13 @@ type FetchResult struct {
 // For HTML pages, it extracts the main text content.
 // For other content types, it returns raw text or saves to file.
 func Fetch(rawURL string, opts *FetchOptions) (*FetchResult, error) {
+	return FetchWithClient(rawURL, opts, nil)
+}
+
+// FetchWithClient is Fetch with an optional caller-provided HTTP client for
+// HTTP(S) requests. It keeps the existing extraction pipeline while allowing
+// security-sensitive callers to enforce their own dial and redirect policy.
+func FetchWithClient(rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
 	if rawURL == "" {
 		return nil, fmt.Errorf("URL is empty")
 	}
@@ -101,16 +108,23 @@ func Fetch(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 
 	// Try headless Chrome first if requested
 	if opts.RenderJS {
+		if client != nil {
+			return nil, fmt.Errorf("RenderJS cannot be used with a custom HTTP client")
+		}
 		if result, err := fetchWithChrome(rawURL, opts); err == nil {
 			return result, nil
 		}
 		// Fallback to HTTP if Chrome fails
 	}
 
-	return fetchHTTP(rawURL, opts)
+	return fetchHTTPWithClient(rawURL, opts, client)
 }
 
 func fetchHTTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
+	return fetchHTTPWithClient(rawURL, opts, nil)
+}
+
+func fetchHTTPWithClient(rawURL string, opts *FetchOptions, client *http.Client) (*FetchResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(opts.TimeoutS)*time.Second)
 	defer cancel()
 
@@ -123,7 +137,10 @@ func fetchHTTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7,ja;q=0.6")
 	req.Header.Set("Accept-Encoding", "identity") // avoid compressed responses for simplicity
 
-	resp, err := httpClient().Do(req)
+	if client == nil {
+		client = httpClient()
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request failed: %w", err)
 	}
@@ -139,8 +156,12 @@ func fetchHTTP(rawURL string, opts *FetchOptions) (*FetchResult, error) {
 	}
 
 	ct := resp.Header.Get("Content-Type")
+	finalURL := rawURL
+	if resp.Request != nil && resp.Request.URL != nil {
+		finalURL = resp.Request.URL.String()
+	}
 	result := &FetchResult{
-		URL:         rawURL,
+		URL:         finalURL,
 		ContentType: ct,
 		BytesRead:   len(body),
 	}

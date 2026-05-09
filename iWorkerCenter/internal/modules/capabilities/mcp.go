@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/audit"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/modules/tenant"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/platform/idgen"
 	"github.com/RapidAI/CodeClaw/iWorkerCenter/internal/shared/response"
@@ -57,7 +59,11 @@ func (h *Handler) handleAdminMCPServers(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handler) handleAdminMCPServerByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/admin/mcp-servers/"), "/")
+	id, err := url.PathUnescape(strings.Trim(strings.TrimPrefix(r.URL.EscapedPath(), "/admin/mcp-servers/"), "/"))
+	if err != nil {
+		response.BadRequest(w, "INVALID_PATH", "invalid mcp server id")
+		return
+	}
 	if id == "" {
 		response.BadRequest(w, "MISSING_ID", "mcp server id is required")
 		return
@@ -110,7 +116,7 @@ func (h *Handler) getMCPServer(w http.ResponseWriter, r *http.Request, id string
 
 func (h *Handler) createMCPServer(w http.ResponseWriter, r *http.Request) {
 	var req mcpServerPayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -132,12 +138,16 @@ func (h *Handler) createMCPServer(w http.ResponseWriter, r *http.Request) {
 		response.Internal(w, err.Error())
 		return
 	}
+	if err := h.recordMCPServerAudit(r.Context(), tenant.RequestTenantID(r), "mcp_server_installed", server, ""); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 	response.Created(w, server)
 }
 
 func (h *Handler) updateMCPServer(w http.ResponseWriter, r *http.Request, id string) {
 	var req mcpServerPayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeCapabilityJSON(r.Body, &req, false); err != nil {
 		response.BadRequest(w, "INVALID_BODY", "invalid JSON body")
 		return
 	}
@@ -146,10 +156,20 @@ func (h *Handler) updateMCPServer(w http.ResponseWriter, r *http.Request, id str
 		response.BadRequest(w, "INVALID_MCP_SERVER", err.Error())
 		return
 	}
+	tenantID := tenant.RequestTenantID(r)
+	previous, err := h.mcpServerByID(r.Context(), tenantID, id)
+	if err == sql.ErrNoRows {
+		response.NotFound(w, "NOT_FOUND", "mcp server not found")
+		return
+	}
+	if err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	argsJSON, _ := json.Marshal(server.Args)
 	envKeysJSON, _ := json.Marshal(server.EnvKeys)
-	res, err := h.write.ExecContext(r.Context(), `UPDATE mcp_servers SET name=?, description=?, server_type=?, endpoint=?, command=?, args_json=?, env_keys_json=?, department_id=?, risk_level=?, status=?, updated_at=? WHERE tenant_id=? AND id=?`, server.Name, server.Description, server.ServerType, server.Endpoint, server.Command, string(argsJSON), string(envKeysJSON), server.DepartmentID, server.RiskLevel, server.Status, now, tenant.RequestTenantID(r), id)
+	res, err := h.write.ExecContext(r.Context(), `UPDATE mcp_servers SET name=?, description=?, server_type=?, endpoint=?, command=?, args_json=?, env_keys_json=?, department_id=?, risk_level=?, status=?, updated_at=? WHERE tenant_id=? AND id=?`, server.Name, server.Description, server.ServerType, server.Endpoint, server.Command, string(argsJSON), string(envKeysJSON), server.DepartmentID, server.RiskLevel, server.Status, now, tenantID, id)
 	if err != nil {
 		response.Internal(w, err.Error())
 		return
@@ -160,7 +180,46 @@ func (h *Handler) updateMCPServer(w http.ResponseWriter, r *http.Request, id str
 	}
 	server.ID = id
 	server.UpdatedAt = now
+	server.InstalledAt = previous.InstalledAt
+	server.CreatedAt = previous.CreatedAt
+	workType := "mcp_server_updated"
+	if previous.Status != server.Status {
+		workType = "mcp_server_status_changed"
+	}
+	if err := h.recordMCPServerAudit(r.Context(), tenantID, workType, server, previous.Status); err != nil {
+		response.Internal(w, err.Error())
+		return
+	}
 	response.OK(w, server)
+}
+
+func (h *Handler) recordMCPServerAudit(ctx context.Context, tenantID, workType string, server MCPServer, previousStatus string) error {
+	if h.audit == nil || tenantID == "" {
+		return nil
+	}
+	summary := fmt.Sprintf("MCP server %s: %s", strings.TrimPrefix(workType, "mcp_server_"), server.Name)
+	details := fmt.Sprintf("mcp_id: %s | name: %s | transport: %s | department: %s | risk: %s | status: %s | previous_status: %s | env_keys: %s",
+		server.ID,
+		server.Name,
+		server.ServerType,
+		server.DepartmentID,
+		server.RiskLevel,
+		server.Status,
+		previousStatus,
+		strings.Join(server.EnvKeys, ","),
+	)
+	return h.audit.Insert(tenantID, &audit.ProxyLog{
+		RequestID:   fmt.Sprintf("%s-%s-%d", workType, server.ID, time.Now().UnixNano()),
+		ProviderID:  "iworkercenter",
+		Model:       "mcp-governance",
+		WorkType:    workType,
+		CostTier:    "internal",
+		Status:      "ok",
+		LatencyMs:   0,
+		InputTokens: 0,
+		Summary:     summary,
+		ErrorMsg:    details,
+	})
 }
 
 func normalizeMCPServerPayload(req mcpServerPayload) (MCPServer, error) {
@@ -272,6 +331,8 @@ func (h *Handler) listMCPServers(ctx context.Context, tenantID, departmentID str
 	if departmentID != "" {
 		where += " AND (department_id='' OR department_id='all' OR department_id=?)"
 		args = append(args, departmentID)
+	} else if enabledOnly {
+		where += " AND (department_id='' OR department_id='all')"
 	}
 	rows, err := h.read.QueryContext(ctx, `SELECT id, name, description, server_type, endpoint, command, args_json, env_keys_json, department_id, risk_level, status, installed_at, created_at, updated_at FROM mcp_servers WHERE `+where+` ORDER BY name`, args...)
 	if err != nil {
@@ -302,8 +363,16 @@ func scanMCPServer(row mcpScannable) (MCPServer, error) {
 	if err := row.Scan(&server.ID, &server.Name, &server.Description, &server.ServerType, &server.Endpoint, &server.Command, &argsJSON, &envKeysJSON, &server.DepartmentID, &server.RiskLevel, &server.Status, &server.InstalledAt, &server.CreatedAt, &server.UpdatedAt); err != nil {
 		return MCPServer{}, err
 	}
-	_ = json.Unmarshal([]byte(argsJSON), &server.Args)
-	_ = json.Unmarshal([]byte(envKeysJSON), &server.EnvKeys)
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &server.Args); err != nil {
+			return MCPServer{}, fmt.Errorf("invalid mcp args_json for %s: %w", server.ID, err)
+		}
+	}
+	if strings.TrimSpace(envKeysJSON) != "" {
+		if err := json.Unmarshal([]byte(envKeysJSON), &server.EnvKeys); err != nil {
+			return MCPServer{}, fmt.Errorf("invalid mcp env_keys_json for %s: %w", server.ID, err)
+		}
+	}
 	if server.Args == nil {
 		server.Args = []string{}
 	}

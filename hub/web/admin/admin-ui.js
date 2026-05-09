@@ -44,12 +44,56 @@
       return renderItem(item, index);
     }).join('');
   }
+  function rememberBackdropPointer(event, overlay) {
+    if (!overlay) return;
+    overlay.__adminBackdropPointerStarted = !!(event && event.target === overlay);
+  }
+  function dismissBackdropClick(event, overlay, closeFn) {
+    if (!overlay || !event || event.target !== overlay) return;
+    const startedOnBackdrop = !!overlay.__adminBackdropPointerStarted;
+    overlay.__adminBackdropPointerStarted = false;
+    if (!startedOnBackdrop) return;
+    if (typeof closeFn === 'function') closeFn();
+  }
+  function bindModalOverlayDismiss(overlay, closeFn) {
+    if (!overlay) return;
+    overlay.onclick = null;
+    overlay.onpointerdown = function(event) { rememberBackdropPointer(event, overlay); };
+    overlay.onmousedown = function(event) { rememberBackdropPointer(event, overlay); };
+    overlay.onclick = function(event) { dismissBackdropClick(event, overlay, closeFn); };
+  }
+  function installModalBackdropGuard() {
+    if (!global.document || installModalBackdropGuard.done) return;
+    installModalBackdropGuard.done = true;
+    const markStart = function(event) {
+      const overlay = event && event.target && event.target.classList && event.target.classList.contains('session-modal-overlay') ? event.target : null;
+      if (overlay) rememberBackdropPointer(event, overlay);
+    };
+    const guardClick = function(event) {
+      const overlay = event && event.target && event.target.classList && event.target.classList.contains('session-modal-overlay') ? event.target : null;
+      if (!overlay) return;
+      if (!overlay.__adminBackdropPointerStarted) {
+        overlay.__adminBackdropPointerStarted = false;
+        event.stopImmediatePropagation();
+        event.preventDefault();
+      }
+    };
+    global.document.addEventListener('pointerdown', markStart, true);
+    global.document.addEventListener('mousedown', markStart, true);
+    global.document.addEventListener('click', guardClick, true);
+  }
+  installModalBackdropGuard.done = false;
+  installModalBackdropGuard();
   global.AdminUI = {
     hint: hint,
     meta: meta,
     badge: badge,
     actionButton: actionButton,
     simpleCard: simpleCard,
-    renderList: renderList
+    renderList: renderList,
+    rememberBackdropPointer: rememberBackdropPointer,
+    dismissBackdropClick: dismissBackdropClick,
+    bindModalOverlayDismiss: bindModalOverlayDismiss,
+    installModalBackdropGuard: installModalBackdropGuard
   };
 })(window);
