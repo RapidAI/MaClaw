@@ -155,6 +155,7 @@ export function useWorkflowState() {
     const docUpdatePhaseIDsRef = useRef<Set<string>>(new Set());
     const workflowIDRef = useRef("");
     const workflowTypeRef = useRef("");
+    const transientTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Listen for phase updates
     useEffect(() => {
@@ -314,10 +315,20 @@ export function useWorkflowState() {
         const unsub = EventsOn("workflow:text", (data: any) => {
             if (!data?.text) return;
             setTransientText(data.text);
+            if (transientTextTimerRef.current) {
+                clearTimeout(transientTextTimerRef.current);
+            }
             // Auto-clear after 5 seconds
-            setTimeout(() => setTransientText(""), 5000);
+            transientTextTimerRef.current = setTimeout(() => {
+                setTransientText("");
+                transientTextTimerRef.current = null;
+            }, 5000);
         });
         return () => {
+            if (transientTextTimerRef.current) {
+                clearTimeout(transientTextTimerRef.current);
+                transientTextTimerRef.current = null;
+            }
             if (typeof unsub === "function") unsub();
             else EventsOff("workflow:text");
         };

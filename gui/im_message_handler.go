@@ -4693,7 +4693,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		// Flush evidence batch and reset session on conversation reset.
 		h.flushEvidenceOnSessionEnd(msg.UserID)
 		// cancelWorkflowForUser is now called inside clearPerUserSessionState.
-		resp := &IMAgentResponse{Text: "瀵硅瘽宸查噸缃€?, ClearUI: true}
+		resp := &IMAgentResponse{Text: "Conversation reset.", ClearUI: true}
 		if h.currentLoopCtx != nil {
 			return h.finalizeTraceResult(h.currentLoopCtx, resp, resp.Text, "")
 		}
@@ -4718,9 +4718,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 				confirmed := lower == "纭瀹夎" || lower == "纭" || lower == "1"
 				h.ResolveCriticalConfirm(confirmID, confirmed) //nolint:errcheck // IM path: error logged internally
 				if confirmed {
-					return &IMAgentResponse{Text: "鉁?宸茬‘璁ゅ畨瑁呰 Critical 椋庨櫓 Skill銆?}
+					return &IMAgentResponse{Text: "Critical-risk Skill installation confirmed."}
 				}
-				return &IMAgentResponse{Text: "鉂?宸叉嫆缁濆畨瑁呰 Critical 椋庨櫓 Skill銆?}
+				return &IMAgentResponse{Text: "Critical-risk Skill installation rejected."}
 			}
 		}
 	}
@@ -4741,15 +4741,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return h.handleMemoryStatusCommand()
 	}
 	if trimmed == "/help" {
-		return &IMAgentResponse{Text: "馃摉 鍙敤鍛戒护:\n" +
-			"/new /reset /clear 鈥?閲嶇疆瀵硅瘽\n" +
-			"/btw <鏌ヨ> 鈥?渚ф煡璇紙涓嶆墦鏂綋鍓嶄换鍔′笂涓嬫枃锛塡n" +
-			"/compress 鈥?鍘嬬缉褰撳墠瀵硅瘽鍘嗗彶\n" +
-			"/memory 鈥?鏌ョ湅璁板繂鐘舵€佸拰瀹归噺\n" +
-			"/cancel /鍙栨秷 鈥?鍙栨秷褰撳墠姝ｅ湪鎵ц鐨勪换鍔n" +
-			"/exit /quit 鈥?缁堟鎵€鏈変細璇濓紝閫€鍑虹紪绋嬫ā寮廫n" +
-			"/sessions /status 鈥?鏌ョ湅褰撳墠浼氳瘽鐘舵€乗n" +
-			"/help 鈥?鏄剧ず姝ゅ府鍔?}
+		return &IMAgentResponse{Text: "Available commands:\n" +
+			"/new /reset /clear - reset conversation\n" +
+			"/btw <query> - side query\n" +
+			"/compress - compress conversation history\n" +
+			"/memory - show memory status\n" +
+			"/cancel - cancel current task\n" +
+			"/exit /quit - stop sessions\n" +
+			"/sessions /status - show current sessions\n" +
+			"/help - show this help"}
 	}
 	// --- /btw side query: independent agent loop for quick lookups ---
 	// Runs in a clean context (no workflow, no 40+ tools). Results are
@@ -4762,10 +4762,10 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			btwQuery = strings.TrimSpace(trimmed[5:])
 		}
 		if btwQuery == "" {
-			return &IMAgentResponse{Text: "鐢ㄦ硶: /btw <鏌ヨ鍐呭>\n\n绀轰緥:\n  /btw 鏈€鏂扮殑 Go 1.23 鏈変粈涔堟柊鐗规€n  /btw React 19 鐨勪富瑕佸彉鍖朶n  /btw 杩欎釜椤圭洰鐢ㄤ簡浠€涔堟鏋?}
+			return &IMAgentResponse{Text: "Usage: /btw <query>\n\nExamples:\n  /btw latest Go changes\n  /btw React 19 main changes\n  /btw what framework does this project use"}
 		}
 		if !h.isMaclawLLMConfigured() {
-			return &IMAgentResponse{Error: "LLM 鏈厤缃紝鏃犳硶鎵ц /btw 鏌ヨ銆?}
+			return &IMAgentResponse{Error: "LLM is not configured, so /btw cannot run."}
 		}
 		return h.handleBtwCommand(msg, btwQuery, onProgress, onToken)
 	}
@@ -4775,25 +4775,25 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if h.confirmationStore != nil {
 			if pending := h.confirmationStore.get(msg.UserID); pending != nil {
 				h.confirmationStore.clear(msg.UserID)
-				return &IMAgentResponse{Text: "鈴癸笍 宸插彇娑堝緟纭浠诲姟銆?}
+				return &IMAgentResponse{Text: "Pending confirmation canceled."}
 			}
 		}
 		// Cancel active /btw side query if any.
 		if btw := h.activeBtwSubAgent.Load(); btw != nil {
 			btw.Cancel()
-			return &IMAgentResponse{Text: "鈴癸笍 宸插彇娑?/btw 渚ф煡璇€?}
+			return &IMAgentResponse{Text: "/btw side query canceled."}
 		}
 		ctx := h.currentLoopCtx
 		if ctx == nil {
-			return &IMAgentResponse{Text: "鈩癸笍 褰撳墠娌℃湁姝ｅ湪鎵ц鐨勪换鍔°€?}
+			return &IMAgentResponse{Text: "There is no active task to cancel."}
 		}
 		taskText := h.lastUserText
 		ctx.Cancel()
 		// Don't wait for the loop to exit 鈥?the IM caller shouldn't block.
 		// The loop will detect cancellation and clean up on its own.
-		cancelMsg := "鈴癸笍 浠诲姟宸插彇娑堛€?
+		cancelMsg := "Task canceled."
 		if preview := truncateRunes(taskText, 30); preview != "" {
-			cancelMsg = fmt.Sprintf("鈴癸笍 宸插彇娑堜换鍔°€?s銆嶃€?, preview)
+			cancelMsg = fmt.Sprintf("Task canceled: %s", preview)
 		}
 		return &IMAgentResponse{Text: cancelMsg}
 	}

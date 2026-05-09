@@ -646,6 +646,29 @@ func TestToolGlobSupportsExcludeFilter(t *testing.T) {
 	}
 }
 
+func TestToolGlobSupportsExcludeGlobAlias(t *testing.T) {
+	dir := t.TempDir()
+	keepFile := filepath.Join(dir, "keep.go")
+	excludedFile := filepath.Join(dir, "snapshot.go")
+	for _, path := range []string{keepFile, excludedFile} {
+		if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := ToolGlob(map[string]interface{}{
+		"path":         dir,
+		"pattern":      "*.go",
+		"exclude_glob": "snapshot.go",
+	})
+	if !strings.Contains(out, keepFile) {
+		t.Fatalf("Glob exclude_glob missing kept file:\n%s", out)
+	}
+	if strings.Contains(out, excludedFile) {
+		t.Fatalf("Glob exclude_glob matched excluded file:\n%s", out)
+	}
+}
+
 func TestToolGlobSupportsTypeFilter(t *testing.T) {
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "main.go")
