@@ -14,6 +14,7 @@ vi.mock('../../../../wailsjs/runtime', () => ({
 describe('workflow state document collection', () => {
     beforeEach(() => {
         eventHandlers.clear();
+        vi.useRealTimers();
     });
 
     it('normalizes backend phase aliases used by workflow phase_outputs', () => {
@@ -367,5 +368,37 @@ describe('workflow state document collection', () => {
         });
 
         expect(result.current.state.gateResults.get('tasks')?.items).toEqual([]);
+    });
+
+    it('keeps the latest transient workflow text for a full timeout window', () => {
+        vi.useFakeTimers();
+        const { result, unmount } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:text')?.({ text: '第一条提示' });
+        });
+
+        expect(result.current.state.transientText).toBe('第一条提示');
+
+        act(() => {
+            vi.advanceTimersByTime(3000);
+            eventHandlers.get('workflow:text')?.({ text: '第二条提示' });
+        });
+
+        expect(result.current.state.transientText).toBe('第二条提示');
+
+        act(() => {
+            vi.advanceTimersByTime(2500);
+        });
+
+        expect(result.current.state.transientText).toBe('第二条提示');
+
+        act(() => {
+            vi.advanceTimersByTime(2500);
+        });
+
+        expect(result.current.state.transientText).toBe('');
+        unmount();
+        vi.useRealTimers();
     });
 });

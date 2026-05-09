@@ -46,3 +46,48 @@ func TestCoreToolNames_AllRegistered(t *testing.T) {
 			"or add it to guiOnly in this test with a comment explaining why.", name)
 	}
 }
+
+func TestCoreSearchToolsExposeLargeRepoSearchOptions(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	assertProps := func(toolName string, props ...string) {
+		t.Helper()
+		reg.mu.RLock()
+		entry := reg.tools[toolName]
+		reg.mu.RUnlock()
+		if entry == nil {
+			t.Fatalf("tool %q is not registered", toolName)
+		}
+		for _, prop := range props {
+			if _, ok := entry.Properties[prop]; !ok {
+				t.Fatalf("tool %q does not expose property %q", toolName, prop)
+			}
+		}
+	}
+
+	assertProps("ripgrep",
+		"glob",
+		"exclude",
+		"exclude_glob",
+		"no_ignore",
+		"include_hidden",
+		"type",
+		"fixed_string",
+		"whole_word",
+		"line_regexp",
+		"output_mode",
+		"context",
+		"before_context",
+		"after_context",
+		"offset",
+		"stats",
+	)
+	assertProps("Glob",
+		"exclude",
+		"exclude_glob",
+		"no_ignore",
+		"include_hidden",
+		"type",
+	)
+}
