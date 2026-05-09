@@ -170,10 +170,18 @@ export function useWorkflowState() {
                 setPhaseDocuments(new Map());
                 setGateResults(new Map());
                 setPhases([]);
+                setSuggestMaximize(false);
+                setSuggestMaximizeType("");
+                setTransientText("");
                 setWorkingDir("");
+                userClosedRef.current = false;
                 docUpdatePhaseIDsRef.current = new Set();
                 workflowIDRef.current = "";
                 workflowTypeRef.current = "";
+                if (transientTextTimerRef.current) {
+                    clearTimeout(transientTextTimerRef.current);
+                    transientTextTimerRef.current = null;
+                }
                 return;
             }
             const workflowID = resolveWorkflowInstanceKey(state);

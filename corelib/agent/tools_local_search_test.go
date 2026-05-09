@@ -1278,6 +1278,42 @@ func TestToolRipgrepLocalIndexIncludesModifiedDirtyFiles(t *testing.T) {
 	}
 }
 
+func TestToolRipgrepLocalIndexIncludesModifiedFileWithOlderModTime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc InitialTimestampSymbol() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "InitialTimestampSymbol",
+		"output_mode": "files_with_matches",
+	}); !strings.Contains(out, path) {
+		t.Fatalf("initial indexed search missing file:\n%s", out)
+	}
+
+	oldTime := time.Now().Add(-time.Hour)
+	if err := os.WriteFile(path, []byte("package main\nfunc AddedDespiteOlderTimestamp() {}\nvar Padding = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "AddedDespiteOlderTimestamp",
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	if !strings.Contains(out, path) {
+		t.Fatalf("indexed search missed modified file with older mtime:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("older-mtime dirty file search should still use index overlay:\n%s", out)
+	}
+}
+
 func TestToolRipgrepRebuildsStaleIndexWhenDirtyRatioIsHigh(t *testing.T) {
 	dir := t.TempDir()
 	first := filepath.Join(dir, "first.go")

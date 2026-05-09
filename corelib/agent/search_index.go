@@ -34,7 +34,13 @@ type localSearchIndex struct {
 	usedAt   time.Time
 	files    []string
 	fileSet  map[string]bool
+	fileMeta map[string]localSearchFileMeta
 	postings map[string][]int
+}
+
+type localSearchFileMeta struct {
+	size    int64
+	modTime time.Time
 }
 
 type searchCandidateStats struct {
@@ -206,6 +212,7 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 		builtAt:  now,
 		usedAt:   now,
 		fileSet:  make(map[string]bool),
+		fileMeta: make(map[string]localSearchFileMeta),
 		postings: make(map[string][]int),
 	}
 	truncated := false
@@ -261,6 +268,7 @@ func buildLocalSearchIndex(root, globPattern, excludePattern, fileType string, i
 		id := len(idx.files)
 		idx.files = append(idx.files, path)
 		idx.fileSet[path] = true
+		idx.fileMeta[path] = localSearchFileMeta{size: info.Size(), modTime: info.ModTime()}
 		for trigram := range contentTrigramsBytes(data) {
 			idx.postings[trigram] = append(idx.postings[trigram], id)
 		}
@@ -354,13 +362,24 @@ func (idx *localSearchIndex) dirtyCandidateFiles(globPattern, excludePattern, fi
 		if err != nil || info.Size() > MaxSearchFileSize {
 			return nil
 		}
-		if idx.fileSet[path] && info.ModTime().Before(idx.builtAt) {
+		if idx.fileSet[path] && idx.fileMetadataUnchanged(path, info) {
 			return nil
 		}
 		files = append(files, path)
 		return nil
 	})
 	return files
+}
+
+func (idx *localSearchIndex) fileMetadataUnchanged(path string, info os.FileInfo) bool {
+	if idx == nil || info == nil {
+		return false
+	}
+	meta, ok := idx.fileMeta[path]
+	if !ok {
+		return info.ModTime().Before(idx.builtAt)
+	}
+	return meta.size == info.Size() && meta.modTime.Equal(info.ModTime())
 }
 
 func literalSearchTerms(pattern string) []string {

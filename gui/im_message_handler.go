@@ -4887,7 +4887,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		h.manager.SuppressResumeForSession(decision.DismissRecoverableSessionID)
 		decision.ResumeRecoverableSessionID = ""
 		freshTask = true
-		return &IMAgentResponse{Text: "宸插拷鐣ヨ鎭㈠浼氳瘽銆?}
+		return &IMAgentResponse{Text: "Recoverable session dismissed."}
 	}
 	if decision.ResumeRecoverableSessionID != "" && h.manager != nil {
 		session, ok := h.manager.Get(decision.ResumeRecoverableSessionID)
@@ -4912,15 +4912,15 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 					return &IMAgentResponse{Error: fmt.Sprintf("鎭㈠浼氳瘽澶辫触: %v", err)}
 				}
 				h.manager.SuppressResumeForSession(decision.ResumeRecoverableSessionID)
-				return &IMAgentResponse{Text: "宸插惎鍔ㄦ仮澶嶄細璇濄€傝鍒拌繙绋嬩細璇濆垪琛ㄧ户缁煡鐪嬫墽琛岀姸鎬併€?}
+				return &IMAgentResponse{Text: "Recoverable session started. Check the remote session list for execution status."}
 			}
 		}
-		return &IMAgentResponse{Error: "褰撳墠娌℃湁鍙仮澶嶇殑浼氳瘽锛屾垨璇ヤ細璇濅笉鏀寔鎭㈠銆?}
+		return &IMAgentResponse{Error: "There is no recoverable session available, or the session does not support resume."}
 	}
 
 	if !h.isMaclawLLMConfigured() {
 		return &IMAgentResponse{
-			Error: "MaClaw LLM 鏈厤缃紝鏃犳硶澶勭悊璇锋眰銆傝鍦?MaClaw 瀹㈡埛绔殑璁剧疆涓厤缃?LLM銆?,
+			Error: "MaClaw LLM is not configured, so the request cannot be processed. Configure LLM in the MaClaw client settings.",
 		}
 	}
 
@@ -5004,7 +5004,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			}
 			if !hasSavedText {
 				log.Printf("[TaskSlot] UI action for user %s: dismiss_slot:%s", msg.UserID, decision.DismissSlotID)
-				return &IMAgentResponse{Text: "鉁?宸叉斁寮冩棫浠诲姟銆傝鍛婅瘔鎴戜綘鐨勬柊浠诲姟銆?}
+				return &IMAgentResponse{Text: "Previous task dismissed. Tell me the new task."}
 			}
 		}
 	} else if decision.ResumeSlotID != "" {
@@ -5122,7 +5122,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if pendingFresh {
 			hasPendingAskUser = true
 			askUserContext = fmt.Sprintf(
-				"銆愪笂涓嬫枃鎻愮ず銆戠敤鎴锋鍦ㄥ洖绛斾綘涔嬪墠鎻愬嚭鐨勭‘璁ら棶棰橈紝鑰岄潪鍙戣捣鏂拌姹傘€俓n浣犵殑闂锛?s\n鐢ㄦ埛鍥炵瓟锛?s\n璇峰熀浜庡綋鍓嶄换鍔′笂涓嬫枃鐞嗚В鐢ㄦ埛鎰忓浘锛屽皢鍏惰涓鸿ˉ鍏呮垨淇敼鎰忚銆?,
+				"[Context hint] The user is answering your previous clarification question, not starting a new request.\nAssistant question: %s\nUser answer: %s\nInterpret it as supplementary or corrective information for the current task.",
 				pending.Question, trimmed,
 			)
 			log.Printf("[AskUser] consumed pending ask_user for user %s, question=%q, answer=%q", msg.UserID, truncateRunes(pending.Question, 50), truncateRunes(trimmed, 50))
@@ -5224,7 +5224,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			loopCtx = <-waitC
 		}
 		if loopCtx == nil {
-			return &IMAgentResponse{Error: "鍚庡彴浠诲姟鍚姩澶辫触锛氭棤娉曡幏鍙栨墽琛屾Ы浣?}
+			return &IMAgentResponse{Error: "Background task failed to start: unable to acquire execution slot."}
 		}
 		loopCtx.HTTPClient = httpClient
 		if h.traceService != nil && loopCtx.RunID == "" {
@@ -5232,7 +5232,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 			loopCtx.JobID = job.JobID
 			loopCtx.RunID = run.RunID
 			h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
-			h.appendTraceEvent(loopCtx, "request.accepted", "info", "鍚庡彴浠诲姟宸叉帴鏀?, truncateTraceText(msg.Text, 180), "", "")
+			h.appendTraceEvent(loopCtx, "request.accepted", "info", "Background task accepted", truncateTraceText(msg.Text, 180), "", "")
 		}
 
 		var systemPrompt string

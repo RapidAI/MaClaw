@@ -249,6 +249,45 @@ describe('workflow state document collection', () => {
         expect(result.current.state.latestDocumentPhaseID).toBe('problem_discovery');
     });
 
+    it('fully resets preview dismissal and transient UI state on workflow reset', () => {
+        vi.useFakeTimers();
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:text')?.({ text: '旧提示' });
+            eventHandlers.get('workflow:suggest_maximize')?.({ workflow_type: 'coding' });
+            result.current.closeDocPreview();
+        });
+
+        expect(result.current.state.transientText).toBe('旧提示');
+        expect(result.current.state.suggestMaximize).toBe(true);
+        expect(result.current.state.splitMode).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.(null);
+        });
+
+        expect(result.current.state.transientText).toBe('');
+        expect(result.current.state.suggestMaximize).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
+
+        act(() => {
+            vi.advanceTimersByTime(5000);
+        });
+
+        expect(result.current.state.transientText).toBe('');
+        vi.useRealTimers();
+    });
+
     it('updates fallback phase output snapshots until a doc update becomes authoritative', () => {
         const { result } = renderHook(() => useWorkflowState());
 
