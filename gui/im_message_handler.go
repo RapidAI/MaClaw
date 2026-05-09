@@ -7471,14 +7471,13 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 		if phase.Stage == agentStageOrient && phase.ForceSkillPreference {
 			convergePrompt := ""
 			if shouldRestrictToSkillSearch(phase) {
-				convergePrompt = "[Skill 浼樺厛瑕佹眰]\n褰撳墠浠诲姟灞炰簬 Skill 浼樺厛璺緞锛屼絾鏈湴鏈懡涓悎閫?Skill銆傛湰杞繀椤诲厛璋冪敤 search_and_install_skill锛堟垨鍏朵粬 skill 鎼滅储/瀹夎宸ュ叿锛夋煡鎵惧彲澶嶇敤 Skill锛涘湪纭杩滅▼ Skill 璺緞鏃犺В涔嬪墠锛屼笉瑕佺洿鎺ヤ娇鐢?craft_tool 鎴?bash銆俓n[/Skill 浼樺厛瑕佹眰]"
+				convergePrompt = "[Skill preference]\nThis task should prefer a reusable Skill, but no matching local Skill is available. This round must search/install a reusable Skill before using craft_tool or bash.\n[/Skill preference]"
 			} else if phase.PreferredSkillName != "" {
 				guidance := buildSkillProgressGuidance(phase.PreferredSkillName, phase.PreferredSkillRunID)
-				convergePrompt = fmt.Sprintf("[Skill 浼樺厛瑕佹眰]\n妫€娴嬪埌鏈湴宸叉湁鍙鐢?Skill銆?s銆嶃€傛湰杞紭鍏堣皟鐢?manage_skill(action=\"run\", name=\"%s\") 瀹屾垚浠诲姟锛屼笉瑕佸厛浣跨敤 craft_tool 鎴?bash 鑷缓鑴氭湰銆?s 鑻ヨ Skill 澶辫触锛屽啀鍩轰簬澶辫触鍘熷洜鍒囨崲鍒板叾浠栧伐鍏疯矾寰勩€?, phase.PreferredSkillName, phase.PreferredSkillName, guidance)
+				convergePrompt = fmt.Sprintf("[Skill preference]\nA reusable local Skill is available: %s. Prefer manage_skill(action=\"run\", name=%q) for this task before craft_tool or bash. %s If the Skill fails, switch to another real tool path.\n[/Skill preference]", phase.PreferredSkillName, phase.PreferredSkillName, guidance)
 				if phase.PreferredSkillReason != "" {
-					convergePrompt += fmt.Sprintf("\n鍖归厤渚濇嵁: %s", truncateTraceText(phase.PreferredSkillReason, 160))
+					convergePrompt += fmt.Sprintf("\nMatch reason: %s", truncateTraceText(phase.PreferredSkillReason, 160))
 				}
-				convergePrompt += "\n[/Skill 浼樺厛瑕佹眰]"
 			}
 			if convergePrompt != "" {
 				conversation = append(conversation, map[string]string{"role": "system", "content": convergePrompt})
