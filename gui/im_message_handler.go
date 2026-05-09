@@ -7171,10 +7171,10 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 				ctx.SetState("running")
 			case <-ctx.CancelC:
 				ctx.SetState("stopped")
-				return &IMAgentResponse{Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 宸茶鍋滄銆?, ctx.ID)}
+				return &IMAgentResponse{Text: fmt.Sprintf("Background task %s was stopped.", ctx.ID)}
 			case <-time.After(5 * time.Minute):
 				ctx.SetState("timeout")
-				return &IMAgentResponse{Text: fmt.Sprintf("鍚庡彴浠诲姟 %s 绛夊緟缁懡瓒呮椂锛屽凡鑷姩缁撴潫銆?, ctx.ID)}
+				return &IMAgentResponse{Text: fmt.Sprintf("Background task %s timed out waiting for continuation and was ended.", ctx.ID)}
 			}
 		}
 
@@ -7201,17 +7201,17 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 		if iteration > 0 {
 			if iteration >= effectiveMax && ctx.Kind == LoopKindChat {
-				sendProgress("鈴?宸叉帴杩戞渶澶ф帹鐞嗚疆娆★紝姝ｅ湪鍩轰簬鐜版湁淇℃伅鏀跺熬骞剁敓鎴愭渶缁堢粨鏋溾€?)
+				sendProgress("Approaching the reasoning limit; finishing from current information.")
 				conversation = append(conversation, map[string]string{
 					"role":    "system",
-					"content": "[鏀跺熬瑕佹眰]\n浣犲凡鎺ヨ繎鏈€澶ф帹鐞嗚疆娆°€傜姝㈢户缁墿灞曟悳绱㈣寖鍥达紱浼樺厛鍩轰簬褰撳墠宸叉湁淇℃伅鐩存帴鏀跺熬骞朵氦浠樻渶缁堢粨鏋溿€傝嫢宸叉湁鏂囨。鍐呭锛岃绔嬪嵆鐢熸垚骞跺彂閫?PDF锛涜嫢浠嶆棤娉曠敓鎴?PDF锛岃鏄庣‘璇存槑褰撳墠宸插畬鎴愰儴鍒嗐€佺己灏戜粈涔堬紝骞剁粰鍑哄彲瑙佺粓鎬併€俒/鏀跺熬瑕佹眰]",
+					"content": "[Finalization requirement]\nYou are approaching the maximum reasoning rounds. Stop expanding the search scope and produce the best final answer from current information. If a deliverable cannot be completed, clearly state what is done, what is missing, and the current visible end state.\n[/Finalization requirement]",
 				})
 			}
 			if isDebug() {
 				if maxIter > 0 || h.loopMaxOverride > 0 {
-					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d/%d 杞級鈥?, iteration+1, effectiveMax))
+					sendProgress(fmt.Sprintf("Agent reasoning (%d/%d)...", iteration+1, effectiveMax))
 				} else {
-					sendProgress(fmt.Sprintf("馃攧 Agent 鎺ㄧ悊涓紙绗?%d 杞級鈥?, iteration+1))
+					sendProgress(fmt.Sprintf("Agent reasoning (%d)...", iteration+1))
 				}
 			} else {
 				// Event-driven progress: milestone tracker handles merge
