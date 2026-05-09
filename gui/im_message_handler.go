@@ -5724,32 +5724,32 @@ func (h *IMMessageHandler) handleBtwCommand(msg IMUserMessage, query string, onP
 // handleSessionsCommand returns a quick status summary of active sessions.
 func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 	if h.manager == nil {
-		return &IMAgentResponse{Text: "浼氳瘽绠＄悊鍣ㄦ湭鍒濆鍖栥€?}
+		return &IMAgentResponse{Text: "Session manager is not initialized."}
 	}
 	sessions := h.manager.List()
 	if len(sessions) == 0 {
 		return &IMAgentResponse{
-			Text: "褰撳墠娌℃湁娲昏穬浼氳瘽銆俓n\n馃挕 鎻愮ず: 鍙戦€?/exit 鍙€€鍑虹紪绋嬫ā寮忓洖鍒版櫘閫氬璇濄€?,
+			Text: "There are no active sessions.\n\nTip: send /exit to leave coding mode and return to normal chat.",
 		}
 	}
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("馃搵 褰撳墠 %d 涓細璇?\n", len(sessions)))
+	b.WriteString(fmt.Sprintf("Current sessions: %d\n", len(sessions)))
 	for _, s := range sessions {
 		s.mu.RLock()
 		status := string(s.Status)
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
 		s.mu.RUnlock()
-		b.WriteString(fmt.Sprintf("鈥?[%s] %s 鈥?%s", s.ID, s.Tool, status))
+		b.WriteString(fmt.Sprintf("- [%s] %s - %s", s.ID, s.Tool, status))
 		if task != "" {
 			b.WriteString(fmt.Sprintf(" | %s", task))
 		}
 		if waiting {
-			b.WriteString(" 鈴崇瓑寰呰緭鍏?)
+			b.WriteString(" waiting for input")
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("\n馃挕 鍙戦€?/exit 鍙粓姝㈡墍鏈変細璇濆苟閫€鍑虹紪绋嬫ā寮忋€?)
+	b.WriteString("\nSend /exit to stop all sessions and leave coding mode.")
 	return &IMAgentResponse{Text: b.String()}
 }
 
