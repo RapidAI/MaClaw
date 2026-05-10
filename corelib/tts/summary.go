@@ -45,18 +45,7 @@ func GenerateVoiceSummary(input string, maxRunes int) string {
 
 // buildStructuredSummary generates the spoken sentence from structured input.
 func buildStructuredSummary(si voiceSummaryInput, maxRunes int) string {
-	// Status phrase
-	var statusPhrase string
-	switch si.Status {
-	case "error":
-		statusPhrase = "任务处理失败"
-	case "paused":
-		statusPhrase = "任务已暂停"
-	case "needs_confirmation":
-		statusPhrase = "需要任务确认"
-	default:
-		statusPhrase = "任务已完成"
-	}
+	statusPhrase := normalizeVoiceSummaryStatus(si.Status).Phrase()
 
 	// Clean the user text for speech
 	taskDesc := cleanForSpeech(si.UserText)
