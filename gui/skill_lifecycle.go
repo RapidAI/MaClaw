@@ -277,7 +277,7 @@ func evaluateSkillQualityForDir(entry *corelib.NLSkillEntry, report *skill.Porta
 		q.Score -= 10
 		q.Reasons = append(q.Reasons, "no trigger keywords")
 	}
-	if entry.Type != "knowledge" && len(entry.Steps) == 0 && len(entry.Pipeline) == 0 {
+	if !normalizeSkillTypeKind(entry.Type).IsKnowledge() && len(entry.Steps) == 0 && len(entry.Pipeline) == 0 {
 		q.Score -= 35
 		q.Reasons = append(q.Reasons, "no executable steps or pipeline")
 	}

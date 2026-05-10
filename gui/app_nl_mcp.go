@@ -53,18 +53,18 @@ func mcpWireToolsToViews(wire []mcpWireToolView) []MCPToolView {
 
 // MCPServerView is the Wails-facing view of an MCP Server including runtime state.
 type MCPServerView struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	EndpointURL  string            `json:"endpoint_url"`
-	AuthType     string            `json:"auth_type"`
-	AuthSecret   string            `json:"auth_secret"`
-	Headers      map[string]string `json:"headers,omitempty"`
-	Source       corelib.MCPServerSource   `json:"source"`
-	Tools        []MCPToolView     `json:"tools"`
-	HealthStatus string            `json:"health_status"` // "healthy", "slow", "unavailable", "unknown"
-	FailCount    int               `json:"fail_count"`
-	LastCheckAt  time.Time         `json:"last_check_at"`
-	CreatedAt    time.Time         `json:"created_at"`
+	ID           string                  `json:"id"`
+	Name         string                  `json:"name"`
+	EndpointURL  string                  `json:"endpoint_url"`
+	AuthType     string                  `json:"auth_type"`
+	AuthSecret   string                  `json:"auth_secret"`
+	Headers      map[string]string       `json:"headers,omitempty"`
+	Source       corelib.MCPServerSource `json:"source"`
+	Tools        []MCPToolView           `json:"tools"`
+	HealthStatus string                  `json:"health_status"`
+	FailCount    int                     `json:"fail_count"`
+	LastCheckAt  time.Time               `json:"last_check_at"`
+	CreatedAt    time.Time               `json:"created_at"`
 }
 
 // MCPRegistry manages locally-registered MCP Servers on the MaClaw client.
@@ -87,7 +87,7 @@ type mcpSession struct {
 }
 
 type mcpHealthState struct {
-	Status    string // "healthy", "slow", "unavailable", "unknown"
+	Status    string
 	FailCount int
 	LastCheck time.Time
 }
@@ -243,7 +243,7 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 			AuthSecret:   s.AuthSecret,
 			Headers:      s.Headers,
 			Source:       s.Source,
-			HealthStatus: "unknown",
+			HealthStatus: string(mcpHealthStatusUnknown),
 		}
 		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
 			v.CreatedAt = t
@@ -409,7 +409,7 @@ func (r *MCPRegistry) ensureSession(target *corelib.MCPServerEntry) error {
 		"method":  "initialize",
 		"params": map[string]interface{}{
 			"protocolVersion": "2025-03-26",
-			"capabilities":   map[string]interface{}{},
+			"capabilities":    map[string]interface{}{},
 			"clientInfo": map[string]interface{}{
 				"name":    "maclaw",
 				"version": "1.0.0",
@@ -458,7 +458,7 @@ func (r *MCPRegistry) CallTool(serverID, toolName string, args map[string]interf
 	if err != nil {
 		// If we get an auth error and have a session, the session may be stale.
 		// Clear it and retry once with a fresh session.
-		if r.sessions[target.ID] != nil && isAuthError(err) {
+		if r.sessions[target.ID] != nil && isMCPAuthError(err) {
 			log.Printf("[MCPRegistry] auth error with session for %s, retrying with fresh session", serverID)
 			delete(r.sessions, target.ID)
 			if initErr := r.ensureSession(target); initErr == nil {
@@ -523,24 +523,12 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 	h.FailCount = 0
 	h.LastCheck = time.Now()
 	if elapsed > 5*time.Second {
-		h.Status = "slow"
+		h.Status = string(mcpHealthStatusSlow)
 	} else {
-		h.Status = "healthy"
+		h.Status = string(mcpHealthStatusHealthy)
 	}
 	r.mu.Unlock()
 	return nil
-}
-
-// isAuthError checks if an error message indicates an authentication failure.
-func isAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "api key") ||
-		strings.Contains(msg, "unauthorized") ||
-		strings.Contains(msg, "401") ||
-		strings.Contains(msg, "auth")
 }
 
 func (r *MCPRegistry) recordFailure(serverID string) {
@@ -550,9 +538,9 @@ func (r *MCPRegistry) recordFailure(serverID string) {
 	h.FailCount++
 	h.LastCheck = time.Now()
 	if h.FailCount >= 3 {
-		h.Status = "unavailable"
+		h.Status = string(mcpHealthStatusUnavailable)
 	} else {
-		h.Status = "slow"
+		h.Status = string(mcpHealthStatusSlow)
 	}
 }
 
@@ -562,13 +550,13 @@ func (r *MCPRegistry) recordSuccess(serverID string) {
 	h := r.getOrCreateHealth(serverID)
 	h.FailCount = 0
 	h.LastCheck = time.Now()
-	h.Status = "healthy"
+	h.Status = string(mcpHealthStatusHealthy)
 }
 
 func (r *MCPRegistry) getOrCreateHealth(serverID string) *mcpHealthState {
 	h, ok := r.health[serverID]
 	if !ok {
-		h = &mcpHealthState{Status: "unknown"}
+		h = &mcpHealthState{Status: string(mcpHealthStatusUnknown)}
 		r.health[serverID] = h
 	}
 	return h
@@ -625,7 +613,7 @@ func (r *MCPRegistry) ProbeAllUnknownAsync() {
 	var toCheck []string
 	for _, s := range servers {
 		h, ok := r.health[s.ID]
-		if !ok || h.Status == "unknown" {
+		if !ok || normalizeMCPHealthStatus(h.Status) == mcpHealthStatusUnknown {
 			toCheck = append(toCheck, s.ID)
 		}
 	}

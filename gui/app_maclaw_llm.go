@@ -385,18 +385,19 @@ func (a *App) GetMaclawLLMConfig() corelib.MaclawLLMConfig {
 	data := a.GetMaclawLLMProviders()
 	for _, p := range data.Providers {
 		if p.Name == data.Current {
+			authKind := normalizeMaclawLLMAuthTypeKind(p.AuthType)
 			wireAPI := p.WireAPI
-			if wireAPI == "" && p.AuthType == "oauth" {
+			if wireAPI == "" && authKind.IsOAuth() {
 				wireAPI = "responses-ws"
 			}
 			// For OAuth providers: if token exchange succeeded, Key contains sk-... API key;
 			// otherwise fall back to OAuthAccessToken (raw access_token).
 			key := p.Key
-			if p.AuthType == "oauth" && p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
+			if authKind.IsOAuth() && p.OAuthAccessToken != "" && !strings.HasPrefix(p.Key, "sk-") {
 				key = p.OAuthAccessToken
 			}
 			// Diagnostic log for OAuth token debugging
-			if p.AuthType == "oauth" {
+			if authKind.IsOAuth() {
 				oatLen := len(p.OAuthAccessToken)
 				keyLen := len(p.Key)
 				keyPfx := p.Key
@@ -491,13 +492,13 @@ func (a *App) StartOpenAIOAuth() (string, error) {
 	defaults := defaultMaclawLLMProviders()
 	var defaultOpenAI *corelib.MaclawLLMProvider
 	for i := range defaults {
-		if defaults[i].Name == "OpenAI" && defaults[i].AuthType == "oauth" {
+		if defaults[i].Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(defaults[i].AuthType).IsOAuth() {
 			defaultOpenAI = &defaults[i]
 			break
 		}
 	}
 	for i, p := range data.Providers {
-		if p.Name == "OpenAI" && p.AuthType == "oauth" {
+		if p.Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			data.Providers[i] = oauth.ApplyTokenResult(p, result)
 			// Sync URL, Model, WireAPI to latest defaults so stale config doesn't linger
 			if defaultOpenAI != nil {
@@ -565,7 +566,7 @@ func (a *App) ImportCodexAuth() (string, error) {
 
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
-		if p.Name == "OpenAI" && p.AuthType == "oauth" {
+		if p.Name == "OpenAI" && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			data.Providers[i].Key = apiKey
 			if err := a.SaveMaclawLLMProviders(data.Providers, "OpenAI"); err != nil {
 				return "", fmt.Errorf("保存配置失败: %w", err)
@@ -584,7 +585,7 @@ func (a *App) GetOpenAIUsage() (*oauth.UsageInfo, error) {
 	}
 	data := a.GetMaclawLLMProviders()
 	for _, p := range data.Providers {
-		if p.Name == data.Current && p.AuthType == "oauth" {
+		if p.Name == data.Current && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			if p.Key == "" {
 				return nil, fmt.Errorf("未登录 OpenAI，请先完成 OAuth 授权")
 			}
@@ -599,7 +600,7 @@ func (a *App) GetOpenAIUsage() (*oauth.UsageInfo, error) {
 func (a *App) ensureOAuthToken() error {
 	data := a.GetMaclawLLMProviders()
 	for i, p := range data.Providers {
-		if p.Name == data.Current && p.AuthType == "oauth" {
+		if p.Name == data.Current && normalizeMaclawLLMAuthTypeKind(p.AuthType).IsOAuth() {
 			cfg := oauth.DefaultConfig()
 			updated, err := oauth.EnsureValidToken(p, cfg, func(up corelib.MaclawLLMProvider) error {
 				data.Providers[i] = up
@@ -880,11 +881,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	defer cancel()
 
 	endpoint := strings.TrimRight(baseURL, "/")
-	if strings.Contains(endpoint, "chatgpt.com") {
-		endpoint += "/codex/responses"
-	} else {
-		endpoint += "/responses"
-	}
+	endpoint = llm.BuildResponsesEndpoint(endpoint)
 	reqBody := map[string]interface{}{
 		"model": model,
 		"store": false,
@@ -911,7 +908,7 @@ func probeVisionResponsesAPI(baseURL, key, model, userAgent string) bool {
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
-	if strings.Contains(baseURL, "chatgpt.com") {
+	if llm.IsCodexSubscriptionEndpoint(baseURL) {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		if accountID, _ := oauth.ExtractAccountIDFromJWT(key); accountID != "" {
 			req.Header.Set("chatgpt-account-id", accountID)
@@ -2048,14 +2045,7 @@ func isUsableProviderModel(m providerModelEntry) bool {
 	if m.Active != nil && !*m.Active {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(m.Status)) {
-	case "", "ok", "ready", "enabled", "available", "active":
-		return true
-	case "disabled", "unavailable", "inactive", "denied", "forbidden", "no_permission", "no-permission":
-		return false
-	default:
-		return true
-	}
+	return normalizeMaclawLLMProviderStatusKind(m.Status).IsAvailable()
 }
 
 func providerModelItemFromEntry(m providerModelEntry) (ProviderModelItem, bool) {

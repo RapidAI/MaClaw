@@ -41,6 +41,10 @@ func TestAdminPageHAStaticContract(t *testing.T) {
 		`haReadinessReady: 'Saved HA config includes the key fields needed for a 3-node rollout. Restart after saving on all nodes.'`,
 		`haNodePlanTitle: '3-Node Deployment Cards'`,
 		"navHA: '\\u591a\\u673a\\u70ed\\u5907'",
+		`id="deleteFlaggedGossipBtn" onclick="deleteFlaggedGossipPosts()"`,
+		`function deleteFlaggedGossipPosts()`,
+		`deleteFlaggedConfirm:'Delete all flagged gossip posts? This cannot be undone.'`,
+		`deleteFlagged:'\u5220\u9664\u5df2\u5ba1\u6838'`,
 	}
 	for _, snippet := range required {
 		if !strings.Contains(html, snippet) {
@@ -49,8 +53,8 @@ func TestAdminPageHAStaticContract(t *testing.T) {
 	}
 
 	altRequired := [][2]string{
-        {`haRuntimeMatches: '\u5f53\u524d\u8fd0\u884c\u4e2d\u7684\u70ed\u5907\u5173\u952e\u53c2\u6570\u4e0e\u672c\u9875\u5df2\u4fdd\u5b58\u914d\u7f6e\u4e00\u81f4\u3002'`, "haRuntimeMatches: '当前运行中的热备关键参数与本页已保存配置一致。'"},
-        {`haNodePlanTitle: '\u4e09\u8282\u70b9\u90e8\u7f72\u5361\u7247'`, "haNodePlanTitle: '三节点部署卡片'"},
+		{`haRuntimeMatches: '\u5f53\u524d\u8fd0\u884c\u4e2d\u7684\u70ed\u5907\u5173\u952e\u53c2\u6570\u4e0e\u672c\u9875\u5df2\u4fdd\u5b58\u914d\u7f6e\u4e00\u81f4\u3002'`, "haRuntimeMatches: '当前运行中的热备关键参数与本页已保存配置一致。'"},
+		{`haNodePlanTitle: '\u4e09\u8282\u70b9\u90e8\u7f72\u5361\u7247'`, "haNodePlanTitle: '三节点部署卡片'"},
 	}
 	for _, pair := range altRequired {
 		if !strings.Contains(html, pair[0]) && !strings.Contains(html, pair[1]) {
@@ -110,5 +114,3 @@ func assertHATemplate(t *testing.T, html, nodeID, nodeName, advertiseURL string,
 		}
 	}
 }
-
-

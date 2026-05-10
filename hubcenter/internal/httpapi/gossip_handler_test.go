@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -275,6 +276,104 @@ func TestAdminGossipDeletePost(t *testing.T) {
 	total, _ := browseData["total"].(float64)
 	if total != 0 {
 		t.Fatalf("expected 0 posts after delete, got %v", total)
+	}
+}
+
+func TestAdminGossipDeleteFlaggedPosts(t *testing.T) {
+	env := newGossipTestEnv(t)
+
+	var keepID string
+	for i, content := range []string{"keep me", "flagged one", "flagged two"} {
+		resp := doJSONRequest(t, env.handler, http.MethodPost, "/api/gossip/publish", map[string]any{
+			"machine_id": "bulk-delete-machine-" + strconv.Itoa(i),
+			"content":    content,
+			"category":   "project",
+		}, "")
+		if resp.Code != http.StatusOK {
+			t.Fatalf("publish %d: %d %s", i, resp.Code, resp.Body.String())
+		}
+		postID := decodeJSON(t, resp.Body.Bytes())["post"].(map[string]any)["id"].(string)
+		if i == 0 {
+			keepID = postID
+			continue
+		}
+		resp = doJSONRequest(t, env.handler, http.MethodPost, "/api/admin/gossip/flag", map[string]any{
+			"id": postID, "flagged": true,
+		}, env.token)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("flag %d: %d %s", i, resp.Code, resp.Body.String())
+		}
+		resp = doJSONRequest(t, env.handler, http.MethodPost, "/api/gossip/comment", map[string]any{
+			"machine_id": "commenter-" + strconv.Itoa(i),
+			"post_id":    postID,
+			"content":    "comment to delete",
+		}, "")
+		if resp.Code != http.StatusOK {
+			t.Fatalf("comment %d: %d %s", i, resp.Code, resp.Body.String())
+		}
+	}
+
+	resp := doJSONRequest(t, env.handler, http.MethodDelete, "/api/admin/gossip/flagged", nil, env.token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("delete flagged: %d %s", resp.Code, resp.Body.String())
+	}
+	deleted, _ := decodeJSON(t, resp.Body.Bytes())["deleted"].(float64)
+	if deleted != 2 {
+		t.Fatalf("deleted = %v, want 2", deleted)
+	}
+
+	resp = doJSONRequest(t, env.handler, http.MethodGet, "/api/admin/gossip?filter=flagged", nil, env.token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("list flagged: %d %s", resp.Code, resp.Body.String())
+	}
+	flaggedTotal, _ := decodeJSON(t, resp.Body.Bytes())["total"].(float64)
+	if flaggedTotal != 0 {
+		t.Fatalf("flagged total = %v, want 0", flaggedTotal)
+	}
+
+	resp = doJSONRequest(t, env.handler, http.MethodGet, "/api/gossip/browse?page=1", nil, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("browse: %d %s", resp.Code, resp.Body.String())
+	}
+	browseData := decodeJSON(t, resp.Body.Bytes())
+	total, _ := browseData["total"].(float64)
+	if total != 1 {
+		t.Fatalf("visible total = %v, want 1", total)
+	}
+	posts := browseData["posts"].([]any)
+	if got := posts[0].(map[string]any)["id"]; got != keepID {
+		t.Fatalf("remaining post id = %v, want %s", got, keepID)
+	}
+}
+
+func TestAdminGossipDeleteFlaggedPostsNoop(t *testing.T) {
+	env := newGossipTestEnv(t)
+
+	resp := doJSONRequest(t, env.handler, http.MethodPost, "/api/gossip/publish", map[string]any{
+		"machine_id": "bulk-delete-noop-machine",
+		"content":    "not flagged",
+		"category":   "project",
+	}, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("publish: %d %s", resp.Code, resp.Body.String())
+	}
+
+	resp = doJSONRequest(t, env.handler, http.MethodDelete, "/api/admin/gossip/flagged", nil, env.token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("delete flagged noop: %d %s", resp.Code, resp.Body.String())
+	}
+	deleted, _ := decodeJSON(t, resp.Body.Bytes())["deleted"].(float64)
+	if deleted != 0 {
+		t.Fatalf("deleted = %v, want 0", deleted)
+	}
+
+	resp = doJSONRequest(t, env.handler, http.MethodGet, "/api/gossip/browse?page=1", nil, "")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("browse: %d %s", resp.Code, resp.Body.String())
+	}
+	total, _ := decodeJSON(t, resp.Body.Bytes())["total"].(float64)
+	if total != 1 {
+		t.Fatalf("visible total = %v, want 1", total)
 	}
 }
 

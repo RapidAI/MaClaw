@@ -119,11 +119,12 @@ const debugPort = 9222
 
 // DiscoverOrLaunch tries DiscoverCDPAddr first. If that fails, it launches
 // Chrome/Edge with an isolated debug profile and a fixed port (9222).
-// This avoids user-data-dir conflicts with any running browser instance —
-// the key insight from maclaw's stable three-step approach:
-//  1. Kill stale debug-port browsers
-//  2. Launch with --user-data-dir=<isolated> --remote-debugging-port=9222
-//  3. Connect to http://127.0.0.1:9222
+// This is the ISOLATED mode fallback — used only when SessionModeIsolated is
+// explicitly requested, or when DiscoverOrLaunchUserProfile cannot determine
+// the user's data directory.
+//
+// For the default (auto) mode, use DiscoverOrLaunchUserProfile() instead,
+// which preserves user cookies/passwords/extensions.
 func DiscoverOrLaunch() (string, error) {
 	// Fast path: already available.
 	if addr, err := DiscoverCDPAddr(); err == nil {

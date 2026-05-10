@@ -593,20 +593,37 @@ func truncateWebFetchToolResult(s string, limit int) string {
 	return head + sep + meta
 }
 
-// InferFileDeliveryMessage generates a user-facing prompt based on the file name
-// when no explicit message was provided. This ensures PDF documents sent via IM
-// always include a hint telling the user what the document is and what to do.
+// InferFileDeliveryMessage is kept for compatibility. Without structured
+// document metadata it returns the generic file-delivery prompt.
 func InferFileDeliveryMessage(fileName string) string {
-	lower := strings.ToLower(fileName)
-	switch {
-	case strings.Contains(lower, "requirement") || strings.Contains(lower, "需求"):
+	return InferFileDeliveryMessageForDocType("", fileName)
+}
+
+// InferFileDeliveryMessageForDocType generates a user-facing prompt from
+// structured document metadata when no explicit message was provided.
+func InferFileDeliveryMessageForDocType(docType, fileName string) string {
+	switch normalizeDeliveryDocType(docType) {
+	case "requirements":
 		return i18n.T(i18n.MsgFileRequirements, "zh")
-	case strings.Contains(lower, "design") || strings.Contains(lower, "设计"):
+	case "design":
 		return i18n.T(i18n.MsgFileDesign, "zh")
-	case strings.Contains(lower, "task") || strings.Contains(lower, "任务"):
+	case "tasks":
 		return i18n.T(i18n.MsgFileTaskList, "zh")
 	default:
 		return i18n.Tf(i18n.MsgFileGeneric, "zh", fileName)
+	}
+}
+
+func normalizeDeliveryDocType(docType string) string {
+	switch strings.ToLower(strings.TrimSpace(docType)) {
+	case "requirements", "requirement", "requirements_doc":
+		return "requirements"
+	case "design", "tech_design", "technical_design":
+		return "design"
+	case "tasks", "task", "task_breakdown", "task_list", "task_plan":
+		return "tasks"
+	default:
+		return ""
 	}
 }
 

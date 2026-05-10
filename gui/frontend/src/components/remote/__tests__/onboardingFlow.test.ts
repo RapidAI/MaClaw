@@ -48,4 +48,16 @@ describe('onboardingFlow', () => {
         expect(getOnboardingStepDone(flow, { regDone: true, llmDone: false, wxCompleted: true })).toEqual([false, true, false, true]);
         expect(isOnboardingComplete(flow, { regDone: true, llmDone: false, wxCompleted: true })).toBe(false);
     });
+
+    it('uses mode plus LLM only in offline mode', () => {
+        const flow = getOnboardingFlow({ brandId: 'maclaw', freeTrial: true, offlineMode: true });
+
+        expect(flow.steps).toEqual(['mode', 'llm']);
+        expect(flow.totalSteps).toBe(2);
+        expect(flow.wxStep).toBe(0);
+        expect(flow.llmStep).toBe(2);
+        expect(getOnboardingStepLabels(flow, 'en')).toEqual(['Mode', 'LLM']);
+        expect(getOnboardingStepDone(flow, { regDone: true, llmDone: false, wxCompleted: false })).toEqual([false, true, false]);
+        expect(isOnboardingComplete(flow, { regDone: true, llmDone: true, wxCompleted: false })).toBe(true);
+    });
 });

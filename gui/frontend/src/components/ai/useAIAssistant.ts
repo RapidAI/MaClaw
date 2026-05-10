@@ -51,6 +51,8 @@ interface AIAssistantSendResult {
     LocalFilePaths?: string[];
     thumbnail_base64?: string;
     ThumbnailBase64?: string;
+    image_key?: string;
+    ImageKey?: string;
     request_id?: string;
     RequestID?: string;
     response_source?: string;
@@ -242,6 +244,7 @@ export interface ChatMessage {
     localFilePath?: string;
     localFilePaths?: string[];
     thumbnailBase64?: string;
+    imageKey?: string;
     requestId?: string;
     timestamp: number;
     /** Workflow document link — phase ID for opening doc preview. */
@@ -324,6 +327,33 @@ function normalizeLocalFilePaths(localFilePath: unknown, localFilePaths: unknown
         }
     }
     return normalized.size > 0 ? Array.from(normalized) : undefined;
+}
+
+function firstStringValue(...values: unknown[]): string {
+    for (const value of values) {
+        if (typeof value !== 'string') continue;
+        const trimmed = value.trim();
+        if (trimmed) return trimmed;
+    }
+    return '';
+}
+
+function firstStringArrayValue(...values: unknown[]): string[] | undefined {
+    for (const value of values) {
+        if (Array.isArray(value)) return value;
+    }
+    return undefined;
+}
+
+function responseArtifactPayload(response: any): { localFilePath: string; localFilePaths?: string[]; thumbnailBase64: string; imageKey: string } {
+    const localFilePath = firstStringValue(response?.local_file_path, response?.LocalFilePath);
+    const localFilePaths = normalizeLocalFilePaths(
+        localFilePath,
+        firstStringArrayValue(response?.local_file_paths, response?.LocalFilePaths),
+    );
+    const thumbnailBase64 = firstStringValue(response?.thumbnail_base64, response?.ThumbnailBase64);
+    const imageKey = firstStringValue(response?.image_key, response?.ImageKey);
+    return { localFilePath, localFilePaths, thumbnailBase64, imageKey };
 }
 
 export function isImageFilePath(filePath: string): boolean {
@@ -461,13 +491,13 @@ function buildResetConfirmationMessages(response: any): ChatMessage[] {
 
 function serializePersistedMessages(msgs: ChatMessage[]): string | null {
     // Only persist meaningful messages; skip progress, system, and empty content.
-    // Strip thumbnailBase64 to avoid blowing up localStorage (5MB limit).
+    // Strip image payloads to avoid blowing up localStorage (5MB limit).
     const toSave = msgs
         .filter(m => m.role !== 'progress' && m.role !== 'system' && m.content !== '')
         .slice(-MAX_PERSISTED_MESSAGES)
         .map(m => {
-            if (!m.thumbnailBase64) return m;
-            const { thumbnailBase64: _, ...rest } = m;
+            if (!m.thumbnailBase64 && !m.imageKey) return m;
+            const { thumbnailBase64: _, imageKey: __, ...rest } = m;
             return rest;
         });
     return toSave.length === 0 ? null : JSON.stringify(toSave);
@@ -863,6 +893,7 @@ function normalizeSendResponse(response: AIAssistantSendResult | null | undefine
         local_file_path: typeof raw.local_file_path === 'string' ? raw.local_file_path : (typeof raw.LocalFilePath === 'string' ? raw.LocalFilePath : ''),
         local_file_paths: Array.isArray(raw.local_file_paths) ? raw.local_file_paths : (Array.isArray(raw.LocalFilePaths) ? raw.LocalFilePaths : undefined),
         thumbnail_base64: typeof raw.thumbnail_base64 === 'string' ? raw.thumbnail_base64 : (typeof raw.ThumbnailBase64 === 'string' ? raw.ThumbnailBase64 : ''),
+        image_key: typeof raw.image_key === 'string' ? raw.image_key : (typeof raw.ImageKey === 'string' ? raw.ImageKey : ''),
         request_id: typeof raw.request_id === 'string' ? raw.request_id : (typeof raw.RequestID === 'string' ? raw.RequestID : ''),
         response_source: typeof raw.response_source === 'string' ? raw.response_source : (typeof raw.ResponseSource === 'string' ? raw.ResponseSource : ''),
         trace_status: typeof raw.trace_status === 'string' ? raw.trace_status : (typeof raw.TraceStatus === 'string' ? raw.TraceStatus : ''),
@@ -1120,16 +1151,53 @@ function isFailedTerminalTraceStatus(status: unknown): boolean {
 
 function hasVisibleTerminalPayload(response: any): boolean {
     const text = typeof response?.text === 'string' ? response.text.trim() : '';
-    const localFilePath = typeof response?.local_file_path === 'string' ? response.local_file_path.trim() : '';
-    const localFilePaths = normalizeLocalFilePaths(localFilePath, response?.local_file_paths);
-    const thumbnailBase64 = typeof response?.thumbnail_base64 === 'string' ? response.thumbnail_base64.trim() : '';
-    return !!text || !!thumbnailBase64 || !!localFilePaths?.length;
+    const { localFilePaths, thumbnailBase64, imageKey } = responseArtifactPayload(response);
+    return !!text || !!thumbnailBase64 || !!imageKey || !!localFilePaths?.length;
 }
 
 /** Sources whose response.text is semantically unrelated to streamed content. */
 const SPECIAL_RESPONSE_SOURCES: ReadonlySet<string> = new Set([
     'ask_user', 'cancel', 'file_delivery', 'screenshot',
 ]);
+
+function canonicalResponseSource(source: unknown): string {
+    if (typeof source !== 'string') return '';
+    const trimmed = source.trim();
+    if (!trimmed) return '';
+    const token = trimmed.toLowerCase().replace(/[_\-\s]/g, '');
+    switch (token) {
+        case 'filedelivery':
+            return 'file_delivery';
+        case 'screenshot':
+        case 'screenshotcapture':
+            return 'screenshot';
+        case 'askuser':
+            return 'ask_user';
+        case 'cancel':
+        case 'cancelled':
+        case 'canceled':
+            return 'cancel';
+        case 'agentloop':
+            return 'agent_loop';
+        case 'agentviewsubmit':
+            return 'agent_view_submit';
+        case 'agentviewdismiss':
+            return 'agent_view_dismiss';
+        default:
+            return trimmed.toLowerCase();
+    }
+}
+
+function resolveResponseSource(response: any): string {
+    const explicitSource = canonicalResponseSource(response?.response_source || response?.ResponseSource);
+    const { localFilePaths, thumbnailBase64, imageKey } = responseArtifactPayload(response);
+    if (!explicitSource || explicitSource === 'agent_loop') {
+        if (thumbnailBase64 || imageKey) return 'screenshot';
+        if (localFilePaths?.length) return 'file_delivery';
+    }
+    if (explicitSource) return explicitSource;
+    return '';
+}
 
 // rolePrefixPattern matches hallucinated role prefixes (e.g. "Browser: ..." or
 // "Tool: ...") at the start of a line, with optional Markdown block-level markers.
@@ -1297,9 +1365,7 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     const rawStreamedContent = message.content || '';
     const finalText = stripRolePrefixFrontend(rawFinalText);
     const streamedContent = stripRolePrefixFrontend(rawStreamedContent);
-    const responseSource: string = typeof response?.response_source === 'string'
-        ? response.response_source
-        : (typeof response?.ResponseSource === 'string' ? response.ResponseSource : '');
+    const responseSource = resolveResponseSource(response);
     logRolePrefixDiagnostic('final-response:text', rawFinalText, finalText, {
         messageId: message.id,
         requestId: message.requestId || response?.request_id,
@@ -1318,10 +1384,7 @@ export function resolveFinalRoundContent(message: ChatMessage, response: any): s
     if (SPECIAL_RESPONSE_SOURCES.has(responseSource)) {
         return finalText;
     }
-    const localFilePath = typeof response?.local_file_path === 'string'
-        ? response.local_file_path
-        : (typeof response?.LocalFilePath === 'string' ? response.LocalFilePath : '');
-    const localFilePaths = normalizeLocalFilePaths(localFilePath, response?.local_file_paths ?? response?.LocalFilePaths);
+    const { localFilePaths } = responseArtifactPayload(response);
     if (!finalText && localFilePaths?.length) {
         return '';
     }
@@ -1373,10 +1436,13 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
         const responseActions = normalizeActions(response.actions) || [];
         const traceActions = buildTraceDetailAction(response, preferences.showTraceEntry) || [];
         const nextActions = [...responseActions, ...traceActions];
-        const nextLocalFilePath = typeof response.local_file_path === 'string' ? response.local_file_path.trim() : '';
-        const nextLocalFilePaths = normalizeLocalFilePaths(nextLocalFilePath, response.local_file_paths);
-        const nextThumbnailBase64 = response.thumbnail_base64;
-        if (!nextContent && !nextFields?.length && !nextActions?.length && !nextThumbnailBase64 && !nextLocalFilePaths?.length) {
+        const {
+            localFilePath: nextLocalFilePath,
+            localFilePaths: nextLocalFilePaths,
+            thumbnailBase64: nextThumbnailBase64,
+            imageKey: nextImageKey,
+        } = responseArtifactPayload(response);
+        if (!nextContent && !nextFields?.length && !nextActions?.length && !nextThumbnailBase64 && !nextImageKey && !nextLocalFilePaths?.length) {
             return null;
         }
         return {
@@ -1389,6 +1455,7 @@ function finalizeRoundMessage(messages: ChatMessage[], assistantMessageId: strin
             localFilePath: nextLocalFilePath || undefined,
             localFilePaths: nextLocalFilePaths,
             thumbnailBase64: nextThumbnailBase64,
+            imageKey: nextImageKey || undefined,
         };
     };
     return updateRoundMessage(messages, assistantMessageId, requestId, finalizeMessage);
@@ -2571,12 +2638,23 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     }, []);
 
     useEffect(() => {
+        // agent-view:lifecycle is the single source of truth for view state.
+        // The legacy "agent-view" / "agent-view-clear" events are ignored when
+        // lifecycle events are available, preventing double-setState on the same
+        // render cycle. Legacy events are retained only for external consumers
+        // that haven't migrated to the lifecycle protocol.
+        let lifecycleActive = false;
         const offView = subscribeEvent(AGENT_VIEW_EVENT, (payload: unknown) => {
+            if (lifecycleActive) return; // lifecycle is authoritative
             const nextView = normalizeAgentView(payload);
             if (nextView) setAgentView(nextView);
         });
-        const offClear = subscribeEvent(AGENT_VIEW_CLEAR_EVENT, () => setAgentView(null));
+        const offClear = subscribeEvent(AGENT_VIEW_CLEAR_EVENT, () => {
+            if (lifecycleActive) return;
+            setAgentView(null);
+        });
         const offLifecycle = subscribeEvent(AGENT_VIEW_LIFECYCLE_EVENT, (payload: unknown) => {
+            lifecycleActive = true;
             const event = normalizeAgentViewLifecycle(payload);
             if (!event) return;
             switch (event.action) {

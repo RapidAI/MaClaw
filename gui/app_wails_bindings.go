@@ -170,8 +170,7 @@ func (a *App) QuerySecurityEvents(days int) ([]SecurityEventItem, error) {
 }
 
 func isDeniedResult(result string) bool {
-	r := strings.ToLower(result)
-	return strings.Contains(r, "denied") || strings.Contains(r, "rejected") || strings.Contains(r, "鎷掔粷")
+	return classifySecurityAuditResult(result).IsDenied()
 }
 
 // formatDenyReason produces a human-readable reason from an AuditEntry.
@@ -271,21 +270,21 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		}
 	}()
 	ctx := context.Background()
-	switch strings.TrimSpace(source) {
-	case "skillmarket", "skillhub":
+	switch skillSearchSourceFromStatus(source) {
+	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		skill, err := downloadSkillJSONFromHubCenter(ctx, a, "/api/v1/skills/"+url.PathEscape(id)+"/download")
 		if err != nil {
 			return err
 		}
 		return a.skillExecutor.Register(*skill)
 
-	case "clawhub":
+	case skillSearchSourceClawHub:
 		skill, err := downloadClawHubSkill(ctx, id)
 		if err != nil {
 			return err
 		}
 		return a.skillExecutor.Register(*skill)
-	case "github":
+	case skillSearchSourceGitHub:
 		var candidate cskill.GitHubSkillCandidate
 		if strings.TrimSpace(installRef) == "" {
 			return fmt.Errorf("missing github install ref")
@@ -401,7 +400,7 @@ func (a *App) CheckHubSkillUpdates() ([]HubSkillUpdateInfo, error) {
 	skills := a.skillExecutor.loadSkills()
 	var checks []hubSkillForUpdateCheck
 	for _, s := range skills {
-		if s.Source != "hub" || s.HubSkillID == "" {
+		if normalizeSkillEntrySource(s.Source) != skillEntrySourceHub || s.HubSkillID == "" {
 			continue
 		}
 		checks = append(checks, hubSkillForUpdateCheck{
@@ -1226,15 +1225,27 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		return nil, fmt.Errorf("message text is required")
 	}
 	if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
+		normalizeArtifactResponseSource(resp)
 		return resp, err
+	}
+	if resp, handled := a.TryHandlePassthroughSlashCommandWithSource(text, "desktop:ai-assistant"); handled {
+		if resp != nil {
+			requestID := strings.TrimSpace(req.RequestID)
+			if requestID == "" {
+				requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
+			}
+			resp.RequestID = requestID
+			normalizeArtifactResponseSource(resp)
+		}
+		return resp, nil
 	}
 	hubClient := a.hubClient()
 	if hubClient == nil {
 		return nil, fmt.Errorf("AI assistant not initialized")
 	}
 	msg := IMUserMessage{
-		UserID:                      "desktop-user",
-		Platform:                    "desktop",
+		UserID:                      desktopUserID,
+		Platform:                    desktopPlatform,
 		Text:                        text,
 		ResumeSlotID:                strings.TrimSpace(req.ResumeSlotID),
 		StartNewTask:                req.StartNewTask,
@@ -1293,7 +1304,8 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	if resp != nil {
 		resp.RequestID = requestID
-		if resp.ResponseSource == "file_delivery" || resp.LocalFilePath != "" || len(resp.LocalFilePaths) > 0 {
+		normalizeArtifactResponseSource(resp)
+		if canonicalIMResponseSourceKind(resp.ResponseSource).IsArtifactDelivery() || strings.TrimSpace(resp.LocalFilePath) != "" || hasNonEmptyString(resp.LocalFilePaths) {
 			paths := resp.LocalFilePaths
 			if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
 				paths = append([]string{resp.LocalFilePath}, paths...)
@@ -1467,13 +1479,14 @@ func (a *App) SendBtwQuery(query string, requestID string) (*IMAgentResponse, er
 	}
 
 	msg := IMUserMessage{
-		UserID:   "desktop-user",
-		Platform: "desktop",
+		UserID:   desktopUserID,
+		Platform: desktopPlatform,
 		Text:     "/btw " + query,
 	}
 	resp := handler.handleBtwCommand(msg, query, onProgress, onToken)
 	if resp != nil {
 		resp.RequestID = requestID
+		normalizeArtifactResponseSource(resp)
 	}
 	return resp, nil
 }
@@ -1486,7 +1499,7 @@ func (a *App) ClearAIAssistantHistory() error {
 		return fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
-	handler.memory.Clear("desktop-user")
+	handler.memory.Clear(desktopUserID)
 	// 鍚屾娓呯┖ gossip 妫€娴嬬紦鍐插尯
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()
@@ -1553,7 +1566,7 @@ func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
 		return false, fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
-	return handler.InjectSupplementary("desktop-user", text), nil
+	return handler.InjectSupplementary(desktopUserID, text), nil
 }
 
 // ResolveCriticalConfirm is called by the desktop frontend when the user
@@ -1604,7 +1617,7 @@ func (a *App) StopAllBackgroundLoops() []string {
 	views := handler.bgManager.ListViews()
 	var ids []string
 	for _, v := range views {
-		if v.Status == "running" || v.Status == "paused" {
+		if normalizeTraceLoopState(v.Status).IsActiveBackgroundLoop() {
 			ids = append(ids, v.ID)
 		}
 	}
@@ -1823,12 +1836,7 @@ func (a *App) ReadErrorLog() ([]string, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		lower := strings.ToLower(line)
-		if strings.Contains(lower, " error") ||
-			strings.Contains(lower, "[error]") ||
-			strings.Contains(lower, "fatal") ||
-			strings.Contains(lower, "panic:") ||
-			strings.Contains(lower, "panic(") {
+		if classifyAppLogLine(line) == appLogLineError {
 			errors = append(errors, line)
 		}
 	}

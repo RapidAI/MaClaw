@@ -24,6 +24,7 @@ import {
 } from "../../../wailsjs/go/main/App";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { HubRegisterButtonContent, HubStatusBadge } from "./HubConnectionStatus";
+import { OnboardingOfflineModeOption } from "./OnboardingOfflineModeOption";
 import {
     getOnboardingFlow,
     getOnboardingStepDone,
@@ -59,12 +60,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const [vipFlag, setVipFlag] = useState(false);
     const [redeemCode, setRedeemCode] = useState("");
     const [freeTrial, setFreeTrial] = useState(true);
-    const onboardingFlow = useMemo(() => getOnboardingFlow({ brandId, freeTrial }), [brandId, freeTrial]);
+    const [offlineMode, setOfflineMode] = useState(false);
+    const onboardingFlow = useMemo(() => getOnboardingFlow({ brandId, freeTrial, offlineMode }), [brandId, freeTrial, offlineMode]);
     const isTigerclaw = onboardingFlow.isTigerclaw;
     const totalSteps = onboardingFlow.totalSteps;
     const wxStep = onboardingFlow.wxStep;
     const [freeTrialVerified, setFreeTrialVerified] = useState(false);
-    const [regResult, setRegResult] = useState<{ ok: boolean; msg: string } | null>(null);
+    const [regResult, setRegResult] = useState<{ ok: boolean; msg: string; tone?: "warning" } | null>(null);
 
     const [ssoBusy, setSsoBusy] = useState(false);
     const [ssoResult, setSsoResult] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -100,12 +102,13 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const wxPollingRef = useRef(false);
 
     const wxCompleted = wxDone || wxSkipped;
+    const effectiveRegDone = offlineMode || regDone;
 
     const stepDone = useMemo(() => getOnboardingStepDone(onboardingFlow, {
-        regDone,
+        regDone: effectiveRegDone,
         llmDone,
         wxCompleted,
-    }), [onboardingFlow, regDone, llmDone, wxCompleted]);
+    }), [onboardingFlow, effectiveRegDone, llmDone, wxCompleted]);
 
     const getPrevStep = useCallback((currentStep: number) => {
         return Math.max(1, currentStep - 1);
@@ -118,6 +121,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     const canNext = step < totalSteps && stepDone[step];
     const canPrev = step > 1;
     const isLastStep = step === totalSteps;
+    const lastStepCompleted = !!stepDone[step];
 
     const applyHubServiceStatus = useCallback((status?: HubLLMServiceStatus | null) => {
         const shouldSkipLLM = !!status?.active && !!status?.skip_llm_config;
@@ -206,38 +210,37 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     }, []);
 
     useEffect(() => {
-        if (isTigerclaw) return;
+        if (isTigerclaw || offlineMode) return;
+        let cancelled = false;
         GetHubLLMServiceStatus().then(status => {
+            if (cancelled) return;
             const applied = applyHubServiceStatus(status);
             if (applied) setFreeTrialVerified(true);
         }).catch(() => {});
-    }, [applyHubServiceStatus, isTigerclaw]);
+        return () => { cancelled = true; };
+    }, [applyHubServiceStatus, isTigerclaw, offlineMode]);
 
-    // When free trial is verified by the Hub and the checkbox is still checked,
-    // auto-set llmDone so the user can proceed past step 3.
     useEffect(() => {
-        if (!isTigerclaw && freeTrial && freeTrialVerified && !llmDone) {
+        if (!isTigerclaw && !offlineMode && freeTrial && freeTrialVerified && !llmDone) {
             setLlmDone(true);
             onLLMConfigured();
         }
-    }, [isTigerclaw, freeTrial, freeTrialVerified, llmDone, onLLMConfigured]);
+    }, [isTigerclaw, offlineMode, freeTrial, freeTrialVerified, llmDone, onLLMConfigured]);
 
     useEffect(() => {
-        if (!isTigerclaw && !freeTrial && llmDone && step === 2) {
+        if (!isTigerclaw && !offlineMode && !freeTrial && llmDone && step === 2) {
             setStep(3);
         }
-    }, [isTigerclaw, freeTrial, llmDone, step]);
+    }, [isTigerclaw, offlineMode, freeTrial, llmDone, step]);
 
     useEffect(() => {
-        if (!regDone || !hubConnecting) return;
+        if (!regDone || !hubConnecting || offlineMode) return;
         let cancelled = false;
         const poll = async () => {
             try {
                 const status = await GetRemoteConnectionStatus();
                 if (!cancelled && status?.connected) {
                     setHubConnecting(false);
-                    // Preserve any existing redeem success/warning appended
-                    // after the base message (delimited by newline).
                     setRegResult(prev => {
                         const baseMsg = t("注册成功，Hub 已连接，可直接继续下一步", "Registration successful. Hub connected — you can continue.");
                         if (prev?.ok && prev.msg && prev.msg.includes('\n')) {
@@ -246,13 +249,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         }
                         return { ok: true, msg: baseMsg };
                     });
-                    // Re-check hub LLM service status after hub connects.
-                    // For free trial: this is the authoritative path that verifies
-                    // the Hub actually provisioned the LLM service grant and sets
-                    // llmDone. For redeem code: catches the case where mount-time
-                    // check failed (no viewer token yet) but redeem already succeeded.
-                    // Always check — even if llmDone is already true from a redeem
-                    // code path — to ensure config.json has the Hub LLM provider.
                     GetHubLLMServiceStatus().then(svcStatus => {
                         if (!cancelled) {
                             const applied = applyHubServiceStatus(svcStatus);
@@ -272,7 +268,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
             cancelled = true;
             clearInterval(id);
         };
-    }, [regDone, hubConnecting, t, applyHubServiceStatus]);
+    }, [regDone, hubConnecting, offlineMode, t, applyHubServiceStatus]);
 
     useEffect(() => {
         if (step !== wxStep) wxPollingRef.current = false;
@@ -294,15 +290,34 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
     }, [onClose, showConfirm]);
 
     useEffect(() => {
-        const allDone = isOnboardingComplete(onboardingFlow, { regDone, llmDone, wxCompleted });
+        const allDone = isOnboardingComplete(onboardingFlow, { regDone: effectiveRegDone, llmDone, wxCompleted });
         if (allDone) {
             onSaveField({ onboarding_done: true });
             const timer = setTimeout(onClose, 1500);
             return () => clearTimeout(timer);
         }
-    }, [onboardingFlow, regDone, llmDone, wxCompleted, onClose, onSaveField]);
+    }, [onboardingFlow, effectiveRegDone, llmDone, wxCompleted, onClose, onSaveField]);
 
     const selectedProvider = selectedIdx !== null ? providers[selectedIdx] : null;
+    const regResultWarning = regResult?.tone === "warning";
+
+    const handleOfflineModeToggle = useCallback((checked: boolean) => {
+        setOfflineMode(checked);
+        if (checked) {
+            setFreeTrial(false);
+            setFreeTrialVerified(false);
+            setLlmDone(false);
+            setRegResult({ ok: true, tone: "warning", msg: t("已启用离网模式：将跳过 Hub 注册。请继续配置 LLM；离网模式无法访问外网，也无法进行网页搜索。", "Offline mode enabled: Hub registration will be skipped. Continue to LLM setup; offline mode cannot access the public internet or perform web search.", "已啟用離網模式：將跳過 Hub 註冊。請繼續配置 LLM；離網模式無法訪問外網，也無法進行網頁搜尋。") });
+            setHubConnecting(false);
+        } else {
+            setFreeTrial(true);
+            if (freeTrialVerified) {
+                setLlmDone(true);
+                onLLMConfigured();
+            }
+            setRegResult(null);
+        }
+    }, [freeTrialVerified, onLLMConfigured, t]);
 
     const updateField = useCallback((field: keyof LLMProvider, value: string) => {
         if (selectedIdx === null) return;
@@ -486,22 +501,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
         try {
             const result = await ActivateRemote(regEmail.trim(), invCode.trim(), "");
             if (result?.vip_flag) setVipFlag(true);
-            // Free trial: do NOT optimistically set llmDone here.
-            // The Hub connection polling will verify the LLM service status
-            // and set llmDone only after confirming Active=true.
-            // This prevents the user from completing onboarding without a
-            // working LLM service when the Hub hasn't provisioned the grant
-            // (e.g. no DefaultNewUserServiceGroups, no Models, no Providers).
             let redeemNote = "";
             if (trimmedRedeemCode) {
                 try {
                     const serviceStatus = await RedeemHubLLMService(trimmedRedeemCode) as HubLLMServiceStatus;
                     const skippedByStatus = applyHubServiceStatus(serviceStatus);
                     setRedeemCode("");
-                    // Backend's applyHubLLMServiceStatusToConfig configures
-                    // the hub LLM provider when the Hub service is active.
-                    // Inactive grants (queued, period-limited, exhausted) must
-                    // remain visible instead of being treated as completed LLM setup.
                     if (!skippedByStatus) {
                         if (serviceStatus?.active) {
                             setLlmDone(true);
@@ -650,7 +655,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                 overflowY: "auto", boxShadow: "0 8px 24px rgba(99,102,241,0.12)",
                 border: "1px solid var(--theme-border)", display: "flex", flexDirection: "column",
             }}>
-                {/* ── Header ── */}
                 <div style={{
                     background: "linear-gradient(135deg, var(--theme-info-bg, #eef2ff) 0%, var(--theme-primary-soft, #e0e7ff) 100%)",
                     padding: "12px 18px 10px", position: "relative", flexShrink: 0,
@@ -665,7 +669,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     </h3>
                 </div>
 
-                {/* ── Progress bar ── */}
                 <div style={{
                     display: "flex", alignItems: "center", justifyContent: "center",
                     gap: 0, padding: "14px 18px 6px", flexShrink: 0,
@@ -708,15 +711,10 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                     })}
                 </div>
 
-                {/* ── Step content ── */}
                 <div style={{ padding: "10px 18px 0", flex: 1, overflowY: "auto" }}>
 
                     <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
 
-                    {/* ═══ Step 1 ═══
-                        TigerClaw 品牌：企业 SSO 认证 + 自动注册 Hub（合并原 Step1+Step2）
-                        普通品牌：邮件注册
-                    */}
                     {isCurrentOnboardingStep(onboardingFlow, step, 'sso') && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
@@ -898,12 +896,16 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                         </div>
                     )}
 
-                    {isCurrentOnboardingStep(onboardingFlow, step, 'register') && (
+                    {(isCurrentOnboardingStep(onboardingFlow, step, 'register') || isCurrentOnboardingStep(onboardingFlow, step, 'mode')) && (
                         <div>
                             <p style={{ margin: "0 0 10px 0", fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.4 }}>
-                                {t("注册设备邮箱到 Hub，即可通过移动端操控。",
-                                    "Register your email to the Hub for remote control.")}
+                                {offlineMode
+                                    ? t("选择离网模式后，将跳过 Hub 注册并进入 LLM 配置。", "Offline mode skips Hub registration and continues to LLM setup.", "選擇離網模式後，將跳過 Hub 註冊並進入 LLM 配置。")
+                                    : t("选择运行模式。正常联网模式下，注册设备邮箱到 Hub 后即可通过移动端操控。", "Choose a run mode. In online mode, register your email to the Hub for remote control.", "選擇運行模式。正常聯網模式下，註冊設備郵箱到 Hub 後即可通過移動端操控。")}
                             </p>
+                            <OnboardingOfflineModeOption offlineMode={offlineMode} onToggle={handleOfflineModeToggle} t={t} />
+                            {!offlineMode && (
+                                <>
                             <div style={{ marginBottom: 10 }}>
                                 <label style={labelStyle}>{t("邮箱", "Email")} <span style={{ color: colors.danger }}>*</span></label>
                                 <input style={inputStyle} value={regEmail}
@@ -967,26 +969,28 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             }}>
                                 <HubRegisterButtonContent regBusy={regBusy} regDone={regDone} hubConnecting={hubConnecting} t={hubT} />
                             </button>
+                                </>
+                            )}
                             {regResult && (
                                 <div style={{
                                     marginTop: 8, padding: "6px 10px", borderRadius: 4, fontSize: "0.74rem",
                                     lineHeight: 1.5, whiteSpace: "pre-wrap", wordBreak: "break-word",
-                                    background: regResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-                                    border: `1px solid ${regResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                    color: regResult.ok ? colors.success : colors.danger,
+                                    background: regResultWarning ? "rgba(245,158,11,0.10)" : regResult.ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
+                                    border: `1px solid ${regResultWarning ? "rgba(245,158,11,0.28)" : regResult.ok ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`,
+                                    color: regResultWarning ? colors.warning : regResult.ok ? colors.success : colors.danger,
                                 }}>
-                                    {regResult.ok ? `✅ ${regResult.msg}` : `❌ ${regResult.msg}`}
-                                    {regResult.ok && (
+                                    {regResultWarning ? `⚠️ ${regResult.msg}` : regResult.ok ? `✅ ${regResult.msg}` : `❌ ${regResult.msg}`}
+                                    {regResult.ok && !offlineMode && (
                                         <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, fontSize: "0.68rem", color: hubConnecting ? colors.primary : colors.success }}>
                                             <HubStatusBadge connecting={hubConnecting} t={hubT} />
                                         </div>
                                     )}
-                                    {regResult.ok && regDone && freeTrial && !llmDone && (
+                                    {regResult.ok && !offlineMode && regDone && freeTrial && !llmDone && (
                                         <div style={{ marginTop: 4, fontSize: "0.68rem", color: colors.primary }}>
                                             ⏳ {t("正在验证免费试用服务...", "Verifying free trial service...", "正在驗證免費試用服務...")}
                                         </div>
                                     )}
-                                    {regResult.ok && regDone && freeTrial && freeTrialVerified && llmDone && (
+                                    {regResult.ok && !offlineMode && regDone && freeTrial && freeTrialVerified && llmDone && (
                                         <div style={{ marginTop: 4, fontSize: "0.68rem", color: colors.success }}>
                                             ✅ {t("免费试用已激活，LLM 配置已自动完成", "Free trial activated. LLM configured automatically.", "免費試用已啟用，LLM 配置已自動完成")}
                                         </div>
@@ -995,11 +999,6 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                             )}
                         </div>
                     )}
-
-                    {/* ═══ Step 2 ═══
-                        TigerClaw 品牌：绑定微信
-                        普通品牌：LLM 配置
-                    */}
 
                     {isCurrentOnboardingStep(onboardingFlow, step, 'llm') && (
                         <div>
@@ -1290,7 +1289,7 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
 
                     {isLastStep ? (
                         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                            {!wxDone && !wxSkipped && (
+                            {isCurrentOnboardingStep(onboardingFlow, step, 'wechat') && !wxDone && !wxSkipped && (
                                 <button
                                     onClick={() => {
                                         setWxSkipped(true);
@@ -1309,12 +1308,12 @@ export function OnboardingWizard({ lang, hubUrl, email, brandId, brandDisplayNam
                                     onSaveField({ onboarding_done: true });
                                     onClose();
                                 }}
-                                disabled={!wxCompleted}
+                                disabled={!lastStepCompleted}
                                 style={{
                                     padding: "7px 20px", fontSize: "0.8rem", fontWeight: 600, borderRadius: 6,
-                                    background: wxCompleted ? colors.successBg : colors.surfaceMuted,
-                                    color: wxCompleted ? colors.success : colors.textMuted, border: `1px solid ${wxCompleted ? colors.success : colors.border}`,
-                                    cursor: wxCompleted ? "pointer" : "default",
+                                    background: lastStepCompleted ? colors.successBg : colors.surfaceMuted,
+                                    color: lastStepCompleted ? colors.success : colors.textMuted, border: `1px solid ${lastStepCompleted ? colors.success : colors.border}`,
+                                    cursor: lastStepCompleted ? "pointer" : "default",
                                 }}
                             >
                                 {t("完成", "Finish")}

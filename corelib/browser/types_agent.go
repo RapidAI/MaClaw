@@ -170,6 +170,14 @@ type BrowserAgentSession struct {
 	UpdatedAt time.Time
 	Policy    BrowserPolicy
 
+	// Mode records how this session was connected (auto/connect_user/isolated).
+	Mode SessionMode
+	// LastActivityAt tracks the last tool operation time (for inactivity timeout).
+	LastActivityAt time.Time
+	// timedOut is set by the inactivity timer before calling StopAgentSession,
+	// so StopAgentSession can skip duplicate audit logging.
+	timedOut bool
+
 	session *Session
 	stopCh  chan struct{}
 

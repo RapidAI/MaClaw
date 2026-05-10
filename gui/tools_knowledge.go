@@ -16,10 +16,10 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	}
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_search",
-		Description: "Search MaClaw local knowledge base without calling an LLM. Use when the user asks about saved URLs, imported documents, project knowledge, or asks to recall stored knowledge. Query is local SQLite/FTS over knowledge cards, facts, and source nodes.",
+		Description: "Search MaClaw local knowledge base without calling an LLM. Use when the user asks about saved URLs, imported documents, project knowledge, saved local corpus, or asks to recall stored knowledge. Query is local SQLite/FTS over knowledge cards, facts, and source nodes.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "memory", "search", "local", "brain", "recall"},
-		Priority:    6,
+		Priority:    10,
 		Status:      RegToolAvailable,
 		Required:    []string{"query"},
 		InputSchema: map[string]interface{}{
@@ -86,10 +86,10 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_context_pack",
-		Description: "Build a compact, citation-backed local knowledge context pack without calling an LLM. Use before answering from saved knowledge when the agent needs a prompt-ready bundle of ranked cards, facts, and source nodes under a character budget. This is not raw chunk RAG.",
+		Description: "Build a compact, citation-backed local knowledge context pack without calling an LLM. Use before answering from saved knowledge or a saved local corpus when the agent needs a prompt-ready bundle of ranked cards, facts, and source nodes under a character budget. This is not raw chunk RAG.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "context", "citation", "local", "brain", "recall"},
-		Priority:    7,
+		Priority:    10,
 		Status:      RegToolAvailable,
 		Required:    []string{"query"},
 		InputSchema: map[string]interface{}{
@@ -398,10 +398,10 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_import_directory",
-		Description: "Scan or import a local directory of documents into MaClaw knowledge base. Only use after the user explicitly provides or approves the directory. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are supported when local LibreOffice/soffice conversion is available. Action scan is dry-run; action import starts an async import by default.",
+		Description: "Scan or import a local directory of documents into MaClaw knowledge base or saved local corpus. Only use after the user explicitly provides or approves the directory. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are supported when local LibreOffice/soffice conversion is available. Action scan is dry-run; action import starts an async import by default.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "document", "import", "directory", "brain"},
-		Priority:    5,
+		Priority:    10,
 		Status:      RegToolAvailable,
 		Required:    []string{"root_path"},
 		InputSchema: map[string]interface{}{
@@ -424,10 +424,10 @@ func registerKnowledgeTools(registry *ToolRegistry, app *App) {
 	})
 	registry.Register(RegisteredTool{
 		Name:        "knowledge_import_files",
-		Description: "Scan or import explicitly provided local document file paths into MaClaw knowledge base. Only use after the user explicitly provides or approves the file paths. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are parsed through local LibreOffice/soffice conversion when available and otherwise surfaced in diagnostics.",
+		Description: "Scan or import explicitly provided local document file paths into MaClaw knowledge base or saved local corpus. Only use after the user explicitly provides or approves the file paths. Supported: docx, pdf, xlsx, csv, markdown, txt; legacy doc/xls are parsed through local LibreOffice/soffice conversion when available and otherwise surfaced in diagnostics.",
 		Category:    ToolCategoryBuiltin,
 		Tags:        []string{"knowledge", "document", "import", "file", "brain"},
-		Priority:    5,
+		Priority:    10,
 		Status:      RegToolAvailable,
 		Required:    []string{"file_paths"},
 		InputSchema: map[string]interface{}{
@@ -2018,8 +2018,8 @@ func (a *App) toolKnowledgeImportDirectory(args map[string]interface{}) string {
 		IncludeExts:  knowledgeToolStringSlice(args["include_exts"]),
 		MaxFileBytes: int64(maxFileMB) * 1024 * 1024,
 	}
-	switch strings.ToLower(knowledgeToolStringArg(args, "action")) {
-	case "scan", "dry_run", "preview":
+	switch normalizeKnowledgeToolActionKind(knowledgeToolStringArg(args, "action")) {
+	case knowledgeToolActionScan:
 		result, err := a.KnowledgeScanDirectory(req)
 		return knowledgeToolJSON(map[string]interface{}{"scan": result}, err)
 	default:
@@ -2050,8 +2050,8 @@ func (a *App) toolKnowledgeImportFiles(args map[string]interface{}) string {
 		IncludeExts:  knowledgeToolStringSlice(args["include_exts"]),
 		MaxFileBytes: int64(maxFileMB) * 1024 * 1024,
 	}
-	switch strings.ToLower(knowledgeToolStringArg(args, "action")) {
-	case "scan", "dry_run", "preview":
+	switch normalizeKnowledgeToolActionKind(knowledgeToolStringArg(args, "action")) {
+	case knowledgeToolActionScan:
 		result, err := a.KnowledgeScanFiles(req, filePaths)
 		return knowledgeToolJSON(map[string]interface{}{"scan": result}, err)
 	default:
@@ -2201,8 +2201,8 @@ func (a *App) toolKnowledgeCapabilities(args map[string]interface{}) string {
 }
 
 func (a *App) toolKnowledgeURLDomainPolicies(args map[string]interface{}) string {
-	switch strings.ToLower(knowledgeToolStringArg(args, "action")) {
-	case "replace", "set", "update":
+	switch normalizeKnowledgeToolActionKind(knowledgeToolStringArg(args, "action")) {
+	case knowledgeToolActionReplace:
 		result, err := a.KnowledgeUpdateURLDomainPolicies(knowledge.URLDomainPolicyUpdateRequest{
 			AllowDomains: knowledgeToolStringSlice(args["allow_domains"]),
 			BlockDomains: knowledgeToolStringSlice(args["block_domains"]),
@@ -2210,7 +2210,7 @@ func (a *App) toolKnowledgeURLDomainPolicies(args map[string]interface{}) string
 			Reason:       knowledgeToolStringArg(args, "reason"),
 		})
 		return knowledgeToolJSON(map[string]interface{}{"result": result}, err)
-	case "check", "test":
+	case knowledgeToolActionCheck:
 		rawURL := knowledgeToolFirstString(args, "url")
 		if rawURL == "" {
 			return knowledgeToolJSON(nil, fmt.Errorf("missing url argument"))
@@ -3558,11 +3558,8 @@ func knowledgeToolBoolArg(args map[string]interface{}, key string, fallback bool
 	case bool:
 		return typed
 	case string:
-		switch strings.ToLower(strings.TrimSpace(typed)) {
-		case "true", "1", "yes", "y", "on":
-			return true
-		case "false", "0", "no", "n", "off":
-			return false
+		if value, ok := coerceToolBoolToken(typed); ok {
+			return value
 		}
 	}
 	return fallback
@@ -3898,23 +3895,11 @@ func knowledgeToolMaintenanceActionSummary(actions []knowledge.SourceQualityMain
 }
 
 func knowledgeToolMaintenanceActionExecutable(kind string) bool {
-	switch strings.TrimSpace(kind) {
-	case "disable_sensitive_sources", "rebuild_derived_gaps", "backfill_labels", "refresh_topic_links", "suppress_duplicate_groups", "refresh_or_reimport_missing_nodes":
-		return true
-	default:
-		return false
-	}
+	return normalizeKnowledgeMaintenanceActionKind(kind).IsExecutable()
 }
 
 func knowledgeToolMaintenanceActionManualReason(kind string) string {
-	switch strings.TrimSpace(kind) {
-	case "refresh_or_reimport_missing_nodes":
-		return "requires_refresh_or_reimport_entrypoint"
-	case "":
-		return "missing_action_kind"
-	default:
-		return "unsupported_quality_maintenance_action"
-	}
+	return normalizeKnowledgeMaintenanceActionKind(kind).ManualReason()
 }
 
 func knowledgeToolFloatArg(args map[string]interface{}, key string, fallback float64) float64 {

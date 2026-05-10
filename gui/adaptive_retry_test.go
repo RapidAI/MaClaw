@@ -292,7 +292,7 @@ func TestRecordFailure_NotCalledOnSkip(t *testing.T) {
 
 	for attempt := 0; attempt < 4; attempt++ {
 		decision := r.Decide("llm_request", FailureTransient, attempt)
-		if decision.Action == "retry" {
+		if decision.Action == RetryActionRetry {
 			r.RecordFailure("llm_request", FailureTransient, decision)
 		}
 	}
@@ -309,7 +309,7 @@ func TestRecordFailure_DisablesAfterThreshold(t *testing.T) {
 	r := NewAdaptiveRetry(nil)
 
 	for i := 0; i < 5; i++ {
-		r.RecordFailure("llm_request", FailureTransient, RetryDecision{Action: "retry", Attempt: i})
+		r.RecordFailure("llm_request", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: i})
 	}
 
 	if !r.IsDisabled("llm_request") {

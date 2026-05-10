@@ -1,0 +1,159 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/progress"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+)
+
+type agentLoopBonusRoundOptions struct {
+	UserID                 string
+	Config                 corelib.MaclawLLMConfig
+	RequestContext         context.Context
+	Conversation           []interface{}
+	History                []agent.ConversationEntry
+	Tools                  []map[string]interface{}
+	HTTPClient             *http.Client
+	EffectiveTokenLimit    int
+	ToolsTokenBudget       int
+	OnToken                llm.TokenCallback
+	OnProgress             tool.ProgressCallback
+	OnNewRound             NewRoundCallback
+	StreamDoneCallback     func()
+	FirstRequestMetrics    *llmFirstRequestMetrics
+	StreamDone             bool
+	Phase                  *agentLoopPhase
+	MilestoneTracker       *progress.AgentProgressTracker
+	Recorder               *TrajectoryRecorder
+	InFlightLifecycle      *imInFlightLifecycle
+	RecordToolCall         func(id, name, args string)
+	RecordToolResult       func(id string, content interface{})
+	AttachLLMTelemetry     func(*IMAgentResponse)
+	AttachVisibleArtifacts func(*IMAgentResponse)
+	SendProgress           func(string)
+	Debug                  bool
+}
+
+type agentLoopBonusRoundResult struct {
+	Response        *IMAgentResponse
+	Conversation    []interface{}
+	History         []agent.ConversationEntry
+	InputTokens     int
+	OutputTokens    int
+	UsageElapsed    time.Duration
+	UsageDone       bool
+	ToolExecElapsed time.Duration
+}
+
+func (h *IMMessageHandler) runActiveSessionBonusRound(opts agentLoopBonusRoundOptions) agentLoopBonusRoundResult {
+	result := agentLoopBonusRoundResult{Conversation: opts.Conversation, History: opts.History}
+	if opts.SendProgress != nil {
+		opts.SendProgress("Reasoning rounds are exhausted, but coding sessions are still active. Checking status...")
+	}
+
+	conversation := autoCompressConversation(opts.Conversation, opts.Config, opts.HTTPClient)
+	conversation = trimConversation(conversation, opts.EffectiveTokenLimit, opts.ToolsTokenBudget, makeSummarizer(opts.Config, opts.HTTPClient))
+	if opts.OnNewRound != nil {
+		opts.OnNewRound()
+	}
+	bonusMetrics := &llmStreamMetrics{}
+	bonusResp, err := h.doLLMRequestStream(opts.RequestContext, opts.Config, conversation, opts.Tools, opts.HTTPClient, opts.OnToken, bonusMetrics)
+	opts.FirstRequestMetrics.AddStreamMetrics(bonusMetrics)
+	if err == nil && opts.StreamDoneCallback != nil {
+		opts.StreamDoneCallback()
+	}
+	if bonusResp != nil {
+		usageStartedAt := time.Now()
+		usage := h.recordLLMUsageSnapshot("bonus_round", bonusResp, conversation)
+		result.InputTokens = usage.Input
+		result.OutputTokens = usage.Output
+		if opts.StreamDone {
+			result.UsageElapsed = time.Since(usageStartedAt)
+			result.UsageDone = true
+		}
+	}
+	if err == nil && bonusResp != nil && len(bonusResp.Choices) > 0 {
+		conversation, result.History, result.ToolExecElapsed = h.applyBonusRoundChoice(conversation, result.History, bonusResp.Choices[0], opts)
+	}
+
+	result.Conversation = conversation
+	h.saveConversationHistoryTimed(opts.UserID, result.History, &IMAgentResponse{})
+	resp := &IMAgentResponse{Text: "Coding session is still running. Reply 'continue' to keep watching, or send another message to continue normally.", Deferred: true}
+	opts.AttachLLMTelemetry(resp)
+	opts.AttachVisibleArtifacts(resp)
+	result.Response = resp
+	return result
+}
+
+func (h *IMMessageHandler) applyBonusRoundChoice(conversation []interface{}, history []agent.ConversationEntry, choice llm.Choice, opts agentLoopBonusRoundOptions) ([]interface{}, []agent.ConversationEntry, time.Duration) {
+	content := choice.Message.Content
+	reasoning := choice.Message.ReasoningContent
+	if content == "" && reasoning != "" {
+		content = reasoning
+	}
+	assistantMsg := map[string]interface{}{"role": "assistant", "content": content}
+	if reasoning != "" {
+		assistantMsg["reasoning_content"] = reasoning
+	} else {
+		assistantMsg["reasoning_content"] = ""
+	}
+	if len(choice.Message.ToolCalls) > 0 {
+		assistantMsg["tool_calls"] = choice.Message.ToolCalls
+	}
+	conversation = append(conversation, assistantMsg)
+	if opts.Recorder != nil {
+		opts.Recorder.Record("assistant", content, choice.Message.ToolCalls, "", reasoning)
+	}
+	history = append(history, agent.ConversationEntry{
+		Role: "assistant", Content: content, ReasoningContent: reasoning, ToolCalls: choice.Message.ToolCalls,
+	})
+
+	var toolExecElapsed time.Duration
+	for _, tc := range choice.Message.ToolCalls {
+		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
+		if opts.Debug && opts.SendProgress != nil {
+			opts.SendProgress(userFacingToolProgressText(tc.Function.Name))
+		}
+		toolOnProgress := filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug)
+		toolExecStartedAt := time.Now()
+		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+		execResult := h.executeBonusRoundTool(tc, toolOnProgress, opts.Phase)
+		toolResult := execResult.Text
+		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
+		if IsAskUserResult(toolResult) {
+			toolResult = "ask_user is unavailable in background tasks; choose the next action directly."
+		}
+		if IsSubAgentContext(toolResult) {
+			toolResult = ExtractSubAgentContext(toolResult)
+		}
+		if h.toolRouter != nil && tool.ShouldPinConditionalTool(tc.Function.Name) && execResult.FailureKind == toolFailureNone {
+			h.toolRouter.ActivateSessionTool(tc.Function.Name)
+			log.Printf("[ToolPin] session-pinned conditional tool %q", tc.Function.Name)
+		}
+		if opts.StreamDone {
+			toolExecElapsed += time.Since(toolExecStartedAt)
+		}
+		truncated := truncateToolResultForTool(tc.Function.Name, toolResult)
+		opts.RecordToolResult(tc.ID, truncated)
+		conversation = append(conversation, map[string]interface{}{"role": "tool", "tool_call_id": tc.ID, "content": truncated})
+		history = append(history, agent.ConversationEntry{Role: "tool", Content: truncated, ToolCallID: tc.ID, ToolOutcome: execResult.Outcome.String()})
+		opts.InFlightLifecycle.SetOnce()
+	}
+	return conversation, history, toolExecElapsed
+}
+
+func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress tool.ProgressCallback, phase *agentLoopPhase) toolExecutionResult {
+	if phase != nil && phase.TruncationBlockedTools[tc.Function.Name] {
+		result := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
+		return toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailureTruncationBlocked}
+	}
+	return h.executeToolDetailed(tc.Function.Name, tc.Function.Arguments, onProgress)
+}

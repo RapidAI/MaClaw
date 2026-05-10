@@ -96,8 +96,9 @@ CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags desktop,production -ldfla
 rm -f gui/resource_windows_amd64.syso gui/resource_windows_arm64.syso
 
 # Build TUI/CLI Binaries
-echo "  - Building TUI/CLI and DataSrv binaries..."
+echo "  - Building TUI/CLI, MaClawSrv and DataSrv binaries..."
 TUI_LDFLAGS="-s -w -X main.version=${VERSION}"
+MACLAWSRV_LDFLAGS="-s -w -X main.serviceVersion=${VERSION}"
 DATASRV_LDFLAGS="-s -w -X main.serviceVersion=${VERSION}"
 for TUI_ARCH in amd64 arm64; do
     # macOS TUI
@@ -110,12 +111,16 @@ for TUI_ARCH in amd64 arm64; do
     CGO_ENABLED=0 GOOS=darwin GOARCH=$TUI_ARCH go build -ldflags "$TUI_LDFLAGS" -o "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_darwin" ./cmd/maclaw-tool/
     CGO_ENABLED=0 GOOS=windows GOARCH=$TUI_ARCH go build -ldflags "$TUI_LDFLAGS" -o "${BIN_DIR}/maclaw-tool_${TUI_ARCH}.exe" ./cmd/maclaw-tool/
     CGO_ENABLED=0 GOOS=linux GOARCH=$TUI_ARCH go build -ldflags "$TUI_LDFLAGS" -o "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_linux" ./cmd/maclaw-tool/
+    # maclawsrv
+    CGO_ENABLED=0 GOOS=darwin GOARCH=$TUI_ARCH go build -ldflags "$MACLAWSRV_LDFLAGS" -o "${BIN_DIR}/maclawsrv_${TUI_ARCH}_darwin" ./MaClawSrv/
+    CGO_ENABLED=0 GOOS=windows GOARCH=$TUI_ARCH go build -ldflags "$MACLAWSRV_LDFLAGS" -o "${BIN_DIR}/maclawsrv_${TUI_ARCH}.exe" ./MaClawSrv/
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TUI_ARCH go build -ldflags "$MACLAWSRV_LDFLAGS" -o "${BIN_DIR}/maclawsrv_${TUI_ARCH}_linux" ./MaClawSrv/
     # maclaw-data-srv
-    CGO_ENABLED=0 GOOS=darwin GOARCH=$TUI_ARCH go build -ldflags "$DATASRV_LDFLAGS" -o "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_darwin" ./cmd/maclaw-data-srv/
-    CGO_ENABLED=0 GOOS=windows GOARCH=$TUI_ARCH go build -ldflags "$DATASRV_LDFLAGS" -o "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}.exe" ./cmd/maclaw-data-srv/
-    CGO_ENABLED=0 GOOS=linux GOARCH=$TUI_ARCH go build -ldflags "$DATASRV_LDFLAGS" -o "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_linux" ./cmd/maclaw-data-srv/
+    CGO_ENABLED=0 GOOS=darwin GOARCH=$TUI_ARCH go -C datasrv build -ldflags "$DATASRV_LDFLAGS" -o "../${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_darwin" ./cmd/maclaw-data-srv/
+    CGO_ENABLED=0 GOOS=windows GOARCH=$TUI_ARCH go -C datasrv build -ldflags "$DATASRV_LDFLAGS" -o "../${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}.exe" ./cmd/maclaw-data-srv/
+    CGO_ENABLED=0 GOOS=linux GOARCH=$TUI_ARCH go -C datasrv build -ldflags "$DATASRV_LDFLAGS" -o "../${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_linux" ./cmd/maclaw-data-srv/
 done
-echo "  TUI/CLI and DataSrv binaries built for all platforms."
+echo "  TUI/CLI, MaClawSrv and DataSrv binaries built for all platforms."
 
 # Export PATH for nfpm
 export PATH=$PATH:$(go env GOPATH)/bin
@@ -368,6 +373,120 @@ create_pkg() {
     rm -rf "$TEMP_ROOT"
 }
 
+# Function to create standalone MaClawSrv PKG
+create_maclawsrv_pkg() {
+    ARCH=$1
+    if [ "$ARCH" == "universal" ]; then
+        SRC_BINARY="${BIN_DIR}/maclawsrv_universal_darwin"
+        PKG_NAME="maclawsrv-Universal.pkg"
+        if [ ! -f "$SRC_BINARY" ]; then
+            lipo -create "${BIN_DIR}/maclawsrv_amd64_darwin" "${BIN_DIR}/maclawsrv_arm64_darwin" -output "$SRC_BINARY"
+        fi
+    else
+        SRC_BINARY="${BIN_DIR}/maclawsrv_${ARCH}_darwin"
+        PKG_NAME="maclawsrv-${ARCH}.pkg"
+    fi
+
+    if [ ! -f "$SRC_BINARY" ]; then
+        echo "  - Skipping MaClawSrv PKG for $ARCH: $SRC_BINARY not found."
+        return
+    fi
+
+    TEMP_ROOT="build/maclawsrv_pkg_root_${ARCH}"
+    SCRIPTS_DIR="build/maclawsrv_pkg_scripts_${ARCH}"
+    rm -rf "$TEMP_ROOT" "$SCRIPTS_DIR"
+    mkdir -p "$TEMP_ROOT/usr/local/bin"
+    cp "$SRC_BINARY" "$TEMP_ROOT/usr/local/bin/maclawsrv"
+    chmod 755 "$TEMP_ROOT/usr/local/bin/maclawsrv"
+    mkdir -p "$SCRIPTS_DIR"
+    cat > "$SCRIPTS_DIR/postinstall" <<'EOF'
+#!/bin/sh
+set -e
+
+LABEL="com.rapidai.maclaw.srv"
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+DATA_ROOT="/Library/Application Support/MaClawSrv"
+LOG_DIR="/Library/Logs/MaClawSrv"
+
+make_secret() {
+    BYTES="$1"
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex "$BYTES"
+        return
+    fi
+    uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]'
+}
+
+ADMIN_SECRET="$(make_secret 24)"
+TOKEN_SECRET="$(make_secret 32)"
+if [ -f "$PLIST" ]; then
+    OLD_ADMIN_SECRET="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:MACLAW_ADMIN_SECRET' "$PLIST" 2>/dev/null || true)"
+    OLD_TOKEN_SECRET="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:MACLAW_TOKEN_SECRET' "$PLIST" 2>/dev/null || true)"
+    [ -n "$OLD_ADMIN_SECRET" ] && ADMIN_SECRET="$OLD_ADMIN_SECRET"
+    [ -n "$OLD_TOKEN_SECRET" ] && TOKEN_SECRET="$OLD_TOKEN_SECRET"
+fi
+
+mkdir -p "$DATA_ROOT" "$LOG_DIR"
+chown root:wheel "$DATA_ROOT" "$LOG_DIR"
+chmod 700 "$DATA_ROOT"
+chmod 755 "$LOG_DIR"
+
+if launchctl print "system/${LABEL}" >/dev/null 2>&1; then
+    launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+fi
+
+cat > "$PLIST" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/maclawsrv</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>MACLAW_ADMIN_SECRET</key>
+        <string>${ADMIN_SECRET}</string>
+        <key>MACLAW_TOKEN_SECRET</key>
+        <string>${TOKEN_SECRET}</string>
+        <key>MACLAW_DATA_ROOT</key>
+        <string>${DATA_ROOT}</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/MaClawSrv/maclawsrv.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/MaClawSrv/maclawsrv.err.log</string>
+</dict>
+</plist>
+PLIST_EOF
+
+chown root:wheel "$PLIST"
+chmod 600 "$PLIST"
+launchctl bootstrap system "$PLIST"
+launchctl enable "system/${LABEL}"
+launchctl kickstart -k "system/${LABEL}"
+exit 0
+EOF
+    chmod 755 "$SCRIPTS_DIR/postinstall"
+
+    echo "  - Creating MaClawSrv PKG for $ARCH..."
+    pkgbuild --root "$TEMP_ROOT" \
+             --scripts "$SCRIPTS_DIR" \
+             --identifier "com.rapidai.maclaw.srv" \
+             --version "$VERSION" \
+             --install-location "/" \
+             "${OUTPUT_DIR}/${PKG_NAME}"
+
+    rm -rf "$TEMP_ROOT" "$SCRIPTS_DIR"
+}
+
 # Function to create standalone DataSrv PKG
 create_datasrv_pkg() {
     ARCH=$1
@@ -415,6 +534,9 @@ for TUI_ARCH in amd64 arm64; do
     cp "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_darwin" "${OUTPUT_DIR}/" 2>/dev/null || true
     cp "${BIN_DIR}/maclaw-tool_${TUI_ARCH}.exe" "${OUTPUT_DIR}/" 2>/dev/null || true
     cp "${BIN_DIR}/maclaw-tool_${TUI_ARCH}_linux" "${OUTPUT_DIR}/" 2>/dev/null || true
+    cp "${BIN_DIR}/maclawsrv_${TUI_ARCH}_darwin" "${OUTPUT_DIR}/" 2>/dev/null || true
+    cp "${BIN_DIR}/maclawsrv_${TUI_ARCH}.exe" "${OUTPUT_DIR}/" 2>/dev/null || true
+    cp "${BIN_DIR}/maclawsrv_${TUI_ARCH}_linux" "${OUTPUT_DIR}/" 2>/dev/null || true
     cp "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_darwin" "${OUTPUT_DIR}/" 2>/dev/null || true
     cp "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}.exe" "${OUTPUT_DIR}/" 2>/dev/null || true
     cp "${BIN_DIR}/maclaw-data-srv_${TUI_ARCH}_linux" "${OUTPUT_DIR}/" 2>/dev/null || true
@@ -423,6 +545,9 @@ done
 create_pkg amd64
 create_pkg arm64
 create_pkg universal
+create_maclawsrv_pkg amd64
+create_maclawsrv_pkg arm64
+create_maclawsrv_pkg universal
 create_datasrv_pkg amd64
 create_datasrv_pkg arm64
 create_datasrv_pkg universal

@@ -19,7 +19,7 @@ func TestStructuredDataBoundaryDocIsReadableAndComplete(t *testing.T) {
 	for _, want := range []string{
 		"`corelib/structureddata`",
 		"`datasrv/structureddata`",
-		"`cmd/maclaw-data-srv`",
+		"`datasrv/cmd/maclaw-data-srv`",
 		"independently buildable Go module",
 		"module path `github.com/RapidAI/CodeClaw/datasrv`",
 		"`go.mod`",
@@ -57,7 +57,7 @@ func TestDocsIndexLinksStructuredDataBoundary(t *testing.T) {
 		"datasrv-production-ops-guide.md",
 		"`corelib/structureddata`",
 		"`datasrv/structureddata`",
-		"`cmd/maclaw-data-srv`",
+		"`datasrv/cmd/maclaw-data-srv`",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("docs index missing %s", want)
@@ -192,5 +192,42 @@ func TestDataSrvModuleFilesExist(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("datasrv/go.mod missing %s", want)
 		}
+	}
+}
+
+func TestDataSrvInstallerUsesIndependentModuleReadme(t *testing.T) {
+	data, err := os.ReadFile("../../build/windows/installer/datasrv.nsi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(data) {
+		t.Fatal("build/windows/installer/datasrv.nsi must remain valid UTF-8")
+	}
+	text := string(data)
+	if strings.Contains(text, `cmd\maclaw-data-srv\README.md`) {
+		t.Fatal("DataSrv installer must not package the removed root cmd/maclaw-data-srv README")
+	}
+	if !strings.Contains(text, `datasrv\README.md`) {
+		t.Fatal("DataSrv installer must package datasrv/README.md")
+	}
+	for _, want := range []string{
+		`!define SERVICE_NAME "MaClawDataSrv"`,
+		`sc.exe create "${SERVICE_NAME}"`,
+		`start= auto`,
+		`sc.exe description "${SERVICE_NAME}"`,
+		`sc.exe start "${SERVICE_NAME}"`,
+		`Installed ${SERVICE_NAME}, but failed to start it`,
+		`sc.exe exited with code $R1`,
+		`Sleep 2000`,
+		`Sleep 1000`,
+		`sc.exe stop "${SERVICE_NAME}"`,
+		`sc.exe delete "${SERVICE_NAME}"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("DataSrv installer missing %s", want)
+		}
+	}
+	if strings.Contains(text, "taskkill /F") {
+		t.Fatal("DataSrv installer should not force-kill service processes during uninstall")
 	}
 }

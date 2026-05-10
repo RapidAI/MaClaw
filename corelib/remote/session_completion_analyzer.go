@@ -60,11 +60,10 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 	for _, line := range tail {
 		lower := strings.ToLower(line)
 
-		if strings.HasPrefix(lower, "[gemini-acp] turn complete:") {
-			rest := strings.TrimSpace(lower[len("[gemini-acp] turn complete:"):])
-			if strings.Contains(rest, "success") || strings.Contains(rest, "done") || strings.Contains(rest, "completed") {
+		if marker := classifyGeminiACPTurnCompleteMarker(line); marker != sessionCompletionMarkerUnknown {
+			if marker == sessionCompletionMarkerCompleted {
 				completionCount++
-			} else if strings.Contains(rest, "cancelled") || strings.Contains(rest, "canceled") {
+			} else if marker == sessionCompletionMarkerIncomplete {
 				incompletionCount++
 			}
 			continue

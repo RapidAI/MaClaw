@@ -165,11 +165,8 @@ func boolArg(args map[string]interface{}, key string, fallback bool) bool {
 		return v
 	}
 	if v, ok := args[key].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "true", "1", "yes", "y", "on":
-			return true
-		case "false", "0", "no", "n", "off":
-			return false
+		if value, ok := coerceToolBoolToken(v); ok {
+			return value
 		}
 	}
 	return fallback
@@ -366,12 +363,12 @@ func chooseCraftLanguage(request craftToolRequest, runtimes craftRuntimeAvailabi
 }
 
 func runtimeSupportedForLanguage(language string, runtimes craftRuntimeAvailability) bool {
-	switch normalizeCraftLanguage(language) {
-	case "python":
+	switch normalizeCraftLanguageKind(language) {
+	case craftLanguagePython:
 		return runtimes.Python != ""
-	case "node":
+	case craftLanguageNode:
 		return runtimes.Node != ""
-	case "powershell":
+	case craftLanguagePowerShell:
 		return runtimes.PowerShell != ""
 	default:
 		return runtimes.Bash != "" || runtimes.PowerShell != ""
@@ -523,12 +520,12 @@ func generateScriptWithContext(ctx context.Context, cfg corelib.MaclawLLMConfig,
 		result, err := doSimpleLLMRequest(ctx, cfg, messages, client, requestTimeout)
 		if err != nil {
 			errMsg := err.Error()
-			if strings.Contains(errMsg, "429") || strings.Contains(strings.ToLower(errMsg), "rate limit") || strings.Contains(strings.ToLower(errMsg), "too many requests") {
+			if classifyCraftAPIError(errMsg) == craftAPIErrorRateLimit {
 				lastErr = err
 				continue // retry on 429
 			}
 			// 智谱 API code:1234 transient "网络错误" — retryable
-			if (strings.Contains(errMsg, `"code":"1234"`) || strings.Contains(errMsg, `"code": "1234"`)) && strings.Contains(errMsg, "网络错误") {
+			if classifyCraftAPIError(errMsg) == craftAPIErrorCode1234Transient {
 				isCode1234 = true
 				lastErr = err
 				continue // retry on 智谱 code:1234
@@ -631,27 +628,18 @@ func shouldRetryCraftAttempt(request craftToolRequest, attempt craftAttemptResul
 		if attempt.ArtifactPath == "" {
 			return false
 		}
-		if strings.Contains(message, "未报告产物路径") {
+		if classifyCraftArtifactFailureSignal(message) == craftFailureSignalArtifactNotReported {
 			return false
 		}
 		return true
 	}
 	message := strings.ToLower(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr), attempt.Output))
-	for _, disallowed := range []string{
-		"permission denied", "access denied", "unauthorized", "forbidden", "authentication", "credential", "login required",
-		"no such host", "name resolution", "temporary failure in name resolution", "connection refused", "tls handshake", "x509", "certificate", "rate limit", "429 ",
-		"manual login", "interactive login", "browser interaction", "captcha", "human verification",
-		"repository-wide", "repo-wide", "whole codebase", "large codebase", "multi-file refactor", "requires create_session", "use create_session",
-	} {
-		if strings.Contains(message, disallowed) {
-			return false
-		}
+	if classifyCraftFailureSignal(message).DisallowsRetry() {
+		return false
 	}
 	if request.WorkingDir != "" {
-		for _, disallowed := range []string{"not a directory", "no such file or directory", "cannot find path", "working directory"} {
-			if strings.Contains(message, disallowed) {
-				return false
-			}
+		if classifyCraftFailureSignal(message) == craftFailureSignalEnvironment {
+			return false
 		}
 	}
 	return true
@@ -714,21 +702,16 @@ func buildCraftSuccessResult(app *App, request craftToolRequest, attempt craftAt
 // with human-readable Chinese summaries. If no pattern matches, the original
 // message is returned unchanged.
 func humanizeCraftAPIError(message string) string {
-	// Rule 1: code:1234 server-side transient error
-	if strings.Contains(message, `"code":"1234"`) || strings.Contains(message, `"code": "1234"`) {
+	switch classifyCraftAPIError(message) {
+	case craftAPIErrorCode1234, craftAPIErrorCode1234Transient:
 		return "API 服务端临时故障（code:1234），请稍后重试"
-	}
-	// Rule 2: generic API error response
-	if strings.Contains(message, `"type":"error"`) || strings.Contains(message, `"type": "error"`) {
+	case craftAPIErrorResponse:
 		return "API 返回错误响应，请检查配置或稍后重试"
-	}
-	// Rule 3: rate limiting (case insensitive)
-	lower := strings.ToLower(message)
-	if strings.Contains(lower, "http 429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "too many requests") {
+	case craftAPIErrorRateLimit:
 		return "API 调用频率超限，请稍后重试"
+	default:
+		return message
 	}
-	// Rule 4: no match, return original
-	return message
 }
 
 func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResult, providerName string, providerURL string) string {
@@ -804,17 +787,18 @@ func errorText(err error) string {
 func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) (string, string) {
 	if attempt.VerificationStatus == craftVerificationArtifactMissing {
 		message := strings.ToLower(firstNonEmptyCraftText(attempt.VerificationMessage, attempt.Output))
-		switch {
-		case strings.Contains(message, "报告了产物路径"):
+		switch classifyCraftArtifactFailureSignal(message) {
+		case craftFailureSignalArtifactReportedMissing:
 			return craftFailureCategoryArtifact, "脚本声称已经生成产物，但磁盘上找不到该文件；请检查脚本是否写入了临时目录、错误目录，或写入后又被清理。"
-		case strings.Contains(message, "未报告产物路径"):
+		case craftFailureSignalArtifactNotReported:
 			if attempt.ArtifactPath != "" {
 				return craftFailureCategoryArtifact, fmt.Sprintf("脚本没有明确回报产物路径，且预期文件不存在；请强制脚本把结果写到指定路径：%s", attempt.ArtifactPath)
 			}
 			return craftFailureCategoryArtifact, "脚本没有明确回报产物路径；请输出 artifact: <path>，或补充明确 output / expected_artifacts。"
-		case attempt.ArtifactPath != "":
-			return craftFailureCategoryArtifact, fmt.Sprintf("脚本已运行但目标产物不存在，请确认脚本把结果写到指定路径：%s", attempt.ArtifactPath)
 		default:
+			if attempt.ArtifactPath != "" {
+				return craftFailureCategoryArtifact, fmt.Sprintf("脚本已运行但目标产物不存在，请确认脚本把结果写到指定路径：%s", attempt.ArtifactPath)
+			}
 			return craftFailureCategoryArtifact, "脚本已运行但没有生成可验证的目标产物，请补充明确 output 或 expected_artifacts。"
 		}
 	}
@@ -823,27 +807,17 @@ func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) 
 	}
 
 	message := strings.ToLower(firstNonEmptyCraftText(attempt.VerificationMessage, errorText(attempt.ExecErr), attempt.Output))
-	for _, marker := range []string{"permission denied", "access denied", "unauthorized", "forbidden", "authentication", "credential", "login required"} {
-		if strings.Contains(message, marker) {
-			return craftFailureCategoryPermission, "这是权限或认证问题，继续自动重试通常无效；请先补齐权限、凭据或登录态。"
-		}
+	switch classifyCraftFailureSignal(message) {
+	case craftFailureSignalPermission:
+		return craftFailureCategoryPermission, "这是权限或认证问题，继续自动重试通常无效；请先补齐权限、凭据或登录态。"
+	case craftFailureSignalEnvironment:
+		return craftFailureCategoryEnvironment, "这是运行环境或外部依赖问题，建议先修复网络、证书、目录或相关依赖后再重试。"
+	case craftFailureSignalCapabilityBoundary:
+		return craftFailureCategoryCapability, "该任务超出单脚本自动化边界，建议改用 create_session 进行多步探索或代码库级修改。"
+	case craftFailureSignalScript:
+		return craftFailureCategoryScript, "这更像脚本本身的可修复错误，可以调整脚本内容、依赖导入或命令后再试。"
 	}
-	for _, marker := range []string{"no such host", "name resolution", "temporary failure in name resolution", "connection refused", "tls handshake", "x509", "certificate", "rate limit", "429 ", "not a directory", "no such file or directory", "cannot find path", "working directory"} {
-		if strings.Contains(message, marker) {
-			return craftFailureCategoryEnvironment, "这是运行环境或外部依赖问题，建议先修复网络、证书、目录或相关依赖后再重试。"
-		}
-	}
-	for _, marker := range []string{"manual login", "interactive login", "browser interaction", "captcha", "human verification", "repository-wide", "repo-wide", "whole codebase", "large codebase", "multi-file refactor", "requires create_session", "use create_session"} {
-		if strings.Contains(message, marker) {
-			return craftFailureCategoryCapability, "该任务超出单脚本自动化边界，建议改用 create_session 进行多步探索或代码库级修改。"
-		}
-	}
-	for _, marker := range []string{"traceback", "syntaxerror", "exception", "command not found", "is not recognized as an internal or external command", "no module named", "error:"} {
-		if strings.Contains(message, marker) {
-			return craftFailureCategoryScript, "这更像脚本本身的可修复错误，可以调整脚本内容、依赖导入或命令后再试。"
-		}
-	}
-	if request.VerificationMode == "artifact_required" {
+	if normalizeCraftVerificationModeKind(request.VerificationMode).RequiresArtifact() {
 		return craftFailureCategoryArtifact, "当前任务要求生成可验证产物，请确认脚本确实输出了目标文件。"
 	}
 	return craftFailureCategoryUnknown, "未能自动归类失败原因，请结合脚本输出与保存的脚本内容继续排查。"
@@ -862,14 +836,12 @@ func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) 
 	}
 	// 仅在有预期产物时才做输出可疑性检查。
 	// 纯输出型脚本（诊断、echo 等）exit code == 0 即视为成功。
-	if len(request.ExpectedArtifacts) > 0 || strings.EqualFold(request.VerificationMode, "artifact_required") {
+	if len(request.ExpectedArtifacts) > 0 || normalizeCraftVerificationModeKind(request.VerificationMode).RequiresArtifact() {
 		outputLower := strings.ToLower(attempt.Output)
-		for _, marker := range []string{"traceback", "syntaxerror", "exception", "command not found", "is not recognized as an internal or external command", "no module named", "cannot find path"} {
-			if strings.Contains(outputLower, marker) {
-				result.VerificationStatus = craftVerificationOutputSuspicious
-				result.VerificationMessage = "脚本输出包含明显错误信号，自动验收未通过。"
-				return result
-			}
+		if isSuspiciousCraftOutputSignal(classifyCraftFailureSignal(outputLower)) {
+			result.VerificationStatus = craftVerificationOutputSuspicious
+			result.VerificationMessage = "脚本输出包含明显错误信号，自动验收未通过。"
+			return result
 		}
 		if shouldAcceptStdoutOnlyCraftResult(request, expectedArtifactPath, reportedArtifactPath, attempt) {
 			result.VerificationStatus = craftVerificationPassed
@@ -924,7 +896,7 @@ func verifyCraftExecution(request craftToolRequest, attempt craftAttemptResult) 
 }
 
 func shouldAcceptStdoutOnlyCraftResult(request craftToolRequest, expectedArtifactPath, reportedArtifactPath string, attempt craftAttemptResult) bool {
-	if !strings.EqualFold(request.VerificationMode, "artifact_required") {
+	if !normalizeCraftVerificationModeKind(request.VerificationMode).RequiresArtifact() {
 		return false
 	}
 	if len(request.ExpectedArtifacts) > 0 || expectedArtifactPath != "" || reportedArtifactPath != "" {
@@ -1013,7 +985,7 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 		Source:         "crafted",
 	}
 	if err := app.skillExecutor.Register(entry); err != nil {
-		if strings.Contains(err.Error(), "already exists") {
+		if classifyCraftSkillRegistrationError(err).NeedsUniqueNameRetry() {
 			entry.Name = skillName + "_" + time.Now().Format("0102_1504")
 			if err2 := app.skillExecutor.Register(entry); err2 != nil {
 				return fmt.Sprintf("⚠️ Skill 注册失败: %s", err2.Error())
@@ -1115,20 +1087,20 @@ func executeScriptWithContext(parent context.Context, scriptPath, language, work
 }
 
 func buildCraftExecCommand(ctx context.Context, scriptPath, language string, runtimes craftRuntimeAvailability) (*exec.Cmd, error) {
-	switch normalizeCraftLanguage(language) {
-	case "python":
+	switch normalizeCraftLanguageKind(language) {
+	case craftLanguagePython:
 		if runtimes.Python == "" {
 			return nil, fmt.Errorf("python runtime not found")
 		}
 		// Use the absolute path from runtimes (resolved via cmd /c where on
 		// Windows) to ensure Python is found regardless of which shell is active.
 		return exec.CommandContext(ctx, runtimes.Python, scriptPath), nil
-	case "node":
+	case craftLanguageNode:
 		if runtimes.Node == "" {
 			return nil, fmt.Errorf("node runtime not found")
 		}
 		return exec.CommandContext(ctx, runtimes.Node, scriptPath), nil
-	case "powershell":
+	case craftLanguagePowerShell:
 		if runtimes.PowerShell == "" {
 			return nil, fmt.Errorf("powershell runtime not found")
 		}
@@ -1207,30 +1179,12 @@ func detectScriptLanguageWithRuntime(task string, runtimes craftRuntimeAvailabil
 }
 
 func normalizeCraftLanguage(language string) string {
-	switch strings.ToLower(strings.TrimSpace(language)) {
-	case "javascript", "node":
-		return "node"
-	case "pwsh", "powershell":
-		return "powershell"
-	case "python", "bash":
-		return strings.ToLower(strings.TrimSpace(language))
-	default:
-		return "bash"
-	}
+	return normalizeCraftLanguageKind(language).String()
 }
 
 // scriptExtension returns the file extension for a script language.
 func scriptExtension(language string) string {
-	switch normalizeCraftLanguage(language) {
-	case "python":
-		return ".py"
-	case "node":
-		return ".js"
-	case "powershell":
-		return ".ps1"
-	default:
-		return ".sh"
-	}
+	return normalizeCraftLanguageKind(language).ScriptExtension()
 }
 
 // sanitizeFilename removes characters that are invalid in filenames.
@@ -1290,15 +1244,15 @@ func extractTriggerKeywords(task string) []string {
 
 // buildRunCommand returns the shell command to execute a saved script.
 func buildRunCommand(scriptPath, language string) string {
-	switch normalizeCraftLanguage(language) {
-	case "python":
+	switch normalizeCraftLanguageKind(language) {
+	case craftLanguagePython:
 		if runtime.GOOS == "windows" {
 			return fmt.Sprintf("python \"%s\"", scriptPath)
 		}
 		return fmt.Sprintf("python3 \"%s\"", scriptPath)
-	case "node":
+	case craftLanguageNode:
 		return fmt.Sprintf("node \"%s\"", scriptPath)
-	case "powershell":
+	case craftLanguagePowerShell:
 		return fmt.Sprintf("powershell -NoProfile -ExecutionPolicy Bypass -File \"%s\"", scriptPath)
 	default:
 		if runtime.GOOS == "windows" {

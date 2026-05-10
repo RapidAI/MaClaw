@@ -3,6 +3,7 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -20,7 +21,11 @@ var (
 )
 
 // StartAgentSession creates or reuses a long-lived browser agent session.
-func StartAgentSession(addr string, policy BrowserPolicy, reuseExisting bool) (*BrowserAgentSession, error) {
+// The mode parameter controls the connection strategy:
+//   - SessionModeAuto (default): connect user Chrome first, fallback to user-profile launch
+//   - SessionModeConnectUser: only connect to user's running Chrome (no launch)
+//   - SessionModeIsolated: launch with isolated debug profile (no user data)
+func StartAgentSession(addr string, policy BrowserPolicy, reuseExisting bool, mode SessionMode) (*BrowserAgentSession, error) {
 	browserAgentMu.Lock()
 	defer browserAgentMu.Unlock()
 
@@ -37,13 +42,25 @@ func StartAgentSession(addr string, policy BrowserPolicy, reuseExisting bool) (*
 		}
 	}
 
+	// Normalize mode.
+	if mode == "" {
+		mode = SessionModeAuto
+	}
+
 	cdpAddr := strings.TrimSpace(addr)
 	if cdpAddr == "" {
-		discovered, err := DiscoverOrLaunch()
+		var err error
+		switch mode {
+		case SessionModeConnectUser:
+			cdpAddr, err = ConnectUserChrome()
+		case SessionModeIsolated:
+			cdpAddr, err = DiscoverOrLaunch()
+		default: // SessionModeAuto
+			cdpAddr, err = DiscoverOrLaunchUserProfile()
+		}
 		if err != nil {
 			return nil, err
 		}
-		cdpAddr = discovered
 	}
 
 	session, err := connectToAddr(cdpAddr)
@@ -53,20 +70,30 @@ func StartAgentSession(addr string, policy BrowserPolicy, reuseExisting bool) (*
 	targetID := activeTargetID(session)
 	now := time.Now()
 	agentSession := &BrowserAgentSession{
-		ID:            "browser-session-" + generateID(),
-		Addr:          cdpAddr,
-		TargetID:      targetID,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		Policy:        policy,
-		session:       session,
-		stopCh:        make(chan struct{}),
-		snapshots:     map[string]*BrowserSnapshot{},
-		recentConsole: []string{},
-		recentNetwork: []string{},
-		recentErrors:  []string{},
+		ID:             "browser-session-" + generateID(),
+		Addr:           cdpAddr,
+		TargetID:       targetID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		LastActivityAt: now,
+		Policy:         policy,
+		Mode:           mode,
+		session:        session,
+		stopCh:         make(chan struct{}),
+		snapshots:      map[string]*BrowserSnapshot{},
+		recentConsole:  []string{},
+		recentNetwork:  []string{},
+		recentErrors:   []string{},
 	}
 	agentSession.startEventPump()
+	// Start inactivity timeout for connect_user/auto modes (not isolated).
+	if mode != SessionModeIsolated {
+		agentSession.startInactivityTimer()
+	}
+	// Audit log for user-chrome connections.
+	if mode != SessionModeIsolated {
+		GetAuditLogger().LogConnect(agentSession.ID, cdpAddr)
+	}
 	browserAgentSessions[agentSession.ID] = agentSession
 	return agentSession, nil
 }
@@ -92,10 +119,13 @@ func GetAgentSession(sessionID string) (*BrowserAgentSession, error) {
 		sess.UpdatedAt = time.Now()
 		sess.startEventPump()
 	}
+	// Touch activity on every access to reset the inactivity timer.
+	sess.TouchActivity()
 	return sess, nil
 }
 
 // StopAgentSession closes and removes a browser agent session.
+// In connect_user/auto mode, closeBrowser is ignored — we never kill the user's Chrome.
 func StopAgentSession(sessionID string, closeBrowser bool) error {
 	browserAgentMu.Lock()
 	sess, ok := browserAgentSessions[sessionID]
@@ -110,10 +140,16 @@ func StopAgentSession(sessionID string, closeBrowser bool) error {
 		close(sess.stopCh)
 		sess.stopCh = nil
 	}
+	// Audit log for user-chrome disconnections (skip if already logged by inactivity timer).
+	if sess.Mode != SessionModeIsolated && !sess.timedOut {
+		GetAuditLogger().LogDisconnect(sessionID, "session_stop")
+	}
 	if sess.session != nil && sess.session.client != nil {
 		_ = sess.session.client.Close()
 	}
-	if closeBrowser {
+	// Only kill the browser process in isolated mode.
+	// In connect_user/auto mode, the browser belongs to the user — never kill it.
+	if closeBrowser && sess.Mode == SessionModeIsolated {
 		killManagedBrowser()
 	}
 	return nil
@@ -173,6 +209,57 @@ func (s *BrowserAgentSession) startEventPump() {
 			}
 		}
 	}()
+}
+
+// connectUserInactivityTimeout is the duration after which a connect_user/auto
+// session is automatically disconnected if no tool operations occur.
+const connectUserInactivityTimeout = 30 * time.Minute
+
+// startInactivityTimer starts a background goroutine that checks for inactivity
+// and auto-disconnects the session after connectUserInactivityTimeout.
+// Only used for connect_user/auto modes (user's Chrome should not be held indefinitely).
+func (s *BrowserAgentSession) startInactivityTimer() {
+	if s == nil {
+		return
+	}
+	stopCh := s.stopCh
+	sessionID := s.ID
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ticker.C:
+				s.mu.RLock()
+				lastActivity := s.LastActivityAt
+				s.mu.RUnlock()
+				if time.Since(lastActivity) >= connectUserInactivityTimeout {
+					log.Printf("[browser] 会话 %s 超过 30 分钟无操作，自动断开", sessionID)
+					// Mark as timed-out so StopAgentSession skips duplicate audit log.
+					s.mu.Lock()
+					s.timedOut = true
+					s.mu.Unlock()
+					GetAuditLogger().LogDisconnect(sessionID, "inactivity_timeout")
+					// Use a goroutine to avoid deadlock (StopAgentSession acquires browserAgentMu).
+					go StopAgentSession(sessionID, false)
+					return
+				}
+			}
+		}
+	}()
+}
+
+// TouchActivity updates the last activity timestamp. Called on every
+// GetAgentSession access to reset the inactivity timer.
+func (s *BrowserAgentSession) TouchActivity() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.LastActivityAt = time.Now()
+	s.mu.Unlock()
 }
 
 func (s *BrowserAgentSession) handleCDPEvent(evt CDPEvent) {

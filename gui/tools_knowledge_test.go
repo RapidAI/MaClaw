@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -671,6 +672,62 @@ func TestKnowledgeToolMissingArgumentErrorsAreASCII(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestKnowledgeToolsAreRoutedForAgentKnowledgeRequests(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	handler := &IMMessageHandler{app: app}
+	handler.registry = NewToolRegistry()
+	registerBuiltinTools(handler.registry, handler)
+	registerKnowledgeTools(handler.registry, app)
+	for i := 0; i < maxToolBudget; i++ {
+		handler.registry.Register(RegisteredTool{
+			Name:        "filler_tool_" + strconv.Itoa(i),
+			Description: "Filler tool for unrelated routing pressure " + strconv.Itoa(i),
+			Category:    ToolCategoryMCP,
+			Status:      RegToolAvailable,
+			Handler:     func(args map[string]interface{}) string { return "{}" },
+		})
+	}
+
+	tools := NewDynamicToolBuilder(handler.registry).BuildAll()
+	if len(tools) <= maxToolBudget {
+		t.Fatalf("need more than %d tools to verify routed visibility, got %d", maxToolBudget, len(tools))
+	}
+	router := NewToolRouter(NewToolDefinitionGenerator(nil, tools))
+	router.SetRegistry(handler.registry)
+	handler.SetToolRouter(router)
+
+	recallRouted := handler.routeTools("Use the saved local corpus to answer what the prism anchor note says.", tools)
+	recallNames := knowledgeToolNames(recallRouted)
+	if !recallNames["knowledge_search"] && !recallNames["knowledge_context_pack"] {
+		t.Fatalf("expected a knowledge recall tool to be routed, got %v", sortedKnowledgeToolNames(recallNames))
+	}
+
+	importRouted := handler.routeTools("I approved D:\\docs; scan and import those documents into the saved local corpus.", tools)
+	importNames := knowledgeToolNames(importRouted)
+	if !importNames["knowledge_import_directory"] && !importNames["knowledge_import_files"] {
+		t.Fatalf("expected a knowledge import tool to be routed, got %v", sortedKnowledgeToolNames(importNames))
+	}
+}
+
+func knowledgeToolNames(tools []map[string]interface{}) map[string]bool {
+	names := make(map[string]bool, len(tools))
+	for _, tool := range tools {
+		names[extractToolName(tool)] = true
+	}
+	return names
+}
+
+func sortedKnowledgeToolNames(names map[string]bool) []string {
+	out := make([]string, 0, len(names))
+	for name := range names {
+		if strings.HasPrefix(name, "knowledge_") {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func TestKnowledgeSearchToolUsesLocalStore(t *testing.T) {

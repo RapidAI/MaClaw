@@ -28,6 +28,11 @@ func (s *Store) migrateAuth() error {
 			created_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sm_sessions_user ON sm_sessions(user_id)`,
+		`CREATE TABLE IF NOT EXISTS sm_session_revocations (
+			token      TEXT PRIMARY KEY,
+			expires_at TEXT NOT NULL,
+			revoked_at TEXT NOT NULL
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -126,6 +131,12 @@ type Session struct {
 	CreatedAt time.Time
 }
 
+type SessionRevocation struct {
+	Token     string
+	ExpiresAt time.Time
+	RevokedAt time.Time
+}
+
 func (s *Store) CreateSession(ctx context.Context, sess *Session) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sm_sessions (token, user_id, email, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`,
@@ -161,8 +172,69 @@ func (s *Store) DeleteSession(ctx context.Context, token string) error {
 	return err
 }
 
+func (s *Store) RevokeSession(ctx context.Context, token string, expiresAt time.Time) error {
+	now := time.Now()
+	if expiresAt.IsZero() || expiresAt.Before(now) {
+		expiresAt = now
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sm_session_revocations (token, expires_at, revoked_at) VALUES (?, ?, ?)
+		 ON CONFLICT(token) DO UPDATE SET expires_at = excluded.expires_at, revoked_at = excluded.revoked_at`,
+		token, fmtTime(expiresAt), fmtTime(now))
+	if err == nil {
+		s.emitSync(ctx)
+	}
+	return err
+}
+
+func (s *Store) DeleteAndRevokeSession(ctx context.Context, token string, expiresAt time.Time) error {
+	now := time.Now()
+	if expiresAt.IsZero() || expiresAt.Before(now) {
+		expiresAt = now
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sm_sessions WHERE token = ?`, token); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO sm_session_revocations (token, expires_at, revoked_at) VALUES (?, ?, ?)
+		 ON CONFLICT(token) DO UPDATE SET expires_at = excluded.expires_at, revoked_at = excluded.revoked_at`,
+		token, fmtTime(expiresAt), fmtTime(now)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.emitSync(ctx)
+	return nil
+}
+
+func (s *Store) IsSessionRevoked(ctx context.Context, token string) (bool, error) {
+	var expiresAt string
+	err := s.readDB.QueryRowContext(ctx, `SELECT expires_at FROM sm_session_revocations WHERE token = ?`, token).Scan(&expiresAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	if exp := parseTime(expiresAt); !exp.IsZero() && time.Now().After(exp) {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM sm_session_revocations WHERE token = ?`, token)
+		return false, nil
+	}
+	return true, nil
+}
+
 func (s *Store) DeleteExpiredSessions(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sm_sessions WHERE expires_at < ?`, fmtTime(time.Now()))
+	now := fmtTime(time.Now())
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sm_sessions WHERE expires_at < ?`, now)
+	if err == nil {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM sm_session_revocations WHERE expires_at < ?`, now)
+	}
 	if err == nil {
 		s.emitSync(ctx)
 	}

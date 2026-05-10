@@ -94,16 +94,11 @@ func (a *App) defaultExperienceReviewReviewer(value string) string {
 }
 
 func normalizeExperienceReviewOutcome(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "approve", "approved", "accept", "accepted", "ok":
-		return experienceReviewOutcomeApproved, nil
-	case "reject", "rejected", "deny", "denied":
-		return experienceReviewOutcomeRejected, nil
-	case "defer", "deferred", "later", "pending":
-		return experienceReviewOutcomeDeferred, nil
-	default:
+	outcome := normalizeExperienceReviewOutcomeKind(value)
+	if !outcome.IsKnown() {
 		return "", fmt.Errorf("unknown review outcome %q", value)
 	}
+	return outcome.String(), nil
 }
 
 func findExperienceReviewMemoryEntry(store *memory.Store, traceID string) (memory.Entry, string, error) {
@@ -124,11 +119,11 @@ func findExperienceReviewMemoryEntry(store *memory.Store, traceID string) (memor
 		}
 		switch {
 		case hasTag(entry.Tags, groupDiscussionConflictTag):
-			return entry, "conflict", nil
+			return entry, experienceReviewKindConflict.String(), nil
 		case hasTag(entry.Tags, groupDiscussionRollbackTag):
-			return entry, "rollback", nil
-		case hasTag(entry.Tags, "skill_nudge_candidate"):
-			return entry, "skill_nudge", nil
+			return entry, experienceReviewKindRollback.String(), nil
+		case hasTag(entry.Tags, experienceTraceKindSkillNudgeCandidate.String()):
+			return entry, experienceReviewKindSkillNudge.String(), nil
 		default:
 			return memory.Entry{}, "", fmt.Errorf("experience trace %q is not a reviewable learning signal", traceID)
 		}
@@ -167,32 +162,33 @@ func appendExperienceReviewRecord(content, outcome, reviewKind, note, reviewer s
 
 func applyExperienceReviewTags(tags []string, reviewKind, outcome string, now time.Time) []string {
 	result := withoutExperienceFollowUpStateTags(withoutExperienceReviewStateTags(tags))
+	kind := normalizeExperienceReviewKind(reviewKind)
 
 	result = append(result, experienceReviewStatusTagPrefix+outcome)
 	switch outcome {
 	case experienceReviewOutcomeDeferred:
-		result = append(result, experienceReviewRequiredTag, "review_deferred")
+		result = append(result, experienceReviewRequiredTag, experienceReviewLifecycleTagDeferred.String())
 	default:
-		result = append(result, experienceReviewResolvedTag, "reviewed_at:"+now.Format("20060102"))
-		if reviewKind == "rollback" {
+		result = append(result, experienceReviewResolvedTag, experienceReviewedAtTagPrefix+now.Format("20060102"))
+		if kind == experienceReviewKindRollback {
 			if outcome == experienceReviewOutcomeRejected {
-				result = append(result, "rollback_rejected")
+				result = append(result, experienceReviewLifecycleTagRollbackRejected.String())
 			} else {
-				result = append(result, "rollback_reviewed")
+				result = append(result, experienceReviewLifecycleTagRollbackReviewed.String())
 			}
 		}
-		if reviewKind == "conflict" {
+		if kind == experienceReviewKindConflict {
 			if outcome == experienceReviewOutcomeRejected {
-				result = append(result, "conflict_rejected")
+				result = append(result, experienceReviewLifecycleTagConflictRejected.String())
 			} else {
-				result = append(result, "conflict_reviewed")
+				result = append(result, experienceReviewLifecycleTagConflictReviewed.String())
 			}
 		}
-		if reviewKind == "skill_nudge" {
+		if kind == experienceReviewKindSkillNudge {
 			if outcome == experienceReviewOutcomeRejected {
-				result = append(result, "skill_nudge_rejected")
+				result = append(result, experienceReviewLifecycleTagSkillNudgeRejected.String())
 			} else {
-				result = append(result, "skill_nudge_reviewed")
+				result = append(result, experienceReviewLifecycleTagSkillNudgeReviewed.String())
 			}
 		}
 	}
@@ -210,20 +206,17 @@ func resetExperienceReviewTagsForChangedContent(existing, incoming []string) []s
 }
 
 func experienceReviewableTags(tags []string) bool {
-	return hasTag(tags, groupDiscussionConflictTag) || hasTag(tags, groupDiscussionRollbackTag) || hasTag(tags, "skill_nudge_candidate")
+	return hasTag(tags, groupDiscussionConflictTag) || hasTag(tags, groupDiscussionRollbackTag) || hasTag(tags, experienceTraceKindSkillNudgeCandidate.String())
 }
 
 func withoutExperienceReviewStateTags(tags []string) []string {
 	result := make([]string, 0, len(tags))
 	for _, tag := range tags {
 		tag = strings.TrimSpace(tag)
-		if tag == "" || tag == experienceReviewRequiredTag || tag == experienceReviewResolvedTag || tag == "review_deferred" {
+		if tag == "" || tag == experienceReviewRequiredTag || tag == experienceReviewResolvedTag || normalizeExperienceReviewLifecycleTagKind(tag).IsStateTag() {
 			continue
 		}
-		if strings.HasPrefix(tag, experienceReviewStatusTagPrefix) || strings.HasPrefix(tag, "reviewed_at:") {
-			continue
-		}
-		if tag == "rollback_reviewed" || tag == "rollback_rejected" || tag == "conflict_reviewed" || tag == "conflict_rejected" || tag == "skill_nudge_reviewed" || tag == "skill_nudge_rejected" {
+		if strings.HasPrefix(tag, experienceReviewStatusTagPrefix) || strings.HasPrefix(tag, experienceReviewedAtTagPrefix) {
 			continue
 		}
 		result = append(result, tag)

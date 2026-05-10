@@ -29,7 +29,7 @@ type CodingAgentEvent struct {
 	Files      []string `json:"files,omitempty"`
 }
 
-func newCodingAgentTaskEvent(phase string, task *TaskItem, title string, runID string) CodingAgentEvent {
+func newCodingAgentTaskEvent(phase codingAgentEventPhaseKind, task *TaskItem, title string, runID string) CodingAgentEvent {
 	if task != nil && strings.TrimSpace(title) == "" {
 		title = compactSubAgentTaskTitle(task.Title)
 	}
@@ -40,8 +40,8 @@ func newCodingAgentTaskEvent(phase string, task *TaskItem, title string, runID s
 	return CodingAgentEvent{
 		Version: 1,
 		Agent:   "coding",
-		Event:   "task_status",
-		Phase:   strings.TrimSpace(strings.ToLower(phase)),
+		Event:   codingAgentEventKindTaskStatus.String(),
+		Phase:   phase.String(),
 		TaskID:  taskID,
 		Title:   strings.TrimSpace(title),
 		RunID:   strings.TrimSpace(runID),
@@ -130,24 +130,11 @@ func codingAgentEventWire(event CodingAgentEvent) codingAgentEventPayload {
 }
 
 func codingAgentEventCarriesDuration(event string) bool {
-	return strings.TrimSpace(strings.ToLower(event)) == "tool_finished"
+	return classifyCodingAgentEventKind(event).CarriesDuration()
 }
 
 func codingAgentEventCarriesCount(event string) bool {
-	switch strings.TrimSpace(strings.ToLower(event)) {
-	case "diff_updated",
-		"diff_summary",
-		"diff_check",
-		"verification_summary",
-		"exploration_summary",
-		"guardrail_summary",
-		"command_summary",
-		"file_activity_summary",
-		"quality_summary":
-		return true
-	default:
-		return false
-	}
+	return classifyCodingAgentEventKind(event).CarriesCount()
 }
 
 func isCodingAgentEventText(text string) bool {

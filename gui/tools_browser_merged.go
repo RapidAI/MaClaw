@@ -88,6 +88,7 @@ var mergedBrowserInputSchema = map[string]interface{}{
 	// session_start specific
 	"start_url":        map[string]string{"type": "string", "description": "初始 URL（session_start 时可用）"},
 	"reuse_existing":   map[string]string{"type": "boolean", "description": "是否复用已有会话（session_start 时可用，默认 true）"},
+	"mode":             map[string]string{"type": "string", "description": "连接模式（session_start 时可用）：auto（默认，优先直连用户 Chrome 复用登录态）/ connect_user（仅直连）/ isolated（隔离实例）"},
 	"allowed_domains":  map[string]string{"type": "array", "description": "允许访问的域名列表"},
 	"blocked_domains":  map[string]string{"type": "array", "description": "禁止访问的域名列表"},
 	"close_browser":    map[string]string{"type": "boolean", "description": "是否关闭浏览器（session_stop 时可用）"},
@@ -96,59 +97,22 @@ var mergedBrowserInputSchema = map[string]interface{}{
 	"success_criteria": map[string]string{"type": "string", "description": "成功标准（task_run/task_verify 时可用）"},
 }
 
-// actionToToolName maps merged browser action names to individual tool names.
-var actionToToolName = map[string]string{
-	"session_start": "browser_session_start",
-	"session_stop":  "browser_session_stop",
-	"observe":       "browser_observe",
-	"navigate":      "browser_navigate",
-	"click":         "browser_click",
-	"type":          "browser_type",
-	"wait":          "browser_wait",
-	"refresh":       "browser_refresh",
-	"back":          "browser_back",
-	"extract":       "browser_extract",
-	"connect":       "browser_connect",
-	"screenshot":    "browser_screenshot",
-	"get_text":      "browser_get_text",
-	"get_html":      "browser_get_html",
-	"eval":          "browser_eval",
-	"scroll":        "browser_scroll",
-	"select":        "browser_select",
-	"list_pages":    "browser_list_pages",
-	"switch_page":   "browser_switch_page",
-	"close":         "browser_close",
-	"click_at":      "browser_click_at",
-	"set_files":     "browser_set_files",
-	"info":          "browser_info",
-	"ocr":           "browser_ocr",
-	"task_run":      "browser_task_run",
-	"task_status":   "browser_task_status",
-	"task_verify":   "browser_task_verify",
-	"task_replay":   "browser_task_replay",
-	"record_start":  "browser_record_start",
-	"record_stop":   "browser_record_stop",
-	"list_flows":    "browser_list_flows",
-}
-
 // dispatchMergedBrowser routes a merged browser(action=...) call to the
 // corresponding individual browser_* tool handler.
 func dispatchMergedBrowser(registry *ToolRegistry, args map[string]interface{}) string {
-	action, _ := args["action"].(string)
-	action = strings.TrimSpace(action)
-	if action == "" {
+	actionText, _ := args["action"].(string)
+	actionText = strings.TrimSpace(actionText)
+	if actionText == "" {
 		return "缺少 action 参数。请指定操作类型，如 browser(action=\"navigate\", ...)"
 	}
 
-	toolName, ok := actionToToolName[action]
-	if !ok {
+	action := normalizeBrowserToolAction(actionText)
+	toolName := action.ToolName()
+	if toolName == "" {
 		// Try with browser_ prefix in case LLM uses the full name.
-		toolName = "browser_" + action
+		toolName = "browser_" + actionText
 		if _, exists := registry.Get(toolName); !exists {
-			var actions []string
-			for a := range actionToToolName {
-				actions = append(actions, a)
-			}
+			actions := browserSupportedActionNames()
 			return fmt.Sprintf("未知 browser action: %s（支持: %s）", action, strings.Join(actions, ", "))
 		}
 	}

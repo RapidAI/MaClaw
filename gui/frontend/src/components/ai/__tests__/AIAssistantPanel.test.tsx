@@ -252,14 +252,11 @@ describe('AIAssistantPanel property tests', () => {
         });
 
         const row = getByTestId('ai-input-row');
-        const actions = getByTestId('ai-input-actions');
+        const toolbar = getByTestId('ai-input-toolbar');
         const inputBar = getByTestId('ai-input-bar');
 
-        expect(row.style.alignItems).toBe('flex-end');
-        expect(actions.getAttribute('role')).toBe('group');
-        expect(actions.getAttribute('aria-label')).toBe('Input actions');
-        expect(actions.style.paddingTop).toBe('0px');
-        expect(actions.style.paddingBottom).toBe('4px');
+        expect(row.style.alignItems).toBe('flex-start');
+        expect(toolbar.querySelector('[role="group"]')!.getAttribute('aria-label')).toBe('Input actions');
         expect(inputBar.style.flex).toBe('');
     });
 
@@ -275,13 +272,11 @@ describe('AIAssistantPanel property tests', () => {
         fireEvent.mouseUp(document);
 
         const row = getByTestId('ai-input-row');
-        const actions = getByTestId('ai-input-actions');
+        const toolbar = getByTestId('ai-input-toolbar');
         const inputBar = getByTestId('ai-input-bar');
 
         expect(row.style.alignItems).toBe('flex-start');
-        expect(actions.style.flexShrink).toBe('0');
-        expect(actions.style.paddingTop).toBe('2px');
-        expect(actions.style.paddingBottom).toBe('0px');
+        expect(toolbar).toBeTruthy();
         expect(inputBar.style.flex).toBe('1 1 auto');
     });
 
@@ -508,6 +503,88 @@ describe('AIAssistantPanel property tests', () => {
         const input = getByTestId('ai-input') as HTMLTextAreaElement;
         expect(input.placeholder).toBe('Running tools... (you can type ahead)');
         expect(getByText('Running tools... (you can type ahead)')).toBeTruthy();
+    });
+
+    it('does not send when Enter confirms an active IME composition', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'ni' } });
+        fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('ni');
+    });
+
+    it('tracks IME composition locally so Enter confirms text before it can send', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: 'mac' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('mac');
+    });
+
+    it('does not send when compositionend arrives before the Enter keydown that committed IME text', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: 'macaron' } });
+        fireEvent.compositionEnd(input);
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('macaron');
+    });
+
+    it('only consumes the first Enter after compositionend so a quick second Enter can send', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: 'quick send' } });
+        fireEvent.compositionEnd(input);
+
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('quick send'));
+    });
+
+    it('does not send when an IME Enter keydown is reported with keyCode 229', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'ma' } });
+        fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('ma');
     });
 
     it('fires queued input into the next agent loop as supplementary context', async () => {
@@ -1146,6 +1223,22 @@ describe('AIAssistantPanel property tests', () => {
         await waitFor(() => {
             expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\capture.png');
         });
+    });
+
+    it('renders image_key screenshots without requiring a saved local file', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                imageKey: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9kAAAAASUVORK5CYII=',
+            }),
+        ];
+
+        const { getByAltText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByAltText('screenshot')).toBeTruthy();
     });
 
     it('normal send records each manual prompt once so consecutive duplicates can be deduplicated upstream', async () => {

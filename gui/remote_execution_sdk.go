@@ -464,17 +464,19 @@ func (h *SDKExecutionHandle) readStdout() {
 		}
 
 		msgType, _ := raw["type"].(string)
+		msgKind := normalizeRemoteSDKMessageTypeKind(msgType)
 
-		switch msgType {
-		case "control_request":
+		switch msgKind {
+		case remoteSDKMessageTypeControlRequest:
 			h.handleControlRequest([]byte(trimmed))
-		case "control_cancel_request":
+		case remoteSDKMessageTypeControlCancelRequest:
 			h.handleControlCancel([]byte(trimmed))
 		default:
 			// Surface api_retry messages before parsing into SDKMessage
 			// (SDKMessage struct doesn't capture the extra fields).
-			if msgType == "system" {
-				if sub, _ := raw["subtype"].(string); sub == "api_retry" {
+			if msgKind == remoteSDKMessageTypeSystem {
+				sub, _ := raw["subtype"].(string)
+				if normalizeRemoteSDKMessageSubtypeKind(sub) == remoteSDKMessageSubtypeAPIRetry {
 					attempt, _ := raw["attempt"].(float64)
 					errStr, _ := raw["error"].(string)
 					line := fmt.Sprintf("⚠️ API retry (attempt %.0f): %s", attempt, errStr)
@@ -484,7 +486,7 @@ func (h *SDKExecutionHandle) readStdout() {
 
 			// Surface API errors from result messages so the user sees
 			// what went wrong instead of a silent busy→waiting transition.
-			if msgType == "result" {
+			if msgKind == remoteSDKMessageTypeResult {
 				if isErr, _ := raw["is_error"].(bool); isErr {
 					if errText, _ := raw["result"].(string); errText != "" {
 						if len(errText) > 500 {
@@ -498,13 +500,14 @@ func (h *SDKExecutionHandle) readStdout() {
 			// Parse as SDK message
 			var msg SDKMessage
 			if err := json.Unmarshal([]byte(trimmed), &msg); err == nil {
+				parsedMsgKind := normalizeRemoteSDKMessageTypeKind(msg.Type)
 				// Check for session init
-				if msg.Type == "system" && msg.Subtype == "init" && msg.SessionID != "" {
+				if parsedMsgKind == remoteSDKMessageTypeSystem && normalizeRemoteSDKMessageSubtypeKind(msg.Subtype) == remoteSDKMessageSubtypeInit && msg.SessionID != "" {
 					h.claudeSessionID.Store(msg.SessionID)
 				}
 
 				// Handle stream_event: extract streaming text and emit immediately
-				if msg.Type == "stream_event" && msg.Event != nil {
+				if parsedMsgKind == remoteSDKMessageTypeStreamEvent && msg.Event != nil {
 					h.hasStreamEvents.Store(true)
 					text := extractStreamEventText(msg.Event)
 					if text != "" {
@@ -643,14 +646,14 @@ func (h *SDKExecutionHandle) handleControlCancel(data []byte) {
 // sdkMessageToText converts an SDK message to human-readable text for
 // the output pipeline and preview display.
 func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
-	switch msg.Type {
-	case "system":
-		if msg.Subtype == "init" {
+	switch normalizeRemoteSDKMessageTypeKind(msg.Type) {
+	case remoteSDKMessageTypeSystem:
+		if normalizeRemoteSDKMessageSubtypeKind(msg.Subtype) == remoteSDKMessageSubtypeInit {
 			return "" // init message is handled by runSDKOutputLoop status update
 		}
 		return ""
 
-	case "assistant":
+	case remoteSDKMessageTypeAssistant:
 		// With --include-partial-messages, text is already streamed via
 		// stream_event messages. Only emit tool_use summaries from the
 		// complete assistant message to avoid duplicating text output.
@@ -666,10 +669,10 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 		}
 		var parts []string
 		for _, block := range msg.Message.Content {
-			switch block.Type {
-			case "text":
+			switch normalizeRemoteSDKContentBlockTypeKind(block.Type) {
+			case remoteSDKContentBlockText:
 				// Skip — already streamed incrementally via stream_event
-			case "tool_use":
+			case remoteSDKContentBlockToolUse:
 				if block.Name == "AskUserQuestion" {
 					if details := formatAskUserQuestionBlock(block); details != "" {
 						parts = append(parts, details)
@@ -693,7 +696,7 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 					}
 				}
 				parts = append(parts, fmt.Sprintf("⏺ %s", summary))
-			case "image":
+			case remoteSDKContentBlockImage:
 				if block.Source != nil && block.Source.MediaType != "" {
 					parts = append(parts, fmt.Sprintf("🖼 Image (%s)", block.Source.MediaType))
 				} else {
@@ -703,12 +706,12 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 		}
 		return strings.Join(parts, "\n")
 
-	case "user":
+	case remoteSDKMessageTypeUser:
 		if msg.Message == nil {
 			return ""
 		}
 		for _, block := range msg.Message.Content {
-			if block.Type == "tool_result" {
+			if normalizeRemoteSDKContentBlockTypeKind(block.Type) == remoteSDKContentBlockToolResult {
 				if block.IsError {
 					result := block.Content
 					if len(result) > 150 {
@@ -722,7 +725,7 @@ func sdkMessageToText(msg SDKMessage, hasStreamEvents bool) string {
 		}
 		return ""
 
-	case "result":
+	case remoteSDKMessageTypeResult:
 		// Error results are surfaced directly in readStdout from the raw
 		// JSON (SDKResultPayload doesn't capture is_error/result fields).
 		return ""
@@ -767,8 +770,8 @@ func formatAskUserQuestionBlock(block SDKContentBlock) string {
 func extractStreamEventText(event map[string]interface{}) string {
 	eventType, _ := event["type"].(string)
 
-	switch eventType {
-	case "message_start":
+	switch normalizeAnthropicStreamEventType(eventType) {
+	case anthropicStreamEventMessageStart:
 		// Emit a marker when the LLM starts generating a response.
 		// This ensures RawOutputLines grows immediately, preventing
 		// the session observer from timing out during the gap between
@@ -776,17 +779,17 @@ func extractStreamEventText(event map[string]interface{}) string {
 		// be tens of seconds with slow API proxies like GLM).
 		return "\n⏳ LLM responding...\n"
 
-	case "content_block_delta":
+	case anthropicStreamEventContentBlockDelta:
 		delta, ok := event["delta"].(map[string]interface{})
 		if !ok {
 			return ""
 		}
 		deltaType, _ := delta["type"].(string)
-		if deltaType == "text_delta" {
+		if normalizeRemoteSDKStreamDeltaTypeKind(deltaType) == remoteSDKStreamDeltaText {
 			text, _ := delta["text"].(string)
 			return text // raw text chunk — no newline, accumulates naturally
 		}
-		if deltaType == "thinking_delta" {
+		if normalizeRemoteSDKStreamDeltaTypeKind(deltaType) == remoteSDKStreamDeltaThinking {
 			// Don't emit individual thinking tokens — they would flood
 			// RawOutputLines with hundreds of "💭" markers. The single
 			// "💭 Thinking..." line from content_block_start is enough
@@ -796,22 +799,22 @@ func extractStreamEventText(event map[string]interface{}) string {
 		// input_json_delta for tool inputs — skip (too noisy)
 		return ""
 
-	case "content_block_start":
+	case anthropicStreamEventContentBlockStart:
 		block, ok := event["content_block"].(map[string]interface{})
 		if !ok {
 			return ""
 		}
 		blockType, _ := block["type"].(string)
-		if blockType == "thinking" {
+		if normalizeRemoteSDKContentBlockTypeKind(blockType) == remoteSDKContentBlockThinking {
 			return "\n💭 Thinking...\n"
 		}
-		if blockType == "tool_use" {
+		if normalizeRemoteSDKContentBlockTypeKind(blockType) == remoteSDKContentBlockToolUse {
 			name, _ := block["name"].(string)
 			if name != "" {
 				return fmt.Sprintf("\n⏺ %s", name)
 			}
 		}
-		if blockType == "image" {
+		if normalizeRemoteSDKContentBlockTypeKind(blockType) == remoteSDKContentBlockImage {
 			source, _ := block["source"].(map[string]interface{})
 			if source != nil {
 				mediaType, _ := source["media_type"].(string)

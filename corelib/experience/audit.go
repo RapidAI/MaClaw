@@ -2,7 +2,6 @@ package experience
 
 import (
 	"sort"
-	"strings"
 	"sync"
 	"time"
 )
@@ -303,43 +302,11 @@ func diagnoseAuditHealth(health AuditHealth, skipReasons map[string]int, unsuppo
 }
 
 func auditIssueCodeForReason(reason string) string {
-	lower := strings.ToLower(reason)
-	switch {
-	case strings.Contains(lower, "quality score below threshold"):
-		return AuditIssueQualityBelowThreshold
-	case strings.Contains(lower, "insufficient session evidence"):
-		return AuditIssueInsufficientEvidence
-	case strings.Contains(lower, "existing skill is equal or better"):
-		return AuditIssueExistingSkillBetter
-	case strings.Contains(lower, "pattern budget exceeded"):
-		return AuditIssuePatternBudgetExceeded
-	case strings.Contains(lower, "register failed"), strings.Contains(lower, "update failed"):
-		return AuditIssueStoreWriteFailed
-	case strings.Contains(lower, "unsupported step action"):
-		return AuditIssueUnsupportedStepAction
-	default:
-		return AuditIssueNoSkillsLearned
-	}
+	return classifyAuditReason(reason).IssueCode()
 }
 
 func suggestAuditActionForReason(reason string) string {
-	lower := strings.ToLower(reason)
-	switch {
-	case strings.Contains(lower, "quality score below threshold"):
-		return "capture broader repeatable workflows before learning a skill"
-	case strings.Contains(lower, "insufficient session evidence"):
-		return "keep enough command output and important events to support every learned step"
-	case strings.Contains(lower, "existing skill is equal or better"):
-		return "no action needed unless the existing skill should be replaced"
-	case strings.Contains(lower, "pattern budget exceeded"):
-		return "increase extraction budget only after confirming candidates are high quality"
-	case strings.Contains(lower, "register failed"), strings.Contains(lower, "update failed"):
-		return "check learned skill store permissions and validation errors"
-	case strings.Contains(lower, "unsupported step action"):
-		return "teach extraction to use supported actions or add support for the missing action"
-	default:
-		return "inspect recent audit decisions for the skipped candidate details"
-	}
+	return classifyAuditReason(reason).SuggestedAction()
 }
 
 func topAuditCount(counts map[string]int) (string, bool) {

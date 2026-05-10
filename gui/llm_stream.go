@@ -1175,25 +1175,27 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 			continue
 		}
 
-		switch evt.Type {
-		case "content_block_start":
+		switch normalizeAnthropicStreamEventType(evt.Type) {
+		case anthropicStreamEventContentBlockStart:
 			acc := &blockAccum{blockType: evt.ContentBlock.Type}
-			if evt.ContentBlock.Type == "text" && evt.ContentBlock.Text != "" {
+			blockKind := normalizeAnthropicContentBlockKind(evt.ContentBlock.Type)
+			if blockKind == anthropicContentBlockText && evt.ContentBlock.Text != "" {
 				acc.text.WriteString(evt.ContentBlock.Text)
 				tf.Write(evt.ContentBlock.Text)
 			}
-			if evt.ContentBlock.Type == "tool_use" {
+			if blockKind == anthropicContentBlockToolUse {
 				acc.toolID = evt.ContentBlock.ID
 				acc.toolName = evt.ContentBlock.Name
 			}
 			blocks[evt.Index] = acc
 
-		case "content_block_delta":
+		case anthropicStreamEventContentBlockDelta:
 			acc, ok := blocks[evt.Index]
 			if !ok {
 				continue
 			}
-			if evt.Delta.Type == "text_delta" && evt.Delta.Text != "" {
+			deltaKind := normalizeAnthropicDeltaKind(evt.Delta.Type)
+			if deltaKind == anthropicDeltaText && evt.Delta.Text != "" {
 				acc.text.WriteString(evt.Delta.Text)
 				tf.Write(evt.Delta.Text)
 				// Early-terminate if the repetition filter detected degeneration.
@@ -1209,7 +1211,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 					goto anthDone
 				}
 			}
-			if evt.Delta.Type == "input_json_delta" && evt.Delta.PartialJSON != "" {
+			if deltaKind == anthropicDeltaInputJSON && evt.Delta.PartialJSON != "" {
 				acc.toolArgs.WriteString(evt.Delta.PartialJSON)
 				if acc.toolArgs.Len() > guiMaxToolArgumentsBytes {
 					toolName := acc.toolName
@@ -1220,7 +1222,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 				}
 			}
 
-		case "message_delta":
+		case anthropicStreamEventMessageDelta:
 			if evt.Delta.StopReason != "" {
 				stopReason = evt.Delta.StopReason
 			}
@@ -1231,7 +1233,7 @@ func (h *IMMessageHandler) doAnthropicLLMRequestStream(
 				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 			}
 
-		case "message_stop":
+		case anthropicStreamEventMessageStop:
 			// End of stream
 
 		case "message_start":
@@ -1297,10 +1299,10 @@ anthDone:
 		if !ok {
 			continue
 		}
-		switch acc.blockType {
-		case "text":
+		switch normalizeAnthropicContentBlockKind(acc.blockType) {
+		case anthropicContentBlockText:
 			textParts = append(textParts, acc.text.String())
-		case "tool_use":
+		case anthropicContentBlockToolUse:
 			msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{
 				ID:   acc.toolID,
 				Type: "function",
@@ -1320,7 +1322,7 @@ anthDone:
 	}
 
 	finishReason := "stop"
-	if stopReason == "tool_use" {
+	if normalizeAnthropicContentBlockKind(stopReason) == anthropicContentBlockToolUse {
 		finishReason = "tool_calls"
 	} else if stopReason == "max_tokens" {
 		finishReason = "length"

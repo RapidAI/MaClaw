@@ -1,0 +1,101 @@
+package browser
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+// AuditLogger records operations performed in connect_user mode for security auditing.
+// Only active when the session is connected to the user's real Chrome (not isolated).
+type AuditLogger struct {
+	mu      sync.Mutex
+	logPath string
+	file    *os.File
+}
+
+// NewAuditLogger creates an audit logger that writes to the given directory.
+// The log file is created at {logDir}/browser_connect_audit.log.
+func NewAuditLogger(logDir string) *AuditLogger {
+	if logDir == "" {
+		home, _ := os.UserHomeDir()
+		if home == "" {
+			return &AuditLogger{} // no-op logger
+		}
+		logDir = filepath.Join(home, ".maclaw", "logs")
+	}
+	os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "browser_connect_audit.log")
+	return &AuditLogger{logPath: logPath}
+}
+
+func (l *AuditLogger) write(entry string) {
+	if l == nil || l.logPath == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.file == nil {
+		f, err := os.OpenFile(l.logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			return
+		}
+		l.file = f
+	}
+
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Fprintf(l.file, "%s %s\n", timestamp, entry)
+}
+
+// LogConnect records a successful connection to the user's Chrome.
+func (l *AuditLogger) LogConnect(sessionID, addr string) {
+	l.write(fmt.Sprintf("[CONNECT] session_id=%s addr=%s", sessionID, addr))
+}
+
+// LogDisconnect records a disconnection.
+func (l *AuditLogger) LogDisconnect(sessionID, reason string) {
+	l.write(fmt.Sprintf("[DISCONNECT] session_id=%s reason=%s", sessionID, reason))
+}
+
+// LogNavigation records a page navigation.
+func (l *AuditLogger) LogNavigation(sessionID, url string) {
+	l.write(fmt.Sprintf("[NAVIGATE] session_id=%s url=%s", sessionID, url))
+}
+
+// LogAction records a generic browser action.
+func (l *AuditLogger) LogAction(sessionID, action, detail string) {
+	l.write(fmt.Sprintf("[ACTION] session_id=%s action=%s detail=%s", sessionID, action, detail))
+}
+
+// Close flushes and closes the log file.
+func (l *AuditLogger) Close() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.file != nil {
+		l.file.Close()
+		l.file = nil
+	}
+}
+
+// globalAuditLogger is the package-level audit logger instance.
+var globalAuditLogger *AuditLogger
+var auditLoggerOnce sync.Once
+
+// GetAuditLogger returns the singleton audit logger.
+func GetAuditLogger() *AuditLogger {
+	auditLoggerOnce.Do(func() {
+		home, _ := os.UserHomeDir()
+		logDir := ""
+		if home != "" {
+			logDir = filepath.Join(home, ".maclaw", "logs")
+		}
+		globalAuditLogger = NewAuditLogger(logDir)
+	})
+	return globalAuditLogger
+}

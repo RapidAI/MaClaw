@@ -199,13 +199,13 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	}
 
 	// Bug #3: Distinguish needs_setup / disabled from active
-	if target.Status == "needs_setup" {
+	switch normalizeSkillEntryStatus(target.Status) {
+	case skillEntryStatusNeedsSetup:
 		return "", fmt.Errorf("skill %q needs setup. Installation was incomplete (missing dependencies or files). Please check the skill directory (%s) and complete configuration", skillName, target.SkillDir)
-	}
-	if target.Status == "disabled" {
+	case skillEntryStatusDisabled:
 		return "", fmt.Errorf("skill %q is disabled. Please enable it first", skillName)
-	}
-	if target.Status != "active" && target.Status != "" {
+	case skillEntryStatusActive, skillEntryStatusUnknown:
+	default:
 		return "", fmt.Errorf("skill %q status is %q, expected active", skillName, target.Status)
 	}
 
@@ -310,7 +310,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		status: SkillRunStatus{
 			RunID:          runID,
 			Skill:          skillName,
-			Status:         "running",
+			Status:         string(skillRunStatusRunning),
 			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
 			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, prep.ExecutionSteps,
 				strings.TrimSpace(templateVars["output"]), len(prep.SelectedSteps) == 0),
@@ -327,7 +327,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		run.status.Steps[i] = StepResult{
 			Index:  i,
 			Action: step.Action,
-			Status: "pending",
+			Status: string(skillStepStatusPending),
 		}
 	}
 	r.runs[runID] = run
@@ -367,7 +367,7 @@ func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkill
 		status: SkillRunStatus{
 			RunID:          runID,
 			Skill:          skillName,
-			Status:         "running",
+			Status:         string(skillRunStatusRunning),
 			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
 			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, nil,
 				strings.TrimSpace(templateVars["output"]), true),
@@ -386,7 +386,7 @@ func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkill
 			Index:  i,
 			Name:   step.Skill,
 			Action: "pipeline",
-			Status: "pending",
+			Status: string(skillStepStatusPending),
 		}
 	}
 	r.runs[runID] = run
@@ -424,15 +424,15 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	if err != nil {
 		execErr = err
 		for i := range run.status.Steps {
-			if run.status.Steps[i].Status == "pending" {
-				run.status.Steps[i].Status = "skipped"
+			if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
+				run.status.Steps[i].Status = string(skillStepStatusSkipped)
 			}
 		}
 		run.status.Error = err.Error()
 		r.mu.Unlock()
 		r.updateUsageStats(entry, execErr)
 		r.mu.Lock()
-		run.status.Status = "failed"
+		run.status.Status = string(skillRunStatusFailed)
 		run.status.EndedAt = time.Now().Format(time.RFC3339)
 		run.status.DurationMs = time.Since(execStart).Milliseconds()
 		r.mu.Unlock()
@@ -447,14 +447,14 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 			break
 		}
 		run.status.Steps[i].Name = stepResult.Skill
-		switch stepResult.Status {
-		case "completed":
-			run.status.Steps[i].Status = "success"
-		case "failed":
-			run.status.Steps[i].Status = "failed"
+		switch normalizeSkillPipelineStatus(stepResult.Status) {
+		case skillPipelineStatusCompleted:
+			run.status.Steps[i].Status = string(skillStepStatusSuccess)
+		case skillPipelineStatusFailed:
+			run.status.Steps[i].Status = string(skillStepStatusFailed)
 			run.status.Steps[i].Error = stepResult.Error
-		case "skipped":
-			run.status.Steps[i].Status = "skipped"
+		case skillPipelineStatusSkipped:
+			run.status.Steps[i].Status = string(skillStepStatusSkipped)
 		default:
 			run.status.Steps[i].Status = stepResult.Status
 		}
@@ -463,16 +463,16 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		}
 	}
 	for i := len(result.StepResults); i < len(run.status.Steps); i++ {
-		if run.status.Steps[i].Status == "pending" {
-			run.status.Steps[i].Status = "skipped"
+		if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
+			run.status.Steps[i].Status = string(skillStepStatusSkipped)
 		}
 	}
-	finalStatus := "failed"
-	switch result.Status {
-	case "completed":
-		finalStatus = "success"
-	case "cancelled":
-		finalStatus = "cancelled"
+	finalStatus := skillRunStatusFailed
+	switch normalizeSkillPipelineStatus(result.Status) {
+	case skillPipelineStatusCompleted:
+		finalStatus = skillRunStatusSuccess
+	case skillPipelineStatusCancelled:
+		finalStatus = skillRunStatusCancelled
 	default:
 		if result.Error != "" {
 			run.status.Error = result.Error
@@ -483,11 +483,11 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		}
 	}
 	r.mu.Unlock()
-	if finalStatus != "cancelled" {
+	if finalStatus != skillRunStatusCancelled {
 		r.updateUsageStats(entry, execErr)
 	}
 	r.mu.Lock()
-	run.status.Status = finalStatus
+	run.status.Status = string(finalStatus)
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	run.status.DurationMs = time.Since(execStart).Milliseconds()
 	r.mu.Unlock()
@@ -573,7 +573,7 @@ func (r *SkillRunner) CleanupFinished(maxKeep int) {
 	}
 	var finished []finishedEntry
 	for id, run := range r.runs {
-		if run.status.Status != "running" {
+		if !run.status.IsRunning() {
 			finished = append(finished, finishedEntry{id: id, endedAt: run.status.EndedAt})
 		}
 	}
@@ -663,33 +663,33 @@ func summarizeSkillRun(status *SkillRunStatus) {
 	}
 	if artifactPath != "" {
 		status.Summary.ArtifactPath = artifactPath
-		if status.Status == "running" {
-			status.Summary.ArtifactStatus = "pending"
+		if status.IsRunning() {
+			status.Summary.ArtifactStatus = string(skillArtifactStatusPending)
 		} else if artifactExists(artifactPath) {
-			status.Summary.ArtifactStatus = "verified"
+			status.Summary.ArtifactStatus = string(skillArtifactStatusVerified)
 		} else if artifactExpected {
-			status.Summary.ArtifactStatus = "missing"
+			status.Summary.ArtifactStatus = string(skillArtifactStatusMissing)
 		}
 	}
 	if craftVerificationPassedStatus(status) {
-		status.Summary.ArtifactStatus = "verified"
+		status.Summary.ArtifactStatus = string(skillArtifactStatusVerified)
 	}
 	if isInstructionOnlySkillStatus(status) {
-		status.Summary.NeedsArtifactVerification = status.Summary.ArtifactStatus != "verified"
+		status.Summary.NeedsArtifactVerification = normalizeSkillArtifactStatus(status.Summary.ArtifactStatus) != skillArtifactStatusVerified
 	}
 	for i, step := range status.Steps {
-		switch step.Status {
-		case "running":
+		switch step.LifecycleStatus() {
+		case skillStepStatusRunning:
 			status.Summary.CurrentStepIndex = i
 			status.Summary.CurrentStep = step.Action
 			status.Summary.CurrentStepStatus = step.Status
-		case "success":
+		case skillStepStatusSuccess:
 			status.Summary.LastCompletedStepIndex = i
 			status.Summary.LastCompletedStep = step.Action
 			if snippet := strings.TrimSpace(step.Output); snippet != "" {
 				status.Summary.LastOutputSnippet = truncateSkillRunSnippet(snippet)
 			}
-		case "failed":
+		case skillStepStatusFailed:
 			status.Summary.CurrentStepIndex = i
 			status.Summary.CurrentStep = step.Action
 			status.Summary.CurrentStepStatus = step.Status
@@ -697,14 +697,14 @@ func summarizeSkillRun(status *SkillRunStatus) {
 			if snippet := strings.TrimSpace(firstNonEmptyTraceText(step.Error, step.Output)); snippet != "" {
 				status.Summary.LastErrorSnippet = truncateSkillRunSnippet(snippet)
 			}
-		case "skipped":
+		case skillStepStatusSkipped:
 			status.SkippedSteps++
 		}
 	}
 	if status.Summary.CurrentStep == "" && len(status.Steps) > 0 {
 		for i := len(status.Steps) - 1; i >= 0; i-- {
 			step := status.Steps[i]
-			if step.Status != "pending" {
+			if step.LifecycleStatus() != skillStepStatusPending {
 				status.Summary.CurrentStepIndex = i
 				status.Summary.CurrentStep = step.Action
 				status.Summary.CurrentStepStatus = step.Status
@@ -951,7 +951,7 @@ func isInstructionOnlySkillEntry(skill *corelib.NLSkillEntry) bool {
 		return false
 	}
 	step := skill.Steps[0]
-	if step.Action != "craft_tool" {
+	if !classifySkillStepAction(step.Action).IsCraftTool() {
 		return false
 	}
 	params := step.Params
@@ -1013,7 +1013,7 @@ func stepExpectsArtifact(step corelib.NLSkillStep) bool {
 	if len(params) == 0 {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(stringVal(params, "verification_mode")), "artifact_required") {
+	if normalizeCraftVerificationModeKind(stringVal(params, "verification_mode")).RequiresArtifact() {
 		return true
 	}
 	if strings.TrimSpace(stringVal(params, "output_path")) != "" {
@@ -1037,7 +1037,7 @@ func isInstructionOnlySkillStatus(status *SkillRunStatus) bool {
 		return false
 	}
 	step := status.Steps[0]
-	if step.Action != "craft_tool" {
+	if !classifySkillStepAction(step.Action).IsCraftTool() {
 		return false
 	}
 	output := step.Output
@@ -1130,7 +1130,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = "failed"
+			run.status.Status = string(skillRunStatusFailed)
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1144,12 +1144,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	if strings.EqualFold(skill.Mode, "interactive") {
 		r.mu.Lock()
 		for i := range skill.Steps {
-			run.status.Steps[i].Status = "skipped"
+			run.status.Steps[i].Status = string(skillStepStatusSkipped)
 		}
 		r.mu.Unlock()
 		r.updateUsageStats(skill, nil)
 		r.mu.Lock()
-		run.status.Status = "success"
+		run.status.Status = string(skillRunStatusSuccess)
 		run.status.EndedAt = time.Now().Format(time.RFC3339)
 		run.status.DurationMs = time.Since(execStart).Milliseconds()
 		r.mu.Unlock()
@@ -1227,15 +1227,15 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			execErr := fmt.Errorf("%s", errMsg)
 			r.mu.Lock()
 			for i := range run.status.Steps {
-				if run.status.Steps[i].Status == "pending" {
-					run.status.Steps[i].Status = "skipped"
+				if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
+					run.status.Steps[i].Status = string(skillStepStatusSkipped)
 				}
 			}
 			run.status.Error = errMsg
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = "failed"
+			run.status.Status = string(skillRunStatusFailed)
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1249,15 +1249,15 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			execErr := fmt.Errorf("%s", errMsg)
 			r.mu.Lock()
 			for i := range run.status.Steps {
-				if run.status.Steps[i].Status == "pending" {
-					run.status.Steps[i].Status = "skipped"
+				if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
+					run.status.Steps[i].Status = string(skillStepStatusSkipped)
 				}
 			}
 			run.status.Error = errMsg
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = "failed"
+			run.status.Status = string(skillRunStatusFailed)
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1307,9 +1307,9 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		case <-ctx.Done():
 			r.mu.Lock()
 			for j := i; j < len(skill.Steps); j++ {
-				run.status.Steps[j].Status = "skipped"
+				run.status.Steps[j].Status = string(skillStepStatusSkipped)
 			}
-			run.status.Status = "cancelled"
+			run.status.Status = string(skillRunStatusCancelled)
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1318,9 +1318,9 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			if ctx.Err() != nil {
 				r.mu.Lock()
 				for j := i; j < len(skill.Steps); j++ {
-					run.status.Steps[j].Status = "skipped"
+					run.status.Steps[j].Status = string(skillStepStatusSkipped)
 				}
-				run.status.Status = "cancelled"
+				run.status.Status = string(skillRunStatusCancelled)
 				run.status.EndedAt = time.Now().Format(time.RFC3339)
 				run.status.DurationMs = time.Since(execStart).Milliseconds()
 				r.mu.Unlock()
@@ -1329,7 +1329,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			execErr := fmt.Errorf("skill execution exceeded global timeout of %v", globalTimeout)
 			r.mu.Lock()
 			for j := i; j < len(skill.Steps); j++ {
-				run.status.Steps[j].Status = "skipped"
+				run.status.Steps[j].Status = string(skillStepStatusSkipped)
 				if j == i {
 					run.status.Steps[j].Timeout = true
 					run.status.Steps[j].Error = "global timeout exceeded"
@@ -1339,7 +1339,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = "failed"
+			run.status.Status = string(skillRunStatusFailed)
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1350,14 +1350,14 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		// Handle condition: "on_failure" — skip if no prior failure
 		if step.Condition == "on_failure" && !hasFailure {
 			r.mu.Lock()
-			run.status.Steps[i].Status = "skipped"
+			run.status.Steps[i].Status = string(skillStepStatusSkipped)
 			r.mu.Unlock()
 			continue
 		}
 		// Handle condition: "on_success" — skip if there was a failure
 		if step.Condition == "on_success" && hasFailure {
 			r.mu.Lock()
-			run.status.Steps[i].Status = "skipped"
+			run.status.Steps[i].Status = string(skillStepStatusSkipped)
 			r.mu.Unlock()
 			continue
 		}
@@ -1366,7 +1366,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		if isAPIWorkflow && len(run.selectedSteps) > 0 && step.Label != "" {
 			if !cskill.StepLabelSelected(step.Label, run.selectedSteps) {
 				r.mu.Lock()
-				run.status.Steps[i].Status = "skipped"
+				run.status.Steps[i].Status = string(skillStepStatusSkipped)
 				r.mu.Unlock()
 				log.Printf("[skill-runner] step %d/%d: skipped (label %q not in selected steps)", i+1, len(skill.Steps), step.Label)
 				continue
@@ -1375,7 +1375,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		// api_workflow mode: skip unlabeled steps when step selection is active
 		if isAPIWorkflow && len(run.selectedSteps) > 0 && step.Label == "" {
 			r.mu.Lock()
-			run.status.Steps[i].Status = "skipped"
+			run.status.Steps[i].Status = string(skillStepStatusSkipped)
 			r.mu.Unlock()
 			log.Printf("[skill-runner] step %d/%d: skipped (no label, step selection active)", i+1, len(skill.Steps))
 			continue
@@ -1387,7 +1387,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			vars := r.templateVarsForRun(run.status.RunID)
 			if !cskill.EvaluateStepWhen(step.When, vars) {
 				r.mu.Lock()
-				run.status.Steps[i].Status = "skipped"
+				run.status.Steps[i].Status = string(skillStepStatusSkipped)
 				r.mu.Unlock()
 				log.Printf("[skill-runner] step %d/%d: skipped (when %q evaluated false)", i+1, len(skill.Steps), step.When)
 				continue
@@ -1395,14 +1395,14 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 
 		r.mu.Lock()
-		run.status.Steps[i].Status = "running"
+		run.status.Steps[i].Status = string(skillStepStatusRunning)
 		r.mu.Unlock()
 
 		step = withSkillPreferredShell(step, skill.PreferredShell)
 		resolvedStep, resolveErr := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
 		if resolveErr != nil {
 			r.mu.Lock()
-			run.status.Steps[i].Status = "failed"
+			run.status.Steps[i].Status = string(skillStepStatusFailed)
 			run.status.Steps[i].Error = resolveErr.Error()
 			hasFailure = true
 			execErr = resolveErr
@@ -1418,7 +1418,8 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 		// Propagate skill-level preferred_shell to bash steps so the shell
 		// selection logic can respect it.
-		if resolvedStep.Action == "bash" && skill.PreferredShell != "" {
+		resolvedStepAction := classifySkillStepAction(resolvedStep.Action)
+		if resolvedStepAction.IsBash() && skill.PreferredShell != "" {
 			if resolvedStep.Params == nil {
 				resolvedStep.Params = map[string]interface{}{}
 			}
@@ -1429,7 +1430,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		// Inject user_prompt into craft_tool steps so the LLM has context
 		// about what the user wants. Without this, craft_tool generates
 		// scripts blindly from just the skill description, often failing.
-		if resolvedStep.Action == "craft_tool" {
+		if resolvedStepAction.IsCraftTool() {
 			if resolvedStep.Params == nil {
 				resolvedStep.Params = map[string]interface{}{}
 			}
@@ -1459,12 +1460,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Lock()
 			run.status.Steps[i].Name = resolvedStep.Name
 			run.status.Steps[i].CommandResolved = resolveCommandForDisplay(resolvedStep)
-			run.status.Steps[i].Status = "skipped"
+			run.status.Steps[i].Status = string(skillStepStatusSkipped)
 			run.status.Steps[i].Error = ctx.Err().Error()
 			for j := i + 1; j < len(skill.Steps); j++ {
-				run.status.Steps[j].Status = "skipped"
+				run.status.Steps[j].Status = string(skillStepStatusSkipped)
 			}
-			run.status.Status = "cancelled"
+			run.status.Status = string(skillRunStatusCancelled)
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			if run.monitorCancel != nil {
@@ -1487,7 +1488,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		run.status.Steps[i].Name = resolvedStep.Name
 		run.status.Steps[i].CommandResolved = resolveCommandForDisplay(resolvedStep)
 		if stepErr != nil {
-			run.status.Steps[i].Status = "failed"
+			run.status.Steps[i].Status = string(skillStepStatusFailed)
 			run.status.Steps[i].Error = stepErr.Error()
 			run.status.Steps[i].Output = result
 			log.Printf("[skill-runner] step %d/%d FAILED: %v", i+1, len(skill.Steps), stepErr)
@@ -1504,7 +1505,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				execErr = stepErr
 				// 标记剩余 step 为 skipped
 				for j := i + 1; j < len(skill.Steps); j++ {
-					run.status.Steps[j].Status = "skipped"
+					run.status.Steps[j].Status = string(skillStepStatusSkipped)
 				}
 				r.mu.Unlock()
 				break
@@ -1513,7 +1514,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				execErr = stepErr // 记录第一个错误
 			}
 		} else {
-			run.status.Steps[i].Status = "success"
+			run.status.Steps[i].Status = string(skillStepStatusSuccess)
 			run.status.Steps[i].Output = result
 			log.Printf("[skill-runner] step %d/%d OK (output %d bytes)", i+1, len(skill.Steps), len(result))
 		}
@@ -1523,23 +1524,23 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	r.mu.Lock()
 	if ctx.Err() != nil {
 		for i := range run.status.Steps {
-			if run.status.Steps[i].Status == "pending" || run.status.Steps[i].Status == "running" {
-				run.status.Steps[i].Status = "skipped"
+			if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending || run.status.Steps[i].LifecycleStatus() == skillStepStatusRunning {
+				run.status.Steps[i].Status = string(skillStepStatusSkipped)
 				run.status.Steps[i].Error = ctx.Err().Error()
 			}
 		}
 		if run.monitorCancel != nil {
 			run.monitorCancel()
 		}
-		run.status.Status = "cancelled"
+		run.status.Status = string(skillRunStatusCancelled)
 		run.status.EndedAt = time.Now().Format(time.RFC3339)
 		run.status.DurationMs = time.Since(execStart).Milliseconds()
 		r.mu.Unlock()
 		return
 	}
-	finalStatus := "success"
+	finalStatus := skillRunStatusSuccess
 	if hasFailure {
-		finalStatus = "failed"
+		finalStatus = skillRunStatusFailed
 		if execErr != nil && strings.TrimSpace(run.status.Error) == "" {
 			run.status.Error = execErr.Error()
 		}
@@ -1556,7 +1557,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	r.updateUsageStats(skill, execErr)
 
 	r.mu.Lock()
-	run.status.Status = finalStatus
+	run.status.Status = string(finalStatus)
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	run.status.DurationMs = time.Since(execStart).Milliseconds()
 	r.mu.Unlock()
@@ -1650,7 +1651,7 @@ func (r *SkillRunner) markSelfRepairPending(skillName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, run := range r.runs {
-		if run.status.Skill == skillName && run.status.Status == "failed" {
+		if run.status.Skill == skillName && run.status.IsFailed() {
 			run.status.SelfRepairPending = true
 			break
 		}
@@ -1811,16 +1812,16 @@ func (r *SkillRunner) RecordSkillOutcome(skillName, outcome, lastError string) {
 	skills := r.executor.loadSkills()
 	for i, s := range skills {
 		if s.MatchesName(skillName) {
-			switch outcome {
-			case "success":
+			switch normalizeSkillOutcomeStatus(outcome) {
+			case skillOutcomeStatusSuccess:
 				skills[i].SuccessCount++
 				skills[i].LastError = ""
-			case "failure":
+			case skillOutcomeStatusFailure:
 				skills[i].FailureCount++
 				if lastError != "" {
 					skills[i].LastError = lastError
 				}
-			case "workaround":
+			case skillOutcomeStatusWorkaround:
 				skills[i].WorkaroundCount++
 				if lastError != "" {
 					skills[i].LastError = lastError
@@ -1882,8 +1883,7 @@ func (r *SkillRunner) RecordWorkaround(skillName, lastError string) {
 var skillStepProcessEnvMu sync.Mutex
 
 func installSkillStepProcessEnv(action string, extraEnv map[string]string) func() {
-	normalizedAction := cskill.NormalizeStepActionName(action)
-	if normalizedAction == "bash" || normalizedAction == "craft_tool" || len(extraEnv) == 0 {
+	if !classifySkillStepAction(action).UsesManagedProcessEnv() || len(extraEnv) == 0 {
 		return func() {}
 	}
 	skillStepProcessEnvMu.Lock()
@@ -1927,25 +1927,25 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 	}
 
 	r.mu.RLock()
-	status := run.status.Status
+	status := run.status.LifecycleStatus()
 	hasErr := false
 	for _, st := range run.status.Steps {
-		if st.Status == "failed" {
+		if st.IsFailed() {
 			hasErr = true
 			break
 		}
 	}
 	r.mu.RUnlock()
 
-	result := &SkillExecutionResult{Success: status == "success", HasError: hasErr, OutputQuality: "basic"}
-	if status == "success" && !hasErr {
+	result := &SkillExecutionResult{Success: status == skillRunStatusSuccess, HasError: hasErr, OutputQuality: "basic"}
+	if status == skillRunStatusSuccess && !hasErr {
 		result.OutputQuality = "good"
 	}
 
 	localHash := skillDirHash(skill.SkillDir)
 	score := EvaluateSkillExecution(result)
 	r.uploadTrigger.RecordExecution(skill.Name, score, localHash)
-	if status != "success" || hasErr || score < 1 {
+	if status != skillRunStatusSuccess || hasErr || score < 1 {
 		return
 	}
 
@@ -1995,8 +1995,8 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		return "", err
 	}
 	step.Action = cskill.NormalizeStepActionName(step.Action)
-	switch step.Action {
-	case "create_session":
+	switch classifySkillStepAction(step.Action) {
+	case skillStepActionCreateSession:
 		tool, _ := step.Params["tool"].(string)
 		projectPath, _ := step.Params["project_path"].(string)
 		projectID, _ := step.Params["project_id"].(string)
@@ -2042,7 +2042,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		})
 		return fmt.Sprintf("会话已创建: ID=%s", startResult.View.ID), nil
 
-	case "send_input":
+	case skillStepActionSendInput:
 		sessionID := r.resolveStepSessionID(runID, step)
 		text, _ := step.Params["text"].(string)
 		if sessionID == "" || text == "" {
@@ -2056,7 +2056,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		}
 		return fmt.Sprintf("已发送到会话 %s", sessionID), nil
 
-	case "send_and_observe":
+	case skillStepActionSendAndObserve:
 		sessionID := r.resolveStepSessionID(runID, step)
 		text, _ := step.Params["text"].(string)
 		timeoutSeconds, _ := step.Params["timeout_seconds"].(float64)
@@ -2074,7 +2074,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 			return h.toolGetSessionOutput(renderArgs)
 		}), nil
 
-	case "call_mcp_tool":
+	case skillStepActionCallMCPTool:
 		serverRef, _ := step.Params["server_id"].(string)
 		toolName, _ := step.Params["tool_name"].(string)
 		var args map[string]interface{}
@@ -2107,20 +2107,20 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 		}
 		return r.executor.mcpRegistry.CallTool(resolvedID, toolName, args)
 
-	case "bash":
+	case skillStepActionBash:
 		command, _ := step.Params["command"].(string)
 		if command == "" {
 			return "", fmt.Errorf("missing command parameter")
 		}
 		return runBashStepWithContext(ctx, command, step.Params, skillDir, r.executor.app)
 
-	case "craft_tool":
+	case skillStepActionCraftTool:
 		if r.executor == nil || r.executor.app == nil {
 			return "", fmt.Errorf("app not initialized")
 		}
 		return executeCraftToolCoreWithContext(ctx, r.executor.app, nil, step.Params, nil)
 
-	case "poll":
+	case skillStepActionPoll:
 		return r.executePollStep(ctx, step, skillDir)
 
 	default:

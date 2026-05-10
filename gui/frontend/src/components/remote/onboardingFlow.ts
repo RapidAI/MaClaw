@@ -1,6 +1,6 @@
 export type OnboardingLang = 'en' | 'zh-Hans' | 'zh-Hant' | string | undefined;
 
-export type OnboardingStepId = 'register' | 'sso' | 'llm' | 'wechat';
+export type OnboardingStepId = 'mode' | 'register' | 'sso' | 'llm' | 'wechat';
 
 export interface OnboardingFlow {
     readonly isTigerclaw: boolean;
@@ -19,6 +19,11 @@ export interface OnboardingStepDoneState {
 export const TIGERCLAW_BRAND_ID = 'qianxin';
 
 const STEP_LABELS: Record<OnboardingStepId, { en: string; zhHans: string; zhHant: string }> = {
+    mode: {
+        en: 'Mode',
+        zhHans: '\u8fd0\u884c\u6a21\u5f0f',
+        zhHant: '\u904b\u884c\u6a21\u5f0f',
+    },
     register: {
         en: 'Register',
         zhHans: '\u90ae\u7bb1\u6ce8\u518c',
@@ -53,13 +58,17 @@ export const isTigerClawBrand = (brandId?: string): boolean => brandId === TIGER
 export const getOnboardingFlow = ({
     brandId,
     freeTrial,
+    offlineMode = false,
 }: {
     brandId?: string;
     freeTrial: boolean;
+    offlineMode?: boolean;
 }): OnboardingFlow => {
     const isTigerclaw = isTigerClawBrand(brandId);
     const steps: readonly OnboardingStepId[] = isTigerclaw
         ? ['sso', 'wechat']
+        : offlineMode
+            ? ['mode', 'llm']
         : freeTrial
             ? ['register', 'wechat']
             : ['register', 'llm', 'wechat'];
@@ -82,6 +91,7 @@ export const getOnboardingStepDone = (
     { regDone, llmDone, wxCompleted }: OnboardingStepDoneState,
 ): boolean[] => {
     const doneByStep: Record<OnboardingStepId, boolean> = {
+        mode: regDone,
         register: regDone,
         sso: regDone && llmDone,
         llm: llmDone,
@@ -99,6 +109,7 @@ export const isCurrentOnboardingStep = (
 export const isOnboardingComplete = (flow: OnboardingFlow, state: OnboardingStepDoneState): boolean => (
     flow.steps.every((step) => {
         if (step === 'register') return state.regDone;
+        if (step === 'mode') return state.regDone;
         if (step === 'sso') return state.regDone && state.llmDone;
         if (step === 'llm') return state.llmDone;
         return state.wxCompleted;

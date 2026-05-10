@@ -15,6 +15,9 @@ func TestDataSrvCommandUsesLocalModuleImplementationPackage(t *testing.T) {
 	if strings.Contains(text, "github.com/RapidAI/CodeClaw/corelib/structureddata") {
 		t.Fatal("datasrv command must not import corelib/structureddata for service construction; use datasrv/structureddata")
 	}
+	if strings.Contains(text, "github.com/RapidAI/CodeClaw/internal/") {
+		t.Fatal("datasrv command must not import root-module internal packages; keep process helpers inside datasrv/internal")
+	}
 	if !strings.Contains(text, "github.com/RapidAI/CodeClaw/datasrv/structureddata") {
 		t.Fatal("datasrv command must import its local module implementation package")
 	}

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
@@ -117,20 +116,7 @@ func ClassifyError(err error) FailoverReason {
 	if err == nil {
 		return ""
 	}
-	s := err.Error()
-	if strings.Contains(s, "429") || strings.Contains(s, "rate limit") || strings.Contains(s, "Too Many Requests") {
-		return FailoverRateLimit
-	}
-	if strings.Contains(s, "401") || strings.Contains(s, "403") || strings.Contains(s, "Unauthorized") || strings.Contains(s, "Forbidden") {
-		return FailoverAuthError
-	}
-	if strings.Contains(s, "500") || strings.Contains(s, "502") || strings.Contains(s, "503") || strings.Contains(s, "504") {
-		return FailoverServerError
-	}
-	if strings.Contains(s, "timeout") || strings.Contains(s, "deadline exceeded") {
-		return FailoverTimeout
-	}
-	return FailoverNetwork
+	return classifyFailoverErrorMarker(err).Reason()
 }
 
 // ShouldFailover returns true if the error warrants trying a fallback provider.

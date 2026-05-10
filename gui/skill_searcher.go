@@ -32,6 +32,10 @@ type SkillSearchResult struct {
 	CreatedAt     string   `json:"created_at,omitempty"`
 }
 
+func (r SkillSearchResult) SourceKind() skillSearchSourceKind {
+	return skillSearchSourceFromStatus(r.Status)
+}
+
 // MixedSkillSearchResult is the GUI-facing unified search result model.
 type MixedSkillSearchResult struct {
 	ID            string   `json:"id"`
@@ -181,12 +185,12 @@ func localSearchPenalty(name, installedName string, skillMap map[string]*corelib
 }
 
 func sourcePriority(source string) int {
-	switch source {
-	case "skillmarket", "skillhub":
+	switch skillSearchSourceFromStatus(source) {
+	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		return 0
-	case "clawhub":
+	case skillSearchSourceClawHub:
 		return 1
-	case "github":
+	case skillSearchSourceGitHub:
 		return 2
 	default:
 		return 3
@@ -194,12 +198,12 @@ func sourcePriority(source string) int {
 }
 
 func mixedSourceLabel(source string) string {
-	switch source {
-	case "skillmarket", "skillhub":
+	switch skillSearchSourceFromStatus(source) {
+	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		return "SkillMarket"
-	case "clawhub":
+	case skillSearchSourceClawHub:
 		return "ClawHub"
-	case "github":
+	case skillSearchSourceGitHub:
 		return "GitHub"
 	default:
 		return source
@@ -207,10 +211,7 @@ func mixedSourceLabel(source string) string {
 }
 
 func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkillSearchResult {
-	source := "skillmarket"
-	if r.Status == "clawhub" {
-		source = "clawhub"
-	}
+	source := string(r.SourceKind())
 	return MixedSkillSearchResult{
 		ID:          r.ID,
 		Name:        r.Name,
@@ -230,8 +231,8 @@ func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkill
 }
 
 func mixedTrustLevel(source string) string {
-	switch source {
-	case "clawhub", "github":
+	switch skillSearchSourceFromStatus(source) {
+	case skillSearchSourceClawHub, skillSearchSourceGitHub:
 		return "community"
 	default:
 		return ""
@@ -273,7 +274,7 @@ func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 			if mixedResultMatchesSkill(results[i], skill) {
 				results[i].Installed = true
 				results[i].InstalledName = skill.Name
-				if skill.Source == "hub" && skill.HubSkillID != "" {
+				if normalizeSkillEntrySource(skill.Source) == skillEntrySourceHub && skill.HubSkillID != "" {
 					results[i].CanUpdate = true
 					if updatesByHubID != nil {
 						results[i].HasUpdate = updatesByHubID[skill.HubSkillID]
@@ -286,13 +287,13 @@ func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 }
 
 func mixedResultMatchesSkill(result MixedSkillSearchResult, skill corelib.NLSkillEntry) bool {
-	switch result.Source {
-	case "skillmarket", "skillhub":
-		return skill.Source == "hub" && skill.HubSkillID == result.ID
-	case "clawhub":
-		return skill.Source == "clawhub" && strings.EqualFold(skill.Name, result.Name)
-	case "github":
-		return skill.Source == "github" && (strings.EqualFold(skill.SourceProject, result.RepoURL) || strings.EqualFold(skill.Name, result.Name))
+	switch skillSearchSourceFromStatus(result.Source) {
+	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
+		return normalizeSkillEntrySource(skill.Source) == skillEntrySourceHub && skill.HubSkillID == result.ID
+	case skillSearchSourceClawHub:
+		return normalizeSkillEntrySource(skill.Source) == skillEntrySourceClawHub && strings.EqualFold(skill.Name, result.Name)
+	case skillSearchSourceGitHub:
+		return normalizeSkillEntrySource(skill.Source) == skillEntrySourceGitHub && (strings.EqualFold(skill.SourceProject, result.RepoURL) || strings.EqualFold(skill.Name, result.Name))
 	default:
 		return false
 	}

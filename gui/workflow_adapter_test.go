@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
@@ -77,6 +79,30 @@ func TestNormalizeWorkflowStateForFrontendIncludesCanonicalTemplatePhases(t *tes
 	}
 }
 
+func TestNormalizeWorkflowStateForFrontendIncludesOpsMaintenancePhases(t *testing.T) {
+	registry := workflow.NewWorkflowRegistry()
+	state := &workflow.WorkflowState{
+		Type:         workflow.WorkflowOpsMaintenance,
+		CurrentPhase: "risk_policy",
+	}
+
+	got := normalizeWorkflowStateForFrontendWithRegistry(state, registry)
+
+	wantIDs := []string{"ops_intake", "readonly_collection", "artifact_plan", "risk_policy", "controlled_execution"}
+	if len(got.Phases) != len(wantIDs) {
+		t.Fatalf("len(Phases) = %d, want %d: %#v", len(got.Phases), len(wantIDs), got.Phases)
+	}
+	for i, wantID := range wantIDs {
+		if got.Phases[i].ID != wantID {
+			t.Fatalf("phase %d ID = %q, want %q: %#v", i, got.Phases[i].ID, wantID, got.Phases)
+		}
+		wantDocument := i < len(wantIDs)-1
+		if got.Phases[i].ExpectsDocument != wantDocument {
+			t.Fatalf("phase %s ExpectsDocument = %v, want %v", wantID, got.Phases[i].ExpectsDocument, wantDocument)
+		}
+	}
+}
+
 func TestNormalizeWorkflowStateForFrontendDoesNotMutateEngineState(t *testing.T) {
 	state := &workflow.WorkflowState{
 		CurrentPhase: "tech_design",
@@ -100,5 +126,43 @@ func TestNormalizeWorkflowStateForFrontendDoesNotMutateEngineState(t *testing.T)
 	}
 	if state.GateResults["tech_design"].PhaseID != "tech_design" {
 		t.Fatalf("original GateResults mutated: %#v", state.GateResults["tech_design"])
+	}
+}
+
+func TestEmitDocUpdateUsesExplicitPhaseIDWithoutContentInference(t *testing.T) {
+	dir := t.TempDir()
+	adapter := NewGUIWorkflowAdapter(&App{}, nil)
+	adapter.SetWorkingDir("u1", dir)
+
+	requirementsContent := "# Technical Design\n\nThis title must not move the document."
+	if err := adapter.EmitDocUpdate("u1", "requirements", requirementsContent); err != nil {
+		t.Fatalf("EmitDocUpdate requirements failed: %v", err)
+	}
+	designContent := "# Tasks\n\nThis title must not move the document either."
+	if err := adapter.EmitDocUpdate("u1", "design", designContent); err != nil {
+		t.Fatalf("EmitDocUpdate design failed: %v", err)
+	}
+
+	workflowDir := filepath.Join(dir, ".maclaw", "workflow")
+	requirementsPath := filepath.Join(workflowDir, phaseFileName["requirements"])
+	designPath := filepath.Join(workflowDir, phaseFileName["design"])
+	tasksPath := filepath.Join(workflowDir, phaseFileName["tasks"])
+
+	gotRequirements, err := os.ReadFile(requirementsPath)
+	if err != nil {
+		t.Fatalf("requirements doc was not persisted at explicit phase path: %v", err)
+	}
+	if string(gotRequirements) != requirementsContent {
+		t.Fatalf("requirements doc content = %q, want %q", string(gotRequirements), requirementsContent)
+	}
+	gotDesign, err := os.ReadFile(designPath)
+	if err != nil {
+		t.Fatalf("design doc was not persisted at explicit phase path: %v", err)
+	}
+	if string(gotDesign) != designContent {
+		t.Fatalf("design doc content = %q, want %q", string(gotDesign), designContent)
+	}
+	if _, err := os.Stat(tasksPath); !os.IsNotExist(err) {
+		t.Fatalf("tasks doc should not be created from content heading, stat err=%v", err)
 	}
 }

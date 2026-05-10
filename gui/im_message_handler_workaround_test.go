@@ -3,7 +3,6 @@ package main
 import (
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"testing"
-
 )
 
 func TestExtractFailedSkillInfo_RunSkillFailed(t *testing.T) {
@@ -20,7 +19,7 @@ func TestExtractFailedSkillInfo_RunSkillFailed(t *testing.T) {
 	}
 	toolResults := []string{"❌ Skill 执行失败: status: failed\n依赖 wkhtmltopdf 未安装"}
 
-	name, errMsg := extractFailedSkillInfo(toolCalls, toolResults)
+	name, errMsg := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "pdf-converter" {
 		t.Fatalf("expected skill name 'pdf-converter', got %q", name)
 	}
@@ -43,7 +42,7 @@ func TestExtractFailedSkillInfo_ManageSkillRunFailed(t *testing.T) {
 	}
 	toolResults := []string{"❌ status: failed — timeout after 60s"}
 
-	name, errMsg := extractFailedSkillInfo(toolCalls, toolResults)
+	name, errMsg := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "my-skill" {
 		t.Fatalf("expected skill name 'my-skill', got %q", name)
 	}
@@ -66,7 +65,7 @@ func TestExtractFailedSkillInfo_ManageSkillNonRunAction(t *testing.T) {
 	}
 	toolResults := []string{"❌ 列表获取失败"}
 
-	name, _ := extractFailedSkillInfo(toolCalls, toolResults)
+	name, _ := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "" {
 		t.Fatalf("expected empty skill name for non-run action, got %q", name)
 	}
@@ -86,7 +85,7 @@ func TestExtractFailedSkillInfo_SuccessfulSkill(t *testing.T) {
 	}
 	toolResults := []string{"✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: success"}
 
-	name, _ := extractFailedSkillInfo(toolCalls, toolResults)
+	name, _ := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeSucceeded})
 	if name != "" {
 		t.Fatalf("expected empty skill name for successful skill, got %q", name)
 	}
@@ -106,19 +105,19 @@ func TestExtractFailedSkillInfo_NoSkillTools(t *testing.T) {
 	}
 	toolResults := []string{"file1.txt\nfile2.txt"}
 
-	name, _ := extractFailedSkillInfo(toolCalls, toolResults)
+	name, _ := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeSucceeded})
 	if name != "" {
 		t.Fatalf("expected empty skill name for non-skill tool, got %q", name)
 	}
 }
 
 func TestExtractFailedSkillInfo_EmptyInputs(t *testing.T) {
-	name, _ := extractFailedSkillInfo(nil, nil)
+	name, _ := extractFailedSkillInfo(nil, nil, nil)
 	if name != "" {
 		t.Fatalf("expected empty skill name for nil inputs, got %q", name)
 	}
 
-	name, _ = extractFailedSkillInfo([]llm.ToolCall{}, []string{})
+	name, _ = extractFailedSkillInfo([]llm.ToolCall{}, []string{}, []toolOutcome{})
 	if name != "" {
 		t.Fatalf("expected empty skill name for empty inputs, got %q", name)
 	}
@@ -137,7 +136,7 @@ func TestExtractFailedSkillInfo_MismatchedLengths(t *testing.T) {
 		},
 	}
 	// Mismatched: 1 tool call but 0 results
-	name, _ := extractFailedSkillInfo(toolCalls, []string{})
+	name, _ := extractFailedSkillInfo(toolCalls, []string{}, []toolOutcome{})
 	if name != "" {
 		t.Fatalf("expected empty skill name for mismatched lengths, got %q", name)
 	}
@@ -158,7 +157,7 @@ func TestExtractFailedSkillInfo_SkillNameParam(t *testing.T) {
 	}
 	toolResults := []string{"❌ status: failed — dependency missing"}
 
-	name, _ := extractFailedSkillInfo(toolCalls, toolResults)
+	name, _ := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if name != "alt-skill" {
 		t.Fatalf("expected skill name 'alt-skill', got %q", name)
 	}
@@ -183,7 +182,7 @@ func TestExtractFailedSkillInfo_TruncatesLongError(t *testing.T) {
 	}
 	toolResults := []string{longError}
 
-	_, errMsg := extractFailedSkillInfo(toolCalls, toolResults)
+	_, errMsg := extractFailedSkillInfo(toolCalls, toolResults, []toolOutcome{toolOutcomeFailed})
 	if len(errMsg) > 300 {
 		t.Fatalf("expected error message truncated to 300 chars, got %d chars", len(errMsg))
 	}

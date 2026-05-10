@@ -114,14 +114,3 @@ func truncateSessionField(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
-
-// isTerminalSessionStatus returns true if the session status indicates it
-// has finished and no further polling is needed.
-func isTerminalSessionStatus(status string) bool {
-	switch status {
-	case "completed", "failed", "exited", "cancelled", "error":
-		return true
-	default:
-		return false
-	}
-}

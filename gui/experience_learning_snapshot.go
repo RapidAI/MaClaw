@@ -376,20 +376,20 @@ func experienceTraceReviewSummaryStatus(detail ExperienceTraceDetail) string {
 		return status
 	}
 	if detail.ReviewRequired {
-		return "required"
+		return string(experienceReviewStatusRequired)
 	}
 	return ""
 }
 
 func experienceReviewSummaryRank(status string) int {
-	switch strings.TrimSpace(status) {
-	case "required":
+	switch normalizeExperienceReviewStatus(status) {
+	case experienceReviewStatusRequired:
 		return 0
-	case experienceReviewOutcomeDeferred:
+	case experienceReviewStatusDeferred:
 		return 1
-	case experienceReviewOutcomeApproved:
+	case experienceReviewStatusApproved:
 		return 2
-	case experienceReviewOutcomeRejected:
+	case experienceReviewStatusRejected:
 		return 3
 	default:
 		return 9
@@ -401,7 +401,7 @@ func buildExperienceNextActionSummaries(details []ExperienceTraceDetail) []Exper
 	for _, detail := range details {
 		kind := strings.TrimSpace(detail.NextActionKind)
 		if kind == "" && strings.TrimSpace(detail.NextAction) != "" {
-			kind = "manual_follow_up"
+			kind = string(experienceTraceKindManualFollowUp)
 		}
 		if kind == "" {
 			continue
@@ -629,10 +629,10 @@ func prioritizeExperienceTraceDetails(details []ExperienceTraceDetail) {
 }
 
 func experienceTracePriority(detail ExperienceTraceDetail) int {
-	switch detail.Kind {
-	case "a2a_conflict_review", "a2a_rollback_review":
+	switch normalizeExperienceTraceKind(detail.Kind) {
+	case experienceTraceKindA2AConflictReview, experienceTraceKindA2ARollbackReview:
 		return 0
-	case "skill_nudge_review", "skill_nudge_candidate":
+	case experienceTraceKindSkillNudgeReview, experienceTraceKindSkillNudgeCandidate:
 		return 1
 	default:
 		if detail.ReviewRequired {
@@ -656,11 +656,11 @@ func traceDetailFromRoutingHint(hint coretool.ToolRoutingHint) ExperienceTraceDe
 	}
 	return ExperienceTraceDetail{
 		ID:         id,
-		Kind:       "routing_hint",
+		Kind:       experienceTraceKindRoutingHint.String(),
 		Title:      firstNonEmptyExperienceString(hint.ContextKey, "Routing hint"),
 		Summary:    summary,
 		Detail:     joinExperienceDetailLines("Task type: "+hint.TaskType, "Tokens: "+strings.Join(hint.QueryTokens, ", "), "Prefer tools: "+strings.Join(hint.PreferTools, ", "), "Avoid tools: "+strings.Join(hint.AvoidTools, ", "), "Recovery tools: "+strings.Join(hint.RecoveryTools, ", ")),
-		SourceType: "tool_usage",
+		SourceType: string(experienceTraceSourceToolUsage),
 		Evidence:   hint.Evidence,
 		Confidence: hint.Confidence,
 		Impact:     "May apply only a bounded routing-score adjustment; it never authorizes tool execution by itself.",
@@ -671,11 +671,11 @@ func traceDetailFromSkillNudge(nudge coretool.ToolSkillNudgeCandidate) Experienc
 	id := "skill_nudge:" + firstNonEmptyExperienceString(nudge.ContextKey, nudge.SuggestedName, strings.Join(nudge.ToolSequence, ":"))
 	return ExperienceTraceDetail{
 		ID:             id,
-		Kind:           "skill_nudge_candidate",
+		Kind:           experienceTraceKindSkillNudgeCandidate.String(),
 		Title:          firstNonEmptyExperienceString(nudge.SuggestedName, nudge.ContextKey, "Skill candidate"),
 		Summary:        strings.TrimSpace(nudge.Description),
 		Detail:         joinExperienceDetailLines("Task type: "+nudge.TaskType, "Tokens: "+strings.Join(nudge.QueryTokens, ", "), "Sequence: "+strings.Join(nudge.ToolSequence, " -> ")),
-		SourceType:     "tool_usage",
+		SourceType:     string(experienceTraceSourceToolUsage),
 		Evidence:       nudge.Evidence,
 		Confidence:     nudge.Confidence,
 		Impact:         "Review candidate only; no skill is created, installed, or run automatically.",
@@ -688,11 +688,11 @@ func traceDetailFromRecoveryPattern(pattern coretool.ToolRecoveryPattern) Experi
 	id := "recovery:" + firstNonEmptyExperienceString(pattern.ContextKey, pattern.FailedTool+":"+pattern.RecoveryTool)
 	return ExperienceTraceDetail{
 		ID:         id,
-		Kind:       "tool_recovery_pattern",
+		Kind:       experienceTraceKindToolRecoveryPattern.String(),
 		Title:      firstNonEmptyExperienceString(pattern.FailedTool, "Tool") + " -> " + firstNonEmptyExperienceString(pattern.RecoveryTool, "Recovery"),
 		Summary:    strings.TrimSpace(pattern.Description),
 		Detail:     joinExperienceDetailLines("Context: "+pattern.ContextKey, "Task type: "+pattern.TaskType, "Error class: "+pattern.ErrorClass, "Tokens: "+strings.Join(pattern.QueryTokens, ", "), "Sequence: "+strings.Join(pattern.ToolSequence, " -> ")),
-		SourceType: "tool_usage",
+		SourceType: string(experienceTraceSourceToolUsage),
 		Evidence:   pattern.Evidence,
 		Confidence: pattern.Confidence,
 		Impact:     "Explains a repeated recovery flow for project memory; normal routing and safety checks still apply.",
@@ -702,11 +702,11 @@ func traceDetailFromRecoveryPattern(pattern coretool.ToolRecoveryPattern) Experi
 func traceDetailFromUsagePattern(pattern coretool.UsagePattern) ExperienceTraceDetail {
 	return ExperienceTraceDetail{
 		ID:         "usage:" + firstNonEmptyExperienceString(pattern.ToolName, strings.Join(pattern.TopTokens, ":")),
-		Kind:       "usage_pattern",
+		Kind:       experienceTraceKindUsagePattern.String(),
 		Title:      firstNonEmptyExperienceString(pattern.ToolName, "Usage pattern"),
 		Summary:    strings.TrimSpace(pattern.Description),
 		Detail:     joinExperienceDetailLines("Top tokens: " + strings.Join(pattern.TopTokens, ", ")),
-		SourceType: "tool_usage",
+		SourceType: string(experienceTraceSourceToolUsage),
 		Evidence:   pattern.Count,
 		Confidence: pattern.SuccessRate,
 		Impact:     "Read-only usage observation; it is weaker than a routing hint or recovery pattern.",
@@ -740,11 +740,11 @@ func traceDetailFromSessionSummary(summary session.SessionSummary) (ExperienceTr
 	}
 	return ExperienceTraceDetail{
 		ID:         "session:" + sessionID,
-		Kind:       "session_history",
+		Kind:       experienceTraceKindSessionHistory.String(),
 		Title:      firstNonEmptyExperienceString(summary.Topic, "Session "+sessionID),
 		Summary:    "Searchable session transcript available as source material for future distillation.",
 		Detail:     "Session history item: " + firstNonEmptyExperienceString(summary.Topic, sessionID),
-		SourceType: "session_history",
+		SourceType: string(experienceTraceSourceSessionHistory),
 		SourceURL:  "session://" + sessionID,
 		Tags:       tags,
 		Evidence:   summary.TextLen,
@@ -760,14 +760,14 @@ func traceDetailFromMemoryEntry(entry memory.Entry) (ExperienceTraceDetail, bool
 	reviewResolved := experienceTraceReviewResolved(entry.Tags)
 	switch {
 	case hasTag(entry.Tags, groupDiscussionConflictTag):
-		kind = "a2a_conflict_review"
+		kind = string(experienceTraceKindA2AConflictReview)
 		impact = "Requires review before either conflicting A2A result becomes durable project policy."
 		reviewRequired = !reviewResolved
 		if reviewResolved {
 			impact = "Reviewed A2A conflict signal; it remains source evidence and no automatic project policy change was made."
 		}
 	case hasTag(entry.Tags, groupDiscussionRollbackTag):
-		kind = "a2a_rollback_review"
+		kind = string(experienceTraceKindA2ARollbackReview)
 		impact = "Rollback triggers were captured from an A2A decision; review them before treating rollback execution as authorized."
 		if hasTag(entry.Tags, groupDiscussionRollbackTriggered) {
 			impact = "Current A2A evidence matches one or more rollback triggers; review them before any workflow draft treats rollback as manually actionable."
@@ -776,24 +776,24 @@ func traceDetailFromMemoryEntry(entry memory.Entry) (ExperienceTraceDetail, bool
 		if reviewResolved {
 			impact = "Reviewed A2A rollback signal; it remains source evidence and no rollback execution was authorized automatically."
 		}
-	case hasTag(entry.Tags, "skill_nudge_candidate"):
-		kind = "skill_nudge_review"
+	case hasTag(entry.Tags, experienceTraceKindSkillNudgeCandidate.String()):
+		kind = string(experienceTraceKindSkillNudgeReview)
 		impact = "Repeated tool sequence suggests a reusable skill candidate; review it before creating or updating any skill."
 		reviewRequired = !reviewResolved
 		if reviewResolved {
 			impact = "Reviewed tool self-evolution candidate; it remains source evidence and no skill was created automatically."
 		}
 	case hasTag(entry.Tags, "has_escalation"):
-		kind = "a2a_escalation_evidence"
+		kind = string(experienceTraceKindA2AEscalationEvidence)
 		impact = "A2A escalation evidence was captured for manual handoff; it does not route or resolve the escalation automatically."
 	case hasTag(entry.Tags, experienceDraftReviewTag):
 		kind = experienceDraftReviewTraceKind(entry.Tags)
 		impact = "Manual review evidence for a non-executing experience-learning draft; it does not rewrite memory, change routing, write files, install skills, or run tools."
 	case entry.SourceType == groupDiscussionMemorySourceType || hasTag(entry.Tags, groupDiscussionResultTag):
-		kind = "a2a_discussion_result"
+		kind = string(experienceTraceKindA2ADiscussionResult)
 		impact = "Project memory distilled from a completed current-Hub A2A discussion."
-	case entry.SourceType == "tool_usage" || hasExperienceAnyTag(entry.Tags, "usage_pattern", "usage_routing_hint", "skill_nudge_candidate", "tool_recovery_pattern"):
-		kind = "tool_memory"
+	case normalizeExperienceTraceSourceType(entry.SourceType).IsToolUsage() || hasExperienceAnyTag(entry.Tags, experienceTraceKindUsagePattern.String(), experienceTraceTagUsageRoutingHint, experienceTraceKindSkillNudgeCandidate.String(), experienceTraceKindToolRecoveryPattern.String()):
+		kind = string(experienceTraceKindToolMemory)
 		impact = "Memory-backed tool learning signal; used as context, not as automatic permission."
 	default:
 		return ExperienceTraceDetail{}, false
@@ -803,8 +803,8 @@ func traceDetailFromMemoryEntry(entry memory.Entry) (ExperienceTraceDetail, bool
 	nextActionKind, nextAction := experienceTraceNextAction(kind, reviewStatus, reviewRequired)
 	followUpAudit := experienceFollowUpAuditFromContent(entry.Content)
 	followUpStatus := experienceFollowUpStatusFromTags(entry.Tags)
-	if kind == "a2a_rollback_review" && hasTag(entry.Tags, groupDiscussionRollbackTriggered) && reviewStatus == "required" {
-		nextActionKind = "review_triggered_rollback_signal"
+	if normalizeExperienceTraceKind(kind) == experienceTraceKindA2ARollbackReview && hasTag(entry.Tags, groupDiscussionRollbackTriggered) && normalizeExperienceReviewStatus(reviewStatus) == experienceReviewStatusRequired {
+		nextActionKind = experienceGovernanceActionReviewTriggeredRollbackSignal.String()
 		nextAction = "Current A2A evidence already matches rollback conditions; review the matched triggers first, then open a non-executing rollback workflow draft if approved."
 	}
 	if experienceFollowUpResolved(entry.Tags) {
@@ -874,12 +874,12 @@ func reviewActionForExperienceTrace(kind string, reviewRequired bool) string {
 	if !reviewRequired {
 		return ""
 	}
-	switch kind {
-	case "a2a_conflict_review":
+	switch normalizeExperienceTraceKind(kind) {
+	case experienceTraceKindA2AConflictReview:
 		return "Compare the conflicting A2A memories and decide which result, if any, should remain durable project policy."
-	case "a2a_rollback_review":
+	case experienceTraceKindA2ARollbackReview:
 		return "Validate each rollback trigger and convert it into a human-approved rollback workflow before any execution path uses it."
-	case "skill_nudge_review":
+	case experienceTraceKindSkillNudgeReview:
 		return "Inspect the repeated tool sequence and create or update a skill only after confirming it is safe and reusable."
 	default:
 		return ""
@@ -888,41 +888,41 @@ func reviewActionForExperienceTrace(kind string, reviewRequired bool) string {
 
 func experienceTraceNextAction(kind, status string, reviewRequired bool) (string, string) {
 	if status == "" && reviewRequired {
-		status = "required"
+		status = string(experienceReviewStatusRequired)
 	}
-	if status == "required" {
-		return "review_signal", reviewActionForExperienceTrace(kind, true)
+	if normalizeExperienceReviewStatus(status) == experienceReviewStatusRequired {
+		return experienceGovernanceActionReviewSignal.String(), reviewActionForExperienceTrace(kind, true)
 	}
-	switch kind {
-	case "a2a_conflict_review":
+	switch normalizeExperienceTraceKind(kind) {
+	case experienceTraceKindA2AConflictReview:
 		switch status {
-		case experienceReviewOutcomeApproved:
-			return "resolve_a2a_conflict_manually", "Use this approved conflict signal to open a manual reconciliation task before changing durable project policy."
-		case experienceReviewOutcomeRejected:
-			return "keep_rejected_conflict_evidence", "Keep the rejected conflict as audit evidence and avoid promoting either conflicting result from this signal."
-		case experienceReviewOutcomeDeferred:
-			return "collect_a2a_conflict_evidence", "Collect missing owner evidence, then review the conflict again before changing project memory or policy."
+		case string(experienceReviewStatusApproved):
+			return experienceGovernanceActionResolveA2AConflictManually.String(), "Use this approved conflict signal to open a manual reconciliation task before changing durable project policy."
+		case string(experienceReviewStatusRejected):
+			return experienceGovernanceActionKeepRejectedConflictEvidence.String(), "Keep the rejected conflict as audit evidence and avoid promoting either conflicting result from this signal."
+		case string(experienceReviewStatusDeferred):
+			return experienceGovernanceActionCollectA2AConflictEvidence.String(), "Collect missing owner evidence, then review the conflict again before changing project memory or policy."
 		}
-	case "a2a_rollback_review":
+	case experienceTraceKindA2ARollbackReview:
 		switch status {
-		case experienceReviewOutcomeApproved:
-			return "draft_rollback_workflow", "Draft a human-approved rollback workflow from these triggers; execution remains manual until separately authorized."
-		case experienceReviewOutcomeRejected:
-			return "block_rollback_use", "Treat these rollback triggers as rejected evidence and do not use them for rollback execution."
-		case experienceReviewOutcomeDeferred:
-			return "collect_rollback_evidence", "Collect validation evidence for each rollback trigger, then review again before any execution path can use it."
+		case string(experienceReviewStatusApproved):
+			return experienceGovernanceActionDraftRollbackWorkflow.String(), "Draft a human-approved rollback workflow from these triggers; execution remains manual until separately authorized."
+		case string(experienceReviewStatusRejected):
+			return experienceGovernanceActionBlockRollbackUse.String(), "Treat these rollback triggers as rejected evidence and do not use them for rollback execution."
+		case string(experienceReviewStatusDeferred):
+			return experienceGovernanceActionCollectRollbackEvidence.String(), "Collect validation evidence for each rollback trigger, then review again before any execution path can use it."
 		}
-	case "skill_nudge_review":
+	case experienceTraceKindSkillNudgeReview:
 		switch status {
-		case experienceReviewOutcomeApproved:
-			return "draft_skill_manually", "Open a manual skill draft from the approved repeated tool sequence; do not install, update, or run it automatically."
-		case experienceReviewOutcomeRejected:
-			return "suppress_skill_candidate", "Keep the rejected skill candidate as evidence and avoid using it to create or update a skill."
-		case experienceReviewOutcomeDeferred:
-			return "collect_skill_evidence", "Collect more successful executions before deciding whether the tool sequence deserves a manual skill draft."
+		case string(experienceReviewStatusApproved):
+			return experienceGovernanceActionDraftSkillManually.String(), "Open a manual skill draft from the approved repeated tool sequence; do not install, update, or run it automatically."
+		case string(experienceReviewStatusRejected):
+			return experienceGovernanceActionSuppressSkillCandidate.String(), "Keep the rejected skill candidate as evidence and avoid using it to create or update a skill."
+		case string(experienceReviewStatusDeferred):
+			return experienceGovernanceActionCollectSkillEvidence.String(), "Collect more successful executions before deciding whether the tool sequence deserves a manual skill draft."
 		}
-	case "a2a_escalation_evidence":
-		return "prepare_escalation_brief", "Prepare a manual escalation handoff brief from the captured reason, target, raiser, and discussion evidence."
+	case experienceTraceKindA2AEscalationEvidence:
+		return experienceGovernanceActionPrepareEscalationBrief.String(), "Prepare a manual escalation handoff brief from the captured reason, target, raiser, and discussion evidence."
 	}
 	return "", ""
 }
@@ -935,8 +935,8 @@ func experienceTraceReviewResolved(tags []string) bool {
 		if !strings.HasPrefix(tag, experienceReviewStatusTagPrefix) {
 			continue
 		}
-		switch strings.TrimSpace(strings.TrimPrefix(tag, experienceReviewStatusTagPrefix)) {
-		case "approved", "rejected":
+		status := normalizeExperienceReviewStatus(strings.TrimPrefix(tag, experienceReviewStatusTagPrefix))
+		if status.IsResolved() {
 			return true
 		}
 	}
@@ -948,24 +948,23 @@ func experienceReviewStatusFromTags(tags []string, required bool) string {
 		if !strings.HasPrefix(tag, experienceReviewStatusTagPrefix) {
 			continue
 		}
-		status := strings.TrimSpace(strings.TrimPrefix(tag, experienceReviewStatusTagPrefix))
-		switch status {
-		case experienceReviewOutcomeApproved, experienceReviewOutcomeRejected, experienceReviewOutcomeDeferred:
-			return status
+		status := normalizeExperienceReviewStatus(strings.TrimPrefix(tag, experienceReviewStatusTagPrefix))
+		if status.IsRecordedReviewOutcome() {
+			return status.String()
 		}
 	}
 	if required {
-		return "required"
+		return experienceReviewStatusRequired.String()
 	}
 	return ""
 }
 
 func experienceTraceReviewedAt(tags []string) string {
 	for _, tag := range tags {
-		if !strings.HasPrefix(tag, "reviewed_at:") {
+		if !strings.HasPrefix(tag, experienceReviewedAtTagPrefix) {
 			continue
 		}
-		raw := strings.TrimSpace(strings.TrimPrefix(tag, "reviewed_at:"))
+		raw := strings.TrimSpace(strings.TrimPrefix(tag, experienceReviewedAtTagPrefix))
 		if len(raw) == 8 {
 			return raw[:4] + "-" + raw[4:6] + "-" + raw[6:]
 		}
@@ -979,10 +978,9 @@ func experienceFollowUpStatusFromTags(tags []string) string {
 		if !strings.HasPrefix(tag, experienceFollowUpStatusTagPrefix) {
 			continue
 		}
-		status := strings.TrimSpace(strings.TrimPrefix(tag, experienceFollowUpStatusTagPrefix))
-		switch status {
-		case experienceFollowUpOutcomeCompleted, experienceFollowUpOutcomeBlocked, experienceFollowUpOutcomeDeferred:
-			return status
+		status := normalizeExperienceFollowUpOutcomeKind(strings.TrimPrefix(tag, experienceFollowUpStatusTagPrefix))
+		if status.IsKnown() {
+			return status.String()
 		}
 	}
 	return ""
@@ -1043,12 +1041,12 @@ func experienceReviewAuditFromContent(content string) experienceReviewAudit {
 			if !ok {
 				continue
 			}
-			switch strings.ToLower(strings.TrimSpace(key)) {
-			case "reviewer":
+			switch normalizeExperienceAuditFieldKind(key) {
+			case experienceAuditFieldReviewer:
 				audit.Reviewer = strings.TrimSpace(value)
-			case "reviewed at":
+			case experienceAuditFieldReviewedAt:
 				audit.ReviewedAt = formatExperienceReviewAuditTime(value)
-			case "note":
+			case experienceAuditFieldNote:
 				noteLines = append(noteLines[:0], strings.TrimSpace(value))
 				capturingNote = true
 			}
@@ -1084,14 +1082,14 @@ func experienceFollowUpAuditFromContent(content string) experienceFollowUpAudit 
 			if !ok {
 				continue
 			}
-			switch strings.ToLower(strings.TrimSpace(key)) {
-			case "action kind":
+			switch normalizeExperienceAuditFieldKind(key) {
+			case experienceAuditFieldActionKind:
 				audit.ActionKind = strings.TrimSpace(value)
-			case "actor":
+			case experienceAuditFieldActor:
 				audit.Actor = strings.TrimSpace(value)
-			case "recorded at":
+			case experienceAuditFieldRecordedAt:
 				audit.At = formatExperienceReviewAuditTime(value)
-			case "note":
+			case experienceAuditFieldNote:
 				noteLines = append(noteLines[:0], strings.TrimSpace(value))
 				capturingNote = true
 			}
@@ -1139,13 +1137,13 @@ func memoryTraceTitle(entry memory.Entry) string {
 		if tag == groupDiscussionRollbackTag {
 			return "A2A rollback review"
 		}
-		if tag == "tool_recovery_pattern" {
+		if tag == experienceTraceKindToolRecoveryPattern.String() {
 			return "Tool recovery memory"
 		}
-		if tag == "usage_routing_hint" {
+		if tag == experienceTraceTagUsageRoutingHint {
 			return "Routing hint memory"
 		}
-		if tag == "skill_nudge_candidate" {
+		if tag == experienceTraceKindSkillNudgeCandidate.String() {
 			return "Skill candidate memory"
 		}
 	}

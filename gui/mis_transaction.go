@@ -87,7 +87,7 @@ func createMISBusinessTransaction(actionID, businessObject, domain, operation, q
 		Domain:         strings.TrimSpace(domain),
 		Operation:      strings.TrimSpace(operation),
 		Query:          strings.TrimSpace(query),
-		State:          "collecting",
+		State:          misTransactionStateCollecting.String(),
 		Fields:         map[string]misTransactionField{},
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -103,20 +103,29 @@ func ensureMISBusinessTransaction(txnID, actionID, businessObject, domain, opera
 	txnID = strings.TrimSpace(txnID)
 	actionID = strings.TrimSpace(actionID)
 	if txnID != "" {
-		misTransactionStore.Lock()
-		txn := misTransactionStore.items[txnID]
-		if txn != nil && (actionID == "" || txn.ActionID == actionID) {
-			applyMISTransactionFieldsLocked(txn, data, source, false, 0)
-			if txn.State == "" {
-				txn.State = "collecting"
-			}
-			txn.UpdatedAt = time.Now()
-			misTransactionStore.Unlock()
-			return txnID
+		if reused := tryReuseMISBusinessTransaction(txnID, actionID, data, source); reused != "" {
+			return reused
 		}
-		misTransactionStore.Unlock()
 	}
 	return createMISBusinessTransaction(actionID, businessObject, domain, operation, query, data, source)
+}
+
+// tryReuseMISBusinessTransaction attempts to reuse an existing transaction.
+// Returns the transaction ID if reused, empty string otherwise.
+// Uses defer Unlock to prevent mutex leak if applyMISTransactionFieldsLocked panics.
+func tryReuseMISBusinessTransaction(txnID, actionID string, data map[string]interface{}, source string) string {
+	misTransactionStore.Lock()
+	defer misTransactionStore.Unlock()
+	txn := misTransactionStore.items[txnID]
+	if txn == nil || (actionID != "" && txn.ActionID != actionID) {
+		return ""
+	}
+	applyMISTransactionFieldsLocked(txn, data, source, false, 0)
+	if normalizeMISTransactionStateKind(txn.State) == misTransactionStateUnknown {
+		txn.State = misTransactionStateCollecting.String()
+	}
+	txn.UpdatedAt = time.Now()
+	return txnID
 }
 
 func updateMISBusinessTransactionFields(txnID string, data map[string]interface{}, source string, confirmed bool, confidence float64) {
@@ -222,12 +231,7 @@ func activeMISBusinessTransactions(actionID, businessObject string, limit int) [
 }
 
 func isRecoverableMISTransactionState(state string) bool {
-	switch strings.TrimSpace(state) {
-	case "", "collecting", "validating", "awaiting_validation", "validation_failed", "awaiting_commit", "commit_failed":
-		return true
-	default:
-		return false
-	}
+	return normalizeMISTransactionStateKind(state).IsRecoverable()
 }
 
 func misTransactionFieldValues(txn *misBusinessTransaction) map[string]interface{} {

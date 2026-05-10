@@ -123,7 +123,7 @@ func ResolveSSHHostByLabel(hosts []corelib.SSHHostEntry, label string) *corelib.
 func FindRunningSSHSession(mgr *remote.SSHSessionManager, hostID, label string) *remote.SSHManagedSession {
 	for _, s := range mgr.List() {
 		summary := s.GetSummary()
-		if summary.Status != string(remote.SessionRunning) {
+		if !isRunningSessionStatus(summary.Status) {
 			continue
 		}
 		if summary.HostID == hostID || (label != "" && summary.HostLabel == label) {

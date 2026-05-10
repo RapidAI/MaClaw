@@ -50,18 +50,18 @@ func (h *IMMessageHandler) handleMCPToolAgentViewSubmit(data map[string]interfac
 		if h != nil && h.app != nil {
 			h.emitMCPToolAgentView(serverRef, strings.TrimSpace(fmt.Sprint(callArgs["resolved_id"])), toolName, inputSchema, toolArgs, registeredToolValidationIssuesForMCP(validationIssues))
 		}
-		return &IMAgentResponse{Text: "MCP tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "MCP tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	callArgs["arguments"] = toolArgs
 
 	result := h.toolCallMCPTool(callArgs)
 	if strings.TrimSpace(result) == mcpAgentViewCorrectionMessage {
-		return &IMAgentResponse{Text: "MCP tool parameters need correction. Review the task panel.", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "MCP tool parameters need correction. Review the task panel.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if h != nil && h.app != nil {
 		h.app.emitAgentView(buildMCPToolResultAgentView(toolName, result))
 	}
-	return &IMAgentResponse{Text: "MCP tool completed from task panel.", ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: "MCP tool completed from task panel.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func registeredToolValidationIssuesForMCP(issues []registeredToolValidationIssue) []mcputil.ValidationError {
@@ -91,7 +91,7 @@ func buildMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema m
 		param := strings.TrimSpace(validationErr.Param)
 		if param != "" {
 			fieldErrors[param] = validationErr.Message
-			if validationErr.Code == "missing_required" {
+			if normalizeAgentViewValidationCodeKind(validationErr.Code).IsMissingRequired() {
 				missing = append(missing, param)
 			}
 		}

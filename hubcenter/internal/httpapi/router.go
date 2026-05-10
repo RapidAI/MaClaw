@@ -300,6 +300,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/client/hubcenters", ClientHubCentersHandler(haConfigSvc))
 	if haSvc != nil {
 		mux.HandleFunc("GET /api/internal/ha/ops", HAOpsPullHandler(haSvc))
+		mux.HandleFunc("POST /api/internal/ha/ops/apply", HAOpsApplyHandler(haSvc))
 		mux.HandleFunc("GET /api/internal/ha/public-key", HAInternalKeyMaterialHandler(haConfigSvc, haSvc, haSvc))
 	}
 	// Skill Catalog API
@@ -332,6 +333,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	// Gossip admin management
 	mux.HandleFunc("GET /api/admin/gossip", RequireAdmin(adminService, AdminListGossipHandler(gossipRepo)))
 	mux.HandleFunc("DELETE /api/admin/gossip", RequireAdmin(adminService, AdminDeleteGossipHandler(gossipRepo, gossipCache)))
+	mux.HandleFunc("DELETE /api/admin/gossip/flagged", RequireAdmin(adminService, AdminDeleteFlaggedGossipHandler(gossipRepo, gossipCache)))
 	mux.HandleFunc("POST /api/admin/gossip/lock", RequireAdmin(adminService, AdminLockGossipHandler(gossipRepo, gossipCache)))
 	mux.HandleFunc("GET /api/admin/gossip/comments", RequireAdmin(adminService, AdminListGossipCommentsHandler(gossipRepo)))
 	mux.HandleFunc("DELETE /api/admin/gossip/comments", RequireAdmin(adminService, AdminDeleteGossipCommentHandler(gossipRepo, gossipCache)))

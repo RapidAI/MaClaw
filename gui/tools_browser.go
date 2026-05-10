@@ -16,7 +16,7 @@ type replayActivityAdapter struct {
 
 func (a *replayActivityAdapter) UpdateReplay(flowName string, currentStep, totalSteps int, status string) {
 	a.store.Update(&AgentActivity{
-		Source:      "browser_replay",
+		Source:      agentActivitySourceBrowserReplay.String(),
 		Task:        fmt.Sprintf("回放: %s", flowName),
 		Iteration:   currentStep,
 		MaxIter:     totalSteps,
@@ -25,7 +25,7 @@ func (a *replayActivityAdapter) UpdateReplay(flowName string, currentStep, total
 }
 
 func (a *replayActivityAdapter) ClearReplay() {
-	a.store.Clear("browser_replay")
+	a.store.Clear(agentActivitySourceBrowserReplay.String())
 }
 
 // registerBrowserTools registers browser automation tools into the gui ToolRegistry.
@@ -85,7 +85,7 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 	// Description is set to empty so BuildAll() skips them — only the merged
 	// "browser" tool definition is visible to the LLM.
 	for _, ct := range coreReg.ListAvailable() {
-		toolName := ct.Name // capture for closure
+		toolName := ct.Name   // capture for closure
 		handler := ct.Handler // capture for closure
 		gt := RegisteredTool{
 			Name:        toolName,
@@ -129,7 +129,7 @@ func registerBrowserTools(registry *ToolRegistry, app *App) {
 			// Sync browser session state after session management actions.
 			if app != nil && app.browserSessions != nil {
 				action, _ := args["action"].(string)
-				if strings.HasPrefix(action, "session_") || action == "connect" || action == "close" {
+				if normalizeBrowserToolAction(action).ShouldSyncSessions() {
 					app.browserSessions.syncFromCore()
 					app.emitRemoteStateChanged()
 				}

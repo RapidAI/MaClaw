@@ -15,7 +15,7 @@ func (p *skillExecutorProvider) ListActiveSkills() []tool.SkillSummary {
 	skills := p.executor.List()
 	var out []tool.SkillSummary
 	for _, s := range skills {
-		if s.Status != "active" {
+		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
 		out = append(out, tool.SkillSummary{

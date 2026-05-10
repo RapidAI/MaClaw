@@ -276,6 +276,7 @@ type GossipRepository interface {
 	ListFlaggedPosts(ctx context.Context, offset, limit int) ([]*GossipPost, int, error)
 	GetPost(ctx context.Context, id string) (*GossipPost, error)
 	DeletePost(ctx context.Context, id string) error
+	DeleteFlaggedPosts(ctx context.Context) (int, error)
 	LockPost(ctx context.Context, id string, locked bool) error
 	FlagPost(ctx context.Context, id string, flagged bool) error
 	ReplaceAll(ctx context.Context, posts []*GossipPost, comments []*GossipComment) error

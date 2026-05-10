@@ -264,7 +264,7 @@ func (a *App) refreshHubUpdateCacheAsync() {
 		skills := a.skillExecutor.loadSkills()
 		var checks []hubSkillForUpdateCheck
 		for _, s := range skills {
-			if s.Source == "hub" && s.HubSkillID != "" {
+			if normalizeSkillEntrySource(s.Source) == skillEntrySourceHub && s.HubSkillID != "" {
 				checks = append(checks, hubSkillForUpdateCheck{
 					name:       s.Name,
 					hubSkillID: s.HubSkillID,

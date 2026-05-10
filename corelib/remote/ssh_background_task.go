@@ -11,15 +11,15 @@ import (
 // SSHBackgroundTask 表示一个在远程服务器上通过 nohup 运行的后台任务。
 type SSHBackgroundTask struct {
 	mu        sync.Mutex
-	TaskID    string    `json:"task_id"`
-	SessionID string    `json:"session_id"`
-	Command   string    `json:"command"`
-	LogFile   string    `json:"log_file"`
-	PIDFile   string    `json:"pid_file"`
-	Status    string    `json:"status"` // pending, running, completed, failed, unknown
-	PID       string    `json:"pid,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	LastCheck time.Time `json:"last_check,omitempty"`
+	TaskID    string                  `json:"task_id"`
+	SessionID string                  `json:"session_id"`
+	Command   string                  `json:"command"`
+	LogFile   string                  `json:"log_file"`
+	PIDFile   string                  `json:"pid_file"`
+	Status    SSHBackgroundTaskStatus `json:"status"` // pending, running, completed, failed, unknown
+	PID       string                  `json:"pid,omitempty"`
+	StartedAt time.Time               `json:"started_at"`
+	LastCheck time.Time               `json:"last_check,omitempty"`
 }
 
 // SSHBackgroundTaskManager 管理远程后台任务的生命周期。
@@ -131,7 +131,7 @@ func (m *SSHBackgroundTaskManager) Submit(sessionID, command string) (*SSHBackgr
 		Command:   command,
 		LogFile:   logFile,
 		PIDFile:   pidFile,
-		Status:    "running",
+		Status:    SSHBackgroundTaskStatusRunning,
 		PID:       pid,
 		StartedAt: time.Now(),
 	}
@@ -207,15 +207,15 @@ func (m *SSHBackgroundTaskManager) CheckTask(taskID string, tailLines int) (*Bac
 	task.mu.Lock()
 	task.LastCheck = time.Now()
 	if result.IsAlive {
-		task.Status = "running"
+		task.Status = SSHBackgroundTaskStatusRunning
 	} else {
 		// 检查日志中是否有 EXIT 标记
 		if strings.Contains(result.LogTail, "EXIT: 0") {
-			task.Status = "completed"
+			task.Status = SSHBackgroundTaskStatusCompleted
 		} else if strings.Contains(result.LogTail, "EXIT:") {
-			task.Status = "failed"
+			task.Status = SSHBackgroundTaskStatusFailed
 		} else {
-			task.Status = "unknown"
+			task.Status = SSHBackgroundTaskStatusUnknown
 		}
 	}
 	result.Status = task.Status
@@ -255,7 +255,7 @@ func (m *SSHBackgroundTaskManager) KillTask(taskID string) error {
 	}
 
 	task.mu.Lock()
-	task.Status = "killed"
+	task.Status = SSHBackgroundTaskStatusKilled
 	task.mu.Unlock()
 
 	return nil
@@ -263,14 +263,14 @@ func (m *SSHBackgroundTaskManager) KillTask(taskID string) error {
 
 // BackgroundTaskStatus 是 CheckTask 的返回结果。
 type BackgroundTaskStatus struct {
-	TaskID    string    `json:"task_id"`
-	Command   string    `json:"command"`
-	Status    string    `json:"status"`
-	IsAlive   bool      `json:"is_alive"`
-	LogTail   string    `json:"log_tail"`
-	LogSize   string    `json:"log_size"`
-	StartedAt time.Time `json:"started_at"`
-	Elapsed   string    `json:"elapsed"`
+	TaskID    string                  `json:"task_id"`
+	Command   string                  `json:"command"`
+	Status    SSHBackgroundTaskStatus `json:"status"`
+	IsAlive   bool                    `json:"is_alive"`
+	LogTail   string                  `json:"log_tail"`
+	LogSize   string                  `json:"log_size"`
+	StartedAt time.Time               `json:"started_at"`
+	Elapsed   string                  `json:"elapsed"`
 }
 
 // --- 辅助函数 ---
@@ -456,9 +456,7 @@ func (m *SSHBackgroundTaskManager) EnsureSudoToken(sessionID string) (ok bool, m
 		time.Sleep(500 * time.Millisecond)
 		newLines2, _ := session.NewLinesSince(linesBefore)
 		for _, line := range newLines2 {
-			lower := strings.ToLower(line)
-			if strings.Contains(lower, "sorry") || strings.Contains(lower, "incorrect") ||
-				strings.Contains(lower, "authentication failure") || strings.Contains(lower, "try again") {
+			if classifySudoPasswordMarker(line) == sudoPasswordMarkerRejected {
 				passwordWrong = true
 				break
 			}

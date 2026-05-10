@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -18,10 +19,12 @@ type fakeHASyncReader struct {
 	nodeID     string
 	maxSeq     int64
 	ops        []*store.HASyncOp
+	applied    []*store.HASyncOp
 	gotAfter   int64
 	gotLimit   int
 	listCalled bool
 	authFn     func(r *http.Request) error
+	applyErr   error
 }
 
 func (f *fakeHASyncReader) NodeID() string { return f.nodeID }
@@ -41,6 +44,14 @@ func (f *fakeHASyncReader) ListOpsAfterSeq(_ context.Context, afterSeq int64, li
 }
 
 func (f *fakeHASyncReader) MaxOpSeq(_ context.Context) (int64, error) { return f.maxSeq, nil }
+
+func (f *fakeHASyncReader) ApplyRemoteOps(_ context.Context, ops []*store.HASyncOp) error {
+	if f.applyErr != nil {
+		return f.applyErr
+	}
+	f.applied = append(f.applied, ops...)
+	return nil
+}
 
 func TestHAOpsPullRequiresAuthentication(t *testing.T) {
 	svc := &fakeHASyncReader{nodeID: "hc-a", authFn: func(r *http.Request) error { return context.Canceled }}
@@ -133,5 +144,47 @@ func TestHAOpsPullAcceptsSignedRequest(t *testing.T) {
 	HAOpsPullHandler(svc).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHAOpsApplyAppliesOpsWithValidAuth(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &fakeHASyncReader{nodeID: "hc-a", authFn: func(r *http.Request) error { return nil }}
+	body, _ := json.Marshal(map[string]any{
+		"ops": []*store.HASyncOp{
+			{Seq: 6, OpID: "op-6", SourceNodeID: "hc-b", EntityType: "news_article", EntityID: "n-1", OpType: "upsert", EntityVersion: 1, OccurredAt: now, PayloadJSON: `{}`, PayloadHash: "hash"},
+		},
+	})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/ha/ops/apply", bytes.NewReader(body))
+
+	HAOpsApplyHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if len(svc.applied) != 1 || svc.applied[0].OpID != "op-6" {
+		t.Fatalf("applied = %#v", svc.applied)
+	}
+}
+
+func TestHAOpsApplyRejectsInvalidRemoteOpAsBadRequest(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &fakeHASyncReader{nodeID: "hc-a", authFn: func(r *http.Request) error { return nil }, applyErr: ha.InvalidRemoteOpError{Reason: "payload hash mismatch"}}
+	body, _ := json.Marshal(map[string]any{
+		"ops": []*store.HASyncOp{
+			{Seq: 6, OpID: "op-6", SourceNodeID: "hc-b", EntityType: "news_article", EntityID: "n-1", OpType: "upsert", EntityVersion: 1, OccurredAt: now, PayloadJSON: `{}`, PayloadHash: "bad"},
+		},
+	})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/internal/ha/ops/apply", bytes.NewReader(body))
+
+	HAOpsApplyHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte("INVALID_HA_OP")) {
+		t.Fatalf("body = %s, want INVALID_HA_OP", rr.Body.String())
 	}
 }

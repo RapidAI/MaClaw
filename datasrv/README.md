@@ -50,6 +50,20 @@ $env:MACLAW_DATA_SQLITE_PATH = "D:\data\maclaw\data.db"
 go run ./cmd/maclaw-data-srv
 ```
 
+On Windows, the same `maclaw-data-srv.exe` can run either as a normal command
+line process or as an NT service. When the binary is launched by the Windows
+Service Control Manager, stop and shutdown controls are mapped to the same
+graceful HTTP shutdown path used by Ctrl+C:
+
+```powershell
+sc.exe create MaClawDataSrv binPath= "C:\MaClaw\maclaw-data-srv.exe" start= auto
+sc.exe start MaClawDataSrv
+sc.exe stop MaClawDataSrv
+```
+
+The standalone Windows installer registers `MaClawDataSrv` as an automatic
+startup service and starts it after installation.
+
 `MACLAW_DATA_TOKEN` is optional. When set, it acts as a service bearer token and
 must be at least 24 characters. Without it, use the first-time administrator
 setup and login flow to obtain a temporary bearer token.

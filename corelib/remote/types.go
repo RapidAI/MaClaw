@@ -12,6 +12,14 @@ const (
 	SessionExited       SessionStatus = "exited"
 )
 
+func (status SessionStatus) String() string {
+	return string(status)
+}
+
+func (status SessionStatus) IsRunning() bool {
+	return status == SessionRunning
+}
+
 // ThinkingState 表示 Agent 的思考状态。
 type ThinkingState int
 
@@ -67,7 +75,7 @@ type LaunchSpec struct {
 	// starting a fresh conversation.
 	ResumeSessionID string
 
-	Env          map[string]string
+	Env map[string]string
 }
 
 // CommandSpec 描述要执行的命令。

@@ -113,26 +113,18 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 
 	if len(events) == 0 && len(lines) > 0 {
 		joined := strings.ToLower(strings.Join(lines, " "))
+		marker := classifySummaryOutputMarker(joined)
 		if next.Status != string(SessionWaitingInput) && next.Status != string(SessionError) && next.Status != string(SessionExited) {
-			if strings.Contains(joined, "running") || strings.Contains(joined, "reading") || strings.Contains(joined, "editing") {
+			if marker == summaryOutputMarkerBusy {
 				next.Status = string(SessionBusy)
 			}
 		}
 
 		if next.Status == string(SessionRunning) || next.Status == string(SessionBusy) {
-			waitingHints := []string{
-				"what would you like", "what do you want",
-				"how can i help", "what should i do",
-				"waiting for", "your turn",
-				"enter a command", "type a message", "send a message",
-			}
-			for _, hint := range waitingHints {
-				if strings.Contains(joined, hint) {
-					next.Status = string(SessionWaitingInput)
-					next.WaitingForUser = true
-					next.SuggestedAction = "Review results and send next instruction"
-					break
-				}
+			if marker == summaryOutputMarkerWaiting {
+				next.Status = string(SessionWaitingInput)
+				next.WaitingForUser = true
+				next.SuggestedAction = "Review results and send next instruction"
 			}
 		}
 	}

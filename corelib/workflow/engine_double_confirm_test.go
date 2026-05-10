@@ -328,6 +328,7 @@ func TestBugCondition_AllTemplates_FirstExecution(t *testing.T) {
 		WorkflowPresentationDesign, WorkflowBidResponse,
 		WorkflowContractReview, WorkflowDueDiligence,
 		WorkflowComplianceAudit, WorkflowPatentAnalysis,
+		WorkflowOpsMaintenance,
 	}
 
 	for _, wt := range workflowTypes {

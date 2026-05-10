@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
@@ -368,18 +371,48 @@ func TestCodingSubAgentExecuteToolEmitsStructuredToolEvent(t *testing.T) {
 	}
 }
 
-func TestClassifyCodingToolOutcome(t *testing.T) {
-	if got := classifyCodingToolOutcome("read_file", "ok"); got != "success" {
-		t.Fatalf("success outcome = %q", got)
+func TestCodingToolExecutionUsesStructuredOutcome(t *testing.T) {
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{}}
+	blocked := cb.executeToolWithOutcome("read_file", `{"path":"main.go"}`)
+	if blocked.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("blocked outcome = %q", blocked.Outcome)
 	}
-	if got := classifyCodingToolOutcome("read_file", "coding subagent host tool handler is unavailable"); got != "blocked" {
-		t.Fatalf("blocked outcome = %q", got)
-	}
-	if got := classifyCodingToolOutcome("bash", "[ERROR] exit code: 1"); got != "failed" {
-		t.Fatalf("failed outcome = %q", got)
+	failed := cb.ExecuteToolStructured("read_file", `{`)
+	if failed.Outcome != agent.ToolExecutionOutcomeError {
+		t.Fatalf("structured loop outcome = %q", failed.Outcome)
 	}
 	if got := compactCodingToolResultSummary("first line\nsecond line"); got != "first line" {
 		t.Fatalf("tool result summary = %q", got)
+	}
+}
+
+func TestExecuteCodingBashReturnsStructuredOutcome(t *testing.T) {
+	successCmd := "printf ok"
+	failCmd := "exit 7"
+	timeoutCmd := "sleep 2"
+	if runtime.GOOS == "windows" {
+		successCmd = "Write-Output ok"
+		failCmd = "exit 7"
+		timeoutCmd = "Start-Sleep -Seconds 2"
+	}
+
+	success := executeCodingBash(map[string]interface{}{"command": successCmd}, nil)
+	if success.Kind != codingCommandResultOK || success.ExitCode != 0 {
+		t.Fatalf("success result = %#v", success)
+	}
+	failed := executeCodingBash(map[string]interface{}{"command": failCmd}, nil)
+	if failed.Kind != codingCommandResultExitError || failed.ExitCode == 0 {
+		t.Fatalf("failed result = %#v", failed)
+	}
+	timedOut := executeCodingBash(map[string]interface{}{
+		"command": timeoutCmd,
+		"timeout": float64(1),
+	}, nil)
+	if timedOut.Kind != codingCommandResultTimeout {
+		t.Fatalf("timeout result = %#v", timedOut)
+	}
+	if timedOut.toolResult().Outcome != codingToolOutcomeTimeout {
+		t.Fatalf("timeout tool outcome = %q", timedOut.toolResult().Outcome)
 	}
 }
 
@@ -729,48 +762,39 @@ func TestCodingSubAgentWriteFileRequiresReadOnlyForExistingFiles(t *testing.T) {
 	}
 }
 
-func TestFileMutationFailureDetection(t *testing.T) {
-	failed := []string{
-		"缺少 path 参数",
-		"写入失败: denied",
-		"编辑失败: bad",
-		"行编辑失败: bad",
-		"未找到要替换的内容",
-		"文件不存在或无法访问: missing",
-		"missing path parameter",
-		"write failed: permission denied",
-		"edit failed: replacement not found",
-		"line edit failed: bad range",
-		"no such file or directory",
+func TestCodingFileToolExecutionReturnsStructuredOutcome(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.go")
+	writeResult := executeCodingWriteFile(map[string]interface{}{
+		"path":    file,
+		"content": "package main\nfunc main() {}\n",
+	})
+	if writeResult.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("write outcome = %q, text=%q", writeResult.Outcome, writeResult.Text)
 	}
-	for _, result := range failed {
-		if !isFailedFileMutationResult(result) {
-			t.Fatalf("expected mutation result to fail: %q", result)
-		}
+	readResult := executeCodingReadFile(map[string]interface{}{"path": file})
+	if readResult.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("read outcome = %q, text=%q", readResult.Outcome, readResult.Text)
 	}
-	if isFailedFileMutationResult("已编辑 file.go（替换 1 处，当前 10 字节）") {
-		t.Fatal("successful edit should not be treated as failed")
+	editResult := executeCodingEditFile(map[string]interface{}{
+		"path":       file,
+		"old_string": "func main() {}",
+		"new_string": "func main() { println(\"ok\") }",
+	})
+	if editResult.Outcome != codingToolOutcomeSuccess {
+		t.Fatalf("edit outcome = %q, text=%q", editResult.Outcome, editResult.Text)
 	}
-}
-
-func TestFileReadFailureDetection(t *testing.T) {
-	failed := []string{
-		"缺少 path 参数",
-		"文件不存在或无法访问: missing",
-		"读取失败: denied",
-		"target 是目录，请使用 list_directory",
-		"missing path parameter",
-		"file does not exist",
-		"read failed: permission denied",
-		"target is a directory",
+	missingPath := executeCodingWriteFile(map[string]interface{}{"content": "x"})
+	if missingPath.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("missing path outcome = %q", missingPath.Outcome)
 	}
-	for _, result := range failed {
-		if !isFailedFileReadResult(result) {
-			t.Fatalf("expected read result to fail: %q", result)
-		}
-	}
-	if isFailedFileReadResult("package main\nfunc main() {}\n") {
-		t.Fatal("successful read should not be treated as failed")
+	missingReplacement := executeCodingEditFile(map[string]interface{}{
+		"path":       file,
+		"old_string": "not present",
+		"new_string": "replacement",
+	})
+	if missingReplacement.Outcome != codingToolOutcomeFailed {
+		t.Fatalf("missing replacement outcome = %q", missingReplacement.Outcome)
 	}
 }
 
@@ -1228,7 +1252,7 @@ func TestClassifyCodingGuardrail(t *testing.T) {
 		{name: "host", tool: "read_file", result: "coding subagent host tool handler is unavailable", category: "host"},
 	}
 	for _, tc := range cases {
-		if got := classifyCodingGuardrail(tc.tool, tc.path, tc.command, tc.result); got != tc.category {
+		if got := classifyCodingGuardrailCategory(tc.tool, tc.path, tc.command, tc.result).String(); got != tc.category {
 			t.Fatalf("%s category = %q, want %q", tc.name, got, tc.category)
 		}
 	}
@@ -1489,8 +1513,8 @@ func TestCodingSubAgentCommandTracking(t *testing.T) {
 	cb.trackCommandResult(map[string]interface{}{
 		"command":     "go test ./...",
 		"working_dir": "D:\\repo",
-	}, "ok github.com/example/project")
-	cb.trackCommandResult(map[string]interface{}{"command": ""}, "ignored")
+	}, "ok github.com/example/project", true)
+	cb.trackCommandResult(map[string]interface{}{"command": ""}, "ignored", false)
 
 	commands := cb.getCommandsRun()
 	if len(commands) != 1 {
@@ -1509,7 +1533,7 @@ func TestCodingSubAgentRejectedCommandTracking(t *testing.T) {
 	cb.trackCommandResult(map[string]interface{}{
 		"command":     "git reset --hard HEAD",
 		"working_dir": "D:\\repo",
-	}, "拒绝执行高风险命令：git reset --hard HEAD")
+	}, "拒绝执行高风险命令：git reset --hard HEAD", false)
 
 	commands := cb.getCommandsRun()
 	if len(commands) != 1 {
@@ -1524,61 +1548,6 @@ func TestCodingSubAgentRejectedCommandTracking(t *testing.T) {
 }
 
 func TestCommandResultSummaryAndStatus(t *testing.T) {
-	if !isSuccessfulCommandResult("ok\nPASS") {
-		t.Fatal("expected successful output")
-	}
-	if isSuccessfulCommandResult("[错误] 退出码: exit status 1") {
-		t.Fatal("expected error output to be marked failed")
-	}
-	for _, result := range []string{
-		"[ERROR] exit code: 1",
-		"exit status 2",
-		"exit-code: 3",
-		"status=4",
-		"process exited with code 5",
-		"process finished with exit code 42",
-		"command timed out after 120s",
-		"permission denied",
-		"refused to execute dangerous command",
-		"npm ERR! code 1",
-		"error: build failed",
-		"fatal: not a git repository",
-		"panic: runtime error",
-		"compilation failed",
-		"build failed",
-		"test failed",
-		"FAIL\nFAIL\t./pkg\t0.12s",
-		"FAILED",
-		"FAILURES!!!",
-		"AssertionError: expected true",
-		"Traceback (most recent call last):",
-		"expected 2 got 3",
-	} {
-		if isSuccessfulCommandResult(result) {
-			t.Fatalf("expected English error output to be marked failed: %q", result)
-		}
-	}
-	for _, result := range []string{
-		"PASS\nok ./pkg",
-		"0 failed tests, 20 passed",
-		"no failures detected",
-		"expected output file exists",
-		"summary: 0 errors: all checks passed",
-		"note: previous error: was ignored by the tool",
-		"process finished with exit code 0",
-		"process exited with code 0",
-		"exit-code: 0",
-		"status=0",
-		"exit status 0",
-	} {
-		if !isSuccessfulCommandResult(result) {
-			t.Fatalf("expected benign command output to be marked successful: %q", result)
-		}
-	}
-	if isSuccessfulCommandResult("拒绝执行高风险命令：git reset --hard HEAD") {
-		t.Fatal("expected rejected command to be marked failed")
-	}
-
 	long := compactCommandResult(strings.Repeat("line\n", 400))
 	if !strings.Contains(long, "截断") {
 		t.Fatal("expected long command output to be truncated")
@@ -1687,11 +1656,11 @@ func TestCodingSubAgentSearchTracking(t *testing.T) {
 	cb.trackSearchResult("Glob", map[string]interface{}{
 		"pattern": "**/*.go",
 		"path":    project,
-	}, filepath.Join(project, "main.go"))
+	}, filepath.Join(project, "main.go"), true)
 	cb.trackSearchResult("ripgrep", map[string]interface{}{
 		"pattern": "func main",
 		"path":    project,
-	}, "main.go:1:func main() {}")
+	}, "main.go:1:func main() {}", true)
 
 	searches := cb.getSearchesRun()
 	if len(searches) != 2 {
@@ -1714,7 +1683,7 @@ func TestCodingSubAgentSearchTrackingCompactsLongFields(t *testing.T) {
 	cb.trackSearchResult("ripgrep", map[string]interface{}{
 		"pattern": longQuery,
 		"path":    longPath,
-	}, strings.Repeat("main.go:1:match\n", 300))
+	}, strings.Repeat("main.go:1:match\n", 300), true)
 
 	searches := cb.getSearchesRun()
 	if len(searches) != 1 {
@@ -1732,27 +1701,25 @@ func TestCodingSubAgentSearchTrackingCompactsLongFields(t *testing.T) {
 }
 
 func TestSearchResultSummaryAndStatus(t *testing.T) {
-	if !isSuccessfulSearchResult("main.go:1:func main() {}") {
-		t.Fatal("expected search result to be successful")
+	dir := t.TempDir()
+	file := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(file, []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
 	}
-	for _, result := range []string{
-		"缺少 pattern 参数",
-		"搜索失败: bad",
-		"Glob 失败: bad",
-		"正则表达式无效: bad",
-		"未找到匹配路径",
-		"missing pattern parameter",
-		"search failed: bad",
-		"glob failed: bad",
-		"invalid regular expression: bad",
-		"no matches found",
-	} {
-		if isSuccessfulSearchResult(result) {
-			t.Fatalf("expected search result to fail: %q", result)
-		}
+	matched := agent.ToolGlobDetailed(map[string]interface{}{"path": dir, "pattern": "**/*.go"})
+	if matched.Outcome != agent.SearchToolOutcomeMatched {
+		t.Fatalf("matched outcome = %q, text=%q", matched.Outcome, matched.Text)
+	}
+	missing := agent.ToolGlobDetailed(map[string]interface{}{"path": dir, "pattern": "**/*.md"})
+	if missing.Outcome != agent.SearchToolOutcomeNoMatch {
+		t.Fatalf("missing outcome = %q, text=%q", missing.Outcome, missing.Text)
+	}
+	invalid := agent.ToolRipgrepDetailed(map[string]interface{}{"path": dir, "pattern": "["})
+	if invalid.Outcome != agent.SearchToolOutcomeError {
+		t.Fatalf("invalid regex outcome = %q, text=%q", invalid.Outcome, invalid.Text)
 	}
 	long := compactSearchResult(strings.Repeat("main.go:1:x\n", 300))
-	if !strings.Contains(long, "截断") {
+	if len(long) >= len(strings.Repeat("main.go:1:x\n", 300)) {
 		t.Fatal("expected long search result to be truncated")
 	}
 }

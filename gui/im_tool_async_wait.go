@@ -71,21 +71,19 @@ func (h *IMMessageHandler) toolBashBackground(command, workDir string) string {
 
 // toolAsyncWait handles the async_wait tool: check/wait/kill/list background tasks.
 func (h *IMMessageHandler) toolAsyncWait(args map[string]interface{}, onProgress coretool.ProgressCallback) string {
-	action := stringVal(args, "action")
-	if action == "" {
-		action = "check" // default
-	}
+	actionText := stringVal(args, "action")
+	action := normalizeAsyncWaitAction(actionText)
 
 	mgr := h.ensureLocalBgTaskMgr()
 
 	switch action {
-	case "check":
+	case asyncWaitActionCheck:
 		return h.asyncWaitCheck(mgr, args)
-	case "wait":
+	case asyncWaitActionWait:
 		return h.asyncWaitWait(mgr, args, onProgress)
-	case "kill":
+	case asyncWaitActionKill:
 		return h.asyncWaitKill(mgr, args)
-	case "list":
+	case asyncWaitActionList:
 		return h.asyncWaitList(mgr)
 	default:
 		return fmt.Sprintf("不支持的 action: %s。支持: check, wait, kill, list", action)
@@ -187,12 +185,12 @@ func formatTaskStatus(s *coretool.LocalTaskStatus) string {
 	var b strings.Builder
 
 	icon := "🔄"
-	switch s.Status {
-	case "completed":
+	switch normalizeLocalBackgroundTaskStatus(s.Status) {
+	case localBackgroundTaskStatusCompleted:
 		icon = "✅"
-	case "failed":
+	case localBackgroundTaskStatusFailed:
 		icon = "❌"
-	case "killed":
+	case localBackgroundTaskStatusKilled:
 		icon = "⏹️"
 	}
 

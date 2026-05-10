@@ -551,17 +551,18 @@ func (h *GeminiACPExecutionHandle) handleServerRequest(msg acpJSONRPCResponse) {
 		}
 
 		// Determine the default allow option ID from the options list.
-		optionID := "allow_once"
+		optionID := string(geminiACPPermissionAllowOnce)
 		denyOptionID := ""
 		if options, ok := params["options"].([]interface{}); ok {
 			for _, opt := range options {
 				if optMap, ok := opt.(map[string]interface{}); ok {
 					kind, _ := optMap["kind"].(string)
 					oid, _ := optMap["optionId"].(string)
-					if (kind == "allow_once" || kind == "allow_always") && oid != "" {
+					permissionKind := normalizeGeminiACPPermissionKind(kind)
+					if permissionKind.IsAllow() && oid != "" {
 						optionID = oid
 					}
-					if kind == "deny" && oid != "" {
+					if permissionKind == geminiACPPermissionDeny && oid != "" {
 						denyOptionID = oid
 					}
 				}
@@ -672,13 +673,14 @@ func (h *GeminiACPExecutionHandle) handleSessionUpdate(params json.RawMessage) {
 		h.outputCh <- []byte(fmt.Sprintf("⚡ %s [%s]\n", title, status))
 	case "tool_call_update", "toolCallUpdate":
 		status, _ := update["status"].(string)
-		if status == "completed" || status == "failed" {
+		toolStatus := normalizeRemoteToolUpdateStatus(status)
+		if toolStatus.IsTerminal() {
 			title, _ := update["title"].(string)
 			if title == "" {
 				title = "tool"
 			}
 			icon := "✓"
-			if status == "failed" {
+			if toolStatus == remoteToolUpdateStatusFailed {
 				icon = "✗"
 			}
 			h.outputCh <- []byte(fmt.Sprintf("%s %s %s\n", icon, title, status))

@@ -298,16 +298,14 @@ func (a *App) VerifyRemoteActivation() bool {
 		return true
 	}
 
-	switch probe.Status {
-	case "not_found", "blocked":
+	if normalizeRemoteProbeStatusKind(probe.Status).ShouldClearActivation() {
 		// Server no longer recognizes this user — clear machine credentials
 		// but preserve email and hub URL for easier re-registration.
 		fmt.Printf("[verify-activation] server reports status=%s for %s, clearing local machine credentials\n", probe.Status, email)
 		a.clearMachineCredentials()
 		return false
-	default:
-		return true
 	}
+	return true
 }
 
 // clearMachineCredentials removes machine_id, machine_token, sn, and user_id

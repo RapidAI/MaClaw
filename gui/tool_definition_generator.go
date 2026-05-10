@@ -116,7 +116,7 @@ func (g *ToolDefinitionGenerator) Generate() []map[string]interface{} {
 	if g.registry != nil {
 		servers := g.registry.ListServers()
 		for _, srv := range servers {
-			if srv.HealthStatus != "healthy" {
+			if normalizeMCPHealthStatus(srv.HealthStatus) != mcpHealthStatusHealthy {
 				continue
 			}
 			tools := g.registry.GetServerTools(srv.ID)

@@ -55,6 +55,12 @@ func agentViewSchemaVersion(source, id string, contract interface{}) string {
 	if version := agentViewSchemaVersionCache.items[cacheKey]; version != "" {
 		return version
 	}
+	// Evict all entries when cache exceeds max size to prevent unbounded memory growth.
+	// The cache is a pure computation cache (SHA256 of inputs), so eviction only costs
+	// re-computation on next access, not data loss.
+	if len(agentViewSchemaVersionCache.items) >= 512 {
+		agentViewSchemaVersionCache.items = make(map[string]string, 256)
+	}
 	sum := sha256.Sum256([]byte(cacheKey))
 	version := hex.EncodeToString(sum[:8])
 	agentViewSchemaVersionCache.items[cacheKey] = version

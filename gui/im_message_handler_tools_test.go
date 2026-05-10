@@ -71,19 +71,20 @@ func TestTrialReflectObserveIteration_BuildsReflectionNote(t *testing.T) {
 		},
 	}
 	toolResults := []string{"error: test failed"}
+	toolOutcomes := []toolOutcome{toolOutcomeFailed}
 
-	outcome, observation, repeatedFailures := state.observeIteration(toolCalls, toolResults)
-	if outcome != "failed" {
-		t.Fatalf("expected failed outcome, got %q", outcome)
+	observation := state.observeIteration(toolCalls, toolResults, toolOutcomes)
+	if observation.Outcome != trialReflectOutcomeFailed {
+		t.Fatalf("expected failed outcome, got %q", observation.Outcome.String())
 	}
-	if !contains(observation, "bash=failed") {
-		t.Fatalf("expected failed observation, got %q", observation)
+	if !contains(observation.Text, "bash=failed") {
+		t.Fatalf("expected failed observation, got %q", observation.Text)
 	}
-	if !contains(state.pendingNote, "[试错反思]") || !contains(state.pendingNote, "不要原样重复已经失败的尝试") {
+	if !contains(state.pendingNote, "[Trial reflection]") || !contains(state.pendingNote, "do not repeat the same failed attempt") {
 		t.Fatalf("expected reflection note, got %q", state.pendingNote)
 	}
-	if len(repeatedFailures) != 1 || repeatedFailures[0] != "bash" {
-		t.Fatalf("expected repeated failure guard for bash, got %#v", repeatedFailures)
+	if len(observation.RepeatedFailures) != 1 || observation.RepeatedFailures[0] != "bash" {
+		t.Fatalf("expected repeated failure guard for bash, got %#v", observation.RepeatedFailures)
 	}
 }
 
@@ -101,16 +102,16 @@ func TestTrialReflectObserveIteration_ClearsFailureAfterSuccess(t *testing.T) {
 		},
 	}
 
-	state.observeIteration(toolCalls, []string{"error: failed"})
-	outcome, observation, repeatedFailures := state.observeIteration(toolCalls, []string{"success: completed"})
-	if outcome != "succeeded" {
-		t.Fatalf("expected succeeded outcome, got %q", outcome)
+	state.observeIteration(toolCalls, []string{"previous failure"}, []toolOutcome{toolOutcomeFailed})
+	observation := state.observeIteration(toolCalls, []string{"completed"}, []toolOutcome{toolOutcomeSucceeded})
+	if observation.Outcome != trialReflectOutcomeSucceeded {
+		t.Fatalf("expected succeeded outcome, got %q", observation.Outcome.String())
 	}
-	if !contains(observation, "bash=succeeded") {
-		t.Fatalf("expected succeeded observation, got %q", observation)
+	if !contains(observation.Text, "bash=succeeded") {
+		t.Fatalf("expected succeeded observation, got %q", observation.Text)
 	}
-	if len(repeatedFailures) != 0 {
-		t.Fatalf("expected repeated failures to clear after success, got %#v", repeatedFailures)
+	if len(observation.RepeatedFailures) != 0 {
+		t.Fatalf("expected repeated failures to clear after success, got %#v", observation.RepeatedFailures)
 	}
 }
 
@@ -126,55 +127,17 @@ func TestTrialReflectObserveIteration_ListSkillsEmptyRegistryIsSucceeded(t *test
 		},
 	}}
 	toolResults := []string{"本地没有已注册的 Skill。\n\n提示：可以使用 search_skill_hub 工具在 SkillHub 上搜索更多 Skill。\n"}
+	toolOutcomes := []toolOutcome{toolOutcomeSucceeded}
 
-	outcome, observation, repeatedFailures := state.observeIteration(toolCalls, toolResults)
-	if outcome != "succeeded" {
-		t.Fatalf("expected succeeded outcome, got %q", outcome)
+	observation := state.observeIteration(toolCalls, toolResults, toolOutcomes)
+	if observation.Outcome != trialReflectOutcomeSucceeded {
+		t.Fatalf("expected succeeded outcome, got %q", observation.Outcome.String())
 	}
-	if !contains(observation, "list_skills=succeeded") {
-		t.Fatalf("expected succeeded observation, got %q", observation)
+	if !contains(observation.Text, "list_skills=succeeded") {
+		t.Fatalf("expected succeeded observation, got %q", observation.Text)
 	}
-	if len(repeatedFailures) != 0 {
-		t.Fatalf("expected no repeated failures, got %#v", repeatedFailures)
-	}
-}
-
-func TestClassifyToolOutcome_RunSkillAndStatusSnapshots(t *testing.T) {
-	cases := []struct {
-		name     string
-		toolName string
-		result   string
-		want     string
-	}{
-		{
-			name:     "run skill running is uncertain",
-			toolName: "run_skill",
-			result:   "✅ Skill 已启动\n## 运行信息\n- run_id: run-1\n- status: running\n- session_ready: false\n## 下一步\n- 使用 get_skill_run(run_id) 继续观察执行进度。",
-			want:     "uncertain",
-		},
-		{
-			name:     "get skill run success is succeeded",
-			toolName: "get_skill_run",
-			result:   "🔎 Skill 状态查询结果\n## 运行信息\n- run_id: run-1\n- status: success",
-			want:     "succeeded",
-		},
-		{
-			name:     "get skill run failed is failed",
-			toolName: "get_skill_run",
-			result:   "🔎 Skill 状态查询结果\n## 运行信息\n- run_id: run-1\n- status: failed",
-			want:     "failed",
-		},
-		{
-			name:     "search and install not found is uncertain",
-			toolName: "search_and_install_skill",
-			result:   "在 SkillMarket、ClawHub 和 GitHub 上均未找到与 \"生成PPT\" 匹配的 Skill",
-			want:     "uncertain",
-		},
-	}
-	for _, tc := range cases {
-		if got := classifyToolOutcome(tc.toolName, tc.result); got != tc.want {
-			t.Fatalf("%s: classifyToolOutcome(%q) = %q, want %q", tc.name, tc.toolName, got, tc.want)
-		}
+	if len(observation.RepeatedFailures) != 0 {
+		t.Fatalf("expected no repeated failures, got %#v", observation.RepeatedFailures)
 	}
 }
 
@@ -188,18 +151,74 @@ func TestDidSkillToolFail_IgnoresListSkillsBusinessEmptyState(t *testing.T) {
 			Arguments: `{}`,
 		},
 	}}
-	toolResults := []string{"本地没有已注册的 Skill。\n\n提示：可以使用 search_skill_hub 工具在 SkillHub 上搜索更多 Skill。\n"}
-	if didSkillToolFail(toolCalls, toolResults) {
+	if didSkillToolFail(toolCalls, []toolOutcome{toolOutcomeSucceeded}) {
 		t.Fatal("expected list_skills empty state to not count as skill failure")
+	}
+}
+
+func TestHasRecentFailedToolCallUsesOutcomeMetadata(t *testing.T) {
+	history := []agent.ConversationEntry{
+		{Role: "tool", Content: "error: text-only legacy failure"},
+		{Role: "tool", Content: "all good", ToolOutcome: toolOutcomeFailed.String()},
+	}
+	if !hasRecentFailedToolCall(history) {
+		t.Fatal("expected structured failed outcome to be detected")
+	}
+	history[1].ToolOutcome = toolOutcomeSucceeded.String()
+	if hasRecentFailedToolCall(history) {
+		t.Fatal("expected failure-looking text without failed metadata to be ignored")
+	}
+}
+
+func TestExecuteToolDetailed_ArgumentParseFailureUsesMetadata(t *testing.T) {
+	h := &IMMessageHandler{}
+	result := h.executeToolDetailed("write_file", `{"path":`, nil)
+	if result.Outcome != toolOutcomeFailed {
+		t.Fatalf("Outcome = %q, want failed", result.Outcome.String())
+	}
+	if result.FailureKind != toolFailureArgumentParse {
+		t.Fatalf("FailureKind = %q, want argument_parse", result.FailureKind)
+	}
+	if result.ToolName != "write_file" {
+		t.Fatalf("ToolName = %q, want write_file", result.ToolName)
+	}
+	if result.ToolKind != agentToolKindWriteFile {
+		t.Fatalf("ToolKind = %v, want write_file", result.ToolKind)
+	}
+	if !result.IsWriteFileRecoverableFailure() {
+		t.Fatal("expected write_file argument parse failure to be recoverable")
+	}
+	result.ToolName = "bash"
+	result.ToolKind = agentToolKindUnknown
+	if result.IsWriteFileRecoverableFailure() {
+		t.Fatal("expected non-write_file tool to not use write_file recovery")
+	}
+}
+
+func TestParseToolPayloadResult(t *testing.T) {
+	image := parseToolPayloadResult("[screenshot_base64]abc123")
+	if image.ImageKey != "abc123" || image.TraceResult != "Tool result prepared for the user." {
+		t.Fatalf("image payload = %#v", image)
+	}
+	file := parseToolPayloadResult("[file_base64|report.pdf|application/pdf|im]ZGF0YQ==")
+	if file.File == nil || file.File.name != "report.pdf" || !file.File.forwardIM {
+		t.Fatalf("file payload = %#v", file)
+	}
+	if file.File.message == "" {
+		t.Fatalf("expected file delivery message, got %#v", file.File)
+	}
+	voice := parseToolPayloadResult("[voice_base64|voice.ogg|audio/ogg]AAAA")
+	if voice.VoiceData != "AAAA" || voice.VoiceFileName != "voice.ogg" || voice.VoiceMimeType != "audio/ogg" {
+		t.Fatalf("voice payload = %#v", voice)
 	}
 }
 
 func TestBuildRemoteSkillSearchPrompt(t *testing.T) {
 	prompt := buildRemoteSkillSearchPrompt()
-	if !contains(prompt, "search_and_install_skill") {
-		t.Fatalf("expected search_and_install_skill guidance, got %q", prompt)
+	if !contains(prompt, "Search/install a reusable Skill first") {
+		t.Fatalf("expected reusable Skill guidance, got %q", prompt)
 	}
-	if !contains(prompt, "不要继续解释、承诺或直接 craft_tool") {
+	if !contains(prompt, "Only switch to craft_tool or bash") {
 		t.Fatalf("expected craft_tool restriction, got %q", prompt)
 	}
 }
@@ -222,23 +241,19 @@ func TestBuildNoToolActionPrompt(t *testing.T) {
 	}
 
 	fallbackPrompt := buildNoToolActionPrompt(false, "", "")
-	if !contains(fallbackPrompt, "请立即选择一个最合适的真实工具开始执行") {
+	if !contains(fallbackPrompt, "Choose the best real tool and start executing") {
 		t.Fatalf("expected generic action guidance, got %q", fallbackPrompt)
 	}
 }
 
 func TestBuildNoToolStallRecoverPrompt(t *testing.T) {
 	prompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report", "")
-	if !contains(prompt, "连续 2 轮都没有真正调用工具") {
+	if !contains(prompt, "No real tool was called for 2 consecutive rounds") {
 		t.Fatalf("expected stall count, got %q", prompt)
 	}
 	if !contains(prompt, `manage_skill(action="run", name="hf_daily_papers_report")`) {
 		t.Fatalf("expected preferred skill guidance, got %q", prompt)
 	}
-	if !contains(prompt, `get_skill_run(run_id=...)`) {
-		t.Fatalf("expected get_skill_run guidance, got %q", prompt)
-	}
-
 	runningPrompt := buildNoToolStallRecoverPrompt(2, true, "hf_daily_papers_report", "run-456")
 	if !contains(runningPrompt, `get_skill_run(run_id="run-456")`) {
 		t.Fatalf("expected concrete run_id guidance, got %q", runningPrompt)
@@ -248,10 +263,10 @@ func TestBuildNoToolStallRecoverPrompt(t *testing.T) {
 	}
 
 	fallbackPrompt := buildNoToolStallRecoverPrompt(3, false, "", "")
-	if !contains(fallbackPrompt, "连续 3 轮都没有真正调用工具") {
+	if !contains(fallbackPrompt, "No real tool was called for 3 consecutive rounds") {
 		t.Fatalf("expected fallback stall count, got %q", fallbackPrompt)
 	}
-	if !contains(fallbackPrompt, "请立即选择一个最合适的真实工具开始执行") {
+	if !contains(fallbackPrompt, "Choose the best real tool now") {
 		t.Fatalf("expected generic execution guidance, got %q", fallbackPrompt)
 	}
 }

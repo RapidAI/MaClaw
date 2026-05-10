@@ -16,22 +16,20 @@ func ToolTask(store *task.Store, args map[string]interface{}) string {
 		return "任务管理器未初始化"
 	}
 	action, _ := args["action"].(string)
-	switch action {
-	case "create":
+	switch parsedAction := parseTaskToolAction(action); parsedAction {
+	case taskToolActionCreate:
 		return TaskCreate(store, args)
-	case "update":
+	case taskToolActionUpdate:
 		return TaskUpdate(store, args)
-	case "complete":
-		args["status"] = "completed"
+	case taskToolActionComplete, taskToolActionFail:
+		status, _ := parsedAction.completionStatus()
+		args["status"] = string(status)
 		return TaskUpdate(store, args)
-	case "fail":
-		args["status"] = "failed"
-		return TaskUpdate(store, args)
-	case "list":
+	case taskToolActionList:
 		return TaskList(store)
-	case "delegate":
+	case taskToolActionDelegate:
 		return TaskDelegate(store, args)
-	case "delete":
+	case taskToolActionDelete:
 		return TaskDelete(store, args)
 	default:
 		return fmt.Sprintf("未知 task action: %s（支持: create/update/complete/fail/list/delegate/delete）", action)
@@ -77,21 +75,8 @@ func TaskUpdate(store *task.Store, args map[string]interface{}) string {
 	statusStr, _ := args["status"].(string)
 	note, _ := args["status_note"].(string)
 
-	var status task.Status
-	switch statusStr {
-	case "pending":
-		status = task.StatusPending
-	case "in_progress":
-		status = task.StatusInProgress
-	case "completed":
-		status = task.StatusCompleted
-	case "failed":
-		status = task.StatusFailed
-	case "blocked":
-		status = task.StatusBlocked
-	case "":
-		// no status change, just note update
-	default:
+	status, ok := parseTaskToolStatus(statusStr)
+	if !ok {
 		return fmt.Sprintf("未知状态: %s（支持: pending/in_progress/completed/failed/blocked）", statusStr)
 	}
 

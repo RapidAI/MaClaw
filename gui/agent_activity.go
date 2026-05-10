@@ -16,6 +16,31 @@ type AgentActivity struct {
 	UpdatedAt   time.Time
 }
 
+func (h *IMMessageHandler) startAgentLoopActivity(platform, userText string, maxIter int) (agentLoopActivityReporter, func(), string) {
+	activitySource := agentActivitySourceForPlatform(platform).String()
+	reportActivity := func(iter, maxI int, summary string) {
+		task := userText
+		if len(task) > 100 {
+			task = task[:100]
+		}
+		if len(summary) > 120 {
+			summary = summary[:120]
+		}
+		h.agentActivity.Update(&AgentActivity{
+			Source:      activitySource,
+			Task:        task,
+			Iteration:   iter,
+			MaxIter:     maxI,
+			LastSummary: summary,
+		})
+	}
+	reportActivity(0, maxIter, "")
+	cleanup := func() {
+		h.agentActivity.Clear(activitySource)
+	}
+	return reportActivity, cleanup, h.agentActivity.FormatForPrompt(activitySource)
+}
+
 // agentActivityTTL — entries older than this are considered expired.
 const agentActivityTTL = 5 * time.Minute
 
@@ -28,6 +53,8 @@ type AgentActivityStore struct {
 }
 
 // NewAgentActivityStore creates a new empty store.
+type agentLoopActivityReporter func(iter, maxIter int, summary string)
+
 func NewAgentActivityStore() *AgentActivityStore {
 	return &AgentActivityStore{items: make(map[string]*AgentActivity)}
 }
@@ -60,11 +87,12 @@ func (s *AgentActivityStore) FormatForPrompt(excludeSource string) string {
 			continue
 		}
 		label := "IM 通道"
-		if a.Source == "gui" {
+		switch normalizeAgentActivitySource(a.Source) {
+		case agentActivitySourceGUI:
 			label = "GUI AI 助手"
-		} else if a.Source == "browser_replay" {
+		case agentActivitySourceBrowserReplay:
 			label = "浏览器回放"
-		} else if a.Source == "gui_replay" {
+		case agentActivitySourceGUIReplay:
 			label = "GUI 桌面回放"
 		}
 		line := fmt.Sprintf("- [%s] 任务: %s", label, a.Task)

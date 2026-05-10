@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -283,5 +284,362 @@ func TestWorkflowConfirmation_NormalizesEmptyGoals(t *testing.T) {
 	}
 	if len(item.WorkflowGoals) != 1 || item.WorkflowGoals[0] != "real task" {
 		t.Fatalf("expected normalized workflow goals, got %#v", item.WorkflowGoals)
+	}
+}
+
+func TestFilterToolsForOpsControlledAllowsOnlyOperationalTools(t *testing.T) {
+	tools := []map[string]interface{}{
+		toolDef("ssh", "ssh", nil, nil),
+		toolDef("bash", "bash", nil, nil),
+		toolDef("read_file", "read file", nil, nil),
+		toolDef("task", "task", nil, nil),
+		toolDef("create_session", "create session", nil, nil),
+		toolDef("edit_file", "edit file", nil, nil),
+	}
+
+	filtered := workflow.FilterToolDefinitions(workflow.ToolFilterOpsControlled, tools)
+	names := make(map[string]bool, len(filtered))
+	for _, tool := range filtered {
+		names[extractToolName(tool)] = true
+	}
+
+	for _, allowed := range []string{"ssh", "bash", "read_file"} {
+		if !names[allowed] {
+			t.Fatalf("expected ops-controlled filter to keep %s, got %#v", allowed, names)
+		}
+	}
+	for _, blocked := range []string{"task", "create_session", "edit_file"} {
+		if names[blocked] {
+			t.Fatalf("expected ops-controlled filter to block %s, got %#v", blocked, names)
+		}
+	}
+}
+
+func TestApplyWorkflowToolFilterUsesActiveOpsPhasePolicy(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-filter-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	tools := []map[string]interface{}{
+		toolDef("bash", "bash", nil, nil),
+		toolDef("task", "task", nil, nil),
+	}
+	filtered := handler.applyWorkflowToolFilter(userID, tools)
+	names := make(map[string]bool, len(filtered))
+	for _, tool := range filtered {
+		names[extractToolName(tool)] = true
+	}
+	if !names["bash"] || names["task"] {
+		t.Fatalf("expected active ops phase to keep bash and block task, got %#v", names)
+	}
+}
+
+func TestWorkflowToolExecutionGuardBlocksDisallowedTool(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-guard-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		ToolCall: llm.ToolCall{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "task",
+				Arguments: `{"action":"run"}`,
+			},
+		},
+	})
+
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "not allowed") {
+		t.Fatalf("expected rejection text, got %q", result.Text)
+	}
+}
+
+func TestWorkflowToolExecutionGuardBlocksHighRiskCommandArguments(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-guard-command-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		ToolCall: llm.ToolCall{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "bash",
+				Arguments: `{"command":"rm -rf / --no-preserve-root"}`,
+			},
+		},
+	})
+
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "reviewed runbook") {
+		t.Fatalf("expected high-risk rejection text, got %q", result.Text)
+	}
+}
+
+func TestWorkflowToolExecutionGuardBlocksCommandOutsideApprovedManifest(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-guard-manifest-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseOutputs["risk_policy"] = `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		ToolCall: llm.ToolCall{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "bash",
+				Arguments: `{"command":"systemctl restart mysql"}`,
+			},
+		},
+	})
+
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "approved risk-policy") {
+		t.Fatalf("expected approved manifest rejection text, got %q", result.Text)
+	}
+}
+
+func TestWorkflowToolExecutionGuardBlocksMutatingCommandWithoutManifest(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-guard-no-manifest-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		ToolCall: llm.ToolCall{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "bash",
+				Arguments: `{"command":"systemctl restart nginx"}`,
+			},
+		},
+	})
+
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "allowed_commands") {
+		t.Fatalf("expected missing manifest rejection text, got %q", result.Text)
+	}
+}
+
+func TestWorkflowToolExecutionGuardBlocksSSHUploadWithoutManifest(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-guard-ssh-upload-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		ToolCall: llm.ToolCall{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "ssh",
+				Arguments: `{"action":"upload","local_path":"apply.sh","remote_path":"/tmp/apply.sh"}`,
+			},
+		},
+	})
+
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected policy rejection, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "allowed_commands") {
+		t.Fatalf("expected missing manifest rejection text, got %q", result.Text)
+	}
+}
+
+func TestWorkflowToolExecutionGuardAllowsApprovedSSHUpload(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-guard-ssh-upload-approved-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseOutputs["risk_policy"] = `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: ssh
+    action: upload
+    target: prod-session
+    command: "apply.sh -> /tmp/apply.sh"
+`
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		ToolCall: llm.ToolCall{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "ssh",
+				Arguments: `{"action":"upload","session_id":"prod-session","local_path":"other.sh","remote_path":"/tmp/apply.sh"}`,
+			},
+		},
+	})
+
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected unapproved descriptor rejection, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+	if !strings.Contains(result.Text, "approved risk-policy") {
+		t.Fatalf("expected approved manifest rejection text, got %q", result.Text)
+	}
+
+	result = handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID: userID,
+		ToolCall: llm.ToolCall{
+			ID: "call_2",
+			Function: llm.ToolCallFunction{
+				Name:      "ssh",
+				Arguments: `{"action":"upload","session_id":"staging-session","local_path":"apply.sh","remote_path":"/tmp/apply.sh"}`,
+			},
+		},
+	})
+	if result.FailureKind != toolFailurePolicyRejected {
+		t.Fatalf("expected wrong-target rejection, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+}
+
+func TestWorkflowToolExecutionGuardHonorsSkipNeedsConfirmGate(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "ops-guard-skip-user"
+	state, err := handler.app.workflowEngine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowOpsMaintenance,
+		Summary:  "server maintenance",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	tmpl := handler.app.workflowEngine.GetRegistry().Match(workflow.WorkflowOpsMaintenance)
+	for i, phase := range tmpl.Phases {
+		if phase.ID == "controlled_execution" {
+			state.PhaseIndex = i
+			state.CurrentPhase = phase.ID
+			break
+		}
+	}
+
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		UserID:           userID,
+		SkipWorkflowGate: true,
+		ToolCall: llm.ToolCall{
+			ID: "call_1",
+			Function: llm.ToolCallFunction{
+				Name:      "task",
+				Arguments: `{"action":"run"}`,
+			},
+		},
+	})
+
+	if result.FailureKind == toolFailurePolicyRejected {
+		t.Fatalf("skip gate should bypass workflow policy rejection, got %q", result.Text)
 	}
 }

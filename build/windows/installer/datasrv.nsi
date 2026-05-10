@@ -17,6 +17,9 @@ Unicode true
 !ifndef PRODUCT_EXECUTABLE
 !define PRODUCT_EXECUTABLE "maclaw-data-srv.exe"
 !endif
+!ifndef SERVICE_NAME
+!define SERVICE_NAME "MaClawDataSrv"
+!endif
 !ifndef ARG_DATASRV_AMD64_BINARY
 !define ARG_DATASRV_AMD64_BINARY "..\..\..\dist\maclaw-data-srv_amd64.exe"
 !endif
@@ -101,13 +104,32 @@ Section
         Abort
     ${EndIf}
 
-    File "/oname=README.md" "..\..\..\cmd\maclaw-data-srv\README.md"
+    File "/oname=README.md" "..\..\..\datasrv\README.md"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     CreateDirectory "$SMPROGRAMS\${INFO_COMPANYNAME}"
     CreateShortcut "$SMPROGRAMS\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
 
     WriteUninstaller "$INSTDIR\uninstall.exe"
+
+    DetailPrint "Registering ${SERVICE_NAME} Windows service"
+    ExecWait 'sc.exe stop "${SERVICE_NAME}"'
+    Sleep 2000
+    ExecWait 'sc.exe delete "${SERVICE_NAME}"'
+    Sleep 1000
+    ExecWait 'sc.exe create "${SERVICE_NAME}" binPath= "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\"" start= auto DisplayName= "${INFO_PRODUCTNAME}"' $R1
+    ${If} $R1 != 0
+        MessageBox MB_OK|MB_ICONSTOP "Failed to create ${SERVICE_NAME} Windows service. sc.exe exited with code $R1."
+        Abort
+    ${EndIf}
+    ExecWait 'sc.exe description "${SERVICE_NAME}" "MaClawDataSrv structured data HTTP service"'
+    ExecWait 'sc.exe start "${SERVICE_NAME}"' $R1
+    ${If} $R1 != 0
+        ExecWait 'sc.exe stop "${SERVICE_NAME}"'
+        ExecWait 'sc.exe delete "${SERVICE_NAME}"'
+        MessageBox MB_OK|MB_ICONSTOP "Installed ${SERVICE_NAME}, but failed to start it. sc.exe exited with code $R1."
+        Abort
+    ${EndIf}
 
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "DisplayName" "${INFO_PRODUCTNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${INFO_PRODUCTNAME}" "UninstallString" "$\"$INSTDIR\uninstall.exe$\""
@@ -119,7 +141,9 @@ SectionEnd
 Section "uninstall"
     SetShellVarContext all
 
-    ExecWait "taskkill /F /IM ${PRODUCT_EXECUTABLE}"
+    ExecWait 'sc.exe stop "${SERVICE_NAME}"'
+    ExecWait 'sc.exe delete "${SERVICE_NAME}"'
+    ExecWait "taskkill /IM ${PRODUCT_EXECUTABLE}"
 
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$INSTDIR\README.md"

@@ -178,7 +178,7 @@ func (m *BackgroundLoopManager) SendContinue(loopID string, additionalRounds int
 	if !ok {
 		return fmt.Errorf("loop %s not found", loopID)
 	}
-	if ctx.State() != "paused" {
+	if !ctx.StateKind().IsPaused() {
 		return fmt.Errorf("loop %s is not paused (state=%s)", loopID, ctx.State())
 	}
 	select {
@@ -211,7 +211,7 @@ func (m *BackgroundLoopManager) Stop(loopID string) {
 	m.mu.Unlock()
 
 	ctx.Cancel()
-	ctx.SetState("stopped")
+	ctx.SetStateKind(LoopStateStopped)
 
 	if next != nil {
 		m.mu.Lock()
@@ -246,7 +246,7 @@ func (m *BackgroundLoopManager) Complete(loopID string) {
 	}
 	m.mu.Unlock()
 
-	ctx.SetState("completed")
+	ctx.SetStateKind(LoopStateCompleted)
 
 	if next != nil {
 		m.mu.Lock()

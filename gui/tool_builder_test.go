@@ -93,10 +93,42 @@ func TestDynamicToolBuilder_Build_GroupActivation(t *testing.T) {
 	}
 }
 
+func TestDynamicToolBuilder_Build_PassthroughGroupActivation(t *testing.T) {
+	r := NewToolRegistry()
+	for i := 0; i < 10; i++ {
+		r.Register(RegisteredTool{
+			Name: "builtin_" + string(rune('a'+i)), Description: "builtin tool", Category: ToolCategoryBuiltin, Status: RegToolAvailable,
+		})
+	}
+	for i := 0; i < 16; i++ {
+		r.Register(RegisteredTool{
+			Name: "other_" + string(rune('a'+i)), Description: "other tool", Category: ToolCategoryMCP, Status: RegToolAvailable,
+			Tags: []string{"other"},
+		})
+	}
+	r.Register(RegisteredTool{Name: "passthrough_task", Description: "manage passthrough tasks", Category: ToolCategoryBuiltin, Status: RegToolAvailable, Tags: []string{"passthrough", "run", "emergency", "recovery", "script"}})
+
+	b := NewDynamicToolBuilder(r)
+	defs := b.Build("帮我创建一个直通任务，用于远程应急恢复")
+
+	if !toolDefsContain(defs, "passthrough_task") {
+		t.Fatalf("expected passthrough_task to be routed, got %#v", toolDefNames(defs))
+	}
+}
+
 func TestDetectGroupTags_Chinese(t *testing.T) {
 	tags := detectGroupTags("使用数据库工具查询")
 	if !tags["database"] || !tags["sql"] {
 		t.Errorf("expected database/sql tags for 数据库, got %v", tags)
+	}
+}
+
+func TestDetectGroupTags_Passthrough(t *testing.T) {
+	tags := detectGroupTags("帮我注册直通任务作为应急脚本")
+	for _, want := range []string{"passthrough", "emergency", "recovery", "script"} {
+		if !tags[want] {
+			t.Fatalf("expected passthrough tag %q, got %v", want, tags)
+		}
 	}
 }
 
@@ -105,6 +137,27 @@ func TestDetectGroupTags_English(t *testing.T) {
 	if !tags["git"] || !tags["vcs"] {
 		t.Errorf("expected git/vcs tags, got %v", tags)
 	}
+}
+
+func toolDefsContain(defs []map[string]interface{}, want string) bool {
+	for _, d := range defs {
+		fn, _ := d["function"].(map[string]interface{})
+		if fn["name"] == want {
+			return true
+		}
+	}
+	return false
+}
+
+func toolDefNames(defs []map[string]interface{}) []string {
+	names := make([]string, 0, len(defs))
+	for _, d := range defs {
+		fn, _ := d["function"].(map[string]interface{})
+		if name, ok := fn["name"].(string); ok {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func TestDetectGroupTags_NoMatch(t *testing.T) {
@@ -134,5 +187,3 @@ func TestRegisteredToolToDef(t *testing.T) {
 		t.Errorf("required = %v, want [path]", req)
 	}
 }
-
-

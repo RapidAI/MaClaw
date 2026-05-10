@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
@@ -174,5 +175,29 @@ func TestValidateTransportSecurityBoolEnvParsing(t *testing.T) {
 	t.Setenv("MACLAW_ALLOW_INSECURE_HTTP", "later")
 	if _, err := getenvBoolStrict("MACLAW_ALLOW_INSECURE_HTTP", false); err == nil {
 		t.Fatalf("expected invalid transport bool env to be rejected")
+	}
+}
+
+func TestWindowsInstallerUninstallsRegisteredService(t *testing.T) {
+	data, err := os.ReadFile("../build/windows/installer/maclawsrv.nsi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		`!define SERVICE_NAME "MaClawSrv"`,
+		`sc.exe create "${SERVICE_NAME}"`,
+		`start= auto`,
+		`maclawsrv_service_env.ps1`,
+		`sc.exe start "${SERVICE_NAME}"`,
+		`sc.exe stop "${SERVICE_NAME}"`,
+		`sc.exe delete "${SERVICE_NAME}"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("maclawsrv installer missing %s", want)
+		}
+	}
+	if strings.Contains(text, "taskkill") {
+		t.Fatal("maclawsrv installer should stop through the service manager instead of killing processes")
 	}
 }

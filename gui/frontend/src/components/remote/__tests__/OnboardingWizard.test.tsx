@@ -367,6 +367,89 @@ describe('OnboardingWizard registration', () => {
         expect(await screen.findByText(/Pick a provider/)).toBeTruthy();
     });
 
+    it('skips Hub registration and finishes after LLM setup in offline mode', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [
+                { name: 'Custom1', url: '', key: '', model: '', protocol: 'openai', is_custom: true, supports_vision: false },
+            ],
+        });
+        TestMaclawLLMMock.mockResolvedValue({ message: 'hello', supports_vision: false });
+
+        render(<OnboardingWizard {...baseProps} />);
+
+        expect(screen.getByLabelText(/Online mode/)).toBeTruthy();
+        fireEvent.click(screen.getByLabelText(/Offline mode/));
+        expect(screen.getByText(/Hub registration will be skipped/i)).toBeTruthy();
+        expect(screen.getAllByText(/cannot access the public internet/i).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/web search/i).length).toBeGreaterThan(0);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        expect(await screen.findByText(/Pick a provider/)).toBeTruthy();
+        expect(screen.getByText('2 / 2')).toBeTruthy();
+        expect(screen.getByText('Mode')).toBeTruthy();
+        expect(screen.queryByText(/Scan to bind WeChat/)).toBeNull();
+        expect(ActivateRemoteMock).not.toHaveBeenCalled();
+
+        fireEvent.click(await screen.findByRole('button', { name: 'Custom1' }));
+        fireEvent.change(await screen.findByPlaceholderText('https://api.openai.com/v1'), { target: { value: 'https://api.example.com/v1' } });
+        fireEvent.change(screen.getByPlaceholderText('gpt-4o'), { target: { value: 'gpt-test' } });
+        fireEvent.change(screen.getByPlaceholderText('sk-...'), { target: { value: 'secret' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Test & Save' }));
+
+        await waitFor(() => {
+            expect(TestMaclawLLMMock).toHaveBeenCalledWith({
+                url: 'https://api.example.com/v1',
+                key: 'secret',
+                model: 'gpt-test',
+                protocol: 'openai',
+                agent_type: 'openclaw',
+                wire_api: '',
+            });
+        });
+        await waitFor(() => {
+            expect(SaveMaclawLLMProvidersMock).toHaveBeenCalledWith(
+                [expect.objectContaining({ name: 'Custom1', url: 'https://api.example.com/v1', key: 'secret', model: 'gpt-test' })],
+                'Custom1',
+            );
+        });
+        expect(baseProps.onRegistered).not.toHaveBeenCalled();
+        expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
+        expect(baseProps.onSaveField).toHaveBeenCalledWith({ onboarding_done: true });
+    });
+
+    it('returns to the normal registration UI when offline mode is turned back off', () => {
+        render(<OnboardingWizard {...baseProps} />);
+
+        fireEvent.click(screen.getByLabelText(/Offline mode/));
+        expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
+        expect(screen.getAllByText(/cannot access the public internet/i).length).toBeGreaterThan(0);
+
+        fireEvent.click(screen.getByLabelText(/Online mode/));
+        expect(screen.getByPlaceholderText('name@example.com')).toBeTruthy();
+        expect(screen.getByText('Free trial')).toBeTruthy();
+        expect(screen.queryAllByText(/cannot access the public internet/i)).toHaveLength(0);
+    });
+
+    it('ignores stale Hub LLM status responses after switching to offline mode', async () => {
+        let resolveHubStatus: ((value: { active: boolean; skip_llm_config: boolean }) => void) | null = null;
+        GetHubLLMServiceStatusMock.mockImplementation(() => new Promise(resolve => {
+            resolveHubStatus = resolve;
+        }));
+
+        render(<OnboardingWizard {...baseProps} />);
+        fireEvent.click(screen.getByLabelText(/Offline mode/));
+
+        await act(async () => {
+            resolveHubStatus?.({ active: true, skip_llm_config: true });
+            await Promise.resolve();
+        });
+
+        expect(baseProps.onLLMConfigured).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        expect(await screen.findByText(/Pick a provider/)).toBeTruthy();
+        expect((screen.getByRole('button', { name: 'Finish' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
     it('does not impose a timeout warning on free trial verification', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: false });
         GetRemoteConnectionStatusMock.mockResolvedValue({ connected: true });

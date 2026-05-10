@@ -19,8 +19,9 @@ func buildMediaAttachment(mediaType string, mediaData []byte, mediaName, mimeTyp
 	if mediaType == "" || len(mediaData) == 0 {
 		return nil
 	}
+	mediaKind := normalizeIMMediaKind(mediaType)
 	// Convert voice to WAV for unified ASR processing.
-	if mediaType == "voice" {
+	if mediaKind.IsVoice() {
 		mediaData, mediaName, mimeType = convertVoiceToWAV(mediaData, mediaName)
 	}
 	if mimeType == "" {
@@ -44,7 +45,7 @@ func buildMediaAttachment(mediaType string, mediaData []byte, mediaName, mimeTyp
 // Voice media is automatically converted to WAV before saving.
 func saveMediaToTempDir(subDir, namePrefix, userID, mediaType string, mediaData []byte, mediaName string) (string, error) {
 	// Convert voice to WAV for unified ASR processing.
-	if mediaType == "voice" {
+	if normalizeIMMediaKind(mediaType).IsVoice() {
 		mediaData, mediaName, _ = convertVoiceToWAV(mediaData, mediaName)
 	}
 	home, err := os.UserHomeDir()
@@ -105,12 +106,12 @@ func convertVoiceToWAV(mediaData []byte, mediaName string) ([]byte, string, stri
 
 // mediaExtension returns a default file extension for a media type.
 func mediaExtension(mediaType string) string {
-	switch mediaType {
-	case "image":
+	switch normalizeIMMediaKind(mediaType) {
+	case imMediaImage:
 		return ".jpg"
-	case "voice":
+	case imMediaVoice:
 		return ".wav"
-	case "video":
+	case imMediaVideo:
 		return ".mp4"
 	default:
 		return ".bin"
@@ -120,15 +121,15 @@ func mediaExtension(mediaType string) string {
 func mediaTypeFromFileName(fileName string) string {
 	switch strings.ToLower(filepath.Ext(fileName)) {
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp":
-		return "image"
+		return imMediaImage.String()
 	case ".mp4", ".avi", ".mov", ".mkv", ".webm":
-		return "video"
+		return imMediaVideo.String()
 	case ".ogg", ".oga", ".opus", ".amr", ".silk", ".slk":
-		return "voice"
+		return imMediaVoice.String()
 	case ".wav", ".mp3", ".m4a", ".aac", ".flac":
-		return "audio"
+		return imMediaAudio.String()
 	default:
-		return "file"
+		return imMediaFile.String()
 	}
 }
 
@@ -172,14 +173,14 @@ func guessMimeFromMedia(mediaType, fileName string) string {
 			return "application/zip"
 		}
 	}
-	switch mediaType {
-	case "image":
+	switch normalizeIMMediaKind(mediaType) {
+	case imMediaImage:
 		return "image/jpeg"
-	case "video":
+	case imMediaVideo:
 		return "video/mp4"
-	case "audio":
+	case imMediaAudio:
 		return "audio/mpeg"
-	case "voice":
+	case imMediaVoice:
 		return "audio/wav"
 	default:
 		return "application/octet-stream"
@@ -188,14 +189,14 @@ func guessMimeFromMedia(mediaType, fileName string) string {
 
 // mediaLabel returns a Chinese label for a media type.
 func mediaLabel(mediaType string) string {
-	switch mediaType {
-	case "image":
+	switch normalizeIMMediaKind(mediaType) {
+	case imMediaImage:
 		return "图片"
-	case "voice":
+	case imMediaVoice:
 		return "语音"
-	case "video":
+	case imMediaVideo:
 		return "视频"
-	case "file":
+	case imMediaFile:
 		return "文件"
 	default:
 		return "媒体"
@@ -208,10 +209,10 @@ func mediaLabel(mediaType string) string {
 // QQ, Telegram) use to construct image attachments for the LLM vision path.
 func buildLocalImageAttachment(mediaData []byte, mediaName, mimeType string) MessageAttachment {
 	if mimeType == "" {
-		mimeType = guessMimeFromMedia("image", mediaName)
+		mimeType = guessMimeFromMedia(imMediaImage.String(), mediaName)
 	}
 	return MessageAttachment{
-		Type:     "image",
+		Type:     imMediaImage.String(),
 		FileName: mediaName,
 		MimeType: mimeType,
 		Data:     base64.StdEncoding.EncodeToString(mediaData),

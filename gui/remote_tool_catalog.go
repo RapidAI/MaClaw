@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"runtime"
 	"strings"
 	"unicode"
@@ -255,24 +255,24 @@ func remoteToolSupported(toolName string) bool {
 }
 
 func remoteToolVisible(cfg corelib.AppConfig, toolName string) bool {
-	switch normalizeRemoteToolName(toolName) {
-	case "claude":
+	switch normalizeRemoteToolNameKind(toolName) {
+	case remoteToolNameClaude:
 		return true
-	case "codex":
+	case remoteToolNameCodex:
 		return cfg.ShowCodex
-	case "opencode":
+	case remoteToolNameOpencode:
 		return cfg.ShowOpenCode
-	case "iflow":
+	case remoteToolNameIFlow:
 		return cfg.ShowIFlow
-	case "kilo":
+	case remoteToolNameKilo:
 		return cfg.ShowKilo
-	case "gemini":
+	case remoteToolNameGemini:
 		return cfg.ShowGemini
-	case "cursor":
+	case remoteToolNameCursor:
 		return cfg.ShowCursor && runtime.GOOS != "windows"
-	case "codebuddy":
+	case remoteToolNameCodeBuddy:
 		return cfg.ShowCodeBuddy
-	case "browser":
+	case remoteToolNameBrowser:
 		return true
 	default:
 		for _, et := range brand.Current().ExtraTools {

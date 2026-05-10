@@ -827,13 +827,14 @@ func groupDiscussionReadiness(detail a2a.HubDiscussionDetail) GroupDiscussionRea
 		status = string(detail.Session.Status)
 	}
 	hasResult := strings.TrimSpace(detail.Discussion.ResultSummary) != "" || detail.Decision != nil
-	ready := hasResult || answerCount >= expected || (status != "" && status != string(a2a.SessionOpen) && answerCount > 0)
+	statusKind := normalizeGroupDiscussionSessionStatus(status)
+	ready := hasResult || answerCount >= expected || (statusKind.IsSetAndNotOpen() && answerCount > 0)
 	reason := "waiting for expert answers"
 	if hasResult {
 		reason = "result already exists"
 	} else if answerCount >= expected {
 		reason = "expected expert answers received"
-	} else if status != "" && status != string(a2a.SessionOpen) && answerCount > 0 {
+	} else if statusKind.IsSetAndNotOpen() && answerCount > 0 {
 		reason = "discussion is no longer open"
 	} else if answerCount > 0 {
 		reason = fmt.Sprintf("waiting for more expert answers (%d/%d)", answerCount, expected)
@@ -1658,7 +1659,7 @@ func staleGroupDiscussions(discussions []a2a.HubDiscussionSummary, timeoutSecond
 	deadline := time.Duration(timeoutSeconds) * time.Second
 	out := make([]a2a.HubDiscussionSummary, 0)
 	for _, discussion := range discussions {
-		if !strings.EqualFold(strings.TrimSpace(discussion.Status), string(a2a.SessionOpen)) {
+		if !normalizeGroupDiscussionSessionStatus(discussion.Status).IsOpen() {
 			continue
 		}
 		base := discussion.CreatedAt
@@ -1734,7 +1735,7 @@ func (a *App) GroupDiscussionStatus() GroupDiscussionStatus {
 	if discussions, err := client.ListDiscussions(ctx, ""); err == nil {
 		status.Discussions = discussions
 		for _, discussion := range discussions {
-			isOpen := strings.EqualFold(strings.TrimSpace(discussion.Status), string(a2a.SessionOpen))
+			isOpen := normalizeGroupDiscussionSessionStatus(discussion.Status).IsOpen()
 			if isOpen {
 				status.ActiveDiscussionCount++
 			}

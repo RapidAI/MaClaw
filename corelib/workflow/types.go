@@ -28,6 +28,7 @@ const (
 	WorkflowDueDiligence        WorkflowType = "due_diligence"
 	WorkflowComplianceAudit     WorkflowType = "compliance_audit"
 	WorkflowPatentAnalysis      WorkflowType = "patent_analysis"
+	WorkflowOpsMaintenance      WorkflowType = "ops_maintenance"
 )
 
 // Phase IDs for the coding workflow. These are the canonical identifiers
@@ -56,9 +57,10 @@ type StructuredIntent struct {
 type ToolFilterPolicy string
 
 const (
-	ToolFilterNone    ToolFilterPolicy = "none"     // no tool restrictions
-	ToolFilterDocOnly ToolFilterPolicy = "doc_only" // documentation tools only
-	ToolFilterFull    ToolFilterPolicy = "full"     // full tool list
+	ToolFilterNone          ToolFilterPolicy = "none"           // no tool restrictions
+	ToolFilterDocOnly       ToolFilterPolicy = "doc_only"       // documentation tools only
+	ToolFilterFull          ToolFilterPolicy = "full"           // full tool list
+	ToolFilterOpsControlled ToolFilterPolicy = "ops_controlled" // controlled operational execution tools
 )
 
 // DocOnlyAllowedTools is the canonical set of tool names permitted during
@@ -92,6 +94,23 @@ var DocOnlyAllowedTools = map[string]bool{
 	"screenshot":     true,
 	"async_wait":     true,
 	"list_directory": true,
+}
+
+// OpsControlledAllowedTools is the canonical tool set for controlled server
+// operations phases. It intentionally excludes generic subagent/task/session
+// orchestration tools so operational execution stays inside the risk-gated
+// workflow phase.
+var OpsControlledAllowedTools = map[string]bool{
+	"bash":           true,
+	"ssh":            true,
+	"read_file":      true,
+	"list_directory": true,
+	"memory":         true,
+	"async_wait":     true,
+	"send_file":      true,
+	"web_search":     true,
+	"web_fetch":      true,
+	"set_nickname":   true,
 }
 
 // InputRequirement describes a document/file that the user must provide
@@ -133,6 +152,12 @@ type PhaseTemplate struct {
 	NeedsConfirm bool             `json:"needs_confirm"`
 	CanSkip      bool             `json:"can_skip"`
 	ToolPolicy   ToolFilterPolicy `json:"tool_policy"`
+
+	// DisableOrchestrator prevents the generic task orchestrator from trying
+	// to parse the previous phase output as a coding task list when this phase
+	// enters full-tool execution. Operational workflows use this so the risk
+	// policy gate remains the execution boundary.
+	DisableOrchestrator bool `json:"disable_orchestrator,omitempty"`
 }
 
 // WorkflowTemplate defines a complete workflow with ordered phases.

@@ -1,4 +1,4 @@
-﻿package ha
+package ha
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -25,6 +26,8 @@ type Syncer struct {
 	client   *http.Client
 	interval time.Duration
 	limit    int
+	mu       sync.Mutex
+	running  map[string]bool
 }
 
 func NewSyncer(svc *Service, interval time.Duration, limit int) *Syncer {
@@ -34,14 +37,15 @@ func NewSyncer(svc *Service, interval time.Duration, limit int) *Syncer {
 	if limit <= 0 {
 		limit = 200
 	}
-	if limit > 500 {
-		limit = 500
+	if limit > 2000 {
+		limit = 2000
 	}
 	return &Syncer{
 		svc:      svc,
 		client:   &http.Client{Timeout: 30 * time.Second},
 		interval: interval,
 		limit:    limit,
+		running:  make(map[string]bool),
 	}
 }
 
@@ -65,11 +69,46 @@ func (s *Syncer) Run(ctx context.Context) {
 func (s *Syncer) syncAll(ctx context.Context) {
 	for _, peer := range s.svc.listPeerStates() {
 		peer := peer
+		if !s.beginPeerSync(peer.NodeID) {
+			continue
+		}
 		go s.syncPeer(ctx, peer)
 	}
 }
 
+func (s *Syncer) beginPeerSync(nodeID string) bool {
+	nodeID = strings.TrimSpace(nodeID)
+	if s == nil || nodeID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.running == nil {
+		s.running = make(map[string]bool)
+	}
+	if s.running[nodeID] {
+		return false
+	}
+	s.running[nodeID] = true
+	return true
+}
+
+func (s *Syncer) endPeerSync(nodeID string) {
+	nodeID = strings.TrimSpace(nodeID)
+	if s == nil || nodeID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.running, nodeID)
+}
+
 func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
+	defer func() {
+		if peer != nil {
+			s.endPeerSync(peer.NodeID)
+		}
+	}()
 	if peer == nil || strings.TrimSpace(peer.NodeID) == "" || strings.TrimSpace(peer.BaseURL) == "" {
 		return
 	}
@@ -141,4 +180,3 @@ func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq i
 	}
 	return &out, nil
 }
-

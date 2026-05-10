@@ -1,6 +1,7 @@
 package ha
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -36,9 +37,22 @@ const (
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
+
+	maxPendingPushOpsPerPeer = 4000
 )
 
 var opIDCounter uint64
+
+type InvalidRemoteOpError struct {
+	Reason string
+}
+
+func (e InvalidRemoteOpError) Error() string {
+	if strings.TrimSpace(e.Reason) == "" {
+		return "invalid remote op"
+	}
+	return e.Reason
+}
 
 type Service struct {
 	nodeID        string
@@ -69,6 +83,10 @@ type Service struct {
 	peers          map[string]*PeerRuntimeState
 	peerPublicKeys map[string]*rsa.PublicKey
 	client         *http.Client
+	pushSem        chan struct{}
+	pushMu         sync.Mutex
+	pushPending    map[string][]*store.HASyncOp
+	pushRunning    map[string]bool
 	refresher      interface{ Rebuild(context.Context) error }
 	recorder       *diagnostics.FailureEventRecorder
 }
@@ -92,6 +110,10 @@ func (s *Service) recordFailure(ctx context.Context, category, eventCode, messag
 
 type localOpAppender interface {
 	AppendLocalWithVersion(ctx context.Context, op *store.HASyncOp) (int64, error)
+}
+
+type remoteOpRecorder interface {
+	AppendRemoteIfMissing(ctx context.Context, op *store.HASyncOp) error
 }
 
 func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []StaticPeer) *Service {
@@ -123,6 +145,9 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 		peers:                    peerMap,
 		peerPublicKeys:           peerKeys,
 		client:                   &http.Client{Timeout: 8 * time.Second},
+		pushSem:                  make(chan struct{}, 16),
+		pushPending:              make(map[string][]*store.HASyncOp),
+		pushRunning:              make(map[string]bool),
 		heartbeatSyncMinInterval: 10 * time.Second,
 	}
 }
@@ -423,6 +448,18 @@ type adminSyncCategoryState struct {
 	LastOpAt  *time.Time
 }
 
+type latestEntityTypeOpsLister interface {
+	ListLatestByEntityTypes(ctx context.Context, entityTypes []string) ([]*store.HASyncOp, error)
+}
+
+type entityTypeOpsChecker interface {
+	HasEntityTypeOps(ctx context.Context, entityTypes []string) (bool, error)
+}
+
+type skillMarketRecordCounter interface {
+	CountSnapshotRecords(ctx context.Context) (int64, error)
+}
+
 func adminSyncCategorySpecs() []adminSyncCategorySpec {
 	return []adminSyncCategorySpec{
 		{Key: "routing", Label: "Hub Routing", EntityTypes: map[string]struct{}{EntityHubDomainRoute: {}, EntityHubInstance: {}, EntityHubUserLink: {}}},
@@ -438,7 +475,7 @@ func countSkillMarketSnapshotRecords(snap *skillmarket.Snapshot) int64 {
 	if snap == nil {
 		return 0
 	}
-	return int64(len(snap.Users) + len(snap.Transactions) + len(snap.Submissions) + len(snap.Purchases) + len(snap.Ratings) + len(snap.Configs) + len(snap.Tiers) + len(snap.AuthTokens) + len(snap.Sessions) + len(snap.APIKeys) + len(snap.PendingKeyOrders) + len(snap.NotificationSequences))
+	return int64(len(snap.Users) + len(snap.Transactions) + len(snap.Submissions) + len(snap.Purchases) + len(snap.Ratings) + len(snap.Configs) + len(snap.Tiers) + len(snap.AuthTokens) + len(snap.Sessions) + len(snap.SessionRevocations) + len(snap.APIKeys) + len(snap.PendingKeyOrders) + len(snap.NotificationSequences))
 }
 
 func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
@@ -486,7 +523,11 @@ func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
 		}
 	}
 	if s.skillMarket != nil {
-		if snap, err := s.skillMarket.DumpSnapshot(ctx); err == nil {
+		if counter, ok := any(s.skillMarket).(skillMarketRecordCounter); ok {
+			if count, err := counter.CountSnapshotRecords(ctx); err == nil {
+				counts["skillmarket"] += count
+			}
+		} else if snap, err := s.skillMarket.DumpSnapshot(ctx); err == nil {
 			counts["skillmarket"] += countSkillMarketSnapshotRecords(snap)
 		}
 	}
@@ -531,14 +572,6 @@ func buildAdminSyncDetails(ops []*store.HASyncOp, peers []AdminPeerView, localCo
 			Peers:        make([]AdminSyncCategoryPeerView, 0, len(peers)),
 		}
 		for _, peer := range peers {
-			pending := int64(0)
-			if state.LastOpSeq > peer.CursorLastPulledSeq {
-				pending = state.LastOpSeq - peer.CursorLastPulledSeq
-			}
-			if pending > 0 {
-				item.PendingPeers++
-				item.PendingOps += pending
-			}
 			status := "synced"
 			if state.LastOpSeq == 0 {
 				if item.LocalRecords > 0 {
@@ -549,14 +582,12 @@ func buildAdminSyncDetails(ops []*store.HASyncOp, peers []AdminPeerView, localCo
 			} else if strings.TrimSpace(peer.LastError) != "" {
 				status = "error"
 				item.ErrorPeers++
-			} else if pending > 0 {
-				status = "pending"
 			}
 			item.Peers = append(item.Peers, AdminSyncCategoryPeerView{
 				NodeID:              peer.NodeID,
 				NodeName:            peer.NodeName,
 				Status:              status,
-				PendingOps:          pending,
+				PendingOps:          0,
 				CursorLastPulledSeq: peer.CursorLastPulledSeq,
 				CursorLastSuccessAt: peer.CursorLastSuccessAt,
 				LastError:           peer.LastError,
@@ -579,6 +610,32 @@ func buildAdminSyncDetails(ops []*store.HASyncOp, peers []AdminPeerView, localCo
 	return views
 }
 
+func adminSyncDetailEntityTypes() []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, spec := range adminSyncCategorySpecs() {
+		for entityType := range spec.EntityTypes {
+			if _, ok := seen[entityType]; ok {
+				continue
+			}
+			seen[entityType] = struct{}{}
+			out = append(out, entityType)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (s *Service) listAdminSyncDetailOps(ctx context.Context) ([]*store.HASyncOp, error) {
+	if s == nil || s.ops == nil {
+		return nil, nil
+	}
+	if lister, ok := s.ops.(latestEntityTypeOpsLister); ok {
+		return lister.ListLatestByEntityTypes(ctx, adminSyncDetailEntityTypes())
+	}
+	return s.ops.ListAfterSeq(ctx, 0, 0)
+}
+
 func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) {
 	if s == nil {
 		return &AdminStatusView{Enabled: false, GeneratedAt: time.Now().UTC()}, nil
@@ -596,7 +653,7 @@ func (s *Service) GetAdminStatus(ctx context.Context) (*AdminStatusView, error) 
 		if err != nil {
 			return nil, err
 		}
-		ops, err = s.ops.ListAfterSeq(ctx, 0, 0)
+		ops, err = s.listAdminSyncDetailOps(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -710,6 +767,14 @@ func (s *Service) HasEntityTypeOps(ctx context.Context, entityTypes ...string) (
 	if len(want) == 0 {
 		return false, nil
 	}
+	cleaned := make([]string, 0, len(want))
+	for entityType := range want {
+		cleaned = append(cleaned, entityType)
+	}
+	sort.Strings(cleaned)
+	if checker, ok := s.ops.(entityTypeOpsChecker); ok {
+		return checker.HasEntityTypeOps(ctx, cleaned)
+	}
 	ops, err := s.ops.ListAfterSeq(ctx, 0, 0)
 	if err != nil {
 		return false, err
@@ -750,6 +815,9 @@ func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType str
 	op := &store.HASyncOp{OpID: newOpID(s.nodeID, entityType, entityID, updatedAt), SourceNodeID: s.nodeID, EntityType: entityType, EntityID: entityID, OpType: opType, OccurredAt: updatedAt, PayloadJSON: payloadJSON, PayloadHash: payloadHash}
 	if appender, ok := s.ops.(localOpAppender); ok {
 		_, err := appender.AppendLocalWithVersion(ctx, op)
+		if err == nil {
+			s.broadcastLocalOp(op)
+		}
 		return err
 	}
 
@@ -763,7 +831,227 @@ func (s *Service) appendOp(ctx context.Context, entityType, entityID, opType str
 		return err
 	}
 	op.EntityVersion = version
-	return s.ops.Append(ctx, op)
+	if err := s.ops.Append(ctx, op); err != nil {
+		return err
+	}
+	s.broadcastLocalOp(op)
+	return nil
+}
+
+func (s *Service) broadcastLocalOp(op *store.HASyncOp) {
+	if s == nil || op == nil {
+		return
+	}
+	peers := s.listPeerStates()
+	if len(peers) == 0 {
+		return
+	}
+	for _, peer := range peers {
+		peer := peer
+		if peer == nil || strings.TrimSpace(peer.BaseURL) == "" {
+			continue
+		}
+		opCopy := *op
+		s.enqueuePushOp(peer, &opCopy)
+	}
+}
+
+func (s *Service) enqueuePushOp(peer *PeerRuntimeState, op *store.HASyncOp) {
+	if s == nil || peer == nil || op == nil {
+		return
+	}
+	nodeID := strings.TrimSpace(peer.NodeID)
+	if nodeID == "" {
+		return
+	}
+	s.pushMu.Lock()
+	if s.pushPending == nil {
+		s.pushPending = make(map[string][]*store.HASyncOp)
+	}
+	if s.pushRunning == nil {
+		s.pushRunning = make(map[string]bool)
+	}
+	if !s.replacePendingPushOpLocked(nodeID, op) {
+		s.pushPending[nodeID] = append(s.pushPending[nodeID], op)
+	}
+	deferred := false
+	if len(s.pushPending[nodeID]) > maxPendingPushOpsPerPeer {
+		s.pushPending[nodeID] = append([]*store.HASyncOp(nil), s.pushPending[nodeID][len(s.pushPending[nodeID])-maxPendingPushOpsPerPeer:]...)
+		deferred = true
+	}
+	if s.pushRunning[nodeID] {
+		s.pushMu.Unlock()
+		if deferred {
+			s.markPeerPushDeferred(nodeID, "push queue trimmed; waiting for pull sync")
+		}
+		return
+	}
+	s.pushRunning[nodeID] = true
+	s.pushMu.Unlock()
+	if deferred {
+		s.markPeerPushDeferred(nodeID, "push queue trimmed; waiting for pull sync")
+	}
+	go s.runPeerPushQueue(*peer)
+}
+
+func (s *Service) replacePendingPushOpLocked(nodeID string, op *store.HASyncOp) bool {
+	if s == nil || op == nil || strings.TrimSpace(op.EntityType) == "" || strings.TrimSpace(op.EntityID) == "" {
+		return false
+	}
+	pending := s.pushPending[nodeID]
+	for i, existing := range pending {
+		if existing == nil || existing.EntityType != op.EntityType || existing.EntityID != op.EntityID {
+			continue
+		}
+		if shouldReplaceQueuedPushOp(existing, op) {
+			pending[i] = op
+			s.pushPending[nodeID] = pending
+		}
+		return true
+	}
+	return false
+}
+
+func shouldReplaceQueuedPushOp(existing, incoming *store.HASyncOp) bool {
+	if existing == nil {
+		return true
+	}
+	if incoming == nil {
+		return false
+	}
+	if incoming.EntityVersion != existing.EntityVersion {
+		return incoming.EntityVersion > existing.EntityVersion
+	}
+	if !incoming.OccurredAt.Equal(existing.OccurredAt) {
+		return incoming.OccurredAt.After(existing.OccurredAt)
+	}
+	return strings.TrimSpace(incoming.OpID) > strings.TrimSpace(existing.OpID)
+}
+
+func (s *Service) runPeerPushQueue(peer PeerRuntimeState) {
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
+	<-timer.C
+	for {
+		ops := s.takePeerPushBatch(peer.NodeID, 2000)
+		if len(ops) == 0 {
+			return
+		}
+		s.pushOpsToPeer(&peer, ops)
+	}
+}
+
+func (s *Service) takePeerPushBatch(nodeID string, limit int) []*store.HASyncOp {
+	if s == nil {
+		return nil
+	}
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	pending := s.pushPending[nodeID]
+	if len(pending) == 0 {
+		if s.pushRunning != nil {
+			delete(s.pushRunning, nodeID)
+		}
+		return nil
+	}
+	if limit <= 0 || limit > len(pending) {
+		limit = len(pending)
+	}
+	out := append([]*store.HASyncOp(nil), pending[:limit]...)
+	if limit == len(pending) {
+		delete(s.pushPending, nodeID)
+	} else {
+		remaining := append([]*store.HASyncOp(nil), pending[limit:]...)
+		s.pushPending[nodeID] = remaining
+	}
+	return out
+}
+
+func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) {
+	if s == nil || peer == nil || len(ops) == 0 {
+		return
+	}
+	if s.pushSem != nil {
+		select {
+		case s.pushSem <- struct{}{}:
+			defer func() { <-s.pushSem }()
+		default:
+			s.markPeerPushDeferred(peer.NodeID, "push queue saturated; waiting for pull sync")
+			return
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	payload, err := json.Marshal(map[string]any{"ops": ops})
+	if err != nil {
+		return
+	}
+	url := strings.TrimRight(peer.BaseURL, "/") + "/api/internal/ha/ops/apply"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if secret := strings.TrimSpace(s.ClusterSecret()); secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
+	}
+	if err := s.SignPeerRequest(req); err != nil {
+		log.Printf("[hubcenter][ha] sign push ops to %s: %v", peer.NodeID, err)
+		return
+	}
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.markPeerError(peer.NodeID, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.markPeerError(peer.NodeID, fmt.Sprintf("push ops failed: %s", resp.Status))
+		return
+	}
+	s.updatePeerPushSuccess(peer.NodeID)
+}
+
+func (s *Service) markPeerPushDeferred(nodeID, msg string) {
+	if s == nil {
+		return
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	peer := s.peers[nodeID]
+	if peer == nil {
+		return
+	}
+	peer.LastCheckedAt = &now
+	peer.LastError = msg
+	if peer.Backlog < 1 {
+		peer.Backlog = 1
+	}
+}
+
+func (s *Service) updatePeerPushSuccess(nodeID string) {
+	if s == nil {
+		return
+	}
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	peer := s.peers[nodeID]
+	if peer == nil {
+		return
+	}
+	peer.Reachable = true
+	peer.LagSeconds = 0
+	peer.LastCheckedAt = &now
+	peer.LastSuccessAt = &now
+	if peer.Backlog == 0 {
+		peer.LastError = ""
+	}
 }
 
 func (s *Service) nextEntityVersion(ctx context.Context, entityType, entityID string, updatedAt time.Time) (int64, error) {
@@ -783,6 +1071,11 @@ func (s *Service) nextEntityVersion(ctx context.Context, entityType, entityID st
 
 func (s *Service) ApplyRemoteOps(ctx context.Context, ops []*store.HASyncOp) error {
 	for _, op := range ops {
+		if err := validateRemoteOp(op); err != nil {
+			return err
+		}
+	}
+	for _, op := range ops {
 		if err := s.ApplyRemoteOp(ctx, op); err != nil {
 			return err
 		}
@@ -793,6 +1086,14 @@ func (s *Service) ApplyRemoteOps(ctx context.Context, ops []*store.HASyncOp) err
 func (s *Service) ApplyRemoteOp(ctx context.Context, op *store.HASyncOp) error {
 	if s == nil || op == nil || s.ops == nil || s.versions == nil {
 		return nil
+	}
+	if err := validateRemoteOp(op); err != nil {
+		return err
+	}
+	if recorder, ok := s.ops.(remoteOpRecorder); ok {
+		if err := recorder.AppendRemoteIfMissing(ctx, op); err != nil {
+			return err
+		}
 	}
 	applied, err := s.ops.HasApplied(ctx, op.OpID)
 	if err != nil {
@@ -818,6 +1119,35 @@ func (s *Service) ApplyRemoteOp(ctx context.Context, op *store.HASyncOp) error {
 		return err
 	}
 	return s.markApplied(ctx, op)
+}
+
+func validateRemoteOp(op *store.HASyncOp) error {
+	if op == nil {
+		return InvalidRemoteOpError{Reason: "missing op"}
+	}
+	if strings.TrimSpace(op.OpID) == "" {
+		return InvalidRemoteOpError{Reason: "missing op id"}
+	}
+	if strings.TrimSpace(op.SourceNodeID) == "" {
+		return InvalidRemoteOpError{Reason: "missing source node id"}
+	}
+	if strings.TrimSpace(op.EntityType) == "" || strings.TrimSpace(op.EntityID) == "" {
+		return InvalidRemoteOpError{Reason: "missing entity identity"}
+	}
+	if op.OpType != OpUpsert && op.OpType != OpDelete {
+		return InvalidRemoteOpError{Reason: fmt.Sprintf("unsupported op type: %s", op.OpType)}
+	}
+	if op.EntityVersion <= 0 {
+		return InvalidRemoteOpError{Reason: "invalid entity version"}
+	}
+	if op.OccurredAt.IsZero() {
+		return InvalidRemoteOpError{Reason: "missing occurred_at"}
+	}
+	sum := sha256.Sum256([]byte(op.PayloadJSON))
+	if !strings.EqualFold(strings.TrimSpace(op.PayloadHash), hex.EncodeToString(sum[:])) {
+		return InvalidRemoteOpError{Reason: "payload hash mismatch"}
+	}
+	return nil
 }
 
 func shouldApplyRemoteVersion(current *store.HAEntityVersion, op *store.HASyncOp) bool {

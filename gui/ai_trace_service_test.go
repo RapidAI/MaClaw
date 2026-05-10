@@ -98,8 +98,24 @@ func TestAITraceServiceBuildsTrialReflectSummary(t *testing.T) {
 	svc := NewAITraceService()
 	_, run := svc.StartJobRun(TraceJobKindAIAssistant, "Trial reflect", "desktop", "u1", "/project")
 
-	svc.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=failed command=npm test"})
-	svc.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=succeeded command=npm test"})
+	svc.AppendEvent(run.RunID, TraceEvent{
+		Kind:    "trial.observed",
+		Title:   "Trial outcome",
+		Summary: "command=npm test",
+		ToolOutcomes: []TraceToolObservation{{
+			ToolName: "bash",
+			Outcome:  toolOutcomeFailed.String(),
+		}},
+	})
+	svc.AppendEvent(run.RunID, TraceEvent{
+		Kind:    "trial.observed",
+		Title:   "Trial outcome",
+		Summary: "command=npm test",
+		ToolOutcomes: []TraceToolObservation{{
+			ToolName: "bash",
+			Outcome:  toolOutcomeSucceeded.String(),
+		}},
+	})
 	svc.AppendEvidence(run.RunID, EvidenceRecord{SourceKind: "adaptive_retry", Category: "args", Summary: "retry decision", ContentSnippet: "invalid parameter"})
 	svc.AppendEvidence(run.RunID, EvidenceRecord{SourceKind: "trial_reflect", Category: "repeat_guard", Summary: "avoid repeating failed actions", ContentSnippet: "bash"})
 	svc.UpdateRun(run.RunID, TraceRunStatusCompleted, "success after retry", "")
@@ -128,6 +144,9 @@ func TestAITraceServiceBuildsTrialReflectSummary(t *testing.T) {
 	}
 	if len(view.TrialReflectSummary.FailureCategories) == 0 || view.TrialReflectSummary.FailureCategories[0] != "args" {
 		t.Fatalf("FailureCategories = %#v, want args", view.TrialReflectSummary.FailureCategories)
+	}
+	if !view.TrialReflectSummary.RepeatGuard {
+		t.Fatal("expected RepeatGuard = true")
 	}
 	if !strings.Contains(view.TrialReflectSummary.StrategyNote, "repeat guard") {
 		t.Fatalf("StrategyNote = %q, want repeat guard mention", view.TrialReflectSummary.StrategyNote)

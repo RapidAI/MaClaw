@@ -307,6 +307,38 @@ jobs:
                   /DMUI_ICON_PATH="$root\$($env:BRAND_ICON_ICO)" `
                   build/windows/installer/multiarch.nsi
 
+      - name: Create DataSrv NSIS installer (default brand only)
+        if: matrix.brand == ''
+        shell: pwsh
+        run: |
+          $cfg = Get-Content wails.json -Raw | ConvertFrom-Json
+          $nsis = $env:NSIS_PATH
+          $root = (Get-Location).Path
+          & $nsis /DINFO_PRODUCTNAME="MaClaw Data Service" `
+                  /DINFO_COMPANYNAME="$($cfg.info.companyName)" `
+                  /DINFO_COPYRIGHT="$($cfg.info.copyright)" `
+                  /DINFO_PRODUCTVERSION="$env:VERSION" `
+                  /DPRODUCT_EXECUTABLE="maclaw-data-srv.exe" `
+                  /DARG_DATASRV_AMD64_BINARY="$root\dist\maclaw-data-srv_amd64.exe" `
+                  /DARG_DATASRV_ARM64_BINARY="$root\dist\maclaw-data-srv_arm64.exe" `
+                  build/windows/installer/datasrv.nsi
+
+      - name: Create MaClawSrv NSIS installer (default brand only)
+        if: matrix.brand == ''
+        shell: pwsh
+        run: |
+          $cfg = Get-Content wails.json -Raw | ConvertFrom-Json
+          $nsis = $env:NSIS_PATH
+          $root = (Get-Location).Path
+          & $nsis /DINFO_PRODUCTNAME="MaClaw Service" `
+                  /DINFO_COMPANYNAME="$($cfg.info.companyName)" `
+                  /DINFO_COPYRIGHT="$($cfg.info.copyright)" `
+                  /DINFO_PRODUCTVERSION="$env:VERSION" `
+                  /DPRODUCT_EXECUTABLE="maclawsrv.exe" `
+                  /DARG_MACLAWSRV_AMD64_BINARY="$root\dist\maclawsrv_amd64.exe" `
+                  /DARG_MACLAWSRV_ARM64_BINARY="$root\dist\maclawsrv_arm64.exe" `
+                  build/windows/installer/maclawsrv.nsi
+
       - name: Create portable zip
         shell: pwsh
         run: |
@@ -342,8 +374,10 @@ jobs:
             dist/maclaw-tui_arm64.exe
             dist/maclaw-tool_amd64.exe
             dist/maclaw-tool_arm64.exe
+            dist/maclawsrv-Setup.exe
             dist/maclawsrv_amd64.exe
             dist/maclawsrv_arm64.exe
+            dist/maclaw-data-srv-Setup.exe
             dist/maclaw-data-srv_amd64.exe
             dist/maclaw-data-srv_arm64.exe
             dist/srvdemo_amd64.exe
@@ -560,6 +594,139 @@ jobs:
             rm -rf "$TEMP_ROOT"
           done
 
+      - name: Create DataSrv PKGs (default brand only)
+        if: matrix.brand == ''
+        run: |
+          IDENTIFIER="com.rapidai.maclaw.datasrv"
+          for ARCH in amd64 arm64 universal; do
+            if [ "$ARCH" = "universal" ]; then
+              SRC_BINARY="dist/maclaw-data-srv_universal_darwin"
+              PKG_NAME="maclaw-data-srv-Universal.pkg"
+              if [ ! -f "$SRC_BINARY" ]; then
+                lipo -create "dist/maclaw-data-srv_amd64_darwin" "dist/maclaw-data-srv_arm64_darwin" \
+                  -output "$SRC_BINARY"
+              fi
+            else
+              SRC_BINARY="dist/maclaw-data-srv_${ARCH}_darwin"
+              PKG_NAME="maclaw-data-srv-${ARCH}.pkg"
+            fi
+
+            TEMP_ROOT="build/datasrv_pkg_root_${ARCH}"
+            rm -rf "$TEMP_ROOT"
+            mkdir -p "$TEMP_ROOT/usr/local/bin"
+            cp "$SRC_BINARY" "$TEMP_ROOT/usr/local/bin/maclaw-data-srv"
+            chmod 755 "$TEMP_ROOT/usr/local/bin/maclaw-data-srv"
+            pkgbuild --root "$TEMP_ROOT" --identifier "$IDENTIFIER" --version "$VERSION" \
+              --install-location "/" "dist/${PKG_NAME}"
+            rm -rf "$TEMP_ROOT"
+          done
+
+      - name: Create MaClawSrv PKGs (default brand only)
+        if: matrix.brand == ''
+        run: |
+          IDENTIFIER="com.rapidai.maclaw.srv"
+          for ARCH in amd64 arm64 universal; do
+            if [ "$ARCH" = "universal" ]; then
+              SRC_BINARY="dist/maclawsrv_universal_darwin"
+              PKG_NAME="maclawsrv-Universal.pkg"
+              if [ ! -f "$SRC_BINARY" ]; then
+                lipo -create "dist/maclawsrv_amd64_darwin" "dist/maclawsrv_arm64_darwin" \
+                  -output "$SRC_BINARY"
+              fi
+            else
+              SRC_BINARY="dist/maclawsrv_${ARCH}_darwin"
+              PKG_NAME="maclawsrv-${ARCH}.pkg"
+            fi
+
+            TEMP_ROOT="build/maclawsrv_pkg_root_${ARCH}"
+            SCRIPTS_DIR="build/maclawsrv_pkg_scripts_${ARCH}"
+            rm -rf "$TEMP_ROOT" "$SCRIPTS_DIR"
+            mkdir -p "$TEMP_ROOT/usr/local/bin"
+            cp "$SRC_BINARY" "$TEMP_ROOT/usr/local/bin/maclawsrv"
+            chmod 755 "$TEMP_ROOT/usr/local/bin/maclawsrv"
+            mkdir -p "$SCRIPTS_DIR"
+            cat > "$SCRIPTS_DIR/postinstall" <<'EOF'
+          #!/bin/sh
+          set -e
+
+          LABEL="com.rapidai.maclaw.srv"
+          PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+          DATA_ROOT="/Library/Application Support/MaClawSrv"
+          LOG_DIR="/Library/Logs/MaClawSrv"
+
+          make_secret() {
+              BYTES="$1"
+              if command -v openssl >/dev/null 2>&1; then
+                  openssl rand -hex "$BYTES"
+                  return
+              fi
+              uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]'
+          }
+
+          ADMIN_SECRET="$(make_secret 24)"
+          TOKEN_SECRET="$(make_secret 32)"
+          if [ -f "$PLIST" ]; then
+              OLD_ADMIN_SECRET="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:MACLAW_ADMIN_SECRET' "$PLIST" 2>/dev/null || true)"
+              OLD_TOKEN_SECRET="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:MACLAW_TOKEN_SECRET' "$PLIST" 2>/dev/null || true)"
+              [ -n "$OLD_ADMIN_SECRET" ] && ADMIN_SECRET="$OLD_ADMIN_SECRET"
+              [ -n "$OLD_TOKEN_SECRET" ] && TOKEN_SECRET="$OLD_TOKEN_SECRET"
+          fi
+
+          mkdir -p "$DATA_ROOT" "$LOG_DIR"
+          chown root:wheel "$DATA_ROOT" "$LOG_DIR"
+          chmod 700 "$DATA_ROOT"
+          chmod 755 "$LOG_DIR"
+
+          if launchctl print "system/${LABEL}" >/dev/null 2>&1; then
+              launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
+          fi
+
+          cat > "$PLIST" <<PLIST_EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>Label</key>
+              <string>${LABEL}</string>
+              <key>ProgramArguments</key>
+              <array>
+                  <string>/usr/local/bin/maclawsrv</string>
+              </array>
+              <key>RunAtLoad</key>
+              <true/>
+              <key>KeepAlive</key>
+              <true/>
+              <key>EnvironmentVariables</key>
+              <dict>
+                  <key>MACLAW_ADMIN_SECRET</key>
+                  <string>${ADMIN_SECRET}</string>
+                  <key>MACLAW_TOKEN_SECRET</key>
+                  <string>${TOKEN_SECRET}</string>
+                  <key>MACLAW_DATA_ROOT</key>
+                  <string>${DATA_ROOT}</string>
+              </dict>
+              <key>StandardOutPath</key>
+              <string>/Library/Logs/MaClawSrv/maclawsrv.log</string>
+              <key>StandardErrorPath</key>
+              <string>/Library/Logs/MaClawSrv/maclawsrv.err.log</string>
+          </dict>
+          </plist>
+          PLIST_EOF
+
+          chown root:wheel "$PLIST"
+          chmod 600 "$PLIST"
+          launchctl bootstrap system "$PLIST"
+          launchctl enable "system/${LABEL}"
+          launchctl kickstart -k "system/${LABEL}"
+          exit 0
+          EOF
+            sed -i '' 's/^[[:space:]]*//' "$SCRIPTS_DIR/postinstall"
+            chmod 755 "$SCRIPTS_DIR/postinstall"
+            pkgbuild --root "$TEMP_ROOT" --scripts "$SCRIPTS_DIR" --identifier "$IDENTIFIER" --version "$VERSION" \
+              --install-location "/" "dist/${PKG_NAME}"
+            rm -rf "$TEMP_ROOT" "$SCRIPTS_DIR"
+          done
+
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -576,8 +743,14 @@ jobs:
             dist/maclaw-tui_arm64_darwin
             dist/maclaw-tool_amd64_darwin
             dist/maclaw-tool_arm64_darwin
+            dist/maclawsrv-Universal.pkg
+            dist/maclawsrv-amd64.pkg
+            dist/maclawsrv-arm64.pkg
             dist/maclawsrv_amd64_darwin
             dist/maclawsrv_arm64_darwin
+            dist/maclaw-data-srv-Universal.pkg
+            dist/maclaw-data-srv-amd64.pkg
+            dist/maclaw-data-srv-arm64.pkg
             dist/maclaw-data-srv_amd64_darwin
             dist/maclaw-data-srv_arm64_darwin
             dist/srvdemo_amd64_darwin
@@ -1097,6 +1270,10 @@ jobs:
             MaClaw-aarch64-u2404.AppImage
             MaClaw-Setup.exe
             MaClaw-Universal.pkg
+            maclawsrv-Setup.exe
+            maclawsrv-Universal.pkg
+            maclaw-data-srv-Setup.exe
+            maclaw-data-srv-Universal.pkg
             TigerClaw-aarch64-u2204.AppImage
             TigerClaw-aarch64-u2404.AppImage
             TigerClaw-Setup.exe
@@ -1134,6 +1311,10 @@ jobs:
             MaClaw-aarch64-u2404.AppImage
             MaClaw-Setup.exe
             MaClaw-Universal.pkg
+            maclawsrv-Setup.exe
+            maclawsrv-Universal.pkg
+            maclaw-data-srv-Setup.exe
+            maclaw-data-srv-Universal.pkg
             TigerClaw-aarch64-u2204.AppImage
             TigerClaw-aarch64-u2404.AppImage
             TigerClaw-Setup.exe
@@ -1178,6 +1359,10 @@ jobs:
             MaClaw-aarch64-u2404.AppImage
             MaClaw-Setup.exe
             MaClaw-Universal.pkg
+            maclawsrv-Setup.exe
+            maclawsrv-Universal.pkg
+            maclaw-data-srv-Setup.exe
+            maclaw-data-srv-Universal.pkg
             TigerClaw-aarch64-u2204.AppImage
             TigerClaw-aarch64-u2404.AppImage
             TigerClaw-Setup.exe

@@ -393,6 +393,20 @@ func AdminDeleteGossipHandler(gossip store.GossipRepository, cache *GossipCache)
 	}
 }
 
+func AdminDeleteFlaggedGossipHandler(gossip store.GossipRepository, cache *GossipCache) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		deleted, err := gossip.DeleteFlaggedPosts(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+			return
+		}
+		if deleted > 0 {
+			go cache.Refresh(context.Background())
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
+	}
+}
+
 func AdminLockGossipHandler(gossip store.GossipRepository, cache *GossipCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

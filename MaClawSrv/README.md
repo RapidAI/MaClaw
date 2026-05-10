@@ -75,6 +75,18 @@
 
 - When `MACLAW_DATA_ROOT` is unset, the default root is `~/.maclaw_srv`.
 
+## Windows Service
+
+- On Windows, `maclawsrv.exe` can run either as a normal command-line process or as an NT service.
+- When launched by the Windows Service Control Manager, service stop/shutdown controls trigger the same graceful HTTP shutdown path as Ctrl+C in a console.
+- Example registration:
+
+```powershell
+sc.exe create MaClawSrv binPath= "C:\MaClaw\maclawsrv.exe" start= auto
+sc.exe start MaClawSrv
+sc.exe stop MaClawSrv
+```
+
 
 
 

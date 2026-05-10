@@ -552,9 +552,128 @@ func TestToolRipgrepFixedStringMatchesRegexMetacharacters(t *testing.T) {
 		"pattern":      "target[0]+literal",
 		"fixed_string": true,
 		"output_mode":  "files_with_matches",
+		"stats":        true,
 	})
 	if !strings.Contains(out, path) {
 		t.Fatalf("ripgrep fixed_string missed literal metacharacters:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("ripgrep fixed_string should use literal index candidates:\n%s", out)
+	}
+}
+
+func TestToolRipgrepFixedStringUnicodeUsesIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(path, []byte("本地检索能力已经启用\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":         dir,
+		"pattern":      "本地检索能力",
+		"fixed_string": true,
+		"output_mode":  "files_with_matches",
+		"stats":        true,
+	})
+	if !strings.Contains(out, path) {
+		t.Fatalf("ripgrep unicode fixed_string missed match:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("ripgrep unicode fixed_string should use local index:\n%s", out)
+	}
+}
+
+func TestToolRipgrepRegexUnicodeLiteralUsesIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(path, []byte("大仓库检索能力已经启用\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "大仓库检索能力",
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	if !strings.Contains(out, path) {
+		t.Fatalf("ripgrep unicode regex literal missed match:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("ripgrep unicode regex literal should use local index:\n%s", out)
+	}
+}
+
+func TestToolRipgrepShortFixedStringFallsBackToFullScan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "operators.txt")
+	if err := os.WriteFile(path, []byte("a++\nb--\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":         dir,
+		"pattern":      "++",
+		"fixed_string": true,
+		"stats":        true,
+	})
+	if !strings.Contains(out, path+":1:a++") {
+		t.Fatalf("ripgrep short fixed_string fallback missed match:\n%s", out)
+	}
+	for _, want := range []string{"mode=full_scan", "fallback=no_required_literal"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("ripgrep short fixed_string should report %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestToolRipgrepRegexEscapedLiteralUsesIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nconst value = \"Target.Name\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     `Target\.Name`,
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	if !strings.Contains(out, path) {
+		t.Fatalf("ripgrep regex escaped literal missed match:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("ripgrep regex escaped literal should use index:\n%s", out)
+	}
+}
+
+func TestToolRipgrepRegexCharClassUsesLiteralPrefixCandidate(t *testing.T) {
+	dir := t.TempDir()
+	match := filepath.Join(dir, "match.go")
+	nonMatch := filepath.Join(dir, "nonmatch.go")
+	if err := os.WriteFile(match, []byte("package main\nvar _ = TargetZ\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(nonMatch, []byte("package main\nvar _ = Target1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":        dir,
+		"pattern":     `Target[A-Z]`,
+		"output_mode": "files_with_matches",
+		"stats":       true,
+	})
+	if !strings.Contains(out, match) {
+		t.Fatalf("ripgrep regex char class missed matching file:\n%s", out)
+	}
+	if strings.Contains(out, nonMatch) {
+		t.Fatalf("ripgrep regex char class returned non-matching candidate:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("ripgrep regex char class should use literal-prefix index candidates:\n%s", out)
 	}
 }
 
@@ -967,6 +1086,50 @@ func TestToolRipgrepStatsIncludeFullScanData(t *testing.T) {
 	for _, want := range []string{"search_stats:", "mode=full_scan", "searched=1", "fallback=no_required_literal", "candidate_ms=", "scan_ms=", "total_ms="} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("ripgrep full-scan stats missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestToolRipgrepSingleFilePathFallsBackWithoutIndex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\nfunc TargetSingleFile() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":    path,
+		"pattern": "TargetSingleFile",
+		"stats":   true,
+	})
+	if !strings.Contains(out, path+":2:func TargetSingleFile() {}") {
+		t.Fatalf("ripgrep single-file path missed match:\n%s", out)
+	}
+	for _, want := range []string{"mode=full_scan", "searched=1", "fallback=base_not_directory"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("ripgrep single-file path should report %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestToolRipgrepFallsBackWhenRegexHasNoRequiredLiteral(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "codes.txt")
+	if err := os.WriteFile(path, []byte("ticket ABC123 is open\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":    dir,
+		"pattern": `[A-Z]{3}[0-9]+`,
+		"stats":   true,
+	})
+	if !strings.Contains(out, path+":1:ticket ABC123 is open") {
+		t.Fatalf("ripgrep no-literal regex fallback missed match:\n%s", out)
+	}
+	for _, want := range []string{"mode=full_scan", "fallback=no_required_literal"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("ripgrep no-literal regex should report %q:\n%s", want, out)
 		}
 	}
 }
@@ -1453,6 +1616,35 @@ func TestToolRipgrepLocalIndexPreservesCaseSensitiveExactSearch(t *testing.T) {
 	}
 }
 
+func TestToolRipgrepLocalIndexCaseSensitiveFiltersCaseMismatchedCandidates(t *testing.T) {
+	dir := t.TempDir()
+	match := filepath.Join(dir, "match.go")
+	mismatch := filepath.Join(dir, "mismatch.go")
+	if err := os.WriteFile(match, []byte("package main\nfunc TargetCase() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mismatch, []byte("package main\nfunc targetcase() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolRipgrep(map[string]interface{}{
+		"path":           dir,
+		"pattern":        "TargetCase",
+		"case_sensitive": true,
+		"output_mode":    "files_with_matches",
+		"stats":          true,
+	})
+	if !strings.Contains(out, match) {
+		t.Fatalf("case-sensitive indexed search missed exact-case file:\n%s", out)
+	}
+	if strings.Contains(out, mismatch) {
+		t.Fatalf("case-sensitive indexed search returned case-mismatched candidate:\n%s", out)
+	}
+	if !strings.Contains(out, "mode=indexed") {
+		t.Fatalf("case-sensitive search should use local index candidates:\n%s", out)
+	}
+}
+
 func TestToolRipgrepLocalIndexSupportsCaseInsensitiveCandidates(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.go")
@@ -1505,6 +1697,45 @@ func TestLiteralSearchTermsExtractsAlternationCommonSuffix(t *testing.T) {
 	terms := literalSearchTerms("ReadAlpha|WriteAlpha")
 	if len(terms) == 0 || terms[0] != "Alpha" {
 		t.Fatalf("literalSearchTerms common suffix = %#v, want Alpha", terms)
+	}
+}
+
+func TestLiteralSearchTermsFromTextDedupesUnicodeTerms(t *testing.T) {
+	terms := literalSearchTermsFromText("本地检索 本地检索 Target Target")
+	want := []string{"Target", "本地检索"}
+	if len(terms) != len(want) {
+		t.Fatalf("literalSearchTermsFromText = %#v, want %#v", terms, want)
+	}
+	for i := range want {
+		if terms[i] != want[i] {
+			t.Fatalf("literalSearchTermsFromText = %#v, want %#v", terms, want)
+		}
+	}
+}
+
+func TestLiteralSearchTermsFromTextDedupesCaseVariants(t *testing.T) {
+	terms := literalSearchTermsFromText("Target target TARGET Other")
+	want := []string{"Target", "Other"}
+	if len(terms) != len(want) {
+		t.Fatalf("literalSearchTermsFromText = %#v, want %#v", terms, want)
+	}
+	for i := range want {
+		if terms[i] != want[i] {
+			t.Fatalf("literalSearchTermsFromText = %#v, want %#v", terms, want)
+		}
+	}
+}
+
+func TestLiteralSearchTermsFromTextDedupesUnicodeCaseVariants(t *testing.T) {
+	terms := literalSearchTermsFromText("Äpfel äpfel Other")
+	want := []string{"Äpfel", "Other"}
+	if len(terms) != len(want) {
+		t.Fatalf("literalSearchTermsFromText = %#v, want %#v", terms, want)
+	}
+	for i := range want {
+		if terms[i] != want[i] {
+			t.Fatalf("literalSearchTermsFromText = %#v, want %#v", terms, want)
+		}
 	}
 }
 

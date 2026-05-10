@@ -153,6 +153,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	rateLimiter := skillmarket.NewRateLimiter(smStore, tierSvc)
 
 	authSvc := skillmarket.NewAuthService(smStore, mailer, cfg.Server.PublicBaseURL)
+	authSvc.SetSessionSigningSecret(cfg.HA.ClusterSecret)
 	authSvc.SetPublicBaseURLProvider(hubService)
 
 	smHandlers := httpapi.NewSkillMarketHandlers(httpapi.SkillMarketConfig{

@@ -227,7 +227,7 @@ requireExcludes(appRel, 'const translations', 'inline translations; use i18n/app
 requireExcludes(appRel, 'const knownProviderEndpoints', 'inline provider endpoint catalog; use config/providerCatalog.ts');
 requireExcludes(appRel, 'const recommendedModels', 'inline recommended model catalog; use config/providerCatalog.ts');
 requireExcludes(appRel, 'const ToolConfiguration =', 'inline ToolConfiguration; use components/tools/ToolConfiguration.tsx');
-requireIncludes('gui/frontend/src/components/remote/OnboardingWizard.tsx', 'getOnboardingFlow({ brandId, freeTrial })', 'centralized onboarding flow');
+requireIncludes('gui/frontend/src/components/remote/OnboardingWizard.tsx', 'getOnboardingFlow({ brandId, freeTrial, offlineMode })', 'centralized onboarding flow');
 requireExcludes('gui/frontend/src/components/remote/OnboardingWizard.tsx', 'brandId === \'qianxin\'', 'inline TigerClaw brand detection; use onboardingFlow.ts');
 requireExcludes(appRel, 'const MarkdownLink =', 'inline MarkdownLink; use components/common/MarkdownLink.tsx');
 requireExcludes(appRel, 'const TOOL_NAMES', 'inline tool tab catalog; use config/toolCatalog.ts');

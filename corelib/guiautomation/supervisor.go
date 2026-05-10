@@ -4,370 +4,318 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib/browser"
+	"github.com/RapidAI/CodeClaw/corelib/taskengine"
 )
 
-// guiTaskEntry wraps GUITaskState with control channels.
-type guiTaskEntry struct {
-	state   *GUITaskState
-	cancel  context.CancelFunc
-	pauseC  chan struct{}
-	resumeC chan struct{}
-}
-
 // GUITaskSupervisor manages GUI task execution with retry, pause/resume/cancel.
+// It delegates to taskengine.Supervisor for the execution loop, injecting
+// a GUIStepExecutor (step execution) and GUIStateObserver (state observation).
+//
+// This ensures that all execution-loop improvements (per-step verification,
+// SuccessCriteria checking, checkpoint recording, retry logic) are shared
+// with the browser automation path — no parallel implementation.
 type GUITaskSupervisor struct {
-	mu           sync.RWMutex
-	tasks        map[string]*guiTaskEntry
-	locator      *ElementLocator
-	input        InputSimulator
-	screenshotFn func() (string, error)
-	ocr          browser.OCRProvider
-	retrier      *GUIRetryStrategy
-	logger       func(string)
-	idCounter    int
+	locator    *ElementLocator
+	input      InputSimulator
+	classifier taskengine.RetryClassifier
+	observer   *GUIStateObserver
+	logger     func(string)
+
+	// engine is lazily constructed on first Execute call.
+	engine *taskengine.Supervisor
+
+	// activeTaskID tracks the currently executing task for CancelAll support.
+	// Only one GUI task runs at a time (Execute blocks), so a single ID suffices.
+	activeTaskID string
 }
 
-// NewGUITaskSupervisor creates a supervisor.
+// NewGUITaskSupervisor creates a supervisor. The observer is optional —
+// if nil, SuccessCriteria verification and per-step Verify are skipped
+// (taskengine.Supervisor handles this gracefully).
 func NewGUITaskSupervisor(
 	locator *ElementLocator,
 	input InputSimulator,
 	screenshotFn func() (string, error),
-	ocr browser.OCRProvider,
+	ocr taskengine.OCRProvider,
 	retrier *GUIRetryStrategy,
 	logger func(string),
 ) *GUITaskSupervisor {
-	if retrier == nil {
-		retrier = NewGUIRetryStrategy(3)
+	var classifier taskengine.RetryClassifier
+	if retrier != nil {
+		classifier = &guiRetryClassifierAdapter{retrier: retrier}
 	}
+
 	return &GUITaskSupervisor{
-		tasks:        make(map[string]*guiTaskEntry),
-		locator:      locator,
-		input:        input,
-		screenshotFn: screenshotFn,
-		ocr:          ocr,
-		retrier:      retrier,
-		logger:       logger,
+		locator:    locator,
+		input:      input,
+		classifier: classifier,
+		logger:     logger,
 	}
 }
 
-// Execute runs a GUI task. It blocks until the task completes, fails, or is cancelled.
+// SetObserver injects a GUIStateObserver for SuccessCriteria verification
+// and per-step Verify. Must be called before Execute if verification is desired.
+func (s *GUITaskSupervisor) SetObserver(obs *GUIStateObserver) {
+	s.observer = obs
+}
+
+// getEngine returns the lazily-constructed taskengine.Supervisor.
+// Built on first call with whatever observer/classifier are set at that point.
+func (s *GUITaskSupervisor) getEngine() *taskengine.Supervisor {
+	if s.engine == nil {
+		s.engine = taskengine.NewSupervisor(taskengine.SupervisorConfig{
+			Executor: &guiStepExecutor{
+				locator: s.locator,
+				input:   s.input,
+			},
+			Observer:   s.observer,
+			Classifier: s.classifier,
+			Logger:     s.logger,
+		})
+	}
+	return s.engine
+}
+
+// Execute runs a GUI task by converting GUITaskSpec to taskengine.TaskSpec
+// and delegating to the unified engine.
 func (s *GUITaskSupervisor) Execute(spec GUITaskSpec) (*GUITaskState, error) {
-	if spec.MaxRetries <= 0 {
-		spec.MaxRetries = 3
+	teSpec := convertGUITaskSpec(spec)
+	s.activeTaskID = teSpec.ID
+
+	teState, err := s.getEngine().Execute(teSpec)
+
+	s.activeTaskID = ""
+	return convertTaskState(teState, spec), err
+}
+
+// CancelAll cancels the currently running task (if any).
+func (s *GUITaskSupervisor) CancelAll() {
+	if id := s.activeTaskID; id != "" {
+		_ = s.getEngine().Cancel(id)
 	}
-	if spec.StepTimeout <= 0 {
-		spec.StepTimeout = 30 * time.Second
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	s.mu.Lock()
-	s.idCounter++
-	if spec.ID == "" {
-		spec.ID = fmt.Sprintf("gui-%d", s.idCounter)
-	}
-	state := &GUITaskState{
-		ID:         spec.ID,
-		Status:     "running",
-		TotalSteps: len(spec.Steps),
-		StartedAt:  time.Now(),
-	}
-	entry := &guiTaskEntry{
-		state:   state,
-		cancel:  cancel,
-		pauseC:  make(chan struct{}, 1),
-		resumeC: make(chan struct{}, 1),
-	}
-	s.tasks[spec.ID] = entry
-	s.mu.Unlock()
-
-	s.log("gui task %s started: %s (%d steps)", spec.ID, spec.Description, len(spec.Steps))
-
-	for i, step := range spec.Steps {
-		if err := ctx.Err(); err != nil {
-			state.Status = "cancelled"
-			state.LastError = "cancelled by user"
-			return state, fmt.Errorf("cancelled")
-		}
-
-		state.CurrentStep = i + 1
-
-		err := s.executeStepWithRetry(ctx, spec, step, i, state)
-		if err != nil {
-			state.Status = "failed"
-			state.LastError = err.Error()
-			s.log("gui task %s failed at step %d: %v", spec.ID, i+1, err)
-			return state, err
-		}
-
-		// Record checkpoint after each step
-		s.takeCheckpoint(state, i, step)
-
-		// Check for pause signal
-		s.mu.RLock()
-		e := s.tasks[spec.ID]
-		s.mu.RUnlock()
-		if e != nil {
-			select {
-			case <-e.pauseC:
-				state.Status = "paused"
-				s.log("gui task %s paused after step %d", spec.ID, i+1)
-				select {
-				case <-e.resumeC:
-					state.Status = "running"
-					s.log("gui task %s resumed", spec.ID)
-				case <-ctx.Done():
-					state.Status = "cancelled"
-					state.LastError = "cancelled while paused"
-					return state, fmt.Errorf("cancelled while paused")
-				}
-			default:
-			}
-		}
-	}
-
-	state.Status = "completed"
-	s.log("gui task %s completed successfully", spec.ID)
-	return state, nil
 }
 
 // Pause requests a running task to pause after the current step.
 func (s *GUITaskSupervisor) Pause(taskID string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	entry, ok := s.tasks[taskID]
-	if !ok {
-		return fmt.Errorf("task %s not found", taskID)
-	}
-	if entry.state.Status != "running" {
-		return fmt.Errorf("task %s is not running (status=%s)", taskID, entry.state.Status)
-	}
-	select {
-	case entry.pauseC <- struct{}{}:
-	default:
-	}
-	return nil
+	return s.getEngine().Pause(taskID)
 }
 
 // Resume resumes a paused task.
 func (s *GUITaskSupervisor) Resume(taskID string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	entry, ok := s.tasks[taskID]
-	if !ok {
-		return fmt.Errorf("task %s not found", taskID)
-	}
-	if entry.state.Status != "paused" {
-		return fmt.Errorf("task %s is not paused (status=%s)", taskID, entry.state.Status)
-	}
-	select {
-	case entry.resumeC <- struct{}{}:
-	default:
-	}
-	return nil
+	return s.getEngine().Resume(taskID)
 }
 
 // Cancel cancels a running or paused task.
 func (s *GUITaskSupervisor) Cancel(taskID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := s.tasks[taskID]
-	if !ok {
-		return fmt.Errorf("task %s not found", taskID)
-	}
-	st := entry.state.Status
-	if st != "running" && st != "paused" {
-		return fmt.Errorf("task %s is not running or paused (status=%s)", taskID, st)
-	}
-	entry.cancel()
-	return nil
+	return s.getEngine().Cancel(taskID)
 }
 
 // GetState returns the current state of a task.
 func (s *GUITaskSupervisor) GetState(taskID string) (*GUITaskState, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	entry, ok := s.tasks[taskID]
+	teState, ok := s.getEngine().GetState(taskID)
 	if !ok {
 		return nil, false
 	}
-	return entry.state, true
+	return &GUITaskState{
+		ID:          teState.ID,
+		Status:      string(teState.Status),
+		TotalSteps:  teState.TotalSteps,
+		CurrentStep: teState.CurrentStep,
+		RetryCount:  teState.RetryCount,
+		LastError:   teState.LastError,
+		StartedAt:   teState.StartedAt,
+	}, true
 }
 
-// ── internal ──
+// ── GUIStepExecutor: adapts GUIStepSpec execution to taskengine.StepExecutor ──
 
-func (s *GUITaskSupervisor) executeStepWithRetry(ctx context.Context, spec GUITaskSpec, step GUIStepSpec, stepIdx int, state *GUITaskState) error {
-	timeout := step.Timeout
-	if timeout <= 0 {
-		timeout = spec.StepTimeout
-	}
-
-	currentTimeout := timeout
-	for retry := 0; ; retry++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("cancelled")
-		}
-
-		err := s.executeOneStep(ctx, step, currentTimeout)
-		if err == nil {
-			return nil
-		}
-
-		failType := s.retrier.ClassifyFailure(err)
-
-		// Capture screenshot and OCR for retry decision
-		screenshotB64 := ""
-		ocrText := ""
-		if s.screenshotFn != nil {
-			if img, serr := s.screenshotFn(); serr == nil {
-				screenshotB64 = img
-			}
-		}
-		if s.ocr != nil && s.ocr.IsAvailable() && screenshotB64 != "" {
-			if results, oerr := s.ocr.Recognize(screenshotB64); oerr == nil {
-				for _, r := range results {
-					ocrText += r.Text + " "
-				}
-			}
-		}
-
-		decision := s.retrier.Decide(failType, step, retry, screenshotB64, ocrText)
-		if !decision.ShouldRetry {
-			return fmt.Errorf("step %d failed: %v (%s)", stepIdx+1, err, decision.Reason)
-		}
-
-		s.log("gui task step %d retry %d: %s", stepIdx+1, retry+1, decision.Reason)
-		state.RetryCount++
-
-		if decision.WaitBefore > 0 {
-			time.Sleep(decision.WaitBefore)
-		}
-		if decision.AdjustedTimeout > 0 {
-			currentTimeout = decision.AdjustedTimeout
-		}
-	}
+// guiStepExecutor implements taskengine.StepExecutor for desktop GUI automation.
+type guiStepExecutor struct {
+	locator *ElementLocator
+	input   InputSimulator
 }
 
-func (s *GUITaskSupervisor) executeOneStep(ctx context.Context, step GUIStepSpec, timeout time.Duration) error {
-	stepCtx, stepCancel := context.WithTimeout(ctx, timeout)
-	defer stepCancel()
+func (e *guiStepExecutor) Execute(ctx context.Context, step taskengine.StepSpec) error {
+	// Recover the original GUIStepSpec from Extra if available.
+	origStep := recoverOrigStep(step)
 
-	ch := make(chan error, 1)
-	go func() {
-		ch <- s.doStep(step)
-	}()
-
-	select {
-	case err := <-ch:
-		return err
-	case <-stepCtx.Done():
-		if ctx.Err() != nil {
-			return fmt.Errorf("cancelled")
-		}
-		return fmt.Errorf("step timed out after %v", timeout)
-	}
-}
-
-func (s *GUITaskSupervisor) doStep(step GUIStepSpec) error {
-	// If we have the original recorded step, use the locator to find the element
+	// Resolve coordinates via locator or params.
 	var x, y int
-	if step.OrigStep != nil && s.locator != nil {
-		result, err := s.locator.Locate(*step.OrigStep)
+	if origStep != nil && e.locator != nil {
+		result, err := e.locator.Locate(*origStep)
 		if err != nil {
 			return fmt.Errorf("element not found: %w", err)
 		}
 		x, y = result.X, result.Y
 	} else {
-		// Fall back to params
 		fmt.Sscanf(step.Params["x"], "%d", &x)
 		fmt.Sscanf(step.Params["y"], "%d", &y)
 	}
 
 	switch step.Action {
 	case "click":
-		return s.input.Click(x, y)
+		return e.input.Click(x, y)
 	case "right_click":
-		return s.input.RightClick(x, y)
+		return e.input.RightClick(x, y)
 	case "double_click":
-		return s.input.DoubleClick(x, y)
+		return e.input.DoubleClick(x, y)
 	case "type":
 		text := step.Params["text"]
-		// Click the target first, then type
 		if x > 0 || y > 0 {
-			if err := s.input.Click(x, y); err != nil {
+			if err := e.input.Click(x, y); err != nil {
 				return err
 			}
 		}
-		return s.input.Type(text)
+		return e.input.Type(text)
 	case "keypress":
 		keys := step.Params["keys"]
 		if keys == "" {
 			return fmt.Errorf("keypress: missing keys param")
 		}
-		// keys is comma-separated
-		var keyList []string
-		for _, k := range splitKeys(keys) {
-			keyList = append(keyList, k)
-		}
-		return s.input.KeyCombo(keyList...)
+		return e.input.KeyCombo(splitKeys(keys)...)
 	case "scroll":
 		dy := 0
 		fmt.Sscanf(step.Params["scroll_dy"], "%d", &dy)
-		return s.input.Scroll(x, y, 0, dy)
+		return e.input.Scroll(x, y, 0, dy)
 	case "drag":
 		toX, toY := 0, 0
 		fmt.Sscanf(step.Params["drag_to_x"], "%d", &toX)
 		fmt.Sscanf(step.Params["drag_to_y"], "%d", &toY)
-		return s.input.DragDrop(x, y, toX, toY)
+		return e.input.DragDrop(x, y, toX, toY)
 	default:
 		return fmt.Errorf("unknown GUI action: %s", step.Action)
 	}
 }
 
-func (s *GUITaskSupervisor) takeCheckpoint(state *GUITaskState, stepIdx int, step GUIStepSpec) {
-	cp := GUICheckpoint{
-		StepIndex: stepIdx,
-		Timestamp: time.Now(),
-		Strategy:  "coordinate", // default; overridden below if OrigStep present
-	}
+// ── guiRetryClassifierAdapter: adapts GUIRetryStrategy to taskengine.RetryClassifier ──
 
-	if step.OrigStep != nil {
-		cp.WindowTitle = step.OrigStep.WindowTitle
-		// Infer strategy from what locator info was available (without re-running Locate)
-		if step.OrigStep.AccessibilityID != nil {
-			cp.Strategy = string(StrategyAccessibility)
-		} else if step.OrigStep.SnapshotRef != "" {
-			cp.Strategy = string(StrategyImage)
-		}
-	}
+type guiRetryClassifierAdapter struct {
+	retrier *GUIRetryStrategy
+}
 
-	// Try to capture screenshot
-	if s.screenshotFn != nil {
-		if img, err := s.screenshotFn(); err == nil {
-			cp.ScreenshotB64 = img
-		}
-	}
-
-	const maxCheckpoints = 20
-	state.Checkpoints = append(state.Checkpoints, cp)
-	if len(state.Checkpoints) > maxCheckpoints {
-		state.Checkpoints = state.Checkpoints[len(state.Checkpoints)-maxCheckpoints:]
-	}
-	// Only keep screenshot on the most recent checkpoint
-	for i := 0; i < len(state.Checkpoints)-1; i++ {
-		state.Checkpoints[i].ScreenshotB64 = ""
+func (a *guiRetryClassifierAdapter) Classify(err error, step taskengine.StepSpec) taskengine.FailureType {
+	ft := a.retrier.ClassifyFailure(err)
+	switch ft {
+	case GUIFailureElementNotFound:
+		return taskengine.FailureElementNotFound
+	case GUIFailureTimeout:
+		return taskengine.FailureTimeout
+	default:
+		return taskengine.FailureUnknown
 	}
 }
 
-func (s *GUITaskSupervisor) log(format string, args ...interface{}) {
-	if s.logger != nil {
-		s.logger(fmt.Sprintf(format, args...))
+func (a *guiRetryClassifierAdapter) Decide(failure taskengine.FailureType, step taskengine.StepSpec, retryCount int, snapshot *taskengine.StateSnapshot) *taskengine.RetryDecision {
+	// Delegate to GUIRetryStrategy with a simplified interface.
+	// Convert taskengine types back to GUI types for the legacy retrier.
+	guiStep := GUIStepSpec{
+		Action: step.Action,
+		Params: step.Params,
 	}
+	guiFailType := GUIFailureUnknown
+	switch failure {
+	case taskengine.FailureElementNotFound:
+		guiFailType = GUIFailureElementNotFound
+	case taskengine.FailureTimeout:
+		guiFailType = GUIFailureTimeout
+	}
+
+	screenshotB64 := ""
+	ocrText := ""
+	if snapshot != nil {
+		screenshotB64 = snapshot.ScreenshotB64
+		ocrText = snapshot.OCRText
+	}
+
+	decision := a.retrier.Decide(guiFailType, guiStep, retryCount, screenshotB64, ocrText)
+	return &taskengine.RetryDecision{
+		ShouldRetry:     decision.ShouldRetry,
+		WaitBefore:      decision.WaitBefore,
+		AdjustedTimeout: decision.AdjustedTimeout,
+		Reason:          decision.Reason,
+	}
+}
+
+// ── Conversion helpers ──
+
+// convertGUITaskSpec converts GUITaskSpec to taskengine.TaskSpec.
+func convertGUITaskSpec(spec GUITaskSpec) taskengine.TaskSpec {
+	steps := make([]taskengine.StepSpec, len(spec.Steps))
+	for i, gs := range spec.Steps {
+		steps[i] = convertGUIStepSpec(gs)
+	}
+
+	criteria := make([]taskengine.CriterionSpec, len(spec.SuccessCriteria))
+	for i, c := range spec.SuccessCriteria {
+		criteria[i] = taskengine.CriterionSpec{
+			Type:    c.Type,
+			Pattern: c.Pattern,
+			Window:  c.Window,
+		}
+	}
+
+	return taskengine.TaskSpec{
+		ID:              spec.ID,
+		Description:     spec.Description,
+		Steps:           steps,
+		SuccessCriteria: criteria,
+		MaxRetries:      spec.MaxRetries,
+		StepTimeout:     spec.StepTimeout,
+	}
+}
+
+// convertGUIStepSpec converts a single GUIStepSpec to taskengine.StepSpec.
+func convertGUIStepSpec(gs GUIStepSpec) taskengine.StepSpec {
+	ts := taskengine.StepSpec{
+		Action:  gs.Action,
+		Params:  gs.Params,
+		Timeout: gs.Timeout,
+	}
+	// Stash the original GUIRecordedStep in Extra for the executor to recover.
+	if gs.OrigStep != nil {
+		if ts.Extra == nil {
+			ts.Extra = make(map[string]interface{})
+		}
+		ts.Extra["gui_orig_step"] = gs.OrigStep
+	}
+	return ts
+}
+
+// recoverOrigStep extracts the stashed GUIRecordedStep from a taskengine.StepSpec.
+func recoverOrigStep(step taskengine.StepSpec) *GUIRecordedStep {
+	if step.Extra == nil {
+		return nil
+	}
+	if orig, ok := step.Extra["gui_orig_step"].(*GUIRecordedStep); ok {
+		return orig
+	}
+	return nil
+}
+
+// convertTaskState converts taskengine.TaskState to GUITaskState.
+func convertTaskState(ts *taskengine.TaskState, spec GUITaskSpec) *GUITaskState {
+	if ts == nil {
+		return &GUITaskState{Status: "failed"}
+	}
+	gs := &GUITaskState{
+		ID:          ts.ID,
+		Status:      string(ts.Status),
+		TotalSteps:  ts.TotalSteps,
+		CurrentStep: ts.CurrentStep,
+		RetryCount:  ts.RetryCount,
+		LastError:   ts.LastError,
+		StartedAt:   ts.StartedAt,
+	}
+	// Convert checkpoints.
+	for _, cp := range ts.Checkpoints {
+		gs.Checkpoints = append(gs.Checkpoints, GUICheckpoint{
+			StepIndex:     cp.StepIndex,
+			Timestamp:     cp.Timestamp,
+			ScreenshotB64: cp.ScreenshotB64,
+		})
+	}
+	return gs
 }
 
 // splitKeys splits a comma-separated key string.

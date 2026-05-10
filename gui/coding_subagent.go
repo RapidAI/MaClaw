@@ -123,10 +123,24 @@ type CodingSubAgentSearchResult struct {
 // CodingSubAgentGuardrailViolation is a compact audit record for blocked tool use.
 type CodingSubAgentGuardrailViolation struct {
 	Tool     string
-	Category string
+	Category CodingSubAgentGuardrailCategory
 	Path     string
 	Command  string
 	Summary  string
+}
+
+type codingToolOutcome string
+
+const (
+	codingToolOutcomeSuccess codingToolOutcome = "success"
+	codingToolOutcomeFailed  codingToolOutcome = "failed"
+	codingToolOutcomeBlocked codingToolOutcome = "blocked"
+	codingToolOutcomeTimeout codingToolOutcome = "timeout"
+)
+
+type codingToolExecutionResult struct {
+	Text    string
+	Outcome codingToolOutcome
 }
 
 // NewCodingSubAgent creates a SubAgent bound to the host's tool implementations.
@@ -167,7 +181,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	log.Printf("[coding-subagent] starting task T%d: %s (project=%s)", task.Index, taskTitle, s.projectPath)
 
 	if s.onProgress != nil {
-		emitCodingAgentEvent(s.onProgress, newCodingAgentTaskEvent("running", task, taskTitle, ""))
+		emitCodingAgentEvent(s.onProgress, newCodingAgentTaskEvent(codingAgentEventPhaseRunning, task, taskTitle, ""))
 		s.onProgress(fmt.Sprintf("🔧 开始执行任务 T%d: %s", task.Index, taskTitle))
 	}
 
@@ -235,7 +249,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	log.Printf("[coding-subagent] task T%d finished: status=%s iterations=%d tools=%d err=%q",
 		task.Index, status, result.Iterations, result.ToolCalls, errMsg)
 	if s.onProgress != nil {
-		event := newCodingAgentTaskEvent("result", task, taskTitle, "")
+		event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, task, taskTitle, "")
 		event.Detail = string(status)
 		emitCodingAgentEvent(s.onProgress, event)
 	}
@@ -314,27 +328,45 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	return c.cachedTools
 }
 
-func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) (toolResult string) {
+func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) string {
+	return c.ExecuteToolStructured(name, argsJSON).Result
+}
+
+func (c *codingSubAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
+	result := c.executeToolWithOutcome(name, argsJSON)
+	outcome := agent.ToolExecutionOutcomeOK
+	switch result.Outcome {
+	case codingToolOutcomeTimeout:
+		outcome = agent.ToolExecutionOutcomeTimeout
+	case codingToolOutcomeSuccess:
+		outcome = agent.ToolExecutionOutcomeOK
+	default:
+		outcome = agent.ToolExecutionOutcomeError
+	}
+	return agent.ToolExecutionResult{Result: result.Text, Outcome: outcome}
+}
+
+func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {
 	if c.ShouldStop() {
-		return "coding subagent cancelled before tool execution"
+		return codingToolExecutionResult{Text: "coding subagent cancelled before tool execution", Outcome: codingToolOutcomeFailed}
 	}
 	toolStartedAt := time.Now()
 	c.emitToolStartedEvent(name)
 	defer func() {
-		c.emitToolFinishedEvent(name, toolResult, time.Since(toolStartedAt))
+		c.emitToolFinishedEvent(name, toolResult.Text, toolResult.Outcome, time.Since(toolStartedAt))
 	}()
 
 	if !codingSubAgentToolNames[name] {
-		return fmt.Sprintf("未知工具: %s（编码 SubAgent 仅支持 %v）", name, codingSubAgentToolNameList())
+		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s (coding SubAgent supports %v)", name, codingSubAgentToolNameList()), Outcome: codingToolOutcomeFailed}
 	}
 
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return fmt.Sprintf("参数解析失败: %v", err)
+		return codingToolExecutionResult{Text: fmt.Sprintf("argument parse failed: %v", err), Outcome: codingToolOutcomeFailed}
 	}
 
 	if c == nil || c.subagent == nil {
-		return "coding subagent is unavailable"
+		return codingToolExecutionResult{Text: "coding subagent is unavailable", Outcome: codingToolOutcomeFailed}
 	}
 
 	h := c.subagent.handler
@@ -343,52 +375,52 @@ func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) (toolResult
 		searchArgs := c.withDefaultProjectPath(args)
 		if p, _ := searchArgs["path"].(string); p != "" {
 			if msg := c.requireProjectReadScope(p, "Glob"); msg != "" {
-				return c.rejectToolCall("Glob", searchArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("Glob", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		result := agent.ToolGlob(searchArgs)
-		c.trackSearchResult("Glob", searchArgs, result)
-		return result
+		result := agent.ToolGlobDetailed(searchArgs)
+		c.trackSearchResult("Glob", searchArgs, result.Text, result.Outcome == agent.SearchToolOutcomeMatched)
+		return codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
 	case "ripgrep":
 		searchArgs := c.withDefaultProjectPath(args)
 		if p, _ := searchArgs["path"].(string); p != "" {
 			if msg := c.requireProjectReadScope(p, "ripgrep"); msg != "" {
-				return c.rejectToolCall("ripgrep", searchArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("ripgrep", searchArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		result := agent.ToolRipgrep(searchArgs)
-		c.trackSearchResult("ripgrep", searchArgs, result)
-		return result
+		result := agent.ToolRipgrepDetailed(searchArgs)
+		c.trackSearchResult("ripgrep", searchArgs, result.Text, result.Outcome == agent.SearchToolOutcomeMatched)
+		return codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
 	case "read_file":
 		if h == nil {
-			return c.rejectToolCall("read_file", args, "coding subagent host tool handler is unavailable")
+			return codingToolExecutionResult{Text: c.rejectToolCall("read_file", args, "coding subagent host tool handler is unavailable"), Outcome: codingToolOutcomeBlocked}
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
 			if msg := c.requireProjectReadScope(p, "read_file"); msg != "" {
-				return c.rejectToolCall("read_file", fileArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		result := h.toolReadFile(fileArgs)
-		if p, _ := fileArgs["path"].(string); p != "" && !isFailedFileReadResult(result) {
+		result := executeCodingReadFile(fileArgs)
+		if p, _ := fileArgs["path"].(string); p != "" && result.Outcome == codingToolOutcomeSuccess {
 			c.trackReadFile(p)
 		}
 		return result
 	case "write_file":
 		if h == nil {
-			return c.rejectToolCall("write_file", args, "coding subagent host tool handler is unavailable")
+			return codingToolExecutionResult{Text: c.rejectToolCall("write_file", args, "coding subagent host tool handler is unavailable"), Outcome: codingToolOutcomeBlocked}
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
 			if msg := c.requireProjectWriteScope(p); msg != "" {
-				return c.rejectToolCall("write_file", fileArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 			created := !codingFileExists(p)
 			if msg := c.requireReadBeforeWriteExisting(p); msg != "" {
-				return c.rejectToolCall("write_file", fileArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("write_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
-			result := h.toolWriteFile(fileArgs)
-			if !isFailedFileMutationResult(result) {
+			result := executeCodingWriteFile(fileArgs)
+			if result.Outcome == codingToolOutcomeSuccess {
 				c.trackFile(p)
 				if created {
 					c.trackCreatedFile(p)
@@ -397,95 +429,106 @@ func (c *codingSubAgentCallbacks) ExecuteTool(name, argsJSON string) (toolResult
 			}
 			return result
 		}
-		return h.toolWriteFile(fileArgs)
+		return executeCodingWriteFile(fileArgs)
 	case "edit_file":
 		if h == nil {
-			return c.rejectToolCall("edit_file", args, "coding subagent host tool handler is unavailable")
+			return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", args, "coding subagent host tool handler is unavailable"), Outcome: codingToolOutcomeBlocked}
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
 			if msg := c.requireProjectWriteScope(p); msg != "" {
-				return c.rejectToolCall("edit_file", fileArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 			if msg := c.requireReadBeforeModify(p, "edit_file"); msg != "" {
-				return c.rejectToolCall("edit_file", fileArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
-			result := h.toolEditFile(fileArgs)
-			if !isFailedFileMutationResult(result) {
+			result := executeCodingEditFile(fileArgs)
+			if result.Outcome == codingToolOutcomeSuccess {
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
 			}
 			return result
 		}
-		return h.toolEditFile(fileArgs)
+		return executeCodingEditFile(fileArgs)
 	case "edit_lines":
 		if h == nil {
-			return c.rejectToolCall("edit_lines", args, "coding subagent host tool handler is unavailable")
+			return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", args, "coding subagent host tool handler is unavailable"), Outcome: codingToolOutcomeBlocked}
 		}
 		fileArgs := c.withProjectRelativePath(args, false)
 		if p, _ := fileArgs["path"].(string); p != "" {
 			if msg := c.requireProjectWriteScope(p); msg != "" {
-				return c.rejectToolCall("edit_lines", fileArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 			if msg := c.requireReadBeforeModify(p, "edit_lines"); msg != "" {
-				return c.rejectToolCall("edit_lines", fileArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("edit_lines", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
-			result := h.toolEditLines(fileArgs)
-			if !isFailedFileMutationResult(result) {
+			result := executeCodingEditLines(fileArgs)
+			if result.Outcome == codingToolOutcomeSuccess {
 				c.trackFile(p)
 				c.refreshFileSnapshot(p)
 			}
 			return result
 		}
-		return h.toolEditLines(fileArgs)
+		return executeCodingEditLines(fileArgs)
 	case "bash":
-		if h == nil {
-			return c.rejectToolCall("bash", args, "coding subagent host tool handler is unavailable")
-		}
 		bashArgs := c.withDefaultWorkingDir(args)
 		if command, _ := bashArgs["command"].(string); command != "" {
 			if msg := rejectDisallowedCodingBashCommand(command); msg != "" {
-				c.trackCommandResult(bashArgs, msg)
-				return c.rejectToolCall("bash", bashArgs, msg)
+				c.trackCommandResult(bashArgs, msg, false)
+				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
 		if wd, _ := bashArgs["working_dir"].(string); wd != "" {
 			if msg := c.requireProjectWorkingDirScope(wd); msg != "" {
-				c.trackCommandResult(bashArgs, msg)
-				return c.rejectToolCall("bash", bashArgs, msg)
+				c.trackCommandResult(bashArgs, msg, false)
+				return codingToolExecutionResult{Text: c.rejectToolCall("bash", bashArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		result := h.toolBash(bashArgs, func(text string) {
+		commandResult := executeCodingBash(bashArgs, func(text string) {
 			if c.subagent.onProgress != nil {
 				c.subagent.onProgress(text)
 			}
 		})
-		c.trackCommandResult(bashArgs, result)
-		return result
+		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.Kind == codingCommandResultOK)
+		return commandResult.toolResult()
 	case "list_directory":
 		if h == nil {
-			return c.rejectToolCall("list_directory", args, "coding subagent host tool handler is unavailable")
+			return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", args, "coding subagent host tool handler is unavailable"), Outcome: codingToolOutcomeBlocked}
 		}
 		listArgs := c.withProjectRelativePath(args, true)
 		if p, _ := listArgs["path"].(string); p != "" {
 			if msg := c.requireProjectReadScope(p, "list_directory"); msg != "" {
-				return c.rejectToolCall("list_directory", listArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("list_directory", listArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
-		return h.toolListDirectory(listArgs)
+		return codingToolExecutionResult{Text: h.toolListDirectory(listArgs), Outcome: codingToolOutcomeSuccess}
 	case "git_diff":
 		diffArgs := c.withProjectRelativePath(args, true)
 		if p, _ := diffArgs["path"].(string); p != "" {
 			if msg := c.requireProjectDiffScope(p); msg != "" {
-				return c.rejectToolCall("git_diff", diffArgs, msg)
+				return codingToolExecutionResult{Text: c.rejectToolCall("git_diff", diffArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
 		result := c.toolGitDiff(diffArgs)
 		c.trackGitDiff(result)
-		return result
+		return codingToolExecutionResult{Text: result, Outcome: codingToolOutcomeSuccess}
 	default:
-		return fmt.Sprintf("未知工具: %s", name)
+		return codingToolExecutionResult{Text: fmt.Sprintf("unknown tool: %s", name), Outcome: codingToolOutcomeFailed}
 	}
+}
+
+func codingOutcomeFromSuccess(success bool) codingToolOutcome {
+	if success {
+		return codingToolOutcomeSuccess
+	}
+	return codingToolOutcomeFailed
+}
+
+func codingOutcomeFromSearchOutcome(outcome agent.SearchToolOutcome) codingToolOutcome {
+	if outcome == agent.SearchToolOutcomeMatched {
+		return codingToolOutcomeSuccess
+	}
+	return codingToolOutcomeFailed
 }
 
 func (c *codingSubAgentCallbacks) withDefaultProjectPath(args map[string]interface{}) map[string]interface{} {
@@ -994,7 +1037,7 @@ func (c *codingSubAgentCallbacks) trackGitDiff(result string) {
 	c.lastGitDiff = compactSubAgentDiff(result)
 }
 
-func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}, result string) {
+func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}, result string, succeeded bool) {
 	command, _ := args["command"].(string)
 	if strings.TrimSpace(command) == "" {
 		return
@@ -1005,7 +1048,7 @@ func (c *codingSubAgentCallbacks) trackCommandResult(args map[string]interface{}
 	c.commandsRun = append(c.commandsRun, CodingSubAgentCommandResult{
 		Command:    command,
 		WorkingDir: workDir,
-		Succeeded:  isSuccessfulCommandResult(result),
+		Succeeded:  succeeded,
 		Summary:    compactCommandResult(result),
 	})
 }
@@ -1025,7 +1068,7 @@ func (c *codingSubAgentCallbacks) trackGuardrailViolation(toolName string, args 
 	defer c.mu.Unlock()
 	c.guardrails = append(c.guardrails, CodingSubAgentGuardrailViolation{
 		Tool:     toolName,
-		Category: classifyCodingGuardrail(toolName, path, command, result),
+		Category: classifyCodingGuardrailCategory(toolName, path, command, result),
 		Path:     c.displayProjectPath(path),
 		Command:  command,
 		Summary:  compactGuardrailSummary(result),
@@ -1054,13 +1097,8 @@ func (c *codingSubAgentCallbacks) getCommandsRun() []CodingSubAgentCommandResult
 	return out
 }
 
-func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[string]interface{}, result string) {
-	query := ""
-	if toolName == "Glob" {
-		query, _ = args["pattern"].(string)
-	} else {
-		query, _ = args["pattern"].(string)
-	}
+func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[string]interface{}, result string, succeeded bool) {
+	query, _ := args["pattern"].(string)
 	path, _ := args["path"].(string)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1068,7 +1106,7 @@ func (c *codingSubAgentCallbacks) trackSearchResult(toolName string, args map[st
 		Tool:      toolName,
 		Query:     compactSubAgentSearchText(query),
 		Path:      compactSubAgentPathText(c.displayProjectPath(path)),
-		Succeeded: isSuccessfulSearchResult(result),
+		Succeeded: succeeded,
 		Summary:   compactSearchResult(result),
 	})
 }
@@ -1361,7 +1399,7 @@ func snapshotCodingFile(path string) (codingFileSnapshot, error) {
 		return codingFileSnapshot{}, err
 	}
 	if info.IsDir() {
-		return codingFileSnapshot{}, fmt.Errorf("%s 是目录", abs)
+		return codingFileSnapshot{}, fmt.Errorf("%s is a directory", abs)
 	}
 	data, err := os.ReadFile(abs)
 	if err != nil {
@@ -1381,39 +1419,6 @@ func codingFileExists(path string) bool {
 	}
 	info, err := os.Stat(abs)
 	return err == nil && !info.IsDir()
-}
-
-func isFailedFileReadResult(result string) bool {
-	lower := strings.ToLower(result)
-	return strings.HasPrefix(result, "缺少 path 参数") ||
-		strings.HasPrefix(result, "文件不存在或无法访问") ||
-		strings.HasPrefix(result, "读取失败") ||
-		strings.Contains(result, " 是目录，请使用 list_directory") ||
-		strings.Contains(lower, "missing path") ||
-		strings.Contains(lower, "file does not exist") ||
-		strings.Contains(lower, "no such file") ||
-		strings.Contains(lower, "read failed") ||
-		strings.Contains(lower, "permission denied") ||
-		strings.Contains(lower, "is a directory")
-}
-
-func isFailedFileMutationResult(result string) bool {
-	lower := strings.ToLower(result)
-	return strings.HasPrefix(result, "缺少 ") ||
-		strings.HasPrefix(result, "写入失败") ||
-		strings.HasPrefix(result, "编辑失败") ||
-		strings.HasPrefix(result, "行编辑失败") ||
-		strings.Contains(result, "未找到要替换的内容") ||
-		strings.Contains(result, "不存在或无法访问") ||
-		strings.Contains(lower, "missing ") ||
-		strings.Contains(lower, "write failed") ||
-		strings.Contains(lower, "edit failed") ||
-		strings.Contains(lower, "line edit failed") ||
-		strings.Contains(lower, "replacement not found") ||
-		strings.Contains(lower, "old_string") ||
-		strings.Contains(lower, "no such file") ||
-		strings.Contains(lower, "permission denied") ||
-		strings.Contains(lower, "is a directory")
 }
 
 func compactSubAgentDiff(diff string) string {
@@ -1550,7 +1555,7 @@ func appendSubAgentGuardrailSummary(summary string, violations []CodingSubAgentG
 		}
 		if v.Category != "" {
 			b.WriteString(" category: `")
-			b.WriteString(escapeSubAgentInlineCode(v.Category))
+			b.WriteString(escapeSubAgentInlineCode(v.Category.String()))
 			b.WriteString("`")
 		}
 		if v.Path != "" {
@@ -1584,7 +1589,7 @@ func aggregateGuardrailViolations(violations []CodingSubAgentGuardrailViolation)
 	entries := make([]aggregatedGuardrailViolation, 0, len(violations))
 	seen := make(map[string]int, len(violations))
 	for _, v := range violations {
-		key := strings.Join([]string{v.Tool, v.Category, v.Path, v.Command, v.Summary}, "\x00")
+		key := strings.Join([]string{v.Tool, v.Category.String(), v.Path, v.Command, v.Summary}, "\x00")
 		if idx, ok := seen[key]; ok {
 			entries[idx].Count++
 			continue
@@ -1593,111 +1598,6 @@ func aggregateGuardrailViolations(violations []CodingSubAgentGuardrailViolation)
 		entries = append(entries, aggregatedGuardrailViolation{Violation: v, Count: 1})
 	}
 	return entries
-}
-
-func isSuccessfulCommandResult(result string) bool {
-	lower := strings.ToLower(result)
-	if hasCommandFailureMarker(result, lower) {
-		return false
-	}
-	return !strings.Contains(result, "[错误]") &&
-		!strings.Contains(result, "命令启动失败") &&
-		!strings.Contains(result, "退出码") &&
-		!strings.Contains(result, "命令超时") &&
-		!strings.Contains(result, "拒绝执行") &&
-		!strings.Contains(result, "拒绝在项目目录外执行命令") &&
-		!strings.Contains(lower, "[error]") &&
-		!strings.Contains(lower, "command timed out") &&
-		!strings.Contains(lower, "command timeout") &&
-		!strings.Contains(lower, "command start failed") &&
-		!strings.Contains(lower, "permission denied") &&
-		!strings.Contains(lower, "refused to execute")
-}
-
-func hasCommandFailureMarker(result, lower string) bool {
-	failureFragments := []string{
-		"[error]", "npm err!", "pnpm err!", "yarn error",
-		"compilation failed", "build failed", "test failed", "tests failed", "pytest failed",
-		"assertionerror", "assertion failed", "traceback (most recent call last)",
-	}
-	for _, fragment := range failureFragments {
-		if strings.Contains(lower, fragment) {
-			return true
-		}
-	}
-	return hasNonZeroExitMarker(lower) || hasStandaloneFailureLine(result) || hasFailureLinePrefix(result)
-}
-
-func hasNonZeroExitMarker(lower string) bool {
-	normalized := strings.NewReplacer(":", " ", "=", " ", ",", " ", ";", " ", "-", " ").Replace(lower)
-	fields := strings.Fields(normalized)
-	for i := 0; i < len(fields); i++ {
-		switch {
-		case i+2 < len(fields) && fields[i] == "exit" && (fields[i+1] == "status" || fields[i+1] == "code"):
-			if isNonZeroExitCodeText(fields[i+2]) {
-				return true
-			}
-		case i+3 < len(fields) && fields[i] == "exited" && fields[i+1] == "with" && fields[i+2] == "code":
-			if isNonZeroExitCodeText(fields[i+3]) {
-				return true
-			}
-		case i+1 < len(fields) && fields[i] == "status":
-			if isNonZeroExitCodeText(fields[i+1]) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func isNonZeroExitCodeText(text string) bool {
-	code := strings.Trim(text, " \t\r\n.()[]")
-	return code != "0" && isIntegerText(code)
-}
-
-func isIntegerText(text string) bool {
-	if text == "" {
-		return false
-	}
-	if text[0] == '-' || text[0] == '+' {
-		text = text[1:]
-	}
-	if text == "" {
-		return false
-	}
-	for _, r := range text {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func hasStandaloneFailureLine(result string) bool {
-	for _, line := range strings.Split(result, "\n") {
-		line = strings.ToLower(strings.TrimSpace(line))
-		line = strings.Trim(line, " \t\r\n:;,.![]()")
-		if line == "fail" || line == "failed" || line == "failures" || strings.HasPrefix(line, "fail\t") || strings.HasPrefix(line, "fail ") {
-			return true
-		}
-		if strings.Contains(line, "expected") && strings.Contains(line, "got") {
-			return true
-		}
-	}
-	return false
-}
-
-func hasFailureLinePrefix(result string) bool {
-	for _, line := range strings.Split(result, "\n") {
-		line = strings.ToLower(strings.TrimSpace(line))
-		line = strings.TrimLeft(line, " \t\r\n>│|")
-		for _, prefix := range []string{"error:", "fatal:", "panic:"} {
-			if strings.HasPrefix(line, prefix) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func compactCommandResult(result string) string {
@@ -1716,46 +1616,30 @@ func compactGuardrailSummary(result string) string {
 	return truncateRunesForSubAgent(result, 500)
 }
 
-func classifyCodingGuardrail(toolName, path, command, result string) string {
+func classifyCodingGuardrailCategory(toolName, path, command, result string) CodingSubAgentGuardrailCategory {
 	normalizedCommand := strings.ToLower(strings.Join(strings.Fields(command), " "))
-	if toolName == "bash" {
+	if classifyCodingSubAgentTool(toolName) == codingSubAgentToolBash {
 		switch {
 		case hasDisallowedGitCommand(normalizedCommand):
-			return "git"
+			return codingSubAgentGuardrailCategoryGit
 		case hasDisallowedRecursiveDeleteCommand(normalizedCommand):
-			return "delete"
+			return codingSubAgentGuardrailCategoryDelete
 		case hasDisallowedShellFileMutation(normalizedCommand):
-			return "shell_write"
+			return codingSubAgentGuardrailCategoryShellWrite
 		default:
-			return "command"
+			return codingSubAgentGuardrailCategoryCommand
 		}
 	}
-	lowerResult := strings.ToLower(result)
-	switch {
-	case strings.Contains(lowerResult, "host tool handler is unavailable"):
-		return "host"
-	case path != "" || strings.Contains(lowerResult, "outside project") || strings.Contains(lowerResult, "project"):
-		return "scope"
+	switch classifyCodingGuardrailResultMarker(result) {
+	case codingGuardrailResultMarkerHostUnavailable:
+		return codingSubAgentGuardrailCategoryHost
+	case codingGuardrailResultMarkerProjectScope:
+		return codingSubAgentGuardrailCategoryScope
 	}
-	return "policy"
-}
-
-func isSuccessfulSearchResult(result string) bool {
-	result = strings.TrimSpace(result)
-	lower := strings.ToLower(result)
-	return result != "" &&
-		!strings.HasPrefix(result, "缺少 ") &&
-		!strings.HasPrefix(result, "搜索失败") &&
-		!strings.HasPrefix(result, "Glob 失败") &&
-		!strings.HasPrefix(result, "正则表达式无效") &&
-		!strings.HasPrefix(result, "未找到匹配") &&
-		!strings.HasPrefix(lower, "missing ") &&
-		!strings.HasPrefix(lower, "search failed") &&
-		!strings.HasPrefix(lower, "glob failed") &&
-		!strings.HasPrefix(lower, "invalid regular expression") &&
-		!strings.HasPrefix(lower, "invalid regex") &&
-		!strings.HasPrefix(lower, "no matches") &&
-		!strings.HasPrefix(lower, "no matching")
+	if path != "" {
+		return codingSubAgentGuardrailCategoryScope
+	}
+	return codingSubAgentGuardrailCategoryPolicy
 }
 
 func compactSearchResult(result string) string {
@@ -1833,18 +1717,18 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus string, diff
 	if len(guardrails) > 0 {
 		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(guardrails)))
 	}
-	if verificationStatus == "failed" {
+	if normalizeCodingSubAgentQualityStatus(verificationStatus) == codingSubAgentQualityFailed {
 		failed = append(failed, "verification failed")
 	}
 	failedCommands := countFailedSubAgentCommands(commands)
-	if failedCommands > 0 && verificationStatus != "failed" {
+	if failedCommands > 0 && normalizeCodingSubAgentQualityStatus(verificationStatus) != codingSubAgentQualityFailed {
 		warnings = append(warnings, fmt.Sprintf("%d command(s) failed", failedCommands))
 	}
 	if len(filesModified) > 0 {
-		if explorationStatus == "missing" {
+		if normalizeCodingSubAgentQualityStatus(explorationStatus) == codingSubAgentQualityMissing {
 			warnings = append(warnings, "no exploration before edits")
 		}
-		if verificationStatus == "missing" {
+		if normalizeCodingSubAgentQualityStatus(verificationStatus) == codingSubAgentQualityMissing {
 			warnings = append(warnings, "verification not run")
 		}
 		if !diffChecked {
@@ -2261,14 +2145,14 @@ func appendSubAgentExplorationSummary(summary, status, explorationSummary string
 		return summary
 	}
 	label := status
-	switch status {
-	case "explored":
+	switch normalizeCodingSubAgentQualityStatus(status) {
+	case codingSubAgentQualityExplored:
 		label = "EXPLORED"
-	case "read_only":
+	case codingSubAgentQualityReadOnly:
 		label = "READ_ONLY"
-	case "missing":
+	case codingSubAgentQualityMissing:
 		label = "MISSING"
-	case "not_needed":
+	case codingSubAgentQualityNotNeeded:
 		label = "NOT_NEEDED"
 	}
 	return strings.TrimSpace(summary) + "\n\n## 探索状态\n\n" + label + ": " + explorationSummary
@@ -2279,21 +2163,21 @@ func appendSubAgentVerificationSummary(summary, status, verificationSummary stri
 		return summary
 	}
 	label := status
-	switch status {
-	case "passed":
+	switch normalizeCodingSubAgentQualityStatus(status) {
+	case codingSubAgentQualityPassed:
 		label = "PASS"
-	case "failed":
+	case codingSubAgentQualityFailed:
 		label = "FAIL"
-	case "missing":
+	case codingSubAgentQualityMissing:
 		label = "MISSING"
-	case "not_needed":
+	case codingSubAgentQualityNotNeeded:
 		label = "NOT_NEEDED"
 	}
 	return strings.TrimSpace(summary) + "\n\n## 验证状态\n\n" + label + ": " + verificationSummary
 }
 
 func applySubAgentVerificationOutcome(status TaskExecStatus, errMsg, verificationStatus, verificationSummary string) (TaskExecStatus, string) {
-	if status != TaskExecPassed || verificationStatus != "failed" {
+	if status != TaskExecPassed || normalizeCodingSubAgentQualityStatus(verificationStatus) != codingSubAgentQualityFailed {
 		return status, errMsg
 	}
 	if strings.TrimSpace(verificationSummary) == "" {
@@ -2336,13 +2220,13 @@ func (c *codingSubAgentCallbacks) emitToolStartedEvent(name string) {
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	event := newCodingAgentTaskEvent("running", c.task, title, "")
-	event.Event = "tool_started"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
+	event.Event = codingAgentEventKindToolStarted.String()
 	event.Detail = strings.TrimSpace(name)
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
-func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, result string, duration time.Duration) {
+func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, result string, outcome codingToolOutcome, duration time.Duration) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
@@ -2350,11 +2234,11 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, result string, dur
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	event := newCodingAgentTaskEvent("running", c.task, title, "")
-	event.Event = "tool_finished"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
+	event.Event = codingAgentEventKindToolFinished.String()
 	event.Detail = strings.TrimSpace(name)
-	event.Outcome = classifyCodingToolOutcome(name, result)
-	if event.Outcome != "success" {
+	event.Outcome = string(outcome)
+	if outcome != codingToolOutcomeSuccess {
 		event.Summary = compactCodingToolResultSummary(result)
 	}
 	durationMS := duration.Milliseconds()
@@ -2373,48 +2257,6 @@ func compactCodingToolResultSummary(result string) string {
 	return truncateRunesForSubAgent(result, 180)
 }
 
-func classifyCodingToolOutcome(name, result string) string {
-	result = strings.TrimSpace(result)
-	if result == "" {
-		return "success"
-	}
-	lower := strings.ToLower(result)
-	switch {
-	case strings.Contains(result, "拒绝") ||
-		strings.Contains(result, "鎷掔粷") ||
-		strings.Contains(lower, "refused") ||
-		strings.Contains(lower, "outside project") ||
-		strings.Contains(lower, "host tool handler is unavailable"):
-		return "blocked"
-	case strings.Contains(result, "失败") ||
-		strings.Contains(result, "澶辫触") ||
-		strings.Contains(lower, "failed") ||
-		strings.Contains(lower, "error") ||
-		strings.Contains(lower, "unknown tool") ||
-		strings.Contains(lower, "cancelled"):
-		return "failed"
-	}
-	switch name {
-	case "bash":
-		if !isSuccessfulCommandResult(result) {
-			return "failed"
-		}
-	case "Glob", "ripgrep":
-		if !isSuccessfulSearchResult(result) {
-			return "failed"
-		}
-	case "read_file":
-		if isFailedFileReadResult(result) {
-			return "failed"
-		}
-	case "write_file", "edit_file", "edit_lines":
-		if isFailedFileMutationResult(result) {
-			return "failed"
-		}
-	}
-	return "success"
-}
-
 func (c *codingSubAgentCallbacks) emitDiffUpdatedEvent(path string, count int) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
@@ -2423,8 +2265,8 @@ func (c *codingSubAgentCallbacks) emitDiffUpdatedEvent(path string, count int) {
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	event := newCodingAgentTaskEvent("running", c.task, title, "")
-	event.Event = "diff_updated"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseRunning, c.task, title, "")
+	event.Event = codingAgentEventKindDiffUpdated.String()
 	path = strings.TrimSpace(path)
 	if path != "" {
 		event.Detail = fmt.Sprintf("%s (%d)", compactSubAgentPathText(path), count)
@@ -2473,8 +2315,8 @@ func (c *codingSubAgentCallbacks) emitFileActivitySummaryEvent(filesRead, filesM
 	} else if len(filesRead) > 0 {
 		summary = fmt.Sprintf("%s; read: %s", detail, compactSubAgentFileList(filesRead, 5))
 	}
-	event := newCodingAgentTaskEvent("result", c.task, title, "")
-	event.Event = "file_activity_summary"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
+	event.Event = codingAgentEventKindFileActivitySummary.String()
 	event.Outcome = outcome
 	event.Detail = detail
 	event.Summary = truncateRunesForSubAgent(summary, 240)
@@ -2491,8 +2333,8 @@ func (c *codingSubAgentCallbacks) emitDiffCheckEvent(checked bool, diffSummary s
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	event := newCodingAgentTaskEvent("result", c.task, title, "")
-	event.Event = "diff_check"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
+	event.Event = codingAgentEventKindDiffCheck.String()
 	event.Count = modifiedCount
 	switch {
 	case checked && strings.TrimSpace(diffSummary) != "":
@@ -2517,8 +2359,8 @@ func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, ver
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
 	outcome, summary, count := summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, filesModified, commands, guardrails)
-	event := newCodingAgentTaskEvent("result", c.task, title, "")
-	event.Event = "quality_summary"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
+	event.Event = codingAgentEventKindQualitySummary.String()
 	event.Outcome = outcome
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = count
@@ -2538,8 +2380,8 @@ func (c *codingSubAgentCallbacks) emitExplorationSummaryEvent(status, summary st
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	event := newCodingAgentTaskEvent("result", c.task, title, "")
-	event.Event = "exploration_summary"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
+	event.Event = codingAgentEventKindExplorationSummary.String()
 	event.Outcome = status
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = count
@@ -2559,16 +2401,16 @@ func (c *codingSubAgentCallbacks) emitGuardrailSummaryEvent(violations []CodingS
 	if len(entries) > 0 {
 		v := entries[0].Violation
 		parts := []string{"blocked", strings.TrimSpace(v.Tool)}
-		if strings.TrimSpace(v.Category) != "" {
-			parts = append(parts, "category:"+strings.TrimSpace(v.Category))
+		if strings.TrimSpace(v.Category.String()) != "" {
+			parts = append(parts, "category:"+strings.TrimSpace(v.Category.String()))
 		}
 		if strings.TrimSpace(v.Summary) != "" {
 			parts = append(parts, firstLine(v.Summary))
 		}
 		summary = strings.Join(nonEmptySubAgentStrings(parts), " | ")
 	}
-	event := newCodingAgentTaskEvent("result", c.task, title, "")
-	event.Event = "guardrail_summary"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
+	event.Event = codingAgentEventKindGuardrailSummary.String()
 	event.Outcome = "blocked"
 	event.Summary = truncateRunesForSubAgent(summary, 240)
 	event.Count = len(violations)
@@ -2584,8 +2426,8 @@ func (c *codingSubAgentCallbacks) emitCommandSummaryEvent(commands []CodingSubAg
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
 	outcome, summary := summarizeSubAgentCommands(commands)
-	event := newCodingAgentTaskEvent("result", c.task, title, "")
-	event.Event = "command_summary"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
+	event.Event = codingAgentEventKindCommandSummary.String()
 	event.Outcome = outcome
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = len(commands)
@@ -2605,8 +2447,8 @@ func (c *codingSubAgentCallbacks) emitVerificationSummaryEvent(status, summary s
 	if c.task != nil {
 		title = compactSubAgentTaskTitle(c.task.Title)
 	}
-	event := newCodingAgentTaskEvent("result", c.task, title, "")
-	event.Event = "verification_summary"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
+	event.Event = codingAgentEventKindVerificationSummary.String()
 	event.Outcome = status
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = count

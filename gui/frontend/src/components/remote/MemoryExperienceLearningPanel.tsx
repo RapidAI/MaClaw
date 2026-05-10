@@ -1096,7 +1096,7 @@ function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewAct
                     )}
                 </div>
             )}
-            {recommendedToolCall && <DetailBlock label={t("Recommended Tool Call", "\u5efa\u8bae\u5de5\u5177\u8c03\u7528", "\u5efa\u8b70\u5de5\u5177\u8abf\u7528")} value={recommendedToolCall} copyValueText={recommendedToolCall} pre monospace {...draftCopyProps(t)} />}
+            {recommendedToolCall && <DetailBlock label={t("Recommended Tool Call", "\u5efa\u8bae\u5de5\u5177\u8c03\u7528", "\u5efa\u8b70\u5de5\u5177\u8abf\u7528")} value={recommendedToolCall} copyValueText={recommendedToolCall} pre {...draftCopyProps(t)} />}
             {boundary && <div style={governanceBoundaryStyle}>{boundary}</div>}
         </div>
     );
@@ -1142,8 +1142,8 @@ function GovernanceHandoffBlock({ t, title, focusContext, recommendedToolCall, b
     return (
         <div style={compact ? undefined : governanceRoutingPreviewStyle}>
             {title && <div style={{ fontSize: "0.66rem", color: colors.textMuted, fontWeight: 700, marginBottom: 4 }}>{title}</div>}
-            {focusContext && <DetailBlock label={t("Focus Context", "\u805a\u7126\u4e0a\u4e0b\u6587", "\u805a\u7126\u4e0a\u4e0b\u6587")} value={focusContext} copyValueText={focusContext} pre monospace {...draftCopyProps(t)} />}
-            {recommendedToolCall && <DetailBlock label={t("Recommended Tool Call", "\u5efa\u8bae\u5de5\u5177\u8c03\u7528", "\u5efa\u8b70\u5de5\u5177\u8abf\u7528")} value={recommendedToolCall} copyValueText={recommendedToolCall} pre monospace {...draftCopyProps(t)} />}
+            {focusContext && <DetailBlock label={t("Focus Context", "\u805a\u7126\u4e0a\u4e0b\u6587", "\u805a\u7126\u4e0a\u4e0b\u6587")} value={focusContext} copyValueText={focusContext} pre {...draftCopyProps(t)} />}
+            {recommendedToolCall && <DetailBlock label={t("Recommended Tool Call", "\u5efa\u8bae\u5de5\u5177\u8c03\u7528", "\u5efa\u8b70\u5de5\u5177\u8abf\u7528")} value={recommendedToolCall} copyValueText={recommendedToolCall} pre {...draftCopyProps(t)} />}
             {boundary && <DetailBlock label={t("Safety Boundary", "\u5b89\u5168\u8fb9\u754c", "\u5b89\u5168\u908a\u754c")} value={boundary} />}
         </div>
     );
@@ -1168,7 +1168,7 @@ function DraftOutput({ t, label, draft, error }: { t: Translate; label: string; 
 
 function RecommendedToolCallBlock({ t, call }: { t: Translate; call?: GovernanceToolCall | null }) {
     const text = formatGovernanceRecommendedToolCall(asRecord(call));
-    return text ? <DetailBlock label={t("Recommended Tool Call", "\u5efa\u8bae\u5de5\u5177\u8c03\u7528", "\u5efa\u8b70\u5de5\u5177\u8abf\u7528")} value={text} copyValueText={text} pre monospace {...draftCopyProps(t)} /> : null;
+    return text ? <DetailBlock label={t("Recommended Tool Call", "\u5efa\u8bae\u5de5\u5177\u8c03\u7528", "\u5efa\u8b70\u5de5\u5177\u8abf\u7528")} value={text} copyValueText={text} pre {...draftCopyProps(t)} /> : null;
 }
 
 function DraftReviewControls({ t, draft, note, recording, error, message, recommendedToolCall, notePlaceholder, onNoteChange, onRecord }: DraftReviewControlsProps) {
@@ -1951,20 +1951,30 @@ function governanceRoutingQueryLine(t: Translate, query: Record<string, any>): s
 function formatGovernanceRecommendedToolCall(call: Record<string, any>, traceId = "", traceTitle = "", traceReason = ""): string {
     if (!call.tool && !call.args) return "";
     try {
+        const lines: string[] = [];
+        const toolName = String(call.tool || "").trim();
+        if (toolName) lines.push("工具: " + toolName);
+        const args = call.args;
+        if (args && typeof args === "object") {
+            const argEntries = Object.entries(args).filter(([, v]) => v !== undefined && v !== null && v !== "");
+            if (argEntries.length > 0) {
+                lines.push("参数:");
+                for (const [key, value] of argEntries) {
+                    const displayValue = typeof value === "object" ? JSON.stringify(value) : String(value);
+                    const truncated = displayValue.length > 120 ? displayValue.slice(0, 117) + "..." : displayValue;
+                    lines.push("  " + key + ": " + truncated);
+                }
+            }
+        }
         const targetID = String(traceId || "").trim();
         const targetTitle = String(traceTitle || "").trim();
         const reason = String(traceReason || "").trim();
-        if (!targetID && !targetTitle && !reason) return JSON.stringify(call, null, 2);
-        const focusContext = {
-            priority_trace_id: targetID,
-            priority_trace_title: targetTitle,
-            reason,
-        };
-        return JSON.stringify({
-            ...call,
-            governance_focus_context: focusContext,
-            recommended_focus_context: focusContext,
-        }, null, 2);
+        if (targetTitle || targetID) lines.push("关联轨迹: " + (targetTitle || targetID));
+        if (reason) lines.push("原因: " + reason);
+        const boundary = String(call.non_executing_boundary || "").trim();
+        if (call.non_executing) lines.push("⚠️ 仅供参考，不会自动执行");
+        if (boundary) lines.push("安全边界: " + boundary);
+        return lines.join("\n");
     } catch {
         return "";
     }
@@ -1973,7 +1983,31 @@ function formatGovernanceRecommendedToolCall(call: Record<string, any>, traceId 
 function formatGovernanceFocusContext(context: Record<string, any>): string {
     if (Object.keys(context).length === 0) return "";
     try {
-        return JSON.stringify(context, null, 2);
+        const lines: string[] = [];
+        const traceId = String(context.priority_trace_id || "").trim();
+        const traceTitle = String(context.priority_trace_title || "").trim();
+        const reason = String(context.reason || "").trim();
+        if (traceTitle) lines.push("优先轨迹: " + traceTitle);
+        else if (traceId) lines.push("优先轨迹: " + traceId);
+        if (traceTitle && traceId) lines.push("轨迹 ID: " + traceId);
+        if (reason) lines.push("原因: " + reason);
+        // Fallback for any other keys not covered above
+        for (const [key, value] of Object.entries(context)) {
+            if (["priority_trace_id", "priority_trace_title", "reason"].includes(key)) continue;
+            if (value === undefined || value === null || value === "") continue;
+            if (typeof value === "object" && !Array.isArray(value)) {
+                // Flatten one level of nested objects
+                for (const [subKey, subValue] of Object.entries(value as Record<string, any>)) {
+                    if (subValue === undefined || subValue === null || subValue === "") continue;
+                    const sv = typeof subValue === "object" ? JSON.stringify(subValue) : String(subValue);
+                    lines.push(key + "." + subKey + ": " + sv);
+                }
+            } else {
+                const displayValue = Array.isArray(value) ? value.join(", ") : String(value);
+                lines.push(key + ": " + displayValue);
+            }
+        }
+        return lines.join("\n") || "";
     } catch {
         return "";
     }

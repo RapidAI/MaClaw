@@ -85,13 +85,10 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 		lower := strings.ToLower(line)
 
 		// Check Gemini ACP turn-complete marker.
-		if strings.HasPrefix(lower, "[gemini-acp] turn complete:") {
-			restLower := strings.TrimSpace(lower[len("[gemini-acp] turn complete:"):])
-			if strings.Contains(restLower, "success") || strings.Contains(restLower, "done") || strings.Contains(restLower, "completed") {
+		if marker := classifyGeminiACPTurnCompleteMarker(line); marker != sessionCompletionMarkerUnknown {
+			if marker == sessionCompletionMarkerCompleted {
 				completionCount++
-			} else if strings.Contains(restLower, "cancelled") || strings.Contains(restLower, "canceled") {
-				// cancelled means the turn was cut short (e.g. token limit),
-				// task is likely incomplete.
+			} else if marker == sessionCompletionMarkerIncomplete {
 				incompletionCount++
 			}
 			continue

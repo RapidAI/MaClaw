@@ -61,7 +61,7 @@ func (c *SkillMarketClient) getSkillPurchaseMode() string {
 }
 
 func (c *SkillMarketClient) SubmitSkill(ctx context.Context, zipPath, email string) (string, error) {
-	base, discovered, err := c.selectBaseURL(ctx)
+	bases, err := c.app.resolveHubCenterCandidates(ctx, c.client)
 	if err != nil {
 		return "", err
 	}
@@ -80,32 +80,89 @@ func (c *SkillMarketClient) SubmitSkill(ctx context.Context, zipPath, email stri
 		return "", err
 	}
 	_ = w.WriteField("email", email)
-	w.Close()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/skills/submit", &buf)
-	if err != nil {
+	contentType := w.FormDataContentType()
+	if err := w.Close(); err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	if cfg, err := c.app.LoadConfig(); err == nil && strings.TrimSpace(cfg.RemoteViewerToken) != "" {
-		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(cfg.RemoteViewerToken))
+	bodyBytes := buf.Bytes()
+
+	authHeader := c.skillMarketAuthHeader()
+
+	var lastErr error
+	authFailures := 0
+	for _, base := range bases {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/v1/skills/submit", bytes.NewReader(bodyBytes))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", contentType)
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("submit skill via %s: %w", base, err)
+			continue
+		}
+		var result struct {
+			SubmissionID string `json:"submission_id"`
+		}
+		retry, reqErr := func() (bool, error) {
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+				err := fmt.Errorf("submit failed via %s (%d): %s", base, resp.StatusCode, strings.TrimSpace(string(body)))
+				return shouldRetrySkillSubmitStatus(resp.StatusCode), err
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				return true, fmt.Errorf("decode submit response from %s: %w", base, err)
+			}
+			return false, nil
+		}()
+		if reqErr == nil {
+			c.app.rememberHubCenterSelection(base, bases)
+			return result.SubmissionID, nil
+		}
+		lastErr = reqErr
+		if isSkillSubmitAuthStatus(resp.StatusCode) {
+			authFailures++
+		}
+		if !retry {
+			break
+		}
 	}
-	resp, err := c.client.Do(req)
+	if authFailures > 0 && authFailures == len(bases) {
+		return "", fmt.Errorf("SkillMarket 认证失败或已过期，请重新登录 SkillMarket 后再上传；如果是多机集群，请确认各 HubCenter 使用相同 cluster_secret 并已同步 session revocation")
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("no reachable hubcenter")
+}
+
+func (c *SkillMarketClient) skillMarketAuthHeader() string {
+	if c == nil || c.app == nil {
+		return ""
+	}
+	cfg, err := c.app.LoadConfig()
 	if err != nil {
-		return "", fmt.Errorf("submit skill: %w", err)
+		return ""
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("submit failed (%d): %s", resp.StatusCode, string(body))
+	if token := strings.TrimSpace(cfg.SkillMarketSessionToken); token != "" {
+		return "Bearer " + token
 	}
-	var result struct {
-		SubmissionID string `json:"submission_id"`
+	if token := strings.TrimSpace(cfg.RemoteViewerToken); token != "" {
+		return "Bearer " + token
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-	c.app.rememberHubCenterSelection(base, discovered)
-	return result.SubmissionID, nil
+	return ""
+}
+
+func shouldRetrySkillSubmitStatus(status int) bool {
+	return isSkillSubmitAuthStatus(status) || status >= 500
+}
+
+func isSkillSubmitAuthStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 func (c *SkillMarketClient) GetSubmissionStatus(ctx context.Context, submissionID string) (string, string, error) {

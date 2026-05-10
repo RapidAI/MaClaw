@@ -182,6 +182,119 @@ describe('resolveFinalRoundContent — Bug Condition Exploration', () => {
         expect(result).not.toContain('Browser:');
     });
 
+    it('Case 10a: file delivery normalizes response_source before source matching', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened.';
+        const finalText = 'Deck generated and saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            response_source: ' File_Delivery ',
+            local_file_paths: ['C:/tmp/demo.pptx'],
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 10a.1: file delivery canonicalizes non-underscore response_source variants', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened.';
+        const finalText = 'Deck generated and saved.';
+
+        for (const responseSource of ['file-delivery', 'FileDelivery']) {
+            const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+                text: finalText,
+                response_source: responseSource,
+                local_file_paths: ['C:/tmp/demo.pptx'],
+            });
+
+            expect(result).toBe(finalText);
+            expect(result).not.toContain('Browser:');
+        }
+    });
+
+    it('Case 10b: inferred local file delivery ignores streamed Browser residue when response_source is missing', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened.';
+        const finalText = 'Deck generated and saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            local_file_paths: ['C:/tmp/demo.pptx'],
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 10c: inferred screenshot delivery ignores streamed Browser residue when response_source is missing', () => {
+        const streamedContent = 'Browser: screenshot captured.';
+        const finalText = 'Screenshot saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            local_file_path: 'C:/tmp/screenshot.png',
+            thumbnail_base64: 'abc123',
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 10d: inferred Go-style file delivery ignores streamed Browser residue when response_source is missing', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened.';
+        const finalText = 'Deck generated and saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            LocalFilePaths: ['C:/tmp/demo.pptx'],
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 10e: artifact payload overrides explicit agent_loop source to ignore streamed Browser residue', () => {
+        const streamedContent = 'Browser: generated deck is ready and opened with extra streamed residue.';
+        const finalText = 'Deck generated and saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            response_source: 'agent_loop',
+            local_file_paths: ['C:/tmp/demo.pptx'],
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 10f: Go-style screenshot artifact overrides explicit agent_loop source', () => {
+        const streamedContent = 'Browser: screenshot captured with stale stream residue.';
+        const finalText = 'Screenshot saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            ResponseSource: 'agent_loop',
+            LocalFilePath: 'C:/tmp/screenshot.png',
+            ThumbnailBase64: 'abc123',
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
+    it('Case 10g: image key artifact overrides explicit agent_loop source', () => {
+        const streamedContent = 'Browser: screenshot captured with stale stream residue.';
+        const finalText = 'Screenshot saved.';
+
+        const result = resolveFinalRoundContent(makeMessage(streamedContent), {
+            text: finalText,
+            response_source: 'agent_loop',
+            image_key: 'screenshot-123',
+        });
+
+        expect(result).toBe(finalText);
+        expect(result).not.toContain('Browser:');
+    });
+
     it('Case 11: role-prefix diagnostics do not log content snippets', () => {
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
         try {

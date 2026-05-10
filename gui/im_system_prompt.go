@@ -8,12 +8,51 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 func (h *IMMessageHandler) buildSystemPrompt() string {
 	return h.buildSystemPromptBase(false)
+}
+
+func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, workflowAgentLoop bool, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
+	var systemPrompt string
+	if h.memoryStore != nil {
+		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0)
+	} else {
+		systemPrompt = h.buildSystemPrompt()
+	}
+	systemPrompt += h.buildResumeTraceContext(msg.UserID, msg.Text)
+
+	if workflowAgentLoop && h.getWorkflowEngine() != nil {
+		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
+			systemPrompt += "\n" + stashed.(string)
+		} else if phasePrompt := h.getWorkflowEngine().BuildPhasePrompt(msg.UserID); phasePrompt != "" {
+			systemPrompt += "\n" + phasePrompt
+		}
+	} else {
+		h.stashedPhasePrompt.Delete(msg.UserID)
+		h.workflowOriginalRequest.Delete(msg.UserID)
+	}
+
+	if askUserContext != "" {
+		systemPrompt += "\n\n" + askUserContext
+	}
+	if pendingUserReplyContext != "" {
+		systemPrompt += "\n\n" + pendingUserReplyContext
+	}
+	if capabilityGapContext != "" {
+		systemPrompt += "\n\n" + capabilityGapContext
+	}
+
+	if msg.Platform == "desktop" {
+		systemPrompt += desktopWorkflowDocOverride()
+	} else if msg.Platform != "" {
+		systemPrompt += imWorkflowDocDeliveryRule()
+	}
+	return systemPrompt
 }
 
 func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMessage ...string) string {
@@ -98,6 +137,21 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 `)
 
 	appendCodingWorkflowContract(&b)
+
+	b.WriteString(`
+## Passthrough Commands
+- Users may ask you to create, edit, explain, or register an emergency passthrough command.
+- A passthrough command is a pre-registered script that can later be invoked from IM with: /run <name> [--param value] [--confirm].
+- Help the user create a normal script, then register it with the passthrough_task tool. Monitor > Passthrough Tasks is the human editing/deletion UI.
+- passthrough_task supports action=list/status/show/export/preview/save/delete/set_enabled/audit. Use action=export when the user needs an IM-ready /runctl save registration command. Use action=preview before save when you need to verify the final argv without executing or persisting anything. Use action=save with name, title, description, script_path, template_args, runtime, cwd, timeout_seconds, confirm_required, enabled, and params.
+- For command-template tasks, put the executable or script in script_path and fixed arguments/placeholders in template_args, e.g. script_path="git", runtime="direct", template_args=["-C", "${target}", "status", "--short"]. Never combine a shell string.
+- Params can be passed as an array of objects, params_json, or params_text. params_text is one per line: name:type:required:default:example. params_json is best when you need to provide an IM-ready /runctl save --params-json command; remember JSON must escape Windows paths as D:\\workprj\\aicoder. Supported param types are text, number, boolean, and path. The required flag can be required or optional.
+- Scripts receive params as argv pairs: --param value. For example, /run repair-env --target D:\workprj\aicoder --deep true --confirm.
+- If the user needs a one-time recovery command and explicitly accepts the risk, they can enable /exec in Monitor > Passthrough Tasks. /exec runs an executable from PATH or an absolute path as argv, requires --confirm, and does not interpret shell syntax such as pipes, redirection, or &&.
+- Do not tell the user that /run itself needs LLM or agent reasoning. /run is a deterministic recovery path and must remain usable when the LLM is unavailable.
+- Prefer safe names such as restart-agent, repair-env, clean-locks. Parameters should be simple: text, number, boolean, or path.
+- After registration, tell the user the exact /run example, the returned /runctl save registration command if useful, and remind them they can query /runctl status, /runctl show <name>, /runctl preview <name>, and /runctl audit from IM when the LLM is unavailable.
+`)
 
 	if isProMode {
 		// Pro mode: full coding workflow with session management.
@@ -519,7 +573,7 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 			b.WriteString("\n## 已注册 Skill\n")
 			b.WriteString("调用方式：manage_skill(action=\"run\", name=\"Skill名称\", args={...})\n")
 			for _, s := range skills {
-				if s.Status == "active" {
+				if normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
 					b.WriteString(fmt.Sprintf("- %s: %s", s.Name, s.Description))
 					if s.UsageCount > 0 {
 						b.WriteString(fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, s.SuccessRate*100))
@@ -759,7 +813,7 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 	// Determine userID for per-user snapshot keying.
 	userID := h.lastUserID
 	if userID == "" {
-		userID = "desktop-user"
+		userID = desktopUserID
 	}
 
 	// --- Static part: user_fact summary + memory guide (frozen per session) ---
@@ -1024,17 +1078,18 @@ func (h *IMMessageHandler) appendKnowledgeSkillSection(b *strings.Builder, userM
 
 	var matched []matchedKnowledgeSkill
 	for _, s := range skills {
-		if s.Status != "active" {
+		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
 
 		// Determine the content to inject.
 		var content string
+		skillKind := normalizeSkillTypeKind(s.Type)
 		switch {
-		case s.Type == "knowledge" && s.Content != "":
+		case skillKind.IsKnowledge() && s.Content != "":
 			// Category 1: knowledge skill with inline content.
 			content = s.Content
-		case s.Type != "knowledge" && s.SkillDir != "":
+		case !skillKind.IsKnowledge() && s.SkillDir != "":
 			// Category 2: executable skill with SKILL.md.
 			// Load documentation directly from the skill directory.
 			// Only loaded when triggers match (lazy), so no wasted IO.
@@ -1156,7 +1211,7 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	var activePublisher string
 	var activeSkillName string
 	for _, run := range runs {
-		if run.Status != "running" {
+		if !run.IsRunning() {
 			continue
 		}
 		// Look up the skill to check its publisher.
@@ -1182,7 +1237,7 @@ func (h *IMMessageHandler) appendBundleContextBanner(b *strings.Builder) {
 	h.getSkillExecutor().mu.RLock()
 	var siblings []string
 	for _, s := range h.getSkillExecutor().loadSkills() {
-		if s.Publisher == activePublisher && s.Name != activeSkillName && s.Status == "active" {
+		if s.Publisher == activePublisher && s.Name != activeSkillName && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
 			siblings = append(siblings, s.Name)
 		}
 	}

@@ -37,11 +37,11 @@ func (h *IMMessageHandler) emitSkillRunAgentViewIfNeeded(name string, args map[s
 func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]interface{}) *IMAgentResponse {
 	skillName = strings.TrimSpace(skillName)
 	if skillName == "" {
-		return &IMAgentResponse{Text: "Skill task panel submission is missing skill name.", Error: "missing skill name", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Skill task panel submission is missing skill name.", Error: "missing skill name", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
-		return &IMAgentResponse{Text: "Skill Runner is not initialized.", Error: "skill runner not initialized", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Skill Runner is not initialized.", Error: "skill runner not initialized", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	target := a.findSkillForAgentView(skillName)
 	baseArgs, _ := data["_run_args"].(map[string]interface{})
@@ -72,7 +72,7 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 				view["formErrors"] = validationErrors
 				a.emitAgentView(view)
 			}
-			return &IMAgentResponse{Text: "Skill parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "Skill parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		vars = normalizeSkillRunVars(runArgs)
 		params, missing = skillRunParameterContract(target, vars, runArgs)
@@ -81,41 +81,41 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 			if view != nil {
 				a.emitAgentView(view)
 			}
-			return &IMAgentResponse{Text: "Skill parameters are still incomplete. Review the task panel.", Error: "missing required parameters: " + strings.Join(missing, ", "), ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "Skill parameters are still incomplete. Review the task panel.", Error: "missing required parameters: " + strings.Join(missing, ", "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 	}
 	runID, err := a.skillRunner.StartRun(skillName, runArgs)
 	if err != nil {
-		return &IMAgentResponse{Text: "Skill start failed.", Error: err.Error(), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Skill start failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	status, err := waitForSkillRunnerSnapshot(a.skillRunner, runID, 2*time.Second)
 	if err != nil {
-		return &IMAgentResponse{Text: fmt.Sprintf("Skill started, but status snapshot failed. run_id=%s", runID), Error: err.Error(), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: fmt.Sprintf("Skill started, but status snapshot failed. run_id=%s", runID), Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if a.ctx != nil {
 		a.emitAgentView(buildSkillRunStatusAgentView(status, runID))
 	}
-	return &IMAgentResponse{Text: fmt.Sprintf("Skill started from task panel. run_id=%s", runID), ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: fmt.Sprintf("Skill started from task panel. run_id=%s", runID), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func (a *App) handleSkillStatusAgentViewSubmit(data map[string]interface{}) *IMAgentResponse {
 	if a == nil {
-		return &IMAgentResponse{Text: "Skill status is not available.", Error: "app not initialized", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Skill status is not available.", Error: "app not initialized", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	a.ensureSkillRunner()
 	if a.skillRunner == nil {
-		return &IMAgentResponse{Text: "Skill Runner is not initialized.", Error: "skill runner not initialized", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Skill Runner is not initialized.", Error: "skill runner not initialized", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	runID := strings.TrimSpace(fmt.Sprint(data["run_id"]))
 	if runID == "" || runID == "<nil>" {
-		return &IMAgentResponse{Text: "Skill status submission is missing run_id.", Error: "missing run_id", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Skill status submission is missing run_id.", Error: "missing run_id", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	status, err := waitForSkillRunnerSnapshot(a.skillRunner, runID, 500*time.Millisecond)
 	if err != nil {
-		return &IMAgentResponse{Text: "Skill status refresh failed.", Error: err.Error(), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Skill status refresh failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	a.emitAgentView(buildSkillRunStatusAgentView(status, runID))
-	return &IMAgentResponse{Text: "Skill status refreshed in the task panel.", ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: "Skill status refreshed in the task panel.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func (a *App) findSkillForAgentView(name string) *corelib.NLSkillEntry {
@@ -367,9 +367,9 @@ func normalizeSkillAgentViewSubmittedValue(field map[string]interface{}, raw int
 	if label == "" {
 		label = name
 	}
-	fieldType := strings.ToLower(strings.TrimSpace(fmt.Sprint(field["type"])))
+	fieldType := normalizeAgentViewFieldType(fmt.Sprint(field["type"]))
 	switch fieldType {
-	case "number":
+	case agentViewFieldTypeNumber:
 		if raw == nil || strings.TrimSpace(fmt.Sprint(raw)) == "" {
 			return raw, ""
 		}
@@ -378,19 +378,19 @@ func normalizeSkillAgentViewSubmittedValue(field map[string]interface{}, raw int
 			return raw, label + " must be a valid number"
 		}
 		return number, ""
-	case "boolean":
+	case agentViewFieldTypeBoolean:
 		value, ok := skillAgentViewBoolFromAny(raw)
 		if !ok {
 			return raw, label + " must be true or false"
 		}
 		return value, ""
-	case "select", "business_ref", "user_ref", "department_ref":
+	case agentViewFieldTypeSelect, agentViewFieldTypeBusinessRef, agentViewFieldTypeUserRef, agentViewFieldTypeDepartmentRef:
 		value := strings.TrimSpace(fmt.Sprint(raw))
 		if errText := skillAgentViewValidateOption(label, value, field["options"]); errText != "" {
 			return raw, errText
 		}
 		return value, ""
-	case "multiselect":
+	case agentViewFieldTypeMultiSelect:
 		values := skillAgentViewStringSliceFromAny(raw)
 		for _, value := range values {
 			if errText := skillAgentViewValidateOption(label, value, field["options"]); errText != "" {
@@ -398,7 +398,7 @@ func normalizeSkillAgentViewSubmittedValue(field map[string]interface{}, raw int
 			}
 		}
 		return values, ""
-	case "date":
+	case agentViewFieldTypeDate:
 		value := strings.TrimSpace(fmt.Sprint(raw))
 		if value != "" {
 			if _, err := time.Parse("2006-01-02", value); err != nil {
@@ -438,12 +438,7 @@ func skillAgentViewBoolFromAny(raw interface{}) (bool, bool) {
 	case bool:
 		return v, true
 	case string:
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "1", "true", "yes", "y", "on", "enabled":
-			return true, true
-		case "0", "false", "no", "n", "off", "disabled":
-			return false, true
-		}
+		return coerceAgentViewBoolToken(v)
 	}
 	return false, false
 }
@@ -576,28 +571,13 @@ func skillOperationsWithLabels(operations []corelib.NLSkillOperation) []corelib.
 }
 
 func skillAgentViewFieldType(name, description string) string {
-	text := strings.ToLower(name + " " + description)
-	switch {
-	case len(skillAgentViewEnumOptions(description)) > 0:
-		return "select"
-	case strings.Contains(text, "enabled") || strings.Contains(text, "disabled") || strings.Contains(text, "boolean") || strings.Contains(text, "true/false") || strings.Contains(text, "yes/no") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "is_") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(name)), "has_"):
-		return "boolean"
-	case strings.Contains(text, "prompt") || strings.Contains(text, "content") || strings.Contains(text, "text") || strings.Contains(text, "markdown"):
-		return "textarea"
-	case strings.Contains(text, "count") || strings.Contains(text, "num") || strings.Contains(text, "number") || strings.Contains(text, "seconds") || strings.Contains(text, "limit") || strings.Contains(text, "amount") || strings.Contains(text, "price") || strings.Contains(text, "total"):
-		return "number"
-	case strings.Contains(text, "date") && !strings.Contains(text, "update"):
-		return "date"
-	case strings.Contains(text, "file") || strings.Contains(text, "path") || strings.Contains(text, "dir") || strings.Contains(text, "directory") || strings.Contains(text, "folder"):
-		return "file"
-	default:
-		return "text"
-	}
+	return inferSkillAgentViewFieldKind(name, description).FieldType().String()
 }
 
 func skillAgentViewFieldHints(param corelib.NLSkillParam, fieldType string) map[string]interface{} {
 	hints := map[string]interface{}{}
-	if fieldType == "select" {
+	normalizedFieldType := normalizeAgentViewFieldType(fieldType)
+	if normalizedFieldType.UsesOptions() {
 		if options := skillAgentViewEnumOptions(param.Description); len(options) > 0 {
 			hints["options"] = options
 		}
@@ -612,7 +592,7 @@ func skillAgentViewFieldHints(param corelib.NLSkillParam, fieldType string) map[
 		hints["format"] = "password"
 		hints["sensitive"] = true
 	}
-	if fieldType == "number" {
+	if normalizedFieldType == agentViewFieldTypeNumber {
 		if strings.Contains(text, "seconds") || strings.Contains(text, "count") || strings.Contains(text, "limit") {
 			hints["min"] = 0
 		}
@@ -681,16 +661,17 @@ func skillAgentViewFieldLabel(name string) string {
 }
 
 func skillAgentViewPlaceholder(param corelib.NLSkillParam, fieldType string) string {
-	if fieldType == "select" || fieldType == "boolean" {
+	normalizedFieldType := normalizeAgentViewFieldType(fieldType)
+	if normalizedFieldType.SuppressesPlaceholder() {
 		return ""
 	}
 	if len(param.Aliases) > 0 {
 		return "Aliases: " + strings.Join(param.Aliases, ", ")
 	}
-	switch fieldType {
-	case "file":
+	switch normalizedFieldType {
+	case agentViewFieldTypeFile:
 		return "Enter a file or folder path"
-	case "date":
+	case agentViewFieldTypeDate:
 		return "YYYY-MM-DD"
 	default:
 		return ""
@@ -699,17 +680,11 @@ func skillAgentViewPlaceholder(param corelib.NLSkillParam, fieldType string) str
 
 func skillAgentViewCoerceFieldValue(fieldType, value string) interface{} {
 	value = strings.TrimSpace(value)
-	switch fieldType {
-	case "boolean":
-		switch strings.ToLower(value) {
-		case "1", "true", "yes", "y", "on", "enabled":
-			return true
-		case "0", "false", "no", "n", "off", "disabled":
-			return false
-		default:
-			return false
-		}
-	case "number":
+	switch normalizeAgentViewFieldType(fieldType) {
+	case agentViewFieldTypeBoolean:
+		parsed, _ := coerceAgentViewBoolToken(value)
+		return parsed
+	case agentViewFieldTypeNumber:
 		var n float64
 		if _, err := fmt.Sscanf(value, "%f", &n); err == nil {
 			return n
@@ -719,11 +694,8 @@ func skillAgentViewCoerceFieldValue(fieldType, value string) interface{} {
 }
 
 func buildSkillRunStatusAgentView(status *SkillRunStatus, runID string) map[string]interface{} {
-	if status != nil {
-		switch strings.ToLower(strings.TrimSpace(status.Status)) {
-		case "success", "failed", "cancelled":
-			return buildSkillRunResultAgentView(status, runID)
-		}
+	if status != nil && status.IsFinished() {
+		return buildSkillRunResultAgentView(status, runID)
 	}
 	return buildSkillRunProgressAgentView(status, runID)
 }
@@ -798,7 +770,7 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 			"actions": []map[string]interface{}{{
 				"label":   "Refresh",
 				"viewId":  "skill:status",
-				"primary": resultStatus == "running",
+				"primary": status != nil && status.IsRunning(),
 				"data": map[string]interface{}{
 					"run_id": runID,
 				},
@@ -909,14 +881,5 @@ func skillRunTruncate(text string, maxRunes int) string {
 }
 
 func agentViewStepStatus(status string) string {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "success", "done", "completed":
-		return "done"
-	case "running":
-		return "running"
-	case "error", "failed", "failure":
-		return "error"
-	default:
-		return "pending"
-	}
+	return string(normalizeAgentViewStepStatus(status))
 }

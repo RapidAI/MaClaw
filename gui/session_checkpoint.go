@@ -1,9 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -54,7 +54,7 @@ func (c *SessionCheckpointer) SaveCheckpoint(session *RemoteSession) error {
 	session.mu.RLock()
 	cp := SessionCheckpoint{
 		SessionID:   session.ID,
-		UserID:      "desktop-user",
+		UserID:      desktopUserID,
 		Tool:        session.Tool,
 		ProjectPath: session.ProjectPath,
 		Status:      string(session.Status),

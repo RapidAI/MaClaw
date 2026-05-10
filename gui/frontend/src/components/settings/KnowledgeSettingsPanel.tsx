@@ -1,5 +1,5 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import {
     KnowledgeCapabilities,
     KnowledgeBackfillSourceAutoLabels,
@@ -1139,17 +1139,43 @@ type KnowledgeSubTab = 'overview' | 'ingest' | 'search' | 'sources' | 'quality';
 
 
 export function KnowledgeSettingsPanel({ lang }: Props) {
-    const isZh = lang === 'zh-CN' || lang === 'zh-TW';
+    const t = (en: string, zhHans: string, zhHant: string = zhHans) => (
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
+    );
+    const [activeTab, setActiveTab] = useState<KnowledgeSubTab>('overview');
     const [health, setHealth] = useState<any>(null);
+    const [capabilities, setCapabilities] = useState<KnowledgeCapabilitiesResult | null>(null);
+    const [sources, setSources] = useState<Source[]>([]);
+    const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+    const [facets, setFacets] = useState<SearchFacetsResult | null>(null);
+    const [qualityReport, setQualityReport] = useState<SourceQualityReport | null>(null);
+    const [qualityPlan, setQualityPlan] = useState<SourceQualityMaintenancePlan | null>(null);
+    const [executionResult, setExecutionResult] = useState<SourceQualityMaintenanceExecuteResult | null>(null);
+    const [executionContext, setExecutionContext] = useState<{ source?: string; action?: string; dryRun?: boolean } | null>(null);
+    const [importJob, setImportJob] = useState<ImportJob | null>(null);
+    const [operationResult, setOperationResult] = useState<any>(null);
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+    const [busy, setBusy] = useState('');
+    const [textForm, setTextForm] = useState({ title: '', text: '', labels: '', topicHint: '', saveScope: 'project', distillMode: '' });
+    const [urlForm, setURLForm] = useState({ urls: '', labels: '', topicHint: '', saveScope: 'project', distillMode: '', autoLabels: true });
+    const [fileForm, setFileForm] = useState({ directory: '', labels: '', topicHint: '', saveScope: 'project', distillMode: '', includeExts: '', excludeGlobs: '', recursive: true, autoLabels: true, dryRun: false, maxFileBytes: 10485760 });
+    const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
+    const [searchForm, setSearchForm] = useState({ query: '', resultType: 'all', sourceKind: 'all', domain: '', sourceID: '', labels: '', limit: 20, includeDisabled: false });
+    const [sourceFilter, setSourceFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
+    const [qualityFilter, setQualityFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
+    const [qualityOptions, setQualityOptions] = useState({ policy: 'balanced', dryRun: true, distillMode: '', maxSourcesPerAction: 100, allowSensitiveDisable: false, allowDuplicateSuppression: true });
 
     const refresh = async () => {
         setLoading(true);
         setError('');
         try {
-            const result = await KnowledgeHealth({});
-            setHealth(result || null);
+            const [healthResult, capabilityResult] = await Promise.all([
+                KnowledgeHealth({}),
+                KnowledgeCapabilities(),
+            ]);
+            setHealth(healthResult || null);
+            setCapabilities(capabilityResult || null);
         } catch (err: any) {
             setError(err?.message || String(err));
         } finally {
@@ -1162,26 +1188,572 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     }, []);
 
     const summary = knowledgeHealthSummaryModel(health);
+    const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
+    const qualityPayload = useMemo(() => knowledgeSourceListPayload(capabilities, qualityFilter), [capabilities, qualityFilter]);
+    const coverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, sourceFilter.coverage), [capabilities, sourceFilter.coverage]);
+    const qualityCoverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, qualityFilter.coverage), [capabilities, qualityFilter.coverage]);
+    const distillModes = capabilities?.distill_modes?.length ? capabilities.distill_modes : ['rules_only', 'llm_optional'];
+    const formatSummary = (capabilities?.formats || []).slice(0, 6).map(format => `${format.kind || 'format'}${format.extensions?.length ? ` (${format.extensions.join(', ')})` : ''}`);
+    const aliasSummary = knowledgeCoverageAliasSummary(capabilities, 4);
+
+    const refreshSourceList = async () => {
+        const result = await KnowledgeListSources(sourcePayload);
+        const nextSources = Array.isArray(result) ? result : [];
+        setSources(nextSources);
+        return nextSources;
+    };
+
+    const runTask = async (name: string, task: () => Promise<any>, options: { refreshSources?: boolean; refreshHealth?: boolean } = {}) => {
+        setBusy(name);
+        setError('');
+        if (name !== 'executeQuality') {
+            setExecutionResult(null);
+            setExecutionContext(null);
+        }
+        try {
+            const result = await task();
+            setOperationResult(result ?? { ok: true });
+            if (options.refreshSources) await refreshSourceList();
+            if (options.refreshHealth) await refresh();
+            return result;
+        } catch (err: any) {
+            setError(err?.message || String(err));
+            return null;
+        } finally {
+            setBusy('');
+        }
+    };
+
+    const importPayload = () => ({
+        root_path: fileForm.directory.trim(),
+        topic_hint: fileForm.topicHint.trim(),
+        save_scope: fileForm.saveScope,
+        distill_mode: fileForm.distillMode,
+        labels: parseLabelList(fileForm.labels),
+        auto_labels: fileForm.autoLabels,
+        recursive: fileForm.recursive,
+        include_exts: parseLabelList(fileForm.includeExts).map(ext => ext.startsWith('.') ? ext : `.${ext}`),
+        exclude_globs: parseLabelList(fileForm.excludeGlobs),
+        max_file_bytes: normalizeKnowledgeSourceLimit(fileForm.maxFileBytes, 10485760, 1024 * 1024 * 1024),
+        dry_run: fileForm.dryRun,
+    });
+
+    const loadSources = async () => {
+        await runTask('sources', async () => {
+            const nextSources = await refreshSourceList();
+            return { count: nextSources.length };
+        });
+    };
+
+    const saveText = async () => {
+        if (!textForm.text.trim()) {
+            setError(t('Text is required.', '请输入文本内容。'));
+            return;
+        }
+        await runTask('saveText', () => KnowledgeSaveText({
+            text: textForm.text,
+            title: textForm.title.trim(),
+            kind: 'text',
+            topic_hint: textForm.topicHint.trim(),
+            save_scope: textForm.saveScope,
+            distill_mode: textForm.distillMode,
+            labels: parseLabelList(textForm.labels),
+            auto_labels: true,
+        }), { refreshSources: true, refreshHealth: true });
+    };
+
+    const saveURLs = async () => {
+        const urls = parseURLBatch(urlForm.urls);
+        if (!urls.length) {
+            setError(t('At least one URL is required.', '请输入至少一个 URL。'));
+            return;
+        }
+        await runTask('saveURLs', () => urls.length === 1
+            ? KnowledgeSaveURL(urls[0], urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels)
+            : KnowledgeSaveURLs(urls, urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels), { refreshSources: true, refreshHealth: true });
+    };
+
+    const chooseFiles = async () => {
+        await runTask('chooseFiles', async () => {
+            const files = await SelectKnowledgeFiles();
+            setSelectedFiles(Array.isArray(files) ? files : []);
+            return { files: Array.isArray(files) ? files.length : 0 };
+        });
+    };
+
+    const importFiles = async () => {
+        if (!selectedFiles.length) {
+            setError(t('Select files before importing.', '请先选择文件。'));
+            return;
+        }
+        await runTask('importFiles', () => KnowledgeImportFiles(importPayload(), selectedFiles), { refreshSources: true, refreshHealth: true });
+    };
+
+    const chooseDirectory = async () => {
+        await runTask('chooseDirectory', async () => {
+            const directory = await SelectKnowledgeDirectory();
+            if (directory) setFileForm(form => ({ ...form, directory }));
+            return { directory };
+        });
+    };
+
+    const startDirectoryImport = async () => {
+        if (!fileForm.directory.trim()) {
+            setError(t('Select a directory before importing.', '请先选择目录。'));
+            return;
+        }
+        await runTask('importDirectory', async () => {
+            const job = await KnowledgeStartImportDirectory(importPayload());
+            setImportJob(job || null);
+            return job;
+        }, { refreshSources: true, refreshHealth: true });
+    };
+
+    const runSearch = async () => {
+        if (!searchForm.query.trim()) {
+            setError(t('Search query is required.', '请输入搜索问题。'));
+            return;
+        }
+        await runTask('search', async () => {
+            const payload: any = {
+                query: searchForm.query.trim(),
+                limit: normalizeKnowledgeSourceLimit(searchForm.limit, 20, 200),
+                include_disabled: searchForm.includeDisabled,
+            };
+            applyKnowledgeSearchFilterPayload(payload, searchForm);
+            const [results, facetResult] = await Promise.all([
+                KnowledgeSearch(payload),
+                KnowledgeSearchFacets(payload),
+            ]);
+            setSearchResults(Array.isArray(results) ? results : []);
+            setFacets(facetResult || null);
+            return { count: Array.isArray(results) ? results.length : 0 };
+        });
+    };
+
+    const loadQuality = async () => {
+        await runTask('quality', async () => {
+            const [report, plan] = await Promise.all([
+                KnowledgeSourceQualityReport(qualityPayload),
+                KnowledgeSourceQualityMaintenancePlan(qualityPayload),
+            ]);
+            setQualityReport(report || null);
+            setQualityPlan(plan || null);
+            return { sources: report?.count || 0, actions: plan?.count || plan?.actions?.length || 0 };
+        });
+    };
+
+    const executeQualityAction = async (action?: SourceQualityMaintenanceAction) => {
+        const payload = action
+            ? knowledgeHealthActionExecutionPayload(qualityPayload, action, qualityOptions)
+            : {
+                filter: qualityPayload,
+                policy: qualityOptions.policy,
+                dry_run: qualityOptions.dryRun,
+                distill_mode: qualityOptions.distillMode,
+                max_sources_per_action: normalizeKnowledgeSourceLimit(qualityOptions.maxSourcesPerAction, 100, 5000),
+                allow_sensitive_disable: qualityOptions.allowSensitiveDisable,
+                allow_duplicate_suppression: qualityOptions.allowDuplicateSuppression,
+            };
+        if (!payload) return;
+        await runTask('executeQuality', async () => {
+            const result = await KnowledgeExecuteSourceQualityMaintenancePlan(payload);
+            setExecutionResult(result || null);
+            setExecutionContext({ source: action ? 'quality_action' : 'quality_plan', action: action?.kind || 'all_actions', dryRun: qualityOptions.dryRun });
+            return result;
+        }, { refreshSources: true, refreshHealth: true });
+    };
+
+    const toggleSource = async (source: Source) => {
+        if (!source.id) return;
+        const isDisabled = String(source.status || '').toLowerCase() === 'disabled';
+        await runTask(isDisabled ? 'enableSource' : 'disableSource', () => isDisabled ? KnowledgeEnableSource(source.id || '') : KnowledgeDisableSource(source.id || ''), { refreshSources: true, refreshHealth: true });
+    };
+
+    const deleteSource = async (source: Source) => {
+        if (!source.id) return;
+        const ok = window.confirm(t('Delete this knowledge source?', '确定删除这个知识来源？'));
+        if (!ok) return;
+        await runTask('deleteSource', () => KnowledgeDeleteSource(source.id || ''), { refreshSources: true, refreshHealth: true });
+    };
+
+    useEffect(() => {
+        const id = String(importJob?.id || '').trim();
+        const status = String(importJob?.status || '').toLowerCase();
+        if (!id || !['queued', 'running', 'pending'].includes(status)) return;
+        const handle = window.setInterval(() => {
+            void KnowledgeImportJobStatus(id)
+                .then(job => {
+                    setImportJob(job || null);
+                    if (job && !['queued', 'running', 'pending'].includes(String(job.status || '').toLowerCase())) {
+                        setOperationResult(job);
+                        void refreshSourceList();
+                        void refresh();
+                    }
+                })
+                .catch(err => setError(err?.message || String(err)));
+        }, 1500);
+        return () => window.clearInterval(handle);
+    }, [importJob?.id, importJob?.status, sourcePayload]);
 
     return (
         <section style={panelStyle}>
             <div style={sectionHeaderStyle}>
                 <div>
-                    <h2 style={titleStyle}>{isZh ? 'Knowledge Base' : 'Knowledge Base'}</h2>
-                    <p style={subtleStyle}>Knowledge settings are available after the panel source is restored.</p>
+                    <h2 style={titleStyle}>{t('Knowledge Base', '知识库')}</h2>
+                    <p style={subtleStyle}>{t('Ingest, search, inspect, and maintain local knowledge sources.', '导入、检索、查看并维护本地知识来源。')}</p>
                 </div>
                 <button type="button" style={buttonStyle} onClick={refresh} disabled={loading}>
-                    {loading ? 'Refreshing...' : 'Refresh'}
+                    {loading ? t('Refreshing...', '刷新中...') : t('Refresh', '刷新')}
                 </button>
             </div>
             {error ? <div style={errorBoxStyle}>{error}</div> : null}
-            <div style={statsGridStyle}>
-                <Stat label="Status" value={summary?.status || 'Unknown'} />
-                <Stat label="Score" value={summary?.score ?? 0} />
-                <Stat label="Quality" value={summary?.qualityAvgScore ?? 0} />
-                <Stat label="Actions" value={summary?.actions?.length ?? 0} />
+            <div style={tabsStyle}>
+                {([
+                    ['overview', t('Overview', '总览')],
+                    ['ingest', t('Ingest', '导入')],
+                    ['search', t('Search', '检索')],
+                    ['sources', t('Sources', '来源')],
+                    ['quality', t('Quality', '质量')],
+                ] as Array<[KnowledgeSubTab, string]>).map(([tab, label]) => (
+                    <button key={tab} type="button" onClick={() => setActiveTab(tab)} style={tabButtonStyle(activeTab === tab)}>{label}</button>
+                ))}
             </div>
+
+            {activeTab === 'overview' && (
+                <div style={stackStyle}>
+                    <div style={statsGridStyle}>
+                        <Stat label={t('Status', '状态')} value={summary?.status || 'Unknown'} />
+                        <Stat label={t('Score', '评分')} value={summary?.score ?? 0} />
+                        <Stat label={t('Quality', '质量')} value={summary?.qualityAvgScore ?? 0} />
+                        <Stat label={t('Actions', '动作')} value={summary?.actions?.length ?? 0} />
+                    </div>
+                    <div style={twoColumnStyle}>
+                        <PanelBlock title={t('Health Signals', '健康信号')}>
+                            <KeyValueList values={[...(summary?.gradeEntries || []), ...(summary?.signalEntries || []), ...(summary?.findingEntries || [])]} empty={t('No health signals.', '暂无健康信号。')} />
+                        </PanelBlock>
+                        <PanelBlock title={t('Capabilities', '能力')}>
+                            <KeyValueList values={[
+                                capabilities?.storage_backend ? `storage ${capabilities.storage_backend}` : '',
+                                capabilities?.search_backend ? `search ${capabilities.search_backend}` : '',
+                                ...(formatSummary.length ? formatSummary : []),
+                                ...(aliasSummary.length ? aliasSummary : []),
+                            ]} empty={t('Capabilities are not loaded yet.', '能力信息尚未加载。')} />
+                        </PanelBlock>
+                    </div>
+                    <PanelBlock title={t('Recommended Maintenance', '建议维护')}>
+                        {(summary?.actions || []).length ? (
+                            <div style={listStyle}>
+                                {(summary?.actions || []).map((action: any, index: number) => (
+                                    <div key={`${action.kind || action.tool || index}`} style={rowStyle}>
+                                        <div style={rowMainStyle}>
+                                            <strong>{action.title || action.kind || action.tool || t('Action', '动作')}</strong>
+                                            <span style={mutedLineStyle}>{action.description || [action.kind || action.tool, action.count ? `${action.count} sources` : ''].filter(Boolean).join(' · ')}</span>
+                                        </div>
+                                        {knowledgeHealthActionExecutable(action) ? (
+                                            <button type="button" style={buttonStyle} disabled={!!busy} onClick={() => executeQualityAction(action)}>{t('Preview', '预览')}</button>
+                                        ) : <span style={badgeStyle}>{knowledgeHealthActionManualLabel(action)}</span>}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : <div style={emptyStyle}>{t('No maintenance action is required.', '暂无需要执行的维护动作。')}</div>}
+                    </PanelBlock>
+                </div>
+            )}
+
+            {activeTab === 'ingest' && (
+                <div style={twoColumnStyle}>
+                    <PanelBlock title={t('Save Text', '保存文本')}>
+                        <input style={inputStyle} value={textForm.title} onChange={event => setTextForm({ ...textForm, title: event.target.value })} placeholder={t('Title', '标题')} />
+                        <textarea style={textareaStyle} value={textForm.text} onChange={event => setTextForm({ ...textForm, text: event.target.value })} placeholder={t('Paste text or notes', '粘贴文本或笔记')} />
+                        <MetadataControls t={t} labels={textForm.labels} topicHint={textForm.topicHint} saveScope={textForm.saveScope} distillMode={textForm.distillMode} distillModes={distillModes} onChange={patch => setTextForm({ ...textForm, ...patch })} />
+                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={saveText}>{busy === 'saveText' ? t('Saving...', '保存中...') : t('Save Text', '保存文本')}</button>
+                    </PanelBlock>
+                    <PanelBlock title={t('Save URLs', '保存 URL')}>
+                        <textarea style={textareaStyle} value={urlForm.urls} onChange={event => setURLForm({ ...urlForm, urls: event.target.value })} placeholder={t('One or more URLs, separated by line breaks', '一个或多个 URL，可换行分隔')} />
+                        <MetadataControls t={t} labels={urlForm.labels} topicHint={urlForm.topicHint} saveScope={urlForm.saveScope} distillMode={urlForm.distillMode} distillModes={distillModes} onChange={patch => setURLForm({ ...urlForm, ...patch })} />
+                        <label style={checkboxStyle}><input type="checkbox" checked={urlForm.autoLabels} onChange={event => setURLForm({ ...urlForm, autoLabels: event.target.checked })} /> {t('Auto labels', '自动标签')}</label>
+                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={saveURLs}>{busy === 'saveURLs' ? t('Saving...', '保存中...') : t('Save URLs', '保存 URL')}</button>
+                    </PanelBlock>
+                    <PanelBlock title={t('Import Files', '导入文件')}>
+                        <div style={inlineActionsStyle}>
+                            <button type="button" style={buttonStyle} disabled={!!busy} onClick={chooseFiles}>{t('Select Files', '选择文件')}</button>
+                            <button type="button" style={primaryButtonStyle} disabled={!!busy || !selectedFiles.length} onClick={importFiles}>{t('Import Selected', '导入所选')}</button>
+                        </div>
+                        <div style={mutedLineStyle}>{selectedFiles.length ? `${selectedFiles.length} ${t('files selected', '个文件已选择')}` : t('No files selected.', '尚未选择文件。')}</div>
+                        <MetadataControls t={t} labels={fileForm.labels} topicHint={fileForm.topicHint} saveScope={fileForm.saveScope} distillMode={fileForm.distillMode} distillModes={distillModes} onChange={patch => setFileForm({ ...fileForm, ...patch })} />
+                    </PanelBlock>
+                    <PanelBlock title={t('Import Directory', '导入目录')}>
+                        <div style={inlineActionsStyle}>
+                            <input style={inputStyle} value={fileForm.directory} onChange={event => setFileForm({ ...fileForm, directory: event.target.value })} placeholder={t('Directory path', '目录路径')} />
+                            <button type="button" style={buttonStyle} disabled={!!busy} onClick={chooseDirectory}>{t('Browse', '浏览')}</button>
+                        </div>
+                        <div style={compactGridStyle}>
+                            <input style={inputStyle} value={fileForm.includeExts} onChange={event => setFileForm({ ...fileForm, includeExts: event.target.value })} placeholder={t('Include extensions: .md,.pdf', '包含扩展名：.md,.pdf')} />
+                            <input style={inputStyle} value={fileForm.excludeGlobs} onChange={event => setFileForm({ ...fileForm, excludeGlobs: event.target.value })} placeholder={t('Exclude globs', '排除规则')} />
+                            <input style={inputStyle} type="number" value={fileForm.maxFileBytes} onChange={event => setFileForm({ ...fileForm, maxFileBytes: Number(event.target.value) })} />
+                        </div>
+                        <div style={inlineActionsStyle}>
+                            <label style={checkboxStyle}><input type="checkbox" checked={fileForm.recursive} onChange={event => setFileForm({ ...fileForm, recursive: event.target.checked })} /> {t('Recursive', '递归')}</label>
+                            <label style={checkboxStyle}><input type="checkbox" checked={fileForm.autoLabels} onChange={event => setFileForm({ ...fileForm, autoLabels: event.target.checked })} /> {t('Auto labels', '自动标签')}</label>
+                            <label style={checkboxStyle}><input type="checkbox" checked={fileForm.dryRun} onChange={event => setFileForm({ ...fileForm, dryRun: event.target.checked })} /> {t('Dry run', '仅预检')}</label>
+                        </div>
+                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={startDirectoryImport}>{busy === 'importDirectory' ? t('Starting...', '启动中...') : t('Start Directory Import', '开始导入目录')}</button>
+                        {importJob ? (
+                            <div style={jobStatusStyle}>
+                                <strong>{t('Import Job', '导入任务')} {importJob.id}</strong>
+                                <span style={mutedLineStyle}>{[importJob.status, importJob.result?.current_file, importJob.error].filter(Boolean).join(' · ')}</span>
+                                <span style={mutedLineStyle}>{[
+                                    `processed ${importJob.result?.processed_files || 0}`,
+                                    `imported ${importJob.result?.imported_files || 0}`,
+                                    `skipped ${importJob.result?.skipped_files || 0}`,
+                                    `failed ${importJob.result?.failed_files || 0}`,
+                                ].join(' · ')}</span>
+                            </div>
+                        ) : null}
+                    </PanelBlock>
+                </div>
+            )}
+
+            {activeTab === 'search' && (
+                <div style={stackStyle}>
+                    <PanelBlock title={t('Search', '检索')}>
+                        <div style={compactGridStyle}>
+                            <input style={inputStyle} value={searchForm.query} onChange={event => setSearchForm({ ...searchForm, query: event.target.value })} placeholder={t('Ask or search knowledge', '输入问题或关键词')} />
+                            <select style={inputStyle} value={searchForm.resultType} onChange={event => setSearchForm({ ...searchForm, resultType: event.target.value })}><option value="all">{t('All result types', '全部结果类型')}</option><option value="node">node</option><option value="card">card</option><option value="fact">fact</option></select>
+                            <input style={inputStyle} value={searchForm.sourceKind} onChange={event => setSearchForm({ ...searchForm, sourceKind: event.target.value })} placeholder={t('Source kind', '来源类型')} />
+                            <input style={inputStyle} value={searchForm.domain} onChange={event => setSearchForm({ ...searchForm, domain: event.target.value })} placeholder={t('Domain', '域名')} />
+                            <input style={inputStyle} value={searchForm.labels} onChange={event => setSearchForm({ ...searchForm, labels: event.target.value })} placeholder={t('Labels', '标签')} />
+                            <input style={inputStyle} type="number" value={searchForm.limit} onChange={event => setSearchForm({ ...searchForm, limit: Number(event.target.value) })} />
+                        </div>
+                        <label style={checkboxStyle}><input type="checkbox" checked={searchForm.includeDisabled} onChange={event => setSearchForm({ ...searchForm, includeDisabled: event.target.checked })} /> {t('Include disabled sources', '包含已禁用来源')}</label>
+                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={runSearch}>{busy === 'search' ? t('Searching...', '检索中...') : t('Search', '检索')}</button>
+                    </PanelBlock>
+                    <div style={twoColumnStyle}>
+                        <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`}>
+                            <ResultList results={searchResults} empty={t('No results yet.', '暂无检索结果。')} />
+                        </PanelBlock>
+                        <PanelBlock title={t('Facets', '分面')}>
+                            <KeyValueList values={[
+                                ...(facets?.result_types || []).map(item => `${item.label || item.kind} ${item.count || 0}`),
+                                ...(facets?.source_kinds || []).map(item => `${item.label || item.kind} ${item.count || 0}`),
+                                ...(facets?.domains || []).map(item => `${item.domain || item.label} ${item.count || 0}`),
+                                ...(facets?.labels || []).map(item => `${item.label} ${item.count || 0}`),
+                            ]} empty={t('Run a search to see facets.', '执行检索后显示分面。')} />
+                        </PanelBlock>
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'sources' && (
+                <div style={stackStyle}>
+                    <SourceFilters t={t} filter={sourceFilter} coverageOptions={coverageOptions} onChange={setSourceFilter} />
+                    <div style={inlineActionsStyle}>
+                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={loadSources}>{busy === 'sources' ? t('Loading...', '加载中...') : t('Load Sources', '加载来源')}</button>
+                        <span style={mutedLineStyle}>{t('Payload', '条件')} {JSON.stringify(sourcePayload)}</span>
+                    </div>
+                    <div style={listStyle}>
+                        {sources.length ? sources.map(source => (
+                            <div key={source.id || source.uri || source.title} style={rowStyle}>
+                                <div style={rowMainStyle}>
+                                    <strong>{source.title || source.relative_path || source.uri || source.id}</strong>
+                                    <span style={mutedLineStyle}>{[source.kind, source.status, source.relative_path || source.uri, source.labels?.join(', ')].filter(Boolean).join(' · ')}</span>
+                                    <span style={mutedLineStyle}>{[`nodes ${source.node_count || 0}`, `cards ${source.card_count || 0}`, `facts ${source.fact_count || 0}`].join(' · ')}</span>
+                                </div>
+                                <div style={inlineActionsStyle}>
+                                    <button type="button" style={buttonStyle} disabled={!!busy} onClick={() => toggleSource(source)}>{String(source.status || '').toLowerCase() === 'disabled' ? t('Enable', '启用') : t('Disable', '禁用')}</button>
+                                    <button type="button" style={dangerButtonStyle} disabled={!!busy} onClick={() => deleteSource(source)}>{t('Delete', '删除')}</button>
+                                </div>
+                            </div>
+                        )) : <div style={emptyStyle}>{t('No sources loaded.', '尚未加载来源。')}</div>}
+                    </div>
+                </div>
+            )}
+
+            {activeTab === 'quality' && (
+                <div style={stackStyle}>
+                    <SourceFilters t={t} filter={qualityFilter} coverageOptions={qualityCoverageOptions} onChange={setQualityFilter} />
+                    <div style={compactGridStyle}>
+                        <select style={inputStyle} value={qualityOptions.policy} onChange={event => setQualityOptions({ ...qualityOptions, policy: event.target.value })}><option value="balanced">balanced</option><option value="conservative">conservative</option><option value="aggressive">aggressive</option></select>
+                        <select style={inputStyle} value={qualityOptions.distillMode} onChange={event => setQualityOptions({ ...qualityOptions, distillMode: event.target.value })}><option value="">{t('Default distill mode', '默认蒸馏模式')}</option>{distillModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}</select>
+                        <input style={inputStyle} type="number" value={qualityOptions.maxSourcesPerAction} onChange={event => setQualityOptions({ ...qualityOptions, maxSourcesPerAction: Number(event.target.value) })} />
+                    </div>
+                    <div style={inlineActionsStyle}>
+                        <label style={checkboxStyle}><input type="checkbox" checked={qualityOptions.dryRun} onChange={event => setQualityOptions({ ...qualityOptions, dryRun: event.target.checked })} /> {t('Preview only', '仅预览')}</label>
+                        <label style={checkboxStyle}><input type="checkbox" checked={qualityOptions.allowSensitiveDisable} onChange={event => setQualityOptions({ ...qualityOptions, allowSensitiveDisable: event.target.checked })} /> {t('Allow sensitive isolation', '允许敏感隔离')}</label>
+                        <label style={checkboxStyle}><input type="checkbox" checked={qualityOptions.allowDuplicateSuppression} onChange={event => setQualityOptions({ ...qualityOptions, allowDuplicateSuppression: event.target.checked })} /> {t('Allow duplicate suppression', '允许重复抑制')}</label>
+                    </div>
+                    <div style={inlineActionsStyle}>
+                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={loadQuality}>{busy === 'quality' ? t('Loading...', '加载中...') : t('Build Report + Plan', '生成报告和计划')}</button>
+                        <button type="button" style={buttonStyle} disabled={!!busy || !(qualityPlan?.actions || []).length} onClick={() => executeQualityAction()}>{qualityOptions.dryRun ? t('Preview Plan', '预览计划') : t('Run Plan', '执行计划')}</button>
+                    </div>
+                    <div style={twoColumnStyle}>
+                        <PanelBlock title={t('Quality Report', '质量报告')}>
+                            <div style={statsGridStyle}>
+                                <Stat label={t('Sources', '来源')} value={qualityReport?.count || 0} />
+                                <Stat label={t('Average', '平均分')} value={qualityReport?.average_score || 0} />
+                                <Stat label={t('Actions', '动作')} value={qualityPlan?.actions?.length || 0} />
+                            </div>
+                            <KeyValueList values={[...topCounts(qualityReport?.grades, 4), ...topCounts(qualityReport?.signals, 6), ...topCounts(qualityReport?.actions, 6)]} empty={t('No report yet.', '暂无报告。')} />
+                        </PanelBlock>
+                        <PanelBlock title={t('Maintenance Plan', '维护计划')}>
+                            {(qualityPlan?.actions || []).length ? <div style={listStyle}>{(qualityPlan?.actions || []).map((action, index) => (
+                                <div key={`${action.kind || index}`} style={rowStyle}>
+                                    <div style={rowMainStyle}>
+                                        <strong>{action.title || action.kind}</strong>
+                                        <span style={mutedLineStyle}>{[action.description, action.severity, action.count ? `${action.count} sources` : '', action.signals?.join(', ')].filter(Boolean).join(' · ')}</span>
+                                    </div>
+                                    <button type="button" style={buttonStyle} disabled={!!busy} onClick={() => executeQualityAction(action)}>{qualityOptions.dryRun ? t('Preview', '预览') : t('Run', '执行')}</button>
+                                </div>
+                            ))}</div> : <div style={emptyStyle}>{t('No plan has been built.', '尚未生成维护计划。')}</div>}
+                        </PanelBlock>
+                    </div>
+                </div>
+            )}
+
+            {operationResult ? (
+                <PanelBlock title={t('Last Operation', '最近操作')}>
+                    {executionResult && operationResult === executionResult ? (
+                        <ExecutionSummary t={t} result={executionResult} context={executionContext} />
+                    ) : null}
+                    {importJob && operationResult?.id === importJob.id ? <ImportJobSummary t={t} job={importJob} /> : null}
+                    <details>
+                        <summary style={detailsSummaryStyle}>{t('Raw payload', '原始数据')}</summary>
+                        <pre style={preStyle}>{JSON.stringify(operationResult, null, 2)}</pre>
+                    </details>
+                </PanelBlock>
+            ) : null}
         </section>
+    );
+}
+
+function PanelBlock({ title, children }: { title: string; children: ReactNode }) {
+    return <div style={blockStyle}><h3 style={blockTitleStyle}>{title}</h3><div style={blockBodyStyle}>{children}</div></div>;
+}
+
+function KeyValueList({ values, empty }: { values: string[]; empty: string }) {
+    const cleanValues = values.map(value => String(value || '').trim()).filter(Boolean);
+    if (!cleanValues.length) return <div style={emptyStyle}>{empty}</div>;
+    return <div style={chipListStyle}>{cleanValues.map(value => <span key={value} style={chipStyle}>{value}</span>)}</div>;
+}
+
+function ResultList({ results, empty }: { results: SearchResult[]; empty: string }) {
+    if (!results.length) return <div style={emptyStyle}>{empty}</div>;
+    return <div style={listStyle}>{results.map((result, index) => (
+        <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || index}`} style={rowStyle}>
+            <div style={rowMainStyle}>
+                <strong>{result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result'}</strong>
+                <span style={mutedLineStyle}>{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>
+                <span>{result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' ')}</span>
+            </div>
+        </div>
+    ))}</div>;
+}
+
+function ExecutionSummary({ t, result, context }: {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    result: SourceQualityMaintenanceExecuteResult;
+    context: { source?: string; action?: string; dryRun?: boolean } | null;
+}) {
+    const sourceIDs = knowledgeExecutionResultSourceIDs(result, 12);
+    const failures = knowledgeExecutionFailureDetails(result, 8);
+    const label = knowledgeQualityExecutionContextLabel(context);
+    return (
+        <div style={stackStyle}>
+            <div style={statsGridStyle}>
+                <Stat label={t('Mode', '模式')} value={result.dry_run ? t('Preview', '预览') : t('Run', '执行')} />
+                <Stat label={t('Actions', '动作')} value={result.results?.length || 0} />
+                <Stat label={t('Sources', '来源')} value={result.count || sourceIDs.length || 0} />
+                <Stat label={t('Failures', '失败')} value={failures.length} />
+            </div>
+            {label ? <div style={mutedLineStyle}>{label}</div> : null}
+            {sourceIDs.length ? <div style={mutedLineStyle}>{knowledgeExecutionSourceFilterLabel(label, sourceIDs.length)}</div> : null}
+            <KeyValueList values={sourceIDs} empty={t('No affected sources reported.', '未报告受影响来源。')} />
+            {failures.length ? (
+                <div style={listStyle}>
+                    {failures.map((failure, index) => (
+                        <div key={`${failure.action}-${failure.sourceID}-${index}`} style={failureRowStyle}>
+                            <strong>{failure.action || t('Execution', '执行')}</strong>
+                            <span style={mutedLineStyle}>{failure.sourceID}</span>
+                            <span>{failure.error}</span>
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+function ImportJobSummary({ t, job }: {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    job: ImportJob;
+}) {
+    return (
+        <div style={jobStatusStyle}>
+            <strong>{t('Directory Import', '目录导入')} {job.id}</strong>
+            <span style={mutedLineStyle}>{[job.status, job.result?.root_path, job.result?.current_file, job.error].filter(Boolean).join(' · ')}</span>
+            <div style={statsGridStyle}>
+                <Stat label={t('Processed', '已处理')} value={job.result?.processed_files || 0} />
+                <Stat label={t('Imported', '已导入')} value={job.result?.imported_files || 0} />
+                <Stat label={t('Skipped', '已跳过')} value={job.result?.skipped_files || 0} />
+                <Stat label={t('Failed', '失败')} value={job.result?.failed_files || 0} />
+            </div>
+        </div>
+    );
+}
+
+function MetadataControls({ t, labels, topicHint, saveScope, distillMode, distillModes, onChange }: {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    labels: string;
+    topicHint: string;
+    saveScope: string;
+    distillMode: string;
+    distillModes: string[];
+    onChange: (patch: any) => void;
+}) {
+    return (
+        <div style={compactGridStyle}>
+            <input style={inputStyle} value={labels} onChange={event => onChange({ labels: event.target.value })} placeholder={t('Labels', '标签')} />
+            <input style={inputStyle} value={topicHint} onChange={event => onChange({ topicHint: event.target.value })} placeholder={t('Topic hint', '主题提示')} />
+            <select style={inputStyle} value={saveScope} onChange={event => onChange({ saveScope: event.target.value })}>
+                <option value="project">{t('Project', '项目')}</option>
+                <option value="personal">{t('Personal', '个人')}</option>
+                <option value="local_only">{t('Local only', '仅本地')}</option>
+            </select>
+            <select style={inputStyle} value={distillMode} onChange={event => onChange({ distillMode: event.target.value })}>
+                <option value="">{t('Default distill mode', '默认蒸馏模式')}</option>
+                {distillModes.map(mode => <option key={mode} value={mode}>{mode}</option>)}
+            </select>
+        </div>
+    );
+}
+
+function SourceFilters({ t, filter, coverageOptions, onChange }: {
+    t: (en: string, zhHans: string, zhHant?: string) => string;
+    filter: { query: string; kind: string; status: string; coverage: string; domain: string; labels: string; limit: number };
+    coverageOptions: string[];
+    onChange: (filter: any) => void;
+}) {
+    return (
+        <PanelBlock title={t('Filters', '筛选')}>
+            <div style={compactGridStyle}>
+                <input style={inputStyle} value={filter.query} onChange={event => onChange({ ...filter, query: event.target.value })} placeholder={t('Query', '关键词')} />
+                <input style={inputStyle} value={filter.kind} onChange={event => onChange({ ...filter, kind: event.target.value })} placeholder={t('Kind', '类型')} />
+                <select style={inputStyle} value={filter.status} onChange={event => onChange({ ...filter, status: event.target.value })}>
+                    <option value="all">{t('All statuses', '全部状态')}</option>
+                    <option value="active">active</option>
+                    <option value="distilled">distilled</option>
+                    <option value="disabled">disabled</option>
+                    <option value="error">error</option>
+                </select>
+                <select style={inputStyle} value={filter.coverage} onChange={event => onChange({ ...filter, coverage: event.target.value })}>
+                    {coverageOptions.map(option => <option key={option} value={option}>{option}</option>)}
+                </select>
+                <input style={inputStyle} value={filter.domain} onChange={event => onChange({ ...filter, domain: event.target.value })} placeholder={t('Domain', '域名')} />
+                <input style={inputStyle} value={filter.labels} onChange={event => onChange({ ...filter, labels: event.target.value })} placeholder={t('Labels', '标签')} />
+                <input style={inputStyle} type="number" value={filter.limit} onChange={event => onChange({ ...filter, limit: Number(event.target.value) })} />
+            </div>
+        </PanelBlock>
     );
 }
 
@@ -1199,11 +1771,37 @@ const sectionHeaderStyle: CSSProperties = { display: 'flex', justifyContent: 'sp
 const titleStyle: CSSProperties = { margin: 0, fontSize: 18, fontWeight: 700, color: colors.text };
 const subtleStyle: CSSProperties = { margin: '6px 0 0', color: colors.textMuted, fontSize: 13 };
 const buttonStyle: CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '7px 10px', background: colors.surface, color: colors.text, cursor: 'pointer' };
+const primaryButtonStyle: CSSProperties = { ...buttonStyle, border: `1px solid ${colors.primary}`, background: colors.primaryLight, color: colors.primaryDark, fontWeight: 700 };
+const dangerButtonStyle: CSSProperties = { ...buttonStyle, border: '1px solid #fecaca', color: '#b91c1c' };
 const errorBoxStyle: CSSProperties = { border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#b91c1c' };
 const statsGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 };
 const statStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted };
 const statLabelStyle: CSSProperties = { fontSize: 12, color: colors.textMuted };
 const statValueStyle: CSSProperties = { marginTop: 4, fontSize: 18, fontWeight: 700, color: colors.text };
+const tabsStyle: CSSProperties = { display: 'flex', gap: 6, flexWrap: 'wrap', borderBottom: `1px solid ${colors.borderLight}`, paddingBottom: 8 };
+const tabButtonStyle = (active: boolean): CSSProperties => ({ border: `1px solid ${active ? colors.primary : colors.border}`, borderRadius: radius.sm, padding: '7px 10px', background: active ? colors.primaryLight : colors.surface, color: active ? colors.primaryDark : colors.textMuted, fontWeight: active ? 700 : 600, cursor: 'pointer' });
+const stackStyle: CSSProperties = { display: 'grid', gap: 12 };
+const twoColumnStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12, alignItems: 'start' };
+const compactGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8 };
+const blockStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 12, background: colors.surface };
+const blockTitleStyle: CSSProperties = { margin: '0 0 10px', fontSize: 13, fontWeight: 800, color: colors.text };
+const blockBodyStyle: CSSProperties = { display: 'grid', gap: 10 };
+const inputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '7px 9px', background: colors.surface, color: colors.text, fontSize: 13 };
+const textareaStyle: CSSProperties = { ...inputStyle, minHeight: 110, resize: 'vertical', fontFamily: 'inherit' };
+const checkboxStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, color: colors.textMuted, fontSize: 13 };
+const inlineActionsStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' };
+const listStyle: CSSProperties = { display: 'grid', gap: 8 };
+const rowStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted };
+const rowMainStyle: CSSProperties = { minWidth: 0, display: 'grid', gap: 4, color: colors.text, fontSize: 13 };
+const mutedLineStyle: CSSProperties = { color: colors.textMuted, fontSize: 12, overflowWrap: 'anywhere' };
+const emptyStyle: CSSProperties = { color: colors.textMuted, fontSize: 13 };
+const chipListStyle: CSSProperties = { display: 'flex', gap: 6, flexWrap: 'wrap' };
+const chipStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: '4px 7px', color: colors.textMuted, background: colors.surfaceMuted, fontSize: 12 };
+const badgeStyle: CSSProperties = { ...chipStyle, color: colors.textMuted };
+const jobStatusStyle: CSSProperties = { display: 'grid', gap: 4, border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted, color: colors.text, fontSize: 13 };
+const failureRowStyle: CSSProperties = { display: 'grid', gap: 4, border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#7f1d1d', fontSize: 13 };
+const detailsSummaryStyle: CSSProperties = { color: colors.textMuted, cursor: 'pointer', fontSize: 12, fontWeight: 700 };
+const preStyle: CSSProperties = { margin: 0, maxHeight: 260, overflow: 'auto', border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted, color: colors.text, fontSize: 12 };
 
 export function parseURLBatch(value: string): string[] {
     return uniqueNormalizedParts(String(value || '').split(/[\s,;，；、]+/), item => item.trim());

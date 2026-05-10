@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -33,7 +32,7 @@ func (h *IMMessageHandler) doOpenAILLMRequest(cfg corelib.MaclawLLMConfig, messa
 	if err != nil {
 		// Re-wrap with dumpLLMContext for HTTP 500 context dump support.
 		// DoOpenAIRequest returns "HTTP %d: ..." errors; extract status if 500.
-		if strings.Contains(err.Error(), "HTTP 500") {
+		if isLLMHTTPStatusError(err, http.StatusInternalServerError) {
 			data, _ := json.Marshal(map[string]interface{}{
 				"model": cfg.Model, "messages": messages, "tools": tools,
 			})

@@ -4,10 +4,10 @@ package main
 // and conversation history compaction utilities.
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"net/http"
 	"regexp"
 	"sort"
@@ -55,13 +55,14 @@ func estimateConversationTokens(msgs []interface{}) int {
 					continue
 				}
 				blockType, _ := bm["type"].(string)
-				if blockType == "image_url" {
+				blockKind := normalizeIMContentBlockKind(blockType)
+				if blockKind == imContentBlockImageURL {
 					// Vision image block — count a fixed ~85 tokens (low-detail)
 					// instead of serializing the huge base64 string.
 					total += 85
 					continue
 				}
-				if blockType == "image" {
+				if blockKind == imContentBlockImage {
 					// Anthropic-style image block — same treatment.
 					total += 85
 					continue
@@ -675,8 +676,10 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 // the nearest group boundary so we never start in the middle of a
 // tool_calls group (which would orphan tool messages without their
 // preceding assistant). This replaces the old pattern of:
-//   trimmed = entries[start:]
-//   for len(trimmed) > 0 && trimmed[0].Role == "tool" { trimmed = trimmed[1:] }
+//
+//	trimmed = entries[start:]
+//	for len(trimmed) > 0 && trimmed[0].Role == "tool" { trimmed = trimmed[1:] }
+//
 // which could leave an assistant(tool_calls) at the end of the dropped
 // region without its tool messages in the kept region.
 func groupAlignedSlice(entries []agent.ConversationEntry, start int) []agent.ConversationEntry {
@@ -785,7 +788,7 @@ func extractTurnBoundaryIndices(entries []agent.ConversationEntry, maxCount int)
 	// Build groups first — we need them to expand assistant selections.
 	groups := agent.BuildEntryGroups(entries)
 
-	var realTurns []int     // user-initiated turn boundaries
+	var realTurns []int      // user-initiated turn boundaries
 	var syntheticTurns []int // system-injected turn boundaries
 	prevRole := ""
 	lastUserWasSynthetic := false // tracks whether the most recent user msg was synthetic
@@ -928,6 +931,7 @@ func truncateToolResult(s string) string {
 const webFetchMaxToolResult = 32768
 
 func truncateToolResultForTool(toolName, s string) string {
+	toolKind := classifyAgentToolKind(toolName)
 	// Phase 1: semantic compression — deduplicate repeated lines and
 	// collapse homogeneous blocks BEFORE size truncation. This reduces
 	// the effective size so more unique information survives the budget.
@@ -935,7 +939,7 @@ func truncateToolResultForTool(toolName, s string) string {
 
 	// web_fetch gets a higher budget — content is already windowed in handler
 	limit := maxToolResultLen
-	if toolName == "web_fetch" {
+	if toolKind == agentToolKindWebFetch {
 		limit = webFetchMaxToolResult
 	}
 	if strings.HasPrefix(toolName, "browser") {
@@ -944,7 +948,7 @@ func truncateToolResultForTool(toolName, s string) string {
 	if len(s) <= limit {
 		return s
 	}
-	if toolName == "web_fetch" {
+	if toolKind == agentToolKindWebFetch {
 		return truncateWebFetchToolResult(s, limit)
 	}
 	sep := "\n\n... (已截断，共 " + fmt.Sprintf("%d", len(s)) + " 字节) ...\n\n"
@@ -968,13 +972,13 @@ func truncateToolResultForTool(toolName, s string) string {
 // compressToolResultSemantic applies content-aware compression to tool
 // results before size truncation. Two mechanisms:
 //
-// 1. Line deduplication: consecutive identical or near-identical lines
-//    (common in compiler warnings, npm install output, test results)
-//    are collapsed into "... (重复 N 行) ...".
+//  1. Line deduplication: consecutive identical or near-identical lines
+//     (common in compiler warnings, npm install output, test results)
+//     are collapsed into "... (重复 N 行) ...".
 //
-// 2. Homogeneous block collapse: when >10 consecutive lines match the
-//    same pattern (e.g. all start with "PASS", "ok", "  ✓"), keep the
-//    first 3 + last 2 and insert a summary.
+//  2. Homogeneous block collapse: when >10 consecutive lines match the
+//     same pattern (e.g. all start with "PASS", "ok", "  ✓"), keep the
+//     first 3 + last 2 and insert a summary.
 //
 // This is inspired by GenericAgent's _clean_content which shrinks code
 // blocks >6 lines to 5 lines + count. The principle: maximize information
@@ -1132,17 +1136,15 @@ func truncateWebFetchToolResult(s string, limit int) string {
 	return head + sep + meta
 }
 
-// inferFileDeliveryMessage generates a user-facing prompt based on the file name
-// when no explicit message was provided. This ensures PDF documents sent via IM
-// always include a hint telling the user what the document is and what to do.
-func inferFileDeliveryMessage(fileName string) string {
-	lower := strings.ToLower(fileName)
-	switch {
-	case strings.Contains(lower, "requirement") || strings.Contains(lower, "需求"):
+// fileDeliveryMessageForDocType generates a user-facing prompt from structured
+// document metadata when no explicit message was provided.
+func fileDeliveryMessageForDocType(docType, fileName string) string {
+	switch normalizeWorkflowPhaseKind(docType) {
+	case workflowPhaseKind(workflowPhaseRequirements):
 		return i18n.T(i18n.MsgFileRequirements, "zh")
-	case strings.Contains(lower, "design") || strings.Contains(lower, "设计"):
+	case workflowPhaseKind(workflowPhaseDesign):
 		return i18n.T(i18n.MsgFileDesign, "zh")
-	case strings.Contains(lower, "task") || strings.Contains(lower, "任务"):
+	case workflowPhaseKind(workflowPhaseTasks):
 		return i18n.T(i18n.MsgFileTaskList, "zh")
 	default:
 		return i18n.Tf(i18n.MsgFileGeneric, "zh", fileName)
@@ -1434,28 +1436,6 @@ func stripCodeBlocks(s string) string {
 // ---------------------------------------------------------------------------
 // IMMessageHandler
 // ---------------------------------------------------------------------------
-
-// isToolCallFailure checks if a tool result indicates a failure.
-// Used to decide whether to truncate oversized arguments in conversation.
-// Only checks prefixes — all tool error messages start with the error indicator.
-func isToolCallFailure(result string) bool {
-	failurePrefixes := []string{
-		"缺少 ",
-		"参数解析失败",
-		"工具执行异常",
-		"写入失败",
-		"读取失败",
-		"编辑失败",
-		"文件不存在",
-		"未知工具",
-	}
-	for _, p := range failurePrefixes {
-		if strings.HasPrefix(result, p) {
-			return true
-		}
-	}
-	return false
-}
 
 // truncateToolCallArgsInConversation finds the assistant message containing
 // the given tool call ID and truncates its arguments to a short summary.

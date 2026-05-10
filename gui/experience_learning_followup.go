@@ -162,7 +162,8 @@ func (a *App) BuildExperienceTraceFollowUp(traceID string) (ExperienceTraceFollo
 	if strings.TrimSpace(detail.NextActionKind) == "" || strings.TrimSpace(detail.NextAction) == "" {
 		return ExperienceTraceFollowUpDraft{}, fmt.Errorf("experience trace %q has no follow-up action", traceID)
 	}
-	if detail.ReviewRequired || detail.NextActionKind == "review_signal" {
+	nextActionKind := normalizeExperienceGovernanceActionKind(detail.NextActionKind)
+	if detail.ReviewRequired || nextActionKind.IsReviewSignal() {
 		return ExperienceTraceFollowUpDraft{}, fmt.Errorf("experience trace %q must be reviewed before drafting a follow-up", traceID)
 	}
 	return finalizeExperienceTraceFollowUpDraft(buildExperienceTraceFollowUpDraft(detail)), nil
@@ -184,10 +185,11 @@ func (a *App) BuildExperienceSkillDraft(traceID string) (ExperienceSkillDraft, e
 	if !ok {
 		return ExperienceSkillDraft{}, fmt.Errorf("experience trace %q is not available", traceID)
 	}
-	if detail.Kind != "skill_nudge_review" {
+	if normalizeExperienceTraceKind(detail.Kind) != experienceTraceKindSkillNudgeReview {
 		return ExperienceSkillDraft{}, fmt.Errorf("experience trace %q is not a skill nudge review", traceID)
 	}
-	if detail.ReviewRequired || detail.ReviewStatus != experienceReviewOutcomeApproved || detail.NextActionKind != "draft_skill_manually" {
+	nextActionKind := normalizeExperienceGovernanceActionKind(detail.NextActionKind)
+	if detail.ReviewRequired || detail.ReviewStatus != experienceReviewOutcomeApproved || nextActionKind != experienceGovernanceActionDraftSkillManually {
 		return ExperienceSkillDraft{}, fmt.Errorf("experience trace %q must be approved and queued for manual skill drafting", traceID)
 	}
 	return finalizeExperienceSkillDraft(buildExperienceSkillDraft(detail)), nil
@@ -209,10 +211,11 @@ func (a *App) BuildExperienceRollbackWorkflowDraft(traceID string) (ExperienceRo
 	if !ok {
 		return ExperienceRollbackWorkflowDraft{}, fmt.Errorf("experience trace %q is not available", traceID)
 	}
-	if detail.Kind != "a2a_rollback_review" {
+	if normalizeExperienceTraceKind(detail.Kind) != experienceTraceKindA2ARollbackReview {
 		return ExperienceRollbackWorkflowDraft{}, fmt.Errorf("experience trace %q is not an A2A rollback review", traceID)
 	}
-	if detail.ReviewRequired || detail.ReviewStatus != experienceReviewOutcomeApproved || detail.NextActionKind != "draft_rollback_workflow" {
+	nextActionKind := normalizeExperienceGovernanceActionKind(detail.NextActionKind)
+	if detail.ReviewRequired || detail.ReviewStatus != experienceReviewOutcomeApproved || nextActionKind != experienceGovernanceActionDraftRollbackWorkflow {
 		return ExperienceRollbackWorkflowDraft{}, fmt.Errorf("experience trace %q must be approved and queued for manual rollback workflow drafting", traceID)
 	}
 	return finalizeExperienceRollbackWorkflowDraft(buildExperienceRollbackWorkflowDraft(detail)), nil
@@ -234,10 +237,11 @@ func (a *App) BuildExperienceEscalationBrief(traceID string) (ExperienceEscalati
 	if !ok {
 		return ExperienceEscalationBrief{}, fmt.Errorf("experience trace %q is not available", traceID)
 	}
-	if detail.Kind != "a2a_escalation_evidence" {
+	if normalizeExperienceTraceKind(detail.Kind) != experienceTraceKindA2AEscalationEvidence {
 		return ExperienceEscalationBrief{}, fmt.Errorf("experience trace %q is not A2A escalation evidence", traceID)
 	}
-	if detail.ReviewRequired || detail.NextActionKind != "prepare_escalation_brief" {
+	nextActionKind := normalizeExperienceGovernanceActionKind(detail.NextActionKind)
+	if detail.ReviewRequired || nextActionKind != experienceGovernanceActionPrepareEscalationBrief {
 		return ExperienceEscalationBrief{}, fmt.Errorf("experience trace %q is not queued for escalation handoff briefing", traceID)
 	}
 	return finalizeExperienceEscalationBrief(buildExperienceEscalationBrief(detail)), nil
@@ -259,10 +263,11 @@ func (a *App) BuildExperienceConflictReconciliationDraft(traceID string) (Experi
 	if !ok {
 		return ExperienceConflictReconciliationDraft{}, fmt.Errorf("experience trace %q is not available", traceID)
 	}
-	if detail.Kind != "a2a_conflict_review" {
+	if normalizeExperienceTraceKind(detail.Kind) != experienceTraceKindA2AConflictReview {
 		return ExperienceConflictReconciliationDraft{}, fmt.Errorf("experience trace %q is not an A2A conflict review", traceID)
 	}
-	if detail.ReviewRequired || detail.ReviewStatus != experienceReviewOutcomeApproved || detail.NextActionKind != "resolve_a2a_conflict_manually" {
+	nextActionKind := normalizeExperienceGovernanceActionKind(detail.NextActionKind)
+	if detail.ReviewRequired || detail.ReviewStatus != experienceReviewOutcomeApproved || nextActionKind != experienceGovernanceActionResolveA2AConflictManually {
 		return ExperienceConflictReconciliationDraft{}, fmt.Errorf("experience trace %q must be approved and queued for manual conflict reconciliation", traceID)
 	}
 	return finalizeExperienceConflictReconciliationDraft(buildExperienceConflictReconciliationDraft(detail)), nil
@@ -330,7 +335,8 @@ func (a *App) RecordExperienceTraceFollowUp(traceID string, req ExperienceTraceF
 	if !ok {
 		return ExperienceTraceFollowUpRecord{}, fmt.Errorf("experience trace %q is not available", traceID)
 	}
-	if detail.ReviewRequired || detail.NextActionKind == "" || detail.NextActionKind == "review_signal" {
+	nextActionKind := normalizeExperienceGovernanceActionKind(detail.NextActionKind)
+	if detail.ReviewRequired || nextActionKind == experienceGovernanceActionUnknown || nextActionKind.IsReviewSignal() {
 		return ExperienceTraceFollowUpRecord{}, fmt.Errorf("experience trace %q has no recordable follow-up action", traceID)
 	}
 	now := time.Now().UTC()
@@ -411,54 +417,23 @@ func (a *App) RecordExperienceDraftReview(req ExperienceDraftReviewRequest) (Exp
 }
 
 func normalizeExperienceFollowUpOutcome(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "complete", "completed", "done", "resolved":
-		return experienceFollowUpOutcomeCompleted, nil
-	case "block", "blocked", "reject", "rejected":
-		return experienceFollowUpOutcomeBlocked, nil
-	case "defer", "deferred", "later", "pending":
-		return experienceFollowUpOutcomeDeferred, nil
-	default:
+	outcome := normalizeExperienceFollowUpOutcomeKind(value)
+	if !outcome.IsKnown() {
 		return "", fmt.Errorf("unknown follow-up status %q", value)
 	}
+	return outcome.String(), nil
 }
 
 func normalizeExperienceDraftReviewKind(value string) (string, error) {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "memory", "maintenance", "memory_maintenance", "memory_maintenance_draft":
-		return experienceDraftKindMaintenance, nil
-	case "routing", "router", "routing_adjustment", "routing_adjustment_draft":
-		return experienceDraftKindRouting, nil
-	case "skill", "skill_draft", "skill_nudge", "skill_nudge_draft":
-		return experienceDraftKindSkill, nil
-	case "rollback", "rollback_workflow", "rollback_draft", "rollback_workflow_draft":
-		return experienceDraftKindRollback, nil
-	case "escalation", "escalation_brief", "escalation_handoff", "escalation_handoff_brief":
-		return experienceDraftKindEscalation, nil
-	case "conflict", "conflict_reconciliation", "conflict_draft", "conflict_reconciliation_draft":
-		return experienceDraftKindConflict, nil
-	default:
+	kind := normalizeExperienceDraftKind(value)
+	if !kind.IsKnown() {
 		return "", fmt.Errorf("unknown experience draft kind %q", value)
 	}
+	return kind.String(), nil
 }
 
 func experienceDraftReviewTitle(kind string) string {
-	switch kind {
-	case experienceDraftKindMaintenance:
-		return "memory maintenance draft"
-	case experienceDraftKindRouting:
-		return "routing adjustment draft"
-	case experienceDraftKindSkill:
-		return "skill draft"
-	case experienceDraftKindRollback:
-		return "rollback workflow draft"
-	case experienceDraftKindEscalation:
-		return "escalation brief"
-	case experienceDraftKindConflict:
-		return "conflict reconciliation draft"
-	default:
-		return strings.TrimSpace(kind)
-	}
+	return experienceDraftKind(strings.TrimSpace(kind)).Title()
 }
 
 func experienceDraftReviewRecommendedToolCall(kind string, focusContext map[string]interface{}, boundary, sourceTraceID, query string) map[string]interface{} {
@@ -884,7 +859,7 @@ func experienceSkillDraftNameFromContent(content string) string {
 
 func experienceSkillDraftNameFromTags(tags []string) string {
 	for i, tag := range tags {
-		if tag != "skill_nudge_candidate" || i+1 >= len(tags) {
+		if tag != experienceTraceKindSkillNudgeCandidate.String() || i+1 >= len(tags) {
 			continue
 		}
 		for _, candidate := range tags[i+1:] {
@@ -902,7 +877,7 @@ func experienceSkillDraftSequence(content string, tags []string) []string {
 		return sequence
 	}
 	for i, tag := range tags {
-		if tag != "skill_nudge_candidate" {
+		if tag != experienceTraceKindSkillNudgeCandidate.String() {
 			continue
 		}
 		start := i + 3
@@ -1000,11 +975,11 @@ func splitExperienceSkillDraftList(value string) []string {
 
 func experienceSkillDraftStateTag(tag string) bool {
 	tag = strings.TrimSpace(tag)
-	if tag == "" || tag == experienceReviewRequiredTag || tag == experienceReviewResolvedTag || tag == "skill_nudge_reviewed" || tag == "skill_nudge_rejected" {
+	if tag == "" || tag == experienceReviewRequiredTag || tag == experienceReviewResolvedTag || normalizeExperienceReviewLifecycleTagKind(tag).IsStateTag() {
 		return true
 	}
 	return strings.HasPrefix(tag, experienceReviewStatusTagPrefix) ||
-		strings.HasPrefix(tag, "reviewed_at:") ||
+		strings.HasPrefix(tag, experienceReviewedAtTagPrefix) ||
 		strings.HasPrefix(tag, experienceFollowUpStatusTagPrefix) ||
 		strings.HasPrefix(tag, "followup_") ||
 		strings.HasPrefix(tag, "followup_at:")
@@ -1179,31 +1154,31 @@ func writeExperienceDraftLine(b *strings.Builder, label, value string) {
 }
 
 func experienceFollowUpDraftTitle(actionKind string, triggeredRollback bool) string {
-	switch actionKind {
-	case "review_triggered_rollback_signal":
+	switch normalizeExperienceGovernanceActionKind(actionKind) {
+	case experienceGovernanceActionReviewTriggeredRollbackSignal:
 		return "Triggered rollback review handoff"
-	case "resolve_a2a_conflict_manually":
+	case experienceGovernanceActionResolveA2AConflictManually:
 		return "Manual A2A conflict reconciliation draft"
-	case "keep_rejected_conflict_evidence":
+	case experienceGovernanceActionKeepRejectedConflictEvidence:
 		return "Rejected A2A conflict evidence note"
-	case "collect_a2a_conflict_evidence":
+	case experienceGovernanceActionCollectA2AConflictEvidence:
 		return "A2A conflict evidence collection draft"
-	case "draft_rollback_workflow":
+	case experienceGovernanceActionDraftRollbackWorkflow:
 		if triggeredRollback {
 			return "Triggered rollback workflow handoff"
 		}
 		return "Manual rollback workflow draft"
-	case "block_rollback_use":
+	case experienceGovernanceActionBlockRollbackUse:
 		return "Rejected rollback trigger note"
-	case "collect_rollback_evidence":
+	case experienceGovernanceActionCollectRollbackEvidence:
 		return "Rollback evidence collection draft"
-	case "draft_skill_manually":
+	case experienceGovernanceActionDraftSkillManually:
 		return "Manual skill draft brief"
-	case "suppress_skill_candidate":
+	case experienceGovernanceActionSuppressSkillCandidate:
 		return "Rejected skill candidate note"
-	case "collect_skill_evidence":
+	case experienceGovernanceActionCollectSkillEvidence:
 		return "Skill evidence collection draft"
-	case "prepare_escalation_brief":
+	case experienceGovernanceActionPrepareEscalationBrief:
 		return "A2A escalation handoff brief"
 	default:
 		return "Manual experience follow-up draft"
@@ -1211,31 +1186,31 @@ func experienceFollowUpDraftTitle(actionKind string, triggeredRollback bool) str
 }
 
 func experienceFollowUpChecks(actionKind string, triggeredRollback bool) []string {
-	switch actionKind {
-	case "review_triggered_rollback_signal":
+	switch normalizeExperienceGovernanceActionKind(actionKind) {
+	case experienceGovernanceActionReviewTriggeredRollbackSignal:
 		return []string{"Reconfirm which current A2A evidence matched each rollback trigger.", "Name the owner who must approve or reject the rollback path.", "Record the owner decision before drafting or reusing any rollback workflow."}
-	case "resolve_a2a_conflict_manually":
+	case experienceGovernanceActionResolveA2AConflictManually:
 		return []string{"Identify the accountable owner for the disputed decision.", "Compare both sides against source evidence.", "Update durable memory or policy only after owner approval."}
-	case "keep_rejected_conflict_evidence":
+	case experienceGovernanceActionKeepRejectedConflictEvidence:
 		return []string{"Keep the rejected conflict attached as audit evidence.", "Do not promote either disputed claim from this signal.", "Reference the rejection if the same conflict reappears."}
-	case "collect_a2a_conflict_evidence":
+	case experienceGovernanceActionCollectA2AConflictEvidence:
 		return []string{"List the missing evidence or owner input.", "Collect source links or discussion excerpts.", "Re-run human review after evidence is available."}
-	case "draft_rollback_workflow":
+	case experienceGovernanceActionDraftRollbackWorkflow:
 		if triggeredRollback {
 			return []string{"Reconfirm which current A2A evidence still matches each rollback trigger.", "Record the owner decision before drafting or reusing the rollback workflow.", "Keep execution blocked until the owner-approved rollback workflow is separately reviewed."}
 		}
 		return []string{"Validate each rollback trigger with an owner.", "Define the manual rollback steps and stop conditions.", "Run a dry review before any execution path uses the workflow."}
-	case "block_rollback_use":
+	case experienceGovernanceActionBlockRollbackUse:
 		return []string{"Mark the triggers as rejected evidence.", "Do not wire these triggers into rollback execution.", "Capture the reason for future audits."}
-	case "collect_rollback_evidence":
+	case experienceGovernanceActionCollectRollbackEvidence:
 		return []string{"Collect validation evidence for every trigger.", "Confirm trigger ownership and expected impact.", "Review again before drafting an executable workflow."}
-	case "draft_skill_manually":
+	case experienceGovernanceActionDraftSkillManually:
 		return []string{"Confirm the repeated sequence is reusable outside the original task.", "Check for secrets, local paths, and environment assumptions.", "Draft or update the skill manually and run its tests before installation."}
-	case "suppress_skill_candidate":
+	case experienceGovernanceActionSuppressSkillCandidate:
 		return []string{"Keep the rejected candidate as evidence.", "Do not create or update a skill from this signal.", "Use the rejection reason when similar nudges recur."}
-	case "collect_skill_evidence":
+	case experienceGovernanceActionCollectSkillEvidence:
 		return []string{"Collect more successful executions across contexts.", "Validate parameter and platform assumptions.", "Review again before drafting a skill manually."}
-	case "prepare_escalation_brief":
+	case experienceGovernanceActionPrepareEscalationBrief:
 		return []string{"Confirm the escalation target and accountable owner.", "Attach the discussion reason, source evidence, and requested manual action.", "Record the owner response as follow-up audit evidence."}
 	default:
 		return []string{"Confirm the action owner.", "Attach source evidence.", "Record the manual outcome after completion."}
@@ -1243,7 +1218,7 @@ func experienceFollowUpChecks(actionKind string, triggeredRollback bool) []strin
 }
 
 func experienceTriggeredRollbackEvidence(detail ExperienceTraceDetail) bool {
-	if detail.NextActionKind == "review_triggered_rollback_signal" || detail.FollowUpActionKind == "review_triggered_rollback_signal" {
+	if normalizeExperienceGovernanceActionKind(detail.NextActionKind) == experienceGovernanceActionReviewTriggeredRollbackSignal || normalizeExperienceGovernanceActionKind(detail.FollowUpActionKind) == experienceGovernanceActionReviewTriggeredRollbackSignal {
 		return true
 	}
 	for _, tag := range detail.Tags {
@@ -1251,5 +1226,5 @@ func experienceTriggeredRollbackEvidence(detail ExperienceTraceDetail) bool {
 			return true
 		}
 	}
-	return strings.Contains(strings.ToLower(detail.Detail), "matched rollback triggers")
+	return classifyExperienceEvidenceMarker(detail.Detail) == experienceEvidenceMarkerMatchedRollbackTriggers
 }

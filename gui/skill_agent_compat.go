@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,14 +17,14 @@ import (
 func ImportAgentSkill(skillDir string) (*corelib.NLSkillEntry, error) {
 	entry, err := cskill.ImportMarkdownSkillDir(skillDir, cskill.MarkdownSkillOptions{
 		NameFallback: filepath.Base(skillDir),
-		Source:       "agent_skill",
+		Source:       string(skillEntrySourceAgent),
 		SkillDir:     skillDir,
 	})
 	if err != nil {
 		return nil, err
 	}
 	for i := range entry.Steps {
-		if entry.Steps[i].Action != "bash" {
+		if !classifySkillStepAction(entry.Steps[i].Action).IsBash() {
 			continue
 		}
 		cmd, _ := entry.Steps[i].Params["command"].(string)
@@ -33,7 +33,7 @@ func ImportAgentSkill(skillDir string) (*corelib.NLSkillEntry, error) {
 		}
 		entry.Steps[i].Params["command"] = normalizeImportedAgentSkillCommand(cmd)
 	}
-	entry.Source = "agent_skill"
+	entry.Source = string(skillEntrySourceAgent)
 	if entry.CreatedAt == "" {
 		entry.CreatedAt = time.Now().Format(time.RFC3339)
 	}
@@ -85,7 +85,7 @@ func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string) error {
 	scriptsDir := filepath.Join(outputDir, "scripts")
 	scriptsDirCreated := false
 	for _, step := range entry.Steps {
-		if step.Action == "bash" {
+		if classifySkillStepAction(step.Action).IsBash() {
 			cmd, _ := step.Params["command"].(string)
 			if cmd == "" {
 				continue

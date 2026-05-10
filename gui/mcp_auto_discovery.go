@@ -1,16 +1,15 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -113,7 +112,7 @@ func (d *MCPAutoDiscovery) registerServer(srv MCPDeclServer, source corelib.MCPS
 
 	// Register into MCPRegistry (ignore duplicate errors).
 	if err := d.mcpRegistry.Register(entry); err != nil {
-		if !strings.Contains(err.Error(), "already exists") {
+		if !classifyMCPRegistryError(err).IsDuplicate() {
 			log.Printf("[MCPAutoDiscovery] register %s: %v", srv.ID, err)
 		}
 	}

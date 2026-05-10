@@ -132,7 +132,7 @@ func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIn
 	}
 	userID := h.lastUserID
 	if userID == "" {
-		userID = "desktop-user"
+		userID = desktopUserID
 	}
 	entries := h.memory.Load(userID)
 	if len(entries) == 0 {
@@ -409,10 +409,10 @@ func (h *IMMessageHandler) toolListProviders(args map[string]interface{}) string
 }
 
 func (h *IMMessageHandler) toolProjectManage(args map[string]interface{}) string {
-	action, _ := args["action"].(string)
-	action = strings.TrimSpace(action)
+	actionText, _ := args["action"].(string)
+	action := normalizeProjectToolAction(actionText)
 	switch action {
-	case "create":
+	case projectToolActionCreate:
 		name, _ := args["name"].(string)
 		path, _ := args["path"].(string)
 		res, err := project.Create(h.app, name, path)
@@ -421,7 +421,7 @@ func (h *IMMessageHandler) toolProjectManage(args map[string]interface{}) string
 		}
 		data, _ := json.Marshal(map[string]string{"id": res.Id, "name": res.Name, "path": res.Path, "status": "created"})
 		return string(data)
-	case "list":
+	case projectToolActionList:
 		items, err := project.List(h.app)
 		if err != nil {
 			return fmt.Sprintf("加载配置失败: %v", err)
@@ -431,7 +431,7 @@ func (h *IMMessageHandler) toolProjectManage(args map[string]interface{}) string
 		}
 		data, _ := json.Marshal(items)
 		return string(data)
-	case "delete":
+	case projectToolActionDelete:
 		target, _ := args["target"].(string)
 		res, err := project.Delete(h.app, target)
 		if err != nil {
@@ -439,7 +439,7 @@ func (h *IMMessageHandler) toolProjectManage(args map[string]interface{}) string
 		}
 		data, _ := json.Marshal(map[string]string{"id": res.Id, "name": res.Name, "status": "deleted"})
 		return string(data)
-	case "switch":
+	case projectToolActionSwitch:
 		target, _ := args["target"].(string)
 		res, err := project.Switch(h.app, target)
 		if err != nil {
@@ -590,27 +590,24 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 		// When the session is running but has no output, it's likely waiting
 		// for the first user message (SDK mode tools like Claude Code wait
 		// for input after init). Hint the AI to send the task.
-		if status == string(SessionRunning) {
+		statusKind := normalizeSessionStatus(status)
+		if statusKind.IsRunning() {
 			b.WriteString(fmt.Sprintf("\n📌 会话已就绪但暂无输出——编程工具在等待输入。请立即调用 send_and_observe(session_id=%q, text=\"编程指令\") 发送任务。", sessionID))
-		} else if status == string(SessionStarting) {
+		} else if statusKind.IsStarting() {
 			b.WriteString("\n⏳ 会话正在启动中，请稍后再次调用 get_session_output 检查状态（最多再检查 1 次）。")
 		}
 	}
 
 	// When the session is busy (coding tool actively executing), hint the
 	// Agent based on the current stall detection state.
-	if status == string(SessionBusy) {
+	if normalizeSessionStatus(status).IsBusy() {
 		// Check if recent output contains API retry messages — this means
 		// the upstream API is rate-limiting or temporarily unavailable, and
 		// Claude Code is automatically retrying. The agent should wait
 		// patiently instead of giving up or sending new messages.
-		hasAPIRetry := false
-		for i := len(rawLines) - 1; i >= 0 && i >= len(rawLines)-10; i-- {
-			if strings.Contains(rawLines[i], "API retry") || strings.Contains(rawLines[i], "api_retry") {
-				hasAPIRetry = true
-				break
-			}
-		}
+		hasAPIRetry := recentSessionOutputHasMarker(rawLines, 10, func(kind sessionOutputMarkerKind) bool {
+			return kind == sessionOutputMarkerAPIRetry
+		})
 
 		session.mu.RLock()
 		stallState := session.StallState
@@ -633,17 +630,13 @@ func (h *IMMessageHandler) toolGetSessionOutput(args map[string]interface{}) str
 
 	// When the session is waiting for input, hint the Agent based on the
 	// semantic completion analysis result.
-	if status == string(SessionWaitingInput) {
+	if normalizeSessionStatus(status).IsWaitingInput() {
 		// Check if the session just recovered from an API error — the last
 		// few lines may contain error messages. If so, hint the agent to
 		// retry the instruction instead of giving up.
-		hasRecentAPIError := false
-		for i := len(rawLines) - 1; i >= 0 && i >= len(rawLines)-5; i-- {
-			if strings.Contains(rawLines[i], "API retry") || strings.Contains(rawLines[i], "❌") {
-				hasRecentAPIError = true
-				break
-			}
-		}
+		hasRecentAPIError := recentSessionOutputHasMarker(rawLines, 5, func(kind sessionOutputMarkerKind) bool {
+			return kind == sessionOutputMarkerAPIRetry || kind == sessionOutputMarkerAPIError
+		})
 
 		session.mu.RLock()
 		completionLevel := session.CompletionLevel
@@ -893,30 +886,7 @@ func isFatalSessionError(lines []string) bool {
 		start = len(lines) - 20
 	}
 	for _, line := range lines[start:] {
-		lower := strings.ToLower(line)
-		// API key / authentication issues
-		if strings.Contains(lower, "api key") && (strings.Contains(lower, "missing") || strings.Contains(lower, "invalid") || strings.Contains(lower, "not set") || strings.Contains(lower, "not found") || strings.Contains(lower, "not configured")) {
-			return true
-		}
-		if strings.Contains(lower, "authentication failed") {
-			return true
-		}
-		if strings.Contains(lower, "invalid_api_key") || strings.Contains(lower, "invalid api key") {
-			return true
-		}
-		// HTTP 401 — only match explicit status code patterns, not random numbers
-		if strings.Contains(lower, "status 401") || strings.Contains(lower, "http 401") || strings.Contains(lower, "error 401") || strings.Contains(lower, "code 401") || strings.Contains(lower, "401 unauthorized") {
-			return true
-		}
-		// Tool not installed
-		if strings.Contains(lower, "command not found") || strings.Contains(lower, "not recognized as") || strings.Contains(lower, "is not recognized") {
-			return true
-		}
-		if strings.Contains(lower, "no such file or directory") && (strings.Contains(lower, "claude") || strings.Contains(lower, "codex") || strings.Contains(lower, "gemini")) {
-			return true
-		}
-		// Permission denied at OS level (not API rate-limit "permission")
-		if strings.Contains(lower, "permission denied") && !strings.Contains(lower, "rate") && !strings.Contains(lower, "api") {
+		if classifyFatalSessionOutputLine(line) != fatalSessionErrorNone {
 			return true
 		}
 	}
@@ -926,7 +896,8 @@ func isFatalSessionError(lines []string) bool {
 // toolControlSession merges interrupt_session and kill_session into one tool.
 func (h *IMMessageHandler) toolControlSession(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
-	action, _ := args["action"].(string)
+	actionText, _ := args["action"].(string)
+	action := normalizeSessionControlAction(actionText)
 	if sessionID == "" {
 		return "缺少 session_id 参数"
 	}
@@ -934,12 +905,12 @@ func (h *IMMessageHandler) toolControlSession(args map[string]interface{}) strin
 		return "会话管理器未初始化"
 	}
 	switch action {
-	case "interrupt":
+	case sessionControlActionInterrupt:
 		if err := h.manager.Interrupt(sessionID); err != nil {
 			return fmt.Sprintf("中断失败: %s", err.Error())
 		}
 		return fmt.Sprintf("已向会话 %s 发送中断信号", sessionID)
-	case "kill":
+	case sessionControlActionKill:
 		if err := h.manager.Kill(sessionID); err != nil {
 			return fmt.Sprintf("终止失败: %s", err.Error())
 		}
@@ -962,15 +933,7 @@ func hasSelectedLocalImagePath(userText string) bool {
 	}
 	block := userText[idx+len(filePathPromptPrefix):]
 	for _, line := range strings.Split(block, "\n") {
-		trimmed := strings.TrimSpace(strings.TrimPrefix(line, "-"))
-		if trimmed == "" {
-			continue
-		}
-		lowerLine := strings.ToLower(trimmed)
-		if strings.HasPrefix(lowerLine, "这是用户已经提供的本地图片文件") || strings.HasPrefix(lowerLine, "请直接使用这些路径") {
-			continue
-		}
-		if strings.HasSuffix(lowerLine, ".png") || strings.HasSuffix(lowerLine, ".jpg") || strings.HasSuffix(lowerLine, ".jpeg") || strings.HasSuffix(lowerLine, ".gif") || strings.HasSuffix(lowerLine, ".bmp") || strings.HasSuffix(lowerLine, ".webp") || strings.HasSuffix(lowerLine, ".svg") || strings.HasSuffix(lowerLine, ".ico") || strings.HasSuffix(lowerLine, ".tif") || strings.HasSuffix(lowerLine, ".tiff") {
+		if classifyLocalImagePathLine(line) == localImagePathLineImagePath {
 			return true
 		}
 	}
@@ -1071,7 +1034,7 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 	if h.currentLoopCtx != nil {
 		platform = h.currentLoopCtx.Platform
 	}
-	if platform != "" && platform != "desktop" {
+	if !normalizeIMMessagePlatformKind(platform).IsDesktopPlaybackTarget() {
 		captureStart2 := time.Now()
 		base64Data, err := h.manager.CaptureScreenshotToBase64(sessionID)
 		log.Printf("[screenshot] CaptureScreenshotToBase64 took %v, data_len=%d, err=%v", time.Since(captureStart2), len(base64Data), err)

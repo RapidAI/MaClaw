@@ -25,7 +25,8 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 
 	for i := range attachments {
 		att := &attachments[i]
-		if isImageMime(att.MimeType) || att.Type == "image" {
+		attKind := normalizeIMMediaKind(att.Type)
+		if isImageMime(att.MimeType) || attKind.IsImage() {
 			if supportsVision {
 				imageAttachments = append(imageAttachments, *att)
 			} else {
@@ -42,7 +43,7 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 					fileDescriptions = append(fileDescriptions, fmt.Sprintf("[用户发送了图片 %s，已保存到 %s，当前模型不支持图片理解]", displayName, path))
 				}
 			}
-		} else if att.Type == "voice" {
+		} else if attKind.IsVoice() {
 			// Voice attachment: decode, convert to WAV for ASR, then save.
 			decoded, decErr := base64.StdEncoding.DecodeString(att.Data)
 			if decErr != nil {
@@ -52,7 +53,7 @@ func buildUserContent(userText string, attachments []MessageAttachment, protocol
 			}
 			wavData, wavName, wavMime := convertVoiceToWAV(decoded, att.FileName)
 			wavAtt := &MessageAttachment{
-				Type:     "voice",
+				Type:     imMediaVoice.String(),
 				FileName: wavName,
 				MimeType: wavMime,
 				Data:     base64.StdEncoding.EncodeToString(wavData),
@@ -106,7 +107,7 @@ func buildOpenAIVisionContent(text string, images []MessageAttachment) []interfa
 	var blocks []interface{}
 	if text != "" {
 		blocks = append(blocks, map[string]interface{}{
-			"type": "text",
+			"type": imContentBlockText,
 			"text": text,
 		})
 	}
@@ -116,7 +117,7 @@ func buildOpenAIVisionContent(text string, images []MessageAttachment) []interfa
 			mime = "image/png"
 		}
 		blocks = append(blocks, map[string]interface{}{
-			"type": "image_url",
+			"type": imContentBlockImageURL,
 			"image_url": map[string]interface{}{
 				"url": fmt.Sprintf("data:%s;base64,%s", mime, img.Data),
 			},
@@ -131,7 +132,7 @@ func buildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 	var blocks []interface{}
 	if text != "" {
 		blocks = append(blocks, map[string]interface{}{
-			"type": "text",
+			"type": imContentBlockText,
 			"text": text,
 		})
 	}
@@ -141,7 +142,7 @@ func buildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 			mime = "image/png"
 		}
 		blocks = append(blocks, map[string]interface{}{
-			"type": "image",
+			"type": imContentBlockImage,
 			"source": map[string]interface{}{
 				"type":       "base64",
 				"media_type": mime,
@@ -237,11 +238,12 @@ func stripHistoryAttachments(msg interface{}) interface{} {
 				continue
 			}
 			blockType, _ := bm["type"].(string)
-			if blockType == "image_url" || blockType == "image" {
+			blockKind := normalizeIMContentBlockKind(blockType)
+			if blockKind.IsImageBlock() {
 				// Count images; a single merged placeholder is emitted below.
 				imageCount++
 				changed = true
-			} else if blockType == "text" {
+			} else if blockKind.IsText() {
 				if text, ok := bm["text"].(string); ok {
 					if annotated := annotateHistoryAttachmentText(text); annotated != text {
 						cp := make(map[string]interface{}, len(bm))
@@ -265,7 +267,7 @@ func stripHistoryAttachments(msg interface{}) interface{} {
 		if imageCount > 0 {
 			placeholder := fmt.Sprintf("[之前上传了 %d 张图片]", imageCount)
 			newBlocks = append(newBlocks, map[string]interface{}{
-				"type": "text",
+				"type": imContentBlockText,
 				"text": placeholder,
 			})
 		}

@@ -20,95 +20,88 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 	next.UpdatedAt = time.Now().Unix()
 
 	if next.Severity == "" {
-		next.Severity = "info"
+		next.Severity = string(summarySeverityInfo)
 	}
 	if next.Status == "" {
-		next.Status = string(SessionRunning)
+		next.Status = SessionRunning.String()
 	}
 
 	for _, evt := range events {
-		switch evt.Type {
-		case "session.init":
-			next.Status = string(SessionRunning)
-			next.Severity = "info"
+		switch normalizeSummaryEventType(evt.Type) {
+		case summaryEventSessionInit:
+			next.Status = SessionRunning.String()
+			next.Severity = string(summarySeverityInfo)
 			next.WaitingForUser = false
 			next.CurrentTask = "Starting session"
 			next.ProgressSummary = evt.Summary
 			next.SuggestedAction = "Wait for the first tool action"
-		case "file.read":
-			next.Status = string(SessionBusy)
+		case summaryEventFileRead:
+			next.Status = SessionBusy.String()
 			next.CurrentTask = "Inspecting project files"
 			next.ProgressSummary = evt.Summary
 			next.ImportantFiles = appendRecentUnique(next.ImportantFiles, evt.RelatedFile, 5)
-		case "file.change":
-			next.Status = string(SessionBusy)
+		case summaryEventFileChange:
+			next.Status = SessionBusy.String()
 			next.CurrentTask = "Modifying source files"
 			next.ProgressSummary = evt.Summary
 			next.LastResult = "Applied code changes"
 			next.ImportantFiles = appendRecentUnique(next.ImportantFiles, evt.RelatedFile, 5)
 			next.SuggestedAction = "Continue and verify the changes"
-		case "command.started":
-			next.Status = string(SessionBusy)
+		case summaryEventCommandStarted:
+			next.Status = SessionBusy.String()
 			next.WaitingForUser = false
 			next.LastCommand = evt.Command
 			next.CurrentTask = "Running validation command"
 			next.ProgressSummary = evt.Summary
 			next.SuggestedAction = "Continue"
-		case "command.success":
-			next.Status = string(SessionRunning)
-			next.Severity = "info"
+		case summaryEventCommandSuccess:
+			next.Status = SessionRunning.String()
+			next.Severity = string(summarySeverityInfo)
 			next.LastResult = evt.Summary
 			next.ProgressSummary = "Command completed successfully"
 			next.SuggestedAction = "Continue"
-		case "command.failed":
-			next.Status = string(SessionRunning)
-			next.Severity = "warn"
+		case summaryEventCommandFailed:
+			next.Status = SessionRunning.String()
+			next.Severity = string(summarySeverityWarn)
 			next.LastResult = evt.Summary
 			next.ProgressSummary = "Command failed — reviewing results"
 			next.SuggestedAction = "Check the error and decide next step"
-		case "task.completed":
-			next.Status = string(SessionWaitingInput)
-			next.Severity = "info"
+		case summaryEventTaskCompleted:
+			next.Status = SessionWaitingInput.String()
+			next.Severity = string(summarySeverityInfo)
 			next.WaitingForUser = true
 			next.CurrentTask = "Task completed"
 			next.LastResult = evt.Summary
 			next.ProgressSummary = "Waiting for next instruction"
 			next.SuggestedAction = "Review results and send next instruction"
-		case "input.required":
-			next.Status = string(SessionWaitingInput)
-			next.Severity = "warn"
+		case summaryEventInputRequired:
+			next.Status = SessionWaitingInput.String()
+			next.Severity = string(summarySeverityWarn)
 			next.WaitingForUser = true
 			next.LastResult = evt.Summary
 			next.SuggestedAction = "Review status and send next instruction"
-		case "session.error":
-			next.Status = string(SessionError)
-			next.Severity = "error"
+		case summaryEventSessionError:
+			next.Status = SessionError.String()
+			next.Severity = string(summarySeverityError)
 			next.WaitingForUser = false
 			next.LastResult = evt.Summary
 			next.SuggestedAction = "Fix the current error and continue"
-		case "session.failed":
-			next.Status = string(SessionError)
-			next.Severity = "error"
+		case summaryEventSessionFailed:
+			next.Status = SessionError.String()
+			next.Severity = string(summarySeverityError)
 			next.WaitingForUser = false
 			next.CurrentTask = "Starting session"
 			next.ProgressSummary = "Session failed before becoming interactive"
 			next.LastResult = evt.Summary
 			next.SuggestedAction = "Review the launch error and try again"
-		case "session.closed":
-			next.Status = string(SessionExited)
+		case summaryEventSessionClosed:
+			next.Status = SessionExited.String()
 			next.WaitingForUser = false
 			next.CurrentTask = "Session finished"
 			next.ProgressSummary = evt.Summary
 			next.LastResult = evt.Summary
 			next.SuggestedAction = "Start a new session when ready"
-			switch evt.Severity {
-			case "error":
-				next.Severity = "error"
-			case "warn":
-				next.Severity = "warn"
-			default:
-				next.Severity = "info"
-			}
+			next.Severity = string(normalizeSummarySeverity(evt.Severity))
 		}
 	}
 
@@ -118,12 +111,10 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 		// active (non-terminal, non-waiting) state.  Once the session reaches
 		// waiting_input, error, or exited, raw output should NOT reset it back
 		// to running/busy — only a recognized event can change the status.
-		if next.Status != string(SessionWaitingInput) && next.Status != string(SessionError) && next.Status != string(SessionExited) {
-			// "reading" can appear in "Reading prompt from stdin" which means
-			// the tool is WAITING for input, not busy. Exclude that pattern.
-			isReading := strings.Contains(joined, "reading") && !strings.Contains(joined, "reading prompt from stdin")
-			if strings.Contains(joined, "running") || isReading || strings.Contains(joined, "editing") {
-				next.Status = string(SessionBusy)
+		status := normalizeSessionStatus(next.Status)
+		if !status.IsWaitingOrTerminal() {
+			if classifyRemoteSummaryOutputMarker(joined) == remoteSummaryOutputMarkerBusy {
+				next.Status = SessionBusy.String()
 			}
 			// Otherwise keep the current status (don't force it to "running")
 		}
@@ -131,26 +122,12 @@ func (r *ClaudeSummaryReducer) Apply(current SessionSummary, events []ImportantE
 		// Heuristic: detect idle/waiting patterns from raw output even when
 		// no structured event was extracted.  Claude Code shows a prompt
 		// character (e.g. ">") or certain phrases when it finishes a task.
-		if next.Status == string(SessionRunning) || next.Status == string(SessionBusy) {
-			waitingHints := []string{
-				"what would you like",
-				"what do you want",
-				"how can i help",
-				"what should i do",
-				"waiting for",
-				"your turn",
-				"enter a command",
-				"type a message",
-				"send a message",
-				"reading prompt from stdin",
-			}
-			for _, hint := range waitingHints {
-				if strings.Contains(joined, hint) {
-					next.Status = string(SessionWaitingInput)
-					next.WaitingForUser = true
-					next.SuggestedAction = "Review results and send next instruction"
-					break
-				}
+		status = normalizeSessionStatus(next.Status)
+		if status.IsRunning() || status.IsBusy() {
+			if classifyRemoteSummaryOutputMarker(joined) == remoteSummaryOutputMarkerWaiting {
+				next.Status = SessionWaitingInput.String()
+				next.WaitingForUser = true
+				next.SuggestedAction = "Review results and send next instruction"
 			}
 		}
 	}

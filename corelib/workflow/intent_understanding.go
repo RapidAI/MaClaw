@@ -419,6 +419,7 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- category=\"due_diligence\"：尽职调查任务（需要用户提供公司资料）\n")
 	b.WriteString("- category=\"compliance_audit\"：合规审计任务（需要用户提供审计资料）\n")
 	b.WriteString("- category=\"patent_analysis\"：专利分析任务（需要用户上传技术方案或专利文献）\n")
+	b.WriteString("- category=\"ops_maintenance\"：服务器运维、巡检、排障、变更方案、Runbook/脚本生成、风险评估、审批执行、回滚和审计任务\n")
 	b.WriteString("- 其他类型参见上方「可用的工作流类型」列表，category 值使用列表中加粗的英文标识\n\n")
 
 	b.WriteString("## 易混淆示例（重要）\n\n")
@@ -450,6 +451,7 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- \"对这家公司做个尽调\" → due_diligence（需要调查维度+评估框架）\n")
 	b.WriteString("- \"检查一下我们的数据合规情况\" → compliance_audit（需要审计范围+评估标准）\n")
 	b.WriteString("- \"分析一下这个专利的侵权风险\" → patent_analysis（需要技术比对+法律分析框架）\n")
+	b.WriteString("- \"帮我巡检服务器并生成运维脚本，必要时按审批执行\" → ops_maintenance（需要环境分级+只读采集+风险门禁+受控执行）\n")
 	b.WriteString("- \"帮我写一篇文献综述\" → literature_review（需要选题角度+文献筛选策略）\n")
 	b.WriteString("- \"帮我写一份研究报告\" → research_report（需要研究框架+论述结构）\n")
 	b.WriteString("- \"帮我写一篇论文\" → paper_writing（需要论点设计+论证结构）\n")

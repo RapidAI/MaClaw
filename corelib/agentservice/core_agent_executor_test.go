@@ -11,7 +11,20 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/tooldef"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
+
+type captureExecutor struct {
+	req ExecuteRequest
+}
+
+func (e *captureExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
+	_ = ctx
+	e.req = req
+	return &ExecuteResult{Content: "ok", OutputType: "text/plain"}, nil
+}
 
 func TestCoreAgentExecutorSupportsAskUserFlow(t *testing.T) {
 	callCount := 0
@@ -114,6 +127,380 @@ func TestCoreAgentExecutorSupportsAskUserFlow(t *testing.T) {
 	}
 }
 
+func TestPostMessagePropagatesToolPolicyMetadata(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{
+		Title:    "Session",
+		Metadata: map[string]string{"tool_policy": string(workflow.ToolFilterDocOnly)},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{
+		Content:  "run controlled operation",
+		Metadata: map[string]string{"tool_policy": string(workflow.ToolFilterOpsControlled)},
+	}); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	if executor.req.ToolPolicy != workflow.ToolFilterOpsControlled {
+		t.Fatalf("ToolPolicy = %q, want %q", executor.req.ToolPolicy, workflow.ToolFilterOpsControlled)
+	}
+}
+
+func TestPostMessageFallsBackToSessionToolPolicyMetadata(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{
+		Title:    "Session",
+		Metadata: map[string]string{"tool_policy": string(workflow.ToolFilterOpsControlled)},
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "run controlled operation"}); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	if executor.req.ToolPolicy != workflow.ToolFilterOpsControlled {
+		t.Fatalf("ToolPolicy = %q, want %q", executor.req.ToolPolicy, workflow.ToolFilterOpsControlled)
+	}
+}
+
+func TestPostMessagePropagatesOpsApprovedCommandsMetadata(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "Session"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	policyText := `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    target: /srv/app
+    command: "systemctl restart nginx"
+`
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{
+		Content: "run controlled operation",
+		Metadata: map[string]string{
+			"tool_policy":            string(workflow.ToolFilterOpsControlled),
+			"ops_execution_approved": "true",
+			"ops_approval_digest":    workflow.OpsApprovalDigest(policyText),
+			"ops_approved_commands":  policyText,
+		},
+	}); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	if len(executor.req.OpsApprovedCommands) != 1 {
+		t.Fatalf("OpsApprovedCommands len = %d, want 1: %#v", len(executor.req.OpsApprovedCommands), executor.req.OpsApprovedCommands)
+	}
+	if executor.req.OpsApprovedCommands[0].Command != "systemctl restart nginx" {
+		t.Fatalf("unexpected approved commands: %#v", executor.req.OpsApprovedCommands)
+	}
+	if executor.req.OpsApprovedCommands[0].Target != "/srv/app" {
+		t.Fatalf("approved command target = %q, want /srv/app", executor.req.OpsApprovedCommands[0].Target)
+	}
+}
+
+func TestOpsApprovedCommandsFromMetadataRequiresApprovalForApprovalRequired(t *testing.T) {
+	policyText := `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	metadata := map[string]string{
+		"ops_approved_commands": policyText,
+	}
+	if got := opsApprovedCommandsFromMetadata(metadata, nil); len(got) != 0 {
+		t.Fatalf("approval_required without approval flag should not propagate commands: %#v", got)
+	}
+
+	metadata["ops_execution_approved"] = "approved"
+	if got := opsApprovedCommandsFromMetadata(metadata, nil); len(got) != 0 {
+		t.Fatalf("approval_required without digest should not propagate commands: %#v", got)
+	}
+
+	metadata["ops_approval_digest"] = "bad-digest"
+	if got := opsApprovedCommandsFromMetadata(metadata, nil); len(got) != 0 {
+		t.Fatalf("approval_required with mismatched digest should not propagate commands: %#v", got)
+	}
+
+	metadata["ops_approval_digest"] = workflow.OpsApprovalDigest(policyText)
+	if got := opsApprovedCommandsFromMetadata(metadata, nil); len(got) != 1 {
+		t.Fatalf("approval_required with approval flag and digest should propagate commands: %#v", got)
+	}
+}
+
+func TestOpsApprovedCommandsFromMetadataAllowsAutoExecuteWithoutApprovalFlag(t *testing.T) {
+	got := opsApprovedCommandsFromMetadata(map[string]string{
+		"ops_approved_commands": `
+decision: auto_execute
+risk_level: L1
+approval_required: none
+allowed_commands:
+  - tool: bash
+    command: "systemctl status nginx"
+`,
+	}, nil)
+	if len(got) != 1 {
+		t.Fatalf("auto_execute should propagate commands without approval flag: %#v", got)
+	}
+}
+
+func TestOpsApprovedCommandsFromMetadataRequiresDoubleApprovalWhenPolicyRequiresDouble(t *testing.T) {
+	policyText := `
+decision: approval_required
+risk_level: L3
+approval_required: double
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	metadata := map[string]string{
+		"ops_approved_commands":        policyText,
+		"ops_approval_digest":          workflow.OpsApprovalDigest(policyText),
+		"ops_execution_approval_level": "single",
+	}
+	if got := opsApprovedCommandsFromMetadata(metadata, nil); len(got) != 0 {
+		t.Fatalf("single approval should not satisfy double-required policy: %#v", got)
+	}
+
+	metadata["ops_execution_approval_level"] = "double"
+	if got := opsApprovedCommandsFromMetadata(metadata, nil); len(got) != 1 {
+		t.Fatalf("double approval should satisfy double-required policy: %#v", got)
+	}
+}
+
+func TestOpsApprovedCommandsFromMetadataPreservesPolicyStrengthMetadata(t *testing.T) {
+	policyText := `
+decision: approval_required
+risk_level: L3
+approval_required: double
+allowed_commands:
+  - tool: ssh
+    action: close_all
+    command: "all"
+`
+	metadata := map[string]string{
+		"ops_approved_commands":        policyText,
+		"ops_approval_digest":          workflow.OpsApprovalDigest(policyText),
+		"ops_execution_approval_level": "double",
+	}
+	got := opsApprovedCommandsFromMetadata(metadata, nil)
+	if len(got) != 1 {
+		t.Fatalf("double-approved close_all policy should propagate one command: %#v", got)
+	}
+	if got[0].RiskLevel != workflow.OpsRiskLevelL3 || got[0].ApprovalRequirement != workflow.OpsApprovalRequirementDouble {
+		t.Fatalf("approved command lost policy strength metadata: %#v", got[0])
+	}
+}
+
+func TestOpsApprovedCommandsFromMetadataCombinesSessionPolicyWithMessageApproval(t *testing.T) {
+	policyText := `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	messageMetadata := map[string]string{
+		"ops_execution_approved": "true",
+		"ops_approval_digest":    workflow.OpsApprovalDigest(policyText),
+	}
+	sessionMetadata := map[string]string{
+		"ops_approved_commands": policyText,
+	}
+	if got := opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata); len(got) != 1 {
+		t.Fatalf("message approval should satisfy session policy when digest matches: %#v", got)
+	}
+}
+
+func TestOpsApprovedCommandsFromMetadataMessagePolicyOverridesSessionPolicy(t *testing.T) {
+	sessionPolicy := `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	messagePolicy := `
+decision: deny
+risk_level: L4
+approval_required: none
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	messageMetadata := map[string]string{
+		"ops_approved_commands":  messagePolicy,
+		"ops_execution_approved": "true",
+		"ops_approval_digest":    workflow.OpsApprovalDigest(messagePolicy),
+	}
+	sessionMetadata := map[string]string{
+		"ops_approved_commands":  sessionPolicy,
+		"ops_execution_approved": "true",
+		"ops_approval_digest":    workflow.OpsApprovalDigest(sessionPolicy),
+	}
+	if got := opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata); len(got) != 0 {
+		t.Fatalf("message policy should override stale session policy: %#v", got)
+	}
+}
+
+func TestOpsApprovedCommandsFromMetadataRequiresMessageApprovalForMessagePolicy(t *testing.T) {
+	sessionPolicy := `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	messagePolicy := `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart mysql"
+`
+	messageMetadata := map[string]string{
+		"ops_approved_commands": messagePolicy,
+		"ops_approval_digest":   workflow.OpsApprovalDigest(messagePolicy),
+	}
+	sessionMetadata := map[string]string{
+		"ops_approved_commands":  sessionPolicy,
+		"ops_execution_approved": "true",
+		"ops_approval_digest":    workflow.OpsApprovalDigest(sessionPolicy),
+	}
+	if got := opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata); len(got) != 0 {
+		t.Fatalf("message policy should not inherit stale session approval: %#v", got)
+	}
+
+	messageMetadata["ops_execution_approved"] = "true"
+	if got := opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata); len(got) != 1 || got[0].Command != "systemctl restart mysql" {
+		t.Fatalf("message policy should use message-scoped approval and digest: %#v", got)
+	}
+}
+
+func TestPostMessageDoesNotPropagateDeniedOpsApprovedCommandsMetadata(t *testing.T) {
+	executor := &captureExecutor{}
+	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: "http://127.0.0.1/test", MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "Instance"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "Session"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{
+		Content: "run controlled operation",
+		Metadata: map[string]string{
+			"tool_policy": string(workflow.ToolFilterOpsControlled),
+			"ops_approved_commands": `
+decision: deny
+risk_level: L4
+approval_required: none
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`,
+		},
+	}); err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	if len(executor.req.OpsApprovedCommands) != 0 {
+		t.Fatalf("denied policy should not propagate commands: %#v", executor.req.OpsApprovedCommands)
+	}
+}
+
 func TestEnsureBashWorkingDirUsesInstanceWorkspace(t *testing.T) {
 	args := ensureBashWorkingDir(map[string]interface{}{"command": "pwd"}, "/tmp/workspace")
 	if got := args["working_dir"]; got != "/tmp/workspace" {
@@ -156,6 +543,116 @@ func TestCoreAgentBuildToolsIncludesBashWhenEnabled(t *testing.T) {
 	}
 	if !seen["bash"] {
 		t.Fatalf("expected bash tool definition in %#v", seen)
+	}
+}
+
+func TestCoreAgentToolPolicyFiltersExposedTools(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		allowLocalBash:             true,
+		localBashTrustedSingleUser: true,
+		localBashTenantID:          "tenant_a",
+		localBashUserID:            "user_a",
+		principal:                  Principal{TenantID: "tenant_a", UserID: "user_a"},
+		toolPolicy:                 workflow.ToolFilterOpsControlled,
+	}
+	tools := agent.FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools(""))
+	seen := map[string]bool{}
+	for _, tool := range tools {
+		seen[tooldef.Name(tool)] = true
+	}
+	if !seen["bash"] {
+		t.Fatalf("expected bash to remain under ops policy, got %#v", seen)
+	}
+	if seen["task"] || seen["ask_user"] {
+		t.Fatalf("expected non-ops tools to be filtered by ops policy, got %#v", seen)
+	}
+}
+
+func TestCoreAgentToolPolicyBlocksExecution(t *testing.T) {
+	cb := &coreAgentCallbacks{toolPolicy: workflow.ToolFilterOpsControlled}
+	if cb.IsToolAllowed("bash") != true {
+		t.Fatal("expected bash to be allowed by ops policy")
+	}
+	if cb.IsToolAllowed("task") {
+		t.Fatal("expected task to be blocked by ops policy")
+	}
+}
+
+func TestCoreAgentToolPolicyBlocksHighRiskCommandArguments(t *testing.T) {
+	cb := &coreAgentCallbacks{toolPolicy: workflow.ToolFilterOpsControlled}
+	allowed, reason := cb.IsToolCallAllowed("bash", `{"command":"rm -rf / --no-preserve-root"}`)
+	if allowed {
+		t.Fatal("expected high-risk bash command to be blocked")
+	}
+	if !strings.Contains(reason, "reviewed runbook") {
+		t.Fatalf("unexpected rejection reason: %q", reason)
+	}
+	result := cb.ExecuteToolStructured("bash", `{"command":"rm -rf / --no-preserve-root"}`)
+	if result.Outcome != agent.ToolExecutionOutcomeError {
+		t.Fatalf("Outcome = %q, want %q", result.Outcome, agent.ToolExecutionOutcomeError)
+	}
+	if !strings.Contains(result.Result, "reviewed runbook") {
+		t.Fatalf("unexpected result: %q", result.Result)
+	}
+}
+
+func TestCoreAgentToolPolicyBlocksMutatingCommandWithoutApprovedManifest(t *testing.T) {
+	cb := &coreAgentCallbacks{toolPolicy: workflow.ToolFilterOpsControlled}
+	allowed, reason := cb.IsToolCallAllowed("bash", `{"command":"systemctl restart nginx"}`)
+	if allowed {
+		t.Fatal("expected mutating command without approved manifest to be blocked")
+	}
+	if !strings.Contains(reason, "allowed_commands") {
+		t.Fatalf("unexpected rejection reason: %q", reason)
+	}
+	allowed, reason = cb.IsToolCallAllowed("bash", `{"command":"systemctl status nginx"}`)
+	if !allowed {
+		t.Fatalf("expected read-only command without manifest to pass, got %q", reason)
+	}
+}
+
+func TestCoreAgentToolPolicyBlocksCommandOutsideApprovedManifest(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		toolPolicy: workflow.ToolFilterOpsControlled,
+		opsApprovedCommands: []workflow.OpsApprovedCommand{
+			{Tool: "bash", Command: "systemctl restart nginx"},
+		},
+	}
+	allowed, reason := cb.IsToolCallAllowed("bash", `{"command":"systemctl restart mysql"}`)
+	if allowed {
+		t.Fatal("expected command outside approved manifest to be blocked")
+	}
+	if !strings.Contains(reason, "approved risk-policy") {
+		t.Fatalf("unexpected rejection reason: %q", reason)
+	}
+	allowed, reason = cb.IsToolCallAllowed("bash", `{"command":"systemctl   restart   nginx"}`)
+	if !allowed {
+		t.Fatalf("expected approved command to pass, got %q", reason)
+	}
+}
+
+func TestCoreAgentToolPolicyBlocksSSHUploadWithoutApprovedManifest(t *testing.T) {
+	cb := &coreAgentCallbacks{toolPolicy: workflow.ToolFilterOpsControlled}
+	allowed, reason := cb.IsToolCallAllowed("ssh", `{"action":"upload","local_path":"apply.sh","remote_path":"/tmp/apply.sh"}`)
+	if allowed {
+		t.Fatal("expected ssh upload without approved manifest to be blocked")
+	}
+	if !strings.Contains(reason, "allowed_commands") {
+		t.Fatalf("unexpected rejection reason: %q", reason)
+	}
+
+	cb.opsApprovedCommands = []workflow.OpsApprovedCommand{{Tool: "ssh", Action: "upload", Target: "prod-session", Command: "apply.sh -> /tmp/apply.sh"}}
+	allowed, reason = cb.IsToolCallAllowed("ssh", `{"action":"upload","session_id":"prod-session","local_path":"apply.sh","remote_path":"/tmp/apply.sh"}`)
+	if !allowed {
+		t.Fatalf("expected approved ssh upload to pass, got %q", reason)
+	}
+	allowed, reason = cb.IsToolCallAllowed("ssh", `{"action":"upload","session_id":"prod-session","local_path":"other.sh","remote_path":"/tmp/apply.sh"}`)
+	if allowed {
+		t.Fatal("expected upload outside manifest to be blocked")
+	}
+	allowed, reason = cb.IsToolCallAllowed("ssh", `{"action":"upload","session_id":"staging-session","local_path":"apply.sh","remote_path":"/tmp/apply.sh"}`)
+	if allowed {
+		t.Fatal("expected upload on unapproved target to be blocked")
 	}
 }
 

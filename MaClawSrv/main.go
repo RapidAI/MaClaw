@@ -8,13 +8,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/internal/servicehost"
 )
 
 var (
@@ -24,23 +23,29 @@ var (
 )
 
 func main() {
+	if err := servicehost.Run("MaClawSrv", runServer); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runServer(ctx context.Context) error {
 	dataRoot := defaultDataRoot()
 	adminSecret := os.Getenv("MACLAW_ADMIN_SECRET")
 	tokenSecret := os.Getenv("MACLAW_TOKEN_SECRET")
 	if err := validateStartupSecrets(adminSecret, tokenSecret); err != nil {
-		log.Fatalf("invalid security configuration: %v", err)
+		return fmt.Errorf("invalid security configuration: %w", err)
 	}
 
 	executor, err := buildCoreAgentExecutorFromEnv()
 	if err != nil {
-		log.Fatalf("invalid executor environment configuration: %v", err)
+		return fmt.Errorf("invalid executor environment configuration: %w", err)
 	}
 	if err := validateLocalBashScope(executor); err != nil {
-		log.Fatalf("invalid local bash configuration: %v", err)
+		return fmt.Errorf("invalid local bash configuration: %w", err)
 	}
 	credentialPepper := os.Getenv("MACLAW_CREDENTIAL_PEPPER")
 	if err := validateCredentialPepper(credentialPepper); err != nil {
-		log.Fatalf("invalid credential pepper configuration: %v", err)
+		return fmt.Errorf("invalid credential pepper configuration: %w", err)
 	}
 	svc, err := agentservice.NewService(agentservice.Config{
 		DataRoot:         dataRoot,
@@ -49,7 +54,7 @@ func main() {
 		CredentialPepper: credentialPepper,
 	}, nil, executor)
 	if err != nil {
-		log.Fatalf("create service: %v", err)
+		return fmt.Errorf("create service: %w", err)
 	}
 
 	server := NewHTTPServer(svc, adminSecret)
@@ -67,14 +72,12 @@ func main() {
 	tlsKeyFile := os.Getenv("MACLAW_TLS_KEY_FILE")
 	allowInsecureHTTP, err := getenvBoolStrict("MACLAW_ALLOW_INSECURE_HTTP", false)
 	if err != nil {
-		log.Fatalf("invalid transport environment configuration: %v", err)
+		return fmt.Errorf("invalid transport environment configuration: %w", err)
 	}
 	if err := validateTransportSecurity(addr, tlsCertFile, tlsKeyFile, allowInsecureHTTP); err != nil {
-		log.Fatalf("invalid transport configuration: %v", err)
+		return fmt.Errorf("invalid transport configuration: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("MaClawSrv listening on %s with data root %s", addr, svc.DataRoot())
@@ -92,19 +95,20 @@ func main() {
 	select {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
+			return err
 		}
 	case <-ctx.Done():
 		log.Printf("shutdown requested, stopping MaClawSrv")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Fatalf("shutdown server: %v", err)
+			return fmt.Errorf("shutdown server: %w", err)
 		}
 		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
+			return err
 		}
 	}
+	return nil
 }
 
 func validateStartupSecrets(adminSecret, tokenSecret string) error {

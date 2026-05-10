@@ -74,8 +74,8 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 				if err := mgr.ReconnectByID(existing.ID); err == nil {
 					time.Sleep(2 * time.Second)
 					preview := strings.Join(existing.PreviewTail(10), "\n")
-					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: running",
-						existing.ID, targetID)
+					result := fmt.Sprintf("♻️ 复用已有 SSH 会话（已自动重连）\n会话 ID: %s\n主机: %s\n状态: %s",
+						existing.ID, targetID, runningSessionStatusLabel())
 					if preview != "" {
 						result += "\n\n--- 重连后输出 ---\n" + preview
 					}
@@ -109,9 +109,7 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 	session, err := mgr.Create(spec)
 	if err != nil {
 		errMsg := fmt.Sprintf("SSH 连接失败: %v", err)
-		errLower := strings.ToLower(err.Error())
-		if strings.Contains(errLower, "unable to authenticate") || strings.Contains(errLower, "handshake failed") ||
-			strings.Contains(errLower, "permission denied") || strings.Contains(errLower, "no supported methods") {
+		if classifySSHError(err) == sshErrorAuthentication {
 			if cfg.Password == "" {
 				errMsg += "\n\n💡 认证失败且未提供密码。请使用 password 参数重试，例如：\nssh connect host=... user=... port=... password=<密码> auth_method=password"
 			} else {
@@ -130,8 +128,8 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 
 	preview := strings.Join(session.PreviewTail(20), "\n")
 
-	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: running",
-		session.ID, cfg.SSHHostID())
+	result := fmt.Sprintf("✅ SSH 连接成功\n会话 ID: %s\n主机: %s\n状态: %s",
+		session.ID, cfg.SSHHostID(), runningSessionStatusLabel())
 	if preview != "" {
 		result += "\n\n--- 初始输出 ---\n" + preview
 	}
@@ -282,7 +280,7 @@ func SSHExecBackground(deps SSHToolDeps, args map[string]interface{}) string {
 		"命令: %s\n"+
 		"日志文件: %s\n"+
 		"PID: %s\n"+
-		"状态: running\n\n"+
+		"状态: "+runningSessionStatusLabel()+"\n\n"+
 		"💡 使用 check_task (task_id=%s) 查看进度\n"+
 		"💡 使用 kill_task (task_id=%s) 终止任务\n"+
 		"💡 SSH 断连不影响任务执行，重连后可继续查看",
@@ -307,17 +305,7 @@ func SSHCheckTask(deps SSHToolDeps, args map[string]interface{}) string {
 		return fmt.Sprintf("检查任务失败: %v", err)
 	}
 
-	statusEmoji := "🔄"
-	switch result.Status {
-	case "completed":
-		statusEmoji = "✅"
-	case "failed":
-		statusEmoji = "❌"
-	case "killed":
-		statusEmoji = "🛑"
-	case "unknown":
-		statusEmoji = "❓"
-	}
+	statusEmoji := backgroundTaskStatusIcon(result.Status)
 
 	logTail := result.LogTail
 	if logTail == "" {
@@ -328,7 +316,7 @@ func SSHCheckTask(deps SSHToolDeps, args map[string]interface{}) string {
 	}
 
 	return fmt.Sprintf("%s 任务 %s\n命令: %s\n状态: %s\n进程存活: %v\n已运行: %s\n\n--- 最新日志 ---\n%s",
-		statusEmoji, result.TaskID, result.Command, result.Status,
+		statusEmoji, result.TaskID, result.Command, result.Status.String(),
 		result.IsAlive, result.Elapsed, logTail)
 }
 
@@ -488,7 +476,7 @@ func SSHCloseAll(deps SSHToolDeps) string {
 	running := make([]*remote.SSHManagedSession, 0, len(sessions))
 	for _, s := range sessions {
 		summary := s.GetSummary()
-		if summary.Status == string(remote.SessionRunning) {
+		if isRunningSessionStatus(summary.Status) {
 			running = append(running, s)
 		}
 	}

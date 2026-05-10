@@ -60,4 +60,12 @@ var DeferredToolNames = []string{
 	"gui_verify",
 	"gui_record_start",
 	"gui_record_stop",
+	// GUI automation auxiliary tools — only useful after gui_observe provides
+	// coordinates/context. Deferring saves ~1500 token in initial prompt.
+	"gui_click",
+	"gui_type",
+	"gui_screenshot",
+	"gui_list_displays",
+	"gui_replay",
+	"gui_list_flows",
 }

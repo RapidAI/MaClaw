@@ -46,6 +46,13 @@ const PHASE_ID_ALIASES: Record<string, string> = {
     tech_design: "design",
     task_breakdown: "tasks",
 };
+const FALLBACK_NON_DOCUMENT_PHASE_IDS = new Set([
+    "implementation",
+    "test_execution",
+    "ppt_generation",
+    "bp_doc_generation",
+    "controlled_execution",
+]);
 
 export function normalizeWorkflowPhaseID(phaseID: unknown): string {
     if (typeof phaseID !== "string") return "";
@@ -120,6 +127,12 @@ function collectWorkflowPhases(phases: unknown): PhaseInfo[] {
     return collected.sort((a, b) => a.index - b.index);
 }
 
+function workflowPhaseExpectsDocument(phaseID: string, phases: PhaseInfo[]): boolean {
+    const phase = phases.find(item => item.id === phaseID);
+    if (phase && typeof phase.expectsDocument === "boolean") return phase.expectsDocument;
+    return !FALLBACK_NON_DOCUMENT_PHASE_IDS.has(phaseID);
+}
+
 function resolveWorkflowInstanceKey(state: any): string {
     const id = typeof state?.id === "string" ? state.id.trim() : "";
     if (id) return id;
@@ -155,6 +168,8 @@ export function useWorkflowState() {
     const docUpdatePhaseIDsRef = useRef<Set<string>>(new Set());
     const workflowIDRef = useRef("");
     const workflowTypeRef = useRef("");
+    const workflowActiveRef = useRef(false);
+    const pendingWorkingDirRef = useRef("");
     const transientTextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Listen for phase updates
@@ -178,6 +193,8 @@ export function useWorkflowState() {
                 docUpdatePhaseIDsRef.current = new Set();
                 workflowIDRef.current = "";
                 workflowTypeRef.current = "";
+                workflowActiveRef.current = false;
+                pendingWorkingDirRef.current = "";
                 if (transientTextTimerRef.current) {
                     clearTimeout(transientTextTimerRef.current);
                     transientTextTimerRef.current = null;
@@ -186,6 +203,8 @@ export function useWorkflowState() {
             }
             const workflowID = resolveWorkflowInstanceKey(state);
             const incomingWorkflowType = typeof state.type === "string" ? state.type : "";
+            const wasActive = workflowActiveRef.current;
+            let appliedPendingWorkingDir = false;
             if (workflowID && workflowID !== workflowIDRef.current) {
                 workflowIDRef.current = workflowID;
                 docUpdatePhaseIDsRef.current = new Set();
@@ -193,17 +212,32 @@ export function useWorkflowState() {
                 setPhaseDocuments(new Map());
                 setGateResults(new Map());
                 setPhases([]);
+                setWorkingDir(pendingWorkingDirRef.current);
+                pendingWorkingDirRef.current = "";
+                appliedPendingWorkingDir = true;
+                userClosedRef.current = false;
             } else if (!workflowID && state.status === "active" && workflowTypeRef.current && incomingWorkflowType && incomingWorkflowType !== workflowTypeRef.current) {
                 docUpdatePhaseIDsRef.current = new Set();
                 setLatestDocumentPhaseID("");
                 setPhaseDocuments(new Map());
                 setGateResults(new Map());
                 setPhases([]);
+                setWorkingDir(pendingWorkingDirRef.current);
+                pendingWorkingDirRef.current = "";
+                appliedPendingWorkingDir = true;
+                userClosedRef.current = false;
             }
-            setActive(state.status === "active");
+            const isActive = state.status === "active";
+            setActive(isActive);
+            workflowActiveRef.current = isActive;
+            if (isActive && !wasActive && !appliedPendingWorkingDir && pendingWorkingDirRef.current) {
+                setWorkingDir(pendingWorkingDirRef.current);
+                pendingWorkingDirRef.current = "";
+            }
             setWorkflowType(incomingWorkflowType);
             if (incomingWorkflowType) workflowTypeRef.current = incomingWorkflowType;
-            setPhases(collectWorkflowPhases(state.phases));
+            const incomingPhases = collectWorkflowPhases(state.phases);
+            setPhases(incomingPhases);
             const currentPhase = normalizeWorkflowPhaseID(state.current_phase);
             setCurrentPhaseID(currentPhase);
             const outputDocuments = collectWorkflowPhaseDocuments(state.phase_outputs);
@@ -219,12 +253,11 @@ export function useWorkflowState() {
                 return next;
             });
 
-            // Auto-open split mode for doc phases (not implementation)
-            if (state.status === "active" && !userClosedRef.current) {
-                const isImplPhase = currentPhase === "implementation" || currentPhase === "test_execution";
-                setSplitMode(!isImplPhase);
+            // Auto-open split mode for phases that are expected to produce preview documents.
+            if (isActive && !userClosedRef.current) {
+                setSplitMode(currentPhase ? workflowPhaseExpectsDocument(currentPhase, incomingPhases) : false);
             }
-            if (state.status !== "active") {
+            if (!isActive) {
                 setSplitMode(false);
                 userClosedRef.current = false;
                 // Don't clear phaseDocuments here — preserve documents so
@@ -242,6 +275,7 @@ export function useWorkflowState() {
     // Listen for document updates
     useEffect(() => {
         const unsub = EventsOn("workflow:doc_update", (data: any) => {
+            if (!workflowActiveRef.current) return;
             if (!data?.phase_id) return;
             const phaseID = normalizeWorkflowPhaseID(data.phase_id);
             const content = normalizeWorkflowDocumentContent(data.content);
@@ -271,6 +305,7 @@ export function useWorkflowState() {
     // Listen for gate results
     useEffect(() => {
         const unsub = EventsOn("workflow:gate_result", (data: any) => {
+            if (!workflowActiveRef.current) return;
             if (!data?.phase_id || !data?.result) return;
             const phaseID = normalizeWorkflowPhaseID(data.phase_id);
             if (!phaseID) return;
@@ -345,8 +380,13 @@ export function useWorkflowState() {
     // Listen for working directory changes
     useEffect(() => {
         const unsub = EventsOn("workflow:workdir_set", (data: any) => {
-            if (!data?.path) return;
-            setWorkingDir(data.path);
+            const path = typeof data?.path === "string" ? data.path.trim() : "";
+            if (!path) return;
+            if (!workflowActiveRef.current) {
+                if (!workflowIDRef.current) pendingWorkingDirRef.current = path;
+                return;
+            }
+            setWorkingDir(path);
         });
         return () => {
             if (typeof unsub === "function") unsub();

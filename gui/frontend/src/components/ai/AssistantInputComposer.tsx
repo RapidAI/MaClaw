@@ -1,10 +1,11 @@
 import type { ClipboardEvent, Dispatch, PointerEvent, Ref, SetStateAction } from "react";
 import { AssistantAttachmentsStrip } from "./AssistantAttachmentsStrip";
-import { AssistantInputActions } from "./AssistantInputActions";
+import { AssistantInputActionsLeft, AssistantInputActionsRight } from "./AssistantInputActions";
 import { getAssistantInputComposerStyles } from "./AssistantInputComposerStyles";
 import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { useTextCompositionGuard } from "./useTextCompositionGuard";
 
 interface AssistantInputComposerProps {
     browseFile: () => void;
@@ -12,7 +13,6 @@ interface AssistantInputComposerProps {
     cancelPending: boolean;
     cancelSession?: unknown;
     clearSelectedFile?: () => void;
-    composing: boolean;
     exitHistoryBrowsing: () => boolean;
     finishVoicePointer: (event: PointerEvent<HTMLButtonElement>) => void;
     handleCancel: () => void;
@@ -37,7 +37,6 @@ interface AssistantInputComposerProps {
     removeSelectedFile?: (index: number) => void;
     resizeInput: () => void;
     selectedFilePaths: string[];
-    setComposing: (value: boolean) => void;
     setPendingAttachments: Dispatch<SetStateAction<AttachmentInfo[]>>;
     showBusySpinner: boolean;
     theme: Theme;
@@ -47,9 +46,10 @@ interface AssistantInputComposerProps {
 }
 
 export function AssistantInputComposer(props: AssistantInputComposerProps) {
-    const { browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composing, exitHistoryBrowsing, finishVoicePointer, handleCancel, handlePaste, handleSend, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputLocked, inputRef, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, setComposing, setPendingAttachments, showBusySpinner, theme: t, themeMode, updateInputValue, voiceInput } = props;
+    const { browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, exitHistoryBrowsing, finishVoicePointer, handleCancel, handlePaste, handleSend, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight, inputLocked, inputRef, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile, resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, theme: t, themeMode, updateInputValue, voiceInput } = props;
+    const textComposition = useTextCompositionGuard();
     const isExpandedInput = inputAreaHeight !== null;
-    const { inputBarStyle, inputRowStyle, promptStyle, textareaStyle, inputActionsStyle } = getAssistantInputComposerStyles({
+    const { inputBarStyle, inputRowStyle, textareaStyle, toolbarStyle, toolbarLeftStyle, toolbarRightStyle } = getAssistantInputComposerStyles({
         cancelPending,
         inline,
         isExpandedInput,
@@ -60,10 +60,10 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     return (
         <div data-testid="ai-input-bar" style={inputBarStyle}>
             <AssistantAttachmentsStrip cancelPending={cancelPending} clearSelectedFile={clearSelectedFile} lang={lang} pendingAttachments={pendingAttachments} removeSelectedFile={removeSelectedFile} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} theme={t} />
+            {/* Textarea area */}
             <div data-testid="ai-input-row" style={inputRowStyle}>
-                <span aria-hidden="true" style={promptStyle}>{">"}</span>
-                <textarea ref={inputRef} data-testid="ai-input" disabled={!ready || cancelPending} readOnly={cancelPending} aria-readonly={cancelPending} style={textareaStyle} rows={1} value={inputValue} onChange={(e) => { rememberHistoryEdit(e.target.value); updateInputValue(e.target.value); resizeInput(); }} onPaste={handlePaste} onCompositionStart={() => setComposing(true)} onCompositionEnd={() => setComposing(false)} onKeyDown={(e) => {
-                    if (composing) return;
+                <textarea ref={inputRef} data-testid="ai-input" disabled={!ready || cancelPending} readOnly={cancelPending} aria-readonly={cancelPending} style={textareaStyle} rows={1} value={inputValue} onChange={(e) => { rememberHistoryEdit(e.target.value); updateInputValue(e.target.value); resizeInput(); }} onPaste={handlePaste} onCompositionStart={textComposition.onCompositionStart} onCompositionEnd={textComposition.onCompositionEnd} onKeyDown={(e) => {
+                    if (textComposition.shouldIgnoreKeyDown(e)) return;
                     if (e.key === "ArrowUp" && isSelectionCollapsedAtBoundary("up")) {
                         if (recallHistory("up")) { e.preventDefault(); return; }
                     }
@@ -79,8 +79,17 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                         handleSend();
                     }
                 }} placeholder={placeholderText} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
-                <div data-testid="ai-input-actions" role="group" aria-label={lang?.startsWith("zh") ? "输入操作" : "Input actions"} style={inputActionsStyle}>
-                    <AssistantInputActions browseFile={browseFile} canSend={canSend} cancelSession={cancelSession} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleSend={handleSend} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputLocked={inputLocked} isBusy={isBusy} lang={lang} ready={ready} showBusySpinner={showBusySpinner} theme={t} themeMode={themeMode} voiceInput={voiceInput} />
+            </div>
+            {/* Bottom toolbar: [attach voice] ---- [hint] [send/cancel] */}
+            <div data-testid="ai-input-toolbar" style={toolbarStyle}>
+                <div style={toolbarLeftStyle} role="group" aria-label={lang?.startsWith("zh") ? "输入操作" : "Input actions"}>
+                    <AssistantInputActionsLeft browseFile={browseFile} inputLocked={inputLocked} lang={lang} ready={ready} theme={t} themeMode={themeMode} voiceInput={voiceInput} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} finishVoicePointer={finishVoicePointer} />
+                </div>
+                <div style={toolbarRightStyle}>
+                    <span aria-hidden="true" style={{ fontSize: "11px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
+                        {lang?.startsWith("zh") ? "Enter 发送" : "Enter to send"}
+                    </span>
+                    <AssistantInputActionsRight canSend={canSend} cancelSession={cancelSession} handleCancel={handleCancel} handleSend={handleSend} isBusy={isBusy} lang={lang} ready={ready} showBusySpinner={showBusySpinner} theme={t} themeMode={themeMode} />
                 </div>
             </div>
         </div>

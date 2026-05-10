@@ -123,7 +123,10 @@ func (f *fakeSeedGossipRepo) ListFlaggedPosts(context.Context, int, int) ([]*sto
 func (f *fakeSeedGossipRepo) GetPost(context.Context, string) (*store.GossipPost, error) {
 	return nil, nil
 }
-func (f *fakeSeedGossipRepo) DeletePost(context.Context, string) error     { return nil }
+func (f *fakeSeedGossipRepo) DeletePost(context.Context, string) error { return nil }
+func (f *fakeSeedGossipRepo) DeleteFlaggedPosts(context.Context) (int, error) {
+	return 0, nil
+}
 func (f *fakeSeedGossipRepo) LockPost(context.Context, string, bool) error { return nil }
 func (f *fakeSeedGossipRepo) FlagPost(context.Context, string, bool) error { return nil }
 func (f *fakeSeedGossipRepo) ReplaceAll(context.Context, []*store.GossipPost, []*store.GossipComment) error {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -12,9 +13,12 @@ const timeFmt = time.RFC3339
 
 // Store 鏄?SkillMarket 鐨?SQLite 瀛樺偍灞傦紝瀹炵幇鎵€鏈?Repository 鎺ュ彛銆?
 type Store struct {
-	db     *sql.DB
-	readDB *sql.DB
-	sync   SyncRecorder
+	db          *sql.DB
+	readDB      *sql.DB
+	sync        SyncRecorder
+	syncMu      sync.Mutex
+	syncRunning bool
+	syncPending bool
 }
 
 // NewStore 鍒涘缓 SkillMarket 瀛樺偍灞傚苟鎵ц杩佺Щ銆?

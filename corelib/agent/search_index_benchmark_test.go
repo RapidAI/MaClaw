@@ -17,6 +17,15 @@ func BenchmarkContentTrigramsBytes(b *testing.B) {
 	}
 }
 
+func BenchmarkLiteralSearchTermsFromText(b *testing.B) {
+	text := strings.Repeat("TargetSymbol target_symbol \u672c\u5730\u68c0\u7d22\u80fd\u529b \u5927\u4ed3\u5e93\u68c0\u7d22\u80fd\u529b target[0]+literal ", 128)
+	b.SetBytes(int64(len(text)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = literalSearchTermsFromText(text)
+	}
+}
+
 func BenchmarkIndexedSearchCandidates(b *testing.B) {
 	dir := b.TempDir()
 	for i := 0; i < 2000; i++ {

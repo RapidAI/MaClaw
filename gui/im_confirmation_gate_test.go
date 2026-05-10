@@ -12,15 +12,31 @@ import (
 )
 
 func TestHandleIMMessageWithProgressAndStream_ReturnsConfirmationBeforeExecution(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"intent\":\"coding\",\"confidence\":0.96,\"reason\":\"code change request\",\"evidence\":[\"bug fix\"]}"}}]}`)
+	}))
+	defer server.Close()
+
 	tempHome := t.TempDir()
 	app := &App{testHomeDir: tempHome}
 	cfg, err := app.LoadConfig()
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	cfg.MaclawLLMUrl = "http://example.com"
+	cfg.MaclawLLMUrl = server.URL
 	cfg.MaclawLLMModel = "test-model"
 	cfg.MaclawLLMProtocol = "openai"
+	cfg.MaclawLLMProviders = []corelib.MaclawLLMProvider{{
+		Name:          "Custom1",
+		URL:           server.URL,
+		Model:         "test-model",
+		Protocol:      "openai",
+		IsCustom:      true,
+		AuthType:      "none",
+		ContextLength: 16000,
+	}}
+	cfg.MaclawLLMCurrentProvider = "Custom1"
 	cfg.UIMode = "pro"
 	cfg.Projects = []corelib.ProjectConfig{{Id: "p1", Path: "D:/work/project"}}
 	cfg.CurrentProject = "p1"
@@ -251,10 +267,10 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 		t.Fatal("expected response")
 	}
 	approvedText := confirmationApprovedText(pending)
-	if !strings.Contains(approvedText, "[鎵ц涓婁笅鏂嘳") {
+	if !strings.Contains(approvedText, "[执行上下文]") {
 		t.Fatalf("expected approved text to carry execution context, got %q", approvedText)
 	}
-	if !strings.Contains(approvedText, "鐢ㄦ埛宸茬‘璁ゅ綋鍓嶆柟妗堬紝璇风洿鎺ュ紑濮嬫墽琛岋紝涓嶈鍐嶆璇锋眰纭") {
+	if !strings.Contains(approvedText, "用户已确认当前计划。直接开始执行，不要再次请求确认。") {
 		t.Fatalf("expected approved text to include confirmation directive, got %q", approvedText)
 	}
 	if resp.Error == "" {
@@ -274,14 +290,14 @@ func TestHandleIMMessageWithProgressAndStream_ApproveConfirmationResumesOriginal
 func TestNormalizeConfirmationIntentRequiresExactCategory(t *testing.T) {
 	cases := []struct {
 		input string
-		want  string
+		want  confirmationIntent
 	}{
-		{input: "confirm", want: "confirm"},
-		{input: " confirm. ", want: "confirm"},
-		{input: "cancel", want: "cancel"},
-		{input: "modify", want: "modify"},
-		{input: "not confirm", want: ""},
-		{input: "confirm or modify", want: ""},
+		{input: "confirm", want: confirmationIntentConfirm},
+		{input: " confirm. ", want: confirmationIntentConfirm},
+		{input: "cancel", want: confirmationIntentCancel},
+		{input: "modify", want: confirmationIntentModify},
+		{input: "not confirm", want: confirmationIntentUnknown},
+		{input: "confirm or modify", want: confirmationIntentUnknown},
 	}
 	for _, tc := range cases {
 		if got := normalizeConfirmationIntent(tc.input); got != tc.want {

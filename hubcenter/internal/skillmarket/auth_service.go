@@ -37,10 +37,11 @@ type PublicBaseURLProvider interface {
 
 // AuthService handles registration, login, activation, and identity verification.
 type AuthService struct {
-	store       *Store
-	mailer      *mail.Service
-	baseURL     string // static fallback
-	urlProvider PublicBaseURLProvider
+	store                *Store
+	mailer               *mail.Service
+	baseURL              string // static fallback
+	urlProvider          PublicBaseURLProvider
+	sessionSigningSecret []byte
 }
 
 // NewAuthService creates an AuthService.
@@ -51,6 +52,20 @@ func NewAuthService(store *Store, mailer *mail.Service, baseURL string) *AuthSer
 // SetPublicBaseURLProvider sets the dynamic URL provider (call after construction to avoid import cycles).
 func (a *AuthService) SetPublicBaseURLProvider(p PublicBaseURLProvider) {
 	a.urlProvider = p
+}
+
+// SetSessionSigningSecret enables locally verifiable session tokens for HA
+// clusters. Database-backed sessions remain supported for older clients.
+func (a *AuthService) SetSessionSigningSecret(secret string) {
+	if a == nil {
+		return
+	}
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		a.sessionSigningSecret = nil
+		return
+	}
+	a.sessionSigningSecret = []byte(secret)
 }
 
 // resolveBaseURL reads the configured hubcenter external URL, falling back to the static baseURL.
@@ -259,12 +274,28 @@ func (a *AuthService) VerifyIdentity(ctx context.Context, token string) (*Sessio
 
 // ValidateSession checks if a session token is valid.
 func (a *AuthService) ValidateSession(ctx context.Context, token string) (*Session, error) {
-	sess, err := a.store.GetSession(ctx, token)
-	if err != nil {
+	token = strings.TrimSpace(token)
+	if token == "" {
 		return nil, ErrTokenExpired
 	}
-	if time.Now().After(sess.ExpiresAt) {
-		_ = a.store.DeleteSession(ctx, token)
+	if revoked, err := a.store.IsSessionRevoked(ctx, token); err != nil {
+		return nil, err
+	} else if revoked {
+		return nil, ErrTokenExpired
+	}
+	sess, err := a.store.GetSession(ctx, token)
+	if err == nil {
+		if time.Now().After(sess.ExpiresAt) {
+			_ = a.store.DeleteSession(ctx, token)
+			return nil, ErrTokenExpired
+		}
+		return sess, nil
+	}
+	if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	sess, err = a.validateSignedSessionToken(token)
+	if err != nil {
 		return nil, ErrTokenExpired
 	}
 	return sess, nil
@@ -272,7 +303,17 @@ func (a *AuthService) ValidateSession(ctx context.Context, token string) (*Sessi
 
 // Logout deletes a session.
 func (a *AuthService) Logout(ctx context.Context, token string) error {
-	return a.store.DeleteSession(ctx, token)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil
+	}
+	var expiresAt time.Time
+	if sess, err := a.store.GetSession(ctx, token); err == nil && sess != nil {
+		expiresAt = sess.ExpiresAt
+	} else if sess, err := a.validateSignedSessionToken(token); err == nil && sess != nil {
+		expiresAt = sess.ExpiresAt
+	}
+	return a.store.DeleteAndRevokeSession(ctx, token, expiresAt)
 }
 
 // ResendActivation resends activation email for an unverified account.
@@ -416,11 +457,12 @@ func (a *AuthService) sendActivationEmail(ctx context.Context, userID, email str
 
 func (a *AuthService) createSession(ctx context.Context, user *SkillMarketUser) (*Session, error) {
 	now := time.Now()
+	expiresAt := now.Add(sessionExpiry)
 	sess := &Session{
-		Token:     generateToken(),
+		Token:     a.newSessionToken(user, now, expiresAt),
 		UserID:    user.ID,
 		Email:     user.Email,
-		ExpiresAt: now.Add(sessionExpiry),
+		ExpiresAt: expiresAt,
 		CreatedAt: now,
 	}
 	if err := a.store.CreateSession(ctx, sess); err != nil {

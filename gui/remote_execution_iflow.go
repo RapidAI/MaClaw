@@ -274,26 +274,26 @@ func acpMessageToText(data []byte) string {
 		return ""
 	}
 
-	switch msg.Type {
-	case "AssistantMessage":
+	switch normalizeIFlowACPMessageType(msg.Type) {
+	case iflowACPMessageAssistant:
 		var payload ACPAssistantPayload
 		if err := json.Unmarshal(msg.Payload, &payload); err == nil && payload.Content != "" {
 			return payload.Content
 		}
 
-	case "ToolCallMessage":
+	case iflowACPMessageToolCall:
 		var payload ACPToolCallPayload
 		if err := json.Unmarshal(msg.Payload, &payload); err == nil && payload.ToolName != "" {
 			return fmt.Sprintf("⚡ %s", payload.ToolName)
 		}
 
-	case "PlanMessage":
+	case iflowACPMessagePlan:
 		var payload ACPPlanPayload
 		if err := json.Unmarshal(msg.Payload, &payload); err == nil && payload.Plan != "" {
 			return payload.Plan
 		}
 
-	case "TaskFinishMessage":
+	case iflowACPMessageTaskFinish:
 		var payload ACPTaskFinishPayload
 		if err := json.Unmarshal(msg.Payload, &payload); err == nil {
 			if payload.Summary != "" {

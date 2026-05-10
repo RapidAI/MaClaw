@@ -201,7 +201,7 @@ func (a *App) ResumeProject(projectPath string) string {
 		return "记忆系统未初始化"
 	}
 
-	userID := "desktop-user"
+	userID := desktopUserID
 
 	// 0. Update config.CurrentProject so that GetCurrentProjectPath() returns
 	//    the target project. Without this, all downstream consumers

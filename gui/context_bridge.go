@@ -63,14 +63,10 @@ func (b *ContextBridge) ExtractFromEvents(projectPath string, events []Important
 
 	ctx := b.getOrCreate(projectPath)
 	for _, e := range events {
-		switch e.Type {
-		case "file.change", "file.create", "file.delete":
-			action := "modify"
-			if e.Type == "file.create" {
-				action = "create"
-			} else if e.Type == "file.delete" {
-				action = "delete"
-			}
+		eventType := normalizeSummaryEventType(e.Type)
+		switch {
+		case eventType.IsFileMutationEvent():
+			action := fileChangeActionForEventType(eventType).String()
 			ts := time.Unix(e.CreatedAt, 0)
 			ctx.FileChanges = append(ctx.FileChanges, FileChangeRecord{
 				File:      e.Summary,
@@ -78,7 +74,7 @@ func (b *ContextBridge) ExtractFromEvents(projectPath string, events []Important
 				Timestamp: ts,
 				SessionID: e.SessionID,
 			})
-		case "command.execute":
+		case eventType.IsCommandStarted() || isLegacyCommandExecuteEvent(e.Type):
 			ts := time.Unix(e.CreatedAt, 0)
 			if isSignificantCommand(e.Summary) {
 				ctx.Decisions = append(ctx.Decisions, DecisionRecord{
@@ -98,6 +94,10 @@ func (b *ContextBridge) ExtractFromEvents(projectPath string, events []Important
 		ctx.Decisions = ctx.Decisions[len(ctx.Decisions)-maxContextRecords:]
 	}
 	ctx.LastUpdated = time.Now()
+}
+
+func isLegacyCommandExecuteEvent(eventType string) bool {
+	return normalizeContextEventKind(eventType) == contextEventCommandExecute
 }
 
 func isSignificantCommand(cmd string) bool {

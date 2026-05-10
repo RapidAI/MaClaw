@@ -38,8 +38,8 @@ import (
 // RuntimeTaskInfo represents a single background task (local or SSH).
 type RuntimeTaskInfo struct {
 	TaskID    string
-	Source    string // "local" or "ssh"
-	Status    string
+	Source    runtimeTaskSource
+	Status    runtimeTaskStatus
 	Command   string
 	StartedAt time.Time
 	ExitCode  int    // only meaningful for local tasks when completed/failed
@@ -49,7 +49,7 @@ type RuntimeTaskInfo struct {
 // RuntimeSessionInfo represents a coding session or SSH connection.
 type RuntimeSessionInfo struct {
 	ID     string
-	Source string // "coding" or "ssh"
+	Source runtimeSessionSource
 	Status string
 	Label  string // host label for SSH, empty for coding
 }
@@ -92,8 +92,8 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 			t.Lock()
 			rs.Tasks = append(rs.Tasks, RuntimeTaskInfo{
 				TaskID:    t.TaskID,
-				Source:    "local",
-				Status:    t.Status,
+				Source:    runtimeTaskSourceLocal,
+				Status:    normalizeRuntimeTaskStatus(t.Status),
 				Command:   t.Command,
 				StartedAt: t.StartedAt,
 				ExitCode:  t.ExitCode,
@@ -107,8 +107,8 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 		for _, t := range h.bgTaskMgr.ListTasks() {
 			rs.Tasks = append(rs.Tasks, RuntimeTaskInfo{
 				TaskID:    t.TaskID,
-				Source:    "ssh",
-				Status:    t.Status,
+				Source:    runtimeTaskSourceSSH,
+				Status:    normalizeRuntimeTaskStatus(t.Status),
 				Command:   t.Command,
 				StartedAt: t.StartedAt,
 				PID:       t.PID,
@@ -122,7 +122,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 			s.mu.RLock()
 			rs.Sessions = append(rs.Sessions, RuntimeSessionInfo{
 				ID:     s.ID,
-				Source: "coding",
+				Source: runtimeSessionSourceCoding,
 				Status: string(s.Status),
 			})
 			s.mu.RUnlock()
@@ -135,7 +135,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 			summary := s.GetSummary()
 			rs.Sessions = append(rs.Sessions, RuntimeSessionInfo{
 				ID:     s.ID,
-				Source: "ssh",
+				Source: runtimeSessionSourceSSH,
 				Status: summary.Status,
 				Label:  summary.HostLabel,
 			})
@@ -153,9 +153,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 // This is a read-only tool — it does not modify any state.
 func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 	category, _ := args["category"].(string)
-	if category == "" {
-		category = "all"
-	}
+	categoryKind := normalizeAgentStatusCategory(category)
 	taskID, _ := args["task_id"].(string)
 
 	// If a specific task_id is provided, do a targeted lookup with log tail.
@@ -167,7 +165,7 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 	var sections []string
 
 	// Main agent loop status — always included for "all" category.
-	if category == "all" {
+	if categoryKind.IncludesMainAgent() {
 		if rs.MainAgentRunning {
 			taskPreview := rs.MainAgentTask
 			if len([]rune(taskPreview)) > 80 {
@@ -182,29 +180,29 @@ func (h *IMMessageHandler) toolAgentStatus(args map[string]interface{}) string {
 	}
 
 	// Filter and format tasks by category.
-	if category == "all" || category == "local_tasks" {
+	if categoryKind.IncludesLocalTasks() {
 		if s := formatTaskSection("📋 **本地后台任务**", rs.Tasks, "local"); s != "" {
 			sections = append(sections, s)
 		}
 	}
-	if category == "all" || category == "ssh_tasks" {
+	if categoryKind.IncludesSSHTasks() {
 		if s := formatTaskSection("🖥️ **SSH 后台任务**", rs.Tasks, "ssh"); s != "" {
 			sections = append(sections, s)
 		}
 	}
-	if category == "all" || category == "sessions" {
+	if categoryKind.IncludesCodingSessions() {
 		if s := formatSessionSection("💻 **编程会话**", rs.Sessions, "coding"); s != "" {
 			sections = append(sections, s)
 		}
 	}
-	if category == "all" || category == "ssh_sessions" {
+	if categoryKind.IncludesSSHSessions() {
 		if s := formatSessionSection("🔗 **SSH 连接**", rs.Sessions, "ssh"); s != "" {
 			sections = append(sections, s)
 		}
 	}
 
 	if len(sections) == 0 {
-		return fmt.Sprintf("查询类别 %q 没有活跃的资源。", category)
+		return fmt.Sprintf("查询类别 %q 没有活跃的资源。", categoryKind.String())
 	}
 
 	return strings.Join(sections, "\n\n")
@@ -234,7 +232,7 @@ func (h *IMMessageHandler) agentStatusByTaskID(taskID string) string {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-func formatTaskSection(header string, tasks []RuntimeTaskInfo, source string) string {
+func formatTaskSection(header string, tasks []RuntimeTaskInfo, source runtimeTaskSource) string {
 	var b strings.Builder
 	count := 0
 	for _, t := range tasks {
@@ -245,11 +243,11 @@ func formatTaskSection(header string, tasks []RuntimeTaskInfo, source string) st
 			b.WriteString(header + "\n")
 		}
 		count++
-		icon := runtimeStatusIcon(t.Status)
+		icon := t.Status.Icon()
 		cmdShort := truncateRunesForSubAgent(t.Command, 60)
 		elapsed := time.Since(t.StartedAt).Round(time.Second)
 		fmt.Fprintf(&b, "%s %s [%s] 已运行=%s 命令=%s", icon, t.TaskID, t.Status, elapsed, cmdShort)
-		if (t.Status == "completed" || t.Status == "failed") && t.Source == "local" {
+		if t.Status.HasExitCode() && t.Source == runtimeTaskSourceLocal {
 			fmt.Fprintf(&b, " 退出码=%d", t.ExitCode)
 		}
 		b.WriteString("\n")
@@ -257,7 +255,7 @@ func formatTaskSection(header string, tasks []RuntimeTaskInfo, source string) st
 	return b.String()
 }
 
-func formatSessionSection(header string, sessions []RuntimeSessionInfo, source string) string {
+func formatSessionSection(header string, sessions []RuntimeSessionInfo, source runtimeSessionSource) string {
 	var b strings.Builder
 	count := 0
 	for _, s := range sessions {
@@ -277,25 +275,10 @@ func formatSessionSection(header string, sessions []RuntimeSessionInfo, source s
 	return b.String()
 }
 
-func runtimeStatusIcon(status string) string {
-	switch status {
-	case "running", "pending":
-		return "🔄"
-	case "completed":
-		return "✅"
-	case "failed":
-		return "❌"
-	case "killed":
-		return "⏹️"
-	default:
-		return "❓"
-	}
-}
-
 // formatSSHTaskStatusForBtw formats an SSH background task status for /btw display.
 func formatSSHTaskStatusForBtw(s *remote.BackgroundTaskStatus) string {
 	var b strings.Builder
-	icon := runtimeStatusIcon(s.Status)
+	icon := normalizeRuntimeTaskStatus(s.Status).Icon()
 	fmt.Fprintf(&b, "%s SSH 任务 %s: %s\n", icon, s.TaskID, s.Status)
 	fmt.Fprintf(&b, "已运行: %s | 日志大小: %s\n", s.Elapsed, s.LogSize)
 	if s.LogTail != "" {
@@ -318,7 +301,7 @@ func pendingBackgroundTaskHintFromStatus(rs RuntimeStatus, loopStart time.Time) 
 
 	for _, t := range rs.Tasks {
 		// Only running/pending tasks started in this loop.
-		if t.Status != "running" && t.Status != "pending" {
+		if !t.Status.IsActive() {
 			continue
 		}
 		if t.StartedAt.Before(loopStart) {
@@ -332,11 +315,11 @@ func pendingBackgroundTaskHintFromStatus(rs RuntimeStatus, loopStart time.Time) 
 		}
 
 		switch t.Source {
-		case "ssh":
+		case runtimeTaskSourceSSH:
 			hints = append(hints, fmt.Sprintf(
 				"- SSH 后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 ssh(action=\"check_task\", task_id=\"%s\") 查看进度",
 				t.TaskID, elapsed, cmd, t.TaskID))
-		case "local":
+		case runtimeTaskSourceLocal:
 			hints = append(hints, fmt.Sprintf(
 				"- 本地后台任务 %s 仍在运行（已 %s），命令: %s → 请调用 async_wait(action=\"check\", task_id=\"%s\") 查看进度",
 				t.TaskID, elapsed, cmd, t.TaskID))

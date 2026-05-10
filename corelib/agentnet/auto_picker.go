@@ -159,7 +159,7 @@ func (p *AutoTaskPicker) loop() {
 
 func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	if !p.pollMu.TryLock() {
-		p.setPollResult("busy", 0)
+		p.setPollResult(autoPollStatusBusy.String(), 0)
 		return p.GetStatus()
 	}
 	defer p.pollMu.Unlock()
@@ -167,16 +167,16 @@ func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	p.mu.Lock()
 	p.lastPollAt = time.Now()
 	p.lastError = ""
-	p.lastPollStatus = "checking"
+	p.lastPollStatus = autoPollStatusChecking.String()
 	p.lastDiscoveredCnt = 0
 	activeCount := 0
 	for _, r := range p.activeTasks {
-		if r.Status == "executing" || r.Status == "claiming" || r.Status == "submitting" {
+		if normalizeAutoRunStatus(r.Status).IsActive() {
 			activeCount++
 		}
 	}
 	if activeCount >= p.maxConcurrent {
-		p.lastPollStatus = "busy"
+		p.lastPollStatus = autoPollStatusBusy.String()
 		p.mu.Unlock()
 		p.notifyChange()
 		return p.GetStatus()
@@ -193,7 +193,7 @@ func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 		return p.GetStatus()
 	}
 	if !client.IsRunning() {
-		p.setPollResult("offline", 0)
+		p.setPollResult(autoPollStatusOffline.String(), 0)
 		return p.GetStatus()
 	}
 
@@ -203,16 +203,16 @@ func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 		return p.GetStatus()
 	}
 	if len(tasks) == 0 {
-		p.setPollResult("no_tasks", 0)
+		p.setPollResult(autoPollStatusNoTasks.String(), 0)
 		return p.GetStatus()
 	}
 
 	selected := p.selectTask(tasks, minReward, preferredTags)
 	if selected == nil {
-		p.setPollResult("no_matching_tasks", len(tasks))
+		p.setPollResult(autoPollStatusNoMatchingTasks.String(), len(tasks))
 		return p.GetStatus()
 	}
-	p.setPollResult("picked", len(tasks))
+	p.setPollResult(autoPollStatusPicked.String(), len(tasks))
 	go p.executeTask(client, selected, executor)
 	return p.GetStatus()
 }
@@ -222,8 +222,7 @@ func (p *AutoTaskPicker) discoverTasks(client *Client, hubURL string) ([]Task, e
 	if err == nil && len(matched) > 0 {
 		var open []Task
 		for _, t := range matched {
-			s := strings.ToLower(t.TaskStatus)
-			if s == "open" || s == "created" {
+			if normalizeTaskAvailabilityStatus(t.TaskStatus).CanPick() {
 				open = append(open, t)
 			}
 		}
@@ -240,8 +239,7 @@ func (p *AutoTaskPicker) discoverTasks(client *Client, hubURL string) ([]Task, e
 	}
 	var open []Task
 	for _, t := range netTasks {
-		s := strings.ToLower(t.TaskStatus)
-		if s == "open" || s == "created" {
+		if normalizeTaskAvailabilityStatus(t.TaskStatus).CanPick() {
 			open = append(open, t)
 		}
 	}
@@ -316,7 +314,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 
 	run := &autoTaskRun{
 		TaskID: task.ID, Title: task.Title, Reward: task.Reward,
-		Status: "claiming", StartedAt: time.Now(),
+		Status: autoRunStatusClaiming.String(), StartedAt: time.Now(),
 	}
 	p.mu.Lock()
 	p.activeTasks[task.ID] = run
@@ -330,7 +328,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 		}
 	}
 
-	p.setRunStatus(run, "executing")
+	p.setRunStatus(run, autoRunStatusExecuting.String())
 	description := task.Title
 	if task.Description != "" {
 		description = task.Title + "\n\n" + task.Description
@@ -347,14 +345,14 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 	run.Result = result
 	p.mu.Unlock()
 
-	p.setRunStatus(run, "submitting")
+	p.setRunStatus(run, autoRunStatusSubmitting.String())
 	if err := client.SubmitTaskDeliverable(task, result); err != nil {
 		p.failTask(run, FormatTaskError("submit", err, lang))
 		return
 	}
 
 	p.mu.Lock()
-	run.Status = "done"
+	run.Status = autoRunStatusDone.String()
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)
@@ -393,14 +391,13 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 		msg := FormatTaskError("get_task", err, lang)
 		return map[string]interface{}{"ok": false, "error": msg}
 	}
-	normalizedStatus := strings.ToLower(task.TaskStatus)
-	if normalizedStatus != "open" && normalizedStatus != "created" && normalizedStatus != "settled" && normalizedStatus != "" {
+	if !normalizeTaskAvailabilityStatus(task.TaskStatus).CanPick() {
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("task status is '%s', only 'open'/'created' tasks can be picked", task.TaskStatus)}
 	}
 
 	run := &autoTaskRun{
 		TaskID: task.ID, Title: task.Title, Reward: task.Reward,
-		Status: "claiming", StartedAt: time.Now(),
+		Status: autoRunStatusClaiming.String(), StartedAt: time.Now(),
 	}
 	p.mu.Lock()
 	p.activeTasks[task.ID] = run
@@ -415,7 +412,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 		}
 	}
 
-	p.setRunStatus(run, "executing")
+	p.setRunStatus(run, autoRunStatusExecuting.String())
 	description := task.Title
 	if task.Description != "" {
 		description = task.Title + "\n\n" + task.Description
@@ -433,7 +430,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	run.Result = execResult
 	p.mu.Unlock()
 
-	p.setRunStatus(run, "submitting")
+	p.setRunStatus(run, autoRunStatusSubmitting.String())
 	if submitErr := client.SubmitTaskDeliverable(task, execResult); submitErr != nil {
 		msg := FormatTaskError("submit", submitErr, lang)
 		p.failTask(run, msg)
@@ -441,7 +438,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	}
 
 	p.mu.Lock()
-	run.Status = "done"
+	run.Status = autoRunStatusDone.String()
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)
@@ -460,12 +457,12 @@ func (p *AutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
 
 func (p *AutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.mu.Lock()
-	run.Status = "failed"
+	run.Status = autoRunStatusFailed.String()
 	run.Error = errMsg
 	p.failedCount++
 	delete(p.activeTasks, run.TaskID)
 	p.lastError = errMsg
-	p.lastPollStatus = "error"
+	p.lastPollStatus = autoPollStatusError.String()
 	p.mu.Unlock()
 	p.notifyChange()
 	fmt.Printf("[auto-task-picker] task %q failed: %s\n", run.Title, errMsg)
@@ -474,7 +471,7 @@ func (p *AutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 func (p *AutoTaskPicker) setError(msg string) {
 	p.mu.Lock()
 	p.lastError = msg
-	p.lastPollStatus = "error"
+	p.lastPollStatus = autoPollStatusError.String()
 	p.mu.Unlock()
 	p.notifyChange()
 }

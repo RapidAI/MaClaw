@@ -25,6 +25,18 @@ type loopTraceRequest struct {
 	Messages []map[string]interface{} `json:"messages"`
 }
 
+func traceTrialObservedEvent(toolName string, outcome toolOutcome) TraceEvent {
+	return TraceEvent{
+		Kind:    "trial.observed",
+		Title:   "Trial outcome",
+		Summary: "command=npm test",
+		ToolOutcomes: []TraceToolObservation{{
+			ToolName: toolName,
+			Outcome:  outcome.String(),
+		}},
+	}
+}
+
 func TestRunAgentLoop_TrialReflect_ClearsRepeatGuardAfterSuccess(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
@@ -1860,8 +1872,8 @@ func TestFinalizeTraceResult_PersistsRecoveredTrialReflectSummary(t *testing.T) 
 	ctx.JobID = run.JobID
 	ctx.SetState("completed")
 
-	h.traceService.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=failed command=npm test"})
-	h.traceService.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=succeeded command=npm test"})
+	h.traceService.AppendEvent(run.RunID, traceTrialObservedEvent("bash", toolOutcomeFailed))
+	h.traceService.AppendEvent(run.RunID, traceTrialObservedEvent("bash", toolOutcomeSucceeded))
 	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{SourceKind: "adaptive_retry", Category: "args", Summary: "retry decision", ContentSnippet: "invalid parameter"})
 	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{SourceKind: "trial_reflect", Category: "repeat_guard", Summary: "avoid repeating failed actions", ContentSnippet: "bash"})
 
@@ -1902,7 +1914,7 @@ func TestFinalizeTraceResult_DoesNotPersistBenignTrialReflectSummary(t *testing.
 	ctx.JobID = run.JobID
 	ctx.SetState("completed")
 
-	h.traceService.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=succeeded command=npm test"})
+	h.traceService.AppendEvent(run.RunID, traceTrialObservedEvent("bash", toolOutcomeSucceeded))
 
 	resp := h.finalizeTraceResult(ctx, &IMAgentResponse{Text: "done"}, "done", "")
 	view, ok := h.traceService.GetTrace(run.RunID)
@@ -1959,8 +1971,8 @@ func TestBuildTraceEvidencePrompt_IncludesPersistedTrialReflectSummary(t *testin
 	ctx.JobID = run.JobID
 	ctx.SetState("completed")
 
-	h.traceService.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=failed command=npm test"})
-	h.traceService.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=succeeded command=npm test"})
+	h.traceService.AppendEvent(run.RunID, traceTrialObservedEvent("bash", toolOutcomeFailed))
+	h.traceService.AppendEvent(run.RunID, traceTrialObservedEvent("bash", toolOutcomeSucceeded))
 	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{SourceKind: "adaptive_retry", Category: "args", Summary: "retry decision", ContentSnippet: "invalid parameter"})
 	h.traceService.AppendEvidence(run.RunID, EvidenceRecord{SourceKind: "trial_reflect", Category: "repeat_guard", Summary: "avoid repeating failed actions", ContentSnippet: "bash"})
 
@@ -2004,7 +2016,7 @@ func TestBuildTraceEvidencePrompt_SkipsBenignTrialReflectSummary(t *testing.T) {
 	ctx.JobID = run.JobID
 	ctx.SetState("completed")
 
-	h.traceService.AppendEvent(run.RunID, TraceEvent{Kind: "trial.observed", Title: "Trial outcome", Summary: "bash=succeeded command=npm test"})
+	h.traceService.AppendEvent(run.RunID, traceTrialObservedEvent("bash", toolOutcomeSucceeded))
 
 	h.finalizeTraceResult(ctx, &IMAgentResponse{Text: "done"}, "done", "")
 	prompt := h.buildTraceEvidencePrompt("desktop-user", "npm test success")

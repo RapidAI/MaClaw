@@ -39,7 +39,7 @@ type AgentNetAutoTaskPicker struct {
 	totalEarned       float64
 	lastPollAt        time.Time
 	lastError         string
-	lastPollStatus    string
+	lastPollStatus    agentNetAutoPollStatus
 	lastDiscoveredCnt int
 }
 
@@ -166,7 +166,7 @@ func (p *AgentNetAutoTaskPicker) GetStatus() map[string]interface{} {
 		"total_earned":          p.totalEarned,
 		"last_poll_at":          formatTimeOrEmpty(p.lastPollAt),
 		"last_error":            p.lastError,
-		"last_poll_status":      p.lastPollStatus,
+		"last_poll_status":      string(p.lastPollStatus),
 		"last_discovered_count": p.lastDiscoveredCnt,
 	}
 }
@@ -209,7 +209,7 @@ func (p *AgentNetAutoTaskPicker) loop() {
 // Protected by pollMu to prevent concurrent invocations from loop + TriggerNow.
 func (p *AgentNetAutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	if !p.pollMu.TryLock() {
-		p.setPollResult("busy", 0)
+		p.setPollResult(agentNetAutoPollStatusBusy, 0)
 		return p.GetStatus()
 	}
 	defer p.pollMu.Unlock()
@@ -217,18 +217,18 @@ func (p *AgentNetAutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	p.mu.Lock()
 	p.lastPollAt = time.Now()
 	p.lastError = ""
-	p.lastPollStatus = "checking"
+	p.lastPollStatus = agentNetAutoPollStatusChecking
 	p.lastDiscoveredCnt = 0
 
 	// Check if we're already at max concurrent tasks.
 	activeCount := 0
 	for _, r := range p.activeTasks {
-		if r.Status == "executing" || r.Status == "claiming" || r.Status == "submitting" {
+		if normalizeAgentNetAutoRunStatus(r.Status).IsActive() {
 			activeCount++
 		}
 	}
 	if activeCount >= p.maxConcurrent {
-		p.lastPollStatus = "busy"
+		p.lastPollStatus = agentNetAutoPollStatusBusy
 		p.mu.Unlock()
 		p.notifyChange()
 		return p.GetStatus()
@@ -249,7 +249,7 @@ func (p *AgentNetAutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	// Step 1: Check if AgentNet is online.
 	if !client.IsRunning() {
 		// Not an error - just not online yet. Don't spam lastError.
-		p.setPollResult("offline", 0)
+		p.setPollResult(agentNetAutoPollStatusOffline, 0)
 		return p.GetStatus()
 	}
 
@@ -260,17 +260,17 @@ func (p *AgentNetAutoTaskPicker) pollAndPickTask() map[string]interface{} {
 		return p.GetStatus()
 	}
 	if len(tasks) == 0 {
-		p.setPollResult("no_tasks", 0)
+		p.setPollResult(agentNetAutoPollStatusNoTasks, 0)
 		return p.GetStatus() // no tasks available, that's fine
 	}
 
 	// Step 3: Select the best task.
 	selected := p.selectTask(tasks, minReward, preferredTags)
 	if selected == nil {
-		p.setPollResult("no_matching_tasks", len(tasks))
+		p.setPollResult(agentNetAutoPollStatusNoMatchingTasks, len(tasks))
 		return p.GetStatus() // no suitable task found
 	}
-	p.setPollResult("picked", len(tasks))
+	p.setPollResult(agentNetAutoPollStatusPicked, len(tasks))
 
 	// Step 4: Claim and execute the task.
 	go p.executeTask(client, selected, executor)
@@ -284,7 +284,7 @@ func (p *AgentNetAutoTaskPicker) discoverTasks(client *AgentNetClient, hubURL st
 	if err == nil && len(matched) > 0 {
 		var open []AgentNetTask
 		for _, t := range matched {
-			if t.Status == "open" {
+			if normalizeAgentNetTaskAvailabilityStatus(t.Status) == agentNetTaskAvailabilityOpen {
 				open = append(open, t)
 			}
 		}
@@ -304,7 +304,7 @@ func (p *AgentNetAutoTaskPicker) discoverTasks(client *AgentNetClient, hubURL st
 	}
 	var open []AgentNetTask
 	for _, t := range netTasks {
-		if t.Status == "open" {
+		if normalizeAgentNetTaskAvailabilityStatus(t.Status) == agentNetTaskAvailabilityOpen {
 			open = append(open, t)
 		}
 	}
@@ -389,7 +389,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 		TaskID:    task.ID,
 		Title:     task.Title,
 		Reward:    task.Reward,
-		Status:    "claiming",
+		Status:    string(agentNetAutoRunStatusClaiming),
 		StartedAt: time.Now(),
 	}
 
@@ -408,7 +408,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 	}
 
 	// Step 2: Execute via agent.
-	p.setRunStatus(run, "executing")
+	p.setRunStatus(run, agentNetAutoRunStatusExecuting)
 
 	description := task.Title
 	if task.Description != "" {
@@ -429,7 +429,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 	p.mu.Unlock()
 
 	// Step 3: Submit the result.
-	p.setRunStatus(run, "submitting")
+	p.setRunStatus(run, agentNetAutoRunStatusSubmitting)
 
 	if err := client.SubmitTaskDeliverable(task, result); err != nil {
 		p.failTask(run, agentnet.FormatTaskError("submit", err, lang))
@@ -438,7 +438,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 
 	// Success!
 	p.mu.Lock()
-	run.Status = "done"
+	run.Status = string(agentNetAutoRunStatusDone)
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)
@@ -449,9 +449,9 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 }
 
 // setRunStatus updates a run's status under the lock and notifies.
-func (p *AgentNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
+func (p *AgentNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status agentNetAutoRunStatus) {
 	p.mu.Lock()
-	run.Status = status
+	run.Status = string(status)
 	p.mu.Unlock()
 	p.notifyChange()
 }
@@ -459,12 +459,12 @@ func (p *AgentNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
 // failTask marks a task run as failed and cleans up.
 func (p *AgentNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.mu.Lock()
-	run.Status = "failed"
+	run.Status = string(agentNetAutoRunStatusFailed)
 	run.Error = errMsg
 	p.failedCount++
 	delete(p.activeTasks, run.TaskID)
 	p.lastError = errMsg
-	p.lastPollStatus = "error"
+	p.lastPollStatus = agentNetAutoPollStatusError
 	p.mu.Unlock()
 	p.notifyChange()
 
@@ -475,12 +475,12 @@ func (p *AgentNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 func (p *AgentNetAutoTaskPicker) setError(msg string) {
 	p.mu.Lock()
 	p.lastError = msg
-	p.lastPollStatus = "error"
+	p.lastPollStatus = agentNetAutoPollStatusError
 	p.mu.Unlock()
 	p.notifyChange()
 }
 
-func (p *AgentNetAutoTaskPicker) setPollResult(status string, discovered int) {
+func (p *AgentNetAutoTaskPicker) setPollResult(status agentNetAutoPollStatus, discovered int) {
 	p.mu.Lock()
 	p.lastPollStatus = status
 	p.lastDiscoveredCnt = discovered
@@ -535,8 +535,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 	}
 	// Allow picking tasks that are "open" or have been settled locally but are
 	// still open on the network (the Hub is the source of truth for network tasks).
-	normalizedStatus := strings.ToLower(task.Status)
-	if normalizedStatus != "open" && normalizedStatus != "settled" && normalizedStatus != "" {
+	if !normalizeAgentNetTaskAvailabilityStatus(task.Status).CanPick() {
 		return map[string]interface{}{"ok": false, "error": fmt.Sprintf("task status is '%s', only 'open' tasks can be picked", task.Status)}
 	}
 
@@ -544,7 +543,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 		TaskID:    task.ID,
 		Title:     task.Title,
 		Reward:    task.Reward,
-		Status:    "claiming",
+		Status:    string(agentNetAutoRunStatusClaiming),
 		StartedAt: time.Now(),
 	}
 
@@ -563,7 +562,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 	}
 
 	// Step 2: Execute via agent.
-	p.setRunStatus(run, "executing")
+	p.setRunStatus(run, agentNetAutoRunStatusExecuting)
 	description := task.Title
 	if task.Description != "" {
 		description = task.Title + "\n\n" + task.Description
@@ -583,7 +582,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 	p.mu.Unlock()
 
 	// Step 3: Submit the result.
-	p.setRunStatus(run, "submitting")
+	p.setRunStatus(run, agentNetAutoRunStatusSubmitting)
 	if submitErr := client.SubmitTaskDeliverable(task, execResult); submitErr != nil {
 		msg := agentnet.FormatTaskError("submit", submitErr, lang)
 		p.failTask(run, msg)
@@ -592,7 +591,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 
 	// Success!
 	p.mu.Lock()
-	run.Status = "done"
+	run.Status = string(agentNetAutoRunStatusDone)
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)

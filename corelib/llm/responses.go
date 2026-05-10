@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
@@ -38,17 +37,7 @@ func BuildResponsesAPIRequestData(
 	messages []interface{},
 	opts ResponsesAPIRequestOptions,
 ) (endpoint string, body []byte, err error) {
-	endpoint = strings.TrimRight(cfg.URL, "/")
-	// For chatgpt.com/backend-api (Codex subscription), use /codex/responses
-	// For api.openai.com/v1 (API key), use /responses
-	if strings.Contains(endpoint, "chatgpt.com") {
-		if !strings.HasSuffix(endpoint, "/codex/responses") {
-			endpoint = strings.TrimSuffix(endpoint, "/codex")
-			endpoint += "/codex/responses"
-		}
-	} else {
-		endpoint += "/responses"
-	}
+	endpoint = BuildResponsesEndpoint(cfg.URL)
 
 	converted := ConvertToResponsesInput(messages)
 
@@ -97,7 +86,7 @@ func NewResponsesAPIRequest(
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}
 	// Codex subscription headers for chatgpt.com/backend-api
-	if strings.Contains(cfg.URL, "chatgpt.com") {
+	if IsCodexSubscriptionEndpoint(cfg.URL) {
 		req.Header.Set("OpenAI-Beta", "responses=experimental")
 		if accountID, _ := oauth.ExtractAccountIDFromJWT(cfg.Key); accountID != "" {
 			req.Header.Set("chatgpt-account-id", accountID)

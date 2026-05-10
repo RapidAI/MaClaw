@@ -41,7 +41,7 @@ type weixinGatewayManager struct {
 func newWeixinGatewayManager(app *App) *weixinGatewayManager {
 	return &weixinGatewayManager{
 		app:    app,
-		status: "disconnected",
+		status: string(gatewayConnectionStatusDisconnected),
 	}
 }
 
@@ -58,7 +58,7 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = "disconnected"
+			m.status = string(gatewayConnectionStatusDisconnected)
 			m.mu.Unlock()
 			_ = gw.Stop()
 		} else {
@@ -67,7 +67,7 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 		// Always notify Hub to release gateway claim, even if local gateway
 		// was already nil — Hub may still hold a stale claim from a previous run.
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim("weixin")
+			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformWeixin)
 			log.Printf("[weixin-mgr] sent gateway unclaim to hub")
 		}
 		if gw != nil {
@@ -115,7 +115,7 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 	if err := gw.Start(context.Background()); err != nil {
 		log.Printf("[weixin-mgr] start failed: %v", err)
 		m.mu.Lock()
-		m.status = "error"
+		m.status = string(gatewayConnectionStatusError)
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -127,7 +127,7 @@ func (m *weixinGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = "disconnected"
+	m.status = string(gatewayConnectionStatusDisconnected)
 	m.lastToken = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -156,24 +156,25 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
-	if status == "connected" {
+	normalized := normalizeGatewayConnectionStatus(status)
+	if normalized == gatewayConnectionStatusConnected {
 		// In local mode, skip Hub gateway claim.
 		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsWeixinLocalMode() {
 			return
 		}
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("weixin")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformWeixin)
 		}
 	}
 
-	if status == "session_expired" {
+	if normalized == gatewayConnectionStatusSessionExpired {
 		wl.Log("mgr.status", "---", "-", "session expired ->tearing down gateway and releasing hub claim")
 		log.Printf("[weixin-mgr] session expired, tearing down gateway")
 
 		// Release Hub gateway claim so Hub doesn't route replies to a dead gateway.
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim("weixin")
+			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformWeixin)
 		}
 
 		// Tear down the gateway instance so HandleGatewayReply won't try to use it.
@@ -186,7 +187,7 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 		gw := m.gateway
 		m.gateway = nil
 		m.lastToken = ""
-		m.status = "disconnected"
+		m.status = string(gatewayConnectionStatusDisconnected)
 		lh := m.localHandler
 		m.localHandler = nil
 		m.mu.Unlock()
@@ -234,6 +235,11 @@ func (m *weixinGatewayManager) resetLocalHandler() {
 //   - Hub mode fallback: if Hub is unavailable, notify user and fall back to local
 func (m *weixinGatewayManager) onIncomingMessage(msg weixin.IncomingMessage) {
 	wl := weixin.GetWxLog()
+	if isPassthroughSlashText(msg.Text) {
+		wl.Log("mgr.incoming", "---", msg.FromUserID, "ROUTE -> passthrough")
+		m.handleLocalMessage(msg)
+		return
+	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		wl.Log("mgr.incoming", "IN", msg.FromUserID, "ERR LoadConfig: %v", err)
@@ -321,7 +327,7 @@ func (m *weixinGatewayManager) forwardToHub(msg weixin.IncomingMessage) {
 		payload["context_token"] = msg.ContextToken
 	}
 
-	if err := hubClient.SendIMGatewayMessage("weixin", payload); err != nil {
+	if err := hubClient.SendIMGatewayMessage(imGatewayPlatformWeixin, payload); err != nil {
 		wl.Log("mgr.forward", "OUT", msg.FromUserID, "ERR SendIMGatewayMessage: %v, fallback to local", err)
 		log.Printf("[weixin-mgr] forwardToHub SendIMGatewayMessage error: %v, falling back to local", err)
 		m.handleLocalMessage(msg)
@@ -431,6 +437,30 @@ func (m *weixinGatewayManager) ensureLocalHandler() *IMMessageHandler {
 // and sends the response back via the WeChat API.
 func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	wl := weixin.GetWxLog()
+	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(msg.Text, "weixin:"+msg.FromUserID); handled {
+		m.mu.Lock()
+		gw := m.gateway
+		m.mu.Unlock()
+		if gw != nil {
+			contextToken := msg.ContextToken
+			if contextToken == "" {
+				contextToken = gw.GetContextToken(msg.FromUserID)
+			}
+			reply := resp.Text
+			if reply == "" {
+				reply = resp.Error
+			}
+			if reply == "" {
+				reply = "(no output)"
+			}
+			_ = gw.SendText(context.Background(), weixin.OutgoingText{
+				ToUserID:     msg.FromUserID,
+				Text:         reply,
+				ContextToken: contextToken,
+			})
+		}
+		return
+	}
 	// Check LLM is configured before entering the agent loop.
 	if !m.app.isMaclawLLMConfigured() {
 		wl.Log("mgr.local", "---", msg.FromUserID, "ERR LLM not configured")
@@ -468,7 +498,7 @@ func (m *weixinGatewayManager) handleLocalMessage(msg weixin.IncomingMessage) {
 	text := msg.Text
 	var attachments []MessageAttachment
 	if msg.MediaType != "" && len(msg.MediaData) > 0 {
-		if msg.MediaType == "image" {
+		if normalizeIMMediaKind(msg.MediaType).IsImage() {
 			// Pass image as a proper attachment for multimodal vision.
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, ""))
 		} else {
@@ -833,8 +863,8 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 		wl.Log("mgr.hubReply", "---", reply.PlatformUID, "ctx_token resolved (from_payload=%v)", reply.ContextToken != "")
 	}
 
-	switch reply.ReplyType {
-	case "text":
+	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
+	case gatewayReplyTypeText:
 		if err := gw.SendText(context.Background(), weixin.OutgoingText{
 			ToUserID:     reply.PlatformUID,
 			Text:         textutil.StripMarkdown(reply.Text),
@@ -845,7 +875,7 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 		} else {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendText text_len=%d", len(reply.Text))
 		}
-	case "image":
+	case gatewayReplyTypeImage:
 		data, err := base64.StdEncoding.DecodeString(reply.ImageData)
 		if err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR image base64 decode: %v", err)
@@ -857,14 +887,14 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			Caption:      reply.Caption,
 			ContextToken: contextToken,
 			FileData:     data,
-			MediaType:    "image",
+			MediaType:    imMediaImage.String(),
 		}); err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(image): %v", err)
 			log.Printf("[weixin-mgr] SendMedia(image) error (to=%s): %v", reply.PlatformUID, err)
 		} else {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(image) size=%d", len(data))
 		}
-	case "file":
+	case gatewayReplyTypeFile:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR file base64 decode: %v", err)
@@ -877,14 +907,14 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			ContextToken: contextToken,
 			FileData:     data,
 			FileName:     reply.FileName,
-			MediaType:    "file",
+			MediaType:    imMediaFile.String(),
 		}); err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(file): %v", err)
 			log.Printf("[weixin-mgr] SendMedia(file) error (to=%s): %v", reply.PlatformUID, err)
 		} else {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(file) name=%s size=%d", reply.FileName, len(data))
 		}
-	case "video":
+	case gatewayReplyTypeVideo:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR video base64 decode: %v", err)
@@ -897,14 +927,14 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			ContextToken: contextToken,
 			FileData:     data,
 			FileName:     reply.FileName,
-			MediaType:    "video",
+			MediaType:    imMediaVideo.String(),
 		}); err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(video): %v", err)
 			log.Printf("[weixin-mgr] SendMedia(video) error (to=%s): %v", reply.PlatformUID, err)
 		} else {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "OK SendMedia(video) size=%d", len(data))
 		}
-	case "voice":
+	case gatewayReplyTypeVoice:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil || len(data) == 0 {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR voice base64 decode: %v", err)
@@ -920,7 +950,7 @@ func (m *weixinGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			ContextToken: contextToken,
 			FileData:     data,
 			FileName:     voiceFileName,
-			MediaType:    "voice",
+			MediaType:    imMediaVoice.String(),
 		}); err != nil {
 			wl.Log("mgr.hubReply", "OUT", reply.PlatformUID, "ERR SendMedia(voice): %v", err)
 			log.Printf("[weixin-mgr] SendMedia(voice) error (to=%s): %v", reply.PlatformUID, err)
@@ -1014,7 +1044,7 @@ func (a *App) SetWeixinLocalMode(enabled bool) error {
 		hubConnected := !hubNil && hubClient.IsConnected()
 		log.Printf("[weixin-mgr] switching to hub mode: hub_nil=%v hub_connected=%v", hubNil, hubConnected)
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("weixin")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformWeixin)
 			log.Printf("[weixin-mgr] sent gateway claim after switching to hub mode")
 		} else {
 			log.Printf("[weixin-mgr] WARNING: cannot send gateway claim, hub not available")
@@ -1063,13 +1093,13 @@ func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
 
 	result, status, err := weixin.PollQRStatus(ctx, baseURL, qrcodeToken)
 	if err != nil {
-		return map[string]string{"error": err.Error(), "status": "error"}
+		return map[string]string{"error": err.Error(), "status": string(gatewayConnectionStatusError)}
 	}
 	resp := map[string]string{
 		"status":  status,
 		"message": result.Message,
 	}
-	if status == "confirmed" {
+	if normalizeGatewayConnectionStatus(status) == gatewayConnectionStatusConfirmed {
 		if !result.Connected {
 			resp["error"] = result.Message
 			return resp

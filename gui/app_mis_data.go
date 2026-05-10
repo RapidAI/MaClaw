@@ -41,7 +41,6 @@ func (a *App) SaveMISDataConfig(next corelib.MISDataConfig) error {
 func (a *App) TestMISDataConnection(next corelib.MISDataConfig) (MISDataConnectionStatus, error) {
 	cfg := normalizeMISDataConfig(next)
 	status := MISDataConnectionStatus{Endpoint: cfg.Endpoint}
-	client := &http.Client{Timeout: 8 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -50,7 +49,7 @@ func (a *App) TestMISDataConnection(next corelib.MISDataConfig) (MISDataConnecti
 		status.Error = err.Error()
 		return status, nil
 	}
-	readyResp, err := client.Do(readyReq)
+	readyResp, err := misDataHTTPClient.Do(readyReq)
 	if err != nil {
 		status.Error = err.Error()
 		return status, nil
@@ -84,7 +83,7 @@ func (a *App) TestMISDataConnection(next corelib.MISDataConfig) (MISDataConnecti
 	authReq.Header.Set("X-MaClaw-Tenant-ID", cfg.TenantID)
 	authReq.Header.Set("X-MaClaw-User-ID", cfg.UserID)
 	authReq.Header.Set("X-MaClaw-Role", cfg.Role)
-	authResp, err := client.Do(authReq)
+	authResp, err := misDataHTTPClient.Do(authReq)
 	if err != nil {
 		status.Error = err.Error()
 		return status, nil

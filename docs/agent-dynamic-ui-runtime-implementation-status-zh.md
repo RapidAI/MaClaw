@@ -4,14 +4,15 @@
 
 ## 当前完成度
 
-核心链路约 95% 完成。现在已经不是“展示 schema/源码”的预览，而是由后端发出受控 AgentView 描述，右侧 `AgentTaskPanel` 渲染真实可操作控件，提交后回传结构化数据，再由运行时校验、合并、审批并继续执行原 tool/skill/MCP/MIS 流程。
+核心链路约 97% 完成。现在已经不是“展示 schema/源码”的预览，而是由后端发出受控 AgentView 描述，右侧 `AgentTaskPanel` 渲染真实可操作控件，提交后回传结构化数据，再由运行时校验、合并、审批并继续执行原 tool/skill/MCP/MIS 流程。
 
 ## 已落地能力
 
 - 右侧任务面板支持 `form`、`wizard`、`table_editor`、`resource_picker`、`field_mapper`、`approval`、`progress`、`result_browser`、`artifact`。
 - 前端控件支持文本、多行文本、数字、日期、布尔、单选、多选、隐藏字段、对象字段组、数组明细表，并在提交前做必填和嵌套字段校验。
 - 后端通过 `agent-view` / `agent-view-clear` 事件驱动右侧面板；前端提交走 `SubmitAgentView`，关闭走 `DismissAgentView`。
-- AgentView 生命周期协议已开始正式化：后端统一发出兼容旧事件的 `agent-view:lifecycle`，前端识别 `open/update/submit/dismiss/error/complete`。
+- AgentView 生命周期协议已正式化：后端统一发出兼容旧事件的 `agent-view:lifecycle`，前端识别 `open/update/submit/dismiss/error/complete`。
+- 提交链路会记录 AgentView 发射序号：如果提交后没有打开下一张面板，后端自动发 `complete`；如果返回错误则发 `error`；如果处理过程已经打开 dry-run、审批、结果等下一张面板，则不会误清空右侧 UI。
 - 标准 skill 文件不需要修改。运行时 sidecar/adaptive 层会根据已有参数、步骤、隐式 required 和运行上下文生成表单。
 - `run_skill` 缺少必填参数时会打开右侧表单；多 operation skill 会自动加入 operation 选择控件；提交后重新校验和归一化，再启动 skill，并持续发出 progress/result 视图。
 - MIS 动态业务对象链路已支持：语义意图识别、候选选择、业务表单、事务暂存、dry-run 校验、审批确认、提交落库、结果和审计展示。
@@ -53,17 +54,15 @@ Agent 选择 tool / skill / MCP / MIS action
 
 ## 本轮验证
 
-- `go test -p=1 -vet=off ./gui -run "AgentView|RegisteredTool|MCPTool|MISData|TestToolRunSkill_OpensAgentViewForMissingRequiredParams|TestRegisteredToolToDef|PendingUserReplyPromptCandidate" -count=1 -timeout=300s -v` 通过。
-- `go test -p=1 -vet=off ./gui -run "TestHandleRegisteredToolApprovalSubmitRunsApprovedTool|TestBuildRegisteredToolApprovalAgentViewCarriesApprovalID|TestExecuteToolOpensAgentViewForInvalidRegisteredToolArgs|TestHandleRegisteredToolAgentViewSubmitMergesAndRuns" -count=1 -timeout=300s -v` 通过。
-- `npm test -- AgentTaskPanel.test.tsx` 通过，23 个测试全部通过。
+- `go test -p=1 -vet=off ./gui -run "AgentViewSchema|SchemaVersion" -count=1 -timeout=300s -v` 通过。
+- `go test -p=1 -vet=off ./gui -run "AgentView|RegisteredTool|MCPTool|MISData|TestToolRunSkill_OpensAgentViewForMissingRequiredParams|TestRegisteredToolToDef|PendingUserReplyPromptCandidate|SchemaVersion" -count=1 -timeout=300s -v` 通过。
+- `npm test -- AgentTaskPanel.test.tsx AIAssistantPanel.test.tsx useAIAssistant.test.ts` 通过，156 个测试全部通过。
+- `npm test -- useAIAssistant.test.ts` 通过，76 个测试全部通过，覆盖 lifecycle `open/dismiss/complete/error`。
 - `npx tsc --noEmit --pretty false` 通过。
-- `npm test -- useAIAssistant.test.ts -t "lifecycle"` 通过，覆盖生命周期 open/dismiss/complete。
-- `npm test -- AIAssistantPanel.test.tsx -t "AgentView"` 通过，覆盖右侧预览区渲染真实可操作表单并提交结构化数据。
-- Go 回归已覆盖 schema version 注入：registered tool、MCP tool、standard skill 表单均携带版本化 schema metadata。
+- Go 回归已覆盖 schema version 注入、registered tool/MCP/standard skill 表单、MIS 业务对象动态表单、dry-run/approval/commit、右侧真实 UI 提交回流等链路。
 
 ## 剩余工作
 
-- 将 AgentView 生命周期事件正式化为 `open/update/submit/dismiss/error/complete` 的统一协议，减少不同入口的分支判断。
 - 增加 Wails/浏览器 E2E，验证真实右侧预览区在桌面端渲染、交互和清理行为。
 - 扩展更多企业业务对象模板，例如采购申请、合同审批、客户建档、工单派发、库存调整。
-- 扩展 UI schema 缓存策略，从当前版本签名缓存推进到跨会话持久缓存和失效策略。
+- 继续扩展 UI schema 缓存策略和审计可观测性，从当前持久化版本签名缓存推进到更细粒度失效策略。

@@ -87,7 +87,7 @@ func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult
 	orchTask := &OrchestratorTask{
 		ID:        taskID,
 		Sessions:  make([]string, 0, len(tasks)),
-		Status:    "running",
+		Status:    string(orchestratorTaskStatusRunning),
 		Results:   make(map[string]string),
 		CreatedAt: time.Now(),
 	}
@@ -126,15 +126,15 @@ func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult
 			orchTask.Sessions = append(orchTask.Sessions, sr.SessionID)
 			o.mu.Unlock()
 		}
-		if sr.Status == "failed" {
+		if normalizeOrchestratorSessionStatus(sr.Status) == orchestratorSessionStatusFailed {
 			hasFailure = true
 		}
 	}
 
 	if hasFailure {
-		orchTask.Status = "partial_failure"
+		orchTask.Status = string(orchestratorTaskStatusPartialFailure)
 	} else {
-		orchTask.Status = "completed"
+		orchTask.Status = string(orchestratorTaskStatusCompleted)
 	}
 
 	// Remove from active tasks now that execution is done.
@@ -157,14 +157,28 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 	sr := SessionResult{
 		Tool: tr.Tool,
 	}
+	toolName := normalizeRemoteToolName(tr.Tool)
+	if !remoteToolSupported(toolName) {
+		sr.Status = string(orchestratorSessionStatusFailed)
+		sr.Error = parallelExecuteUnsupportedToolError(toolName)
+		if o.sharedCtx != nil {
+			o.sharedCtx.Put(ContextEntry{
+				Key:       "session_create_failed",
+				Value:     fmt.Sprintf("tool=%s project=%s error=%s", toolName, tr.ProjectPath, sr.Error),
+				SessionID: "",
+				CreatedAt: time.Now(),
+			})
+		}
+		return sr
+	}
 
 	view, err := o.app.StartRemoteSessionForProject(RemoteStartSessionRequest{
-		Tool:         tr.Tool,
+		Tool:         toolName,
 		ProjectPath:  tr.ProjectPath,
 		LaunchSource: RemoteLaunchSourceAI,
 	})
 	if err != nil {
-		sr.Status = "failed"
+		sr.Status = string(orchestratorSessionStatusFailed)
 		sr.Error = err.Error()
 		// Record failure in shared context so other sessions can see it.
 		if o.sharedCtx != nil {
@@ -195,7 +209,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 
 	// Send the task description as the first input to the session.
 	if err := o.manager.WriteInput(view.ID, input); err != nil {
-		sr.Status = "failed"
+		sr.Status = string(orchestratorSessionStatusFailed)
 		sr.Error = fmt.Sprintf("failed to send input: %v", err)
 		// Record send-failure in shared context.
 		if o.sharedCtx != nil {
@@ -209,7 +223,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 		return sr
 	}
 
-	sr.Status = "success"
+	sr.Status = string(orchestratorSessionStatusSuccess)
 	sr.Output = fmt.Sprintf("session %s started for tool %s", view.ID, tr.Tool)
 
 	// Record successful task dispatch in shared context.
@@ -223,6 +237,17 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 	}
 
 	return sr
+}
+
+func parallelExecuteUnsupportedToolError(toolName string) string {
+	const remoteTools = "claude, codex, opencode, gemini, cursor, codebuddy, iflow, or kilo"
+	switch classifyAgentToolKind(toolName) {
+	case agentToolKindBash, agentToolKindReadFile, agentToolKindWriteFile, agentToolKindEditFile, agentToolKindListDirectory,
+		agentToolKindCraftTool, agentToolKindGeneratePDF, agentToolKindOffice:
+		return fmt.Sprintf("tool %q is a local built-in tool and cannot be used with parallel_execute remote sessions; call it directly, or use a remote coding tool such as %s", toolName, remoteTools)
+	default:
+		return fmt.Sprintf("tool %q is not a remote coding tool for parallel_execute; use %s", toolName, remoteTools)
+	}
 }
 
 // buildInputWithContext prepends relevant shared context entries to the task
@@ -252,10 +277,10 @@ func buildOrchestratorSummary(results map[string]SessionResult) string {
 	succeeded := 0
 	failed := 0
 	for _, sr := range results {
-		switch sr.Status {
-		case "success":
+		switch normalizeOrchestratorSessionStatus(sr.Status) {
+		case orchestratorSessionStatusSuccess:
 			succeeded++
-		case "failed":
+		case orchestratorSessionStatusFailed:
 			failed++
 		}
 	}

@@ -231,6 +231,26 @@ function Stage-SourceTree {
             ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache')
         },
         [pscustomobject]@{
+            Path = 'datasrv'
+            ExcludePaths = @(
+                '.gocache',
+                '.gomodcache',
+                '.tmp-go-cache-datasrv-bool-cmd',
+                '.tmp-go-cache-datasrv-cmd-syncstate',
+                '.tmp-go-tmp-datasrv-bool-cmd',
+                '.tmp-go-tmp-datasrv-cmd-syncstate',
+                'structureddata\.tmp-go-cache-datasrv-bool-review',
+                'structureddata\.tmp-go-cache-datasrv-export-review',
+                'structureddata\.tmp-go-cache-datasrv-review-syncstate',
+                'structureddata\.tmp-go-tmp-datasrv-bool-review',
+                'structureddata\.tmp-go-tmp-datasrv-export-review',
+                'structureddata\.tmp-go-tmp-datasrv-review-syncstate',
+                'bin',
+                'package',
+                'data'
+            )
+        },
+        [pscustomobject]@{
             Path = 'openclaw-bridge'
             ExcludePaths = @('node_modules', 'dist')
         },

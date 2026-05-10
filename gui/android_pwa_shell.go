@@ -231,15 +231,8 @@ func runMobilePWAShellGenerator(app *App, args []string) int {
 		return 2
 	}
 
-	generateAndroid := true
-	generateIOS := true
-	switch strings.ToLower(strings.TrimSpace(*platform)) {
-	case "", "all":
-	case "android":
-		generateIOS = false
-	case "ios":
-		generateAndroid = false
-	default:
+	platformKind := normalizeMobilePWAShellPlatform(*platform)
+	if platformKind == mobilePWAShellPlatformUnknown {
 		fmt.Fprintln(os.Stderr, "invalid platform:", *platform)
 		return 2
 	}
@@ -251,8 +244,8 @@ func runMobilePWAShellGenerator(app *App, args []string) int {
 		IOSBundleID:     *iosBundleID,
 		HubCenterURL:    *hubCenterURL,
 		StartURL:        *startURL,
-		GenerateAndroid: generateAndroid,
-		GenerateIOS:     generateIOS,
+		GenerateAndroid: platformKind.GenerateAndroid(),
+		GenerateIOS:     platformKind.GenerateIOS(),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "generate mobile pwa shell failed:", err)
@@ -1462,7 +1455,7 @@ func buildMobileShellRootReadme(result MobilePWAShellResult) string {
 		"",
 		"## Defaults",
 		"",
-		"Both Android and iOS default to Hub Center `" + defaultRemoteHubCenterURL + "`.",
+		"Both Android and iOS default to Hub Center `"+defaultRemoteHubCenterURL+"`.",
 		"",
 		"## Entry Points",
 		"",

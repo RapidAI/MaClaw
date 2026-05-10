@@ -11,11 +11,11 @@ import (
 
 // CodexEvent represents a single JSONL event from `codex exec --json`.
 type CodexEvent struct {
-	Type     string     `json:"type"`
-	ThreadID string     `json:"thread_id,omitempty"`
-	Item     *CodexItem `json:"item,omitempty"`
+	Type     string      `json:"type"`
+	ThreadID string      `json:"thread_id,omitempty"`
+	Item     *CodexItem  `json:"item,omitempty"`
 	Usage    *CodexUsage `json:"usage,omitempty"`
-	Error    string     `json:"error,omitempty"`
+	Error    string      `json:"error,omitempty"`
 }
 
 // CodexItem represents an item within a Codex event.
@@ -165,7 +165,7 @@ func buildCodexToolUseEvent(session *RemoteSession, event CodexEvent) ImportantE
 
 	switch item.ItemType {
 	case "command_execution":
-		evt.Type = "command.started"
+		evt.Type = summaryEventCommandStarted.String()
 		evt.Severity = "info"
 		evt.Title = "Running command"
 		evt.Command = item.Command
@@ -174,7 +174,7 @@ func buildCodexToolUseEvent(session *RemoteSession, event CodexEvent) ImportantE
 			evt.Summary = evt.Summary[:100] + "..."
 		}
 	case "file_change":
-		evt.Type = "file.change"
+		evt.Type = summaryEventFileChange.String()
 		evt.Severity = "info"
 		evt.Title = "File modified"
 		evt.RelatedFile = item.FilePath

@@ -59,7 +59,7 @@ func (e *ClaudeEventExtractor) detectFileRead(session *RemoteSession, line strin
 	}
 
 	file := extractFilePath(line)
-	return newEvent(session, "file.read", "info", "Inspected file", line, file, "")
+	return newEvent(session, summaryEventFileRead.String(), "info", "Inspected file", line, file, "")
 }
 
 func (e *ClaudeEventExtractor) detectFileChanged(session *RemoteSession, line string) *ImportantEvent {
@@ -69,7 +69,7 @@ func (e *ClaudeEventExtractor) detectFileChanged(session *RemoteSession, line st
 	}
 
 	file := extractFilePath(line)
-	return newEvent(session, "file.change", "info", "Changed file", line, file, "")
+	return newEvent(session, summaryEventFileChange.String(), "info", "Changed file", line, file, "")
 }
 
 func (e *ClaudeEventExtractor) detectCommandStarted(session *RemoteSession, line string) *ImportantEvent {
@@ -77,7 +77,7 @@ func (e *ClaudeEventExtractor) detectCommandStarted(session *RemoteSession, line
 	if !ok {
 		return nil
 	}
-	return newEvent(session, "command.started", "info", "Running command", line, "", command)
+	return newEvent(session, summaryEventCommandStarted.String(), "info", "Running command", line, "", command)
 }
 
 func (e *ClaudeEventExtractor) detectInputRequired(session *RemoteSession, line string) *ImportantEvent {

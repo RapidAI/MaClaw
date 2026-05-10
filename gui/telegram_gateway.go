@@ -36,7 +36,7 @@ type telegramGatewayManager struct {
 func newTelegramGatewayManager(app *App) *telegramGatewayManager {
 	return &telegramGatewayManager{
 		app:    app,
-		status: "disconnected",
+		status: string(gatewayConnectionStatusDisconnected),
 	}
 }
 
@@ -52,7 +52,7 @@ func (m *telegramGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = "disconnected"
+			m.status = string(gatewayConnectionStatusDisconnected)
 			m.mu.Unlock()
 			_ = gw.Stop()
 		} else {
@@ -61,7 +61,7 @@ func (m *telegramGatewayManager) SyncFromConfig() {
 		// Always notify Hub to release gateway claim, even if local gateway
 		// was already nil — Hub may still hold a stale claim from a previous run.
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim("telegram")
+			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformTelegram)
 			log.Printf("[telegram-mgr] sent gateway unclaim to hub")
 		}
 		if gw != nil {
@@ -96,7 +96,7 @@ func (m *telegramGatewayManager) SyncFromConfig() {
 		m.mu.Lock()
 		m.gateway = nil
 		m.lastToken = ""
-		m.status = "error"
+		m.status = string(gatewayConnectionStatusError)
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -108,7 +108,7 @@ func (m *telegramGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = "disconnected"
+	m.status = string(gatewayConnectionStatusDisconnected)
 	m.lastToken = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -132,21 +132,22 @@ func (m *telegramGatewayManager) Status() string {
 func (m *telegramGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
 	m.status = status
-	if status == "error" {
+	normalized := normalizeGatewayConnectionStatus(status)
+	if normalized == gatewayConnectionStatusError {
 		m.gateway = nil
 		m.lastToken = ""
 	}
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
-	if status == "connected" {
+	if normalized == gatewayConnectionStatusConnected {
 		// In local mode, skip Hub gateway claim.
 		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsTelegramLocalMode() {
 			return
 		}
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("telegram")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformTelegram)
 		}
 	}
 }
@@ -248,6 +249,11 @@ func (m *telegramGatewayManager) ensureLocalHandler() *IMMessageHandler {
 
 // onIncomingMessage routes Telegram messages to local handler or Hub.
 func (m *telegramGatewayManager) onIncomingMessage(msg telegram.IncomingMessage) {
+	if isPassthroughSlashText(msg.Text) {
+		log.Printf("[telegram-mgr] routing passthrough command locally: chat=%d", msg.ChatID)
+		m.handleLocalMessage(msg)
+		return
+	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		log.Printf("[telegram-mgr] LoadConfig error: %v", err)
@@ -312,12 +318,31 @@ func (m *telegramGatewayManager) forwardToHub(msg telegram.IncomingMessage) {
 		payload["attachments"] = []map[string]any{att}
 	}
 
-	if err := hubClient.SendIMGatewayMessage("telegram", payload); err != nil {
+	if err := hubClient.SendIMGatewayMessage(imGatewayPlatformTelegram, payload); err != nil {
 		log.Printf("[telegram-mgr] forwardToHub SendIMGatewayMessage error: %v", err)
 	}
 }
 
 func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage) {
+	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(msg.Text, "telegram:"+strconv.FormatInt(msg.ChatID, 10)); handled {
+		m.mu.Lock()
+		gw := m.gateway
+		m.mu.Unlock()
+		if gw != nil {
+			reply := resp.Text
+			if reply == "" {
+				reply = resp.Error
+			}
+			if reply == "" {
+				reply = "(no output)"
+			}
+			_ = gw.SendText(context.Background(), telegram.OutgoingText{
+				ChatID: msg.ChatID,
+				Text:   reply,
+			})
+		}
+		return
+	}
 	if !m.app.isMaclawLLMConfigured() {
 		m.mu.Lock()
 		gw := m.gateway
@@ -345,7 +370,7 @@ func (m *telegramGatewayManager) handleLocalMessage(msg telegram.IncomingMessage
 	// Pass images as multimodal attachments so the LLM can "see" them.
 	var attachments []MessageAttachment
 	if msg.MediaType != "" && len(msg.MediaData) > 0 {
-		if msg.MediaType == "image" {
+		if normalizeIMMediaKind(msg.MediaType).IsImage() {
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, msg.MimeType))
 		} else {
 			mediaPath, err := saveTelegramMediaToTemp(msg)
@@ -464,14 +489,14 @@ func (m *telegramGatewayManager) sendLocalFiles(gw *telegram.Gateway, chatID int
 		name := filepath.Base(p)
 		mediaType := mediaTypeFromFileName(name)
 		fileType := "document"
-		switch mediaType {
-		case "image":
+		switch normalizeIMMediaKind(mediaType) {
+		case imMediaImage:
 			fileType = "photo"
-		case "voice":
+		case imMediaVoice:
 			fileType = "voice"
-		case "audio":
+		case imMediaAudio:
 			fileType = "audio"
-		case "video":
+		case imMediaVideo:
 			fileType = "video"
 		}
 		if err := gw.SendMedia(context.Background(), telegram.OutgoingMedia{
@@ -488,16 +513,16 @@ func (m *telegramGatewayManager) sendLocalFiles(gw *telegram.Gateway, chatID int
 
 // GatewayReplyPayload holds the fields of an im.gateway_reply from Hub.
 type GatewayReplyPayload struct {
-	ReplyType    string         `json:"reply_type"`
-	PlatformUID  string         `json:"platform_uid"`
-	Text         string         `json:"text"`
-	ImageData    string         `json:"image_data"`
-	Caption      string         `json:"caption"`
-	FileData     string         `json:"file_data"`
-	FileName     string         `json:"file_name"`
-	MimeType     string         `json:"mime_type"`
-	ContextToken string         `json:"context_token,omitempty"`
-	Extra        map[string]any `json:"extra,omitempty"`
+	ReplyType    gatewayReplyTypeKind `json:"reply_type"`
+	PlatformUID  string               `json:"platform_uid"`
+	Text         string               `json:"text"`
+	ImageData    string               `json:"image_data"`
+	Caption      string               `json:"caption"`
+	FileData     string               `json:"file_data"`
+	FileName     string               `json:"file_name"`
+	MimeType     string               `json:"mime_type"`
+	ContextToken string               `json:"context_token,omitempty"`
+	Extra        map[string]any       `json:"extra,omitempty"`
 }
 
 // HandleGatewayReply dispatches a reply from Hub to the Telegram API.
@@ -515,20 +540,20 @@ func (m *telegramGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 		return
 	}
 
-	switch reply.ReplyType {
-	case "text":
+	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
+	case gatewayReplyTypeText:
 		_ = gw.SendText(context.Background(), telegram.OutgoingText{
 			ChatID: chatID,
 			Text:   reply.Text,
 		})
-	case "image":
+	case gatewayReplyTypeImage:
 		_ = gw.SendMedia(context.Background(), telegram.OutgoingMedia{
 			ChatID:   chatID,
 			FileType: "photo",
 			FileData: reply.ImageData,
 			Caption:  reply.Caption,
 		})
-	case "file":
+	case gatewayReplyTypeFile:
 		_ = gw.SendMedia(context.Background(), telegram.OutgoingMedia{
 			ChatID:   chatID,
 			FileType: "document",
@@ -536,7 +561,7 @@ func (m *telegramGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) {
 			FileName: reply.FileName,
 			MimeType: reply.MimeType,
 		})
-	case "voice":
+	case gatewayReplyTypeVoice:
 		_ = gw.SendMedia(context.Background(), telegram.OutgoingMedia{
 			ChatID:   chatID,
 			FileType: "voice",
@@ -619,7 +644,7 @@ func (a *App) SetTelegramLocalMode(enabled bool) error {
 	if !enabled {
 		hubClient := a.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("telegram")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformTelegram)
 			log.Printf("[telegram-mgr] sent gateway claim after switching to hub mode")
 		}
 	}

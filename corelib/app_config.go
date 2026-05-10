@@ -58,22 +58,23 @@ type AppConfig struct {
 	DefaultProxyScopeCodingTools bool   `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
 	DefaultProxyScopeAgent       bool   `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
 	// Terminal settings (Windows only)
-	UseWindowsTerminal  bool     `json:"use_windows_terminal"`
-	RemoteEnabled       bool     `json:"remote_enabled"`
-	RemoteHubURL        string   `json:"remote_hub_url"`
-	RemoteHubCenterURL  string   `json:"remote_hubcenter_url"`
-	RemoteHubCenterURLs []string `json:"remote_hubcenter_urls,omitempty"`
-	RemoteEmail         string   `json:"remote_email"`
-	RemoteMobile        string   `json:"remote_mobile"`
-	RemoteSN            string   `json:"remote_sn"`
-	RemoteUserID        string   `json:"remote_user_id"`
-	RemoteMachineID     string   `json:"remote_machine_id"`
-	RemoteMachineToken  string   `json:"remote_machine_token"`
-	RemoteViewerToken   string   `json:"remote_viewer_token,omitempty"`
-	RemoteHeartbeatSec  int      `json:"remote_heartbeat_sec"`
-	RemoteNickname      string   `json:"remote_nickname,omitempty"`
-	RemoteClientID      string   `json:"remote_client_id"`
-	DefaultLaunchMode   string   `json:"default_launch_mode"`
+	UseWindowsTerminal      bool     `json:"use_windows_terminal"`
+	RemoteEnabled           bool     `json:"remote_enabled"`
+	RemoteHubURL            string   `json:"remote_hub_url"`
+	RemoteHubCenterURL      string   `json:"remote_hubcenter_url"`
+	RemoteHubCenterURLs     []string `json:"remote_hubcenter_urls,omitempty"`
+	RemoteEmail             string   `json:"remote_email"`
+	RemoteMobile            string   `json:"remote_mobile"`
+	RemoteSN                string   `json:"remote_sn"`
+	RemoteUserID            string   `json:"remote_user_id"`
+	RemoteMachineID         string   `json:"remote_machine_id"`
+	RemoteMachineToken      string   `json:"remote_machine_token"`
+	RemoteViewerToken       string   `json:"remote_viewer_token,omitempty"`
+	SkillMarketSessionToken string   `json:"skill_market_session_token,omitempty"`
+	RemoteHeartbeatSec      int      `json:"remote_heartbeat_sec"`
+	RemoteNickname          string   `json:"remote_nickname,omitempty"`
+	RemoteClientID          string   `json:"remote_client_id"`
+	DefaultLaunchMode       string   `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`

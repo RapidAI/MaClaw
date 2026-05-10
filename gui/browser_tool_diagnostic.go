@@ -246,7 +246,7 @@ func BrowserDiagCP7_FinalOutput(text string, source string) {
 func BrowserDiagFileDelivery(stage, text string, fileNames, localPaths []string, responseSource string) {
 	hasBrowser := browserDiagHasBrowserRolePrefix(text)
 	rolePrefixKind, rolePrefixIdx, hasRolePrefix := browserDiagRolePrefix(text)
-	interesting := hasRolePrefix || len(fileNames) > 0 || len(localPaths) > 0 || responseSource == "file_delivery"
+	interesting := hasRolePrefix || len(fileNames) > 0 || len(localPaths) > 0 || canonicalIMResponseSourceKind(responseSource).IsArtifactDelivery()
 	if !interesting {
 		return
 	}

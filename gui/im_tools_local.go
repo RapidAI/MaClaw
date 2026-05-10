@@ -258,7 +258,7 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 	}
 	size, err := coretool.WriteTextFile(absPath, content, mode)
 	if err != nil {
-		if strings.Contains(err.Error(), "不支持的 mode") {
+		if classifyLocalFileToolError(err).ReturnRawError() {
 			return err.Error()
 		}
 		return fmt.Sprintf("写入失败: %s", err.Error())
@@ -287,7 +287,7 @@ func (h *IMMessageHandler) toolEditFile(args map[string]interface{}) string {
 	replaceAll, _ := args["replace_all"].(bool)
 	res, err := coretool.EditTextFile(absPath, oldString, newString, replaceAll)
 	if err != nil {
-		if strings.Contains(err.Error(), "未找到要替换的内容") || strings.Contains(err.Error(), "缺少 old_string 参数") {
+		if classifyLocalFileToolError(err).ReturnRawError() {
 			return err.Error()
 		}
 		return fmt.Sprintf("编辑失败: %s", err.Error())

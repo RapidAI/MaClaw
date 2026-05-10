@@ -15,8 +15,8 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 	if h == nil || h.app == nil {
 		return experienceLearningToolResult(nil, fmt.Errorf("experience learning is only available in the desktop app"))
 	}
-	switch strings.TrimSpace(strings.ToLower(stringVal(args, "action"))) {
-	case "snapshot", "":
+	switch normalizeExperienceLearningToolAction(stringVal(args, "action")) {
+	case experienceLearningToolActionSnapshot:
 		snapshot := h.app.GetExperienceLearningSnapshot()
 		focusContext := experienceSnapshotFocusContext(snapshot)
 		return experienceLearningToolResult(map[string]interface{}{
@@ -25,7 +25,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     experienceSnapshotRecommendedToolCall(focusContext),
 			"non_executing_boundary":    "read-only experience learning snapshot; no review approval, memory rewrite, routing change, rollback execution, file write, notification, tool execution, or skill install was performed",
 		}, nil)
-	case "governance_summary", "summary":
+	case experienceLearningToolActionGovernanceSummary:
 		summary := h.app.GetExperienceGovernanceSummary(ExperienceRoutingSignalQuery{
 			TaskType: strings.TrimSpace(stringVal(args, "task_type")),
 			Tool:     strings.TrimSpace(stringVal(args, "tool")),
@@ -40,7 +40,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_next_action":        summary["recommended_next_action"],
 			"recommended_next_action_reason": summary["recommended_next_action_reason"],
 		}, nil)
-	case "next_actions":
+	case experienceLearningToolActionNextActions:
 		snapshot := h.app.GetExperienceLearningSnapshot()
 		recommendedAction, recommendedReason := experienceGovernanceRecommendedNextAction(snapshot, nil)
 		return experienceLearningToolResult(map[string]interface{}{
@@ -62,13 +62,13 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"follow_up_action_summaries":     snapshot.FollowUpActionSummaries,
 			"non_executing_boundary":         "read-only next-action governance inspection; no review approval, draft execution, memory rewrite, routing change, file write, tool execution, notification, rollback execution, or skill install was performed",
 		}, nil)
-	case "queues", "governance_queues":
+	case experienceLearningToolActionQueues:
 		limit := intArg(args, "limit", 20)
 		snapshot := h.app.GetExperienceLearningSnapshot()
 		recommendedAction, recommendedReason := experienceGovernanceRecommendedNextAction(snapshot, nil)
-		reviewQueue := h.app.QueryExperienceTraceDetails(ExperienceTraceDetailQuery{Filter: "review", Limit: limit})
-		actionQueue := h.app.QueryExperienceTraceDetails(ExperienceTraceDetailQuery{Filter: "manual_actions", Limit: limit})
-		followUpQueue := h.app.QueryExperienceTraceDetails(ExperienceTraceDetailQuery{Filter: "followups", Limit: limit})
+		reviewQueue := h.app.QueryExperienceTraceDetails(ExperienceTraceDetailQuery{Filter: experienceTraceQueryFilterReview.String(), Limit: limit})
+		actionQueue := h.app.QueryExperienceTraceDetails(ExperienceTraceDetailQuery{Filter: experienceTraceQueryFilterManualActions.String(), Limit: limit})
+		followUpQueue := h.app.QueryExperienceTraceDetails(ExperienceTraceDetailQuery{Filter: experienceTraceQueryFilterFollowUps.String(), Limit: limit})
 		return experienceLearningToolResult(map[string]interface{}{
 			"recommended_next_action":        recommendedAction,
 			"recommended_next_action_reason": recommendedReason,
@@ -95,7 +95,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"follow_up_queue":                followUpQueue.Details,
 			"non_executing_boundary":         "read-only governance queue inspection; no review approval, draft execution, memory rewrite, routing change, file write, tool execution, notification, rollback execution, or skill install was performed",
 		}, nil)
-	case "follow_up_actions", "followup_actions":
+	case experienceLearningToolActionFollowUpActions:
 		result := h.app.QueryExperienceFollowUpActions(ExperienceTraceDetailQuery{
 			FollowUpStatus:        firstNonEmptyExperienceString(stringVal(args, "follow_up_status"), stringVal(args, "status")),
 			FollowUpActionKind:    firstNonEmptyExperienceString(stringVal(args, "follow_up_action_kind"), stringVal(args, "action_kind")),
@@ -112,7 +112,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     result.RecommendedToolCall,
 			"non_executing_boundary":    result.NonExecutingBoundary,
 		}, nil)
-	case "routing_signals":
+	case experienceLearningToolActionRoutingSignals:
 		query := ExperienceRoutingSignalQuery{
 			TaskType: strings.TrimSpace(stringVal(args, "task_type")),
 			Tool:     strings.TrimSpace(stringVal(args, "tool")),
@@ -135,7 +135,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     result.RecommendedToolCall,
 			"non_executing_boundary":    result.NonExecutingBoundary,
 		}, nil)
-	case "build_routing_adjustment_draft":
+	case experienceLearningToolActionBuildRoutingAdjustmentDraft:
 		query := ExperienceRoutingSignalQuery{
 			TaskType: strings.TrimSpace(stringVal(args, "task_type")),
 			Tool:     strings.TrimSpace(stringVal(args, "tool")),
@@ -149,7 +149,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     draft.RecommendedToolCall,
 			"non_executing_boundary":    draft.NonExecutingBoundary,
 		}, nil)
-	case "memory_candidates":
+	case experienceLearningToolActionMemoryCandidates:
 		query := ExperienceMemoryCandidateQuery{
 			Reason: strings.TrimSpace(stringVal(args, "reason")),
 			Source: strings.TrimSpace(stringVal(args, "source")),
@@ -174,7 +174,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"non_executing_boundary":     result.NonExecutingBoundary,
 			"memory_candidates":          result.Candidates,
 		}, nil)
-	case "build_memory_maintenance_draft":
+	case experienceLearningToolActionBuildMemoryMaintenanceDraft:
 		query := ExperienceMemoryCandidateQuery{
 			Reason: strings.TrimSpace(stringVal(args, "reason")),
 			Source: strings.TrimSpace(stringVal(args, "source")),
@@ -188,7 +188,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     draft.RecommendedToolCall,
 			"non_executing_boundary":    draft.NonExecutingBoundary,
 		}, nil)
-	case "trace_details":
+	case experienceLearningToolActionTraceDetails:
 		query := ExperienceTraceDetailQuery{
 			Filter:             strings.TrimSpace(stringVal(args, "filter")),
 			ReviewStatus:       strings.TrimSpace(stringVal(args, "review_status")),
@@ -216,7 +216,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     result.RecommendedToolCall,
 			"non_executing_boundary":    result.NonExecutingBoundary,
 		}, nil)
-	case "build_followup":
+	case experienceLearningToolActionBuildFollowUp:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
@@ -229,7 +229,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     draft.RecommendedToolCall,
 			"non_executing_boundary":    draft.NonExecutingBoundary,
 		}, err)
-	case "build_skill_draft":
+	case experienceLearningToolActionBuildSkillDraft:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
@@ -242,7 +242,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     draft.RecommendedToolCall,
 			"non_executing_boundary":    draft.NonExecutingBoundary,
 		}, err)
-	case "build_rollback_draft":
+	case experienceLearningToolActionBuildRollbackDraft:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
@@ -255,7 +255,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     draft.RecommendedToolCall,
 			"non_executing_boundary":    draft.NonExecutingBoundary,
 		}, err)
-	case "build_escalation_brief":
+	case experienceLearningToolActionBuildEscalationBrief:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
@@ -268,7 +268,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     brief.RecommendedToolCall,
 			"non_executing_boundary":    brief.NonExecutingBoundary,
 		}, err)
-	case "build_conflict_draft":
+	case experienceLearningToolActionBuildConflictDraft:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
@@ -281,7 +281,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     draft.RecommendedToolCall,
 			"non_executing_boundary":    draft.NonExecutingBoundary,
 		}, err)
-	case "record_followup":
+	case experienceLearningToolActionRecordFollowUp:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
@@ -307,7 +307,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     record.RecommendedToolCall,
 			"non_executing_boundary":    record.NonExecutingBoundary,
 		}, nil)
-	case "record_review":
+	case experienceLearningToolActionRecordReview:
 		traceID := strings.TrimSpace(stringVal(args, "trace_id"))
 		if traceID == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("trace_id is required"))
@@ -332,7 +332,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     record.RecommendedToolCall,
 			"non_executing_boundary":    record.NonExecutingBoundary,
 		}, nil)
-	case "record_draft_review":
+	case experienceLearningToolActionRecordDraftReview:
 		status := strings.TrimSpace(stringVal(args, "status"))
 		if status == "" {
 			return experienceLearningToolResult(nil, fmt.Errorf("status is required"))
@@ -474,9 +474,9 @@ func experienceGovernanceSummary(snapshot ExperienceLearningSnapshot, routingSig
 	}
 	a2aSummary := map[string]interface{}{
 		"discussion_results":           snapshot.TraceKindCounts["a2a_discussion_result"],
-		"conflict_reviews":             snapshot.TraceKindCounts["a2a_conflict_review"],
-		"rollback_reviews":             snapshot.TraceKindCounts["a2a_rollback_review"],
-		"escalation_evidence":          snapshot.TraceKindCounts["a2a_escalation_evidence"],
+		"conflict_reviews":             snapshot.TraceKindCounts[experienceTraceKindA2AConflictReview.String()],
+		"rollback_reviews":             snapshot.TraceKindCounts[experienceTraceKindA2ARollbackReview.String()],
+		"escalation_evidence":          snapshot.TraceKindCounts[experienceTraceKindA2AEscalationEvidence.String()],
 		"review_required_trace_count":  snapshot.ReviewRequiredTraceCount,
 		"review_status_counts":         snapshot.ReviewStatusCounts,
 		"review_summaries":             snapshot.ReviewSummaries,
@@ -517,9 +517,9 @@ func experienceGovernanceSummary(snapshot ExperienceLearningSnapshot, routingSig
 
 func experienceGovernanceA2ASignalCount(snapshot ExperienceLearningSnapshot) int {
 	return snapshot.TraceKindCounts["a2a_discussion_result"] +
-		snapshot.TraceKindCounts["a2a_conflict_review"] +
-		snapshot.TraceKindCounts["a2a_rollback_review"] +
-		snapshot.TraceKindCounts["a2a_escalation_evidence"] +
+		snapshot.TraceKindCounts[experienceTraceKindA2AConflictReview.String()] +
+		snapshot.TraceKindCounts[experienceTraceKindA2ARollbackReview.String()] +
+		snapshot.TraceKindCounts[experienceTraceKindA2AEscalationEvidence.String()] +
 		snapshot.ReviewRequiredTraceCount
 }
 
@@ -535,9 +535,9 @@ func experienceGovernanceA2ASummaryHandoff(snapshot ExperienceLearningSnapshot) 
 		"reason":                      reason,
 		"review_required_trace_count": snapshot.ReviewRequiredTraceCount,
 		"a2a_discussion_results":      snapshot.TraceKindCounts["a2a_discussion_result"],
-		"a2a_conflict_reviews":        snapshot.TraceKindCounts["a2a_conflict_review"],
-		"a2a_rollback_reviews":        snapshot.TraceKindCounts["a2a_rollback_review"],
-		"a2a_escalation_evidence":     snapshot.TraceKindCounts["a2a_escalation_evidence"],
+		"a2a_conflict_reviews":        snapshot.TraceKindCounts[experienceTraceKindA2AConflictReview.String()],
+		"a2a_rollback_reviews":        snapshot.TraceKindCounts[experienceTraceKindA2ARollbackReview.String()],
+		"a2a_escalation_evidence":     snapshot.TraceKindCounts[experienceTraceKindA2AEscalationEvidence.String()],
 	}
 	return focusContext, map[string]interface{}{
 		"tool": "experience_learning",
@@ -554,13 +554,13 @@ func experienceGovernanceA2ASummaryHandoff(snapshot ExperienceLearningSnapshot) 
 
 func experienceGovernanceRecommendedNextAction(snapshot ExperienceLearningSnapshot, routingSignals *ExperienceRoutingSignalResult) (string, string) {
 	if experienceGovernanceHasScopedRoutingCandidates(routingSignals) {
-		return "review_routing_candidates", "matching bounded routing evidence is available for the current scoped query"
+		return experienceGovernanceActionReviewRoutingCandidates.String(), "matching bounded routing evidence is available for the current scoped query"
 	}
-	if experienceGovernanceHasNextAction(snapshot, "review_triggered_rollback_signal") {
-		return "review_triggered_rollback_signal", "current A2A evidence already matches rollback conditions and should be reviewed before any draft workflow is used"
+	if experienceGovernanceHasNextAction(snapshot, experienceGovernanceActionReviewTriggeredRollbackSignal.String()) {
+		return experienceGovernanceActionReviewTriggeredRollbackSignal.String(), "current A2A evidence already matches rollback conditions and should be reviewed before any draft workflow is used"
 	}
 	if snapshot.ReviewRequiredTraceCount > 0 {
-		return "review_required_traces", "review-gated conflict, rollback, or self-evolution signals should be inspected before follow-up work"
+		return experienceGovernanceActionReviewRequiredTraces.String(), "review-gated conflict, rollback, or self-evolution signals should be inspected before follow-up work"
 	}
 	if len(snapshot.NextActionSummaries) > 0 {
 		kind := strings.TrimSpace(snapshot.NextActionSummaries[0].Kind)
@@ -569,27 +569,27 @@ func experienceGovernanceRecommendedNextAction(snapshot ExperienceLearningSnapsh
 		}
 	}
 	if routingSignals != nil && len(routingSignals.ToolCandidates) > 0 {
-		return "review_routing_candidates", "matching bounded routing evidence is available for the current query"
+		return experienceGovernanceActionReviewRoutingCandidates.String(), "matching bounded routing evidence is available for the current query"
 	}
 	if snapshot.LayeredMemoryRecommended {
-		return "build_memory_maintenance_draft", "memory volume or protected evidence suggests retention-aware maintenance before lossy compression"
+		return experienceGovernanceActionBuildMemoryMaintenanceDraft.String(), "memory volume or protected evidence suggests retention-aware maintenance before lossy compression"
 	}
 	if experienceGovernanceHasTriggeredRollbackFollowUps(snapshot) {
-		return "inspect_triggered_rollback_followups", "owner-reviewed triggered rollback follow-up records exist and should be inspected before they fade into generic rollback audit history"
+		return experienceGovernanceActionInspectTriggeredRollbackFollowups.String(), "owner-reviewed triggered rollback follow-up records exist and should be inspected before they fade into generic rollback audit history"
 	}
 	if snapshot.FollowUpTraceCount > 0 {
-		return "inspect_follow_up_actions", "manual follow-up outcomes exist and may explain why queued actions were closed, blocked, or deferred"
+		return experienceGovernanceActionInspectFollowUpActions.String(), "manual follow-up outcomes exist and may explain why queued actions were closed, blocked, or deferred"
 	}
 	if snapshot.SkillNudgeCount > 0 {
-		return "inspect_skill_nudge_candidates", "repeated tool sequences have self-evolution candidates that remain review-gated"
+		return experienceGovernanceActionInspectSkillNudgeCandidates.String(), "repeated tool sequences have self-evolution candidates that remain review-gated"
 	}
 	if snapshot.RoutingHintCount > 0 || snapshot.RecoveryPatternCount > 0 || snapshot.UsagePatternCount > 0 {
-		return "inspect_routing_signals", "routing and recovery evidence exists, but no query-specific candidate was requested"
+		return experienceGovernanceActionInspectRoutingSignals.String(), "routing and recovery evidence exists, but no query-specific candidate was requested"
 	}
 	if snapshot.ProtectedMemoryCount > 0 {
-		return "inspect_memory_candidates", "protected memory anchors are available for maintenance planning"
+		return experienceGovernanceActionInspectMemoryCandidates.String(), "protected memory anchors are available for maintenance planning"
 	}
-	return "normal_operation", "no immediate governance queue or routing/self-evolution evidence requires attention"
+	return experienceGovernanceActionNormalOperation.String(), "no immediate governance queue or routing/self-evolution evidence requires attention"
 }
 
 func experienceGovernanceHasScopedRoutingCandidates(routingSignals *ExperienceRoutingSignalResult) bool {
@@ -602,22 +602,23 @@ func experienceGovernanceHasScopedRoutingCandidates(routingSignals *ExperienceRo
 
 func experienceGovernanceRecommendedFocus(action string) map[string]interface{} {
 	action = strings.TrimSpace(action)
+	actionKind := normalizeExperienceGovernanceActionKind(action)
 	focus := map[string]interface{}{
 		"action":        action,
 		"non_executing": true,
 	}
-	switch action {
-	case "review_required_traces", "review_signal":
+	switch actionKind {
+	case experienceGovernanceActionReviewRequiredTraces, experienceGovernanceActionReviewSignal:
 		focus["trace_filter"] = "review"
-	case "inspect_triggered_rollback_followups":
+	case experienceGovernanceActionInspectTriggeredRollbackFollowups:
 		focus["trace_filter"] = "followups"
-		focus["follow_up_action_kind"] = "draft_rollback_workflow"
+		focus["follow_up_action_kind"] = experienceGovernanceActionDraftRollbackWorkflow.String()
 		focus["triggered_rollback_only"] = true
-	case "inspect_follow_up_actions":
+	case experienceGovernanceActionInspectFollowUpActions:
 		focus["trace_filter"] = "followups"
-	case "review_routing_candidates", "inspect_routing_signals", "inspect_skill_nudge_candidates":
+	case experienceGovernanceActionReviewRoutingCandidates, experienceGovernanceActionInspectRoutingSignals, experienceGovernanceActionInspectSkillNudgeCandidates:
 		focus["trace_filter"] = "tools"
-	case "build_memory_maintenance_draft", "inspect_memory_candidates", "normal_operation", "":
+	case experienceGovernanceActionBuildMemoryMaintenanceDraft, experienceGovernanceActionInspectMemoryCandidates, experienceGovernanceActionNormalOperation, experienceGovernanceActionUnknown:
 		focus["trace_filter"] = "all"
 	default:
 		focus["trace_filter"] = "actions"
@@ -628,39 +629,40 @@ func experienceGovernanceRecommendedFocus(action string) map[string]interface{} 
 
 func experienceGovernanceRecommendedToolCall(action string, snapshot ExperienceLearningSnapshot, routingSignals *ExperienceRoutingSignalResult, reasons ...string) map[string]interface{} {
 	action = strings.TrimSpace(action)
+	actionKind := normalizeExperienceGovernanceActionKind(action)
 	reason := ""
 	if len(reasons) > 0 {
 		reason = strings.TrimSpace(reasons[0])
 	}
 	args := map[string]interface{}{}
-	switch action {
-	case "review_triggered_rollback_signal":
+	switch actionKind {
+	case experienceGovernanceActionReviewTriggeredRollbackSignal:
 		args["action"] = "trace_details"
 		args["filter"] = "actions"
-		args["action_kind"] = "review_triggered_rollback_signal"
-		args["kind"] = "a2a_rollback_review"
+		args["action_kind"] = experienceGovernanceActionReviewTriggeredRollbackSignal.String()
+		args["kind"] = experienceTraceKindA2ARollbackReview.String()
 		args["limit"] = 20
-	case "inspect_triggered_rollback_followups":
+	case experienceGovernanceActionInspectTriggeredRollbackFollowups:
 		args["action"] = "follow_up_actions"
 		if kind := experienceGovernanceTopTriggeredRollbackFollowUpActionKind(snapshot); kind != "" {
 			args["follow_up_action_kind"] = kind
 		}
 		args["triggered_rollback_only"] = true
-		args["kind"] = "a2a_rollback_review"
+		args["kind"] = experienceTraceKindA2ARollbackReview.String()
 		args["limit"] = 20
-	case "review_required_traces":
+	case experienceGovernanceActionReviewRequiredTraces:
 		args["action"] = "queues"
 		args["limit"] = 20
-	case "inspect_follow_up_actions":
+	case experienceGovernanceActionInspectFollowUpActions:
 		args["action"] = "follow_up_actions"
 		if kind := experienceGovernanceTopFollowUpActionKind(snapshot); kind != "" {
 			args["follow_up_action_kind"] = kind
 		}
 		if experienceGovernanceHasTriggeredRollbackFollowUps(snapshot) {
-			args["kind"] = "a2a_rollback_review"
+			args["kind"] = experienceTraceKindA2ARollbackReview.String()
 		}
 		args["limit"] = 20
-	case "review_routing_candidates":
+	case experienceGovernanceActionReviewRoutingCandidates:
 		args["action"] = "build_routing_adjustment_draft"
 		if routingSignals != nil {
 			query := routingSignals.Query
@@ -680,52 +682,47 @@ func experienceGovernanceRecommendedToolCall(action string, snapshot ExperienceL
 		if _, ok := args["limit"]; !ok {
 			args["limit"] = 12
 		}
-	case "inspect_routing_signals":
+	case experienceGovernanceActionInspectRoutingSignals:
 		args["action"] = "routing_signals"
 		args["limit"] = 20
-	case "inspect_skill_nudge_candidates":
+	case experienceGovernanceActionInspectSkillNudgeCandidates:
 		args["action"] = "trace_details"
 		args["filter"] = "tools"
 		args["limit"] = 20
-	case "build_memory_maintenance_draft":
+	case experienceGovernanceActionBuildMemoryMaintenanceDraft:
 		args["action"] = "build_memory_maintenance_draft"
 		args["limit"] = 24
-	case "inspect_memory_candidates":
+	case experienceGovernanceActionInspectMemoryCandidates:
 		args["action"] = "memory_candidates"
 		args["limit"] = 40
-	case "draft_skill_manually", "draft_rollback_workflow", "prepare_escalation_brief", "resolve_a2a_conflict_manually":
-		traceID := experienceGovernanceLatestNextActionTraceID(snapshot, action)
-		if traceID != "" {
-			args["trace_id"] = traceID
-			switch action {
-			case "draft_skill_manually":
-				args["action"] = "build_skill_draft"
-			case "draft_rollback_workflow":
-				args["action"] = "build_rollback_draft"
-			case "prepare_escalation_brief":
-				args["action"] = "build_escalation_brief"
-			case "resolve_a2a_conflict_manually":
-				args["action"] = "build_conflict_draft"
-			}
-			break
-		}
-		args["action"] = "trace_details"
-		args["filter"] = "actions"
-		args["action_kind"] = action
-		args["limit"] = 20
-	case "collect_a2a_conflict_evidence", "collect_rollback_evidence", "collect_skill_evidence", "block_rollback_use", "suppress_skill_candidate", "keep_rejected_conflict_evidence":
-		traceID := experienceGovernanceLatestNextActionTraceID(snapshot, action)
-		if traceID != "" {
-			args["action"] = "build_followup"
-			args["trace_id"] = traceID
-			break
-		}
-		args["action"] = "trace_details"
-		args["filter"] = "actions"
-		args["action_kind"] = action
-		args["limit"] = 20
 	default:
-		if action == "" || action == "normal_operation" {
+		if actionKind.IsDraftBuildAction() {
+			traceID := experienceGovernanceLatestNextActionTraceID(snapshot, action)
+			if traceID != "" {
+				args["trace_id"] = traceID
+				args["action"] = actionKind.DraftToolAction()
+				break
+			}
+			args["action"] = "trace_details"
+			args["filter"] = "actions"
+			args["action_kind"] = action
+			args["limit"] = 20
+			break
+		}
+		if actionKind.IsFollowUpBuildAction() {
+			traceID := experienceGovernanceLatestNextActionTraceID(snapshot, action)
+			if traceID != "" {
+				args["action"] = "build_followup"
+				args["trace_id"] = traceID
+				break
+			}
+			args["action"] = "trace_details"
+			args["filter"] = "actions"
+			args["action_kind"] = action
+			args["limit"] = 20
+			break
+		}
+		if actionKind.IsNormalOrEmpty() {
 			args["action"] = "snapshot"
 		} else {
 			args["action"] = "trace_details"
@@ -750,12 +747,13 @@ func experienceGovernanceRecommendedToolCall(action string, snapshot ExperienceL
 func experienceGovernanceRecommendedToolCallFocusContext(action string, snapshot ExperienceLearningSnapshot, reason string) map[string]interface{} {
 	traceID := ""
 	title := ""
-	switch action {
-	case "review_triggered_rollback_signal":
+	actionKind := normalizeExperienceGovernanceActionKind(action)
+	switch {
+	case actionKind == experienceGovernanceActionReviewTriggeredRollbackSignal:
 		traceID, title = experienceGovernanceLatestNextActionTraceTarget(snapshot, action)
-	case "inspect_triggered_rollback_followups":
+	case actionKind == experienceGovernanceActionInspectTriggeredRollbackFollowups:
 		traceID, title, reason = experienceGovernanceTriggeredRollbackFollowUpTraceTarget(snapshot, reason)
-	case "draft_skill_manually", "draft_rollback_workflow", "prepare_escalation_brief", "resolve_a2a_conflict_manually", "collect_a2a_conflict_evidence", "collect_rollback_evidence", "collect_skill_evidence", "block_rollback_use", "suppress_skill_candidate", "keep_rejected_conflict_evidence":
+	case actionKind.NeedsPriorityTraceTarget():
 		traceID, title = experienceGovernanceLatestNextActionTraceTarget(snapshot, action)
 	}
 	traceID = strings.TrimSpace(traceID)
@@ -1197,24 +1195,7 @@ func experienceMemoryCandidateLess(a, b corememory.ProtectedExperienceCandidate)
 }
 
 func experienceMemoryCandidateReasonRank(reason string) int {
-	switch strings.TrimSpace(reason) {
-	case "pinned":
-		return 80
-	case "instruction":
-		return 70
-	case "self_identity":
-		return 65
-	case "high_strength":
-		return 60
-	case "a2a_discussion":
-		return 50
-	case "tool_usage":
-		return 40
-	case "swarm_trace":
-		return 30
-	default:
-		return 0
-	}
+	return normalizeExperienceMemoryReasonKind(reason).Rank()
 }
 
 type ExperienceRoutingSignalQuery struct {
@@ -1611,14 +1592,7 @@ func experienceRoutingToolCandidates(adjustments []coretool.RoutingHintAdjustmen
 }
 
 func experienceRoutingCandidateRecommendation(direction string) string {
-	switch strings.ToLower(strings.TrimSpace(direction)) {
-	case "prefer", "positive":
-		return "consider earlier in routing; evidence is bounded and non-executing"
-	case "avoid", "negative":
-		return "deprioritize unless the current task has stronger direct evidence"
-	default:
-		return "inspect evidence; no bounded routing preference is currently implied"
-	}
+	return normalizeExperienceRoutingDirectionKind(direction).Recommendation()
 }
 
 func experienceRoutingRecommendation(result ExperienceRoutingSignalResult) string {
@@ -1844,16 +1818,11 @@ func experienceTraceDetailRecommendedToolCall(detail ExperienceTraceDetail, focu
 		return nil
 	}
 	action := ""
-	switch strings.TrimSpace(detail.NextActionKind) {
-	case "draft_skill_manually":
-		action = "build_skill_draft"
-	case "draft_rollback_workflow":
-		action = "build_rollback_draft"
-	case "prepare_escalation_brief":
-		action = "build_escalation_brief"
-	case "resolve_a2a_conflict_manually":
-		action = "build_conflict_draft"
-	case "collect_a2a_conflict_evidence", "collect_rollback_evidence", "collect_skill_evidence", "block_rollback_use", "suppress_skill_candidate", "keep_rejected_conflict_evidence":
+	actionKind := normalizeExperienceGovernanceActionKind(detail.NextActionKind)
+	switch {
+	case actionKind.IsDraftBuildAction():
+		action = actionKind.DraftToolAction()
+	case actionKind.IsFollowUpBuildAction():
 		action = "build_followup"
 	default:
 		return nil
@@ -1888,7 +1857,7 @@ func experienceRecommendedTraceTargetForQuery(req ExperienceTraceDetailQuery, de
 	}
 	detail := details[0]
 	reason := "latest trace matching the current filter"
-	if req.ActionKind == "review_triggered_rollback_signal" || req.TriggeredRollbackOnly {
+	if normalizeExperienceGovernanceActionKind(req.ActionKind) == experienceGovernanceActionReviewTriggeredRollbackSignal || req.TriggeredRollbackOnly {
 		reason = "latest triggered rollback trace matching the current filter"
 	} else if req.FollowUpActionKind != "" || req.FollowUpStatus != "" {
 		reason = "latest follow-up trace matching the current filter"
@@ -1997,41 +1966,41 @@ func normalizeExperienceTraceDetailQuery(req ExperienceTraceDetailQuery) Experie
 }
 
 func experienceTraceDetailMatchesQuery(detail ExperienceTraceDetail, req ExperienceTraceDetailQuery) bool {
-	switch req.Filter {
-	case "review", "needs_review", "required":
+	switch normalizeExperienceTraceQueryFilterKind(req.Filter) {
+	case experienceTraceQueryFilterReview:
 		if !detail.ReviewRequired {
 			return false
 		}
-	case "reviewed":
+	case experienceTraceQueryFilterReviewed:
 		if !isExperienceReviewResolvedStatus(detail.ReviewStatus) {
 			return false
 		}
-	case "actions", "next_actions":
+	case experienceTraceQueryFilterActions:
 		if strings.TrimSpace(detail.NextActionKind) == "" && strings.TrimSpace(detail.NextAction) == "" {
 			return false
 		}
-	case "manual_actions", "action_queue":
-		if kind := actionKindForExperienceTraceDetail(detail); kind == "" || kind == "review_signal" {
+	case experienceTraceQueryFilterManualActions:
+		if kind := normalizeExperienceGovernanceActionKind(actionKindForExperienceTraceDetail(detail)); kind == experienceGovernanceActionUnknown || kind == experienceGovernanceActionReviewSignal {
 			return false
 		}
-	case "followups", "follow_ups":
+	case experienceTraceQueryFilterFollowUps:
 		if strings.TrimSpace(detail.FollowUpStatus) == "" {
 			return false
 		}
-	case "a2a":
-		if !strings.HasPrefix(detail.Kind, "a2a_") && detail.SourceType != groupDiscussionMemorySourceType {
+	case experienceTraceQueryFilterA2A:
+		if !normalizeExperienceTraceKind(detail.Kind).IsA2A() && detail.SourceType != groupDiscussionMemorySourceType {
 			return false
 		}
-	case "tools":
-		if !strings.Contains(detail.Kind, "tool") && detail.Kind != "routing_hint" && detail.Kind != "usage_pattern" && detail.Kind != "skill_nudge_candidate" && detail.Kind != "skill_nudge_review" && detail.SourceType != "tool_usage" {
+	case experienceTraceQueryFilterTools:
+		if !normalizeExperienceTraceKind(detail.Kind).IsToolLearning() && !normalizeExperienceTraceSourceType(detail.SourceType).IsToolUsage() {
 			return false
 		}
-	case "sessions":
-		if detail.Kind != "session_history" && detail.SourceType != "session_history" {
+	case experienceTraceQueryFilterSessions:
+		if normalizeExperienceTraceKind(detail.Kind) != experienceTraceKindSessionHistory && !normalizeExperienceTraceSourceType(detail.SourceType).IsSessionHistory() {
 			return false
 		}
-	case "", "all":
-	default:
+	case experienceTraceQueryFilterAll:
+	case experienceTraceQueryFilterUnknown:
 		return false
 	}
 	if req.ReviewStatus != "" && strings.ToLower(experienceTraceReviewSummaryStatus(detail)) != req.ReviewStatus {
@@ -2076,7 +2045,7 @@ func actionKindForExperienceTraceDetail(detail ExperienceTraceDetail) string {
 		return kind
 	}
 	if strings.TrimSpace(detail.NextAction) != "" {
-		return "manual_follow_up"
+		return experienceGovernanceActionManualFollowUp.String()
 	}
 	return ""
 }

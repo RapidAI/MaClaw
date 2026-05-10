@@ -84,7 +84,6 @@ export function AIAssistantPanel(props: any) {
         onHideWindow,
     } = panelWindow || {};
     const [localDraftInputValue, setLocalDraftInputValue] = useState(draftInputValue);
-    const [composing, setComposing] = useState(false);
     const [cancelPending, setCancelPending] = useState(false);
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
     const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
@@ -490,7 +489,6 @@ export function AIAssistantPanel(props: any) {
                 cancelPending={cancelPending}
                 cancelSession={cancelSession}
                 clearSelectedFile={clearSelectedFile}
-                composing={composing}
                 editingEntryId={editingEntryId}
                 exitHistoryBrowsing={exitHistoryBrowsing}
                 finishVoicePointer={finishVoicePointer}
@@ -523,7 +521,6 @@ export function AIAssistantPanel(props: any) {
                 reorderEntry={reorderEntry}
                 resizeInput={resizeInput}
                 selectedFilePaths={selectedFilePaths}
-                setComposing={setComposing}
                 setPendingAttachments={setPendingAttachments}
                 showBusySpinner={showBusySpinner}
                 startInputResize={startInputResize}

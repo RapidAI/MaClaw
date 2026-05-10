@@ -33,7 +33,7 @@ Concrete MaClawDataSrv implementation package.
 
 The parent `datasrv/` directory is an independently buildable Go module with
 module path `github.com/RapidAI/CodeClaw/datasrv`. It owns its own `go.mod`,
-`go.sum`, and `cmd/maclaw-data-srv` executable entry point. In-repo development
+`go.sum`, and `datasrv/cmd/maclaw-data-srv` executable entry point. In-repo development
 uses `replace github.com/RapidAI/CodeClaw => ..` so this module compiles against
 the local `corelib/structureddata` contracts.
 
@@ -61,7 +61,7 @@ All exported DTOs should be defined in `corelib/structureddata` and aliased thro
 `datasrv/structureddata/*_alias.go` files. Implementation files should use those local
 aliases instead of importing `corelib/structureddata` directly.
 
-### `cmd/maclaw-data-srv`
+### `datasrv/cmd/maclaw-data-srv`
 
 Executable entry point.
 
@@ -80,7 +80,7 @@ The boundary is enforced by architecture tests in:
 
 - `corelib/structureddata/architecture_test.go`
 - `datasrv/structureddata/architecture_test.go`
-- `cmd/maclaw-data-srv/architecture_test.go`
+- `datasrv/cmd/maclaw-data-srv/architecture_test.go`
 
 Additional implementation guardrails:
 

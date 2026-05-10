@@ -16,7 +16,33 @@ export function ClipboardGetText():Promise<string>;
 
 export function DeleteSkill(arg1:string,arg2:string):Promise<void>;
 
+export function DeletePassthroughCommand(arg1:string):Promise<void>;
+
 export function DownloadUpdate(arg1:string,arg2:string):Promise<string>;
+
+export function ExportPassthroughCommand(arg1:string):Promise<string>;
+
+export function GetPassthroughCommand(arg1:string):Promise<any>;
+
+export function GetPassthroughSettings():Promise<any>;
+
+export function ListPassthroughCommands():Promise<Array<any>>;
+
+export function ListPassthroughAudit(arg1:number):Promise<Array<any>>;
+
+export function PassthroughRegistryPath():Promise<string>;
+
+export function PreviewPassthroughCommand(arg1:string,arg2:any):Promise<Array<string>>;
+
+export function PreviewPassthroughDraftCommand(arg1:any,arg2:any):Promise<Array<string>>;
+
+export function RunPassthroughCommand(arg1:string,arg2:any,arg3:boolean):Promise<any>;
+
+export function SavePassthroughCommand(arg1:any):Promise<any>;
+
+export function SavePassthroughSettings(arg1:any):Promise<any>;
+
+export function SetPassthroughCommandEnabled(arg1:string,arg2:boolean):Promise<void>;
 
 export function ActivateRemote(arg1:string,arg2:string,arg3:string):Promise<any>;
 

@@ -106,7 +106,7 @@ func resolveSelectedProvider(cfg corelib.AppConfig) (corelib.MaclawLLMProvider, 
 func resolveProviderSecret(provider corelib.MaclawLLMProvider) string {
 	oauthToken := strings.TrimSpace(provider.OAuthAccessToken)
 	key := strings.TrimSpace(provider.Key)
-	if strings.Contains(strings.ToLower(strings.TrimSpace(provider.URL)), "chatgpt.com") && oauthToken != "" {
+	if classifyProviderEndpointKind(provider.URL).PrefersOAuthToken() && oauthToken != "" {
 		return oauthToken
 	}
 	switch strings.ToLower(strings.TrimSpace(provider.AuthType)) {

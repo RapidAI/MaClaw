@@ -92,7 +92,8 @@ func (p *OutputPipeline) coalesceEvents(events []ImportantEvent) []ImportantEven
 	merged := make([]ImportantEvent, 0, len(events))
 	for i := 0; i < len(events); {
 		event := events[i]
-		if event.Type != "file.change" && event.Type != "file.read" {
+		eventType := normalizeSummaryEventType(event.Type)
+		if !eventType.IsFileEvent() {
 			merged = append(merged, event)
 			i++
 			continue
@@ -106,7 +107,7 @@ func (p *OutputPipeline) coalesceEvents(events []ImportantEvent) []ImportantEven
 			seen[event.RelatedFile] = struct{}{}
 		}
 
-		for j < len(events) && events[j].Type == event.Type {
+		for j < len(events) && normalizeSummaryEventType(events[j].Type) == eventType {
 			if file := events[j].RelatedFile; file != "" {
 				if _, ok := seen[file]; !ok {
 					files = append(files, file)
@@ -149,7 +150,8 @@ func (p *OutputPipeline) coalesceAcrossBursts(session *RemoteSession, events []I
 	now := time.Now()
 	merged := make([]ImportantEvent, 0, len(events))
 	for _, event := range events {
-		if event.Type == "command.started" {
+		eventType := normalizeSummaryEventType(event.Type)
+		if eventType.IsCommandStarted() {
 			key := session.ID + "|" + event.Type + "|" + event.Command
 			lastSeen, ok := p.recentCommandRuns[key]
 			if ok && now.Sub(lastSeen) <= p.burstWindow {
@@ -159,7 +161,7 @@ func (p *OutputPipeline) coalesceAcrossBursts(session *RemoteSession, events []I
 			merged = append(merged, event)
 			continue
 		}
-		if event.Type != "file.change" && event.Type != "file.read" {
+		if !eventType.IsFileEvent() {
 			merged = append(merged, event)
 			continue
 		}
@@ -224,10 +226,10 @@ func buildEventDedupeKey(event ImportantEvent) string {
 }
 
 func buildMergedEventTitle(eventType string, count int) string {
-	switch eventType {
-	case "file.read":
+	switch normalizeSummaryEventType(eventType) {
+	case summaryEventFileRead:
 		return fmt.Sprintf("Inspected %d files", count)
-	case "file.change":
+	case summaryEventFileChange:
 		return fmt.Sprintf("Changed %d files", count)
 	default:
 		return fmt.Sprintf("%d events", count)
@@ -237,7 +239,7 @@ func buildMergedEventTitle(eventType string, count int) string {
 func buildMergedEventSummary(eventType string, files []string) string {
 	label := "files"
 	verb := "Updated"
-	if eventType == "file.read" {
+	if normalizeSummaryEventType(eventType).IsFileRead() {
 		verb = "Inspected"
 	}
 
@@ -356,11 +358,12 @@ type rawChunkResult struct {
 
 // screenClearPattern matches common ANSI sequences that clear the screen
 // or move the cursor to the home position, indicating a full TUI redraw.
-//   \x1b[2J  – Erase entire display
-//   \x1b[H   – Cursor home (row 1, col 1)
-//   \x1b[1;1H – Cursor to (1,1)
-//   \x1b[?1049h – Switch to alternate screen buffer
-//   \x1b[?1049l – Switch back from alternate screen buffer
+//
+//	\x1b[2J  – Erase entire display
+//	\x1b[H   – Cursor home (row 1, col 1)
+//	\x1b[1;1H – Cursor to (1,1)
+//	\x1b[?1049h – Switch to alternate screen buffer
+//	\x1b[?1049l – Switch back from alternate screen buffer
 var screenClearPattern = regexp.MustCompile(`\x1b\[2J|\x1b\[H|\x1b\[1;1H|\x1b\[\?1049[hl]`)
 
 // rawChunkLines splits a PTY output chunk into lines with only ANSI

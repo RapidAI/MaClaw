@@ -106,7 +106,7 @@ func (h *IMMessageHandler) confirmCriticalRiskSkill(
 
 	// Dispatch confirmation UI.
 	switch {
-	case platform == "desktop":
+	case normalizeIMMessagePlatformKind(platform).IsDesktop():
 		if h.app != nil {
 			payload := map[string]interface{}{
 				"confirm_id": confirmID,
@@ -127,7 +127,7 @@ func (h *IMMessageHandler) confirmCriticalRiskSkill(
 		displayText := FormatAskUserForDisplay(&AskUserRequest{
 			Question:  promptText,
 			Options:   []string{"确认安装", "拒绝安装"},
-			InputType: "confirm",
+			InputType: askUserInputConfirm.String(),
 		})
 		if h.app != nil {
 			imConfirmKey := platform + ":" + userID

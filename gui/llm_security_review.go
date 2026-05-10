@@ -1,11 +1,11 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"net/http"
 	"strings"
 	"time"
@@ -113,12 +113,12 @@ func parseSecurityVerdict(content string) (LLMSecurityVerdict, string, error) {
 
 // normalizeVerdict maps a string to a known LLMSecurityVerdict.
 func normalizeVerdict(s string) LLMSecurityVerdict {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "safe":
+	switch LLMSecurityVerdict(strings.ToLower(strings.TrimSpace(s))) {
+	case VerdictSafe:
 		return VerdictSafe
-	case "risky":
+	case VerdictRisky:
 		return VerdictRisky
-	case "dangerous":
+	case VerdictDangerous:
 		return VerdictDangerous
 	default:
 		return ""

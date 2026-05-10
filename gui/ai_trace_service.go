@@ -169,6 +169,10 @@ func (s *AITraceService) AppendEvent(runID string, event TraceEvent) TraceEvent 
 	event.Summary = truncateTraceText(event.Summary, 400)
 	event.RelatedFile = truncateTraceText(event.RelatedFile, 260)
 	event.Command = truncateTraceText(event.Command, 260)
+	for i := range event.ToolOutcomes {
+		event.ToolOutcomes[i].ToolName = truncateTraceText(event.ToolOutcomes[i].ToolName, 80)
+		event.ToolOutcomes[i].Outcome = truncateTraceText(event.ToolOutcomes[i].Outcome, 40)
+	}
 	items := append(s.events[runID], event)
 	if len(items) > traceEventLimit {
 		items = items[len(items)-traceEventLimit:]
@@ -395,31 +399,43 @@ func buildTrialReflectSummary(run *TraceRun, events []TraceEvent, evidence []Evi
 	sawFailure := false
 	repeatGuardTriggered := false
 	for _, event := range events {
-		if event.Kind != "trial.observed" {
+		if normalizeTraceEventKind(event.Kind) != traceEventKindTrialObserved {
 			continue
 		}
-		attemptCount++
-		for _, tool := range traceToolNamesFromText(event.Command + " " + event.Summary) {
-			if _, ok := seenTools[tool]; ok {
-				continue
+		if len(event.ToolOutcomes) > 0 {
+			attemptCount += len(event.ToolOutcomes)
+			for _, observed := range event.ToolOutcomes {
+				tool := strings.TrimSpace(observed.ToolName)
+				if tool != "" {
+					if _, ok := seenTools[tool]; !ok {
+						seenTools[tool] = struct{}{}
+						attemptedTools = append(attemptedTools, tool)
+					}
+				}
+				switch observed.Outcome {
+				case toolOutcomeFailed.String():
+					failureCount++
+					sawFailure = true
+				case toolOutcomeSucceeded.String():
+					sawSuccess = true
+				}
 			}
-			seenTools[tool] = struct{}{}
-			attemptedTools = append(attemptedTools, tool)
-		}
-		lowerSummary := strings.ToLower(event.Summary)
-		if strings.Contains(lowerSummary, "=failed") {
-			failureCount++
-			sawFailure = true
-		}
-		if strings.Contains(lowerSummary, "=succeeded") {
-			sawSuccess = true
+		} else {
+			attemptCount++
+			for _, tool := range traceToolNamesFromText(event.Command + " " + event.Summary) {
+				if _, ok := seenTools[tool]; ok {
+					continue
+				}
+				seenTools[tool] = struct{}{}
+				attemptedTools = append(attemptedTools, tool)
+			}
 		}
 	}
 	for _, item := range evidence {
-		if item.Category == "repeat_guard" {
+		if normalizeTraceEvidenceCategory(item.Category) == traceEvidenceCategoryRepeatGuard {
 			repeatGuardTriggered = true
 		}
-		if item.SourceKind == "adaptive_retry" && item.Category != "" {
+		if normalizeTraceSourceKind(item.SourceKind) == traceSourceKindAdaptiveRetry && item.Category != "" {
 			if _, ok := seenCategories[item.Category]; !ok {
 				seenCategories[item.Category] = struct{}{}
 				failureCategories = append(failureCategories, item.Category)
@@ -472,6 +488,7 @@ func buildTrialReflectSummary(run *TraceRun, events []TraceEvent, evidence []Evi
 		AttemptedTools:    attemptedTools,
 		FailureCount:      failureCount,
 		FailureCategories: failureCategories,
+		RepeatGuard:       repeatGuardTriggered,
 		Recovered:         recovered,
 		FinalOutcome:      finalOutcome,
 		StrategyNote:      truncateTraceText(strings.Join(strategyParts, "; "), 220),
@@ -501,12 +518,12 @@ func traceEvidenceScore(item EvidenceRecord, projectPath, query string, tokens [
 	if projectPath != "" && item.ProjectPath == projectPath {
 		score += 50
 	}
-	switch item.Category {
-	case "error":
+	switch normalizeTraceEvidenceCategory(item.Category) {
+	case traceEvidenceCategoryError:
 		score += 20
-	case "result":
+	case traceEvidenceCategoryResult:
 		score += 16
-	case "file", "decision":
+	case traceEvidenceCategoryFile, traceEvidenceCategoryDecision:
 		score += 12
 	default:
 		score += 4

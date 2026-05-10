@@ -30,8 +30,60 @@ export function DeleteSkill(arg1, arg2) {
   return window['go']['main']['App']['DeleteSkill'](arg1, arg2);
 }
 
+export function DeletePassthroughCommand(arg1) {
+  return window['go']['main']['App']['DeletePassthroughCommand'](arg1);
+}
+
 export function DownloadUpdate(arg1, arg2) {
   return window['go']['main']['App']['DownloadUpdate'](arg1, arg2);
+}
+
+export function ExportPassthroughCommand(arg1) {
+  return window['go']['main']['App']['ExportPassthroughCommand'](arg1);
+}
+
+export function GetPassthroughCommand(arg1) {
+  return window['go']['main']['App']['GetPassthroughCommand'](arg1);
+}
+
+export function GetPassthroughSettings() {
+  return window['go']['main']['App']['GetPassthroughSettings']();
+}
+
+export function ListPassthroughCommands() {
+  return window['go']['main']['App']['ListPassthroughCommands']();
+}
+
+export function ListPassthroughAudit(arg1) {
+  return window['go']['main']['App']['ListPassthroughAudit'](arg1);
+}
+
+export function PassthroughRegistryPath() {
+  return window['go']['main']['App']['PassthroughRegistryPath']();
+}
+
+export function PreviewPassthroughCommand(arg1, arg2) {
+  return window['go']['main']['App']['PreviewPassthroughCommand'](arg1, arg2);
+}
+
+export function PreviewPassthroughDraftCommand(arg1, arg2) {
+  return window['go']['main']['App']['PreviewPassthroughDraftCommand'](arg1, arg2);
+}
+
+export function RunPassthroughCommand(arg1, arg2, arg3) {
+  return window['go']['main']['App']['RunPassthroughCommand'](arg1, arg2, arg3);
+}
+
+export function SavePassthroughCommand(arg1) {
+  return window['go']['main']['App']['SavePassthroughCommand'](arg1);
+}
+
+export function SavePassthroughSettings(arg1) {
+  return window['go']['main']['App']['SavePassthroughSettings'](arg1);
+}
+
+export function SetPassthroughCommandEnabled(arg1, arg2) {
+  return window['go']['main']['App']['SetPassthroughCommandEnabled'](arg1, arg2);
 }
 
 export function ActivateRemote(arg1, arg2, arg3) {

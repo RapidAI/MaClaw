@@ -227,9 +227,17 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
     const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (headingMatch) {
         const level = headingMatch[1].length;
-        const sizes: Record<number, string> = { 1: "1.2em", 2: "1.1em", 3: "1.0em", 4: "0.95em" };
+        const sizes: Record<number, string> = { 1: "1.25em", 2: "1.12em", 3: "1.0em", 4: "0.92em" };
+        const weights: Record<number, number> = { 1: 700, 2: 700, 3: 600, 4: 600 };
+        const margins: Record<number, string> = { 1: "0.6em 0 0.3em", 2: "0.5em 0 0.25em", 3: "0.4em 0 0.2em", 4: "0.3em 0 0.15em" };
         return (
-            <div key={key} style={{ fontSize: sizes[level] || "1em", fontWeight: 700, color: t.headingColor, margin: "0.4em 0 0.2em" }}>
+            <div key={key} style={{
+                fontSize: sizes[level] || "1em",
+                fontWeight: weights[level] || 600,
+                color: t.headingColor,
+                margin: margins[level] || "0.4em 0 0.2em",
+                letterSpacing: level === 1 ? "0.01em" : undefined,
+            }}>
                 {renderInlineMarkdown(headingMatch[2], t)}
             </div>
         );
@@ -237,7 +245,14 @@ function renderMarkdownLine(text: string, key: string | number, t: Theme): React
 
     if (/^>\s/.test(trimmed)) {
         return (
-            <div key={key} style={{ borderLeft: `2px solid ${t.quoteBorder}`, paddingLeft: "8px", color: t.quoteText, fontStyle: "italic", minHeight: "1.4em" }}>
+            <div key={key} style={{
+                borderLeft: `3px solid ${t.quoteBorder}`,
+                paddingLeft: "10px",
+                color: t.quoteText,
+                fontStyle: "italic",
+                minHeight: "1.4em",
+                margin: "2px 0",
+            }}>
                 {renderInlineMarkdown(trimmed.slice(2), t)}
             </div>
         );
@@ -297,12 +312,12 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     if (tableLines.length < 2 || dataRows.length === 0) return null;
     const headerCells = parseTableCells(dataRows[0]);
     const bodyRows = dataRows.slice(1);
-    const cellStyle: React.CSSProperties = { border: `1px solid ${t.divider}`, padding: "4px 8px", textAlign: "left", fontSize: "0.9em", lineHeight: 1.5 };
+    const cellStyle: React.CSSProperties = { border: `1px solid ${t.fieldBorder}`, padding: "5px 10px", textAlign: "left", fontSize: "0.9em", lineHeight: 1.5 };
     return (
-        <div key={key} style={{ overflowX: "auto", margin: "4px 0" }}>
+        <div key={key} style={{ overflowX: "auto", margin: "6px 0" }}>
             <table style={{ borderCollapse: "collapse", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
-                <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, fontWeight: 600, background: t.fieldBg }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
-                {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseTableCells(row); return <tr key={ri}>{headerCells.map((_, ci) => <td key={ci} style={cellStyle}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
+                <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, fontWeight: 600, background: t.fieldBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em" }}>{renderInlineMarkdown(cell, t)}</th>)}</tr></thead>
+                {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseTableCells(row); return <tr key={ri} style={{ background: ri % 2 === 1 ? t.fieldBg : undefined }}>{headerCells.map((_, ci) => <td key={ci} style={cellStyle}>{renderInlineMarkdown(cells[ci] || "", t)}</td>)}</tr>; })}</tbody>}
             </table>
         </div>
     );
@@ -323,15 +338,15 @@ export function renderContentWithCodeBlocks(content: string, t: Theme): React.Re
                 <pre key={`code-${elements.length}`} style={{
                     background: t.codeBlockBg,
                     border: `1px solid ${t.codeBlockBorder}`,
-                    borderRadius: "4px",
-                    padding: "8px 10px",
-                    margin: "4px 0",
-                    fontSize: "0.9em",
+                    borderRadius: "6px",
+                    padding: "10px 12px",
+                    margin: "6px 0",
+                    fontSize: "0.88em",
                     overflowX: "auto",
                     color: t.codeText,
-                    lineHeight: 1.5,
+                    lineHeight: 1.6,
                 }}>
-                    {codeBlockLang && <div style={{ color: t.codeBlockLang, fontSize: "0.85em", marginBottom: "4px" }}>{codeBlockLang}</div>}
+                    {codeBlockLang && <div style={{ color: t.codeBlockLang, fontSize: "0.8em", marginBottom: "6px", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.05em", opacity: 0.8 }}>{codeBlockLang}</div>}
                     <code>{renderCodeBlockText(codeBlockLines.join("\n"), t)}</code>
                 </pre>
             );
@@ -602,6 +617,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
             const savedPaths = msg.localFilePaths && msg.localFilePaths.length > 0
                 ? msg.localFilePaths
                 : (msg.localFilePath ? [msg.localFilePath] : []);
+            const screenshotBase64 = msg.thumbnailBase64 || msg.imageKey;
             return (
                 <div key={msg.id} style={{
                     padding: "4px 0 4px 8px",
@@ -610,16 +626,28 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     color: t.text,
                 }}>
                     {/* Streaming: show blinking cursor only on the last assistant message */}
-                    {isLastAssistant && !msg.content && !msg.fields && !msg.thumbnailBase64 && savedPaths.length === 0 && (
+                    {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && (
                         <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>{"|"}</span>
                     )}
-                    {msg.thumbnailBase64 && msg.localFilePath && (
+                    {screenshotBase64 && (
                         <div style={{ margin: "4px 0 6px 0" }}>
-                            <a href="#" onClick={(event) => openFileInFolder(event, msg.localFilePath!)}
-                               style={{ display: "inline-block", cursor: "pointer" }}
-                               title={msg.localFilePath}>
+                            {msg.localFilePath ? (
+                                <a href="#" onClick={(event) => openFileInFolder(event, msg.localFilePath!)}
+                                   style={{ display: "inline-block", cursor: "pointer" }}
+                                   title={msg.localFilePath}>
+                                    <img
+                                        src={`data:image/png;base64,${screenshotBase64}`}
+                                        alt="screenshot"
+                                        style={{
+                                            maxWidth: "180px", maxHeight: "120px",
+                                            borderRadius: "4px", border: `1px solid ${t.borderLeft}`,
+                                            objectFit: "contain",
+                                        }}
+                                    />
+                                </a>
+                            ) : (
                                 <img
-                                    src={`data:image/png;base64,${msg.thumbnailBase64}`}
+                                    src={`data:image/png;base64,${screenshotBase64}`}
                                     alt="screenshot"
                                     style={{
                                         maxWidth: "180px", maxHeight: "120px",
@@ -627,7 +655,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                                         objectFit: "contain",
                                     }}
                                 />
-                            </a>
+                            )}
                         </div>
                     )}
                     {renderContentWithCodeBlocks(msg.content, t)}
@@ -658,7 +686,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                 if (codingAgentProgress) return codingAgentProgress;
             }
             return (
-                <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "1px 0", fontStyle: "italic" }}>
+                <div key={msg.id} style={{ color: t.textMuted, fontSize: "11px", padding: "2px 0", fontStyle: "italic" }}>
                     {msg.content}
                 </div>
             );
@@ -668,7 +696,7 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     padding: "8px 12px",
                     margin: "4px 0",
                     borderRadius: "6px",
-                    background: "linear-gradient(135deg, rgba(99,102,241,0.06), rgba(139,92,246,0.06))",
+                    background: t.fieldBg,
                     borderLeft: `3px solid ${t.promptColor}`,
                     color: t.text,
                     fontSize: "12px",

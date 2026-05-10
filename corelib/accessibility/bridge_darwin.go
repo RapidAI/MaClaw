@@ -58,9 +58,8 @@ func runPython(script string) (string, error) {
 		// Check if this is a permission error.
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			stderr := string(exitErr.Stderr)
-			if strings.Contains(stderr, "AXError") || strings.Contains(stderr, "kAXErrorCannotComplete") ||
-				strings.Contains(stderr, "not trusted") || strings.Contains(stderr, "accessibility") {
-				return "", fmt.Errorf("accessibility permission denied: grant access in System Preferences > Privacy & Security > Accessibility")
+			if classifyAccessibilityErrorMessage(stderr) == accessibilityErrorPermissionDenied {
+				return "", fmt.Errorf("%s", accessibilityPermissionDeniedMessage)
 			}
 		}
 		// Graceful degradation: app may not expose accessibility info.
@@ -177,7 +176,7 @@ print(json.dumps(result))
 	out, err := runPython(script)
 	if err != nil {
 		// Permission error — propagate it.
-		if strings.Contains(err.Error(), "accessibility permission denied") {
+		if isAccessibilityPermissionDenied(err) {
 			return nil, err
 		}
 		return nil, nil
@@ -283,7 +282,7 @@ for app in apps:
 
 	out, err := runPython(script)
 	if err != nil {
-		if strings.Contains(err.Error(), "accessibility permission denied") {
+		if isAccessibilityPermissionDenied(err) {
 			return nil, err
 		}
 		return nil, nil

@@ -294,7 +294,7 @@ func (c *btwCallbacks) ExecuteTool(name, argsJSON string) string {
 	// This is not a prompt-level suggestion — the LLM cannot bypass it.
 	if name == "memory" {
 		action, _ := args["action"].(string)
-		if action != "recall" {
+		if !normalizeMemoryToolAction(action).IsRecallOnlyAllowed() {
 			return "错误: /btw 侧查询中 memory 工具仅支持 action=\"recall\"（只读查询）"
 		}
 	}

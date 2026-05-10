@@ -48,8 +48,8 @@ func (s CodingDiffSnapshot) Detail() string {
 }
 
 func newCodingAgentDiffSummaryEvent(task *TaskItem, title string, snapshot CodingDiffSnapshot) CodingAgentEvent {
-	event := newCodingAgentTaskEvent("result", task, title, "")
-	event.Event = "diff_summary"
+	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, task, title, "")
+	event.Event = codingAgentEventKindDiffSummary.String()
 	event.Detail = snapshot.Detail()
 	event.Count = snapshot.Count()
 	event.Files = snapshot.Files()

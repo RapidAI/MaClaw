@@ -5,46 +5,150 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/progress"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
-func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress coretool.ProgressCallback) (result string) {
+type agentLoopToolExecutionOptions struct {
+	UserID           string
+	SkipWorkflowGate bool
+	ToolCall         llm.ToolCall
+	Iteration        int
+	Phase            agentLoopPhase
+	Debug            bool
+	OnProgress       coretool.ProgressCallback
+	SendToolProgress func(string)
+	MilestoneTracker *progress.AgentProgressTracker
+	RecordToolCall   func(string, string, string)
+}
+
+func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionOptions) toolExecutionResult {
+	tc := opts.ToolCall
+	if opts.MilestoneTracker != nil {
+		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
+	}
+	if opts.Debug && opts.SendToolProgress != nil {
+		opts.SendToolProgress(userFacingToolProgressText(tc.Function.Name))
+	}
+	if opts.RecordToolCall != nil {
+		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)
+	}
+
+	var result toolExecutionResult
+	if !opts.SkipWorkflowGate && !h.isWorkflowToolAllowed(opts.UserID, tc.Function.Name) {
+		text := fmt.Sprintf("[system rejected] %s is not allowed by the current workflow tool policy.", tc.Function.Name)
+		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+		log.Printf("[agent-loop] rejected execution of workflow-blocked tool %q (iter=%d user=%s)", tc.Function.Name, opts.Iteration, opts.UserID)
+	}
+	if result.Text == "" && !opts.SkipWorkflowGate {
+		allowed, reason := h.isWorkflowToolCallAllowed(opts.UserID, tc.Function.Name, tc.Function.Arguments)
+		if !allowed {
+			text := fmt.Sprintf("[system rejected] %s", reason)
+			result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
+			log.Printf("[agent-loop] rejected execution of workflow-blocked tool call %q (iter=%d user=%s reason=%s)", tc.Function.Name, opts.Iteration, opts.UserID, reason)
+		}
+	}
+	if result.Text == "" && opts.Phase.TruncationBlockedTools[tc.Function.Name] {
+		text := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
+		result = toolExecutionResult{Text: text, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailureTruncationBlocked}
+		log.Printf("[agent-loop] rejected execution of truncation-blocked tool %q (iter=%d)", tc.Function.Name, opts.Iteration)
+	}
+	if result.Text == "" {
+		result = h.executeToolDetailed(tc.Function.Name, tc.Function.Arguments, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
+	}
+
+	if opts.MilestoneTracker != nil {
+		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
+	}
+	return result
+}
+
+func (h *IMMessageHandler) isWorkflowToolAllowed(userID, name string) bool {
+	engine := h.getWorkflowEngine()
+	if engine == nil || strings.TrimSpace(userID) == "" {
+		return true
+	}
+	return workflow.IsToolAllowedByPolicy(engine.GetPhaseToolFilter(userID), name)
+}
+
+func (h *IMMessageHandler) isWorkflowToolCallAllowed(userID, name, argsJSON string) (bool, string) {
+	engine := h.getWorkflowEngine()
+	if engine == nil || strings.TrimSpace(userID) == "" {
+		return true, ""
+	}
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		cleaned := coretool.CleanToolArguments(argsJSON)
+		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
+			return false, fmt.Sprintf("invalid tool arguments: %v", err)
+		}
+	}
+	if err := workflow.ValidateToolCallByPolicyWithApproval(engine.GetPhaseToolFilter(userID), strings.TrimSpace(name), args, engine.GetOpsApprovedCommands(userID)); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress coretool.ProgressCallback) string {
+	return h.executeToolDetailed(name, argsJSON, onProgress).Text
+}
+
+func (h *IMMessageHandler) executeToolDetailed(name, argsJSON string, onProgress coretool.ProgressCallback) (result toolExecutionResult) {
+	name = strings.TrimSpace(name)
+	kind := classifyAgentToolKind(name)
 	defer func() {
 		if r := recover(); r != nil {
-			result = fmt.Sprintf("工具执行异常: %v", r)
+			result = toolExecutionResult{
+				Text:        fmt.Sprintf("Tool execution panicked: %v", r),
+				ToolName:    name,
+				ToolKind:    kind,
+				Outcome:     toolOutcomeFailed,
+				FailureKind: toolFailureExecutionPanic,
+			}
+		}
+		if result.ToolName == "" {
+			result.ToolName = name
+		}
+		if result.ToolKind == agentToolKindUnknown {
+			result.ToolKind = kind
 		}
 	}()
 
 	var args map[string]interface{}
 	if argsJSON != "" {
-		// Sanitize LLM-returned JSON: strip code fences, fix over-escaped
-		// quotes, remove single-quote wrappers. Small models (DeepSeek, Qwen)
-		// frequently return malformed JSON that fails json.Unmarshal.
 		cleaned := coretool.CleanToolArguments(argsJSON)
 		if err := json.Unmarshal([]byte(cleaned), &args); err != nil {
-			errMsg := fmt.Sprintf("参数解析失败: %s", err.Error())
-			// When JSON is truncated (common with large write_file content),
-			// provide actionable guidance to the LLM.
-			if strings.Contains(err.Error(), "unexpected end of JSON input") && len(argsJSON) > 8000 {
-				errMsg += "\n\n⚠️ 参数内容过长导致 JSON 被截断。请将内容拆分为多次调用：先用 write_file 写入前半部分，再用 write_file(mode=\"append\") 追加后半部分。单次 content 建议不超过 6000 字符。"
+			errMsg := fmt.Sprintf("Argument parse failed: %s", err.Error())
+			if hint := classifyToolArgumentError(err, argsJSON).Hint(); hint != "" {
+				errMsg += "\n\n" + hint
 			}
-			return errMsg
+			return toolExecutionResult{Text: errMsg, Outcome: toolOutcomeFailed, FailureKind: toolFailureArgumentParse}
 		}
 	}
 	if args == nil {
 		args = map[string]interface{}{}
 	}
 
-	// Track file paths for steering fileMatch resolution.
 	h.trackSteeringFileFromArgs(name, args)
 
-	// --- Registry-based dispatch (unified path) ---
+	if kind == agentToolKindSearchAndInstallSkill {
+		installResult := h.toolSearchAndInstallSkillResult(args, onProgress)
+		outcome := toolOutcomeFailed
+		if installResult.Success {
+			outcome = toolOutcomeSucceeded
+		}
+		return toolExecutionResult{Text: installResult.Text, Outcome: outcome, FailureKind: failureKindForOutcome(outcome)}
+	}
+
 	if h.registry != nil {
 		if tool, ok := h.registry.Get(name); ok {
 			if h.emitRegisteredToolAgentViewIfNeeded(name, args) {
-				return "Tool parameters are incomplete. A task panel form has been opened on the right."
+				return toolExecutionResult{Text: "Tool parameters are incomplete. A task panel form has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureMissingParameters}
 			}
 			if validationIssues := registeredToolValidateArgIssues(*tool, args); len(validationIssues) > 0 {
 				if h.app != nil {
@@ -53,73 +157,28 @@ func (h *IMMessageHandler) executeTool(name, argsJSON string, onProgress coretoo
 						h.app.emitAgentView(view)
 					}
 				}
-				return "Tool parameters need correction. A task panel form has been opened on the right."
+				return toolExecutionResult{Text: "Tool parameters need correction. A task panel form has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureValidation}
 			}
 			securityCtx := &SecurityCallContext{SessionID: localSessionIDFromToolArgs(args)}
 			if h.emitRegisteredToolApprovalAgentViewIfNeeded(name, args, securityCtx) {
-				return "Tool execution needs approval. An approval panel has been opened on the right."
+				return toolExecutionResult{Text: "Tool execution needs approval. An approval panel has been opened on the right.", Outcome: toolOutcomeUncertain, FailureKind: toolFailureApprovalRequired}
 			}
 			if h.firewall != nil {
 				allowed, reason := h.firewall.Check(name, args, securityCtx)
 				if !allowed {
-					return reason
+					return toolExecutionResult{Text: reason, Outcome: toolOutcomeFailed, FailureKind: toolFailureFirewallRejected}
 				}
 			}
 			if tool.HandlerProg != nil {
-				return tool.HandlerProg(args, onProgress)
+				text := tool.HandlerProg(args, onProgress)
+				return toolExecutionResult{Text: text, Outcome: toolOutcomeUncertain, FailureKind: toolFailureNone}
 			}
 			if tool.Handler != nil {
-				return tool.Handler(args)
+				text := tool.Handler(args)
+				return toolExecutionResult{Text: text, Outcome: toolOutcomeUncertain, FailureKind: toolFailureNone}
 			}
 		}
 	}
 
-	return fmt.Sprintf("未知工具: %s", name)
+	return toolExecutionResult{Text: fmt.Sprintf("Unknown tool: %s", name), Outcome: toolOutcomeFailed, FailureKind: toolFailureUnknownTool}
 }
-
-func localSessionIDFromToolArgs(args map[string]interface{}) string {
-	if args == nil {
-		return "local"
-	}
-	for _, key := range []string{"session_id", "browser_session_id"} {
-		if value, ok := args[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return "local"
-}
-
-func (h *IMMessageHandler) toolListSessions() string {
-	if h.manager == nil {
-		return "会话管理器未初始化"
-	}
-	sessions := h.manager.List()
-	if len(sessions) == 0 {
-		return "当前没有活跃会话。"
-	}
-	var b strings.Builder
-	for _, s := range sessions {
-		s.mu.RLock()
-		status := string(s.Status)
-		task := s.Summary.CurrentTask
-		waiting := s.Summary.WaitingForUser
-		modelName := s.ModelName
-		s.mu.RUnlock()
-		b.WriteString(fmt.Sprintf("- [%s] 工具=%s 标题=%s 状态=%s", s.ID, s.Tool, s.Title, status))
-		if modelName != "" {
-			b.WriteString(fmt.Sprintf(" 服务商=%s", modelName))
-		}
-		if task != "" {
-			b.WriteString(fmt.Sprintf(" 任务=%s", task))
-		}
-		if waiting {
-			b.WriteString(" [等待用户输入]")
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-// ---------------------------------------------------------------------------
-// Non-coding task guard — prevents create_session for non-coding requests
-// ---------------------------------------------------------------------------

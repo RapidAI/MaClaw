@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 type Config struct {
@@ -1590,7 +1591,22 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	execMsg.Content = effectiveContent
 	execCtx, cancelExec := context.WithCancel(ctx)
 	s.registerRunCancel(run.ID, cancelExec)
-	res, execErr := s.executor.Execute(execCtx, ExecuteRequest{Principal: p, Tenant: tenant, User: user, Instance: inst, Session: sess, Message: execMsg, History: history, DataDir: inst.DataDir, Config: cfg.AppConfig})
+	res, execErr := s.executor.Execute(execCtx, ExecuteRequest{
+		Principal:  p,
+		Tenant:     tenant,
+		User:       user,
+		Instance:   inst,
+		Session:    sess,
+		Message:    execMsg,
+		History:    history,
+		DataDir:    inst.DataDir,
+		Config:     cfg.AppConfig,
+		ToolPolicy: toolPolicyFromMetadata(userMsg.Metadata, sess.Metadata),
+		OpsApprovedCommands: opsApprovedCommandsFromMetadata(
+			userMsg.Metadata,
+			sess.Metadata,
+		),
+	})
 	s.clearRunCancel(run.ID)
 	cancelExec()
 	completed := s.now()
@@ -1617,20 +1633,93 @@ func (s *Service) PostMessage(ctx context.Context, p Principal, instanceID, sess
 	run.Status = RunStatusSucceeded
 	run.AssistantMessageID = assistant.ID
 	run.ResponseSource = strings.TrimSpace(assistant.Metadata[metaResponseSource])
-	run.WaitingForUser = run.ResponseSource == "ask_user"
+	run.WaitingForUser = normalizeResponseSourceKind(run.ResponseSource).IsWaitingForUser()
 	if err := s.store.SaveRun(run); err != nil {
 		return nil, nil, err
 	}
 	if pendingAskReq != nil {
 		sess.Metadata = clearPendingAskUserMetadata(sess.Metadata)
 	}
-	if res != nil && res.Metadata != nil && res.Metadata[metaResponseSource] == "ask_user" {
+	if res != nil && res.Metadata != nil && normalizeResponseSourceKind(res.Metadata[metaResponseSource]).IsWaitingForUser() {
 		sess.Metadata = setPendingAskUserMetadata(sess.Metadata, res.Metadata)
 	}
 	sess.UpdatedAt = completed
 	_ = s.store.SaveSession(sess)
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "run.succeeded", ResourceType: "run", ResourceID: run.ID, ActorType: "system", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"instance_id": instanceID, "session_id": sessionID, "assistant_message_id": assistant.ID}})
 	return &run, &assistant, nil
+}
+
+func toolPolicyFromMetadata(messageMetadata, sessionMetadata map[string]string) workflow.ToolFilterPolicy {
+	for _, metadata := range []map[string]string{messageMetadata, sessionMetadata} {
+		policy := workflow.ToolFilterPolicy(strings.TrimSpace(metadata["tool_policy"]))
+		switch policy {
+		case workflow.ToolFilterDocOnly, workflow.ToolFilterFull, workflow.ToolFilterOpsControlled:
+			return policy
+		}
+	}
+	return workflow.ToolFilterNone
+}
+
+func opsApprovedCommandsFromMetadata(messageMetadata, sessionMetadata map[string]string) []workflow.OpsApprovedCommand {
+	policyText := strings.TrimSpace(messageMetadata["ops_approved_commands"])
+	approvalSources := []map[string]string{messageMetadata}
+	if policyText == "" {
+		policyText = strings.TrimSpace(sessionMetadata["ops_approved_commands"])
+		approvalSources = []map[string]string{messageMetadata, sessionMetadata}
+	}
+	if policyText == "" {
+		return nil
+	}
+	decision := workflow.ExtractOpsRiskDecision(policyText)
+	if decision == workflow.OpsRiskDecisionApprovalRequired && !opsExecutionApprovalSatisfies(approvalSources, workflow.ExtractOpsApprovalRequirement(policyText)) {
+		return nil
+	}
+	if decision == workflow.OpsRiskDecisionApprovalRequired && !opsApprovalDigestMatches(approvalSources, policyText) {
+		return nil
+	}
+	return workflow.ExtractOpsApprovedCommands(policyText)
+}
+
+func opsExecutionApprovalSatisfies(metadataSources []map[string]string, required workflow.OpsApprovalRequirement) bool {
+	actual := opsExecutionApprovalLevelFromMetadata(metadataSources)
+	if required == workflow.OpsApprovalRequirementSingle {
+		return actual == workflow.OpsApprovalRequirementSingle || actual == workflow.OpsApprovalRequirementDouble
+	}
+	if required == workflow.OpsApprovalRequirementDouble {
+		return actual == workflow.OpsApprovalRequirementDouble
+	}
+	return false
+}
+
+func opsExecutionApprovalLevelFromMetadata(metadataSources []map[string]string) workflow.OpsApprovalRequirement {
+	for _, metadata := range metadataSources {
+		level := strings.ToLower(strings.TrimSpace(metadata["ops_execution_approval_level"]))
+		switch level {
+		case string(workflow.OpsApprovalRequirementSingle):
+			return workflow.OpsApprovalRequirementSingle
+		case string(workflow.OpsApprovalRequirementDouble):
+			return workflow.OpsApprovalRequirementDouble
+		}
+		value := strings.ToLower(strings.TrimSpace(metadata["ops_execution_approved"]))
+		switch value {
+		case "true", "yes", "approved", "1":
+			return workflow.OpsApprovalRequirementSingle
+		}
+	}
+	return workflow.OpsApprovalRequirementUnknown
+}
+
+func opsApprovalDigestMatches(metadataSources []map[string]string, policyText string) bool {
+	for _, metadata := range metadataSources {
+		expected := strings.TrimSpace(metadata["ops_approval_digest"])
+		if expected == "" {
+			continue
+		}
+		if strings.EqualFold(expected, workflow.OpsApprovalDigest(policyText)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) ListAuditEvents(ctx context.Context, in ListAuditEventsInput) ([]AuditEvent, error) {
@@ -3510,7 +3599,7 @@ func (s *Service) enrichRun(run Run) (Run, error) {
 		}
 		if msg.Metadata != nil {
 			run.ResponseSource = strings.TrimSpace(msg.Metadata[metaResponseSource])
-			run.WaitingForUser = run.ResponseSource == "ask_user"
+			run.WaitingForUser = normalizeResponseSourceKind(run.ResponseSource).IsWaitingForUser()
 		}
 		break
 	}

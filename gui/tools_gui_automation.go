@@ -63,8 +63,6 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 	)
 
 	replayer := guiautomation.NewGUIReplayer(supervisor, locator, inputSim)
-
-	// Activity updater for background task list
 	var guiActivity *guiReplayActivityAdapter
 	if activityStore != nil {
 		guiActivity = &guiReplayActivityAdapter{store: activityStore}
@@ -359,6 +357,10 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 		guiObserver.SetScreenParser(yoloParser)
 		log.Printf("[gui-automation] YOLO ScreenParser configured: %s", yoloWeightsPath)
 	}
+
+	// Wire observer into supervisor for SuccessCriteria verification after replay.
+	supervisor.SetObserver(guiObserver)
+
 	registry.Register(RegisteredTool{
 		Name:        "gui_observe",
 		Description: "观测桌面 GUI 程序的结构化状态（窗口元素树、焦点元素、OCR 文本）。返回纯文本，不截屏，不消耗 vision token。Observe desktop GUI state: accessibility tree, focused element, OCR text. Returns structured text, no screenshot.",
@@ -369,6 +371,7 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 		InputSchema: map[string]interface{}{
 			"window": map[string]interface{}{"type": "string", "description": "窗口标题（子串匹配）。不传则返回所有顶层窗口列表 / Window title (substring match). Omit to list all top-level windows."},
 			"depth":  map[string]interface{}{"type": "integer", "description": "元素树深度（默认 3，最大 5）/ Element tree depth (default 3, max 5)"},
+			"offset": map[string]interface{}{"type": "integer", "description": "从第 N 个字符开始返回（用于分页查看被截断的内容）/ Start from character N (for paginating truncated output)"},
 		},
 		Source: "builtin:gui_automation",
 		Handler: func(args map[string]interface{}) string {
@@ -433,9 +436,19 @@ func registerGUIAutomationTools(registry *ToolRegistry, loopMgr *BackgroundLoopM
 				formatElementTree(&sb, &el, 0, depth)
 			}
 
-			result := sb.String()
-			if len(result) > 8000 {
-				result = result[:8000] + "\n... (truncated)"
+			fullResult := sb.String()
+			totalLen := len(fullResult)
+			offset := guiIntArg(args, "offset", 0)
+			if offset < 0 {
+				offset = 0
+			}
+			if offset >= totalLen {
+				return fmt.Sprintf("offset %d 超出内容长度 %d", offset, totalLen)
+			}
+			result := fullResult[offset:]
+			const maxChunk = 8000
+			if len(result) > maxChunk {
+				result = result[:maxChunk] + fmt.Sprintf("\n... (truncated, total %d chars, use offset=%d to continue)", totalLen, offset+maxChunk)
 			}
 			return result
 		},
@@ -598,7 +611,7 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 		return "", fmt.Errorf("screenshot not supported on this platform")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	var shellName string
@@ -619,7 +632,7 @@ func captureDesktopScreenshot(screenIndex int) (string, error) {
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("screenshot timed out after 45s")
+			return "", fmt.Errorf("screenshot timed out after 15s")
 		}
 		return "", fmt.Errorf("screenshot failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}

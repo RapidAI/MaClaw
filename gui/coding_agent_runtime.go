@@ -92,7 +92,7 @@ func (c CodingTurnContext) ApplyToEvent(event CodingAgentEvent) CodingAgentEvent
 }
 
 func (c CodingTurnContext) TaskEvent(phase string, task *TaskItem, title string) CodingAgentEvent {
-	return c.ApplyToEvent(newCodingAgentTaskEvent(phase, task, title, c.RunID))
+	return c.ApplyToEvent(newCodingAgentTaskEvent(normalizeCodingAgentEventPhaseKind(phase), task, title, c.RunID))
 }
 
 func (c CodingTurnContext) Emit(onProgress func(string), event CodingAgentEvent) {

@@ -22,6 +22,21 @@ const (
 
 const LoopKindNormal = LoopKindChat
 
+type LoopState string
+
+const (
+	LoopStateRunning   LoopState = "running"
+	LoopStatePaused    LoopState = "paused"
+	LoopStateStopped   LoopState = "stopped"
+	LoopStateCompleted LoopState = "completed"
+	LoopStateFailed    LoopState = "failed"
+	LoopStateTimeout   LoopState = "timeout"
+)
+
+func (s LoopState) String() string {
+	return string(s)
+}
+
 // SlotKind categorizes background loops for concurrency control.
 type SlotKind int
 
@@ -63,9 +78,9 @@ type LoopContext struct {
 	Description string   // human-readable task description
 
 	mu            sync.RWMutex
-	maxIterations int    // current max iterations for this loop
-	iteration     int    // current iteration count
-	status        string // "running", "paused", "completed", "failed"
+	maxIterations int // current max iterations for this loop
+	iteration     int // current iteration count
+	status        LoopState
 
 	Conversation []interface{}             // this loop's conversation messages
 	History      []agent.ConversationEntry // loaded history (for chat loops)
@@ -109,7 +124,7 @@ func NewLoopContext(id string, maxIter int, httpClient *http.Client) *LoopContex
 		ID:            id,
 		Kind:          LoopKindChat,
 		maxIterations: maxIter,
-		status:        "running",
+		status:        LoopStateRunning,
 		CancelC:       make(chan struct{}),
 		DoneC:         make(chan struct{}),
 		HTTPClient:    httpClient,
@@ -126,7 +141,7 @@ func NewBackgroundLoopContext(id string, slotKind SlotKind, description string,
 		SlotKind:      slotKind,
 		Description:   description,
 		maxIterations: maxIter,
-		status:        "running",
+		status:        LoopStateRunning,
 		ContinueC:     make(chan int, 1),
 		StatusC:       statusC,
 		CancelC:       make(chan struct{}),
@@ -183,11 +198,23 @@ func (c *LoopContext) IncrementIteration() int {
 func (c *LoopContext) State() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	return c.status.String()
+}
+
+// LoopState returns the current typed loop state (thread-safe).
+func (c *LoopContext) LoopState() LoopState {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.status
 }
 
 // SetState sets the status string (thread-safe).
 func (c *LoopContext) SetState(s string) {
+	c.SetLoopState(LoopState(s))
+}
+
+// SetLoopState sets the typed loop state (thread-safe).
+func (c *LoopContext) SetLoopState(s LoopState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = s

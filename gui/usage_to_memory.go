@@ -80,7 +80,7 @@ func (b *UsagePatternBridge) RunOnce() {
 	written := 0
 	updated := 0
 	for _, p := range patterns {
-		created, changed := b.upsertUsageMemory(p.Description, []string{"usage_pattern", p.ToolName})
+		created, changed := b.upsertUsageMemory(p.Description, []string{experienceTraceKindUsagePattern.String(), p.ToolName})
 		if created {
 			written++
 		} else if changed {
@@ -89,7 +89,7 @@ func (b *UsagePatternBridge) RunOnce() {
 	}
 	for _, hint := range routingHints {
 		content := formatToolRoutingHintMemory(hint)
-		tags := []string{"usage_routing_hint", hint.ContextKey}
+		tags := []string{experienceTraceTagUsageRoutingHint, hint.ContextKey}
 		tags = append(tags, hint.PreferTools...)
 		tags = append(tags, hint.AvoidTools...)
 		tags = append(tags, hint.RecoveryTools...)
@@ -102,7 +102,7 @@ func (b *UsagePatternBridge) RunOnce() {
 	}
 	for _, nudge := range skillNudges {
 		content := formatToolSkillNudgeMemory(nudge)
-		tags := []string{"skill_nudge_candidate", nudge.ContextKey}
+		tags := []string{experienceTraceKindSkillNudgeCandidate.String(), nudge.ContextKey}
 		if nudge.SuggestedName != "" {
 			tags = append(tags, nudge.SuggestedName)
 		}
@@ -117,7 +117,7 @@ func (b *UsagePatternBridge) RunOnce() {
 	}
 	for _, pattern := range recoveryPatterns {
 		content := formatToolRecoveryPatternMemory(pattern)
-		tags := []string{"tool_recovery_pattern", pattern.ContextKey, pattern.FailedTool, pattern.RecoveryTool}
+		tags := []string{experienceTraceKindToolRecoveryPattern.String(), pattern.ContextKey, pattern.FailedTool, pattern.RecoveryTool}
 		if pattern.ErrorClass != "" {
 			tags = append(tags, pattern.ErrorClass)
 		}
@@ -160,7 +160,7 @@ func (b *UsagePatternBridge) upsertUsageMemory(content string, tags []string) (c
 		Content:    content,
 		Category:   memory.CategoryProjectKnowledge,
 		Tags:       tags,
-		SourceType: "tool_usage",
+		SourceType: string(experienceTraceSourceToolUsage),
 	}
 	if err := b.memory.Save(entry); err != nil {
 		return false, false
@@ -173,12 +173,12 @@ func usageMemoryIdentityTagCount(tags []string) int {
 		return len(tags)
 	}
 	switch tags[0] {
-	case "tool_recovery_pattern":
+	case experienceTraceKindToolRecoveryPattern.String():
 		if len(tags) < 4 {
 			return len(tags)
 		}
 		return 4
-	case "skill_nudge_candidate":
+	case experienceTraceKindSkillNudgeCandidate.String():
 		if len(tags) < 3 {
 			return len(tags)
 		}

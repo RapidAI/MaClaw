@@ -203,32 +203,32 @@ func (c *RemoteHubClient) syncIMGatewayClaims() {
 		return
 	}
 	// WeChat
-	if !cfg.IsWeixinLocalMode() && c.app.weixinGateway != nil && c.app.weixinGateway.Status() == "connected" {
-		if err := c.SendIMGatewayClaim("weixin"); err == nil {
+	if !cfg.IsWeixinLocalMode() && c.app.weixinGateway != nil && normalizeGatewayConnectionStatus(c.app.weixinGateway.Status()).IsConnected() {
+		if err := c.SendIMGatewayClaim(imGatewayPlatformWeixin); err == nil {
 			log.Printf("[hub-client] re-sent weixin gateway claim on connect")
 		}
 	}
 	// Lansenger
-	if !cfg.IsLansengerLocalMode() && c.app.lansengerGateway != nil && c.app.lansengerGateway.Status() == "connected" {
-		if err := c.SendIMGatewayClaim("lansenger"); err == nil {
+	if !cfg.IsLansengerLocalMode() && c.app.lansengerGateway != nil && normalizeGatewayConnectionStatus(c.app.lansengerGateway.Status()).IsConnected() {
+		if err := c.SendIMGatewayClaim(imGatewayPlatformLansenger); err == nil {
 			log.Printf("[hub-client] re-sent lansenger gateway claim on connect")
 		}
 	}
 	// Telegram
-	if !cfg.IsTelegramLocalMode() && c.app.telegramGateway != nil && c.app.telegramGateway.Status() == "connected" {
-		if err := c.SendIMGatewayClaim("telegram"); err == nil {
+	if !cfg.IsTelegramLocalMode() && c.app.telegramGateway != nil && normalizeGatewayConnectionStatus(c.app.telegramGateway.Status()).IsConnected() {
+		if err := c.SendIMGatewayClaim(imGatewayPlatformTelegram); err == nil {
 			log.Printf("[hub-client] re-sent telegram gateway claim on connect")
 		}
 	}
 	// QQ Bot
-	if !cfg.IsQQBotLocalMode() && c.app.qqBotGateway != nil && c.app.qqBotGateway.Status() == "connected" {
-		if err := c.SendIMGatewayClaim("qqbot_remote"); err == nil {
+	if !cfg.IsQQBotLocalMode() && c.app.qqBotGateway != nil && normalizeGatewayConnectionStatus(c.app.qqBotGateway.Status()).IsConnected() {
+		if err := c.SendIMGatewayClaim(imGatewayPlatformQQBotRemote); err == nil {
 			log.Printf("[hub-client] re-sent qqbot gateway claim on connect")
 		}
 	}
 	// Third-party local HTTP gateway
-	if !cfg.IsThirdPartyGatewayLocalMode() && c.app.thirdPartyGateway != nil && c.app.thirdPartyGateway.Status() == "connected" {
-		if err := c.SendIMGatewayClaim("thirdparty"); err == nil {
+	if !cfg.IsThirdPartyGatewayLocalMode() && c.app.thirdPartyGateway != nil && normalizeGatewayConnectionStatus(c.app.thirdPartyGateway.Status()).IsConnected() {
+		if err := c.SendIMGatewayClaim(imGatewayPlatformThirdParty); err == nil {
 			log.Printf("[hub-client] re-sent thirdparty gateway claim on connect")
 		}
 	}
@@ -297,7 +297,8 @@ func (c *RemoteHubClient) connectLocked() error {
 	log.Printf("[onboarding] RemoteHubClient.connectLocked read_auth=%s auth_type=%s", time.Since(authReadStart), authResp.Type)
 	_ = c.conn.SetReadDeadline(time.Now().Add(hubPongWait)) // initial deadline; refreshed by pong handler
 
-	if authResp.Type == "error" {
+	authRespType := normalizeHubInboundMessageType(authResp.Type)
+	if authRespType.IsError() {
 		_ = c.conn.Close()
 		c.conn = nil
 		c.connected = false
@@ -308,7 +309,7 @@ func (c *RemoteHubClient) connectLocked() error {
 	// Extract viewer_token from auth.ok payload if present.
 	// This allows existing clients (which only have machine_token) to
 	// obtain a viewer_token for LLM service APIs without re-enrolling.
-	if authResp.Type == "auth.ok" && len(authResp.Payload) > 0 {
+	if authRespType.IsAuthOK() && len(authResp.Payload) > 0 {
 		var authPayload struct {
 			ViewerToken string `json:"viewer_token"`
 		}
@@ -845,34 +846,34 @@ func (c *RemoteHubClient) readLoop() {
 		// WebSocket-level pongs are slightly delayed.
 		_ = conn.SetReadDeadline(time.Now().Add(hubPongWait))
 
-		switch msg.Type {
-		case "error":
+		switch normalizeHubInboundMessageType(msg.Type) {
+		case hubInboundMessageError:
 			c.storeHubError(msg.Payload)
-		case "session.start":
+		case hubInboundMessageSessionStart:
 			// Run in a goroutine to avoid blocking the read loop during
 			// potentially slow session creation (e.g. full-disk scans).
 			go c.handleSessionStart(msg)
-		case "session.input":
+		case hubInboundMessageSessionInput:
 			c.handleSessionInput(msg)
-		case "session.interrupt":
+		case hubInboundMessageSessionInterrupt:
 			c.handleSessionInterrupt(msg)
-		case "session.kill":
+		case hubInboundMessageSessionKill:
 			c.handleSessionKill(msg)
-		case "session.image_input":
+		case hubInboundMessageSessionImageInput:
 			c.handleSessionImageInput(msg)
-		case "session.screenshot":
+		case hubInboundMessageSessionScreenshot:
 			c.handleSessionScreenshot(msg)
-		case "im.user_message":
+		case hubInboundMessageIMUserMessage:
 			go c.handleIMUserMessage(msg)
-		case "im.cancel_session":
+		case hubInboundMessageIMCancelSession:
 			go c.handleIMCancelSession(msg)
-		case "im.gateway_reply":
+		case hubInboundMessageIMGatewayReply:
 			go c.handleIMGatewayReply(msg)
-		case "im.gateway_claim_result":
+		case hubInboundMessageGatewayClaimResult:
 			c.handleIMGatewayClaimResult(msg)
-		case "machine.nickname_assigned":
+		case hubInboundMessageNicknameAssigned:
 			c.handleNicknameAssigned(msg)
-		case "ack":
+		case hubInboundMessageAck:
 			c.handleAck(msg)
 		}
 	}
@@ -1124,23 +1125,23 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 
 	c.app.log(fmt.Sprintf("[hub-client] im.gateway_reply received: platform=%s reply_type=%s uid=%s", payload.Platform, reply.ReplyType, reply.PlatformUID))
 
-	switch payload.Platform {
-	case "qqbot_remote":
+	switch normalizeIMGatewayPlatformKind(payload.Platform) {
+	case imGatewayPlatformQQBotRemote:
 		if c.app.qqBotGateway == nil {
 			c.app.log("[hub-client] im.gateway_reply: qqBotGateway is nil, ignoring")
 			return
 		}
-		switch reply.ReplyType {
-		case "text":
+		switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
+		case gatewayReplyTypeText:
 			_ = c.app.qqBotGateway.SendQQBotReply(reply.PlatformUID, reply.Text)
-		case "image":
+		case gatewayReplyTypeImage:
 			_ = c.app.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{
 				OpenID:   reply.PlatformUID,
 				FileType: 1,
 				FileData: reply.ImageData,
 				MimeType: "image/png",
 			})
-		case "file":
+		case gatewayReplyTypeFile:
 			_ = c.app.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{
 				OpenID:   reply.PlatformUID,
 				FileType: 4,
@@ -1148,7 +1149,7 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 				FileName: reply.FileName,
 				MimeType: reply.MimeType,
 			})
-		case "voice":
+		case gatewayReplyTypeVoice:
 			_ = c.app.qqBotGateway.SendQQBotMedia(qqbot.OutgoingMedia{
 				OpenID:   reply.PlatformUID,
 				FileType: 3,
@@ -1157,7 +1158,7 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 				MimeType: reply.MimeType,
 			})
 		}
-	case "telegram":
+	case imGatewayPlatformTelegram:
 		if c.app.telegramGateway == nil {
 			return
 		}
@@ -1171,7 +1172,7 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileName:    reply.FileName,
 			MimeType:    reply.MimeType,
 		})
-	case "weixin":
+	case imGatewayPlatformWeixin:
 		wl := weixin.GetWxLog()
 		if c.app.weixinGateway == nil {
 			wl.Log("hubClient.reply", "IN", reply.PlatformUID, "ERR weixinGateway is nil, dropping")
@@ -1192,7 +1193,7 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			ContextToken: reply.ContextToken,
 			Extra:        reply.Extra,
 		})
-	case "lansenger":
+	case imGatewayPlatformLansenger:
 		if c.app.lansengerGateway == nil {
 			c.app.log("[hub-client] im.gateway_reply: lansengerGateway is nil, ignoring")
 			return
@@ -1207,7 +1208,7 @@ func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 			FileName:    reply.FileName,
 			MimeType:    reply.MimeType,
 		})
-	case "thirdparty":
+	case imGatewayPlatformThirdParty:
 		if c.app.thirdPartyGateway == nil {
 			c.app.log("[hub-client] im.gateway_reply: thirdPartyGateway is nil, ignoring")
 			return
@@ -1391,8 +1392,8 @@ func (c *RemoteHubClient) SendIMProactiveFile(b64Data, fileName, mimeType, messa
 }
 
 // SendIMGatewayClaim sends im.gateway_claim to Hub to register this machine
-// as the gateway owner for the given IM platform (e.g. "qqbot_remote", "telegram").
-func (c *RemoteHubClient) SendIMGatewayClaim(platform string) error {
+// as the gateway owner for the given IM platform.
+func (c *RemoteHubClient) SendIMGatewayClaim(platform imGatewayPlatformKind) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
@@ -1402,14 +1403,14 @@ func (c *RemoteHubClient) SendIMGatewayClaim(platform string) error {
 		Type:      "im.gateway_claim",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
-		Payload:   map[string]string{"platform": platform},
+		Payload:   map[string]string{"platform": platform.String()},
 	})
 }
 
 // SendIMGatewayUnclaim sends im.gateway_unclaim to Hub to release this machine's
 // gateway ownership for the given IM platform. Called when the user disables
 // an IM plugin so Hub stops routing messages to this client.
-func (c *RemoteHubClient) SendIMGatewayUnclaim(platform string) error {
+func (c *RemoteHubClient) SendIMGatewayUnclaim(platform imGatewayPlatformKind) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
@@ -1419,14 +1420,14 @@ func (c *RemoteHubClient) SendIMGatewayUnclaim(platform string) error {
 		Type:      "im.gateway_unclaim",
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
-		Payload:   map[string]string{"platform": platform},
+		Payload:   map[string]string{"platform": platform.String()},
 	})
 }
 
 // SendIMGatewayMessage sends im.gateway_message to Hub, forwarding an incoming
 // IM message from a client-side gateway (QQ Bot, Telegram) for processing
 // through the Hub's IM Adapter pipeline.
-func (c *RemoteHubClient) SendIMGatewayMessage(platform string, data map[string]any) error {
+func (c *RemoteHubClient) SendIMGatewayMessage(platform imGatewayPlatformKind, data map[string]any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.connected || c.conn == nil {
@@ -1440,7 +1441,7 @@ func (c *RemoteHubClient) SendIMGatewayMessage(platform string, data map[string]
 		TS:        time.Now().Unix(),
 		MachineID: c.machineID,
 		Payload: map[string]any{
-			"platform": platform,
+			"platform": platform.String(),
 			"data":     data,
 		},
 	})

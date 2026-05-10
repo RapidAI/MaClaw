@@ -42,7 +42,7 @@ type MCPServerView struct {
 	AutoStart     bool                    `json:"auto_start,omitempty"`
 	Source        corelib.MCPServerSource `json:"source,omitempty"`
 	Running       bool                    `json:"running"`
-	HealthStatus  string                  `json:"health_status"`
+	HealthStatus  MCPHealthStatus         `json:"health_status"`
 	FailCount     int                     `json:"fail_count,omitempty"`
 	LastCheckAt   *time.Time              `json:"last_check_at,omitempty"`
 	CreatedAt     string                  `json:"created_at,omitempty"`
@@ -88,7 +88,7 @@ type userMCPRuntime struct {
 }
 
 type remoteMCPRuntime struct {
-	healthStatus string
+	healthStatus MCPHealthStatus
 	failCount    int
 	lastCheckAt  time.Time
 	sessionID    string
@@ -379,7 +379,7 @@ func (s *Service) StopMCPServer(ctx context.Context, p Principal, serverID strin
 	}
 	if remoteEntry != nil {
 		runtime.clearRemote(serverID)
-		view.HealthStatus = "unknown"
+		view.HealthStatus = MCPHealthUnknown
 		view.Running = false
 		view.LastCheckAt = nil
 		view.Tools = nil
@@ -500,10 +500,10 @@ func buildMCPViews(cfg corelib.AppConfig, runtime *userMCPRuntime) []MCPServerVi
 			HeaderNames:   sortedKeys(entry.Headers),
 			Source:        entry.Source,
 			CreatedAt:     entry.CreatedAt,
-			HealthStatus:  "unknown",
+			HealthStatus:  MCPHealthUnknown,
 		}
 		if state != nil {
-			view.HealthStatus = defaultString(state.healthStatus, "unknown")
+			view.HealthStatus = normalizeMCPHealthStatus(state.healthStatus)
 			view.FailCount = state.failCount
 			if !state.lastCheckAt.IsZero() {
 				ts := state.lastCheckAt
@@ -527,14 +527,14 @@ func buildMCPViews(cfg corelib.AppConfig, runtime *userMCPRuntime) []MCPServerVi
 			Disabled:     entry.Disabled,
 			AutoStart:    entry.AutoStart,
 			CreatedAt:    entry.CreatedAt,
-			HealthStatus: "stopped",
+			HealthStatus: MCPHealthStopped,
 		}
 		if client != nil && client.IsRunning() {
 			view.Running = true
-			view.HealthStatus = "running"
+			view.HealthStatus = MCPHealthRunning
 			view.Tools = cloneMCPTools(client.GetTools())
 		} else if entry.Disabled {
-			view.HealthStatus = "disabled"
+			view.HealthStatus = MCPHealthDisabled
 		}
 		items = append(items, view)
 	}
@@ -732,10 +732,7 @@ func (rt *userMCPRuntime) checkRemote(entry corelib.MCPServerEntry) error {
 		}
 		rt.remote[entry.ID] = state
 	}
-	state.healthStatus = "healthy"
-	if time.Since(start) > 5*time.Second {
-		state.healthStatus = "slow"
-	}
+	state.healthStatus = remoteMCPHealthStatus(time.Since(start))
 	state.failCount = 0
 	state.lastCheckAt = time.Now()
 	state.tools = tools
@@ -761,9 +758,9 @@ func (rt *userMCPRuntime) recordRemoteFailure(serverID string) {
 	state.failCount++
 	state.lastCheckAt = time.Now()
 	if state.failCount >= 3 {
-		state.healthStatus = "unavailable"
+		state.healthStatus = MCPHealthUnavailable
 	} else {
-		state.healthStatus = "slow"
+		state.healthStatus = MCPHealthSlow
 	}
 }
 

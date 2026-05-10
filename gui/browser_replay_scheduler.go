@@ -32,7 +32,7 @@ func (b *browserReplaySchedulerBridge) handleScheduledReplay(task *scheduler.Sch
 	if err := json.Unmarshal([]byte(task.Action), &action); err != nil {
 		return "", nil, false // not a structured action, let default executor handle
 	}
-	if action.Type != "browser_replay" || action.FlowName == "" {
+	if !normalizeScheduledActionTypeKind(action.Type).IsBrowserReplay() || action.FlowName == "" {
 		return "", nil, false
 	}
 

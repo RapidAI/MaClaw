@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type TraceJobKind string
 
@@ -62,17 +65,23 @@ type TraceRun struct {
 }
 
 type TraceEvent struct {
-	EventID     string `json:"event_id"`
-	JobID       string `json:"job_id"`
-	RunID       string `json:"run_id"`
-	ProjectPath string `json:"project_path,omitempty"`
-	Kind        string `json:"kind"`
-	Severity    string `json:"severity,omitempty"`
-	Title       string `json:"title"`
-	Summary     string `json:"summary,omitempty"`
-	RelatedFile string `json:"related_file,omitempty"`
-	Command     string `json:"command,omitempty"`
-	CreatedAt   int64  `json:"created_at"`
+	EventID      string                 `json:"event_id"`
+	JobID        string                 `json:"job_id"`
+	RunID        string                 `json:"run_id"`
+	ProjectPath  string                 `json:"project_path,omitempty"`
+	Kind         string                 `json:"kind"`
+	Severity     string                 `json:"severity,omitempty"`
+	Title        string                 `json:"title"`
+	Summary      string                 `json:"summary,omitempty"`
+	RelatedFile  string                 `json:"related_file,omitempty"`
+	Command      string                 `json:"command,omitempty"`
+	ToolOutcomes []TraceToolObservation `json:"tool_outcomes,omitempty"`
+	CreatedAt    int64                  `json:"created_at"`
+}
+
+type TraceToolObservation struct {
+	ToolName string `json:"tool_name"`
+	Outcome  string `json:"outcome"`
 }
 
 type EvidenceRecord struct {
@@ -94,6 +103,7 @@ type TrialReflectSummary struct {
 	AttemptedTools    []string `json:"attempted_tools,omitempty"`
 	FailureCount      int      `json:"failure_count,omitempty"`
 	FailureCategories []string `json:"failure_categories,omitempty"`
+	RepeatGuard       bool     `json:"repeat_guard,omitempty"`
 	Recovered         bool     `json:"recovered,omitempty"`
 	FinalOutcome      string   `json:"final_outcome,omitempty"`
 	StrategyNote      string   `json:"strategy_note,omitempty"`
@@ -142,23 +152,69 @@ func traceStatusFromSessionStatus(status SessionStatus) TraceRunStatus {
 	}
 }
 
+type traceLoopState string
+
+const (
+	traceLoopStateUnknown   traceLoopState = ""
+	traceLoopStateQueued    traceLoopState = "queued"
+	traceLoopStateStarting  traceLoopState = "starting"
+	traceLoopStateRunning   traceLoopState = "running"
+	traceLoopStatePaused    traceLoopState = "paused"
+	traceLoopStateCompleted traceLoopState = "completed"
+	traceLoopStateFailed    traceLoopState = "failed"
+	traceLoopStateStopped   traceLoopState = "stopped"
+	traceLoopStateTimeout   traceLoopState = "timeout"
+)
+
+func normalizeTraceLoopState(state string) traceLoopState {
+	switch traceLoopState(strings.TrimSpace(state)) {
+	case traceLoopStateQueued:
+		return traceLoopStateQueued
+	case traceLoopStateStarting:
+		return traceLoopStateStarting
+	case traceLoopStateRunning:
+		return traceLoopStateRunning
+	case traceLoopStatePaused:
+		return traceLoopStatePaused
+	case traceLoopStateCompleted:
+		return traceLoopStateCompleted
+	case traceLoopStateFailed:
+		return traceLoopStateFailed
+	case traceLoopStateStopped:
+		return traceLoopStateStopped
+	case traceLoopStateTimeout:
+		return traceLoopStateTimeout
+	default:
+		return traceLoopStateUnknown
+	}
+}
+
+func (s traceLoopState) IsActiveBackgroundLoop() bool {
+	switch s {
+	case traceLoopStateRunning, traceLoopStatePaused:
+		return true
+	default:
+		return false
+	}
+}
+
 func traceStatusFromLoopState(state string) TraceRunStatus {
-	switch state {
-	case "queued":
+	switch normalizeTraceLoopState(state) {
+	case traceLoopStateQueued:
 		return TraceRunStatusQueued
-	case "starting":
+	case traceLoopStateStarting:
 		return TraceRunStatusStarting
-	case "running":
+	case traceLoopStateRunning:
 		return TraceRunStatusRunning
-	case "paused":
+	case traceLoopStatePaused:
 		return TraceRunStatusPaused
-	case "completed":
+	case traceLoopStateCompleted:
 		return TraceRunStatusCompleted
-	case "failed":
+	case traceLoopStateFailed:
 		return TraceRunStatusFailed
-	case "stopped":
+	case traceLoopStateStopped:
 		return TraceRunStatusStopped
-	case "timeout":
+	case traceLoopStateTimeout:
 		return TraceRunStatusTimeout
 	default:
 		return TraceRunStatusRunning

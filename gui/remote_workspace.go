@@ -135,7 +135,7 @@ func (p *DefaultWorkspacePreparer) prepareGitWorktree(sessionID, projectPath, gi
 	p.worktreeMu.Lock()
 	defer p.worktreeMu.Unlock()
 
-	if err := runGit(gitRoot, "branch", "-D", branchName); err != nil && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "cannot delete branch") {
+	if err := runGit(gitRoot, "branch", "-D", branchName); err != nil && !classifyGitBranchError(err).IgnorableDeleteFailure() {
 		// Ignore common "branch doesn't exist" cases, but fail on anything else.
 	}
 

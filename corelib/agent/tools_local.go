@@ -289,12 +289,29 @@ func ToolFileRead(args map[string]interface{}) string {
 	return b.String()
 }
 
+type SearchToolOutcome string
+
+const (
+	SearchToolOutcomeMatched SearchToolOutcome = "matched"
+	SearchToolOutcomeNoMatch SearchToolOutcome = "no_match"
+	SearchToolOutcomeError   SearchToolOutcome = "error"
+)
+
+type SearchToolResult struct {
+	Text    string
+	Outcome SearchToolOutcome
+}
+
 // ToolRipgrep searches text files recursively using Go regexp.
 func ToolRipgrep(args map[string]interface{}) string {
+	return ToolRipgrepDetailed(args).Text
+}
+
+func ToolRipgrepDetailed(args map[string]interface{}) SearchToolResult {
 	totalStart := time.Now()
 	pattern := StringArg(args, "pattern")
 	if pattern == "" {
-		return "missing pattern parameter"
+		return SearchToolResult{Text: "missing pattern parameter", Outcome: SearchToolOutcomeError}
 	}
 	caseSensitive := boolArg(args, "case_sensitive", false)
 	fixedString := boolArg(args, "fixed_string", false)
@@ -306,12 +323,12 @@ func ToolRipgrep(args map[string]interface{}) string {
 	}
 	re, err := regexp.Compile(compilePattern)
 	if err != nil {
-		return fmt.Sprintf("invalid regex: %s", err.Error())
+		return SearchToolResult{Text: fmt.Sprintf("invalid regex: %s", err.Error()), Outcome: SearchToolOutcomeError}
 	}
 
 	base, err := resolveSearchBase(StringArg(args, "path"))
 	if err != nil {
-		return err.Error()
+		return SearchToolResult{Text: err.Error(), Outcome: SearchToolOutcomeError}
 	}
 	globPattern := StringArg(args, "glob")
 	excludePattern := resolveSearchExcludePattern(args, base)
@@ -327,7 +344,7 @@ func ToolRipgrep(args map[string]interface{}) string {
 		outputMode = "content"
 	}
 	if !isValidSearchOutputMode(outputMode) {
-		return fmt.Sprintf("invalid output_mode %q: expected content, files_with_matches, or count", outputMode)
+		return SearchToolResult{Text: fmt.Sprintf("invalid output_mode %q: expected content, files_with_matches, or count", outputMode), Outcome: SearchToolOutcomeError}
 	}
 	offset := intArg(args, "offset", 0)
 	if offset < 0 {
@@ -347,6 +364,12 @@ func ToolRipgrep(args map[string]interface{}) string {
 	appendStats := func(result string) string {
 		searchStats.totalTime = time.Since(totalStart)
 		return appendSearchStats(result, includeStats, searchStats, filesSearched)
+	}
+	matchedResult := func(result string) SearchToolResult {
+		return SearchToolResult{Text: appendStats(result), Outcome: SearchToolOutcomeMatched}
+	}
+	noMatchResult := func() SearchToolResult {
+		return SearchToolResult{Text: appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched)), Outcome: SearchToolOutcomeNoMatch}
 	}
 	visit := func(path string, d fs.DirEntry) error {
 		if searchOutputLimitReached(outputMode, outputLimit, matches, matchedFiles, fileCounts) {
@@ -395,7 +418,7 @@ func ToolRipgrep(args map[string]interface{}) string {
 	}
 	searchStats.scanTime = time.Since(scanStart)
 	if err != nil && err != filepath.SkipAll {
-		return fmt.Sprintf("search failed: %s", err.Error())
+		return SearchToolResult{Text: fmt.Sprintf("search failed: %s", err.Error()), Outcome: SearchToolOutcomeError}
 	}
 
 	switch outputMode {
@@ -410,13 +433,13 @@ func ToolRipgrep(args map[string]interface{}) string {
 			files = files[:maxResults]
 		}
 		if len(files) == 0 {
-			return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
+			return noMatchResult()
 		}
 		result := strings.Join(files, "\n")
 		if len(matchedFiles) >= maxResults+offset {
 			result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
 		}
-		return appendStats(result)
+		return matchedResult(result)
 	case "count":
 		files := make([]string, 0, len(fileCounts))
 		for file := range fileCounts {
@@ -425,7 +448,7 @@ func ToolRipgrep(args map[string]interface{}) string {
 		sort.Strings(files)
 		files = applyStringOffset(files, offset)
 		if len(files) == 0 {
-			return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
+			return noMatchResult()
 		}
 		if len(files) > maxResults {
 			files = files[:maxResults]
@@ -436,28 +459,32 @@ func ToolRipgrep(args map[string]interface{}) string {
 	}
 
 	if len(matches) == 0 {
-		return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
+		return noMatchResult()
 	}
 	matches = applyStringOffset(matches, offset)
 	if len(matches) == 0 {
-		return appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched))
+		return noMatchResult()
 	}
 	result := strings.Join(matches, "\n")
 	if len(matches) >= maxResults {
 		result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
 	}
-	return appendStats(result)
+	return matchedResult(result)
 }
 
 // ToolGlob finds files by glob pattern, including recursive ** patterns.
 func ToolGlob(args map[string]interface{}) string {
+	return ToolGlobDetailed(args).Text
+}
+
+func ToolGlobDetailed(args map[string]interface{}) SearchToolResult {
 	pattern := StringArg(args, "pattern")
 	if pattern == "" {
-		return "missing pattern parameter"
+		return SearchToolResult{Text: "missing pattern parameter", Outcome: SearchToolOutcomeError}
 	}
 	base, err := resolveSearchBase(StringArg(args, "path"))
 	if err != nil {
-		return err.Error()
+		return SearchToolResult{Text: err.Error(), Outcome: SearchToolOutcomeError}
 	}
 	maxResults := intArg(args, "max_results", 200)
 	if maxResults <= 0 {
@@ -483,17 +510,17 @@ func ToolGlob(args map[string]interface{}) string {
 		return nil
 	})
 	if err != nil && err != filepath.SkipAll {
-		return fmt.Sprintf("Glob 濠电姰鍨洪崕鑲╁垝妤ｅ啯鏅? %s", err.Error())
+		return SearchToolResult{Text: fmt.Sprintf("Glob failed: %s", err.Error()), Outcome: SearchToolOutcomeError}
 	}
 	sort.Strings(results)
 	if len(results) == 0 {
-		return "no matches found"
+		return SearchToolResult{Text: "no matches found", Outcome: SearchToolOutcomeNoMatch}
 	}
 	result := strings.Join(results, "\n")
 	if len(results) >= maxResults {
 		result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
 	}
-	return result
+	return SearchToolResult{Text: result, Outcome: SearchToolOutcomeMatched}
 }
 
 // BuildAdaptiveReadResult 根据文件类型和大小自动决定返回内容。
@@ -672,7 +699,7 @@ func ToolWriteFile(args map[string]interface{}) string {
 	}
 	size, err := tool.WriteTextFile(absPath, content, mode)
 	if err != nil {
-		if strings.Contains(err.Error(), "不支持的 mode") {
+		if classifyLocalFileToolError(err).ReturnRawError() {
 			return err.Error()
 		}
 		return fmt.Sprintf("写入失败: %s", err.Error())
@@ -704,7 +731,7 @@ func ToolEditFile(args map[string]interface{}) string {
 	replaceAll, _ := args["replace_all"].(bool)
 	res, err := tool.EditTextFile(absPath, oldString, newString, replaceAll)
 	if err != nil {
-		if strings.Contains(err.Error(), "未找到要替换的内容") || strings.Contains(err.Error(), "缺少 old_string 参数") {
+		if classifyLocalFileToolError(err).ReturnRawError() {
 			return err.Error()
 		}
 		return fmt.Sprintf("编辑失败: %s", err.Error())

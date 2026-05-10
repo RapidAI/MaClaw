@@ -2195,6 +2195,26 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.agentView?.id).toBe('tool-result');
     });
 
+    it('surfaces lifecycle AgentView errors as chat errors', async () => {
+        const { result } = renderAssistantHook();
+
+        await waitFor(() => {
+            expect(runtimeHandlers.has('agent-view:lifecycle')).toBe(true);
+        });
+
+        act(() => {
+            emitRuntimeEvent('agent-view:lifecycle', {
+                action: 'error',
+                view_id: 'expense-form',
+                error: 'Amount must be greater than zero.',
+            });
+        });
+
+        const last = result.current.messages[result.current.messages.length - 1];
+        expect(last.role).toBe('error');
+        expect(last.content).toBe('Amount must be greater than zero.');
+    });
+
     it('keeps coding agent progress events visible in live progress state', async () => {
         const pending = deferred<{ text: string; error: string; fields: null; actions: null; request_id: string; local_file_path?: string }>();
         (SendAIAssistantMessage as any).mockImplementationOnce(() => pending.promise);
@@ -2240,6 +2260,49 @@ describe('useAIAssistant property tests', () => {
         expect(assistantMsg?.content).toBe('');
         expect(assistantMsg?.localFilePath).toBe('/tmp/review.pdf');
         expect(assistantMsg?.localFilePaths).toEqual(['/tmp/review.pdf']);
+    });
+
+    it('keeps Go-style artifact responses visible', async () => {
+        mockSendResponse = {
+            Text: '',
+            Error: '',
+            Fields: null,
+            Actions: null,
+            LocalFilePath: '/tmp/review.pdf',
+            ResponseSource: ' File_Delivery ',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('make pdf');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('');
+        expect(assistantMsg?.localFilePath).toBe('/tmp/review.pdf');
+        expect(assistantMsg?.localFilePaths).toEqual(['/tmp/review.pdf']);
+    });
+
+    it('keeps image_key screenshot responses visible', async () => {
+        mockSendResponse = {
+            text: '',
+            error: '',
+            fields: null,
+            actions: null,
+            image_key: 'screenshot-base64',
+            response_source: 'agent_loop',
+        };
+
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            await result.current.sendMessage('take screenshot');
+        });
+
+        const assistantMsg = result.current.messages.find(m => m.role === 'assistant');
+        expect(assistantMsg?.content).toBe('');
+        expect(assistantMsg?.imageKey).toBe('screenshot-base64');
     });
 
     it('deduplicates consecutive identical progress events', async () => {

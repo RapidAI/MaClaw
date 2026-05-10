@@ -393,20 +393,20 @@ func (a *App) applyHubLLMServiceStatusToConfig(cfg *corelib.AppConfig, status Hu
 
 func hubLLMServiceMissingProviderMessage(status HubLLMServiceStatus) string {
 	grant := primaryHubLLMServiceGrant(status)
-	switch strings.ToLower(strings.TrimSpace(grant.Status)) {
-	case "period_limited":
+	switch normalizeHubLLMServiceGrantStatusKind(grant.Status) {
+	case hubLLMServiceGrantStatusPeriodLimited:
 		if retry := formatHubLLMServiceRetry(grant); retry != "" {
 			return "MaClaw 官方周期限流：当前周期额度已用尽，约 " + retry + " 后恢复；请刷新 Hub 服务状态。"
 		}
 		return "MaClaw 官方周期限流：当前周期额度已用尽；请刷新 Hub 服务状态。"
-	case "queued":
+	case hubLLMServiceGrantStatusQueued:
 		if retry := formatHubLLMServiceRetry(grant); retry != "" {
 			return "MaClaw 官方授权尚未生效：约 " + retry + " 后生效；请刷新 Hub 服务状态。"
 		}
 		return "MaClaw 官方授权尚未生效；请刷新 Hub 服务状态。"
-	case "exhausted":
+	case hubLLMServiceGrantStatusExhausted:
 		return "MaClaw 官方额度已用尽：请兑换或等待新的授权额度。"
-	case "expired":
+	case hubLLMServiceGrantStatusExpired:
 		return "MaClaw 官方授权已过期：请兑换新的授权额度。"
 	}
 	return "MaClaw 官方服务商暂不可用：Hub 未返回可用服务入口，请刷新 Hub 服务状态后重试。"
@@ -430,20 +430,7 @@ func primaryHubLLMServiceGrant(status HubLLMServiceStatus) HubLLMActiveGrant {
 }
 
 func hubLLMServiceGrantStatusRank(status string) int {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "period_limited":
-		return 0
-	case "queued":
-		return 1
-	case "exhausted":
-		return 2
-	case "expired":
-		return 3
-	case "active":
-		return 4
-	default:
-		return 9
-	}
+	return normalizeHubLLMServiceGrantStatusKind(status).Rank()
 }
 
 func formatHubLLMServiceRetry(grant HubLLMActiveGrant) string {

@@ -1932,6 +1932,42 @@ func (c *tuiCallbacks) ExecuteTool(name, argsJSON string) string {
 	return result
 }
 
+func (c *tuiCallbacks) IsToolAllowed(name string) bool {
+	return c.app.isWorkflowToolAllowedTUI(name)
+}
+
+func (c *tuiCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return false, tuiFormat(tuiConfigLang(c.app.appConfig), "toolArgParseFailed", err.Error())
+		}
+	}
+	var approved []workflow.OpsApprovedCommand
+	if engine := c.app.getWorkflowEngine(); engine != nil {
+		approved = engine.GetOpsApprovedCommands("tui-user")
+	}
+	if err := workflow.ValidateToolCallByPolicyWithApproval(c.app.currentWorkflowToolFilterTUI(), strings.TrimSpace(name), args, approved); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func (app *TUIApp) isWorkflowToolAllowedTUI(name string) bool {
+	return workflow.IsToolAllowedByPolicy(app.currentWorkflowToolFilterTUI(), name)
+}
+
+func (app *TUIApp) currentWorkflowToolFilterTUI() workflow.ToolFilterPolicy {
+	if app == nil {
+		return workflow.ToolFilterNone
+	}
+	engine := app.getWorkflowEngine()
+	if engine == nil {
+		return workflow.ToolFilterNone
+	}
+	return engine.GetPhaseToolFilter("tui-user")
+}
+
 func (c *tuiCallbacks) OnToken(delta string) {
 	if c.program != nil {
 		c.program.Send(views.ChatStreamMsg{Type: "text_delta", Content: delta})

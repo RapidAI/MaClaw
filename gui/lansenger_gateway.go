@@ -35,7 +35,7 @@ type lansengerGatewayManager struct {
 func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
 	return &lansengerGatewayManager{
 		app:    app,
-		status: "disconnected",
+		status: string(gatewayConnectionStatusDisconnected),
 	}
 }
 
@@ -57,14 +57,14 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = "disconnected"
+			m.status = string(gatewayConnectionStatusDisconnected)
 			m.mu.Unlock()
 			_ = gw.Stop()
 		} else {
 			m.mu.Unlock()
 		}
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim("lansenger")
+			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformLansenger)
 		}
 		if gw != nil {
 			m.emitStatusEvent()
@@ -107,7 +107,7 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		m.mu.Lock()
 		m.gateway = nil
 		m.lastToken = ""
-		m.status = "error"
+		m.status = string(gatewayConnectionStatusError)
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -119,7 +119,7 @@ func (m *lansengerGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = "disconnected"
+	m.status = string(gatewayConnectionStatusDisconnected)
 	m.lastToken = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -143,7 +143,8 @@ func (m *lansengerGatewayManager) Status() string {
 func (m *lansengerGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
 	m.status = status
-	if status == "error" {
+	normalized := normalizeGatewayConnectionStatus(status)
+	if normalized == gatewayConnectionStatusError {
 		// Clear gateway reference so SyncFromConfig can retry on next call.
 		m.gateway = nil
 		m.lastToken = ""
@@ -151,13 +152,13 @@ func (m *lansengerGatewayManager) onStatusChange(status string) {
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
-	if status == "connected" {
+	if normalized == gatewayConnectionStatusConnected {
 		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsLansengerLocalMode() {
 			return
 		}
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("lansenger")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformLansenger)
 		}
 	}
 }
@@ -180,6 +181,11 @@ func (m *lansengerGatewayManager) resetLocalHandler() {
 // ---------------------------------------------------------------------------
 
 func (m *lansengerGatewayManager) onIncomingMessage(msg lansenger.IncomingMessage) {
+	if isPassthroughSlashText(msg.Text) {
+		log.Printf("[lansenger-mgr] routing passthrough command locally: user=%s", msg.FromUserID)
+		m.handleLocalMessage(msg)
+		return
+	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		log.Printf("[lansenger-mgr] LoadConfig error: %v", err)
@@ -236,7 +242,7 @@ func (m *lansengerGatewayManager) forwardToHub(msg lansenger.IncomingMessage) {
 		"message_type": "text",
 	}
 
-	if err := hubClient.SendIMGatewayMessage("lansenger", payload); err != nil {
+	if err := hubClient.SendIMGatewayMessage(imGatewayPlatformLansenger, payload); err != nil {
 		log.Printf("[lansenger-mgr] forwardToHub error: %v, falling back to local", err)
 		m.handleLocalMessage(msg)
 	}
@@ -321,6 +327,25 @@ func (m *lansengerGatewayManager) ensureLocalHandler() *IMMessageHandler {
 }
 
 func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessage) {
+	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(msg.Text, "lansenger:"+msg.FromUserID); handled {
+		m.mu.Lock()
+		gw := m.gateway
+		m.mu.Unlock()
+		if gw != nil {
+			reply := resp.Text
+			if reply == "" {
+				reply = resp.Error
+			}
+			if reply == "" {
+				reply = "(no output)"
+			}
+			_ = gw.SendText(context.Background(), lansenger.OutgoingText{
+				ToUserID: msg.FromUserID,
+				Text:     reply,
+			})
+		}
+		return
+	}
 	if !m.app.isMaclawLLMConfigured() {
 		m.mu.Lock()
 		gw := m.gateway
@@ -349,7 +374,7 @@ func (m *lansengerGatewayManager) handleLocalMessage(msg lansenger.IncomingMessa
 	// WeChat, Telegram and QQ gateways.
 	var attachments []MessageAttachment
 	if msg.MediaType != "" && len(msg.MediaData) > 0 {
-		if msg.MediaType == "image" {
+		if normalizeIMMediaKind(msg.MediaType).IsImage() {
 			// Image → multimodal attachment for LLM vision.
 			// If the LLM doesn't support vision, buildUserContent will
 			// save it to a local file and tell the LLM accordingly.
@@ -514,8 +539,9 @@ func (m *lansengerGatewayManager) sendLocalFiles(gw *lansenger.Gateway, toUserID
 		}
 		name := filepath.Base(p)
 		mediaType := mediaTypeFromFileName(name)
-		if mediaType == "voice" || mediaType == "audio" {
-			mediaType = "file"
+		mediaKind := normalizeIMMediaKind(mediaType)
+		if mediaKind.IsVoice() || mediaKind.IsAudio() {
+			mediaType = imMediaFile.String()
 		}
 		if err := gw.SendMedia(context.Background(), lansenger.OutgoingMedia{
 			ToUserID:  toUserID,
@@ -543,13 +569,13 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 	}
 
 	ctx := context.Background()
-	switch reply.ReplyType {
-	case "text":
+	switch normalizeGatewayReplyTypeKind(reply.ReplyType) {
+	case gatewayReplyTypeText:
 		_ = gw.SendText(ctx, lansenger.OutgoingText{
 			ToUserID: reply.PlatformUID,
 			Text:     textutil.StripMarkdown(reply.Text),
 		})
-	case "image":
+	case gatewayReplyTypeImage:
 		data, err := base64.StdEncoding.DecodeString(reply.ImageData)
 		if err != nil {
 			return
@@ -557,9 +583,9 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 		_ = gw.SendMedia(ctx, lansenger.OutgoingMedia{
 			ToUserID:  reply.PlatformUID,
 			FileData:  data,
-			MediaType: "image",
+			MediaType: imMediaImage.String(),
 		})
-	case "file":
+	case gatewayReplyTypeFile:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
 			return
@@ -568,9 +594,9 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 			ToUserID:  reply.PlatformUID,
 			FileData:  data,
 			FileName:  reply.FileName,
-			MediaType: "file",
+			MediaType: imMediaFile.String(),
 		})
-	case "voice":
+	case gatewayReplyTypeVoice:
 		data, err := base64.StdEncoding.DecodeString(reply.FileData)
 		if err != nil {
 			return
@@ -579,7 +605,7 @@ func (m *lansengerGatewayManager) HandleGatewayReply(reply GatewayReplyPayload) 
 			ToUserID:  reply.PlatformUID,
 			FileData:  data,
 			FileName:  reply.FileName,
-			MediaType: "file",
+			MediaType: imMediaFile.String(),
 		})
 	}
 }
@@ -654,7 +680,7 @@ func (a *App) SetLansengerLocalMode(enabled bool) error {
 	if !enabled {
 		hubClient := a.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("lansenger")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformLansenger)
 		}
 	}
 	return nil

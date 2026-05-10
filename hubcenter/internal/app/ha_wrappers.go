@@ -102,6 +102,17 @@ func (r *haGossipRepo) DeletePost(ctx context.Context, id string) error {
 	return nil
 }
 
+func (r *haGossipRepo) DeleteFlaggedPosts(ctx context.Context) (int, error) {
+	deleted, err := r.inner.DeleteFlaggedPosts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if deleted > 0 {
+		r.syncSnapshot(ctx)
+	}
+	return deleted, nil
+}
+
 func (r *haGossipRepo) LockPost(ctx context.Context, id string, locked bool) error {
 	if err := r.inner.LockPost(ctx, id, locked); err != nil {
 		return err

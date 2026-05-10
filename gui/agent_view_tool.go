@@ -94,11 +94,11 @@ func (h *IMMessageHandler) emitRegisteredToolApprovalAgentViewIfNeeded(name stri
 func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, data map[string]interface{}) *IMAgentResponse {
 	toolName = strings.TrimSpace(toolName)
 	if h == nil || h.registry == nil || toolName == "" {
-		return &IMAgentResponse{Text: "Tool task panel submission is missing tool context.", Error: "missing tool context", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool task panel submission is missing tool context.", Error: "missing tool context", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	tool, ok := h.registry.Get(toolName)
 	if !ok || tool == nil {
-		return &IMAgentResponse{Text: "Tool is no longer available.", Error: "tool not found: " + toolName, ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool is no longer available.", Error: "tool not found: " + toolName, ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 
 	baseArgs, _ := data[registeredToolAgentViewArgsField].(map[string]interface{})
@@ -117,7 +117,7 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 				h.app.emitAgentView(view)
 			}
 		}
-		return &IMAgentResponse{Text: "Tool parameters are still incomplete. Fill the required fields in the task panel.", Error: "missing required parameters: " + strings.Join(missing, ", "), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool parameters are still incomplete. Fill the required fields in the task panel.", Error: "missing required parameters: " + strings.Join(missing, ", "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if validationIssues := registeredToolValidateArgIssues(*tool, args); len(validationIssues) > 0 {
 		validationErrors := registeredToolValidationMessages(validationIssues)
@@ -127,7 +127,7 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 				h.app.emitAgentView(view)
 			}
 		}
-		return &IMAgentResponse{Text: "Tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool parameters need correction. Review the task panel.", Error: strings.Join(validationErrors, "; "), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 
 	var result string
@@ -136,12 +136,12 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 	} else if tool.Handler != nil {
 		result = tool.Handler(args)
 	} else {
-		return &IMAgentResponse{Text: "Tool has no runnable handler.", Error: "missing handler: " + toolName, ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool has no runnable handler.", Error: "missing handler: " + toolName, ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if h.app != nil {
 		h.app.emitAgentView(buildRegisteredToolResultAgentView(*tool, result))
 	}
-	return &IMAgentResponse{Text: fmt.Sprintf("Tool %s completed from task panel.", toolName), ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: fmt.Sprintf("Tool %s completed from task panel.", toolName), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[string]interface{}) *IMAgentResponse {
@@ -151,18 +151,18 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 		approvalID = nonEmptyStringFromAny(parameters[registeredToolApprovalIDField])
 	}
 	if approvalID == "" {
-		return &IMAgentResponse{Text: "Tool approval is missing context.", Error: "missing approval id", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool approval is missing context.", Error: "missing approval id", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	approval, ok := getRegisteredToolPendingApproval(approvalID)
 	if !ok {
-		return &IMAgentResponse{Text: "Tool approval has expired or was already handled.", Error: "approval not found", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool approval has expired or was already handled.", Error: "approval not found", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if !boolFromAny(data["approved"]) {
 		deleteRegisteredToolPendingApproval(approvalID)
 		if h != nil && h.firewall != nil {
 			h.firewall.recordAudit(approval.ToolName, approval.Args, approval.Risk, security.PolicyAsk, "agent_view_approval_rejected", approval.SessionID)
 		}
-		return &IMAgentResponse{Text: "Tool execution was rejected.", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Tool execution was rejected.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if h != nil && h.firewall != nil && approval.SessionID != "" {
 		h.firewall.ApproveForSession(approval.SessionID, approval.ToolName)
@@ -176,7 +176,7 @@ func (h *IMMessageHandler) handleRegisteredToolApprovalAgentViewSubmit(data map[
 			h.app.emitAgentView(buildRegisteredToolResultAgentView(*tool, result))
 		}
 	}
-	return &IMAgentResponse{Text: "Approved tool execution completed.", ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: "Approved tool execution completed.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func registeredToolValidateArgs(tool RegisteredTool, args map[string]interface{}) []string {
@@ -254,12 +254,12 @@ func registeredToolValidateValue(path, label string, value interface{}, prop map
 	if enumIssues := registeredToolValidateEnum(path, label, value, prop); len(enumIssues) > 0 {
 		issues = append(issues, enumIssues...)
 	}
-	typ := strings.ToLower(strings.TrimSpace(fmt.Sprint(prop["type"])))
-	if typ == "" || typ == "<nil>" {
-		typ = registeredToolInferJSONType(value)
+	typ := normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"]))
+	if typ == registeredToolJSONSchemaUnknown {
+		typ = normalizeRegisteredToolJSONSchemaType(registeredToolInferJSONType(value))
 	}
 	switch typ {
-	case "number", "integer":
+	case registeredToolJSONSchemaNumber, registeredToolJSONSchemaInteger:
 		number, ok := numberFromAny(value)
 		if !ok {
 			return append(issues, registeredToolValidationIssue{Path: path, Message: fmt.Sprintf("%s must be a valid number", label)})
@@ -279,7 +279,7 @@ func registeredToolValidateValue(path, label string, value interface{}, prop map
 		if multipleOf, ok := numberFromAny(prop["multipleOf"]); ok && !registeredToolMultipleOf(number, multipleOf) {
 			issues = append(issues, registeredToolValidationIssue{Path: path, Message: fmt.Sprintf("%s must be a multiple of %s", label, formatConstraintNumber(multipleOf))})
 		}
-	case "string":
+	case registeredToolJSONSchemaString:
 		text := fmt.Sprint(value)
 		if minLength, ok := numberFromAny(prop["minLength"]); ok && float64(len([]rune(text))) < minLength {
 			issues = append(issues, registeredToolValidationIssue{Path: path, Message: fmt.Sprintf("%s must be at least %s characters", label, formatConstraintNumber(minLength))})
@@ -297,7 +297,7 @@ func registeredToolValidateValue(path, label string, value interface{}, prop map
 				issues = append(issues, registeredToolValidationIssue{Path: path, Message: errText})
 			}
 		}
-	case "array":
+	case registeredToolJSONSchemaArray:
 		length, ok := registeredToolCollectionLen(value)
 		if !ok {
 			return append(issues, registeredToolValidationIssue{Path: path, Message: fmt.Sprintf("%s must be an array", label)})
@@ -335,7 +335,7 @@ func registeredToolValidateValue(path, label string, value interface{}, prop map
 				}
 			}
 		}
-	case "object":
+	case registeredToolJSONSchemaObject:
 		objectValue := registeredToolAsMap(value)
 		if objectValue == nil {
 			return append(issues, registeredToolValidationIssue{Path: path, Message: fmt.Sprintf("%s must be an object", label)})
@@ -803,11 +803,11 @@ func registeredToolSpecializedAgentView(tool RegisteredTool, args map[string]int
 	for _, name := range names {
 		prop := props[name]
 		switch registeredToolAgentViewKind(prop) {
-		case "resource_picker":
+		case registeredToolAgentViewResourcePicker:
 			if view := registeredToolResourcePickerView(tool, name, prop, args, opts); view != nil {
 				return view
 			}
-		case "field_mapper":
+		case registeredToolAgentViewFieldMapper:
 			if view := registeredToolFieldMapperView(tool, name, prop, args, opts); view != nil {
 				return view
 			}
@@ -816,17 +816,13 @@ func registeredToolSpecializedAgentView(tool RegisteredTool, args map[string]int
 	return nil
 }
 
-func registeredToolAgentViewKind(prop map[string]interface{}) string {
+func registeredToolAgentViewKind(prop map[string]interface{}) registeredToolAgentViewWidgetKind {
 	for _, key := range []string{"x-agent-view", "x_agent_view", "ui:widget", "ui_widget"} {
-		kind := strings.ToLower(strings.TrimSpace(fmt.Sprint(prop[key])))
-		switch kind {
-		case "resource_picker", "resource-picker", "resourcepicker":
-			return "resource_picker"
-		case "field_mapper", "field-mapper", "fieldmapper":
-			return "field_mapper"
+		if kind := normalizeRegisteredToolAgentViewKind(fmt.Sprint(prop[key])); kind != registeredToolAgentViewUnknown {
+			return kind
 		}
 	}
-	return ""
+	return registeredToolAgentViewUnknown
 }
 
 func registeredToolResourcePickerView(tool RegisteredTool, name string, prop map[string]interface{}, args map[string]interface{}, opts registeredToolSpecializedAgentViewOptions) map[string]interface{} {
@@ -945,15 +941,15 @@ func registeredToolAgentViewFieldsForSchema(schema map[string]interface{}, requi
 			field["defaultValue"] = defaultValue
 		}
 		if options := registeredToolFieldOptions(prop); len(options) > 0 {
-			if strings.ToLower(strings.TrimSpace(fmt.Sprint(prop["type"]))) == "array" {
-				field["type"] = "multiselect"
+			if normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"])) == registeredToolJSONSchemaArray {
+				field["type"] = agentViewFieldTypeMultiSelect.String()
 			} else {
-				field["type"] = "select"
+				field["type"] = agentViewFieldTypeSelect.String()
 			}
 			field["options"] = options
 		}
 		registeredToolApplySchemaConstraints(field, prop)
-		if field["type"] == "array_table" {
+		if normalizeAgentViewFieldType(fmt.Sprint(field["type"])) == agentViewFieldTypeArrayTable {
 			if columns := registeredToolArrayTableColumns(prop); len(columns) > 0 {
 				field["columns"] = columns
 			}
@@ -961,7 +957,7 @@ func registeredToolAgentViewFieldsForSchema(schema map[string]interface{}, requi
 				field["dependentRequired"] = deps
 			}
 		}
-		if field["type"] == "object_form" {
+		if normalizeAgentViewFieldType(fmt.Sprint(field["type"])) == agentViewFieldTypeObjectForm {
 			if columns := registeredToolObjectColumns(prop); len(columns) > 0 {
 				field["columns"] = columns
 			}
@@ -1040,6 +1036,7 @@ func buildRegisteredToolResultAgentView(tool RegisteredTool, result string) map[
 func storeRegisteredToolPendingApproval(toolName string, args map[string]interface{}, sessionID string, risk security.RiskAssessment) registeredToolPendingApproval {
 	registeredToolApprovalStore.Lock()
 	defer registeredToolApprovalStore.Unlock()
+	pruneRegisteredToolPendingApprovals(30 * time.Minute)
 	registeredToolApprovalStore.next++
 	id := fmt.Sprintf("tool-approval-%d", registeredToolApprovalStore.next)
 	item := registeredToolPendingApproval{
@@ -1065,6 +1062,17 @@ func deleteRegisteredToolPendingApproval(id string) {
 	registeredToolApprovalStore.Lock()
 	defer registeredToolApprovalStore.Unlock()
 	delete(registeredToolApprovalStore.items, strings.TrimSpace(id))
+}
+
+// pruneRegisteredToolPendingApprovals removes stale approval entries older than maxAge.
+// Must be called with registeredToolApprovalStore.Lock held.
+func pruneRegisteredToolPendingApprovals(maxAge time.Duration) {
+	now := time.Now()
+	for id, item := range registeredToolApprovalStore.items {
+		if now.Sub(item.CreatedAt) > maxAge {
+			delete(registeredToolApprovalStore.items, id)
+		}
+	}
 }
 
 func buildRegisteredToolApprovalAgentView(approval registeredToolPendingApproval) map[string]interface{} {
@@ -1153,7 +1161,7 @@ func registeredToolSchemaProperties(schema map[string]interface{}) map[string]ma
 		return out
 	}
 	for name, raw := range props {
-		if name == "required" || name == "type" || name == "properties" || name == "dependentRequired" || name == "dependencies" || name == "additionalProperties" {
+		if isRegisteredToolSchemaContainerProperty(name) {
 			continue
 		}
 		if prop := registeredToolAsMap(raw); len(prop) > 0 {
@@ -1210,27 +1218,26 @@ func registeredToolValueMissing(value interface{}) bool {
 }
 
 func registeredToolAgentViewFieldType(prop map[string]interface{}) string {
-	typ := strings.ToLower(strings.TrimSpace(fmt.Sprint(prop["type"])))
-	switch typ {
-	case "number", "integer":
-		return "number"
-	case "boolean":
-		return "boolean"
-	case "array":
+	switch normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"])) {
+	case registeredToolJSONSchemaNumber, registeredToolJSONSchemaInteger:
+		return agentViewFieldTypeNumber.String()
+	case registeredToolJSONSchemaBoolean:
+		return agentViewFieldTypeBoolean.String()
+	case registeredToolJSONSchemaArray:
 		if len(registeredToolArrayTableColumns(prop)) > 0 {
-			return "array_table"
+			return agentViewFieldTypeArrayTable.String()
 		}
 		if len(registeredToolFieldOptions(prop)) > 0 {
-			return "multiselect"
+			return agentViewFieldTypeMultiSelect.String()
 		}
-		return "textarea"
-	case "object":
+		return agentViewFieldTypeTextarea.String()
+	case registeredToolJSONSchemaObject:
 		if len(registeredToolObjectColumns(prop)) > 0 {
-			return "object_form"
+			return agentViewFieldTypeObjectForm.String()
 		}
-		return "textarea"
+		return agentViewFieldTypeTextarea.String()
 	default:
-		return "text"
+		return agentViewFieldTypeText.String()
 	}
 }
 
@@ -1254,7 +1261,7 @@ func registeredToolFieldDescription(prop map[string]interface{}) string {
 
 func registeredToolFieldOptions(prop map[string]interface{}) []map[string]interface{} {
 	values := stringSliceFromAny(prop["enum"])
-	if len(values) == 0 && strings.ToLower(strings.TrimSpace(fmt.Sprint(prop["type"]))) == "array" {
+	if len(values) == 0 && normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"])) == registeredToolJSONSchemaArray {
 		if itemValues := stringSliceFromAny(registeredToolAsMap(prop["items"])["enum"]); len(itemValues) > 0 {
 			values = itemValues
 		}
@@ -1280,7 +1287,7 @@ func registeredToolResourceOptions(prop map[string]interface{}) []map[string]int
 		}
 	}
 	values := stringSliceFromAny(prop["enum"])
-	if len(values) == 0 && strings.EqualFold(strings.TrimSpace(fmt.Sprint(prop["type"])), "array") {
+	if len(values) == 0 && normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"])) == registeredToolJSONSchemaArray {
 		values = stringSliceFromAny(registeredToolAsMap(prop["items"])["enum"])
 	}
 	if len(values) == 0 {
@@ -1501,12 +1508,7 @@ func registeredToolApplySchemaConstraints(target map[string]interface{}, prop ma
 }
 
 func isSensitiveSchemaFormat(prop map[string]interface{}) bool {
-	switch strings.ToLower(nonEmptyStringFromAny(prop["format"])) {
-	case "password", "secret", "token":
-		return true
-	default:
-		return false
-	}
+	return normalizeAgentViewSchemaFormatKind(nonEmptyStringFromAny(prop["format"])).IsSensitive()
 }
 
 func registeredToolRequiredFromSchema(schema map[string]interface{}) []string {
@@ -1571,7 +1573,8 @@ func boolFromAny(value interface{}) bool {
 	case bool:
 		return v
 	case string:
-		return strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
+		parsed, _ := coerceAgentViewBoolToken(v)
+		return parsed
 	default:
 		return false
 	}
@@ -1676,29 +1679,29 @@ func registeredToolFormatValidationError(label, text, format string) string {
 	if text == "" {
 		return ""
 	}
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "email":
+	switch formatKind := normalizeAgentViewSchemaFormatKind(format); {
+	case formatKind == agentViewSchemaFormatEmail:
 		if regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`).MatchString(text) {
 			return ""
 		}
 		return fmt.Sprintf("%s must be a valid email", label)
-	case "uri", "url", "uri-reference":
+	case formatKind.IsURLLike():
 		parsed, err := url.ParseRequestURI(text)
 		if err == nil && parsed.Scheme != "" {
 			return ""
 		}
 		return fmt.Sprintf("%s must be a valid URL", label)
-	case "uuid":
+	case formatKind == agentViewSchemaFormatUUID:
 		if regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(text) {
 			return ""
 		}
 		return fmt.Sprintf("%s must be a valid UUID", label)
-	case "date":
+	case formatKind == agentViewSchemaFormatDate:
 		if _, err := time.Parse("2006-01-02", text); err == nil {
 			return ""
 		}
 		return fmt.Sprintf("%s must be a valid date", label)
-	case "date-time", "datetime":
+	case formatKind.IsDateTime():
 		if _, err := time.Parse(time.RFC3339, text); err == nil {
 			return ""
 		}
@@ -1712,16 +1715,15 @@ func registeredToolFormatValidationError(label, text, format string) string {
 }
 
 func registeredToolTableColumnType(prop map[string]interface{}) string {
-	typ := strings.ToLower(strings.TrimSpace(fmt.Sprint(prop["type"])))
-	switch typ {
-	case "number", "integer":
-		return "number"
-	case "boolean":
-		return "boolean"
-	case "date":
-		return "date"
+	switch normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"])) {
+	case registeredToolJSONSchemaNumber, registeredToolJSONSchemaInteger:
+		return agentViewFieldTypeNumber.String()
+	case registeredToolJSONSchemaBoolean:
+		return agentViewFieldTypeBoolean.String()
+	case registeredToolJSONSchemaDate:
+		return agentViewFieldTypeDate.String()
 	default:
-		return "text"
+		return agentViewFieldTypeText.String()
 	}
 }
 
@@ -1735,8 +1737,8 @@ func coerceRegisteredToolValue(tool *RegisteredTool, key string, value interface
 			prop = registeredToolSchemaProperties(selected.Schema)[key]
 		}
 	}
-	typ := strings.ToLower(strings.TrimSpace(fmt.Sprint(prop["type"])))
-	if (typ == "object" || typ == "array") && value != nil {
+	typ := normalizeRegisteredToolJSONSchemaType(fmt.Sprint(prop["type"]))
+	if typ.IsObjectLike() && value != nil {
 		text, ok := value.(string)
 		if !ok {
 			return value

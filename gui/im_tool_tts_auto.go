@@ -51,38 +51,25 @@ func (h *IMMessageHandler) maybeAttachVoiceSummary(resp *IMAgentResponse, platfo
 
 // isIMPlatform returns true if the platform is an IM channel (not desktop).
 func isIMPlatform(platform string) bool {
-	switch platform {
-	case "feishu", "wecom", "qqbot", "dingtalk", "telegram", "lansenger",
-		"qqbot_local", "telegram_local", "weixin", "weixin_local", "lansenger_local":
-		return true
-	}
-	return false
+	return normalizeIMMessagePlatformKind(platform).IsIMChannel()
 }
 
 func shouldEmitDesktopTTSPlayback(platform string) bool {
-	switch platform {
-	case "", "desktop", "tui":
-		return true
-	default:
-		return false
-	}
+	return normalizeIMMessagePlatformKind(platform).IsDesktopPlaybackTarget()
 }
 
 func selectTTSVoicePayload(platform string, ogg, wav, amr []byte) ([]byte, string, string) {
-	switch platform {
-	case "wecom":
+	platformKind := normalizeIMMessagePlatformKind(platform)
+	switch {
+	case platformKind.PrefersAMRVoice():
 		if amr != nil {
 			return amr, "voice.amr", "audio/amr"
 		}
-	case "weixin", "weixin_local":
+	case platformKind.PrefersWAVVoice():
 		if wav != nil {
 			return wav, "voice.wav", "audio/wav"
 		}
-	case "qqbot", "qqbot_local":
-		if wav != nil {
-			return wav, "voice.wav", "audio/wav"
-		}
-	case "feishu", "telegram", "telegram_local", "dingtalk":
+	case platformKind.PrefersOGGVoice():
 		if ogg != nil {
 			return ogg, "voice.ogg", "audio/ogg"
 		}
@@ -101,7 +88,7 @@ func selectTTSVoicePayload(platform string, ogg, wav, amr []byte) ([]byte, strin
 }
 
 func synthesizeAMRForPlatform(platform string, wav []byte) []byte {
-	if platform != "wecom" || wav == nil {
+	if !normalizeIMMessagePlatformKind(platform).PrefersAMRVoice() || wav == nil {
 		return nil
 	}
 	amr, err := tts.EncodeWAVToAMR(wav)
@@ -113,13 +100,13 @@ func synthesizeAMRForPlatform(platform string, wav []byte) []byte {
 }
 
 func isVoiceInputMessage(msg IMUserMessage) bool {
-	switch msg.MessageType {
-	case "voice", "audio":
+	switch normalizeIMMediaKind(msg.MessageType) {
+	case imMediaVoice, imMediaAudio:
 		return true
 	}
 	for _, att := range msg.Attachments {
-		switch att.Type {
-		case "voice", "audio":
+		switch normalizeIMMediaKind(att.Type) {
+		case imMediaVoice, imMediaAudio:
 			return true
 		}
 	}

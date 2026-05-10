@@ -30,6 +30,15 @@ const (
 	InFlightTaskRenewInterval = 2 * time.Minute
 )
 
+type UnfinishedTaskSlotSource string
+
+const (
+	UnfinishedTaskSlotSourceSessionExit          UnfinishedTaskSlotSource = "session_exit"
+	UnfinishedTaskSlotSourceInFlightRecovery     UnfinishedTaskSlotSource = "in_flight_recovery"
+	UnfinishedTaskSlotSourceInFlightLeaseExpired UnfinishedTaskSlotSource = "in_flight_lease_expired"
+	UnfinishedTaskSlotSourceMaxRounds            UnfinishedTaskSlotSource = "max_rounds"
+)
+
 // ConversationEntry represents a single message in a conversation.
 type ConversationEntry struct {
 	Role             string      `json:"role"`
@@ -37,6 +46,8 @@ type ConversationEntry struct {
 	ReasoningContent string      `json:"reasoning_content,omitempty"`
 	ToolCalls        interface{} `json:"tool_calls,omitempty"`
 	ToolCallID       string      `json:"tool_call_id,omitempty"`
+	ToolName         string      `json:"tool_name,omitempty"`
+	ToolOutcome      string      `json:"tool_outcome,omitempty"`
 }
 
 // ToMessage converts a ConversationEntry to a map suitable for the LLM API.
@@ -69,19 +80,28 @@ func (e ConversationEntry) ToMessage() interface{} {
 
 // UnfinishedTaskSlot tracks an incomplete task that can be resumed later.
 type UnfinishedTaskSlot struct {
-	SlotID           string    `json:"slot_id"`
-	UserID           string    `json:"user_id"`
-	ProjectPath      string    `json:"project_path,omitempty"`
-	Tool             string    `json:"tool,omitempty"`
-	Status           string    `json:"status"`
-	Summary          string    `json:"summary,omitempty"`
-	LastTask         string    `json:"last_task,omitempty"`
-	ResumePrompt     string    `json:"resume_prompt,omitempty"`
-	Source           string    `json:"source,omitempty"`
-	EvidenceScopeKey string    `json:"evidence_scope_key,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
-	BoundAt          time.Time `json:"bound_at,omitempty"`
+	SlotID           string                   `json:"slot_id"`
+	UserID           string                   `json:"user_id"`
+	ProjectPath      string                   `json:"project_path,omitempty"`
+	Tool             string                   `json:"tool,omitempty"`
+	Status           string                   `json:"status"`
+	Summary          string                   `json:"summary,omitempty"`
+	LastTask         string                   `json:"last_task,omitempty"`
+	ResumePrompt     string                   `json:"resume_prompt,omitempty"`
+	Source           UnfinishedTaskSlotSource `json:"source,omitempty"`
+	EvidenceScopeKey string                   `json:"evidence_scope_key,omitempty"`
+	CreatedAt        time.Time                `json:"created_at"`
+	UpdatedAt        time.Time                `json:"updated_at"`
+	BoundAt          time.Time                `json:"bound_at,omitempty"`
+}
+
+func (s UnfinishedTaskSlotSource) IsSessionExit() bool {
+	return s == UnfinishedTaskSlotSourceSessionExit
+}
+
+func (s UnfinishedTaskSlotSource) IsInFlightRecovery() bool {
+	return s == UnfinishedTaskSlotSourceInFlightRecovery ||
+		s == UnfinishedTaskSlotSourceInFlightLeaseExpired
 }
 
 // CloneUnfinishedTaskSlot returns a deep copy of the slot.
@@ -505,7 +525,7 @@ func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 		return false
 	}
 	s.activeSlotID = slotID
-	s.unfinishedSlot.Status = "resumed"
+	s.unfinishedSlot.Status = UnfinishedTaskSlotStatusResumed.String()
 	s.unfinishedSlot.BoundAt = time.Now()
 	s.unfinishedSlot.UpdatedAt = time.Now()
 	s.lastAccess = time.Now()
@@ -544,7 +564,7 @@ func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
 	defer sh.mu.Unlock()
 	if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
 		if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
-			s.unfinishedSlot.Status = "completed"
+			s.unfinishedSlot.Status = UnfinishedTaskSlotStatusCompleted.String()
 			s.unfinishedSlot.UpdatedAt = time.Now()
 			s.activeSlotID = ""
 			s.lastAccess = time.Now()
@@ -690,7 +710,7 @@ func (cm *ConversationMemory) ClearInFlightTaskForRun(userID, runID string) {
 			}
 		}
 		if s.unfinishedSlot != nil &&
-			s.unfinishedSlot.Source == "in_flight_lease_expired" &&
+			s.unfinishedSlot.Source == UnfinishedTaskSlotSourceInFlightLeaseExpired &&
 			s.unfinishedSlot.EvidenceScopeKey == inFlightRunScopeKey(runID) {
 			s.unfinishedSlot = nil
 			s.activeSlotID = ""
@@ -753,7 +773,7 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 			Summary:          "Previous task stopped making progress and was moved to recovery.",
 			LastTask:         task,
 			ResumePrompt:     "The previous task stopped making progress. Continue from the saved conversation history and avoid repeating completed work.\n",
-			Source:           "in_flight_lease_expired",
+			Source:           UnfinishedTaskSlotSourceInFlightLeaseExpired,
 			EvidenceScopeKey: inFlightRunScopeKey(runID),
 			CreatedAt:        now,
 			UpdatedAt:        now,

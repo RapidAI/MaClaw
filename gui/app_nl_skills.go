@@ -369,13 +369,13 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	}
 	filtered := make([]corelib.NLSkillEntry, 0, len(skills))
 	for _, s := range skills {
-		if s.Source == "file" {
+		if normalizeSkillEntrySource(s.Source) == skillEntrySourceFile {
 			// Only persist the stats overlay; strip definition data so
 			// config.json is not polluted with YAML-managed content.
 			if s.UsageCount > 0 || s.SuccessCount > 0 || s.FailureCount > 0 || s.WorkaroundCount > 0 {
 				filtered = append(filtered, corelib.NLSkillEntry{
 					Name:            s.Name,
-					Source:          "file",
+					Source:          string(skillEntrySourceFile),
 					UsageCount:      s.UsageCount,
 					SuccessCount:    s.SuccessCount,
 					FailureCount:    s.FailureCount,
@@ -411,7 +411,7 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 		if s.Name != name {
 			continue
 		}
-		if entry.Source == "hub" && s.Source == "file" && primaryErr == nil {
+		if normalizeSkillEntrySource(entry.Source) == skillEntrySourceHub && normalizeSkillEntrySource(s.Source) == skillEntrySourceFile && primaryErr == nil {
 			extractedDir := filepath.Join(primaryDir, name)
 			if filepath.Clean(s.SkillDir) == filepath.Clean(extractedDir) {
 				continue
@@ -421,13 +421,13 @@ func (e *SkillExecutor) Register(entry corelib.NLSkillEntry) error {
 	}
 	entry.Name = name
 	if entry.Status == "" {
-		entry.Status = "active"
+		entry.Status = string(skillEntryStatusActive)
 	}
 	if entry.CreatedAt == "" {
 		entry.CreatedAt = time.Now().Format(time.RFC3339)
 	}
 	if entry.Source == "" {
-		entry.Source = "manual"
+		entry.Source = string(skillEntrySourceManual)
 	}
 	if entry.Triggers == nil {
 		entry.Triggers = []string{}
@@ -489,7 +489,7 @@ func (e *SkillExecutor) UpdateFromHub(name string) error {
 	if !found {
 		return fmt.Errorf("skill %q not found", name)
 	}
-	if skill.Source != "hub" || skill.HubSkillID == "" {
+	if normalizeSkillEntrySource(skill.Source) != skillEntrySourceHub || skill.HubSkillID == "" {
 		return fmt.Errorf("skill %q is not a hub skill", name)
 	}
 	if e.app.skillHubClient == nil {
@@ -608,7 +608,7 @@ func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 		if s.Name != name {
 			continue
 		}
-		if s.Source == "file" && s.SkillDir != "" {
+		if normalizeSkillEntrySource(s.Source) == skillEntrySourceFile && s.SkillDir != "" {
 			// File-based skill: write upload_status.json to skill directory.
 			status := uploadStatusFile{
 				SubmissionID: submissionID,
@@ -628,9 +628,8 @@ func (e *SkillExecutor) MarkUploaded(name, submissionID string) error {
 }
 
 func classifySkillExecutionClass(entry corelib.NLSkillEntry) string {
-	if len(entry.Steps) == 1 && entry.Steps[0].Action == "craft_tool" {
-		switch strings.TrimSpace(entry.Source) {
-		case "github", "clawhub", "agent_skill":
+	if len(entry.Steps) == 1 && classifySkillStepAction(entry.Steps[0].Action).IsCraftTool() {
+		if normalizeSkillEntrySource(entry.Source).IsAgentMarkdownSkillSource() {
 			return "agent_markdown_skill"
 		}
 	}
@@ -670,7 +669,7 @@ func (e *SkillExecutor) List() []NLSkillDefinition {
 			Content:          s.Content,
 			Publisher:        s.Publisher,
 			Mode:             s.Mode,
-			HasDocumentation: (s.Type == "knowledge" && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
+			HasDocumentation: (normalizeSkillTypeKind(s.Type).IsKnowledge() && s.Content != "") || (s.SkillDir != "" && hasSkillDocFile(s.SkillDir)),
 			SkillDir:         s.SkillDir,
 			Params:           s.Params,
 			RequiredArgs:     s.RequiredArgs,
@@ -705,7 +704,7 @@ func (e *SkillExecutor) AsRegisteredTools() []tool.RegisteredTool {
 	skills := e.loadSkills()
 	var result []tool.RegisteredTool
 	for _, s := range skills {
-		if s.Status != "active" {
+		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
 		body := e.readSkillBody(s)
@@ -739,7 +738,8 @@ func (e *SkillExecutor) readSkillBody(entry corelib.NLSkillEntry) string {
 
 	// For hub-installed skills, check the primary skills directory where
 	// extractFiles writes skill.md/SKILL.md during installation.
-	if entry.Source == "hub" || entry.Source == "agent_skill" {
+	switch normalizeSkillEntrySource(entry.Source) {
+	case skillEntrySourceHub, skillEntrySourceAgent:
 		primaryDir, err := skill.PrimarySkillsDir()
 		if err != nil {
 			return ""
@@ -896,7 +896,8 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			continue
 		}
 		stepCopy := step
-		if stepCopy.Action == "send_input" || stepCopy.Action == "send_and_observe" {
+		stepCopyAction := classifySkillStepAction(stepCopy.Action)
+		if stepCopyAction == skillStepActionSendInput || stepCopyAction == skillStepActionSendAndObserve {
 			resolvedSessionID := resolveSkillStepSessionID(stepCopy, lastSessionID, e.manager)
 			if resolvedSessionID != "" {
 				if stepCopy.Params == nil {
@@ -919,7 +920,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			break
 		}
 		stepCopy = resolvedStep
-		if stepCopy.Action == "craft_tool" && len(extraEnv) > 0 {
+		if classifySkillStepAction(stepCopy.Action).IsCraftTool() && len(extraEnv) > 0 {
 			if stepCopy.Params == nil {
 				stepCopy.Params = map[string]interface{}{}
 			}
@@ -931,7 +932,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 			defer restoreEnv()
 			return e.executeStep(stepCopy, preparedEntry.Description)
 		}()
-		if stepCopy.Action == "create_session" {
+		if classifySkillStepAction(stepCopy.Action) == skillStepActionCreateSession {
 			if sessionID := parseCreatedSessionID(result); sessionID != "" {
 				lastSessionID = sessionID
 			}
@@ -1045,7 +1046,7 @@ func (e *SkillExecutor) ExecuteWithArgs(name string, runArgs map[string]interfac
 			shouldEmitUsageEvent = true
 
 			// Auto-rate hub skills after execution.
-			if s.Source == "hub" && s.HubSkillID != "" && e.app.capabilityGapDetector != nil {
+			if normalizeSkillEntrySource(s.Source) == skillEntrySourceHub && s.HubSkillID != "" && e.app.capabilityGapDetector != nil {
 				go e.app.capabilityGapDetector.autoRate(
 					context.Background(), s.HubSkillID, output, execErr,
 				)
@@ -1075,7 +1076,7 @@ func (e *SkillExecutor) executeSkillByNameDetailed(name string, runArgs map[stri
 	e.mu.RLock()
 	var target *corelib.NLSkillEntry
 	for _, s := range e.loadSkills() {
-		if s.MatchesName(name) && s.Status == "active" {
+		if s.MatchesName(name) && normalizeSkillEntryStatus(s.Status) == skillEntryStatusActive {
 			cp := s
 			target = &cp
 			break
@@ -1135,7 +1136,7 @@ func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry
 	if result == nil {
 		return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("pipeline returned no result")}
 	}
-	if result.Status != "completed" {
+	if normalizeSkillPipelineStatus(result.Status) != skillPipelineStatusCompleted {
 		if result.Error != "" {
 			return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("%s", result.Error)}
 		}
@@ -1198,8 +1199,8 @@ func (e *SkillExecutor) RunSubSkill(ctx context.Context, skillName string, param
 
 // executeStep runs a single skill step.
 func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription string) (string, error) {
-	switch step.Action {
-	case "create_session":
+	switch classifySkillStepAction(step.Action) {
+	case skillStepActionCreateSession:
 		tool, _ := step.Params["tool"].(string)
 		projectPath, _ := step.Params["project_path"].(string)
 		projectID, _ := step.Params["project_id"].(string)
@@ -1233,7 +1234,7 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 		}
 		return fmt.Sprintf("会话已创建: ID=%s", startResult.View.ID), nil
 
-	case "send_input":
+	case skillStepActionSendInput:
 		sessionID, _ := step.Params["session_id"].(string)
 		text, _ := step.Params["text"].(string)
 		if sessionID == "" || text == "" {
@@ -1247,7 +1248,7 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 		}
 		return fmt.Sprintf("sent input to session %s", sessionID), nil
 
-	case "send_and_observe":
+	case skillStepActionSendAndObserve:
 		sessionID, _ := step.Params["session_id"].(string)
 		text, _ := step.Params["text"].(string)
 		timeoutSeconds, _ := step.Params["timeout_seconds"].(float64)
@@ -1265,7 +1266,7 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 			return h.toolGetSessionOutput(renderArgs)
 		}), nil
 
-	case "call_mcp_tool":
+	case skillStepActionCallMCPTool:
 		serverRef, _ := step.Params["server_id"].(string)
 		toolName, _ := step.Params["tool_name"].(string)
 		var args map[string]interface{}
@@ -1298,17 +1299,17 @@ func (e *SkillExecutor) executeStep(step corelib.NLSkillStep, skillDescription s
 		}
 		return e.mcpRegistry.CallTool(resolvedID, toolName, args)
 
-	case "ssh":
+	case skillStepActionSSH:
 		return e.executeSSHStep(step.Params)
 
-	case "bash":
+	case skillStepActionBash:
 		command, _ := step.Params["command"].(string)
 		if command == "" {
 			return "", fmt.Errorf("missing command parameter")
 		}
 		return executeBashStep(command, step.Params, e.app)
 
-	case "craft_tool":
+	case skillStepActionCraftTool:
 		if e.app == nil {
 			return "", fmt.Errorf("app not initialized")
 		}
@@ -1330,27 +1331,28 @@ func (e *SkillExecutor) ensureSSHManager() *remote.SSHSessionManager {
 }
 
 func (e *SkillExecutor) executeSSHStep(args map[string]interface{}) (string, error) {
-	action, _ := args["action"].(string)
+	actionText, _ := args["action"].(string)
+	action := classifySSHToolAction(actionText)
 	switch action {
-	case "connect":
+	case sshToolActionConnect:
 		return e.sshConnect(args), nil
-	case "exec":
+	case sshToolActionExec:
 		return e.sshExec(args), nil
-	case "exec_background":
+	case sshToolActionExecBackground:
 		return e.sshExecBackground(args), nil
-	case "check_task":
+	case sshToolActionCheckTask:
 		return e.sshCheckTask(args), nil
-	case "list_tasks":
+	case sshToolActionListTasks:
 		return e.sshListTasks(), nil
-	case "kill_task":
+	case sshToolActionKillTask:
 		return e.sshKillTask(args), nil
-	case "upload":
+	case sshToolActionUpload:
 		return e.sshUpload(args), nil
-	case "download":
+	case sshToolActionDownload:
 		return e.sshDownload(args), nil
-	case "list":
+	case sshToolActionList:
 		return e.sshList(), nil
-	case "close":
+	case sshToolActionClose:
 		return e.sshClose(args), nil
 	default:
 		return "", fmt.Errorf("未知 SSH 操作 %s; supported: connect/exec/exec_background/check_task/list_tasks/kill_task/upload/download/list/close", action)
@@ -2392,7 +2394,7 @@ func (e *SkillExecutor) CleanupStaleSkills() []string {
 	var disabled []string
 
 	for i, s := range skills {
-		if s.Status != "active" {
+		if normalizeSkillEntryStatus(s.Status) != skillEntryStatusActive {
 			continue
 		}
 		// Only auto-cleanup learned/crafted skills; manual, hub, and auto-installed skills are user-managed.

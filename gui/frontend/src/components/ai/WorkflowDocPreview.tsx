@@ -372,6 +372,15 @@ export function workflowProgressPhaseCardState({
     isCurrent: boolean;
     isPast: boolean;
 }): { status: string; tone: "attention" | "current" | "done" | "pending"; emphasized: boolean } {
+    if (expectsDocument && !hasDoc) {
+        if (isCurrent) {
+            return { status: "生成中", tone: "current", emphasized: true };
+        }
+        if (isPast) {
+            return { status: "缺文档", tone: "attention", emphasized: true };
+        }
+        return { status: "待开始", tone: "pending", emphasized: false };
+    }
     if (typeof gatePassed === "boolean") {
         return {
             status: gatePassed ? "质检通过" : "需调整",
@@ -391,18 +400,11 @@ export function workflowProgressPhaseCardState({
         }
         return { status: "待执行", tone: "pending", emphasized: false };
     }
-    if (isCurrent) {
-        return {
-            status: hasDoc ? "待确认" : "生成中",
-            tone: "current",
-            emphasized: true,
-        };
-    }
     if (hasDoc) {
+        if (isCurrent) {
+            return { status: "待确认", tone: "current", emphasized: true };
+        }
         return { status: "已完成", tone: "done", emphasized: true };
-    }
-    if (isPast) {
-        return { status: "缺文档", tone: "attention", emphasized: true };
     }
     return { status: "待开始", tone: "pending", emphasized: false };
 }

@@ -542,7 +542,7 @@ func (d *CapabilityGapDetector) scanDependencies(steps []corelib.NLSkillStep) []
 	seen := make(map[string]bool)
 
 	for _, step := range steps {
-		if step.Action != "bash" {
+		if !classifySkillStepAction(step.Action).IsBash() {
 			continue
 		}
 		cmd, _ := step.Params["command"].(string)

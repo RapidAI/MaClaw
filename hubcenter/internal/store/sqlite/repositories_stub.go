@@ -1334,6 +1334,29 @@ func (r *gossipRepo) DeletePost(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
+func (r *gossipRepo) DeleteFlaggedPosts(ctx context.Context) (int, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gossip_comments WHERE post_id IN (SELECT id FROM gossip_posts WHERE flagged = 1)`); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM gossip_posts WHERE flagged = 1`)
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(deleted), nil
+}
+
 func (r *gossipRepo) LockPost(ctx context.Context, id string, locked bool) error {
 	return execWrite(ctx, r.batch, r.db, `UPDATE gossip_posts SET locked = ? WHERE id = ?`, boolToInt(locked), id)
 }

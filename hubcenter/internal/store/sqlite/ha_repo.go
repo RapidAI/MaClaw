@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -100,6 +101,29 @@ func (r *haSyncOpRepo) Append(ctx context.Context, op *store.HASyncOp) error {
 	)
 }
 
+func (r *haSyncOpRepo) AppendRemoteIfMissing(ctx context.Context, op *store.HASyncOp) error {
+	if op == nil {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO ha_sync_ops (
+			op_id, source_node_id, entity_type, entity_id, op_type,
+			entity_version, occurred_at, payload_json, payload_hash
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		op.OpID,
+		op.SourceNodeID,
+		op.EntityType,
+		op.EntityID,
+		op.OpType,
+		op.EntityVersion,
+		op.OccurredAt.Format(time.RFC3339),
+		op.PayloadJSON,
+		op.PayloadHash,
+	)
+	return err
+}
+
 func (r *haSyncOpRepo) ListAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error) {
 	query := `
 		SELECT seq, op_id, source_node_id, entity_type, entity_id, op_type, entity_version, occurred_at, payload_json, payload_hash
@@ -129,6 +153,87 @@ func (r *haSyncOpRepo) ListAfterSeq(ctx context.Context, afterSeq int64, limit i
 		out = append(out, &item)
 	}
 	return out, rows.Err()
+}
+
+func (r *haSyncOpRepo) ListLatestByEntityTypes(ctx context.Context, entityTypes []string) ([]*store.HASyncOp, error) {
+	cleaned := cleanEntityTypes(entityTypes)
+	if len(cleaned) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(cleaned))
+	args := make([]any, 0, len(cleaned)*2)
+	for i, entityType := range cleaned {
+		placeholders[i] = "?"
+		args = append(args, entityType)
+	}
+	args = append(args, args...)
+	query := `
+		SELECT seq, op_id, source_node_id, entity_type, entity_id, op_type, entity_version, occurred_at, payload_json, payload_hash
+		FROM ha_sync_ops
+		WHERE entity_type IN (` + strings.Join(placeholders, ",") + `)
+		  AND seq IN (
+			SELECT MAX(seq)
+			FROM ha_sync_ops
+			WHERE entity_type IN (` + strings.Join(placeholders, ",") + `)
+			GROUP BY entity_type
+		  )
+		ORDER BY seq ASC`
+	rows, err := r.readDB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*store.HASyncOp
+	for rows.Next() {
+		var item store.HASyncOp
+		var occurredAt string
+		if err := rows.Scan(&item.Seq, &item.OpID, &item.SourceNodeID, &item.EntityType, &item.EntityID, &item.OpType, &item.EntityVersion, &occurredAt, &item.PayloadJSON, &item.PayloadHash); err != nil {
+			return nil, err
+		}
+		item.OccurredAt = mustParseTime(occurredAt)
+		out = append(out, &item)
+	}
+	return out, rows.Err()
+}
+
+func cleanEntityTypes(entityTypes []string) []string {
+	cleaned := make([]string, 0, len(entityTypes))
+	seen := make(map[string]struct{}, len(entityTypes))
+	for _, entityType := range entityTypes {
+		entityType = strings.TrimSpace(entityType)
+		if entityType == "" {
+			continue
+		}
+		if _, ok := seen[entityType]; ok {
+			continue
+		}
+		seen[entityType] = struct{}{}
+		cleaned = append(cleaned, entityType)
+	}
+	return cleaned
+}
+
+func (r *haSyncOpRepo) HasEntityTypeOps(ctx context.Context, entityTypes []string) (bool, error) {
+	cleaned := cleanEntityTypes(entityTypes)
+	if len(cleaned) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(cleaned))
+	args := make([]any, 0, len(cleaned))
+	for i, entityType := range cleaned {
+		placeholders[i] = "?"
+		args = append(args, entityType)
+	}
+	var one int
+	err := r.readDB.QueryRowContext(ctx, `SELECT 1 FROM ha_sync_ops WHERE entity_type IN (`+strings.Join(placeholders, ",")+`) LIMIT 1`, args...).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *haSyncOpRepo) GetMaxSeq(ctx context.Context) (int64, error) {

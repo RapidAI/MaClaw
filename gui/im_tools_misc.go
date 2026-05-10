@@ -11,13 +11,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/security"
-	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -197,113 +195,6 @@ func (h *IMMessageHandler) toolCallMCPTool(args map[string]interface{}) string {
 		return mcputil.FormatForLLM(nil, stdErr)
 	}
 	return mcputil.FormatForLLM(resp, nil)
-}
-
-func (h *IMMessageHandler) toolListSkills() string {
-	exec := h.getSkillExecutor()
-	if exec == nil {
-		return "Skill Executor 未初始化"
-	}
-	skills := exec.List()
-
-	var b strings.Builder
-
-	// Show local skills grouped by namespace (Requirement 5.4).
-	if len(skills) > 0 {
-		// Group skills by publisher namespace.
-		type nsGroup struct {
-			publisher string
-			skills    []NLSkillDefinition
-		}
-		groupMap := make(map[string]*nsGroup)
-		var groupOrder []string
-		for _, s := range skills {
-			key := s.Publisher
-			if key == "" {
-				key = "__local__"
-			}
-			if _, ok := groupMap[key]; !ok {
-				groupMap[key] = &nsGroup{publisher: s.Publisher}
-				groupOrder = append(groupOrder, key)
-			}
-			groupMap[key].skills = append(groupMap[key].skills, s)
-		}
-
-		// Sort: local skills first, then namespaced groups alphabetically.
-		sort.SliceStable(groupOrder, func(i, j int) bool {
-			if groupOrder[i] == "__local__" {
-				return true
-			}
-			if groupOrder[j] == "__local__" {
-				return false
-			}
-			return groupOrder[i] < groupOrder[j]
-		})
-
-		b.WriteString("=== 本地已注册 Skill ===\n")
-		for _, key := range groupOrder {
-			g := groupMap[key]
-			if key == "__local__" {
-				b.WriteString("\n[Local]\n")
-			} else {
-				b.WriteString(fmt.Sprintf("\n[%s]\n", g.publisher))
-			}
-			for _, s := range g.skills {
-				line := fmt.Sprintf("- %s", s.Name)
-				// Show qualified name for namespaced skills
-				if s.Publisher != "" {
-					line = fmt.Sprintf("- %s:%s", s.Publisher, s.Name)
-				}
-				// Show directory name alias if different from display name
-				if s.DirName != "" && s.DirName != s.Name {
-					line += fmt.Sprintf(" (alias: %s)", s.DirName)
-				}
-				// Show [knowledge] type indicator for knowledge skills
-				if s.Type == "knowledge" {
-					line += " [knowledge]"
-				}
-				line += fmt.Sprintf(" [%s]: %s", s.Status, s.Description)
-				if s.Source == "hub" {
-					line += fmt.Sprintf(" (来源: Hub, trust: %s)", s.TrustLevel)
-				} else if s.Source == "file" {
-					line += " (来源: 本地文件)"
-				}
-				if s.UsageCount > 0 {
-					successRate := float64(s.SuccessCount) / float64(s.UsageCount) * 100
-					line += fmt.Sprintf(" (用过%d次, 成功率%.0f%%)", s.UsageCount, successRate)
-					// Flag skills needing improvement: failure rate > 30% with at least 10 usages
-					if s.UsageCount >= 10 {
-						failureRate := float64(s.FailureCount) / float64(s.UsageCount)
-						if failureRate > 0.30 {
-							line += " [needs_improvement]"
-						}
-					}
-				}
-				if s.LastError != "" {
-					line += fmt.Sprintf(" (最近错误: %s)", s.LastError)
-				}
-				b.WriteString(line + "\n")
-			}
-		}
-	} else {
-		b.WriteString("本地没有已注册的 Skill。\n")
-	}
-
-	// If local skills are empty or few, also show Hub recommendations
-	if len(skills) < 3 && h.getSkillHubClient() != nil {
-		recs := h.getSkillHubClient().GetRecommendations()
-		if len(recs) > 0 {
-			b.WriteString("\n=== SkillHub 推荐 Skill（可用 install_skill_hub 安装）===\n")
-			for _, r := range recs {
-				b.WriteString(fmt.Sprintf("- [%s] %s: %s (trust: %s, downloads: %d, hub: %s)\n",
-					r.ID, r.Name, r.Description, r.TrustLevel, r.Downloads, r.HubURL))
-			}
-		} else {
-			b.WriteString("\n提示：可以使用 search_skill_hub 工具在 SkillHub 上搜索更多 Skill。\n")
-		}
-	}
-
-	return b.String()
 }
 
 func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) string {
@@ -556,420 +447,11 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	return b.String()
 }
 
-func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID string) {
-	if b == nil {
-		return
-	}
-	b.WriteString("## 运行信息\n")
-	b.WriteString(fmt.Sprintf("- run_id: %s\n", runID))
-	if status == nil {
-		b.WriteString("- status: unknown\n")
-		return
-	}
-	b.WriteString(fmt.Sprintf("- skill: %s\n", status.Skill))
-	b.WriteString(fmt.Sprintf("- status: %s\n", status.Status))
-	if len(status.Warnings) > 0 {
-		b.WriteString("## Warnings\n")
-		for _, warning := range status.Warnings {
-			warning = strings.TrimSpace(warning)
-			if warning == "" {
-				continue
-			}
-			b.WriteString(fmt.Sprintf("- %s\n", warning))
-		}
-	}
-	// session_ready: explicit signal for callers to know if session_id is available.
-	// Only emit when the skill actually involves sessions to avoid confusing the
-	// LLM with "session_ready: false" on pure-bash skills like weather-query.
-	sessionReady := status.Session != nil && strings.TrimSpace(status.Session.SessionID) != ""
-	if sessionReady || status.Status == "running" {
-		b.WriteString(fmt.Sprintf("- session_ready: %v\n", sessionReady))
-	}
-	if status.Summary.CurrentStep != "" {
-		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, firstNonEmptySkillRunStatus(status.Summary.CurrentStepStatus, "running")))
-	}
-	if status.Summary.LastCompletedStep != "" {
-		b.WriteString(fmt.Sprintf("- last_completed_step: %s\n", status.Summary.LastCompletedStep))
-	}
-	if status.Summary.NeedsArtifactVerification {
-		b.WriteString("## 结果说明\n")
-		b.WriteString("- 这是一个仅提供 SKILL.md 指导的 skill；当前结果只表示脚本已生成并执行。\n")
-		if status.Summary.ArtifactPath != "" {
-			b.WriteString(fmt.Sprintf("- 目标产物: %s\n", status.Summary.ArtifactPath))
-			switch status.Summary.ArtifactStatus {
-			case "verified":
-				b.WriteString("- 产物已自动验证存在。\n")
-			case "missing":
-				b.WriteString("- 目标产物尚未生成到该路径；当前不能算成功交付。\n")
-			default:
-				b.WriteString("- 宿主尚未完成产物验证，请继续观察。\n")
-			}
-		} else {
-			b.WriteString("- 宿主尚未定位目标产物路径；如果目标是 PPT/PDF，请继续检查输出文件。\n")
-		}
-	}
-	if status.Summary.ArtifactPath != "" {
-		b.WriteString(fmt.Sprintf("- artifact_path: %s\n", status.Summary.ArtifactPath))
-	}
-	if status.Summary.ArtifactStatus != "" {
-		b.WriteString(fmt.Sprintf("- artifact_status: %s\n", status.Summary.ArtifactStatus))
-	}
-	if status.Summary.LastErrorSnippet != "" {
-		b.WriteString(fmt.Sprintf("- last_error: %s\n", status.Summary.LastErrorSnippet))
-	}
-	// Step-level progress: show each step's status AND output for visibility
-	// into intermediate execution stages (addresses P1-5 from LibTV report).
-	// Previously only status/duration/error were shown; step.Output was stored
-	// but never returned to the LLM, causing "session_ready: false" confusion
-	// for non-session skills (e.g. weather-query) where the actual result is
-	// in stdout.
-	//
-	// Budget: cap total step output to ~4096 chars to avoid bloating LLM context
-	// when a skill has many steps. Individual steps are capped at 2048 chars.
-	const maxStepOutputLen = 2048
-	const maxTotalOutputLen = 4096
-	totalOutputLen := 0
-	if len(status.Steps) > 0 {
-		b.WriteString(fmt.Sprintf("- total_steps: %d\n", len(status.Steps)))
-		b.WriteString("## 步骤进度\n")
-		for i, step := range status.Steps {
-			label := step.Name
-			if label == "" {
-				label = step.Action
-			}
-			line := fmt.Sprintf("- step %d: %s → %s", i+1, label, step.Status)
-			if step.DurationMs > 0 {
-				line += fmt.Sprintf(" (%dms)", step.DurationMs)
-			}
-			if step.Error != "" {
-				errSnippet := step.Error
-				if len(errSnippet) > 80 {
-					errSnippet = errSnippet[:80] + "..."
-				}
-				line += fmt.Sprintf(" [error: %s]", errSnippet)
-			}
-			b.WriteString(line + "\n")
-			// Return step output so the LLM can see actual results (e.g.
-			// weather data, API responses) instead of just "success".
-			if stepOut := strings.TrimSpace(step.Output); stepOut != "" && totalOutputLen < maxTotalOutputLen {
-				remaining := maxTotalOutputLen - totalOutputLen
-				limit := maxStepOutputLen
-				if remaining < limit {
-					limit = remaining
-				}
-				runes := []rune(stepOut)
-				b.WriteString("```\n")
-				if len(runes) > limit {
-					b.WriteString(string(runes[:limit]))
-					b.WriteString("\n... (truncated)\n")
-					totalOutputLen += limit
-				} else {
-					b.WriteString(stepOut)
-					b.WriteString("\n")
-					totalOutputLen += len(runes)
-				}
-				b.WriteString("```\n")
-			}
-		}
-	}
-	if status.Session != nil {
-		b.WriteString("## 会话信息\n")
-		if strings.TrimSpace(status.Session.SessionID) != "" {
-			b.WriteString(fmt.Sprintf("- session_id: %s\n", status.Session.SessionID))
-		}
-		if strings.TrimSpace(status.Session.Tool) != "" {
-			b.WriteString(fmt.Sprintf("- tool: %s\n", status.Session.Tool))
-		}
-		if strings.TrimSpace(status.Session.ProjectPath) != "" {
-			b.WriteString(fmt.Sprintf("- project_path: %s\n", status.Session.ProjectPath))
-		}
-		if strings.TrimSpace(status.Session.Status) != "" {
-			b.WriteString(fmt.Sprintf("- session_status: %s\n", status.Session.Status))
-		}
-		if strings.TrimSpace(status.Session.ResumeSessionID) != "" {
-			b.WriteString(fmt.Sprintf("- resume_session_id: %s\n", status.Session.ResumeSessionID))
-		}
-	}
-	// Session progress: show what the session's internal AI agent is doing.
-	if status.SessionProgress != nil {
-		sp := status.SessionProgress
-		b.WriteString("## 会话内部进度\n")
-		b.WriteString(fmt.Sprintf("- session_status: %s\n", sp.SessionStatus))
-		if sp.CurrentTask != "" {
-			b.WriteString(fmt.Sprintf("- current_action: %s\n", sp.CurrentTask))
-		}
-		if sp.ProgressSummary != "" {
-			b.WriteString(fmt.Sprintf("- progress: %s\n", sp.ProgressSummary))
-		}
-		if sp.LastResult != "" {
-			b.WriteString(fmt.Sprintf("- last_result: %s\n", sp.LastResult))
-		}
-		if sp.LastCommand != "" {
-			b.WriteString(fmt.Sprintf("- last_command: %s\n", sp.LastCommand))
-		}
-		if sp.WaitingForUser {
-			b.WriteString("- ⚠️ 会话内部 agent 正在等待输入\n")
-		}
-		b.WriteString(fmt.Sprintf("- poll_count: %d\n", sp.PollCount))
-		if sp.UpdatedAt != "" {
-			b.WriteString(fmt.Sprintf("- updated_at: %s\n", sp.UpdatedAt))
-		}
-	}
-	b.WriteString("## 下一步\n")
-	if sessionReady && status.SessionProgress != nil {
-		b.WriteString("- session 内部进度已自动监控，继续调用 get_skill_run(run_id) 即可查看最新状态。\n")
-	} else if sessionReady {
-		b.WriteString("- session_id 已就绪；先调用 get_skill_run(run_id) 确认当前状态，再使用 query_session / send_and_observe 观察会话输出。\n")
-	} else if status.Status == "running" {
-		b.WriteString("- 使用 get_skill_run(run_id) 继续观察执行进度。\n")
-	} else if status.Status == "success" || status.Status == "failed" {
-		// Skill has finished — step outputs are already shown above.
-		// No need to direct the LLM to poll or wait for session_ready.
-		if status.Status == "failed" {
-			// Include action hint from the last failed step to guide the LLM
-			// on what to do next (retry, patch, search alternative, etc.).
-			for i := len(status.Steps) - 1; i >= 0; i-- {
-				if status.Steps[i].Status == "failed" && status.Steps[i].Error != "" {
-					ce := cskill.ClassifyStepError(
-						status.Steps[i].ExitCode,
-						status.Steps[i].Output,
-						status.Steps[i].Error,
-						status.Steps[i].CommandResolved,
-					)
-					if ce.ActionHint != "" {
-						b.WriteString(fmt.Sprintf("- 建议操作: %s\n", ce.ActionHint))
-					}
-					if ce.Retryable {
-						b.WriteString("- 此错误可重试（transient error）\n")
-					}
-					break
-				}
-			}
-			if status.SelfRepairPending {
-				b.WriteString("- ⚙️ 系统正在自动修复此 Skill，建议等待 10 秒后使用 manage_skill(action=\"status\", run_id=\"" + runID + "\") 检查修复状态，再重试执行。\n")
-			} else {
-				b.WriteString("- Skill 执行失败，步骤输出已在上方显示。请根据建议操作决定下一步。\n")
-			}
-		} else {
-			b.WriteString("- Skill 已执行完毕，步骤输出已在上方显示。请直接基于输出内容回复用户。\n")
-		}
-	} else {
-		b.WriteString("- 使用 get_skill_run(run_id) 查看最终结果。\n")
-	}
-}
-
-func emitSkillRunStatusAgentView(h *IMMessageHandler, status *SkillRunStatus, runID string) {
-	if h == nil || h.app == nil {
-		return
-	}
-	h.app.emitAgentView(buildSkillRunStatusAgentView(status, runID))
-}
-
-func firstNonEmptySkillRunStatus(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func emitSkillRunProgress(onProgress tool.ProgressCallback, status *SkillRunStatus) {
-	if onProgress == nil || status == nil {
-		return
-	}
-	switch {
-	case status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "":
-		onProgress("🚀 Skill 已绑定会话，可继续观察输出...")
-	case status.Status == "success":
-		onProgress("✅ Skill 已执行完成，正在整理结果...")
-	case status.Status == "failed":
-		onProgress("❌ Skill 执行失败，正在整理错误摘要...")
-	case status.Summary.CurrentStep != "":
-		onProgress(fmt.Sprintf("⏳ Skill 正在执行步骤：%s", status.Summary.CurrentStep))
-	default:
-		onProgress("⏳ Skill 正在运行，等待状态快照...")
-	}
-}
-
-func normalizeSkillRunWaitSeconds(raw interface{}) time.Duration {
-	seconds := 2.0
-	switch v := raw.(type) {
-	case float64:
-		if v > 0 {
-			seconds = v
-		}
-	case int:
-		if v > 0 {
-			seconds = float64(v)
-		}
-	}
-	if seconds < 5 {
-		seconds = 5
-	}
-	if seconds > 30 {
-		seconds = 30
-	}
-	return time.Duration(seconds * float64(time.Second))
-}
-
-func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.Duration) (*SkillRunStatus, error) {
-	if runner == nil {
-		return nil, fmt.Errorf("skill runner not initialized")
-	}
-	deadline := time.Now().Add(timeout)
-	// Track whether we've seen any step progress to decide if we should
-	// extend the wait for session_id binding.
-	sawStepProgress := false
-	for {
-		status, err := runner.GetRunStatus(runID)
-		if err != nil {
-			return nil, err
-		}
-		if status != nil {
-			if status.Session != nil && strings.TrimSpace(status.Session.SessionID) != "" {
-				return status, nil
-			}
-			if status.Status != "running" {
-				return status, nil
-			}
-			if status.Summary.ArtifactStatus == "verified" || status.Summary.ArtifactStatus == "missing" {
-				return status, nil
-			}
-			for _, step := range status.Steps {
-				if step.Status == "success" || step.Status == "failed" {
-					// A step completed but session_id not yet bound — extend
-					// deadline by up to 10s to give create_session time to
-					// propagate the session meta. This addresses P0-1 where
-					// run_skill returns session_id=null because the snapshot
-					// was taken before SetRunSessionMeta completed.
-					if !sawStepProgress {
-						sawStepProgress = true
-						extended := time.Now().Add(10 * time.Second)
-						if extended.After(deadline) {
-							deadline = extended
-						}
-					}
-					// If session is still not bound after extension, return
-					// what we have so the caller can poll via get_skill_run.
-					if time.Now().After(deadline) {
-						return status, nil
-					}
-					break // check again after sleep
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			return status, nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-	h.ensureSkillRunner()
-	runner := h.getSkillRunner()
-	if runner == nil {
-		return "Skill Runner 未初始化"
-	}
-	name, _ := args["name"].(string)
-	if name == "" {
-		return "缺少 name 参数"
-	}
-	if h.emitSkillRunAgentViewIfNeeded(name, args) {
-		return fmt.Sprintf("Skill「%s」需要补充结构化参数。请在右侧任务面板填写后提交。", name)
-	}
-	if onProgress != nil {
-		onProgress(fmt.Sprintf("🚀 正在启动 Skill「%s」...", name))
-	}
-	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
-	runID, err := runner.StartRun(name, buildRunSkillArgs(args))
-	if err != nil {
-		return fmt.Sprintf("Skill 启动失败: %s", err.Error())
-	}
-	if onProgress != nil {
-		onProgress("⏳ Skill 已启动，正在等待状态快照...")
-	}
-	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
-	if err != nil {
-		return fmt.Sprintf("Skill 已启动，但读取状态失败: %s（run_id=%s）", err.Error(), runID)
-	}
-	emitSkillRunProgress(onProgress, status)
-	var b strings.Builder
-	b.WriteString("✅ Skill 已启动\n")
-	emitSkillRunStatusAgentView(h, status, runID)
-	appendSkillRunSummary(&b, status, runID)
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
-	h.ensureSkillRunner()
-	runner := h.getSkillRunner()
-	if runner == nil {
-		return "Skill Runner 未初始化"
-	}
-	runID, _ := args["run_id"].(string)
-	if strings.TrimSpace(runID) == "" {
-		return "缺少 run_id 参数"
-	}
-	waitDuration := normalizeSkillRunWaitSeconds(args["wait_seconds"])
-	status, err := waitForSkillRunnerSnapshot(runner, runID, waitDuration)
-	if err != nil {
-		return fmt.Sprintf("读取 Skill 状态失败: %s（run_id=%s）", err.Error(), runID)
-	}
-	var b strings.Builder
-	b.WriteString("🔎 Skill 状态查询结果\n")
-	emitSkillRunStatusAgentView(h, status, runID)
-	appendSkillRunSummary(&b, status, runID)
-	return strings.TrimRight(b.String(), "\n")
-}
-
-func buildRunSkillArgs(args map[string]interface{}) map[string]interface{} {
-	runArgs := map[string]interface{}{}
-	for k, v := range args {
-		if cskill.IsManageSkillRunnerControlKey(k) {
-			continue
-		}
-		runArgs[k] = v
-	}
-	if len(runArgs) == 0 {
-		return nil
-	}
-	return runArgs
-}
-
 // stringVal extracts a string value from a map, returning "" if the key is
 // missing or not a string.
 func stringVal(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
 	return v
-}
-
-// toolManageSkill dispatches the merged manage_skill tool to individual handlers.
-func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgress tool.ProgressCallback) string {
-	action := stringVal(args, "action")
-	switch action {
-	case "list":
-		return h.toolListSkills()
-	case "search":
-		return h.toolSearchSkillHub(args)
-	case "install":
-		return h.toolInstallSkillHub(args)
-	case "run":
-		return h.toolRunSkill(args, onProgress)
-	case "status":
-		return h.toolGetSkillRun(args)
-	case "upload":
-		return h.toolUploadSkill(args)
-	case "validate":
-		return h.toolValidateSkill(args)
-	case "patch":
-		return h.toolPatchSkill(args)
-	case "history":
-		return h.toolSkillPatchHistory(args)
-	default:
-		return cskill.ManageSkillUnknownActionError(action)
-	}
 }
 
 // patchRecord represents a single patch applied to a skill definition file.
@@ -1632,9 +1114,50 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		return "长期记忆未初始化"
 	}
 
-	action := stringVal(args, "action")
+	action := normalizeMemoryToolAction(stringVal(args, "action"))
 	switch action {
-	case "recall":
+	case memoryToolActionThemes:
+		rebuildIMMemoryThemes(h.memoryStore)
+		limit := memoryThemeLimit(args, 20)
+		themes := h.memoryStore.ThemeManager().TopThemes(limit)
+		includeStats := boolArg(args, "stats", false)
+		includeEvidence := boolArg(args, "evidence", false)
+		evidenceLimit := memoryThemeEvidenceLimit(args, 3)
+		diagnose := boolArg(args, "diagnose", false)
+		issueLimit := memoryThemeIssueLimit(args, 50)
+		plan := boolArg(args, "plan", false)
+		actionLimit := memoryThemeActionLimit(args, 20)
+		apply := boolArg(args, "apply", false)
+		if apply {
+			return formatIMMemoryThemeMaintenanceResult(h.memoryStore.ApplyThemeMaintenancePlan(issueLimit, actionLimit))
+		}
+		if plan {
+			report := h.memoryStore.ThemeDiagnostics(issueLimit)
+			return formatIMMemoryThemeMaintenancePlan(corememory.PlanThemeMaintenance(report, actionLimit), report, h.memoryStore.ThemeExplanations(limit, evidenceLimit), includeEvidence)
+		}
+		if diagnose {
+			return formatIMMemoryThemeDiagnostics(h.memoryStore.ThemeDiagnostics(issueLimit), h.memoryStore.ThemeExplanations(limit, evidenceLimit), includeEvidence)
+		}
+		if includeEvidence {
+			return formatIMMemoryThemeExplanations(h.memoryStore.ThemeExplanations(limit, evidenceLimit), h.memoryStore.ThemeHealth(), includeStats)
+		}
+		if len(themes) == 0 {
+			return "没有找到记忆主题。"
+		}
+		var b strings.Builder
+		if includeStats {
+			b.WriteString(formatIMMemoryThemeHealth(h.memoryStore.ThemeHealth()))
+		}
+		b.WriteString(fmt.Sprintf("记忆主题 %d 个\n", len(themes)))
+		for _, theme := range themes {
+			b.WriteString(fmt.Sprintf("- %s members=%d tags=%v summary=%s\n", theme.ID, theme.MemberCount, theme.Tags, theme.Summary))
+			if len(theme.Neighbors) > 0 {
+				b.WriteString(fmt.Sprintf("  neighbors=%v\n", theme.Neighbors))
+			}
+		}
+		return b.String()
+
+	case memoryToolActionRecall:
 		query := stringVal(args, "query")
 		if query == "" {
 			return "缺少 query 参数"
@@ -1645,12 +1168,69 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		if h.contextResolver != nil {
 			projectPath, _ = h.contextResolver.ResolveProject()
 		}
-		entries := h.memoryStore.RecallDynamic(query, category, projectPath)
+		mode := strings.ToLower(strings.TrimSpace(stringVal(args, "mode")))
+		debug, _ := args["debug"].(bool)
+		var entries []corememory.Entry
+		var plan *corememory.AdaptiveRecallPlan
+		switch mode {
+		case "", "dynamic":
+			entries = h.memoryStore.RecallDynamic(query, category, projectPath)
+		case "hybrid", "recall":
+			entries = h.memoryStore.SearchByMode(query, corememory.SearchHybrid, category, projectPath, 0)
+		case "auto":
+			if corememory.ShouldUseAdaptiveRecall(query) {
+				rebuildIMMemoryThemes(h.memoryStore)
+				result, p := h.memoryStore.RecallAdaptiveHierDebug(query, category, projectPath)
+				entries = result
+				plan = &p
+			} else {
+				entries = h.memoryStore.RecallDynamic(query, category, projectPath)
+			}
+		case "adaptive", "hier", "adaptive_hier":
+			rebuildIMMemoryThemes(h.memoryStore)
+			result, p := h.memoryStore.RecallAdaptiveHierDebug(query, category, projectPath)
+			entries = result
+			plan = &p
+		default:
+			return "memory recall mode 参数无效，可选值: dynamic, hybrid, adaptive, auto"
+		}
 		if len(entries) == 0 {
 			return "没有找到相关记忆。"
 		}
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf("召回 %d 条相关记忆:\n", len(entries)))
+		if debug && plan != nil {
+			b.WriteString(fmt.Sprintf("Adaptive plan: complexity=%s fallback=%v themes=%d expanded=%d\n",
+				plan.Complexity, plan.Fallback, len(plan.SelectedThemes), len(plan.ExpandedEntryIDs)))
+			b.WriteString(fmt.Sprintf("  budget max_items=%d token_budget=%d\n", plan.Budget.MaxItems, plan.Budget.TokenBudget))
+			b.WriteString(fmt.Sprintf("  diversity theme_cap=%d source_cap=%d deferred_theme=%d deferred_source=%d backfilled=%d selected_themes=%d selected_sources=%d selected_theme_coverage=%d/%d->%d reserved=%d\n",
+				plan.Diversity.ThemeCap, plan.Diversity.SourceCap, plan.Diversity.DeferredByThemeCap, plan.Diversity.DeferredBySourceCap, plan.Diversity.BackfilledDeferred, plan.Diversity.SelectedThemeCount, plan.Diversity.SelectedSourceCount, plan.Diversity.SelectedThemeCoveredBefore, plan.Diversity.SelectedThemeTargets, plan.Diversity.SelectedThemeCoveredAfter, plan.Diversity.ReservedSelectedThemes))
+			for _, facet := range plan.QueryFacets {
+				b.WriteString(fmt.Sprintf("  facet %s: %s tokens=%v\n", facet.Kind, facet.Text, facet.Tokens))
+			}
+			for _, coverage := range plan.FacetCoverage {
+				b.WriteString(fmt.Sprintf("  facet_coverage %s: themes=%v expanded=%v\n", coverage.Kind, coverage.SelectedThemeIDs, coverage.ExpandedEntryIDs))
+			}
+			for _, aggregate := range plan.ThemeAggregates {
+				b.WriteString(fmt.Sprintf("  aggregate %s: results=%d seeds=%d expanded=%d tokens=%d facets=%v\n",
+					aggregate.ThemeID, len(aggregate.ResultEntryIDs), len(aggregate.SeedEntryIDs), len(aggregate.ExpandedEntryIDs), aggregate.TokenEstimate, aggregate.MatchedFacets))
+				for _, preview := range aggregate.ResultPreviews {
+					b.WriteString(fmt.Sprintf("    preview: %s\n", preview))
+				}
+			}
+			for _, theme := range plan.SelectedThemes {
+				b.WriteString(fmt.Sprintf("  theme %s: %s (%s facets=%v)\n", theme.ThemeID, theme.Summary, theme.Reason, theme.MatchedFacets))
+				for _, ev := range theme.MatchEvidence {
+					b.WriteString(fmt.Sprintf("    match %s token=%s entry=%s source=%s preview=%s\n", ev.FacetKind, ev.Token, ev.EntryID, ev.SourceType, ev.ContentPreview))
+				}
+			}
+			for _, ev := range plan.ResultEvidence {
+				b.WriteString(fmt.Sprintf("  result #%d %s via %s source=%s theme=%s\n", ev.Rank, ev.EntryID, ev.Reason, ev.SourceType, ev.ThemeID))
+			}
+			for _, ev := range plan.ExpandedEvidence {
+				b.WriteString(fmt.Sprintf("  expanded #%d %s source=%s theme=%s score=%d\n", ev.Rank, ev.EntryID, ev.SourceType, ev.ThemeID, ev.ExpansionScore))
+			}
+		}
 		for _, e := range entries {
 			b.WriteString(fmt.Sprintf("- [%s] %s\n", string(e.Category), e.Content))
 		}
@@ -1662,7 +1242,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		h.memoryStore.TouchAccess(ids)
 		return b.String()
 
-	case "save":
+	case memoryToolActionSave:
 		content := stringVal(args, "content")
 		if content == "" {
 			return "缺少 content 参数"
@@ -1705,7 +1285,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		}
 		return fmt.Sprintf("已保存记忆: %s", summary)
 
-	case "list":
+	case memoryToolActionList:
 		category := corememory.Category(stringVal(args, "category"))
 		keyword := stringVal(args, "keyword")
 		entries := h.memoryStore.List(category, keyword)
@@ -1723,7 +1303,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		}
 		return b.String()
 
-	case "delete":
+	case memoryToolActionDelete:
 		id := stringVal(args, "id")
 		if id == "" {
 			return "缺少 id 参数"
@@ -1738,6 +1318,178 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 	}
 }
 
+func rebuildIMMemoryThemes(store *corememory.Store) {
+	if store == nil || store.ThemeManager() == nil {
+		return
+	}
+	store.ThemeManager().Rebuild(store.List("", ""), nil)
+}
+
+func formatIMMemoryThemeHealth(health corememory.ThemeHealth) string {
+	return fmt.Sprintf(
+		"theme_health: themes=%d active=%d covered=%d uncovered=%d coverage=%.2f avg_size=%.2f max_size=%d neighbor_links=%d isolated=%d duplicate_refs=%d\n",
+		health.ThemeCount,
+		health.ActiveEligibleEntries,
+		health.CoveredEntries,
+		health.UncoveredEntries,
+		health.CoverageRate,
+		health.AverageThemeSize,
+		health.MaxThemeSize,
+		health.NeighborLinks,
+		health.IsolatedThemes,
+		health.DuplicateEntryRefs,
+	)
+}
+
+func formatIMMemoryThemeExplanations(explanations []corememory.ThemeExplanation, health corememory.ThemeHealth, includeStats bool) string {
+	if len(explanations) == 0 {
+		if includeStats {
+			return formatIMMemoryThemeHealth(health) + "没有找到记忆主题。"
+		}
+		return "没有找到记忆主题。"
+	}
+	var b strings.Builder
+	if includeStats {
+		b.WriteString(formatIMMemoryThemeHealth(health))
+	}
+	b.WriteString(fmt.Sprintf("记忆主题 %d 个\n", len(explanations)))
+	for _, explanation := range explanations {
+		theme := explanation.Theme
+		b.WriteString(fmt.Sprintf("- %s members=%d cohesion=%.2f tags=%v summary=%s\n", theme.ID, theme.MemberCount, explanation.Cohesion, theme.Tags, theme.Summary))
+		for _, ev := range explanation.Evidence {
+			b.WriteString(fmt.Sprintf("  evidence %s source=%s sim=%.2f access=%d %s\n",
+				ev.EntryID, ev.SourceType, ev.Similarity, ev.AccessCount, ev.ContentPreview))
+			if ev.SourceURL != "" {
+				b.WriteString(fmt.Sprintf("    url=%s\n", ev.SourceURL))
+			}
+		}
+	}
+	return b.String()
+}
+
+func formatIMMemoryThemeDiagnostics(report corememory.ThemeDiagnosticReport, explanations []corememory.ThemeExplanation, includeEvidence bool) string {
+	var b strings.Builder
+	b.WriteString(formatIMMemoryThemeHealth(report.Health))
+	if len(report.Issues) == 0 {
+		b.WriteString("theme_diagnostics: no actionable issues\n")
+	} else {
+		b.WriteString(fmt.Sprintf("theme_diagnostics: issues=%d\n", len(report.Issues)))
+		for _, issue := range report.Issues {
+			target := issue.ThemeID
+			if target == "" {
+				target = issue.EntryID
+			}
+			b.WriteString(fmt.Sprintf("- [%s] %s %s: %s\n", issue.Severity, issue.Kind, target, issue.Message))
+			b.WriteString(fmt.Sprintf("  suggestion: %s\n", issue.Suggestion))
+		}
+	}
+	if includeEvidence {
+		b.WriteString(formatIMMemoryThemeExplanations(explanations, report.Health, false))
+	}
+	return b.String()
+}
+
+func formatIMMemoryThemeMaintenancePlan(plan corememory.ThemeMaintenancePlan, report corememory.ThemeDiagnosticReport, explanations []corememory.ThemeExplanation, includeEvidence bool) string {
+	var b strings.Builder
+	b.WriteString(formatIMMemoryThemeHealth(plan.Health))
+	b.WriteString(fmt.Sprintf("theme_diagnostics: issues=%d\n", len(report.Issues)))
+	if len(plan.Actions) == 0 {
+		b.WriteString("theme_maintenance_plan: no actions recommended\n")
+	} else {
+		b.WriteString(fmt.Sprintf("theme_maintenance_plan: actions=%d\n", len(plan.Actions)))
+		for _, action := range plan.Actions {
+			target := action.ThemeID
+			if target == "" {
+				target = strings.Join(action.EntryIDs, ",")
+			}
+			b.WriteString(fmt.Sprintf("- [%s] %s %s\n", action.Priority, action.Action, target))
+			b.WriteString(fmt.Sprintf("  reason: %s\n", action.Reason))
+			if len(action.IssueKinds) > 0 {
+				b.WriteString(fmt.Sprintf("  issues: %s\n", strings.Join(action.IssueKinds, ",")))
+			}
+		}
+	}
+	if includeEvidence {
+		b.WriteString(formatIMMemoryThemeExplanations(explanations, plan.Health, false))
+	}
+	return b.String()
+}
+
+func formatIMMemoryThemeMaintenanceResult(result corememory.ThemeMaintenanceResult) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("theme_maintenance_result: requested=%d rebuilt=%v backfilled=%d coverage=%.2f->%.2f\n",
+		result.RequestedActions, result.RebuiltThemes, result.BackfilledEmbeddings, result.Before.CoverageRate, result.After.CoverageRate))
+	if len(result.AppliedActions) > 0 {
+		b.WriteString(fmt.Sprintf("applied=%s\n", strings.Join(result.AppliedActions, ",")))
+	}
+	if len(result.SkippedActions) > 0 {
+		b.WriteString(fmt.Sprintf("skipped=%s\n", strings.Join(result.SkippedActions, ",")))
+	}
+	if len(result.Errors) > 0 {
+		b.WriteString(fmt.Sprintf("errors=%s\n", strings.Join(result.Errors, "; ")))
+	}
+	return b.String()
+}
+
+func memoryThemeLimit(args map[string]interface{}, fallback int) int {
+	if args == nil {
+		return fallback
+	}
+	switch v := args["limit"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case float32:
+		return int(v)
+	}
+	return fallback
+}
+
+func memoryThemeEvidenceLimit(args map[string]interface{}, fallback int) int {
+	if args == nil {
+		return fallback
+	}
+	limit := memoryThemeLimit(map[string]interface{}{"limit": args["evidence_limit"]}, fallback)
+	if limit <= 0 {
+		return fallback
+	}
+	if limit > 10 {
+		return 10
+	}
+	return limit
+}
+
+func memoryThemeIssueLimit(args map[string]interface{}, fallback int) int {
+	if args == nil {
+		return fallback
+	}
+	limit := memoryThemeLimit(map[string]interface{}{"limit": args["issue_limit"]}, fallback)
+	if limit <= 0 {
+		return fallback
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+func memoryThemeActionLimit(args map[string]interface{}, fallback int) int {
+	if args == nil {
+		return fallback
+	}
+	limit := memoryThemeLimit(map[string]interface{}{"limit": args["action_limit"]}, fallback)
+	if limit <= 0 {
+		return fallback
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
 // buildMemoryContextHint extracts recent conversation text (last 5 user+assistant
 // messages) to provide alias and context terms for tag enrichment during memory save.
 func (h *IMMessageHandler) buildMemoryContextHint() string {
@@ -1746,7 +1498,7 @@ func (h *IMMessageHandler) buildMemoryContextHint() string {
 	}
 	userID := h.lastUserID
 	if userID == "" {
-		userID = "desktop-user"
+		userID = desktopUserID
 	}
 	entries := h.memory.Load(userID)
 	if len(entries) == 0 {
@@ -1977,19 +1729,20 @@ func (h *IMMessageHandler) toolImportConfig(args map[string]interface{}) string 
 
 // toolManageConfig dispatches the merged manage_config tool to individual handlers.
 func (h *IMMessageHandler) toolManageConfig(args map[string]interface{}) string {
-	action := stringVal(args, "action")
+	actionText := stringVal(args, "action")
+	action := normalizeManageConfigAction(actionText)
 	switch action {
-	case "get":
+	case manageConfigActionGet:
 		return h.toolGetConfig(args)
-	case "set":
+	case manageConfigActionSet:
 		return h.toolUpdateConfig(args)
-	case "batch":
+	case manageConfigActionBatch:
 		return h.toolBatchUpdateConfig(args)
-	case "schema":
+	case manageConfigActionSchema:
 		return h.toolListConfigSchema()
-	case "export":
+	case manageConfigActionExport:
 		return h.toolExportConfig()
-	case "import":
+	case manageConfigActionImport:
 		return h.toolImportConfig(args)
 	default:
 		return fmt.Sprintf("未知 manage_config action: %s（支持: get/set/batch/schema/export/import）", action)
@@ -1998,13 +1751,14 @@ func (h *IMMessageHandler) toolManageConfig(args map[string]interface{}) string 
 
 // toolManageTemplate dispatches the merged manage_template tool to individual handlers.
 func (h *IMMessageHandler) toolManageTemplate(args map[string]interface{}) string {
-	action := stringVal(args, "action")
+	actionText := stringVal(args, "action")
+	action := normalizeManageTemplateAction(actionText)
 	switch action {
-	case "create":
+	case manageTemplateActionCreate:
 		return h.toolCreateTemplate(args)
-	case "list":
+	case manageTemplateActionList:
 		return h.toolListTemplates()
-	case "launch":
+	case manageTemplateActionLaunch:
 		if _, ok := args["template_name"]; !ok {
 			if name, ok := args["name"]; ok {
 				args["template_name"] = name
@@ -2018,18 +1772,20 @@ func (h *IMMessageHandler) toolManageTemplate(args map[string]interface{}) strin
 
 // toolManageSchedule dispatches the merged manage_schedule tool to individual handlers.
 func (h *IMMessageHandler) toolManageSchedule(args map[string]interface{}) string {
-	action := stringVal(args, "action")
+	actionText := stringVal(args, "action")
 	if ta, ok := args["task_action"]; ok {
 		args["action"] = ta
+		actionText = stringVal(args, "action")
 	}
+	action := normalizeManageScheduleAction(actionText)
 	switch action {
-	case "create":
+	case manageScheduleActionCreate:
 		return h.toolCreateScheduledTask(args)
-	case "list":
+	case manageScheduleActionList:
 		return h.toolListScheduledTasks()
-	case "delete":
+	case manageScheduleActionDelete:
 		return h.toolDeleteScheduledTask(args)
-	case "update":
+	case manageScheduleActionUpdate:
 		return h.toolUpdateScheduledTask(args)
 	default:
 		return fmt.Sprintf("未知 manage_schedule action: %s（支持: create/list/delete/update）", action)

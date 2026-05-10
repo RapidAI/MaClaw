@@ -5,7 +5,6 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
-	"regexp"
 	"regexp/syntax"
 	"sort"
 	"strings"
@@ -405,21 +404,7 @@ func literalSearchTerms(pattern string) []string {
 	if err != nil {
 		return nil
 	}
-	parts := regexp.MustCompile(`[^[:alnum:]_]+`).Split(strings.Join(requiredLiteralFragments(re), " "), -1)
-	terms := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if len([]rune(part)) >= 3 {
-			terms = append(terms, part)
-		}
-	}
-	sort.Slice(terms, func(i, j int) bool {
-		return len([]rune(terms[i])) > len([]rune(terms[j]))
-	})
-	if len(terms) > 3 {
-		terms = terms[:3]
-	}
-	return terms
+	return literalSearchTermsFromText(strings.Join(requiredLiteralFragments(re), " "))
 }
 
 func literalSearchTermsForQuery(pattern string, fixedString bool) []string {
@@ -430,21 +415,62 @@ func literalSearchTermsForQuery(pattern string, fixedString bool) []string {
 }
 
 func literalSearchTermsFromText(text string) []string {
-	parts := regexp.MustCompile(`[^[:alnum:]_]+`).Split(text, -1)
-	terms := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if len([]rune(part)) >= 3 {
-			terms = append(terms, part)
-		}
+	type searchTerm struct {
+		text string
+		size int
 	}
+	var terms []searchTerm
+	seen := make(map[string]bool)
+	start := -1
+	runeCount := 0
+	hasCaseFold := false
+	flush := func(end int) {
+		if start < 0 {
+			return
+		}
+		part := text[start:end]
+		if runeCount >= 3 && !seen[part] {
+			key := part
+			if hasCaseFold {
+				key = strings.ToLower(part)
+			}
+			if !seen[key] {
+				seen[key] = true
+				seen[part] = true
+				terms = append(terms, searchTerm{text: part, size: runeCount})
+			} else {
+				seen[part] = true
+			}
+		}
+		start = -1
+		runeCount = 0
+		hasCaseFold = false
+	}
+	for i, r := range text {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
+			if start < 0 {
+				start = i
+			}
+			if (r >= 'A' && r <= 'Z') || (r > unicode.MaxASCII && r <= 0x024F && unicode.IsUpper(r)) {
+				hasCaseFold = true
+			}
+			runeCount++
+			continue
+		}
+		flush(i)
+	}
+	flush(len(text))
 	sort.Slice(terms, func(i, j int) bool {
-		return len([]rune(terms[i])) > len([]rune(terms[j]))
+		return terms[i].size > terms[j].size
 	})
 	if len(terms) > 3 {
 		terms = terms[:3]
 	}
-	return terms
+	out := make([]string, 0, len(terms))
+	for _, term := range terms {
+		out = append(out, term.text)
+	}
+	return out
 }
 
 func requiredLiteralFragments(re *syntax.Regexp) []string {

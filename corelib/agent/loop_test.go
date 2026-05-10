@@ -10,20 +10,25 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
 var callCounter atomic.Int64
 
 // mockCallbacks implements LoopCallbacks for testing.
 type mockCallbacks struct {
-	config     corelib.MaclawLLMConfig
-	maxIter    int
-	sysPrompt  string
-	tools      []map[string]interface{}
-	toolResult string
-	tokens     []string
-	toolCalls  []string
-	stopped    bool
+	config      corelib.MaclawLLMConfig
+	maxIter     int
+	sysPrompt   string
+	tools       []map[string]interface{}
+	toolResult  string
+	toolOutcome ToolExecutionOutcome
+	allowed     map[string]bool
+	callAllowed map[string]bool
+	callReason  string
+	tokens      []string
+	toolCalls   []string
+	stopped     bool
 }
 
 func (m *mockCallbacks) GetLLMConfig() corelib.MaclawLLMConfig      { return m.config }
@@ -33,6 +38,29 @@ func (m *mockCallbacks) BuildTools(string) []map[string]interface{} { return m.t
 func (m *mockCallbacks) ExecuteTool(name, args string) string {
 	m.toolCalls = append(m.toolCalls, name)
 	return m.toolResult
+}
+func (m *mockCallbacks) ExecuteToolStructured(name, args string) ToolExecutionResult {
+	if m.toolOutcome == "" {
+		return ToolExecutionResult{Result: m.ExecuteTool(name, args), Outcome: executionOutcomeFromToolOutcome(classifyToolResult(m.toolResult).kind)}
+	}
+	m.toolCalls = append(m.toolCalls, name)
+	return ToolExecutionResult{Result: m.toolResult, Outcome: m.toolOutcome}
+}
+func (m *mockCallbacks) IsToolAllowed(name string) bool {
+	if m.allowed == nil {
+		return true
+	}
+	return m.allowed[name]
+}
+func (m *mockCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	_ = argsJSON
+	if m.callAllowed == nil {
+		return true, ""
+	}
+	if m.callAllowed[name] {
+		return true, ""
+	}
+	return false, m.callReason
 }
 func (m *mockCallbacks) OnToken(delta string)     { m.tokens = append(m.tokens, delta) }
 func (m *mockCallbacks) OnProgress(text string)   {}
@@ -162,6 +190,149 @@ func TestRunLoop_WithToolCall_ExecutesAndContinues(t *testing.T) {
 	}
 	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "bash" {
 		t.Fatalf("unexpected tool calls: %v", cb.toolCalls)
+	}
+}
+
+func TestRunLoop_ToolAuthorizerBlocksExecution(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var resp map[string]interface{}
+		if callCount == 1 {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "",
+							"tool_calls": []map[string]interface{}{
+								{
+									"id":   "call_1",
+									"type": "function",
+									"function": map[string]interface{}{
+										"name":      "task",
+										"arguments": `{"action":"run"}`,
+									},
+								},
+							},
+						},
+						"finish_reason": "tool_calls",
+					},
+				},
+			}
+		} else {
+			resp = map[string]interface{}{
+				"choices": []map[string]interface{}{
+					{
+						"message": map[string]interface{}{
+							"role":    "assistant",
+							"content": "blocked",
+						},
+						"finish_reason": "stop",
+					},
+				},
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:   server.URL,
+			Model: "test",
+			Key:   "test-key",
+		},
+		maxIter:   10,
+		sysPrompt: "You are a helpful assistant.",
+		allowed:   map[string]bool{"ssh": true},
+	}
+
+	result := RunLoop(cb, "run a task", nil, nil)
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("blocked tool should not reach ExecuteTool, got calls: %v", cb.toolCalls)
+	}
+	if result.ToolCalls != 1 {
+		t.Fatalf("expected blocked tool call to be counted, got %d", result.ToolCalls)
+	}
+}
+
+func TestExecuteLoopTool_ToolCallAuthorizerBlocksArguments(t *testing.T) {
+	cb := &mockCallbacks{
+		allowed:     map[string]bool{"bash": true},
+		callAllowed: map[string]bool{"bash": false},
+		callReason:  "high-risk command must be reviewed",
+		toolResult:  "should not run",
+	}
+
+	result := executeLoopTool(cb, "bash", `{"command":"rm -rf /"}`)
+
+	if result.Outcome != ToolExecutionOutcomeError {
+		t.Fatalf("Outcome = %q, want %q", result.Outcome, ToolExecutionOutcomeError)
+	}
+	if !strings.Contains(result.Result, "high-risk command") {
+		t.Fatalf("unexpected result: %q", result.Result)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("tool executed despite argument-level rejection: %#v", cb.toolCalls)
+	}
+}
+
+func TestRunLoop_ToolAuthorizerFiltersExposedTools(t *testing.T) {
+	var exposed []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Tools []map[string]interface{} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		for _, def := range req.Tools {
+			exposed = append(exposed, tooldef.Name(def))
+		}
+		resp := map[string]interface{}{
+			"choices": []map[string]interface{}{
+				{
+					"message": map[string]interface{}{
+						"role":    "assistant",
+						"content": "ok",
+					},
+					"finish_reason": "stop",
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{
+			URL:   server.URL,
+			Model: "test",
+			Key:   "test-key",
+		},
+		maxIter:   10,
+		sysPrompt: "You are a helpful assistant.",
+		tools: []map[string]interface{}{
+			ToolDef("ssh", "remote shell", nil, nil),
+			ToolDef("task", "spawn task", nil, nil),
+		},
+		allowed: map[string]bool{"ssh": true},
+	}
+
+	result := RunLoop(cb, "inspect server", nil, nil)
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if len(exposed) != 1 || exposed[0] != "ssh" {
+		t.Fatalf("expected only ssh to be exposed, got %v", exposed)
 	}
 }
 
@@ -738,5 +909,30 @@ func TestClassifyToolResult(t *testing.T) {
 				t.Errorf("classifyToolResult(%q) = %d, want %d", tt.result, got.kind, tt.want)
 			}
 		})
+	}
+}
+
+func TestExecuteLoopToolUsesStructuredOutcome(t *testing.T) {
+	cb := &mockCallbacks{
+		toolResult:  "Error: legacy-looking text",
+		toolOutcome: ToolExecutionOutcomeOK,
+	}
+	result := executeLoopTool(cb, "demo", "{}")
+	if result.Outcome != ToolExecutionOutcomeOK {
+		t.Fatalf("Outcome = %q, want %q", result.Outcome, ToolExecutionOutcomeOK)
+	}
+	outcome := toolOutcomeFromExecutionResult(result)
+	if outcome.kind != toolOutcomeOK {
+		t.Fatalf("toolOutcome kind = %d, want %d", outcome.kind, toolOutcomeOK)
+	}
+}
+
+func TestExecuteLoopToolFallsBackWhenStructuredOutcomeUnset(t *testing.T) {
+	cb := &mockCallbacks{
+		toolResult: "Error: exit code: 1",
+	}
+	result := executeLoopTool(cb, "demo", "{}")
+	if result.Outcome != ToolExecutionOutcomeError {
+		t.Fatalf("Outcome = %q, want %q", result.Outcome, ToolExecutionOutcomeError)
 	}
 }

@@ -99,6 +99,7 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 		return
 	}
 	email := ""
+	var user *skillmarket.SkillMarketUser
 	if h.authSvc != nil {
 		token := extractSessionToken(r)
 		if token == "" {
@@ -111,6 +112,11 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 			return
 		}
 		email = strings.TrimSpace(sess.Email)
+		user, err = h.userSvc.EnsureAccountWithID(r.Context(), sess.UserID, email)
+		if err != nil {
+			smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
+			return
+		}
 	} else {
 		email = strings.TrimSpace(r.FormValue("email"))
 	}
@@ -132,10 +138,12 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 	}
 
 	// 确保用户账户存在
-	user, err := h.userSvc.EnsureAccount(r.Context(), email)
-	if err != nil {
-		smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
-		return
+	if user == nil {
+		user, err = h.userSvc.EnsureAccount(r.Context(), email)
+		if err != nil {
+			smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
+			return
+		}
 	}
 
 	// 频率限制检查

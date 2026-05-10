@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 )
@@ -657,14 +656,14 @@ func (s *Session) evalCheck(js string) error {
 	if err != nil {
 		return err
 	}
-	// Check for error in the returned JSON.
+	// Check for a structured error in the returned JSON.
 	str := extractStringValue(result)
-	if strings.Contains(str, `"error"`) {
-		var r map[string]interface{}
-		if json.Unmarshal([]byte(str), &r) == nil {
-			if e, ok := r["error"].(string); ok {
-				return fmt.Errorf("%s", e)
-			}
+	var r struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(str), &r) == nil {
+		if r.Error != "" {
+			return fmt.Errorf("%s", r.Error)
 		}
 	}
 	return nil

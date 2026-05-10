@@ -59,6 +59,49 @@ func (s *UserService) EnsureAccount(ctx context.Context, email string) (*SkillMa
 
 // VerifyAccount 将账户升级为 verified。
 // 如果 email 已有 unverified 账户，直接接管（方案 A）。
+func (s *UserService) EnsureAccountWithID(ctx context.Context, userID, email string) (*SkillMarketUser, error) {
+	email = normalizeEmail(email)
+	if userID != "" {
+		if u, err := s.store.GetUserByID(ctx, userID); err == nil {
+			return u, nil
+		} else if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+	if u, err := s.store.GetUserByEmail(ctx, email); err == nil {
+		return u, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if userID == "" {
+		return s.EnsureAccount(ctx, email)
+	}
+	now := time.Now()
+	stubTime := time.Unix(0, 0).UTC()
+	user := &SkillMarketUser{
+		ID:               userID,
+		Email:            email,
+		Status:           "verified",
+		VerifyMethod:     "session",
+		Credits:          0,
+		VoucherCount:     defaultVoucherCount,
+		VoucherExpiresAt: now.Add(defaultVoucherDays * 24 * time.Hour),
+		CreatedAt:        stubTime,
+		UpdatedAt:        stubTime,
+		VerifiedAt:       stubTime,
+	}
+	if err := s.store.CreateUser(ctx, user); err != nil {
+		if u, err2 := s.store.GetUserByID(ctx, userID); err2 == nil {
+			return u, nil
+		}
+		if u, err2 := s.store.GetUserByEmail(ctx, email); err2 == nil {
+			return u, nil
+		}
+		return nil, err
+	}
+	return user, nil
+}
+
 func (s *UserService) VerifyAccount(ctx context.Context, email, method string) (*SkillMarketUser, error) {
 	email = normalizeEmail(email)
 	u, err := s.store.GetUserByEmail(ctx, email)

@@ -163,6 +163,42 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"server_id", "tool_name"},
 		func(args map[string]interface{}) string { return h.toolCallMCPTool(args) })
 
+	reg("passthrough_task", "管理直通任务注册表。用于帮用户创建、修改、删除、查看可通过 /run 从 AI 助手或 IM 通道直接执行的应急脚本任务；此工具只管理注册表，不执行脚本。保存成功后会返回 /run 运行示例和可发到 IM 的 /runctl save 注册命令。",
+		ToolCategoryBuiltin, []string{"passthrough", "run", "emergency", "recovery", "script"},
+		map[string]interface{}{
+			"action":           map[string]string{"type": "string", "description": "操作: list/status/show/export/preview/save/delete/set_enabled/audit。export 只返回可发到 IM 的 /runctl save 注册命令；preview 只预览最终 argv，不执行脚本；save 会返回 /run 与 /runctl save 示例。"},
+			"name":             map[string]string{"type": "string", "description": "任务名，示例 repair-env。允许字母、数字、点、下划线、短横线。"},
+			"title":            map[string]string{"type": "string", "description": "显示名称，可选。"},
+			"description":      map[string]string{"type": "string", "description": "任务说明，可选。"},
+			"command":          map[string]string{"type": "string", "description": "完整命令模板，save 时可替代 script_path + template_args；第一段为脚本/可执行程序，其余段可写固定参数和 ${param} 占位符。"},
+			"script_path":      map[string]string{"type": "string", "description": "脚本或可执行文件路径；command 为空时必填。"},
+			"template_args":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "命令模板参数，不经过 shell。可写固定参数和 ${param} 占位符；留空时按 --param value 传入所有形参。"},
+			"runtime":          map[string]string{"type": "string", "description": "运行时: auto/powershell/pwsh/cmd/bash/python/node/direct。默认 auto。"},
+			"cwd":              map[string]string{"type": "string", "description": "工作目录，可选；留空时使用脚本所在目录。"},
+			"timeout_seconds":  map[string]string{"type": "integer", "description": "超时秒数，默认 120。"},
+			"confirm_required": map[string]string{"type": "boolean", "description": "是否要求远程执行时带 --confirm，默认 true。"},
+			"enabled":          map[string]string{"type": "boolean", "description": "是否启用任务，默认 true；set_enabled 时用于启用/禁用。"},
+			"params": map[string]interface{}{
+				"type":        "array",
+				"description": "参数定义数组。脚本会收到 argv 形式的 --name value。",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"name":     map[string]string{"type": "string", "description": "参数名。"},
+						"type":     map[string]string{"type": "string", "description": "text/number/boolean/path。"},
+						"required": map[string]string{"type": "boolean", "description": "是否必填。"},
+						"default":  map[string]string{"type": "string", "description": "默认值。"},
+						"example":  map[string]string{"type": "string", "description": "用于生成 /run 示例的值。"},
+					},
+				},
+			},
+			"params_text": map[string]string{"type": "string", "description": "参数定义的简写格式，每行 name:type:required:default:example；可代替 params。"},
+			"params_json": map[string]string{"type": "string", "description": "参数定义 JSON 数组字符串，可代替 params。适合生成可发到 IM 的 /runctl save --params-json 内容；Windows 路径需按 JSON 转义为 D:\\\\workprj\\\\aicoder。"},
+			"values":      map[string]string{"type": "object", "description": "preview 时使用的参数值，例如 {\"target\":\"D:\\\\workprj\\\\aicoder\"}。未传时使用形参 example/default 或安全样例。"},
+			"limit":       map[string]string{"type": "integer", "description": "audit 返回条数，默认 10，最多 50。"},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolPassthroughTask(args) })
+
 	// --- Merged skill management tool (progress-aware for run action) ---
 	regP("manage_skill", skill.ManageSkillDescription(),
 		ToolCategoryBuiltin, append([]string{"skill"}, skill.ManageSkillActionNames()...),
@@ -311,9 +347,11 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	reg("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。大文件请分块写入：先 overwrite 第一部分，再 append 后续部分）",
 		ToolCategoryBuiltin, []string{"file", "write"},
 		map[string]interface{}{
-			"path":    map[string]string{"type": "string", "description": "文件路径"},
-			"content": map[string]string{"type": "string", "description": "文件内容，可为空字符串"},
-			"mode":    map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
+			"path":     map[string]string{"type": "string", "description": "文件路径"},
+			"content":  map[string]string{"type": "string", "description": "文件内容，可为空字符串"},
+			"mode":     map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
+			"phase_id": map[string]string{"type": "string", "description": "Optional workflow phase enum: requirements, design, or tasks."},
+			"doc_type": map[string]string{"type": "string", "description": "Optional workflow document type enum: requirements, design, or task_plan."},
 		}, []string{"path", "content"},
 		func(args map[string]interface{}) string { return h.toolWriteFile(args) })
 
@@ -382,20 +420,34 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		func(args map[string]interface{}) string { return h.toolTTS(args) })
 
 	// --- Long-term memory (unified) ---
-	reg("memory", "管理长期记忆（action: recall/save/list/delete）。recall 按需检索相关记忆，save 保存新记忆。",
+	reg("memory", "管理长期记忆（action: recall/themes/save/list/delete）。recall 按需检索相关记忆，themes 查看主题层，save 保存新记忆。",
 		ToolCategoryBuiltin, []string{"memory", "save", "remember", "list", "search", "delete", "recall"},
 		map[string]interface{}{
-			"action":   map[string]string{"type": "string", "description": "操作: recall(按需召回)/save(保存)/list(列出或搜索)/delete(删除)"},
+			"action":   map[string]string{"type": "string", "description": "操作: recall(按需召回)/themes(查看主题层)/save(保存)/list(列出或搜索)/delete(删除)"},
 			"query":    map[string]string{"type": "string", "description": "检索关键词（recall 时必填，由你提炼的精准检索词，非用户原始消息）"},
 			"content":  map[string]string{"type": "string", "description": "记忆内容（save 时必填）"},
 			"category": map[string]string{"type": "string", "description": "类别: user_fact/preference/project_knowledge/instruction（save 时必填，recall/list 时可选过滤）"},
+			"mode":     map[string]string{"type": "string", "description": "recall mode: dynamic, hybrid, adaptive, auto"},
+			"debug":    map[string]string{"type": "boolean", "description": "include adaptive recall plan when adaptive recall is used"},
+			"stats":    map[string]string{"type": "boolean", "description": "include theme health diagnostics for action=themes"},
 			"tags": map[string]interface{}{
 				"type":        "array",
 				"description": "关联标签（save 时可选）",
 				"items":       map[string]string{"type": "string"},
 			},
 			"keyword": map[string]string{"type": "string", "description": "按关键词搜索（list 时可选）"},
-			"id":      map[string]string{"type": "string", "description": "记忆条目 ID（delete 时必填）"},
+			"limit":   map[string]string{"type": "integer", "description": "themes 返回的最大主题数"},
+			"evidence": map[string]string{
+				"type":        "boolean",
+				"description": "themes 时包含每个主题的代表性原始记忆",
+			},
+			"evidence_limit": map[string]string{"type": "integer", "description": "每个主题返回的代表性记忆数量"},
+			"diagnose":       map[string]string{"type": "boolean", "description": "themes 时返回主题健康诊断和修复建议"},
+			"issue_limit":    map[string]string{"type": "integer", "description": "themes 诊断最多返回的问题数"},
+			"plan":           map[string]string{"type": "boolean", "description": "themes 时返回非破坏性的主题维护计划"},
+			"action_limit":   map[string]string{"type": "integer", "description": "themes 维护计划最多返回的动作数"},
+			"apply":          map[string]string{"type": "boolean", "description": "themes 时执行安全维护：可用时补 embedding 并重建主题层"},
+			"id":             map[string]string{"type": "string", "description": "记忆条目 ID（delete 时必填）"},
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolMemory(args) })
 
@@ -536,6 +588,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"content":   map[string]string{"type": "string", "description": "Markdown 格式的文档内容（generate_pdf 时必填）"},
 			"title":     map[string]string{"type": "string", "description": "文档标题（generate_pdf 时可选）"},
 			"doc_type":  map[string]string{"type": "string", "description": "文档类型: requirements/design/task_plan（generate_pdf 时可选）"},
+			"phase_id":  map[string]string{"type": "string", "description": "Optional workflow phase enum: requirements, design, or tasks."},
 			"file_path": map[string]string{"type": "string", "description": "文件路径（read_excel/write_excel/read_pptx 时必填）"},
 			"sheet":     map[string]string{"type": "string", "description": "工作表名称（read_excel 时可选，默认第一个工作表）"},
 			"range":     map[string]string{"type": "string", "description": "A1 表示法的单元格范围，如 A1:D10（read_excel 时可选）"},
@@ -566,6 +619,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"content":  map[string]string{"type": "string", "description": "Markdown 格式的文档内容"},
 			"title":    map[string]string{"type": "string", "description": "项目名称或文档标题"},
 			"doc_type": map[string]string{"type": "string", "description": "文档类型: requirements（需求文档）、design（设计文档）、task_plan（任务计划）。不传则为通用文档"},
+			"phase_id": map[string]string{"type": "string", "description": "Optional workflow phase enum: requirements, design, or tasks."},
 		}, []string{"content"},
 		func(args map[string]interface{}) string {
 			args["action"] = "generate_pdf"

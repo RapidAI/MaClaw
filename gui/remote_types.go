@@ -18,6 +18,53 @@ const (
 	SessionExited       SessionStatus = "exited"
 )
 
+func normalizeSessionStatus(status string) SessionStatus {
+	switch SessionStatus(status) {
+	case SessionStarting:
+		return SessionStarting
+	case SessionRunning:
+		return SessionRunning
+	case SessionBusy:
+		return SessionBusy
+	case SessionWaitingInput:
+		return SessionWaitingInput
+	case SessionError:
+		return SessionError
+	case SessionExited:
+		return SessionExited
+	default:
+		return ""
+	}
+}
+
+func (status SessionStatus) String() string {
+	return string(status)
+}
+
+func (status SessionStatus) IsStarting() bool {
+	return status == SessionStarting
+}
+
+func (status SessionStatus) IsRunning() bool {
+	return status == SessionRunning
+}
+
+func (status SessionStatus) IsBusy() bool {
+	return status == SessionBusy
+}
+
+func (status SessionStatus) IsWaitingInput() bool {
+	return status == SessionWaitingInput
+}
+
+func (status SessionStatus) IsTerminal() bool {
+	return status == SessionError || status == SessionExited
+}
+
+func (status SessionStatus) IsWaitingOrTerminal() bool {
+	return status.IsWaitingInput() || status.IsTerminal()
+}
+
 const (
 	RemoteLaunchSourceDesktop RemoteLaunchSource = "desktop"
 	RemoteLaunchSourceMobile  RemoteLaunchSource = "mobile"
@@ -26,8 +73,8 @@ const (
 )
 
 const (
-	ThinkingIdle     ThinkingState = iota // Agent is idle / waiting for input
-	ThinkingActive                        // Agent is actively processing (LLM call in flight)
+	ThinkingIdle   ThinkingState = iota // Agent is idle / waiting for input
+	ThinkingActive                      // Agent is actively processing (LLM call in flight)
 )
 
 func normalizeRemoteLaunchSource(source RemoteLaunchSource) RemoteLaunchSource {
@@ -108,13 +155,13 @@ type SessionSummary struct {
 
 // PendingQuestionView contains sanitized AskUserQuestion data for the UI.
 type PendingQuestionView struct {
-	ToolUseID string                    `json:"tool_use_id,omitempty"`
-	ToolName  string                    `json:"tool_name,omitempty"`
-	Header    string                    `json:"header,omitempty"`
-	Question  string                    `json:"question,omitempty"`
-	Hint      string                    `json:"hint,omitempty"`
-	Multi     bool                      `json:"multi,omitempty"`
-	Options   []PendingQuestionOption   `json:"options,omitempty"`
+	ToolUseID string                  `json:"tool_use_id,omitempty"`
+	ToolName  string                  `json:"tool_name,omitempty"`
+	Header    string                  `json:"header,omitempty"`
+	Question  string                  `json:"question,omitempty"`
+	Hint      string                  `json:"hint,omitempty"`
+	Multi     bool                    `json:"multi,omitempty"`
+	Options   []PendingQuestionOption `json:"options,omitempty"`
 }
 
 type PendingQuestionOption struct {
@@ -214,12 +261,12 @@ type RemoteSession struct {
 	UpdatedAt time.Time
 
 	// Stall detection and completion analysis fields (protected by mu).
-	StallState      StallState      // current stall state, updated by StallDetector
-	CompletionLevel CompletionLevel // latest completion analysis result
-	LastNudgeCount  int             // nudge count from the most recent stall episode
-	AutoContinueCount int           // times Agent auto-continued within a live session (e.g. gemini-acp cancelled)
-	ThinkingState   ThinkingState   // current thinking state (idle/active)
-	ThinkingSince   time.Time       // when the current thinking state started
+	StallState        StallState      // current stall state, updated by StallDetector
+	CompletionLevel   CompletionLevel // latest completion analysis result
+	LastNudgeCount    int             // nudge count from the most recent stall episode
+	AutoContinueCount int             // times Agent auto-continued within a live session (e.g. gemini-acp cancelled)
+	ThinkingState     ThinkingState   // current thinking state (idle/active)
+	ThinkingSince     time.Time       // when the current thinking state started
 
 	Summary SessionSummary
 	Preview SessionPreview
@@ -284,14 +331,14 @@ type PendingToolUse struct {
 // SessionResumeContext captures the state of a session that exited mid-task,
 // so the Agent can create a new session and continue the work.
 type SessionResumeContext struct {
-	OriginalTask    string   `json:"original_task"`     // the user's original request
-	CompletedFiles  []string `json:"completed_files"`   // files that were created/modified
-	LastProgress    string   `json:"last_progress"`     // last progress summary
-	LastOutput      string   `json:"last_output"`       // tail of output before exit
-	ResumeCount     int      `json:"resume_count"`      // how many times we've resumed
-	ProjectPath     string   `json:"project_path"`      // project path for new session
-	Tool            string   `json:"tool"`              // tool name (claude, gemini, etc.)
-	ExitReason      string   `json:"exit_reason"`       // "token_limit", "api_error", "unknown"
+	OriginalTask   string   `json:"original_task"`   // the user's original request
+	CompletedFiles []string `json:"completed_files"` // files that were created/modified
+	LastProgress   string   `json:"last_progress"`   // last progress summary
+	LastOutput     string   `json:"last_output"`     // tail of output before exit
+	ResumeCount    int      `json:"resume_count"`    // how many times we've resumed
+	ProjectPath    string   `json:"project_path"`    // project path for new session
+	Tool           string   `json:"tool"`            // tool name (claude, gemini, etc.)
+	ExitReason     string   `json:"exit_reason"`     // "token_limit", "api_error", "unknown"
 
 	// ResumeSessionID is the provider-native session/thread id that can be
 	// passed back via create_session(..., resume_session_id=...) to continue
@@ -354,7 +401,7 @@ func (r OutputResult) SummaryText() string {
 type SessionOutputImage struct {
 	ImageID      string `json:"image_id"`
 	MediaType    string `json:"media_type"`
-	Data         string `json:"data"`          // base64-encoded
+	Data         string `json:"data"`           // base64-encoded
 	AfterLineIdx int    `json:"after_line_idx"` // insert after this raw-output-line index
 }
 

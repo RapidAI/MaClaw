@@ -293,42 +293,38 @@ func validateAgentNetServiceRegistration(reg *AgentNetServiceRegistration) error
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("service url must be an absolute localhost HTTP URL")
 	}
-	if parsed.Scheme != "http" {
+	if !isAgentNetLocalHTTPServiceURLScheme(parsed.Scheme) {
 		return fmt.Errorf("service url must use http")
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+	if !isAgentNetLoopbackServiceHost(parsed.Hostname()) {
 		return fmt.Errorf("service url must point to localhost or loopback")
 	}
-	reg.Billing = strings.TrimSpace(strings.ToLower(reg.Billing))
-	if reg.Billing == "" {
-		reg.Billing = "free"
+	billing := normalizeAgentNetServiceBillingKind(reg.Billing)
+	if billing == agentNetServiceBillingUnknown && strings.TrimSpace(reg.Billing) == "" {
+		billing = agentNetServiceBillingFree
 	}
-	switch reg.Billing {
-	case "free", "per_call", "per_kb":
-	default:
+	if billing == agentNetServiceBillingUnknown {
 		return fmt.Errorf("billing must be free, per_call, or per_kb")
 	}
+	reg.Billing = billing.String()
 	if reg.Price < 0 {
 		return fmt.Errorf("service price cannot be negative")
 	}
-	if reg.Billing != "free" && reg.Price <= 0 {
+	if billing.IsPaid() && reg.Price <= 0 {
 		return fmt.Errorf("paid services require a positive price")
 	}
 	if reg.FreeTier < 0 {
 		return fmt.Errorf("free tier cannot be negative")
 	}
 	if len(reg.Modes) == 0 {
-		reg.Modes = []string{"rr"}
+		reg.Modes = []string{agentNetServiceModeRR.String()}
 	}
 	for i, mode := range reg.Modes {
-		mode = strings.TrimSpace(strings.ToLower(mode))
-		reg.Modes[i] = mode
-		switch mode {
-		case "rr", "server-stream", "bidi":
-		default:
+		modeKind := normalizeAgentNetServiceModeKind(mode)
+		if modeKind == agentNetServiceModeUnknown {
 			return fmt.Errorf("unsupported service mode: %s", mode)
 		}
+		reg.Modes[i] = modeKind.String()
 	}
 	return nil
 }

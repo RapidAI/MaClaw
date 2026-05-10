@@ -391,7 +391,9 @@ func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *Wo
 	// This decouples orchestrator activation from specific phase IDs —
 	// coding's "implementation", testing's "test_execution", and PPT's
 	// "ppt_generation" all satisfy ToolFilterFull && !NeedsConfirm.
-	if nextPhase.ToolPolicy == ToolFilterFull && !nextPhase.NeedsConfirm {
+	// Templates can opt out when full-tool execution must stay inside the
+	// phase prompt itself (for example controlled ops execution).
+	if nextPhase.ToolPolicy == ToolFilterFull && !nextPhase.NeedsConfirm && !nextPhase.DisableOrchestrator {
 		resp.ActivateOrchestrator = true
 		// The task list is in the phase immediately before the execution phase.
 		if nextIndex > 0 {
@@ -511,6 +513,27 @@ func (e *WorkflowEngine) GetPhaseToolFilter(userID string) ToolFilterPolicy {
 	}
 
 	return GetToolFilterForPhase(&tmpl.Phases[ws.PhaseIndex])
+}
+
+// GetOpsApprovedCommands returns the confirmed risk-policy command manifest for
+// an active ops workflow. It is used by execution hosts as a hard boundary for
+// controlled_execution.
+func (e *WorkflowEngine) GetOpsApprovedCommands(userID string) []OpsApprovedCommand {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	ws := e.workflows[userID]
+	if ws == nil || ws.Status != WorkflowActive || ws.Type != WorkflowOpsMaintenance {
+		return nil
+	}
+	if ws.CurrentPhase != "controlled_execution" {
+		return nil
+	}
+	// In the workflow state-machine path, reaching controlled_execution means
+	// the risk_policy phase was reviewed and confirmed by the user. Detached
+	// service/API callers do not have this state proof and must provide a
+	// separate approval marker before approval_required manifests are honored.
+	return ExtractOpsApprovedCommands(ws.PhaseOutputs["risk_policy"])
 }
 
 // HasPhaseOutput returns true if the user's active workflow has

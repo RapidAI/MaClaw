@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 type TenantStatus string
@@ -935,6 +936,16 @@ type ExecuteRequest struct {
 	History   []Message
 	DataDir   string
 	Config    corelib.AppConfig
+
+	// ToolPolicy optionally constrains tool exposure and execution for this
+	// request. Empty means unrestricted beyond the executor's normal
+	// deployment-level capability checks.
+	ToolPolicy workflow.ToolFilterPolicy
+
+	// OpsApprovedCommands is the optional command manifest approved by an ops
+	// risk-policy gate. When present in ops_controlled mode, bash/ssh execution
+	// must match this manifest exactly.
+	OpsApprovedCommands []workflow.OpsApprovedCommand
 }
 
 type ExecuteResult struct {

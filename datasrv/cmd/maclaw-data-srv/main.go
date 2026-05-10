@@ -13,13 +13,12 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/datasrv/internal/servicehost"
 	"github.com/RapidAI/CodeClaw/datasrv/structureddata"
 )
 
@@ -34,29 +33,33 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "admin" {
 		os.Exit(runAdminCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	if err := servicehost.Run("MaClawDataSrv", runServer); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runServer(ctx context.Context) error {
 	addr := getenv("MACLAW_DATA_HTTP_ADDR", "127.0.0.1:18180")
 	token := strings.TrimSpace(os.Getenv("MACLAW_DATA_TOKEN"))
 	if err := validateServiceToken(token); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := validateListenAddr(addr); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	store, err := structureddata.NewSQLiteStore(defaultDBPath())
 	if err != nil {
-		log.Fatalf("create sqlite store: %v", err)
+		return fmt.Errorf("create sqlite store: %w", err)
 	}
 	defer store.Close()
 	svc := structureddata.NewService(store, "sqlite")
 	apiKeys, err := structureddata.ParseAPIKeyPolicies(os.Getenv("MACLAW_DATA_API_KEYS"))
 	if err != nil {
-		log.Fatalf("parse MACLAW_DATA_API_KEYS: %v", err)
+		return fmt.Errorf("parse MACLAW_DATA_API_KEYS: %w", err)
 	}
 	server := structureddata.NewHTTPServerWithAPIKeys(svc, token, serviceVersion, apiKeys)
 	httpServer := &http.Server{Addr: addr, Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 120 * time.Second, IdleTimeout: 120 * time.Second}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("MaClawDataSrv listening on %s", addr)
@@ -65,18 +68,19 @@ func main() {
 	select {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
+			return err
 		}
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			log.Fatalf("shutdown server: %v", err)
+			return fmt.Errorf("shutdown server: %w", err)
 		}
 		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatal(err)
+			return err
 		}
 	}
+	return nil
 }
 
 func runAdminCommand(args []string, stdout, stderr io.Writer) int {
@@ -267,9 +271,13 @@ func printMainUsage(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  maclaw-data-srv")
-	fmt.Fprintln(w, "      Start the HTTP service using environment variables.")
+	fmt.Fprintln(w, "      Start the HTTP service using environment variables. On Windows this runs as a normal console process unless started by the Service Control Manager.")
 	fmt.Fprintln(w, "  maclaw-data-srv admin <command> [flags]")
 	fmt.Fprintln(w, "      Run offline administrator maintenance commands against the SQLite database.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Windows Service:")
+	fmt.Fprintln(w, "  The same executable can be registered as an NT service. Service stop/shutdown controls trigger the same graceful HTTP shutdown path as Ctrl+C.")
+	fmt.Fprintln(w, "  Example: sc.exe create MaClawDataSrv binPath= \"C:\\\\MaClaw\\\\maclaw-data-srv.exe\" start= auto")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Service environment:")
 	fmt.Fprintln(w, "  MACLAW_DATA_TOKEN        Optional service bearer token. When set, it must be at least 24 characters.")

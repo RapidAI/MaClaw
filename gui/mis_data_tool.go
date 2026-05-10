@@ -30,6 +30,18 @@ var misAgentViewDraftStore = struct {
 	items map[string]misAgentViewDraft
 }{items: map[string]misAgentViewDraft{}}
 
+// misDataHTTPClient is a shared HTTP client for MIS data service calls.
+// Reusing a single client enables TCP connection keep-alive and avoids
+// per-request TLS handshake overhead. Per-request deadlines are controlled
+// via context.WithTimeout on individual requests.
+var misDataHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 func (h *IMMessageHandler) toolMISData(args map[string]interface{}) string {
 	if h == nil || h.app == nil {
 		return "MIS data tool is not initialized"
@@ -47,100 +59,124 @@ type AgentViewDismissPayload struct {
 }
 
 func (a *App) SubmitAgentView(payload AgentViewSubmitPayload) (*IMAgentResponse, error) {
-	return a.handleAgentViewSubmitPayload(payload), nil
+	resp := a.handleAgentViewSubmitPayload(payload)
+	normalizeArtifactResponseSource(resp)
+	return resp, nil
 }
 
 func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentResponse, error) {
 	a.clearAgentView(payload.ViewID)
-	return &IMAgentResponse{Text: "Task panel closed.", ResponseSource: "agent_view_dismiss"}, nil
+	resp := &IMAgentResponse{Text: "Task panel closed.", ResponseSource: imResponseSourceAgentViewDismiss.String()}
+	normalizeArtifactResponseSource(resp)
+	return resp, nil
 }
 
 func (a *App) handleAgentViewControlMessage(text string) (*IMAgentResponse, bool, error) {
-	trimmed := strings.TrimSpace(text)
-	if strings.HasPrefix(trimmed, "__agent_view_dismiss__ ") {
-		raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "__agent_view_dismiss__ "))
+	control := classifyAgentViewControlMessage(text)
+	if control.Kind == agentViewControlMessageDismiss {
 		var payload AgentViewDismissPayload
-		_ = json.Unmarshal([]byte(raw), &payload)
+		_ = json.Unmarshal([]byte(control.Raw), &payload)
 		resp, err := a.DismissAgentView(payload)
 		return resp, true, err
 	}
-	if !strings.HasPrefix(trimmed, "__agent_view_submit__ ") {
+	if control.Kind != agentViewControlMessageSubmit {
 		return nil, false, nil
 	}
-	raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "__agent_view_submit__ "))
 	var payload AgentViewSubmitPayload
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return &IMAgentResponse{Text: "Invalid task panel submission.", Error: err.Error(), ResponseSource: "agent_view_submit"}, true, nil
+	if err := json.Unmarshal([]byte(control.Raw), &payload); err != nil {
+		return &IMAgentResponse{Text: "Invalid task panel submission.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}, true, nil
 	}
 	return a.handleAgentViewSubmitPayload(payload), true, nil
 }
 
-func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) *IMAgentResponse {
+func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp *IMAgentResponse) {
 	a.emitAgentViewLifecycle(agentViewLifecycleSubmit, map[string]interface{}{
 		"view_id": payload.ViewID,
 		"data":    payload.Data,
 	})
+	startSeq := a.agentViewSeq()
+	defer func() {
+		if resp == nil {
+			resp = &IMAgentResponse{Text: "Task panel submission failed.", Error: "empty agent view response", ResponseSource: imResponseSourceAgentViewSubmit.String()}
+		}
+		if a.agentViewSeq() != startSeq {
+			return
+		}
+		lifecyclePayload := map[string]interface{}{
+			"view_id": payload.ViewID,
+		}
+		if strings.TrimSpace(resp.Error) != "" {
+			lifecyclePayload["error"] = resp.Error
+			a.emitAgentViewLifecycle(agentViewLifecycleError, lifecyclePayload)
+			return
+		}
+		a.emitAgentViewLifecycle(agentViewLifecycleComplete, lifecyclePayload)
+	}()
 	a.ensureMISBusinessTransactionsLoaded()
-	if skillName, ok := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "skill:run:"); ok {
-		return a.handleSkillRunAgentViewSubmit(skillName, payload.Data)
-	}
-	if strings.TrimSpace(payload.ViewID) == "skill:status" {
+	viewID := classifyMISAgentViewID(payload.ViewID)
+	switch viewID.Kind {
+	case misAgentViewIDSkillRun:
+		return a.handleSkillRunAgentViewSubmit(viewID.Arg, payload.Data)
+	case misAgentViewIDSkillStatus:
 		return a.handleSkillStatusAgentViewSubmit(payload.Data)
-	}
-	if strings.TrimSpace(payload.ViewID) == "tool:approval" {
+	case misAgentViewIDToolApproval:
 		hubClient := a.ensureHubClient()
 		if hubClient == nil {
-			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		return hubClient.ensureIMHandler().handleRegisteredToolApprovalAgentViewSubmit(payload.Data)
-	}
-	if toolName, ok := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "tool:run:"); ok {
+	case misAgentViewIDToolRun:
 		hubClient := a.ensureHubClient()
 		if hubClient == nil {
-			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
-		return hubClient.ensureIMHandler().handleRegisteredToolAgentViewSubmit(toolName, payload.Data)
-	}
-	if strings.TrimSpace(payload.ViewID) == "mcp:call" {
+		return hubClient.ensureIMHandler().handleRegisteredToolAgentViewSubmit(viewID.Arg, payload.Data)
+	case misAgentViewIDMCPCall:
 		hubClient := a.ensureHubClient()
 		if hubClient == nil {
-			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "AI assistant is not initialized.", Error: "missing hub client", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		return hubClient.ensureIMHandler().handleMCPToolAgentViewSubmit(payload.Data)
-	}
-	if strings.TrimSpace(payload.ViewID) == "mis:choose-intent" {
+	case misAgentViewIDChooseIntent:
 		return a.handleMISIntentChoiceAgentViewSubmit(payload.Data)
-	}
-	if strings.TrimSpace(payload.ViewID) == "mis:resume-transaction" {
+	case misAgentViewIDResumeTransaction:
 		return a.handleMISTransactionResumeAgentViewSubmit(payload.Data)
+	case misAgentViewIDCommit:
+		return a.handleMISCommitAgentViewSubmit(viewID.Arg, payload.Data)
+	case misAgentViewIDIntent:
+		return a.handleMISIntentAgentViewSubmit(viewID.Arg, payload.Data)
+	default:
+		return &IMAgentResponse{Text: "Task panel submission received.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	actionID, ok := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "mis:intent:")
-	if !ok || strings.TrimSpace(actionID) == "" {
-		if commitActionID, commitOK := strings.CutPrefix(strings.TrimSpace(payload.ViewID), "mis:commit:"); commitOK {
-			return a.handleMISCommitAgentViewSubmit(commitActionID, payload.Data)
-		}
-		return &IMAgentResponse{Text: "Task panel submission received.", ResponseSource: "agent_view_submit"}
+}
+
+// handleMISIntentAgentViewSubmit handles business object form submissions:
+// sanitize → create/reuse transaction → dry-run → emit result view.
+func (a *App) handleMISIntentAgentViewSubmit(actionID string, data map[string]interface{}) *IMAgentResponse {
+	actionID = strings.TrimSpace(actionID)
+	if actionID == "" {
+		return &IMAgentResponse{Text: "Task panel submission received.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	submittedData := sanitizeMISAgentViewSubmittedData(payload.Data)
-	transactionID := ensureMISBusinessTransaction(extractMISAgentViewTransactionID(payload.Data), strings.TrimSpace(actionID), "", "", "", "", submittedData, "agent_view_submit")
+	submittedData := sanitizeMISAgentViewSubmittedData(data)
+	transactionID := ensureMISBusinessTransaction(extractMISAgentViewTransactionID(data), actionID, "", "", "", "", submittedData, imResponseSourceAgentViewSubmit.String())
 	updateMISBusinessTransactionFields(transactionID, submittedData, "user_input", true, 1)
-	data, err := a.executeMISBusinessActionBytes(strings.TrimSpace(actionID), submittedData, true)
+	result, err := a.executeMISBusinessActionBytes(actionID, submittedData, true)
 	if err != nil {
-		markMISBusinessTransaction(transactionID, "awaiting_validation", "business_action.validation_unavailable", err.Error(), map[string]interface{}{"reason": err.Error()})
-		if view := buildMISBusinessActionPendingValidationAgentView(strings.TrimSpace(actionID), submittedData, transactionID, err); view != nil {
+		markMISBusinessTransaction(transactionID, misTransactionStateAwaitingValidation.String(), "business_action.validation_unavailable", err.Error(), map[string]interface{}{"reason": err.Error()})
+		if view := buildMISBusinessActionPendingValidationAgentView(actionID, submittedData, transactionID, err); view != nil {
 			a.emitAgentView(view)
 		}
 		a.saveMISBusinessTransactions()
-		return &IMAgentResponse{Text: "Structured business data was saved locally and is waiting for MIS validation.", Error: err.Error(), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Structured business data was saved locally and is waiting for MIS validation.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	markMISBusinessTransaction(transactionID, "validating", "business_action.dry_run_completed", "Structured business data dry-run completed.", nil)
-	if view := buildMISBusinessActionDryRunAgentViewWithTransaction(strings.TrimSpace(actionID), submittedData, data, transactionID); view != nil {
+	markMISBusinessTransaction(transactionID, misTransactionStateValidating.String(), "business_action.dry_run_completed", "Structured business data dry-run completed.", nil)
+	if view := buildMISBusinessActionDryRunAgentViewWithTransaction(actionID, submittedData, result, transactionID); view != nil {
 		a.emitAgentView(view)
 	}
 	a.saveMISBusinessTransactions()
 	return &IMAgentResponse{
 		Text:           "Structured data dry-run completed. Review the result in the task panel.",
-		ResponseSource: "agent_view_submit",
+		ResponseSource: imResponseSourceAgentViewSubmit.String(),
 	}
 }
 
@@ -148,7 +184,7 @@ func (a *App) handleMISIntentChoiceAgentViewSubmit(data map[string]interface{}) 
 	a.ensureMISBusinessTransactionsLoaded()
 	actionID := strings.TrimSpace(fmt.Sprint(data["business_action_id"]))
 	if actionID == "" {
-		return &IMAgentResponse{Text: "Choose a business task before continuing.", Error: "missing business_action_id", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Choose a business task before continuing.", Error: "missing business_action_id", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	var action contract.BusinessAction
 	cfg, cfgErr := a.GetMISDataConfig()
@@ -157,7 +193,7 @@ func (a *App) handleMISIntentChoiceAgentViewSubmit(data map[string]interface{}) 
 		result, err := a.callMISDataAPIBytes(cfg, http.MethodGet, "/api/v1/data/business-actions/"+pathEscape(actionID), nil)
 		if err == nil {
 			if err := json.Unmarshal(result, &action); err != nil {
-				return &IMAgentResponse{Text: "Decode business action failed.", Error: err.Error(), ResponseSource: "agent_view_submit"}
+				return &IMAgentResponse{Text: "Decode business action failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 			}
 		} else {
 			actionLoadErr = err
@@ -174,29 +210,29 @@ func (a *App) handleMISIntentChoiceAgentViewSubmit(data map[string]interface{}) 
 	}
 	if strings.TrimSpace(action.ID) == "" {
 		if cfgErr != nil {
-			return &IMAgentResponse{Text: "Load MIS data config failed.", Error: cfgErr.Error(), ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "Load MIS data config failed.", Error: cfgErr.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		if actionLoadErr != nil {
-			return &IMAgentResponse{Text: "Load business action failed.", Error: actionLoadErr.Error(), ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "Load business action failed.", Error: actionLoadErr.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
-		return &IMAgentResponse{Text: "Load business action failed.", Error: "business action unavailable and no intent form snapshot exists", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Load business action failed.", Error: "business action unavailable and no intent form snapshot exists", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	if view := buildMISBusinessActionInputAgentView(action); view != nil {
 		a.emitAgentView(view)
 	}
 	a.saveMISBusinessTransactions()
-	return &IMAgentResponse{Text: "Business task form opened in the task panel.", ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: "Business task form opened in the task panel.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func (a *App) handleMISTransactionResumeAgentViewSubmit(data map[string]interface{}) *IMAgentResponse {
 	a.ensureMISBusinessTransactionsLoaded()
 	transactionID := strings.TrimSpace(fmt.Sprint(data["transaction_id"]))
 	if transactionID == "" {
-		return &IMAgentResponse{Text: "Choose a business transaction before continuing.", Error: "missing transaction_id", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Choose a business transaction before continuing.", Error: "missing transaction_id", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	txn, ok := getMISBusinessTransaction(transactionID)
 	if !ok {
-		return &IMAgentResponse{Text: "Business transaction is no longer available.", Error: "transaction not found", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Business transaction is no longer available.", Error: "transaction not found", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	var action contract.BusinessAction
 	actionLoadedFromSnapshot := false
@@ -211,7 +247,7 @@ func (a *App) handleMISTransactionResumeAgentViewSubmit(data map[string]interfac
 			result, callErr := a.callMISDataAPIBytes(cfg, http.MethodGet, "/api/v1/data/business-actions/"+pathEscape(txn.ActionID), nil)
 			if callErr == nil {
 				if err := json.Unmarshal(result, &action); err != nil {
-					return &IMAgentResponse{Text: "Decode business action failed.", Error: err.Error(), ResponseSource: "agent_view_submit"}
+					return &IMAgentResponse{Text: "Decode business action failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 				}
 				setMISBusinessTransactionActionSnapshot(transactionID, misActionSnapshotFromBusinessAction(action))
 			} else {
@@ -225,21 +261,21 @@ func (a *App) handleMISTransactionResumeAgentViewSubmit(data map[string]interfac
 	}
 	if strings.TrimSpace(action.ID) == "" {
 		if cfgErr != nil {
-			return &IMAgentResponse{Text: "Load MIS data config failed.", Error: cfgErr.Error(), ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "Load MIS data config failed.", Error: cfgErr.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
 		if actionLoadErr != nil {
-			return &IMAgentResponse{Text: "Load business action failed.", Error: actionLoadErr.Error(), ResponseSource: "agent_view_submit"}
+			return &IMAgentResponse{Text: "Load business action failed.", Error: actionLoadErr.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 		}
-		return &IMAgentResponse{Text: "Load business action failed.", Error: "business action unavailable and no local form snapshot exists", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Load business action failed.", Error: "business action unavailable and no local form snapshot exists", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	markMISBusinessTransaction(transactionID, "", "transaction.resumed", "Business transaction resumed from AgentView.", nil)
 	if a != nil {
 		var view map[string]interface{}
 		values := misTransactionFieldValues(txn)
-		switch strings.TrimSpace(txn.State) {
-		case "awaiting_commit", "commit_failed":
+		switch normalizeMISTransactionStateKind(txn.State) {
+		case misTransactionStateAwaitingCommit, misTransactionStateCommitFailed:
 			view = buildMISBusinessActionCommitReviewAgentView(action.ID, values, transactionID, "Review business commit", "This business transaction has already passed validation. Review and commit when ready.")
-		case "awaiting_validation":
+		case misTransactionStateAwaitingValidation:
 			view = buildMISBusinessActionPendingValidationAgentView(action.ID, values, transactionID, nil)
 		default:
 			view = buildMISBusinessActionInputAgentViewForTransaction(action, txn)
@@ -250,9 +286,9 @@ func (a *App) handleMISTransactionResumeAgentViewSubmit(data map[string]interfac
 	}
 	a.saveMISBusinessTransactions()
 	if actionLoadedFromSnapshot {
-		return &IMAgentResponse{Text: "Business transaction form reopened from the local form snapshot.", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Business transaction form reopened from the local form snapshot.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	return &IMAgentResponse{Text: "Business transaction form reopened in the task panel.", ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: "Business transaction form reopened in the task panel.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func (a *App) handleMISCommitAgentViewSubmit(actionID string, data map[string]interface{}) *IMAgentResponse {
@@ -262,10 +298,10 @@ func (a *App) handleMISCommitAgentViewSubmit(actionID string, data map[string]in
 	if !approved {
 		parameters, _ := data["parameters"].(map[string]interface{})
 		transactionID := strings.TrimSpace(fmt.Sprint(parameters["transaction_id"]))
-		markMISBusinessTransaction(transactionID, "collecting", "business_action.commit_rejected", "User kept editing the structured business data.", nil)
+		markMISBusinessTransaction(transactionID, misTransactionStateCollecting.String(), "business_action.commit_rejected", "User kept editing the structured business data.", nil)
 		deleteMISAgentViewDraft(strings.TrimSpace(fmt.Sprint(parameters["draft_id"])))
 		a.saveMISBusinessTransactions()
-		return &IMAgentResponse{Text: "Business action was not committed.", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Business action was not committed.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	parameters, _ := data["parameters"].(map[string]interface{})
 	draftID := strings.TrimSpace(fmt.Sprint(parameters["draft_id"]))
@@ -275,25 +311,25 @@ func (a *App) handleMISCommitAgentViewSubmit(actionID string, data map[string]in
 		submittedData, _ = parameters["data"].(map[string]interface{})
 	}
 	if len(submittedData) == 0 {
-		return &IMAgentResponse{Text: "Missing structured data for commit.", Error: "missing data", ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Missing structured data for commit.", Error: "missing data", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
 	result, err := a.executeMISBusinessActionBytes(actionID, submittedData, false)
 	if err != nil {
-		markMISBusinessTransaction(transactionID, "commit_failed", "business_action.commit_failed", err.Error(), nil)
+		markMISBusinessTransaction(transactionID, misTransactionStateCommitFailed.String(), "business_action.commit_failed", err.Error(), nil)
 		a.emitAgentView(buildMISBusinessActionCommitFailedAgentView(actionID, submittedData, transactionID, draftID, err))
 		a.saveMISBusinessTransactions()
-		return &IMAgentResponse{Text: "Business action commit failed.", Error: err.Error(), ResponseSource: "agent_view_submit"}
+		return &IMAgentResponse{Text: "Business action commit failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	markMISBusinessTransaction(transactionID, "committed", "business_action.committed", "Structured business data committed.", misBusinessActionCommitSummary(actionID, decodeMISJSONMap(result)))
+	markMISBusinessTransaction(transactionID, misTransactionStateCommitted.String(), "business_action.committed", "Structured business data committed.", misBusinessActionCommitSummary(actionID, decodeMISJSONMap(result)))
 	a.emitAgentView(buildMISBusinessActionCommittedAgentViewWithTransaction(actionID, result, transactionID))
 	deleteMISAgentViewDraft(draftID)
 	a.saveMISBusinessTransactions()
-	return &IMAgentResponse{Text: "Business action committed. Result is shown in the task panel.", ResponseSource: "agent_view_submit"}
+	return &IMAgentResponse{Text: "Business action committed. Result is shown in the task panel.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func (a *App) executeMISDataTool(args map[string]interface{}) string {
-	action := strings.ToLower(strings.TrimSpace(stringArg(args, "action")))
-	if action == "list_agent_transactions" {
+	action := normalizeMISDataToolAction(stringArg(args, "action"))
+	if action == misDataToolActionListAgentTransactions {
 		a.ensureMISBusinessTransactionsLoaded()
 		txns := activeMISBusinessTransactions(strings.TrimSpace(stringArg(args, "business_action_id")), strings.TrimSpace(stringArg(args, "dataset_id")), intArg(args, "limit", 5))
 		if view := buildMISTransactionWorkspaceAgentView(txns); view != nil {
@@ -311,7 +347,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 	if strings.TrimSpace(cfg.Token) == "" {
 		return "MIS data service token is empty. Configure it in Settings > MIS data."
 	}
-	if action == "" {
+	if action == misDataToolActionUnknown {
 		return "missing action. Supported: status, get_capabilities, list_domains, get_domain, list_relationships, resolve_intent, get_inbox, get_inbox_summary, get_stats, export_governance_evidence_pack, export_governance_evidence_summary, run_maintenance, list_business_actions, get_business_action, list_business_rules, evaluate_business_rules, list_event_contracts, get_event_contract, list_event_dead_letters, get_event_dead_letter, retry_event_dead_letter, resolve_event_dead_letter, list_connectors, list_connector_health, get_connector, upsert_connector, delete_connector, test_connector, validate_connector_config, check_connector_readiness, get_connector_health, get_connector_sync_state, list_connector_sync_runs, update_connector_sync_state, plan_connector_sync, sync_connector_batch, suggest_connector_mapping, patch_connector_config, preview_connector_event, ingest_connector_event, execute_business_action, list_business_views, get_business_view, query_business_view, list_dashboards, get_dashboard, run_dashboard, list_reports, get_report, run_report, aggregate_records, list_quality_checks, run_quality_check, list_quality_runs, get_quality_run, list_import_jobs, get_import_job, list_export_jobs, get_export_job, download_export_job, list_operation_plans, create_operation_plan, get_operation_plan, review_operation_plan, apply_operation_plan, cancel_operation_plan, list_record_approvals, create_record_approval, get_record_approval, review_record_approval, list_audit_logs, export_audit_logs_csv, list_data_events, list_record_revisions, get_record_timeline, get_related_records, list_schema_proposals, get_schema_proposal, list_templates, get_template, bootstrap_templates, create_dataset_from_template, list_datasets, get_dataset, create_dataset, delete_dataset, list_fields, upsert_fields, propose_schema, apply_schema_proposal, validate_record, batch_import_records, bulk_update_records, bulk_delete_records, restore_record, start_batch_import_job, get_import_template_csv, import_records_csv, start_csv_import_job, import_records_jsonl, start_jsonl_import_job, upsert_record, get_record, delete_record, query_records, export_records, export_records_jsonl, start_csv_export_job, start_jsonl_export_job, ingest_event, create_backup, list_backups, get_backup, download_backup, restore_backup"
 	}
 	switch action {
@@ -346,7 +382,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		a.emitMISIntentAgentView(data)
 		return prettyMISDataResponse(data)
-	case "get_inbox", "get_inbox_summary":
+	case misDataToolActionGetInbox, misDataToolActionGetInboxSummary:
 		values := url.Values{}
 		if datasetID := strings.TrimSpace(stringArg(args, "dataset_id")); datasetID != "" {
 			values.Set("dataset_id", datasetID)
@@ -364,7 +400,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			values.Set("limit", limit)
 		}
 		path := "/api/v1/data/inbox"
-		if action == "get_inbox_summary" {
+		if action == misDataToolActionGetInboxSummary {
 			path = "/api/v1/data/inbox/summary"
 		}
 		if encoded := values.Encode(); encoded != "" {
@@ -610,7 +646,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		}
 		body := map[string]interface{}{"source": stringArg(args, "source"), "business_action_id": stringArg(args, "business_action_id"), "event_type": stringArg(args, "event_type"), "operation": stringArg(args, "operation"), "dataset_id": stringArg(args, "dataset_id"), "record_id": stringArg(args, "record_id"), "idempotency_key": stringArg(args, "idempotency_key"), "title": stringArg(args, "title"), "tags": args["tags"], "data": args["data"], "occurred_at": stringArg(args, "occurred_at"), "dry_run": args["dry_run"]}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/connectors/"+pathEscape(connectorID)+"/events", compactPayload(body))
-	case "execute_business_action":
+	case misDataToolActionExecuteBusinessAction:
 		actionID := strings.TrimSpace(stringArg(args, "business_action_id"))
 		if actionID == "" {
 			return "missing business_action_id"
@@ -881,7 +917,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 			values.Set("limit", limit)
 		}
 		path := "/api/v1/data/audit"
-		if action == "export_audit_logs_csv" {
+		if action == misDataToolActionExportAuditLogsCSV {
 			path = "/api/v1/data/audit/export.csv"
 		}
 		if encoded := values.Encode(); encoded != "" {
@@ -1257,7 +1293,7 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 		body := map[string]interface{}{"confirm": misBoolArg(args, "confirm"), "reason": stringArg(args, "reason")}
 		return a.callMISDataAPI(cfg, http.MethodPost, "/api/v1/data/backups/"+pathEscape(backupID)+"/restore", compactPayload(body))
 	default:
-		return "unknown MIS data action: " + action
+		return "unknown MIS data action: " + string(action)
 	}
 }
 
@@ -1292,7 +1328,7 @@ func (a *App) callMISDataAPIBytes(cfg corelib.MISDataConfig, method, path string
 	req.Header.Set("X-MaClaw-Tenant-ID", cfg.TenantID)
 	req.Header.Set("X-MaClaw-User-ID", cfg.UserID)
 	req.Header.Set("X-MaClaw-Role", cfg.Role)
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	resp, err := misDataHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("MIS data service request failed: %v", err)
 	}
@@ -1360,10 +1396,11 @@ func buildMISIntentAgentViewFromResolveResult(data []byte) map[string]interface{
 		return nil
 	}
 	top := result.Matches[0]
-	if top.Decision == "ask_user_to_choose" {
+	decision := normalizeMISIntentDecisionKind(top.Decision)
+	if decision == misIntentDecisionAskUserToChoose {
 		return buildMISIntentChoiceAgentView(result)
 	}
-	if top.Decision != "auto_open_task_panel" || strings.TrimSpace(top.BusinessActionID) == "" {
+	if decision != misIntentDecisionAutoOpenTaskPanel || strings.TrimSpace(top.BusinessActionID) == "" {
 		return nil
 	}
 	step := preferredMISIntentWriteStep(top.NextSteps)
@@ -1593,14 +1630,14 @@ func misTransactionWorkspaceSummary(txn misBusinessTransaction) map[string]inter
 }
 
 func misTransactionNextAction(txn misBusinessTransaction) string {
-	switch strings.TrimSpace(txn.State) {
-	case "awaiting_validation":
+	switch normalizeMISTransactionStateKind(txn.State) {
+	case misTransactionStateAwaitingValidation:
 		return "retry_validation"
-	case "validation_failed", "collecting", "":
+	case misTransactionStateValidationFailed, misTransactionStateCollecting, misTransactionStateUnknown:
 		return "continue_editing"
-	case "awaiting_commit", "commit_failed":
+	case misTransactionStateAwaitingCommit, misTransactionStateCommitFailed:
 		return "review_or_retry_commit"
-	case "validating":
+	case misTransactionStateValidating:
 		return "retry_or_wait_validation"
 	default:
 		return "continue"
@@ -1740,7 +1777,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 		meta["transaction_id"] = strings.TrimSpace(transactionID)
 	}
 	for _, field := range fields {
-		if strings.TrimSpace(fmt.Sprint(field["type"])) == "hidden" {
+		if normalizeAgentViewFieldType(fmt.Sprint(field["type"])) == agentViewFieldTypeHidden {
 			hiddenFields = append(hiddenFields, field)
 			name := strings.TrimSpace(fmt.Sprint(field["name"]))
 			if name != "" {
@@ -1752,7 +1789,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 		}
 		visibleFields = append(visibleFields, field)
 	}
-	if len(visibleFields) == 1 && strings.TrimSpace(fmt.Sprint(visibleFields[0]["type"])) == "array_table" {
+	if len(visibleFields) == 1 && normalizeAgentViewFieldType(fmt.Sprint(visibleFields[0]["type"])) == agentViewFieldTypeArrayTable {
 		field := visibleFields[0]
 		columns, _ := field["columns"].([]map[string]interface{})
 		if len(columns) > 0 {
@@ -1795,7 +1832,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 			}
 		}
 	}
-	if len(visibleFields) == 1 && strings.TrimSpace(fmt.Sprint(visibleFields[0]["type"])) == "field_mapper" {
+	if len(visibleFields) == 1 && normalizeAgentViewFieldType(fmt.Sprint(visibleFields[0]["type"])) == agentViewFieldTypeFieldMapper {
 		field := visibleFields[0]
 		sourceFields, _ := field["sourceFields"].([]string)
 		targetFields, _ := field["targetFields"].([]map[string]interface{})
@@ -1844,12 +1881,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 }
 
 func isMISResourceField(field map[string]interface{}) bool {
-	switch strings.TrimSpace(fmt.Sprint(field["type"])) {
-	case "user_ref", "department_ref", "business_ref":
-		return true
-	default:
-		return false
-	}
+	return normalizeAgentViewFieldType(fmt.Sprint(field["type"])).IsResourceReference()
 }
 
 func firstNonNilMISAgentView(values ...interface{}) interface{} {
@@ -1947,7 +1979,7 @@ func buildMISBusinessActionPendingValidationAgentView(actionID string, submitted
 			"source":             "mis.transaction_store",
 			"business_action_id": strings.TrimSpace(actionID),
 			"transaction_id":     strings.TrimSpace(transactionID),
-			"state":              "awaiting_validation",
+			"state":              misTransactionStateAwaitingValidation.String(),
 		},
 	}
 }
@@ -2022,7 +2054,7 @@ func buildMISBusinessActionDryRunAgentViewWithTransaction(actionID string, submi
 	_ = json.Unmarshal(resultData, &result)
 	valid, _ := result["valid"].(bool)
 	if valid {
-		markMISBusinessTransaction(transactionID, "awaiting_commit", "business_action.validation_passed", "Business validation passed; awaiting user commit.", misBusinessActionValidationSummary(result))
+		markMISBusinessTransaction(transactionID, misTransactionStateAwaitingCommit.String(), "business_action.validation_passed", "Business validation passed; awaiting user commit.", misBusinessActionValidationSummary(result))
 		view := buildMISBusinessActionCommitReviewAgentView(actionID, submittedData, transactionID, "Commit business action", "Validation passed. Review the data and commit when ready.")
 		if view != nil {
 			action, _ := view["action"].(map[string]interface{})
@@ -2033,7 +2065,7 @@ func buildMISBusinessActionDryRunAgentViewWithTransaction(actionID string, submi
 		}
 		return view
 	}
-	markMISBusinessTransaction(transactionID, "validation_failed", "business_action.validation_failed", "Business validation failed.", map[string]interface{}{"errors": misDryRunValidationErrors(result)})
+	markMISBusinessTransaction(transactionID, misTransactionStateValidationFailed.String(), "business_action.validation_failed", "Business validation failed.", map[string]interface{}{"errors": misDryRunValidationErrors(result)})
 	fields := buildMISDryRunCorrectionFields(submittedData, result, transactionID)
 	if strings.TrimSpace(transactionID) != "" {
 		fields = append(fields, misTransactionHiddenField(transactionID))
@@ -2094,11 +2126,38 @@ func deleteMISAgentViewDraft(draftID string) {
 }
 
 func cloneMISInterfaceMap(in map[string]interface{}) map[string]interface{} {
-	out := map[string]interface{}{}
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
 	for key, value := range in {
-		out[key] = value
+		out[key] = cloneMISInterfaceValue(value)
 	}
 	return out
+}
+
+// cloneMISInterfaceValue deep-clones a single value. Handles the types that
+// appear in JSON-deserialized tool arguments: map, slice, and scalars.
+func cloneMISInterfaceValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		return cloneMISInterfaceMap(v)
+	case []interface{}:
+		cloned := make([]interface{}, len(v))
+		for i, item := range v {
+			cloned[i] = cloneMISInterfaceValue(item)
+		}
+		return cloned
+	case []map[string]interface{}:
+		cloned := make([]map[string]interface{}, len(v))
+		for i, item := range v {
+			cloned[i] = cloneMISInterfaceMap(item)
+		}
+		return cloned
+	default:
+		// Scalars (string, float64, bool, nil, json.Number) are immutable — no clone needed.
+		return value
+	}
 }
 
 func buildMISDryRunCorrectionFields(submittedData map[string]interface{}, result map[string]interface{}, transactionID string) []map[string]interface{} {
@@ -2145,7 +2204,7 @@ func buildMISAgentViewFields(inputFields []contract.DatasetTemplateField, defaul
 		uiField := map[string]interface{}{
 			"name":        name,
 			"label":       firstNonEmptyMISAgentView(field.Title, name),
-			"type":        agentViewFieldType(field),
+			"type":        datasetAgentViewFieldType(field),
 			"required":    field.Required,
 			"description": field.Type,
 		}
@@ -2405,7 +2464,7 @@ func preferredMISIntentWriteStep(steps []contract.BusinessIntentNextStep) *contr
 	var dryRun *contract.BusinessIntentNextStep
 	for i := range steps {
 		step := &steps[i]
-		if step.Action != "execute_business_action" {
+		if normalizeMISDataToolAction(step.Action) != misDataToolActionExecuteBusinessAction {
 			continue
 		}
 		if step.DryRun {
@@ -2417,31 +2476,8 @@ func preferredMISIntentWriteStep(steps []contract.BusinessIntentNextStep) *contr
 	return dryRun
 }
 
-func agentViewFieldType(field contract.DatasetTemplateField) string {
-	switch strings.ToLower(strings.TrimSpace(field.Type)) {
-	case "number", "integer", "float", "decimal":
-		return "number"
-	case "boolean", "bool":
-		return "boolean"
-	case "date":
-		return "date"
-	case "datetime", "timestamp":
-		return "datetime"
-	case "file_ref":
-		return "file"
-	case "person_ref", "user_ref":
-		return "user_ref"
-	case "department_ref":
-		return "department_ref"
-	case "record_ref", "org_ref":
-		return "business_ref"
-	case "array", "list", "items", "line_items", "object_array":
-		return "array_table"
-	case "object", "map", "struct", "json":
-		return "object_form"
-	default:
-		return "text"
-	}
+func datasetAgentViewFieldType(field contract.DatasetTemplateField) string {
+	return normalizeMISDatasetAgentViewFieldType(field.Type).String()
 }
 
 func agentViewFieldTypeFromValue(value interface{}) string {
@@ -2607,18 +2643,7 @@ func nonNilString(value interface{}) string {
 }
 
 func agentViewTableColumnType(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "number", "integer", "float", "decimal":
-		return "number"
-	case "boolean", "bool":
-		return "boolean"
-	case "date":
-		return "date"
-	case "select", "enum":
-		return "select"
-	default:
-		return "text"
-	}
+	return normalizeMISTableColumnAgentViewFieldType(value).String()
 }
 
 func enumOptionsFromFieldConfig(config map[string]interface{}) []map[string]string {
@@ -2767,7 +2792,7 @@ func (a *App) callMISDataDownloadSummary(cfg corelib.MISDataConfig, path string)
 	req.Header.Set("X-MaClaw-Tenant-ID", cfg.TenantID)
 	req.Header.Set("X-MaClaw-User-ID", cfg.UserID)
 	req.Header.Set("X-MaClaw-Role", cfg.Role)
-	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+	resp, err := misDataHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Sprintf("MIS data download failed: %v", err)
 	}

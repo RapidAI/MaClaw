@@ -44,31 +44,32 @@ func (h *IMMessageHandler) ensureSSHManager() *remote.SSHSessionManager {
 
 // toolSSH is the unified SSH tool entry point, dispatching by action.
 func (h *IMMessageHandler) toolSSH(args map[string]interface{}) string {
-	action, _ := args["action"].(string)
+	actionText, _ := args["action"].(string)
+	action := classifySSHToolAction(actionText)
 	switch action {
-	case "connect":
+	case sshToolActionConnect:
 		return h.sshConnect(args)
-	case "exec":
+	case sshToolActionExec:
 		return h.sshExec(args)
-	case "exec_background":
+	case sshToolActionExecBackground:
 		return h.sshExecBackground(args)
-	case "check_task":
+	case sshToolActionCheckTask:
 		return h.sshCheckTask(args)
-	case "list_tasks":
+	case sshToolActionListTasks:
 		return h.sshListTasks()
-	case "kill_task":
+	case sshToolActionKillTask:
 		return h.sshKillTask(args)
-	case "sudo_prepare":
+	case sshToolActionSudoPrepare:
 		return h.sshSudoPrepare(args)
-	case "upload":
+	case sshToolActionUpload:
 		return h.sshUpload(args)
-	case "download":
+	case sshToolActionDownload:
 		return h.sshDownload(args)
-	case "list":
+	case sshToolActionList:
 		return h.sshList()
-	case "close":
+	case sshToolActionClose:
 		return h.sshClose(args)
-	case "close_all":
+	case sshToolActionCloseAll:
 		return h.sshCloseAll()
 	default:
 		return fmt.Sprintf("未知 SSH 操作: %s（支持: connect/exec/exec_background/check_task/list_tasks/kill_task/sudo_prepare/upload/download/list/close/close_all）", action)
@@ -178,9 +179,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 	session, err := mgr.Create(spec)
 	if err != nil {
 		errMsg := fmt.Sprintf("SSH 连接失败: %v", err)
-		errLower := strings.ToLower(err.Error())
-		if strings.Contains(errLower, "unable to authenticate") || strings.Contains(errLower, "handshake failed") ||
-			strings.Contains(errLower, "permission denied") || strings.Contains(errLower, "no supported methods") {
+		if classifySSHError(err) == sshErrorAuthentication {
 			if cfg.Password == "" {
 				errMsg += "\n\n💡 认证失败且未提供密码。请使用 password 参数重试，例如：\nssh connect host=... user=... port=... password=<密码> auth_method=password"
 			} else {
@@ -208,10 +207,12 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 
 // findRunningSSHSession looks for an existing SSH session matching the
 // given hostID (user@host:port) or label that is still running.
-func (h *IMMessageHandler) findRunningSSHSession(mgr interface{ List() []*remote.SSHManagedSession }, hostID, label string) *remote.SSHManagedSession {
+func (h *IMMessageHandler) findRunningSSHSession(mgr interface {
+	List() []*remote.SSHManagedSession
+}, hostID, label string) *remote.SSHManagedSession {
 	for _, s := range mgr.List() {
 		summary := s.GetSummary()
-		if summary.Status != string(remote.SessionRunning) {
+		if !remote.SessionStatus(summary.Status).IsRunning() {
 			continue
 		}
 		if summary.HostID == hostID || (label != "" && summary.HostLabel == label) {
@@ -392,14 +393,14 @@ func (h *IMMessageHandler) sshCheckTask(args map[string]interface{}) string {
 	}
 
 	statusEmoji := "🔄"
-	switch result.Status {
-	case "completed":
+	switch normalizeLocalBackgroundTaskStatus(result.Status) {
+	case localBackgroundTaskStatusCompleted:
 		statusEmoji = "✅"
-	case "failed":
+	case localBackgroundTaskStatusFailed:
 		statusEmoji = "❌"
-	case "killed":
+	case localBackgroundTaskStatusKilled:
 		statusEmoji = "🛑"
-	case "unknown":
+	case localBackgroundTaskStatusUnknownID:
 		statusEmoji = "❓"
 	}
 
@@ -564,7 +565,7 @@ func (h *IMMessageHandler) sshCloseAll() string {
 	running := make([]*remote.SSHManagedSession, 0, len(sessions))
 	for _, s := range sessions {
 		summary := s.GetSummary()
-		if summary.Status == string(remote.SessionRunning) {
+		if remote.SessionStatus(summary.Status).IsRunning() {
 			running = append(running, s)
 		}
 	}
@@ -597,7 +598,7 @@ func (h *IMMessageHandler) registerSSHBackgroundLoop(session *remote.SSHManagedS
 	ctx := h.bgManager.Spawn(SlotKindSSH, "", desc, 0, nil)
 	if ctx != nil {
 		ctx.SessionID = session.ID
-		ctx.SetState("running")
+		ctx.SetLoopState(LoopStateRunning)
 	}
 }
 

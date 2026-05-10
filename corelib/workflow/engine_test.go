@@ -139,6 +139,40 @@ func TestEngine_CompleteWorkflowLifecycle(t *testing.T) {
 	}
 }
 
+func TestEngine_OpsMaintenanceExecutionDoesNotActivateOrchestrator(t *testing.T) {
+	engine, _ := newTestEngine()
+	if _, err := engine.StartWorkflow("u1", StructuredIntent{
+		Category: WorkflowOpsMaintenance,
+		Summary:  "restart a bounded service after risk approval",
+	}); err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	// Confirm every document/risk phase. The final full-tool phase should run
+	// through the controlled execution prompt, not the generic task orchestrator.
+	for i := 0; i < 4; i++ {
+		saveReviewOutputForCurrentPhase(t, engine, "u1")
+		resp, err := engine.ApplyReviewIntent("u1", ReviewIntentConfirm, "")
+		if err != nil {
+			t.Fatalf("ApplyReviewIntent phase %d failed: %v", i, err)
+		}
+		if i < 3 && !resp.Advance {
+			t.Fatalf("phase %d should advance", i)
+		}
+		if i == 3 {
+			if !resp.Advance || !resp.RunAgentLoop {
+				t.Fatalf("risk policy confirmation should enter controlled execution, got advance=%v run=%v", resp.Advance, resp.RunAgentLoop)
+			}
+			if resp.ActivateOrchestrator {
+				t.Fatal("ops controlled execution must not activate the generic task orchestrator")
+			}
+			if resp.ToolFilter != ToolFilterOpsControlled {
+				t.Fatalf("controlled execution should use ops-controlled tools, got %s", resp.ToolFilter)
+			}
+		}
+	}
+}
+
 func TestEngine_LLMNotConfiguredDegradation(t *testing.T) {
 	// Engine with nil understanding manager — should still work for direct workflow start
 	registry := NewWorkflowRegistry()
@@ -242,5 +276,106 @@ func TestEngine_GetPhaseToolFilterNoWorkflow(t *testing.T) {
 	policy := engine.GetPhaseToolFilter("nonexistent")
 	if policy != ToolFilterNone {
 		t.Errorf("expected ToolFilterNone, got %s", policy)
+	}
+}
+
+func TestEngine_GetOpsApprovedCommandsFromRiskPolicyOutput(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	RegisterBuiltinTemplates(registry)
+	engine := NewWorkflowEngine(registry, nil, nil, nil)
+	state, err := engine.StartWorkflow("u_ops_manifest", StructuredIntent{Category: WorkflowOpsMaintenance})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	state.CurrentPhase = "controlled_execution"
+	state.PhaseOutputs["risk_policy"] = `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	got := engine.GetOpsApprovedCommands("u_ops_manifest")
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].Tool != "bash" || got[0].Command != "systemctl restart nginx" {
+		t.Fatalf("unexpected command manifest: %#v", got)
+	}
+}
+
+func TestEngine_GetOpsApprovedCommandsOnlyDuringControlledExecution(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	RegisterBuiltinTemplates(registry)
+	engine := NewWorkflowEngine(registry, nil, nil, nil)
+	state, err := engine.StartWorkflow("u_ops_manifest_before_execution", StructuredIntent{Category: WorkflowOpsMaintenance})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	state.CurrentPhase = "risk_policy"
+	state.PhaseOutputs["risk_policy"] = `
+decision: approval_required
+risk_level: L2
+approval_required: single
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	if got := engine.GetOpsApprovedCommands("u_ops_manifest_before_execution"); len(got) != 0 {
+		t.Fatalf("risk policy output should not expose approved commands before controlled_execution: %#v", got)
+	}
+	state.CurrentPhase = "controlled_execution"
+	if got := engine.GetOpsApprovedCommands("u_ops_manifest_before_execution"); len(got) != 1 {
+		t.Fatalf("controlled_execution should expose approved commands, got %#v", got)
+	}
+}
+
+func TestEngine_GetOpsApprovedCommandsIgnoresDeniedRiskPolicy(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	RegisterBuiltinTemplates(registry)
+	engine := NewWorkflowEngine(registry, nil, nil, nil)
+	state, err := engine.StartWorkflow("u_ops_denied_manifest", StructuredIntent{Category: WorkflowOpsMaintenance})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	state.CurrentPhase = "controlled_execution"
+	state.PhaseOutputs["risk_policy"] = `
+decision: deny
+risk_level: L4
+approval_required: none
+allowed_commands:
+  - tool: bash
+    command: "systemctl restart nginx"
+`
+	if got := engine.GetOpsApprovedCommands("u_ops_denied_manifest"); len(got) != 0 {
+		t.Fatalf("denied policy should not expose approved commands: %#v", got)
+	}
+}
+
+func TestEngine_GetOpsApprovedCommandsPreservesPolicyStrengthMetadata(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	RegisterBuiltinTemplates(registry)
+	engine := NewWorkflowEngine(registry, nil, nil, nil)
+	state, err := engine.StartWorkflow("u_ops_close_all_manifest", StructuredIntent{Category: WorkflowOpsMaintenance})
+	if err != nil {
+		t.Fatalf("StartWorkflow: %v", err)
+	}
+	state.CurrentPhase = "controlled_execution"
+	state.PhaseOutputs["risk_policy"] = `
+decision: approval_required
+risk_level: L3
+approval_required: double
+allowed_commands:
+  - tool: ssh
+    action: close_all
+    command: "all"
+`
+	got := engine.GetOpsApprovedCommands("u_ops_close_all_manifest")
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1: %#v", len(got), got)
+	}
+	if got[0].Action != "close_all" || got[0].RiskLevel != OpsRiskLevelL3 || got[0].ApprovalRequirement != OpsApprovalRequirementDouble {
+		t.Fatalf("approved close_all lost policy strength metadata: %#v", got[0])
 	}
 }

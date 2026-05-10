@@ -159,6 +159,7 @@ func TestPreservation_AllRegisteredTemplatesDescribed(t *testing.T) {
 		WorkflowDueDiligence,
 		WorkflowComplianceAudit,
 		WorkflowPatentAnalysis,
+		WorkflowOpsMaintenance,
 	}
 
 	for _, wt := range registeredTypes {
@@ -167,6 +168,26 @@ func TestPreservation_AllRegisteredTemplatesDescribed(t *testing.T) {
 				"registered template type %q.\n"+
 				"All registered templates must be described in the system prompt "+
 				"so the LLM can classify intent correctly.", string(wt))
+		}
+	}
+}
+
+func TestPreservation_OpsMaintenancePromptGuidancePresent(t *testing.T) {
+	registry := NewWorkflowRegistry()
+	llm := &MockLLMCaller{Response: `{"reply":"ok","ready":false}`}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, registry)
+
+	prompt := mgr.buildSystemPrompt()
+	required := []string{
+		`category="ops_maintenance"`,
+		"服务器运维",
+		"只读采集",
+		"风险门禁",
+		"受控执行",
+	}
+	for _, want := range required {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("intent prompt should contain ops maintenance guidance %q", want)
 		}
 	}
 }

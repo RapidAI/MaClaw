@@ -3,6 +3,7 @@ import { colors, radius } from "./styles";
 import { TERMINAL_SESSION_STATUSES, type RemoteSessionView } from "./types";
 import { RemoteSessionConsole } from "./RemoteSessionConsole";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
+import { PassthroughCommandsPanel } from "./PassthroughCommandsPanel";
 import { ListBackgroundLoops, StopBackgroundLoop, StopAllBackgroundLoops, StopAllBackgroundTasks, DismissRemoteSession, ContinueBackgroundLoop, GetBackgroundLoopOutput } from "../../../wailsjs/go/main/App";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
@@ -90,7 +91,7 @@ export function RemoteSessionList(props: Props) {
         lang,
     } = props;
 
-    const [sessionTab, setSessionTab] = useState<"remote" | "background" | "scheduled">("remote");
+    const [sessionTab, setSessionTab] = useState<"remote" | "background" | "scheduled" | "passthrough">("remote");
     const [showHistory, setShowHistory] = useState(false);
     const [hiddenSessionIds, setHiddenSessionIds] = useState<string[]>([]);
     const [consoleSessionId, setConsoleSessionId] = useState<string | null>(null);
@@ -558,6 +559,7 @@ export function RemoteSessionList(props: Props) {
 
     const isBackgroundTab = sessionTab === "background";
     const isScheduledTab = sessionTab === "scheduled";
+    const isPassthroughTab = sessionTab === "passthrough";
     const isRemoteTab = sessionTab === "remote";
     const remoteLiveCount = useMemo(() => remoteSess.filter(isLiveSession).length, [remoteSess]);
     const bgTotalCount = bgLoops.filter(l => l.status === "running" || l.status === "paused").length + aiSessions.filter(isLiveSession).length;
@@ -630,6 +632,22 @@ export function RemoteSessionList(props: Props) {
                         }}
                     >
                         ⏰ {localizeText("Scheduled", "计划任务", "計劃任務")}
+                    </button>
+                    <button
+                        onClick={() => { setSessionTab("passthrough"); setShowHistory(false); }}
+                        style={{
+                            border: "none",
+                            background: sessionTab === "passthrough" ? colors.surface : "transparent",
+                            borderBottom: sessionTab === "passthrough" ? `2px solid ${colors.warning}` : "2px solid transparent",
+                            padding: "8px 16px",
+                            fontSize: "0.8rem",
+                            fontWeight: sessionTab === "passthrough" ? 700 : 500,
+                            color: sessionTab === "passthrough" ? colors.warning : colors.textMuted,
+                            cursor: "pointer",
+                            transition: "all 0.15s",
+                        }}
+                    >
+                        {localizeText("Passthrough Tasks", "直通任务", "直通任務")}
                     </button>
                     <div style={{ flex: 1 }} />
                     {isBackgroundTab && bgTotalCount > 0 && (
@@ -704,6 +722,12 @@ export function RemoteSessionList(props: Props) {
             {isScheduledTab && (
                 <div style={{ padding: "8px 14px" }}>
                     <ScheduledTasksPanel lang={lang} refreshKey={scheduledRefreshKey} />
+                </div>
+            )}
+
+            {isPassthroughTab && (
+                <div style={{ padding: "8px 14px" }}>
+                    <PassthroughCommandsPanel lang={lang} />
                 </div>
             )}
 

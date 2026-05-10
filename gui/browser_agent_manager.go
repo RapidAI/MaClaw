@@ -106,7 +106,7 @@ func (m *BrowserAgentManager) syncFromCore() {
 	for id, view := range m.mapViews {
 		if !alive[id] && view != nil {
 			view.Status = SessionExited
-			view.Summary.Status = string(SessionExited)
+			view.Summary.Status = SessionExited.String()
 			view.Summary.ProgressSummary = "Browser session closed"
 			view.Summary.LastResult = "Browser session closed"
 			view.UpdatedAt = time.Now()
@@ -212,7 +212,8 @@ func (m *BrowserAgentManager) Start(args map[string]interface{}) (BrowserSession
 		AllowUpload:                boolValue(args["allow_upload"], false),
 		ContentBoundary:            boolValue(args["content_boundary"], true),
 	}
-	sess, err := browser.StartAgentSession(stringValue(args["addr"]), policy, boolValue(args["reuse_existing"], true))
+	mode := browser.SessionMode(firstNonEmptyBrowserText(stringValue(args["mode"]), string(browser.SessionModeAuto)))
+	sess, err := browser.StartAgentSession(stringValue(args["addr"]), policy, boolValue(args["reuse_existing"], true), mode)
 	if err != nil {
 		return BrowserSessionView{}, err
 	}
@@ -319,41 +320,20 @@ func browserSuggestedAction(state browser.BrowserAgentState) string {
 
 func severityFromBrowserState(state browser.BrowserAgentState) string {
 	if len(state.ErrorLines) > 0 {
-		return "warn"
+		return string(summarySeverityWarn)
 	}
-	return "info"
+	return string(summarySeverityInfo)
 }
 
 func severityForBrowserTrace(kind string) string {
-	if kind == "error" {
-		return "warn"
+	if normalizeBrowserEventKind(kind) == browserEventKindError {
+		return string(summarySeverityWarn)
 	}
-	return "info"
+	return string(summarySeverityInfo)
 }
 
 func browserEventTitle(kind string) string {
-	switch kind {
-	case "observe":
-		return "Observe"
-	case "navigate":
-		return "Navigate"
-	case "click":
-		return "Click"
-	case "type":
-		return "Type"
-	case "wait":
-		return "Wait"
-	case "extract":
-		return "Extract"
-	case "console":
-		return "Console"
-	case "network":
-		return "Network"
-	case "error":
-		return "Error"
-	default:
-		return strings.Title(kind)
-	}
+	return normalizeBrowserEventKind(kind).Title(kind)
 }
 
 func firstNonEmptyBrowserText(values ...string) string {

@@ -75,52 +75,52 @@ func registerGroupDiscussionTools(registry *ToolRegistry, app *App, handler *IMM
 }
 
 func dispatchGroupDiscussionTool(app *App, handler *IMMessageHandler, args map[string]interface{}) string {
-	switch strings.TrimSpace(strings.ToLower(stringVal(args, "action"))) {
-	case "status":
+	switch normalizeGroupDiscussionToolAction(stringVal(args, "action")) {
+	case groupDiscussionToolActionStatus:
 		status := app.GroupDiscussionStatus()
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"status": status}, status.RecommendedFocusContext, status.RecommendedToolCall, firstNonEmptyGroupString(status.NonExecutingBoundary, groupDiscussionStatusNonExecutingBoundary), nil)
-	case "list_experts":
+	case groupDiscussionToolActionListExperts:
 		experts, err := app.GroupDiscussionListExperts()
 		focusContext := groupDiscussionExpertsFocusContext(experts)
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"experts": experts}, focusContext, groupDiscussionExpertsToolCall(focusContext), groupDiscussionExpertsNonExecutingBoundary, err)
-	case "rank_experts":
+	case groupDiscussionToolActionRankExperts:
 		ranking, err := app.GroupDiscussionRankExperts(groupDiscussionRequestFromArgs(app, args))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"expert_ranking": ranking}, ranking.RecommendedFocusContext, ranking.RecommendedToolCall, ranking.NonExecutingBoundary, err)
-	case "list_mine":
+	case groupDiscussionToolActionListMine:
 		discussions, err := app.GroupDiscussionListMine(stringVal(args, "role_filter"))
 		focusContext := groupDiscussionListMineFocusContext(discussions, stringVal(args, "role_filter"))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"discussions": discussions}, focusContext, groupDiscussionListMineToolCall(focusContext), groupDiscussionListMineNonExecutingBoundary, err)
-	case "get_discussion":
+	case groupDiscussionToolActionGetDiscussion:
 		discussion, err := app.GroupDiscussionGetConsultation(stringVal(args, "consultation_id"))
 		focusContext := groupDiscussionSummaryFocusContext(discussion, stringVal(args, "consultation_id"))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"discussion": discussion}, focusContext, groupDiscussionSummaryToolCall(focusContext), groupDiscussionSummaryNonExecutingBoundary, err)
-	case "get_detail":
+	case groupDiscussionToolActionGetDetail:
 		detail, err := app.GroupDiscussionGetConsultationDetail(stringVal(args, "consultation_id"))
 		focusContext := groupDiscussionDetailFocusContext(detail, stringVal(args, "consultation_id"))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"discussion_detail": detail}, focusContext, groupDiscussionDetailToolCall(focusContext), groupDiscussionDetailNonExecutingBoundary, err)
-	case "workflow_state":
+	case groupDiscussionToolActionWorkflowState:
 		state, err := app.GroupDiscussionGetWorkflowState(stringVal(args, "consultation_id"))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"workflow_state": state}, state.RecommendedFocusContext, state.RecommendedToolCall, state.NonExecutingBoundary, err)
-	case "workflow_action_draft":
+	case groupDiscussionToolActionWorkflowActionDraft:
 		draft, err := app.GroupDiscussionBuildWorkflowActionDraft(stringVal(args, "consultation_id"))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"workflow_action_draft": draft}, draft.RecommendedFocusContext, draft.RecommendedToolCall, draft.NonExecutingBoundary, err)
-	case "escalation_route":
+	case groupDiscussionToolActionEscalationRoute:
 		suggestion, err := app.GroupDiscussionSuggestEscalationRoute(stringVal(args, "consultation_id"))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"escalation_route": suggestion}, suggestion.RecommendedFocusContext, suggestion.RecommendedToolCall, suggestion.NonExecutingBoundary, err)
-	case "rollback_readiness":
+	case groupDiscussionToolActionRollbackReadiness:
 		readiness, err := app.GroupDiscussionGetRollbackReadiness(stringVal(args, "consultation_id"), firstNonEmptyGroupString(stringVal(args, "rollback_evidence"), stringVal(args, "evidence"), stringVal(args, "content")))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"rollback_readiness": readiness}, readiness.RecommendedFocusContext, readiness.RecommendedToolCall, readiness.NonExecutingBoundary, err)
-	case "readiness":
+	case groupDiscussionToolActionReadiness:
 		readiness, err := app.GroupDiscussionGetReadiness(stringVal(args, "consultation_id"))
 		return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"readiness": readiness}, readiness.RecommendedFocusContext, readiness.RecommendedToolCall, readiness.NonExecutingBoundary, err)
-	case "summarize_result":
+	case groupDiscussionToolActionSummarizeResult:
 		preview := groupDiscussionBool(args["preview"])
 		result, err := app.GroupDiscussionSummarizeResult(GroupDiscussionSummarizeRequest{ConsultationID: stringVal(args, "consultation_id"), Submit: groupDiscussionBool(args["submit"]), Inject: groupDiscussionBool(args["inject"]), Force: groupDiscussionBool(args["force"]), Preview: preview})
 		if preview {
 			return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"summary": result}, result.RecommendedFocusContext, result.RecommendedToolCall, result.NonExecutingBoundary, err)
 		}
 		return groupDiscussionResult(map[string]interface{}{"summary": result}, err)
-	case "cleanup_stale":
+	case groupDiscussionToolActionCleanupStale:
 		dryRun := groupDiscussionBool(args["dry_run"])
 		result, err := app.GroupDiscussionCleanupStale(GroupDiscussionStaleCleanupRequest{DryRun: dryRun})
 		if dryRun {
@@ -128,12 +128,12 @@ func dispatchGroupDiscussionTool(app *App, handler *IMMessageHandler, args map[s
 			return groupDiscussionResultWithSafeHandoff(map[string]interface{}{"cleanup": result}, focusContext, groupDiscussionStaleCleanupToolCall(focusContext), groupDiscussionStaleCleanupNonExecutingBoundary, err)
 		}
 		return groupDiscussionResult(map[string]interface{}{"cleanup": result}, err)
-	case "process_invites":
+	case groupDiscussionToolActionProcessInvites:
 		invites, err := app.GroupDiscussionProcessPendingInvites()
 		return groupDiscussionResult(map[string]interface{}{"pending_invites": invites}, err)
-	case "suggest":
+	case groupDiscussionToolActionSuggest:
 		return groupDiscussionSuggest(app, args)
-	case "start_authorized":
+	case groupDiscussionToolActionStartAuthorized:
 		if err := groupDiscussionAuthorizeStartGate(app, handler, args); err != nil {
 			return groupDiscussionResult(nil, err)
 		}
@@ -144,19 +144,19 @@ func dispatchGroupDiscussionTool(app *App, handler *IMMessageHandler, args map[s
 			Trusted:    groupDiscussionBool(args["trusted"]),
 		})
 		return groupDiscussionResult(result, err)
-	case "send_message":
+	case groupDiscussionToolActionSendMessage:
 		consultationID := strings.TrimSpace(stringVal(args, "consultation_id"))
 		msg := a2a.GroupDiscussionMessage{Kind: groupDiscussionMessageKind(stringVal(args, "message_kind")), Content: strings.TrimSpace(stringVal(args, "content")), CreatedAt: time.Now()}
 		return groupDiscussionResult(map[string]interface{}{"sent": true, "consultation_id": consultationID}, app.GroupDiscussionSendMessage(consultationID, msg))
-	case "add_proposal":
+	case groupDiscussionToolActionAddProposal:
 		consultationID := strings.TrimSpace(stringVal(args, "consultation_id"))
 		proposal := a2a.Proposal{AuthorID: strings.TrimSpace(stringVal(args, "author_id")), Title: strings.TrimSpace(firstNonEmptyGroupString(stringVal(args, "proposal_title"), stringVal(args, "title"))), Content: strings.TrimSpace(firstNonEmptyGroupString(stringVal(args, "proposal_content"), stringVal(args, "content"))), Goals: groupDiscussionStringSlice(args["goals"]), Constraints: groupDiscussionStringSlice(args["constraints"]), Risks: groupDiscussionStringSlice(args["risks"]), CreatedAt: time.Now()}
 		return groupDiscussionResult(map[string]interface{}{"proposal_added": true, "consultation_id": consultationID}, app.GroupDiscussionAddProposal(consultationID, proposal))
-	case "add_review":
+	case groupDiscussionToolActionAddReview:
 		consultationID := strings.TrimSpace(stringVal(args, "consultation_id"))
 		review := a2a.Review{ProposalID: strings.TrimSpace(stringVal(args, "proposal_id")), ReviewerID: strings.TrimSpace(stringVal(args, "reviewer_id")), Position: groupDiscussionReviewPosition(stringVal(args, "review_position")), Comment: strings.TrimSpace(stringVal(args, "content")), CreatedAt: time.Now()}
 		return groupDiscussionResult(map[string]interface{}{"review_added": true, "consultation_id": consultationID, "proposal_id": review.ProposalID}, app.GroupDiscussionAddReview(consultationID, review))
-	case "decide":
+	case groupDiscussionToolActionDecide:
 		consultationID := strings.TrimSpace(stringVal(args, "consultation_id"))
 		decision := a2a.Decision{
 			ProposalID: strings.TrimSpace(stringVal(args, "proposal_id")),
@@ -166,16 +166,16 @@ func dispatchGroupDiscussionTool(app *App, handler *IMMessageHandler, args map[s
 			CreatedAt:  time.Now(),
 		}
 		return groupDiscussionResult(map[string]interface{}{"decision_recorded": true, "consultation_id": consultationID, "proposal_id": decision.ProposalID}, app.GroupDiscussionDecide(consultationID, decision))
-	case "escalate":
+	case groupDiscussionToolActionEscalate:
 		consultationID := strings.TrimSpace(stringVal(args, "consultation_id"))
 		escalation := a2a.Escalation{RaisedBy: strings.TrimSpace(stringVal(args, "raised_by")), Reason: strings.TrimSpace(firstNonEmptyGroupString(stringVal(args, "escalation_reason"), stringVal(args, "reason"), stringVal(args, "content"))), Target: strings.TrimSpace(firstNonEmptyGroupString(stringVal(args, "escalation_target"), stringVal(args, "target"))), CreatedAt: time.Now()}
 		escalation = normalizeGroupDiscussionEscalation(escalation, "")
 		return groupDiscussionResult(map[string]interface{}{"escalated": true, "consultation_id": consultationID, "target": escalation.Target}, app.GroupDiscussionEscalate(consultationID, escalation))
-	case "submit_result":
+	case groupDiscussionToolActionSubmitResult:
 		consultationID := strings.TrimSpace(stringVal(args, "consultation_id"))
 		result := a2a.GroupDiscussionResult{Summary: strings.TrimSpace(stringVal(args, "summary")), Rationale: strings.TrimSpace(stringVal(args, "rationale")), Risks: groupDiscussionStringSlice(args["risks"]), CreatedAt: time.Now()}
 		return groupDiscussionResult(map[string]interface{}{"submitted": true, "consultation_id": consultationID}, app.GroupDiscussionSubmitResult(consultationID, result))
-	case "set_state":
+	case groupDiscussionToolActionSetState:
 		consultationID := strings.TrimSpace(stringVal(args, "consultation_id"))
 		action := strings.TrimSpace(stringVal(args, "state_action"))
 		return groupDiscussionResult(map[string]interface{}{"updated": true, "consultation_id": consultationID, "state_action": action}, app.GroupDiscussionSetState(consultationID, action))
@@ -344,7 +344,7 @@ func groupDiscussionWorkflowStateCore(detail a2a.HubDiscussionDetail) GroupDiscu
 		NonExecutingBoundary:      "read-only workflow state; no proposal, review, decision, escalation, message, result submission, or discussion state change was performed",
 	}
 	for _, proposal := range proposals {
-		if proposal.Status == "" || proposal.Status == string(a2a.ProposalOpen) {
+		if normalizeGroupDiscussionProposalStatus(proposal.Status).IsOpen() {
 			state.OpenProposalCount++
 		}
 		if proposal.PolicySatisfied {
@@ -446,12 +446,12 @@ func groupDiscussionEscalationRouteSuggestionFromState(detail a2a.HubDiscussionD
 		suggestion.Triggers = dedupeGroupDiscussionStrings(suggestion.Triggers)
 		return finalize()
 	}
-	switch strings.ToLower(strings.TrimSpace(state.Status)) {
-	case string(a2a.SessionEscalated):
+	switch normalizeGroupDiscussionSessionStatus(state.Status) {
+	case groupDiscussionSessionStatusEscalated:
 		suggestion.Reason = "Discussion status is already escalated; wait for the escalation owner before changing state."
 		suggestion.Triggers = []string{"status_escalated"}
 		return finalize()
-	case string(a2a.SessionClosed):
+	case groupDiscussionSessionStatusKind(a2a.SessionClosed):
 		suggestion.Suggested = true
 		suggestion.Target = firstNonEmptyGroupString(policy.Target, suggestion.Target)
 		suggestion.Reason = groupDiscussionRouteReason(policy, "Discussion is closed without a result or decision; route to the owner for final disposition.")
@@ -668,7 +668,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		RiskBoundaries:          groupDiscussionWorkflowDraftBoundaries(true),
 	}
 	if state.HasEscalation {
-		draft.ActionKind = "review_escalation_handoff"
+		draft.ActionKind = groupDiscussionWorkflowActionReviewEscalationHandoff.String()
 		draft.Title = "Review escalation owner handoff"
 		draft.Summary = "This discussion is already escalated; inspect the escalation owner, reason, and current state before taking follow-up action."
 		draft.RequiresConfirmation = false
@@ -690,7 +690,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		}
 	}
 	if (state.HasDecision || state.HasResult) && rollbackReadiness != nil && rollbackReadiness.Suggested {
-		draft.ActionKind = "prepare_rollback_review"
+		draft.ActionKind = groupDiscussionWorkflowActionPrepareRollbackReview.String()
 		draft.Title = "Prepare rollback review"
 		draft.Summary = "Rollback triggers are matched by current discussion evidence; review them and prepare a human-approved rollback workflow without executing rollback here."
 		draft.RequiresConfirmation = false
@@ -705,7 +705,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		return finalizeGroupDiscussionWorkflowActionDraft(draft)
 	}
 	if state.HasDecision || state.HasResult {
-		draft.ActionKind = "review_result_reuse"
+		draft.ActionKind = groupDiscussionWorkflowActionReviewResultReuse.String()
 		draft.Title = "Review existing result"
 		draft.Summary = "A result or decision already exists; inspect rationale, review evidence, and rollback triggers before reusing it."
 		draft.RequiresConfirmation = false
@@ -720,7 +720,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		return finalizeGroupDiscussionWorkflowActionDraft(draft)
 	}
 	if route != nil && route.Suggested {
-		draft.ActionKind = "prepare_escalation"
+		draft.ActionKind = groupDiscussionWorkflowActionPrepareEscalation.String()
 		draft.Title = "Prepare escalation to " + firstNonEmptyGroupString(route.Target, defaultGroupDiscussionEscalationTarget())
 		draft.Summary = strings.TrimSpace(route.Reason)
 		draft.EscalationTarget = firstNonEmptyGroupString(route.Target, defaultGroupDiscussionEscalationTarget())
@@ -735,7 +735,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		return finalizeGroupDiscussionWorkflowActionDraft(draft)
 	}
 	if proposal := firstDecidableGroupDiscussionProposal(state); proposal != nil {
-		draft.ActionKind = "record_decision"
+		draft.ActionKind = groupDiscussionWorkflowActionRecordDecision.String()
 		draft.Title = "Prepare decision for " + firstNonEmptyGroupString(proposal.Title, proposal.ID)
 		draft.Summary = "A proposal has enough non-blocking approvals; prepare a decision rationale and rollback triggers before recording it."
 		draft.ProposalID = strings.TrimSpace(proposal.ID)
@@ -758,7 +758,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		return finalizeGroupDiscussionWorkflowActionDraft(draft)
 	}
 	if state.ProposalCount > 0 {
-		draft.ActionKind = "collect_reviews"
+		draft.ActionKind = groupDiscussionWorkflowActionCollectReviews.String()
 		draft.Title = "Prepare proposal review request"
 		draft.Summary = "Open proposals need participant review before a decision can be recorded."
 		draft.TargetParticipants = groupDiscussionReviewRequestParticipants(state)
@@ -773,7 +773,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		return finalizeGroupDiscussionWorkflowActionDraft(draft)
 	}
 	if state.Readiness.Ready {
-		draft.ActionKind = "preview_summary"
+		draft.ActionKind = groupDiscussionWorkflowActionPreviewSummary.String()
 		draft.Title = "Preview discussion summary"
 		draft.Summary = "Expert answers are ready; preview the layered summary before injecting or submitting any result."
 		draft.Evidence = groupDiscussionReadinessDraftEvidence(state)
@@ -786,7 +786,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		return finalizeGroupDiscussionWorkflowActionDraft(draft)
 	}
 	if state.Readiness.AnswerCount > 0 {
-		draft.ActionKind = "send_followup"
+		draft.ActionKind = groupDiscussionWorkflowActionSendFollowup.String()
 		draft.Title = "Prepare targeted follow-up"
 		draft.Summary = "Some expert answers are present, but the discussion is not ready; ask a focused follow-up or wait for missing answers."
 		draft.TargetParticipants = append([]string{}, state.MissingAnswerParticipants...)
@@ -799,7 +799,7 @@ func groupDiscussionWorkflowActionDraft(detail a2a.HubDiscussionDetail, state Gr
 		draft.SuggestedArguments = map[string]interface{}{"action": "send_message", "consultation_id": consultationID, "message_kind": "question", "content": groupDiscussionFollowupContentDraft(detail, state), "target_participants": draft.TargetParticipants}
 		return finalizeGroupDiscussionWorkflowActionDraft(draft)
 	}
-	draft.ActionKind = "wait_for_answers"
+	draft.ActionKind = groupDiscussionWorkflowActionWaitForAnswers.String()
 	missingAnswers := missingGroupDiscussionAnswerParticipants(detail)
 	if len(missingAnswers) > 0 {
 		draft.Title = "Prepare expert answer reminder"
@@ -838,12 +838,12 @@ func groupDiscussionRecommendedToolCallForDraft(draft GroupDiscussionWorkflowAct
 		return nil
 	}
 	args := map[string]interface{}{"action": "workflow_action_draft", "consultation_id": consultationID}
-	switch strings.TrimSpace(draft.ActionKind) {
-	case "review_escalation_handoff":
+	switch normalizeGroupDiscussionWorkflowActionKind(draft.ActionKind) {
+	case groupDiscussionWorkflowActionReviewEscalationHandoff:
 		args["action"] = "get_detail"
-	case "prepare_rollback_review":
+	case groupDiscussionWorkflowActionPrepareRollbackReview:
 		args["action"] = "rollback_readiness"
-	case "review_result_reuse":
+	case groupDiscussionWorkflowActionReviewResultReuse:
 		args["action"] = "get_detail"
 		for _, item := range draft.Evidence {
 			if strings.HasPrefix(strings.TrimSpace(item), "rollback_on:") {
@@ -851,7 +851,7 @@ func groupDiscussionRecommendedToolCallForDraft(draft GroupDiscussionWorkflowAct
 				break
 			}
 		}
-	case "preview_summary":
+	case groupDiscussionWorkflowActionPreviewSummary:
 		args["action"] = "summarize_result"
 		args["preview"] = true
 	}
@@ -872,7 +872,7 @@ func groupDiscussionRecommendedToolCallForDraft(draft GroupDiscussionWorkflowAct
 
 func groupDiscussionWorkflowDraftFocusContext(draft GroupDiscussionWorkflowActionDraft) map[string]interface{} {
 	consultationID := strings.TrimSpace(draft.ConsultationID)
-	actionKind := strings.TrimSpace(draft.ActionKind)
+	actionKind := normalizeGroupDiscussionWorkflowActionKind(draft.ActionKind).String()
 	reason := strings.TrimSpace(firstNonEmptyGroupString(draft.Summary, draft.Title))
 	if consultationID == "" && actionKind == "" && reason == "" {
 		return nil
@@ -1300,8 +1300,7 @@ func groupDiscussionReviewRequestContent(detail a2a.HubDiscussionDetail, state G
 func groupDiscussionReviewRequestProposals(state GroupDiscussionWorkflowState) []GroupDiscussionProposalWorkflowState {
 	out := make([]GroupDiscussionProposalWorkflowState, 0, len(state.Proposals))
 	for _, proposal := range state.Proposals {
-		status := strings.ToLower(strings.TrimSpace(proposal.Status))
-		if status == string(a2a.ProposalAccepted) || status == string(a2a.ProposalRejected) || status == string(a2a.ProposalSuperseded) {
+		if normalizeGroupDiscussionProposalStatus(proposal.Status).IsFinal() {
 			continue
 		}
 		if proposal.PolicySatisfied || proposal.BlockingReviews {
@@ -1707,18 +1706,7 @@ func groupDiscussionAuthorizeStartGate(app *App, handler *IMMessageHandler, args
 }
 
 func groupDiscussionRiskRank(value string) int {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "low":
-		return 1
-	case "medium", "":
-		return 2
-	case "high":
-		return 3
-	case "critical":
-		return 4
-	default:
-		return 2
-	}
+	return normalizeGroupDiscussionRiskKind(value).Rank()
 }
 
 type groupDiscussionAuthorizationDecision struct {

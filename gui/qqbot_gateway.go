@@ -37,7 +37,7 @@ type qqBotGatewayManager struct {
 func newQQBotGatewayManager(app *App) *qqBotGatewayManager {
 	return &qqBotGatewayManager{
 		app:    app,
-		status: "disconnected",
+		status: string(gatewayConnectionStatusDisconnected),
 	}
 }
 
@@ -55,7 +55,7 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = "disconnected"
+			m.status = string(gatewayConnectionStatusDisconnected)
 			m.mu.Unlock()
 			_ = gw.Stop() // Stop outside lock to avoid deadlock with onStatusChange
 		} else {
@@ -64,7 +64,7 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		// Always notify Hub to release gateway claim, even if local gateway
 		// was already nil — Hub may still hold a stale claim from a previous run.
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim("qqbot_remote")
+			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformQQBotRemote)
 			log.Printf("[qqbot-mgr] sent gateway unclaim to hub")
 		}
 		if gw != nil {
@@ -108,7 +108,7 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		m.gateway = nil
 		m.lastAppID = ""
 		m.lastSecret = ""
-		m.status = "error"
+		m.status = string(gatewayConnectionStatusError)
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -120,7 +120,7 @@ func (m *qqBotGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = "disconnected"
+	m.status = string(gatewayConnectionStatusDisconnected)
 	m.lastAppID = ""
 	m.lastSecret = ""
 	lh := m.localHandler
@@ -146,7 +146,8 @@ func (m *qqBotGatewayManager) Status() string {
 func (m *qqBotGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
 	m.status = status
-	if status == "error" {
+	normalized := normalizeGatewayConnectionStatus(status)
+	if normalized == gatewayConnectionStatusError {
 		m.gateway = nil
 		m.lastAppID = ""
 		m.lastSecret = ""
@@ -155,13 +156,13 @@ func (m *qqBotGatewayManager) onStatusChange(status string) {
 	m.emitStatusEvent()
 
 	// When QQ gateway connects, claim the gateway lock on Hub (only in hub mode).
-	if status == "connected" {
+	if normalized == gatewayConnectionStatusConnected {
 		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsQQBotLocalMode() {
 			return
 		}
 		hubClient := m.app.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("qqbot_remote")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformQQBotRemote)
 		}
 	}
 }
@@ -264,6 +265,11 @@ func (m *qqBotGatewayManager) ensureLocalHandler() *IMMessageHandler {
 // onIncomingMessage is called when a C2C message arrives from QQ.
 // Routes to local handler or Hub depending on mode.
 func (m *qqBotGatewayManager) onIncomingMessage(msg qqbot.IncomingMessage) {
+	if isPassthroughSlashText(msg.Text) {
+		log.Printf("[qqbot-mgr] routing passthrough command locally: user=%s", msg.OpenID)
+		m.handleLocalMessage(msg)
+		return
+	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		log.Printf("[qqbot-mgr] LoadConfig error: %v", err)
@@ -328,12 +334,31 @@ func (m *qqBotGatewayManager) forwardToHub(msg qqbot.IncomingMessage) {
 		payload["attachments"] = []map[string]any{att}
 	}
 
-	if err := hubClient.SendIMGatewayMessage("qqbot_remote", payload); err != nil {
+	if err := hubClient.SendIMGatewayMessage(imGatewayPlatformQQBotRemote, payload); err != nil {
 		log.Printf("[qqbot-mgr] forwardToHub SendIMGatewayMessage error: %v", err)
 	}
 }
 
 func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
+	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(msg.Text, "qqbot:"+msg.OpenID); handled {
+		m.mu.Lock()
+		gw := m.gateway
+		m.mu.Unlock()
+		if gw != nil {
+			reply := resp.Text
+			if reply == "" {
+				reply = resp.Error
+			}
+			if reply == "" {
+				reply = "(no output)"
+			}
+			_ = gw.SendText(context.Background(), qqbot.OutgoingText{
+				OpenID: msg.OpenID,
+				Text:   reply,
+			})
+		}
+		return
+	}
 	if !m.app.isMaclawLLMConfigured() {
 		m.mu.Lock()
 		gw := m.gateway
@@ -361,7 +386,7 @@ func (m *qqBotGatewayManager) handleLocalMessage(msg qqbot.IncomingMessage) {
 	// Pass images as multimodal attachments so the LLM can "see" them.
 	var attachments []MessageAttachment
 	if msg.MediaType != "" && len(msg.MediaData) > 0 {
-		if msg.MediaType == "image" {
+		if normalizeIMMediaKind(msg.MediaType).IsImage() {
 			attachments = append(attachments, buildLocalImageAttachment(msg.MediaData, msg.MediaName, msg.MimeType))
 		} else {
 			mediaPath, err := saveQQMediaToTemp(msg)
@@ -487,15 +512,15 @@ func (m *qqBotGatewayManager) sendLocalFiles(gw *qqbot.Gateway, openID string, r
 		name := filepath.Base(p)
 		mediaType := mediaTypeFromFileName(name)
 		fileType := 4
-		switch mediaType {
-		case "image":
+		switch normalizeIMMediaKind(mediaType) {
+		case imMediaImage:
 			fileType = 1
-		case "video":
+		case imMediaVideo:
 			fileType = 2
-		case "voice":
+		case imMediaVoice:
 			fileType = 3
-		case "audio":
-			mediaType = "file"
+		case imMediaAudio:
+			mediaType = imMediaFile.String()
 		}
 		if err := gw.SendMedia(context.Background(), qqbot.OutgoingMedia{
 			OpenID:   openID,
@@ -613,7 +638,7 @@ func (a *App) SetQQBotLocalMode(enabled bool) error {
 	if !enabled {
 		hubClient := a.hubClient()
 		if hubClient != nil && hubClient.IsConnected() {
-			hubClient.SendIMGatewayClaim("qqbot_remote")
+			hubClient.SendIMGatewayClaim(imGatewayPlatformQQBotRemote)
 			log.Printf("[qqbot-mgr] sent gateway claim after switching to hub mode")
 		}
 	}

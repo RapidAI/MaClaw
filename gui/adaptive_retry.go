@@ -2,16 +2,17 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
-// FailureCategory 失败分类。
+// FailureCategory classifies a failed tool or LLM operation.
 type FailureCategory string
 
+type RetryAction string
+
 const (
-	FailureTransient   FailureCategory = "transient" // recoverable server-side errors (429, 408, 5xx, overload)
-	FailureNetwork     FailureCategory = "network"   // client-side connectivity (timeout, refused, reset)
+	FailureTransient   FailureCategory = "transient"
+	FailureNetwork     FailureCategory = "network"
 	FailurePeriodLimit FailureCategory = "period_limit"
 	FailurePermission  FailureCategory = "permission"
 	FailureArgs        FailureCategory = "args"
@@ -23,30 +24,37 @@ const (
 )
 
 const (
+	RetryActionRetry   RetryAction = "retry"
+	RetryActionFix     RetryAction = "fix"
+	RetryActionSkip    RetryAction = "skip"
+	RetryActionDisable RetryAction = "disable"
+)
+
+const (
 	defaultMaxFailures  = 5
 	maxNetworkRetries   = 3
 	maxTransientRetries = 3
 	baseRetryDelay      = 1 * time.Second
-	baseTransientDelay  = 5 * time.Second // transient errors need longer backoff
+	baseTransientDelay  = 5 * time.Second
 )
 
-// RetryDecision 重试决策。
+// RetryDecision describes the next retry action.
 type RetryDecision struct {
-	Action       string        // "retry", "fix", "skip", "disable"
-	Delay        time.Duration // 重试延迟 (指数退避)
-	ErrorContext string        // 注入 LLM 的错误上下文
-	Attempt      int           // 当前重试次数
+	Action       RetryAction
+	Delay        time.Duration
+	ErrorContext string
+	Attempt      int
 }
 
-// AdaptiveRetry 分析 tool_call 失败并决定重试策略。
+// AdaptiveRetry classifies failures and chooses retry behavior.
 type AdaptiveRetry struct {
-	failureCounts map[string]int  // toolName → 累计失败次数
-	maxFailures   int             // 单工具最大失败次数 (默认 5)
-	disabledTools map[string]bool // 已禁用的工具
+	failureCounts map[string]int
+	maxFailures   int
+	disabledTools map[string]bool
 	recorder      *TrajectoryRecorder
 }
 
-// NewAdaptiveRetry 创建智能重试器。
+// NewAdaptiveRetry creates an adaptive retry controller.
 func NewAdaptiveRetry(recorder *TrajectoryRecorder) *AdaptiveRetry {
 	return &AdaptiveRetry{
 		failureCounts: make(map[string]int),
@@ -56,90 +64,17 @@ func NewAdaptiveRetry(recorder *TrajectoryRecorder) *AdaptiveRetry {
 	}
 }
 
-// networkKeywords indicate client-side connectivity failures.
-// These are distinct from transient server errors: the request never
-// reached the server, so a short retry is appropriate.
-// All keywords must be lowercase — msg is lowercased before matching.
-var networkKeywords = []string{
-	"timeout", "connection refused", "dial",
-	"eof", "reset by peer", "i/o timeout",
-	"client.timeout", "context deadline exceeded",
-}
-
-// permissionKeywords are substrings that indicate a permission-related failure.
-var permissionKeywords = []string{
-	"permission denied", "access denied", "forbidden",
-	"unauthorized", "403", "401",
-}
-
-// argsKeywords are substrings that indicate an argument/parameter failure.
-var argsKeywords = []string{
-	"invalid argument", "invalid parameter", "missing required",
-	"bad request", "400",
-}
-
-// logicKeywords are substrings that indicate a logic-level failure.
-var logicKeywords = []string{
-	"not found", "already exists", "conflict", "assertion failed",
-}
-
-// Classify 分析错误信息，返回失败分类。
-//
-// Classification priority (highest first):
-//  1. Period limit — Hub quota window is exhausted; do not retry.
-//  2. Transient — recoverable server-side errors (429, 408, 5xx, overload).
-//     Delegates to isTransientServerError() as single source of truth.
-//  3. Network — client-side connectivity (timeout, refused, reset).
-//  4. Permission — auth/authz failures (401, 403).
-//  5. Args — bad request / invalid parameters (400).
-//  6. Logic — application-level conflicts.
-//  7. Unknown — fallback.
+// Classify maps an error to a retry failure category.
 func (r *AdaptiveRetry) Classify(toolName string, err error) FailureCategory {
-	if err == nil {
-		return FailureUnknown
-	}
-	msg := strings.ToLower(err.Error())
-
-	if isHubPeriodLimitError(err) {
-		return FailurePeriodLimit
-	}
-
-	// Transient server errors must be checked first — they may contain
-	// network-related substrings (e.g. "http 502") but need longer backoff.
-	if isTransientServerError(err) {
-		return FailureTransient
-	}
-	for _, kw := range networkKeywords {
-		if strings.Contains(msg, kw) {
-			return FailureNetwork
-		}
-	}
-	for _, kw := range permissionKeywords {
-		if strings.Contains(msg, kw) {
-			return FailurePermission
-		}
-	}
-	for _, kw := range argsKeywords {
-		if strings.Contains(msg, kw) {
-			return FailureArgs
-		}
-	}
-	for _, kw := range logicKeywords {
-		if strings.Contains(msg, kw) {
-			return FailureLogic
-		}
-	}
-	return FailureUnknown
+	return classifyAdaptiveRetryFailure(err)
 }
 
-// Decide 根据失败分类和历史决定重试策略。
-// 注意：此方法不修改内部状态，调用者应在确认执行后调用 RecordFailure。
+// Decide chooses a retry strategy for a failure category and attempt count.
 func (r *AdaptiveRetry) Decide(toolName string, category FailureCategory, attempt int) RetryDecision {
-	// Check cumulative failures — disable if threshold reached.
 	if r.failureCounts[toolName] >= r.maxFailures {
 		return RetryDecision{
-			Action:       "disable",
-			ErrorContext: fmt.Sprintf("工具 %s 累计失败 %d 次，已标记为不可用。请使用替代方案。", toolName, r.failureCounts[toolName]),
+			Action:       RetryActionDisable,
+			ErrorContext: fmt.Sprintf("tool %s failed %d times and has been disabled; use an alternative path", toolName, r.failureCounts[toolName]),
 			Attempt:      attempt,
 		}
 	}
@@ -147,75 +82,65 @@ func (r *AdaptiveRetry) Decide(toolName string, category FailureCategory, attemp
 	switch category {
 	case FailurePeriodLimit:
 		return RetryDecision{
-			Action:       "skip",
-			ErrorContext: fmt.Sprintf("MaClaw 官方周期限流：工具 %s 当前周期额度已用尽，请等待周期恢复或手动切换服务商。", toolName),
+			Action:       RetryActionSkip,
+			ErrorContext: fmt.Sprintf("MaClaw period quota is exhausted for tool %s; wait for quota recovery or switch provider", toolName),
 			Attempt:      attempt,
 		}
-
 	case FailureTransient:
 		if attempt >= maxTransientRetries {
 			return RetryDecision{
-				Action:       "skip",
-				ErrorContext: fmt.Sprintf("工具 %s 服务端暂时不可用，重试已达上限 (%d 次)，跳过。", toolName, maxTransientRetries),
+				Action:       RetryActionSkip,
+				ErrorContext: fmt.Sprintf("tool %s transient server error retry limit reached (%d); skip", toolName, maxTransientRetries),
 				Attempt:      attempt,
 			}
 		}
-		// Exponential backoff: 5s → 10s → 20s
-		delay := baseTransientDelay * time.Duration(1<<uint(attempt))
 		return RetryDecision{
-			Action:  "retry",
-			Delay:   delay,
+			Action:  RetryActionRetry,
+			Delay:   baseTransientDelay * time.Duration(1<<uint(attempt)),
 			Attempt: attempt,
 		}
-
 	case FailureNetwork:
 		if attempt >= maxNetworkRetries {
 			return RetryDecision{
-				Action:       "skip",
-				ErrorContext: fmt.Sprintf("工具 %s 网络错误重试已达上限 (%d 次)，跳过。", toolName, maxNetworkRetries),
+				Action:       RetryActionSkip,
+				ErrorContext: fmt.Sprintf("tool %s network retry limit reached (%d); skip", toolName, maxNetworkRetries),
 				Attempt:      attempt,
 			}
 		}
-		// Exponential backoff: 1s → 2s → 4s
-		delay := baseRetryDelay * time.Duration(1<<uint(attempt))
 		return RetryDecision{
-			Action:  "retry",
-			Delay:   delay,
+			Action:  RetryActionRetry,
+			Delay:   baseRetryDelay * time.Duration(1<<uint(attempt)),
 			Attempt: attempt,
 		}
-
 	case FailureArgs, FailureLogic:
 		return RetryDecision{
-			Action:       "fix",
-			ErrorContext: fmt.Sprintf("工具 %s 执行失败（%s 错误），请根据错误信息修正参数后重试。", toolName, string(category)),
+			Action:       RetryActionFix,
+			ErrorContext: fmt.Sprintf("tool %s failed with %s; adjust arguments or logic before retrying", toolName, string(category)),
 			Attempt:      attempt,
 		}
-
 	case FailurePermission:
 		return RetryDecision{
-			Action:       "skip",
-			ErrorContext: fmt.Sprintf("工具 %s 权限不足，跳过此操作。", toolName),
+			Action:       RetryActionSkip,
+			ErrorContext: fmt.Sprintf("tool %s failed because of permission or authentication; fix credentials before retrying", toolName),
 			Attempt:      attempt,
 		}
-
-	default: // FailureUnknown
-		// Default: retry once then skip.
+	default:
 		if attempt >= 1 {
 			return RetryDecision{
-				Action:       "skip",
-				ErrorContext: fmt.Sprintf("工具 %s 未知错误，已重试 %d 次，跳过。", toolName, attempt),
+				Action:       RetryActionSkip,
+				ErrorContext: fmt.Sprintf("tool %s failed with an unknown error after %d attempts; skip", toolName, attempt),
 				Attempt:      attempt,
 			}
 		}
 		return RetryDecision{
-			Action:  "retry",
+			Action:  RetryActionRetry,
 			Delay:   baseRetryDelay,
 			Attempt: attempt,
 		}
 	}
 }
 
-// RecordFailure 记录一次失败到 TrajectoryRecorder，并更新内部计数。
+// RecordFailure records a failed retry decision.
 func (r *AdaptiveRetry) RecordFailure(toolName string, category FailureCategory, decision RetryDecision) {
 	r.failureCounts[toolName]++
 	if r.failureCounts[toolName] >= r.maxFailures {
@@ -229,7 +154,7 @@ func (r *AdaptiveRetry) RecordFailure(toolName string, category FailureCategory,
 	r.recorder.Record("system", content, nil, "", "adaptive_retry")
 }
 
-// IsDisabled 检查工具是否已被禁用。
+// IsDisabled reports whether a tool has been disabled after repeated failures.
 func (r *AdaptiveRetry) IsDisabled(toolName string) bool {
 	return r.disabledTools[toolName]
 }

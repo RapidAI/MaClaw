@@ -15,7 +15,7 @@ func RegisterTools(registry *tool.Registry) {
 	tools := []tool.RegisteredTool{
 		{
 			Name:        "browser_session_start",
-			Description: "启动或复用一个长期浏览器 agent 会话，返回 session_id。支持 allowed_domains / blocked_domains / start_url / reuse_existing。",
+			Description: "启动或复用一个长期浏览器 agent 会话，返回 session_id。支持 allowed_domains / blocked_domains / start_url / reuse_existing / mode。",
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "session", "agent", "浏览器", "会话", "网页"},
 			Priority:    6,
@@ -23,6 +23,7 @@ func RegisterTools(registry *tool.Registry) {
 				"addr":                          map[string]interface{}{"type": "string", "description": "可选 CDP 地址，默认自动发现或启动"},
 				"start_url":                     map[string]interface{}{"type": "string", "description": "可选初始 URL"},
 				"reuse_existing":                map[string]interface{}{"type": "boolean", "description": "是否优先复用已有 browser session，默认 true"},
+				"mode":                          map[string]interface{}{"type": "string", "description": "连接模式：auto（默认，优先直连用户 Chrome）/ connect_user（仅直连，不启动）/ isolated（隔离实例）"},
 				"allowed_domains":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "允许访问的域名列表"},
 				"blocked_domains":               map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "禁止访问的域名列表"},
 				"allow_cross_origin_navigation": map[string]interface{}{"type": "boolean", "description": "是否允许跨域导航"},
@@ -30,7 +31,8 @@ func RegisterTools(registry *tool.Registry) {
 			Handler: func(args map[string]interface{}) string {
 				policy := policyFromArgs(args)
 				reuseExisting := boolArg(args, "reuse_existing", true)
-				agentSession, err := StartAgentSession(strArg(args, "addr", addr), policy, reuseExisting)
+				mode := SessionMode(strArg(args, "mode", string(SessionModeAuto)))
+				agentSession, err := StartAgentSession(strArg(args, "addr", addr), policy, reuseExisting, mode)
 				if err != nil {
 					return marshalBrowserResult(false, err.Error(), nil)
 				}
@@ -40,12 +42,19 @@ func RegisterTools(registry *tool.Registry) {
 					}
 				}
 				state := agentSession.State()
-				return marshalBrowserResult(true, fmt.Sprintf("已启动浏览器会话 %s", agentSession.ID), map[string]interface{}{
+				modeLabel := "auto"
+				if agentSession.Mode == SessionModeConnectUser || (agentSession.Mode == SessionModeAuto && isUserChromeSession(agentSession)) {
+					modeLabel = "connect_user (复用登录态)"
+				} else if agentSession.Mode == SessionModeIsolated {
+					modeLabel = "isolated (隔离环境)"
+				}
+				return marshalBrowserResult(true, fmt.Sprintf("已启动浏览器会话 %s [%s]", agentSession.ID, modeLabel), map[string]interface{}{
 					"session_id":  state.ID,
 					"target_id":   state.TargetID,
 					"url":         state.CurrentURL,
 					"title":       state.CurrentTitle,
 					"ready_state": state.ReadyState,
+					"mode":        string(agentSession.Mode),
 				})
 			},
 		},

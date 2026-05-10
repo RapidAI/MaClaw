@@ -88,7 +88,7 @@ func NewRemoteSessionManager(app *App) *RemoteSessionManager {
 			// stays busy forever and blocks all interaction.
 			if s.Status == SessionBusy {
 				s.Status = SessionWaitingInput
-				s.Summary.Status = string(SessionWaitingInput)
+				s.Summary.Status = SessionWaitingInput.String()
 				s.Summary.WaitingForUser = true
 			}
 		case StallStateNormal:
@@ -250,20 +250,7 @@ func (m *RemoteSessionManager) syncTraceFromOutputResult(session *RemoteSession,
 }
 
 func traceCategoryForImportantEvent(evt ImportantEvent) string {
-	typeLower := strings.ToLower(evt.Type)
-	severityLower := strings.ToLower(evt.Severity)
-	switch {
-	case severityLower == "error" || strings.Contains(typeLower, "error") || strings.Contains(typeLower, "fail"):
-		return "error"
-	case strings.Contains(typeLower, "file") || evt.RelatedFile != "":
-		return "file"
-	case strings.Contains(typeLower, "command") || evt.Command != "":
-		return "command"
-	case strings.Contains(typeLower, "result") || strings.Contains(typeLower, "close") || strings.Contains(typeLower, "complete"):
-		return "result"
-	default:
-		return "event"
-	}
+	return classifyRemoteTraceCategory(evt).String()
 }
 
 func traceSnippetFromLines(lines []string, limit int) string {
@@ -475,7 +462,7 @@ func (m *RemoteSessionManager) Create(spec LaunchSpec) (*RemoteSession, error) {
 			Tool:      spec.Tool,
 			Title:     spec.Title,
 			Source:    string(spec.LaunchSource),
-			Status:    string(SessionStarting),
+			Status:    SessionStarting.String(),
 			Severity:  "info",
 			UpdatedAt: now.Unix(),
 		},
@@ -590,7 +577,7 @@ func (m *RemoteSessionManager) newFailedSession(
 			Tool:            spec.Tool,
 			Title:           title,
 			Source:          string(normalizeRemoteLaunchSource(spec.LaunchSource)),
-			Status:          string(SessionError),
+			Status:          SessionError.String(),
 			Severity:        "error",
 			CurrentTask:     fmt.Sprintf("Starting %s session", remoteToolDisplayName(spec.Tool)),
 			ProgressSummary: fmt.Sprintf("%s remote launch failed before the session became interactive", remoteToolDisplayName(spec.Tool)),
@@ -643,7 +630,7 @@ func (m *RemoteSessionManager) CreateAIBackgroundSession(title, projectPath stri
 			Tool:            "ai-assistant",
 			Title:           trimmedTitle,
 			Source:          string(RemoteLaunchSourceAI),
-			Status:          string(SessionBusy),
+			Status:          SessionBusy.String(),
 			Severity:        "info",
 			CurrentTask:     trimmedTitle,
 			ProgressSummary: "后台 AI 任务已创建",
@@ -928,7 +915,7 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 			return
 		}
 		s.Status = SessionBusy
-		s.Summary.Status = string(SessionBusy)
+		s.Summary.Status = SessionBusy.String()
 		s.Summary.WaitingForUser = false
 		if strings.TrimSpace(currentTask) != "" {
 			s.Summary.CurrentTask = currentTask
@@ -951,7 +938,7 @@ func (m *RemoteSessionManager) writeSDKInput(s *RemoteSession, sessionID, text, 
 				s.Summary.PendingQuestion = nil
 				s.Summary.WaitingForUser = false
 				s.Status = SessionBusy
-				s.Summary.Status = string(SessionBusy)
+				s.Summary.Status = SessionBusy.String()
 				s.Summary.CurrentTask = "Submitting your answer"
 				s.Summary.SuggestedAction = ""
 				s.Summary.UpdatedAt = time.Now().Unix()
@@ -1586,7 +1573,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 					// (and the mobile PWA) see the session as interactive
 					// immediately, instead of lingering in "running/starting".
 					s.Status = SessionWaitingInput
-					s.Summary.Status = string(SessionWaitingInput)
+					s.Summary.Status = SessionWaitingInput.String()
 					s.Summary.WaitingForUser = true
 					s.Summary.Severity = "info"
 					s.Summary.CurrentTask = "Session initialized"
@@ -1598,7 +1585,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 
 			case "assistant":
 				s.Status = SessionBusy
-				s.Summary.Status = string(SessionBusy)
+				s.Summary.Status = SessionBusy.String()
 				s.Summary.WaitingForUser = false
 				s.Summary.UpdatedAt = now.Unix()
 				flushStreamAccum()
@@ -1630,7 +1617,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 									RawInput:  rawInput,
 								}
 								s.Status = SessionWaitingInput
-								s.Summary.Status = string(SessionWaitingInput)
+								s.Summary.Status = SessionWaitingInput.String()
 								s.Summary.WaitingForUser = true
 								s.Summary.PendingQuestion = clonePendingQuestionView(questionView)
 								if questionView != nil && strings.TrimSpace(questionView.Question) != "" {
@@ -1696,7 +1683,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			case "result":
 				flushStreamAccum()
 				s.Status = SessionWaitingInput
-				s.Summary.Status = string(SessionWaitingInput)
+				s.Summary.Status = SessionWaitingInput.String()
 				s.Summary.WaitingForUser = true
 				s.PendingUserQuestion = nil // Clear any stale pending question
 				s.Summary.PendingQuestion = nil
@@ -1831,7 +1818,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 			if s.Status == SessionBusy {
 				m.app.log(fmt.Sprintf("[sdk-busy-idle-timeout] session=%s: no result after %v, forcing SessionWaitingInput", s.ID, busyIdleTimeout))
 				s.Status = SessionWaitingInput
-				s.Summary.Status = string(SessionWaitingInput)
+				s.Summary.Status = SessionWaitingInput.String()
 				s.Summary.WaitingForUser = true
 				s.Summary.SuggestedAction = "编程工具长时间无响应，已自动解锁。可发送新指令或终止会话"
 				s.Summary.UpdatedAt = time.Now().Unix()
@@ -1858,7 +1845,7 @@ func (m *RemoteSessionManager) runSDKOutputLoop(s *RemoteSession) {
 				m.app.log(fmt.Sprintf("[sdk-init-timeout] session=%s: no system/init after 5s, forcing SessionWaitingInput to break deadlock", s.ID))
 				s.mu.Lock()
 				s.Status = SessionWaitingInput
-				s.Summary.Status = string(SessionWaitingInput)
+				s.Summary.Status = SessionWaitingInput.String()
 				s.Summary.WaitingForUser = true
 				s.Summary.Severity = "info"
 				s.Summary.CurrentTask = "Session ready (waiting for first message)"
@@ -1906,7 +1893,7 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 			sessionStarted = true
 			s.mu.Lock()
 			s.Status = SessionRunning
-			s.Summary.Status = string(SessionRunning)
+			s.Summary.Status = SessionRunning.String()
 			s.Summary.Severity = "info"
 			s.Summary.CurrentTask = "Codex session started"
 			s.Summary.UpdatedAt = time.Now().Unix()
@@ -1922,10 +1909,10 @@ func (m *RemoteSessionManager) runCodexSDKOutputLoop(s *RemoteSession) {
 		// is ready to receive a prompt, NOT that it's busy working.
 		// Without this, the summary reducer's "reading" keyword match
 		// would set the status to SessionBusy, blocking WriteInput.
-		if strings.Contains(text, "Reading prompt from stdin") {
+		if classifyRemoteSessionOutputMarker(text) == remoteSessionOutputMarkerReadingPromptStdin {
 			s.mu.Lock()
 			s.Status = SessionWaitingInput
-			s.Summary.Status = string(SessionWaitingInput)
+			s.Summary.Status = SessionWaitingInput.String()
 			s.Summary.WaitingForUser = true
 			s.Summary.CurrentTask = "Codex ready — waiting for prompt"
 			s.Summary.SuggestedAction = "Send the task instruction to start working"
@@ -2023,7 +2010,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			sessionStarted = true
 			s.mu.Lock()
 			s.Status = SessionWaitingInput
-			s.Summary.Status = string(SessionWaitingInput)
+			s.Summary.Status = SessionWaitingInput.String()
 			s.Summary.WaitingForUser = true
 			s.Summary.Severity = "info"
 			s.Summary.CurrentTask = "Gemini ACP session started"
@@ -2043,7 +2030,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			// User input echo — session is now busy processing
 			s.mu.Lock()
 			s.Status = SessionBusy
-			s.Summary.Status = string(SessionBusy)
+			s.Summary.Status = SessionBusy.String()
 			s.Summary.WaitingForUser = false
 			s.Summary.UpdatedAt = time.Now().Unix()
 			snap := s.Summary
@@ -2053,11 +2040,11 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			}
 			m.updateTraceFromSummary(s, snap)
 			m.stallDetector.StartMonitoring(s.ID, s.Exec, s.Tool)
-		} else if strings.HasPrefix(trimmedText, "[gemini-acp] turn complete:") {
+		} else if isGeminiACPTurnCompleteLine(trimmedText) {
 			// Prompt completed — session is waiting for next input
 			s.mu.Lock()
 			s.Status = SessionWaitingInput
-			s.Summary.Status = string(SessionWaitingInput)
+			s.Summary.Status = SessionWaitingInput.String()
 			s.Summary.WaitingForUser = true
 			s.Summary.UpdatedAt = time.Now().Unix()
 			// Analyze completion level (pure function, safe under s.mu)
@@ -2073,11 +2060,11 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 			}
 			m.updateTraceFromSummary(s, snap)
 			m.stallDetector.StopMonitoring(s.ID)
-		} else if strings.HasPrefix(trimmedText, "[gemini-acp] prompt error:") {
+		} else if classifyRemoteSessionOutputMarker(trimmedText) == remoteSessionOutputMarkerGeminiPromptError {
 			// Prompt failed — session is waiting for next input
 			s.mu.Lock()
 			s.Status = SessionWaitingInput
-			s.Summary.Status = string(SessionWaitingInput)
+			s.Summary.Status = SessionWaitingInput.String()
 			s.Summary.WaitingForUser = true
 			s.Summary.Severity = "warn"
 			s.Summary.LastResult = trimmedText
@@ -2088,7 +2075,7 @@ func (m *RemoteSessionManager) runGeminiACPOutputLoop(s *RemoteSession) {
 				_ = m.hubClient.SendSessionSummary(snap)
 			}
 			m.updateTraceFromSummary(s, snap)
-		} else if strings.HasPrefix(trimmedText, "[gemini-acp] session error:") {
+		} else if classifyRemoteSessionOutputMarker(trimmedText) == remoteSessionOutputMarkerGeminiSessionError {
 			// Session-level error from Gemini
 			s.mu.Lock()
 			s.Summary.Severity = "warn"
@@ -2473,9 +2460,9 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 			if m.app.sessionCheckpointer != nil {
 				resumePrompt = m.app.sessionCheckpointer.BuildResumePrompt(s.ProjectPath)
 			}
-			mem.UpsertUnfinishedSlot("desktop-user", &agent.UnfinishedTaskSlot{
+			mem.UpsertUnfinishedSlot(desktopUserID, &agent.UnfinishedTaskSlot{
 				SlotID:           slotID,
-				UserID:           "desktop-user",
+				UserID:           desktopUserID,
 				ProjectPath:      s.ProjectPath,
 				Tool:             firstNonEmptyTraceText(strings.TrimSpace(s.Tool), strings.TrimSpace(s.ResumeContext.Tool), "claude"),
 				Status:           "pending_resume",
@@ -2762,7 +2749,7 @@ func buildSDKToolUseEvent(s *RemoteSession, block SDKContentBlock) ImportantEven
 	// Map well-known tool names to file/command events
 	switch block.Name {
 	case "Read", "ReadFile", "View":
-		eventType = "file.read"
+		eventType = summaryEventFileRead.String()
 		if input, ok := block.Input.(map[string]interface{}); ok {
 			if file, ok := input["file_path"].(string); ok {
 				title = fmt.Sprintf("Read %s", filepath.Base(file))
@@ -2770,7 +2757,7 @@ func buildSDKToolUseEvent(s *RemoteSession, block SDKContentBlock) ImportantEven
 			}
 		}
 	case "Write", "WriteFile", "Edit", "MultiEdit":
-		eventType = "file.change"
+		eventType = summaryEventFileChange.String()
 		if input, ok := block.Input.(map[string]interface{}); ok {
 			if file, ok := input["file_path"].(string); ok {
 				title = fmt.Sprintf("Edited %s", filepath.Base(file))
@@ -2778,7 +2765,7 @@ func buildSDKToolUseEvent(s *RemoteSession, block SDKContentBlock) ImportantEven
 			}
 		}
 	case "Bash", "Execute":
-		eventType = "command.started"
+		eventType = summaryEventCommandStarted.String()
 		if input, ok := block.Input.(map[string]interface{}); ok {
 			if cmd, ok := input["command"].(string); ok {
 				title = fmt.Sprintf("Running: %s", cmd)

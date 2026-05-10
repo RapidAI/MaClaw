@@ -115,6 +115,40 @@ describe('workflowProgressPhaseIDs', () => {
         });
     });
 
+    it('does not let gate results hide missing documents for document phases', () => {
+        expect(workflowProgressPhaseCardState({
+            expectsDocument: true,
+            gatePassed: true,
+            hasDoc: false,
+            isCurrent: false,
+            isPast: true,
+        })).toEqual({
+            status: '缺文档',
+            tone: 'attention',
+            emphasized: true,
+        });
+
+        expect(workflowProgressPhaseCardState({
+            expectsDocument: true,
+            gatePassed: false,
+            hasDoc: false,
+            isCurrent: true,
+            isPast: false,
+        })).toEqual({
+            status: '生成中',
+            tone: 'current',
+            emphasized: true,
+        });
+
+        expect(workflowProgressPhaseCardState({
+            expectsDocument: true,
+            gatePassed: true,
+            hasDoc: true,
+            isCurrent: false,
+            isPast: true,
+        }).status).toBe('质检通过');
+    });
+
     it('does not count non-document execution phases as missing documents', () => {
         render(React.createElement(WorkflowDocPreview, {
             phaseDocuments: new Map([

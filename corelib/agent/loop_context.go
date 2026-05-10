@@ -17,7 +17,7 @@ type LoopContext struct {
 	mu            sync.RWMutex
 	maxIterations int
 	iteration     int
-	status        string // "running", "paused", "completed", "failed"
+	status        string
 
 	Conversation []interface{} // this loop's conversation messages
 	History      []interface{} // loaded history (for chat loops)
@@ -37,7 +37,7 @@ func NewLoopContext(id string, maxIter int, httpClient *http.Client) *LoopContex
 		ID:            id,
 		Kind:          LoopKindChat,
 		maxIterations: maxIter,
-		status:        "running",
+		status:        LoopStateRunning.String(),
 		CancelC:       make(chan struct{}),
 		HTTPClient:    httpClient,
 		StartedAt:     time.Now(),
@@ -53,7 +53,7 @@ func NewBackgroundLoopContext(id string, slotKind SlotKind, description string,
 		SlotKind:      slotKind,
 		Description:   description,
 		maxIterations: maxIter,
-		status:        "running",
+		status:        LoopStateRunning.String(),
 		ContinueC:     make(chan int, 1),
 		StatusC:       statusC,
 		CancelC:       make(chan struct{}),
@@ -112,11 +112,23 @@ func (c *LoopContext) State() string {
 	return c.status
 }
 
+// StateKind returns the current status as a typed state.
+func (c *LoopContext) StateKind() LoopStateKind {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return normalizeLoopStateKind(c.status)
+}
+
 // SetState sets the status string (thread-safe).
 func (c *LoopContext) SetState(s string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status = s
+}
+
+// SetStateKind sets the status using a typed state.
+func (c *LoopContext) SetStateKind(s LoopStateKind) {
+	c.SetState(s.String())
 }
 
 // Cancel signals the loop to stop.

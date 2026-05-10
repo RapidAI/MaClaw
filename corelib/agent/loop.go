@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 )
 
 // LoopCallbacks defines the capabilities the agent loop needs from its host.
@@ -62,6 +63,35 @@ type LoopCallbacks interface {
 
 	// ShouldStop returns true if the loop should be terminated early.
 	ShouldStop() bool
+}
+
+type ToolExecutionOutcome string
+
+const (
+	ToolExecutionOutcomeOK      ToolExecutionOutcome = "ok"
+	ToolExecutionOutcomeTimeout ToolExecutionOutcome = "timeout"
+	ToolExecutionOutcomeError   ToolExecutionOutcome = "error"
+)
+
+type ToolExecutionResult struct {
+	Result  string
+	Outcome ToolExecutionOutcome
+}
+
+type StructuredToolExecutor interface {
+	ExecuteToolStructured(name, argsJSON string) ToolExecutionResult
+}
+
+// ToolAuthorizer is an optional host callback implemented when tool execution
+// must be constrained by an outer policy, such as a workflow phase.
+type ToolAuthorizer interface {
+	IsToolAllowed(name string) bool
+}
+
+// ToolCallAuthorizer is an optional stronger execution boundary for hosts that
+// need to validate tool arguments, not just the tool name.
+type ToolCallAuthorizer interface {
+	IsToolCallAllowed(name, argsJSON string) (bool, string)
 }
 
 // LoopHooks provides optional extension points for the agent loop.
@@ -116,7 +146,7 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 	}
 
 	systemPrompt := cb.BuildSystemPrompt(userText, len(history) == 0)
-	tools := cb.BuildTools(userText)
+	tools := FilterToolDefinitionsByAuthorizer(cb, cb.BuildTools(userText))
 
 	// Build conversation from history + current message.
 	var conversation []interface{}
@@ -138,7 +168,7 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 	consecutiveEmpty := 0
 	const maxConsecutiveEmpty = 5
 	var lastNonEmptyContent string
-	var lastToolName string       // track last tool name for empty-response recovery
+	var lastToolName string         // track last tool name for empty-response recovery
 	var lastToolOutcome toolOutcome // structured outcome of last tool execution
 
 	// Drift detection: track recent tool calls to detect loops.
@@ -260,12 +290,13 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 		totalToolCalls += len(choice.Message.ToolCalls)
 		for _, tc := range choice.Message.ToolCalls {
 			cb.OnToolCall(tc.Function.Name)
-			result := cb.ExecuteTool(tc.Function.Name, tc.Function.Arguments)
+			execResult := executeLoopTool(cb, tc.Function.Name, tc.Function.Arguments)
+			result := execResult.Result
 			cb.OnToolResult(tc.Function.Name)
 
 			// Track last tool for empty-response recovery context.
 			lastToolName = tc.Function.Name
-			lastToolOutcome = classifyToolResult(result)
+			lastToolOutcome = toolOutcomeFromExecutionResult(execResult)
 
 			if askReq, ok := ParseAskUserResult(result); ok {
 				return LoopResult{
@@ -337,6 +368,78 @@ func RunLoop(cb LoopCallbacks, userText string, history []ConversationEntry, htt
 
 	log.Printf("[agent-loop] max iterations (%d) reached", maxIter)
 	return LoopResult{Error: "max iterations reached", Iterations: maxIter, ToolCalls: totalToolCalls}
+}
+
+func executeLoopTool(cb LoopCallbacks, name, argsJSON string) ToolExecutionResult {
+	if authorizer, ok := cb.(ToolAuthorizer); ok && !authorizer.IsToolAllowed(name) {
+		return ToolExecutionResult{
+			Result:  fmt.Sprintf("Error: tool %q is not allowed by the current execution policy", name),
+			Outcome: ToolExecutionOutcomeError,
+		}
+	}
+	if authorizer, ok := cb.(ToolCallAuthorizer); ok {
+		if allowed, reason := authorizer.IsToolCallAllowed(name, argsJSON); !allowed {
+			if strings.TrimSpace(reason) == "" {
+				reason = fmt.Sprintf("tool call %q is not allowed by the current execution policy", name)
+			}
+			return ToolExecutionResult{
+				Result:  "Error: " + reason,
+				Outcome: ToolExecutionOutcomeError,
+			}
+		}
+	}
+	if structured, ok := cb.(StructuredToolExecutor); ok {
+		result := structured.ExecuteToolStructured(name, argsJSON)
+		if result.Outcome == "" {
+			outcome := classifyToolResult(result.Result)
+			result.Outcome = executionOutcomeFromToolOutcome(outcome.kind)
+		}
+		return result
+	}
+	result := cb.ExecuteTool(name, argsJSON)
+	outcome := classifyToolResult(result)
+	return ToolExecutionResult{Result: result, Outcome: executionOutcomeFromToolOutcome(outcome.kind)}
+}
+
+// FilterToolDefinitionsByAuthorizer removes LLM-facing tool definitions that
+// the callback's ToolAuthorizer would reject at execution time. This keeps
+// exposure and execution governed by the same mechanism.
+func FilterToolDefinitionsByAuthorizer(cb LoopCallbacks, tools []map[string]interface{}) []map[string]interface{} {
+	authorizer, ok := cb.(ToolAuthorizer)
+	if !ok || len(tools) == 0 {
+		return tools
+	}
+	filtered := make([]map[string]interface{}, 0, len(tools))
+	for _, def := range tools {
+		if authorizer.IsToolAllowed(tooldef.Name(def)) {
+			filtered = append(filtered, def)
+		}
+	}
+	return filtered
+}
+
+func toolOutcomeFromExecutionResult(result ToolExecutionResult) toolOutcome {
+	outcome := toolOutcome{kind: toolOutcomeOK, snippet: truncateRunesSuffix(result.Result, 300)}
+	switch result.Outcome {
+	case ToolExecutionOutcomeTimeout:
+		outcome.kind = toolOutcomeTimeout
+	case ToolExecutionOutcomeError:
+		outcome.kind = toolOutcomeError
+	default:
+		outcome.kind = toolOutcomeOK
+	}
+	return outcome
+}
+
+func executionOutcomeFromToolOutcome(kind toolOutcomeKind) ToolExecutionOutcome {
+	switch kind {
+	case toolOutcomeTimeout:
+		return ToolExecutionOutcomeTimeout
+	case toolOutcomeError:
+		return ToolExecutionOutcomeError
+	default:
+		return ToolExecutionOutcomeOK
+	}
 }
 
 // doLLMRequestWithTools sends a chat completion request with tool definitions.
@@ -435,12 +538,12 @@ func classifyToolResult(result string) toolOutcome {
 
 	// Structured error markers from our tool implementations.
 	errorPrefixes := []string{
-		"[错误]",        // tools_local, im_tools_local, im_tool_async_wait
-		"工具执行异常",  // im_tool_execution.go panic recovery
-		"未知工具",      // im_tool_execution.go, subagent callbacks
-		"参数解析失败",  // im_tool_execution.go, tui callbacks
-		"错误:",         // various tool handlers
-		"Error:",        // various tool handlers
+		"[错误]",   // tools_local, im_tools_local, im_tool_async_wait
+		"工具执行异常", // im_tool_execution.go panic recovery
+		"未知工具",   // im_tool_execution.go, subagent callbacks
+		"参数解析失败", // im_tool_execution.go, tui callbacks
+		"错误:",    // various tool handlers
+		"Error:", // various tool handlers
 	}
 	trimmed := strings.TrimSpace(result)
 	for _, prefix := range errorPrefixes {

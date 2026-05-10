@@ -9,7 +9,6 @@ interface AssistantInputStackProps {
     cancelPending: boolean;
     cancelSession?: unknown;
     clearSelectedFile?: () => void;
-    composing: boolean;
     editingEntryId: string | null;
     exitHistoryBrowsing: () => boolean;
     finishVoicePointer: (event: React.PointerEvent<HTMLButtonElement>) => void;
@@ -42,7 +41,6 @@ interface AssistantInputStackProps {
     reorderEntry: (fromIndex: number, toIndex: number) => void;
     resizeInput: () => void;
     selectedFilePaths: string[];
-    setComposing: (value: boolean) => void;
     setPendingAttachments: React.Dispatch<React.SetStateAction<any>>;
     showBusySpinner: boolean;
     startInputResize: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -54,12 +52,12 @@ interface AssistantInputStackProps {
 
 export function AssistantInputStack(props: AssistantInputStackProps) {
     const {
-        browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, composing, editingEntryId,
+        browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, editingEntryId,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handlePaste,
         handleSaveEdit, handleFireEntry, handleSend, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight,
         inputLocked, inputRef, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments,
         placeholderText, queue, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
-        resizeInput, selectedFilePaths, setComposing, setPendingAttachments, showBusySpinner, startInputResize, theme: t,
+        resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, startInputResize, theme: t,
         themeMode, updateInputValue, voiceInput,
     } = props;
 
@@ -117,7 +115,6 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     cancelPending={cancelPending}
                     cancelSession={cancelSession}
                     clearSelectedFile={clearSelectedFile}
-                    composing={composing}
                     exitHistoryBrowsing={exitHistoryBrowsing}
                     finishVoicePointer={finishVoicePointer}
                     handleCancel={handleCancel}
@@ -142,7 +139,6 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     removeSelectedFile={removeSelectedFile}
                     resizeInput={resizeInput}
                     selectedFilePaths={selectedFilePaths}
-                    setComposing={setComposing}
                     setPendingAttachments={setPendingAttachments}
                     showBusySpinner={showBusySpinner}
                     theme={t}

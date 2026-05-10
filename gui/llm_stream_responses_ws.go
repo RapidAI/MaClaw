@@ -32,7 +32,7 @@ func responsesWSEndpoint(baseURL string) string {
 	u := strings.TrimRight(baseURL, "/")
 	u = strings.Replace(u, "https://", "wss://", 1)
 	u = strings.Replace(u, "http://", "ws://", 1)
-	if strings.Contains(u, "chatgpt.com") {
+	if llm.IsCodexSubscriptionEndpoint(u) {
 		return u + "/codex/responses"
 	}
 	return u + "/responses"
@@ -103,7 +103,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 	headers.Set("User-Agent", cfg.UserAgent())
 	headers.Set("originator", "codex_cli_rs")
 	// Codex subscription headers for chatgpt.com/backend-api
-	if strings.Contains(cfg.URL, "chatgpt.com") {
+	if llm.IsCodexSubscriptionEndpoint(cfg.URL) {
 		headers.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
 		if accountID, _ := oauth.ExtractAccountIDFromJWT(cfg.Key); accountID != "" {
 			headers.Set("chatgpt-account-id", accountID)
@@ -260,8 +260,8 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			continue
 		}
 
-		switch baseFrame.Type {
-		case "response.output_item.added":
+		switch normalizeResponsesEventType(baseFrame.Type) {
+		case responsesEventOutputItemAdded:
 			var added struct {
 				OutputIndex int                    `json:"output_index"`
 				Item        map[string]interface{} `json:"item"`
@@ -273,7 +273,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			if t, _ := added.Item["type"].(string); t != "" {
 				acc.itemType = t
 			}
-			if acc.itemType == "function_call" {
+			if normalizeResponsesOutputItemKind(acc.itemType) == responsesOutputItemFunctionCall {
 				if cid, _ := added.Item["call_id"].(string); cid != "" {
 					acc.callID = cid
 				}
@@ -283,7 +283,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			}
 			itemAccums[added.OutputIndex] = acc
 
-		case "response.output_text.delta":
+		case responsesEventOutputTextDelta:
 			var td struct {
 				Delta string `json:"delta"`
 			}
@@ -300,7 +300,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 				}
 			}
 
-		case "response.function_call_arguments.delta":
+		case responsesEventFunctionCallArgumentsDelta:
 			var ad struct {
 				Delta       string `json:"delta"`
 				OutputIndex int    `json:"output_index"`
@@ -323,7 +323,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 				}
 			}
 
-		case "response.function_call_arguments.done":
+		case responsesEventFunctionCallArgumentsDone:
 			var done struct {
 				Arguments   string `json:"arguments"`
 				OutputIndex int    `json:"output_index"`
@@ -338,10 +338,10 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 				acc.args.WriteString(done.Arguments)
 			}
 
-		case "response.output_item.done":
+		case responsesEventOutputItemDone:
 			// No-op: items finalized when building the response below.
 
-		case "response.completed":
+		case responsesEventCompleted:
 			var completed struct {
 				Response struct {
 					Usage *struct {
@@ -366,7 +366,7 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			}
 			goto postLoop
 
-		case "response.failed":
+		case responsesEventFailed:
 			var failed struct {
 				Response struct {
 					Error struct {
@@ -384,11 +384,11 @@ func (h *IMMessageHandler) doResponsesWSLLMRequestStream(
 			}
 			return nil, fmt.Errorf("Responses API error: %s (code=%s)", errMsg, failed.Response.Error.Code)
 
-		case "response.incomplete":
+		case responsesEventIncomplete:
 			finishReason = "length"
 			goto postLoop
 
-		case "error":
+		case responsesEventError:
 			var errFrame struct {
 				Status int `json:"status"`
 				Error  struct {
@@ -452,7 +452,7 @@ postLoop:
 		}
 		for i := 0; i <= maxIdx; i++ {
 			acc, ok := itemAccums[i]
-			if !ok || acc.itemType != "function_call" {
+			if !ok || normalizeResponsesOutputItemKind(acc.itemType) != responsesOutputItemFunctionCall {
 				continue
 			}
 			msg.ToolCalls = append(msg.ToolCalls, llm.ToolCall{

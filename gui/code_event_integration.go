@@ -26,7 +26,8 @@ func (m *RemoteSessionManager) emitCodeFileEvents(s *RemoteSession, events []Imp
 	emitter := m.app.codeEventEmitter
 
 	for _, evt := range events {
-		if evt.Type != "file.change" && evt.Type != "file.read" {
+		eventType := normalizeSummaryEventType(evt.Type)
+		if !eventType.IsFileEvent() {
 			continue
 		}
 
@@ -69,7 +70,7 @@ func (m *RemoteSessionManager) emitCodeFileEvents(s *RemoteSession, events []Imp
 		opType := "create"
 		var original string
 
-		if evt.Type == "file.change" {
+		if eventType.IsFileChange() {
 			opType = "modify"
 			// Attempt to read original content via git show
 			original = gitShowOriginal(s.ProjectPath, absPath)

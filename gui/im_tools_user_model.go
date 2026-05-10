@@ -34,8 +34,9 @@ func (h *IMMessageHandler) getUserModel() *user.Model {
 //   - dimension (string, optional): the profile dimension to correct/reset
 //   - value (string, optional): the new value for the dimension (required for "correct")
 func (h *IMMessageHandler) toolManageUserModel(args map[string]interface{}) string {
-	action := stringVal(args, "action")
-	if action == "" {
+	actionText := stringVal(args, "action")
+	action := normalizeUserModelAction(actionText)
+	if strings.TrimSpace(actionText) == "" {
 		return "缺少 action 参数（可选值: view, correct, reset）"
 	}
 
@@ -45,11 +46,11 @@ func (h *IMMessageHandler) toolManageUserModel(args map[string]interface{}) stri
 	}
 
 	switch action {
-	case "view":
+	case userModelActionView:
 		return h.userModelView(model)
-	case "correct":
+	case userModelActionCorrect:
 		return h.userModelCorrect(model, args)
-	case "reset":
+	case userModelActionReset:
 		return h.userModelReset(model, args)
 	default:
 		return fmt.Sprintf("未知 action: %s（可选值: view, correct, reset）", action)

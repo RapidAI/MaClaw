@@ -60,16 +60,7 @@ func RunGUIReplayInBackground(
 	go func() {
 		select {
 		case <-loopCtx.CancelC:
-			sup := replayer.supervisor
-			sup.mu.RLock()
-			var ids []string
-			for id := range sup.tasks {
-				ids = append(ids, id)
-			}
-			sup.mu.RUnlock()
-			for _, id := range ids {
-				_ = sup.Cancel(id)
-			}
+			replayer.CancelAll()
 			if logger != nil {
 				logger(fmt.Sprintf("[gui-replay-bg] cancel signal received for %s", flowName))
 			}

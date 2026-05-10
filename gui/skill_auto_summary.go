@@ -370,7 +370,7 @@ func ValidateSkillDraft(
 
 // QualityGateResult holds the result of the quality gate evaluation.
 type QualityGateResult struct {
-	Status   string // "approved" | "draft"
+	Status   string
 	Score    int
 	SkillDir string
 }
@@ -424,13 +424,10 @@ func RunQualityGate(draft *skill.SkillYAMLFile, tagGen *TagGenerator) (*QualityG
 	score := EvaluateSkillExecution(&result)
 
 	// 9. Determine status based on score threshold.
-	status := "draft"
-	if score >= 1 {
-		status = "approved"
-	}
+	status := skillQualityGateStatusForScore(score)
 
 	return &QualityGateResult{
-		Status:   status,
+		Status:   string(status),
 		Score:    score,
 		SkillDir: skillDir,
 	}, nil
@@ -700,7 +697,7 @@ func (p *SkillAutoSummaryPipeline) RunPipeline(session *TrajectorySession) {
 		sid, gateResult.Status, gateResult.Score, gateResult.SkillDir)
 
 	// Stage 5: RunAutoUpload (only if approved)
-	if gateResult.Status == "approved" {
+	if normalizeSkillQualityGateStatus(gateResult.Status) == skillQualityGateStatusApproved {
 		err := RunAutoUpload(
 			context.Background(),
 			draft.Name,

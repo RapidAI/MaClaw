@@ -70,6 +70,11 @@ describe('workflow state document collection', () => {
         const { result } = renderHook(() => useWorkflowState());
 
         act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
             eventHandlers.get('workflow:doc_update')?.({
                 phase_id: 'requirements',
                 content: { markdown: '# Not a string' },
@@ -88,6 +93,90 @@ describe('workflow state document collection', () => {
 
         expect(result.current.state.phaseDocuments.get('requirements')).toBe('# Requirements trimmed');
         expect(result.current.state.latestDocumentPhaseID).toBe('requirements');
+    });
+
+    it('ignores late document and gate events when no workflow is active', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Late requirements',
+            });
+            eventHandlers.get('workflow:gate_result')?.({
+                phase_id: 'requirements',
+                result: { phase_id: 'requirements', passed: true, items: [] },
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.size).toBe(0);
+        expect(result.current.state.gateResults.size).toBe(0);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'requirements',
+                content: '# Active requirements',
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.get('requirements')).toBe('# Active requirements');
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'completed',
+                type: 'coding',
+                current_phase: 'review',
+            });
+            eventHandlers.get('workflow:doc_update')?.({
+                phase_id: 'design',
+                content: '# Late design',
+            });
+            eventHandlers.get('workflow:gate_result')?.({
+                phase_id: 'design',
+                result: { phase_id: 'design', passed: true, items: [] },
+            });
+        });
+
+        expect(result.current.state.phaseDocuments.has('design')).toBe(false);
+        expect(result.current.state.gateResults.has('design')).toBe(false);
+    });
+
+    it('keeps an early workflow working directory until the workflow state arrives', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:workdir_set')?.({ path: '  D:/workprj/early  ' });
+        });
+
+        expect(result.current.state.workingDir).toBe('');
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'workflow-early',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+        });
+
+        expect(result.current.state.workingDir).toBe('D:/workprj/early');
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'workflow-early',
+                status: 'completed',
+                type: 'coding',
+                current_phase: 'review',
+            });
+            eventHandlers.get('workflow:workdir_set')?.({ path: 'D:/workprj/late' });
+        });
+
+        expect(result.current.state.workingDir).toBe('D:/workprj/early');
     });
 
     it('collects backend phase metadata for the preview board', () => {
@@ -119,6 +208,11 @@ describe('workflow state document collection', () => {
         const { result } = renderHook(() => useWorkflowState());
 
         act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
             eventHandlers.get('workflow:doc_update')?.({
                 phase_id: 'requirements',
                 content: '# Requirements v2',
@@ -249,6 +343,66 @@ describe('workflow state document collection', () => {
         expect(result.current.state.latestDocumentPhaseID).toBe('problem_discovery');
     });
 
+    it('clears stale workflow working directory when a new workflow context starts', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'workflow-1',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+            eventHandlers.get('workflow:workdir_set')?.({ path: '  D:/workprj/old  ' });
+        });
+
+        expect(result.current.state.workingDir).toBe('D:/workprj/old');
+
+        act(() => {
+            eventHandlers.get('workflow:workdir_set')?.({ path: '   ' });
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'workflow-2',
+                status: 'active',
+                type: 'product_design',
+                current_phase: 'problem_discovery',
+            });
+        });
+
+        expect(result.current.state.workingDir).toBe('');
+    });
+
+    it('resets manual preview dismissal when a new workflow context starts', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'workflow-1',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
+
+        act(() => {
+            result.current.closeDocPreview();
+        });
+
+        expect(result.current.state.splitMode).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                id: 'workflow-2',
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
+    });
+
     it('fully resets preview dismissal and transient UI state on workflow reset', () => {
         vi.useFakeTimers();
         const { result } = renderHook(() => useWorkflowState());
@@ -286,6 +440,58 @@ describe('workflow state document collection', () => {
 
         expect(result.current.state.transientText).toBe('');
         vi.useRealTimers();
+    });
+
+    it('does not auto-open the document preview for non-document execution phases', () => {
+        const { result } = renderHook(() => useWorkflowState());
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'presentation_design',
+                current_phase: 'ppt_generation',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'ops_maintenance',
+                current_phase: 'controlled_execution',
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'custom',
+                current_phase: 'deploy',
+                phases: [
+                    { id: 'requirements', name: 'Requirements', index: 0, expects_document: true },
+                    { id: 'deploy', name: 'Deploy', index: 1, expects_document: false },
+                ],
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(false);
+
+        act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'custom',
+                current_phase: 'requirements',
+                phases: [
+                    { id: 'requirements', name: 'Requirements', index: 0, expects_document: true },
+                    { id: 'deploy', name: 'Deploy', index: 1, expects_document: false },
+                ],
+            });
+        });
+
+        expect(result.current.state.splitMode).toBe(true);
     });
 
     it('updates fallback phase output snapshots until a doc update becomes authoritative', () => {
@@ -413,6 +619,11 @@ describe('workflow state document collection', () => {
         const { result } = renderHook(() => useWorkflowState());
 
         act(() => {
+            eventHandlers.get('workflow:phase_update')?.({
+                status: 'active',
+                type: 'coding',
+                current_phase: 'requirements',
+            });
             eventHandlers.get('workflow:doc_update')?.({
                 phase_id: 'requirements',
                 content: '# Requirements',

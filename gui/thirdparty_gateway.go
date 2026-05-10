@@ -113,7 +113,7 @@ type thirdPartyOutgoingMessage struct {
 func newThirdPartyGatewayManager(app *App) *thirdPartyGatewayManager {
 	return &thirdPartyGatewayManager{
 		app:      app,
-		status:   "disconnected",
+		status:   gatewayConnectionStatusDisconnected.String(),
 		clients:  make(map[string]*thirdPartyClientState),
 		notifyCh: make(chan struct{}),
 	}
@@ -142,7 +142,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 		m.server = nil
 		m.listener = nil
 		m.lastBindKey = ""
-		m.status = "disconnected"
+		m.status = gatewayConnectionStatusDisconnected.String()
 		lh := m.localHandler
 		m.localHandler = nil
 		m.mu.Unlock()
@@ -155,7 +155,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 			cancel()
 		}
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayUnclaim("thirdparty")
+			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformThirdParty)
 		}
 		m.emitStatusEvent()
 		return
@@ -167,7 +167,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	oldServer := m.server
 	m.server = nil
 	m.listener = nil
-	m.status = "connecting"
+	m.status = gatewayConnectionStatusConnecting.String()
 	m.mu.Unlock()
 
 	if oldServer != nil {
@@ -188,7 +188,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	if err != nil {
 		log.Printf("[thirdparty-mgr] listen %s failed: %v", addr, err)
 		m.mu.Lock()
-		m.status = "error"
+		m.status = gatewayConnectionStatusError.String()
 		m.lastBindKey = ""
 		m.mu.Unlock()
 		m.emitStatusEvent()
@@ -200,13 +200,13 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	m.server = server
 	m.listener = ln
 	m.lastBindKey = bindKey
-	m.status = "connected"
+	m.status = gatewayConnectionStatusConnected.String()
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
 	if !cfg.IsThirdPartyGatewayLocalMode() {
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayClaim("thirdparty")
+			_ = hubClient.SendIMGatewayClaim(imGatewayPlatformThirdParty)
 		}
 	}
 
@@ -218,7 +218,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 			if m.server == server {
 				m.server = nil
 				m.listener = nil
-				m.status = "error"
+				m.status = gatewayConnectionStatusError.String()
 				m.lastBindKey = ""
 			}
 			m.mu.Unlock()
@@ -232,7 +232,7 @@ func (m *thirdPartyGatewayManager) Stop() {
 	server := m.server
 	m.server = nil
 	m.listener = nil
-	m.status = "disconnected"
+	m.status = gatewayConnectionStatusDisconnected.String()
 	m.lastBindKey = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -480,10 +480,7 @@ func (m *thirdPartyGatewayManager) handleAck(w http.ResponseWriter, r *http.Requ
 	}
 	m.mu.Lock()
 	state := m.ensureClientLocked(req.ClientID)
-	status := strings.TrimSpace(req.Status)
-	if status == "" {
-		status = "delivered"
-	}
+	status := normalizeThirdPartyGatewayAckStatus(req.Status).String()
 	for _, id := range req.MessageIDs {
 		id = strings.TrimSpace(id)
 		if id != "" {
@@ -613,6 +610,11 @@ func (m *thirdPartyGatewayManager) enqueue(clientID string, msg thirdPartyOutgoi
 }
 
 func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest, maclawID string) {
+	if isPassthroughSlashText(req.Message.Text) {
+		log.Printf("[thirdparty-mgr] routing passthrough command locally: client=%s conversation=%s", req.ClientID, req.ConversationID)
+		m.handleLocalMessage(req, maclawID)
+		return
+	}
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		m.enqueueError(req, req.MessageID, "bad_request", err.Error())
@@ -635,7 +637,7 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 			if req.Extra != nil {
 				payload["extra"] = req.Extra
 			}
-			if err := hubClient.SendIMGatewayMessage("thirdparty", payload); err == nil {
+			if err := hubClient.SendIMGatewayMessage(imGatewayPlatformThirdParty, payload); err == nil {
 				return
 			}
 			log.Printf("[thirdparty-mgr] forwardToHub error: %v, falling back to local", err)
@@ -729,6 +731,22 @@ func (m *thirdPartyGatewayManager) ensureLocalHandler() *IMMessageHandler {
 }
 
 func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequest, maclawID string) {
+	if resp, handled := m.app.TryHandlePassthroughSlashCommandWithSource(req.Message.Text, "thirdparty:"+req.ClientID+":"+req.ConversationID); handled {
+		reply := resp.Text
+		if reply == "" {
+			reply = resp.Error
+		}
+		if reply == "" {
+			reply = "(no output)"
+		}
+		m.enqueue(req.ClientID, thirdPartyOutgoingMessage{
+			ConversationID:   req.ConversationID,
+			ReplyToMessageID: req.MessageID,
+			Type:             "text",
+			Text:             reply,
+		})
+		return
+	}
 	if !m.app.isMaclawLLMConfigured() {
 		m.enqueue(req.ClientID, thirdPartyOutgoingMessage{
 			ConversationID:   req.ConversationID,
@@ -862,23 +880,24 @@ func (m *thirdPartyGatewayManager) HandleGatewayReply(reply GatewayReplyPayload)
 	}
 	msg := thirdPartyOutgoingMessage{
 		ConversationID: conversationID,
-		Type:           reply.ReplyType,
+		Type:           reply.ReplyType.String(),
 		Text:           reply.Text,
 		Caption:        reply.Caption,
 		FileName:       reply.FileName,
 		ContentType:    reply.MimeType,
 	}
-	switch reply.ReplyType {
-	case "image":
+	replyKind := normalizeThirdPartyGatewayMessageKind(reply.ReplyType.String())
+	switch {
+	case replyKind == thirdPartyGatewayMessageImage:
 		msg.Data = reply.ImageData
 		if msg.ContentType == "" {
 			msg.ContentType = "image/png"
 		}
-	case "file", "voice", "video":
+	case replyKind.IsMediaFile():
 		msg.Data = reply.FileData
 	default:
 		if msg.Type == "" {
-			msg.Type = "text"
+			msg.Type = thirdPartyGatewayMessageText.String()
 		}
 	}
 	m.enqueue(clientID, msg)
@@ -940,9 +959,9 @@ func normalizeIncomingRequest(req *thirdPartyIncomingRequest) error {
 		return fmt.Errorf("user.id is required")
 	}
 	if req.Message.Type == "" {
-		req.Message.Type = "text"
+		req.Message.Type = thirdPartyGatewayMessageText.String()
 	}
-	if req.Message.Type == "text" && strings.TrimSpace(req.Message.Text) == "" {
+	if normalizeThirdPartyGatewayMessageKind(req.Message.Type) == thirdPartyGatewayMessageText && strings.TrimSpace(req.Message.Text) == "" {
 		return fmt.Errorf("message.text is required for text messages")
 	}
 	if req.Message.Text != "" && len([]rune(req.Message.Text)) > thirdPartyMaxTextChars {
@@ -952,12 +971,7 @@ func normalizeIncomingRequest(req *thirdPartyIncomingRequest) error {
 }
 
 func isSupportedThirdPartyMessageType(t string) bool {
-	switch t {
-	case "text", "image", "file", "voice", "video":
-		return true
-	default:
-		return false
-	}
+	return normalizeThirdPartyGatewayMessageKind(t).IsSupported()
 }
 
 func decodeGatewayJSON(r *http.Request, v any) error {
@@ -1047,7 +1061,7 @@ func (a *App) ensureThirdPartyGateway() {
 
 func (a *App) GetThirdPartyGatewayStatus() string {
 	if a.thirdPartyGateway == nil {
-		return "disconnected"
+		return gatewayConnectionStatusDisconnected.String()
 	}
 	return a.thirdPartyGateway.Status()
 }
@@ -1055,7 +1069,7 @@ func (a *App) GetThirdPartyGatewayStatus() string {
 func (a *App) RestartThirdPartyGateway() string {
 	a.ensureThirdPartyGateway()
 	if a.thirdPartyGateway == nil {
-		return "disconnected"
+		return gatewayConnectionStatusDisconnected.String()
 	}
 	return a.thirdPartyGateway.Status()
 }
@@ -1091,7 +1105,7 @@ func (a *App) SetThirdPartyGatewayLocalMode(enabled bool) error {
 	}
 	if !enabled {
 		if hubClient := a.hubClient(); hubClient != nil && hubClient.IsConnected() {
-			_ = hubClient.SendIMGatewayClaim("thirdparty")
+			_ = hubClient.SendIMGatewayClaim(imGatewayPlatformThirdParty)
 		}
 	}
 	return nil

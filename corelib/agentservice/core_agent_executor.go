@@ -18,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
 const (
@@ -65,6 +66,8 @@ type coreAgentCallbacks struct {
 	tasks                      *task.Store
 	sshDeps                    sshtool.SSHToolDeps
 	httpClient                 *http.Client
+	toolPolicy                 workflow.ToolFilterPolicy
+	opsApprovedCommands        []workflow.OpsApprovedCommand
 }
 
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
@@ -101,6 +104,9 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 			},
 		},
 		httpClient: e.clientFor(llmCfg),
+		toolPolicy: req.ToolPolicy,
+		opsApprovedCommands: append([]workflow.OpsApprovedCommand(nil),
+			req.OpsApprovedCommands...),
 	}
 	result := agent.RunLoop(cb, req.Message.Content, convertHistoryToEntries(req.History, req.Message.ID), cb.httpClient)
 	if result.Error != "" {
@@ -118,7 +124,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		metadata["hard_exit"] = "true"
 	}
 	if result.AskUser != nil {
-		metadata[metaResponseSource] = "ask_user"
+		metadata[metaResponseSource] = string(responseSourceAskUser)
 		metadata[metaAskUserQuestion] = result.AskUser.Question
 		metadata[metaAskUserInputType] = result.AskUser.InputType
 		if len(result.AskUser.Options) > 0 {
@@ -387,36 +393,63 @@ func (c *coreAgentCallbacks) BuildTools(string) []map[string]interface{} {
 }
 
 func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
+	return c.ExecuteToolStructured(name, argsJSON).Result
+}
+
+func (c *coreAgentCallbacks) IsToolAllowed(name string) bool {
+	return workflow.IsToolAllowedByPolicy(c.toolPolicy, name)
+}
+
+func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
 	var args map[string]interface{}
 	if strings.TrimSpace(argsJSON) != "" {
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return fmt.Sprintf("Error: invalid tool arguments: %v", err)
+			return false, fmt.Sprintf("invalid tool arguments: %v", err)
 		}
+	}
+	if err := workflow.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
+	var args map[string]interface{}
+	if strings.TrimSpace(argsJSON) != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return agent.ToolExecutionResult{
+				Result:  fmt.Sprintf("Error: invalid tool arguments: %v", err),
+				Outcome: agent.ToolExecutionOutcomeError,
+			}
+		}
+	}
+	if err := workflow.ValidateToolCallByPolicyWithApproval(c.toolPolicy, strings.TrimSpace(name), args, c.opsApprovedCommands); err != nil {
+		return agent.ToolExecutionResult{Result: "Error: " + err.Error(), Outcome: agent.ToolExecutionOutcomeError}
 	}
 	switch strings.TrimSpace(name) {
 	case "bash":
 		if !c.allowLocalBash {
-			return "Error: local bash is disabled for this MaClawSrv deployment"
+			return agent.ToolExecutionResult{Result: "Error: local bash is disabled for this MaClawSrv deployment", Outcome: agent.ToolExecutionOutcomeError}
 		}
 		if !c.canUseLocalBash() {
-			return "Error: " + c.localBashDeniedReason()
+			return agent.ToolExecutionResult{Result: "Error: " + c.localBashDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
 		}
-		return agent.ToolBash(ensureBashWorkingDir(args, c.workspace), c.OnProgress)
+		return agent.ToolExecutionResult{Result: agent.ToolBash(ensureBashWorkingDir(args, c.workspace), c.OnProgress)}
 	case "ssh":
 		if !c.canUseSSH() {
-			return "Error: " + c.sshDeniedReason()
+			return agent.ToolExecutionResult{Result: "Error: " + c.sshDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
 		}
 		validated, err := c.validateSSHArgs(args)
 		if err != nil {
-			return fmt.Sprintf("Error: %v", err)
+			return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: %v", err), Outcome: agent.ToolExecutionOutcomeError}
 		}
-		return sshtool.ToolSSH(c.sshDeps, validated)
+		return agent.ToolExecutionResult{Result: sshtool.ToolSSH(c.sshDeps, validated)}
 	case "ask_user":
-		return agent.ToolAskUser(args)
+		return agent.ToolExecutionResult{Result: agent.ToolAskUser(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "task":
-		return agent.ToolTask(c.tasks, args)
+		return agent.ToolExecutionResult{Result: agent.ToolTask(c.tasks, args), Outcome: agent.ToolExecutionOutcomeOK}
 	default:
-		return fmt.Sprintf("Error: unknown tool %s", name)
+		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
 }
 

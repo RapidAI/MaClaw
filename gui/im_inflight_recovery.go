@@ -33,12 +33,7 @@ func isInFlightRecoverySlot(slot *agent.UnfinishedTaskSlot) bool {
 	if slot == nil {
 		return false
 	}
-	switch strings.TrimSpace(slot.Source) {
-	case "in_flight_recovery", "in_flight_lease_expired":
-		return true
-	default:
-		return false
-	}
+	return slot.Source.IsInFlightRecovery()
 }
 
 func (h *IMMessageHandler) clearInFlightTaskMarker(userID string) {

@@ -14,8 +14,8 @@ import (
 // BackgroundLoopView is a read-only snapshot for the frontend.
 type BackgroundLoopView struct {
 	ID          string `json:"id"`
-	SlotKind    string `json:"slot_kind"`    // "coding", "scheduled", "auto"
-	Description string `json:"description"`  // task description (truncated)
+	SlotKind    string `json:"slot_kind"`   // "coding", "scheduled", "auto"
+	Description string `json:"description"` // task description (truncated)
 	Iteration   int    `json:"iteration"`
 	MaxIter     int    `json:"max_iter"`
 	Status      string `json:"status"`       // "running", "paused", "completed", "failed"
@@ -37,13 +37,13 @@ type pendingTask struct {
 // concurrency control. Each SlotKind has a configurable max (default 1).
 type BackgroundLoopManager struct {
 	mu      sync.RWMutex
-	loops   map[string]*LoopContext          // loopID -> context
-	statusC chan StatusEvent                 // aggregated status channel for Chat Loop
+	loops   map[string]*LoopContext // loopID -> context
+	statusC chan StatusEvent        // aggregated status channel for Chat Loop
 
 	// Slot-based concurrency control
-	slotLimits map[SlotKind]int              // max concurrent loops per kind
-	slotCounts map[SlotKind]int              // current running count per kind
-	queues     map[SlotKind][]*pendingTask   // queued tasks when slot is occupied
+	slotLimits map[SlotKind]int            // max concurrent loops per kind
+	slotCounts map[SlotKind]int            // current running count per kind
+	queues     map[SlotKind][]*pendingTask // queued tasks when slot is occupied
 
 	// For generating unique loop IDs
 	idCounter int
@@ -200,7 +200,7 @@ func (m *BackgroundLoopManager) SendContinue(loopID string, additionalRounds int
 	if !ok {
 		return fmt.Errorf("loop %s not found", loopID)
 	}
-	if ctx.State() != "paused" {
+	if normalizeTraceLoopState(ctx.State()) != traceLoopStatePaused {
 		return fmt.Errorf("loop %s is not paused (state=%s)", loopID, ctx.State())
 	}
 
@@ -239,7 +239,7 @@ func (m *BackgroundLoopManager) Stop(loopID string) {
 
 	// Cancel the stopped loop
 	ctx.Cancel()
-	ctx.SetState("stopped")
+	ctx.SetLoopState(LoopStateStopped)
 
 	// Spawn the next queued task (outside lock)
 	if next != nil {
@@ -281,7 +281,7 @@ func (m *BackgroundLoopManager) Complete(loopID string) {
 
 	m.mu.Unlock()
 
-	ctx.SetState("completed")
+	ctx.SetLoopState(LoopStateCompleted)
 
 	if next != nil {
 		m.mu.Lock()
@@ -325,7 +325,7 @@ func (m *BackgroundLoopManager) StopAll() {
 	// Cancel outside lock.
 	for _, ctx := range toStop {
 		ctx.Cancel()
-		ctx.SetState("stopped")
+		ctx.SetLoopState(LoopStateStopped)
 	}
 
 	if len(toStop) > 0 {

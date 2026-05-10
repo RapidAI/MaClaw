@@ -136,6 +136,7 @@ type App struct {
 	weixinGateway              *weixinGatewayManager
 	lansengerGateway           *lansengerGatewayManager
 	thirdPartyGateway          *thirdPartyGatewayManager
+	passthroughRegistry        *PassthroughRegistry
 	iworkerGoalWatch           *IWorkerGoalWatchService
 	iworkerGoalWatchMu         sync.Mutex
 	configMu                   sync.Mutex
@@ -156,6 +157,7 @@ type App struct {
 	codeEventEmitter           *CodeEventEmitter        // emits code file events to frontend for code preview panel
 	floatingAssistant          *FloatingAssistantManager
 	floatingAssistantMu        sync.Mutex
+	agentViewEmissionSeq       atomic.Int64
 
 	// IM audit store (SQLite-backed IM message audit for review/export).
 	imAuditStore   *IMAuditStore
@@ -870,7 +872,7 @@ func (a *App) ensureStartupFeedback() {
 		if mem == nil {
 			return nil
 		}
-		slot := mem.ActiveUnfinishedSlot("desktop-user")
+		slot := mem.ActiveUnfinishedSlot(desktopUserID)
 		if slot == nil {
 			return nil
 		}
@@ -1578,8 +1580,8 @@ func (a *App) buildClaudeLaunchEnv(
 		}
 	}
 
-	switch strings.ToLower(selectedModel.ModelName) {
-	case "qianfan":
+	switch normalizeModelProviderKind(selectedModel.ModelName) {
+	case modelProviderQianfan:
 		modelID := selectedModel.ModelId
 		if modelID == "" {
 			modelID = "qianfan-code-latest"
@@ -1909,24 +1911,25 @@ func (a *App) buildRemoteLaunchEnvForTool(
 	projectDir string,
 	useProxy bool,
 ) (map[string]string, error) {
-	switch normalizeRemoteToolName(toolName) {
-	case "claude":
+	toolKind := normalizeRemoteToolNameKind(toolName)
+	switch toolKind {
+	case remoteToolNameClaude:
 		return a.buildClaudeLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case "codex":
+	case remoteToolNameCodex:
 		return a.buildCodexLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case "opencode":
+	case remoteToolNameOpencode:
 		return a.buildOpencodeLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case "iflow":
+	case remoteToolNameIFlow:
 		return a.buildIFlowLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case "kilo":
+	case remoteToolNameKilo:
 		return a.buildKiloLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case "gemini":
+	case remoteToolNameGemini:
 		return a.buildGeminiLaunchEnv(config, selectedModel, projectDir, useProxy)
-	case "cursor":
+	case remoteToolNameCursor:
 		return a.buildCursorLaunchEnv(config, selectedModel, projectDir, useProxy)
 	default:
 		// Check OEM extra tools
-		extraTool := findExtraTool(normalizeRemoteToolName(toolName))
+		extraTool := findExtraTool(toolKind.String())
 		if extraTool != nil {
 			return a.buildExtraToolLaunchEnv(extraTool, selectedModel, projectDir, useProxy, config)
 		}
@@ -2041,7 +2044,7 @@ func (a *App) buildRemoteLaunchSpec(
 	}
 
 	teamMode := false
-	if tool == "claude" {
+	if normalizeRemoteToolNameKind(tool).IsClaude() {
 		for _, proj := range config.Projects {
 			if proj.Path == projectDir || proj.Id == config.CurrentProject {
 				teamMode = proj.TeamMode
@@ -2210,7 +2213,7 @@ func (a *App) SetWorkflowWorkingDir(dir string) {
 		return
 	}
 	if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-		adapter.SetWorkingDir("desktop-user", dir)
+		adapter.SetWorkingDir(desktopUserID, dir)
 	}
 }
 
@@ -2459,23 +2462,23 @@ func (a *App) getIFlowConfigPaths(projectDir string, instanceID string) (string,
 // legacy files that belong to the tool's original-provider configuration.
 func (a *App) toolNativeConfigPaths(tool string) (dir string, extras []string) {
 	home := a.GetUserHomeDir()
-	switch strings.ToLower(tool) {
-	case "claude":
+	switch normalizeRemoteToolNameKind(tool) {
+	case remoteToolNameClaude:
 		return filepath.Join(home, ".claude"),
 			[]string{
 				filepath.Join(home, ".claude.json"),
 				filepath.Join(home, ".claude.json.backup"),
 			}
-	case "gemini":
+	case remoteToolNameGemini:
 		return filepath.Join(home, ".gemini"),
 			[]string{filepath.Join(home, ".geminirc")}
-	case "codex":
+	case remoteToolNameCodex:
 		return filepath.Join(home, ".codex"), nil
-	case "opencode":
+	case remoteToolNameOpencode:
 		return filepath.Join(home, ".config", "opencode"), nil
-	case "iflow":
+	case remoteToolNameIFlow:
 		return filepath.Join(home, ".iflow"), nil
-	case "kilo":
+	case remoteToolNameKilo:
 		return filepath.Join(home, ".kilocode", "cli"), nil
 	default:
 		return filepath.Join(home, "."+strings.ToLower(tool)), nil
@@ -2677,27 +2680,27 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 	env["ANTHROPIC_AUTH_TOKEN"] = selectedModel.ApiKey
 	env["CLAUDE_CODE_USE_COLORS"] = "true"
 	env["MAX_THINKING_TOKENS"] = "31999"
-	switch strings.ToLower(selectedModel.ModelName) {
-	case "kimi":
+	switch normalizeModelProviderKind(selectedModel.ModelName) {
+	case modelProviderKimi:
 		env["ANTHROPIC_BASE_URL"] = "https://api.kimi.com/coding"
 		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
-	case "glm", "glm-4.7":
+	case modelProviderGLM:
 		env["ANTHROPIC_BASE_URL"] = "https://open.bigmodel.cn/api/anthropic"
 		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
 		settings["permissions"] = map[string]string{"defaultMode": "dontAsk"}
-	case "doubao":
+	case modelProviderDoubao:
 		env["ANTHROPIC_BASE_URL"] = "https://ark.cn-beijing.volces.com/api/coding"
 		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_MODEL"] = selectedModel.ModelId
-	case "xfyun":
+	case modelProviderXFYun:
 		modelId := selectedModel.ModelId
 		if modelId == "" {
 			modelId = "astron-code-latest"
@@ -2707,7 +2710,7 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "minimax":
+	case modelProviderMiniMax:
 		env["ANTHROPIC_BASE_URL"] = "https://api.minimaxi.com/anthropic"
 		env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = selectedModel.ModelId
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = selectedModel.ModelId
@@ -2716,7 +2719,7 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 		env["ANTHROPIC_SMALL_FAST_MODEL"] = selectedModel.ModelId
 		env["API_TIMEOUT_MS"] = "3000000"
 		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
-	case "deepseek":
+	case modelProviderDeepSeek:
 		env["ANTHROPIC_BASE_URL"] = "https://api.deepseek.com/anthropic"
 		modelId := selectedModel.ModelId
 		if modelId == "" {
@@ -2726,7 +2729,7 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "gaccode":
+	case modelProviderGACCode:
 		env["ANTHROPIC_BASE_URL"] = "https://gaccode.com/claudecode"
 		modelId := selectedModel.ModelId
 		if modelId == "" {
@@ -2736,7 +2739,7 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "tencent", "tencentcloud":
+	case modelProviderTencent:
 		env["ANTHROPIC_BASE_URL"] = "https://api.lkeap.cloud.tencent.com/coding/anthropic"
 		modelId := selectedModel.ModelId
 		if modelId == "" {
@@ -2746,7 +2749,7 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "aliyun":
+	case modelProviderAliyun:
 		env["ANTHROPIC_BASE_URL"] = "https://coding.dashscope.aliyuncs.com/apps/anthropic"
 		modelId := selectedModel.ModelId
 		if modelId == "" {
@@ -2756,7 +2759,7 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 		env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = modelId
 		env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = modelId
 		env["ANTHROPIC_MODEL"] = modelId
-	case "qianfan":
+	case modelProviderQianfan:
 		modelId := selectedModel.ModelId
 		if modelId == "" {
 			modelId = "qianfan-code-latest"
@@ -2773,7 +2776,7 @@ func (a *App) syncToClaudeSettings(config corelib.AppConfig, projectDir string, 
 			"allow": {},
 			"deny":  {},
 		}
-	case "codegen":
+	case modelProviderCodegen:
 		// CodeGen: use the configured Anthropic-compatible provider directly.
 		env["ANTHROPIC_BASE_URL"] = selectedModel.ModelUrl
 		modelId := selectedModel.ModelId
@@ -2879,46 +2882,50 @@ func (a *App) syncToOpencodeSettings(config corelib.AppConfig, projectDir string
 	}
 	baseUrl := selectedModel.ModelUrl
 	modelId := selectedModel.ModelId
-	providerName := selectedModel.ModelName
+	providerKind := normalizeModelProviderKind(selectedModel.ModelName)
+	providerName := strings.TrimSpace(selectedModel.ModelName)
+	if providerName == "" && providerKind != modelProviderUnknown {
+		providerName = string(providerKind)
+	}
 	// Fallback logic for Opencode (align with Codex providers)
 	if modelId == "" {
-		switch strings.ToLower(providerName) {
-		case "deepseek":
+		switch providerKind {
+		case modelProviderDeepSeek:
 			modelId = "deepseek-chat"
 			if baseUrl == "" {
 				baseUrl = "https://api.deepseek.com/v1"
 			}
-		case "glm":
+		case modelProviderGLM:
 			modelId = "glm-4.7"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
-		case "doubao":
+		case modelProviderDoubao:
 			modelId = "doubao-seed-code-preview-latest"
 			if baseUrl == "" {
 				baseUrl = "https://ark.cn-beijing.volces.com/api/coding/v3"
 			}
-		case "xfyun":
+		case modelProviderXFYun:
 			modelId = "astron-code-latest"
 			if baseUrl == "" {
 				baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
 			}
-		case "kimi":
+		case modelProviderKimi:
 			modelId = "kimi-for-coding"
 			if baseUrl == "" {
 				baseUrl = "https://api.kimi.com/coding/v1"
 			}
-		case "minimax":
+		case modelProviderMiniMax:
 			modelId = "MiniMax-M2.1"
 			if baseUrl == "" {
 				baseUrl = "https://api.minimaxi.com/v1"
 			}
-		case "aliyun":
+		case modelProviderAliyun:
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
 			}
-		case "tencent", "tencentcloud":
+		case modelProviderTencent:
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://api.lkeap.cloud.tencent.com/coding/v3"
@@ -3046,41 +3053,41 @@ func (a *App) syncToIFlowSettings(config corelib.AppConfig, projectDir string, i
 	// Prepare defaults
 	baseUrl := selectedModel.ModelUrl
 	modelId := selectedModel.ModelId
-	providerName := strings.ToLower(selectedModel.ModelName)
+	providerKind := normalizeModelProviderKind(selectedModel.ModelName)
 	// Fallback logic for iFlow (align with Codex providers)
 	if modelId == "" {
-		switch providerName {
-		case "deepseek":
+		switch providerKind {
+		case modelProviderDeepSeek:
 			modelId = "deepseek-chat"
 			if baseUrl == "" {
 				baseUrl = "https://api.deepseek.com/v1"
 			}
-		case "glm":
+		case modelProviderGLM:
 			modelId = "glm-4.7"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
-		case "doubao":
+		case modelProviderDoubao:
 			modelId = "doubao-seed-code-preview-latest"
 			if baseUrl == "" {
 				baseUrl = "https://ark.cn-beijing.volces.com/api/coding/v3"
 			}
-		case "kimi":
+		case modelProviderKimi:
 			modelId = "kimi-for-coding"
 			if baseUrl == "" {
 				baseUrl = "https://api.kimi.com/coding/v1"
 			}
-		case "minimax":
+		case modelProviderMiniMax:
 			modelId = "MiniMax-M2.1"
 			if baseUrl == "" {
 				baseUrl = "https://api.minimaxi.com/v1"
 			}
-		case "aliyun":
+		case modelProviderAliyun:
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
 			}
-		case "tencent", "tencentcloud":
+		case modelProviderTencent:
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://api.lkeap.cloud.tencent.com/coding/v3"
@@ -3137,41 +3144,41 @@ func (a *App) syncToKiloSettings(config corelib.AppConfig, projectDir string, in
 	// Prepare provider configuration
 	baseUrl := selectedModel.ModelUrl
 	modelId := selectedModel.ModelId
-	providerName := strings.ToLower(selectedModel.ModelName)
+	providerKind := normalizeModelProviderKind(selectedModel.ModelName)
 	// Fallback logic for common providers
 	if modelId == "" {
-		switch providerName {
-		case "deepseek":
+		switch providerKind {
+		case modelProviderDeepSeek:
 			modelId = "deepseek-chat"
 			if baseUrl == "" {
 				baseUrl = "https://api.deepseek.com/v1"
 			}
-		case "glm":
+		case modelProviderGLM:
 			modelId = "glm-4.7"
 			if baseUrl == "" {
 				baseUrl = "https://open.bigmodel.cn/api/coding/paas/v4"
 			}
-		case "doubao":
+		case modelProviderDoubao:
 			modelId = "doubao-seed-code-preview-latest"
 			if baseUrl == "" {
 				baseUrl = "https://ark.cn-beijing.volces.com/api/coding/v3"
 			}
-		case "kimi":
+		case modelProviderKimi:
 			modelId = "kimi-for-coding"
 			if baseUrl == "" {
 				baseUrl = "https://api.kimi.com/coding/v1"
 			}
-		case "minimax":
+		case modelProviderMiniMax:
 			modelId = "MiniMax-M2.1"
 			if baseUrl == "" {
 				baseUrl = "https://api.minimaxi.com/v1"
 			}
-		case "xiaomi":
+		case modelProviderXiaomi:
 			modelId = "mimo-v2-flash"
 			if baseUrl == "" {
 				baseUrl = "https://api.xiaomimimo.com/v1"
 			}
-		case "aliyun":
+		case modelProviderAliyun:
 			modelId = "glm-5"
 			if baseUrl == "" {
 				baseUrl = "https://coding.dashscope.aliyuncs.com/apps/anthropic/v1"
@@ -3221,18 +3228,19 @@ func (a *App) syncToCodeBuddySettings(config corelib.AppConfig, projectPath stri
 			continue
 		}
 		vendor := strings.ToLower(m.ModelName)
+		vendorKind := normalizeModelProviderKind(m.ModelName)
 		idStr := m.ModelId
 		if idStr == "" {
-			switch vendor {
-			case "deepseek":
+			switch vendorKind {
+			case modelProviderDeepSeek:
 				idStr = "deepseek-chat"
-			case "glm":
+			case modelProviderGLM:
 				idStr = "glm-4.7"
-			case "doubao":
+			case modelProviderDoubao:
 				idStr = "doubao-seed-code-preview-latest"
-			case "kimi":
+			case modelProviderKimi:
 				idStr = "kimi-for-coding"
-			case "minimax":
+			case modelProviderMiniMax:
 				idStr = "MiniMax-M2.1"
 			default:
 				idStr = vendor + "-model"
@@ -3283,22 +3291,22 @@ func getBaseUrl(selectedModel *corelib.ModelConfig) string {
 	}
 	// Otherwise, fall back to hardcoded defaults for known providers that have them.
 	baseUrl := "" // Default to empty string
-	switch strings.ToLower(selectedModel.ModelName) {
-	case "kimi":
+	switch normalizeModelProviderKind(selectedModel.ModelName) {
+	case modelProviderKimi:
 		baseUrl = "https://api.kimi.com/coding"
-	case "glm", "glm-4.7":
+	case modelProviderGLM:
 		baseUrl = "https://open.bigmodel.cn/api/anthropic"
-	case "doubao":
+	case modelProviderDoubao:
 		baseUrl = "https://ark.cn-beijing.volces.com/api/coding"
-	case "xfyun":
+	case modelProviderXFYun:
 		baseUrl = "https://maas-coding-api.cn-huabei-1.xf-yun.com/anthropic"
-	case "minimax":
+	case modelProviderMiniMax:
 		baseUrl = "https://api.minimaxi.com/anthropic"
-	case "deepseek":
+	case modelProviderDeepSeek:
 		baseUrl = "https://api.deepseek.com/anthropic"
-	case "gaccode":
+	case modelProviderGACCode:
 		baseUrl = "https://gaccode.com/claudecode"
-	case "qianfan":
+	case modelProviderQianfan:
 		baseUrl = "https://qianfan.baidubce.com/anthropic/coding"
 	}
 	return baseUrl
@@ -3326,48 +3334,49 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		a.log("Error loading config: " + err.Error())
 		return
 	}
+	launchToolKind := normalizeRemoteToolNameKind(toolName)
 	var toolCfg corelib.ToolConfig
 	var envKey, envBaseUrl string
 	var binaryName string
-	switch strings.ToLower(toolName) {
-	case "claude":
+	switch launchToolKind {
+	case remoteToolNameClaude:
 		toolCfg = config.Claude
 		envKey = "ANTHROPIC_AUTH_TOKEN"
 		envBaseUrl = "ANTHROPIC_BASE_URL"
 		binaryName = "claude"
-	case "gemini":
+	case remoteToolNameGemini:
 		toolCfg = config.Gemini
 		envKey = "GEMINI_API_KEY"
 		envBaseUrl = "GOOGLE_GEMINI_BASE_URL"
 		binaryName = "gemini"
-	case "codex":
+	case remoteToolNameCodex:
 		toolCfg = config.Codex
 		envKey = "OPENAI_API_KEY"
 		envBaseUrl = "OPENAI_BASE_URL"
 		binaryName = "codex"
-	case "iflow":
+	case remoteToolNameIFlow:
 		toolCfg = config.IFlow
 		envKey = "IFLOW_API_KEY"
 		envBaseUrl = "IFLOW_BASE_URL"
 		binaryName = "iflow"
-	case "kilo":
+	case remoteToolNameKilo:
 		toolCfg = config.Kilo
 		envKey = "KILO_API_KEY"
 		envBaseUrl = "KILO_BASE_URL"
 		binaryName = "kilo"
-	case "opencode":
+	case remoteToolNameOpencode:
 		toolCfg = config.Opencode
 		envKey = "OPENCODE_API_KEY"
 		envBaseUrl = "OPENCODE_BASE_URL"
 		binaryName = "opencode"
-	case "codebuddy":
+	case remoteToolNameCodeBuddy:
 		toolCfg = config.CodeBuddy
 		envKey = "CODEBUDDY_API_KEY"
 		envBaseUrl = "CODEBUDDY_BASE_URL"
 		binaryName = "codebuddy"
 	default:
 		// Check OEM extra tools from brand config
-		extraTool := findExtraTool(strings.ToLower(toolName))
+		extraTool := findExtraTool(launchToolKind.String())
 		if extraTool == nil {
 			return
 		}
@@ -3399,7 +3408,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		return
 	}
 	// Ensure ActiveTool is set correctly for syncToSystemEnv
-	config.ActiveTool = strings.ToLower(toolName)
+	config.ActiveTool = launchToolKind.String()
 	a.syncToSystemEnv(config)
 	// Create env map for passing to batch script
 	env := make(map[string]string)
@@ -3460,37 +3469,38 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			env[envBaseUrl] = selectedModel.ModelUrl
 		}
 		// Add CODEBUDDY_CODE_MAX_OUTPUT_TOKENS for DeepSeek
-		if strings.ToLower(selectedModel.ModelName) == "deepseek" {
+		selectedModelProvider := normalizeModelProviderKind(selectedModel.ModelName)
+		if selectedModelProvider.IsDeepSeek() {
 			env["CODEBUDDY_CODE_MAX_OUTPUT_TOKENS"] = "8192"
 		}
 		// Set generic model name env var if applicable
 		if selectedModel.ModelId != "" {
-			switch strings.ToLower(toolName) {
-			case "claude":
+			switch launchToolKind {
+			case remoteToolNameClaude:
 				env["ANTHROPIC_MODEL"] = selectedModel.ModelId
-			case "gemini":
+			case remoteToolNameGemini:
 				env["GOOGLE_GEMINI_MODEL"] = selectedModel.ModelId
-			case "codex":
+			case remoteToolNameCodex:
 				env["OPENAI_MODEL"] = selectedModel.ModelId
-			case "opencode":
+			case remoteToolNameOpencode:
 				env["OPENCODE_MODEL"] = selectedModel.ModelId
-			case "codebuddy":
+			case remoteToolNameCodeBuddy:
 				// env["CODEBUDDY_MODEL"] = selectedModel.ModelId
-			case "iflow":
+			case remoteToolNameIFlow:
 				// iFlow uses settings.json, but maybe env var too?
 				env["IFLOW_MODEL"] = selectedModel.ModelId
-			case "kilo":
+			case remoteToolNameKilo:
 				env["KILO_MODEL"] = selectedModel.ModelId
 			default:
 				// OEM extra tools use generic OpenAI model env var
-				if findExtraTool(strings.ToLower(toolName)) != nil {
+				if findExtraTool(launchToolKind.String()) != nil {
 					env["OPENAI_MODEL"] = selectedModel.ModelId
 				}
 			}
 		}
-		if strings.ToLower(toolName) == "claude" {
-			switch strings.ToLower(selectedModel.ModelName) {
-			case "qianfan":
+		if launchToolKind.IsClaude() {
+			switch selectedModelProvider {
+			case modelProviderQianfan:
 				modelId := selectedModel.ModelId
 				if modelId == "" {
 					modelId = "qianfan-code-latest"
@@ -3506,22 +3516,22 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		// Tool-specific configurations
 		// Tools that support pure env vars: clear old config files to avoid interference
 		// Tools that need config files: use instanceID for isolation
-		switch strings.ToLower(toolName) {
-		case "claude":
+		switch launchToolKind {
+		case remoteToolNameClaude:
 			// Surgically update only the provider settings in ~/.claude/settings.json,
 			// preserving conversation history, MCP plugins, hooks, and other user state.
 			if err := configfile.WriteClaudeProviderSettings(selectedModel.ModelName, selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
 				log.Printf("Claude: failed to write provider settings: %v", err)
 			}
 			a.log("Claude: Updated settings.json with provider config (preserving user state)")
-		case "gemini":
+		case remoteToolNameGemini:
 			// Surgically update ~/.gemini/.env and ~/.gemini/settings.json with provider config,
 			// preserving user's custom env vars, session data, and other settings.
 			if err := configfile.WriteGeminiConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
 				log.Printf("Gemini: failed to write provider config: %v", err)
 			}
 			a.log("Gemini: Updated config with provider settings (preserving user state)")
-		case "codex":
+		case remoteToolNameCodex:
 			env["WIRE_API"] = "responses"
 			// Ensure OpenAI standard vars for Codex
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
@@ -3535,7 +3545,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 				return
 			}
 			a.log("Codex: Updated config with provider settings (preserving user state)")
-		case "opencode":
+		case remoteToolNameOpencode:
 			// Opencode needs config file - use instanceID for isolation
 			a.backupToolNativeConfig("opencode")
 			a.syncToOpencodeSettings(config, projectDir, instanceID)
@@ -3543,10 +3553,10 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			if err := configfile.WriteOpencodeConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId, selectedModel.ModelName); err != nil {
 				log.Printf("Opencode: failed to write home config: %v", err)
 			}
-		case "codebuddy":
+		case remoteToolNameCodeBuddy:
 			// CodeBuddy may need config file
 			// a.syncToCodeBuddySettings(config, projectDir, instanceID)
-		case "iflow":
+		case remoteToolNameIFlow:
 			// iFlow needs config file - use instanceID for isolation
 			// Ensure OpenAI standard vars for iFlow (compatibility)
 			env["OPENAI_API_KEY"] = selectedModel.ApiKey
@@ -3559,7 +3569,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			if err := configfile.WriteIFlowConfig(selectedModel.ApiKey, selectedModel.ModelUrl, selectedModel.ModelId); err != nil {
 				log.Printf("iFlow: failed to write home config: %v", err)
 			}
-		case "kilo":
+		case remoteToolNameKilo:
 			// Kilo needs config file - use instanceID for isolation
 			a.backupToolNativeConfig("kilo")
 			a.syncToKiloSettings(config, projectDir, instanceID)
@@ -3569,7 +3579,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 		default:
 			// OEM extra tools: if EnvBuilderFunc is set, merge its output into env
-			if et := findExtraTool(strings.ToLower(toolName)); et != nil && et.EnvBuilderFunc != nil {
+			if et := findExtraTool(launchToolKind.String()); et != nil && et.EnvBuilderFunc != nil {
 				extraEnv := et.EnvBuilderFunc(nil, selectedModel, projectDir)
 				for k, v := range extraEnv {
 					env[k] = v
@@ -3584,9 +3594,9 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		// restore only for backward-compat migration of pre-fix backups.
 		// For other tools (opencode, iflow, kilo): use the existing
 		// full-directory restore since they use instance-specific config.
-		tool := strings.ToLower(toolName)
-		switch tool {
-		case "claude":
+		tool := launchToolKind.String()
+		switch launchToolKind {
+		case remoteToolNameClaude:
 			if err := configfile.ClearClaudeThirdPartySettings(); err != nil {
 				log.Printf("[LaunchTool-desktop] Claude: ClearClaudeThirdPartySettings error: %v", err)
 			}
@@ -3596,7 +3606,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found 闂?running one-time migration restore")
 				a.restoreToolNativeConfig("claude")
 			}
-		case "gemini":
+		case remoteToolNameGemini:
 			if err := configfile.ClearGeminiThirdPartySettings(); err != nil {
 				log.Printf("[LaunchTool-desktop] Gemini: ClearGeminiThirdPartySettings error: %v", err)
 			}
@@ -3605,7 +3615,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 				log.Printf("[LaunchTool-desktop] Gemini: pre-fix backup found 闂?running one-time migration restore")
 				a.restoreToolNativeConfig("gemini")
 			}
-		case "codex":
+		case remoteToolNameCodex:
 			if err := configfile.ClearCodexThirdPartySettings(); err != nil {
 				a.log("Codex builtin switch failed: " + err.Error())
 				return
@@ -3622,7 +3632,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	}
 
 	// Claude Code Agent Teams mode
-	if strings.ToLower(toolName) == "claude" {
+	if launchToolKind.IsClaude() {
 		// Find the current project config to check team_mode
 		for _, proj := range config.Projects {
 			if proj.Path == projectDir || proj.Id == config.CurrentProject {
@@ -3636,8 +3646,8 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	}
 
 	launchMode := strings.ToLower(strings.TrimSpace(config.DefaultLaunchMode))
-	toolKey := strings.ToLower(toolName)
-	remoteCapableTool := toolKey == "claude" || toolKey == "codex" || toolKey == "opencode" || toolKey == "iflow" || toolKey == "kilo" || findExtraTool(toolKey) != nil
+	toolKind := launchToolKind
+	remoteCapableTool := toolKind.IsDesktopRemoteLaunchCapableBuiltin() || findExtraTool(toolKind.String()) != nil
 	if launchMode == "remote" && config.RemoteEnabled && remoteCapableTool {
 		spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "")
 		if err != nil {
@@ -3658,7 +3668,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 
 	// Ensure tool onboarding is complete for local launches so the user
 	// doesn't have to confirm theme/trust/setup prompts every time.
-	ensureToolOnboardingComplete(a, strings.ToLower(toolName), projectDir)
+	ensureToolOnboardingComplete(a, launchToolKind.String(), projectDir)
 
 	// Enforce Hub YOLO mode override for local launches (Req 7.8).
 	yoloMode = a.enforceYoloModeQuiet(yoloMode)
@@ -6019,11 +6029,11 @@ func (a *App) ListSkills(toolName string) []corelib.Skill {
 
 	// Filter out duplicates of default skills if they exist in JSON
 	// AND filter out 'address' type skills for gemini/codex
-	isGeminiOrCodex := strings.ToLower(toolName) == "gemini" || strings.ToLower(toolName) == "codex"
+	isGeminiOrCodex := normalizeRemoteToolNameKind(toolName).RequiresZipSkills()
 
 	filteredSkills := defaultSkills
 	for _, s := range skills {
-		if isGeminiOrCodex && s.Type == "address" {
+		if isGeminiOrCodex && normalizeSkillTypeKind(s.Type).IsAddress() {
 			continue
 		}
 
@@ -6074,7 +6084,8 @@ func (a *App) ListSkillsWithInstallStatus(toolName string, location string, proj
 	for i := range allSkills {
 		skill := &allSkills[i]
 
-		if skill.Type == "zip" {
+		switch normalizeSkillTypeKind(skill.Type) {
+		case skillTypeZip:
 			// For zip skills, extract the skill directory name from the zip filename
 			// The zip file should extract to a directory with the same base name
 			zipName := filepath.Base(skill.Value)
@@ -6084,7 +6095,7 @@ func (a *App) ListSkillsWithInstallStatus(toolName string, location string, proj
 
 			// Check if this directory exists in installed dirs
 			skill.Installed = installedMap[dirName]
-		} else if skill.Type == "address" {
+		case skillTypeAddress:
 			// For address skills, check enabledPlugins in settings.json
 			skill.Installed = enabledPlugins[skill.Value]
 			// Fallback: also check skill directories
@@ -6181,32 +6192,16 @@ func (a *App) validateSkillZip(path string) error {
 	return nil
 }
 func getToolConfigDirName(tool string) string {
-	switch strings.ToLower(tool) {
-	case "claude":
-		return ".claude"
-	case "gemini":
-		return ".gemini"
-	case "codex":
-		return ".codex"
-	case "opencode":
-		return ".opencode"
-	case "codebuddy":
-		return ".codebuddy"
-	case "iflow":
-		return ".iflow"
-	case "kilo", "kilocode":
-		return ".kilocode"
-	default:
-		return "." + strings.ToLower(tool)
-	}
+	return normalizeRemoteToolNameKind(tool).ConfigDirName()
 }
 func (a *App) AddSkill(name, description, skillType, value, toolName string) error {
+	skillKind := normalizeSkillTypeKind(skillType)
 	// Prevent address skills for gemini/codex
-	if (strings.ToLower(toolName) == "gemini" || strings.ToLower(toolName) == "codex") && skillType == "address" {
+	if normalizeRemoteToolNameKind(toolName).RequiresZipSkills() && skillKind.IsAddress() {
 		return fmt.Errorf("gemini and codex only support zip package skills")
 	}
 	// Validate zip if applicable
-	if skillType == "zip" && strings.Contains(value, string(os.PathSeparator)) {
+	if skillKind.IsZip() && strings.Contains(value, string(os.PathSeparator)) {
 		if err := a.validateSkillZip(value); err != nil {
 			return err
 		}
@@ -6226,7 +6221,7 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	for i, s := range skills {
 		if s.Name == name {
 			finalValue := value
-			if skillType == "zip" {
+			if skillKind.IsZip() {
 				// If value is a path (contains separator)", assume it's a new file to copy
 				if strings.Contains(value, string(os.PathSeparator)) {
 					srcFile, err := os.Open(value)
@@ -6260,7 +6255,7 @@ func (a *App) AddSkill(name, description, skillType, value, toolName string) err
 	}
 	if !found {
 		finalValue := value
-		if skillType == "zip" {
+		if skillKind.IsZip() {
 			// Copy file
 			srcFile, err := os.Open(value)
 			if err != nil {
@@ -6415,13 +6410,14 @@ func (a *App) unzip(src, dest string) error {
 	return nil
 }
 func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {
+	skillKind := normalizeSkillTypeKind(skillType)
 	// 1. Validate
-	if location == "project" && skillType == "address" {
+	if location == "project" && skillKind.IsAddress() {
 		return fmt.Errorf("project installation only supports zip/rar files")
 	}
 	// For zip validation, we need to know if value is a path or filename
 	var fullPath string
-	if skillType == "zip" {
+	if skillKind.IsZip() {
 		if strings.Contains(value, string(os.PathSeparator)) {
 			fullPath = value
 		} else {
@@ -6434,9 +6430,9 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 	configDirName := getToolConfigDirName(toolName)
 	// 2. Install to Tool
 	if location == "user" {
-		if skillType == "address" {
+		if skillKind.IsAddress() {
 			// Skill ID installation
-			if strings.ToLower(toolName) != "claude" {
+			if !normalizeRemoteToolNameKind(toolName).IsClaude() {
 				return fmt.Errorf("skill ID installation is currently only supported for Claude")
 			}
 			// Ensure default marketplaces are registered
@@ -6502,7 +6498,7 @@ func (a *App) DeleteSkill(name, toolName string) error {
 	var newSkills []corelib.Skill
 	for _, s := range skills {
 		if s.Name == name {
-			if s.Type == "zip" {
+			if normalizeSkillTypeKind(s.Type).IsZip() {
 				os.Remove(filepath.Join(skillsDir, s.Value))
 			}
 		} else {
