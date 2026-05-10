@@ -51,6 +51,7 @@ type Store struct {
 
 	// --- Topic clusterer (inspired by Graphiti Community Subgraph) ---
 	topicClusterer *TopicClusterer // tag-based topic clustering
+	themeManager   *ThemeManager   // embedding-aware xMemory-style theme layer
 
 	// --- Online extractor (Mem0-style incremental extraction) ---
 	onlineExtractor *OnlineExtractor // real-time per-turn extraction pipeline
@@ -106,6 +107,7 @@ func NewStore(path string) (*Store, error) {
 		semanticGraph:  NewSemanticGraph(),
 		entityIndex:    NewEntityIndex(),
 		topicClusterer: NewTopicClusterer(),
+		themeManager:   NewThemeManager(),
 		queryEmbCache:  make(map[string]queryEmbeddingCacheEntry),
 		queryEmbFlight: make(map[string]*queryEmbeddingFlight),
 	}
@@ -237,6 +239,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 			if s.semanticGraph != nil {
 				s.semanticGraph.IndexEntry(&s.entries[i])
 			}
+			s.rebuildThemeLayerLocked()
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -281,6 +284,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		if s.semanticGraph != nil {
 			s.semanticGraph.IndexEntry(&s.entries[substringDupIdx])
 		}
+		s.rebuildThemeLayerLocked()
 		s.dirty = true
 		s.signalSave()
 		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", s.entries[substringDupIdx].ID, newLen > existingLen)
@@ -342,6 +346,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	if s.semanticGraph != nil {
 		s.semanticGraph.IndexEntry(&entry)
 	}
+	s.rebuildThemeLayerLocked()
 
 	return nil
 }
@@ -398,6 +403,7 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 			if s.semanticGraph != nil {
 				s.semanticGraph.IndexEntry(&s.entries[i])
 			}
+			s.rebuildThemeLayerLocked()
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -424,6 +430,7 @@ func (s *Store) Delete(id string) error {
 			if s.semanticGraph != nil {
 				s.semanticGraph.RemoveEntry(id)
 			}
+			s.rebuildThemeLayerLocked()
 			s.dirty = true
 			s.signalSave()
 			return nil
@@ -692,6 +699,9 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	// 1-hop graph expansion: expand top candidates to discover related entries.
 	others = s.graphExpand(others, graphExpandSeeds)
 	others = filterRecallProjectOthers(others, projectLower)
+	if ClassifyComplexity(query, queryTokens, nil) != ComplexitySimple && s.themeManager != nil {
+		others = themeAwareDiversityRerank(others, s.themeManager.Themes(), graphExpandSeeds)
+	}
 
 	// Recall gating: LLM-based post-retrieval filtering.
 	if s.gating != nil {
@@ -1330,7 +1340,20 @@ func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
 	if s.projIndex != nil {
 		s.projIndex.Rebuild(s.entries)
 	}
+	s.rebuildThemeLayerLocked()
 	return graphLinksChanged
+}
+
+// rebuildThemeLayerLocked keeps the xMemory-style theme layer in sync with the
+// authoritative store entries. Caller MUST hold s.mu write lock, or be in Store
+// construction before sharing.
+func (s *Store) rebuildThemeLayerLocked() {
+	if s.themeManager == nil {
+		return
+	}
+	entries := make([]Entry, len(s.entries))
+	copy(entries, s.entries)
+	s.themeManager.Rebuild(entries, nil)
 }
 
 func firstOwnerID(ownerID ...string) string {
@@ -1383,6 +1406,7 @@ func (s *Store) supersedeEntryLocked(id string, invalidAt time.Time) bool {
 		if s.projIndex != nil {
 			s.projIndex.Rebuild(s.entries)
 		}
+		s.rebuildThemeLayerLocked()
 		s.dirty = true
 		return true
 	}
@@ -1504,6 +1528,9 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	// edges can cross owner, project, or category boundaries that the seed set had
 	// already filtered out.
 	candidates = filterRecallDynamicCandidates(candidates, category, projectLower, filterOwner)
+	if ClassifyComplexity(query, expanded.Entities, nil) != ComplexitySimple && s.themeManager != nil {
+		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
+	}
 
 	// Recall gating: LLM-based post-retrieval filtering.
 	if s.gating != nil {
@@ -2568,6 +2595,38 @@ func (s *Store) SemanticRecallDebugForProject(query string, projectPath string, 
 
 // TopicClusterer returns the topic clusterer for community-like summaries.
 func (s *Store) TopicClusterer() *TopicClusterer { return s.topicClusterer }
+
+// ThemeManager returns the embedding-aware theme layer used by adaptive recall.
+func (s *Store) ThemeManager() *ThemeManager { return s.themeManager }
+
+// ThemeHealth reports coverage and connectivity diagnostics for the theme layer.
+func (s *Store) ThemeHealth() ThemeHealth {
+	if s == nil || s.themeManager == nil {
+		return ThemeHealth{}
+	}
+	return s.themeManager.Health(s.List("", ""))
+}
+
+// ThemeExplanations returns top themes with representative source evidence.
+func (s *Store) ThemeExplanations(themeLimit int, evidenceLimit int) []ThemeExplanation {
+	if s == nil || s.themeManager == nil {
+		return nil
+	}
+	return s.themeManager.ExplainThemes(s.List("", ""), themeLimit, evidenceLimit)
+}
+
+// ThemeDiagnostics returns actionable health issues for the theme layer.
+func (s *Store) ThemeDiagnostics(limit int) ThemeDiagnosticReport {
+	if s == nil || s.themeManager == nil {
+		return ThemeDiagnosticReport{}
+	}
+	return s.themeManager.DiagnoseThemes(s.List("", ""), limit)
+}
+
+// ThemeMaintenancePlan returns a compact, non-destructive maintenance plan.
+func (s *Store) ThemeMaintenancePlan(issueLimit int, actionLimit int) ThemeMaintenancePlan {
+	return PlanThemeMaintenance(s.ThemeDiagnostics(issueLimit), actionLimit)
+}
 
 // OnlineExtractor returns the online extraction pipeline (may be nil).
 func (s *Store) OnlineExtractor() *OnlineExtractor { return s.onlineExtractor }

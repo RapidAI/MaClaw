@@ -179,8 +179,9 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	}
 
 	// Step 6: Topic clustering (inspired by Graphiti Community Subgraph).
-	// Rebuild topic clusters from current entries. This is lightweight (no LLM)
-	// and provides community-like summaries for global context.
+	// Rebuild topic clusters and the embedding-aware theme layer from current
+	// entries. TopicClusterer remains as a lightweight fallback; ThemeManager is
+	// the xMemory-style layer used by adaptive recall.
 	if p.store.topicClusterer != nil && ctx.Err() == nil {
 		p.store.mu.RLock()
 		entries := make([]Entry, len(p.store.entries))
@@ -196,6 +197,21 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 
 		if len(clusters) > 0 {
 			log.Printf("[pipeline] topic clustering: %d clusters discovered", len(clusters))
+		}
+	}
+	if p.store.themeManager != nil && ctx.Err() == nil {
+		p.store.mu.RLock()
+		entries := make([]Entry, len(p.store.entries))
+		copy(entries, p.store.entries)
+		p.store.mu.RUnlock()
+
+		var llm LLMChatCaller
+		if p.compressor != nil {
+			llm = p.compressor.llm
+		}
+		themes := p.store.themeManager.Rebuild(entries, llm)
+		if len(themes) > 0 {
+			log.Printf("[pipeline] theme layer: %d themes discovered", len(themes))
 		}
 	}
 
