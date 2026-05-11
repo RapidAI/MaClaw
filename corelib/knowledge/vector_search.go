@@ -239,3 +239,53 @@ func rrfFuse(ftsResults, embResults []SearchResult, limit int) []SearchResult {
 	}
 	return results
 }
+
+// backfillCardEmbeddings generates embeddings for cards that don't have one yet.
+func (s *SQLiteStore) backfillCardEmbeddings(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, claim, summary FROM knowledge_cards WHERE embedding IS NULL OR LENGTH(embedding) = 0`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type cardInfo struct {
+		id, title, claim, summary string
+	}
+	var cards []cardInfo
+	for rows.Next() {
+		var c cardInfo
+		if err := rows.Scan(&c.id, &c.title, &c.claim, &c.summary); err != nil {
+			return err
+		}
+		cards = append(cards, c)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(cards) == 0 {
+		return nil
+	}
+
+	// Batch embed
+	texts := make([]string, len(cards))
+	for i, c := range cards {
+		texts[i] = cardEmbeddingText(Card{Title: c.title, Claim: c.claim, Summary: c.summary})
+	}
+	vectors, err := s.embedder.EmbedBatch(texts)
+	if err != nil {
+		return err
+	}
+
+	// Update cards with embeddings
+	for i, c := range cards {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if i >= len(vectors) || len(vectors[i]) == 0 {
+			continue
+		}
+		_, _ = s.db.ExecContext(ctx, `UPDATE knowledge_cards SET embedding = ? WHERE id = ?`,
+			float32SliceToBytes(vectors[i]), c.id)
+	}
+	return nil
+}

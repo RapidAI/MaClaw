@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1520,10 +1519,19 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// Embedding vector search: fuse with FTS/LIKE results using RRF.
 	// This provides semantic matching (e.g., "学历" matches "博士") that
 	// neither FTS nor LIKE can achieve.
+	// Only triggered when FTS+LIKE didn't find high-confidence results,
+	// to avoid adding 50-100ms embedding inference latency to every search.
 	if s.embedder != nil && !embedding.IsNoop(s.embedder) {
-		embResults, embErr := s.searchByEmbedding(ctx, opts)
-		if embErr == nil && len(embResults) > 0 {
-			results = rrfFuse(results, embResults, opts.Limit)
+		needsEmbedding := len(results) == 0
+		if !needsEmbedding && len(results) > 0 && results[0].Score < 2.0 {
+			// FTS/LIKE found something but not high-confidence — embedding may help
+			needsEmbedding = true
+		}
+		if needsEmbedding {
+			embResults, embErr := s.searchByEmbedding(ctx, opts)
+			if embErr == nil && len(embResults) > 0 {
+				results = rrfFuse(results, embResults, opts.Limit)
+			}
 		}
 	}
 

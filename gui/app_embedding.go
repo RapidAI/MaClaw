@@ -540,6 +540,13 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		a.refreshMemoryEvolutionLLM()
 	}
 
+	// Wire embedder into knowledge auto-recall store (enables semantic search).
+	knowledgeAutoRecallStoreMu.Lock()
+	if knowledgeAutoRecallStore != nil {
+		knowledgeAutoRecallStore.SetEmbedder(emb)
+	}
+	knowledgeAutoRecallStoreMu.Unlock()
+
 	// Wire embedder into tool router (enables hybrid retrieval).
 	if a.toolRouter != nil {
 		a.toolRouter.SetEmbedder(emb)

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
 // segmentTextForFTS tokenizes text using gse (via bm25.Tokenize) and returns
@@ -94,7 +95,6 @@ func isCJK(r rune) bool {
 	return (r >= 0x4E00 && r <= 0x9FFF) || (r >= 0x3400 && r <= 0x4DBF)
 }
 
-
 // RebuildFTSIndex drops and rebuilds all FTS indexes with properly segmented content.
 // This should be called once after upgrading to gse-based FTS to re-index existing data.
 // The rebuild is atomic per table — if any table rebuild fails, that table's FTS is
@@ -108,6 +108,13 @@ func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 	}
 	if err := s.rebuildFactsFTS(ctx); err != nil {
 		return fmt.Errorf("rebuild knowledge_facts_fts: %w", err)
+	}
+	// Backfill card embeddings if embedder is available
+	if s.embedder != nil && !embedding.IsNoop(s.embedder) {
+		if err := s.backfillCardEmbeddings(ctx); err != nil {
+			// Non-fatal: FTS is rebuilt, embeddings can be backfilled later
+			fmt.Printf("[knowledge] embedding backfill failed: %v\n", err)
+		}
 	}
 	return nil
 }
