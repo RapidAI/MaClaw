@@ -337,6 +337,11 @@ type EngineCallbacks interface {
 	EmitDocUpdate(userID, phaseID, content string) error
 	// EmitGateResult notifies the frontend of a quality gate result.
 	EmitGateResult(userID, phaseID string, result *QualityGateResult) error
+	// GetLang returns the current user-facing language ("zh", "en").
+	// The engine calls this each time it needs to produce localized text,
+	// ensuring the language is always read from the single source of truth
+	// (app config) without requiring push-based synchronization.
+	GetLang() string
 }
 
 // LLMCaller abstracts LLM invocation for testability.

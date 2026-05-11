@@ -26,6 +26,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
@@ -79,6 +80,13 @@ func (c *TUIWorkflowCallbacks) EmitDocUpdate(userID, phaseID, content string) er
 func (c *TUIWorkflowCallbacks) EmitGateResult(userID, phaseID string, result *workflow.QualityGateResult) error {
 	log.Printf("[TUI-workflow] gate result: phase=%s", phaseID)
 	return nil
+}
+
+func (c *TUIWorkflowCallbacks) GetLang() string {
+	if c.app != nil {
+		return c.app.appConfig.Language
+	}
+	return ""
 }
 
 // tuiWorkflowStore implements workflow.PersistenceStore (in-memory no-op).
@@ -173,7 +181,7 @@ func (app *TUIApp) handleActiveWorkflowTUI(text string) string {
 	resp, err := app.workflowEngine.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[TUI-workflow] HandleInput error: %v", err)
-		return fmt.Sprintf("工作流处理出错: %v", err)
+		return i18n.Tf(i18n.MsgWorkflowHandleError, app.workflowLang(), err)
 	}
 	if resp == nil {
 		return ""
@@ -290,7 +298,7 @@ func (app *TUIApp) workflowReviewBarrierText(userID string) string {
 	if tmpl := app.workflowEngine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
 		phaseName = tmpl.Phases[ws.PhaseIndex].Name
 	}
-	return fmt.Sprintf("Current workflow is waiting for review at phase %q. Please confirm, supplement, skip if allowed, cancel, or start a clearly different task.", phaseName)
+	return i18n.Tf(i18n.MsgWorkflowAwaitingReview, app.workflowLang(), phaseName)
 }
 
 func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
@@ -303,10 +311,10 @@ func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[TUI-workflow] understanding HandleInput error: %v", err)
-		return "我收到了你的补充，但刚才内部理解步骤临时失败了。请再发一次补充，或者直接说“开工”，我会继续当前任务。"
+		return i18n.T(i18n.MsgWorkflowUnderstandError, app.workflowLang())
 	}
 	if cancelled {
-		return "已取消。"
+		return i18n.T(i18n.MsgWorkflowCancelled, app.workflowLang())
 	}
 	if ready && intent != nil {
 		if intent.Category == workflow.WorkflowNone || intent.Category == "" {
@@ -315,7 +323,7 @@ func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 		state, err := app.workflowEngine.StartWorkflow(userID, *intent)
 		if err != nil {
 			log.Printf("[TUI-workflow] StartWorkflow error: %v", err)
-			return fmt.Sprintf("启动工作流失败: %v", err)
+			return i18n.Tf(i18n.MsgWorkflowStartError, app.workflowLang(), err)
 		}
 		return app.buildWorkflowStartOverview(userID, state, reply)
 	}
@@ -348,15 +356,21 @@ func shouldBypassTUIWorkflowUnderstanding(text string) bool {
 	return trimmed == "" || utf8.RuneCountInString(trimmed) <= 1
 }
 
+// workflowLang returns the language for workflow user-facing messages.
+func (app *TUIApp) workflowLang() string {
+	return app.appConfig.Language
+}
+
 func (app *TUIApp) buildWorkflowStartOverview(userID string, state *workflow.WorkflowState, prefix string) string {
-	overview := fmt.Sprintf("🚀 工作流已启动：%s\n📋 当前阶段：%s", state.Type, state.CurrentPhase)
+	lang := app.workflowLang()
+	overview := i18n.Tf(i18n.MsgWorkflowStarted, lang, state.Type, state.CurrentPhase)
 	if req := app.workflowEngine.GetInputRequirement(userID); req != nil {
-		overview += "\n\n📎 " + req.Description
+		overview += i18n.Tf(i18n.MsgWorkflowInputRequired, lang, req.Description)
 		if len(req.FileTypes) > 0 {
-			overview += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
+			overview += i18n.Tf(i18n.MsgWorkflowInputFormats, lang, strings.Join(req.FileTypes, ", "))
 		}
 		if req.AcceptText {
-			overview += "\n\nTUI 中请直接粘贴/拖入本地文件路径，或把文档正文粘贴进来。路径里有空格时请用引号包起来。"
+			overview += i18n.T(i18n.MsgWorkflowInputPasteHint, lang)
 		}
 	}
 	if strings.TrimSpace(prefix) != "" {

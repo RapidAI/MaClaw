@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -66,13 +67,13 @@ func (b *browserReplaySchedulerBridge) handleScheduledReplay(task *scheduler.Sch
 
 // wrapExecutorWithReplay wraps an existing TaskExecutor to intercept browser_replay actions.
 func wrapExecutorWithReplay(original scheduler.TaskExecutor, bridge *browserReplaySchedulerBridge) scheduler.TaskExecutor {
-	return func(task *scheduler.ScheduledTask) (string, error) {
+	return func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 		result, err, handled := bridge.handleScheduledReplay(task)
 		if handled {
 			return result, err
 		}
 		if original != nil {
-			return original(task)
+			return original(ctx, task)
 		}
 		return "", fmt.Errorf("no executor configured")
 	}

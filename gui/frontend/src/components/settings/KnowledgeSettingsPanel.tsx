@@ -766,8 +766,7 @@ type ContextPackResult = {
     notes?: string[];
 };
 
-const defaultExts = ['.docx', '.doc', '.pdf', '.xlsx', '.xls', '.csv', '.md', '.txt'];
-const sourceKindOptions = ['url', 'pdf', 'docx', 'xlsx', 'csv', 'markdown', 'text', 'conversation', 'workflow_artifact', 'doc', 'xls'];
+const sourceKindOptions = ['url', 'pdf', 'pptx', 'docx', 'xlsx', 'csv', 'markdown', 'text', 'conversation', 'workflow_artifact', 'doc', 'xls'];
 const sourceStatusOptions = ['pending', 'parsed', 'distilled', 'failed', 'stale', 'disabled'];
 const sourceCoverageOptions = ['missing_nodes', 'missing_cards', 'missing_facts', 'missing_links', 'missing_labels', 'pdf_ocr_needed', 'complete', 'has_nodes', 'has_cards', 'has_facts', 'has_links'];
 const refreshableSourceKinds = new Set(['url', 'html', 'pdf', 'docx', 'xlsx', 'csv', 'markdown', 'text', 'doc', 'xls']);
@@ -1695,6 +1694,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             open={showImportDialog}
             onClose={() => setShowImportDialog(false)}
             onJobUpdate={job => { if (job) setImportJob(job); }}
+            supportedExts={capabilities?.default_include_exts}
             t={t}
             lang={lang}
         />

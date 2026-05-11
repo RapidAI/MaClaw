@@ -40,6 +40,15 @@ func (a *GUIWorkflowAdapter) SendTextToUser(userID, text string) error {
 	return nil
 }
 
+// GetLang returns the current user-facing language from the app config.
+// This is the single source of truth for workflow message localization.
+func (a *GUIWorkflowAdapter) GetLang() string {
+	if a.app != nil {
+		return a.app.CurrentLanguage
+	}
+	return ""
+}
+
 // EmitPhaseUpdate notifies the frontend of a phase change.
 func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
 	if a.app.ctx != nil {

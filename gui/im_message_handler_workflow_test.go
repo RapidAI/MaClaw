@@ -43,6 +43,8 @@ func (m *mockEngineCallbacksGUI) EmitGateResult(userID, phaseID string, result *
 	return nil
 }
 
+func (m *mockEngineCallbacksGUI) GetLang() string { return "zh" }
+
 func setupWorkflowTestHandler(llm workflow.LLMCaller) (*IMMessageHandler, *mockEngineCallbacksGUI) {
 	registry := workflow.NewWorkflowRegistry()
 	cb := &mockEngineCallbacksGUI{}

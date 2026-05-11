@@ -213,6 +213,13 @@ Rules:
 - If no facts worth extracting, return an empty array: []
 - Return ONLY a JSON array, no markdown, no commentary
 
+CRITICAL category rules:
+- "user_fact" = ONLY personal information about the user (name, family members, location, job title, personal habits, relationships between people)
+- "project_knowledge" = technical environment (software versions, server configs, Docker settings, project architecture, API endpoints, deployment configs, tool configurations, file paths, commands)
+- "preference" = user's tool/language/style preferences
+- "instruction" = how the user wants things done (coding style, workflow rules)
+- NEVER mix personal info and technical info in a single fact. If a conversation mentions both family members and Docker configs, extract them as SEPARATE facts with DIFFERENT categories.
+
 Reference timestamp: ` + refTimeStr
 
 	userPrompt := ""
@@ -336,17 +343,21 @@ func (oe *OnlineExtractor) classifyAndApply(
 		if classified.TargetID != "" && classified.MergedText != "" {
 			// Use Store.Update to ensure all indices are updated consistently.
 			// Merge tags from the new fact into the existing entry's tags.
+			// Preserve the target entry's original category — UPDATE means
+			// "augment existing memory", not "reclassify it".
 			mergedTags := tags
+			targetCat := cat // fallback to new fact's category if target not found
 			oe.store.mu.RLock()
 			for i := range oe.store.entries {
 				if oe.store.entries[i].ID == classified.TargetID {
 					mergedTags = mergeTags(oe.store.entries[i].Tags, tags)
+					targetCat = oe.store.entries[i].Category
 					break
 				}
 			}
 			oe.store.mu.RUnlock()
 
-			if err := oe.store.Update(classified.TargetID, classified.MergedText, cat, mergedTags); err != nil {
+			if err := oe.store.Update(classified.TargetID, classified.MergedText, targetCat, mergedTags); err != nil {
 				log.Printf("[online_extractor] update failed for %s: %v", classified.TargetID, err)
 				// Fallback to ADD.
 				entry := Entry{
@@ -499,6 +510,9 @@ Reply with ONLY a JSON object:
 
 // findSimilarMemories retrieves the top-k most similar active memories
 // using both vector similarity and BM25.
+// Category isolation: only returns entries whose canonical category matches
+// the new fact's category. This prevents cross-category UPDATE merges
+// (e.g. project_knowledge content being merged into a user_fact entry).
 func (oe *OnlineExtractor) findSimilarMemories(content string, category Category, ownerID string, topK int) []Entry {
 	// BM25 scores.
 	bm25Scores := oe.store.bm25.score(content)
@@ -526,6 +540,9 @@ func (oe *OnlineExtractor) findSimilarMemories(content string, category Category
 		threshold = 0.5 // hybrid: vector similarity provides strong signal
 	}
 
+	// Canonical category for isolation check.
+	canonicalCat := MapToCanonical(category)
+
 	type scored struct {
 		entry Entry
 		score float64
@@ -542,6 +559,12 @@ func (oe *OnlineExtractor) findSimilarMemories(content string, category Category
 		}
 		// Multi-tenant isolation.
 		if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+			continue
+		}
+		// Category isolation: only match entries in the same canonical category.
+		// This prevents cross-category merges (e.g. a project_knowledge fact
+		// being UPDATE-merged into a user_fact entry about family members).
+		if category != "" && MapToCanonical(e.Category) != canonicalCat {
 			continue
 		}
 

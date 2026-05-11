@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	excelread "github.com/RapidAI/CodeClaw/corelib/excel"
+	"github.com/RapidAI/CodeClaw/corelib/pptx"
 	"github.com/ledongthuc/pdf"
 )
 
@@ -38,6 +39,8 @@ func ParseDocumentNodes(source Source, filePath, kind string) ([]DocumentNode, e
 		return parseDOCXNodes(source, filePath)
 	case SourceKindPDF:
 		return parsePDFNodes(source, filePath)
+	case SourceKindPPTX:
+		return parsePPTXNodes(source, filePath)
 	case SourceKindXLSX, SourceKindCSV:
 		return parseSpreadsheetNodes(source, filePath, kind)
 	case SourceKindDOC:
@@ -351,6 +354,90 @@ func flushParagraph(paragraphs *[]string, paragraph *strings.Builder) {
 	paragraph.Reset()
 	if text != "" {
 		*paragraphs = append(*paragraphs, text)
+	}
+}
+
+func parsePPTXNodes(source Source, filePath string) ([]DocumentNode, error) {
+	pres, err := pptx.Read(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Extract all text content from slides into paragraphs.
+	var paragraphs []string
+
+	for _, slide := range pres.Slides {
+		var slideTexts []string
+		for _, shape := range slide.Shapes {
+			text := pptxShapeText(shape)
+			if text != "" {
+				slideTexts = append(slideTexts, text)
+			}
+		}
+		if len(slideTexts) > 0 {
+			header := fmt.Sprintf("--- Slide %d ---", slide.Number)
+			paragraphs = append(paragraphs, header)
+			paragraphs = append(paragraphs, slideTexts...)
+		}
+		if slide.Notes != "" {
+			paragraphs = append(paragraphs, "[Notes] "+strings.TrimSpace(slide.Notes))
+		}
+	}
+
+	if len(paragraphs) == 0 {
+		return nil, fmt.Errorf("pptx has no readable text")
+	}
+
+	return nodesFromParagraphs(source, paragraphs, "pptx"), nil
+}
+
+// pptxShapeText extracts plain text from a PPTX shape.
+func pptxShapeText(shape pptx.Shape) string {
+	switch shape.Type {
+	case pptx.ShapeTypeText:
+		if shape.Text == nil {
+			return ""
+		}
+		var lines []string
+		for _, para := range shape.Text.Paragraphs {
+			var sb strings.Builder
+			for _, run := range para.Runs {
+				sb.WriteString(run.Text)
+			}
+			if sb.Len() > 0 {
+				lines = append(lines, sb.String())
+			}
+		}
+		return strings.Join(lines, "\n")
+	case pptx.ShapeTypeTable:
+		if shape.Table == nil {
+			return ""
+		}
+		var rows []string
+		for _, row := range shape.Table.Rows {
+			var cells []string
+			for _, cell := range row.Cells {
+				cells = append(cells, cell.Text)
+			}
+			rows = append(rows, strings.Join(cells, " | "))
+		}
+		return strings.Join(rows, "\n")
+	case pptx.ShapeTypeChart:
+		if shape.Chart == nil {
+			return ""
+		}
+		var parts []string
+		if shape.Chart.ChartType != "" {
+			parts = append(parts, "[Chart: "+shape.Chart.ChartType+"]")
+		}
+		for _, ds := range shape.Chart.DataSeries {
+			if ds.Label != "" {
+				parts = append(parts, ds.Label)
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
 	}
 }
 

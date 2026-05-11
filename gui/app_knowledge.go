@@ -190,13 +190,36 @@ func (a *App) SelectKnowledgeFiles() []string {
 	selections, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "Select Knowledge Documents",
 		Filters: []runtime.FileFilter{
-			{DisplayName: "Documents (*.docx, *.pdf, *.xlsx, *.md, *.txt, *.doc, *.xls)", Pattern: "*.docx;*.pdf;*.xlsx;*.md;*.txt;*.doc;*.xls"},
+			{DisplayName: "Documents (*.docx, *.pdf, *.pptx, *.xlsx, *.md, *.txt, *.doc, *.xls)", Pattern: "*.docx;*.pdf;*.pptx;*.xlsx;*.md;*.txt;*.doc;*.xls"},
 		},
 	})
 	if err != nil {
 		return []string{}
 	}
 	return selections
+}
+
+// ExportTextFile shows a save dialog and writes the given text content to the chosen file.
+// Returns the saved file path, or empty string if the user cancelled.
+func (a *App) ExportTextFile(content string, defaultFilename string) (string, error) {
+	savePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "Export Report",
+		DefaultFilename: defaultFilename,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Markdown (*.md)", Pattern: "*.md"},
+			{DisplayName: "All Files (*.*)", Pattern: "*.*"},
+		},
+	})
+	if err != nil {
+		return "", err
+	}
+	if savePath == "" {
+		return "", nil
+	}
+	if err := os.WriteFile(savePath, []byte(content), 0644); err != nil {
+		return "", err
+	}
+	return savePath, nil
 }
 
 func (a *App) KnowledgeStats() (knowledge.Stats, error) {

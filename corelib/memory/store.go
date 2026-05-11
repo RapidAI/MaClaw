@@ -3140,6 +3140,9 @@ func (s *Store) findSubstringDuplicateForEntry(entry Entry) int {
 		return -1
 	}
 
+	// Canonical category for isolation check.
+	canonicalCat := MapToCanonical(entry.Category)
+
 	// Scan the most recent 50 entries (by slice position, which correlates
 	// with creation order since new entries are appended).
 	start := len(s.entries) - 50
@@ -3151,6 +3154,12 @@ func (s *Store) findSubstringDuplicateForEntry(entry Entry) int {
 		// Empty OwnerID (shared) can match with any user.
 		existingOwner := s.entries[i].OwnerID
 		if entry.OwnerID != "" && existingOwner != "" && existingOwner != entry.OwnerID {
+			continue
+		}
+		// Category isolation: only dedup within the same canonical category.
+		// This prevents a project_knowledge entry from being merged into a
+		// user_fact entry (or vice versa) just because they share a substring.
+		if entry.Category != "" && MapToCanonical(s.entries[i].Category) != canonicalCat {
 			continue
 		}
 		if isDuplicateContentCandidate(lower, entry.Entities, s.entries[i]) {

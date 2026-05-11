@@ -1062,7 +1062,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	// Wire the scheduled task executor so that due tasks are sent to the
 	// agent loop via the IM handler, making scheduled tasks actually fire.
 	if a.scheduledTaskManager != nil {
-		a.scheduledTaskManager.SetExecutor(func(task *scheduler.ScheduledTask) (string, error) {
+		a.scheduledTaskManager.SetExecutor(func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
 			// Show a quiet notification when the task starts executing.
 			if ShowNotification != nil {
 				ShowNotification(
@@ -1073,7 +1073,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			}
 
 			// Progress callback: only log locally, do NOT push intermediate
-			// progress to IM 闂?users find frequent mid-execution notifications
+			// progress to IM — users find frequent mid-execution notifications
 			// annoying. We only notify on start and final result/error.
 			onProgress := func(text string) {
 				fmt.Printf("[ScheduledTask] %s progress: %s\n", task.Name, text)
@@ -1083,19 +1083,26 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			// that must complete in one shot (no user to "continue").
 			actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
 
-			resp := hubClient.ensureIMHandler().HandleIMMessageWithProgress(IMUserMessage{
+			handler := hubClient.ensureIMHandler()
+			resp := handler.HandleIMMessageWithProgressAndStream(IMUserMessage{
 				UserID:        "scheduled_task",
 				Platform:      "scheduler",
 				Text:          actionText,
 				MinIterations: 50, // complex tasks need more rounds
 				IsBackground:  true,
-			}, onProgress)
+				CancelCtx:     ctx, // propagate scheduler timeout to agent loop
+			}, onProgress, nil, nil, nil)
 			if resp == nil {
 				return "", fmt.Errorf("nil response from agent")
 			}
 
+			// Check if we were cancelled by the scheduler timeout.
+			if ctx.Err() != nil {
+				return resp.Text, ctx.Err()
+			}
+
 			// Push the result to the user's IM channels (Feishu/QQ) via Hub.
-			// Silently ignore send errors 闂?Hub may be temporarily disconnected.
+			// Silently ignore send errors — Hub may be temporarily disconnected.
 			resultText := resp.Text
 			hasError := resp.Error != ""
 
@@ -1437,7 +1444,7 @@ func (a *App) shutdown(ctx context.Context) {
 		a.memoryCompressor.Stop()
 	}
 	if a.scheduledTaskManager != nil {
-		a.scheduledTaskManager.Stop()
+		a.scheduledTaskManager.Stop() // cancels ticker + all in-flight executor goroutines
 	}
 	if a.stopHubTicker != nil {
 		close(a.stopHubTicker)

@@ -184,6 +184,22 @@ func (m *BackgroundLoopManager) QueueLength(kind SlotKind) int {
 	return len(m.queues[kind])
 }
 
+// CancelPending removes a pending task from the queue by its resultC channel.
+// This must be called when the caller times out waiting for a slot, to prevent
+// the pending task from being dequeued later and creating an orphan LoopContext
+// that permanently leaks the slot.
+func (m *BackgroundLoopManager) CancelPending(kind SlotKind, ch <-chan *LoopContext) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q := m.queues[kind]
+	for i, pt := range q {
+		if pt.resultC == ch {
+			m.queues[kind] = append(q[:i], q[i+1:]...)
+			return
+		}
+	}
+}
+
 // RunningCount returns the number of running loops for a given slot kind.
 func (m *BackgroundLoopManager) RunningCount(kind SlotKind) int {
 	m.mu.RLock()

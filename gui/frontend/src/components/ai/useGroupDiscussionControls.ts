@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import type { GroupDiscussionPanelControl } from "./aiAssistantPanelTypes";
+import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
 import { localizeText } from "./aiAssistantI18n";
 
 export function useGroupDiscussionControls(groupDiscussion: GroupDiscussionPanelControl | undefined, inline: boolean | undefined, lang: string) {

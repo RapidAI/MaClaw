@@ -4175,6 +4175,12 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		// Fallback: use the raw query as a single term
 		terms = []string{query}
 	}
+	// Cap terms to prevent excessive OR conditions in LIKE queries.
+	// With 5 terms × 3 columns = 15 LIKE conditions per table — acceptable.
+	const maxLikeTerms = 5
+	if len(terms) > maxLikeTerms {
+		terms = terms[:maxLikeTerms]
+	}
 
 	limit := opts.Limit
 	if limit <= 0 {

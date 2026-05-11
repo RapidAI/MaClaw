@@ -76,9 +76,12 @@ func NewLoopContext(id string, maxIter int, httpClient *http.Client) *LoopContex
 }
 
 // NewBackgroundLoopContext creates a LoopContext for a background loop.
+// parentCtx is an optional external cancellation context (e.g. scheduler
+// timeout). When parentCtx is cancelled, the loop's CancelC is automatically
+// closed. Pass nil if no external cancellation is needed.
 func NewBackgroundLoopContext(id string, slotKind SlotKind, description string,
 	maxIter int, httpClient *http.Client, statusC chan StatusEvent) *LoopContext {
-	return &LoopContext{
+	ctx := &LoopContext{
 		ID:            id,
 		Kind:          LoopKindBackground,
 		SlotKind:      slotKind,
@@ -92,6 +95,29 @@ func NewBackgroundLoopContext(id string, slotKind SlotKind, description string,
 		HTTPClient:    httpClient,
 		StartedAt:     time.Now(),
 	}
+	return ctx
+}
+
+// BindParentContext attaches an external context.Context as a cancellation
+// parent. When parentCtx is cancelled (e.g. scheduler timeout, shutdown),
+// the loop's CancelC is automatically closed. This is the standard
+// context composition pattern — child inherits parent's cancellation.
+//
+// Must be called before runAgentLoop starts. The internal goroutine exits
+// when either parentCtx is cancelled OR DoneC is closed (loop finishes),
+// whichever comes first — no goroutine leak.
+func (c *LoopContext) BindParentContext(parentCtx context.Context) {
+	if parentCtx == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			c.Cancel()
+		case <-c.DoneC:
+			// loop finished normally; goroutine exits cleanly
+		}
+	}()
 }
 
 // MaxIterations returns the current max iterations (thread-safe).

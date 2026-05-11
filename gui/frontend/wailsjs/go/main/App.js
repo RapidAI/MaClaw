@@ -2123,6 +2123,10 @@ export function SelectKnowledgeFiles() {
   return window['go']['main']['App']['SelectKnowledgeFiles']();
 }
 
+export function ExportTextFile(arg1, arg2) {
+  return window['go']['main']['App']['ExportTextFile'](arg1, arg2);
+}
+
 // MIS data service bindings
 export function GetMISDataConfig() {
   return window['go']['main']['App']['GetMISDataConfig']();

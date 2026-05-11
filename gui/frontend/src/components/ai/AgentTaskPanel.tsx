@@ -953,7 +953,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
             <header
                 onMouseDown={handleHeaderMouseDown}
                 onDoubleClick={handleHeaderDoubleClick}
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "drag" } as React.CSSProperties}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "12px 14px", borderBottom: `1px solid ${theme.divider}`, background: theme.titleBarBg, "--wails-draggable": "no-drag" } as React.CSSProperties}
             >
                 <div style={{ minWidth: 0 }}>
                     <div style={{ color: theme.titleText, fontWeight: 700, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

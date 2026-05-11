@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
+import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -2802,7 +2803,45 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, [injectSupplementary, sendMessage]);
 
-    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, submitAgentView, dismissAgentView };
+    // panelState / panelActions: pre-built objects matching AIAssistantPanelStateProps
+    // and AIAssistantPanelActionProps. App.tsx spreads these directly into
+    // <AIAssistantPanel state={...panelState} actions={...panelActions} />,
+    // eliminating the manual field-by-field mapping that caused #agentView-missing.
+    // When useAIAssistant adds a new field, it flows through automatically.
+    const panelState: AIAssistantPanelHookState = useMemo(() => ({
+        messages,
+        progressMessages,
+        sending,
+        streaming,
+        visualBusy,
+        ready,
+        initStatus,
+        selectedFilePaths,
+        submittedPrompts,
+        draftInputValue,
+        trialReflectEnabled,
+        scrollToTopSeq,
+        agentView,
+    }), [messages, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView]);
+
+    const panelActions: AIAssistantPanelHookActions = useMemo(() => ({
+        browseFile,
+        clearSelectedFile,
+        removeSelectedFile,
+        sendMessage,
+        sendMessageInBackground,
+        injectSupplementary,
+        clearHistory,
+        recordSubmittedPrompt,
+        setDraftInputValue,
+        executeAction,
+        refreshNews: doFetchNews,
+        cancelSession,
+        submitAgentView,
+        dismissAgentView,
+    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendMessageInBackground, injectSupplementary, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView]);
+
+    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, submitAgentView, dismissAgentView, panelState, panelActions };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

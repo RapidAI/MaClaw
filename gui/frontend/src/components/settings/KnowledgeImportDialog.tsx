@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import {
+    ExportTextFile,
     KnowledgeImportJobStatus,
     KnowledgeScanDirectory,
     KnowledgeScanFiles,
@@ -11,6 +12,10 @@ import {
 } from '../../../wailsjs/go/main/App';
 import { EventsOn } from '../../../wailsjs/runtime';
 import { colors, radius } from '../remote/styles';
+
+// Fallback only used if capabilities haven't loaded yet (e.g. dialog opened before API returns).
+// The authoritative list comes from the backend via the supportedExts prop.
+const fallbackExts = ['.pdf', '.pptx', '.docx', '.doc', '.xlsx', '.xls', '.csv', '.md', '.txt'];
 
 type TFunc = (en: string, zhHans: string, zhHant?: string) => string;
 
@@ -54,11 +59,14 @@ type Props = {
     open: boolean;
     onClose: () => void;
     onJobUpdate?: (job: ImportJob | null) => void;
+    supportedExts?: string[];
     t: TFunc;
     lang: string;
 };
 
-export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: Props) {
+export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExts, t, lang }: Props) {
+    // Single source of truth: backend-provided list, fallback only if not yet loaded.
+    const allExts = supportedExts && supportedExts.length > 0 ? supportedExts : fallbackExts;
     const [step, setStep] = useState<ImportDialogStep>('choose');
     const [importMode, setImportMode] = useState<'directory' | 'files'>('directory');
     const [selectedPath, setSelectedPath] = useState('');
@@ -74,12 +82,26 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
         labels: '',
         recursive: true,
         autoLabels: true,
-        includeExts: '',
+        includeExts: [...allExts],
         excludeGlobs: '',
         maxFileBytes: 104857600,
         distillMode: '',
     });
     const [showAdvanced, setShowAdvanced] = useState(false);
+
+    // Sync includeExts when backend capabilities arrive (supportedExts prop changes).
+    const prevExtsRef = useRef(allExts);
+    useEffect(() => {
+        if (prevExtsRef.current === allExts) return;
+        const prev = prevExtsRef.current;
+        prevExtsRef.current = allExts;
+        // Only auto-sync if user hasn't manually deselected anything (still matches previous full set).
+        setConfig(c => {
+            const wasAllSelected = prev.every(ext => c.includeExts.includes(ext)) && c.includeExts.length === prev.length;
+            if (wasAllSelected) return { ...c, includeExts: [...allExts] };
+            return c;
+        });
+    }, [allExts]);
 
     // Notify parent of job updates
     const onJobUpdateRef = useRef(onJobUpdate);
@@ -157,19 +179,24 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
         onClose();
     };
 
-    const buildPayload = () => ({
-        root_path: selectedPath,
-        topic_hint: config.topicHint.trim(),
-        save_scope: config.saveScope,
-        distill_mode: config.distillMode,
-        labels: config.labels.split(/[,;，；\n]+/).map(s => s.trim()).filter(Boolean),
-        auto_labels: config.autoLabels,
-        recursive: config.recursive,
-        include_exts: config.includeExts.split(/[,;，；\n]+/).map(s => s.trim()).filter(Boolean).map(ext => ext.startsWith('.') ? ext : `.${ext}`),
-        exclude_globs: config.excludeGlobs.split(/[,;，；\n]+/).map(s => s.trim()).filter(Boolean),
-        max_file_bytes: config.maxFileBytes,
-        dry_run: false,
-    });
+    const buildPayload = () => {
+        // When all formats are selected, send empty array to let backend use its DefaultIncludeExts.
+        // This ensures forward-compatibility when backend adds new formats.
+        const allSelected = allExts.every(ext => config.includeExts.includes(ext));
+        return {
+            root_path: selectedPath,
+            topic_hint: config.topicHint.trim(),
+            save_scope: config.saveScope,
+            distill_mode: config.distillMode,
+            labels: config.labels.split(/[,;，；\n]+/).map(s => s.trim()).filter(Boolean),
+            auto_labels: config.autoLabels,
+            recursive: config.recursive,
+            include_exts: allSelected ? [] : config.includeExts,
+            exclude_globs: config.excludeGlobs.split(/[,;，；\n]+/).map(s => s.trim()).filter(Boolean),
+            max_file_bytes: config.maxFileBytes,
+            dry_run: false,
+        };
+    };
 
     const handleChooseDirectory = async () => {
         try {
@@ -283,7 +310,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
                                 <span style={chooseDescStyle}>{t('Pick one or more document files', '选择一个或多个文档文件')}</span>
                             </button>
                             <div style={formatHintStyle}>
-                                {t('Supported: PDF, DOCX, XLSX, CSV, Markdown, TXT', '支持格式：PDF、DOCX、XLSX、CSV、Markdown、TXT')}
+                                {t('Supported: PDF, PPTX, DOCX, XLSX, CSV, Markdown, TXT', '支持格式：PDF、PPTX、DOCX、XLSX、CSV、Markdown、TXT')}
                             </div>
                         </div>
                     )}
@@ -302,6 +329,9 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
                                         <strong>{scanResult.total_files || 0}</strong> {t('files found', '个文件')}
                                         {(scanResult.estimated_bytes || 0) > 0 && (
                                             <span style={scanMetaStyle}> · {formatBytes(scanResult.estimated_bytes || 0)}</span>
+                                        )}
+                                        {scanResult.ext_counts && Object.keys(scanResult.ext_counts).length > 0 && (
+                                            <span style={scanMetaStyle}> · {Object.entries(scanResult.ext_counts).map(([ext, n]) => `${ext}(${n})`).join(' ')}</span>
                                         )}
                                     </div>
                                     {scanResult.queued_files !== undefined && scanResult.queued_files < (scanResult.total_files || 0) && (
@@ -340,24 +370,51 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
                                 {showAdvanced ? '▼' : '▸'} {t('Advanced options', '高级选项')}
                             </button>
                             {showAdvanced && (
-                                <div style={configGridStyle}>
-                                    <label style={configLabelStyle}>
-                                        {t('Include extensions', '包含扩展名')}
-                                        <input style={configInputStyle} value={config.includeExts} onChange={e => setConfig({ ...config, includeExts: e.target.value })} placeholder=".pdf,.docx,.md" />
-                                    </label>
-                                    <label style={configLabelStyle}>
-                                        {t('Exclude globs', '排除规则')}
-                                        <input style={configInputStyle} value={config.excludeGlobs} onChange={e => setConfig({ ...config, excludeGlobs: e.target.value })} placeholder="node_modules/**" />
-                                    </label>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                    <div style={configLabelStyle}>
+                                        {t('File formats', '文件格式')}
+                                        <div style={extCheckboxGridStyle}>
+                                            {allExts.map(ext => (
+                                                <label key={ext} style={extCheckboxLabelStyle}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={config.includeExts.includes(ext)}
+                                                        onChange={e => {
+                                                            setConfig(prev => ({
+                                                                ...prev,
+                                                                includeExts: e.target.checked
+                                                                    ? [...prev.includeExts, ext]
+                                                                    : prev.includeExts.filter(x => x !== ext),
+                                                            }));
+                                                        }}
+                                                    />
+                                                    {ext}
+                                                </label>
+                                            ))}
+                                        </div>
+                                        <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+                                            <button type="button" style={extQuickBtnStyle} onClick={() => setConfig(prev => ({ ...prev, includeExts: [...allExts] }))}>{t('Select all', '全选')}</button>
+                                            <button type="button" style={extQuickBtnStyle} onClick={() => setConfig(prev => ({ ...prev, includeExts: [] }))}>{t('Clear all', '清空')}</button>
+                                        </div>
+                                    </div>
+                                    <div style={configGridStyle}>
+                                        <label style={configLabelStyle}>
+                                            {t('Exclude globs', '排除规则')}
+                                            <input style={configInputStyle} value={config.excludeGlobs} onChange={e => setConfig({ ...config, excludeGlobs: e.target.value })} placeholder="node_modules/**" />
+                                        </label>
+                                    </div>
                                 </div>
                             )}
 
                             <div style={actionRowStyle}>
                                 <button style={cancelBtnStyle} onClick={() => setStep('choose')}>{t('Cancel', '取消')}</button>
-                                <button style={startBtnStyle} disabled={scanning || !(scanResult?.queued_files)} onClick={handleStartImport}>
+                                <button style={startBtnStyle} disabled={scanning || !(scanResult?.queued_files) || config.includeExts.length === 0} onClick={handleStartImport}>
                                     {t('Start Import', '开始导入')} →
                                 </button>
                             </div>
+                            {config.includeExts.length === 0 && (
+                                <div style={{ fontSize: 11, color: '#d97706', marginTop: -4 }}>{t('Please select at least one file format.', '请至少选择一种文件格式。')}</div>
+                            )}
                         </div>
                     )}
 
@@ -398,12 +455,15 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
 
                             {/* Done actions */}
                             {step === 'done' && (
+                                <>
+                                <SkippedFilesSummary entries={logEntries} t={t} />
                                 <div style={doneActionRowStyle}>
                                     {job?.status === 'failed' && (
                                         <button style={retryBtnStyle} onClick={handleRetry}>{t('Retry', '重试')}</button>
                                     )}
                                     <button style={closeDoneBtnStyle} onClick={handleClose}>{t('Close', '关闭')}</button>
                                 </div>
+                                </>
                             )}
                         </div>
                     )}
@@ -441,6 +501,66 @@ function ImportLog({ entries, done, t }: { entries: LogEntry[]; done?: boolean; 
                 ))}
                 <div ref={bottomRef} />
             </div>
+        </div>
+    );
+}
+
+function SkippedFilesSummary({ entries, t }: { entries: LogEntry[]; t: TFunc }) {
+    const skipped = entries.filter(e => e.status === 'skipped' || e.status === 'failed');
+    const [exporting, setExporting] = useState(false);
+    const [exportPath, setExportPath] = useState('');
+
+    if (!skipped.length) return null;
+
+    const buildMarkdown = () => {
+        const lines: string[] = [
+            `# ${t('Import Report - Skipped/Failed Files', '导入报告 - 跳过/失败的文件')}`,
+            '',
+            `${t('Date', '日期')}: ${new Date().toLocaleString()}`,
+            '',
+            `| ${t('File', '文件')} | ${t('Status', '状态')} | ${t('Reason', '原因')} |`,
+            '| --- | --- | --- |',
+        ];
+        for (const entry of skipped) {
+            const status = entry.status === 'skipped' ? t('Skipped', '跳过') : t('Failed', '失败');
+            const reason = entry.reason || '-';
+            lines.push(`| ${entry.path.replace(/\|/g, '\\|')} | ${status} | ${reason.replace(/\|/g, '\\|')} |`);
+        }
+        lines.push('');
+        return lines.join('\n');
+    };
+
+    const handleExport = async () => {
+        setExporting(true);
+        try {
+            const md = buildMarkdown();
+            const filename = `import-report-${new Date().toISOString().slice(0, 10)}.md`;
+            const saved = await ExportTextFile(md, filename);
+            if (saved) setExportPath(saved);
+        } catch { /* ignore cancel */ }
+        setExporting(false);
+    };
+
+    return (
+        <div style={skippedSummaryStyle}>
+            <div style={skippedHeaderStyle}>
+                <span>⚠️ {skipped.length} {t('files skipped or failed', '个文件被跳过或失败')}</span>
+                <button type="button" style={exportBtnStyle} disabled={exporting} onClick={handleExport}>
+                    {exporting ? '...' : `📄 ${t('Export Report', '导出报告')}`}
+                </button>
+            </div>
+            <div style={skippedListStyle}>
+                {skipped.slice(0, 20).map((entry, i) => (
+                    <div key={i} style={skippedItemStyle}>
+                        <span style={skippedPathStyle}>{entry.path}</span>
+                        <span style={skippedReasonStyle}>{entry.reason || (entry.status === 'skipped' ? t('skipped', '跳过') : t('failed', '失败'))}</span>
+                    </div>
+                ))}
+                {skipped.length > 20 && (
+                    <div style={skippedMoreStyle}>... {t('and', '及')} {skipped.length - 20} {t('more', '更多')}</div>
+                )}
+            </div>
+            {exportPath && <div style={exportSuccessStyle}>✅ {t('Exported to', '已导出到')}: {exportPath}</div>}
         </div>
     );
 }
@@ -499,6 +619,9 @@ const configInputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box'
 const checkboxRowStyle: CSSProperties = { display: 'flex', gap: 14, flexWrap: 'wrap' };
 const cbStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: colors.textMuted, cursor: 'pointer' };
 const advancedToggleStyle: CSSProperties = { background: 'none', border: 'none', color: colors.textMuted, fontSize: 11, cursor: 'pointer', padding: '2px 0', textAlign: 'left' };
+const extCheckboxGridStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '4px 12px', marginTop: 4 };
+const extCheckboxLabelStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: colors.textSecondary, cursor: 'pointer' };
+const extQuickBtnStyle: CSSProperties = { background: 'none', border: 'none', color: colors.primary, fontSize: 11, cursor: 'pointer', padding: 0, textDecoration: 'underline' };
 const actionRowStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6 };
 const cancelBtnStyle: CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '6px 14px', background: colors.surface, color: colors.text, cursor: 'pointer', fontSize: 12 };
 const startBtnStyle: CSSProperties = { border: `1px solid ${colors.primary}`, borderRadius: radius.sm, padding: '6px 16px', background: colors.primaryLight, color: colors.primaryDark, fontWeight: 600, cursor: 'pointer', fontSize: 12 };
@@ -530,4 +653,16 @@ const logEntryStyle: CSSProperties = { padding: '1px 0', color: colors.textSecon
 const logReasonStyle: CSSProperties = { color: colors.textMuted, fontSize: 10 };
 const logHiddenStyle: CSSProperties = { color: colors.textMuted, fontStyle: 'italic', padding: '1px 0', fontSize: 10 };
 const logEmptyStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, textAlign: 'center', padding: 14 };
+
+// Skipped files summary
+const skippedSummaryStyle: CSSProperties = { border: `1px solid #f59e0b`, borderRadius: radius.sm, overflow: 'hidden', marginTop: 4 };
+const skippedHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: '#fffbeb', fontSize: 12, fontWeight: 600, color: '#92400e' };
+const exportBtnStyle: CSSProperties = { background: 'none', border: `1px solid #d97706`, borderRadius: radius.sm, padding: '3px 10px', fontSize: 11, color: '#92400e', cursor: 'pointer' };
+const skippedListStyle: CSSProperties = { maxHeight: 140, overflowY: 'auto', padding: '4px 10px', fontSize: 11, lineHeight: '1.7' };
+const skippedItemStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 8, padding: '1px 0', color: colors.textSecondary };
+const skippedPathStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 };
+const skippedReasonStyle: CSSProperties = { flexShrink: 0, color: colors.textMuted, fontSize: 10 };
+const skippedMoreStyle: CSSProperties = { color: colors.textMuted, fontStyle: 'italic', padding: '2px 0' };
+const exportSuccessStyle: CSSProperties = { fontSize: 11, color: '#16a34a', padding: '4px 10px', borderTop: `1px solid ${colors.border}` };
+
 const errorStyle: CSSProperties = { border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#b91c1c', fontSize: 13, marginBottom: 8 };

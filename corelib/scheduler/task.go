@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -19,6 +20,11 @@ const (
 // missedRunCatchUpThreshold is the minimum gap between a missed run and the
 // next scheduled run that triggers a catch-up execution for "process" tasks.
 const missedRunCatchUpThreshold = 1 * time.Hour
+
+// defaultExecutionTimeout is the maximum time a single task execution is
+// allowed to run before being forcefully cancelled. This prevents runaway
+// agent loops from permanently blocking the scheduled slot.
+const defaultExecutionTimeout = 30 * time.Minute
 
 // ScheduledTask represents a single scheduled task.
 type ScheduledTask struct {
@@ -42,9 +48,10 @@ type ScheduledTask struct {
 	LastError       string     `json:"last_error,omitempty"`
 }
 
-// TaskExecutor is called when a task fires. It receives the task action
-// (natural language) and should send it to the agent for processing.
-type TaskExecutor func(task *ScheduledTask) (result string, err error)
+// TaskExecutor is called when a task fires. It receives a context (cancelled
+// on timeout or shutdown) and the task action. Implementations MUST respect
+// ctx.Done() to allow graceful cancellation of long-running tasks.
+type TaskExecutor func(ctx context.Context, task *ScheduledTask) (result string, err error)
 
 // Manager manages scheduled tasks with JSON persistence
 // and a background ticker that fires due tasks.
@@ -57,6 +64,10 @@ type Manager struct {
 	executor        TaskExecutor
 	onChange        func() // optional callback after task state changes (fire/expire)
 	pendingCatchUps []string // task IDs that need catch-up fire on Start()
+
+	// runningTasks tracks in-flight executor goroutines so they can be
+	// cancelled on Stop(). Key is task ID, value is the cancel function.
+	runningTasks map[string]context.CancelFunc
 }
 
 // NewManager creates a manager persisting to the given path.
@@ -66,9 +77,10 @@ func NewManager(path string) (*Manager, error) {
 		return nil, fmt.Errorf("scheduler: resolve path: %w", err)
 	}
 	m := &Manager{
-		tasks:  make([]ScheduledTask, 0),
-		path:   absPath,
-		stopCh: make(chan struct{}),
+		tasks:        make([]ScheduledTask, 0),
+		path:         absPath,
+		stopCh:       make(chan struct{}),
+		runningTasks: make(map[string]context.CancelFunc),
 	}
 	if err := m.load(); err != nil {
 		return nil, err
@@ -133,13 +145,18 @@ func (m *Manager) Start() {
 	go m.loop()
 }
 
-// Stop halts the scheduler.
+// Stop halts the scheduler and cancels all in-flight task executions.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.running {
 		close(m.stopCh)
 		m.running = false
+	}
+	// Cancel all in-flight executor goroutines so they don't outlive the manager.
+	for id, cancel := range m.runningTasks {
+		cancel()
+		delete(m.runningTasks, id)
 	}
 }
 
@@ -206,6 +223,24 @@ func (m *Manager) purgeExpired(now time.Time) bool {
 	return true
 }
 
+// computeExecutionTimeout returns the timeout for a task execution.
+// Strategy: 80% of the interval (so the task finishes before the next run),
+// clamped to [defaultExecutionTimeout, 2h].
+func computeExecutionTimeout(task *ScheduledTask) time.Duration {
+	timeout := defaultExecutionTimeout
+	if task.IntervalMinutes > 0 {
+		intervalTimeout := time.Duration(float64(task.IntervalMinutes)*0.8) * time.Minute
+		if intervalTimeout > timeout {
+			timeout = intervalTimeout
+		}
+	}
+	const maxTimeout = 2 * time.Hour
+	if timeout > maxTimeout {
+		return maxTimeout
+	}
+	return timeout
+}
+
 func (m *Manager) fireByID(id string, executor TaskExecutor) {
 	// Atomically claim the task: read it and clear NextRunAt so the next
 	// tick() won't fire it again while the executor is still running.
@@ -229,6 +264,24 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		return
 	}
 
+	timeout := computeExecutionTimeout(taskCopy)
+
+	// Create a cancellable context with the computed timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+
+	// Register the cancel func so Stop() can cancel in-flight tasks.
+	m.mu.Lock()
+	m.runningTasks[id] = cancel
+	m.mu.Unlock()
+
+	// Ensure cleanup of the running task entry and context.
+	defer func() {
+		cancel()
+		m.mu.Lock()
+		delete(m.runningTasks, id)
+		m.mu.Unlock()
+	}()
+
 	// Execute outside lock (with panic recovery).
 	var result, errStr string
 	if executor != nil {
@@ -238,7 +291,7 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 					errStr = fmt.Sprintf("panic: %v", r)
 				}
 			}()
-			res, err := executor(taskCopy)
+			res, err := executor(ctx, taskCopy)
 			result = res
 			if err != nil {
 				errStr = err.Error()
@@ -246,6 +299,13 @@ func (m *Manager) fireByID(id string, executor TaskExecutor) {
 		}()
 	} else {
 		result = "no executor configured"
+	}
+
+	// If the context was cancelled (timeout or shutdown), annotate the error.
+	if ctx.Err() == context.DeadlineExceeded && errStr == "" {
+		errStr = fmt.Sprintf("execution timed out after %v", timeout)
+	} else if ctx.Err() == context.Canceled && errStr == "" {
+		errStr = "execution cancelled (shutdown)"
 	}
 
 	// Update state under lock.
@@ -524,6 +584,21 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 		return
 	}
 
+	// Manual triggers use the same timeout as scheduled fires.
+	timeout := computeExecutionTimeout(taskCopy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	m.mu.Lock()
+	m.runningTasks[id] = cancel
+	m.mu.Unlock()
+
+	defer func() {
+		cancel()
+		m.mu.Lock()
+		delete(m.runningTasks, id)
+		m.mu.Unlock()
+	}()
+
 	var result, errStr string
 	if executor != nil {
 		func() {
@@ -532,7 +607,7 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 					errStr = fmt.Sprintf("panic: %v", r)
 				}
 			}()
-			res, err := executor(taskCopy)
+			res, err := executor(ctx, taskCopy)
 			result = res
 			if err != nil {
 				errStr = err.Error()
@@ -540,6 +615,12 @@ func (m *Manager) fireManual(id string, executor TaskExecutor) {
 		}()
 	} else {
 		result = "no executor configured"
+	}
+
+	if ctx.Err() == context.DeadlineExceeded && errStr == "" {
+		errStr = fmt.Sprintf("execution timed out after %v", timeout)
+	} else if ctx.Err() == context.Canceled && errStr == "" {
+		errStr = "execution cancelled (shutdown)"
 	}
 
 	now := time.Now()

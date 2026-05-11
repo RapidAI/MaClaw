@@ -1,4 +1,4 @@
-import type { GroupDiscussionPanelStatus } from "./aiAssistantPanelTypes";
+import type { GroupDiscussionPanelStatus } from "./groupDiscussionTypes";
 
 export function getPrimaryDiscussionTraceFocus(status?: GroupDiscussionPanelStatus | null): string {
     const discussions = Array.isArray(status?.discussions) ? [...status!.discussions] : [];

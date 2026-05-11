@@ -44,8 +44,10 @@ func NewIntentUnderstandingManager(store PersistenceStore, llm LLMCaller, regist
 // determined this is NOT a workflow task — the caller should fall through to
 // the normal agent loop without creating a session.
 type StartResult struct {
-	Reply    string // LLM's reply text (empty when rejected)
-	Rejected bool   // true = LLM says "not a workflow", no session created
+	Reply    string           // LLM's reply text (empty when rejected)
+	Rejected bool             // true = LLM says "not a workflow", no session created
+	Ready    bool             // true = LLM is confident enough to start immediately (no clarification needed)
+	Intent   *StructuredIntent // non-nil when Ready=true; the confirmed intent
 }
 
 // Start creates a new intent understanding session for the user and sends
@@ -71,7 +73,7 @@ func (m *IntentUnderstandingManager) Start(userID, text string) (*StartResult, e
 	}
 
 	// Parse LLM response
-	reply, intent, _, parseOK := parseLLMIntentResponse(raw)
+	reply, intent, isReady, parseOK := parseLLMIntentResponse(raw)
 
 	// JSON parse failure — LLM returned malformed output. Don't silently
 	// reject as "not a workflow". Fall through to normal agent loop with
@@ -90,6 +92,16 @@ func (m *IntentUnderstandingManager) Start(userID, text string) (*StartResult, e
 	// Treat as rejection rather than creating a broken session.
 	if intent.Category == "" {
 		return &StartResult{Rejected: true}, nil
+	}
+
+	// First-round ready: the LLM is confident enough to start immediately
+	// without multi-round clarification. This happens for unambiguous tasks
+	// like "开发一个贪吃蛇游戏" where the intent is clear from the first message.
+	// No session is created — the caller can proceed directly to StartWorkflow.
+	if isReady {
+		log.Printf("[IntentUnderstanding] first-round ready for user %s: category=%s conf=%.2f",
+			userID, intent.Category, intent.Confidence)
+		return &StartResult{Reply: reply, Ready: true, Intent: &intent}, nil
 	}
 
 	// It's a workflow task — create session
@@ -459,9 +471,12 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- \"基于报告做投资人路演PPT\" → presentation_design（需要叙事结构+视觉风格+受众适配）\n\n")
 
 	b.WriteString("## ready 判断规则\n\n")
-	b.WriteString("- ready=true：用户明确表示可以开始了（如\"开工\"、\"开始吧\"、\"可以了\"、\"没问题了\"、\"就这样\"），且你对意图的理解已经足够清晰\n")
-	b.WriteString("- ready=false：用户还在补充信息、提出新需求、或者虽然说了类似\"开始\"但实际在补充需求\n")
-	b.WriteString("- 通过语义分析综合判断，不要仅匹配关键词\n\n")
+	b.WriteString("- ready=true：以下任一条件满足时设为 true：\n")
+	b.WriteString("  1. 用户明确表示可以开始了（如\"开工\"、\"开始吧\"、\"可以了\"、\"没问题了\"、\"就这样\"）\n")
+	b.WriteString("  2. 首轮消息中任务意图已经完全明确，无需追问（如\"开发一个贪吃蛇游戏，C++ cmake\"——目标、技术栈都清楚了）\n")
+	b.WriteString("- ready=false：用户还在补充信息、提出新需求、或任务描述模糊需要澄清\n")
+	b.WriteString("- 通过语义分析综合判断，不要仅匹配关键词\n")
+	b.WriteString("- 首轮 ready=true 的判据：用户消息包含明确的目标 + 足够的约束条件（技术栈/平台/规模等），无需追问即可开始规划\n\n")
 
 	b.WriteString("## 易混淆 ready 示例\n\n")
 	b.WriteString("- \"开始吧\" → ready=true\n")

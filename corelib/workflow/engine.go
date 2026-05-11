@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 // workflowExpiry is the duration after which completed/cancelled workflows
@@ -58,6 +60,17 @@ func (e *WorkflowEngine) SetArtifactSaver(saver ArtifactSaver) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.artifactSaver = saver
+}
+
+// getLang returns the current user-facing language by pulling from callbacks.
+// Falls back to "zh" when callbacks are not set.
+func (e *WorkflowEngine) getLang() string {
+	if e.callbacks != nil {
+		if lang := e.callbacks.GetLang(); lang != "" {
+			return i18n.NormalizeLang(lang)
+		}
+	}
+	return "zh"
 }
 
 // ---------------------------------------------------------------------------
@@ -181,13 +194,13 @@ func (e *WorkflowEngine) HandleInput(userID, text string) (*WorkflowResponse, er
 			req := tmpl.RequiresInput
 			hint := req.Description
 			if len(req.FileTypes) > 0 {
-				hint += fmt.Sprintf("（支持格式：%s）", strings.Join(req.FileTypes, "、"))
+				hint += i18n.Tf(i18n.MsgWorkflowInputFormats, e.getLang(), strings.Join(req.FileTypes, ", "))
 			}
 			if req.AcceptText {
-				hint += "\n\n也可以直接将文档内容粘贴到对话框中，提供本地文件路径，或提供网址由系统自动抓取。"
+				hint += i18n.T(i18n.MsgWorkflowInputPasteAlt, e.getLang())
 			}
 			return &WorkflowResponse{
-				Text:         "📎 " + hint,
+				Text:         i18n.Tf(i18n.MsgWorkflowInputWaiting, e.getLang(), hint),
 				RunAgentLoop: false,
 			}, nil
 		}
@@ -269,7 +282,7 @@ func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, f
 	case ReviewIntentSkip:
 		if !phase.CanSkip {
 			return &WorkflowResponse{
-				Text:         fmt.Sprintf("Current phase %q cannot be skipped. Please confirm it, provide supplements, or cancel the workflow.", phase.Name),
+				Text:         i18n.Tf(i18n.MsgWorkflowPhaseCannotSkip, e.getLang(), phase.Name),
 				RunAgentLoop: false,
 			}, nil
 		}
@@ -287,7 +300,7 @@ func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, f
 			_ = e.callbacks.EmitPhaseUpdate(userID, ws)
 		}
 		return &WorkflowResponse{
-			Text:         "Current workflow has been cancelled.",
+			Text:         i18n.T(i18n.MsgWorkflowCancelled, e.getLang()),
 			RunAgentLoop: false,
 			Complete:     true,
 		}, nil
@@ -311,7 +324,7 @@ func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, f
 
 	case ReviewIntentOther:
 		return &WorkflowResponse{
-			Text:         fmt.Sprintf("Current workflow is waiting for review at phase %q. Please confirm to continue, provide supplements to revise this phase, skip if allowed, or cancel the workflow.", phase.Name),
+			Text:         i18n.Tf(i18n.MsgWorkflowAwaitingReview, e.getLang(), phase.Name),
 			RunAgentLoop: false,
 		}, nil
 
@@ -326,7 +339,7 @@ func (e *WorkflowEngine) regenerateCurrentPhaseResponse(ws *WorkflowState, phase
 		phasePrompt += fmt.Sprintf("\n\nUser supplement/change request for this review round:\n%s\n\nRegenerate the current phase deliverable incorporating this feedback. Do not advance to the next phase.", feedback)
 	}
 	return &WorkflowResponse{
-		Text:         fmt.Sprintf("Received your supplement. Updating current phase: %s.", phase.Name),
+		Text:         i18n.Tf(i18n.MsgWorkflowSupplementAck, e.getLang(), phase.Name),
 		PhasePrompt:  phasePrompt,
 		ToolFilter:   phase.ToolPolicy,
 		RunAgentLoop: true,
@@ -354,7 +367,7 @@ func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *Wo
 		}
 
 		return &WorkflowResponse{
-			Text:     fmt.Sprintf("🎉 工作流已完成！所有 %d 个阶段均已完成。", len(tmpl.Phases)),
+			Text:     i18n.Tf(i18n.MsgWorkflowCompleted, e.getLang(), len(tmpl.Phases)),
 			Complete: true,
 			Advance:  true,
 		}
@@ -376,7 +389,7 @@ func (e *WorkflowEngine) advancePhase(userID string, ws *WorkflowState, tmpl *Wo
 	phasePrompt := BuildPhaseSystemPrompt(ws, nextPhase, e.registry)
 
 	resp := &WorkflowResponse{
-		Text:         fmt.Sprintf("✅ 进入阶段 %d/%d：%s", nextIndex+1, len(tmpl.Phases), nextPhase.Name),
+		Text:         i18n.Tf(i18n.MsgWorkflowPhaseAdvance, e.getLang(), nextIndex+1, len(tmpl.Phases), nextPhase.Name),
 		PhasePrompt:  phasePrompt,
 		ToolFilter:   nextPhase.ToolPolicy,
 		RunAgentLoop: true,

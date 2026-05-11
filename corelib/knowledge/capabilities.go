@@ -69,6 +69,16 @@ func Capabilities() KnowledgeCapabilities {
 				Notes:         "Text PDFs are supported; OCR for scanned image PDFs is a later enhancement.",
 			},
 			{
+				Kind:          SourceKindPPTX,
+				Extensions:    []string{".pptx"},
+				Parser:        "pptx_slide_text",
+				SearchUnit:    "slide paragraph nodes/cards/facts",
+				Status:        "supported",
+				Refreshable:   true,
+				DefaultImport: true,
+				Notes:         "Extracts text, tables, and notes from each slide.",
+			},
+			{
 				Kind:          SourceKindXLSX,
 				Extensions:    []string{".xlsx"},
 				Parser:        "spreadsheet_row_blocks",

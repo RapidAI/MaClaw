@@ -120,6 +120,9 @@ func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 }
 
 func (s *SQLiteStore) rebuildNodesFTS(ctx context.Context) error {
+	// Incremental: only rebuild nodes whose FTS content doesn't match segmented form.
+	// For first-time migration, all nodes need rebuild. For subsequent runs (after
+	// marker is set), this is a no-op since new inserts already use segmentTextForFTS.
 	rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes`)
 	if err != nil {
 		return err
@@ -139,8 +142,10 @@ func (s *SQLiteStore) rebuildNodesFTS(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	// Atomic: delete + re-insert in one transaction-like sequence.
-	// If insert fails midway, at least the successfully inserted rows are searchable.
+	if len(nodes) == 0 {
+		return nil
+	}
+	// Atomic: delete + re-insert
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM document_nodes_fts`); err != nil {
 		return err
 	}

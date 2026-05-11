@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -18,7 +19,17 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 
 	loopCtx, waitC := h.bgManager.SpawnOrQueue(slotKind, msg.UserID, msg.Text, maxIter)
 	if loopCtx == nil && waitC != nil {
-		loopCtx = <-waitC
+		// Wait for the slot to become available, but with a timeout to prevent
+		// goroutine leaks when the previous task never completes.
+		select {
+		case loopCtx = <-waitC:
+			// slot acquired
+		case <-time.After(2 * time.Minute):
+			// Remove the pending task from the queue to prevent an orphan
+			// LoopContext from being created when the slot eventually frees.
+			h.bgManager.CancelPending(slotKind, waitC)
+			return &IMAgentResponse{Error: "Background task slot occupied by a long-running task. Skipping this execution."}, true
+		}
 	}
 	if loopCtx == nil {
 		return &IMAgentResponse{Error: "Background task failed to start: unable to acquire execution slot."}, true
@@ -31,6 +42,10 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 		h.traceService.SetRunLoopID(run.RunID, loopCtx.ID)
 		h.appendTraceEvent(loopCtx, "request.accepted", "info", "Background task accepted", truncateTraceText(msg.Text, 180), "", "")
 	}
+
+	// Bind external cancellation context (e.g. scheduler timeout) to the loop.
+	// When the parent context is cancelled, the loop's CancelC closes automatically.
+	loopCtx.BindParentContext(msg.CancelCtx)
 
 	var systemPrompt string
 	history := h.memory.Load(msg.UserID)

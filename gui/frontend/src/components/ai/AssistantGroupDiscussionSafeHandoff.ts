@@ -1,4 +1,4 @@
-import type { GroupDiscussionPanelStatus } from "./aiAssistantPanelTypes";
+import type { GroupDiscussionPanelStatus } from "./groupDiscussionTypes";
 
 export function buildGroupDiscussionStatusSafeHandoff(status: GroupDiscussionPanelStatus | null | undefined, primaryTraceFocus: string): string {
     if (!status) return "";

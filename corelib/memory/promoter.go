@@ -96,7 +96,14 @@ Rules:
 - "content" must be a single actionable statement
 - Maximum 5 promotions per run
 - Return ONLY the JSON array
-- If nothing qualifies, return []`, p.threshold)
+- If nothing qualifies, return []
+
+CRITICAL category rules:
+- "user_fact" = ONLY personal information about the user (name, family, location, job, personal habits, relationships)
+- "preference" = user's tool/language/style preferences
+- "instruction" = how the user wants things done
+- NEVER classify technical environment details (software versions, server configs, Docker settings, project architecture, API endpoints, deployment configs) as "user_fact". These are project knowledge, not user facts — do NOT promote them here.
+- Each promotion must be about ONE topic. NEVER combine personal info with technical info in a single entry.`, p.threshold)
 
 	userPrompt := sb.String()
 	if experienceProtection != "" {

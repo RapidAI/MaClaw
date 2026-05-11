@@ -425,6 +425,8 @@ func kindForExt(ext string) string {
 		return SourceKindDOC
 	case ".pdf":
 		return SourceKindPDF
+	case ".pptx":
+		return SourceKindPPTX
 	case ".xlsx":
 		return SourceKindXLSX
 	case ".csv":
@@ -442,7 +444,7 @@ func kindForExt(ext string) string {
 
 func isImmediatelyParsedKind(kind string) bool {
 	switch kind {
-	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindXLSX, SourceKindCSV:
+	case SourceKindMarkdown, SourceKindText, SourceKindDOCX, SourceKindPDF, SourceKindPPTX, SourceKindXLSX, SourceKindCSV:
 		return true
 	default:
 		return false

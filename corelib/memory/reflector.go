@@ -104,7 +104,14 @@ Rules:
 - Maximum 10 insights per reflection
 - Skip trivial or one-time observations
 - Return ONLY the JSON array, no commentary
-- If no meaningful insights can be extracted, return []`
+- If no meaningful insights can be extracted, return []
+
+CRITICAL category rules for "type" field:
+- "fact" = ONLY personal information about the user (name, family, location, job, personal habits, relationships)
+- "preference" = user's tool/language/style preferences
+- "instruction" = how the user wants things done
+- NEVER classify technical environment details (software versions, server configs, Docker settings, project architecture, API endpoints, deployment configs) as "fact". These belong in project knowledge, not user facts.
+- Each insight must be about ONE topic. NEVER combine personal info with technical info in a single insight.`
 
 	messages := []map[string]string{
 		{"role": "system", "content": systemPrompt},

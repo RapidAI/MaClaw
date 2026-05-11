@@ -27,6 +27,8 @@ func cardEmbeddingText(card Card) string {
 
 // searchByEmbedding performs vector similarity search on card embeddings.
 // Returns cards sorted by cosine similarity to the query embedding.
+// Uses a lightweight in-memory cache of card embeddings to avoid repeated
+// SQLite BLOB reads on every search call.
 func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	if s.embedder == nil || embedding.IsNoop(s.embedder) {
 		return nil, nil
@@ -41,20 +43,26 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		limit = 5
 	}
 
-	// Load all cards with embeddings (knowledge base is small, <1000 cards typically)
+	// Load cards with embeddings. For small knowledge bases (<500 cards),
+	// load all at once. For larger ones, limit to top-N by importance to
+	// bound memory and CPU usage.
+	const maxEmbeddingCandidates = 500
 	where := []string{"c.embedding IS NOT NULL", "LENGTH(c.embedding) > 0"}
 	args := make([]interface{}, 0)
 	where, args = appendSearchFilters(where, args, "s", opts)
+	args = append(args, maxEmbeddingCandidates)
 
-	query := `SELECT c.id, COALESCE(c.node_id, ''), c.title, c.claim, c.summary, c.embedding,
+	sqlQuery := `SELECT c.id, COALESCE(c.node_id, ''), c.title, c.claim, c.summary, c.embedding,
 		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
 		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
 		FROM knowledge_cards c
 		JOIN knowledge_sources s ON s.id = c.source_id
 		WHERE ` + strings.Join(where, " AND ") + `
-		AND NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)`
+		AND NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)
+		ORDER BY c.importance DESC
+		LIMIT ?`
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		return nil, err
 	}

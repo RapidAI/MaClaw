@@ -21,6 +21,7 @@ import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
 import { AssistantTitleBar } from "./AssistantTitleBar";
+import { KnowledgeDialog } from "./KnowledgeDialog";
 import { AssistantInputStack } from "./AssistantInputStack";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
@@ -87,6 +88,7 @@ export function AIAssistantPanel(props: any) {
     const [cancelPending, setCancelPending] = useState(false);
     const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
     const [queueEditDraftActive, setQueueEditDraftActive] = useState(false);
+    const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false);
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
@@ -382,8 +384,8 @@ export function AIAssistantPanel(props: any) {
 
     return (
         <div data-testid="ai-panel-root" style={{ ...containerStyle, flexDirection: "row" }}>
-            <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden" }}>
-            {/* Drag overlay (inline mode) */}
+            <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
+            {/* Drag overlay (inline mode) — scoped to ai-panel-body only */}
             {inline && !maximized && (
                 <div style={{
                     height: "30px", width: "100%",
@@ -413,6 +415,7 @@ export function AIAssistantPanel(props: any) {
                 maximized={!!maximized}
                 onClose={onClose}
                 onHideWindow={onHideWindow}
+                onOpenKnowledge={() => setKnowledgeDialogOpen(true)}
                 onOpenTutorial={onOpenTutorial}
                 onToggleMaximize={onToggleMaximize}
                 projectSearchOpen={projectSearch.open}
@@ -428,6 +431,12 @@ export function AIAssistantPanel(props: any) {
                 trialReflectEnabled={trialReflectEnabled}
                 ttsEnabled={ttsEnabled}
                 toggleProjectSearch={projectSearch.toggle}
+            />
+            <KnowledgeDialog
+                open={knowledgeDialogOpen}
+                onClose={() => setKnowledgeDialogOpen(false)}
+                lang={lang}
+                theme={t}
             />
             {/* Chat area */}
             <AssistantWorkflowMaximizeSuggestion

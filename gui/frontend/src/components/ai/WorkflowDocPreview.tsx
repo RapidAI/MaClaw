@@ -1174,7 +1174,7 @@ export function WorkflowDocPreview({
                 background: theme.bg,
                 color: theme.text,
             }}>
-                {/* Header: title + close button — draggable for window move */}
+                {/* Header: title + close button — double-click to toggle maximize */}
                 <div
                     onMouseDown={handleHeaderMouseDown}
                     onDoubleClick={handleHeaderDoubleClick}
@@ -1187,7 +1187,7 @@ export function WorkflowDocPreview({
                     gap: "4px",
                     flexWrap: "wrap",
                     flexShrink: 0,
-                    '--wails-draggable': 'drag',
+                    '--wails-draggable': 'no-drag',
                 } as any}>
                     <div style={{ fontSize: "13px", fontWeight: 700, color: theme.text }}>
                         文档预览

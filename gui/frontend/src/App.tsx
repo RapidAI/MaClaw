@@ -2295,35 +2295,14 @@ ${instruction}`;
                                 onOpenExperienceTrace: handleOpenExperienceTrace,
                             }}
                             state={{
-                                messages: aiAssistant.messages,
-                                progressMessages: aiAssistant.progressMessages,
-                                sending: aiAssistant.sending,
-                                streaming: aiAssistant.streaming,
-                                visualBusy: aiAssistant.visualBusy,
-                                ready: aiAssistant.ready,
-                                initStatus: aiAssistant.initStatus,
-                                selectedFilePath: (aiAssistant as any).selectedFilePath || ((aiAssistant as any).selectedFilePaths?.[0] ?? ""),
-                                selectedFilePaths: (aiAssistant as any).selectedFilePaths || [],
-                                submittedPrompts: aiAssistant.submittedPrompts,
-                                draftInputValue: aiAssistant.draftInputValue,
-                                trialReflectEnabled: aiAssistant.trialReflectEnabled,
-                                scrollToTopSeq: aiAssistant.scrollToTopSeq,
+                                ...aiAssistant.panelState,
+                                selectedFilePath: aiAssistant.selectedFilePaths?.[0] ?? "",
                                 onboardingIncomplete: !config?.onboarding_done && !showMaclawLLMPopup,
                                 showTraceEntry: !!config?.show_ai_trace_entry,
                             }}
                             actions={{
-                                browseFile: aiAssistant.browseFile,
-                                clearSelectedFile: aiAssistant.clearSelectedFile,
-                                removeSelectedFile: (aiAssistant as any).removeSelectedFile,
-                                sendMessage: aiAssistant.sendMessage,
-                                injectSupplementary: (aiAssistant as any).injectSupplementary,
-                                clearHistory: aiAssistant.clearHistory,
-                                recordSubmittedPrompt: aiAssistant.recordSubmittedPrompt,
-                                setDraftInputValue: aiAssistant.setDraftInputValue,
-                                executeAction: aiAssistant.executeAction,
-                                refreshNews: aiAssistant.refreshNews,
+                                ...aiAssistant.panelActions,
                                 onOpenOnboarding: () => setShowMaclawLLMPopup(true),
-                                cancelSession: aiAssistant.cancelSession,
                                 onTaskPrefsChanged: () => { void refreshSessionsOnly(); },
                             }}
                             window={{

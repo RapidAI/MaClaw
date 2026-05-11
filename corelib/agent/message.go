@@ -1,5 +1,7 @@
 package agent
 
+import "context"
+
 // UserMessage is the input to the agent handler. It represents a message
 // from any platform (desktop, IM, TUI).
 //
@@ -50,6 +52,12 @@ type UserMessage struct {
 	// SlashCommand is set by Hub when it parses a slash command and forwards
 	// it to the device for handling (e.g. "workflow:status", "workflow:cancel").
 	SlashCommand string `json:"slash_command,omitempty"`
+
+	// CancelCtx is an optional external cancellation context. When set,
+	// background task handlers will monitor it and cancel the agent loop
+	// when the context is done (e.g. scheduler timeout or shutdown).
+	// Not serialized — only used for in-process signaling.
+	CancelCtx context.Context `json:"-"`
 }
 
 // MessageAttachment represents an image or file attached to a message.

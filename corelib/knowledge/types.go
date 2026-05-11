@@ -8,6 +8,7 @@ const (
 	SourceKindDOCX             = "docx"
 	SourceKindDOC              = "doc"
 	SourceKindPDF              = "pdf"
+	SourceKindPPTX             = "pptx"
 	SourceKindXLSX             = "xlsx"
 	SourceKindXLS              = "xls"
 	SourceKindCSV              = "csv"
@@ -47,7 +48,7 @@ const (
 
 const DefaultMaxFileBytes int64 = 100 * 1024 * 1024
 
-var DefaultIncludeExts = []string{".docx", ".pdf", ".xlsx", ".csv", ".md", ".txt", ".doc", ".xls"}
+var DefaultIncludeExts = []string{".docx", ".pdf", ".pptx", ".xlsx", ".csv", ".md", ".txt", ".doc", ".xls"}
 
 // SaveStatusCreated indicates the source was newly created.
 const SaveStatusCreated = "created"

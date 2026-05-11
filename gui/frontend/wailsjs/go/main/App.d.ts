@@ -996,6 +996,8 @@ export function SelectKnowledgeDirectory():Promise<string>;
 
 export function SelectKnowledgeFiles():Promise<Array<string>>;
 
+export function ExportTextFile(arg1:string,arg2:string):Promise<string>;
+
 // MIS data service bindings
 export function GetMISDataConfig():Promise<any>;
 export function SaveMISDataConfig(arg1:any):Promise<void>;

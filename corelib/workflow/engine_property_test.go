@@ -22,6 +22,7 @@ func (m *MockEngineCallbacks) EmitDocUpdate(userID, phaseID, content string) err
 func (m *MockEngineCallbacks) EmitGateResult(userID, phaseID string, result *QualityGateResult) error {
 	return nil
 }
+func (m *MockEngineCallbacks) GetLang() string { return "zh" }
 
 func newTestEngine() (*WorkflowEngine, *MockEngineCallbacks) {
 	registry := NewWorkflowRegistry()

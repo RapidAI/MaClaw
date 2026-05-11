@@ -283,6 +283,23 @@ const (
 	MsgTUIAgentNoValidReply            = "msg.tui_agent_no_valid_reply"
 	MsgTUIAgentTruncated               = "msg.tui_agent_truncated"
 	MsgTUIAgentMaxRoundsReached        = "msg.tui_agent_max_rounds_reached"
+
+	// Workflow engine – user-facing messages
+	MsgWorkflowStarted         = "msg.workflow_started"           // %s type, %s phase
+	MsgWorkflowInputRequired   = "msg.workflow_input_required"    // %s description
+	MsgWorkflowInputFormats    = "msg.workflow_input_formats"     // %s formats
+	MsgWorkflowInputPasteHint  = "msg.workflow_input_paste_hint"
+	MsgWorkflowCompleted       = "msg.workflow_completed"         // %d phase count
+	MsgWorkflowPhaseAdvance    = "msg.workflow_phase_advance"     // %d current, %d total, %s name
+	MsgWorkflowInputWaiting    = "msg.workflow_input_waiting"     // %s hint
+	MsgWorkflowInputPasteAlt   = "msg.workflow_input_paste_alt"
+	MsgWorkflowCancelled       = "msg.workflow_cancelled"
+	MsgWorkflowPhaseCannotSkip = "msg.workflow_phase_cannot_skip" // %s phase name
+	MsgWorkflowAwaitingReview  = "msg.workflow_awaiting_review"   // %s phase name
+	MsgWorkflowSupplementAck   = "msg.workflow_supplement_ack"    // %s phase name
+	MsgWorkflowHandleError     = "msg.workflow_handle_error"      // %v error
+	MsgWorkflowStartError      = "msg.workflow_start_error"       // %v error
+	MsgWorkflowUnderstandError = "msg.workflow_understand_error"
 )
 
 // defaultLang is the fallback language when lang is empty or unknown.
@@ -557,6 +574,22 @@ var translations = map[string]map[string]string{
 		MsgTUIAgentNoValidReply:            "LLM 未返回有效回复",
 		MsgTUIAgentTruncated:               "\n...(已截断)",
 		MsgTUIAgentMaxRoundsReached:        "(已达到最大推理轮次)",
+		// Workflow
+		MsgWorkflowStarted:         "🚀 工作流已启动：%s\n📋 当前阶段：%s",
+		MsgWorkflowInputRequired:   "\n\n📎 需要输入：%s",
+		MsgWorkflowInputFormats:    "（支持格式：%s）",
+		MsgWorkflowInputPasteHint:  "\n也可以直接粘贴文档内容，或提供网址由系统自动抓取。",
+		MsgWorkflowCompleted:       "🎉 工作流已完成！所有 %d 个阶段均已完成。",
+		MsgWorkflowPhaseAdvance:    "✅ 进入阶段 %d/%d：%s",
+		MsgWorkflowInputWaiting:    "📎 %s",
+		MsgWorkflowInputPasteAlt:   "\n\n也可以直接将文档内容粘贴到对话框中，提供本地文件路径，或提供网址由系统自动抓取。",
+		MsgWorkflowCancelled:       "当前工作流已取消。",
+		MsgWorkflowPhaseCannotSkip: "当前阶段 %q 不可跳过。请确认、补充修改意见或取消工作流。",
+		MsgWorkflowAwaitingReview:  "当前工作流正在等待阶段 %q 的审阅。请确认以继续、补充修改意见、跳过（如允许）或取消工作流。",
+		MsgWorkflowSupplementAck:   "收到补充意见，正在更新当前阶段：%s。",
+		MsgWorkflowHandleError:     "⚠️ 工作流处理出错: %v",
+		MsgWorkflowStartError:      "⚠️ 启动工作流失败: %v",
+		MsgWorkflowUnderstandError: "⚠️ 内部理解步骤临时失败，请再发一次补充，或直接说「开工」继续当前任务。",
 	},
 	"en": {
 		MsgAckProcessing:                      "⏳ Processing, please wait...",
@@ -820,6 +853,22 @@ var translations = map[string]map[string]string{
 		MsgTUIAgentNoValidReply:            "LLM returned no valid reply",
 		MsgTUIAgentTruncated:               "\n...(truncated)",
 		MsgTUIAgentMaxRoundsReached:        "(maximum reasoning rounds reached)",
+		// Workflow
+		MsgWorkflowStarted:         "🚀 Workflow started: %s\n📋 Current phase: %s",
+		MsgWorkflowInputRequired:   "\n\n📎 Input required: %s",
+		MsgWorkflowInputFormats:    " (supported formats: %s)",
+		MsgWorkflowInputPasteHint:  "\nYou can also paste the document content directly or provide a URL for automatic fetching.",
+		MsgWorkflowCompleted:       "🎉 Workflow completed! All %d phases finished.",
+		MsgWorkflowPhaseAdvance:    "✅ Entering phase %d/%d: %s",
+		MsgWorkflowInputWaiting:    "📎 %s",
+		MsgWorkflowInputPasteAlt:   "\n\nYou can also paste the document content directly, provide a local file path, or provide a URL for automatic fetching.",
+		MsgWorkflowCancelled:       "Current workflow has been cancelled.",
+		MsgWorkflowPhaseCannotSkip: "Current phase %q cannot be skipped. Please confirm, provide supplements, or cancel the workflow.",
+		MsgWorkflowAwaitingReview:  "Current workflow is waiting for review at phase %q. Please confirm to continue, provide supplements, skip (if allowed), or cancel the workflow.",
+		MsgWorkflowSupplementAck:   "Received your supplement. Updating current phase: %s.",
+		MsgWorkflowHandleError:     "⚠️ Workflow error: %v",
+		MsgWorkflowStartError:      "⚠️ Failed to start workflow: %v",
+		MsgWorkflowUnderstandError: "⚠️ Internal understanding step failed temporarily. Please resend your input, or say \"start\" to continue.",
 	},
 }
 
