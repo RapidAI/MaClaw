@@ -18,16 +18,23 @@ func classifyGeminiACPTurnCompleteMarker(line string) sessionCompletionMarkerKin
 		return sessionCompletionMarkerUnknown
 	}
 	restLower := strings.TrimSpace(lower[len(geminiACPTurnCompletePrefix):])
-	switch {
-	case strings.Contains(restLower, "success") || strings.Contains(restLower, "done") || strings.Contains(restLower, "completed"):
-		return sessionCompletionMarkerCompleted
-	case strings.Contains(restLower, "cancelled") || strings.Contains(restLower, "canceled"):
-		return sessionCompletionMarkerIncomplete
-	default:
-		return sessionCompletionMarkerUnknown
+	for _, token := range sessionCompletionMarkerTokens(restLower) {
+		switch token {
+		case "success", "succeeded", "successful", "done", "complete", "completed":
+			return sessionCompletionMarkerCompleted
+		case "cancelled", "canceled", "cancel":
+			return sessionCompletionMarkerIncomplete
+		}
 	}
+	return sessionCompletionMarkerUnknown
 }
 
 func isGeminiACPTurnCompleteLine(line string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), geminiACPTurnCompletePrefix)
+}
+
+func sessionCompletionMarkerTokens(value string) []string {
+	return strings.FieldsFunc(strings.ToLower(strings.TrimSpace(value)), func(r rune) bool {
+		return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
+	})
 }

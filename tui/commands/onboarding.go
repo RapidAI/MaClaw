@@ -276,7 +276,7 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 
 	waitCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
-	lastStatus := ""
+	lastStatus := weixin.QRLoginStatusUnknown
 	for {
 		result, status, err := weixin.PollQRStatus(waitCtx, baseURL, qrToken)
 		if err != nil {
@@ -287,7 +287,7 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 			lastStatus = status
 		}
 		switch status {
-		case "confirmed":
+		case weixin.QRLoginStatusConfirmed:
 			if result == nil || !result.Connected {
 				msg := "login was not confirmed"
 				if result != nil && result.Message != "" {
@@ -296,7 +296,7 @@ func bindWeixinForOnboarding(ctx context.Context, store *FileConfigStore, cfg co
 				return fmt.Errorf("WeChat binding failed: %s", msg)
 			}
 			return saveWeixinLoginResult(store, cfg, result)
-		case "expired":
+		case weixin.QRLoginStatusExpired:
 			return fmt.Errorf("WeChat QR code expired; run onboarding again to get a fresh code")
 		}
 
@@ -384,18 +384,18 @@ func terminalQRHalfBlock(topBlack, bottomBlack bool) string {
 	return fmt.Sprintf("\x1b[%d;%dm▀▀\x1b[0m", fg, bg)
 }
 
-func weixinQRStatusLabel(status string) string {
+func weixinQRStatusLabel(status weixin.QRLoginStatus) string {
 	switch status {
-	case "wait":
+	case weixin.QRLoginStatusWait:
 		return "waiting for scan"
-	case "scaned":
+	case weixin.QRLoginStatusScanned:
 		return "scanned, waiting for phone confirmation"
-	case "confirmed":
+	case weixin.QRLoginStatusConfirmed:
 		return "confirmed"
-	case "expired":
+	case weixin.QRLoginStatusExpired:
 		return "expired"
 	default:
-		return status
+		return status.String()
 	}
 }
 

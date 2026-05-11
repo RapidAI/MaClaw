@@ -189,6 +189,11 @@ func (a *App) ActivateRemote(email string, invitationCode string, mobile string)
 	}
 	log.Printf("[onboarding] ActivateRemote PatchConfig=%s machine_id=%s email=%s", time.Since(persistStart), enrollResult.MachineID, enrollResult.Email)
 
+	// Auto-acquire SkillMarket session token via machine-login.
+	// This allows the user to upload skills immediately after Hub registration
+	// without a separate SkillMarket login step.
+	go a.acquireSkillMarketTokenAfterEnroll(enrollResult.Email, enrollResult.MachineID, enrollResult.ViewerToken)
+
 	// Convert to GUI result type.
 	result := RemoteActivationResult{
 		Status:       enrollResult.Status,
@@ -407,4 +412,46 @@ func (a *App) ListRemoteHubs(centerURL string, email string) ([]RemoteHubCenterH
 // generateClientID delegates to the shared corelib implementation.
 func generateClientID() string {
 	return remote.GenerateClientID()
+}
+
+// acquireSkillMarketTokenAfterEnroll calls the HubCenter machine-login endpoint
+// to obtain a SkillMarket session token using the Hub enrollment credentials.
+// Runs in background — failure is non-fatal (user can still upload via email fallback).
+func (a *App) acquireSkillMarketTokenAfterEnroll(email, machineID, viewerToken string) {
+	if email == "" || viewerToken == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[skillmarket-auto-login] load config failed: %v", err)
+		return
+	}
+	// Skip if user already has a valid SkillMarket token.
+	if strings.TrimSpace(cfg.SkillMarketSessionToken) != "" {
+		return
+	}
+
+	baseURL := cfg.SkillMarketBaseURL(defaultRemoteHubCenterURL)
+	client := remote.NewSkillMarketAuthClient()
+	result, err := client.MachineLogin(ctx, baseURL, email, machineID, viewerToken)
+	if err != nil {
+		log.Printf("[skillmarket-auto-login] machine-login failed (non-fatal): %v", err)
+		return
+	}
+	if result.SessionToken == "" {
+		log.Printf("[skillmarket-auto-login] empty token returned")
+		return
+	}
+
+	// Persist token.
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		cfg.SkillMarketSessionToken = result.SessionToken
+	}); err != nil {
+		log.Printf("[skillmarket-auto-login] save token failed: %v", err)
+		return
+	}
+	log.Printf("[skillmarket-auto-login] success email=%s", email)
 }

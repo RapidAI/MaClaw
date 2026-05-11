@@ -167,7 +167,7 @@ const (
 )
 
 func normalizeTraceLoopState(state string) traceLoopState {
-	switch traceLoopState(strings.TrimSpace(state)) {
+	switch traceLoopState(strings.ToLower(strings.TrimSpace(state))) {
 	case traceLoopStateQueued:
 		return traceLoopStateQueued
 	case traceLoopStateStarting:
@@ -199,22 +199,32 @@ func (s traceLoopState) IsActiveBackgroundLoop() bool {
 }
 
 func traceStatusFromLoopState(state string) TraceRunStatus {
+	if loopState := normalizeLoopState(state); loopState != LoopStateUnknown {
+		return traceStatusFromLoopStateKind(loopState)
+	}
 	switch normalizeTraceLoopState(state) {
 	case traceLoopStateQueued:
 		return TraceRunStatusQueued
 	case traceLoopStateStarting:
 		return TraceRunStatusStarting
-	case traceLoopStateRunning:
+	default:
 		return TraceRunStatusRunning
-	case traceLoopStatePaused:
+	}
+}
+
+func traceStatusFromLoopStateKind(state LoopState) TraceRunStatus {
+	switch normalizeLoopState(state.String()) {
+	case LoopStateRunning:
+		return TraceRunStatusRunning
+	case LoopStatePaused:
 		return TraceRunStatusPaused
-	case traceLoopStateCompleted:
+	case LoopStateCompleted:
 		return TraceRunStatusCompleted
-	case traceLoopStateFailed:
+	case LoopStateFailed:
 		return TraceRunStatusFailed
-	case traceLoopStateStopped:
+	case LoopStateStopped:
 		return TraceRunStatusStopped
-	case traceLoopStateTimeout:
+	case LoopStateTimeout:
 		return TraceRunStatusTimeout
 	default:
 		return TraceRunStatusRunning

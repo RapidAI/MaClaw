@@ -480,3 +480,5 @@ func (m *mockFloatingWindowForProps) IsCreated() bool {
 	defer m.mu.Unlock()
 	return m.created
 }
+
+func (m *mockFloatingWindowForProps) UpdateSoundConfig(soundEnabled bool, preset string) {}

@@ -463,20 +463,26 @@ func TestFloatingAppearanceChangedIncludesPetRuntimeSettings(t *testing.T) {
 	soundOff := false
 	withSoundOff := base
 	withSoundOff.PetMotionSound = &soundOff
-	if !floatingAppearanceChanged(base, withSoundOff) {
-		t.Fatal("expected motion sound toggle to refresh floating window")
+	if floatingAppearanceChanged(base, withSoundOff) {
+		t.Fatal("sound toggle should NOT trigger appearance refresh (uses lightweight UpdateSoundConfig)")
+	}
+	if !floatingSoundChanged(base, withSoundOff) {
+		t.Fatal("expected sound toggle to trigger floatingSoundChanged")
 	}
 
 	withSoundPreset := base
 	withSoundPreset.PetMotionSoundPreset = "chime"
-	if !floatingAppearanceChanged(base, withSoundPreset) {
-		t.Fatal("expected motion sound preset change to refresh floating window")
+	if floatingAppearanceChanged(base, withSoundPreset) {
+		t.Fatal("sound preset change should NOT trigger appearance refresh")
+	}
+	if !floatingSoundChanged(base, withSoundPreset) {
+		t.Fatal("expected sound preset change to trigger floatingSoundChanged")
 	}
 
 	withInvalidSoundPreset := base
 	withInvalidSoundPreset.PetMotionSoundPreset = "laser-horn"
-	if floatingAppearanceChanged(base, withInvalidSoundPreset) {
-		t.Fatal("invalid motion sound preset should normalize to classic without refreshing")
+	if floatingSoundChanged(base, withInvalidSoundPreset) {
+		t.Fatal("invalid motion sound preset should normalize to classic without triggering change")
 	}
 
 	withQuiet := base

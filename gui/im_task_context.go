@@ -17,7 +17,7 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 	switch tcDecision.Action {
 	case agent.TaskNew:
 		if len(entries) >= 2 {
-			h.archiveCurrentTask(msg.UserID, entries, "switched")
+			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusSwitched)
 		}
 		h.memory.ClearConversationAndDismissSlot(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
@@ -28,7 +28,7 @@ func (h *IMMessageHandler) applyUnifiedTaskContextDecision(msg IMUserMessage, tr
 		return "", true, len(entries) > 0
 	case agent.TaskRecall:
 		if len(entries) >= 2 {
-			h.archiveCurrentTask(msg.UserID, entries, "switched")
+			h.archiveCurrentTask(msg.UserID, entries, agent.ArchivedTaskStatusSwitched)
 		}
 		if h.confirmationStore != nil {
 			h.confirmationStore.clear(msg.UserID)

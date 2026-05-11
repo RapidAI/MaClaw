@@ -30,7 +30,7 @@ type weixinGatewayManager struct {
 	app       *App
 	mu        sync.Mutex
 	gateway   *weixin.Gateway
-	status    string
+	status    gatewayConnectionStatus
 	lastToken string
 
 	// localHandler is a fully-wired IMMessageHandler for local mode.
@@ -41,7 +41,7 @@ type weixinGatewayManager struct {
 func newWeixinGatewayManager(app *App) *weixinGatewayManager {
 	return &weixinGatewayManager{
 		app:    app,
-		status: string(gatewayConnectionStatusDisconnected),
+		status: gatewayConnectionStatusDisconnected,
 	}
 }
 
@@ -58,7 +58,7 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = string(gatewayConnectionStatusDisconnected)
+			m.status = gatewayConnectionStatusDisconnected
 			m.mu.Unlock()
 			_ = gw.Stop()
 		} else {
@@ -115,7 +115,7 @@ func (m *weixinGatewayManager) SyncFromConfig() {
 	if err := gw.Start(context.Background()); err != nil {
 		log.Printf("[weixin-mgr] start failed: %v", err)
 		m.mu.Lock()
-		m.status = string(gatewayConnectionStatusError)
+		m.status = gatewayConnectionStatusError
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -127,7 +127,7 @@ func (m *weixinGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = string(gatewayConnectionStatusDisconnected)
+	m.status = gatewayConnectionStatusDisconnected
 	m.lastToken = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -144,7 +144,7 @@ func (m *weixinGatewayManager) Stop() {
 func (m *weixinGatewayManager) Status() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.status
+	return m.status.String()
 }
 
 func (m *weixinGatewayManager) onStatusChange(status string) {
@@ -152,11 +152,11 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 	wl.Log("mgr.status", "---", "-", "status=%s", status)
 
 	m.mu.Lock()
-	m.status = status
+	normalized := normalizeGatewayConnectionStatus(status)
+	m.status = normalized
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
-	normalized := normalizeGatewayConnectionStatus(status)
 	if normalized == gatewayConnectionStatusConnected {
 		// In local mode, skip Hub gateway claim.
 		if cfg, err := m.app.LoadConfig(); err == nil && cfg.IsWeixinLocalMode() {
@@ -187,7 +187,7 @@ func (m *weixinGatewayManager) onStatusChange(status string) {
 		gw := m.gateway
 		m.gateway = nil
 		m.lastToken = ""
-		m.status = string(gatewayConnectionStatusDisconnected)
+		m.status = gatewayConnectionStatusDisconnected
 		lh := m.localHandler
 		m.localHandler = nil
 		m.mu.Unlock()
@@ -1096,10 +1096,10 @@ func (a *App) PollWeixinQRStatus(qrcodeToken string) map[string]string {
 		return map[string]string{"error": err.Error(), "status": string(gatewayConnectionStatusError)}
 	}
 	resp := map[string]string{
-		"status":  status,
+		"status":  status.String(),
 		"message": result.Message,
 	}
-	if normalizeGatewayConnectionStatus(status) == gatewayConnectionStatusConfirmed {
+	if status == weixin.QRLoginStatusConfirmed {
 		if !result.Connected {
 			resp["error"] = result.Message
 			return resp

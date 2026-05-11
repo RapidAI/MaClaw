@@ -1617,7 +1617,7 @@ func (a *App) StopAllBackgroundLoops() []string {
 	views := handler.bgManager.ListViews()
 	var ids []string
 	for _, v := range views {
-		if normalizeTraceLoopState(v.Status).IsActiveBackgroundLoop() {
+		if v.Status == LoopStateRunning || v.Status == LoopStatePaused {
 			ids = append(ids, v.ID)
 		}
 	}

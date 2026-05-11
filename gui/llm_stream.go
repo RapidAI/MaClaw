@@ -64,7 +64,7 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 	}
 
 	// Primary signal: finish_reason="length" means the model hit max_output_tokens.
-	isLengthTruncated := finishReason == "length"
+	isLengthTruncated := normalizeLLMFinishReason(finishReason) == llmFinishReasonLength
 
 	var validCalls []llm.ToolCall
 	var truncatedNames []string
@@ -115,7 +115,7 @@ func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []
 	// assistant message in conversation history only contains the LLM's
 	// own text, not system-injected recovery instructions.
 	if len(msg.ToolCalls) == 0 {
-		return "stop", truncatedNames
+		return llmFinishReasonStop.String(), truncatedNames
 	}
 	return finishReason, truncatedNames
 }
@@ -862,13 +862,13 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 			// Early-terminate if the repetition filter detected degeneration.
 			if repf.Halted() {
 				log.Printf("[LLM Stream] repetition filter halted output (suppressed %d runes)", repf.SuppressedRunes())
-				finishReason = "stop"
+				finishReason = llmFinishReasonStop.String()
 				break
 			}
 			// Early-terminate if a role prefix hallucination was detected.
 			if rpf.Halted() {
 				log.Printf("[LLM Stream] role prefix filter halted output (suppressed %d runes)", rpf.SuppressedRunes())
-				finishReason = "stop"
+				finishReason = llmFinishReasonStop.String()
 				break
 			}
 		}
@@ -996,12 +996,12 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 					},
 				})
 			}
-			finishReason = "tool_calls"
+			finishReason = llmFinishReasonToolCalls.String()
 		}
 	}
 
 	if finishReason == "" {
-		finishReason = "stop"
+		finishReason = llmFinishReasonStop.String()
 	}
 
 	// Detect and filter truncated tool calls caused by output token limit.
@@ -1321,11 +1321,11 @@ anthDone:
 		msg.Content = stripXMLToolCalls(filteredStrAnth)
 	}
 
-	finishReason := "stop"
+	finishReason := llmFinishReasonStop.String()
 	if normalizeAnthropicContentBlockKind(stopReason) == anthropicContentBlockToolUse {
-		finishReason = "tool_calls"
+		finishReason = llmFinishReasonToolCalls.String()
 	} else if stopReason == "max_tokens" {
-		finishReason = "length"
+		finishReason = llmFinishReasonLength.String()
 	}
 
 	// Detect and filter truncated tool calls caused by output token limit.

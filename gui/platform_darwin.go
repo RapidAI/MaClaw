@@ -4,8 +4,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"io"
 	"net/http"
 	"os"
@@ -442,7 +442,7 @@ func (a *App) installNodeJSManually(targetDir string) error {
 
 	fileName := fmt.Sprintf("node-v%s-darwin-%s.tar.gz", nodeVersion, arch)
 	url := fmt.Sprintf("https://nodejs.org/dist/v%s/%s", nodeVersion, fileName)
-	if strings.HasPrefix(strings.ToLower(a.CurrentLanguage), "zh") {
+	if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
 		url = fmt.Sprintf("https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v%s/%s", nodeVersion, fileName)
 	}
 

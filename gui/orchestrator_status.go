@@ -21,6 +21,14 @@ func normalizeOrchestratorSessionStatus(status string) orchestratorSessionStatus
 	}
 }
 
+func (s orchestratorSessionStatus) String() string {
+	return string(s)
+}
+
+func (s orchestratorSessionStatus) IsFailed() bool {
+	return normalizeOrchestratorSessionStatus(string(s)) == orchestratorSessionStatusFailed
+}
+
 type orchestratorTaskStatus string
 
 const (
@@ -54,8 +62,12 @@ func normalizeOrchestratorTaskStatus(status string) orchestratorTaskStatus {
 	}
 }
 
-func orchestratorTaskStatusIsResumable(status string) bool {
-	switch normalizeOrchestratorTaskStatus(status) {
+func (s orchestratorTaskStatus) String() string {
+	return string(s)
+}
+
+func (s orchestratorTaskStatus) IsResumable() bool {
+	switch normalizeOrchestratorTaskStatus(string(s)) {
 	case orchestratorTaskStatusFailed, orchestratorTaskStatusRunning:
 		return true
 	default:
@@ -63,11 +75,23 @@ func orchestratorTaskStatusIsResumable(status string) bool {
 	}
 }
 
-func orchestratorTaskStatusIsActive(status string) bool {
-	switch normalizeOrchestratorTaskStatus(status) {
+func (s orchestratorTaskStatus) IsActive() bool {
+	switch normalizeOrchestratorTaskStatus(string(s)) {
 	case orchestratorTaskStatusPending, orchestratorTaskStatusRunning:
 		return true
 	default:
 		return false
 	}
+}
+
+func (s orchestratorTaskStatus) IsCompleted() bool {
+	return normalizeOrchestratorTaskStatus(string(s)) == orchestratorTaskStatusCompleted
+}
+
+func (s orchestratorTaskStatus) IsPending() bool {
+	return normalizeOrchestratorTaskStatus(string(s)) == orchestratorTaskStatusPending
+}
+
+func (s orchestratorTaskStatus) IsRunning() bool {
+	return normalizeOrchestratorTaskStatus(string(s)) == orchestratorTaskStatusRunning
 }

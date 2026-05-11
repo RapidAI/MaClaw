@@ -60,7 +60,7 @@ func (r *SkillRunner) startSessionMonitor(ctx context.Context, run *skillRun, se
 				r.mu.Unlock()
 
 				// Stop monitoring if session reached terminal state.
-				if isTerminalSessionStatus(progress.SessionStatus) {
+				if progress.SessionStatus.IsTerminal() {
 					log.Printf("[skill-session-monitor] session %s reached terminal state %q (polls=%d)",
 						sessionID, progress.SessionStatus, pollCount)
 					return
@@ -79,7 +79,7 @@ func (r *SkillRunner) pollSessionProgress(manager *RemoteSessionManager, session
 	}
 
 	session.mu.RLock()
-	status := string(session.Status)
+	status := session.Status
 	summary := session.Summary
 	// Copy last 10 raw output lines while holding the lock to avoid
 	// reading a slice that's being appended to concurrently.

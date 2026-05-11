@@ -61,7 +61,7 @@ type MCPServerView struct {
 	Headers      map[string]string       `json:"headers,omitempty"`
 	Source       corelib.MCPServerSource `json:"source"`
 	Tools        []MCPToolView           `json:"tools"`
-	HealthStatus string                  `json:"health_status"`
+	HealthStatus mcpHealthStatus         `json:"health_status"`
 	FailCount    int                     `json:"fail_count"`
 	LastCheckAt  time.Time               `json:"last_check_at"`
 	CreatedAt    time.Time               `json:"created_at"`
@@ -87,7 +87,7 @@ type mcpSession struct {
 }
 
 type mcpHealthState struct {
-	Status    string
+	Status    mcpHealthStatus
 	FailCount int
 	LastCheck time.Time
 }
@@ -243,7 +243,7 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 			AuthSecret:   s.AuthSecret,
 			Headers:      s.Headers,
 			Source:       s.Source,
-			HealthStatus: string(mcpHealthStatusUnknown),
+			HealthStatus: mcpHealthStatusUnknown,
 		}
 		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
 			v.CreatedAt = t
@@ -523,9 +523,9 @@ func (r *MCPRegistry) HealthCheck(serverID string) error {
 	h.FailCount = 0
 	h.LastCheck = time.Now()
 	if elapsed > 5*time.Second {
-		h.Status = string(mcpHealthStatusSlow)
+		h.Status = mcpHealthStatusSlow
 	} else {
-		h.Status = string(mcpHealthStatusHealthy)
+		h.Status = mcpHealthStatusHealthy
 	}
 	r.mu.Unlock()
 	return nil
@@ -538,9 +538,9 @@ func (r *MCPRegistry) recordFailure(serverID string) {
 	h.FailCount++
 	h.LastCheck = time.Now()
 	if h.FailCount >= 3 {
-		h.Status = string(mcpHealthStatusUnavailable)
+		h.Status = mcpHealthStatusUnavailable
 	} else {
-		h.Status = string(mcpHealthStatusSlow)
+		h.Status = mcpHealthStatusSlow
 	}
 }
 
@@ -550,13 +550,13 @@ func (r *MCPRegistry) recordSuccess(serverID string) {
 	h := r.getOrCreateHealth(serverID)
 	h.FailCount = 0
 	h.LastCheck = time.Now()
-	h.Status = string(mcpHealthStatusHealthy)
+	h.Status = mcpHealthStatusHealthy
 }
 
 func (r *MCPRegistry) getOrCreateHealth(serverID string) *mcpHealthState {
 	h, ok := r.health[serverID]
 	if !ok {
-		h = &mcpHealthState{Status: string(mcpHealthStatusUnknown)}
+		h = &mcpHealthState{Status: mcpHealthStatusUnknown}
 		r.health[serverID] = h
 	}
 	return h

@@ -33,4 +33,8 @@ type floatingWindow interface {
 	// IsCreated returns whether the floating window has been created and
 	// is ready to be shown.
 	IsCreated() bool
+
+	// UpdateSoundConfig updates in-memory sound settings without rebuilding
+	// the window. Called when only sound-related config changes.
+	UpdateSoundConfig(soundEnabled bool, preset string)
 }

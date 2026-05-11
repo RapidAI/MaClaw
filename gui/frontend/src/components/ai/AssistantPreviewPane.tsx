@@ -14,6 +14,7 @@ interface AssistantPreviewPaneProps {
     closeDocPreview: () => void;
     dismissAgentView?: (viewId: string | undefined) => void | Promise<void>;
     inline: boolean;
+    lang: string;
     onToggleMaximize?: () => void;
     selectCodeFile: (filePath: string) => void;
     submitAgentView?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
@@ -34,6 +35,7 @@ export function AssistantPreviewPane({
     closeDocPreview,
     dismissAgentView,
     inline,
+    lang,
     onToggleMaximize,
     selectCodeFile,
     submitAgentView,
@@ -75,6 +77,7 @@ export function AssistantPreviewPane({
                     phases={workflowState.phases}
                     workflowType={workflowState.workflowType}
                     gateResults={workflowState.gateResults}
+                    lang={lang}
                     onClose={closeDocPreview}
                     onToggleMaximize={inline ? onToggleMaximize : undefined}
                     onResizeStart={startPreviewResize}

@@ -26,7 +26,7 @@ func (k craftFailureSignalKind) DisallowsRetry() bool {
 	}
 }
 
-func (k craftFailureSignalKind) FailureCategory() string {
+func (k craftFailureSignalKind) FailureCategory() craftFailureCategory {
 	switch k {
 	case craftFailureSignalPermission:
 		return craftFailureCategoryPermission

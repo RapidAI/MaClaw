@@ -22,6 +22,7 @@ type toolExecutionResult struct {
 	ToolKind    agentToolKind
 	Outcome     toolOutcome
 	FailureKind toolFailureKind
+	Metadata    toolResultMetadata
 }
 
 func (r toolExecutionResult) IsFailure() bool {
@@ -45,4 +46,8 @@ func failureKindForOutcome(outcome toolOutcome) toolFailureKind {
 		return toolFailureHandlerReported
 	}
 	return toolFailureNone
+}
+
+type toolResultMetadata struct {
+	SkillRunID string
 }

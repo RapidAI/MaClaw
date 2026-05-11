@@ -37,22 +37,22 @@ type skillPackageQualitySummary struct {
 type SkillQualityStatus = persistedSkillQualityStatus
 
 type persistedSkillQualityStatus struct {
-	SkillName           string                     `json:"skill_name"`
-	Stage               string                     `json:"stage"`
-	Score               int                        `json:"score"`
-	MarketReady         bool                       `json:"market_ready"`
-	MinMarketScore      int                        `json:"min_market_score"`
-	Reasons             []string                   `json:"reasons,omitempty"`
-	PortabilitySummary  skill.IssueSummary         `json:"portability_summary"`
-	PackageSummary      skillPackageQualitySummary `json:"package_summary"`
-	RequireRuntimeProof bool                       `json:"require_runtime_proof"`
-	UsageCount          int                        `json:"usage_count"`
-	SuccessCount        int                        `json:"success_count"`
-	FailureCount        int                        `json:"failure_count"`
-	VerificationStatus  string                     `json:"verification_status"`
-	VerificationSummary string                     `json:"verification_summary,omitempty"`
-	LocalHash           string                     `json:"local_hash,omitempty"`
-	UpdatedAt           string                     `json:"updated_at"`
+	SkillName           string                      `json:"skill_name"`
+	Stage               string                      `json:"stage"`
+	Score               int                         `json:"score"`
+	MarketReady         bool                        `json:"market_ready"`
+	MinMarketScore      int                         `json:"min_market_score"`
+	Reasons             []string                    `json:"reasons,omitempty"`
+	PortabilitySummary  skill.IssueSummary          `json:"portability_summary"`
+	PackageSummary      skillPackageQualitySummary  `json:"package_summary"`
+	RequireRuntimeProof bool                        `json:"require_runtime_proof"`
+	UsageCount          int                         `json:"usage_count"`
+	SuccessCount        int                         `json:"success_count"`
+	FailureCount        int                         `json:"failure_count"`
+	VerificationStatus  skillVerificationStatusKind `json:"verification_status"`
+	VerificationSummary string                      `json:"verification_summary,omitempty"`
+	LocalHash           string                      `json:"local_hash,omitempty"`
+	UpdatedAt           string                      `json:"updated_at"`
 }
 
 type skillPackageManifest struct {
@@ -69,20 +69,20 @@ type skillPackageManifestFile struct {
 	SHA256 string `json:"sha256"`
 }
 
-func skillVerificationStatus(entry *corelib.NLSkillEntry, requireRuntimeProof bool) string {
+func skillVerificationStatus(entry *corelib.NLSkillEntry, requireRuntimeProof bool) skillVerificationStatusKind {
 	if entry == nil {
-		return "missing_entry"
+		return skillVerificationStatusMissingEntry
 	}
 	if entry.SuccessCount > 0 {
-		return "verified_success"
+		return skillVerificationStatusVerifiedSuccess
 	}
 	if entry.FailureCount > 0 {
-		return "failed"
+		return skillVerificationStatusFailed
 	}
 	if requireRuntimeProof {
-		return "needs_runtime_proof"
+		return skillVerificationStatusNeedsRuntimeProof
 	}
-	return "static_checked"
+	return skillVerificationStatusStaticChecked
 }
 
 func skillVerificationSummary(entry *corelib.NLSkillEntry, requireRuntimeProof bool) string {

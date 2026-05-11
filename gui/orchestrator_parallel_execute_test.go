@@ -14,7 +14,7 @@ func TestOrchestratorRejectsLocalBuiltinToolsBeforeRemoteLaunch(t *testing.T) {
 		ProjectPath: t.TempDir(),
 	})
 
-	if normalizeOrchestratorSessionStatus(got.Status) != orchestratorSessionStatusFailed {
+	if !got.Status.IsFailed() {
 		t.Fatalf("status = %q, want failed", got.Status)
 	}
 	if !strings.Contains(got.Error, "local built-in tool") || !strings.Contains(got.Error, "call it directly") {

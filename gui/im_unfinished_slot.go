@@ -145,7 +145,7 @@ func (h *IMMessageHandler) recoverInterruptedTaskSlot(userID string, entries []a
 		SlotID:       slotID,
 		UserID:       userID,
 		ProjectPath:  interruptedProjectPath,
-		Status:       "interrupted",
+		Status:       agent.UnfinishedTaskSlotStatusInterrupted,
 		LastTask:     interruptedTask,
 		Summary:      extractProgressSummary(entries),
 		ResumePrompt: "A previous task was interrupted after tool-level progress. Resume from the saved context and continue the original task instead of starting over.",
@@ -205,7 +205,7 @@ func (h *IMMessageHandler) applyExplicitTaskSlotAction(msg *IMUserMessage, trimm
 	}
 	if decision.StartNewTask {
 		if len(*entries) >= 2 {
-			h.archiveCurrentTask(msg.UserID, *entries, "abandoned")
+			h.archiveCurrentTask(msg.UserID, *entries, agent.ArchivedTaskStatusAbandoned)
 		}
 		h.memory.ClearConversationAndDismissSlot(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)

@@ -128,8 +128,8 @@ func executeCodingWriteFile(args map[string]interface{}) codingToolExecutionResu
 	if err != nil {
 		return codingToolExecutionResult{Text: err.Error(), Outcome: codingToolOutcomeFailed}
 	}
-	resolvedMode, _ := coretool.NormalizeWriteMode(stringVal(args, "mode"))
-	if resolvedMode == "append" {
+	resolvedMode, _ := coretool.NormalizeWriteModeKind(stringVal(args, "mode"))
+	if resolvedMode == coretool.WriteModeAppend {
 		return codingToolExecutionResult{Text: fmt.Sprintf("appended to %s (current %d bytes)", absPath, size), Outcome: codingToolOutcomeSuccess}
 	}
 	if content == "" {

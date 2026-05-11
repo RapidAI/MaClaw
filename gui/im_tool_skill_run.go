@@ -39,7 +39,7 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 		b.WriteString(fmt.Sprintf("- session_ready: %v\n", sessionReady))
 	}
 	if status.Summary.CurrentStep != "" {
-		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, firstNonEmptySkillRunStatus(status.Summary.CurrentStepStatus, "running")))
+		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, firstNonEmptySkillRunStatus(string(status.Summary.CurrentStepStatus), "running")))
 	}
 	if status.Summary.LastCompletedStep != "" {
 		b.WriteString(fmt.Sprintf("- last_completed_step: %s\n", status.Summary.LastCompletedStep))
@@ -49,7 +49,7 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 		b.WriteString("- 这是一个仅提供 SKILL.md 指导的 skill；当前结果只表示脚本已生成并执行。\n")
 		if status.Summary.ArtifactPath != "" {
 			b.WriteString(fmt.Sprintf("- 目标产物: %s\n", status.Summary.ArtifactPath))
-			switch normalizeSkillArtifactStatus(status.Summary.ArtifactStatus) {
+			switch status.Summary.ArtifactStatus {
 			case skillArtifactStatusVerified:
 				b.WriteString("- 产物已自动验证存在。\n")
 			case skillArtifactStatusMissing:
@@ -136,7 +136,7 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 		if strings.TrimSpace(status.Session.ProjectPath) != "" {
 			b.WriteString(fmt.Sprintf("- project_path: %s\n", status.Session.ProjectPath))
 		}
-		if strings.TrimSpace(status.Session.Status) != "" {
+		if strings.TrimSpace(status.Session.Status.String()) != "" {
 			b.WriteString(fmt.Sprintf("- session_status: %s\n", status.Session.Status))
 		}
 		if strings.TrimSpace(status.Session.ResumeSessionID) != "" {
@@ -286,7 +286,7 @@ func waitForSkillRunnerSnapshot(runner *SkillRunner, runID string, timeout time.
 			if !status.IsRunning() {
 				return status, nil
 			}
-			if normalizeSkillArtifactStatus(status.Summary.ArtifactStatus).IsDecided() {
+			if status.Summary.ArtifactStatus.IsDecided() {
 				return status, nil
 			}
 			for _, step := range status.Steps {

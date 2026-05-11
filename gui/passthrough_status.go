@@ -11,8 +11,8 @@ const (
 	passthroughRunStatusTimeout passthroughRunStatus = "timeout"
 )
 
-func normalizePassthroughRunStatus(status string) passthroughRunStatus {
-	switch passthroughRunStatus(strings.TrimSpace(status)) {
+func normalizePassthroughRunStatus(status passthroughRunStatus) passthroughRunStatus {
+	switch passthroughRunStatus(strings.TrimSpace(string(status))) {
 	case passthroughRunStatusSuccess:
 		return passthroughRunStatusSuccess
 	case passthroughRunStatusFailed:

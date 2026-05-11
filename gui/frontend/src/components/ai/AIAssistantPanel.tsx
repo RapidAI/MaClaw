@@ -537,6 +537,7 @@ export function AIAssistantPanel(props: any) {
                 closeDocPreview={closeDocPreview}
                 dismissAgentView={dismissAgentView}
                 inline={!!inline}
+                lang={lang}
                 onToggleMaximize={onToggleMaximize}
                 selectCodeFile={selectCodeFile}
                 submitAgentView={submitAgentView}

@@ -31,7 +31,7 @@ func (s *SkillRunStatus) LifecycleStatus() skillRunLifecycleStatus {
 	if s == nil {
 		return skillRunStatusUnknown
 	}
-	return normalizeSkillRunLifecycleStatus(s.Status)
+	return normalizeSkillRunLifecycleStatus(string(s.Status))
 }
 
 func (s *SkillRunStatus) IsRunning() bool {
@@ -83,7 +83,7 @@ func normalizeSkillStepStatus(status string) skillStepStatus {
 }
 
 func (s StepResult) LifecycleStatus() skillStepStatus {
-	return normalizeSkillStepStatus(s.Status)
+	return normalizeSkillStepStatus(string(s.Status))
 }
 
 func (s StepResult) IsFailed() bool {
@@ -169,6 +169,10 @@ func normalizeSkillEntryStatus(status string) skillEntryStatus {
 	}
 }
 
+func (s skillEntryStatus) String() string {
+	return string(s)
+}
+
 type skillEntrySource string
 
 const (
@@ -198,6 +202,10 @@ func normalizeSkillEntrySource(source string) skillEntrySource {
 	default:
 		return skillEntrySourceUnknown
 	}
+}
+
+func (s skillEntrySource) String() string {
+	return string(s)
 }
 
 func (s skillEntrySource) IsAgentMarkdownSkillSource() bool {

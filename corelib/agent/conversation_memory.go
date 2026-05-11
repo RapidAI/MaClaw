@@ -84,7 +84,7 @@ type UnfinishedTaskSlot struct {
 	UserID           string                   `json:"user_id"`
 	ProjectPath      string                   `json:"project_path,omitempty"`
 	Tool             string                   `json:"tool,omitempty"`
-	Status           string                   `json:"status"`
+	Status           UnfinishedTaskSlotStatus `json:"status"`
 	Summary          string                   `json:"summary,omitempty"`
 	LastTask         string                   `json:"last_task,omitempty"`
 	ResumePrompt     string                   `json:"resume_prompt,omitempty"`
@@ -110,6 +110,7 @@ func CloneUnfinishedTaskSlot(slot *UnfinishedTaskSlot) *UnfinishedTaskSlot {
 		return nil
 	}
 	clone := *slot
+	clone.Status = NormalizeUnfinishedTaskSlotStatus(clone.Status.String())
 	return &clone
 }
 
@@ -525,7 +526,7 @@ func (cm *ConversationMemory) BindUnfinishedSlot(userID, slotID string) bool {
 		return false
 	}
 	s.activeSlotID = slotID
-	s.unfinishedSlot.Status = UnfinishedTaskSlotStatusResumed.String()
+	s.unfinishedSlot.Status = UnfinishedTaskSlotStatusResumed
 	s.unfinishedSlot.BoundAt = time.Now()
 	s.unfinishedSlot.UpdatedAt = time.Now()
 	s.lastAccess = time.Now()
@@ -564,7 +565,7 @@ func (cm *ConversationMemory) CompleteUnfinishedSlot(userID, slotID string) {
 	defer sh.mu.Unlock()
 	if s := sh.sessions[userID]; s != nil && s.unfinishedSlot != nil {
 		if slotID == "" || s.unfinishedSlot.SlotID == strings.TrimSpace(slotID) {
-			s.unfinishedSlot.Status = UnfinishedTaskSlotStatusCompleted.String()
+			s.unfinishedSlot.Status = UnfinishedTaskSlotStatusCompleted
 			s.unfinishedSlot.UpdatedAt = time.Now()
 			s.activeSlotID = ""
 			s.lastAccess = time.Now()
@@ -769,7 +770,7 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 			UserID:           userID,
 			ProjectPath:      projectPath,
 			Tool:             "agent",
-			Status:           "interrupted",
+			Status:           UnfinishedTaskSlotStatusInterrupted,
 			Summary:          "Previous task stopped making progress and was moved to recovery.",
 			LastTask:         task,
 			ResumePrompt:     "The previous task stopped making progress. Continue from the saved conversation history and avoid repeating completed work.\n",

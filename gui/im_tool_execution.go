@@ -117,6 +117,7 @@ func (h *IMMessageHandler) executeToolDetailed(name, argsJSON string, onProgress
 		if result.ToolKind == agentToolKindUnknown {
 			result.ToolKind = kind
 		}
+		result.Metadata = mergeToolResultMetadata(result.Metadata, inferToolResultMetadata(result.ToolKind, result.Text))
 	}()
 
 	var args map[string]interface{}

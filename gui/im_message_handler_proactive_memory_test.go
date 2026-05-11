@@ -159,18 +159,12 @@ func TestSystemPrompt_IncludesKnowledgeBaseTriggerRules(t *testing.T) {
 	prompt := h.buildSystemPrompt()
 
 	assertContainsAll(t, prompt, []string{
-		"## 知识库外脑触发规则",
-		"明确长期保存意图",
+		"## 知识库外脑规则",
 		"knowledge_save_url",
-		"knowledge_save_urls",
-		"knowledge_discover_urls",
 		"knowledge_import_files",
 		"knowledge_import_directory",
 		"knowledge_save_text",
 		"knowledge_context_pack",
-		"knowledge_source_digest",
-		"查询阶段默认不依赖 LLM",
-		"写入阶段允许",
 		"不要因为用户只是让你",
 	})
 }

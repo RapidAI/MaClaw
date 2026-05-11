@@ -50,7 +50,7 @@ type RuntimeTaskInfo struct {
 type RuntimeSessionInfo struct {
 	ID     string
 	Source runtimeSessionSource
-	Status string
+	Status runtimeSessionStatus
 	Label  string // host label for SSH, empty for coding
 }
 
@@ -123,7 +123,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 			rs.Sessions = append(rs.Sessions, RuntimeSessionInfo{
 				ID:     s.ID,
 				Source: runtimeSessionSourceCoding,
-				Status: string(s.Status),
+				Status: normalizeRuntimeSessionStatus(s.Status),
 			})
 			s.mu.RUnlock()
 		}
@@ -136,7 +136,7 @@ func (h *IMMessageHandler) collectRuntimeStatus() RuntimeStatus {
 			rs.Sessions = append(rs.Sessions, RuntimeSessionInfo{
 				ID:     s.ID,
 				Source: runtimeSessionSourceSSH,
-				Status: summary.Status,
+				Status: normalizeRuntimeSessionStatus(summary.Status),
 				Label:  summary.HostLabel,
 			})
 		}

@@ -25,7 +25,7 @@ type qqBotGatewayManager struct {
 	app        *App
 	mu         sync.Mutex
 	gateway    *qqbot.Gateway
-	status     string // "disconnected", "connecting", "connected", "error", "reconnecting"
+	status     gatewayConnectionStatus
 	lastAppID  string
 	lastSecret string
 
@@ -37,7 +37,7 @@ type qqBotGatewayManager struct {
 func newQQBotGatewayManager(app *App) *qqBotGatewayManager {
 	return &qqBotGatewayManager{
 		app:    app,
-		status: string(gatewayConnectionStatusDisconnected),
+		status: gatewayConnectionStatusDisconnected,
 	}
 }
 
@@ -55,7 +55,7 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = string(gatewayConnectionStatusDisconnected)
+			m.status = gatewayConnectionStatusDisconnected
 			m.mu.Unlock()
 			_ = gw.Stop() // Stop outside lock to avoid deadlock with onStatusChange
 		} else {
@@ -108,7 +108,7 @@ func (m *qqBotGatewayManager) SyncFromConfig() {
 		m.gateway = nil
 		m.lastAppID = ""
 		m.lastSecret = ""
-		m.status = string(gatewayConnectionStatusError)
+		m.status = gatewayConnectionStatusError
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -120,7 +120,7 @@ func (m *qqBotGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = string(gatewayConnectionStatusDisconnected)
+	m.status = gatewayConnectionStatusDisconnected
 	m.lastAppID = ""
 	m.lastSecret = ""
 	lh := m.localHandler
@@ -139,14 +139,14 @@ func (m *qqBotGatewayManager) Stop() {
 func (m *qqBotGatewayManager) Status() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.status
+	return m.status.String()
 }
 
 // onStatusChange is called by the gateway when connection status changes.
 func (m *qqBotGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
-	m.status = status
 	normalized := normalizeGatewayConnectionStatus(status)
+	m.status = normalized
 	if normalized == gatewayConnectionStatusError {
 		m.gateway = nil
 		m.lastAppID = ""

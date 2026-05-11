@@ -20,21 +20,8 @@ import (
 )
 
 const (
-	craftVerificationPassed           = "passed"
-	craftVerificationArtifactMissing  = "artifact_missing"
-	craftVerificationRuntimeMissing   = "runtime_missing"
-	craftVerificationExecutionFailed  = "execution_failed"
-	craftVerificationOutputSuspicious = "output_suspicious"
-
 	craftRegisterPolicyAuto   = "auto"
 	craftRegisterPolicyManual = "manual"
-
-	craftFailureCategoryEnvironment = "environment"
-	craftFailureCategoryPermission  = "permission"
-	craftFailureCategoryCapability  = "capability"
-	craftFailureCategoryScript      = "script"
-	craftFailureCategoryArtifact    = "artifact"
-	craftFailureCategoryUnknown     = "unknown"
 )
 
 type craftRuntimeAvailability struct {
@@ -68,7 +55,7 @@ type craftAttemptResult struct {
 	Language            string
 	Output              string
 	ExecErr             error
-	VerificationStatus  string
+	VerificationStatus  craftVerificationStatus
 	VerificationMessage string
 	ArtifactPath        string
 	Attempts            int
@@ -726,7 +713,7 @@ func buildCraftFailureResult(request craftToolRequest, attempt craftAttemptResul
 	if attempt.Attempts > 0 {
 		result.WriteString(fmt.Sprintf("attempts: %d\n", attempt.Attempts))
 	}
-	status := firstNonEmptyCraftText(attempt.VerificationStatus, craftVerificationExecutionFailed)
+	status := firstNonEmptyCraftText(attempt.VerificationStatus.String(), craftVerificationExecutionFailed.String())
 	result.WriteString(fmt.Sprintf("verification: %s\n", status))
 	if providerName != "" || providerURL != "" {
 		if providerName != "" && providerURL != "" {
@@ -784,7 +771,7 @@ func errorText(err error) string {
 	return err.Error()
 }
 
-func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) (string, string) {
+func classifyCraftFailure(request craftToolRequest, attempt craftAttemptResult) (craftFailureCategory, string) {
 	if attempt.VerificationStatus == craftVerificationArtifactMissing {
 		message := strings.ToLower(firstNonEmptyCraftText(attempt.VerificationMessage, attempt.Output))
 		switch classifyCraftArtifactFailureSignal(message) {

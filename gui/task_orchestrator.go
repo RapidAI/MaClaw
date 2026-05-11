@@ -11,22 +11,22 @@ import (
 
 // TaskPlan represents a multi-session execution plan.
 type TaskPlan struct {
-	ID          string        `json:"id"`
-	Description string        `json:"description"`
-	SubTasks    []PlanSubTask `json:"sub_tasks"`
-	Status      string        `json:"status"` // "planning", "running", "completed", "failed", "cancelled"
-	CreatedAt   time.Time     `json:"created_at"`
+	ID          string                 `json:"id"`
+	Description string                 `json:"description"`
+	SubTasks    []PlanSubTask          `json:"sub_tasks"`
+	Status      orchestratorTaskStatus `json:"status"`
+	CreatedAt   time.Time              `json:"created_at"`
 }
 
 // PlanSubTask represents a single unit of work within a TaskPlan.
 type PlanSubTask struct {
-	ID          string   `json:"id"`
-	Description string   `json:"description"`
-	Tool        string   `json:"tool"`
-	SessionID   string   `json:"session_id"`
-	DependsOn   []string `json:"depends_on"`
-	Status      string   `json:"status"` // "pending", "running", "completed", "failed"
-	Result      string   `json:"result"`
+	ID          string                 `json:"id"`
+	Description string                 `json:"description"`
+	Tool        string                 `json:"tool"`
+	SessionID   string                 `json:"session_id"`
+	DependsOn   []string               `json:"depends_on"`
+	Status      orchestratorTaskStatus `json:"status"`
+	Result      string                 `json:"result"`
 }
 
 // TaskOrchestrator2 manages multi-session task execution plans.
@@ -73,11 +73,11 @@ func (o *TaskOrchestrator2) CreatePlan(description string, subTasks []PlanSubTas
 		if subTasks[i].ID == "" {
 			subTasks[i].ID = fmt.Sprintf("task_%d", i+1)
 		}
-		subTasks[i].Status = string(orchestratorTaskStatusPending)
+		subTasks[i].Status = orchestratorTaskStatusPending
 	}
 	plan := &TaskPlan{
 		ID: planID, Description: description, SubTasks: subTasks,
-		Status: string(orchestratorTaskStatusPlanning), CreatedAt: time.Now(),
+		Status: orchestratorTaskStatusPlanning, CreatedAt: time.Now(),
 	}
 	o.mu.Lock()
 	o.plans[planID] = plan
@@ -95,7 +95,7 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 		o.mu.Unlock()
 		return fmt.Errorf("计划 %s 不存在", planID)
 	}
-	plan.Status = string(orchestratorTaskStatusRunning)
+	plan.Status = orchestratorTaskStatusRunning
 	o.mu.Unlock()
 
 	completed := make(map[string]bool)
@@ -103,7 +103,7 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 	// Pre-populate with already-completed subtasks (for Resume).
 	o.mu.RLock()
 	for _, st := range plan.SubTasks {
-		if normalizeOrchestratorTaskStatus(st.Status) == orchestratorTaskStatusCompleted {
+		if st.Status.IsCompleted() {
 			completed[st.ID] = true
 		}
 	}
@@ -118,7 +118,7 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 		o.mu.RLock()
 		completedMu.Lock()
 		for i, st := range plan.SubTasks {
-			if normalizeOrchestratorTaskStatus(st.Status) != orchestratorTaskStatusPending {
+			if !st.Status.IsPending() {
 				continue
 			}
 			allDeps := true
@@ -139,7 +139,7 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 			allDone := true
 			o.mu.RLock()
 			for _, st := range plan.SubTasks {
-				if orchestratorTaskStatusIsActive(st.Status) {
+				if st.Status.IsActive() {
 					allDone = false
 					break
 				}
@@ -155,7 +155,7 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 		for _, idx := range ready {
 			i := idx
 			o.mu.Lock()
-			plan.SubTasks[i].Status = string(orchestratorTaskStatusRunning)
+			plan.SubTasks[i].Status = orchestratorTaskStatusRunning
 			o.mu.Unlock()
 			wg.Add(1)
 			go func() {
@@ -163,7 +163,7 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 				result, err := o.executeSubTask(&plan.SubTasks[i])
 				o.mu.Lock()
 				if err != nil {
-					plan.SubTasks[i].Status = string(orchestratorTaskStatusFailed)
+					plan.SubTasks[i].Status = orchestratorTaskStatusFailed
 					plan.SubTasks[i].Result = err.Error()
 					errMu.Lock()
 					if firstErr == nil {
@@ -171,7 +171,7 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 					}
 					errMu.Unlock()
 				} else {
-					plan.SubTasks[i].Status = string(orchestratorTaskStatusCompleted)
+					plan.SubTasks[i].Status = orchestratorTaskStatusCompleted
 					plan.SubTasks[i].Result = result
 					completedMu.Lock()
 					completed[plan.SubTasks[i].ID] = true
@@ -184,14 +184,14 @@ func (o *TaskOrchestrator2) Execute(planID string) error {
 		wg.Wait()
 		if firstErr != nil {
 			o.mu.Lock()
-			plan.Status = string(orchestratorTaskStatusFailed)
+			plan.Status = orchestratorTaskStatusFailed
 			o.mu.Unlock()
 			_ = o.savePlans()
 			return firstErr
 		}
 	}
 	o.mu.Lock()
-	plan.Status = string(orchestratorTaskStatusCompleted)
+	plan.Status = orchestratorTaskStatusCompleted
 	o.mu.Unlock()
 	_ = o.savePlans()
 	return nil
@@ -225,7 +225,7 @@ func (o *TaskOrchestrator2) Cancel(planID string) error {
 	if !ok {
 		return fmt.Errorf("计划 %s 不存在", planID)
 	}
-	plan.Status = string(orchestratorTaskStatusCancelled)
+	plan.Status = orchestratorTaskStatusCancelled
 	_ = o.savePlansLocked()
 	return nil
 }
@@ -241,11 +241,11 @@ func (o *TaskOrchestrator2) Resume(planID string) error {
 		return fmt.Errorf("计划 %s 不存在", planID)
 	}
 	for i := range plan.SubTasks {
-		if normalizeOrchestratorTaskStatus(plan.SubTasks[i].Status) == orchestratorTaskStatusRunning {
-			plan.SubTasks[i].Status = string(orchestratorTaskStatusPending)
+		if plan.SubTasks[i].Status.IsRunning() {
+			plan.SubTasks[i].Status = orchestratorTaskStatusPending
 		}
 	}
-	plan.Status = string(orchestratorTaskStatusRunning)
+	plan.Status = orchestratorTaskStatusRunning
 	o.mu.Unlock()
 
 	return o.Execute(planID)
@@ -259,10 +259,10 @@ func (o *TaskOrchestrator2) ListResumable() []*TaskPlan {
 
 	var result []*TaskPlan
 	for _, plan := range o.plans {
-		if orchestratorTaskStatusIsResumable(plan.Status) {
+		if plan.Status.IsResumable() {
 			hasPending := false
 			for _, st := range plan.SubTasks {
-				if orchestratorTaskStatusIsActive(st.Status) {
+				if st.Status.IsActive() {
 					hasPending = true
 					break
 				}

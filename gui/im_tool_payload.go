@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 )
@@ -14,6 +15,7 @@ type pendingFile struct {
 type toolPayloadObservation struct {
 	TraceResult    string
 	ToolContent    string
+	Kind           toolPayloadKind
 	ImageKey       string
 	ScreenshotSent bool
 	File           *pendingFile
@@ -52,25 +54,26 @@ func (a *agentLoopPendingToolArtifacts) ApplyObservation(obs toolPayloadObservat
 }
 
 func parseToolPayloadResult(result string) toolPayloadObservation {
+	payload := classifyToolPayloadResult(result)
 	obs := toolPayloadObservation{
 		TraceResult: result,
 		ToolContent: result,
+		Kind:        payload.Kind,
 	}
-	if strings.HasPrefix(result, "[screenshot_base64]") {
-		obs.TraceResult = "Tool result prepared for the user."
+	switch payload.Kind {
+	case toolPayloadScreenshotBase64:
+		obs.TraceResult = toolPayloadPreparedMessage
 		obs.ToolContent = obs.TraceResult
-		obs.ImageKey = strings.TrimPrefix(result, "[screenshot_base64]")
+		obs.ImageKey = payload.Body
 		return obs
-	}
-	if result == "[screenshot_sent]" {
-		obs.TraceResult = "Tool result prepared for the user."
+	case toolPayloadScreenshotSent:
+		obs.TraceResult = toolPayloadPreparedMessage
 		obs.ToolContent = obs.TraceResult
 		obs.ScreenshotSent = true
 		return obs
-	}
-	if strings.HasPrefix(result, "[file_base64|") {
-		obs.TraceResult = "Tool result prepared for the user."
-		rest := strings.TrimPrefix(result, "[file_base64|")
+	case toolPayloadFileBase64:
+		obs.TraceResult = toolPayloadPreparedMessage
+		rest := payload.Body
 		closeBracket := strings.Index(rest, "]")
 		if closeBracket <= 0 {
 			return obs
@@ -85,8 +88,12 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 		var message string
 		for i := 2; i < len(parts); i++ {
 			seg := parts[i]
-			if seg == "im" {
+			if normalizeToolPayloadFileFlag(seg) == toolPayloadFileFlagForwardIM {
 				forwardIM = true
+			} else if strings.HasPrefix(seg, "msg64:") {
+				if decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(seg, "msg64:")); err == nil {
+					message = string(decoded)
+				}
 			} else if strings.HasPrefix(seg, "msg:") {
 				message = strings.TrimPrefix(seg, "msg:")
 			} else {
@@ -110,10 +117,9 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 		}
 		obs.TraceResult = obs.ToolContent
 		return obs
-	}
-	if strings.HasPrefix(result, "[voice_base64|") {
-		obs.TraceResult = "Tool result prepared for the user."
-		rest := strings.TrimPrefix(result, "[voice_base64|")
+	case toolPayloadVoiceBase64:
+		obs.TraceResult = toolPayloadPreparedMessage
+		rest := payload.Body
 		closeBracket := strings.Index(rest, "]")
 		if closeBracket <= 0 {
 			return obs
@@ -129,6 +135,15 @@ func parseToolPayloadResult(result string) toolPayloadObservation {
 		obs.ToolContent = "Voice message is ready and will be sent to the user."
 		obs.TraceResult = obs.ToolContent
 		return obs
+	default:
+		return obs
 	}
-	return obs
+}
+
+func encodeToolPayloadMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return ""
+	}
+	return "msg64:" + base64.RawURLEncoding.EncodeToString([]byte(message))
 }

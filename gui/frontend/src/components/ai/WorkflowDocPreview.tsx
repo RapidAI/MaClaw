@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import type { PhaseInfo, QualityGateResult } from "./useWorkflowState";
+import { localizeText } from "./aiAssistantI18n";
 
 // ── Mermaid (local npm package, no network required) ──
 
@@ -176,6 +177,7 @@ interface WorkflowDocPreviewProps {
     phases?: PhaseInfo[];
     workflowType?: string;
     gateResults: Map<string, QualityGateResult>;
+    lang?: string;
     onClose: () => void;
     theme: DocPreviewTheme;
     onResizeStart?: () => void;
@@ -301,6 +303,23 @@ const phaseLabels: Record<string, string> = {
     tasks: "任务",
 };
 
+function workflowPhaseLabel(lang: string | undefined, phaseID: string, phaseLabelMap: Map<string, string>): string {
+    const metadataLabel = phaseLabelMap.get(phaseID);
+    if (metadataLabel) return metadataLabel;
+    switch (phaseID) {
+        case "requirements":
+            return localizeText(lang || "zh-Hans", "Requirements", "需求", "需求");
+        case "tech_design":
+        case "design":
+            return localizeText(lang || "zh-Hans", "Design", "设计", "設計");
+        case "task_breakdown":
+        case "tasks":
+            return localizeText(lang || "zh-Hans", "Tasks", "任务", "任務");
+        default:
+            return phaseLabels[phaseID] || phaseID;
+    }
+}
+
 const workflowPhaseOrders: Record<string, string[]> = {
     coding: ["requirements", "design", "tasks", "implementation", "review"],
     product_design: ["problem_discovery", "solution_design", "prd", "prototype"],
@@ -409,6 +428,33 @@ export function workflowProgressPhaseCardState({
     return { status: "待开始", tone: "pending", emphasized: false };
 }
 
+function workflowPhaseStatusLabel(lang: string | undefined, status: string): string {
+    switch (status) {
+        case "生成中":
+            return localizeText(lang || "zh-Hans", "Generating", "生成中", "生成中");
+        case "缺文档":
+            return localizeText(lang || "zh-Hans", "Missing doc", "缺文档", "缺文檔");
+        case "待开始":
+            return localizeText(lang || "zh-Hans", "Pending", "待开始", "待開始");
+        case "质检通过":
+            return localizeText(lang || "zh-Hans", "Quality passed", "质检通过", "質檢通過");
+        case "需调整":
+            return localizeText(lang || "zh-Hans", "Needs changes", "需调整", "需調整");
+        case "有产出":
+            return localizeText(lang || "zh-Hans", "Has output", "有产出", "有產出");
+        case "执行中":
+            return localizeText(lang || "zh-Hans", "Running", "执行中", "執行中");
+        case "已执行":
+            return localizeText(lang || "zh-Hans", "Executed", "已执行", "已執行");
+        case "待确认":
+            return localizeText(lang || "zh-Hans", "Waiting for confirmation", "待确认", "待確認");
+        case "已完成":
+            return localizeText(lang || "zh-Hans", "Completed", "已完成", "已完成");
+        default:
+            return status;
+    }
+}
+
 function WorkflowProgressBoard({
     activePhaseID,
     currentPhaseID,
@@ -419,6 +465,7 @@ function WorkflowProgressBoard({
     phaseIDs,
     phaseLabelMap,
     theme,
+    lang,
 }: {
     activePhaseID: string;
     currentPhaseID: string;
@@ -429,6 +476,7 @@ function WorkflowProgressBoard({
     phaseIDs: string[];
     phaseLabelMap: Map<string, string>;
     theme: DocPreviewTheme;
+    lang?: string;
 }) {
     if (phaseIDs.length === 0) return null;
 
@@ -436,8 +484,8 @@ function WorkflowProgressBoard({
     const documentPhaseIDs = phaseIDs.filter(pid => workflowPhaseExpectsDocument(pid, phaseDocumentExpectationMap));
     const collectedCount = documentPhaseIDs.filter(pid => phaseDocuments.has(pid)).length;
     const documentSummaryText = documentPhaseIDs.length > 0
-        ? `${collectedCount}/${documentPhaseIDs.length} 个文档`
-        : "执行阶段";
+        ? localizeText(lang || "zh-Hans", `${collectedCount}/${documentPhaseIDs.length} docs`, `${collectedCount}/${documentPhaseIDs.length} 个文档`, `${collectedCount}/${documentPhaseIDs.length} 個文檔`)
+        : localizeText(lang || "zh-Hans", "Execution phase", "执行阶段", "執行階段");
     const latestCollectedIndex = phaseIDs.reduce((latest, pid, index) => phaseDocuments.has(pid) ? index : latest, -1);
     const progressIndex = Math.max(currentIndex, latestCollectedIndex, 0);
     const progressPercent = phaseIDs.length > 1 ? Math.min(100, Math.max(0, (progressIndex / (phaseIDs.length - 1)) * 100)) : 0;
@@ -458,10 +506,12 @@ function WorkflowProgressBoard({
         }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", marginBottom: "9px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
-                    <div style={{ fontSize: "12px", fontWeight: 700, color: theme.text }}>工作流进度</div>
+                    <div style={{ fontSize: "12px", fontWeight: 700, color: theme.text }}>
+                        {localizeText(lang || "zh-Hans", "Workflow progress", "工作流进度", "工作流進度")}
+                    </div>
                     <div style={{ width: "4px", height: "4px", borderRadius: "50%", background: theme.textMuted, opacity: 0.65 }} />
                     <div style={{ fontSize: "11px", color: theme.textMuted, whiteSpace: "nowrap" }}>
-                        {phaseIDs.length} 个阶段
+                        {localizeText(lang || "zh-Hans", `${phaseIDs.length} phases`, `${phaseIDs.length} 个阶段`, `${phaseIDs.length} 個階段`)}
                     </div>
                 </div>
                 <div style={{
@@ -545,12 +595,14 @@ function WorkflowProgressBoard({
                             : cardState.tone === "attention"
                                 ? "rgba(245, 158, 11, 0.11)"
                                 : "transparent";
-                    const phaseLabel = phaseLabelMap.get(pid) || phaseLabels[pid] || pid;
+                    const phaseLabel = workflowPhaseLabel(lang, pid, phaseLabelMap);
+                    const statusLabel = workflowPhaseStatusLabel(lang, cardState.status);
+                    const ariaSeparator = lang === "en" ? ", " : "，";
                     return (
                         <button
                             key={pid}
                             type="button"
-                            aria-label={`${phaseLabel}，${cardState.status}`}
+                            aria-label={`${phaseLabel}${ariaSeparator}${statusLabel}`}
                             aria-pressed={isViewing}
                             onClick={() => onSelectPhase(pid)}
                             style={{
@@ -572,7 +624,7 @@ function WorkflowProgressBoard({
                                 zIndex: 1,
                                 '--wails-draggable': 'no-drag',
                             } as any}
-                            title={`${phaseLabel} · ${cardState.status}`}
+                            title={`${phaseLabel} · ${statusLabel}`}
                         >
                             <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", minWidth: 0 }}>
                                 <span style={{
@@ -602,7 +654,7 @@ function WorkflowProgressBoard({
                                     overflow: "hidden",
                                     textOverflow: "ellipsis",
                                 }}>
-                                    {cardState.status}
+                                    {statusLabel}
                                 </span>
                             </span>
                             <span style={{ fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -633,6 +685,7 @@ function MissingWorkflowDocPlaceholder({
     phaseIDs,
     phaseLabelMap,
     theme,
+    lang,
 }: {
     activePhaseID: string;
     currentPhaseID: string;
@@ -641,8 +694,9 @@ function MissingWorkflowDocPlaceholder({
     phaseIDs: string[];
     phaseLabelMap: Map<string, string>;
     theme: DocPreviewTheme;
+    lang?: string;
 }) {
-    const label = phaseLabelMap.get(activePhaseID) || phaseLabels[activePhaseID] || activePhaseID || "当前阶段";
+    const label = activePhaseID ? workflowPhaseLabel(lang, activePhaseID, phaseLabelMap) : localizeText(lang || "zh-Hans", "Current phase", "当前阶段", "目前階段");
     const isCurrent = activePhaseID === currentPhaseID;
     const available = phaseIDs.filter(pid => phaseDocuments.has(pid));
     const expectsDocument = workflowPhaseExpectsDocument(activePhaseID, phaseDocumentExpectationMap);
@@ -655,14 +709,24 @@ function MissingWorkflowDocPlaceholder({
             color: theme.text,
         }}>
             <div style={{ fontSize: "15px", fontWeight: 700, marginBottom: "8px", color: theme.headingColor }}>
-                {expectsDocument ? `${label}文档尚未生成` : `${label}暂无预览文档`}
+                {expectsDocument
+                    ? localizeText(lang || "zh-Hans", `${label} document has not been generated`, `${label}文档尚未生成`, `${label}文檔尚未生成`)
+                    : localizeText(lang || "zh-Hans", `${label} has no preview document`, `${label}暂无预览文档`, `${label}暫無預覽文檔`)}
             </div>
             <div style={{ fontSize: "13px", lineHeight: 1.7, color: theme.textMuted }}>
                 {expectsDocument
-                    ? isCurrent ? "该阶段正在推进或等待产出，生成后会自动显示在这里。" : "该阶段还没有收集到文档内容。"
-                    : isCurrent ? "该阶段主要执行工具或生成外部产物，进展请以左侧对话和任务输出为准。" : "该阶段通常不会生成 Markdown 预览文档。"}
+                    ? isCurrent
+                        ? localizeText(lang || "zh-Hans", "This phase is running or waiting for output. The document will appear here once generated.", "该阶段正在推进或等待产出，生成后会自动显示在这里。", "該階段正在推進或等待產出，生成後會自動顯示在這裡。")
+                        : localizeText(lang || "zh-Hans", "No document content has been collected for this phase yet.", "该阶段还没有收集到文档内容。", "該階段還沒有收集到文檔內容。")
+                    : isCurrent
+                        ? localizeText(lang || "zh-Hans", "This phase mainly runs tools or creates external artifacts. Check the conversation and task output for progress.", "该阶段主要执行工具或生成外部产物，进展请以左侧对话和任务输出为准。", "該階段主要執行工具或生成外部產物，進展請以左側對話和任務輸出為準。")
+                        : localizeText(lang || "zh-Hans", "This phase usually does not generate a Markdown preview document.", "该阶段通常不会生成 Markdown 预览文档。", "該階段通常不會生成 Markdown 預覽文檔。")}
                 {available.length > 0 && (
-                    <span> 当前已收集：{available.map(pid => phaseLabelMap.get(pid) || phaseLabels[pid] || pid).join("、")}。</span>
+                    <span>
+                        {localizeText(lang || "zh-Hans", " Collected: ", " 当前已收集：", " 目前已收集：")}
+                        {available.map(pid => workflowPhaseLabel(lang, pid, phaseLabelMap)).join(localizeText(lang || "zh-Hans", ", ", "、", "、"))}
+                        {localizeText(lang || "zh-Hans", ".", "。", "。")}
+                    </span>
                 )}
             </div>
         </div>
@@ -995,6 +1059,7 @@ export function WorkflowDocPreview({
     phases,
     workflowType,
     gateResults,
+    lang,
     onClose,
     theme,
     onResizeStart,
@@ -1160,6 +1225,7 @@ export function WorkflowDocPreview({
                     phaseIDs={phaseIDs}
                     phaseLabelMap={phaseLabelMap}
                     theme={theme}
+                    lang={lang}
                 />
 
                 {/* Quality gate banner */}
@@ -1209,6 +1275,7 @@ export function WorkflowDocPreview({
                                 phaseIDs={phaseIDs}
                                 phaseLabelMap={phaseLabelMap}
                                 theme={theme}
+                                lang={lang}
                             />
                         )
                     }

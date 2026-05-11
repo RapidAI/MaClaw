@@ -395,7 +395,7 @@ func TestClassifyCraftFailure(t *testing.T) {
 		name         string
 		request      craftToolRequest
 		attempt      craftAttemptResult
-		wantCategory string
+		wantCategory craftFailureCategory
 		wantAdvice   string
 	}{
 		{name: "artifact missing with reported path", attempt: craftAttemptResult{VerificationStatus: craftVerificationArtifactMissing, ArtifactPath: "/tmp/out.pdf", VerificationMessage: "脚本报告了产物路径，但文件不存在：/tmp/out.pdf"}, wantCategory: craftFailureCategoryArtifact, wantAdvice: "磁盘上找不到该文件"},

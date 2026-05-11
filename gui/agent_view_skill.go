@@ -709,8 +709,8 @@ func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[st
 			title = "Running " + strings.TrimSpace(status.Skill)
 			descriptionParts = append(descriptionParts, "skill: "+strings.TrimSpace(status.Skill))
 		}
-		if strings.TrimSpace(status.Status) != "" {
-			descriptionParts = append(descriptionParts, "status: "+strings.TrimSpace(status.Status))
+		if strings.TrimSpace(string(status.Status)) != "" {
+			descriptionParts = append(descriptionParts, "status: "+strings.TrimSpace(string(status.Status)))
 		}
 		if status.SessionProgress != nil {
 			if text := strings.TrimSpace(firstNonEmptyMISAgentView(status.SessionProgress.CurrentTask, status.SessionProgress.ProgressSummary)); text != "" {
@@ -725,7 +725,7 @@ func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[st
 			steps = append(steps, map[string]interface{}{
 				"id":          fmt.Sprintf("%d", step.Index),
 				"title":       title,
-				"status":      agentViewStepStatus(step.Status),
+				"status":      agentViewStepStatus(string(step.Status)),
 				"description": skillRunStepDescription(step),
 			})
 		}
@@ -758,7 +758,7 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 	}
 	resultStatus := ""
 	if status != nil {
-		resultStatus = strings.TrimSpace(status.Status)
+		resultStatus = strings.TrimSpace(string(status.Status))
 	}
 	results := []map[string]interface{}{
 		{

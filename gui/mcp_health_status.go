@@ -11,8 +11,8 @@ const (
 	mcpHealthStatusUnavailable mcpHealthStatus = "unavailable"
 )
 
-func normalizeMCPHealthStatus(status string) mcpHealthStatus {
-	switch mcpHealthStatus(strings.ToLower(strings.TrimSpace(status))) {
+func normalizeMCPHealthStatus(status mcpHealthStatus) mcpHealthStatus {
+	switch mcpHealthStatus(strings.ToLower(strings.TrimSpace(status.String()))) {
 	case mcpHealthStatusHealthy:
 		return mcpHealthStatusHealthy
 	case mcpHealthStatusSlow:
@@ -24,4 +24,8 @@ func normalizeMCPHealthStatus(status string) mcpHealthStatus {
 	default:
 		return mcpHealthStatusUnknown
 	}
+}
+
+func (status mcpHealthStatus) String() string {
+	return string(status)
 }

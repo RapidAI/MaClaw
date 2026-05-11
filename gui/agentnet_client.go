@@ -75,16 +75,16 @@ type AgentNetPeer struct {
 }
 
 type AgentNetTask struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Description string         `json:"description,omitempty"`
-	Status      string         `json:"state"` // created, accepted, rejected, cancelled
-	Reward      float64        `json:"reward"`
-	Creator     string         `json:"publisher,omitempty"`
-	Assignee    string         `json:"claimant,omitempty"`
-	TargetPeer  string         `json:"target_peer,omitempty"`
-	Tags        FlexStringList `json:"tags,omitempty"`
-	CreatedAt   string         `json:"created_at,omitempty"`
+	ID          string             `json:"id"`
+	Title       string             `json:"title"`
+	Description string             `json:"description,omitempty"`
+	Status      agentNetTaskStatus `json:"state"`
+	Reward      float64            `json:"reward"`
+	Creator     string             `json:"publisher,omitempty"`
+	Assignee    string             `json:"claimant,omitempty"`
+	TargetPeer  string             `json:"target_peer,omitempty"`
+	Tags        FlexStringList     `json:"tags,omitempty"`
+	CreatedAt   string             `json:"created_at,omitempty"`
 }
 
 // FlexStringList can unmarshal from either a JSON array of strings or a single
@@ -1526,7 +1526,7 @@ func (c *AgentNetClient) PublishTasksToHub(hubURL string) error {
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
-			Status:      t.Status,
+			Status:      t.Status.String(),
 			Reward:      t.Reward,
 			Creator:     t.Creator,
 			PeerID:      peerID,
@@ -1603,7 +1603,7 @@ func (c *AgentNetClient) BrowseHubTasks(hubURL string) ([]AgentNetTask, error) {
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
-			Status:      t.Status,
+			Status:      normalizeAgentNetTaskStatus(agentNetTaskStatus(t.Status)),
 			Reward:      t.Reward,
 			Creator:     t.Creator,
 			Tags:        FlexStringList(t.Tags),

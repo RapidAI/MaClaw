@@ -2003,7 +2003,7 @@ func experienceTraceDetailMatchesQuery(detail ExperienceTraceDetail, req Experie
 	case experienceTraceQueryFilterUnknown:
 		return false
 	}
-	if req.ReviewStatus != "" && strings.ToLower(experienceTraceReviewSummaryStatus(detail)) != req.ReviewStatus {
+	if req.ReviewStatus != "" && strings.ToLower(experienceTraceReviewSummaryStatus(detail).String()) != req.ReviewStatus {
 		return false
 	}
 	if req.ActionKind != "" && actionKindForExperienceTraceDetail(detail) != req.ActionKind {

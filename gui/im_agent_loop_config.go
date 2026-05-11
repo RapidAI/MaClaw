@@ -29,7 +29,7 @@ func (h *IMMessageHandler) prepareAgentLoopConfig(ctx *LoopContext) agentLoopCon
 	}
 	trialReflectEnabled := false
 	if appCfg, err := h.loadConfig(); err == nil {
-		trialReflectEnabled = appCfg.UIMode == "pro" && appCfg.TrialReflectEnabled
+		trialReflectEnabled = normalizeUIModeKind(appCfg.UIMode).IsProExplicit() && appCfg.TrialReflectEnabled
 	}
 	maxIter := h.getMaclawAgentMaxIterations()
 	h.loopMaxOverride = 0

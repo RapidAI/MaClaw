@@ -8,15 +8,15 @@ import (
 
 // BackgroundLoopView is a read-only snapshot for the frontend.
 type BackgroundLoopView struct {
-	ID          string `json:"id"`
-	SlotKind    string `json:"slot_kind"`
-	Description string `json:"description"`
-	Iteration   int    `json:"iteration"`
-	MaxIter     int    `json:"max_iter"`
-	Status      string `json:"status"`
-	SessionID   string `json:"session_id"`
-	StartedAt   string `json:"started_at"`
-	QueuedCount int    `json:"queued_count"`
+	ID          string        `json:"id"`
+	SlotKind    string        `json:"slot_kind"`
+	Description string        `json:"description"`
+	Iteration   int           `json:"iteration"`
+	MaxIter     int           `json:"max_iter"`
+	Status      LoopStateKind `json:"status"`
+	SessionID   string        `json:"session_id"`
+	StartedAt   string        `json:"started_at"`
+	QueuedCount int           `json:"queued_count"`
 }
 
 // pendingTask represents a queued task waiting for a slot.
@@ -147,7 +147,7 @@ func (m *BackgroundLoopManager) ListViews() []BackgroundLoopView {
 			Description: ctx.Description,
 			Iteration:   ctx.Iteration(),
 			MaxIter:     ctx.MaxIterations(),
-			Status:      ctx.State(),
+			Status:      ctx.StateKind(),
 			SessionID:   ctx.SessionID,
 			StartedAt:   ctx.StartedAt.Format(time.RFC3339),
 			QueuedCount: len(m.queues[ctx.SlotKind]),

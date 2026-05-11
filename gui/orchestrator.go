@@ -9,11 +9,11 @@ import (
 // SessionResult holds the outcome of a single session within an orchestrated
 // parallel execution.
 type SessionResult struct {
-	SessionID string `json:"session_id"`
-	Tool      string `json:"tool"`
-	Status    string `json:"status"` // "success" or "failed"
-	Output    string `json:"output"`
-	Error     string `json:"error,omitempty"`
+	SessionID string                    `json:"session_id"`
+	Tool      string                    `json:"tool"`
+	Status    orchestratorSessionStatus `json:"status"`
+	Output    string                    `json:"output"`
+	Error     string                    `json:"error,omitempty"`
 }
 
 // TaskRequest describes a single unit of work to be executed in parallel by
@@ -28,7 +28,7 @@ type TaskRequest struct {
 type OrchestratorTask struct {
 	ID        string
 	Sessions  []string // session IDs created for this task
-	Status    string   // "running", "completed", "partial_failure"
+	Status    orchestratorTaskStatus
 	Results   map[string]string
 	CreatedAt time.Time
 }
@@ -87,7 +87,7 @@ func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult
 	orchTask := &OrchestratorTask{
 		ID:        taskID,
 		Sessions:  make([]string, 0, len(tasks)),
-		Status:    string(orchestratorTaskStatusRunning),
+		Status:    orchestratorTaskStatusRunning,
 		Results:   make(map[string]string),
 		CreatedAt: time.Now(),
 	}
@@ -126,15 +126,15 @@ func (o *Orchestrator) ExecuteParallel(tasks []TaskRequest) (*OrchestratorResult
 			orchTask.Sessions = append(orchTask.Sessions, sr.SessionID)
 			o.mu.Unlock()
 		}
-		if normalizeOrchestratorSessionStatus(sr.Status) == orchestratorSessionStatusFailed {
+		if sr.Status.IsFailed() {
 			hasFailure = true
 		}
 	}
 
 	if hasFailure {
-		orchTask.Status = string(orchestratorTaskStatusPartialFailure)
+		orchTask.Status = orchestratorTaskStatusPartialFailure
 	} else {
-		orchTask.Status = string(orchestratorTaskStatusCompleted)
+		orchTask.Status = orchestratorTaskStatusCompleted
 	}
 
 	// Remove from active tasks now that execution is done.
@@ -159,7 +159,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 	}
 	toolName := normalizeRemoteToolName(tr.Tool)
 	if !remoteToolSupported(toolName) {
-		sr.Status = string(orchestratorSessionStatusFailed)
+		sr.Status = orchestratorSessionStatusFailed
 		sr.Error = parallelExecuteUnsupportedToolError(toolName)
 		if o.sharedCtx != nil {
 			o.sharedCtx.Put(ContextEntry{
@@ -178,7 +178,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 		LaunchSource: RemoteLaunchSourceAI,
 	})
 	if err != nil {
-		sr.Status = string(orchestratorSessionStatusFailed)
+		sr.Status = orchestratorSessionStatusFailed
 		sr.Error = err.Error()
 		// Record failure in shared context so other sessions can see it.
 		if o.sharedCtx != nil {
@@ -209,7 +209,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 
 	// Send the task description as the first input to the session.
 	if err := o.manager.WriteInput(view.ID, input); err != nil {
-		sr.Status = string(orchestratorSessionStatusFailed)
+		sr.Status = orchestratorSessionStatusFailed
 		sr.Error = fmt.Sprintf("failed to send input: %v", err)
 		// Record send-failure in shared context.
 		if o.sharedCtx != nil {
@@ -223,7 +223,7 @@ func (o *Orchestrator) executeOneTask(tr TaskRequest) SessionResult {
 		return sr
 	}
 
-	sr.Status = string(orchestratorSessionStatusSuccess)
+	sr.Status = orchestratorSessionStatusSuccess
 	sr.Output = fmt.Sprintf("session %s started for tool %s", view.ID, tr.Tool)
 
 	// Record successful task dispatch in shared context.
@@ -277,7 +277,7 @@ func buildOrchestratorSummary(results map[string]SessionResult) string {
 	succeeded := 0
 	failed := 0
 	for _, sr := range results {
-		switch normalizeOrchestratorSessionStatus(sr.Status) {
+		switch normalizeOrchestratorSessionStatus(string(sr.Status)) {
 		case orchestratorSessionStatusSuccess:
 			succeeded++
 		case orchestratorSessionStatusFailed:

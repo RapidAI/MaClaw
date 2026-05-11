@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMarkdownToHTML_Headings(t *testing.T) {
@@ -669,6 +670,42 @@ func TestSanitizeFileName_Long(t *testing.T) {
 	got := sanitizeFileName(long)
 	if len(got) > 30 {
 		t.Errorf("should truncate to 30 chars, got %d", len(got))
+	}
+}
+
+func TestFileNameForSpecDefaultPrefixUsesStableASCII(t *testing.T) {
+	got := fileNameForSpec(Spec{
+		ProjectName: "项目A",
+		Title:       "文档",
+		Timestamp:   time.Date(2026, 5, 11, 10, 30, 0, 0, time.UTC),
+	})
+	if !strings.HasPrefix(got, "document_") {
+		t.Fatalf("default filename prefix = %q, want stable ASCII document prefix", got)
+	}
+	if strings.HasPrefix(got, "文档_") {
+		t.Fatalf("default filename prefix should not be localized display text: %q", got)
+	}
+	if strings.Contains(got, "项目") || strings.Contains(got, "文档") {
+		t.Fatalf("filename should not contain localized project/title text: %q", got)
+	}
+}
+
+func TestASCIIFileNameSegment(t *testing.T) {
+	tests := []struct {
+		input    string
+		fallback string
+		want     string
+	}{
+		{input: "My Project", fallback: "document", want: "my_project"},
+		{input: "需求文档", fallback: "document", want: "document"},
+		{input: "需求文档", fallback: "文档", want: "document"},
+		{input: "/tmp/Feature 01.md", fallback: "document", want: "feature_01_md"},
+		{input: "report<>name", fallback: "document", want: "reportname"},
+	}
+	for _, tt := range tests {
+		if got := asciiFileNameSegment(tt.input, tt.fallback); got != tt.want {
+			t.Fatalf("asciiFileNameSegment(%q, %q) = %q, want %q", tt.input, tt.fallback, got, tt.want)
+		}
 	}
 }
 

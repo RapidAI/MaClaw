@@ -770,6 +770,9 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 		return "未配置 remote_email，无法上传到 SkillMarket。请先在配置中设置邮箱。"
 	}
 
+	// Resolve auth token from config.
+	authToken := strings.TrimSpace(app.appConfig.SkillMarketSessionToken)
+
 	// Package skill directory into a zip.
 	zipPath, err := packageSkillDirToZip(entry)
 	if err != nil {
@@ -779,9 +782,17 @@ func skillUpload(app *TUIApp, args map[string]interface{}) string {
 
 	// Upload via HTTP multipart POST (same API as smSubmit).
 	hubURL := app.appConfig.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL)
-	submissionID, err := submitSkillZip(hubURL, zipPath, email)
+	submissionID, err := submitSkillZip(hubURL, zipPath, email, authToken)
 	if err != nil {
-		return fmt.Sprintf("上传失败: %s", err.Error())
+		// If 401 and no token, provide login guidance
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "401") && authToken == "" {
+			return fmt.Sprintf("上传失败: SkillMarket 要求认证。请先登录:\n"+
+				"  maclaw-tui skillmarket login --email %s --password <密码>\n"+
+				"  或使用邮件验证: maclaw-tui skillmarket lookup --email %s\n\n原始错误: %s",
+				email, email, errMsg)
+		}
+		return fmt.Sprintf("上传失败: %s", errMsg)
 	}
 
 	return fmt.Sprintf("✅ Skill「%s」已上传到 SkillMarket，提交 ID: %s\n使用 CLI `maclaw-tui skillmarket status %s` 查看审核状态。",
@@ -856,7 +867,7 @@ func zipDirectoryTUI(srcDir, zipPath string) error {
 }
 
 // submitSkillZip uploads a zip file to the SkillMarket submit API.
-func submitSkillZip(hubURL, zipPath, email string) (string, error) {
+func submitSkillZip(hubURL, zipPath, email, authToken string) (string, error) {
 	f, err := os.Open(zipPath)
 	if err != nil {
 		return "", fmt.Errorf("open zip: %w", err)
@@ -883,6 +894,9 @@ func submitSkillZip(hubURL, zipPath, email string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 
 	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
 	if err != nil {

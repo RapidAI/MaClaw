@@ -102,6 +102,7 @@ type SkillImproveResult struct {
 type SkillUploadInput struct {
 	SkillMarketURL string `json:"skill_market_url,omitempty"`
 	Email          string `json:"email"`
+	AuthToken      string `json:"auth_token,omitempty"`
 }
 
 type SkillUploadResult struct {
@@ -420,7 +421,7 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	if err != nil {
 		return nil, err
 	}
-	submissionID, err := submitSkillArchive(ctx, baseURL, email, normalizeSkillDirName(entry.Name)+".zip", archive)
+	submissionID, err := submitSkillArchive(ctx, baseURL, email, normalizeSkillDirName(entry.Name)+".zip", archive, strings.TrimSpace(in.AuthToken))
 	if err != nil {
 		return nil, err
 	}
@@ -663,7 +664,7 @@ func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corel
 	entry := &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, "skillhub"), SourceProject: baseURL, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content}
 	return entry, nil
 }
-func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, archive []byte) (string, error) {
+func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, archive []byte, authToken string) (string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("zip", fileName)
@@ -678,6 +679,9 @@ func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, ar
 		return "", err
 	}
 	headers := map[string]string{"Content-Type": writer.FormDataContentType()}
+	if authToken != "" {
+		headers["Authorization"] = "Bearer " + authToken
+	}
 	respBody, err := doJSONRequest(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/v1/skills/submit", &body, headers, 1<<20)
 	if err != nil {
 		return "", err

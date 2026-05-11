@@ -51,7 +51,7 @@ func (a *MCPPluginAdapter) Tools() []ToolDefinition {
 // Health returns "healthy" when the adapter is running, "unhealthy" otherwise.
 func (a *MCPPluginAdapter) Health() HealthStatus {
 	if a.healthy {
-		return HealthStatus{Status: "healthy"}
+		return HealthStatus{Status: PluginHealthHealthy}
 	}
-	return HealthStatus{Status: "unhealthy"}
+	return HealthStatus{Status: PluginHealthUnhealthy}
 }

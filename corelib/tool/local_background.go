@@ -29,15 +29,15 @@ import (
 // LocalBackgroundTask represents a process running in the background.
 type LocalBackgroundTask struct {
 	mu        sync.Mutex
-	TaskID    string    `json:"task_id"`
-	Command   string    `json:"command"`
-	WorkDir   string    `json:"work_dir,omitempty"`
-	LogFile   string    `json:"log_file"`
-	PID       int       `json:"pid"`
-	Status    string    `json:"status"` // running, completed, failed, killed
-	ExitCode  int       `json:"exit_code"`
-	StartedAt time.Time `json:"started_at"`
-	EndedAt   time.Time `json:"ended_at,omitempty"`
+	TaskID    string                    `json:"task_id"`
+	Command   string                    `json:"command"`
+	WorkDir   string                    `json:"work_dir,omitempty"`
+	LogFile   string                    `json:"log_file"`
+	PID       int                       `json:"pid"`
+	Status    LocalBackgroundTaskStatus `json:"status"` // running, completed, failed, killed
+	ExitCode  int                       `json:"exit_code"`
+	StartedAt time.Time                 `json:"started_at"`
+	EndedAt   time.Time                 `json:"ended_at,omitempty"`
 
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
@@ -123,7 +123,7 @@ func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBack
 		WorkDir:   workDir,
 		LogFile:   logFile,
 		PID:       cmd.Process.Pid,
-		Status:    "running",
+		Status:    LocalBackgroundTaskStatusRunning,
 		ExitCode:  -1,
 		StartedAt: time.Now(),
 		cmd:       cmd,
@@ -143,13 +143,13 @@ func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBack
 				task.ExitCode = exitErr.ExitCode()
 			}
 			if ctx.Err() != nil {
-				task.Status = "killed"
+				task.Status = LocalBackgroundTaskStatusKilled
 			} else {
-				task.Status = "failed"
+				task.Status = LocalBackgroundTaskStatusFailed
 			}
 		} else {
 			task.ExitCode = 0
-			task.Status = "completed"
+			task.Status = LocalBackgroundTaskStatusCompleted
 		}
 		task.mu.Unlock()
 		close(task.doneC)
@@ -164,14 +164,14 @@ func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBack
 
 // LocalTaskStatus is the result of Check or Wait.
 type LocalTaskStatus struct {
-	TaskID    string `json:"task_id"`
-	Command   string `json:"command"`
-	Status    string `json:"status"`
-	PID       int    `json:"pid"`
-	ExitCode  int    `json:"exit_code"`
-	Elapsed   string `json:"elapsed"`
-	LogTail   string `json:"log_tail"`
-	LogSize   int64  `json:"log_size"`
+	TaskID   string                    `json:"task_id"`
+	Command  string                    `json:"command"`
+	Status   LocalBackgroundTaskStatus `json:"status"`
+	PID      int                       `json:"pid"`
+	ExitCode int                       `json:"exit_code"`
+	Elapsed  string                    `json:"elapsed"`
+	LogTail  string                    `json:"log_tail"`
+	LogSize  int64                     `json:"log_size"`
 }
 
 // Check returns the current status and log tail of a task without blocking.
@@ -250,7 +250,7 @@ func (m *LocalBackgroundTaskManager) Kill(taskID string) error {
 	}
 
 	task.mu.Lock()
-	if task.Status != "running" {
+	if !task.Status.IsRunning() {
 		task.mu.Unlock()
 		return nil // already done
 	}
@@ -287,7 +287,7 @@ func (m *LocalBackgroundTaskManager) Cleanup(maxAge time.Duration) {
 	cutoff := time.Now().Add(-maxAge)
 	for id, task := range m.tasks {
 		task.mu.Lock()
-		done := task.Status != "running"
+		done := !task.Status.IsRunning()
 		ended := task.EndedAt
 		task.mu.Unlock()
 		if done && !ended.IsZero() && ended.Before(cutoff) {

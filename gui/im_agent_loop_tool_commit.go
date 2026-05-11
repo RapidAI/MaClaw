@@ -80,7 +80,7 @@ func (h *IMMessageHandler) recordAgentLoopToolTrace(ctx *LoopContext, tc llm.Too
 		return
 	}
 	h.appendTraceEvent(ctx, "tool.executed", "info", tc.Function.Name, truncateTraceText(traceResult, 220), "", tc.Function.Name)
-	h.appendTraceEvidence(ctx, "ai_tool", traceCategoryForToolExecution(execResult), tc.Function.Name, truncateTraceText(traceResult, 400), "", tc.Function.Name)
+	h.appendTraceEvidence(ctx, traceSourceKindAITool.String(), traceCategoryForToolExecution(execResult).String(), tc.Function.Name, truncateTraceText(traceResult, 400), "", tc.Function.Name)
 	if execResult.ToolKind != agentToolKindCreateSession || h.manager == nil {
 		return
 	}

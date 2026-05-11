@@ -17,46 +17,36 @@ var unifiedClassifier *intent.UnifiedIntentClassifier
 
 func setUnifiedClassifierForIM(uic *intent.UnifiedIntentClassifier) { unifiedClassifier = uic }
 
-type taskIntent string
-
-const (
-	intentCoding    taskIntent = "coding"
-	intentSSH       taskIntent = "ssh"
-	intentNonCoding taskIntent = "non_coding"
-	intentAmbiguous taskIntent = "ambiguous"
-	intentUnknown   taskIntent = "unknown"
-)
-
 type taskIntentResult struct {
 	Intent     taskIntent
 	Matched    string
 	Evidence   []string
 	Reason     string
 	Confidence float64
-	Source     string
+	Source     taskIntentSource
 }
 
 type llmIntentClassification struct {
-	Intent     string   `json:"intent"`
-	Confidence float64  `json:"confidence"`
-	Reason     string   `json:"reason"`
-	Evidence   []string `json:"evidence"`
+	Intent     taskIntent `json:"intent"`
+	Confidence float64    `json:"confidence"`
+	Reason     string     `json:"reason"`
+	Evidence   []string   `json:"evidence"`
 }
 
 func classifyTaskIntent(text string) taskIntentResult {
 	if uic := unifiedClassifier; uic != nil {
 		result := uic.Classify(intent.MessageContext{Text: text})
 		intentStr, matched, evidence, reason, confidence := result.ToTaskIntent()
-		return taskIntentResult{Intent: taskIntent(intentStr), Matched: matched, Evidence: evidence, Reason: reason, Confidence: confidence, Source: "uic"}
+		return taskIntentResult{Intent: normalizeTaskIntent(taskIntent(intentStr)), Matched: matched, Evidence: evidence, Reason: reason, Confidence: confidence, Source: taskIntentSourceUIC}
 	}
 	return classifyTaskIntentWithoutSemantic(text)
 }
 
 func classifyTaskIntentWithoutSemantic(text string) taskIntentResult {
 	if strings.TrimSpace(text) == "" {
-		return taskIntentResult{Intent: intentUnknown, Source: "semantic-unavailable", Reason: "empty task text; no execution route classified", Confidence: 0.3}
+		return taskIntentResult{Intent: intentUnknown, Source: taskIntentSourceSemanticUnavailable, Reason: "empty task text; no execution route classified", Confidence: 0.3}
 	}
-	return taskIntentResult{Intent: intentUnknown, Source: "semantic-unavailable", Reason: "semantic classifier unavailable; no execution route classified", Confidence: 0.45}
+	return taskIntentResult{Intent: intentUnknown, Source: taskIntentSourceSemanticUnavailable, Reason: "semantic classifier unavailable; no execution route classified", Confidence: 0.45}
 }
 
 func (h *IMMessageHandler) classifyTaskIntentForSessionGuard(text string) taskIntentResult {
@@ -68,7 +58,7 @@ func (h *IMMessageHandler) classifyTaskIntentForSessionGuard(text string) taskIn
 
 func shouldRequireExecutionConfirmationForIntent(msg IMUserMessage, pending *pendingConfirmation, intent taskIntentResult) bool {
 	return !msg.IsBackground && pending == nil && strings.TrimSpace(msg.Text) != "" &&
-		intent.Matched != "continuation" &&
+		!intent.IsContinuationMatch() &&
 		(intent.Intent == intentCoding || intent.Intent == intentSSH)
 }
 
@@ -111,7 +101,7 @@ func (h *IMMessageHandler) classifyTaskIntentForExecution(text string, attachmen
 }
 
 func isDecisiveTaskIntentResult(result taskIntentResult) bool {
-	if result.Matched == "continuation" {
+	if result.IsContinuationMatch() {
 		return true
 	}
 	if result.Intent == intentUnknown || result.Intent == intentAmbiguous {
@@ -133,7 +123,7 @@ func (h *IMMessageHandler) classifyTaskIntentWithUIC(text string) (taskIntentRes
 		Evidence:   evidence,
 		Reason:     reason,
 		Confidence: confidence,
-		Source:     "uic",
+		Source:     taskIntentSourceUIC,
 	}, true
 }
 
@@ -272,7 +262,7 @@ func decodeIntentClassificationContent(content string) (llmIntentClassification,
 func normalizeIntentClassification(parsed llmIntentClassification) (taskIntentResult, error) {
 	intentValue := normalizeTaskIntent(parsed.Intent)
 	if intentValue == intentUnknown {
-		return taskIntentResult{}, fmt.Errorf("unknown intent %q", parsed.Intent)
+		return taskIntentResult{}, fmt.Errorf("unknown intent %q", parsed.Intent.String())
 	}
 	evidence := normalizeIntentEvidence(parsed.Evidence)
 	matched := firstEvidence(evidence, strings.TrimSpace(parsed.Reason))
@@ -283,22 +273,7 @@ func normalizeIntentClassification(parsed llmIntentClassification) (taskIntentRe
 	if confidence > 1 {
 		confidence = 1
 	}
-	return taskIntentResult{Intent: intentValue, Matched: matched, Evidence: evidence, Reason: strings.TrimSpace(parsed.Reason), Confidence: confidence, Source: "llm"}, nil
-}
-
-func normalizeTaskIntent(raw string) taskIntent {
-	switch taskIntent(strings.TrimSpace(strings.ToLower(raw))) {
-	case intentCoding:
-		return intentCoding
-	case intentSSH:
-		return intentSSH
-	case intentNonCoding:
-		return intentNonCoding
-	case intentAmbiguous:
-		return intentAmbiguous
-	default:
-		return intentUnknown
-	}
+	return taskIntentResult{Intent: intentValue, Matched: matched, Evidence: evidence, Reason: strings.TrimSpace(parsed.Reason), Confidence: confidence, Source: taskIntentSourceLLM}, nil
 }
 
 func normalizeIntentEvidence(items []string) []string {

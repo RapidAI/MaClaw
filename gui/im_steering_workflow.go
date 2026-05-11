@@ -6,36 +6,20 @@ import (
 	"strings"
 )
 
-type officeToolAction string
-
-const (
-	officeToolActionUnknown     officeToolAction = ""
-	officeToolActionGeneratePDF officeToolAction = "generate_pdf"
-)
-
-func normalizeOfficeToolAction(action string) officeToolAction {
-	switch officeToolAction(strings.TrimSpace(action)) {
-	case officeToolActionGeneratePDF:
-		return officeToolActionGeneratePDF
-	default:
-		return officeToolActionUnknown
-	}
-}
-
 // SteeringWorkflowDetector tracks steering-driven coding workflow state
 // within a single agent loop invocation.
 type SteeringWorkflowDetector struct {
-	detected               bool              // whether a coding workflow has been detected
-	suggestMaximizeEmitted bool              // whether suggest_maximize event has been emitted
-	phaseDocuments         map[string]string // detected phase documents (phaseID -> content)
-	userID                 string            // current user ID
+	detected               bool // whether a coding workflow has been detected
+	suggestMaximizeEmitted bool // whether suggest_maximize event has been emitted
+	phaseDocuments         map[workflowPhaseKind]string
+	userID                 string // current user ID
 }
 
 // NewSteeringWorkflowDetector creates a new detector for the given user.
 func NewSteeringWorkflowDetector(userID string) *SteeringWorkflowDetector {
 	return &SteeringWorkflowDetector{
 		detected:       true,
-		phaseDocuments: make(map[string]string),
+		phaseDocuments: make(map[workflowPhaseKind]string),
 		userID:         userID,
 	}
 }
@@ -90,28 +74,6 @@ func (d *SteeringWorkflowDetector) isCodingTask(message string) bool {
 	return false
 }
 
-// matchPhaseID extracts a workflow phase ID from a file name by matching
-// known patterns for requirements, design, and tasks documents.
-func (d *SteeringWorkflowDetector) matchPhaseID(fileName string) string {
-	lower := strings.ToLower(strings.TrimSpace(fileName))
-	if lower == "" {
-		return ""
-	}
-	switch {
-	case strings.Contains(lower, "tasks") ||
-		strings.Contains(lower, "task_breakdown") ||
-		strings.Contains(lower, "task breakdown") ||
-		strings.Contains(lower, "task_plan"):
-		return workflowPhaseTasks
-	case strings.Contains(lower, "requirements"):
-		return workflowPhaseRequirements
-	case strings.Contains(lower, "design"):
-		return workflowPhaseDesign
-	default:
-		return ""
-	}
-}
-
 // interceptToolCall checks a tool call for workflow phase documents and
 // invokes the emit callback with (phaseID, content) when a match is found.
 func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, emit func(phaseID, content string)) {
@@ -129,15 +91,15 @@ func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, 
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
 			return
 		}
-		phaseID := workflowPhaseFromMetadata(args.PhaseID, args.DocType)
-		if phaseID == "" {
-			phaseID = d.matchPhaseID(args.Path)
+		phase := workflowPhaseKindFromMetadata(args.PhaseID, args.DocType)
+		if phase == workflowPhaseUnknown {
+			phase = d.matchPhaseKind(args.Path)
 		}
-		if phaseID == "" || args.Content == "" {
+		if phase == workflowPhaseUnknown || args.Content == "" {
 			return
 		}
-		d.phaseDocuments[phaseID] = args.Content
-		emit(phaseID, args.Content)
+		d.phaseDocuments[phase] = args.Content
+		emit(phase.String(), args.Content)
 
 	case agentToolKindGeneratePDF:
 		var args struct {
@@ -156,12 +118,12 @@ func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, 
 		if content == "" {
 			return
 		}
-		phaseID := workflowPhaseFromMetadata(args.PhaseID, args.DocType)
-		if phaseID == "" {
+		phase := workflowPhaseKindFromMetadata(args.PhaseID, args.DocType)
+		if phase == workflowPhaseUnknown {
 			return
 		}
-		d.phaseDocuments[phaseID] = content
-		emit(phaseID, content)
+		d.phaseDocuments[phase] = content
+		emit(phase.String(), content)
 
 	case agentToolKindOffice:
 		var args struct {
@@ -184,12 +146,12 @@ func (d *SteeringWorkflowDetector) interceptToolCall(toolName, argsJSON string, 
 		if content == "" {
 			return
 		}
-		phaseID := workflowPhaseFromMetadata(args.PhaseID, args.DocType)
-		if phaseID == "" {
+		phase := workflowPhaseKindFromMetadata(args.PhaseID, args.DocType)
+		if phase == workflowPhaseUnknown {
 			return
 		}
-		d.phaseDocuments[phaseID] = content
-		emit(phaseID, content)
+		d.phaseDocuments[phase] = content
+		emit(phase.String(), content)
 	}
 }
 
@@ -254,18 +216,18 @@ func (d *SteeringWorkflowDetector) interceptTextOutput(text string, emit func(ph
 	if len(headingArea) > 500 {
 		headingArea = headingArea[:500]
 	}
-	phaseID := d.matchPhaseID(headingArea)
-	if phaseID == "" {
+	phase := d.matchPhaseKind(headingArea)
+	if phase == workflowPhaseUnknown {
 		if len(d.phaseDocuments) == 0 {
-			phaseID = workflowPhaseRequirements
+			phase = workflowPhaseKind(workflowPhaseRequirements)
 		} else {
 			return
 		}
 	}
 	docContent := extractFencedDocument(text)
-	if existing, ok := d.phaseDocuments[phaseID]; ok && existing == docContent {
+	if existing, ok := d.phaseDocuments[phase]; ok && existing == docContent {
 		return
 	}
-	d.phaseDocuments[phaseID] = docContent
-	emit(phaseID, docContent)
+	d.phaseDocuments[phase] = docContent
+	emit(phase.String(), docContent)
 }

@@ -94,12 +94,12 @@ type CodingSubAgentResult struct {
 
 	// ExplorationStatus summarizes whether the agent explored before editing:
 	// explored, read_only, missing, or not_needed.
-	ExplorationStatus  string
+	ExplorationStatus  codingSubAgentQualityStatus
 	ExplorationSummary string
 
 	// VerificationStatus summarizes command-based verification:
 	// passed, failed, missing, or not_needed.
-	VerificationStatus  string
+	VerificationStatus  codingSubAgentQualityStatus
 	VerificationSummary string
 }
 
@@ -1688,9 +1688,9 @@ func appendSubAgentCommandSummary(summary string, commands []CodingSubAgentComma
 	return b.String()
 }
 
-func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (string, string) {
+func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (codingSubAgentQualityStatus, string) {
 	if len(commands) == 0 {
-		return "none", "no bash commands run"
+		return codingSubAgentQualityNone, "no bash commands run"
 	}
 	var failed []string
 	for _, cmd := range commands {
@@ -1700,35 +1700,35 @@ func summarizeSubAgentCommands(commands []CodingSubAgentCommandResult) (string, 
 	}
 	if len(failed) == 0 {
 		if len(commands) == 1 {
-			return "passed", "1 bash command run, no failures"
+			return codingSubAgentQualityPassed, "1 bash command run, no failures"
 		}
-		return "passed", fmt.Sprintf("%d bash commands run, no failures", len(commands))
+		return codingSubAgentQualityPassed, fmt.Sprintf("%d bash commands run, no failures", len(commands))
 	}
 	if len(failed) == 1 {
-		return "failed", fmt.Sprintf("%d bash commands run, 1 failed: %s", len(commands), compactFailedVerificationCommands(failed))
+		return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, 1 failed: %s", len(commands), compactFailedVerificationCommands(failed))
 	}
-	return "failed", fmt.Sprintf("%d bash commands run, %d failed: %s", len(commands), len(failed), compactFailedVerificationCommands(failed))
+	return codingSubAgentQualityFailed, fmt.Sprintf("%d bash commands run, %d failed: %s", len(commands), len(failed), compactFailedVerificationCommands(failed))
 }
 
-func summarizeSubAgentQuality(explorationStatus, verificationStatus string, diffChecked bool, filesModified []string, commands []CodingSubAgentCommandResult, guardrails []CodingSubAgentGuardrailViolation) (string, string, int) {
+func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified []string, commands []CodingSubAgentCommandResult, guardrails []CodingSubAgentGuardrailViolation) (codingSubAgentQualityStatus, string, int) {
 	filesModified = uniqueSortedSubAgentStrings(filesModified)
 	var failed []string
 	var warnings []string
 	if len(guardrails) > 0 {
 		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(guardrails)))
 	}
-	if normalizeCodingSubAgentQualityStatus(verificationStatus) == codingSubAgentQualityFailed {
+	if verificationStatus == codingSubAgentQualityFailed {
 		failed = append(failed, "verification failed")
 	}
 	failedCommands := countFailedSubAgentCommands(commands)
-	if failedCommands > 0 && normalizeCodingSubAgentQualityStatus(verificationStatus) != codingSubAgentQualityFailed {
+	if failedCommands > 0 && verificationStatus != codingSubAgentQualityFailed {
 		warnings = append(warnings, fmt.Sprintf("%d command(s) failed", failedCommands))
 	}
 	if len(filesModified) > 0 {
-		if normalizeCodingSubAgentQualityStatus(explorationStatus) == codingSubAgentQualityMissing {
+		if explorationStatus == codingSubAgentQualityMissing {
 			warnings = append(warnings, "no exploration before edits")
 		}
-		if normalizeCodingSubAgentQualityStatus(verificationStatus) == codingSubAgentQualityMissing {
+		if verificationStatus == codingSubAgentQualityMissing {
 			warnings = append(warnings, "verification not run")
 		}
 		if !diffChecked {
@@ -1737,15 +1737,15 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus string, diff
 	}
 	if len(failed) > 0 {
 		issues := append(failed, warnings...)
-		return "failed", strings.Join(issues, "; "), len(issues)
+		return codingSubAgentQualityFailed, strings.Join(issues, "; "), len(issues)
 	}
 	if len(warnings) > 0 {
-		return "warning", strings.Join(warnings, "; "), len(warnings)
+		return codingSubAgentQualityWarning, strings.Join(warnings, "; "), len(warnings)
 	}
 	if len(filesModified) == 0 {
-		return "passed", "no file changes; quality gates not needed", 0
+		return codingSubAgentQualityPassed, "no file changes; quality gates not needed", 0
 	}
-	return "passed", "exploration, verification, and diff check passed", 0
+	return codingSubAgentQualityPassed, "exploration, verification, and diff check passed", 0
 }
 
 func countFailedSubAgentCommands(commands []CodingSubAgentCommandResult) int {
@@ -1793,16 +1793,16 @@ func escapeSubAgentInlineCode(s string) string {
 	return strings.ReplaceAll(s, "`", "'")
 }
 
-func summarizeSubAgentVerification(filesModified []string, commands []CodingSubAgentCommandResult) (string, string) {
+func summarizeSubAgentVerification(filesModified []string, commands []CodingSubAgentCommandResult) (codingSubAgentQualityStatus, string) {
 	if len(filesModified) == 0 {
-		return "not_needed", "未检测到文件修改，跳过命令验证要求。"
+		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过命令验证要求。"
 	}
 	verificationCommands := filterSubAgentVerificationCommands(commands)
 	if len(verificationCommands) == 0 {
 		if len(commands) == 0 {
-			return "missing", "检测到文件修改，但没有运行 bash 验证命令。"
+			return codingSubAgentQualityMissing, "检测到文件修改，但没有运行 bash 验证命令。"
 		}
-		return "missing", fmt.Sprintf("检测到文件修改，并运行了 %d 条 bash 命令，但没有发现 test/build/lint/typecheck 等验证命令。", len(commands))
+		return codingSubAgentQualityMissing, fmt.Sprintf("检测到文件修改，并运行了 %d 条 bash 命令，但没有发现 test/build/lint/typecheck 等验证命令。", len(commands))
 	}
 	var failed []string
 	for _, cmd := range verificationCommands {
@@ -1812,11 +1812,11 @@ func summarizeSubAgentVerification(filesModified []string, commands []CodingSubA
 	}
 	if len(failed) > 0 {
 		if len(failed) == 1 {
-			return "failed", fmt.Sprintf("有 1 条验证命令失败：%s", compactFailedVerificationCommands(failed))
+			return codingSubAgentQualityFailed, fmt.Sprintf("有 1 条验证命令失败：%s", compactFailedVerificationCommands(failed))
 		}
-		return "failed", fmt.Sprintf("有 %d 条验证命令失败：%s", len(failed), compactFailedVerificationCommands(failed))
+		return codingSubAgentQualityFailed, fmt.Sprintf("有 %d 条验证命令失败：%s", len(failed), compactFailedVerificationCommands(failed))
 	}
-	return "passed", fmt.Sprintf("已运行 %d 条 bash 验证命令，未检测到失败。", len(verificationCommands))
+	return codingSubAgentQualityPassed, fmt.Sprintf("已运行 %d 条 bash 验证命令，未检测到失败。", len(verificationCommands))
 }
 
 func filterSubAgentVerificationCommands(commands []CodingSubAgentCommandResult) []CodingSubAgentCommandResult {
@@ -2116,18 +2116,18 @@ func compactFailedVerificationCommands(commands []string) string {
 	return strings.Join(parts, "; ")
 }
 
-func summarizeSubAgentExploration(filesModified, filesRead []string, searches []CodingSubAgentSearchResult) (string, string) {
+func summarizeSubAgentExploration(filesModified, filesRead []string, searches []CodingSubAgentSearchResult) (codingSubAgentQualityStatus, string) {
 	if len(filesModified) == 0 {
-		return "not_needed", "未检测到文件修改，跳过探索要求。"
+		return codingSubAgentQualityNotNeeded, "未检测到文件修改，跳过探索要求。"
 	}
 	successfulSearches := countSuccessfulSubAgentSearches(searches)
 	if successfulSearches > 0 {
-		return "explored", fmt.Sprintf("修改前/过程中运行了 %d 次成功搜索，并读取了 %d 个文件。", successfulSearches, len(filesRead))
+		return codingSubAgentQualityExplored, fmt.Sprintf("修改前/过程中运行了 %d 次成功搜索，并读取了 %d 个文件。", successfulSearches, len(filesRead))
 	}
 	if len(filesRead) > 0 {
-		return "read_only", fmt.Sprintf("未记录成功搜索，但读取了 %d 个文件后修改。", len(filesRead))
+		return codingSubAgentQualityReadOnly, fmt.Sprintf("未记录成功搜索，但读取了 %d 个文件后修改。", len(filesRead))
 	}
-	return "missing", "检测到文件修改，但没有记录成功搜索或文件读取。"
+	return codingSubAgentQualityMissing, "检测到文件修改，但没有记录成功搜索或文件读取。"
 }
 
 func countSuccessfulSubAgentSearches(searches []CodingSubAgentSearchResult) int {
@@ -2140,12 +2140,12 @@ func countSuccessfulSubAgentSearches(searches []CodingSubAgentSearchResult) int 
 	return successfulSearches
 }
 
-func appendSubAgentExplorationSummary(summary, status, explorationSummary string) string {
+func appendSubAgentExplorationSummary(summary string, status codingSubAgentQualityStatus, explorationSummary string) string {
 	if strings.TrimSpace(explorationSummary) == "" {
 		return summary
 	}
-	label := status
-	switch normalizeCodingSubAgentQualityStatus(status) {
+	label := status.String()
+	switch status {
 	case codingSubAgentQualityExplored:
 		label = "EXPLORED"
 	case codingSubAgentQualityReadOnly:
@@ -2158,12 +2158,12 @@ func appendSubAgentExplorationSummary(summary, status, explorationSummary string
 	return strings.TrimSpace(summary) + "\n\n## 探索状态\n\n" + label + ": " + explorationSummary
 }
 
-func appendSubAgentVerificationSummary(summary, status, verificationSummary string) string {
+func appendSubAgentVerificationSummary(summary string, status codingSubAgentQualityStatus, verificationSummary string) string {
 	if strings.TrimSpace(verificationSummary) == "" {
 		return summary
 	}
-	label := status
-	switch normalizeCodingSubAgentQualityStatus(status) {
+	label := status.String()
+	switch status {
 	case codingSubAgentQualityPassed:
 		label = "PASS"
 	case codingSubAgentQualityFailed:
@@ -2176,8 +2176,8 @@ func appendSubAgentVerificationSummary(summary, status, verificationSummary stri
 	return strings.TrimSpace(summary) + "\n\n## 验证状态\n\n" + label + ": " + verificationSummary
 }
 
-func applySubAgentVerificationOutcome(status TaskExecStatus, errMsg, verificationStatus, verificationSummary string) (TaskExecStatus, string) {
-	if status != TaskExecPassed || normalizeCodingSubAgentQualityStatus(verificationStatus) != codingSubAgentQualityFailed {
+func applySubAgentVerificationOutcome(status TaskExecStatus, errMsg string, verificationStatus codingSubAgentQualityStatus, verificationSummary string) (TaskExecStatus, string) {
+	if status != TaskExecPassed || verificationStatus != codingSubAgentQualityFailed {
 		return status, errMsg
 	}
 	if strings.TrimSpace(verificationSummary) == "" {
@@ -2350,7 +2350,7 @@ func (c *codingSubAgentCallbacks) emitDiffCheckEvent(checked bool, diffSummary s
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
-func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, verificationStatus string, diffChecked bool, filesModified []string, commands []CodingSubAgentCommandResult, guardrails []CodingSubAgentGuardrailViolation) {
+func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, verificationStatus codingSubAgentQualityStatus, diffChecked bool, filesModified []string, commands []CodingSubAgentCommandResult, guardrails []CodingSubAgentGuardrailViolation) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
@@ -2361,19 +2361,19 @@ func (c *codingSubAgentCallbacks) emitQualitySummaryEvent(explorationStatus, ver
 	outcome, summary, count := summarizeSubAgentQuality(explorationStatus, verificationStatus, diffChecked, filesModified, commands, guardrails)
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindQualitySummary.String()
-	event.Outcome = outcome
+	event.Outcome = outcome.String()
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = count
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
-func (c *codingSubAgentCallbacks) emitExplorationSummaryEvent(status, summary string, count int) {
+func (c *codingSubAgentCallbacks) emitExplorationSummaryEvent(status codingSubAgentQualityStatus, summary string, count int) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
-	status = strings.TrimSpace(status)
+	statusText := strings.TrimSpace(status.String())
 	summary = strings.TrimSpace(summary)
-	if status == "" || summary == "" {
+	if statusText == "" || summary == "" {
 		return
 	}
 	title := ""
@@ -2382,7 +2382,7 @@ func (c *codingSubAgentCallbacks) emitExplorationSummaryEvent(status, summary st
 	}
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindExplorationSummary.String()
-	event.Outcome = status
+	event.Outcome = statusText
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = count
 	emitCodingAgentEvent(c.subagent.onProgress, event)
@@ -2428,19 +2428,19 @@ func (c *codingSubAgentCallbacks) emitCommandSummaryEvent(commands []CodingSubAg
 	outcome, summary := summarizeSubAgentCommands(commands)
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindCommandSummary.String()
-	event.Outcome = outcome
+	event.Outcome = outcome.String()
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = len(commands)
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
-func (c *codingSubAgentCallbacks) emitVerificationSummaryEvent(status, summary string, count int) {
+func (c *codingSubAgentCallbacks) emitVerificationSummaryEvent(status codingSubAgentQualityStatus, summary string, count int) {
 	if c == nil || c.subagent == nil || c.subagent.onProgress == nil {
 		return
 	}
-	status = strings.TrimSpace(status)
+	statusText := strings.TrimSpace(status.String())
 	summary = strings.TrimSpace(summary)
-	if status == "" || summary == "" {
+	if statusText == "" || summary == "" {
 		return
 	}
 	title := ""
@@ -2449,7 +2449,7 @@ func (c *codingSubAgentCallbacks) emitVerificationSummaryEvent(status, summary s
 	}
 	event := newCodingAgentTaskEvent(codingAgentEventPhaseResult, c.task, title, "")
 	event.Event = codingAgentEventKindVerificationSummary.String()
-	event.Outcome = status
+	event.Outcome = statusText
 	event.Summary = truncateRunesForSubAgent(firstLine(summary), 240)
 	event.Count = count
 	emitCodingAgentEvent(c.subagent.onProgress, event)

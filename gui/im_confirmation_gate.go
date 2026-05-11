@@ -17,27 +17,6 @@ const (
 	confirmationCancelCommandPrefix  = "__cancel_execution__"
 )
 
-type confirmationAction string
-
-const (
-	confirmationActionNone    confirmationAction = ""
-	confirmationActionConfirm confirmationAction = "confirm"
-	confirmationActionCancel  confirmationAction = "cancel"
-)
-
-type confirmationIntent string
-
-const (
-	confirmationIntentUnknown confirmationIntent = ""
-	confirmationIntentConfirm confirmationIntent = "confirm"
-	confirmationIntentCancel  confirmationIntent = "cancel"
-	confirmationIntentModify  confirmationIntent = "modify"
-)
-
-func (i confirmationIntent) String() string {
-	return string(i)
-}
-
 func buildConfirmationActionCommand(action confirmationAction, id string) string {
 	id = strings.TrimSpace(id)
 	switch action {
@@ -126,21 +105,6 @@ When in doubt between "confirm" and "modify", prefer "confirm" if the response i
 	log.Printf("[confirmation-intent] user=%s text=%q -> intent=%q (latency=%.1fs)",
 		userID, truncateForLogGUI(text, 30), intent, result.Latency.Seconds())
 	return intent
-}
-
-func normalizeConfirmationIntent(text string) confirmationIntent {
-	intent := strings.ToLower(strings.TrimSpace(text))
-	intent = strings.Trim(intent, " \t\r\n`\"'.,:;!?()[]{}")
-	switch intent {
-	case confirmationIntentConfirm.String():
-		return confirmationIntentConfirm
-	case confirmationIntentCancel.String():
-		return confirmationIntentCancel
-	case confirmationIntentModify.String():
-		return confirmationIntentModify
-	default:
-		return confirmationIntentUnknown
-	}
 }
 
 func shouldRequireExecutionConfirmation(msg IMUserMessage, pending *pendingConfirmation) bool {
@@ -274,7 +238,7 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		PlannedActions:      plannedActions,
 		RiskFlags:           confirmationRiskFlags(result.Intent),
 		RevisionHints:       confirmationRevisionHints(result.Intent),
-		Status:              "pending",
+		Status:              confirmationStatusPending,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 		LastProjectPath:     projectPath,
@@ -295,7 +259,7 @@ func buildConfirmationPayload(item *pendingConfirmation) *IMResponseConfirmation
 		PlannedActions: append([]string(nil), item.PlannedActions...),
 		RiskFlags:      append([]string(nil), item.RiskFlags...),
 		RevisionHints:  append([]string(nil), item.RevisionHints...),
-		Status:         item.Status,
+		Status:         item.Status.String(),
 	}
 }
 

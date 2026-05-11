@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import {
     KnowledgeCapabilities,
     KnowledgeBackfillSourceAutoLabels,
@@ -1165,6 +1166,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [sourceFilter, setSourceFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
     const [qualityFilter, setQualityFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
     const [qualityOptions, setQualityOptions] = useState({ policy: 'balanced', dryRun: true, distillMode: '', maxSourcesPerAction: 100, allowSensitiveDisable: false, allowDuplicateSuppression: true });
+    const [showImportDialog, setShowImportDialog] = useState(false);
 
     const refresh = async () => {
         setLoading(true);
@@ -1397,6 +1399,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     }, [importJob?.id, importJob?.status, sourcePayload]);
 
     return (
+        <>
         <section style={panelStyle}>
             <div style={sectionHeaderStyle}>
                 <div>
@@ -1475,42 +1478,16 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                         <label style={checkboxStyle}><input type="checkbox" checked={urlForm.autoLabels} onChange={event => setURLForm({ ...urlForm, autoLabels: event.target.checked })} /> {t('Auto labels', '自动标签')}</label>
                         <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={saveURLs}>{busy === 'saveURLs' ? t('Saving...', '保存中...') : t('Save URLs', '保存 URL')}</button>
                     </PanelBlock>
-                    <PanelBlock title={t('Import Files', '导入文件')}>
-                        <div style={inlineActionsStyle}>
-                            <button type="button" style={buttonStyle} disabled={!!busy} onClick={chooseFiles}>{t('Select Files', '选择文件')}</button>
-                            <button type="button" style={primaryButtonStyle} disabled={!!busy || !selectedFiles.length} onClick={importFiles}>{t('Import Selected', '导入所选')}</button>
+                    <PanelBlock title={t('Import Documents', '导入文档')}>
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '16px 0' }}>
+                            <button type="button" style={{ ...primaryButtonStyle, padding: '12px 32px', fontSize: 15 }} onClick={() => setShowImportDialog(true)}>
+                                📥 {t('Import Documents', '导入文档')}
+                            </button>
+                            <span style={mutedLineStyle}>{t('Import files or directories into your knowledge base', '将文件或目录导入到知识库中')}</span>
                         </div>
-                        <div style={mutedLineStyle}>{selectedFiles.length ? `${selectedFiles.length} ${t('files selected', '个文件已选择')}` : t('No files selected.', '尚未选择文件。')}</div>
-                        <MetadataControls t={t} labels={fileForm.labels} topicHint={fileForm.topicHint} saveScope={fileForm.saveScope} distillMode={fileForm.distillMode} distillModes={distillModes} onChange={patch => setFileForm({ ...fileForm, ...patch })} />
-                    </PanelBlock>
-                    <PanelBlock title={t('Import Directory', '导入目录')}>
-                        <div style={inlineActionsStyle}>
-                            <input style={inputStyle} value={fileForm.directory} onChange={event => setFileForm({ ...fileForm, directory: event.target.value })} placeholder={t('Directory path', '目录路径')} />
-                            <button type="button" style={buttonStyle} disabled={!!busy} onClick={chooseDirectory}>{t('Browse', '浏览')}</button>
-                        </div>
-                        <div style={compactGridStyle}>
-                            <input style={inputStyle} value={fileForm.includeExts} onChange={event => setFileForm({ ...fileForm, includeExts: event.target.value })} placeholder={t('Include extensions: .md,.pdf', '包含扩展名：.md,.pdf')} />
-                            <input style={inputStyle} value={fileForm.excludeGlobs} onChange={event => setFileForm({ ...fileForm, excludeGlobs: event.target.value })} placeholder={t('Exclude globs', '排除规则')} />
-                            <input style={inputStyle} type="number" value={fileForm.maxFileBytes} onChange={event => setFileForm({ ...fileForm, maxFileBytes: Number(event.target.value) })} />
-                        </div>
-                        <div style={inlineActionsStyle}>
-                            <label style={checkboxStyle}><input type="checkbox" checked={fileForm.recursive} onChange={event => setFileForm({ ...fileForm, recursive: event.target.checked })} /> {t('Recursive', '递归')}</label>
-                            <label style={checkboxStyle}><input type="checkbox" checked={fileForm.autoLabels} onChange={event => setFileForm({ ...fileForm, autoLabels: event.target.checked })} /> {t('Auto labels', '自动标签')}</label>
-                            <label style={checkboxStyle}><input type="checkbox" checked={fileForm.dryRun} onChange={event => setFileForm({ ...fileForm, dryRun: event.target.checked })} /> {t('Dry run', '仅预检')}</label>
-                        </div>
-                        <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={startDirectoryImport}>{busy === 'importDirectory' ? t('Starting...', '启动中...') : t('Start Directory Import', '开始导入目录')}</button>
-                        {importJob ? (
-                            <div style={jobStatusStyle}>
-                                <strong>{t('Import Job', '导入任务')} {importJob.id}</strong>
-                                <span style={mutedLineStyle}>{[importJob.status, importJob.result?.current_file, importJob.error].filter(Boolean).join(' · ')}</span>
-                                <span style={mutedLineStyle}>{[
-                                    `processed ${importJob.result?.processed_files || 0}`,
-                                    `imported ${importJob.result?.imported_files || 0}`,
-                                    `skipped ${importJob.result?.skipped_files || 0}`,
-                                    `failed ${importJob.result?.failed_files || 0}`,
-                                ].join(' · ')}</span>
-                            </div>
-                        ) : null}
+                        {importJob && ['running', 'queued', 'pending'].includes(String(importJob.status || '').toLowerCase()) && (
+                            <ImportJobSummary t={t} job={importJob} />
+                        )}
                     </PanelBlock>
                 </div>
             )}
@@ -1624,6 +1601,14 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                 </PanelBlock>
             ) : null}
         </section>
+        <KnowledgeImportDialog
+            open={showImportDialog}
+            onClose={() => setShowImportDialog(false)}
+            onJobUpdate={job => { if (job) setImportJob(job); }}
+            t={t}
+            lang={lang}
+        />
+        </>
     );
 }
 

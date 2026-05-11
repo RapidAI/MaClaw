@@ -191,7 +191,7 @@ func (m *RemoteSessionManager) recordImportantEventTrace(session *RemoteSession,
 		ProjectPath: session.ProjectPath,
 	})
 	traceSvc.AppendEvidence(session.RunID, EvidenceRecord{
-		SourceKind:     "remote_event",
+		SourceKind:     traceSourceKindRemoteEvent.String(),
 		Category:       traceCategoryForImportantEvent(evt),
 		Summary:        firstNonEmptyTraceText(evt.Summary, evt.Title, evt.Type),
 		ContentSnippet: evt.Summary,
@@ -202,7 +202,7 @@ func (m *RemoteSessionManager) recordImportantEventTrace(session *RemoteSession,
 	})
 }
 
-func (m *RemoteSessionManager) recordOutputEvidence(session *RemoteSession, category, summary string, lines []string) {
+func (m *RemoteSessionManager) recordOutputEvidence(session *RemoteSession, category remoteTraceCategoryKind, summary string, lines []string) {
 	if session == nil || session.RunID == "" {
 		return
 	}
@@ -218,8 +218,8 @@ func (m *RemoteSessionManager) recordOutputEvidence(session *RemoteSession, cate
 		summary = "Remote output snippet"
 	}
 	traceSvc.AppendEvidence(session.RunID, EvidenceRecord{
-		SourceKind:     "remote_output",
-		Category:       category,
+		SourceKind:     traceSourceKindRemoteOutput.String(),
+		Category:       category.String(),
 		Summary:        summary,
 		ContentSnippet: snippet,
 		CreatedAt:      traceNowMillis(),
@@ -241,11 +241,11 @@ func (m *RemoteSessionManager) syncTraceFromOutputResult(session *RemoteSession,
 		return
 	}
 	if len(result.Events) > 0 {
-		m.recordOutputEvidence(session, "event", firstNonEmptyTraceText(result.SummaryText(), "Remote event output"), result.PreviewDelta.AppendLines)
+		m.recordOutputEvidence(session, remoteTraceCategoryEvent, firstNonEmptyTraceText(result.SummaryText(), "Remote event output"), result.PreviewDelta.AppendLines)
 		return
 	}
 	if result.Summary != nil && strings.EqualFold(result.Summary.Severity, "error") {
-		m.recordOutputEvidence(session, "error", firstNonEmptyTraceText(result.Summary.LastResult, result.Summary.ProgressSummary, "Remote error output"), result.PreviewDelta.AppendLines)
+		m.recordOutputEvidence(session, remoteTraceCategoryError, firstNonEmptyTraceText(result.Summary.LastResult, result.Summary.ProgressSummary, "Remote error output"), result.PreviewDelta.AppendLines)
 	}
 }
 
@@ -2465,11 +2465,11 @@ func (m *RemoteSessionManager) runExitLoop(s *RemoteSession) {
 				UserID:           desktopUserID,
 				ProjectPath:      s.ProjectPath,
 				Tool:             firstNonEmptyTraceText(strings.TrimSpace(s.Tool), strings.TrimSpace(s.ResumeContext.Tool), "claude"),
-				Status:           "pending_resume",
+				Status:           agent.UnfinishedTaskSlotStatusPendingResume,
 				Summary:          firstNonEmptyTraceText(s.Summary.ProgressSummary, s.ResumeContext.LastProgress, s.Summary.LastResult),
 				LastTask:         firstNonEmptyTraceText(s.Summary.CurrentTask, s.ResumeContext.OriginalTask),
 				ResumePrompt:     resumePrompt,
-				Source:           "session_exit",
+				Source:           agent.UnfinishedTaskSlotSourceSessionExit,
 				EvidenceScopeKey: firstNonEmptyTraceText(s.RunID, s.ProjectPath, s.ID),
 				CreatedAt:        time.Now(),
 				UpdatedAt:        time.Now(),

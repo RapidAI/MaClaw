@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-const INPUT_STACK_MIN_HEIGHT = 96;
+const INPUT_STACK_MIN_HEIGHT = 72;
 const INPUT_STACK_MAX_HEIGHT = 420;
 const INPUT_TEXTAREA_DEFAULT_MAX_HEIGHT = 120;
 

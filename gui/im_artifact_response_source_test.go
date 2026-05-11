@@ -146,6 +146,28 @@ func TestPopulateDesktopFileArtifactResponseMarksFileDeliverySource(t *testing.T
 	}
 }
 
+func TestPopulateDesktopFileArtifactResponseUsesStructuredDeliveryMessage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	resp := &IMAgentResponse{}
+	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	handler.populateDesktopFileArtifactResponse(resp, []pendingFile{{
+		name:     "01-requirements.pdf",
+		mimeType: "application/pdf",
+		data:     "JVBERi0xLjQK",
+		message:  "需求文档已生成",
+	}})
+
+	if resp.Text != "需求文档已生成" {
+		t.Fatalf("Text = %q, want structured delivery message", resp.Text)
+	}
+	if resp.ResponseSource != "file_delivery" {
+		t.Fatalf("ResponseSource = %q, want file_delivery", resp.ResponseSource)
+	}
+}
+
 func TestHandleAgentLoopFileArtifactsMarksNonDesktopFileDeliverySource(t *testing.T) {
 	resp := &IMAgentResponse{}
 	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
@@ -181,5 +203,32 @@ func TestHandleAgentLoopFileArtifactsMarksNonDesktopFileDeliverySource(t *testin
 	}
 	if !result.PostStreamReturnPrepTime {
 		t.Fatal("expected PostStreamReturnPrepTime")
+	}
+}
+
+func TestHandleAgentLoopFileArtifactsUsesStructuredDeliveryMessage(t *testing.T) {
+	handler := &IMMessageHandler{memory: agent.NewConversationMemory()}
+	result := handler.handleAgentLoopFileArtifacts(
+		"user",
+		"web",
+		[]pendingFile{{
+			name:     "01-requirements.pdf",
+			mimeType: "application/pdf",
+			data:     "JVBERi0xLjQK",
+			message:  "需求文档已生成",
+		}},
+		"",
+		"",
+		"",
+		nil,
+		true,
+		func(r *IMAgentResponse) {},
+	)
+
+	if result.Response == nil {
+		t.Fatal("expected response")
+	}
+	if result.Response.Text != "需求文档已生成" {
+		t.Fatalf("Text = %q, want structured delivery message", result.Response.Text)
 	}
 }

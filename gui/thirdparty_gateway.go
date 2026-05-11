@@ -41,7 +41,7 @@ type thirdPartyGatewayManager struct {
 	mu           sync.Mutex
 	server       *http.Server
 	listener     net.Listener
-	status       string
+	status       gatewayConnectionStatus
 	lastBindKey  string
 	localHandler *IMMessageHandler
 	clients      map[string]*thirdPartyClientState
@@ -68,12 +68,12 @@ type thirdPartyUserRef struct {
 }
 
 type thirdPartyMessagePayload struct {
-	Type        string `json:"type"`
-	Text        string `json:"text,omitempty"`
-	FileName    string `json:"fileName,omitempty"`
-	ContentType string `json:"contentType,omitempty"`
-	Data        string `json:"data,omitempty"`
-	URL         string `json:"url,omitempty"`
+	Type        thirdPartyGatewayMessageKind `json:"type"`
+	Text        string                       `json:"text,omitempty"`
+	FileName    string                       `json:"fileName,omitempty"`
+	ContentType string                       `json:"contentType,omitempty"`
+	Data        string                       `json:"data,omitempty"`
+	URL         string                       `json:"url,omitempty"`
 }
 
 type thirdPartyIncomingRequest struct {
@@ -88,9 +88,9 @@ type thirdPartyIncomingRequest struct {
 }
 
 type thirdPartyAckRequest struct {
-	ClientID   string   `json:"clientId"`
-	MessageIDs []string `json:"messageIds"`
-	Status     string   `json:"status"`
+	ClientID   string                     `json:"clientId"`
+	MessageIDs []string                   `json:"messageIds"`
+	Status     thirdPartyGatewayAckStatus `json:"status"`
 }
 
 type thirdPartyOutgoingMessage struct {
@@ -113,7 +113,7 @@ type thirdPartyOutgoingMessage struct {
 func newThirdPartyGatewayManager(app *App) *thirdPartyGatewayManager {
 	return &thirdPartyGatewayManager{
 		app:      app,
-		status:   gatewayConnectionStatusDisconnected.String(),
+		status:   gatewayConnectionStatusDisconnected,
 		clients:  make(map[string]*thirdPartyClientState),
 		notifyCh: make(chan struct{}),
 	}
@@ -142,7 +142,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 		m.server = nil
 		m.listener = nil
 		m.lastBindKey = ""
-		m.status = gatewayConnectionStatusDisconnected.String()
+		m.status = gatewayConnectionStatusDisconnected
 		lh := m.localHandler
 		m.localHandler = nil
 		m.mu.Unlock()
@@ -167,7 +167,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	oldServer := m.server
 	m.server = nil
 	m.listener = nil
-	m.status = gatewayConnectionStatusConnecting.String()
+	m.status = gatewayConnectionStatusConnecting
 	m.mu.Unlock()
 
 	if oldServer != nil {
@@ -188,7 +188,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	if err != nil {
 		log.Printf("[thirdparty-mgr] listen %s failed: %v", addr, err)
 		m.mu.Lock()
-		m.status = gatewayConnectionStatusError.String()
+		m.status = gatewayConnectionStatusError
 		m.lastBindKey = ""
 		m.mu.Unlock()
 		m.emitStatusEvent()
@@ -200,7 +200,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 	m.server = server
 	m.listener = ln
 	m.lastBindKey = bindKey
-	m.status = gatewayConnectionStatusConnected.String()
+	m.status = gatewayConnectionStatusConnected
 	m.mu.Unlock()
 	m.emitStatusEvent()
 
@@ -218,7 +218,7 @@ func (m *thirdPartyGatewayManager) SyncFromConfig() {
 			if m.server == server {
 				m.server = nil
 				m.listener = nil
-				m.status = gatewayConnectionStatusError.String()
+				m.status = gatewayConnectionStatusError
 				m.lastBindKey = ""
 			}
 			m.mu.Unlock()
@@ -232,7 +232,7 @@ func (m *thirdPartyGatewayManager) Stop() {
 	server := m.server
 	m.server = nil
 	m.listener = nil
-	m.status = gatewayConnectionStatusDisconnected.String()
+	m.status = gatewayConnectionStatusDisconnected
 	m.lastBindKey = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -251,7 +251,7 @@ func (m *thirdPartyGatewayManager) Stop() {
 func (m *thirdPartyGatewayManager) Status() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.status
+	return m.status.String()
 }
 
 func (m *thirdPartyGatewayManager) emitStatusEvent() {
@@ -364,7 +364,7 @@ func (m *thirdPartyGatewayManager) handleIncoming(w http.ResponseWriter, r *http
 		writeGatewayError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if !isSupportedThirdPartyMessageType(req.Message.Type) {
+	if !req.Message.Type.IsSupported() {
 		writeGatewayError(w, http.StatusBadRequest, "unsupported_message_type", "unsupported message type")
 		return
 	}
@@ -626,7 +626,7 @@ func (m *thirdPartyGatewayManager) processIncoming(req thirdPartyIncomingRequest
 			payload := map[string]any{
 				"platform_uid":    thirdPartySessionUserID(req.ClientID, req.ConversationID),
 				"text":            req.Message.Text,
-				"message_type":    req.Message.Type,
+				"message_type":    req.Message.Type.String(),
 				"client_id":       req.ClientID,
 				"conversation_id": req.ConversationID,
 				"message_id":      req.MessageID,
@@ -742,7 +742,7 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 		m.enqueue(req.ClientID, thirdPartyOutgoingMessage{
 			ConversationID:   req.ConversationID,
 			ReplyToMessageID: req.MessageID,
-			Type:             "text",
+			Type:             thirdPartyGatewayMessageText.String(),
 			Text:             reply,
 		})
 		return
@@ -759,21 +759,21 @@ func (m *thirdPartyGatewayManager) handleLocalMessage(req thirdPartyIncomingRequ
 
 	text := req.Message.Text
 	var attachments []MessageAttachment
-	if req.Message.Type != "text" {
+	if req.Message.Type != thirdPartyGatewayMessageText {
 		mediaData, err := decodeThirdPartyMedia(req.Message)
 		if err != nil {
 			m.enqueueError(req, req.MessageID, "bad_request", err.Error())
 			return
 		}
-		if req.Message.Type == "image" {
+		if req.Message.Type == thirdPartyGatewayMessageImage {
 			attachments = append(attachments, buildLocalImageAttachment(mediaData, req.Message.FileName, req.Message.ContentType))
 		} else {
-			mediaPath, err := saveMediaToTempDir("thirdparty", "tp_", safeFileToken(req.User.ID), req.Message.Type, mediaData, req.Message.FileName)
+			mediaPath, err := saveMediaToTempDir("thirdparty", "tp_", safeFileToken(req.User.ID), req.Message.Type.String(), mediaData, req.Message.FileName)
 			if err != nil {
 				m.enqueueError(req, req.MessageID, "bad_request", err.Error())
 				return
 			}
-			prefix := "[鏀跺埌" + mediaLabel(req.Message.Type) + ": " + mediaPath + "]\n"
+			prefix := "[鏀跺埌" + mediaLabel(req.Message.Type.String()) + ": " + mediaPath + "]\n"
 			text = prefix + text
 		}
 	}
@@ -942,7 +942,7 @@ func normalizeIncomingRequest(req *thirdPartyIncomingRequest) error {
 	req.ConversationID = strings.TrimSpace(req.ConversationID)
 	req.User.ID = strings.TrimSpace(req.User.ID)
 	req.User.Name = strings.TrimSpace(req.User.Name)
-	req.Message.Type = strings.ToLower(strings.TrimSpace(req.Message.Type))
+	req.Message.Type = normalizeThirdPartyGatewayMessageKind(req.Message.Type.String())
 	if req.ClientID == "" {
 		return fmt.Errorf("clientId is required")
 	}
@@ -959,19 +959,15 @@ func normalizeIncomingRequest(req *thirdPartyIncomingRequest) error {
 		return fmt.Errorf("user.id is required")
 	}
 	if req.Message.Type == "" {
-		req.Message.Type = thirdPartyGatewayMessageText.String()
+		req.Message.Type = thirdPartyGatewayMessageText
 	}
-	if normalizeThirdPartyGatewayMessageKind(req.Message.Type) == thirdPartyGatewayMessageText && strings.TrimSpace(req.Message.Text) == "" {
+	if req.Message.Type == thirdPartyGatewayMessageText && strings.TrimSpace(req.Message.Text) == "" {
 		return fmt.Errorf("message.text is required for text messages")
 	}
 	if req.Message.Text != "" && len([]rune(req.Message.Text)) > thirdPartyMaxTextChars {
 		return fmt.Errorf("message.text exceeds %d characters", thirdPartyMaxTextChars)
 	}
 	return nil
-}
-
-func isSupportedThirdPartyMessageType(t string) bool {
-	return normalizeThirdPartyGatewayMessageKind(t).IsSupported()
 }
 
 func decodeGatewayJSON(r *http.Request, v any) error {

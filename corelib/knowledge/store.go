@@ -3221,6 +3221,31 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		if snapshot.CurrentFile == "" {
 			snapshot.CurrentFile = current.FilePath
 		}
+		// Clear step fields when file is fully processed
+		snapshot.CurrentStep = ""
+		snapshot.StepProgress = 0
+		snapshot.TotalSteps = 0
+		snapshot.CurrentStepNum = 0
+		snapshot.Items = nil
+		s.importProgress(snapshot)
+	}
+	emitStepProgress := func(current ImportItem, stepName string, stepNum, totalSteps int) {
+		if s == nil || s.importProgress == nil {
+			return
+		}
+		snapshot := result
+		snapshot.Status = ImportStatusRunning
+		snapshot.ImportedFiles = imported
+		snapshot.FailedFiles = failed
+		snapshot.ProcessedFiles = processed
+		snapshot.CurrentFile = current.RelativePath
+		if snapshot.CurrentFile == "" {
+			snapshot.CurrentFile = current.FilePath
+		}
+		snapshot.CurrentStep = stepName
+		snapshot.CurrentStepNum = stepNum
+		snapshot.TotalSteps = totalSteps
+		snapshot.StepProgress = (stepNum - 1) * 100 / totalSteps // progress at start of step N = (N-1)/total
 		snapshot.Items = nil
 		s.importProgress(snapshot)
 	}
@@ -3243,6 +3268,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		}
 
 		source := BuildSourceFromImport(req, batchID, item)
+		emitStepProgress(item, "preparing", 1, 5)
 		if existingSource, ok, err := findExistingSourceForImport(ctx, tx, req, item); err != nil {
 			return result, err
 		} else if ok {
@@ -3261,6 +3287,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		item.SourceID = source.ID
 		item.Status = ItemStatusImported
 		item.UpdatedAt = time.Now().UTC()
+		emitStepProgress(item, "saving", 2, 5)
 		if err := insertSource(ctx, tx, source); err != nil {
 			item.Status = ItemStatusFailed
 			item.ErrorMessage = err.Error()
@@ -3283,6 +3310,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 		}
 
 		if isImmediatelyParsedKind(item.Kind) {
+			emitStepProgress(item, "parsing", 3, 5)
 			var nodes []DocumentNode
 			nodes, parseErr := ParseDocumentNodes(source, item.FilePath, item.Kind)
 			if parseErr != nil {
@@ -3308,6 +3336,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 				}
 			}
 			if len(nodes) > 0 {
+				emitStepProgress(item, "indexing", 4, 5)
 				if err := insertDocumentNodes(ctx, tx, nodes); err != nil {
 					source.Status = StatusFailed
 					source.ErrorMessage = err.Error()
@@ -3323,6 +3352,7 @@ func (s *SQLiteStore) importScannedItems(ctx context.Context, req DirectoryImpor
 					markImportItemProcessed(i, item)
 					continue
 				}
+				emitStepProgress(item, "distilling", 5, 5)
 				nextSource, err := s.DistillAndSaveCardsWithMode(ctx, tx, source, nodes, req.DistillMode)
 				if err != nil {
 					source.Status = StatusFailed

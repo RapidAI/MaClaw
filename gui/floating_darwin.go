@@ -242,3 +242,8 @@ func (w *darwinFloatingWindow) IsCreated() bool {
 	defer w.mu.Unlock()
 	return w.created
 }
+
+func (w *darwinFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {
+	// macOS floating window does not manage sound state in-memory;
+	// sound is handled by the WebView-based React component.
+}

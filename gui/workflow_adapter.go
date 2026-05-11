@@ -2,8 +2,6 @@ package main
 
 import (
 	"log"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -24,18 +22,6 @@ type GUIWorkflowAdapter struct {
 	// Key: userID, Value: true. This prevents the banner from firing on
 	// every single message while a workflow is active.
 	suggestMaximizeSent sync.Map
-}
-
-type frontendWorkflowPhase struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	Index           int    `json:"index"`
-	ExpectsDocument bool   `json:"expects_document"`
-}
-
-type frontendWorkflowState struct {
-	*workflow.WorkflowState
-	Phases []frontendWorkflowPhase `json:"phases,omitempty"`
 }
 
 // NewGUIWorkflowAdapter creates a new adapter wiring the App and WorkflowEngine.
@@ -66,94 +52,6 @@ func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.Work
 	return nil
 }
 
-func canonicalWorkflowPhaseID(phaseID string) string {
-	if canonical := normalizeWorkflowPhaseID(phaseID); canonical != "" {
-		return canonical
-	}
-	return phaseID
-}
-
-func normalizeWorkflowStateForFrontend(state *workflow.WorkflowState) *frontendWorkflowState {
-	return normalizeWorkflowStateForFrontendWithRegistry(state, nil)
-}
-
-func normalizeWorkflowStateForFrontendWithRegistry(state *workflow.WorkflowState, registry *workflow.WorkflowRegistry) *frontendWorkflowState {
-	if state == nil {
-		return nil
-	}
-	cp := *state
-	cp.CurrentPhase = canonicalWorkflowPhaseID(cp.CurrentPhase)
-	cp.PendingReviewPhaseID = canonicalWorkflowPhaseID(cp.PendingReviewPhaseID)
-	cp.PhaseOutputs = normalizeWorkflowPhaseOutputs(state.PhaseOutputs)
-	cp.GateResults = normalizeWorkflowGateResults(state.GateResults)
-	return &frontendWorkflowState{
-		WorkflowState: &cp,
-		Phases:        normalizeWorkflowPhasesForFrontend(state.Type, registry),
-	}
-}
-
-func normalizeWorkflowPhasesForFrontend(workflowType workflow.WorkflowType, registry *workflow.WorkflowRegistry) []frontendWorkflowPhase {
-	if registry == nil {
-		return nil
-	}
-	tmpl := registry.Match(workflowType)
-	if tmpl == nil || len(tmpl.Phases) == 0 {
-		return nil
-	}
-	phases := make([]frontendWorkflowPhase, 0, len(tmpl.Phases))
-	seen := make(map[string]bool, len(tmpl.Phases))
-	for _, phase := range tmpl.Phases {
-		id := canonicalWorkflowPhaseID(phase.ID)
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		phases = append(phases, frontendWorkflowPhase{
-			ID:              id,
-			Name:            phase.Name,
-			Index:           len(phases),
-			ExpectsDocument: phase.ToolPolicy != workflow.ToolFilterFull && phase.ToolPolicy != workflow.ToolFilterOpsControlled,
-		})
-	}
-	return phases
-}
-
-func normalizeWorkflowPhaseOutputs(outputs map[string]string) map[string]string {
-	if outputs == nil {
-		return nil
-	}
-	normalized := make(map[string]string, len(outputs))
-	for phaseID, content := range outputs {
-		canonical := canonicalWorkflowPhaseID(phaseID)
-		if _, exists := normalized[canonical]; exists && phaseID != canonical {
-			continue
-		}
-		normalized[canonical] = content
-	}
-	return normalized
-}
-
-func normalizeWorkflowGateResults(results map[string]*workflow.QualityGateResult) map[string]*workflow.QualityGateResult {
-	if results == nil {
-		return nil
-	}
-	normalized := make(map[string]*workflow.QualityGateResult, len(results))
-	for phaseID, result := range results {
-		canonical := canonicalWorkflowPhaseID(phaseID)
-		if _, exists := normalized[canonical]; exists && phaseID != canonical {
-			continue
-		}
-		if result == nil {
-			normalized[canonical] = nil
-			continue
-		}
-		cp := *result
-		cp.PhaseID = canonicalWorkflowPhaseID(cp.PhaseID)
-		normalized[canonical] = &cp
-	}
-	return normalized
-}
-
 // EmitDocUpdate notifies the frontend of document content changes and
 // persists the document to the project's .maclaw/workflow/ directory.
 // The content sent to the frontend is read back from the persisted file
@@ -178,97 +76,6 @@ func (a *GUIWorkflowAdapter) EmitDocUpdate(userID, phaseID, content string) erro
 		})
 	}
 	return nil
-}
-
-// readPersistedDoc reads the persisted markdown file for a phase.
-// Returns empty string if the file doesn't exist or can't be read.
-func (a *GUIWorkflowAdapter) readPersistedDoc(phaseID string) string {
-	if a.app == nil {
-		return ""
-	}
-	a.mu.RLock()
-	projectPath := a.workingDir
-	a.mu.RUnlock()
-	if projectPath == "" {
-		projectPath = strings.TrimSpace(a.app.GetCurrentProjectPath())
-	}
-	if projectPath == "" {
-		return ""
-	}
-	fileName := phaseFileName[phaseID]
-	if fileName == "" {
-		fileName = phaseID + ".md"
-	}
-	filePath := filepath.Join(projectPath, ".maclaw", "workflow", fileName)
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
-
-// stripDocPreamble removes conversational text before the first Markdown
-// heading (#). LLM output often starts with a sentence like "好的，以下是
-// 需求文档：" before the actual document heading.
-func stripDocPreamble(text string) string {
-	lines := strings.Split(text, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(strings.TrimSpace(line), "#") {
-			stripped := strings.TrimSpace(strings.Join(lines[i:], "\n"))
-			if len(stripped) > 100 {
-				return stripped
-			}
-			break
-		}
-	}
-	return text
-}
-
-// phaseFileName maps a phase ID to a human-readable file name.
-var phaseFileName = map[string]string{
-	workflowPhaseRequirements: "01-需求文档.md",
-	workflowPhaseDesign:       "02-技术设计.md",
-	workflowPhaseTasks:        "03-任务拆分.md",
-	"ops_intake":              "01-ops-intake.md",
-	"readonly_collection":     "02-readonly-collection.md",
-	"artifact_plan":           "03-maintenance-artifacts.md",
-	"risk_policy":             "04-risk-policy.md",
-	"controlled_execution":    "05-controlled-execution.md",
-}
-
-// persistWorkflowDoc writes the phase document to the workflow working
-// directory's .maclaw/workflow/ subdirectory. Uses the locked workingDir
-// if set, otherwise falls back to the current project path.
-// Errors are logged but not propagated since file persistence is
-// best-effort and should not block the UI.
-func (a *GUIWorkflowAdapter) persistWorkflowDoc(phaseID, content string) {
-	if a.app == nil || strings.TrimSpace(content) == "" {
-		return
-	}
-	a.mu.RLock()
-	projectPath := a.workingDir
-	a.mu.RUnlock()
-	if projectPath == "" {
-		projectPath = strings.TrimSpace(a.app.GetCurrentProjectPath())
-	}
-	if projectPath == "" {
-		return
-	}
-	dir := filepath.Join(projectPath, ".maclaw", "workflow")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		log.Printf("[WorkflowAdapter] failed to create workflow dir %s: %v", dir, err)
-		return
-	}
-	fileName := phaseFileName[phaseID]
-	if fileName == "" {
-		fileName = phaseID + ".md"
-	}
-	filePath := filepath.Join(dir, fileName)
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		log.Printf("[WorkflowAdapter] failed to write workflow doc %s: %v", filePath, err)
-	} else {
-		log.Printf("[WorkflowAdapter] persisted workflow doc: %s (%d bytes)", filePath, len(content))
-	}
 }
 
 // SetWorkingDir locks the working directory for the current workflow session.

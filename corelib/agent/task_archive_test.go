@@ -7,8 +7,8 @@ import (
 
 func TestTaskArchive_ArchiveAndList(t *testing.T) {
 	ta := NewTaskArchive("", 3) // in-memory only
-	ta.Archive(ArchivedTask{ID: "t1", UserID: "u1", Summary: "task 1", Status: "completed"})
-	ta.Archive(ArchivedTask{ID: "t2", UserID: "u1", Summary: "task 2", Status: "switched"})
+	ta.Archive(ArchivedTask{ID: "t1", UserID: "u1", Summary: "task 1", Status: ArchivedTaskStatusCompleted})
+	ta.Archive(ArchivedTask{ID: "t2", UserID: "u1", Summary: "task 2", Status: ArchivedTaskStatusSwitched})
 
 	tasks := ta.List("u1")
 	if len(tasks) != 2 {
@@ -127,7 +127,7 @@ func TestBuildArchivedTask(t *testing.T) {
 		{Role: "user", Content: "继续"},
 		{Role: "assistant", Content: "已完成评估，报告如下：\n文件保存到 /tmp/report.pdf"},
 	}
-	task := BuildArchivedTask("u1", history, "completed", "/workspace")
+	task := BuildArchivedTask("u1", history, ArchivedTaskStatusCompleted, "/workspace")
 
 	if task.UserID != "u1" {
 		t.Fatalf("expected userID u1, got %s", task.UserID)

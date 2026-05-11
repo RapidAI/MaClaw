@@ -33,18 +33,18 @@ type AutoTaskPicker struct {
 	totalEarned       float64
 	lastPollAt        time.Time
 	lastError         string
-	lastPollStatus    string
+	lastPollStatus    autoPollStatus
 	lastDiscoveredCnt int
 }
 
 type autoTaskRun struct {
-	TaskID    string    `json:"task_id"`
-	Title     string    `json:"title"`
-	Reward    float64   `json:"reward"`
-	Status    string    `json:"status"`
-	StartedAt time.Time `json:"started_at"`
-	Result    string    `json:"result,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	TaskID    string        `json:"task_id"`
+	Title     string        `json:"title"`
+	Reward    float64       `json:"reward"`
+	Status    autoRunStatus `json:"status"`
+	StartedAt time.Time     `json:"started_at"`
+	Result    string        `json:"result,omitempty"`
+	Error     string        `json:"error,omitempty"`
 }
 
 // AutoTaskExecutor is called to execute a task.
@@ -114,7 +114,7 @@ func (p *AutoTaskPicker) GetStatus() map[string]interface{} {
 	for _, r := range p.activeTasks {
 		active = append(active, map[string]interface{}{
 			"task_id": r.TaskID, "title": r.Title, "reward": r.Reward,
-			"status": r.Status, "started_at": r.StartedAt.Format(time.RFC3339),
+			"status": r.Status.String(), "started_at": r.StartedAt.Format(time.RFC3339),
 		})
 	}
 	return map[string]interface{}{
@@ -124,7 +124,7 @@ func (p *AutoTaskPicker) GetStatus() map[string]interface{} {
 		"completed_count": p.completedCount, "failed_count": p.failedCount,
 		"total_earned": p.totalEarned,
 		"last_poll_at": formatTimeOrEmpty(p.lastPollAt), "last_error": p.lastError,
-		"last_poll_status": p.lastPollStatus, "last_discovered_count": p.lastDiscoveredCnt,
+		"last_poll_status": p.lastPollStatus.String(), "last_discovered_count": p.lastDiscoveredCnt,
 	}
 }
 
@@ -159,7 +159,7 @@ func (p *AutoTaskPicker) loop() {
 
 func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	if !p.pollMu.TryLock() {
-		p.setPollResult(autoPollStatusBusy.String(), 0)
+		p.setPollResult(autoPollStatusBusy, 0)
 		return p.GetStatus()
 	}
 	defer p.pollMu.Unlock()
@@ -167,16 +167,16 @@ func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	p.mu.Lock()
 	p.lastPollAt = time.Now()
 	p.lastError = ""
-	p.lastPollStatus = autoPollStatusChecking.String()
+	p.lastPollStatus = autoPollStatusChecking
 	p.lastDiscoveredCnt = 0
 	activeCount := 0
 	for _, r := range p.activeTasks {
-		if normalizeAutoRunStatus(r.Status).IsActive() {
+		if r.Status.IsActive() {
 			activeCount++
 		}
 	}
 	if activeCount >= p.maxConcurrent {
-		p.lastPollStatus = autoPollStatusBusy.String()
+		p.lastPollStatus = autoPollStatusBusy
 		p.mu.Unlock()
 		p.notifyChange()
 		return p.GetStatus()
@@ -193,7 +193,7 @@ func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 		return p.GetStatus()
 	}
 	if !client.IsRunning() {
-		p.setPollResult(autoPollStatusOffline.String(), 0)
+		p.setPollResult(autoPollStatusOffline, 0)
 		return p.GetStatus()
 	}
 
@@ -203,16 +203,16 @@ func (p *AutoTaskPicker) pollAndPickTask() map[string]interface{} {
 		return p.GetStatus()
 	}
 	if len(tasks) == 0 {
-		p.setPollResult(autoPollStatusNoTasks.String(), 0)
+		p.setPollResult(autoPollStatusNoTasks, 0)
 		return p.GetStatus()
 	}
 
 	selected := p.selectTask(tasks, minReward, preferredTags)
 	if selected == nil {
-		p.setPollResult(autoPollStatusNoMatchingTasks.String(), len(tasks))
+		p.setPollResult(autoPollStatusNoMatchingTasks, len(tasks))
 		return p.GetStatus()
 	}
-	p.setPollResult(autoPollStatusPicked.String(), len(tasks))
+	p.setPollResult(autoPollStatusPicked, len(tasks))
 	go p.executeTask(client, selected, executor)
 	return p.GetStatus()
 }
@@ -314,7 +314,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 
 	run := &autoTaskRun{
 		TaskID: task.ID, Title: task.Title, Reward: task.Reward,
-		Status: autoRunStatusClaiming.String(), StartedAt: time.Now(),
+		Status: autoRunStatusClaiming, StartedAt: time.Now(),
 	}
 	p.mu.Lock()
 	p.activeTasks[task.ID] = run
@@ -328,7 +328,7 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 		}
 	}
 
-	p.setRunStatus(run, autoRunStatusExecuting.String())
+	p.setRunStatus(run, autoRunStatusExecuting)
 	description := task.Title
 	if task.Description != "" {
 		description = task.Title + "\n\n" + task.Description
@@ -345,14 +345,14 @@ func (p *AutoTaskPicker) executeTask(client *Client, task *Task, executor AutoTa
 	run.Result = result
 	p.mu.Unlock()
 
-	p.setRunStatus(run, autoRunStatusSubmitting.String())
+	p.setRunStatus(run, autoRunStatusSubmitting)
 	if err := client.SubmitTaskDeliverable(task, result); err != nil {
 		p.failTask(run, FormatTaskError("submit", err, lang))
 		return
 	}
 
 	p.mu.Lock()
-	run.Status = autoRunStatusDone.String()
+	run.Status = autoRunStatusDone
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)
@@ -397,7 +397,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 
 	run := &autoTaskRun{
 		TaskID: task.ID, Title: task.Title, Reward: task.Reward,
-		Status: autoRunStatusClaiming.String(), StartedAt: time.Now(),
+		Status: autoRunStatusClaiming, StartedAt: time.Now(),
 	}
 	p.mu.Lock()
 	p.activeTasks[task.ID] = run
@@ -412,7 +412,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 		}
 	}
 
-	p.setRunStatus(run, autoRunStatusExecuting.String())
+	p.setRunStatus(run, autoRunStatusExecuting)
 	description := task.Title
 	if task.Description != "" {
 		description = task.Title + "\n\n" + task.Description
@@ -430,7 +430,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	run.Result = execResult
 	p.mu.Unlock()
 
-	p.setRunStatus(run, autoRunStatusSubmitting.String())
+	p.setRunStatus(run, autoRunStatusSubmitting)
 	if submitErr := client.SubmitTaskDeliverable(task, execResult); submitErr != nil {
 		msg := FormatTaskError("submit", submitErr, lang)
 		p.failTask(run, msg)
@@ -438,7 +438,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	}
 
 	p.mu.Lock()
-	run.Status = autoRunStatusDone.String()
+	run.Status = autoRunStatusDone
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)
@@ -448,7 +448,7 @@ func (p *AutoTaskPicker) PickAndExecuteTask(taskID string) (result map[string]in
 	return map[string]interface{}{"ok": true, "result": execResult}
 }
 
-func (p *AutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
+func (p *AutoTaskPicker) setRunStatus(run *autoTaskRun, status autoRunStatus) {
 	p.mu.Lock()
 	run.Status = status
 	p.mu.Unlock()
@@ -457,12 +457,12 @@ func (p *AutoTaskPicker) setRunStatus(run *autoTaskRun, status string) {
 
 func (p *AutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.mu.Lock()
-	run.Status = autoRunStatusFailed.String()
+	run.Status = autoRunStatusFailed
 	run.Error = errMsg
 	p.failedCount++
 	delete(p.activeTasks, run.TaskID)
 	p.lastError = errMsg
-	p.lastPollStatus = autoPollStatusError.String()
+	p.lastPollStatus = autoPollStatusError
 	p.mu.Unlock()
 	p.notifyChange()
 	fmt.Printf("[auto-task-picker] task %q failed: %s\n", run.Title, errMsg)
@@ -471,12 +471,12 @@ func (p *AutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 func (p *AutoTaskPicker) setError(msg string) {
 	p.mu.Lock()
 	p.lastError = msg
-	p.lastPollStatus = autoPollStatusError.String()
+	p.lastPollStatus = autoPollStatusError
 	p.mu.Unlock()
 	p.notifyChange()
 }
 
-func (p *AutoTaskPicker) setPollResult(status string, discovered int) {
+func (p *AutoTaskPicker) setPollResult(status autoPollStatus, discovered int) {
 	p.mu.Lock()
 	p.lastPollStatus = status
 	p.lastDiscoveredCnt = discovered

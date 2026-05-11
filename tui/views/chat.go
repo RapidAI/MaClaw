@@ -579,21 +579,18 @@ func (m ChatModel) View() string {
 			line := lines[start+i]
 			if needsScrollBar {
 				line = truncateToWidthVisible(line, max(1, m.width-4))
-				trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-				if scrollTrack[i] == '█' {
-					trackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("117"))
-				}
-				b.WriteString("  " + line + " " + trackStyle.Render(string(scrollTrack[i])) + "\n")
+				b.WriteString("  " + line + " " + renderTrackChar(scrollTrack[i]) + "\n")
 			} else {
 				line = truncateToWidthVisible(line, max(1, m.width-2))
 				b.WriteString("  " + line + "\n")
 			}
 		}
-		// 填充剩余空行
+		// 填充剩余空行（内容不足 viewHeight 时补齐，保持滚动条轨道连续）
 		for i := visibleCount; i < viewHeight; i++ {
 			if needsScrollBar && i < len(scrollTrack) {
-				trackStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-				b.WriteString(strings.Repeat(" ", max(0, m.width-2)) + trackStyle.Render(string(scrollTrack[i])) + "\n")
+				// 对齐：2(左边距) + (width-4)(内容区) + 1(间隔) + 1(轨道) = width
+				pad := strings.Repeat(" ", max(0, m.width-3))
+				b.WriteString("  " + pad + renderTrackChar(scrollTrack[i]) + "\n")
 			} else {
 				b.WriteString("\n")
 			}
@@ -617,10 +614,8 @@ func (m ChatModel) View() string {
 	}
 
 	// 滚动位置指示器：基于 getLines() 缓存，零额外开销。
-	lines := m.getLines()
-	totalLines := len(lines)
 	scrollInfo := ""
-	if totalLines > viewHeight {
+	if totalLines := len(m.getLines()); totalLines > viewHeight {
 		maxScroll := totalLines - viewHeight
 		if maxScroll < 1 {
 			maxScroll = 1
@@ -638,14 +633,29 @@ func (m ChatModel) View() string {
 	return b.String()
 }
 
+// 滚动条样式（包级别，避免每帧重复分配）。
+var (
+	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Bold(true)
+	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+)
+
+// renderTrackChar 渲染单个滚动条轨道字符（带颜色）。
+// 滑块 '█' 用亮蓝色加粗，轨道 '┃' 用灰色。
+func renderTrackChar(ch rune) string {
+	if ch == '█' {
+		return scrollThumbStyle.Render(string(ch))
+	}
+	return scrollTrackStyle.Render(string(ch))
+}
+
 // buildScrollTrack 生成垂直滚动条轨道。
-// 返回 viewHeight 长度的 rune 切片。滑块用 '█'，轨道用 '│'。
+// 返回 viewHeight 长度的 rune 切片。滑块用 '█'，轨道用 '┃'。
 // 滑块大小与 viewport/total 比例成正比（最小 1 行）。
 // 滑块位置与 scroll/maxScroll 成正比。
 func buildScrollTrack(viewHeight, totalLines, scroll int) []rune {
 	track := make([]rune, viewHeight)
 	for i := range track {
-		track[i] = '│'
+		track[i] = '┃'
 	}
 
 	if totalLines <= viewHeight || viewHeight < 1 {

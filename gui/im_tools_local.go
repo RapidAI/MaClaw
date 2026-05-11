@@ -251,6 +251,7 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 		return fmt.Sprintf("内容过大（%d 字节），最大允许 %d 字节", len(content), writeFileMaxSize)
 	}
 	mode := stringVal(args, "mode")
+	p = workflowDocWritePath(p, args)
 
 	absPath, err := resolveFileToolPath(p)
 	if err != nil {
@@ -263,8 +264,8 @@ func (h *IMMessageHandler) toolWriteFile(args map[string]interface{}) string {
 		}
 		return fmt.Sprintf("写入失败: %s", err.Error())
 	}
-	resolvedMode, _ := coretool.NormalizeWriteMode(mode)
-	if resolvedMode == "append" {
+	resolvedMode, _ := coretool.NormalizeWriteModeKind(mode)
+	if resolvedMode == coretool.WriteModeAppend {
 		return fmt.Sprintf("已追加到 %s（当前 %d 字节）", absPath, size)
 	}
 	if content == "" {
@@ -447,6 +448,7 @@ func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	if fileName == "" {
 		fileName = filepath.Base(absPath)
 	}
+	fileName = workflowDocDeliveryFileNameWithFallbackExt(fileName, args, filepath.Ext(absPath))
 
 	mimeType := mime.TypeByExtension(filepath.Ext(absPath))
 	if mimeType == "" {
@@ -458,6 +460,9 @@ func (h *IMMessageHandler) toolSendFile(args map[string]interface{}) string {
 	// Check if the caller wants to forward the file to IM channels.
 	forwardIM, _ := args["forward_to_im"].(bool)
 	if forwardIM {
+		if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
+			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, msgFlag, b64)
+		}
 		// Use | as delimiter; append |im flag so the interceptor knows to forward.
 		return fmt.Sprintf("[file_base64|%s|%s|im]%s", fileName, mimeType, b64)
 	}

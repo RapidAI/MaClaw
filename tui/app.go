@@ -1617,13 +1617,13 @@ func (m *tuiModel) pollWeixinFromTUI(token string) tea.Cmd {
 		if err != nil {
 			return views.OnboardingWeixinPollResultMsg{Status: "error", Message: err.Error(), Completed: true}
 		}
-		msg := status
+		msg := status.String()
 		if result != nil && result.Message != "" {
 			msg = result.Message
 		}
-		if status == "confirmed" {
+		if status == weixin.QRLoginStatusConfirmed {
 			if result == nil || !result.Connected {
-				return views.OnboardingWeixinPollResultMsg{Status: status, Message: msg, Completed: true}
+				return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: msg, Completed: true}
 			}
 			store := commands.NewFileConfigStore(commands.ResolveDataDir())
 			cfg, _ := store.LoadConfig()
@@ -1638,15 +1638,15 @@ func (m *tuiModel) pollWeixinFromTUI(token string) tea.Cmd {
 				cfg.WeixinLocalMode = &local
 			}
 			if err := store.SaveConfig(cfg); err != nil {
-				return views.OnboardingWeixinPollResultMsg{Status: status, Message: tuiFormat(lang, "saveConfigFailed", err.Error()), Completed: true}
+				return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: tuiFormat(lang, "saveConfigFailed", err.Error()), Completed: true}
 			}
 			m.app.appConfig = cfg
-			return views.OnboardingWeixinPollResultMsg{Status: status, Message: tuiText(lang, "weixinBoundShort"), Success: true, Completed: true, AccountID: result.AccountID}
+			return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: tuiText(lang, "weixinBoundShort"), Success: true, Completed: true, AccountID: result.AccountID}
 		}
-		if status == "expired" {
-			return views.OnboardingWeixinPollResultMsg{Status: status, Message: msg, Completed: true}
+		if status == weixin.QRLoginStatusExpired {
+			return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: msg, Completed: true}
 		}
-		return views.OnboardingWeixinPollResultMsg{Status: status, Message: msg}
+		return views.OnboardingWeixinPollResultMsg{Status: status.String(), Message: msg}
 	}
 }
 

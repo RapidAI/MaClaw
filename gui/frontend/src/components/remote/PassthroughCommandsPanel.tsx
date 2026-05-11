@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useDialog } from "../CustomDialog";
 import {
     DeletePassthroughCommand,
     ExportPassthroughCommand,
@@ -307,6 +308,18 @@ export function PassthroughCommandsPanel({ lang }: Props) {
     const [runningName, setRunningName] = useState("");
     const [lastResult, setLastResult] = useState<RunResult | null>(null);
     const [registryPath, setRegistryPath] = useState("");
+    const [showForm, setShowForm] = useState(false);
+    const { showConfirm } = useDialog();
+
+    // Close form modal on Escape key
+    useEffect(() => {
+        if (!showForm) return;
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Escape") closeForm();
+        };
+        document.addEventListener("keydown", handleKeyDown);
+        return () => document.removeEventListener("keydown", handleKeyDown);
+    }, [showForm]); // eslint-disable-line react-hooks/exhaustive-deps
 
     const refresh = useCallback(async () => {
         try {
@@ -353,6 +366,16 @@ export function PassthroughCommandsPanel({ lang }: Props) {
         setLastResult(null);
     };
 
+    const openNewForm = () => {
+        resetForm();
+        setShowForm(true);
+    };
+
+    const closeForm = () => {
+        resetForm();
+        setShowForm(false);
+    };
+
     const editCommand = (cmd: PassthroughCommand) => {
         const nextParams = cmd.params || [];
         setForm({ ...emptyForm, ...cmd, params: nextParams, template_args: cmd.template_args || [] });
@@ -361,6 +384,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
         setTestValues(testValuesFor(nextParams, {}));
         setEditing(true);
         setLastResult(null);
+        setShowForm(true);
     };
 
     const updateParam = (index: number, patch: Partial<PassthroughParam>) => {
@@ -412,12 +436,12 @@ export function PassthroughCommandsPanel({ lang }: Props) {
         }
     };
 
-    const confirmTestRun = (name: string): boolean => {
-        return window.confirm(text(lang, `确认测试运行直通任务 ${name}？`, `Run passthrough task ${name} for testing?`));
+    const confirmTestRun = async (name: string): Promise<boolean> => {
+        return showConfirm(text(lang, `确认测试运行直通任务 ${name}？`, `Run passthrough task ${name} for testing?`));
     };
 
     const runTest = async (cmd: PassthroughCommand, values?: Record<string, string>, skipConfirm = false) => {
-        if (!skipConfirm && !confirmTestRun(cmd.name)) return;
+        if (!skipConfirm && !(await confirmTestRun(cmd.name))) return;
         setRunningName(cmd.name);
         setMessage("");
         setLastResult(null);
@@ -488,7 +512,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
 
     const toggleAllowExec = async (allowExec: boolean) => {
         if (allowExec) {
-            const confirmed = window.confirm(text(lang, "确认允许 /exec 一次性系统命令？该能力可从 AI 助手或 IM 通道执行系统程序。", "Allow /exec one-time system commands? This can run system programs from the AI assistant or IM channels."));
+            const confirmed = await showConfirm(text(lang, "确认允许 /exec 一次性系统命令？该能力可从 AI 助手或 IM 通道执行系统程序。", "Allow /exec one-time system commands? This can run system programs from the AI assistant or IM channels."));
             if (!confirmed) return;
         }
         setMessage("");
@@ -502,7 +526,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
     };
 
     const deleteCommand = async (cmd: PassthroughCommand) => {
-        const confirmed = window.confirm(text(lang, `确认删除直通任务 ${cmd.name}？`, `Delete passthrough task ${cmd.name}?`));
+        const confirmed = await showConfirm(text(lang, `确认删除直通任务 ${cmd.name}？`, `Delete passthrough task ${cmd.name}?`));
         if (!confirmed) return;
         setMessage("");
         try {
@@ -518,7 +542,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
     const toggleCommandEnabled = async (cmd: PassthroughCommand) => {
         const nextEnabled = !cmd.enabled;
         if (nextEnabled) {
-            const confirmed = window.confirm(text(lang, `确认启用直通任务 ${cmd.name}？启用后可从 AI 助手或 IM 通道执行。`, `Enable passthrough task ${cmd.name}? It can then run from the AI assistant or IM channels.`));
+            const confirmed = await showConfirm(text(lang, `确认启用直通任务 ${cmd.name}？启用后可从 AI 助手或 IM 通道执行。`, `Enable passthrough task ${cmd.name}? It can then run from the AI assistant or IM channels.`));
             if (!confirmed) return;
         }
         setMessage("");
@@ -532,10 +556,10 @@ export function PassthroughCommandsPanel({ lang }: Props) {
     };
 
     return (
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.2fr) minmax(360px, 0.9fr)", gap: 12 }}>
+        <div style={{ position: "relative" }}>
             <div>
                 <div style={{ display: "flex", alignItems: "flex-start", marginBottom: 8, gap: 8 }}>
-                    <div>
+                    <div style={{ textAlign: "left", flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: "0.86rem", fontWeight: 700, color: colors.text }}>
                             {text(lang, "直通任务", "Passthrough Tasks")}
                         </div>
@@ -563,9 +587,8 @@ export function PassthroughCommandsPanel({ lang }: Props) {
                             </div>
                         )}
                     </div>
-                    <div style={{ flex: 1 }} />
-                    <button style={remotePrimaryActionButtonStyle} onClick={resetForm}>
-                        {text(lang, "新增", "New")}
+                    <button style={{ ...remotePrimaryActionButtonStyle, whiteSpace: "nowrap", flexShrink: 0 }} onClick={openNewForm}>
+                        {text(lang, "+ 新建", "+ New")}
                     </button>
                 </div>
                 <div style={remoteTableContainerStyle}>
@@ -664,9 +687,29 @@ export function PassthroughCommandsPanel({ lang }: Props) {
                 </div>
             </div>
 
-            <div style={{ border: `1px solid ${colors.border}`, borderRadius: radius.lg, padding: 12, background: colors.surface }}>
-                <div style={{ fontSize: "0.82rem", fontWeight: 700, marginBottom: 10, color: colors.text }}>
-                    {editing ? text(lang, "编辑直通任务", "Edit Task") : text(lang, "新增直通任务", "New Task")}
+            {showForm && <>
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000 }} onClick={closeForm} />
+                <div style={{
+                    position: "fixed",
+                    top: "50%",
+                    left: "50%",
+                    transform: "translate(-50%, -50%)",
+                    width: "min(520px, 90vw)",
+                    maxHeight: "85vh",
+                    overflowY: "auto",
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: radius.lg,
+                    padding: 16,
+                    background: colors.surface,
+                    boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+                    zIndex: 1001,
+                }}>
+                <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontSize: "0.82rem", fontWeight: 700, color: colors.text }}>
+                        {editing ? text(lang, "编辑直通任务", "Edit Task") : text(lang, "新增直通任务", "New Task")}
+                    </div>
+                    <div style={{ flex: 1 }} />
+                    <button style={remoteActionButtonStyle} onClick={closeForm}>{text(lang, "关闭", "Close")}</button>
                 </div>
                 <div style={{ display: "grid", gap: 9 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -767,7 +810,7 @@ export function PassthroughCommandsPanel({ lang }: Props) {
                     </div>
                     {message && <div style={{ fontSize: "0.74rem", color: message.includes("Error") || message.includes("错误") || message.includes("failed") ? colors.danger : colors.textSecondary, whiteSpace: "pre-wrap" }}>{message}</div>}
                 </div>
-            </div>
+            </div></>}
         </div>
     );
 }

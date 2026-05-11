@@ -78,7 +78,7 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 	for retryAttempt := 0; result.Err != nil && !ctx.IsCancelled(); retryAttempt++ {
 		decision := adaptiveRetry.Decide("llm_request", category, retryAttempt)
 		h.appendTraceEvent(ctx, "trial.retry_decided", "warn", "Adaptive retry decision", truncateTraceText(fmt.Sprintf("llm_request category=%s action=%s attempt=%d", category, decision.Action, decision.Attempt), 220), "", "")
-		h.appendTraceEvidence(ctx, "adaptive_retry", string(category), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, result.Err.Error()), 400), "", "llm_request")
+		h.appendTraceEvidence(ctx, traceSourceKindAdaptiveRetry.String(), category.String(), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, result.Err.Error()), 400), "", "llm_request")
 		if decision.Action != RetryActionRetry {
 			return
 		}

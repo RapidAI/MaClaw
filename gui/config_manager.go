@@ -534,8 +534,7 @@ func (m *ConfigManager) validateChange(section, key, value string) error {
 			}
 			// Validate bool
 			if ks.Type == "bool" {
-				v := strings.ToLower(value)
-				if v != "true" && v != "false" {
+				if _, err := strconv.ParseBool(strings.TrimSpace(value)); err != nil {
 					return fmt.Errorf("invalid value %q for %s.%s; expected true or false", value, section, key)
 				}
 			}

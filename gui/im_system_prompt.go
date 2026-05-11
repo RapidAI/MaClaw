@@ -47,9 +47,10 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 		systemPrompt += "\n\n" + capabilityGapContext
 	}
 
-	if msg.Platform == "desktop" {
+	platformKind := normalizeIMMessagePlatformKind(msg.Platform)
+	if platformKind.IsDesktop() {
 		systemPrompt += desktopWorkflowDocOverride()
-	} else if msg.Platform != "" {
+	} else if platformKind.IsKnown() || msg.Platform != "" {
 		systemPrompt += imWorkflowDocDeliveryRule()
 	}
 	return systemPrompt
@@ -74,7 +75,7 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 		if cfg.MaclawRoleDescription != "" {
 			roleDesc = cfg.MaclawRoleDescription
 		}
-		isProMode = cfg.UIMode == "pro"
+		isProMode = normalizeUIModeKind(cfg.UIMode).IsProExplicit()
 		if isProMode {
 			roleTitle = "AI编程助手"
 		}
@@ -118,12 +119,9 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 - ⚠️ 提问即停：当你需要向用户提问、征求意见或提供选项让用户选择时（如"要不要继续？"、"你想下载哪个？"、"需要压缩吗？"），**只输出问题文本，不要在同一轮中调用任何工具**。等用户回答后再根据回答行动。自问自答（自己提问又自己回答并执行）是严重错误——用户会看到你替他做了决定。
 - ⚠️ 短消息上下文延续：当用户发送简短消息（如"开工"、"好"、"继续"、"可以"等）时，必须结合对话历史理解其含义。如果你在上一条消息中要求用户确认或说某个词来继续，用户的短回复就是对你上一条消息的回应——直接按之前讨论的任务继续执行，不要当作新对话的开始。绝不要回复"请告诉我今天要做什么"之类的通用问候。
 
-## 知识库外脑触发规则
-- 当用户说"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"批量录入这些文档/链接"等明确长期保存意图时，才调用知识库写入工具。
-- 公共网页保存使用 knowledge_save_url 或 knowledge_save_urls；用户贴出混杂文本、HTML、sitemap 或多行链接并要求保存网页信息时，先用 knowledge_discover_urls 提取候选，再按用户意图批量保存。
-- 文档/表格/目录录入使用 knowledge_import_files 或 knowledge_import_directory；当前话题结论、笔记、工作流产物等纯文本保存使用 knowledge_save_text。
-- 查询、回忆、解释、找关联、生成上下文包时优先使用 knowledge_search、knowledge_explain、knowledge_context_pack、knowledge_source_digest、knowledge_fact_graph 等本地只读工具；查询阶段默认不依赖 LLM。
-- 写入阶段允许在配置可用且有助于提升结构化质量时使用 LLM 辅助蒸馏；如果 LLM 不可用或失败，仍要回退到规则结构化，不能阻塞保存。
+## 知识库外脑规则
+- 查询：系统已自动检索知识库，相关内容显示在上方「知识库参考」section 中。如果自动检索的内容不够或需要更精确的查询，可主动调用 knowledge_search、knowledge_context_pack、knowledge_explain 等工具深入检索。
+- 写入：当用户明确说"保存到知识库"、"记住这份资料"、"加入外脑"、"归档这个网页"、"以后可查"、"批量录入这些文档/链接"等时，调用写入工具。公共网页用 knowledge_save_url；文档/目录用 knowledge_import_files / knowledge_import_directory；纯文本用 knowledge_save_text。
 - 不要因为用户只是让你"看看这个链接/总结这个文件/搜索资料"就自动写入知识库；除非用户明确表达保存、记住、录入、归档或以后复用。
 
 ## 上下文管理（长程任务优化）
@@ -215,7 +213,7 @@ d) 约束与假设（不确定的部分标记为「⚠️ 待确认」）
    - 备选方案：用 craft_tool 生成 Python 脚本，使用 markdown + pdfkit 或 reportlab 将 Markdown 转为 PDF
    - ⚠️ 禁止将 HTML 文件直接作为文档发送到 IM——HTML 在飞书/微信/QQ 中显示效果极差
 3. 用 send_file（forward_to_im=true）将 PDF 发送给用户（如果使用 office 工具的 generate_pdf action 则自动发送，无需额外操作）
-4. PDF 文件命名：需求文档_<feature_name>.pdf
+4. PDF 文件命名：requirements_<feature_name>.pdf（文件名使用稳定 ASCII，展示标题可本地化）
 5. ⚠️ 发送 PDF 后必须同时发送明确的行动提示，告知用户需要查看并确认或提出修改意见。格式："📄 已生成需求文档的 PDF 版本，请查看并确认需求是否准确，或提出修改意见。" 禁止只发 PDF 不说话——用户需要明确知道这个文档需要他看、需要他反馈。
 
 **确认规则：**
@@ -240,7 +238,7 @@ d) 实现方案概述
 
 **文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 格式，严禁发送 .html）
 - 优先使用 office(action="generate_pdf", doc_type="design") 工具
-- PDF 文件命名：设计文档_<feature_name>.pdf
+- PDF 文件命名：design_<feature_name>.pdf（文件名使用稳定 ASCII，展示标题可本地化）
 - ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成技术设计文档的 PDF 版本，请查看设计方案并确认，或提出修改意见。"
 
 **确认规则：**（同第三步）
@@ -259,7 +257,7 @@ c) 每个任务的 TDD 验收测试用例（测试名称、测试步骤、预期
 
 **文档生成与发送：**（同第三步的 PDF 生成流程，⚠️ 必须生成 .pdf 格式，严禁发送 .html）
 - 优先使用 office(action="generate_pdf", doc_type="task_plan") 工具
-- PDF 文件命名：任务列表_<feature_name>.pdf
+- PDF 文件命名：task-plan_<feature_name>.pdf（文件名使用稳定 ASCII，展示标题可本地化）
 - ⚠️ 发送 PDF 后必须同时发送明确的行动提示："📄 已生成任务列表的 PDF 版本，请查看任务拆分是否合理，确认后开始执行，或提出修改意见。"
 
 **确认规则：**（同第三步）
@@ -653,6 +651,10 @@ SSH 断连不影响执行。提交后用 check_task 查看进度，不要频繁�
 	// Inject lightweight memory section: user_fact summary + proactive recall + tool hint.
 	h.appendMemorySection(&b, includeMemoryGuide, msg)
 
+	// Inject knowledge base auto-recall: FTS search against user message,
+	// inject top results if score exceeds threshold.
+	h.appendKnowledgeAutoRecall(&b, msg)
+
 	// Inject matched knowledge skills after memory section, before tool definitions.
 	// Requirements: 1.5, 1.6, 8.1, 8.2, 8.3, 8.4
 	h.appendKnowledgeSkillSection(&b, msg)
@@ -738,7 +740,7 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 ## 文档交付契约
 - 需求文档、设计文档、任务列表优先生成 PDF，可使用 craft_tool、bash、pandoc、wkhtmltopdf 或等价工具。
 - 通过 send_file 且 forward_to_im=true 发送给用户。
-- PDF 文件名使用 需求文档_<feature>.pdf、设计文档_<feature>.pdf、任务列表_<feature>.pdf。
+- PDF 文件名使用 requirements_<feature>.pdf、design_<feature>.pdf、task-plan_<feature>.pdf；文件名保持稳定 ASCII，展示标题可本地化。
 - 发送 PDF 时必须附带行动提示或文字摘要，不能只发文件。
 - 用户提出修改时，更新文档、重新生成 PDF，并把修订后使用最新版本作为后续阶段输入。
 - 收到“回退到需求阶段”或“回到需求阶段”等请求时，告知用户回退信息，并重新生成所有后续阶段文档。

@@ -168,7 +168,7 @@ func GenerateToFile(spec Spec, outputPath string) (string, error) {
 	}
 	if outputPath == "" {
 		home, _ := os.UserHomeDir()
-		outputPath = filepath.Join(home, fmt.Sprintf("%s_%s.pdf", sanitizeFileName(fallbackText(spec.Title, "文档")), fileTimestamp(spec).Format("20060102_150405")))
+		outputPath = filepath.Join(home, fmt.Sprintf("%s_%s.pdf", asciiFileNameSegment(spec.FileNamePrefix, "document"), fileTimestamp(spec).Format("20060102_150405")))
 	}
 	dir := filepath.Dir(outputPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -181,9 +181,43 @@ func GenerateToFile(spec Spec, outputPath string) (string, error) {
 }
 
 func fileNameForSpec(spec Spec) string {
-	prefix := fallbackText(spec.FileNamePrefix, "文档")
+	prefix := asciiFileNameSegment(spec.FileNamePrefix, "document")
 	project := fallbackText(spec.ProjectName, spec.Title)
-	return fmt.Sprintf("%s_%s_%s.pdf", prefix, sanitizeFileName(project), fileTimestamp(spec).Format("0102_1504"))
+	project = asciiFileNameSegment(project, "document")
+	return fmt.Sprintf("%s_%s_%s.pdf", prefix, project, fileTimestamp(spec).Format("0102_1504"))
+}
+
+func asciiFileNameSegment(value, fallback string) string {
+	value = filepath.Base(strings.TrimSpace(value))
+	var b strings.Builder
+	lastSeparator := false
+	for _, r := range strings.ToLower(value) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastSeparator = false
+			continue
+		}
+		if r == '-' || r == '_' || r == '.' || r == ' ' {
+			if b.Len() > 0 && !lastSeparator {
+				b.WriteByte('_')
+				lastSeparator = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		if strings.TrimSpace(fallback) != "" && fallback != value {
+			return asciiFileNameSegment(fallback, "document")
+		}
+		out = "document"
+	}
+	if len(out) > 30 {
+		out = strings.TrimRight(out[:30], "_")
+	}
+	if out == "" {
+		return "document"
+	}
+	return out
 }
 
 func fileTimestamp(spec Spec) time.Time {

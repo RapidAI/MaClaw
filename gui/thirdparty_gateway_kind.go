@@ -53,12 +53,12 @@ const (
 	thirdPartyGatewayAckDelivered thirdPartyGatewayAckStatus = "delivered"
 )
 
-func normalizeThirdPartyGatewayAckStatus(status string) thirdPartyGatewayAckStatus {
-	status = strings.TrimSpace(status)
-	if status == "" {
+func normalizeThirdPartyGatewayAckStatus(status thirdPartyGatewayAckStatus) thirdPartyGatewayAckStatus {
+	normalized := strings.TrimSpace(status.String())
+	if normalized == "" {
 		return thirdPartyGatewayAckDelivered
 	}
-	return thirdPartyGatewayAckStatus(status)
+	return thirdPartyGatewayAckStatus(normalized)
 }
 
 func (status thirdPartyGatewayAckStatus) String() string {

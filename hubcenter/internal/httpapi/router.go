@@ -365,6 +365,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("GET /api/v1/auth/activate", smHandlers.Activate)
 		mux.HandleFunc("POST /api/v1/auth/login", gossipRateLimitMiddleware(authLoginRL, smHandlers.Login))
 		mux.HandleFunc("POST /api/v1/auth/logout", smHandlers.Logout)
+		mux.HandleFunc("POST /api/v1/auth/machine-login", gossipRateLimitMiddleware(authLoginRL, smHandlers.MachineLogin))
 		mux.HandleFunc("POST /api/v1/auth/lookup", gossipRateLimitMiddleware(authLookupRL, smHandlers.SendLookupVerification))
 		mux.HandleFunc("GET /api/v1/auth/verify-identity", smHandlers.VerifyIdentity)
 		mux.HandleFunc("GET /api/v1/auth/session", smHandlers.ValidateSession)
@@ -396,6 +397,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/admin/skillmarket/{id}/reject", RequireAdmin(adminService, smHandlers.AdminRejectSkill))
 		mux.HandleFunc("GET /api/v1/admin/config/trial", RequireAdmin(adminService, smHandlers.GetTrialConfig))
 		mux.HandleFunc("PUT /api/v1/admin/config/trial", RequireAdmin(adminService, smHandlers.UpdateTrialConfig))
+		mux.HandleFunc("GET /api/v1/admin/config/upload-auth", RequireAdmin(adminService, smHandlers.GetUploadAuthConfig))
+		mux.HandleFunc("PUT /api/v1/admin/config/upload-auth", RequireAdmin(adminService, smHandlers.UpdateUploadAuthConfig))
 		// API Key management
 		mux.HandleFunc("POST /api/v1/skillmarket/{id}/apikeys/upload", smHandlers.UploadAPIKeys)
 		mux.HandleFunc("GET /api/v1/skillmarket/{id}/apikeys/status", smHandlers.GetAPIKeyStatus)

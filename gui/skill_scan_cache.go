@@ -19,13 +19,13 @@ import (
 const skillScanCacheFileName = ".maclaw_scan_status.json"
 
 type skillScanCacheRecord struct {
-	SkillName string `json:"skill_name"`
-	Hash      string `json:"hash"`
-	Status    string `json:"status"`
-	Level     string `json:"level,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	ScannedBy string `json:"scanned_by,omitempty"`
-	ScannedAt string `json:"scanned_at"`
+	SkillName string               `json:"skill_name"`
+	Hash      string               `json:"hash"`
+	Status    skillScanCacheStatus `json:"status"`
+	Level     string               `json:"level,omitempty"`
+	Summary   string               `json:"summary,omitempty"`
+	ScannedBy string               `json:"scanned_by,omitempty"`
+	ScannedAt string               `json:"scanned_at"`
 }
 
 func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) error {
@@ -44,10 +44,10 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 		return fmt.Errorf("skill security scan hash failed for %q: %w", skill.Name, err)
 	}
 	if rec, err := readSkillScanCache(skill.SkillDir, skill.Name); err == nil && rec.Hash == hash {
-		switch rec.Status {
-		case "allowed":
+		switch status := normalizeSkillScanCacheStatus(rec.Status); {
+		case status.IsAllowed():
 			return nil
-		case "blocked":
+		case status.IsBlocked():
 			return fmt.Errorf("skill %q was previously blocked by security scan (level=%s): %s", skill.Name, rec.Level, rec.Summary)
 		}
 	}
@@ -78,9 +78,9 @@ func writeSkillScanCacheForReport(skill *corelib.NLSkillEntry, skillDir, hash st
 			return err
 		}
 	}
-	status := "allowed"
+	status := skillScanCacheStatusAllowed
 	if report.IsDangerous() || report.NeedsUserReview() {
-		status = "blocked"
+		status = skillScanCacheStatusBlocked
 	}
 	rec := skillScanCacheRecord{
 		SkillName: skill.Name,

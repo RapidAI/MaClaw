@@ -170,6 +170,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		RefundSvc:      refundSvc,
 		RateLimiter:    rateLimiter,
 		AuthSvc:        authSvc,
+		Settings:       systemSettings,
 		RSAPrivKey:     rsaPrivKey,
 		PendingDir:     pendingDir,
 		DataDir:        dataDir,

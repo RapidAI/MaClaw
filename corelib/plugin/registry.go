@@ -24,7 +24,7 @@ type PluginRegistry struct {
 type pluginEntry struct {
 	plugin   Plugin
 	manifest PluginManifest
-	status   string // "registered", "running", "stopped", "error"
+	status   PluginStatus // "registered", "running", "stopped", "error"
 	err      error
 	tools    []string     // tool names registered by this plugin
 	health   HealthStatus // latest health check result
@@ -59,7 +59,7 @@ func (pr *PluginRegistry) Register(p Plugin) error {
 	pr.plugins[m.Name] = &pluginEntry{
 		plugin:   p,
 		manifest: m,
-		status:   "registered",
+		status:   PluginStatusRegistered,
 	}
 	return nil
 }
@@ -135,7 +135,7 @@ func (pr *PluginRegistry) Enable(ctx context.Context, name string) error {
 		pr.mu.Unlock()
 		return fmt.Errorf("plugin: %q is not registered", name)
 	}
-	if entry.status == "running" {
+	if entry.status.IsRunning() {
 		pr.mu.Unlock()
 		return nil // already running
 	}
@@ -145,7 +145,7 @@ func (pr *PluginRegistry) Enable(ctx context.Context, name string) error {
 
 	if err := p.Start(ctx); err != nil {
 		pr.mu.Lock()
-		entry.status = "error"
+		entry.status = PluginStatusError
 		entry.err = err
 		pr.mu.Unlock()
 		return fmt.Errorf("plugin %q start failed: %w", name, err)
@@ -163,7 +163,7 @@ func (pr *PluginRegistry) Enable(ctx context.Context, name string) error {
 	}
 
 	pr.mu.Lock()
-	entry.status = "running"
+	entry.status = PluginStatusRunning
 	entry.tools = toolNames
 	entry.err = nil
 	pr.mu.Unlock()
@@ -178,7 +178,7 @@ func (pr *PluginRegistry) Disable(name string) error {
 		pr.mu.Unlock()
 		return fmt.Errorf("plugin: %q is not registered", name)
 	}
-	if entry.status == "stopped" {
+	if entry.status.IsStopped() {
 		pr.mu.Unlock()
 		return nil // already stopped
 	}
@@ -204,7 +204,7 @@ func (pr *PluginRegistry) Disable(name string) error {
 	}
 
 	pr.mu.Lock()
-	entry.status = "stopped"
+	entry.status = PluginStatusStopped
 	entry.tools = nil
 	entry.err = nil
 	pr.mu.Unlock()
@@ -268,7 +268,7 @@ func (pr *PluginRegistry) LoadAndStart(ctx context.Context, manifests []PluginMa
 			pr.plugins[manifest.Name] = &pluginEntry{
 				plugin:   p,
 				manifest: manifest,
-				status:   "error",
+				status:   PluginStatusError,
 				err:      err,
 			}
 			pr.mu.Unlock()
@@ -282,7 +282,7 @@ func (pr *PluginRegistry) LoadAndStart(ctx context.Context, manifests []PluginMa
 			pr.plugins[manifest.Name] = &pluginEntry{
 				plugin:   p,
 				manifest: manifest,
-				status:   "error",
+				status:   PluginStatusError,
 				err:      err,
 			}
 			pr.mu.Unlock()
@@ -315,7 +315,7 @@ func (pr *PluginRegistry) LoadAndStart(ctx context.Context, manifests []PluginMa
 		pr.plugins[manifest.Name] = &pluginEntry{
 			plugin:   p,
 			manifest: manifest,
-			status:   "running",
+			status:   PluginStatusRunning,
 			tools:    toolNames,
 		}
 		pr.mu.Unlock()
@@ -356,7 +356,7 @@ func (pr *PluginRegistry) runHealthChecks() {
 	}
 	var targets []snapshot
 	for name, e := range pr.plugins {
-		if e.status == "running" {
+		if e.status.IsRunning() {
 			targets = append(targets, snapshot{name: name, plugin: e.plugin})
 		}
 	}

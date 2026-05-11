@@ -64,33 +64,33 @@ type ExperienceNextActionSummary struct {
 
 // ExperienceReviewSummary groups review-gated signals by normalized status.
 type ExperienceReviewSummary struct {
-	Status           string `json:"status"`
-	Count            int    `json:"count"`
-	RequiredCount    int    `json:"required_count,omitempty"`
-	LatestTraceID    string `json:"latest_trace_id,omitempty"`
-	LatestTitle      string `json:"latest_title,omitempty"`
-	LatestKind       string `json:"latest_kind,omitempty"`
-	LatestAction     string `json:"latest_action,omitempty"`
-	LatestReviewer   string `json:"latest_reviewer,omitempty"`
-	LatestNote       string `json:"latest_note,omitempty"`
-	LatestReviewedAt string `json:"latest_reviewed_at,omitempty"`
-	LatestUpdatedAt  string `json:"latest_updated_at,omitempty"`
+	Status           experienceReviewStatus `json:"status"`
+	Count            int                    `json:"count"`
+	RequiredCount    int                    `json:"required_count,omitempty"`
+	LatestTraceID    string                 `json:"latest_trace_id,omitempty"`
+	LatestTitle      string                 `json:"latest_title,omitempty"`
+	LatestKind       string                 `json:"latest_kind,omitempty"`
+	LatestAction     string                 `json:"latest_action,omitempty"`
+	LatestReviewer   string                 `json:"latest_reviewer,omitempty"`
+	LatestNote       string                 `json:"latest_note,omitempty"`
+	LatestReviewedAt string                 `json:"latest_reviewed_at,omitempty"`
+	LatestUpdatedAt  string                 `json:"latest_updated_at,omitempty"`
 }
 
 // ExperienceFollowUpSummary groups recorded manual follow-up audit outcomes.
 type ExperienceFollowUpSummary struct {
-	Status             string `json:"status"`
-	Count              int    `json:"count"`
-	TriggeredRollback  bool   `json:"triggered_rollback,omitempty"`
-	TriggeredCount     int    `json:"triggered_count,omitempty"`
-	LatestTraceID      string `json:"latest_trace_id,omitempty"`
-	LatestTitle        string `json:"latest_title,omitempty"`
-	RecommendedTraceID string `json:"recommended_trace_id,omitempty"`
-	RecommendedTitle   string `json:"recommended_title,omitempty"`
-	RecommendedReason  string `json:"recommended_reason,omitempty"`
-	LatestActionKind   string `json:"latest_action_kind,omitempty"`
-	LatestNote         string `json:"latest_note,omitempty"`
-	LatestUpdatedAt    string `json:"latest_updated_at,omitempty"`
+	Status             experienceFollowUpOutcomeKind `json:"status"`
+	Count              int                           `json:"count"`
+	TriggeredRollback  bool                          `json:"triggered_rollback,omitempty"`
+	TriggeredCount     int                           `json:"triggered_count,omitempty"`
+	LatestTraceID      string                        `json:"latest_trace_id,omitempty"`
+	LatestTitle        string                        `json:"latest_title,omitempty"`
+	RecommendedTraceID string                        `json:"recommended_trace_id,omitempty"`
+	RecommendedTitle   string                        `json:"recommended_title,omitempty"`
+	RecommendedReason  string                        `json:"recommended_reason,omitempty"`
+	LatestActionKind   string                        `json:"latest_action_kind,omitempty"`
+	LatestNote         string                        `json:"latest_note,omitempty"`
+	LatestUpdatedAt    string                        `json:"latest_updated_at,omitempty"`
 }
 
 // ExperienceFollowUpActionSummary groups recorded manual follow-up audit outcomes
@@ -331,10 +331,11 @@ func buildExperienceReviewSummaries(details []ExperienceTraceDetail) []Experienc
 		if status == "" {
 			continue
 		}
-		summary := byStatus[status]
+		statusText := status.String()
+		summary := byStatus[statusText]
 		if summary == nil {
 			summary = &ExperienceReviewSummary{Status: status}
-			byStatus[status] = summary
+			byStatus[statusText] = summary
 		}
 		summary.Count++
 		if detail.ReviewRequired {
@@ -366,23 +367,23 @@ func buildExperienceReviewSummaries(details []ExperienceTraceDetail) []Experienc
 		if summaries[i].LatestUpdatedAt != summaries[j].LatestUpdatedAt {
 			return summaries[i].LatestUpdatedAt > summaries[j].LatestUpdatedAt
 		}
-		return summaries[i].Status < summaries[j].Status
+		return summaries[i].Status.String() < summaries[j].Status.String()
 	})
 	return summaries
 }
 
-func experienceTraceReviewSummaryStatus(detail ExperienceTraceDetail) string {
+func experienceTraceReviewSummaryStatus(detail ExperienceTraceDetail) experienceReviewStatus {
 	if status := strings.TrimSpace(detail.ReviewStatus); status != "" {
-		return status
+		return normalizeExperienceReviewStatus(status)
 	}
 	if detail.ReviewRequired {
-		return string(experienceReviewStatusRequired)
+		return experienceReviewStatusRequired
 	}
-	return ""
+	return experienceReviewStatusUnknown
 }
 
-func experienceReviewSummaryRank(status string) int {
-	switch normalizeExperienceReviewStatus(status) {
+func experienceReviewSummaryRank(status experienceReviewStatus) int {
+	switch status {
 	case experienceReviewStatusRequired:
 		return 0
 	case experienceReviewStatusDeferred:
@@ -438,14 +439,15 @@ func buildExperienceNextActionSummaries(details []ExperienceTraceDetail) []Exper
 func buildExperienceFollowUpSummaries(details []ExperienceTraceDetail) []ExperienceFollowUpSummary {
 	byStatus := map[string]*ExperienceFollowUpSummary{}
 	for _, detail := range details {
-		status := strings.TrimSpace(detail.FollowUpStatus)
-		if status == "" {
+		status := normalizeExperienceFollowUpOutcomeKind(detail.FollowUpStatus)
+		if !status.IsKnown() {
 			continue
 		}
-		summary := byStatus[status]
+		statusKey := status.String()
+		summary := byStatus[statusKey]
 		if summary == nil {
 			summary = &ExperienceFollowUpSummary{Status: status}
-			byStatus[status] = summary
+			byStatus[statusKey] = summary
 		}
 		summary.Count++
 		if experienceTriggeredRollbackEvidence(detail) {
@@ -482,7 +484,7 @@ func buildExperienceFollowUpSummaries(details []ExperienceTraceDetail) []Experie
 		if summaries[i].LatestUpdatedAt != summaries[j].LatestUpdatedAt {
 			return summaries[i].LatestUpdatedAt > summaries[j].LatestUpdatedAt
 		}
-		return summaries[i].Status < summaries[j].Status
+		return summaries[i].Status.String() < summaries[j].Status.String()
 	})
 	return summaries
 }

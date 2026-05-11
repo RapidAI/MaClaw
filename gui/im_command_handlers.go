@@ -10,7 +10,8 @@ import (
 )
 
 func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed string, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
-	if trimmed == "/new" || trimmed == "/reset" || trimmed == "/clear" {
+	commandKind := classifyImmediateIMCommand(trimmed)
+	if commandKind == imCommandReset {
 		h.memory.Clear(msg.UserID)
 		h.clearPerUserSessionState(msg.UserID)
 		if h.confirmationStore != nil {
@@ -29,13 +30,12 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		_, hasPendingAskUser = pendingAskUserForCurrentHistory(raw, h.memory.Load(msg.UserID))
 	}
 
-	if msg.Platform != "" && msg.Platform != "desktop" {
+	if platformKind := normalizeIMMessagePlatformKind(msg.Platform); (platformKind.IsKnown() || msg.Platform != "") && !platformKind.IsDesktop() {
 		imConfirmKey := msg.Platform + ":" + msg.UserID
 		if v, ok := h.pendingCriticalConfirmIM.LoadAndDelete(imConfirmKey); ok {
 			confirmID, _ := v.(string)
 			if confirmID != "" {
-				lower := strings.TrimSpace(strings.ToLower(trimmed))
-				confirmed := lower == "1" || lower == "confirm" || lower == "yes" || lower == "确认" || lower == "继续"
+				confirmed := classifyIMCriticalConfirmReply(trimmed) == imCriticalConfirmReplyApprove
 				h.ResolveCriticalConfirm(confirmID, confirmed) //nolint:errcheck // IM path: error logged internally
 				if confirmed {
 					return &IMAgentResponse{Text: "Critical-risk Skill installation confirmed."}, true
@@ -48,19 +48,16 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 	if !msg.IsBackground && len(msg.Attachments) == 0 && isShortChitChatMessage(trimmed) && !hasPendingAskUser {
 		return &IMAgentResponse{Text: buildShortChitChatResponse(trimmed, msg.Lang)}, true
 	}
-	if trimmed == "/exit" || trimmed == "/quit" {
+	switch commandKind {
+	case imCommandExit:
 		return h.handleExitCommand(msg.UserID), true
-	}
-	if trimmed == "/sessions" || trimmed == "/status" {
+	case imCommandSessions:
 		return h.handleSessionsCommand(), true
-	}
-	if trimmed == "/compress" {
+	case imCommandCompress:
 		return h.handleCompressCommand(msg.UserID), true
-	}
-	if trimmed == "/memory" {
+	case imCommandMemory:
 		return h.handleMemoryStatusCommand(), true
-	}
-	if trimmed == "/help" {
+	case imCommandHelp:
 		return &IMAgentResponse{Text: "Available commands:\n" +
 			"/new /reset /clear - reset conversation\n" +
 			"/btw <query> - side query\n" +
@@ -71,7 +68,8 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 			"/sessions /status - show current sessions\n" +
 			"/help - show this help"}, true
 	}
-	if strings.HasPrefix(trimmed, "/btw ") || trimmed == "/btw" {
+	switch commandKind {
+	case imCommandBTW:
 		btwQuery := ""
 		if len(trimmed) > 5 {
 			btwQuery = strings.TrimSpace(trimmed[5:])
@@ -84,7 +82,7 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		}
 		return h.handleBtwCommand(msg, btwQuery, onProgress, onToken), true
 	}
-	if trimmed == "/cancel" || trimmed == "/取消" {
+	if commandKind == imCommandCancel {
 		h.cancelWorkflowForUser(msg.UserID)
 		if h.confirmationStore != nil {
 			if pending := h.confirmationStore.get(msg.UserID); pending != nil {

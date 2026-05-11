@@ -38,18 +38,61 @@ func buildNoToolStallRecoverPrompt(consecutive int, preferSkill bool, skillName,
 }
 
 func didSkillToolFail(toolCalls []llm.ToolCall, toolOutcomes []toolOutcome) bool {
-	if len(toolCalls) == 0 || len(toolCalls) != len(toolOutcomes) {
+	return didSkillToolExecutionFail(buildToolExecutionResults(toolCalls, nil, toolOutcomes))
+}
+
+func didSkillToolExecutionFail(toolExecResults []toolExecutionResult) bool {
+	if len(toolExecResults) == 0 {
 		return false
 	}
-	for i, tc := range toolCalls {
-		switch classifyAgentToolKind(tc.Function.Name) {
+	for _, result := range toolExecResults {
+		switch result.ToolKind {
 		case agentToolKindRunSkill, agentToolKindGetSkillRun, agentToolKindSearchAndInstallSkill:
-			if toolOutcomes[i] == toolOutcomeFailed {
+			if result.Outcome == toolOutcomeFailed {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func isSkillRunStarterToolCall(tc llm.ToolCall) bool {
+	switch classifyAgentToolKind(tc.Function.Name) {
+	case agentToolKindRunSkill:
+		return true
+	case agentToolKindManageSkill:
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &parsed); err != nil {
+			return false
+		}
+		action, _ := parsed["action"].(string)
+		return classifyManageSkillAction(action) == manageSkillActionRun
+	default:
+		return false
+	}
+}
+
+func buildToolExecutionResults(toolCalls []llm.ToolCall, toolResults []string, toolOutcomes []toolOutcome) []toolExecutionResult {
+	if len(toolCalls) == 0 || len(toolCalls) != len(toolOutcomes) {
+		return nil
+	}
+	results := make([]toolExecutionResult, 0, len(toolCalls))
+	for i, tc := range toolCalls {
+		text := ""
+		if i < len(toolResults) {
+			text = toolResults[i]
+		}
+		kind := classifyAgentToolKind(tc.Function.Name)
+		results = append(results, toolExecutionResult{
+			Text:        text,
+			ToolName:    tc.Function.Name,
+			ToolKind:    kind,
+			Outcome:     toolOutcomes[i],
+			FailureKind: failureKindForOutcome(toolOutcomes[i]),
+			Metadata:    inferToolResultMetadata(kind, text),
+		})
+	}
+	return results
 }
 
 // extractFailedSkillInfo extracts the skill name and error message from a
@@ -58,11 +101,15 @@ func didSkillToolFail(toolCalls []llm.ToolCall, toolOutcomes []toolOutcome) bool
 // when a skill fails but the LLM resolves the task through alternative
 // tool calls, the outcome is classified as "workaround".
 func extractFailedSkillInfo(toolCalls []llm.ToolCall, toolResults []string, toolOutcomes []toolOutcome) (skillName, lastError string) {
-	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) || len(toolCalls) != len(toolOutcomes) {
+	return extractFailedSkillInfoFromExecutions(toolCalls, buildToolExecutionResults(toolCalls, toolResults, toolOutcomes))
+}
+
+func extractFailedSkillInfoFromExecutions(toolCalls []llm.ToolCall, toolExecResults []toolExecutionResult) (skillName, lastError string) {
+	if len(toolCalls) == 0 || len(toolCalls) != len(toolExecResults) {
 		return "", ""
 	}
 	for i, tc := range toolCalls {
-		kind := classifyAgentToolKind(tc.Function.Name)
+		kind := toolExecResults[i].ToolKind
 		if kind != agentToolKindRunSkill && kind != agentToolKindManageSkill {
 			continue
 		}
@@ -76,7 +123,7 @@ func extractFailedSkillInfo(toolCalls []llm.ToolCall, toolResults []string, tool
 				continue
 			}
 		}
-		if toolOutcomes[i] != toolOutcomeFailed {
+		if toolExecResults[i].Outcome != toolOutcomeFailed {
 			continue
 		}
 		var parsed map[string]interface{}
@@ -90,7 +137,7 @@ func extractFailedSkillInfo(toolCalls []llm.ToolCall, toolResults []string, tool
 		if sn == "" {
 			continue
 		}
-		errMsg := strings.TrimSpace(toolResults[i])
+		errMsg := strings.TrimSpace(toolExecResults[i].Text)
 		if len(errMsg) > 300 {
 			errMsg = errMsg[:300]
 		}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/workflow"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -404,44 +405,44 @@ func deriveTaskName(rec memory.ProjectRecord) string {
 
 // workflowTypeLabel returns a short Chinese label for a workflow type.
 func workflowTypeLabel(wfType string) string {
-	switch wfType {
-	case "coding":
+	switch normalizeWorkflowType(wfType) {
+	case workflow.WorkflowCoding:
 		return "编码"
-	case "product_design":
+	case workflow.WorkflowProductDesign:
 		return "产品设计"
-	case "presentation_design":
+	case workflow.WorkflowPresentationDesign:
 		return "PPT 设计"
-	case "innovation":
+	case workflow.WorkflowInnovation:
 		return "创新"
-	case "business_plan":
+	case workflow.WorkflowBusinessPlan:
 		return "商业计划"
-	case "testing":
+	case workflow.WorkflowTesting:
 		return "测试"
-	case "literature_review":
+	case workflow.WorkflowLiteratureReview:
 		return "文献综述"
-	case "research_report":
+	case workflow.WorkflowResearchReport:
 		return "研究报告"
-	case "experiment_design":
+	case workflow.WorkflowExperimentDesign:
 		return "实验设计"
-	case "grant_proposal":
+	case workflow.WorkflowGrantProposal:
 		return "基金申请"
-	case "paper_writing":
+	case workflow.WorkflowPaperWriting:
 		return "论文写作"
-	case "project_proposal":
+	case workflow.WorkflowProjectProposal:
 		return "项目提案"
-	case "event_planning":
+	case workflow.WorkflowEventPlanning:
 		return "活动策划"
-	case "competitive_analysis":
+	case workflow.WorkflowCompetitiveAnalysis:
 		return "竞品分析"
-	case "bid_response":
+	case workflow.WorkflowBidResponse:
 		return "招投标"
-	case "contract_review":
+	case workflow.WorkflowContractReview:
 		return "合同审查"
-	case "due_diligence":
+	case workflow.WorkflowDueDiligence:
 		return "尽职调查"
-	case "compliance_audit":
+	case workflow.WorkflowComplianceAudit:
 		return "合规审计"
-	case "patent_analysis":
+	case workflow.WorkflowPatentAnalysis:
 		return "专利分析"
 	default:
 		return wfType

@@ -137,6 +137,65 @@ func TestRegisterBuiltinToolsIncludesMISDataWorkspace(t *testing.T) {
 	}
 }
 
+func TestRegisterBuiltinToolsExposeWorkflowDocMetadata(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+
+	for _, toolName := range []string{"write_file", "send_file", "office", "generate_pdf"} {
+		tool, ok := r.Get(toolName)
+		if !ok {
+			t.Fatalf("%s tool is not registered", toolName)
+		}
+		for _, prop := range []string{"phase_id", "doc_type"} {
+			if _, ok := tool.InputSchema[prop]; !ok {
+				t.Fatalf("%s should expose %s metadata for workflow document filenames", toolName, prop)
+			}
+		}
+	}
+}
+
+func TestRegisterBuiltinToolsWorkflowDocMetadataDescriptions(t *testing.T) {
+	r := NewToolRegistry()
+	registerBuiltinTools(r, &IMMessageHandler{})
+
+	assertRegistrySchemaDescription(t, r, "write_file", "phase_id", workflowDocPhaseIDSchemaDescription())
+	assertRegistrySchemaDescription(t, r, "write_file", "doc_type", workflowDocTypeSchemaDescription())
+	assertRegistrySchemaDescription(t, r, "send_file", "phase_id", workflowDocDeliveryPhaseIDSchemaDescription())
+	assertRegistrySchemaDescription(t, r, "send_file", "doc_type", workflowDocDeliveryTypeSchemaDescription())
+	assertRegistrySchemaDescription(t, r, "office", "phase_id", workflowDocGeneratePDFPhaseIDSchemaDescription())
+	assertRegistrySchemaDescription(t, r, "generate_pdf", "phase_id", workflowDocGeneratePDFPhaseIDSchemaDescription())
+}
+
+func assertRegistrySchemaDescription(t *testing.T, r *ToolRegistry, toolName, propName, want string) {
+	t.Helper()
+	tool, ok := r.Get(toolName)
+	if !ok {
+		t.Fatalf("%s tool is not registered", toolName)
+	}
+	got := registrySchemaDescription(t, tool.InputSchema, propName)
+	if got != want {
+		t.Fatalf("%s %s description = %q, want %q", toolName, propName, got, want)
+	}
+}
+
+func registrySchemaDescription(t *testing.T, schema map[string]interface{}, propName string) string {
+	t.Helper()
+	raw, ok := schema[propName]
+	if !ok {
+		t.Fatalf("schema property %s missing", propName)
+	}
+	switch prop := raw.(type) {
+	case map[string]string:
+		return prop["description"]
+	case map[string]interface{}:
+		desc, _ := prop["description"].(string)
+		return desc
+	default:
+		t.Fatalf("schema property %s has unexpected type: %#v", propName, raw)
+		return ""
+	}
+}
+
 func TestToolRegistry_ConcurrentAccess(t *testing.T) {
 	r := NewToolRegistry()
 	var wg sync.WaitGroup

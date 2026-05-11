@@ -6,6 +6,7 @@ import type { AttachmentInfo } from "./useBufferQueue";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { useTextCompositionGuard } from "./useTextCompositionGuard";
+import { MemoryUsageRing } from "./MemoryUsageRing";
 
 interface AssistantInputComposerProps {
     browseFile: () => void;
@@ -80,12 +81,13 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     }
                 }} placeholder={placeholderText} autoCapitalize="off" autoCorrect="off" spellCheck={false} />
             </div>
-            {/* Bottom toolbar: [attach voice] ---- [hint] [send/cancel] */}
+            {/* Inline toolbar: buttons embedded at the bottom of the input box */}
             <div data-testid="ai-input-toolbar" style={toolbarStyle}>
                 <div style={toolbarLeftStyle} role="group" aria-label={lang?.startsWith("zh") ? "输入操作" : "Input actions"}>
                     <AssistantInputActionsLeft browseFile={browseFile} inputLocked={inputLocked} lang={lang} ready={ready} theme={t} themeMode={themeMode} voiceInput={voiceInput} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} finishVoicePointer={finishVoicePointer} />
                 </div>
                 <div style={toolbarRightStyle}>
+                    <MemoryUsageRing theme={t} themeMode={themeMode} lang={lang} size={20} />
                     <span aria-hidden="true" style={{ fontSize: "11px", color: t.textMuted, userSelect: "none", whiteSpace: "nowrap" }}>
                         {lang?.startsWith("zh") ? "Enter 发送" : "Enter to send"}
                     </span>

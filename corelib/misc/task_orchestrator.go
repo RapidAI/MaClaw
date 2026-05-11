@@ -11,22 +11,22 @@ import (
 
 // TaskPlan represents a multi-session execution plan.
 type TaskPlan struct {
-	ID          string        `json:"id"`
-	Description string        `json:"description"`
-	SubTasks    []PlanSubTask `json:"sub_tasks"`
-	Status      string        `json:"status"`
-	CreatedAt   time.Time     `json:"created_at"`
+	ID          string                 `json:"id"`
+	Description string                 `json:"description"`
+	SubTasks    []PlanSubTask          `json:"sub_tasks"`
+	Status      taskOrchestratorStatus `json:"status"`
+	CreatedAt   time.Time              `json:"created_at"`
 }
 
 // PlanSubTask represents a single unit of work within a TaskPlan.
 type PlanSubTask struct {
-	ID          string   `json:"id"`
-	Description string   `json:"description"`
-	Tool        string   `json:"tool"`
-	SessionID   string   `json:"session_id"`
-	DependsOn   []string `json:"depends_on"`
-	Status      string   `json:"status"`
-	Result      string   `json:"result"`
+	ID          string                 `json:"id"`
+	Description string                 `json:"description"`
+	Tool        string                 `json:"tool"`
+	SessionID   string                 `json:"session_id"`
+	DependsOn   []string               `json:"depends_on"`
+	Status      taskOrchestratorStatus `json:"status"`
+	Result      string                 `json:"result"`
 }
 
 // SubTaskExecutor executes a single subtask and returns the result.
@@ -69,11 +69,11 @@ func (o *TaskOrchestrator) CreatePlan(description string, subTasks []PlanSubTask
 		if subTasks[i].ID == "" {
 			subTasks[i].ID = fmt.Sprintf("task_%d", i+1)
 		}
-		subTasks[i].Status = taskOrchestratorStatusPending.String()
+		subTasks[i].Status = taskOrchestratorStatusPending
 	}
 	plan := &TaskPlan{
 		ID: planID, Description: description, SubTasks: subTasks,
-		Status: taskOrchestratorStatusPlanning.String(), CreatedAt: time.Now(),
+		Status: taskOrchestratorStatusPlanning, CreatedAt: time.Now(),
 	}
 	o.mu.Lock()
 	o.plans[planID] = plan
@@ -90,14 +90,14 @@ func (o *TaskOrchestrator) Execute(planID string) error {
 		o.mu.Unlock()
 		return fmt.Errorf("计划 %s 不存在", planID)
 	}
-	plan.Status = taskOrchestratorStatusRunning.String()
+	plan.Status = taskOrchestratorStatusRunning
 	o.mu.Unlock()
 
 	completed := make(map[string]bool)
 	var completedMu sync.Mutex
 	o.mu.RLock()
 	for _, st := range plan.SubTasks {
-		if normalizeTaskOrchestratorStatus(st.Status).IsCompleted() {
+		if st.Status.IsCompleted() {
 			completed[st.ID] = true
 		}
 	}
@@ -112,7 +112,7 @@ func (o *TaskOrchestrator) Execute(planID string) error {
 		o.mu.RLock()
 		completedMu.Lock()
 		for i, st := range plan.SubTasks {
-			if !normalizeTaskOrchestratorStatus(st.Status).IsPending() {
+			if !st.Status.IsPending() {
 				continue
 			}
 			allDeps := true
@@ -133,7 +133,7 @@ func (o *TaskOrchestrator) Execute(planID string) error {
 			allDone := true
 			o.mu.RLock()
 			for _, st := range plan.SubTasks {
-				if normalizeTaskOrchestratorStatus(st.Status).IsActive() {
+				if st.Status.IsActive() {
 					allDone = false
 					break
 				}
@@ -149,7 +149,7 @@ func (o *TaskOrchestrator) Execute(planID string) error {
 		for _, idx := range ready {
 			i := idx
 			o.mu.Lock()
-			plan.SubTasks[i].Status = taskOrchestratorStatusRunning.String()
+			plan.SubTasks[i].Status = taskOrchestratorStatusRunning
 			o.mu.Unlock()
 			wg.Add(1)
 			go func() {
@@ -163,7 +163,7 @@ func (o *TaskOrchestrator) Execute(planID string) error {
 				}
 				o.mu.Lock()
 				if err != nil {
-					plan.SubTasks[i].Status = taskOrchestratorStatusFailed.String()
+					plan.SubTasks[i].Status = taskOrchestratorStatusFailed
 					plan.SubTasks[i].Result = err.Error()
 					errMu.Lock()
 					if firstErr == nil {
@@ -171,7 +171,7 @@ func (o *TaskOrchestrator) Execute(planID string) error {
 					}
 					errMu.Unlock()
 				} else {
-					plan.SubTasks[i].Status = taskOrchestratorStatusCompleted.String()
+					plan.SubTasks[i].Status = taskOrchestratorStatusCompleted
 					plan.SubTasks[i].Result = result
 					completedMu.Lock()
 					completed[plan.SubTasks[i].ID] = true
@@ -184,14 +184,14 @@ func (o *TaskOrchestrator) Execute(planID string) error {
 		wg.Wait()
 		if firstErr != nil {
 			o.mu.Lock()
-			plan.Status = taskOrchestratorStatusFailed.String()
+			plan.Status = taskOrchestratorStatusFailed
 			o.mu.Unlock()
 			_ = o.savePlans()
 			return firstErr
 		}
 	}
 	o.mu.Lock()
-	plan.Status = taskOrchestratorStatusCompleted.String()
+	plan.Status = taskOrchestratorStatusCompleted
 	o.mu.Unlock()
 	_ = o.savePlans()
 	return nil
@@ -218,7 +218,7 @@ func (o *TaskOrchestrator) Cancel(planID string) error {
 	if !ok {
 		return fmt.Errorf("计划 %s 不存在", planID)
 	}
-	plan.Status = taskOrchestratorStatusCancelled.String()
+	plan.Status = taskOrchestratorStatusCancelled
 	return o.savePlansLocked()
 }
 
@@ -231,11 +231,11 @@ func (o *TaskOrchestrator) Resume(planID string) error {
 		return fmt.Errorf("计划 %s 不存在", planID)
 	}
 	for i := range plan.SubTasks {
-		if normalizeTaskOrchestratorStatus(plan.SubTasks[i].Status).IsRunning() {
-			plan.SubTasks[i].Status = taskOrchestratorStatusPending.String()
+		if plan.SubTasks[i].Status.IsRunning() {
+			plan.SubTasks[i].Status = taskOrchestratorStatusPending
 		}
 	}
-	plan.Status = taskOrchestratorStatusRunning.String()
+	plan.Status = taskOrchestratorStatusRunning
 	o.mu.Unlock()
 	return o.Execute(planID)
 }
@@ -246,10 +246,10 @@ func (o *TaskOrchestrator) ListResumable() []*TaskPlan {
 	defer o.mu.RUnlock()
 	var result []*TaskPlan
 	for _, plan := range o.plans {
-		if normalizeTaskOrchestratorStatus(plan.Status).IsResumablePlan() {
+		if plan.Status.IsResumablePlan() {
 			hasPending := false
 			for _, st := range plan.SubTasks {
-				if normalizeTaskOrchestratorStatus(st.Status).IsActive() {
+				if st.Status.IsActive() {
 					hasPending = true
 					break
 				}

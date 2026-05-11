@@ -332,7 +332,7 @@ func buildUnfinishedTaskPayload(slot *agent.UnfinishedTaskSlot) *IMResponseUnfin
 		Title:       strings.TrimSpace(firstNonEmptyTraceText(slot.LastTask, slot.Summary)),
 		Summary:     strings.TrimSpace(slot.Summary),
 		ProjectPath: strings.TrimSpace(slot.ProjectPath),
-		Status:      strings.TrimSpace(slot.Status),
+		Status:      strings.TrimSpace(slot.Status.String()),
 		Actions:     buildResumeSlotActions(slot),
 	}
 }

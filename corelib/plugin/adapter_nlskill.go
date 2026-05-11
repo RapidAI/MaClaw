@@ -51,5 +51,5 @@ func (a *NLSkillPluginAdapter) Tools() []ToolDefinition {
 
 // Health always returns healthy for NLSkill adapters.
 func (a *NLSkillPluginAdapter) Health() HealthStatus {
-	return HealthStatus{Status: "healthy"}
+	return HealthStatus{Status: PluginHealthHealthy}
 }

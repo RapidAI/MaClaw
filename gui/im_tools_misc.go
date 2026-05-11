@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,7 +25,6 @@ import (
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
-	"github.com/RapidAI/CodeClaw/corelib/swarm"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	"gopkg.in/yaml.v3"
 )
@@ -65,7 +65,7 @@ func (h *IMMessageHandler) toolListMCPTools(args map[string]interface{}) string 
 					ServerName:   s.Name,
 					ServerID:     s.ID,
 					SourceType:   "remote/HTTP",
-					HealthStatus: s.HealthStatus,
+					HealthStatus: s.HealthStatus.String(),
 					ToolName:     t.Name,
 					Description:  t.Description,
 					InputSchema:  t.InputSchema,
@@ -1072,6 +1072,7 @@ func (h *IMMessageHandler) toolGeneratePDF(args map[string]interface{}) string {
 	content := stringVal(args, "content")
 	title := stringVal(args, "title")
 	docType := stringVal(args, "doc_type")
+	phaseID := stringVal(args, "phase_id")
 
 	if strings.TrimSpace(content) == "" {
 		return "缺少 content 参数（Markdown 格式的文档内容）"
@@ -1088,23 +1089,16 @@ func (h *IMMessageHandler) toolGeneratePDF(args map[string]interface{}) string {
 		return "未找到可用的中文字体，无法生成 PDF。请改用 write_file 写入 Markdown 文件后用 send_file 发送。"
 	}
 
-	var dt swarm.DocType
-	switch docType {
-	case "requirements":
-		dt = swarm.DocTypeRequirements
-	case "design":
-		dt = swarm.DocTypeDesign
-	case "task_plan":
-		dt = swarm.DocTypeTaskPlan
-	default:
-		dt = ""
-	}
+	dt := workflowPDFDocTypeFromMetadata(docType, phaseID)
 
 	b64Data, fileName, err := gen.GenerateAndEncode(dt, title, content)
 	if err != nil {
 		return fmt.Sprintf("PDF 生成失败: %s", err.Error())
 	}
 
+	if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
+		return fmt.Sprintf("[file_base64|%s|application/pdf|%s]%s", fileName, msgFlag, b64Data)
+	}
 	return fmt.Sprintf("[file_base64|%s|application/pdf]%s", fileName, b64Data)
 }
 
@@ -1168,16 +1162,16 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		if h.contextResolver != nil {
 			projectPath, _ = h.contextResolver.ResolveProject()
 		}
-		mode := strings.ToLower(strings.TrimSpace(stringVal(args, "mode")))
+		mode := normalizeIMMemoryRecallMode(stringVal(args, "mode"))
 		debug, _ := args["debug"].(bool)
 		var entries []corememory.Entry
 		var plan *corememory.AdaptiveRecallPlan
 		switch mode {
-		case "", "dynamic":
+		case imMemoryRecallModeDynamic:
 			entries = h.memoryStore.RecallDynamic(query, category, projectPath)
-		case "hybrid", "recall":
+		case imMemoryRecallModeHybrid:
 			entries = h.memoryStore.SearchByMode(query, corememory.SearchHybrid, category, projectPath, 0)
-		case "auto":
+		case imMemoryRecallModeAuto:
 			if corememory.ShouldUseAdaptiveRecall(query) {
 				rebuildIMMemoryThemes(h.memoryStore)
 				result, p := h.memoryStore.RecallAdaptiveHierDebug(query, category, projectPath)
@@ -1186,7 +1180,7 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			} else {
 				entries = h.memoryStore.RecallDynamic(query, category, projectPath)
 			}
-		case "adaptive", "hier", "adaptive_hier":
+		case imMemoryRecallModeAdaptive:
 			rebuildIMMemoryThemes(h.memoryStore)
 			result, p := h.memoryStore.RecallAdaptiveHierDebug(query, category, projectPath)
 			entries = result
@@ -1558,7 +1552,9 @@ func (h *IMMessageHandler) toolCreateTemplate(args map[string]interface{}) strin
 	if yolo, ok := args["yolo_mode"].(bool); ok {
 		tpl.YoloMode = yolo
 	} else if yoloStr, ok := args["yolo_mode"].(string); ok {
-		tpl.YoloMode = yoloStr == "true"
+		if yolo, err := strconv.ParseBool(strings.TrimSpace(yoloStr)); err == nil {
+			tpl.YoloMode = yolo
+		}
 	}
 
 	if err := h.templateManager.Create(tpl); err != nil {

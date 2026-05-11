@@ -24,6 +24,10 @@ func normalizeVoiceSummaryStatus(status string) voiceSummaryStatus {
 	}
 }
 
+func (s voiceSummaryStatus) String() string {
+	return string(s)
+}
+
 func (s voiceSummaryStatus) Phrase() string {
 	switch s {
 	case voiceSummaryStatusError:

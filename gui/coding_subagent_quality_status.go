@@ -6,6 +6,7 @@ type codingSubAgentQualityStatus string
 
 const (
 	codingSubAgentQualityUnknown   codingSubAgentQualityStatus = ""
+	codingSubAgentQualityNone      codingSubAgentQualityStatus = "none"
 	codingSubAgentQualityPassed    codingSubAgentQualityStatus = "passed"
 	codingSubAgentQualityFailed    codingSubAgentQualityStatus = "failed"
 	codingSubAgentQualityWarning   codingSubAgentQualityStatus = "warning"
@@ -17,6 +18,8 @@ const (
 
 func normalizeCodingSubAgentQualityStatus(status string) codingSubAgentQualityStatus {
 	switch codingSubAgentQualityStatus(strings.TrimSpace(status)) {
+	case codingSubAgentQualityNone:
+		return codingSubAgentQualityNone
 	case codingSubAgentQualityPassed:
 		return codingSubAgentQualityPassed
 	case codingSubAgentQualityFailed:
@@ -34,4 +37,8 @@ func normalizeCodingSubAgentQualityStatus(status string) codingSubAgentQualitySt
 	default:
 		return codingSubAgentQualityUnknown
 	}
+}
+
+func (status codingSubAgentQualityStatus) String() string {
+	return string(status)
 }

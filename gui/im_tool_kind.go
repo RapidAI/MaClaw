@@ -127,16 +127,16 @@ func (k agentToolKind) IsTruncationBlockSafe() bool {
 	}
 }
 
-func (k agentToolKind) TraceCategory(execResult toolExecutionResult) string {
+func (k agentToolKind) TraceCategory(execResult toolExecutionResult) traceEvidenceCategory {
 	if execResult.IsFailure() {
-		return "error"
+		return traceEvidenceCategoryError
 	}
 	switch k {
 	case agentToolKindCreateSession:
-		return "result"
+		return traceEvidenceCategoryResult
 	case agentToolKindWriteFile, agentToolKindGeneratePDF, agentToolKindOffice:
-		return "file"
+		return traceEvidenceCategoryFile
 	default:
-		return "event"
+		return traceEvidenceCategoryEvent
 	}
 }

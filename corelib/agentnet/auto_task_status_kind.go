@@ -69,13 +69,13 @@ const (
 	taskAvailabilitySettled taskAvailabilityStatus = "settled"
 )
 
-func normalizeTaskAvailabilityStatus(status string) taskAvailabilityStatus {
-	switch taskAvailabilityStatus(strings.ToLower(strings.TrimSpace(status))) {
-	case taskAvailabilityOpen:
+func normalizeTaskAvailabilityStatus(status TaskStateStatus) taskAvailabilityStatus {
+	switch NormalizeTaskStateStatus(status) {
+	case TaskStateStatusOpen:
 		return taskAvailabilityOpen
-	case taskAvailabilityCreated:
+	case TaskStateStatusCreated:
 		return taskAvailabilityCreated
-	case taskAvailabilitySettled:
+	case TaskStateStatusSettled:
 		return taskAvailabilitySettled
 	default:
 		return taskAvailabilityUnknown

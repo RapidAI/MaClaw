@@ -9,65 +9,8 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// LoopContext — per-loop mutable state, replacing shared fields on handler
+// LoopContext - per-loop mutable state, replacing shared fields on handler
 // ---------------------------------------------------------------------------
-
-// LoopKind distinguishes front-end chat loops from background loops.
-type LoopKind int
-
-const (
-	LoopKindChat       LoopKind = iota // interactive user chat
-	LoopKindBackground                 // background task (coding, scheduled, auto)
-)
-
-const LoopKindNormal = LoopKindChat
-
-type LoopState string
-
-const (
-	LoopStateRunning   LoopState = "running"
-	LoopStatePaused    LoopState = "paused"
-	LoopStateStopped   LoopState = "stopped"
-	LoopStateCompleted LoopState = "completed"
-	LoopStateFailed    LoopState = "failed"
-	LoopStateTimeout   LoopState = "timeout"
-)
-
-func (s LoopState) String() string {
-	return string(s)
-}
-
-// SlotKind categorizes background loops for concurrency control.
-type SlotKind int
-
-const (
-	SlotKindCoding    SlotKind = iota // 编程任务 — max 1
-	SlotKindScheduled                 // 定时任务 — max 1
-	SlotKindAuto                      // AgentNet 自动任务 — max 1
-	SlotKindSSH                       // SSH 远程会话 — max 10
-	SlotKindBrowser                   // 浏览器任务 — max 2
-	SlotKindGUI                       // GUI 桌面自动化任务 — max 1
-)
-
-// SlotKindString returns a human-readable label for the slot kind.
-func (s SlotKind) String() string {
-	switch s {
-	case SlotKindCoding:
-		return "coding"
-	case SlotKindScheduled:
-		return "scheduled"
-	case SlotKindAuto:
-		return "auto"
-	case SlotKindSSH:
-		return "ssh"
-	case SlotKindBrowser:
-		return "browser"
-	case SlotKindGUI:
-		return "gui"
-	default:
-		return "unknown"
-	}
-}
 
 // LoopContext holds per-loop mutable state, eliminating shared fields on the
 // handler. Each agent loop (chat or background) gets its own LoopContext.
@@ -210,14 +153,14 @@ func (c *LoopContext) LoopState() LoopState {
 
 // SetState sets the status string (thread-safe).
 func (c *LoopContext) SetState(s string) {
-	c.SetLoopState(LoopState(s))
+	c.SetLoopState(normalizeLoopState(s))
 }
 
 // SetLoopState sets the typed loop state (thread-safe).
 func (c *LoopContext) SetLoopState(s LoopState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.status = s
+	c.status = normalizeLoopState(s.String())
 }
 
 // Cancel signals the loop to stop.
@@ -251,7 +194,7 @@ func (c *LoopContext) Context() (context.Context, context.CancelFunc) {
 		case <-c.CancelC:
 			cancel()
 		case <-ctx.Done():
-			// caller cancelled — goroutine exits cleanly
+			// caller cancelled; goroutine exits cleanly
 		}
 	}()
 	return ctx, cancel
@@ -268,7 +211,7 @@ func (c *LoopContext) Done() {
 }
 
 // ---------------------------------------------------------------------------
-// StatusEvent — background → chat loop events
+// StatusEvent - background to chat loop events
 // ---------------------------------------------------------------------------
 
 // StatusEventType enumerates the kinds of events a background loop can emit.

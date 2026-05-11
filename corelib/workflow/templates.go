@@ -429,7 +429,7 @@ func businessPlanTemplate() *WorkflowTemplate {
 **交付物 1：DOCX 商业计划书**
 - 使用 write_file 工具生成 Markdown 格式的完整商业计划书
 - 包含封面、目录、全部章节内容、图表描述、附录
-- 文件命名：{项目名称}_商业计划书.md
+- 文件命名：{project_slug}_business-plan.md（文件名使用稳定 ASCII，文档标题可本地化）
 - 如有 DOCX 生成工具可用，优先生成 DOCX 格式
 
 **交付物 2：PPT 路演文稿**
@@ -440,7 +440,7 @@ func businessPlanTemplate() *WorkflowTemplate {
 
 **交付物 3：演讲稿**（可选）
 - 基于 PPT 演讲备注，生成完整的演讲稿文本
-- 文件命名：{项目名称}_演讲稿.md
+- 文件命名：{project_slug}_speech-script.md（文件名使用稳定 ASCII，文档标题可本地化）
 
 生成完成后，使用 send_file 工具将文件发送给用户。
 

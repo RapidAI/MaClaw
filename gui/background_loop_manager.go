@@ -13,15 +13,15 @@ import (
 
 // BackgroundLoopView is a read-only snapshot for the frontend.
 type BackgroundLoopView struct {
-	ID          string `json:"id"`
-	SlotKind    string `json:"slot_kind"`   // "coding", "scheduled", "auto"
-	Description string `json:"description"` // task description (truncated)
-	Iteration   int    `json:"iteration"`
-	MaxIter     int    `json:"max_iter"`
-	Status      string `json:"status"`       // "running", "paused", "completed", "failed"
-	SessionID   string `json:"session_id"`   // associated remote session (if any)
-	StartedAt   string `json:"started_at"`   // RFC3339
-	QueuedCount int    `json:"queued_count"` // tasks queued behind this slot
+	ID          string    `json:"id"`
+	SlotKind    string    `json:"slot_kind"`   // "coding", "scheduled", "auto"
+	Description string    `json:"description"` // task description (truncated)
+	Iteration   int       `json:"iteration"`
+	MaxIter     int       `json:"max_iter"`
+	Status      LoopState `json:"status"`
+	SessionID   string    `json:"session_id"`   // associated remote session (if any)
+	StartedAt   string    `json:"started_at"`   // RFC3339
+	QueuedCount int       `json:"queued_count"` // tasks queued behind this slot
 }
 
 // pendingTask represents a queued task waiting for a slot to become available.
@@ -168,7 +168,7 @@ func (m *BackgroundLoopManager) ListViews() []BackgroundLoopView {
 			Description: ctx.Description,
 			Iteration:   ctx.Iteration(),
 			MaxIter:     ctx.MaxIterations(),
-			Status:      ctx.State(),
+			Status:      ctx.LoopState(),
 			SessionID:   ctx.SessionID,
 			StartedAt:   ctx.StartedAt.Format(time.RFC3339),
 			QueuedCount: len(m.queues[ctx.SlotKind]),
@@ -200,7 +200,7 @@ func (m *BackgroundLoopManager) SendContinue(loopID string, additionalRounds int
 	if !ok {
 		return fmt.Errorf("loop %s not found", loopID)
 	}
-	if normalizeTraceLoopState(ctx.State()) != traceLoopStatePaused {
+	if ctx.LoopState() != LoopStatePaused {
 		return fmt.Errorf("loop %s is not paused (state=%s)", loopID, ctx.State())
 	}
 
@@ -309,8 +309,8 @@ func (m *BackgroundLoopManager) StopAll() {
 	// Collect loops to stop and remove them from the map under lock.
 	toStop := make([]*LoopContext, 0, len(m.loops))
 	for id, ctx := range m.loops {
-		state := ctx.State()
-		if state == "running" || state == "paused" {
+		state := ctx.LoopState()
+		if state == LoopStateRunning || state == LoopStatePaused {
 			delete(m.loops, id)
 			m.slotCounts[ctx.SlotKind]--
 			if m.slotCounts[ctx.SlotKind] < 0 {

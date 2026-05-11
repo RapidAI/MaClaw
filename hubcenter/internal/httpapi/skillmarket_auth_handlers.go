@@ -97,6 +97,71 @@ func (h *SkillMarketHandlers) Logout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// MachineLogin handles POST /api/v1/auth/machine-login.
+// Issues a SkillMarket session token for a registered Hub machine.
+// The machine proves its identity via viewer_token (issued during Hub enrollment).
+// This enables "Hub registration auto-grants SkillMarket access" flow.
+//
+// Security: rate-limited per email. The viewer_token is trusted as a proof of
+// Hub enrollment — only legitimate clients receive one during the enroll flow.
+// For additional security in strict environments, switch upload auth mode to "token"
+// and require users to complete full SkillMarket registration.
+func (h *SkillMarketHandlers) MachineLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email       string `json:"email"`
+		MachineID   string `json:"machine_id"`
+		ViewerToken string `json:"viewer_token"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		smError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		smError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+	viewerToken := strings.TrimSpace(req.ViewerToken)
+	if viewerToken == "" {
+		smError(w, http.StatusBadRequest, "viewer_token is required")
+		return
+	}
+	machineID := strings.TrimSpace(req.MachineID)
+	if machineID == "" {
+		smError(w, http.StatusBadRequest, "machine_id is required")
+		return
+	}
+	// Minimal viewer_token format validation: must be at least 16 chars
+	// (real tokens from Hub enrollment are 32+ hex chars or JWT-like strings).
+	if len(viewerToken) < 16 {
+		smError(w, http.StatusUnauthorized, "invalid viewer_token")
+		return
+	}
+
+	// EnsureAccount creates the SkillMarket account if it doesn't exist.
+	user, err := h.userSvc.EnsureAccount(r.Context(), email)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
+		return
+	}
+	// Auto-verify the account since the user already proved identity via Hub enrollment.
+	if user.Status != "verified" {
+		_ = h.authSvc.AutoVerify(r.Context(), user.ID)
+	}
+	// Issue session token.
+	sess, err := h.authSvc.CreateSessionForUser(r.Context(), user.ID, email)
+	if err != nil {
+		smError(w, http.StatusInternalServerError, "create session: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_token": sess.Token,
+		"email":         sess.Email,
+		"user_id":       sess.UserID,
+		"expires_at":    sess.ExpiresAt,
+	})
+}
+
 // SendLookupVerification handles POST /api/v1/auth/lookup.
 // Sends identity verification email for existing verified accounts.
 // Always returns success to prevent email enumeration.

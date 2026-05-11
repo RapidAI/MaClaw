@@ -14,17 +14,6 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
 )
 
-type workflowToolFilterDecision string
-
-const (
-	workflowToolFilterNone                 workflowToolFilterDecision = "none"
-	workflowToolFilterSkippedConfirmBypass workflowToolFilterDecision = "skipped(SkipNeedsConfirmGate)"
-)
-
-func (d workflowToolFilterDecision) String() string {
-	return string(d)
-}
-
 type agentLoopNeedsConfirmGateResult struct {
 	Response                 *IMAgentResponse
 	MsgContent               string
@@ -151,9 +140,9 @@ func (h *IMMessageHandler) applyAgentLoopNeedsConfirmGate(
 		return result
 	}
 
-	gateSource := "workflow"
+	gateSource := needsConfirmGateSourceWorkflow
 	if needsConfirmFromSteering && !engineGateActive {
-		gateSource = "steering"
+		gateSource = needsConfirmGateSourceSteering
 	}
 	log.Printf("[agent-loop] NeedsConfirm gate (%s): returning response for user confirmation (iteration=%d len=%d)", gateSource, iteration, len(trimmedForGate))
 	if h.traceService != nil && ctx.RunID != "" {
@@ -447,7 +436,7 @@ func buildPendingWorkflowConfirmation(userID, text string, intent workflow.Struc
 		PlannedActions:      []string{"Start the matched multi-phase workflow", "Generate and review workflow phase outputs", "Use direct execution for simple one-shot tasks"},
 		RiskFlags:           []string{"Workflow mode may add planning/review phases that are unnecessary for simple tasks"},
 		RevisionHints:       []string{"Choose direct execution for a simple task", "Reply with adjustments if the matched workflow type is wrong"},
-		Status:              "pending",
+		Status:              confirmationStatusPending,
 		CreatedAt:           now,
 		UpdatedAt:           now,
 		LastProjectPath:     projectPath,
@@ -688,7 +677,7 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string) bo
 }
 
 func shouldBypassWorkflowForClassification(result intent.ClassificationResult, isWorkflowCandidate bool, rejectThreshold float64) bool {
-	if result.WorkflowType != "" && result.WorkflowType != "none" {
+	if isConcreteWorkflowType(result.WorkflowType) {
 		return false
 	}
 	if rejectThreshold <= 0 {
@@ -797,9 +786,8 @@ func (h *IMMessageHandler) handleActiveWorkflow(engine *workflow.WorkflowEngine,
 				Text:   text,
 				UserID: userID,
 			})
-			if uicResult.WorkflowType != "" &&
-				uicResult.WorkflowType != "none" &&
-				workflow.WorkflowType(uicResult.WorkflowType) != ws.Type &&
+			if isConcreteWorkflowType(uicResult.WorkflowType) &&
+				normalizeWorkflowType(uicResult.WorkflowType) != ws.Type &&
 				uicResult.Confidence >= 0.70 {
 				log.Printf("[WorkflowInterception] cross-type replacement: user=%s "+
 					"active=%s uic_workflow=%s intent=%s conf=%.2f -"+
@@ -1128,13 +1116,13 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 		})
 
 		// UIC determined a specific workflow type via L3 tree reasoning.
-		if uicResult.WorkflowType != "" && uicResult.WorkflowType != "none" {
+		if isConcreteWorkflowType(uicResult.WorkflowType) {
 			log.Printf("[WorkflowInterception] UIC fusion determined workflow for user %s: "+
 				"intent=%s conf=%.2f layer=%d workflow_type=%s text=%q",
 				userID, uicResult.Primary, uicResult.Confidence, uicResult.Layer,
 				uicResult.WorkflowType, truncateRunes(text, 80))
 
-			wfType := workflow.WorkflowType(uicResult.WorkflowType)
+			wfType := normalizeWorkflowType(uicResult.WorkflowType)
 			registry := engine.GetRegistry()
 			if registry != nil && registry.Match(wfType) != nil {
 				// Valid workflow type - start workflow directly, skip IUM LLM call.

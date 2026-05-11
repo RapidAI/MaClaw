@@ -12,20 +12,20 @@ import (
 const confirmationTTL = 2 * time.Hour
 
 type pendingConfirmation struct {
-	ID              string    `json:"id"`
-	UserID          string    `json:"user_id"`
-	OriginalText    string    `json:"original_text"`
-	ResumeText      string    `json:"resume_text"`
-	Summary         string    `json:"summary"`
-	TaskType        string    `json:"task_type"`
-	TargetPaths     []string  `json:"target_paths,omitempty"`
-	PlannedActions  []string  `json:"planned_actions,omitempty"`
-	RiskFlags       []string  `json:"risk_flags,omitempty"`
-	RevisionHints   []string  `json:"revision_hints,omitempty"`
-	Status          string    `json:"status"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	LastProjectPath string    `json:"last_project_path,omitempty"`
+	ID              string             `json:"id"`
+	UserID          string             `json:"user_id"`
+	OriginalText    string             `json:"original_text"`
+	ResumeText      string             `json:"resume_text"`
+	Summary         string             `json:"summary"`
+	TaskType        string             `json:"task_type"`
+	TargetPaths     []string           `json:"target_paths,omitempty"`
+	PlannedActions  []string           `json:"planned_actions,omitempty"`
+	RiskFlags       []string           `json:"risk_flags,omitempty"`
+	RevisionHints   []string           `json:"revision_hints,omitempty"`
+	Status          confirmationStatus `json:"status"`
+	CreatedAt       time.Time          `json:"created_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+	LastProjectPath string             `json:"last_project_path,omitempty"`
 
 	// EnhancedSummary is the LLM-generated structured understanding of the
 	// user's request. When non-empty, it replaces the raw-text Summary in
@@ -76,6 +76,7 @@ func (s *aiConfirmationStore) get(userID string) *pendingConfirmation {
 		return nil
 	}
 	clone := *item
+	clone.Status = normalizeConfirmationStatus(clone.Status.String())
 	clone.TargetPaths = append([]string(nil), item.TargetPaths...)
 	clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 	clone.RiskFlags = append([]string(nil), item.RiskFlags...)
@@ -90,6 +91,7 @@ func (s *aiConfirmationStore) set(item *pendingConfirmation) {
 		return
 	}
 	clone := *item
+	clone.Status = normalizeConfirmationStatus(clone.Status.String())
 	clone.TargetPaths = append([]string(nil), item.TargetPaths...)
 	clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 	clone.RiskFlags = append([]string(nil), item.RiskFlags...)
@@ -137,6 +139,7 @@ func (s *aiConfirmationStore) saveToDisk() error {
 			continue
 		}
 		clone := *item
+		clone.Status = normalizeConfirmationStatus(clone.Status.String())
 		clone.TargetPaths = append([]string(nil), item.TargetPaths...)
 		clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 		clone.RiskFlags = append([]string(nil), item.RiskFlags...)
@@ -182,6 +185,7 @@ func (s *aiConfirmationStore) loadFromDisk() error {
 			continue
 		}
 		clone := *item
+		clone.Status = normalizeConfirmationStatus(clone.Status.String())
 		clone.TargetPaths = append([]string(nil), item.TargetPaths...)
 		clone.PlannedActions = append([]string(nil), item.PlannedActions...)
 		clone.RiskFlags = append([]string(nil), item.RiskFlags...)

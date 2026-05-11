@@ -88,16 +88,16 @@ type Peer struct {
 }
 
 type Task struct {
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Description string         `json:"description,omitempty"`
-	TaskStatus  string         `json:"state"`
-	Reward      float64        `json:"reward"`
-	Creator     string         `json:"publisher,omitempty"`
-	Assignee    string         `json:"claimant,omitempty"`
-	TargetPeer  string         `json:"target_peer,omitempty"`
-	Tags        FlexStringList `json:"tags,omitempty"`
-	CreatedAt   string         `json:"created_at,omitempty"`
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	Description string          `json:"description,omitempty"`
+	TaskStatus  TaskStateStatus `json:"state"`
+	Reward      float64         `json:"reward"`
+	Creator     string          `json:"publisher,omitempty"`
+	Assignee    string          `json:"claimant,omitempty"`
+	TargetPeer  string          `json:"target_peer,omitempty"`
+	Tags        FlexStringList  `json:"tags,omitempty"`
+	CreatedAt   string          `json:"created_at,omitempty"`
 }
 
 // FlexStringList can unmarshal from either a JSON array of strings or a single
@@ -1686,7 +1686,7 @@ func (c *Client) PublishTasksToHub(hubURL string) error {
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
-			Status:      t.TaskStatus,
+			Status:      t.TaskStatus.String(),
 			Reward:      t.Reward,
 			Creator:     t.Creator,
 			PeerID:      peerID,
@@ -1760,7 +1760,7 @@ func (c *Client) BrowseHubTasks(hubURL string) ([]Task, error) {
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
-			TaskStatus:  t.Status,
+			TaskStatus:  NormalizeTaskStateStatus(TaskStateStatus(t.Status)),
 			Reward:      t.Reward,
 			Creator:     t.Creator,
 			Tags:        FlexStringList(t.Tags),

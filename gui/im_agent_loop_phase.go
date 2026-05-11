@@ -2,42 +2,6 @@ package main
 
 import "strings"
 
-type agentLoopStage string
-
-type skillPreferenceMode string
-
-type agentRecoverReason string
-
-const (
-	agentStageOrient   agentLoopStage = "orient"
-	agentStageExecute  agentLoopStage = "execute"
-	agentStageRecover  agentLoopStage = "recover"
-	agentStageConverge agentLoopStage = "converge"
-	agentStageFinalize agentLoopStage = "finalize"
-)
-
-const (
-	skillPreferenceNone            skillPreferenceMode = "none"
-	skillPreferenceLocalOnly       skillPreferenceMode = "local_only"
-	skillPreferenceRemoteRequired  skillPreferenceMode = "remote_required"
-	skillPreferenceFallbackAllowed skillPreferenceMode = "fallback_allowed"
-)
-
-const (
-	agentRecoverNone                  agentRecoverReason = ""
-	agentRecoverSkillFailed           agentRecoverReason = "skill_failed"
-	agentRecoverTrialFailed           agentRecoverReason = "trial_failed"
-	agentRecoverDriftDetected         agentRecoverReason = "drift_detected"
-	agentRecoverPendingSkillRunNoTool agentRecoverReason = "pending_skill_run_no_tool"
-	agentRecoverNoToolStall           agentRecoverReason = "no_tool_stall"
-	agentRecoverEmptyFinalResponse    agentRecoverReason = "empty_final_response"
-	agentRecoverDeliverablePending    agentRecoverReason = "deliverable_pending"
-)
-
-func (r agentRecoverReason) String() string {
-	return string(r)
-}
-
 type agentLoopPhase struct {
 	Stage                     agentLoopStage
 	ConsecutiveNoTool         int

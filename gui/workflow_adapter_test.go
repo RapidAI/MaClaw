@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
@@ -144,9 +145,9 @@ func TestEmitDocUpdateUsesExplicitPhaseIDWithoutContentInference(t *testing.T) {
 	}
 
 	workflowDir := filepath.Join(dir, ".maclaw", "workflow")
-	requirementsPath := filepath.Join(workflowDir, phaseFileName["requirements"])
-	designPath := filepath.Join(workflowDir, phaseFileName["design"])
-	tasksPath := filepath.Join(workflowDir, phaseFileName["tasks"])
+	requirementsPath := filepath.Join(workflowDir, workflowPhaseFileName("requirements"))
+	designPath := filepath.Join(workflowDir, workflowPhaseFileName("design"))
+	tasksPath := filepath.Join(workflowDir, workflowPhaseFileName("tasks"))
 
 	gotRequirements, err := os.ReadFile(requirementsPath)
 	if err != nil {
@@ -164,5 +165,81 @@ func TestEmitDocUpdateUsesExplicitPhaseIDWithoutContentInference(t *testing.T) {
 	}
 	if _, err := os.Stat(tasksPath); !os.IsNotExist(err) {
 		t.Fatalf("tasks doc should not be created from content heading, stat err=%v", err)
+	}
+}
+
+func TestWorkflowPhaseFileNameUsesStableLocalizedKeys(t *testing.T) {
+	tests := []struct {
+		phaseID string
+		want    string
+	}{
+		{phaseID: "requirements", want: "01-requirements.md"},
+		{phaseID: "tech_design", want: "02-technical-design.md"},
+		{phaseID: "task_breakdown", want: "03-task-breakdown.md"},
+		{phaseID: "ops_intake", want: "01-ops-intake.md"},
+		{phaseID: "Needs 文档", want: "needs.md"},
+	}
+
+	for _, tt := range tests {
+		got := workflowPhaseFileName(tt.phaseID)
+		if got != tt.want {
+			t.Fatalf("workflowPhaseFileName(%q) = %q, want %q", tt.phaseID, got, tt.want)
+		}
+		if strings.ContainsAny(got, "需求技术任务文档设计拆分计划") {
+			t.Fatalf("workflow phase file name should not contain localized display text: %q", got)
+		}
+	}
+}
+
+func TestWorkflowPhaseKindFromMetadataUsesEnum(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []string
+		want   workflowPhaseKind
+	}{
+		{name: "phase wins", values: []string{"tech_design", "requirements"}, want: workflowPhaseKind(workflowPhaseDesign)},
+		{name: "doc type fallback", values: []string{"", "task_plan"}, want: workflowPhaseKind(workflowPhaseTasks)},
+		{name: "localized display text rejected", values: []string{"需求文档"}, want: workflowPhaseUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := workflowPhaseKindFromMetadata(tt.values...); got != tt.want {
+				t.Fatalf("workflowPhaseKindFromMetadata(%q) = %q, want %q", tt.values, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowPhaseFileNameWithExt(t *testing.T) {
+	tests := []struct {
+		name    string
+		phaseID string
+		ext     string
+		want    string
+	}{
+		{name: "pdf extension", phaseID: "requirements", ext: ".pdf", want: "01-requirements.pdf"},
+		{name: "uppercase extension normalized", phaseID: "tech_design", ext: ".PDF", want: "02-technical-design.pdf"},
+		{name: "extension without dot", phaseID: "task_breakdown", ext: "docx", want: "03-task-breakdown.docx"},
+		{name: "no extension keeps markdown", phaseID: "tasks", ext: "", want: "03-task-breakdown.md"},
+		{name: "localized extension ignored", phaseID: "requirements", ext: ".文档", want: "01-requirements.md"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := workflowPhaseFileNameWithExt(tt.phaseID, tt.ext); got != tt.want {
+				t.Fatalf("workflowPhaseFileNameWithExt(%q, %q) = %q, want %q", tt.phaseID, tt.ext, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWorkflowPhaseFileNameUnknownPhaseFallbackIsASCII(t *testing.T) {
+	got := workflowPhaseFileName("未命名 阶段")
+	if got != "workflow-phase.md" {
+		t.Fatalf("workflowPhaseFileName unknown localized phase = %q, want workflow-phase.md", got)
+	}
+	if strings.ContainsAny(got, "未命名阶段") {
+		t.Fatalf("unknown phase fallback should not contain localized text: %q", got)
 	}
 }

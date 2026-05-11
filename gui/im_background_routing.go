@@ -45,9 +45,10 @@ func (h *IMMessageHandler) handleBackgroundIMRoute(msg IMUserMessage, providedLo
 	} else {
 		systemPrompt += h.buildTraceEvidencePrompt(msg.UserID, msg.Text)
 	}
-	if msg.Platform == "desktop" {
+	platformKind := normalizeIMMessagePlatformKind(msg.Platform)
+	if platformKind.IsDesktop() {
 		systemPrompt += desktopWorkflowDocOverride()
-	} else if msg.Platform != "" {
+	} else if platformKind.IsKnown() || msg.Platform != "" {
 		systemPrompt += imWorkflowDocDeliveryRule()
 	}
 

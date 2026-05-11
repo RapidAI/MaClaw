@@ -883,11 +883,13 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 		results = append(results, "[Warning] "+warning)
 	}
 	for i, step := range executionSteps {
-		if step.Condition == "on_failure" && !hasFailure {
+		condition := normalizeSkillStepConditionKind(step.Condition)
+		onError := normalizeSkillStepOnErrorKind(step.OnError)
+		if condition == skillStepConditionOnFailure && !hasFailure {
 			results = append(results, fmt.Sprintf("step %d (%s) skipped: waiting for prior failure", i+1, step.Action))
 			continue
 		}
-		if step.Condition == "on_success" && hasFailure {
+		if condition == skillStepConditionOnSuccess && hasFailure {
 			results = append(results, fmt.Sprintf("step %d (%s) skipped: prior failure", i+1, step.Action))
 			continue
 		}
@@ -911,7 +913,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 		if resolveErr != nil {
 			hasFailure = true
 			errMsg := fmt.Sprintf("step %d (%s) parameter binding failed: %s", i+1, step.Action, resolveErr.Error())
-			if step.OnError == "continue" || step.OnError == "skip" {
+			if onError.ShouldContinue() {
 				results = append(results, errMsg)
 				continue
 			}
@@ -947,7 +949,7 @@ func (e *SkillExecutor) executeSkillStepsDetailed(entry *corelib.NLSkillEntry, r
 		if err != nil {
 			hasFailure = true
 			errMsg := fmt.Sprintf("step %d (%s) failed: %s", i+1, step.Action, err.Error())
-			if step.OnError == "continue" {
+			if onError == skillStepOnErrorContinue {
 				results = append(results, errMsg)
 				continue
 			}
@@ -1136,7 +1138,7 @@ func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry
 	if result == nil {
 		return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("pipeline returned no result")}
 	}
-	if normalizeSkillPipelineStatus(result.Status) != skillPipelineStatusCompleted {
+	if normalizeSkillPipelineStatus(string(result.Status)) != skillPipelineStatusCompleted {
 		if result.Error != "" {
 			return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("%s", result.Error)}
 		}

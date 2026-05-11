@@ -19,29 +19,21 @@ import (
 
 const skillUploadLeaseTimeout = 30 * time.Minute
 
-const (
-	skillUploadStatusPending   = "pending"
-	skillUploadStatusUploading = "uploading"
-	skillUploadStatusUploaded  = "uploaded"
-	skillUploadStatusBlocked   = "blocked"
-	skillUploadStatusFailed    = "failed"
-)
-
 type SkillUploadQueueItem struct {
-	ID             string `json:"id"`
-	SkillName      string `json:"skill_name"`
-	SkillDir       string `json:"skill_dir,omitempty"`
-	LocalHash      string `json:"local_hash,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	Status         string `json:"status"`
-	Attempts       int    `json:"attempts"`
-	LastError      string `json:"last_error,omitempty"`
-	NextAttemptAt  string `json:"next_attempt_at,omitempty"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
-	SubmissionID   string `json:"submission_id,omitempty"`
-	QualityScore   int    `json:"quality_score,omitempty"`
-	RequireRuntime bool   `json:"require_runtime_proof"`
+	ID             string            `json:"id"`
+	SkillName      string            `json:"skill_name"`
+	SkillDir       string            `json:"skill_dir,omitempty"`
+	LocalHash      string            `json:"local_hash,omitempty"`
+	Reason         string            `json:"reason,omitempty"`
+	Status         skillUploadStatus `json:"status"`
+	Attempts       int               `json:"attempts"`
+	LastError      string            `json:"last_error,omitempty"`
+	NextAttemptAt  string            `json:"next_attempt_at,omitempty"`
+	CreatedAt      string            `json:"created_at"`
+	UpdatedAt      string            `json:"updated_at"`
+	SubmissionID   string            `json:"submission_id,omitempty"`
+	QualityScore   int               `json:"quality_score,omitempty"`
+	RequireRuntime bool              `json:"require_runtime_proof"`
 }
 
 type skillUploadQueueFile struct {

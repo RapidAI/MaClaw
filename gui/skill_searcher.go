@@ -17,23 +17,23 @@ import (
 
 // SkillSearchResult is one SkillMarket search result.
 type SkillSearchResult struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Description   string   `json:"description"`
-	Tags          []string `json:"tags"`
-	Score         float64  `json:"score"`
-	Price         int      `json:"price"`
-	Status        string   `json:"status"`
-	InstallRef    string   `json:"install_ref,omitempty"`
-	AvgRating     float64  `json:"avg_rating"`
-	DownloadCount int      `json:"download_count"`
-	Version       string   `json:"version,omitempty"`
-	Author        string   `json:"author,omitempty"`
-	CreatedAt     string   `json:"created_at,omitempty"`
+	ID            string                `json:"id"`
+	Name          string                `json:"name"`
+	Description   string                `json:"description"`
+	Tags          []string              `json:"tags"`
+	Score         float64               `json:"score"`
+	Price         int                   `json:"price"`
+	Status        skillSearchSourceKind `json:"status"`
+	InstallRef    string                `json:"install_ref,omitempty"`
+	AvgRating     float64               `json:"avg_rating"`
+	DownloadCount int                   `json:"download_count"`
+	Version       string                `json:"version,omitempty"`
+	Author        string                `json:"author,omitempty"`
+	CreatedAt     string                `json:"created_at,omitempty"`
 }
 
 func (r SkillSearchResult) SourceKind() skillSearchSourceKind {
-	return skillSearchSourceFromStatus(r.Status)
+	return skillSearchSourceFromStatus(r.Status.String())
 }
 
 // MixedSkillSearchResult is the GUI-facing unified search result model.
@@ -354,7 +354,7 @@ func (s *SkillSearcher) searchClawHubMirror(ctx context.Context, query string) [
 			Name:        r.Name,
 			Description: r.Description,
 			Score:       r.Score,
-			Status:      "clawhub",
+			Status:      skillSearchSourceClawHub,
 		})
 	}
 	log.Printf("[skill-search] clawhub mirror found %d results for: %s", len(results), query)
@@ -381,7 +381,7 @@ func (s *SkillSearcher) searchGitHubFallback(ctx context.Context, query string) 
 		ID:          best.RepoFullName,
 		Name:        best.RepoFullName,
 		Description: best.Description,
-		Status:      "github",
+		Status:      skillSearchSourceGitHub,
 		InstallRef:  string(installRefBytes),
 	}, nil
 }

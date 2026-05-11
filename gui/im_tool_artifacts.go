@@ -127,6 +127,7 @@ func (h *IMMessageHandler) handleAgentLoopFileArtifacts(
 	}
 	last := pendingFiles[len(pendingFiles)-1]
 	resp.ResponseSource = imResponseSourceFileDelivery.String()
+	resp.Text = last.message
 	resp.FileData = last.data
 	resp.FileName = last.name
 	resp.FileMimeType = last.mimeType
@@ -140,6 +141,7 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 	var savedPaths []string
 	var failLines []string
 	var imForwardedCount int
+	var deliveryMessage string
 	for _, pf := range pendingFiles {
 		filePath, err := h.saveFileDataToLocal(pf.name, pf.data)
 		if err != nil {
@@ -147,6 +149,9 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 			continue
 		}
 		savedPaths = append(savedPaths, filePath)
+		if strings.TrimSpace(pf.message) != "" {
+			deliveryMessage = pf.message
+		}
 		if !pf.forwardIM {
 			continue
 		}
@@ -162,6 +167,9 @@ func (h *IMMessageHandler) populateDesktopFileArtifactResponse(resp *IMAgentResp
 		imForwardedCount++
 	}
 	text := strings.Join(failLines, "\n")
+	if text == "" && imForwardedCount == 0 {
+		text = deliveryMessage
+	}
 	if imForwardedCount > 0 {
 		imNote := fmt.Sprintf("Forwarded %d file(s) to IM.", imForwardedCount)
 		if text != "" {

@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { collectWorkflowPhases, normalizeWorkflowPhaseID, PhaseInfo, workflowPhaseExpectsDocument } from "./workflowPhase";
+import { isWorkflowActive } from "./workflowStatus";
+
+export type { PhaseInfo } from "./workflowPhase";
 
 /** Quality gate check item from the backend. */
 export interface GateCheckItem {
@@ -14,14 +18,6 @@ export interface QualityGateResult {
     passed: boolean;
     items: GateCheckItem[];
     checked_at: string;
-}
-
-/** Phase info from the backend WorkflowState. */
-export interface PhaseInfo {
-    id: string;
-    name: string;
-    index: number;
-    expectsDocument?: boolean;
 }
 
 /** UI state for the workflow split-pane document preview. */
@@ -42,23 +38,6 @@ export interface WorkflowUIState {
 }
 
 const DEFAULT_SPLIT_RATIO = 0.42;
-const PHASE_ID_ALIASES: Record<string, string> = {
-    tech_design: "design",
-    task_breakdown: "tasks",
-};
-const FALLBACK_NON_DOCUMENT_PHASE_IDS = new Set([
-    "implementation",
-    "test_execution",
-    "ppt_generation",
-    "bp_doc_generation",
-    "controlled_execution",
-]);
-
-export function normalizeWorkflowPhaseID(phaseID: unknown): string {
-    if (typeof phaseID !== "string") return "";
-    const trimmed = phaseID.trim();
-    return PHASE_ID_ALIASES[trimmed] || trimmed;
-}
 
 function normalizeWorkflowDocumentContent(content: unknown): string {
     return typeof content === "string" ? content.trim() : "";
@@ -105,32 +84,6 @@ function collectWorkflowGateResults(results: unknown): Map<string, QualityGateRe
         });
     }
     return gates;
-}
-
-function collectWorkflowPhases(phases: unknown): PhaseInfo[] {
-    if (!Array.isArray(phases)) return [];
-    const collected: PhaseInfo[] = [];
-    const seen = new Set<string>();
-    for (const raw of phases) {
-        if (!raw || typeof raw !== "object") continue;
-        const phase = raw as Record<string, unknown>;
-        const id = normalizeWorkflowPhaseID(phase.id);
-        const name = typeof phase.name === "string" ? phase.name.trim() : "";
-        const index = typeof phase.index === "number" ? phase.index : collected.length;
-        const expectsDocument = typeof phase.expects_document === "boolean" ? phase.expects_document : undefined;
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        const item: PhaseInfo = { id, name, index };
-        if (typeof expectsDocument === "boolean") item.expectsDocument = expectsDocument;
-        collected.push(item);
-    }
-    return collected.sort((a, b) => a.index - b.index);
-}
-
-function workflowPhaseExpectsDocument(phaseID: string, phases: PhaseInfo[]): boolean {
-    const phase = phases.find(item => item.id === phaseID);
-    if (phase && typeof phase.expectsDocument === "boolean") return phase.expectsDocument;
-    return !FALLBACK_NON_DOCUMENT_PHASE_IDS.has(phaseID);
 }
 
 function resolveWorkflowInstanceKey(state: any): string {
@@ -216,7 +169,7 @@ export function useWorkflowState() {
                 pendingWorkingDirRef.current = "";
                 appliedPendingWorkingDir = true;
                 userClosedRef.current = false;
-            } else if (!workflowID && state.status === "active" && workflowTypeRef.current && incomingWorkflowType && incomingWorkflowType !== workflowTypeRef.current) {
+            } else if (!workflowID && isWorkflowActive(state.status) && workflowTypeRef.current && incomingWorkflowType && incomingWorkflowType !== workflowTypeRef.current) {
                 docUpdatePhaseIDsRef.current = new Set();
                 setLatestDocumentPhaseID("");
                 setPhaseDocuments(new Map());
@@ -227,7 +180,7 @@ export function useWorkflowState() {
                 appliedPendingWorkingDir = true;
                 userClosedRef.current = false;
             }
-            const isActive = state.status === "active";
+            const isActive = isWorkflowActive(state.status);
             setActive(isActive);
             workflowActiveRef.current = isActive;
             if (isActive && !wasActive && !appliedPendingWorkingDir && pendingWorkingDirRef.current) {

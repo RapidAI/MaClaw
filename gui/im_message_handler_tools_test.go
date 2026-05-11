@@ -57,6 +57,204 @@ func TestIMToolWriteFile_RejectsMissingContentField(t *testing.T) {
 	}
 }
 
+func TestIMToolWriteFile_NormalizesWorkflowDocFileName(t *testing.T) {
+	tmpDir := t.TempDir()
+	h := &IMMessageHandler{}
+	got := h.toolWriteFile(map[string]interface{}{
+		"path":     filepath.Join(tmpDir, "需求文档.md"),
+		"content":  "# Requirements\n\nbody",
+		"phase_id": "requirements",
+	})
+	if !strings.Contains(got, "01-requirements.md") {
+		t.Fatalf("toolWriteFile() = %q, want normalized workflow doc path", got)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "01-requirements.md")); err != nil {
+		t.Fatalf("expected normalized workflow doc file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, "需求文档.md")); !os.IsNotExist(err) {
+		t.Fatalf("localized workflow doc filename should not be written, stat err=%v", err)
+	}
+}
+
+func TestWorkflowDocWritePathUsesDocType(t *testing.T) {
+	got := workflowDocWritePath(filepath.Join("docs", "任务列表.md"), map[string]interface{}{
+		"doc_type": "task_plan",
+	})
+	want := filepath.Join("docs", "03-task-breakdown.md")
+	if got != want {
+		t.Fatalf("workflowDocWritePath() = %q, want %q", got, want)
+	}
+}
+
+func TestWorkflowDocWritePathDropsLocalizedDocDirectory(t *testing.T) {
+	got := workflowDocWritePath(filepath.Join("docs", "需求文档", "需求文档.md"), map[string]interface{}{
+		"phase_id": "requirements",
+	})
+	want := filepath.Join("docs", "01-requirements.md")
+	if got != want {
+		t.Fatalf("workflowDocWritePath() = %q, want %q", got, want)
+	}
+}
+
+func TestIMToolSendFile_NormalizesWorkflowDocDisplayFileName(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "requirements.pdf")
+	if err := os.WriteFile(path, []byte("pdf"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	h := &IMMessageHandler{}
+	got := h.toolSendFile(map[string]interface{}{
+		"path":      path,
+		"file_name": "需求文档.pdf",
+		"phase_id":  "requirements",
+	})
+	if !strings.HasPrefix(got, "[file_base64|01-requirements.pdf|application/pdf]") {
+		t.Fatalf("toolSendFile() = %q, want normalized display filename", got)
+	}
+	if strings.Contains(got, "需求文档.pdf") {
+		t.Fatalf("toolSendFile() should not expose localized workflow filename: %q", got)
+	}
+}
+
+func TestIMToolSendFile_WorkflowForwardIMUsesStructuredDeliveryMessage(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "requirements.pdf")
+	if err := os.WriteFile(path, []byte("pdf"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	h := &IMMessageHandler{}
+	got := h.toolSendFile(map[string]interface{}{
+		"path":          path,
+		"file_name":     "需求文档.pdf",
+		"phase_id":      "requirements",
+		"forward_to_im": true,
+	})
+	payload := parseToolPayloadResult(got)
+	if payload.File == nil {
+		t.Fatalf("expected file payload, got %#v", payload)
+	}
+	if payload.File.name != "01-requirements.pdf" {
+		t.Fatalf("file name = %q, want 01-requirements.pdf", payload.File.name)
+	}
+	if !payload.File.forwardIM {
+		t.Fatalf("expected forwardIM=true, got %#v", payload.File)
+	}
+	if !strings.Contains(payload.File.message, "需求文档已生成") {
+		t.Fatalf("delivery message = %q, want requirements prompt from metadata", payload.File.message)
+	}
+}
+
+func TestIMToolSendFile_NormalizesWorkflowDocDisplayFileNameWithPathExtension(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "requirements.pdf")
+	if err := os.WriteFile(path, []byte("pdf"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	h := &IMMessageHandler{}
+	got := h.toolSendFile(map[string]interface{}{
+		"path":      path,
+		"file_name": "需求文档",
+		"phase_id":  "requirements",
+	})
+	if !strings.HasPrefix(got, "[file_base64|01-requirements.pdf|application/pdf]") {
+		t.Fatalf("toolSendFile() = %q, want normalized display filename with path extension", got)
+	}
+}
+
+func TestWorkflowDocDeliveryFileNameUsesDocTypeAndExtension(t *testing.T) {
+	got := workflowDocDeliveryFileName("任务列表.pdf", map[string]interface{}{"doc_type": "task_plan"})
+	if got != "03-task-breakdown.pdf" {
+		t.Fatalf("workflowDocDeliveryFileName() = %q, want 03-task-breakdown.pdf", got)
+	}
+}
+
+func TestWorkflowDocDeliveryFileNameUsesFallbackExtension(t *testing.T) {
+	got := workflowDocDeliveryFileNameWithFallbackExt("任务列表", map[string]interface{}{"doc_type": "task_plan"}, ".pdf")
+	if got != "03-task-breakdown.pdf" {
+		t.Fatalf("workflowDocDeliveryFileNameWithFallbackExt() = %q, want 03-task-breakdown.pdf", got)
+	}
+}
+
+func TestWorkflowDocDeliveryFileNameRejectsLocalizedExtension(t *testing.T) {
+	got := workflowDocDeliveryFileNameWithFallbackExt("任务列表.文档", map[string]interface{}{"doc_type": "task_plan"}, ".pdf")
+	if got != "03-task-breakdown.pdf" {
+		t.Fatalf("workflowDocDeliveryFileNameWithFallbackExt() = %q, want 03-task-breakdown.pdf", got)
+	}
+}
+
+func TestBuildToolDefinitionsExposeWorkflowDocMetadata(t *testing.T) {
+	h := &IMMessageHandler{app: &App{}}
+	defs := h.buildToolDefinitions()
+	for _, toolName := range []string{"write_file", "send_file"} {
+		props := toolDefinitionProperties(t, defs, toolName)
+		for _, prop := range []string{"phase_id", "doc_type"} {
+			if _, ok := props[prop]; !ok {
+				t.Fatalf("%s should expose %s metadata for workflow document filenames", toolName, prop)
+			}
+		}
+	}
+}
+
+func TestBuildToolDefinitionsWorkflowDocMetadataDescriptions(t *testing.T) {
+	h := &IMMessageHandler{app: &App{}}
+	defs := h.buildToolDefinitions()
+
+	writeProps := toolDefinitionProperties(t, defs, "write_file")
+	if got := toolSchemaDescription(t, writeProps, "phase_id"); got != workflowDocPhaseIDSchemaDescription() {
+		t.Fatalf("write_file phase_id description = %q, want %q", got, workflowDocPhaseIDSchemaDescription())
+	}
+	if got := toolSchemaDescription(t, writeProps, "doc_type"); got != workflowDocTypeSchemaDescription() {
+		t.Fatalf("write_file doc_type description = %q, want %q", got, workflowDocTypeSchemaDescription())
+	}
+
+	sendProps := toolDefinitionProperties(t, defs, "send_file")
+	if got := toolSchemaDescription(t, sendProps, "phase_id"); got != workflowDocDeliveryPhaseIDSchemaDescription() {
+		t.Fatalf("send_file phase_id description = %q, want %q", got, workflowDocDeliveryPhaseIDSchemaDescription())
+	}
+	if got := toolSchemaDescription(t, sendProps, "doc_type"); got != workflowDocDeliveryTypeSchemaDescription() {
+		t.Fatalf("send_file doc_type description = %q, want %q", got, workflowDocDeliveryTypeSchemaDescription())
+	}
+}
+
+func toolDefinitionProperties(t *testing.T, defs []map[string]interface{}, name string) map[string]interface{} {
+	t.Helper()
+	for _, def := range defs {
+		if extractToolName(def) != name {
+			continue
+		}
+		fn, _ := def["function"].(map[string]interface{})
+		params, _ := fn["parameters"].(map[string]interface{})
+		props, _ := params["properties"].(map[string]interface{})
+		if props == nil {
+			t.Fatalf("%s properties missing in tool definition: %#v", name, def)
+		}
+		return props
+	}
+	t.Fatalf("tool definition %s not found", name)
+	return nil
+}
+
+func toolSchemaDescription(t *testing.T, props map[string]interface{}, name string) string {
+	t.Helper()
+	raw, ok := props[name]
+	if !ok {
+		t.Fatalf("schema property %s missing", name)
+	}
+	switch schema := raw.(type) {
+	case map[string]string:
+		return schema["description"]
+	case map[string]interface{}:
+		desc, _ := schema["description"].(string)
+		return desc
+	default:
+		t.Fatalf("schema property %s has unexpected type: %#v", name, raw)
+		return ""
+	}
+}
+
 func TestTrialReflectObserveIteration_BuildsReflectionNote(t *testing.T) {
 	state := newTrialReflectState(true)
 	toolCalls := []llm.ToolCall{
@@ -206,6 +404,14 @@ func TestParseToolPayloadResult(t *testing.T) {
 	}
 	if file.File.message == "" {
 		t.Fatalf("expected file delivery message, got %#v", file.File)
+	}
+	withMessage := parseToolPayloadResult("[file_base64|01-requirements.pdf|application/pdf|im|msg64:" + strings.TrimPrefix(encodeToolPayloadMessage("需求文档已生成"), "msg64:") + "]ZGF0YQ==")
+	if withMessage.File == nil || withMessage.File.message != "需求文档已生成" {
+		t.Fatalf("file payload message = %#v", withMessage.File)
+	}
+	pdfMessage := parseToolPayloadResult("[file_base64|01-requirements.pdf|application/pdf|msg64:" + strings.TrimPrefix(encodeToolPayloadMessage("需求文档已生成"), "msg64:") + "]ZGF0YQ==")
+	if pdfMessage.File == nil || pdfMessage.File.forwardIM || pdfMessage.File.message != "需求文档已生成" {
+		t.Fatalf("generate_pdf-style payload message = %#v", pdfMessage.File)
 	}
 	voice := parseToolPayloadResult("[voice_base64|voice.ogg|audio/ogg]AAAA")
 	if voice.VoiceData != "AAAA" || voice.VoiceFileName != "voice.ogg" || voice.VoiceMimeType != "audio/ogg" {

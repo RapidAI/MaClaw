@@ -15,19 +15,31 @@ const (
 	defaultAuditTrailLimit              = 50
 )
 
-const (
-	AuditStatusCompleted    = "completed"
-	AuditStatusNoCandidates = "no_candidates"
-	AuditStatusFailed       = "failed"
-)
+type AuditStatusKind string
 
 const (
-	AuditHealthStatusEmpty          = "empty"
-	AuditHealthStatusHealthy        = "healthy"
-	AuditHealthStatusNeedsAttention = "needs_attention"
-	AuditHealthStatusNoSignal       = "no_signal"
-	AuditHealthStatusFailing        = "failing"
+	AuditStatusCompleted    AuditStatusKind = "completed"
+	AuditStatusNoCandidates AuditStatusKind = "no_candidates"
+	AuditStatusFailed       AuditStatusKind = "failed"
 )
+
+func (s AuditStatusKind) String() string {
+	return string(s)
+}
+
+type AuditHealthStatusKind string
+
+const (
+	AuditHealthStatusEmpty          AuditHealthStatusKind = "empty"
+	AuditHealthStatusHealthy        AuditHealthStatusKind = "healthy"
+	AuditHealthStatusNeedsAttention AuditHealthStatusKind = "needs_attention"
+	AuditHealthStatusNoSignal       AuditHealthStatusKind = "no_signal"
+	AuditHealthStatusFailing        AuditHealthStatusKind = "failing"
+)
+
+func (s AuditHealthStatusKind) String() string {
+	return string(s)
+}
 
 const (
 	AuditIssueNone                  = "none"
@@ -59,17 +71,17 @@ type AuditOptions struct {
 
 // AuditEntry is a safe diagnostic record for one experience extraction run.
 type AuditEntry struct {
-	Timestamp   string        `json:"timestamp"`
-	SessionID   string        `json:"session_id,omitempty"`
-	Tool        string        `json:"tool,omitempty"`
-	Title       string        `json:"title,omitempty"`
-	ProjectPath string        `json:"project_path,omitempty"`
-	Status      string        `json:"status,omitempty"`
-	DurationMS  int64         `json:"duration_ms,omitempty"`
-	Summary     ResultSummary `json:"summary"`
-	Decisions   []Decision    `json:"decisions,omitempty"`
-	Upserted    []string      `json:"upserted,omitempty"`
-	Error       string        `json:"error,omitempty"`
+	Timestamp   string          `json:"timestamp"`
+	SessionID   string          `json:"session_id,omitempty"`
+	Tool        string          `json:"tool,omitempty"`
+	Title       string          `json:"title,omitempty"`
+	ProjectPath string          `json:"project_path,omitempty"`
+	Status      AuditStatusKind `json:"status,omitempty"`
+	DurationMS  int64           `json:"duration_ms,omitempty"`
+	Summary     ResultSummary   `json:"summary"`
+	Decisions   []Decision      `json:"decisions,omitempty"`
+	Upserted    []string        `json:"upserted,omitempty"`
+	Error       string          `json:"error,omitempty"`
 }
 
 type AuditContext struct {
@@ -196,22 +208,22 @@ func (t *AuditTrail) List() []AuditEntry {
 }
 
 type AuditHealth struct {
-	Runs             int            `json:"runs"`
-	Completed        int            `json:"completed"`
-	NoCandidates     int            `json:"no_candidates"`
-	Failed           int            `json:"failed"`
-	TotalCandidates  int            `json:"total_candidates"`
-	Registered       int            `json:"registered"`
-	Updated          int            `json:"updated"`
-	Skipped          int            `json:"skipped"`
-	AvgDurationMS    int64          `json:"avg_duration_ms,omitempty"`
-	LatestTimestamp  string         `json:"latest_timestamp,omitempty"`
-	Status           string         `json:"status"`
-	IssueCode        string         `json:"issue_code,omitempty"`
-	PrimaryIssue     string         `json:"primary_issue,omitempty"`
-	SuggestedAction  string         `json:"suggested_action,omitempty"`
-	SkipReasons      map[string]int `json:"skip_reasons,omitempty"`
-	UnsupportedSteps map[string]int `json:"unsupported_steps,omitempty"`
+	Runs             int                   `json:"runs"`
+	Completed        int                   `json:"completed"`
+	NoCandidates     int                   `json:"no_candidates"`
+	Failed           int                   `json:"failed"`
+	TotalCandidates  int                   `json:"total_candidates"`
+	Registered       int                   `json:"registered"`
+	Updated          int                   `json:"updated"`
+	Skipped          int                   `json:"skipped"`
+	AvgDurationMS    int64                 `json:"avg_duration_ms,omitempty"`
+	LatestTimestamp  string                `json:"latest_timestamp,omitempty"`
+	Status           AuditHealthStatusKind `json:"status"`
+	IssueCode        string                `json:"issue_code,omitempty"`
+	PrimaryIssue     string                `json:"primary_issue,omitempty"`
+	SuggestedAction  string                `json:"suggested_action,omitempty"`
+	SkipReasons      map[string]int        `json:"skip_reasons,omitempty"`
+	UnsupportedSteps map[string]int        `json:"unsupported_steps,omitempty"`
 }
 
 func (t *AuditTrail) Health() AuditHealth {
@@ -269,7 +281,7 @@ func SummarizeAuditEntries(entries []AuditEntry, opts AuditOptions) AuditHealth 
 	return health
 }
 
-func diagnoseAuditHealth(health AuditHealth, skipReasons map[string]int, unsupportedSteps map[string]int, opts AuditOptions) (string, string, string, string) {
+func diagnoseAuditHealth(health AuditHealth, skipReasons map[string]int, unsupportedSteps map[string]int, opts AuditOptions) (AuditHealthStatusKind, string, string, string) {
 	opts = normalizeAuditOptions(opts)
 	if health.Runs == 0 {
 		return AuditHealthStatusEmpty, AuditIssueNoRuns, "", "run an eligible successful session before expecting learned skills"
@@ -406,7 +418,7 @@ func AuditText(value string, maxLen int) string {
 	return auditString(value, maxLen)
 }
 
-func AuditStatus(summary ResultSummary) string {
+func AuditStatus(summary ResultSummary) AuditStatusKind {
 	if summary.TotalCandidates == 0 {
 		return AuditStatusNoCandidates
 	}
@@ -443,7 +455,7 @@ func auditDecisionSlice(in []Decision, opts AuditOptions) []Decision {
 	return out
 }
 
-func effectiveAuditStatus(entry AuditEntry) string {
+func effectiveAuditStatus(entry AuditEntry) AuditStatusKind {
 	switch entry.Status {
 	case AuditStatusCompleted, AuditStatusNoCandidates, AuditStatusFailed:
 		return entry.Status

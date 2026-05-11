@@ -230,12 +230,20 @@ func buildSkillPreferenceConvergePrompt(phase agentLoopPhase) string {
 	return prompt
 }
 
-func processSkillPreferenceToolResults(phase *agentLoopPhase, toolCalls []llm.ToolCall, toolResults []string, toolOutcomes []toolOutcome) {
+func processSkillPreferenceToolResults(phase *agentLoopPhase, toolCalls []llm.ToolCall, toolResults []string, toolOutcomes []toolOutcome, toolExecResults []toolExecutionResult) {
+	if len(toolExecResults) == len(toolCalls) {
+		processSkillPreferenceToolExecutions(phase, toolCalls, toolExecResults)
+		return
+	}
+	processSkillPreferenceToolExecutions(phase, toolCalls, buildToolExecutionResults(toolCalls, toolResults, toolOutcomes))
+}
+
+func processSkillPreferenceToolExecutions(phase *agentLoopPhase, toolCalls []llm.ToolCall, toolExecResults []toolExecutionResult) {
 	if phase == nil || !shouldBypassSkillPreference(toolCalls) {
 		return
 	}
 	phase.SkillAttempted = true
-	if runID := extractSkillRunID(toolCalls, toolResults); strings.TrimSpace(runID) != "" {
+	if runID := extractSkillRunID(toolCalls, nil, toolExecResults); strings.TrimSpace(runID) != "" {
 		phase.PreferredSkillRunID = strings.TrimSpace(runID)
 	}
 	if phase.SkillMode == skillPreferenceRemoteRequired {
@@ -248,12 +256,12 @@ func processSkillPreferenceToolResults(phase *agentLoopPhase, toolCalls []llm.To
 			break
 		}
 	}
-	if didSkillToolFail(toolCalls, toolOutcomes) {
+	if didSkillToolExecutionFail(toolExecResults) {
 		phase.SkillFailed = true
 		phase.RemoteSearchExhausted = true
 		phase.ForceSkillPreference = false
 		phase.SkillMode = skillPreferenceFallbackAllowed
-		if sn, se := extractFailedSkillInfo(toolCalls, toolResults, toolOutcomes); sn != "" {
+		if sn, se := extractFailedSkillInfoFromExecutions(toolCalls, toolExecResults); sn != "" {
 			phase.FailedSkillName = sn
 			phase.FailedSkillError = se
 			log.Printf("[skill-workaround] skill %q failed, marking as pending workaround: %s", sn, truncateRunes(se, 120))
@@ -267,23 +275,28 @@ func processSkillPreferenceToolResults(phase *agentLoopPhase, toolCalls []llm.To
 	}
 }
 
-func extractSkillRunID(toolCalls []llm.ToolCall, toolResults []string) string {
-	if len(toolCalls) == 0 || len(toolCalls) != len(toolResults) {
+func extractSkillRunID(toolCalls []llm.ToolCall, toolResults []string, toolExecResults []toolExecutionResult) string {
+	if len(toolCalls) == 0 {
 		return ""
 	}
 	for i := len(toolCalls) - 1; i >= 0; i-- {
-		if classifyAgentToolKind(toolCalls[i].Function.Name) != agentToolKindRunSkill {
+		if !isSkillRunStarterToolCall(toolCalls[i]) {
+			continue
+		}
+		if i < len(toolExecResults) {
+			if runID := strings.TrimSpace(toolExecResults[i].Metadata.SkillRunID); runID != "" {
+				return runID
+			}
+		}
+		if i >= len(toolResults) {
 			continue
 		}
 		result := strings.TrimSpace(toolResults[i])
 		if result == "" {
 			continue
 		}
-		if matches := regexp.MustCompile(`run_id[:=]\s*([A-Za-z0-9._-]+)`).FindStringSubmatch(result); len(matches) == 2 {
-			return strings.TrimSpace(matches[1])
-		}
-		if matches := regexp.MustCompile(`run_id=([A-Za-z0-9._-]+)`).FindStringSubmatch(result); len(matches) == 2 {
-			return strings.TrimSpace(matches[1])
+		if runID := extractSkillRunIDFromToolText(result); runID != "" {
+			return runID
 		}
 	}
 	return ""

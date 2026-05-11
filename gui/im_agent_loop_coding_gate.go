@@ -29,7 +29,7 @@ func (h *IMMessageHandler) prepareAgentLoopCodingGate(userID, userText string, c
 	if workflowOff {
 		gateConfig.active = false
 	}
-	if gateConfig.intent != "" && milestoneTracker != nil {
+	if gateConfig.intent.IsKnown() && milestoneTracker != nil {
 		milestoneTracker.RefineIntent(string(gateConfig.intent))
 	}
 	orchestratorActive := func() bool {

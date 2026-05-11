@@ -78,6 +78,48 @@ describe('workflowProgressPhaseIDs', () => {
         expect(screen.getByTitle('Beta phase · 生成中')).toBeTruthy();
     });
 
+    it('localizes fallback workflow labels without overriding backend phase metadata', () => {
+        render(React.createElement(WorkflowDocPreview, {
+            phaseDocuments: new Map([['requirements', '# Requirements']]),
+            currentPhaseID: 'tasks',
+            latestDocumentPhaseID: 'requirements',
+            phases: [
+                { id: 'requirements', name: 'Requirements analysis', index: 0, expectsDocument: true },
+                { id: 'design', name: 'Technical design', index: 1, expectsDocument: true },
+                { id: 'tasks', name: 'Task breakdown', index: 2, expectsDocument: true },
+            ],
+            workflowType: 'coding',
+            gateResults: new Map(),
+            lang: 'en',
+            onClose: () => undefined,
+            theme: testTheme,
+        }));
+
+        expect(screen.getByText('Workflow progress')).toBeTruthy();
+        expect(screen.getByText('3 phases')).toBeTruthy();
+        expect(screen.getByText('1/3 docs')).toBeTruthy();
+        expect(screen.getByLabelText('Requirements analysis, Completed')).toBeTruthy();
+        expect(screen.getByLabelText('Technical design, Missing doc')).toBeTruthy();
+        expect(screen.getByLabelText('Task breakdown, Generating')).toBeTruthy();
+    });
+
+    it('uses localized fallback labels when phase metadata is unavailable', () => {
+        render(React.createElement(WorkflowDocPreview, {
+            phaseDocuments: new Map([['requirements', '# Requirements']]),
+            currentPhaseID: 'tasks',
+            latestDocumentPhaseID: 'requirements',
+            workflowType: 'coding',
+            gateResults: new Map(),
+            lang: 'en',
+            onClose: () => undefined,
+            theme: testTheme,
+        }));
+
+        expect(screen.getByLabelText('Requirements, Completed')).toBeTruthy();
+        expect(screen.getByLabelText('Design, Missing doc')).toBeTruthy();
+        expect(screen.getByLabelText('Tasks, Generating')).toBeTruthy();
+    });
+
     it('sorts and deduplicates backend-provided phase metadata defensively', () => {
         expect(workflowProgressPhaseIDs('coding', new Map(), 'gamma', [
             { id: 'beta', name: 'Beta phase', index: 1 },

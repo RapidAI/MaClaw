@@ -58,18 +58,6 @@ var gateClassifierJSONSchema = map[string]interface{}{
 // coding tool gate. It uses UIC first, then embedding and LLM classifiers.
 // It returns unknown when semantic classifiers are unavailable or inconclusive.
 
-// GateIntent represents the five-category classification result for the Gate.
-type GateIntent string
-
-const (
-	GateIntentNewProject   GateIntent = "new_project"
-	GateIntentBugFix       GateIntent = "bug_fix"
-	GateIntentMaintenance  GateIntent = "maintenance"
-	GateIntentNonCoding    GateIntent = "non_coding"
-	GateIntentContinuation GateIntent = "continuation"
-	GateIntentUnknown      GateIntent = "unknown"
-)
-
 // GateIntentResult holds the classification output from GateIntentClassifier.
 type GateIntentResult struct {
 	Intent     GateIntent             // one of the GateIntent constants
@@ -211,7 +199,7 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 				text, result.Intent, result.Confidence, result.Gap, result.Reason)
 			logTop2Scores(text, result.AllScores)
 			return result
-		} else if result.Intent != "" {
+		} else if result.Intent.IsKnown() {
 			// Layer 2 returned an ambiguous result; save it for fallback.
 			layer2Result = result
 			hasLayer2 = true

@@ -89,11 +89,11 @@ type CodeGenModel struct {
 
 // codeGenScanResponse 是扫码页面返回的 token 响应结构。
 type codeGenScanResponse struct {
-	Token   string `json:"token"`
-	Email   string `json:"email"`
-	Status  string `json:"status"` // "pending", "success", "expired"
-	Message string `json:"message,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Token   string            `json:"token"`
+	Email   string            `json:"email"`
+	Status  codeGenScanStatus `json:"status"`
+	Message string            `json:"message,omitempty"`
+	Error   string            `json:"error,omitempty"`
 }
 
 // codeGenModelsResponse 是 /api/v1/models 端点的响应结构。
@@ -107,15 +107,15 @@ type codeGenModelsResponse struct {
 }
 
 type codeGenModelEntry struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Provider      string `json:"provider"`
-	ContextWindow int    `json:"context_window"`
-	Available     *bool  `json:"available,omitempty"`
-	Enabled       *bool  `json:"enabled,omitempty"`
-	Active        *bool  `json:"active,omitempty"`
-	Disabled      bool   `json:"disabled,omitempty"`
-	Status        string `json:"status,omitempty"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	Provider      string             `json:"provider"`
+	ContextWindow int                `json:"context_window"`
+	Available     *bool              `json:"available,omitempty"`
+	Enabled       *bool              `json:"enabled,omitempty"`
+	Active        *bool              `json:"active,omitempty"`
+	Disabled      bool               `json:"disabled,omitempty"`
+	Status        codeGenModelStatus `json:"status,omitempty"`
 }
 
 // GetModels 返回模型列表，兼容 "models" 和 "data" 两种响应字段。
@@ -156,14 +156,7 @@ func isUsableCodeGenModel(m codeGenModelEntry) bool {
 	if m.Active != nil && !*m.Active {
 		return false
 	}
-	switch strings.ToLower(strings.TrimSpace(m.Status)) {
-	case "", "ok", "ready", "enabled", "available", "active":
-		return true
-	case "disabled", "unavailable", "inactive", "denied", "forbidden", "no_permission", "no-permission":
-		return false
-	default:
-		return true
-	}
+	return m.Status.IsUsable()
 }
 
 func firstUsableCodeGenModel(models []codeGenModelEntry) (id string, contextLength int) {
@@ -667,21 +660,14 @@ func waitForCodeGenTokenWithContext(ctx context.Context, timeout time.Duration, 
 			}
 		}
 
-		switch scanResp.Status {
-		case "success":
+		switch {
+		case scanResp.Status.IsSuccess():
 			if scanResp.Token == "" {
 				return "", "", fmt.Errorf("扫码成功但未返回 token")
 			}
 			return scanResp.Token, scanResp.Email, nil
-		case "expired":
+		case scanResp.Status.IsExpired():
 			return "", "", fmt.Errorf("二维码已过期，请重试")
-		case "pending", "":
-			select {
-			case <-ticker.C:
-				continue
-			case <-ctx.Done():
-				return "", "", context.Canceled
-			}
 		default:
 			if scanResp.Error != "" {
 				return "", "", fmt.Errorf("扫码失败: %s", scanResp.Error)

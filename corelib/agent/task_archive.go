@@ -49,6 +49,7 @@ func (ta *TaskArchive) Archive(task ArchivedTask) {
 	if strings.TrimSpace(task.UserID) == "" || strings.TrimSpace(task.ID) == "" {
 		return
 	}
+	task.Status = NormalizeArchivedTaskStatus(task.Status.String())
 	if task.ArchivedAt.IsZero() {
 		task.ArchivedAt = time.Now()
 	}
@@ -145,6 +146,9 @@ func (ta *TaskArchive) loadFromDisk() {
 		ta.tasks = snap.Tasks
 		// Ensure sorted newest first.
 		for uid, tasks := range ta.tasks {
+			for i := range tasks {
+				tasks[i].Status = NormalizeArchivedTaskStatus(tasks[i].Status.String())
+			}
 			sort.SliceStable(tasks, func(i, j int) bool {
 				return tasks[i].ArchivedAt.After(tasks[j].ArchivedAt)
 			})
@@ -186,7 +190,7 @@ func (ta *TaskArchive) flushLocked() {
 // --- Helper: build ArchivedTask from conversation ---
 
 // BuildArchivedTask creates an ArchivedTask from the current conversation state.
-func BuildArchivedTask(userID string, history []ConversationEntry, status string, projectPath string) ArchivedTask {
+func BuildArchivedTask(userID string, history []ConversationEntry, status ArchivedTaskStatus, projectPath string) ArchivedTask {
 	taskID := fmt.Sprintf("task-%d", time.Now().UnixMilli())
 
 	// Extract original user request.
@@ -219,7 +223,7 @@ func BuildArchivedTask(userID string, history []ConversationEntry, status string
 		LastRequest:       lastRequest,
 		FilePaths:         filePaths,
 		ProjectPath:       projectPath,
-		Status:            status,
+		Status:            NormalizeArchivedTaskStatus(status.String()),
 		CreatedAt:         time.Now(),
 		ArchivedAt:        time.Now(),
 		CompressedHistory: compressed,

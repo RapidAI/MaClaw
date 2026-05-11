@@ -26,7 +26,7 @@ type lansengerGatewayManager struct {
 	app       *App
 	mu        sync.Mutex
 	gateway   *lansenger.Gateway
-	status    string
+	status    gatewayConnectionStatus
 	lastToken string
 
 	localHandler *IMMessageHandler
@@ -35,7 +35,7 @@ type lansengerGatewayManager struct {
 func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
 	return &lansengerGatewayManager{
 		app:    app,
-		status: string(gatewayConnectionStatusDisconnected),
+		status: gatewayConnectionStatusDisconnected,
 	}
 }
 
@@ -57,7 +57,7 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = string(gatewayConnectionStatusDisconnected)
+			m.status = gatewayConnectionStatusDisconnected
 			m.mu.Unlock()
 			_ = gw.Stop()
 		} else {
@@ -107,7 +107,7 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		m.mu.Lock()
 		m.gateway = nil
 		m.lastToken = ""
-		m.status = string(gatewayConnectionStatusError)
+		m.status = gatewayConnectionStatusError
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -119,7 +119,7 @@ func (m *lansengerGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = string(gatewayConnectionStatusDisconnected)
+	m.status = gatewayConnectionStatusDisconnected
 	m.lastToken = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -137,13 +137,13 @@ func (m *lansengerGatewayManager) Stop() {
 func (m *lansengerGatewayManager) Status() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.status
+	return m.status.String()
 }
 
 func (m *lansengerGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
-	m.status = status
 	normalized := normalizeGatewayConnectionStatus(status)
+	m.status = normalized
 	if normalized == gatewayConnectionStatusError {
 		// Clear gateway reference so SyncFromConfig can retry on next call.
 		m.gateway = nil

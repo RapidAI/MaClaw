@@ -3400,7 +3400,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 	if selectedModel == nil || toolCfg.CurrentModel == "" {
 		title := "\u63d0\u793a"
 		message := "\u8bf7\u5148\u9009\u62e9\u670d\u52a1\u5546"
-		if a.CurrentLanguage == "en" {
+		if normalizeAppLanguageKind(a.CurrentLanguage).IsEnglish() {
 			title = "Notice"
 			message = "Please select a provider first."
 		}
@@ -3645,10 +3645,10 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 		}
 	}
 
-	launchMode := strings.ToLower(strings.TrimSpace(config.DefaultLaunchMode))
+	launchMode := normalizeLaunchModeKind(config.DefaultLaunchMode)
 	toolKind := launchToolKind
 	remoteCapableTool := toolKind.IsDesktopRemoteLaunchCapableBuiltin() || findExtraTool(toolKind.String()) != nil
-	if launchMode == "remote" && config.RemoteEnabled && remoteCapableTool {
+	if launchMode.IsRemote() && config.RemoteEnabled && remoteCapableTool {
 		spec, err := a.buildRemoteLaunchSpec(toolName, config, yoloMode, adminMode, pythonEnv, projectDir, useProxy, "")
 		if err != nil {
 			a.log("build remote launch spec failed: " + err.Error())
@@ -4748,6 +4748,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
 	floatingChanged := floatingAppearanceChanged(oldConfig, config)
+	soundChanged := floatingSoundChanged(oldConfig, config)
 	hubClient := (*RemoteHubClient)(nil)
 	if a.remoteSessions != nil {
 		hubClient = a.remoteSessions.hubClient
@@ -4783,6 +4784,13 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 			}
 		}(config)
 	}
+	if !floatingChanged && soundChanged {
+		go func(cfg corelib.AppConfig) {
+			if fa := a.existingFloatingAssistant(); fa != nil {
+				fa.UpdateSoundConfig(cfg)
+			}
+		}(config)
+	}
 	if hubClient != nil {
 		go func(client *RemoteHubClient) {
 			if client.IsConnected() {
@@ -4810,13 +4818,13 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 // those are only relevant when the corresponding fields change. Callers that
 // modify model/API-key/workspace fields should use SaveConfig instead.
 func (a *App) SetDefaultLaunchMode(mode string) error {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode != "local" && mode != "remote" {
+	launchMode := normalizeLaunchModeKind(mode)
+	if launchMode == launchModeInvalid {
 		return fmt.Errorf("invalid default launch mode: %s", mode)
 	}
 	return a.PatchConfig(func(cfg *corelib.AppConfig) {
-		cfg.DefaultLaunchMode = mode
-		if mode == "remote" {
+		cfg.DefaultLaunchMode = launchMode.String()
+		if launchMode.IsRemote() {
 			cfg.RemoteEnabled = true
 		}
 	})
@@ -5088,11 +5096,11 @@ func getMapKeys(m map[string]interface{}) []string {
 }
 
 type DownloadProgress struct {
-	Percentage float64 `json:"percentage"`
-	Downloaded int64   `json:"downloaded"`
-	Total      int64   `json:"total"`
-	Status     string  `json:"status"` // "downloading", "completed", "error", "cancelled"
-	Error      string  `json:"error,omitempty"`
+	Percentage float64                `json:"percentage"`
+	Downloaded int64                  `json:"downloaded"`
+	Total      int64                  `json:"total"`
+	Status     downloadProgressStatus `json:"status"`
+	Error      string                 `json:"error,omitempty"`
 }
 
 func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
@@ -5137,7 +5145,7 @@ func (a *App) DownloadUpdate(url string, fileName string) (string, error) {
 	if lastErr == nil {
 		lastErr = fmt.Errorf("all download sources failed")
 	}
-	a.emitEvent("download-progress", DownloadProgress{Status: "error", Error: lastErr.Error()})
+	a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusError, Error: lastErr.Error()})
 	return "", lastErr
 }
 
@@ -5221,7 +5229,7 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 				if size > 0 {
 					percentage = float64(downloaded) / float64(size) * 100
 				}
-				a.emitEvent("download-progress", DownloadProgress{Percentage: percentage, Downloaded: downloaded, Total: size, Status: "downloading"})
+				a.emitEvent("download-progress", DownloadProgress{Percentage: percentage, Downloaded: downloaded, Total: size, Status: downloadProgressStatusDownloading})
 				lastReport = time.Now()
 			}
 		}
@@ -5230,7 +5238,7 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 		}
 		if err != nil {
 			if ctx.Err() == context.Canceled {
-				a.emitEvent("download-progress", DownloadProgress{Status: "cancelled"})
+				a.emitEvent("download-progress", DownloadProgress{Status: downloadProgressStatusCancelled})
 				return "", fmt.Errorf("download cancelled")
 			}
 			if sourceCtx.Err() == context.DeadlineExceeded {
@@ -5239,7 +5247,7 @@ func (a *App) downloadUpdateFromURL(ctx context.Context, url string, fileName st
 			return "", err
 		}
 	}
-	a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: "completed"})
+	a.emitEvent("download-progress", DownloadProgress{Percentage: 100, Downloaded: downloaded, Total: size, Status: downloadProgressStatusCompleted})
 	return destPath, nil
 }
 func (a *App) CancelDownload(downloadID string) {
@@ -5487,7 +5495,7 @@ func (a *App) getLatestNpmVersion(npmPath string, packageName string) (string, e
 		a.log(fmt.Sprintf("Warning: Failed to create local npm cache dir: %v", err))
 	}
 	args := []string{"view", packageName, "version", "--cache", localCacheDir}
-	if strings.HasPrefix(strings.ToLower(a.CurrentLanguage), "zh") {
+	if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
 		args = append(args, "--registry=https://registry.npmmirror.com")
 	}
 	cmd = createNpmInstallCmd(npmPath, args) // Using createNpmInstallCmd as it's a general npm command runner
@@ -5960,15 +5968,16 @@ func (a *App) SelectAIAssistantFiles() []string {
 func (a *App) getInstalledSkillDirs(toolName string, location string, projectPath string) []string {
 	var installedDirs []string
 	configDirName := getToolConfigDirName(toolName)
+	locationKind := normalizeSkillInstallLocationKind(location)
 
 	var skillsDir string
-	if location == "user" {
+	if locationKind.IsUser() {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return installedDirs
 		}
 		skillsDir = filepath.Join(home, configDirName, "skills")
-	} else if location == "project" {
+	} else if locationKind.IsProject() {
 		if projectPath == "" {
 			return installedDirs
 		}
@@ -6411,8 +6420,9 @@ func (a *App) unzip(src, dest string) error {
 }
 func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {
 	skillKind := normalizeSkillTypeKind(skillType)
+	locationKind := normalizeSkillInstallLocationKind(location)
 	// 1. Validate
-	if location == "project" && skillKind.IsAddress() {
+	if locationKind.IsProject() && skillKind.IsAddress() {
 		return fmt.Errorf("project installation only supports zip/rar files")
 	}
 	// For zip validation, we need to know if value is a path or filename
@@ -6429,7 +6439,7 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 	}
 	configDirName := getToolConfigDirName(toolName)
 	// 2. Install to Tool
-	if location == "user" {
+	if locationKind.IsUser() {
 		if skillKind.IsAddress() {
 			// Skill ID installation
 			if !normalizeRemoteToolNameKind(toolName).IsClaude() {
@@ -6472,7 +6482,7 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 				return fmt.Errorf("unzip failed: %v", err)
 			}
 		}
-	} else if location == "project" {
+	} else if locationKind.IsProject() {
 		if projectPath == "" {
 			return fmt.Errorf("project path required")
 		}
@@ -6533,14 +6543,7 @@ var translations = map[string]map[string]string{
 }
 
 func (a *App) tr(key string, args ...interface{}) string {
-	lang := strings.ToLower(a.CurrentLanguage)
-	if strings.HasPrefix(lang, "zh-hans") || strings.HasPrefix(lang, "zh-cn") {
-		lang = "zh-Hans"
-	} else if strings.HasPrefix(lang, "zh-hant") || strings.HasPrefix(lang, "zh-tw") || strings.HasPrefix(lang, "zh-hk") {
-		lang = "zh-Hant"
-	} else {
-		lang = "en"
-	}
+	lang := normalizeAppLanguageKind(a.CurrentLanguage).TranslationTag()
 	var format string
 	if dict, ok := translations[key]; ok {
 		if val, ok := dict[lang]; ok {

@@ -452,18 +452,8 @@ func buildTrialReflectSummary(run *TraceRun, events []TraceEvent, evidence []Evi
 	if attemptCount == 0 && len(failureCategories) == 0 && !repeatGuardTriggered {
 		return nil
 	}
-	finalOutcome := string(run.Status)
 	recovered := sawFailure && sawSuccess
-	switch {
-	case recovered && run.Status == TraceRunStatusCompleted:
-		finalOutcome = "recovered_success"
-	case run.Status == TraceRunStatusCompleted && sawFailure:
-		finalOutcome = "partial_success"
-	case run.Status == TraceRunStatusCompleted:
-		finalOutcome = "success"
-	case run.Status == TraceRunStatusFailed || run.Status == TraceRunStatusCancelled || run.Status == TraceRunStatusStopped || run.Status == TraceRunStatusTimeout:
-		finalOutcome = "failed"
-	}
+	finalOutcome := classifyTrialReflectFinalOutcome(run.Status, sawFailure, sawSuccess)
 	strategyParts := make([]string, 0, 4)
 	if len(attemptedTools) > 0 {
 		strategyParts = append(strategyParts, "tools="+strings.Join(attemptedTools, ", "))
@@ -490,7 +480,7 @@ func buildTrialReflectSummary(run *TraceRun, events []TraceEvent, evidence []Evi
 		FailureCategories: failureCategories,
 		RepeatGuard:       repeatGuardTriggered,
 		Recovered:         recovered,
-		FinalOutcome:      finalOutcome,
+		FinalOutcome:      finalOutcome.String(),
 		StrategyNote:      truncateTraceText(strings.Join(strategyParts, "; "), 220),
 	}
 }

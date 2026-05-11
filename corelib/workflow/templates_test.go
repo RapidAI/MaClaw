@@ -184,6 +184,24 @@ func TestBuiltinTemplates_BusinessPlanDocGenerationToolPolicyFull(t *testing.T) 
 	}
 }
 
+func TestBuiltinTemplates_BusinessPlanDocGenerationUsesStableASCIIFileNames(t *testing.T) {
+	r := NewWorkflowRegistry()
+	tmpl := r.Match(WorkflowBusinessPlan)
+	if tmpl == nil {
+		t.Fatal("business_plan template not found")
+	}
+	lastPhase := tmpl.Phases[len(tmpl.Phases)-1]
+	if !strings.Contains(lastPhase.Prompt, "{project_slug}_business-plan.md") {
+		t.Fatalf("business plan prompt missing stable ASCII business plan filename: %s", lastPhase.Prompt)
+	}
+	if !strings.Contains(lastPhase.Prompt, "{project_slug}_speech-script.md") {
+		t.Fatalf("business plan prompt missing stable ASCII speech script filename: %s", lastPhase.Prompt)
+	}
+	if strings.Contains(lastPhase.Prompt, "_商业计划书.md") || strings.Contains(lastPhase.Prompt, "_演讲稿.md") {
+		t.Fatalf("business plan prompt should not require localized filename suffixes: %s", lastPhase.Prompt)
+	}
+}
+
 func TestBuiltinTemplates_OpsMaintenanceControlledExecutionPolicy(t *testing.T) {
 	r := NewWorkflowRegistry()
 	tmpl := r.Match(WorkflowOpsMaintenance)

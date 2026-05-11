@@ -139,7 +139,7 @@ func (a *ScriptPluginAdapter) Tools() []ToolDefinition {
 }
 
 func (a *ScriptPluginAdapter) Health() HealthStatus {
-	return HealthStatus{Status: "healthy"}
+	return HealthStatus{Status: PluginHealthHealthy}
 }
 
 // execute runs the script with JSON args on stdin and returns stdout.

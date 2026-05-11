@@ -220,7 +220,7 @@ func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targ
 		})
 	}
 
-	status := "active"
+	status := skillEntryStatusActive
 	installSkillDir := targetDir
 	if installSkillDir == "" && full.Name != "" {
 		if skillsRoot, err := skill.PrimarySkillsDir(); err == nil {
@@ -235,14 +235,14 @@ func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targ
 	if len(full.Files) > 0 {
 		if err := c.extractFiles(full.Name, full.Files, targetDir); err != nil {
 			// Non-fatal: mark as needs_setup but continue.
-			status = "needs_setup"
+			status = skillEntryStatusNeedsSetup
 		}
 	}
 
 	// Install declared dependencies.
 	if len(full.Manifest.Dependencies) > 0 {
 		if err := c.installDependencies(full.Manifest.Dependencies); err != nil {
-			status = "needs_setup"
+			status = skillEntryStatusNeedsSetup
 		}
 	}
 
@@ -260,9 +260,9 @@ func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targ
 		Description:   full.Description,
 		Triggers:      full.Triggers,
 		Steps:         steps,
-		Status:        status,
+		Status:        status.String(),
 		CreatedAt:     time.Now().Format(time.RFC3339),
-		Source:        "hub",
+		Source:        skillEntrySourceHub.String(),
 		SourceProject: base,
 		HubSkillID:    full.ID,
 		HubVersion:    full.Version,

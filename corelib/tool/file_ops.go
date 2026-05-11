@@ -7,7 +7,14 @@ import (
 	"strings"
 )
 
-const DefaultWriteMode = "overwrite"
+type WriteMode string
+
+const (
+	WriteModeOverwrite WriteMode = "overwrite"
+	WriteModeAppend    WriteMode = "append"
+)
+
+const DefaultWriteMode = string(WriteModeOverwrite)
 
 type PathResolver func() string
 
@@ -42,21 +49,31 @@ func ResolveFileToolPath(path string, projectDirResolver PathResolver) (string, 
 	return filepath.Clean(filepath.Join(home, p)), nil
 }
 
-func NormalizeWriteMode(mode string) (string, error) {
+func NormalizeWriteModeKind(mode string) (WriteMode, error) {
 	m := strings.ToLower(strings.TrimSpace(mode))
 	if m == "" {
-		return DefaultWriteMode, nil
+		return WriteModeOverwrite, nil
 	}
 	switch m {
-	case "overwrite", "append":
-		return m, nil
+	case string(WriteModeOverwrite):
+		return WriteModeOverwrite, nil
+	case string(WriteModeAppend):
+		return WriteModeAppend, nil
 	default:
 		return "", fmt.Errorf("不支持的 mode: %s", mode)
 	}
 }
 
+func NormalizeWriteMode(mode string) (string, error) {
+	m, err := NormalizeWriteModeKind(mode)
+	if err != nil {
+		return "", err
+	}
+	return string(m), nil
+}
+
 func WriteTextFile(path, content, mode string) (int64, error) {
-	m, err := NormalizeWriteMode(mode)
+	m, err := NormalizeWriteModeKind(mode)
 	if err != nil {
 		return 0, err
 	}
@@ -66,7 +83,7 @@ func WriteTextFile(path, content, mode string) (int64, error) {
 		return 0, fmt.Errorf("创建目录失败 %s: %w", dir, err)
 	}
 
-	if m == "append" {
+	if m == WriteModeAppend {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return 0, fmt.Errorf("打开文件失败 %s: %w", path, err)
@@ -127,7 +144,6 @@ func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditText
 	}
 	return &EditTextFileResult{Count: applied, Size: info.Size(), Path: path}, nil
 }
-
 
 // EditLineResult is the outcome of a line-level edit operation.
 type EditLineResult struct {

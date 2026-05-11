@@ -18,9 +18,9 @@ import (
 )
 
 var (
-	claudeReleasesBase    = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+	claudeReleasesBase     = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
 	cursorInstallScriptURL = "https://cursor.com/install"
-	httpGet               = http.Get
+	httpGet                = http.Get
 )
 
 type ToolStatus struct {
@@ -169,7 +169,6 @@ func (tm *ToolManager) NeedsUpdate(name, currentVersion string) (bool, string, e
 	return compareVersions(currentVersion, latest) < 0, latest, nil
 }
 
-
 func (tm *ToolManager) getToolVersion(name, path string) (string, error) {
 	var cmd *exec.Cmd
 	cmd = createVersionCmd(path)
@@ -310,7 +309,7 @@ func (tm *ToolManager) InstallTool(name string) error {
 		args = append(args, "--ignore-scripts")
 	}
 
-	if strings.HasPrefix(strings.ToLower(tm.app.CurrentLanguage), "zh") {
+	if normalizeAppLanguageKind(tm.app.CurrentLanguage).IsChinese() {
 		args = append(args, "--registry=https://registry.npmmirror.com")
 	}
 
@@ -351,14 +350,14 @@ func (tm *ToolManager) InstallTool(name string) error {
 			tm.app.log(tm.app.tr("Detected ENOTEMPTY error (file lock issue). Will retry with cleanup..."))
 			// Clean up the problematic directory more aggressively
 			time.Sleep(2 * time.Second) // Wait for file locks to release
-			os.RemoveAll(pkgDir) // Try to remove again
+			os.RemoveAll(pkgDir)        // Try to remove again
 			needsRetry = true
 		}
 
 		if needsRetry {
 			// Try to clean cache
 			cleanArgs := []string{"cache", "clean", "--force", "--cache", localCacheDir}
-			if strings.HasPrefix(strings.ToLower(tm.app.CurrentLanguage), "zh") {
+			if normalizeAppLanguageKind(tm.app.CurrentLanguage).IsChinese() {
 				cleanArgs = append(cleanArgs, "--registry=https://registry.npmmirror.com")
 			}
 
@@ -454,7 +453,7 @@ func (tm *ToolManager) UpdateTool(name string) error {
 		args = append(args, "--cache", localCacheDir)
 	}
 
-	if strings.HasPrefix(strings.ToLower(tm.app.CurrentLanguage), "zh") {
+	if normalizeAppLanguageKind(tm.app.CurrentLanguage).IsChinese() {
 		args = append(args, "--registry=https://registry.npmmirror.com")
 	}
 
@@ -479,10 +478,10 @@ func (tm *ToolManager) UpdateTool(name string) error {
 		// Check if it's a file locking error
 		outputStr := string(out)
 		isLockError := strings.Contains(outputStr, "EPERM") ||
-					  strings.Contains(outputStr, "EBUSY") ||
-					  strings.Contains(outputStr, "ENOTEMPTY") ||
-					  strings.Contains(outputStr, "operation not permitted") ||
-					  strings.Contains(outputStr, "resource busy or locked")
+			strings.Contains(outputStr, "EBUSY") ||
+			strings.Contains(outputStr, "ENOTEMPTY") ||
+			strings.Contains(outputStr, "operation not permitted") ||
+			strings.Contains(outputStr, "resource busy or locked")
 
 		if !isLockError || i == maxRetries-1 {
 			// Not a lock error or final retry failed

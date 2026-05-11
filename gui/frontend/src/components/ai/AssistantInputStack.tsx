@@ -88,7 +88,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     display: "flex",
                     flexDirection: "column",
                     flexShrink: 0,
-                    minHeight: inputAreaHeight ? "96px" : undefined,
+                    minHeight: inputAreaHeight ? "72px" : undefined,
                     maxHeight: "55%",
                     height: inputAreaHeight ? `${inputAreaHeight}px` : undefined,
                     minWidth: 0,

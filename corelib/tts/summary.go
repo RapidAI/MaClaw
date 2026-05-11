@@ -8,8 +8,8 @@ import (
 
 // voiceSummaryInput is the structured input from the frontend.
 type voiceSummaryInput struct {
-	UserText string `json:"userText"` // user's original request
-	Status   string `json:"status"`   // "success", "error", "paused", "needs_confirmation"
+	UserText string             `json:"userText"` // user's original request
+	Status   voiceSummaryStatus `json:"status"`   // "success", "error", "paused", "needs_confirmation"
 }
 
 // GenerateVoiceSummary generates a spoken status announcement from structured input.
@@ -45,7 +45,7 @@ func GenerateVoiceSummary(input string, maxRunes int) string {
 
 // buildStructuredSummary generates the spoken sentence from structured input.
 func buildStructuredSummary(si voiceSummaryInput, maxRunes int) string {
-	statusPhrase := normalizeVoiceSummaryStatus(si.Status).Phrase()
+	statusPhrase := normalizeVoiceSummaryStatus(si.Status.String()).Phrase()
 
 	// Clean the user text for speech
 	taskDesc := cleanForSpeech(si.UserText)

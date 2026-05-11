@@ -62,6 +62,10 @@ func (kind imMessagePlatformKind) IsDesktop() bool {
 	return kind == imMessagePlatformDesktop
 }
 
+func (kind imMessagePlatformKind) IsKnown() bool {
+	return kind != imMessagePlatformUnknown
+}
+
 func (kind imMessagePlatformKind) IsDesktopPlaybackTarget() bool {
 	return kind == imMessagePlatformUnknown || kind == imMessagePlatformDesktop || kind == imMessagePlatformTUI
 }

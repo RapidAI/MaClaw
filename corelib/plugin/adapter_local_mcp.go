@@ -164,9 +164,9 @@ func (a *LocalMCPPluginAdapter) Tools() []ToolDefinition {
 
 func (a *LocalMCPPluginAdapter) Health() HealthStatus {
 	if a.healthy.Load() {
-		return HealthStatus{Status: "healthy"}
+		return HealthStatus{Status: PluginHealthHealthy}
 	}
-	return HealthStatus{Status: "unhealthy"}
+	return HealthStatus{Status: PluginHealthUnhealthy}
 }
 
 // ---------- JSON-RPC helpers ----------

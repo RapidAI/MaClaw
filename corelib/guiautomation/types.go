@@ -15,7 +15,7 @@ type GUIRecordedFlow struct {
 // GUIRecordedStep represents a single recorded GUI operation step with
 // three layers of locator information captured simultaneously.
 type GUIRecordedStep struct {
-	Action      string        `json:"action"`       // click, type, scroll, drag, keypress
+	Action      string        `json:"action"` // click, type, scroll, drag, keypress
 	WindowTitle string        `json:"window_title"`
 	Timestamp   time.Duration `json:"timestamp"`
 
@@ -40,7 +40,7 @@ type AccessibilityRef struct {
 
 // GUICriterionSpec defines a success criterion for a GUI task.
 type GUICriterionSpec struct {
-	Type    string `json:"type"`              // ocr_contains, window_exists, element_exists
+	Type    string `json:"type"` // ocr_contains, window_exists, element_exists
 	Pattern string `json:"pattern"`
 	Window  string `json:"window,omitempty"`
 }
@@ -66,7 +66,7 @@ type GUIStepSpec struct {
 // GUITaskState tracks the execution state of a GUI task.
 type GUITaskState struct {
 	ID          string          `json:"id"`
-	Status      string          `json:"status"` // running, completed, failed, paused, cancelled
+	Status      GUITaskStatus   `json:"status"` // running, completed, failed, paused, cancelled
 	TotalSteps  int             `json:"total_steps"`
 	CurrentStep int             `json:"current_step"`
 	RetryCount  int             `json:"retry_count"`

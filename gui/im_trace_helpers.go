@@ -107,7 +107,7 @@ func (h *IMMessageHandler) buildResumeTraceContext(userID, fallbackTask string) 
 	return h.buildTraceEvidencePrompt(userID, fallbackTask)
 }
 
-func traceCategoryForToolExecution(execResult toolExecutionResult) string {
+func traceCategoryForToolExecution(execResult toolExecutionResult) traceEvidenceCategory {
 	return execResult.ToolKind.TraceCategory(execResult)
 }
 
@@ -139,7 +139,8 @@ func (h *IMMessageHandler) runTraceStatus(ctx *LoopContext, result *IMAgentRespo
 	if result != nil && result.Error != "" {
 		return TraceRunStatusFailed
 	}
-	switch traceStatusFromLoopState(ctx.State()) {
+	status := traceStatusFromLoopStateKind(ctx.LoopState())
+	switch status {
 	case TraceRunStatusCompleted:
 		return TraceRunStatusCompleted
 	case TraceRunStatusFailed:
@@ -151,7 +152,7 @@ func (h *IMMessageHandler) runTraceStatus(ctx *LoopContext, result *IMAgentRespo
 	case TraceRunStatusPaused:
 		return TraceRunStatusPaused
 	default:
-		return traceStatusFromLoopState(ctx.State())
+		return status
 	}
 }
 
@@ -173,7 +174,7 @@ func (h *IMMessageHandler) finalizeTraceResult(ctx *LoopContext, resp *IMAgentRe
 		resp.TrialReflectStatus = view.TrialReflectSummary.FinalOutcome
 		resp.TrialReflectFailures = view.TrialReflectSummary.FailureCount
 		if shouldPersistTrialReflectSummary(view.TrialReflectSummary) {
-			h.appendTraceEvidence(ctx, "trial_reflect_summary", "decision", "trial-reflect summary", view.TrialReflectSummary.StrategyNote, "", "")
+			h.appendTraceEvidence(ctx, traceSourceKindTrialReflectSummary.String(), traceEvidenceCategoryDecision.String(), "trial-reflect summary", view.TrialReflectSummary.StrategyNote, "", "")
 			resp.TraceSummary = h.traceService.TraceSummary(ctx.RunID)
 		}
 	}

@@ -29,52 +29,52 @@ import (
 
 // SkillRunSessionMeta captures the remote session associated with a skill run.
 type SkillRunSessionMeta struct {
-	SessionID       string `json:"session_id,omitempty"`
-	Tool            string `json:"tool,omitempty"`
-	ProjectPath     string `json:"project_path,omitempty"`
-	Status          string `json:"status,omitempty"`
-	JobID           string `json:"job_id,omitempty"`
-	RunID           string `json:"run_id,omitempty"`
-	ResumeSessionID string `json:"resume_session_id,omitempty"`
-	LaunchSource    string `json:"launch_source,omitempty"`
+	SessionID       string        `json:"session_id,omitempty"`
+	Tool            string        `json:"tool,omitempty"`
+	ProjectPath     string        `json:"project_path,omitempty"`
+	Status          SessionStatus `json:"status,omitempty"`
+	JobID           string        `json:"job_id,omitempty"`
+	RunID           string        `json:"run_id,omitempty"`
+	ResumeSessionID string        `json:"resume_session_id,omitempty"`
+	LaunchSource    string        `json:"launch_source,omitempty"`
 }
 
 // SkillRunSummary provides a compact, user-facing summary of the most
 // important state for a skill run.
 type SkillRunSummary struct {
-	CurrentStepIndex          int    `json:"current_step_index,omitempty"`
-	CurrentStep               string `json:"current_step,omitempty"`
-	CurrentStepStatus         string `json:"current_step_status,omitempty"`
-	LastCompletedStep         string `json:"last_completed_step,omitempty"`
-	LastCompletedStepIndex    int    `json:"last_completed_step_index,omitempty"`
-	LastOutputSnippet         string `json:"last_output_snippet,omitempty"`
-	LastErrorSnippet          string `json:"last_error_snippet,omitempty"`
-	HasSessionBinding         bool   `json:"has_session_binding,omitempty"`
-	NeedsArtifactVerification bool   `json:"needs_artifact_verification,omitempty"`
-	ArtifactPath              string `json:"artifact_path,omitempty"`
-	ArtifactStatus            string `json:"artifact_status,omitempty"`
+	CurrentStepIndex          int                 `json:"current_step_index,omitempty"`
+	CurrentStep               string              `json:"current_step,omitempty"`
+	CurrentStepStatus         skillStepStatus     `json:"current_step_status,omitempty"`
+	LastCompletedStep         string              `json:"last_completed_step,omitempty"`
+	LastCompletedStepIndex    int                 `json:"last_completed_step_index,omitempty"`
+	LastOutputSnippet         string              `json:"last_output_snippet,omitempty"`
+	LastErrorSnippet          string              `json:"last_error_snippet,omitempty"`
+	HasSessionBinding         bool                `json:"has_session_binding,omitempty"`
+	NeedsArtifactVerification bool                `json:"needs_artifact_verification,omitempty"`
+	ArtifactPath              string              `json:"artifact_path,omitempty"`
+	ArtifactStatus            skillArtifactStatus `json:"artifact_status,omitempty"`
 }
 
-// SkillRunStatus 表示一次 skill 执行的状态。
+// SkillRunStatus represents one skill execution.
 type SkillRunStatus struct {
-	RunID             string               `json:"run_id"`
-	Skill             string               `json:"skill"`
-	Status            string               `json:"status"` // "running", "success", "failed", "cancelled"
-	Steps             []StepResult         `json:"steps"`
-	Session           *SkillRunSessionMeta `json:"session,omitempty"`
-	SessionProgress   *SessionProgressInfo `json:"session_progress,omitempty"`
-	Summary           SkillRunSummary      `json:"summary,omitempty"`
-	ExpectedOutput    string               `json:"expected_output,omitempty"`
-	ExpectedArtifact  bool                 `json:"expected_artifact,omitempty"`
-	StartedAt         string               `json:"started_at"`
-	EndedAt           string               `json:"ended_at,omitempty"`
-	Error             string               `json:"error,omitempty"`
-	Warnings          []string             `json:"warnings,omitempty"`
-	DurationMs        int64                `json:"duration_ms,omitempty"`
-	TotalSteps        int                  `json:"total_steps,omitempty"`
-	FailedSteps       int                  `json:"failed_steps,omitempty"`
-	SkippedSteps      int                  `json:"skipped_steps,omitempty"`
-	SelfRepairPending bool                 `json:"self_repair_pending,omitempty"` // true when async self-repair is in progress
+	RunID             string                  `json:"run_id"`
+	Skill             string                  `json:"skill"`
+	Status            skillRunLifecycleStatus `json:"status"`
+	Steps             []StepResult            `json:"steps"`
+	Session           *SkillRunSessionMeta    `json:"session,omitempty"`
+	SessionProgress   *SessionProgressInfo    `json:"session_progress,omitempty"`
+	Summary           SkillRunSummary         `json:"summary,omitempty"`
+	ExpectedOutput    string                  `json:"expected_output,omitempty"`
+	ExpectedArtifact  bool                    `json:"expected_artifact,omitempty"`
+	StartedAt         string                  `json:"started_at"`
+	EndedAt           string                  `json:"ended_at,omitempty"`
+	Error             string                  `json:"error,omitempty"`
+	Warnings          []string                `json:"warnings,omitempty"`
+	DurationMs        int64                   `json:"duration_ms,omitempty"`
+	TotalSteps        int                     `json:"total_steps,omitempty"`
+	FailedSteps       int                     `json:"failed_steps,omitempty"`
+	SkippedSteps      int                     `json:"skipped_steps,omitempty"`
+	SelfRepairPending bool                    `json:"self_repair_pending,omitempty"` // true when async self-repair is in progress
 }
 
 // SessionProgressInfo captures the latest state from the session's internal
@@ -82,37 +82,37 @@ type SkillRunStatus struct {
 // visibility into what the session agent is doing without needing to call
 // query_session separately.
 type SessionProgressInfo struct {
-	SessionStatus   string   `json:"session_status"`              // "starting", "running", "busy", "completed", "failed"
-	CurrentTask     string   `json:"current_task,omitempty"`      // what the session agent is currently doing
-	ProgressSummary string   `json:"progress_summary,omitempty"`  // human-readable progress
-	LastResult      string   `json:"last_result,omitempty"`       // last tool call result or output
-	LastCommand     string   `json:"last_command,omitempty"`      // last command executed
-	WaitingForUser  bool     `json:"waiting_for_user,omitempty"`  // session agent is waiting for input
-	LastOutputLines []string `json:"last_output_lines,omitempty"` // last N raw output lines (max 10)
-	UpdatedAt       string   `json:"updated_at,omitempty"`        // when this snapshot was taken
-	PollCount       int      `json:"poll_count,omitempty"`        // how many times we've polled
+	SessionStatus   SessionStatus `json:"session_status"`
+	CurrentTask     string        `json:"current_task,omitempty"`      // what the session agent is currently doing
+	ProgressSummary string        `json:"progress_summary,omitempty"`  // human-readable progress
+	LastResult      string        `json:"last_result,omitempty"`       // last tool call result or output
+	LastCommand     string        `json:"last_command,omitempty"`      // last command executed
+	WaitingForUser  bool          `json:"waiting_for_user,omitempty"`  // session agent is waiting for input
+	LastOutputLines []string      `json:"last_output_lines,omitempty"` // last N raw output lines (max 10)
+	UpdatedAt       string        `json:"updated_at,omitempty"`        // when this snapshot was taken
+	PollCount       int           `json:"poll_count,omitempty"`        // how many times we've polled
 }
 
-// StepResult 记录单步执行结果。
+// StepResult records a single step result.
 type StepResult struct {
-	Index           int      `json:"index"`
-	Name            string   `json:"name,omitempty"`
-	Action          string   `json:"action"`
-	Status          string   `json:"status"` // "pending", "running", "success", "failed", "skipped", "timeout"
-	Output          string   `json:"output,omitempty"`
-	Error           string   `json:"error,omitempty"`
-	ExitCode        int      `json:"exit_code,omitempty"`
-	StdoutLastLines []string `json:"stdout_last_lines,omitempty"`
-	StderrLastLines []string `json:"stderr_last_lines,omitempty"`
-	ShellPath       string   `json:"shell_path,omitempty"` // 使用的 shell（仅 bash action）
-	CommandResolved string   `json:"command_resolved,omitempty"`
-	DurationMs      int64    `json:"duration_ms,omitempty"`
-	Timeout         bool     `json:"timeout,omitempty"`
+	Index           int             `json:"index"`
+	Name            string          `json:"name,omitempty"`
+	Action          string          `json:"action"`
+	Status          skillStepStatus `json:"status"`
+	Output          string          `json:"output,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	ExitCode        int             `json:"exit_code,omitempty"`
+	StdoutLastLines []string        `json:"stdout_last_lines,omitempty"`
+	StderrLastLines []string        `json:"stderr_last_lines,omitempty"`
+	ShellPath       string          `json:"shell_path,omitempty"`
+	CommandResolved string          `json:"command_resolved,omitempty"`
+	DurationMs      int64           `json:"duration_ms,omitempty"`
+	Timeout         bool            `json:"timeout,omitempty"`
 }
 
 // ── Skill Runner ────────────────────────────────────────────────────────
 
-// SkillRunner 提供异步、平台感知的 skill 执行能力。
+// SkillRunner provides asynchronous, platform-aware skill execution.
 type SkillRunner struct {
 	executor      *SkillExecutor
 	mu            sync.RWMutex
@@ -139,7 +139,7 @@ type skillRun struct {
 	extraEnv      map[string]string // env vars from run_skill caller, injected into subprocesses
 }
 
-// NewSkillRunner 创建 SkillRunner。
+// NewSkillRunner creates a SkillRunner.
 func NewSkillRunner(executor *SkillExecutor) *SkillRunner {
 	return &SkillRunner{
 		executor: executor,
@@ -147,9 +147,9 @@ func NewSkillRunner(executor *SkillExecutor) *SkillRunner {
 	}
 }
 
-// StartRun 异步启动 skill 执行，返回 runID 供前端轮询。
+// StartRun starts a skill asynchronously and returns a run ID for polling.
 func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{}) (string, error) {
-	// 查找 skill — match by name regardless of status so we can provide
+	// ?? skill ? match by name regardless of status so we can provide
 	// specific error messages for disabled/needs_setup skills (Bug #3).
 	r.executor.mu.RLock()
 	var target *corelib.NLSkillEntry
@@ -173,7 +173,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 			cp := collisions[0]
 			target = &cp
 		} else if len(collisions) > 1 {
-			// Multiple skills match the bare name — require qualified name.
+			// Multiple skills match the bare name ? require qualified name.
 			var qualifiedNames []string
 			for _, s := range collisions {
 				if s.Publisher != "" {
@@ -183,7 +183,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 				}
 			}
 			r.executor.mu.RUnlock()
-			return "", fmt.Errorf("skill name %q is ambiguous — multiple skills match:\n  %s\nPlease use the qualified name (publisher:name) to disambiguate",
+			return "", fmt.Errorf("skill name %q is ambiguous ? multiple skills match:\n  %s\nPlease use the qualified name (publisher:name) to disambiguate",
 				skillName, strings.Join(qualifiedNames, "\n  "))
 		}
 	}
@@ -214,7 +214,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		target.SkillDir = normalizeWindowsShortPathGUI(target.SkillDir)
 	}
 
-	// Migrate legacy .cceasy paths to .maclaw — crafted skills from older
+	// Migrate legacy .cceasy paths to .maclaw ? crafted skills from older
 	// versions may reference scripts in the old directory structure.
 	migrateLegacyCceasyPaths(target)
 	if err := cskill.HydrateRunMetadataFromDir(target); err != nil {
@@ -310,7 +310,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		status: SkillRunStatus{
 			RunID:          runID,
 			Skill:          skillName,
-			Status:         string(skillRunStatusRunning),
+			Status:         skillRunStatusRunning,
 			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
 			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, prep.ExecutionSteps,
 				strings.TrimSpace(templateVars["output"]), len(prep.SelectedSteps) == 0),
@@ -327,7 +327,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 		run.status.Steps[i] = StepResult{
 			Index:  i,
 			Action: step.Action,
-			Status: string(skillStepStatusPending),
+			Status: skillStepStatusPending,
 		}
 	}
 	r.runs[runID] = run
@@ -339,7 +339,7 @@ func (r *SkillRunner) StartRun(skillName string, runArgs map[string]interface{})
 	return runID, nil
 }
 
-// GetRunStatus 返回指定 runID 的执行状态（深拷贝）。
+// startPipelineRun starts a pipeline skill asynchronously.
 func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkillEntry, runArgs map[string]interface{}, templateVars map[string]string, extraEnv map[string]string) (string, error) {
 	if target == nil {
 		return "", fmt.Errorf("skill entry is nil")
@@ -367,7 +367,7 @@ func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkill
 		status: SkillRunStatus{
 			RunID:          runID,
 			Skill:          skillName,
-			Status:         string(skillRunStatusRunning),
+			Status:         skillRunStatusRunning,
 			ExpectedOutput: strings.TrimSpace(templateVars["output"]),
 			ExpectedArtifact: skillRunExpectsArtifactForSteps(target, nil,
 				strings.TrimSpace(templateVars["output"]), true),
@@ -386,7 +386,7 @@ func (r *SkillRunner) startPipelineRun(skillName string, target *corelib.NLSkill
 			Index:  i,
 			Name:   step.Skill,
 			Action: "pipeline",
-			Status: string(skillStepStatusPending),
+			Status: skillStepStatusPending,
 		}
 	}
 	r.runs[runID] = run
@@ -425,14 +425,14 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		execErr = err
 		for i := range run.status.Steps {
 			if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
-				run.status.Steps[i].Status = string(skillStepStatusSkipped)
+				run.status.Steps[i].Status = skillStepStatusSkipped
 			}
 		}
 		run.status.Error = err.Error()
 		r.mu.Unlock()
 		r.updateUsageStats(entry, execErr)
 		r.mu.Lock()
-		run.status.Status = string(skillRunStatusFailed)
+		run.status.Status = skillRunStatusFailed
 		run.status.EndedAt = time.Now().Format(time.RFC3339)
 		run.status.DurationMs = time.Since(execStart).Milliseconds()
 		r.mu.Unlock()
@@ -447,16 +447,16 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 			break
 		}
 		run.status.Steps[i].Name = stepResult.Skill
-		switch normalizeSkillPipelineStatus(stepResult.Status) {
+		switch normalizeSkillPipelineStatus(string(stepResult.Status)) {
 		case skillPipelineStatusCompleted:
-			run.status.Steps[i].Status = string(skillStepStatusSuccess)
+			run.status.Steps[i].Status = skillStepStatusSuccess
 		case skillPipelineStatusFailed:
-			run.status.Steps[i].Status = string(skillStepStatusFailed)
+			run.status.Steps[i].Status = skillStepStatusFailed
 			run.status.Steps[i].Error = stepResult.Error
 		case skillPipelineStatusSkipped:
-			run.status.Steps[i].Status = string(skillStepStatusSkipped)
+			run.status.Steps[i].Status = skillStepStatusSkipped
 		default:
-			run.status.Steps[i].Status = stepResult.Status
+			run.status.Steps[i].Status = normalizeSkillStepStatus(string(stepResult.Status))
 		}
 		if stepResult.CapturedVars != nil {
 			run.status.Steps[i].Output = stepResult.CapturedVars["output"]
@@ -464,11 +464,11 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 	}
 	for i := len(result.StepResults); i < len(run.status.Steps); i++ {
 		if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
-			run.status.Steps[i].Status = string(skillStepStatusSkipped)
+			run.status.Steps[i].Status = skillStepStatusSkipped
 		}
 	}
 	finalStatus := skillRunStatusFailed
-	switch normalizeSkillPipelineStatus(result.Status) {
+	switch normalizeSkillPipelineStatus(string(result.Status)) {
 	case skillPipelineStatusCompleted:
 		finalStatus = skillRunStatusSuccess
 	case skillPipelineStatusCancelled:
@@ -487,7 +487,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		r.updateUsageStats(entry, execErr)
 	}
 	r.mu.Lock()
-	run.status.Status = string(finalStatus)
+	run.status.Status = finalStatus
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	run.status.DurationMs = time.Since(execStart).Milliseconds()
 	r.mu.Unlock()
@@ -523,7 +523,7 @@ func (r *SkillRunner) GetRunStatus(runID string) (*SkillRunStatus, error) {
 	return &cp, nil
 }
 
-// CancelRun 取消正在执行的 skill。
+// CancelRun cancels a running skill.
 func (r *SkillRunner) CancelRun(runID string) error {
 	r.mu.RLock()
 	run, ok := r.runs[runID]
@@ -538,7 +538,7 @@ func (r *SkillRunner) CancelRun(runID string) error {
 	return nil
 }
 
-// ListRuns 返回所有执行记录。
+// ListRuns returns all run records.
 func (r *SkillRunner) ListRuns() []SkillRunStatus {
 	r.mu.RLock()
 	result := make([]SkillRunStatus, 0, len(r.runs))
@@ -559,7 +559,7 @@ func (r *SkillRunner) ListRuns() []SkillRunStatus {
 	return result
 }
 
-// CleanupFinished 清理已完成的执行记录（保留最近 maxKeep 条）。
+// CleanupFinished removes old finished run records, keeping the newest maxKeep items.
 func (r *SkillRunner) CleanupFinished(maxKeep int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -577,7 +577,6 @@ func (r *SkillRunner) CleanupFinished(maxKeep int) {
 			finished = append(finished, finishedEntry{id: id, endedAt: run.status.EndedAt})
 		}
 	}
-	// 按 EndedAt 升序排序（最旧的在前）
 	for i := 0; i < len(finished); i++ {
 		for j := i + 1; j < len(finished); j++ {
 			if finished[j].endedAt < finished[i].endedAt {
@@ -627,7 +626,7 @@ func (r *SkillRunner) hydrateRunSessionMeta(status *SkillRunStatus) {
 		return
 	}
 	session.mu.RLock()
-	status.Session.Status = string(session.Status)
+	status.Session.Status = normalizeSessionStatus(session.Status.String())
 	if status.Session.JobID == "" {
 		status.Session.JobID = session.JobID
 	}
@@ -664,18 +663,18 @@ func summarizeSkillRun(status *SkillRunStatus) {
 	if artifactPath != "" {
 		status.Summary.ArtifactPath = artifactPath
 		if status.IsRunning() {
-			status.Summary.ArtifactStatus = string(skillArtifactStatusPending)
+			status.Summary.ArtifactStatus = skillArtifactStatusPending
 		} else if artifactExists(artifactPath) {
-			status.Summary.ArtifactStatus = string(skillArtifactStatusVerified)
+			status.Summary.ArtifactStatus = skillArtifactStatusVerified
 		} else if artifactExpected {
-			status.Summary.ArtifactStatus = string(skillArtifactStatusMissing)
+			status.Summary.ArtifactStatus = skillArtifactStatusMissing
 		}
 	}
 	if craftVerificationPassedStatus(status) {
-		status.Summary.ArtifactStatus = string(skillArtifactStatusVerified)
+		status.Summary.ArtifactStatus = skillArtifactStatusVerified
 	}
 	if isInstructionOnlySkillStatus(status) {
-		status.Summary.NeedsArtifactVerification = normalizeSkillArtifactStatus(status.Summary.ArtifactStatus) != skillArtifactStatusVerified
+		status.Summary.NeedsArtifactVerification = status.Summary.ArtifactStatus != skillArtifactStatusVerified
 	}
 	for i, step := range status.Steps {
 		switch step.LifecycleStatus() {
@@ -765,12 +764,12 @@ func extractArtifactPathCandidate(line string) string {
 	if trimmed == "" {
 		return ""
 	}
-	trimmed = strings.Trim(trimmed, "`\"'“””)。；，")
+	trimmed = strings.Trim(trimmed, "`\"' ,.;:()[]{}")
 	if looksLikeArtifactPath(trimmed) && filepath.IsAbs(trimmed) {
 		return trimmed
 	}
 	for _, field := range strings.Fields(trimmed) {
-		candidate := strings.Trim(field, "`\"'“””)。；，")
+		candidate := strings.Trim(field, "`\"' ,.;:()[]{}")
 		if looksLikeArtifactPath(candidate) && filepath.IsAbs(candidate) {
 			return candidate
 		}
@@ -894,7 +893,7 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 	original := command
 	result := cskill.SubstituteVariablesWithQuote(command, vars, quoteSkillInputForShell)
 	if result != original {
-		log.Printf("[skill-runner] variable substitution: %q 鈫?%q", original, result)
+		log.Printf("[skill-runner] variable substitution: %q -> %q", original, result)
 	}
 	return result
 }
@@ -902,7 +901,7 @@ func substituteSkillVariables(command string, vars map[string]string) string {
 // quoteSkillInputForShell wraps a user-supplied value for safe embedding
 // in a shell command string.
 //
-// On Windows the skill runner dispatches simple commands (node, python, …)
+// On Windows the skill runner dispatches simple commands (node, python, ...)
 // through cmd.exe, which does NOT recognise single-quotes as delimiters.
 // Using single-quotes caused the xh-md-to-pdf path-concatenation bug where
 // the trailing backslash of {baseDir} merged with the opening single-quote.
@@ -1130,26 +1129,26 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = string(skillRunStatusFailed)
+			run.status.Status = skillRunStatusFailed
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
 		}
 	}()
 
-	// Interactive skills should not be auto-executed — they're meant to be
+	// Interactive skills should not be auto-executed ? they are meant to be
 	// invoked on-demand by AI agents. If mode == "interactive", skip automatic
 	// step execution and mark as success (the skill's instructions are available
 	// for the AI context, not for runner auto-execution).
 	if strings.EqualFold(skill.Mode, "interactive") {
 		r.mu.Lock()
 		for i := range skill.Steps {
-			run.status.Steps[i].Status = string(skillStepStatusSkipped)
+			run.status.Steps[i].Status = skillStepStatusSkipped
 		}
 		r.mu.Unlock()
 		r.updateUsageStats(skill, nil)
 		r.mu.Lock()
-		run.status.Status = string(skillRunStatusSuccess)
+		run.status.Status = skillRunStatusSuccess
 		run.status.EndedAt = time.Now().Format(time.RFC3339)
 		run.status.DurationMs = time.Since(execStart).Milliseconds()
 		r.mu.Unlock()
@@ -1228,14 +1227,14 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Lock()
 			for i := range run.status.Steps {
 				if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
-					run.status.Steps[i].Status = string(skillStepStatusSkipped)
+					run.status.Steps[i].Status = skillStepStatusSkipped
 				}
 			}
 			run.status.Error = errMsg
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = string(skillRunStatusFailed)
+			run.status.Status = skillRunStatusFailed
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1250,14 +1249,14 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Lock()
 			for i := range run.status.Steps {
 				if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending {
-					run.status.Steps[i].Status = string(skillStepStatusSkipped)
+					run.status.Steps[i].Status = skillStepStatusSkipped
 				}
 			}
 			run.status.Error = errMsg
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = string(skillRunStatusFailed)
+			run.status.Status = skillRunStatusFailed
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1278,7 +1277,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	// system in StartRun (Registry.FixAll). The pip/npm packages are checked
 	// and installed before execution begins. ──
 
-	log.Printf("[skill-runner] ▶ starting skill %q (%d steps, mode=%s, dir=%s)",
+	log.Printf("[skill-runner] starting skill %q (%d steps, mode=%s, dir=%s)",
 		skill.Name, len(skill.Steps), skill.Mode, skill.SkillDir)
 	if len(skill.RequiredArgs) > 0 {
 		log.Printf("[skill-runner]   required_args: %v", skill.RequiredArgs)
@@ -1307,9 +1306,9 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		case <-ctx.Done():
 			r.mu.Lock()
 			for j := i; j < len(skill.Steps); j++ {
-				run.status.Steps[j].Status = string(skillStepStatusSkipped)
+				run.status.Steps[j].Status = skillStepStatusSkipped
 			}
-			run.status.Status = string(skillRunStatusCancelled)
+			run.status.Status = skillRunStatusCancelled
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1318,9 +1317,9 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			if ctx.Err() != nil {
 				r.mu.Lock()
 				for j := i; j < len(skill.Steps); j++ {
-					run.status.Steps[j].Status = string(skillStepStatusSkipped)
+					run.status.Steps[j].Status = skillStepStatusSkipped
 				}
-				run.status.Status = string(skillRunStatusCancelled)
+				run.status.Status = skillRunStatusCancelled
 				run.status.EndedAt = time.Now().Format(time.RFC3339)
 				run.status.DurationMs = time.Since(execStart).Milliseconds()
 				r.mu.Unlock()
@@ -1329,7 +1328,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			execErr := fmt.Errorf("skill execution exceeded global timeout of %v", globalTimeout)
 			r.mu.Lock()
 			for j := i; j < len(skill.Steps); j++ {
-				run.status.Steps[j].Status = string(skillStepStatusSkipped)
+				run.status.Steps[j].Status = skillStepStatusSkipped
 				if j == i {
 					run.status.Steps[j].Timeout = true
 					run.status.Steps[j].Error = "global timeout exceeded"
@@ -1339,7 +1338,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Unlock()
 			r.updateUsageStats(skill, execErr)
 			r.mu.Lock()
-			run.status.Status = string(skillRunStatusFailed)
+			run.status.Status = skillRunStatusFailed
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			r.mu.Unlock()
@@ -1347,17 +1346,20 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		default:
 		}
 
-		// Handle condition: "on_failure" — skip if no prior failure
-		if step.Condition == "on_failure" && !hasFailure {
+		condition := normalizeSkillStepConditionKind(step.Condition)
+		onError := normalizeSkillStepOnErrorKind(step.OnError)
+
+		// Handle condition: "on_failure" ? skip if no prior failure
+		if condition == skillStepConditionOnFailure && !hasFailure {
 			r.mu.Lock()
-			run.status.Steps[i].Status = string(skillStepStatusSkipped)
+			run.status.Steps[i].Status = skillStepStatusSkipped
 			r.mu.Unlock()
 			continue
 		}
-		// Handle condition: "on_success" — skip if there was a failure
-		if step.Condition == "on_success" && hasFailure {
+		// Handle condition: "on_success" ? skip if there was a failure
+		if condition == skillStepConditionOnSuccess && hasFailure {
 			r.mu.Lock()
-			run.status.Steps[i].Status = string(skillStepStatusSkipped)
+			run.status.Steps[i].Status = skillStepStatusSkipped
 			r.mu.Unlock()
 			continue
 		}
@@ -1366,7 +1368,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		if isAPIWorkflow && len(run.selectedSteps) > 0 && step.Label != "" {
 			if !cskill.StepLabelSelected(step.Label, run.selectedSteps) {
 				r.mu.Lock()
-				run.status.Steps[i].Status = string(skillStepStatusSkipped)
+				run.status.Steps[i].Status = skillStepStatusSkipped
 				r.mu.Unlock()
 				log.Printf("[skill-runner] step %d/%d: skipped (label %q not in selected steps)", i+1, len(skill.Steps), step.Label)
 				continue
@@ -1375,7 +1377,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		// api_workflow mode: skip unlabeled steps when step selection is active
 		if isAPIWorkflow && len(run.selectedSteps) > 0 && step.Label == "" {
 			r.mu.Lock()
-			run.status.Steps[i].Status = string(skillStepStatusSkipped)
+			run.status.Steps[i].Status = skillStepStatusSkipped
 			r.mu.Unlock()
 			log.Printf("[skill-runner] step %d/%d: skipped (no label, step selection active)", i+1, len(skill.Steps))
 			continue
@@ -1387,7 +1389,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			vars := r.templateVarsForRun(run.status.RunID)
 			if !cskill.EvaluateStepWhen(step.When, vars) {
 				r.mu.Lock()
-				run.status.Steps[i].Status = string(skillStepStatusSkipped)
+				run.status.Steps[i].Status = skillStepStatusSkipped
 				r.mu.Unlock()
 				log.Printf("[skill-runner] step %d/%d: skipped (when %q evaluated false)", i+1, len(skill.Steps), step.When)
 				continue
@@ -1395,18 +1397,18 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		}
 
 		r.mu.Lock()
-		run.status.Steps[i].Status = string(skillStepStatusRunning)
+		run.status.Steps[i].Status = skillStepStatusRunning
 		r.mu.Unlock()
 
 		step = withSkillPreferredShell(step, skill.PreferredShell)
 		resolvedStep, resolveErr := resolveSkillStep(step, r.templateVarsForRun(run.status.RunID), skill.SkillDir, skillParams)
 		if resolveErr != nil {
 			r.mu.Lock()
-			run.status.Steps[i].Status = string(skillStepStatusFailed)
+			run.status.Steps[i].Status = skillStepStatusFailed
 			run.status.Steps[i].Error = resolveErr.Error()
 			hasFailure = true
 			execErr = resolveErr
-			if step.OnError == "continue" || step.OnError == "skip" {
+			if onError.ShouldContinue() {
 				r.mu.Unlock()
 				log.Printf("[skill-runner] step %d/%d: param bind failed (on_error=%s): %v", i+1, len(skill.Steps), step.OnError, resolveErr)
 				continue
@@ -1460,12 +1462,12 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 			r.mu.Lock()
 			run.status.Steps[i].Name = resolvedStep.Name
 			run.status.Steps[i].CommandResolved = resolveCommandForDisplay(resolvedStep)
-			run.status.Steps[i].Status = string(skillStepStatusSkipped)
+			run.status.Steps[i].Status = skillStepStatusSkipped
 			run.status.Steps[i].Error = ctx.Err().Error()
 			for j := i + 1; j < len(skill.Steps); j++ {
-				run.status.Steps[j].Status = string(skillStepStatusSkipped)
+				run.status.Steps[j].Status = skillStepStatusSkipped
 			}
-			run.status.Status = string(skillRunStatusCancelled)
+			run.status.Status = skillRunStatusCancelled
 			run.status.EndedAt = time.Now().Format(time.RFC3339)
 			run.status.DurationMs = time.Since(execStart).Milliseconds()
 			if run.monitorCancel != nil {
@@ -1488,7 +1490,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 		run.status.Steps[i].Name = resolvedStep.Name
 		run.status.Steps[i].CommandResolved = resolveCommandForDisplay(resolvedStep)
 		if stepErr != nil {
-			run.status.Steps[i].Status = string(skillStepStatusFailed)
+			run.status.Steps[i].Status = skillStepStatusFailed
 			run.status.Steps[i].Error = stepErr.Error()
 			run.status.Steps[i].Output = result
 			log.Printf("[skill-runner] step %d/%d FAILED: %v", i+1, len(skill.Steps), stepErr)
@@ -1500,21 +1502,21 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 				run.status.Steps[i].StderrLastLines = lastNLines(bErr.Stderr(), 10)
 			}
 			hasFailure = true
-			if step.OnError != "continue" {
+			if onError != skillStepOnErrorContinue {
 				run.status.Error = fmt.Sprintf("step %d (%s) failed: %s", i+1, step.Action, stepErr.Error())
 				execErr = stepErr
-				// 标记剩余 step 为 skipped
+				// Mark remaining steps as skipped.
 				for j := i + 1; j < len(skill.Steps); j++ {
-					run.status.Steps[j].Status = string(skillStepStatusSkipped)
+					run.status.Steps[j].Status = skillStepStatusSkipped
 				}
 				r.mu.Unlock()
 				break
 			}
 			if execErr == nil {
-				execErr = stepErr // 记录第一个错误
+				execErr = stepErr
 			}
 		} else {
-			run.status.Steps[i].Status = string(skillStepStatusSuccess)
+			run.status.Steps[i].Status = skillStepStatusSuccess
 			run.status.Steps[i].Output = result
 			log.Printf("[skill-runner] step %d/%d OK (output %d bytes)", i+1, len(skill.Steps), len(result))
 		}
@@ -1525,14 +1527,14 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	if ctx.Err() != nil {
 		for i := range run.status.Steps {
 			if run.status.Steps[i].LifecycleStatus() == skillStepStatusPending || run.status.Steps[i].LifecycleStatus() == skillStepStatusRunning {
-				run.status.Steps[i].Status = string(skillStepStatusSkipped)
+				run.status.Steps[i].Status = skillStepStatusSkipped
 				run.status.Steps[i].Error = ctx.Err().Error()
 			}
 		}
 		if run.monitorCancel != nil {
 			run.monitorCancel()
 		}
-		run.status.Status = string(skillRunStatusCancelled)
+		run.status.Status = skillRunStatusCancelled
 		run.status.EndedAt = time.Now().Format(time.RFC3339)
 		run.status.DurationMs = time.Since(execStart).Milliseconds()
 		r.mu.Unlock()
@@ -1549,7 +1551,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	if run.monitorCancel != nil {
 		run.monitorCancel()
 	}
-	log.Printf("[skill-runner] ◼ skill %q finished: status=%s steps=%d elapsed=%s",
+	log.Printf("[skill-runner] skill %q finished: status=%s steps=%d elapsed=%s",
 		skill.Name, finalStatus, len(skill.Steps), time.Since(execStart).Truncate(time.Millisecond))
 	r.mu.Unlock()
 
@@ -1557,7 +1559,7 @@ func (r *SkillRunner) executeAsync(ctx context.Context, run *skillRun, skill *co
 	r.updateUsageStats(skill, execErr)
 
 	r.mu.Lock()
-	run.status.Status = string(finalStatus)
+	run.status.Status = finalStatus
 	run.status.EndedAt = time.Now().Format(time.RFC3339)
 	run.status.DurationMs = time.Since(execStart).Milliseconds()
 	r.mu.Unlock()
@@ -1584,7 +1586,7 @@ func (r *SkillRunner) updateUsageStats(skill *corelib.NLSkillEntry, execErr erro
 				skills[i].SuccessCount++
 				skills[i].LastError = ""
 				successfulSkillName = skills[i].Name
-				// Skill succeeded after a previous repair — the fix worked.
+				// Skill succeeded after a previous repair; the fix worked.
 				if skills[i].RepairAttemptCount > 0 {
 					cskill.ResetRepairCount(&skills[i])
 					cskill.MarkRepairVerified(&skills[i])
@@ -1659,7 +1661,7 @@ func (r *SkillRunner) markSelfRepairPending(skillName string) {
 }
 
 // maybeRepairSkill checks if a skill is eligible for LLM-driven self-repair
-// and attempts it in the background. The entry must be a deep copy — this
+// and attempts it in the background. The entry must be a deep copy; this
 // method runs in a goroutine and must not hold any locks.
 func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 	if !cskill.ShouldAttemptRepair(entry) {
@@ -1917,7 +1919,7 @@ func installSkillStepProcessEnv(action string, extraEnv map[string]string) func(
 	}
 }
 
-// tryAutoUpload 在 skill 执行完成后尝试自动上传到 SkillMarket。
+// tryAutoUpload attempts to upload to SkillMarket after a skill run finishes.
 func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) {
 	if r.uploadTrigger == nil || r.executor == nil || r.executor.app == nil {
 		return
@@ -1960,7 +1962,7 @@ func (r *SkillRunner) tryAutoUpload(skill *corelib.NLSkillEntry, run *skillRun) 
 	}
 }
 
-// skillDirHash 计算 skill 目录内容的简单 hash（用于变更检测）。
+// skillDirHash computes a compact hash for skill directory changes.
 func skillDirHash(dir string) string {
 	h := sha256.New()
 	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -1988,7 +1990,7 @@ func skillDirHash(dir string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// ── Step 执行（带 context） ─────────────────────────────────────────────
+// -- Step execution with context ------------------------------------------------
 
 func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, step corelib.NLSkillStep, skillDir string) (string, error) {
 	if err := cskill.EnsureStepActionSupported(cskill.RunnerBackendGUI, step.Action); err != nil {
@@ -2034,13 +2036,13 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 			SessionID:       startResult.View.ID,
 			Tool:            startResult.View.Tool,
 			ProjectPath:     resolvedProjectPath,
-			Status:          string(startResult.View.Status),
+			Status:          startResult.View.Status,
 			JobID:           startResult.View.JobID,
 			RunID:           startResult.View.RunID,
 			ResumeSessionID: strings.TrimSpace(resumeSessionID),
 			LaunchSource:    string(normalizeRemoteLaunchSource(RemoteLaunchSourceAI)),
 		})
-		return fmt.Sprintf("会话已创建: ID=%s", startResult.View.ID), nil
+		return fmt.Sprintf("session created: ID=%s", startResult.View.ID), nil
 
 	case skillStepActionSendInput:
 		sessionID := r.resolveStepSessionID(runID, step)
@@ -2128,7 +2130,7 @@ func (r *SkillRunner) executeStepWithContext(ctx context.Context, runID string, 
 	}
 }
 
-// ── bash step 执行（带 context + skillDir 作为默认 working_dir） ────────
+// -- Bash step execution with context and skillDir working dir ------------------
 
 func mergeRequiredEnvParam(params map[string]interface{}, required []string) {
 	cskill.MergeRequiredEnvParam(params, required)
@@ -2159,9 +2161,9 @@ func runBashStepWithContext(ctx context.Context, command string, params map[stri
 }
 
 func runBashStepWithContextFull(ctx context.Context, command string, params map[string]interface{}, skillDir string, app *App) (string, error) {
-	// Strip UTF-8 BOM if present — SKILL.md files saved with BOM can leak
+	// Strip UTF-8 BOM if present. SKILL.md files saved with BOM can leak
 	// the BOM bytes into the command string, causing cmd.exe to fail with
-	// "'@echo' 不是内部或外部命令".
+	// "'@echo" is not recognized as an internal or external command.
 	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
 
 	timeout := cskill.RunnerStepTimeoutSeconds(params, 120, 600)
@@ -2248,16 +2250,16 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			if app != nil {
 				if shPath, err := app.findSh(); err == nil {
 					shellName = shPath
-					log.Printf("[skill-runner] shell selection: %s → reason: %s", filepath.Base(shPath), shellReason)
+					log.Printf("[skill-runner] shell selection: %s -> reason: %s", filepath.Base(shPath), shellReason)
 				} else {
-					return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤\n%v\n请安装 Git for Windows: https://git-scm.com/download/win", err)
+					return "", fmt.Errorf("missing Unix shell for bash step\n%v\nplease install Git for Windows: https://git-scm.com/download/win", err)
 				}
 			} else {
 				if shPath, err := exec.LookPath("sh.exe"); err == nil {
 					// Skip WSL bash on Windows (runtime check only)
 					shellName = shPath
 				} else {
-					return "", fmt.Errorf("找不到 Unix shell 用于执行 bash 步骤，且 app 实例为空")
+					return "", fmt.Errorf("missing Unix shell for bash step and app is nil")
 				}
 			}
 			// [Bug #1 fix] Use temp script file instead of bash -c on Windows.
@@ -2303,7 +2305,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			shellArgs = []string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpScript}
 			log.Printf("[skill-runner] bash step: using temp powershell script %s", tmpScript)
 		} else {
-			// Direct command — use cmd.exe with a temp .cmd script.
+			// Direct command: use cmd.exe with a temp .cmd script.
 			// We must NOT pass the command as exec.Command args because Go's
 			// syscall.EscapeArg escapes inner quotes with backslashes, turning
 			// node "C:/path/script.mjs" into node \"C:/path/script.mjs\" which
@@ -2317,7 +2319,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 				}
 			}
 			shellName = cmdPath
-			log.Printf("[skill-runner] shell selection: cmd.exe → reason: %s", shellReason)
+			log.Printf("[skill-runner] shell selection: cmd.exe -> reason: %s", shellReason)
 			scriptFile, err := os.CreateTemp("", "skill-step-*.cmd")
 			if err != nil {
 				return "", fmt.Errorf("创建临时脚本文件失败: %v", err)
@@ -2334,7 +2336,7 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 			//
 			// BOM-based approach does NOT work: cmd.exe on CP936 treats the
 			// BOM bytes as part of the first command, turning "@echo off" into
-			// "'@echo' 不是内部或外部命令".
+			// "'@echo" is not recognized as an internal or external command.
 			scriptContent := "@echo off\r\nchcp 65001 >nul\r\n" + cmdSafeCommand + "\r\n"
 			if _, err := scriptFile.WriteString(scriptContent); err != nil {
 				scriptFile.Close()
@@ -2378,14 +2380,14 @@ func runBashStepWithContextFull(ctx context.Context, command string, params map[
 	isTimeout := stepCtx.Err() == context.DeadlineExceeded
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("🐚 shell: %s\n", filepath.Base(shellName)))
-	b.WriteString(fmt.Sprintf("⏱  %s\n", elapsed.Round(time.Millisecond)))
+	b.WriteString(fmt.Sprintf("shell: %s\n", filepath.Base(shellName)))
+	b.WriteString(fmt.Sprintf("elapsed: %s\n", elapsed.Round(time.Millisecond)))
 	b.WriteString(fmt.Sprintf("📂 %s\n", workDir))
 	if tmpScript != "" {
 		// Show original command instead of temp script path for readability
-		b.WriteString(fmt.Sprintf("💻 %s (via script)\n", command))
+		b.WriteString(fmt.Sprintf("command: %s (via script)\n", command))
 	} else {
-		b.WriteString(fmt.Sprintf("💻 %s %s\n", filepath.Base(shellName), strings.Join(shellArgs, " ")))
+		b.WriteString(fmt.Sprintf("command: %s %s\n", filepath.Base(shellName), strings.Join(shellArgs, " ")))
 	}
 	b.WriteString("───────────────\n")
 	if stdout.Len() > 0 {
@@ -2465,7 +2467,7 @@ func (e *bashStepError) Stderr() string  { return e.stderr }
 
 // classifyBashError adds context to error messages by detecting common
 // failure patterns. Delegates to the unified error classifier in
-// corelib/skill/error_classifier.go — single source of truth for all
+// corelib/skill/error_classifier.go is the single source of truth for all
 // error patterns across GUI, TUI, and self-repair.
 func expandPortableHomeVars(command, home string) string {
 	command = strings.TrimPrefix(command, "\xef\xbb\xbf")
@@ -2587,7 +2589,7 @@ func needsBashShell(command string) bool {
 	// prefer cmd.exe for better subprocess nesting.
 	lower := strings.TrimSpace(strings.ToLower(command))
 
-	// Check for Unix shell builtins FIRST — these must use bash even if the
+	// Check for Unix shell builtins FIRST. These must use bash even if the
 	// command also contains .py/.js paths (e.g. "export FOO=bar && python x.py").
 	if strings.HasPrefix(lower, "export ") || strings.HasPrefix(lower, "source ") ||
 		strings.HasPrefix(lower, "#!/") {
@@ -2595,7 +2597,7 @@ func needsBashShell(command string) bool {
 		return true
 	}
 	// Multi-line commands containing export lines or # comment lines.
-	// On Windows, cmd.exe treats # as a command, not a comment — so any
+	// On Windows, cmd.exe treats # as a command, not a comment, so any
 	// script with # comments must be routed to bash.
 	for _, line := range strings.Split(command, "\n") {
 		trimmed := strings.TrimSpace(strings.ToLower(line))
@@ -2614,7 +2616,7 @@ func needsBashShell(command string) bool {
 			return false
 		}
 	}
-	// Direct script path invocation — cmd.exe handles this well.
+	// Direct script path invocation: cmd.exe handles this well.
 	if strings.Contains(lower, ".mjs") || strings.Contains(lower, ".js") ||
 		strings.Contains(lower, ".py") || strings.Contains(lower, ".bat") ||
 		strings.Contains(lower, ".cmd") {
@@ -2681,7 +2683,7 @@ func resolveCommandForDisplay(step corelib.NLSkillStep) string {
 	return cmd
 }
 
-// ── 平台兼容性检查 ──────────────────────────────────────────────────────
+// -- Platform compatibility -----------------------------------------------------
 
 // mapPython3ToWindows replaces `python3` with `python` in commands on Windows,
 // since Windows Python installations typically only provide `python.exe`.
@@ -2709,7 +2711,7 @@ func mapPython3ToWindows(command string) string {
 // python3NeedsMapping returns true if `python3` is not available but `python` is.
 // Result is cached after first call to avoid repeated filesystem lookups.
 // On Windows, the Microsoft Store installs a stub `python3.exe` in
-// WindowsApps that opens the Store instead of running Python — we detect
+// WindowsApps that opens the Store instead of running Python. We detect
 // this by checking if the resolved path contains "WindowsApps".
 var python3NeedsMapping = sync.OnceValue(func() bool {
 	p3, err := exec.LookPath("python3")
@@ -2771,7 +2773,7 @@ func migrateLegacyCceasyPaths(skill *corelib.NLSkillEntry) {
 
 type cceasyPaths struct{ oldDir, newDir string }
 
-// cceasyMigrationPaths returns the old/new directory pair if .cceasy→.maclaw
+// cceasyMigrationPaths returns the old/new directory pair if .cceasy->.maclaw
 // migration is needed. Result is cached after first call to avoid repeated
 // syscalls on every skill run.
 var cceasyMigrationPaths = sync.OnceValue(func() cceasyPaths {
@@ -2811,7 +2813,7 @@ func loadSkillDocContent(skillDir string) string {
 
 // hasSkillDocFile checks whether a SKILL.md (or equivalent) exists in the
 // skill directory without reading its content. Used by List() to populate
-// HasDocumentation efficiently — avoids file IO on every frontend refresh.
+// HasDocumentation efficiently avoids file IO on every frontend refresh.
 func hasSkillDocFile(skillDir string) bool {
 	return findSkillMarkdownDocPath(skillDir) != ""
 }
@@ -2858,7 +2860,7 @@ func (r *SkillRunner) executeStepWithPoll(ctx context.Context, runID string, ste
 			log.Printf("[skill-runner] poll: until_status %q found on attempt %d/%d", poll.UntilStatus, attempt, maxAttempts)
 			return output, nil
 		}
-		// No match condition configured — single execution is enough.
+		// No match condition configured; single execution is enough.
 		if matchRe == nil && poll.UntilStatus == "" {
 			return output, nil
 		}
@@ -2882,11 +2884,11 @@ func substituteSkillVarsInString(s string, vars map[string]string) string {
 
 // evaluateSimpleCondition evaluates a simple condition expression.
 // Supported forms:
-//   - "value == expected"  → true if equal (trimmed)
-//   - "value != expected"  → true if not equal
-//   - "value contains sub" → true if value contains sub
-//   - bare non-empty string → true
-//   - empty string → false
+//   - "value == expected"  -> true if equal (trimmed)
+//   - "value != expected"  -> true if not equal
+//   - "value contains sub" -> true if value contains sub
+//   - bare non-empty string -> true
+//   - empty string -> false
 func evaluateSimpleCondition(expr string) bool {
 	return cskill.EvaluateSimpleCondition(expr)
 }
@@ -3002,7 +3004,7 @@ func (r *SkillRunner) executePollStep(ctx context.Context, step corelib.NLSkillS
 			return output, nil
 		}
 
-		log.Printf("[skill-runner] poll: attempt %d — no match yet (err=%v, output=%d bytes)",
+		log.Printf("[skill-runner] poll: attempt %d: no match yet (err=%v, output=%d bytes)",
 			attempt, execErr, len(output))
 
 		// Wait for next tick or context cancellation

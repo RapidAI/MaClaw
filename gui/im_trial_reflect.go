@@ -17,14 +17,6 @@ type trialReflectState struct {
 	failedActionCounts map[string]int
 }
 
-type toolOutcome int
-
-const (
-	toolOutcomeUncertain toolOutcome = iota
-	toolOutcomeSucceeded
-	toolOutcomeFailed
-)
-
 type trialReflectOutcome int
 
 const (
@@ -47,17 +39,6 @@ type trialReflectObservation struct {
 	Text             string
 	ToolOutcomes     []TraceToolObservation
 	RepeatedFailures []string
-}
-
-func (o toolOutcome) String() string {
-	switch o {
-	case toolOutcomeSucceeded:
-		return "succeeded"
-	case toolOutcomeFailed:
-		return "failed"
-	default:
-		return "uncertain"
-	}
 }
 
 func (o trialReflectOutcome) String() string {
@@ -189,7 +170,7 @@ func (h *IMMessageHandler) observeAgentLoopTrialIteration(ctx *LoopContext, tria
 			Summary:      truncateTraceText(trialObservation.Text, 220),
 			ToolOutcomes: trialObservation.ToolOutcomes,
 		})
-		h.appendTraceEvidence(ctx, "trial_reflect", trialObservation.Outcome.String(), "trial observation", truncateTraceText(trialObservation.Text, 400), "", "")
+		h.appendTraceEvidence(ctx, traceSourceKindTrialReflect.String(), trialObservation.Outcome.String(), "trial observation", truncateTraceText(trialObservation.Text, 400), "", "")
 	}
 	if strings.TrimSpace(trialState.pendingNote) == "" || h.traceService == nil || ctx.RunID == "" {
 		return
@@ -200,7 +181,7 @@ func (h *IMMessageHandler) observeAgentLoopTrialIteration(ctx *LoopContext, tria
 	}
 	h.appendTraceEvent(ctx, "trial.reflected", severity, "Trial reflection", truncateTraceText(trialState.pendingNote, 220), "", "")
 	if len(trialObservation.RepeatedFailures) > 0 {
-		h.appendTraceEvidence(ctx, "trial_reflect", string(traceEvidenceCategoryRepeatGuard), "avoid repeating failed actions", strings.Join(trialObservation.RepeatedFailures, ", "), "", "")
+		h.appendTraceEvidence(ctx, traceSourceKindTrialReflect.String(), string(traceEvidenceCategoryRepeatGuard), "avoid repeating failed actions", strings.Join(trialObservation.RepeatedFailures, ", "), "", "")
 	}
 }
 

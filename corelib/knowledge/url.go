@@ -93,7 +93,7 @@ func (s *SQLiteStore) SaveURLs(ctx context.Context, req URLBatchSaveRequest) URL
 	for _, rawURL := range splitURLBatchInputs(req.URLs) {
 		if _, ok := seen[rawURL]; ok {
 			result.Skipped++
-			result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, Status: "skipped_duplicate"})
+			result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, Status: URLBatchSaveStatusSkippedDuplicate})
 			continue
 		}
 		seen[rawURL] = struct{}{}
@@ -113,12 +113,12 @@ func (s *SQLiteStore) SaveURLs(ctx context.Context, req URLBatchSaveRequest) URL
 		})
 		if err != nil {
 			result.Failed++
-			result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, Status: StatusFailed, Error: err.Error()})
+			result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, Status: URLBatchSaveStatusFailed, Error: err.Error()})
 			continue
 		}
 		result.Saved++
 		result.Sources = append(result.Sources, source)
-		result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, SourceID: source.ID, Title: source.Title, Status: source.Status})
+		result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, SourceID: source.ID, Title: source.Title, Status: URLBatchSaveStatusFromSource(source.Status)})
 	}
 	return result
 }
@@ -139,11 +139,11 @@ func splitURLBatchInputs(values []string) []string {
 func (s *SQLiteStore) DiscoverURLs(ctx context.Context, req URLDiscoveryRequest) (URLDiscoveryResult, error) {
 	result := DiscoverURLsFromText(req)
 	for i := range result.Items {
-		if result.Items[i].Status != "candidate" {
+		if !result.Items[i].Status.IsCandidate() {
 			continue
 		}
 		if err := enforceURLDomainPolicy(ctx, s, result.Items[i].URL); err != nil {
-			result.Items[i].Status = "rejected"
+			result.Items[i].Status = URLDiscoveryStatusRejected
 			result.Items[i].Reason = err.Error()
 			result.Candidates--
 			result.Rejected++
@@ -175,22 +175,22 @@ func DiscoverURLsFromText(req URLDiscoveryRequest) URLDiscoveryResult {
 		normalized, host, err := normalizeDiscoveredURL(raw, base)
 		if err != nil {
 			result.Rejected++
-			result.Items = append(result.Items, URLDiscoveryItem{URL: strings.TrimSpace(raw), Status: "rejected", Reason: err.Error()})
+			result.Items = append(result.Items, URLDiscoveryItem{URL: strings.TrimSpace(raw), Status: URLDiscoveryStatusRejected, Reason: err.Error()})
 			continue
 		}
 		if req.SameDomainOnly && base != nil && !sameOrSubdomain(host, strings.ToLower(base.Hostname())) {
 			result.Rejected++
-			result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: "rejected", Reason: "outside base domain"})
+			result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: URLDiscoveryStatusRejected, Reason: "outside base domain"})
 			continue
 		}
 		if _, ok := seen[normalized]; ok {
 			result.Skipped++
-			result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: "skipped_duplicate"})
+			result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: URLDiscoveryStatusSkippedDuplicate})
 			continue
 		}
 		seen[normalized] = struct{}{}
 		result.Candidates++
-		result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: "candidate"})
+		result.Items = append(result.Items, URLDiscoveryItem{URL: normalized, Host: host, Status: URLDiscoveryStatusCandidate})
 	}
 	return result
 }

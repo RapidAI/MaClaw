@@ -173,7 +173,7 @@ func TestLoadAndStart_InitFailure(t *testing.T) {
 	pr.plugins["fail-init"] = &pluginEntry{
 		plugin:   p,
 		manifest: p.Manifest(),
-		status:   "error",
+		status:   PluginStatusError,
 		err:      p.initErr,
 	}
 	pr.mu.Unlock()
@@ -227,7 +227,7 @@ func TestLoadAndStart_SingleFailureDoesNotAffectOthers(t *testing.T) {
 	pr.plugins["running"] = &pluginEntry{
 		plugin:   &mockRegistryPlugin{name: "running"},
 		manifest: PluginManifest{Name: "running", Type: PluginTypeNative},
-		status:   "running",
+		status:   PluginStatusRunning,
 	}
 	pr.mu.Unlock()
 
@@ -236,14 +236,14 @@ func TestLoadAndStart_SingleFailureDoesNotAffectOthers(t *testing.T) {
 		t.Fatalf("expected 2 plugins, got %d", len(list))
 	}
 
-	statuses := make(map[string]string)
+	statuses := make(map[string]PluginStatus)
 	for _, info := range list {
 		statuses[info.Name] = info.Status
 	}
-	if statuses["failed"] != "error" {
+	if statuses["failed"] != PluginStatusError {
 		t.Errorf("failed status = %q", statuses["failed"])
 	}
-	if statuses["running"] != "running" {
+	if statuses["running"] != PluginStatusRunning {
 		t.Errorf("running status = %q", statuses["running"])
 	}
 }

@@ -20,7 +20,7 @@ import (
 // RunSkillMarket 执行 skillmarket 子命令。
 func RunSkillMarket(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui skillmarket <search|submit|status|account>")
+		return NewUsageError("usage: maclaw-tui skillmarket <search|submit|status|account|login|register|lookup|verify|whoami>")
 	}
 	switch args[0] {
 	case "search":
@@ -31,6 +31,8 @@ func RunSkillMarket(args []string) error {
 		return smStatus(args[1:])
 	case "account":
 		return smAccount(args[1:])
+	case "login", "register", "lookup", "verify", "whoami":
+		return RunSkillMarketAuth(args[0], args[1:])
 	default:
 		return NewUsageError("unknown skillmarket action: %s", args[0])
 	}

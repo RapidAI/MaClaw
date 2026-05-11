@@ -53,7 +53,7 @@ func (a *App) SavePassthroughSettings(settings PassthroughSettings) (Passthrough
 	}
 	if previous.AllowExec != saved.AllowExec {
 		action := passthroughControlActionForEnabled(saved.AllowExec)
-		_ = reg.recordControlAudit("settings", "exec "+string(action), "desktop:monitor", string(passthroughRunStatusSuccess), 0, "")
+		_ = reg.recordControlAudit("settings", "exec "+string(action), "desktop:monitor", passthroughRunStatusSuccess, 0, "")
 	}
 	return saved, nil
 }
@@ -239,7 +239,7 @@ func (a *App) handlePassthroughSlashCommand(text string, source string) *IMAgent
 		if enabled {
 			state = "已开启"
 		}
-		_ = reg.recordControlAudit("runctl", "exec "+string(action), source, string(passthroughRunStatusSuccess), 0, "")
+		_ = reg.recordControlAudit("runctl", "exec "+string(action), source, passthroughRunStatusSuccess, 0, "")
 		return &IMAgentResponse{Text: fmt.Sprintf("%s /exec 一次性系统命令。", state)}
 	}
 	if strings.HasPrefix(trimmed, "/runctl enable ") || strings.HasPrefix(trimmed, "/runctl disable ") {

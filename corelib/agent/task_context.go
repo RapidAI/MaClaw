@@ -71,15 +71,15 @@ type TaskContextDecision struct {
 // ArchivedTask is a compact snapshot of a completed or abandoned task,
 // stored for potential recall.
 type ArchivedTask struct {
-	ID          string    `json:"id"`
-	UserID      string    `json:"user_id"`
-	Summary     string    `json:"summary"`      // one-line task description
-	LastRequest string    `json:"last_request"` // original user request text
-	FilePaths   []string  `json:"file_paths"`   // key files involved
-	ProjectPath string    `json:"project_path"` // workspace directory
-	Status      string    `json:"status"`       // "completed", "abandoned", "interrupted"
-	CreatedAt   time.Time `json:"created_at"`
-	ArchivedAt  time.Time `json:"archived_at"`
+	ID          string             `json:"id"`
+	UserID      string             `json:"user_id"`
+	Summary     string             `json:"summary"`      // one-line task description
+	LastRequest string             `json:"last_request"` // original user request text
+	FilePaths   []string           `json:"file_paths"`   // key files involved
+	ProjectPath string             `json:"project_path"` // workspace directory
+	Status      ArchivedTaskStatus `json:"status"`
+	CreatedAt   time.Time          `json:"created_at"`
+	ArchivedAt  time.Time          `json:"archived_at"`
 
 	// CompressedHistory is a condensed version of the conversation that
 	// can be injected back into the context when the task is recalled.

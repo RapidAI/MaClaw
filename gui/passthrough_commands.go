@@ -29,33 +29,33 @@ type PassthroughParam struct {
 }
 
 type PassthroughCommand struct {
-	Name            string             `json:"name"`
-	Title           string             `json:"title,omitempty"`
-	Description     string             `json:"description,omitempty"`
-	ScriptPath      string             `json:"script_path"`
-	TemplateArgs    []string           `json:"template_args,omitempty"`
-	Runtime         string             `json:"runtime"`
-	Cwd             string             `json:"cwd,omitempty"`
-	TimeoutSeconds  int                `json:"timeout_seconds"`
-	ConfirmRequired bool               `json:"confirm_required"`
-	Enabled         bool               `json:"enabled"`
-	Params          []PassthroughParam `json:"params,omitempty"`
-	CreatedAt       string             `json:"created_at,omitempty"`
-	UpdatedAt       string             `json:"updated_at,omitempty"`
-	LastRunAt       string             `json:"last_run_at,omitempty"`
-	LastExitCode    int                `json:"last_exit_code,omitempty"`
-	LastStatus      string             `json:"last_status,omitempty"`
+	Name            string               `json:"name"`
+	Title           string               `json:"title,omitempty"`
+	Description     string               `json:"description,omitempty"`
+	ScriptPath      string               `json:"script_path"`
+	TemplateArgs    []string             `json:"template_args,omitempty"`
+	Runtime         string               `json:"runtime"`
+	Cwd             string               `json:"cwd,omitempty"`
+	TimeoutSeconds  int                  `json:"timeout_seconds"`
+	ConfirmRequired bool                 `json:"confirm_required"`
+	Enabled         bool                 `json:"enabled"`
+	Params          []PassthroughParam   `json:"params,omitempty"`
+	CreatedAt       string               `json:"created_at,omitempty"`
+	UpdatedAt       string               `json:"updated_at,omitempty"`
+	LastRunAt       string               `json:"last_run_at,omitempty"`
+	LastExitCode    int                  `json:"last_exit_code,omitempty"`
+	LastStatus      passthroughRunStatus `json:"last_status,omitempty"`
 }
 
 type PassthroughRunResult struct {
-	CommandName string   `json:"command_name"`
-	Status      string   `json:"status"`
-	ExitCode    int      `json:"exit_code"`
-	DurationMs  int64    `json:"duration_ms"`
-	Output      string   `json:"output"`
-	Args        []string `json:"args,omitempty"`
-	StartedAt   string   `json:"started_at"`
-	FinishedAt  string   `json:"finished_at"`
+	CommandName string               `json:"command_name"`
+	Status      passthroughRunStatus `json:"status"`
+	ExitCode    int                  `json:"exit_code"`
+	DurationMs  int64                `json:"duration_ms"`
+	Output      string               `json:"output"`
+	Args        []string             `json:"args,omitempty"`
+	StartedAt   string               `json:"started_at"`
+	FinishedAt  string               `json:"finished_at"`
 }
 
 type PassthroughSettings struct {
@@ -63,17 +63,17 @@ type PassthroughSettings struct {
 }
 
 type PassthroughAuditEntry struct {
-	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`
-	CommandName string   `json:"command_name"`
-	Source      string   `json:"source,omitempty"`
-	Args        []string `json:"args,omitempty"`
-	Status      string   `json:"status"`
-	ExitCode    int      `json:"exit_code"`
-	DurationMs  int64    `json:"duration_ms"`
-	StartedAt   string   `json:"started_at"`
-	FinishedAt  string   `json:"finished_at"`
-	Error       string   `json:"error,omitempty"`
+	ID          string               `json:"id"`
+	Kind        string               `json:"kind"`
+	CommandName string               `json:"command_name"`
+	Source      string               `json:"source,omitempty"`
+	Args        []string             `json:"args,omitempty"`
+	Status      passthroughRunStatus `json:"status"`
+	ExitCode    int                  `json:"exit_code"`
+	DurationMs  int64                `json:"duration_ms"`
+	StartedAt   string               `json:"started_at"`
+	FinishedAt  string               `json:"finished_at"`
+	Error       string               `json:"error,omitempty"`
 }
 
 type passthroughRegistryFile struct {
@@ -227,10 +227,10 @@ func (r *PassthroughRegistry) UpsertWithAudit(cmd PassthroughCommand, source str
 		name = "save"
 	}
 	if err != nil {
-		_ = r.recordControlAudit("registry", "save "+name, source, string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAudit("registry", "save "+name, source, passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughCommand{}, err
 	}
-	return saved, r.recordControlAudit("registry", "save "+saved.Name, source, string(passthroughRunStatusSuccess), 0, "")
+	return saved, r.recordControlAudit("registry", "save "+saved.Name, source, passthroughRunStatusSuccess, 0, "")
 }
 
 func (r *PassthroughRegistry) Delete(name string) error {
@@ -259,10 +259,10 @@ func (r *PassthroughRegistry) Delete(name string) error {
 func (r *PassthroughRegistry) DeleteWithAudit(name string, source string) error {
 	name = strings.TrimSpace(name)
 	if err := r.Delete(name); err != nil {
-		_ = r.recordControlAudit("registry", "delete "+name, source, string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAudit("registry", "delete "+name, source, passthroughRunStatusFailed, -1, err.Error())
 		return err
 	}
-	return r.recordControlAudit("registry", "delete "+name, source, string(passthroughRunStatusSuccess), 0, "")
+	return r.recordControlAudit("registry", "delete "+name, source, passthroughRunStatusSuccess, 0, "")
 }
 
 func (r *PassthroughRegistry) SetEnabled(name string, enabled bool) error {
@@ -285,10 +285,10 @@ func (r *PassthroughRegistry) SetEnabled(name string, enabled bool) error {
 func (r *PassthroughRegistry) SetEnabledWithAudit(name string, enabled bool, source string) error {
 	action := passthroughControlActionForEnabled(enabled)
 	if err := r.SetEnabled(name, enabled); err != nil {
-		_ = r.recordControlAudit("runctl", string(action)+" "+name, source, string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAudit("runctl", string(action)+" "+name, source, passthroughRunStatusFailed, -1, err.Error())
 		return err
 	}
-	return r.recordControlAudit("runctl", string(action)+" "+name, source, string(passthroughRunStatusSuccess), 0, "")
+	return r.recordControlAudit("runctl", string(action)+" "+name, source, passthroughRunStatusSuccess, 0, "")
 }
 
 func (r *PassthroughRegistry) Run(ctx context.Context, name string, values map[string]string, confirmed bool) (PassthroughRunResult, error) {
@@ -303,22 +303,22 @@ func (r *PassthroughRegistry) RunWithSource(ctx context.Context, name string, va
 	}
 	if !ok {
 		err := fmt.Errorf("passthrough command %q not found", name)
-		_ = r.recordControlAuditArgs("run", strings.TrimSpace(name), source, passthroughAuditArgsFromValues(values), string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAuditArgs("run", strings.TrimSpace(name), source, passthroughAuditArgsFromValues(values), passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	if !cmd.Enabled {
 		err := fmt.Errorf("passthrough command %q is disabled", name)
-		_ = r.recordControlAuditArgs("run", name, source, passthroughAuditArgsFromValues(values), string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAuditArgs("run", name, source, passthroughAuditArgsFromValues(values), passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	if cmd.ConfirmRequired && !confirmed {
 		err := fmt.Errorf("passthrough command %q requires confirmation; resend with --confirm", name)
-		_ = r.recordControlAuditArgs("run", name, source, passthroughAuditArgsFromValues(values), string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAuditArgs("run", name, source, passthroughAuditArgsFromValues(values), passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	program, args, cwd, err := buildPassthroughProcess(cmd, values)
 	if err != nil {
-		_ = r.recordControlAuditArgs("run", name, source, passthroughAuditArgsFromValues(values), string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAuditArgs("run", name, source, passthroughAuditArgsFromValues(values), passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	result, err := executePassthroughProcess(ctx, start, name, program, args, cwd, time.Duration(cmd.TimeoutSeconds)*time.Second)
@@ -343,23 +343,23 @@ func (r *PassthroughRegistry) RunExecWithSource(ctx context.Context, text string
 	}
 	if !settings.AllowExec {
 		err := fmt.Errorf("/exec is disabled; enable one-time system commands in Monitor > Passthrough Tasks")
-		_ = r.recordControlAudit("exec", "disabled", source, string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAudit("exec", "disabled", source, passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	program, args, confirmed, err := parsePassthroughExecText(text)
 	if err != nil {
-		_ = r.recordControlAudit("exec", "parse", source, string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAudit("exec", "parse", source, passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	if !confirmed {
 		err := fmt.Errorf("/exec requires --confirm")
-		_ = r.recordControlAuditArgs("exec", program, source, redactPassthroughCLIArgs(append([]string{program}, args...)), string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAuditArgs("exec", program, source, redactPassthroughCLIArgs(append([]string{program}, args...)), passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	resolvedProgram, err := exec.LookPath(program)
 	if err != nil {
 		err := fmt.Errorf("executable not found: %s", program)
-		_ = r.recordControlAuditArgs("exec", program, source, redactPassthroughCLIArgs(append([]string{program}, args...)), string(passthroughRunStatusFailed), -1, err.Error())
+		_ = r.recordControlAuditArgs("exec", program, source, redactPassthroughCLIArgs(append([]string{program}, args...)), passthroughRunStatusFailed, -1, err.Error())
 		return PassthroughRunResult{}, err
 	}
 	result, runErr := executePassthroughProcess(ctx, time.Now(), program, resolvedProgram, args, "", 120*time.Second)
@@ -367,7 +367,7 @@ func (r *PassthroughRegistry) RunExecWithSource(ctx context.Context, text string
 	return result, runErr
 }
 
-func (r *PassthroughRegistry) recordRun(name string, at time.Time, status string, exitCode int) error {
+func (r *PassthroughRegistry) recordRun(name string, at time.Time, status passthroughRunStatus, exitCode int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f, err := r.loadLocked()
@@ -414,11 +414,11 @@ func (r *PassthroughRegistry) recordAudit(kind, source string, result Passthroug
 	return r.saveLocked(f)
 }
 
-func (r *PassthroughRegistry) recordControlAudit(kind, commandName, source, status string, exitCode int, errText string) error {
+func (r *PassthroughRegistry) recordControlAudit(kind, commandName, source string, status passthroughRunStatus, exitCode int, errText string) error {
 	return r.recordControlAuditArgs(kind, commandName, source, nil, status, exitCode, errText)
 }
 
-func (r *PassthroughRegistry) recordControlAuditArgs(kind, commandName, source string, args []string, status string, exitCode int, errText string) error {
+func (r *PassthroughRegistry) recordControlAuditArgs(kind, commandName, source string, args []string, status passthroughRunStatus, exitCode int, errText string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f, err := r.loadLocked()
@@ -432,7 +432,7 @@ func (r *PassthroughRegistry) recordControlAuditArgs(kind, commandName, source s
 		CommandName: strings.TrimSpace(commandName),
 		Source:      strings.TrimSpace(source),
 		Args:        append([]string(nil), args...),
-		Status:      strings.TrimSpace(status),
+		Status:      normalizePassthroughRunStatus(status),
 		ExitCode:    exitCode,
 		StartedAt:   now,
 		FinishedAt:  now,
@@ -462,6 +462,12 @@ func (r *PassthroughRegistry) loadLocked() (passthroughRegistryFile, error) {
 	}
 	if f.Version == 0 {
 		f.Version = 1
+	}
+	for i := range f.Commands {
+		f.Commands[i].LastStatus = normalizePassthroughRunStatus(f.Commands[i].LastStatus)
+	}
+	for i := range f.Audit {
+		f.Audit[i].Status = normalizePassthroughRunStatus(f.Audit[i].Status)
 	}
 	return f, nil
 }
@@ -880,7 +886,7 @@ func executePassthroughProcess(ctx context.Context, start time.Time, commandName
 	}
 	result := PassthroughRunResult{
 		CommandName: commandName,
-		Status:      string(status),
+		Status:      status,
 		ExitCode:    exitCode,
 		DurationMs:  finished.Sub(start).Milliseconds(),
 		Output:      truncatePassthroughOutput(out.String(), 6000),

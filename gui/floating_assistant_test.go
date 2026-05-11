@@ -60,6 +60,8 @@ func (m *mockFloatingWindow) IsCreated() bool {
 	return m.created
 }
 
+func (m *mockFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {}
+
 // TestFloatingAssistantManager_HideSetsVisibleFalse tests that HideFloatingButton
 // sets visible to false and destroys the window.
 // Requirement: 1.3

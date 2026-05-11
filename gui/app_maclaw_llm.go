@@ -443,7 +443,7 @@ func (a *App) isProMode() bool {
 	if err != nil {
 		return true
 	}
-	return cfg.UIMode == "" || cfg.UIMode == "pro"
+	return normalizeUIModeKind(cfg.UIMode).IsProDefault()
 }
 
 // SaveMaclawLLMConfig persists the MaClaw LLM configuration.

@@ -30,6 +30,10 @@ const (
 	RetryActionDisable RetryAction = "disable"
 )
 
+func (category FailureCategory) String() string {
+	return string(category)
+}
+
 const (
 	defaultMaxFailures  = 5
 	maxNetworkRetries   = 3

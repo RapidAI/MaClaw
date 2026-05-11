@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
@@ -234,6 +235,19 @@ func remoteActivate(args []string) error {
 
 	if err := store.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
+	}
+
+	// Auto-acquire SkillMarket session token (non-fatal on failure).
+	if result.ViewerToken != "" && cfg.SkillMarketSessionToken == "" {
+		smClient := remote.NewSkillMarketAuthClient()
+		smCtx, smCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		smResult, smErr := smClient.MachineLogin(smCtx, cfg.SkillMarketBaseURL(remote.DefaultRemoteHubCenterURL), result.Email, result.MachineID, result.ViewerToken)
+		smCancel()
+		if smErr == nil && smResult.SessionToken != "" {
+			cfg.SkillMarketSessionToken = smResult.SessionToken
+			_ = store.SaveConfig(cfg)
+			fmt.Println("  SkillMarket: ✅ 已自动登录")
+		}
 	}
 
 	fmt.Println("✅ 注册成功")

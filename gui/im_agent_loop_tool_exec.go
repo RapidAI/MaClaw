@@ -150,6 +150,7 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		ToolCalls:              opts.Choice.Message.ToolCalls,
 		ToolResults:            toolCallResult.ToolResults,
 		ToolOutcomes:           toolCallResult.ToolOutcomes,
+		ToolExecResults:        toolCallResult.ToolExecResults,
 		Conversation:           result.Conversation,
 		History:                result.History,
 		Phase:                  opts.Phase,
@@ -206,6 +207,7 @@ type agentLoopToolCallsResult struct {
 	History          []agent.ConversationEntry
 	ToolResults      []string
 	ToolOutcomes     []toolOutcome
+	ToolExecResults  []toolExecutionResult
 	PendingArtifacts agentLoopPendingToolArtifacts
 	ToolExecElapsed  time.Duration
 	Response         *IMAgentResponse
@@ -214,10 +216,11 @@ type agentLoopToolCallsResult struct {
 
 func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOptions) agentLoopToolCallsResult {
 	result := agentLoopToolCallsResult{
-		Conversation: opts.Conversation,
-		History:      opts.History,
-		ToolResults:  make([]string, 0, len(opts.ToolCalls)),
-		ToolOutcomes: make([]toolOutcome, 0, len(opts.ToolCalls)),
+		Conversation:    opts.Conversation,
+		History:         opts.History,
+		ToolResults:     make([]string, 0, len(opts.ToolCalls)),
+		ToolOutcomes:    make([]toolOutcome, 0, len(opts.ToolCalls)),
+		ToolExecResults: make([]toolExecutionResult, 0, len(opts.ToolCalls)),
 	}
 	for _, tc := range opts.ToolCalls {
 		if opts.Context.IsCancelled() {
@@ -268,6 +271,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		}
 		result.ToolResults = append(result.ToolResults, traceResult)
 		result.ToolOutcomes = append(result.ToolOutcomes, execResult.Outcome)
+		result.ToolExecResults = append(result.ToolExecResults, execResult)
 		result.PendingArtifacts.ApplyObservation(payloadObservation)
 
 		h.recordAgentLoopToolTrace(opts.Context, tc, traceResult, rawResult, execResult)

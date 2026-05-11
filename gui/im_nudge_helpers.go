@@ -72,7 +72,7 @@ func hasRecentFailedToolCall(history []agent.ConversationEntry) bool {
 		if entry.Role != "tool" {
 			continue
 		}
-		if entry.ToolOutcome == toolOutcomeFailed.String() {
+		if normalizeToolOutcome(entry.ToolOutcome) == toolOutcomeFailed {
 			return true
 		}
 	}

@@ -352,7 +352,7 @@ func TestParsePassthroughExecSettingText(t *testing.T) {
 func TestPassthroughRegistryRecordControlAudit(t *testing.T) {
 	dir := t.TempDir()
 	reg := newPassthroughRegistry(filepath.Join(dir, "commands.json"))
-	if err := reg.recordControlAudit("runctl", "exec enable", "weixin:user1", "success", 0, ""); err != nil {
+	if err := reg.recordControlAudit("runctl", "exec enable", "weixin:user1", passthroughRunStatusSuccess, 0, ""); err != nil {
 		t.Fatalf("recordControlAudit failed: %v", err)
 	}
 	audit, err := reg.ListAudit(10)

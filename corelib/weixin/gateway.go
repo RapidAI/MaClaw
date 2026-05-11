@@ -250,11 +250,11 @@ type qrCodeResponse struct {
 }
 
 type qrStatusResponse struct {
-	Status      string `json:"status"` // "wait", "scaned", "confirmed", "expired"
-	BotToken    string `json:"bot_token,omitempty"`
-	ILinkBotID  string `json:"ilink_bot_id,omitempty"`
-	BaseURL     string `json:"baseurl,omitempty"`
-	ILinkUserID string `json:"ilink_user_id,omitempty"`
+	Status      QRLoginStatus `json:"status"`
+	BotToken    string        `json:"bot_token,omitempty"`
+	ILinkBotID  string        `json:"ilink_bot_id,omitempty"`
+	BaseURL     string        `json:"baseurl,omitempty"`
+	ILinkUserID string        `json:"ilink_user_id,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -1873,8 +1873,7 @@ func StartQRLogin(ctx context.Context, baseURL, botType string) (qrcodeURL strin
 }
 
 // PollQRStatus polls the QR code login status once. Returns the status response.
-// This is a long-poll call (up to 35s). Call in a loop until status is "confirmed" or "expired".
-func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginResult, string, error) {
+func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginResult, QRLoginStatus, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -1886,38 +1885,38 @@ func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginRes
 
 	req, err := http.NewRequestWithContext(pollCtx, "GET", u, nil)
 	if err != nil {
-		return nil, "", err
+		return nil, QRLoginStatusUnknown, err
 	}
 	req.Header.Set("iLink-App-ClientVersion", "1")
 
 	resp, err := qrHTTPClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return &QRLoginResult{Message: "超时"}, "wait", nil
+			return &QRLoginResult{Message: "timeout"}, QRLoginStatusWait, nil
 		}
-		return nil, "", err
+		return nil, QRLoginStatusUnknown, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	if err != nil {
-		return nil, "", err
+		return nil, QRLoginStatusUnknown, err
 	}
 	if resp.StatusCode != 200 {
-		return nil, "", fmt.Errorf("get_qrcode_status returned %d: %s", resp.StatusCode, string(data[:min(len(data), 512)]))
+		return nil, QRLoginStatusUnknown, fmt.Errorf("get_qrcode_status returned %d: %s", resp.StatusCode, string(data[:min(len(data), 512)]))
 	}
 
 	var status qrStatusResponse
 	if err := json.Unmarshal(data, &status); err != nil {
-		return nil, "", fmt.Errorf("decode status: %w", err)
+		return nil, QRLoginStatusUnknown, fmt.Errorf("decode status: %w", err)
 	}
 
-	switch status.Status {
-	case "confirmed":
+	switch NormalizeQRLoginStatus(status.Status) {
+	case QRLoginStatusConfirmed:
 		if status.ILinkBotID == "" {
 			return &QRLoginResult{
 				Connected: false,
 				Message:   "登录失败：服务器未返回 ilink_bot_id",
-			}, "confirmed", nil
+			}, QRLoginStatusConfirmed, nil
 		}
 		return &QRLoginResult{
 			Connected: true,
@@ -1926,13 +1925,13 @@ func PollQRStatus(ctx context.Context, baseURL, qrcodeToken string) (*QRLoginRes
 			BaseURL:   status.BaseURL,
 			UserID:    status.ILinkUserID,
 			Message:   "✅ 与微信连接成功！",
-		}, "confirmed", nil
-	case "scaned":
-		return &QRLoginResult{Message: "已扫码，请在微信确认"}, "scaned", nil
-	case "expired":
-		return &QRLoginResult{Message: "二维码已过期"}, "expired", nil
+		}, QRLoginStatusConfirmed, nil
+	case QRLoginStatusScanned:
+		return &QRLoginResult{Message: "已扫码，请在微信确认"}, QRLoginStatusScanned, nil
+	case QRLoginStatusExpired:
+		return &QRLoginResult{Message: "二维码已过期"}, QRLoginStatusExpired, nil
 	default: // "wait"
-		return &QRLoginResult{Message: "等待扫码..."}, "wait", nil
+		return &QRLoginResult{Message: "waiting for scan"}, QRLoginStatusWait, nil
 	}
 }
 
@@ -1953,9 +1952,9 @@ func WaitForQRLogin(ctx context.Context, baseURL, qrcodeToken string, timeout ti
 			return nil, err
 		}
 		switch status {
-		case "confirmed":
+		case QRLoginStatusConfirmed:
 			return result, nil
-		case "expired":
+		case QRLoginStatusExpired:
 			return result, nil
 		}
 		// "wait" or "scaned" — continue polling

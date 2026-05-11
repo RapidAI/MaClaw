@@ -26,7 +26,7 @@ type telegramGatewayManager struct {
 	app       *App
 	mu        sync.Mutex
 	gateway   *telegram.Gateway
-	status    string
+	status    gatewayConnectionStatus
 	lastToken string
 
 	// localHandler is a fully-wired IMMessageHandler for local mode.
@@ -36,7 +36,7 @@ type telegramGatewayManager struct {
 func newTelegramGatewayManager(app *App) *telegramGatewayManager {
 	return &telegramGatewayManager{
 		app:    app,
-		status: string(gatewayConnectionStatusDisconnected),
+		status: gatewayConnectionStatusDisconnected,
 	}
 }
 
@@ -52,7 +52,7 @@ func (m *telegramGatewayManager) SyncFromConfig() {
 		gw := m.gateway
 		if gw != nil {
 			m.gateway = nil
-			m.status = string(gatewayConnectionStatusDisconnected)
+			m.status = gatewayConnectionStatusDisconnected
 			m.mu.Unlock()
 			_ = gw.Stop()
 		} else {
@@ -96,7 +96,7 @@ func (m *telegramGatewayManager) SyncFromConfig() {
 		m.mu.Lock()
 		m.gateway = nil
 		m.lastToken = ""
-		m.status = string(gatewayConnectionStatusError)
+		m.status = gatewayConnectionStatusError
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -108,7 +108,7 @@ func (m *telegramGatewayManager) Stop() {
 	m.mu.Lock()
 	gw := m.gateway
 	m.gateway = nil
-	m.status = string(gatewayConnectionStatusDisconnected)
+	m.status = gatewayConnectionStatusDisconnected
 	m.lastToken = ""
 	lh := m.localHandler
 	m.localHandler = nil
@@ -126,13 +126,13 @@ func (m *telegramGatewayManager) Stop() {
 func (m *telegramGatewayManager) Status() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.status
+	return m.status.String()
 }
 
 func (m *telegramGatewayManager) onStatusChange(status string) {
 	m.mu.Lock()
-	m.status = status
 	normalized := normalizeGatewayConnectionStatus(status)
+	m.status = normalized
 	if normalized == gatewayConnectionStatusError {
 		m.gateway = nil
 		m.lastToken = ""

@@ -16,6 +16,41 @@ const (
 	runtimeSessionSourceSSH    runtimeSessionSource = "ssh"
 )
 
+type runtimeSessionStatus string
+
+const (
+	runtimeSessionStatusUnknown      runtimeSessionStatus = ""
+	runtimeSessionStatusStarting     runtimeSessionStatus = "starting"
+	runtimeSessionStatusRunning      runtimeSessionStatus = "running"
+	runtimeSessionStatusBusy         runtimeSessionStatus = "busy"
+	runtimeSessionStatusWaitingInput runtimeSessionStatus = "waiting_input"
+	runtimeSessionStatusError        runtimeSessionStatus = "error"
+	runtimeSessionStatusExited       runtimeSessionStatus = "exited"
+)
+
+func normalizeRuntimeSessionStatus(status interface{}) runtimeSessionStatus {
+	switch runtimeSessionStatus(strings.TrimSpace(statusString(status))) {
+	case runtimeSessionStatusStarting:
+		return runtimeSessionStatusStarting
+	case runtimeSessionStatusRunning:
+		return runtimeSessionStatusRunning
+	case runtimeSessionStatusBusy:
+		return runtimeSessionStatusBusy
+	case runtimeSessionStatusWaitingInput:
+		return runtimeSessionStatusWaitingInput
+	case runtimeSessionStatusError:
+		return runtimeSessionStatusError
+	case runtimeSessionStatusExited:
+		return runtimeSessionStatusExited
+	default:
+		return runtimeSessionStatusUnknown
+	}
+}
+
+func (s runtimeSessionStatus) String() string {
+	return string(s)
+}
+
 type runtimeTaskStatus string
 
 const (

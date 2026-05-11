@@ -23,3 +23,7 @@ func skillSearchSourceFromStatus(status string) skillSearchSourceKind {
 		return skillSearchSourceSkillMarket
 	}
 }
+
+func (s skillSearchSourceKind) String() string {
+	return string(s)
+}

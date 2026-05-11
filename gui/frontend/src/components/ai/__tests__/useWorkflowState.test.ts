@@ -1,6 +1,8 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { collectWorkflowPhaseDocuments, normalizeWorkflowPhaseID, useWorkflowState } from '../useWorkflowState';
+import { normalizeWorkflowPhaseID } from '../workflowPhase';
+import { isWorkflowActive, normalizeWorkflowStatus, WorkflowStatus } from '../workflowStatus';
+import { collectWorkflowPhaseDocuments, useWorkflowState } from '../useWorkflowState';
 
 const eventHandlers = vi.hoisted(() => new Map<string, (data: any) => void>());
 vi.mock('../../../../wailsjs/runtime', () => ({
@@ -21,6 +23,13 @@ describe('workflow state document collection', () => {
         expect(normalizeWorkflowPhaseID('tech_design')).toBe('design');
         expect(normalizeWorkflowPhaseID('task_breakdown')).toBe('tasks');
         expect(normalizeWorkflowPhaseID('requirements')).toBe('requirements');
+    });
+
+    it('normalizes workflow status before active-state decisions', () => {
+        expect(normalizeWorkflowStatus('active')).toBe(WorkflowStatus.Active);
+        expect(isWorkflowActive('active')).toBe(true);
+        expect(isWorkflowActive('completed')).toBe(false);
+        expect(isWorkflowActive('unknown')).toBe(false);
     });
 
     it('collects non-empty phase outputs into canonical document slots', () => {

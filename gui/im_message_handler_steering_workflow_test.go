@@ -150,6 +150,24 @@ func TestSteeringWorkflow_WriteFileFallsBackOnlyToStructuredFileTokens(t *testin
 	}
 }
 
+func TestSteeringWorkflow_FileTokenFallbackRejectsSubstrings(t *testing.T) {
+	spy := newSpyWorkflowEvents()
+	detector := NewSteeringWorkflowDetector("desktop-user")
+	detector.detected = true
+
+	argsJSON, _ := json.Marshal(map[string]string{
+		"path":    "redesign-notes.md",
+		"content": "body",
+	})
+	detector.interceptToolCall("write_file", string(argsJSON), func(phaseID, content string) {
+		spy.recordDocUpdate("desktop-user", phaseID, content)
+	})
+
+	if spy.docUpdateCount() != 0 {
+		t.Fatalf("doc updates = %#v, want no substring-derived phase update", spy.docUpdates())
+	}
+}
+
 func TestSteeringWorkflow_InterceptToolCallEdgeCases(t *testing.T) {
 	detector := NewSteeringWorkflowDetector("test-user")
 	detector.detected = true

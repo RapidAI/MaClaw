@@ -39,6 +39,10 @@ func (s agentNetAutoRunStatus) IsActive() bool {
 	}
 }
 
+func (s agentNetAutoRunStatus) String() string {
+	return string(s)
+}
+
 type agentNetAutoPollStatus string
 
 const (
@@ -51,6 +55,10 @@ const (
 	agentNetAutoPollStatusPicked          agentNetAutoPollStatus = "picked"
 	agentNetAutoPollStatusError           agentNetAutoPollStatus = "error"
 )
+
+func (s agentNetAutoPollStatus) String() string {
+	return string(s)
+}
 
 func normalizeAgentNetAutoPollStatus(status string) agentNetAutoPollStatus {
 	switch agentNetAutoPollStatus(strings.ToLower(strings.TrimSpace(status))) {
@@ -78,14 +86,17 @@ type agentNetTaskAvailabilityStatus string
 const (
 	agentNetTaskAvailabilityUnknown agentNetTaskAvailabilityStatus = ""
 	agentNetTaskAvailabilityOpen    agentNetTaskAvailabilityStatus = "open"
+	agentNetTaskAvailabilityCreated agentNetTaskAvailabilityStatus = "created"
 	agentNetTaskAvailabilitySettled agentNetTaskAvailabilityStatus = "settled"
 )
 
-func normalizeAgentNetTaskAvailabilityStatus(status string) agentNetTaskAvailabilityStatus {
-	switch agentNetTaskAvailabilityStatus(strings.ToLower(strings.TrimSpace(status))) {
-	case agentNetTaskAvailabilityOpen:
+func normalizeAgentNetTaskAvailabilityStatus(status agentNetTaskStatus) agentNetTaskAvailabilityStatus {
+	switch normalizeAgentNetTaskStatus(status) {
+	case agentNetTaskStatusOpen:
 		return agentNetTaskAvailabilityOpen
-	case agentNetTaskAvailabilitySettled:
+	case agentNetTaskStatusCreated:
+		return agentNetTaskAvailabilityCreated
+	case agentNetTaskStatusSettled:
 		return agentNetTaskAvailabilitySettled
 	default:
 		return agentNetTaskAvailabilityUnknown
@@ -94,7 +105,7 @@ func normalizeAgentNetTaskAvailabilityStatus(status string) agentNetTaskAvailabi
 
 func (s agentNetTaskAvailabilityStatus) CanPick() bool {
 	switch s {
-	case agentNetTaskAvailabilityOpen, agentNetTaskAvailabilitySettled, agentNetTaskAvailabilityUnknown:
+	case agentNetTaskAvailabilityOpen, agentNetTaskAvailabilityCreated, agentNetTaskAvailabilitySettled, agentNetTaskAvailabilityUnknown:
 		return true
 	default:
 		return false

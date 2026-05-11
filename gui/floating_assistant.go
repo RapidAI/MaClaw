@@ -377,10 +377,26 @@ func floatingAppearanceChanged(oldConfig, newConfig corelib.AppConfig) bool {
 		oldConfig.PetSkin != newConfig.PetSkin ||
 		oldConfig.PetSize != newConfig.PetSize ||
 		isPetMotionEnabled(oldConfig) != isPetMotionEnabled(newConfig) ||
-		petMotionSoundEnabled(oldConfig) != petMotionSoundEnabled(newConfig) ||
-		petMotionSoundPreset(oldConfig) != petMotionSoundPreset(newConfig) ||
 		oldConfig.PetQuietMode != newConfig.PetQuietMode ||
 		oldConfig.PetInteractionMode != newConfig.PetInteractionMode
+}
+
+// floatingSoundChanged returns true when only sound-related settings changed
+// (no visual rebuild needed, just update the in-memory flag).
+func floatingSoundChanged(oldConfig, newConfig corelib.AppConfig) bool {
+	return petMotionSoundEnabled(oldConfig) != petMotionSoundEnabled(newConfig) ||
+		petMotionSoundPreset(oldConfig) != petMotionSoundPreset(newConfig)
+}
+
+// UpdateSoundConfig updates the floating window's in-memory sound settings
+// without destroying and recreating the window.
+func (m *FloatingAssistantManager) UpdateSoundConfig(config corelib.AppConfig) {
+	m.mu.Lock()
+	win := m.window
+	m.mu.Unlock()
+	if win != nil {
+		win.UpdateSoundConfig(petMotionSoundEnabled(config), petMotionSoundPreset(config))
+	}
 }
 
 func floatingWindowSizeForCurrentConfig(app *App) int {

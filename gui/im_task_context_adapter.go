@@ -115,7 +115,7 @@ func (h *IMMessageHandler) resolveTaskContext(
 
 // archiveCurrentTask saves the current conversation as an archived task
 // before clearing history for a new task.
-func (h *IMMessageHandler) archiveCurrentTask(userID string, history []agent.ConversationEntry, status string) {
+func (h *IMMessageHandler) archiveCurrentTask(userID string, history []agent.ConversationEntry, status agent.ArchivedTaskStatus) {
 	if h.taskArchive == nil || len(history) < 2 {
 		return // too short to be worth archiving
 	}

@@ -107,7 +107,7 @@ func (ih *imInterruptHandler) TryInterrupt(userID string, messageText string) pr
 			// Same intent label = same domain.
 			domainMatch = newMsgIntent == taskIntent
 			// Also match if both are in the "coding" family.
-			if isCodingFamily(taskIntent) && isCodingFamily(newMsgIntent) {
+			if sameInterruptIntentFamily(taskIntent, newMsgIntent) {
 				domainMatch = true
 			}
 		}
@@ -235,16 +235,6 @@ func classifyMergeInjection(text string, decision progress.ScheduleDecision, inp
 	}
 	// Medium confidence = possibly relevant information.
 	return "[用户补充] " + text
-}
-
-// isCodingFamily returns true if the intent is in the coding domain family.
-func isCodingFamily(intent string) bool {
-	switch intent {
-	case "coding", "bug_fix", "maintenance":
-		return true
-	default:
-		return false
-	}
 }
 
 // HandleCorrection executes a user-initiated correction of a previous

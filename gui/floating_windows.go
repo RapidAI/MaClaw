@@ -62,10 +62,13 @@ const (
 	biRgb = 0
 
 	mfString     = 0x00000000
+	mfSeparator  = 0x00000800
+	mfChecked    = 0x00000008
 	tpmReturncmd = 0x0100
 
-	menuIdHide = 1001
-	menuIdQuit = 1002
+	menuIdSoundOff = 1000
+	menuIdHide     = 1001
+	menuIdQuit     = 1002
 
 	// Timer ID for halo animation
 	timerIdHalo = 1
@@ -440,6 +443,13 @@ func (w *windowsFloatingWindow) IsCreated() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.created
+}
+
+func (w *windowsFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {
+	w.mu.Lock()
+	w.petMotionSound = soundEnabled
+	w.petSoundPreset = preset
+	w.mu.Unlock()
 }
 
 // Message loop
@@ -1184,6 +1194,20 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		if hMenu == 0 {
 			break
 		}
+
+		// "音效关闭" — checkable menu item
+		soundOffText, _ := syscall.UTF16PtrFromString("\u97f3\u6548\u5173\u95ed")
+		soundFlags := uintptr(mfString)
+		w.mu.Lock()
+		if !w.petMotionSound {
+			soundFlags |= mfChecked
+		}
+		w.mu.Unlock()
+		procAppendMenuW.Call(hMenu, soundFlags, uintptr(menuIdSoundOff), uintptr(unsafe.Pointer(soundOffText)))
+
+		// Separator
+		procAppendMenuW.Call(hMenu, uintptr(mfSeparator), 0, 0)
+
 		hideText, _ := syscall.UTF16PtrFromString("\u9690\u85cf")
 		quitText, _ := syscall.UTF16PtrFromString("\u9000\u51fa")
 		procAppendMenuW.Call(hMenu, uintptr(mfString), uintptr(menuIdHide), uintptr(unsafe.Pointer(hideText)))
@@ -1192,6 +1216,22 @@ func floatingWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		cmd, _, _ := procTrackPopupMenu.Call(hMenu, uintptr(tpmReturncmd), uintptr(pt.X), uintptr(pt.Y), 0, hwnd, 0)
 		procDestroyMenu.Call(hMenu)
 		switch cmd {
+		case menuIdSoundOff:
+			go func() {
+				if w.app == nil {
+					return
+				}
+				cfg, err := w.app.LoadConfig()
+				if err != nil {
+					return
+				}
+				// Toggle: if currently enabled → disable, if disabled → enable
+				newEnabled := !petMotionSoundEnabled(cfg)
+				cfg.PetMotionSound = &newEnabled
+				// SaveConfig triggers floatingSoundChanged → UpdateSoundConfig,
+				// which updates w.petMotionSound without rebuilding the window.
+				_ = w.app.SaveConfig(cfg)
+			}()
 		case menuIdHide:
 			go func() {
 				if w.app != nil {

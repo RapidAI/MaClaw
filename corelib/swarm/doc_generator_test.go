@@ -53,7 +53,7 @@ func TestSpecForDocType(t *testing.T) {
 			projectName:  "项目A",
 			wantTitle:    "📋 需求文档",
 			wantSubtitle: "Requirements Specification",
-			wantPrefix:   "需求文档",
+			wantPrefix:   "requirements",
 			wantFooter:   "请确认需求范围与验收标准",
 			wantBrand:    "MaClaw Swarm",
 		},
@@ -63,7 +63,7 @@ func TestSpecForDocType(t *testing.T) {
 			projectName:  "项目B",
 			wantTitle:    "🏗️ 设计文档",
 			wantSubtitle: "Design Document",
-			wantPrefix:   "设计文档",
+			wantPrefix:   "design",
 			wantFooter:   "请确认设计方案与实现边界",
 			wantBrand:    "MaClaw Swarm",
 		},
@@ -73,7 +73,7 @@ func TestSpecForDocType(t *testing.T) {
 			projectName:  "项目C",
 			wantTitle:    "📝 任务计划",
 			wantSubtitle: "Task Plan",
-			wantPrefix:   "任务计划",
+			wantPrefix:   "task-plan",
 			wantFooter:   "请确认任务拆分与执行顺序",
 			wantBrand:    "MaClaw Swarm",
 		},
@@ -220,15 +220,21 @@ func TestSwarmDocGenerator_GenerateAndEncode_Integration(t *testing.T) {
 		t.Skip("跳过：系统未找到中文字体")
 	}
 
-	b64, fileName, err := gen.GenerateAndEncode(DocTypeDesign, "my-project", "## 模块设计\n\n- 模块A\n- 模块B")
+	b64, fileName, err := gen.GenerateAndEncode(DocTypeDesign, "中文项目", "## 模块设计\n\n- 模块A\n- 模块B")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if b64 == "" {
 		t.Fatal("base64 data should not be empty")
 	}
-	if !strings.Contains(fileName, "设计文档") {
-		t.Fatalf("fileName should contain 设计文档, got %q", fileName)
+	if !strings.Contains(fileName, "design") {
+		t.Fatalf("fileName should contain design, got %q", fileName)
+	}
+	if strings.Contains(fileName, "设计文档") {
+		t.Fatalf("fileName should not contain localized display text, got %q", fileName)
+	}
+	if strings.ContainsAny(fileName, "中文项目") {
+		t.Fatalf("fileName should not contain localized project text, got %q", fileName)
 	}
 	if !strings.HasSuffix(fileName, ".pdf") {
 		t.Fatalf("fileName should end with .pdf, got %q", fileName)

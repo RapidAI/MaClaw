@@ -1139,7 +1139,11 @@ func truncateWebFetchToolResult(s string, limit int) string {
 // fileDeliveryMessageForDocType generates a user-facing prompt from structured
 // document metadata when no explicit message was provided.
 func fileDeliveryMessageForDocType(docType, fileName string) string {
-	switch normalizeWorkflowPhaseKind(docType) {
+	return fileDeliveryMessageForPhaseKind(normalizeWorkflowPhaseKind(docType), fileName)
+}
+
+func fileDeliveryMessageForPhaseKind(phase workflowPhaseKind, fileName string) string {
+	switch phase {
 	case workflowPhaseKind(workflowPhaseRequirements):
 		return i18n.T(i18n.MsgFileRequirements, "zh")
 	case workflowPhaseKind(workflowPhaseDesign):

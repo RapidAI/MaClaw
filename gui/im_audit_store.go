@@ -258,9 +258,13 @@ func (s *IMAuditStore) DeleteBefore(days int) (int64, error) {
 func (s *IMAuditStore) ListUsers(platform string) ([]string, error) {
 	var rows *sql.Rows
 	var err error
-	if platform == "thirdparty" {
+	platformKind := normalizeIMAuditPlatformKind(platform)
+	if platformKind.IsThirdParty() {
 		rows, err = s.db.Query(
-			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform LIKE ? ORDER BY user_id`, "thirdparty:%")
+			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform LIKE ? ORDER BY user_id`, imAuditPlatformThirdParty.String()+":%")
+	} else if platformKind != imAuditPlatformUnknown {
+		rows, err = s.db.Query(
+			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform = ? ORDER BY user_id`, platformKind.String())
 	} else if platform != "" {
 		rows, err = s.db.Query(
 			`SELECT DISTINCT user_id FROM im_audit_messages WHERE platform = ? ORDER BY user_id`, platform)
@@ -303,19 +307,18 @@ func (s *IMAuditStore) Stats() (*IMAuditStats, error) {
 		if err := rows.Scan(&platform, &count); err != nil {
 			return nil, fmt.Errorf("im audit: scan stats: %w", err)
 		}
-		switch platform {
-		case "qq":
+		switch normalizeIMAuditPlatformKind(platform) {
+		case imAuditPlatformQQ:
 			stats.QQ += count
-		case "telegram":
+		case imAuditPlatformTelegram:
 			stats.Telegram += count
-		case "weixin":
+		case imAuditPlatformWeixin:
 			stats.Weixin += count
-		case "lansenger":
+		case imAuditPlatformLansenger:
 			stats.Lansenger += count
+		case imAuditPlatformThirdParty:
+			stats.ThirdParty += count
 		default:
-			if strings.HasPrefix(platform, "thirdparty:") {
-				stats.ThirdParty += count
-			}
 		}
 		stats.Total += count
 	}
@@ -413,9 +416,13 @@ func buildIMAuditWhere(platform, userID, keyword string) (string, []interface{})
 	var conditions []string
 	var args []interface{}
 
-	if platform == "thirdparty" {
+	platformKind := normalizeIMAuditPlatformKind(platform)
+	if platformKind.IsThirdParty() {
 		conditions = append(conditions, "platform LIKE ?")
-		args = append(args, "thirdparty:%")
+		args = append(args, imAuditPlatformThirdParty.String()+":%")
+	} else if platformKind != imAuditPlatformUnknown {
+		conditions = append(conditions, "platform = ?")
+		args = append(args, platformKind.String())
 	} else if platform != "" {
 		conditions = append(conditions, "platform = ?")
 		args = append(args, platform)
@@ -442,19 +449,14 @@ func buildIMAuditWhere(platform, userID, keyword string) (string, []interface{})
 //
 // Adding a new IM gateway only requires adding one line here.
 func normalizeIMAuditPlatform(platform string) string {
-	switch platform {
-	case "qqbot_local", "qqbot":
-		return "qq"
-	case "telegram_local":
-		return "telegram"
-	case "weixin_local":
-		return "weixin"
-	case "lansenger_local":
-		return "lansenger"
-	default:
+	if kind := normalizeIMAuditPlatformKind(platform); kind != imAuditPlatformUnknown {
+		return kind.String()
+	}
+	if platform != "" {
 		// Already canonical, or unknown — store as-is.
 		return platform
 	}
+	return ""
 }
 
 // truncateIMAuditContent truncates content to imAuditMaxContentRune runes.

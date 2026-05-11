@@ -159,9 +159,11 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			}, []string{"path"}),
 		toolDef("write_file", "写入内容到本机文件（UTF-8 编码，支持覆盖或追加，允许空内容，会创建不存在的目录。大文件请分块写入：先 overwrite 第一部分，再 append 后续部分）",
 			map[string]interface{}{
-				"path":    map[string]string{"type": "string", "description": "文件路径"},
-				"content": map[string]string{"type": "string", "description": "文件内容，可为空字符串"},
-				"mode":    map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
+				"path":     map[string]string{"type": "string", "description": "文件路径"},
+				"content":  map[string]string{"type": "string", "description": "文件内容，可为空字符串"},
+				"mode":     map[string]string{"type": "string", "description": "写入模式：overwrite（默认）或 append"},
+				"phase_id": map[string]string{"type": "string", "description": workflowDocPhaseIDSchemaDescription()},
+				"doc_type": map[string]string{"type": "string", "description": workflowDocTypeSchemaDescription()},
 			}, []string{"path", "content"}),
 		toolDef("edit_file", "编辑已有文件内容（按文本替换，支持替换首处或全部匹配）",
 			map[string]interface{}{
@@ -177,7 +179,9 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDef("send_file", "读取本机文件并发送给用户（通过 IM 通道直接发送文件）。飞书/微信/QQ等平台均支持文件上传，系统自动处理。设置 forward_to_im=true 可将文件同时转发到用户的 IM 平台。",
 			map[string]interface{}{
 				"path":          map[string]string{"type": "string", "description": "文件的绝对路径或相对于主目录的路径"},
-				"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）"},
+				"file_name":     map[string]string{"type": "string", "description": "发送时显示的文件名（可选，默认使用原文件名）。工作流交付文档请使用稳定 ASCII 文件名，本地化文本放在文档标题或消息正文中。"},
+				"phase_id":      map[string]string{"type": "string", "description": workflowDocDeliveryPhaseIDSchemaDescription()},
+				"doc_type":      map[string]string{"type": "string", "description": workflowDocDeliveryTypeSchemaDescription()},
 				"forward_to_im": map[string]string{"type": "boolean", "description": "是否同时转发到用户的 IM 平台（飞书/微信/QQ等）。仅在用户明确要求发送到飞书、微信、QQ等 IM 时设为 true，默认 false"},
 			}, []string{"path"}),
 		toolDef("open", "用操作系统默认程序打开文件或网址。例如：打开 PDF 用默认阅读器、打开 .xlsx 用 Excel、打开 URL 用默认浏览器、打开文件夹用资源管理器。也支持 mailto: 链接。",

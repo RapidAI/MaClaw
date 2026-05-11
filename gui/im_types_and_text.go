@@ -117,10 +117,14 @@ const maxTotalRecoverInjections = 8
 const minHeuristicTextContinuationRunes = 1200
 
 func shouldContinueTextOutput(finishReason, content string) (bool, string) {
-	if finishReason == "length" {
+	reason := normalizeLLMFinishReason(finishReason)
+	if reason == llmFinishReasonLength {
 		return true, "finish_reason=length"
 	}
-	if finishReason != "" && finishReason != "stop" {
+	if reason == llmFinishReasonUnknown && strings.TrimSpace(finishReason) != "" {
+		return false, ""
+	}
+	if reason != llmFinishReasonUnknown && reason != llmFinishReasonStop {
 		return false, ""
 	}
 	if !looksStructurallyTruncatedText(content) {

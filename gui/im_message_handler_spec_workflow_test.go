@@ -192,9 +192,13 @@ func TestSpecWorkflowProperty5_PDFGenerationAndDelivery(t *testing.T) {
 			return false
 		}
 
-		// (c) Descriptive PDF naming
-		if !strings.Contains(prompt, "需求文档_") || !strings.Contains(prompt, "设计文档_") || !strings.Contains(prompt, "任务列表_") {
-			t.Logf("missing descriptive PDF naming")
+		// (c) Stable ASCII PDF naming, with localized titles kept separate from filenames.
+		if !strings.Contains(prompt, "requirements_") || !strings.Contains(prompt, "design_") || !strings.Contains(prompt, "task-plan_") {
+			t.Logf("missing stable ASCII PDF naming")
+			return false
+		}
+		if strings.Contains(prompt, "需求文档_") || strings.Contains(prompt, "设计文档_") || strings.Contains(prompt, "任务列表_") {
+			t.Logf("prompt still contains localized PDF filename prefixes")
 			return false
 		}
 

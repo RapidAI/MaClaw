@@ -45,13 +45,13 @@ type AgentNetAutoTaskPicker struct {
 
 // autoTaskRun tracks a single auto-picked task execution.
 type autoTaskRun struct {
-	TaskID    string    `json:"task_id"`
-	Title     string    `json:"title"`
-	Reward    float64   `json:"reward"`
-	Status    string    `json:"status"` // "claiming", "executing", "submitting", "done", "failed"
-	StartedAt time.Time `json:"started_at"`
-	Result    string    `json:"result,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	TaskID    string                `json:"task_id"`
+	Title     string                `json:"title"`
+	Reward    float64               `json:"reward"`
+	Status    agentNetAutoRunStatus `json:"status"`
+	StartedAt time.Time             `json:"started_at"`
+	Result    string                `json:"result,omitempty"`
+	Error     string                `json:"error,omitempty"`
 }
 
 // AutoTaskExecutor is called to execute a task. It receives the task description
@@ -149,7 +149,7 @@ func (p *AgentNetAutoTaskPicker) GetStatus() map[string]interface{} {
 			"task_id":    r.TaskID,
 			"title":      r.Title,
 			"reward":     r.Reward,
-			"status":     r.Status,
+			"status":     r.Status.String(),
 			"started_at": r.StartedAt.Format(time.RFC3339),
 		})
 	}
@@ -166,7 +166,7 @@ func (p *AgentNetAutoTaskPicker) GetStatus() map[string]interface{} {
 		"total_earned":          p.totalEarned,
 		"last_poll_at":          formatTimeOrEmpty(p.lastPollAt),
 		"last_error":            p.lastError,
-		"last_poll_status":      string(p.lastPollStatus),
+		"last_poll_status":      p.lastPollStatus.String(),
 		"last_discovered_count": p.lastDiscoveredCnt,
 	}
 }
@@ -223,7 +223,7 @@ func (p *AgentNetAutoTaskPicker) pollAndPickTask() map[string]interface{} {
 	// Check if we're already at max concurrent tasks.
 	activeCount := 0
 	for _, r := range p.activeTasks {
-		if normalizeAgentNetAutoRunStatus(r.Status).IsActive() {
+		if r.Status.IsActive() {
 			activeCount++
 		}
 	}
@@ -284,7 +284,7 @@ func (p *AgentNetAutoTaskPicker) discoverTasks(client *AgentNetClient, hubURL st
 	if err == nil && len(matched) > 0 {
 		var open []AgentNetTask
 		for _, t := range matched {
-			if normalizeAgentNetTaskAvailabilityStatus(t.Status) == agentNetTaskAvailabilityOpen {
+			if normalizeAgentNetTaskAvailabilityStatus(t.Status).CanPick() {
 				open = append(open, t)
 			}
 		}
@@ -304,7 +304,7 @@ func (p *AgentNetAutoTaskPicker) discoverTasks(client *AgentNetClient, hubURL st
 	}
 	var open []AgentNetTask
 	for _, t := range netTasks {
-		if normalizeAgentNetTaskAvailabilityStatus(t.Status) == agentNetTaskAvailabilityOpen {
+		if normalizeAgentNetTaskAvailabilityStatus(t.Status).CanPick() {
 			open = append(open, t)
 		}
 	}
@@ -389,7 +389,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 		TaskID:    task.ID,
 		Title:     task.Title,
 		Reward:    task.Reward,
-		Status:    string(agentNetAutoRunStatusClaiming),
+		Status:    agentNetAutoRunStatusClaiming,
 		StartedAt: time.Now(),
 	}
 
@@ -438,7 +438,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 
 	// Success!
 	p.mu.Lock()
-	run.Status = string(agentNetAutoRunStatusDone)
+	run.Status = agentNetAutoRunStatusDone
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)
@@ -451,7 +451,7 @@ func (p *AgentNetAutoTaskPicker) executeTask(client *AgentNetClient, task *Agent
 // setRunStatus updates a run's status under the lock and notifies.
 func (p *AgentNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status agentNetAutoRunStatus) {
 	p.mu.Lock()
-	run.Status = string(status)
+	run.Status = status
 	p.mu.Unlock()
 	p.notifyChange()
 }
@@ -459,7 +459,7 @@ func (p *AgentNetAutoTaskPicker) setRunStatus(run *autoTaskRun, status agentNetA
 // failTask marks a task run as failed and cleans up.
 func (p *AgentNetAutoTaskPicker) failTask(run *autoTaskRun, errMsg string) {
 	p.mu.Lock()
-	run.Status = string(agentNetAutoRunStatusFailed)
+	run.Status = agentNetAutoRunStatusFailed
 	run.Error = errMsg
 	p.failedCount++
 	delete(p.activeTasks, run.TaskID)
@@ -543,7 +543,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 		TaskID:    task.ID,
 		Title:     task.Title,
 		Reward:    task.Reward,
-		Status:    string(agentNetAutoRunStatusClaiming),
+		Status:    agentNetAutoRunStatusClaiming,
 		StartedAt: time.Now(),
 	}
 
@@ -591,7 +591,7 @@ func (p *AgentNetAutoTaskPicker) PickAndExecuteTask(taskID string) (result map[s
 
 	// Success!
 	p.mu.Lock()
-	run.Status = string(agentNetAutoRunStatusDone)
+	run.Status = agentNetAutoRunStatusDone
 	p.completedCount++
 	p.totalEarned += task.Reward
 	delete(p.activeTasks, task.ID)

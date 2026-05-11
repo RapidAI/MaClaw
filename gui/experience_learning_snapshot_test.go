@@ -331,7 +331,7 @@ func mustFindExperienceNextActionSummary(t *testing.T, summaries []ExperienceNex
 func mustFindExperienceReviewSummary(t *testing.T, summaries []ExperienceReviewSummary, status string) ExperienceReviewSummary {
 	t.Helper()
 	for _, summary := range summaries {
-		if summary.Status == status {
+		if summary.Status.String() == status {
 			return summary
 		}
 	}
@@ -342,7 +342,7 @@ func mustFindExperienceReviewSummary(t *testing.T, summaries []ExperienceReviewS
 func mustFindExperienceFollowUpSummary(t *testing.T, summaries []ExperienceFollowUpSummary, status string) ExperienceFollowUpSummary {
 	t.Helper()
 	for _, summary := range summaries {
-		if summary.Status == status {
+		if summary.Status.String() == status {
 			return summary
 		}
 	}

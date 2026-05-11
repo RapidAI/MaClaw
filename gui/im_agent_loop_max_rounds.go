@@ -47,7 +47,7 @@ func (h *IMMessageHandler) createMaxRoundsUnfinishedSlot(userID string, history 
 		SlotID:       slotID,
 		UserID:       userID,
 		ProjectPath:  h.getCurrentProjectPath(),
-		Status:       "max_rounds_reached",
+		Status:       agent.UnfinishedTaskSlotStatusMaxRoundsReached,
 		LastTask:     originalTask,
 		Summary:      extractProgressSummary(history),
 		ResumePrompt: "The user sent 'continue' to resume this task. Continue from completed work in the conversation history and avoid repeating completed steps.\n",

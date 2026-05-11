@@ -2087,6 +2087,10 @@ export function KnowledgeStartImportDirectory(arg1) {
   return window['go']['main']['App']['KnowledgeStartImportDirectory'](arg1);
 }
 
+export function KnowledgeStartImportFiles(arg1, arg2) {
+  return window['go']['main']['App']['KnowledgeStartImportFiles'](arg1, arg2);
+}
+
 export function KnowledgeImportJobStatus(arg1) {
   return window['go']['main']['App']['KnowledgeImportJobStatus'](arg1);
 }

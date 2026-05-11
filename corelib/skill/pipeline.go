@@ -30,7 +30,7 @@ import (
 
 // PipelineResult is the outcome of a pipeline execution.
 type PipelineResult struct {
-	Status      string               `json:"status"` // "completed", "failed", "stopped_at_checkpoint", "cancelled"
+	Status      PipelineStatus       `json:"status"`
 	FailedAt    int                  `json:"failed_at,omitempty"`
 	FailedSkill string               `json:"failed_skill,omitempty"`
 	StoppedAt   int                  `json:"stopped_at,omitempty"`
@@ -41,11 +41,11 @@ type PipelineResult struct {
 
 // PipelineStepResult records the outcome of one pipeline step.
 type PipelineStepResult struct {
-	Skill        string            `json:"skill"`
-	Status       string            `json:"status"` // "completed", "failed", "skipped"
-	CapturedVars map[string]string `json:"captured_vars,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	Duration     string            `json:"duration,omitempty"`
+	Skill        string             `json:"skill"`
+	Status       PipelineStepStatus `json:"status"`
+	CapturedVars map[string]string  `json:"captured_vars,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	Duration     string             `json:"duration,omitempty"`
 }
 
 // SkillExecutor is the interface that PipelineRunner uses to execute
@@ -78,10 +78,10 @@ type PipelineRunner struct {
 // The user can stop the pipeline at any checkpoint.
 func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipelineStep, initialVars map[string]string) (*PipelineResult, error) {
 	if len(steps) == 0 {
-		return &PipelineResult{Status: "completed"}, nil
+		return &PipelineResult{Status: PipelineStatusCompleted}, nil
 	}
 	if pr == nil || pr.Executor == nil {
-		return &PipelineResult{Status: "failed", Error: "pipeline executor is nil"}, fmt.Errorf("pipeline executor is nil")
+		return &PipelineResult{Status: PipelineStatusFailed, Error: "pipeline executor is nil"}, fmt.Errorf("pipeline executor is nil")
 	}
 
 	vars := make(map[string]string)
@@ -98,7 +98,7 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 		// Check cancellation
 		select {
 		case <-ctx.Done():
-			result.Status = "cancelled"
+			result.Status = PipelineStatusCancelled
 			result.Error = ctx.Err().Error()
 			return result, nil
 		default:
@@ -108,11 +108,11 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 		if skillName == "" {
 			errMsg := fmt.Sprintf("pipeline step %d is missing skill", i+1)
 			result.StepResults = append(result.StepResults, PipelineStepResult{
-				Status: "failed",
+				Status: PipelineStepStatusFailed,
 				Error:  errMsg,
 			})
 			if !step.ContinueOnFail {
-				result.Status = "failed"
+				result.Status = PipelineStatusFailed
 				result.FailedAt = i
 				result.Error = errMsg
 				return result, nil
@@ -125,11 +125,11 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 		if errMsg := unresolvedPipelineParamMessage(resolvedParams); errMsg != "" {
 			result.StepResults = append(result.StepResults, PipelineStepResult{
 				Skill:  skillName,
-				Status: "failed",
+				Status: PipelineStepStatusFailed,
 				Error:  errMsg,
 			})
 			if !step.ContinueOnFail {
-				result.Status = "failed"
+				result.Status = PipelineStatusFailed
 				result.FailedAt = i
 				result.FailedSkill = skillName
 				result.Error = errMsg
@@ -159,19 +159,19 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				stepResult.Status = "cancelled"
+				stepResult.Status = PipelineStepStatusCancelled
 				stepResult.Error = ctxErr.Error()
 				result.StepResults = append(result.StepResults, stepResult)
-				result.Status = "cancelled"
+				result.Status = PipelineStatusCancelled
 				result.Error = ctxErr.Error()
 				return result, nil
 			}
-			stepResult.Status = "failed"
+			stepResult.Status = PipelineStepStatusFailed
 			stepResult.Error = err.Error()
 			result.StepResults = append(result.StepResults, stepResult)
 
 			if !step.ContinueOnFail {
-				result.Status = "failed"
+				result.Status = PipelineStatusFailed
 				result.FailedAt = i
 				result.FailedSkill = skillName
 				result.Error = err.Error()
@@ -180,7 +180,7 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 			mergePipelineStepVars(vars, skillName, captured, output)
 			// ContinueOnFail: record failure but proceed
 		} else {
-			stepResult.Status = "completed"
+			stepResult.Status = PipelineStepStatusCompleted
 			result.StepResults = append(result.StepResults, stepResult)
 
 			mergePipelineStepVars(vars, skillName, captured, output)
@@ -201,26 +201,26 @@ func (pr *PipelineRunner) Run(ctx context.Context, steps []corelib.SkillPipeline
 			// Pipeline only checks the index — language-independent.
 			chosenIdx, askErr := pr.AskUser(msg, []string{"continue", "stop"})
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				result.Status = "cancelled"
+				result.Status = PipelineStatusCancelled
 				result.Error = ctxErr.Error()
 				return result, nil
 			}
 			if askErr != nil {
-				result.Status = "failed"
+				result.Status = PipelineStatusFailed
 				result.FailedAt = i
 				result.FailedSkill = skillName
 				result.Error = fmt.Sprintf("checkpoint prompt failed: %v", askErr)
 				return result, nil
 			}
 			if chosenIdx != 0 {
-				result.Status = "stopped_at_checkpoint"
+				result.Status = PipelineStatusStoppedAtCheckpoint
 				result.StoppedAt = i
 				return result, nil
 			}
 		}
 	}
 
-	result.Status = "completed"
+	result.Status = PipelineStatusCompleted
 	return result, nil
 }
 
@@ -243,9 +243,9 @@ func FormatPipelineResult(result *PipelineResult) string {
 
 	for i, sr := range result.StepResults {
 		icon := "✅"
-		if sr.Status == "failed" {
+		if sr.Status.IsFailed() {
 			icon = "❌"
-		} else if sr.Status == "skipped" {
+		} else if sr.Status.IsSkipped() {
 			icon = "⏭️"
 		}
 		b.WriteString(fmt.Sprintf("  %d. %s %s (%s)", i+1, icon, sr.Skill, sr.Duration))

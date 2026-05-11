@@ -3,9 +3,9 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib"
 	"errors"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"io"
 	"net/http"
 	"os"
@@ -94,7 +94,7 @@ func (a *App) compareVersions(v1, v2 string) int {
 //
 // The result is cached after the first call (OS version doesn't change at
 // runtime).
-var _isWin11     bool
+var _isWin11 bool
 var _isWin11Once sync.Once
 
 func isWindows11() bool {
@@ -1069,7 +1069,7 @@ func (a *App) installNodeJS() error {
 	officialURL := fmt.Sprintf("https://nodejs.org/dist/v%s/%s", nodeVersion, fileName)
 	downloadURL := officialURL
 
-	if strings.HasPrefix(strings.ToLower(a.CurrentLanguage), "zh") && nodeArch != "arm64" {
+	if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() && nodeArch != "arm64" {
 		mirrorURL := fmt.Sprintf("https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v%s/%s", nodeVersion, fileName)
 		a.log(a.tr("Trying China mirror for faster download..."))
 
@@ -1343,7 +1343,7 @@ func (a *App) installGitBash() error {
 	fileName := fmt.Sprintf("Git-%s-64-bit.exe", gitVersion)
 
 	downloadURL := fmt.Sprintf("https://github.com/git-for-windows/git/releases/download/%s/%s", fullVersion, fileName)
-	if strings.HasPrefix(strings.ToLower(a.CurrentLanguage), "zh") {
+	if normalizeAppLanguageKind(a.CurrentLanguage).IsChinese() {
 		downloadURL = fmt.Sprintf("https://npmmirror.com/mirrors/git-for-windows/%s/%s", fullVersion, fileName)
 	}
 

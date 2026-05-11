@@ -39,7 +39,7 @@ func newCodingAgentTaskEvent(phase codingAgentEventPhaseKind, task *TaskItem, ti
 	}
 	return CodingAgentEvent{
 		Version: 1,
-		Agent:   "coding",
+		Agent:   codingAgentNameCoding.String(),
 		Event:   codingAgentEventKindTaskStatus.String(),
 		Phase:   phase.String(),
 		TaskID:  taskID,
@@ -61,7 +61,7 @@ func parseCodingAgentEventText(text string) (CodingAgentEvent, bool) {
 	if err := json.Unmarshal([]byte(payload), &event); err != nil {
 		return CodingAgentEvent{}, false
 	}
-	if strings.TrimSpace(event.Agent) != "coding" {
+	if normalizeCodingAgentNameKind(event.Agent) != codingAgentNameCoding {
 		return CodingAgentEvent{}, false
 	}
 	return event, true
@@ -72,7 +72,7 @@ func formatCodingAgentEvent(event CodingAgentEvent) string {
 		event.Version = 1
 	}
 	if strings.TrimSpace(event.Agent) == "" {
-		event.Agent = "coding"
+		event.Agent = codingAgentNameCoding.String()
 	}
 	if strings.TrimSpace(event.Ts) == "" {
 		event.Ts = time.Now().UTC().Format(time.RFC3339Nano)

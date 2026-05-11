@@ -955,7 +955,7 @@ func TestAuditHealthDiagnosesActionableStatus(t *testing.T) {
 	cases := []struct {
 		name       string
 		entries    []AuditEntry
-		wantStatus string
+		wantStatus AuditHealthStatusKind
 		wantIssue  string
 		wantCode   string
 		wantAction string

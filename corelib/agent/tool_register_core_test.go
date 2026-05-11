@@ -91,3 +91,26 @@ func TestCoreSearchToolsExposeLargeRepoSearchOptions(t *testing.T) {
 		"type",
 	)
 }
+
+func TestCoreWorkflowDocumentToolsExposeMetadata(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+
+	assertProps := func(toolName string, props ...string) {
+		t.Helper()
+		reg.mu.RLock()
+		entry := reg.tools[toolName]
+		reg.mu.RUnlock()
+		if entry == nil {
+			t.Fatalf("tool %q is not registered", toolName)
+		}
+		for _, prop := range props {
+			if _, ok := entry.Properties[prop]; !ok {
+				t.Fatalf("tool %q does not expose property %q", toolName, prop)
+			}
+		}
+	}
+
+	assertProps("write_file", "phase_id", "doc_type")
+	assertProps("send_file", "phase_id", "doc_type")
+}

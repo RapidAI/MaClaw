@@ -76,16 +76,7 @@ func (h *IMMessageHandler) accumulateInjection(userID, prefixedText string) {
 // parseSlotKind converts a string slot kind to the SlotKind enum.
 // Defaults to SlotKindScheduled for unknown values.
 func parseSlotKind(s string) SlotKind {
-	switch s {
-	case "coding":
-		return SlotKindCoding
-	case "scheduled", "":
-		return SlotKindScheduled
-	case "auto":
-		return SlotKindAuto
-	default:
-		return SlotKindScheduled
-	}
+	return normalizeSlotKind(s)
 }
 
 // drainStatusEvents non-blockingly drains all pending StatusEvents from the

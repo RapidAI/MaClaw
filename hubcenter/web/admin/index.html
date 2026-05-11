@@ -202,6 +202,28 @@
         <div class="actions save-actions"><button class="btn-primary" id="smSaveBtn" onclick="saveSmTrialConfig()"></button></div>
       </div>
     </div>
+    <div class="sm-section sm-config-section">
+      <div class="sm-config-card">
+        <div class="sm-section-kicker">SECURITY</div>
+        <h3 id="smUploadAuthTitle">Upload Authentication Mode</h3>
+        <div class="desc" id="smUploadAuthDesc">Controls how skill uploads are authenticated. Default: both (token preferred, email fallback).</div>
+        <div class="sm-config-grid">
+          <div class="sm-config-field" style="grid-column: span 2">
+            <label id="smUploadAuthModeLabel">Auth Mode</label>
+            <div class="hintline" id="smUploadAuthModeHint">both = token + email fallback, token = strict token only, email = legacy email only</div>
+            <select id="smUploadAuthMode">
+              <option value="both">Both (token preferred, email fallback)</option>
+              <option value="token">Token only (strict)</option>
+              <option value="email">Email only (legacy)</option>
+            </select>
+          </div>
+          <div class="sm-config-field" style="display:flex;align-items:flex-end">
+            <button class="btn-primary" style="width:100%;height:42px" onclick="saveSmUploadAuthConfig()">Save</button>
+          </div>
+        </div>
+        <div id="smUploadAuthStatus" class="sm-status"></div>
+      </div>
+    </div>
   </div>
 </section>
       <section id="tab-news" class="panel card"><div class="head"><div><h3 data-i18n="newsTitle"></h3><div class="desc" data-i18n="newsDesc"></div></div><div class="actions"><button class="btn-primary" onclick="showNewsEditor()" data-i18n="newsAdd"></button><button class="btn-ghost" onclick="loadNewsList()" data-i18n="reload"></button></div></div><div id="newsEditor" class="item news-editor"><input id="newsEditId" type="hidden"><div class="grid2"><div><label data-i18n="newsFieldTitle"></label><input id="newsEditTitle" placeholder=""></div><div><label data-i18n="newsFieldCategory"></label><select id="newsEditCategory"><option value="notice"></option><option value="update"></option><option value="tip"></option><option value="alert"></option></select></div></div><div class="stack-gap-sm"><label data-i18n="newsFieldContent"></label><textarea id="newsEditContent" class="news-textarea" rows="8" placeholder=""></textarea></div><div class="inline-check stack-gap-xs"><label class="inline-label" data-i18n="newsFieldPinned"></label><input type="checkbox" id="newsEditPinned" class="auto-check"></div><div class="actions section-gap"><button class="btn-primary" onclick="saveNews()" data-i18n="newsSave"></button><button class="btn-ghost" onclick="hideNewsEditor()" data-i18n="newsCancel"></button></div></div><div id="newsList" class="list"><div class="hint" data-i18n="newsEmpty"></div></div><div id="newsPager" class="actions"><button class="btn-ghost" id="newsPrevBtn" onclick="changeNewsPage(-1)">&larr;</button><span id="newsPageInfo"></span><button class="btn-ghost" id="newsNextBtn" onclick="changeNewsPage(1)">&rarr;</button></div></section>
@@ -468,7 +490,7 @@ Object.assign(I18N_ZH,{
     async function refreshAuthStage(){try{const data=await loadAdminStatus();const initialized=!!data.initialized;adminInitialized=initialized;setSetupAvailability(!initialized);document.getElementById('authStageHint').textContent=initialized?tr('canLogin'):tr('needsSetup');showAuthStage(initialized?'login':'setup');return initialized}catch(err){adminInitialized=true;setSetupAvailability(false);setOutput(tr('loadAdminFailed',{error:err.message}),'loginOutput');showAuthStage('login');return true}}
     function refreshAdminHeader(){const profile=adminProfile();document.getElementById('adminDisplayName').textContent=profile?.username||tr('administrator');document.getElementById('adminDisplayMeta').textContent=profile?.email||tr('signedIn');const on=!!token();document.getElementById('authBadge').textContent=on?tr('loggedIn'):tr('loggedOut');document.getElementById('authBadge').className='badge '+(on?'ok':'warn')}
     function showApp(on){document.getElementById('loginView').classList.toggle('hidden',on);document.getElementById('appView').classList.toggle('hidden',!on);refreshAdminHeader();if(!on)refreshAuthStage()}
-    function openTab(name){const requested=name;const panel=document.getElementById('tab-'+name);if(!panel){if(requested==='usermgmt')return;name='overview'}localStorage.setItem(activeTabKey,name);document.querySelectorAll('.nav button').forEach(v=>v.classList.toggle('active',v.dataset.tab===name));document.querySelectorAll('.panel').forEach(v=>v.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');const meta=tabMeta[name]||tabMeta.overview;renderPageTabIcon(name);document.getElementById('pageTitle').textContent=tr(meta[0]);document.getElementById('pageSubtitle').textContent=tr(meta[1]);if(name==='overview'&&typeof loadRoutingDiagnostics==='function')loadRoutingDiagnostics();if(name==='routequery'&&typeof applyRouteQueryI18n==='function')applyRouteQueryI18n();if(name==='failurelogs'&&typeof loadFailureLogs==='function')loadFailureLogs();if(name==='gossip'&&typeof loadGossipList==='function')loadGossipList();if(name==='skillhub'&&typeof loadSkillHubList==='function'){loadSkillHubList();if(typeof applyImportI18n==='function')applyImportI18n()}if(name==='skillmarket'){if(typeof loadSkillmarketReview==='function')loadSkillmarketReview();if(typeof loadSmPurchases==='function')loadSmPurchases();if(typeof loadSmTrialConfig==='function')loadSmTrialConfig()}if(name==='news'&&typeof loadNewsList==='function')loadNewsList()}
+    function openTab(name){const requested=name;const panel=document.getElementById('tab-'+name);if(!panel){if(requested==='usermgmt')return;name='overview'}localStorage.setItem(activeTabKey,name);document.querySelectorAll('.nav button').forEach(v=>v.classList.toggle('active',v.dataset.tab===name));document.querySelectorAll('.panel').forEach(v=>v.classList.remove('active'));document.getElementById('tab-'+name).classList.add('active');const meta=tabMeta[name]||tabMeta.overview;renderPageTabIcon(name);document.getElementById('pageTitle').textContent=tr(meta[0]);document.getElementById('pageSubtitle').textContent=tr(meta[1]);if(name==='overview'&&typeof loadRoutingDiagnostics==='function')loadRoutingDiagnostics();if(name==='routequery'&&typeof applyRouteQueryI18n==='function')applyRouteQueryI18n();if(name==='failurelogs'&&typeof loadFailureLogs==='function')loadFailureLogs();if(name==='gossip'&&typeof loadGossipList==='function')loadGossipList();if(name==='skillhub'&&typeof loadSkillHubList==='function'){loadSkillHubList();if(typeof applyImportI18n==='function')applyImportI18n()}if(name==='skillmarket'){if(typeof loadSkillmarketReview==='function')loadSkillmarketReview();if(typeof loadSmPurchases==='function')loadSmPurchases();if(typeof loadSmTrialConfig==='function')loadSmTrialConfig();if(typeof loadSmUploadAuthConfig==='function')loadSmUploadAuthConfig()}if(name==='news'&&typeof loadNewsList==='function')loadNewsList()}
     function restoreTab(){openTab(localStorage.getItem(activeTabKey)||'overview')}
     function hubRuntimeStatusText(status){const clean=String(status||'').toLowerCase();const map={ready:'hubRuntimeReady',downloading:'hubRuntimeDownloading',partial:'hubRuntimePartial',missing:'hubRuntimeMissing',unavailable:'hubRuntimeUnavailable'};return tr(map[clean]||'hubRuntimeUnavailable')}
     function hubRuntimeBadge(status){const clean=String(status||'').toLowerCase();const map={ready:['ok',tr('hubRuntimeReady')],downloading:['info',tr('hubRuntimeDownloading')],partial:['warn',tr('hubRuntimePartial')],missing:['danger',tr('hubRuntimeMissing')]};const pair=map[clean]||['warn',tr('hubRuntimeUnavailable')];return `<span class="badge ${pair[0]}">${pair[1]}</span>`}
@@ -984,6 +1006,27 @@ async function saveSmTrialConfig() {
   } catch(err) { showToast(err.message, 'error'); }
   finally {
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = previousText || smtr('save'); }
+  }
+}
+
+async function loadSmUploadAuthConfig() {
+  try {
+    const data = await api('/api/v1/admin/config/upload-auth');
+    const sel = document.getElementById('smUploadAuthMode');
+    if (sel) sel.value = data.mode || 'both';
+  } catch(err) { console.warn('load upload auth config:', err); }
+}
+
+async function saveSmUploadAuthConfig() {
+  const mode = document.getElementById('smUploadAuthMode').value;
+  const statusEl = document.getElementById('smUploadAuthStatus');
+  try {
+    const data = await api('/api/v1/admin/config/upload-auth', {method:'PUT', body: JSON.stringify({mode: mode})});
+    if (statusEl) { statusEl.className = 'sm-status show'; statusEl.textContent = 'Saved: ' + (data.description || mode); }
+    showToast('Upload auth mode saved: ' + mode, 'success');
+  } catch(err) {
+    if (statusEl) { statusEl.className = 'sm-status show error'; statusEl.textContent = 'Error: ' + err.message; }
+    showToast(err.message, 'error');
   }
 }
 

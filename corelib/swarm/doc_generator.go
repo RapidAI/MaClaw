@@ -160,17 +160,17 @@ func specForDocType(docType DocType, projectName, content string, opts GenerateP
 	case DocTypeRequirements:
 		spec.Title = "📋 需求文档"
 		spec.Subtitle = "Requirements Specification"
-		spec.FileNamePrefix = "需求文档"
+		spec.FileNamePrefix = "requirements"
 		spec.FooterHint = "请确认需求范围与验收标准"
 	case DocTypeDesign:
 		spec.Title = "🏗️ 设计文档"
 		spec.Subtitle = "Design Document"
-		spec.FileNamePrefix = "设计文档"
+		spec.FileNamePrefix = "design"
 		spec.FooterHint = "请确认设计方案与实现边界"
 	case DocTypeTaskPlan:
 		spec.Title = "📝 任务计划"
 		spec.Subtitle = "Task Plan"
-		spec.FileNamePrefix = "任务计划"
+		spec.FileNamePrefix = "task-plan"
 		spec.FooterHint = "请确认任务拆分与执行顺序"
 	default:
 		spec.Title = strings.TrimSpace(projectName)

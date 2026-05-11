@@ -18,6 +18,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
 // SkillMarketHandlers 处理 SkillMarket 相关的 HTTP 请求。
@@ -35,10 +36,24 @@ type SkillMarketHandlers struct {
 	refundSvc      *skillmarket.RefundService
 	rateLimiter    *skillmarket.RateLimiter
 	authSvc        *skillmarket.AuthService
+	settings       store.SystemSettingsRepository
 	rsaPrivKey     *rsa.PrivateKey
 	pendingDir     string
 	dataDir        string
 }
+
+// SkillMarket upload auth mode constants.
+// Configurable via system setting key "skillmarket_upload_auth_mode".
+const (
+	// UploadAuthModeBoth allows both token and email-only upload (default, transition period).
+	UploadAuthModeBoth = "both"
+	// UploadAuthModeToken requires a valid session token for upload.
+	UploadAuthModeToken = "token"
+	// UploadAuthModeEmail allows email-only upload (no token required).
+	UploadAuthModeEmail = "email"
+
+	skillmarketUploadAuthModeKey = "skillmarket_upload_auth_mode"
+)
 
 // SkillMarketConfig 是创建 SkillMarketHandlers 所需的配置。
 type SkillMarketConfig struct {
@@ -55,6 +70,7 @@ type SkillMarketConfig struct {
 	RefundSvc      *skillmarket.RefundService
 	RateLimiter    *skillmarket.RateLimiter
 	AuthSvc        *skillmarket.AuthService
+	Settings       store.SystemSettingsRepository
 	RSAPrivKey     *rsa.PrivateKey
 	PendingDir     string
 	DataDir        string
@@ -76,6 +92,7 @@ func NewSkillMarketHandlers(cfg SkillMarketConfig) *SkillMarketHandlers {
 		refundSvc:      cfg.RefundSvc,
 		rateLimiter:    cfg.RateLimiter,
 		authSvc:        cfg.AuthSvc,
+		settings:       cfg.Settings,
 		rsaPrivKey:     cfg.RSAPrivKey,
 		pendingDir:     cfg.PendingDir,
 		dataDir:        cfg.DataDir,
@@ -100,24 +117,32 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 	}
 	email := ""
 	var user *skillmarket.SkillMarketUser
-	if h.authSvc != nil {
+	authMode := h.getUploadAuthMode(r.Context())
+	if h.authSvc != nil && authMode != UploadAuthModeEmail {
 		token := extractSessionToken(r)
-		if token == "" {
-			smError(w, http.StatusUnauthorized, "session token required")
+		if token != "" {
+			// 有 token 时必须验证有效性（防止伪造）
+			sess, err := h.authSvc.ValidateSession(r.Context(), token)
+			if err != nil {
+				smError(w, http.StatusUnauthorized, "session expired or invalid")
+				return
+			}
+			email = strings.TrimSpace(sess.Email)
+			user, err = h.userSvc.EnsureAccountWithID(r.Context(), sess.UserID, email)
+			if err != nil {
+				smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
+				return
+			}
+		} else if authMode == UploadAuthModeToken {
+			// token 模式下无 token 直接拒绝
+			smError(w, http.StatusUnauthorized, "session token required (upload auth mode: token)")
 			return
-		}
-		sess, err := h.authSvc.ValidateSession(r.Context(), token)
-		if err != nil {
-			smError(w, http.StatusUnauthorized, "session expired or invalid")
-			return
-		}
-		email = strings.TrimSpace(sess.Email)
-		user, err = h.userSvc.EnsureAccountWithID(r.Context(), sess.UserID, email)
-		if err != nil {
-			smError(w, http.StatusInternalServerError, "ensure account: "+err.Error())
-			return
+		} else {
+			// both 模式：无 token 时回退到 email 字段识别身份
+			email = strings.TrimSpace(r.FormValue("email"))
 		}
 	} else {
+		// authSvc 为 nil 或 email 模式：直接用 form email
 		email = strings.TrimSpace(r.FormValue("email"))
 	}
 	if email == "" {
@@ -199,6 +224,32 @@ func (h *SkillMarketHandlers) SubmitSkill(w http.ResponseWriter, r *http.Request
 		"submission_id": subID,
 		"status":        "pending",
 	})
+}
+
+// getUploadAuthMode reads the upload auth mode from system settings.
+// Returns "both" (default), "token", or "email".
+func (h *SkillMarketHandlers) getUploadAuthMode(ctx context.Context) string {
+	if h.settings == nil {
+		return UploadAuthModeBoth
+	}
+	raw, err := h.settings.Get(ctx, skillmarketUploadAuthModeKey)
+	if err != nil || raw == "" {
+		return UploadAuthModeBoth
+	}
+	// Parse JSON string value (stored as JSON in system_settings)
+	var mode string
+	if json.Unmarshal([]byte(raw), &mode) != nil {
+		// Not valid JSON — use raw value directly, trimming whitespace and quotes
+		mode = strings.Trim(strings.TrimSpace(raw), `"'`)
+	}
+	switch strings.ToLower(mode) {
+	case UploadAuthModeToken:
+		return UploadAuthModeToken
+	case UploadAuthModeEmail:
+		return UploadAuthModeEmail
+	default:
+		return UploadAuthModeBoth
+	}
 }
 
 // GetSubmissionStatus handles GET /api/v1/skill-submissions/{id}.
@@ -798,6 +849,59 @@ func (h *SkillMarketHandlers) UpdateTrialConfig(w http.ResponseWriter, r *http.R
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// GetUploadAuthConfig handles GET /api/v1/admin/config/upload-auth.
+func (h *SkillMarketHandlers) GetUploadAuthConfig(w http.ResponseWriter, r *http.Request) {
+	mode := h.getUploadAuthMode(r.Context())
+	writeJSON(w, http.StatusOK, map[string]string{
+		"mode":        mode,
+		"description": uploadAuthModeDescription(mode),
+	})
+}
+
+// UpdateUploadAuthConfig handles PUT /api/v1/admin/config/upload-auth.
+func (h *SkillMarketHandlers) UpdateUploadAuthConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		smError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	switch mode {
+	case UploadAuthModeBoth, UploadAuthModeToken, UploadAuthModeEmail:
+		// valid
+	default:
+		smError(w, http.StatusBadRequest, fmt.Sprintf("invalid mode %q, must be one of: both, token, email", req.Mode))
+		return
+	}
+	if h.settings == nil {
+		smError(w, http.StatusInternalServerError, "system settings not available")
+		return
+	}
+	valueJSON, _ := json.Marshal(mode)
+	if err := h.settings.Set(r.Context(), skillmarketUploadAuthModeKey, string(valueJSON)); err != nil {
+		smError(w, http.StatusInternalServerError, "save setting: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":      "ok",
+		"mode":        mode,
+		"description": uploadAuthModeDescription(mode),
+	})
+}
+
+func uploadAuthModeDescription(mode string) string {
+	switch mode {
+	case UploadAuthModeToken:
+		return "Requires valid session token for upload (strict)"
+	case UploadAuthModeEmail:
+		return "Email-only identification, no token required (legacy)"
+	default:
+		return "Token preferred, falls back to email if no token (transition)"
+	}
 }
 
 // ── Withdraw (上传者主动下架) ─────────────────────────────────────────────

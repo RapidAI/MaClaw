@@ -214,7 +214,7 @@ Reply with exactly one word:
 		})
 		if err == nil {
 			intent, ok := parsePendingReplyPromptIntent(result.Text)
-			return ok && intent == "pending"
+			return ok && intent == pendingReplyPromptIntentPending
 		}
 		log.Printf("[PendingUserReply] prompt intent classification failed: %v", err)
 	}
@@ -251,33 +251,11 @@ Reply with exactly one word:
 				log.Printf("[PendingUserReply] answer intent classification ambiguous: %q", truncateForLogGUI(result.Text, 60))
 				return false, false
 			}
-			return intent == "answer", true
+			return intent == pendingReplyAnswerIntentAnswer, true
 		}
 		log.Printf("[PendingUserReply] answer intent classification failed: %v", err)
 	}
 	return false, false
-}
-
-func parsePendingReplyPromptIntent(text string) (string, bool) {
-	intent := strings.ToLower(strings.TrimSpace(text))
-	intent = strings.Trim(intent, " \t\r\n`\"'.,:;!?()[]{}")
-	switch intent {
-	case "pending", "done":
-		return intent, true
-	default:
-		return "", false
-	}
-}
-
-func parsePendingReplyAnswerIntent(text string) (string, bool) {
-	intent := strings.ToLower(strings.TrimSpace(text))
-	intent = strings.Trim(intent, " \t\r\n`\"'.,:;!?()[]{}")
-	switch intent {
-	case "answer", "new":
-		return intent, true
-	default:
-		return "", false
-	}
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a

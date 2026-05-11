@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -651,14 +652,22 @@ func (a *App) KnowledgeScanFiles(req knowledge.DirectoryImportRequest, filePaths
 }
 
 func (a *App) KnowledgeImportFiles(req knowledge.DirectoryImportRequest, filePaths []string) (knowledge.DirectoryImportResult, error) {
+	log.Printf("[knowledge] ImportFiles: %d files, include_exts=%v", len(filePaths), req.IncludeExts)
 	req = a.normalizeKnowledgeImportRequest(req)
 	req.RootPath = ""
 	store, err := a.openKnowledgeStore()
 	if err != nil {
+		log.Printf("[knowledge] ImportFiles: openKnowledgeStore failed: %v", err)
 		return knowledge.DirectoryImportResult{}, err
 	}
 	defer store.Close()
-	return store.ImportFiles(a.knowledgeContext(), req, filePaths)
+	result, err := store.ImportFiles(a.knowledgeContext(), req, filePaths)
+	if err != nil {
+		log.Printf("[knowledge] ImportFiles: failed: %v", err)
+	} else {
+		log.Printf("[knowledge] ImportFiles: done total=%d imported=%d skipped=%d failed=%d", result.TotalFiles, result.ImportedFiles, result.SkippedFiles, result.FailedFiles)
+	}
+	return result, err
 }
 
 func (a *App) KnowledgeListImportBatches(limit int) ([]knowledge.ImportBatch, error) {
@@ -927,6 +936,37 @@ func (a *App) KnowledgeStartImportDirectory(req knowledge.DirectoryImportRequest
 	return job, nil
 }
 
+func (a *App) KnowledgeStartImportFiles(req knowledge.DirectoryImportRequest, filePaths []string) (KnowledgeImportJob, error) {
+	req = a.normalizeKnowledgeImportRequest(req)
+	req.RootPath = ""
+	req.DryRun = false
+	now := time.Now().UTC()
+	job := KnowledgeImportJob{
+		ID:        knowledge.NewID("kjob"),
+		Status:    knowledge.ImportStatusRunning,
+		Result:    knowledge.DirectoryImportResult{Status: knowledge.ImportStatusRunning, TotalFiles: len(filePaths)},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	knowledgeImportJobs.Store(job.ID, job)
+
+	go func(jobID string, req knowledge.DirectoryImportRequest, filePaths []string) {
+		store, err := a.openKnowledgeStore()
+		if err != nil {
+			finishKnowledgeImportJob(jobID, knowledge.DirectoryImportResult{Status: knowledge.ImportStatusFailed}, err)
+			return
+		}
+		defer store.Close()
+		store.SetImportProgressCallback(func(progress knowledge.DirectoryImportResult) {
+			updateKnowledgeImportJobProgress(jobID, progress)
+		})
+		result, err := store.ImportFiles(a.knowledgeContext(), req, filePaths)
+		finishKnowledgeImportJob(jobID, result, err)
+	}(job.ID, req, filePaths)
+
+	return job, nil
+}
+
 func (a *App) KnowledgeImportJobStatus(id string) (KnowledgeImportJob, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -1092,14 +1132,12 @@ func (a *App) normalizeKnowledgeSearchOptions(opts knowledge.SearchOptions) know
 	opts.SourceKinds = normalizeKnowledgeOptionStrings(opts.SourceKinds)
 	opts.SourceIDs = normalizeKnowledgeOptionStrings(opts.SourceIDs)
 	opts.Labels = normalizeKnowledgeOptionStrings(opts.Labels)
-	switch opts.SearchScope {
-	case knowledge.SaveScopeProject:
+	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
+	case scope == knowledgeSearchScopeProject:
 		if strings.TrimSpace(opts.ProjectPath) == "" {
 			opts.ProjectPath = a.GetCurrentProjectPath()
 		}
-	case knowledge.SaveScopePersonal, knowledge.SaveScopeLocalOnly, "local":
-		opts.ProjectPath = ""
-	case "all":
+	case scope.ClearsProjectPath():
 		opts.ProjectPath = ""
 	default:
 		opts.ProjectPath = a.normalizeKnowledgeScopePath(opts.ProjectPath)
@@ -1146,14 +1184,12 @@ func (a *App) normalizeKnowledgeListOptions(opts knowledge.ListSourcesOptions) k
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
-	switch opts.SearchScope {
-	case knowledge.SaveScopeProject:
+	switch scope := normalizeKnowledgeSearchScopeKind(opts.SearchScope); {
+	case scope == knowledgeSearchScopeProject:
 		if opts.ProjectPath == "" {
 			opts.ProjectPath = a.GetCurrentProjectPath()
 		}
-	case knowledge.SaveScopePersonal, knowledge.SaveScopeLocalOnly, "local":
-		opts.ProjectPath = ""
-	case "all":
+	case scope.ClearsProjectPath():
 		opts.ProjectPath = ""
 	default:
 		opts.ProjectPath = a.normalizeKnowledgeScopePath(opts.ProjectPath)

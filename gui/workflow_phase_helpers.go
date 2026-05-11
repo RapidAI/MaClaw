@@ -40,17 +40,13 @@ func normalizeWorkflowPhaseID(value string) string {
 	return normalizeWorkflowPhaseKind(value).String()
 }
 
-func workflowPhaseString(phase string) string {
-	return normalizeWorkflowPhaseID(phase)
-}
-
-func workflowPhaseFromMetadata(values ...string) string {
+func workflowPhaseKindFromMetadata(values ...string) workflowPhaseKind {
 	for _, value := range values {
-		if phaseID := normalizeWorkflowPhaseID(value); phaseID != "" {
-			return phaseID
+		if phase := normalizeWorkflowPhaseKind(value); phase != workflowPhaseUnknown {
+			return phase
 		}
 	}
-	return ""
+	return workflowPhaseUnknown
 }
 
 func inferFileDeliveryMessage(fileName string) string {

@@ -692,6 +692,7 @@ func ToolWriteFile(args map[string]interface{}) string {
 		return fmt.Sprintf("内容过大（%d 字节），最大允许 %d 字节", len(content), WriteFileMaxSize)
 	}
 	mode := StringArg(args, "mode")
+	p = workflowDocWritePath(p, args)
 
 	absPath, err := ResolveFileToolPath(p)
 	if err != nil {
@@ -816,6 +817,7 @@ func ToolSendFile(args map[string]interface{}) string {
 	if fileName == "" {
 		fileName = filepath.Base(absPath)
 	}
+	fileName = workflowDocDeliveryFileNameWithFallbackExt(fileName, args, filepath.Ext(absPath))
 
 	mimeType := mime.TypeByExtension(filepath.Ext(absPath))
 	if mimeType == "" {
@@ -826,6 +828,9 @@ func ToolSendFile(args map[string]interface{}) string {
 
 	forwardIM, _ := args["forward_to_im"].(bool)
 	if forwardIM {
+		if msgFlag := workflowDocDeliveryMessagePayloadFlag(args); msgFlag != "" {
+			return fmt.Sprintf("[file_base64|%s|%s|im|%s]%s", fileName, mimeType, msgFlag, b64)
+		}
 		return fmt.Sprintf("[file_base64|%s|%s|im]%s", fileName, mimeType, b64)
 	}
 	return fmt.Sprintf("[file_base64|%s|%s]%s", fileName, mimeType, b64)

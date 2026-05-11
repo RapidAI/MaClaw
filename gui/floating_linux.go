@@ -278,3 +278,8 @@ func (w *linuxFloatingWindow) IsCreated() bool {
 	defer w.mu.Unlock()
 	return w.created
 }
+
+func (w *linuxFloatingWindow) UpdateSoundConfig(soundEnabled bool, preset string) {
+	// Linux floating window does not manage sound state in-memory;
+	// sound is handled by the WebView-based React component.
+}

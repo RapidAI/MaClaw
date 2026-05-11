@@ -471,6 +471,19 @@ func (a *AuthService) createSession(ctx context.Context, user *SkillMarketUser) 
 	return sess, nil
 }
 
+// AutoVerify marks a user account as verified without email confirmation.
+// Used when identity is already proven through another channel (e.g. Hub enrollment).
+func (a *AuthService) AutoVerify(ctx context.Context, userID string) error {
+	return a.store.UpdateUserStatus(ctx, userID, "verified", "machine_login")
+}
+
+// CreateSessionForUser creates a session for a user identified by ID and email.
+// Used by machine-login flow where the user is already authenticated via Hub credentials.
+func (a *AuthService) CreateSessionForUser(ctx context.Context, userID, email string) (*Session, error) {
+	user := &SkillMarketUser{ID: userID, Email: normalizeEmail(email)}
+	return a.createSession(ctx, user)
+}
+
 func generateToken() string {
 	var buf [32]byte
 	_, _ = rand.Read(buf[:])

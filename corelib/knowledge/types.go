@@ -531,6 +531,10 @@ type DirectoryImportResult struct {
 	FailedFiles    int          `json:"failed_files"`
 	ProcessedFiles int          `json:"processed_files,omitempty"`
 	CurrentFile    string       `json:"current_file,omitempty"`
+	CurrentStep    string       `json:"current_step,omitempty"`  // e.g. "parsing", "indexing", "distilling"
+	StepProgress   int          `json:"step_progress,omitempty"` // 0-100 within current file
+	TotalSteps     int          `json:"total_steps,omitempty"`   // total steps for current file (e.g. 5)
+	CurrentStepNum int          `json:"current_step_num,omitempty"` // which step (1-based)
 	EstimatedBytes int64        `json:"estimated_bytes"`
 	Warnings       []string     `json:"warnings,omitempty"`
 	Items          []ImportItem `json:"items,omitempty"`
@@ -604,10 +608,10 @@ type URLDiscoveryRequest struct {
 }
 
 type URLDiscoveryItem struct {
-	URL    string `json:"url"`
-	Host   string `json:"host,omitempty"`
-	Status string `json:"status"`
-	Reason string `json:"reason,omitempty"`
+	URL    string             `json:"url"`
+	Host   string             `json:"host,omitempty"`
+	Status URLDiscoveryStatus `json:"status"`
+	Reason string             `json:"reason,omitempty"`
 }
 
 type URLDiscoveryResult struct {
@@ -620,11 +624,11 @@ type URLDiscoveryResult struct {
 }
 
 type URLBatchSaveItem struct {
-	URL      string `json:"url"`
-	SourceID string `json:"source_id,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Status   string `json:"status"`
-	Error    string `json:"error,omitempty"`
+	URL      string             `json:"url"`
+	SourceID string             `json:"source_id,omitempty"`
+	Title    string             `json:"title,omitempty"`
+	Status   URLBatchSaveStatus `json:"status"`
+	Error    string             `json:"error,omitempty"`
 }
 
 type URLBatchSaveResult struct {

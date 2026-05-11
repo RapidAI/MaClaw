@@ -119,7 +119,7 @@ func (s *GUITaskSupervisor) GetState(taskID string) (*GUITaskState, bool) {
 	}
 	return &GUITaskState{
 		ID:          teState.ID,
-		Status:      string(teState.Status),
+		Status:      GUITaskStatus(teState.Status),
 		TotalSteps:  teState.TotalSteps,
 		CurrentStep: teState.CurrentStep,
 		RetryCount:  teState.RetryCount,
@@ -296,11 +296,11 @@ func recoverOrigStep(step taskengine.StepSpec) *GUIRecordedStep {
 // convertTaskState converts taskengine.TaskState to GUITaskState.
 func convertTaskState(ts *taskengine.TaskState, spec GUITaskSpec) *GUITaskState {
 	if ts == nil {
-		return &GUITaskState{Status: "failed"}
+		return &GUITaskState{Status: GUITaskStatusFailed}
 	}
 	gs := &GUITaskState{
 		ID:          ts.ID,
-		Status:      string(ts.Status),
+		Status:      GUITaskStatus(ts.Status),
 		TotalSteps:  ts.TotalSteps,
 		CurrentStep: ts.CurrentStep,
 		RetryCount:  ts.RetryCount,
