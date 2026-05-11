@@ -49,6 +49,12 @@ const DefaultMaxFileBytes int64 = 100 * 1024 * 1024
 
 var DefaultIncludeExts = []string{".docx", ".pdf", ".xlsx", ".csv", ".md", ".txt", ".doc", ".xls"}
 
+// SaveStatusCreated indicates the source was newly created.
+const SaveStatusCreated = "created"
+
+// SaveStatusDuplicate indicates the source content already existed and was updated in place.
+const SaveStatusDuplicate = "duplicate"
+
 // Source is a persisted original knowledge input: a URL, uploaded file,
 // imported local file, or derived conversation/workflow artifact.
 type Source struct {
@@ -77,6 +83,10 @@ type Source struct {
 	CardCount    int       `json:"card_count,omitempty"`
 	FactCount    int       `json:"fact_count,omitempty"`
 	Labels       []string  `json:"labels,omitempty"`
+	// SaveStatus is set by SaveText/SaveURL to indicate whether this was a new
+	// creation ("created") or an update of an existing duplicate ("duplicate").
+	// It is transient (not persisted) and only meaningful in the return value of save operations.
+	SaveStatus string `json:"save_status,omitempty"`
 }
 
 type SourceVersion struct {
@@ -632,12 +642,13 @@ type URLBatchSaveItem struct {
 }
 
 type URLBatchSaveResult struct {
-	Requested int                `json:"requested"`
-	Saved     int                `json:"saved"`
-	Failed    int                `json:"failed"`
-	Skipped   int                `json:"skipped"`
-	Items     []URLBatchSaveItem `json:"items,omitempty"`
-	Sources   []Source           `json:"sources,omitempty"`
+	Requested  int                `json:"requested"`
+	Saved      int                `json:"saved"`
+	Duplicates int                `json:"duplicates"`
+	Failed     int                `json:"failed"`
+	Skipped    int                `json:"skipped"`
+	Items      []URLBatchSaveItem `json:"items,omitempty"`
+	Sources    []Source           `json:"sources,omitempty"`
 }
 
 type URLDomainPolicy struct {

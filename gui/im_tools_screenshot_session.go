@@ -45,7 +45,7 @@ func renderMultipleScreenshotSessions(sessions []*RemoteSession) string {
 			continue
 		}
 		s.mu.RLock()
-		status := string(s.Status)
+		status := s.Status
 		s.mu.RUnlock()
 		lines = append(lines, fmt.Sprintf("- %s (工具=%s, 状态=%s)", s.ID, s.Tool, status))
 	}

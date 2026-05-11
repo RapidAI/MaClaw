@@ -20,9 +20,11 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 		return Source{}, err
 	}
 	defer tx.Rollback()
+	isDuplicate := false
 	if existing, ok, err := findExistingTextSourceForSave(ctx, tx, source); err != nil {
 		return Source{}, err
 	} else if ok {
+		isDuplicate = true
 		source.ID = existing.ID
 		source.CreatedAt = existing.CreatedAt
 		if err := deleteSourceDerivedRows(ctx, tx, existing.ID); err != nil {
@@ -58,6 +60,11 @@ func (s *SQLiteStore) SaveText(ctx context.Context, req TextSaveRequest) (Source
 	}
 	if err := s.hydrateSourceLabels(ctx, sources); err != nil {
 		return Source{}, err
+	}
+	if isDuplicate {
+		sources[0].SaveStatus = SaveStatusDuplicate
+	} else {
+		sources[0].SaveStatus = SaveStatusCreated
 	}
 	return sources[0], nil
 }

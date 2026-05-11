@@ -25,8 +25,17 @@ func (s orchestratorSessionStatus) String() string {
 	return string(s)
 }
 
+func (s orchestratorSessionStatus) Normalized() orchestratorSessionStatus {
+	switch s {
+	case orchestratorSessionStatusSuccess, orchestratorSessionStatusFailed:
+		return s
+	default:
+		return orchestratorSessionStatusUnknown
+	}
+}
+
 func (s orchestratorSessionStatus) IsFailed() bool {
-	return normalizeOrchestratorSessionStatus(string(s)) == orchestratorSessionStatusFailed
+	return s.Normalized() == orchestratorSessionStatusFailed
 }
 
 type orchestratorTaskStatus string
@@ -66,8 +75,17 @@ func (s orchestratorTaskStatus) String() string {
 	return string(s)
 }
 
+func (s orchestratorTaskStatus) Normalized() orchestratorTaskStatus {
+	switch s {
+	case orchestratorTaskStatusPlanning, orchestratorTaskStatusPending, orchestratorTaskStatusRunning, orchestratorTaskStatusCompleted, orchestratorTaskStatusFailed, orchestratorTaskStatusCancelled, orchestratorTaskStatusPartialFailure:
+		return s
+	default:
+		return ""
+	}
+}
+
 func (s orchestratorTaskStatus) IsResumable() bool {
-	switch normalizeOrchestratorTaskStatus(string(s)) {
+	switch s.Normalized() {
 	case orchestratorTaskStatusFailed, orchestratorTaskStatusRunning:
 		return true
 	default:
@@ -76,7 +94,7 @@ func (s orchestratorTaskStatus) IsResumable() bool {
 }
 
 func (s orchestratorTaskStatus) IsActive() bool {
-	switch normalizeOrchestratorTaskStatus(string(s)) {
+	switch s.Normalized() {
 	case orchestratorTaskStatusPending, orchestratorTaskStatusRunning:
 		return true
 	default:
@@ -85,13 +103,13 @@ func (s orchestratorTaskStatus) IsActive() bool {
 }
 
 func (s orchestratorTaskStatus) IsCompleted() bool {
-	return normalizeOrchestratorTaskStatus(string(s)) == orchestratorTaskStatusCompleted
+	return s.Normalized() == orchestratorTaskStatusCompleted
 }
 
 func (s orchestratorTaskStatus) IsPending() bool {
-	return normalizeOrchestratorTaskStatus(string(s)) == orchestratorTaskStatusPending
+	return s.Normalized() == orchestratorTaskStatusPending
 }
 
 func (s orchestratorTaskStatus) IsRunning() bool {
-	return normalizeOrchestratorTaskStatus(string(s)) == orchestratorTaskStatusRunning
+	return s.Normalized() == orchestratorTaskStatusRunning
 }

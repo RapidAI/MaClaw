@@ -450,8 +450,8 @@ func TestToolGetSkillRun_ReturnsStatusSummary(t *testing.T) {
 	app.skillRunner.runs["run-123"] = &skillRun{status: SkillRunStatus{
 		RunID:  "run-123",
 		Skill:  "demo-skill",
-		Status: "running",
-		Steps:  []StepResult{{Index: 0, Action: "create_session", Status: "running"}},
+		Status: skillRunStatusRunning,
+		Steps:  []StepResult{{Index: 0, Action: "create_session", Status: skillStepStatusRunning}},
 	}}
 	got := h.toolGetSkillRun(map[string]interface{}{"run_id": "run-123", "wait_seconds": float64(0.01)})
 	if !strings.Contains(got, "🔎 Skill 状态查询结果") {
@@ -551,13 +551,13 @@ func TestAppendSkillRunSummary_ExplainsInstructionOnlySkill(t *testing.T) {
 	var b strings.Builder
 	appendSkillRunSummary(&b, &SkillRunStatus{
 		Skill:  "pptx-generator",
-		Status: "success",
+		Status: skillRunStatusSuccess,
 		Summary: SkillRunSummary{
 			NeedsArtifactVerification: true,
 			ArtifactPath:              `C:\tmp\deck.pptx`,
-			ArtifactStatus:            "missing",
+			ArtifactStatus:            skillArtifactStatusMissing,
 		},
-		Steps: []StepResult{{Action: "craft_tool", Status: "success"}},
+		Steps: []StepResult{{Action: "craft_tool", Status: skillStepStatusSuccess}},
 	}, "run-123")
 	got := b.String()
 	if !strings.Contains(got, "## 结果说明") {
@@ -649,11 +649,11 @@ func TestAppendSkillRunSummary_IncludesStepOutput(t *testing.T) {
 	var b strings.Builder
 	appendSkillRunSummary(&b, &SkillRunStatus{
 		Skill:  "weather-query",
-		Status: "success",
+		Status: skillRunStatusSuccess,
 		Steps: []StepResult{
-			{Index: 0, Action: "bash", Status: "success", Output: "=== 北京 当前天气 ===\n天气：☀️ 晴  气温：26.9℃", DurationMs: 1200},
-			{Index: 1, Action: "bash", Status: "success", Output: "=== 北京 逐小时预报 ===\n14:00 ☀️ 27℃", DurationMs: 800},
-			{Index: 2, Action: "bash", Status: "success", Output: "=== 北京 一周预报 ===\n周一 晴 20~28℃", DurationMs: 900},
+			{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 当前天气 ===\n天气：☀️ 晴  气温：26.9℃", DurationMs: 1200},
+			{Index: 1, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 逐小时预报 ===\n14:00 ☀️ 27℃", DurationMs: 800},
+			{Index: 2, Action: "bash", Status: skillStepStatusSuccess, Output: "=== 北京 一周预报 ===\n周一 晴 20~28℃", DurationMs: 900},
 		},
 	}, "run-weather-1")
 	got := b.String()
@@ -683,9 +683,9 @@ func TestAppendSkillRunSummary_TruncatesLongOutput(t *testing.T) {
 	var b strings.Builder
 	appendSkillRunSummary(&b, &SkillRunStatus{
 		Skill:  "demo",
-		Status: "success",
+		Status: skillRunStatusSuccess,
 		Steps: []StepResult{
-			{Index: 0, Action: "bash", Status: "success", Output: longOutput},
+			{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: longOutput},
 		},
 	}, "run-trunc-1")
 	got := b.String()
@@ -705,11 +705,11 @@ func TestAppendSkillRunSummary_TotalOutputBudget(t *testing.T) {
 	var b strings.Builder
 	appendSkillRunSummary(&b, &SkillRunStatus{
 		Skill:  "demo",
-		Status: "success",
+		Status: skillRunStatusSuccess,
 		Steps: []StepResult{
-			{Index: 0, Action: "bash", Status: "success", Output: stepOutput},
-			{Index: 1, Action: "bash", Status: "success", Output: stepOutput},
-			{Index: 2, Action: "bash", Status: "success", Output: stepOutput},
+			{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: stepOutput},
+			{Index: 1, Action: "bash", Status: skillStepStatusSuccess, Output: stepOutput},
+			{Index: 2, Action: "bash", Status: skillStepStatusSuccess, Output: stepOutput},
 		},
 	}, "run-budget-1")
 	got := b.String()
@@ -730,9 +730,9 @@ func TestAppendSkillRunSummary_UTF8SafeTruncation(t *testing.T) {
 	var b strings.Builder
 	appendSkillRunSummary(&b, &SkillRunStatus{
 		Skill:  "weather",
-		Status: "success",
+		Status: skillRunStatusSuccess,
 		Steps: []StepResult{
-			{Index: 0, Action: "bash", Status: "success", Output: chineseOutput},
+			{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: chineseOutput},
 		},
 	}, "run-utf8-1")
 	got := b.String()
@@ -751,10 +751,10 @@ func TestAppendSkillRunSummary_RunningSkillStillShowsPollingGuidance(t *testing.
 	var b strings.Builder
 	appendSkillRunSummary(&b, &SkillRunStatus{
 		Skill:  "demo",
-		Status: "running",
+		Status: skillRunStatusRunning,
 		Steps: []StepResult{
-			{Index: 0, Action: "bash", Status: "success", Output: "step 1 done"},
-			{Index: 1, Action: "bash", Status: "running"},
+			{Index: 0, Action: "bash", Status: skillStepStatusSuccess, Output: "step 1 done"},
+			{Index: 1, Action: "bash", Status: skillStepStatusRunning},
 		},
 	}, "run-poll-1")
 	got := b.String()

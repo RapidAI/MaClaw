@@ -17,7 +17,11 @@ const (
 )
 
 func normalizeAgentViewStepStatus(status string) agentViewStepStatusKind {
-	switch normalizeSkillStepStatus(status) {
+	return normalizeAgentViewSkillStepStatus(normalizeSkillStepStatus(status), status)
+}
+
+func normalizeAgentViewSkillStepStatus(status skillStepStatus, fallback string) agentViewStepStatusKind {
+	switch status.Normalized() {
 	case skillStepStatusSuccess:
 		return agentViewStepStatusDone
 	case skillStepStatusRunning:
@@ -25,7 +29,7 @@ func normalizeAgentViewStepStatus(status string) agentViewStepStatusKind {
 	case skillStepStatusFailed, skillStepStatusTimeout:
 		return agentViewStepStatusError
 	}
-	switch agentViewStepStatusKind(strings.ToLower(strings.TrimSpace(status))) {
+	switch agentViewStepStatusKind(strings.ToLower(strings.TrimSpace(fallback))) {
 	case agentViewStepStatusDone, agentViewStepStatusDoneAlt:
 		return agentViewStepStatusDone
 	case agentViewStepStatusError, agentViewStepStatusFailure:

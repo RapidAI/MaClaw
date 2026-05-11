@@ -226,7 +226,7 @@ func (h *IMMessageHandler) handleSessionsCommand() *IMAgentResponse {
 	b.WriteString(fmt.Sprintf("Current sessions: %d\n", len(sessions)))
 	for _, s := range sessions {
 		s.mu.RLock()
-		status := string(s.Status)
+		status := s.Status
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
 		s.mu.RUnlock()

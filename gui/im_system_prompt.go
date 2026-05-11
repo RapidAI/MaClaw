@@ -509,7 +509,7 @@ office 工具是统一的文档操作工具，支持以下 action：
 			b.WriteString("\n## 当前会话列表\n")
 			for _, s := range sessions {
 				s.mu.RLock()
-				status := string(s.Status)
+				status := s.Status
 				task := s.Summary.CurrentTask
 				lastResult := s.Summary.LastResult
 				s.mu.RUnlock()

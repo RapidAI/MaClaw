@@ -447,16 +447,10 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 			break
 		}
 		run.status.Steps[i].Name = stepResult.Skill
-		switch normalizeSkillPipelineStatus(string(stepResult.Status)) {
-		case skillPipelineStatusCompleted:
-			run.status.Steps[i].Status = skillStepStatusSuccess
-		case skillPipelineStatusFailed:
-			run.status.Steps[i].Status = skillStepStatusFailed
+		stepStatus := normalizeSkillPipelineStepStatus(stepResult.Status).StepStatus()
+		run.status.Steps[i].Status = stepStatus
+		if stepStatus == skillStepStatusFailed {
 			run.status.Steps[i].Error = stepResult.Error
-		case skillPipelineStatusSkipped:
-			run.status.Steps[i].Status = skillStepStatusSkipped
-		default:
-			run.status.Steps[i].Status = normalizeSkillStepStatus(string(stepResult.Status))
 		}
 		if stepResult.CapturedVars != nil {
 			run.status.Steps[i].Output = stepResult.CapturedVars["output"]
@@ -468,7 +462,7 @@ func (r *SkillRunner) executePipelineAsync(ctx context.Context, run *skillRun, e
 		}
 	}
 	finalStatus := skillRunStatusFailed
-	switch normalizeSkillPipelineStatus(string(result.Status)) {
+	switch normalizeSkillPipelineStatusFromCore(result.Status) {
 	case skillPipelineStatusCompleted:
 		finalStatus = skillRunStatusSuccess
 	case skillPipelineStatusCancelled:

@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
+)
 
 type skillRunLifecycleStatus string
 
@@ -27,11 +31,24 @@ func normalizeSkillRunLifecycleStatus(status string) skillRunLifecycleStatus {
 	}
 }
 
+func (s skillRunLifecycleStatus) Normalized() skillRunLifecycleStatus {
+	switch s {
+	case skillRunStatusRunning, skillRunStatusSuccess, skillRunStatusFailed, skillRunStatusCancelled:
+		return s
+	default:
+		return skillRunStatusUnknown
+	}
+}
+
+func (s skillRunLifecycleStatus) String() string {
+	return string(s)
+}
+
 func (s *SkillRunStatus) LifecycleStatus() skillRunLifecycleStatus {
 	if s == nil {
 		return skillRunStatusUnknown
 	}
-	return normalizeSkillRunLifecycleStatus(string(s.Status))
+	return s.Status.Normalized()
 }
 
 func (s *SkillRunStatus) IsRunning() bool {
@@ -82,8 +99,28 @@ func normalizeSkillStepStatus(status string) skillStepStatus {
 	}
 }
 
+func (s skillStepStatus) Normalized() skillStepStatus {
+	switch s {
+	case skillStepStatusPending, skillStepStatusRunning, skillStepStatusSuccess, skillStepStatusFailed, skillStepStatusSkipped, skillStepStatusTimeout:
+		return s
+	default:
+		return skillStepStatusUnknown
+	}
+}
+
+func (s skillStepStatus) OrElse(fallback skillStepStatus) skillStepStatus {
+	if normalized := s.Normalized(); normalized != skillStepStatusUnknown {
+		return normalized
+	}
+	return fallback
+}
+
+func (s skillStepStatus) String() string {
+	return string(s)
+}
+
 func (s StepResult) LifecycleStatus() skillStepStatus {
-	return normalizeSkillStepStatus(string(s.Status))
+	return s.Status.Normalized()
 }
 
 func (s StepResult) IsFailed() bool {
@@ -121,6 +158,10 @@ func normalizeSkillArtifactStatus(status string) skillArtifactStatus {
 	}
 }
 
+func (s skillArtifactStatus) String() string {
+	return string(s)
+}
+
 func (s skillArtifactStatus) IsDecided() bool {
 	return s == skillArtifactStatusVerified || s == skillArtifactStatusMissing
 }
@@ -144,6 +185,50 @@ func normalizeSkillPipelineStatus(status string) skillPipelineStatus {
 		return skillPipelineStatusCancelled
 	default:
 		return skillPipelineStatusFailed
+	}
+}
+
+func normalizeSkillPipelineStatusFromCore(status cskill.PipelineStatus) skillPipelineStatus {
+	switch status {
+	case cskill.PipelineStatusCompleted:
+		return skillPipelineStatusCompleted
+	case cskill.PipelineStatusCancelled:
+		return skillPipelineStatusCancelled
+	default:
+		return skillPipelineStatusFailed
+	}
+}
+
+func normalizeSkillPipelineStepStatus(status cskill.PipelineStepStatus) skillPipelineStatus {
+	switch status {
+	case cskill.PipelineStepStatusCompleted:
+		return skillPipelineStatusCompleted
+	case cskill.PipelineStepStatusSkipped:
+		return skillPipelineStatusSkipped
+	case cskill.PipelineStepStatusCancelled:
+		return skillPipelineStatusCancelled
+	default:
+		return skillPipelineStatusFailed
+	}
+}
+
+func (s skillPipelineStatus) Normalized() skillPipelineStatus {
+	switch s {
+	case skillPipelineStatusCompleted, skillPipelineStatusFailed, skillPipelineStatusSkipped, skillPipelineStatusCancelled:
+		return s
+	default:
+		return skillPipelineStatusFailed
+	}
+}
+
+func (s skillPipelineStatus) StepStatus() skillStepStatus {
+	switch s.Normalized() {
+	case skillPipelineStatusCompleted:
+		return skillStepStatusSuccess
+	case skillPipelineStatusSkipped, skillPipelineStatusCancelled:
+		return skillStepStatusSkipped
+	default:
+		return skillStepStatusFailed
 	}
 }
 

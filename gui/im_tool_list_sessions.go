@@ -16,7 +16,7 @@ func (h *IMMessageHandler) toolListSessions() string {
 	var b strings.Builder
 	for _, s := range sessions {
 		s.mu.RLock()
-		status := string(s.Status)
+		status := s.Status
 		task := s.Summary.CurrentTask
 		waiting := s.Summary.WaitingForUser
 		modelName := s.ModelName

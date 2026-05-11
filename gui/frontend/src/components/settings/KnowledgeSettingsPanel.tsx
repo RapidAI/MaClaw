@@ -1157,6 +1157,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [executionContext, setExecutionContext] = useState<{ source?: string; action?: string; dryRun?: boolean } | null>(null);
     const [importJob, setImportJob] = useState<ImportJob | null>(null);
     const [operationResult, setOperationResult] = useState<any>(null);
+    const [successMessage, setSuccessMessage] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const [busy, setBusy] = useState('');
@@ -1197,6 +1198,12 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
         void refresh();
     }, []);
 
+    useEffect(() => {
+        if (!successMessage) return;
+        const timer = setTimeout(() => setSuccessMessage(''), 6000);
+        return () => clearTimeout(timer);
+    }, [successMessage]);
+
     const summary = knowledgeHealthSummaryModel(health);
     const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
     const qualityPayload = useMemo(() => knowledgeSourceListPayload(capabilities, qualityFilter), [capabilities, qualityFilter]);
@@ -1216,6 +1223,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const runTask = async (name: string, task: () => Promise<any>, options: { refreshSources?: boolean; refreshHealth?: boolean } = {}) => {
         setBusy(name);
         setError('');
+        setSuccessMessage('');
         if (name !== 'executeQuality') {
             setExecutionResult(null);
             setExecutionContext(null);
@@ -1260,7 +1268,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             setError(t('Text is required.', '请输入文本内容。'));
             return;
         }
-        await runTask('saveText', () => KnowledgeSaveText({
+        const result = await runTask('saveText', () => KnowledgeSaveText({
             text: textForm.text,
             title: textForm.title.trim(),
             kind: 'text',
@@ -1270,6 +1278,13 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             labels: parseLabelList(textForm.labels),
             auto_labels: true,
         }), { refreshSources: true, refreshHealth: true });
+        if (result) {
+            if (result.save_status === 'duplicate') {
+                setSuccessMessage(t('⚠️ Content already exists in knowledge base (updated).', '⚠️ 内容已存在于知识库中（已更新）。'));
+            } else {
+                setSuccessMessage(t('✅ Text saved to knowledge base successfully.', '✅ 文本已成功保存到知识库。'));
+            }
+        }
     };
 
     const saveURLs = async () => {
@@ -1278,9 +1293,40 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             setError(t('At least one URL is required.', '请输入至少一个 URL。'));
             return;
         }
-        await runTask('saveURLs', () => urls.length === 1
+        const result = await runTask('saveURLs', () => urls.length === 1
             ? KnowledgeSaveURL(urls[0], urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels)
             : KnowledgeSaveURLs(urls, urlForm.saveScope, urlForm.topicHint.trim(), urlForm.distillMode, parseLabelList(urlForm.labels), urlForm.autoLabels), { refreshSources: true, refreshHealth: true });
+        if (result) {
+            if (urls.length === 1) {
+                // Single URL: result is a Source with save_status
+                if (result.save_status === 'duplicate') {
+                    setSuccessMessage(t('⚠️ URL already exists in knowledge base (updated).', '⚠️ URL 已存在于知识库中（已更新）。'));
+                } else {
+                    setSuccessMessage(t('✅ URL saved to knowledge base successfully.', '✅ URL 已成功保存到知识库。'));
+                }
+            } else {
+                // Batch URLs: result is URLBatchSaveResult with duplicates count
+                const saved = result.saved || 0;
+                const duplicates = result.duplicates || 0;
+                const skipped = result.skipped || 0;
+                const failed = result.failed || 0;
+                const fresh = saved - duplicates;
+                let msg = '';
+                if (saved === 0 && skipped > 0) {
+                    msg = t(`⚠️ All ${skipped} URL(s) were duplicates in this batch (skipped).`, `⚠️ 本批次中全部 ${skipped} 个 URL 重复（已跳过）。`);
+                } else if (duplicates > 0 && fresh === 0) {
+                    msg = t(`⚠️ All ${duplicates} URL(s) already exist in knowledge base (updated).`, `⚠️ 全部 ${duplicates} 个 URL 已存在于知识库中（已更新）。`);
+                } else if (duplicates > 0) {
+                    msg = t(`✅ ${fresh} URL(s) saved, ${duplicates} already existed (updated).`, `✅ ${fresh} 个 URL 已保存，${duplicates} 个已存在（已更新）。`);
+                } else {
+                    msg = t(`✅ ${saved} URL(s) saved to knowledge base successfully.`, `✅ ${saved} 个 URL 已成功保存到知识库。`);
+                }
+                if (failed > 0) {
+                    msg += t(` ${failed} failed.`, ` ${failed} 个失败。`);
+                }
+                setSuccessMessage(msg);
+            }
+        }
     };
 
     const chooseFiles = async () => {
@@ -1454,6 +1500,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                 </div>
             </div>
             {error ? <div style={errorBoxStyle}>{error}</div> : null}
+            {successMessage ? <div style={successBoxStyle}>{successMessage}</div> : null}
             <div style={tabsStyle}>
                 {([
                     ['overview', t('Overview', '总览')],
@@ -1833,6 +1880,7 @@ const buttonStyle: CSSProperties = { border: `1px solid ${colors.border}`, borde
 const primaryButtonStyle: CSSProperties = { ...buttonStyle, border: `1px solid ${colors.primary}`, background: colors.primaryLight, color: colors.primaryDark, fontWeight: 700 };
 const dangerButtonStyle: CSSProperties = { ...buttonStyle, border: '1px solid #fecaca', color: '#b91c1c' };
 const errorBoxStyle: CSSProperties = { border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#b91c1c' };
+const successBoxStyle: CSSProperties = { border: '1px solid #bbf7d0', borderRadius: radius.sm, padding: 10, background: '#f0fdf4', color: '#166534' };
 const statsGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10 };
 const statStyle: CSSProperties = { border: `1px solid ${colors.borderLight}`, borderRadius: radius.sm, padding: 10, background: colors.surfaceMuted };
 const statLabelStyle: CSSProperties = { fontSize: 12, color: colors.textMuted };

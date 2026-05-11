@@ -709,8 +709,8 @@ func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[st
 			title = "Running " + strings.TrimSpace(status.Skill)
 			descriptionParts = append(descriptionParts, "skill: "+strings.TrimSpace(status.Skill))
 		}
-		if strings.TrimSpace(string(status.Status)) != "" {
-			descriptionParts = append(descriptionParts, "status: "+strings.TrimSpace(string(status.Status)))
+		if strings.TrimSpace(status.Status.String()) != "" {
+			descriptionParts = append(descriptionParts, "status: "+strings.TrimSpace(status.Status.String()))
 		}
 		if status.SessionProgress != nil {
 			if text := strings.TrimSpace(firstNonEmptyMISAgentView(status.SessionProgress.CurrentTask, status.SessionProgress.ProgressSummary)); text != "" {
@@ -725,7 +725,7 @@ func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[st
 			steps = append(steps, map[string]interface{}{
 				"id":          fmt.Sprintf("%d", step.Index),
 				"title":       title,
-				"status":      agentViewStepStatus(string(step.Status)),
+				"status":      agentViewSkillStepStatus(step.Status),
 				"description": skillRunStepDescription(step),
 			})
 		}
@@ -758,7 +758,7 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 	}
 	resultStatus := ""
 	if status != nil {
-		resultStatus = strings.TrimSpace(string(status.Status))
+		resultStatus = strings.TrimSpace(status.Status.String())
 	}
 	results := []map[string]interface{}{
 		{
@@ -784,7 +784,7 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 				stepTitle = fmt.Sprintf("Step %d", step.Index+1)
 			}
 			data := map[string]interface{}{
-				"status":      step.Status,
+				"status":      step.Status.String(),
 				"duration_ms": step.DurationMs,
 			}
 			if output := skillRunTruncate(step.Output, 1600); output != "" {
@@ -802,7 +802,7 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 			results = append(results, map[string]interface{}{
 				"id":     fmt.Sprintf("step-%d", step.Index),
 				"title":  stepTitle,
-				"status": step.Status,
+				"status": step.Status.String(),
 				"data":   data,
 			})
 		}
@@ -827,7 +827,7 @@ func skillRunSummaryData(status *SkillRunStatus, runID string) map[string]interf
 		return data
 	}
 	data["skill"] = status.Skill
-	data["status"] = status.Status
+	data["status"] = status.Status.String()
 	if status.DurationMs > 0 {
 		data["duration_ms"] = status.DurationMs
 	}
@@ -850,7 +850,7 @@ func skillRunSummaryData(status *SkillRunStatus, runID string) map[string]interf
 		data["artifact_path"] = status.Summary.ArtifactPath
 	}
 	if status.Summary.ArtifactStatus != "" {
-		data["artifact_status"] = status.Summary.ArtifactStatus
+		data["artifact_status"] = status.Summary.ArtifactStatus.String()
 	}
 	if status.Summary.LastOutputSnippet != "" {
 		data["last_output"] = status.Summary.LastOutputSnippet
@@ -882,4 +882,8 @@ func skillRunTruncate(text string, maxRunes int) string {
 
 func agentViewStepStatus(status string) string {
 	return string(normalizeAgentViewStepStatus(status))
+}
+
+func agentViewSkillStepStatus(status skillStepStatus) string {
+	return string(normalizeAgentViewSkillStepStatus(status, ""))
 }

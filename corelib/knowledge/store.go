@@ -5,12 +5,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	_ "modernc.org/sqlite"
 )
 
@@ -20,6 +23,13 @@ type SQLiteStore struct {
 	db             *sql.DB
 	distiller      CardDistiller
 	importProgress ImportProgressFunc
+	embedder       embedding.Embedder
+}
+
+// SetEmbedder sets the embedding model for vector search.
+// When set, card embeddings are generated on insert and used for semantic search.
+func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
+	s.embedder = emb
 }
 
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
@@ -359,10 +369,14 @@ func (s *SQLiteStore) SaveCard(ctx context.Context, card Card) error {
 	entitiesJSON, _ := json.Marshal(card.Entities)
 	topicsJSON, _ := json.Marshal(card.Topics)
 	tagsJSON, _ := json.Marshal(card.Tags)
+	var embBlob interface{}
+	if len(card.Embedding) > 0 {
+		embBlob = float32SliceToBytes(card.Embedding)
+	}
 	_, err := s.db.ExecContext(ctx, insertCardSQL,
 		card.ID, card.SourceID, nullableString(card.NodeID), card.Title, card.Claim, card.Summary, string(entitiesJSON), string(topicsJSON), string(tagsJSON),
 		card.ProjectPath, card.OwnerID, card.TenantID, formatTime(card.ValidAt), formatTime(card.InvalidAt), card.Confidence, card.Importance,
-		card.SourceTrust, nil, formatTime(card.CreatedAt), formatTime(card.UpdatedAt),
+		card.SourceTrust, embBlob, formatTime(card.CreatedAt), formatTime(card.UpdatedAt),
 	)
 	if err != nil {
 		return err
@@ -386,6 +400,18 @@ func (s *SQLiteStore) DistillAndSaveCardsWithMode(ctx context.Context, tx *sql.T
 	}
 	if len(cards) == 0 {
 		return source, nil
+	}
+	// Generate embeddings for cards if embedder is available
+	if s != nil && s.embedder != nil && !embedding.IsNoop(s.embedder) {
+		texts := make([]string, len(cards))
+		for i, card := range cards {
+			texts[i] = cardEmbeddingText(card)
+		}
+		if vectors, err := s.embedder.EmbedBatch(texts); err == nil && len(vectors) == len(cards) {
+			for i := range cards {
+				cards[i].Embedding = vectors[i]
+			}
+		}
 	}
 	for _, card := range cards {
 		card = enrichCardStructure(source, card)
@@ -1438,13 +1464,66 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		}
 	}
 
-	// FTS fallback: if FTS returned no results and the query contains CJK characters,
-	// fall back to LIKE-based search on cards and nodes. SQLite FTS5's unicode61 tokenizer
-	// does not segment CJK text, so Chinese queries often fail FTS matching.
-	if len(results) == 0 && containsCJKRunes(opts.Query) {
-		likeResults, likeErr := s.searchCJKLikeFallback(ctx, opts)
-		if likeErr == nil && len(likeResults) > 0 {
-			results = likeResults
+	// FTS fallback: if FTS returned no results or only very low-scoring results
+	// and the query contains CJK characters, fall back to LIKE-based search.
+	// This handles two cases:
+	// 1. FTS index not yet rebuilt with segmentation (rebuild pending/failed)
+	// 2. FTS tokenization mismatch (new words not in gse dictionary)
+	if containsCJKRunes(opts.Query) {
+		needsFallback := len(results) == 0
+		if !needsFallback && len(results) > 0 {
+			// FTS found results but with very low scores — likely a partial match
+			// on unsegmented index data. LIKE search may find better matches.
+			needsFallback = results[0].Score < 1.0
+		}
+		if needsFallback {
+			likeResults, likeErr := s.searchCJKLikeFallback(ctx, opts)
+			if likeErr == nil && len(likeResults) > 0 {
+				// Merge LIKE results into FTS results, deduplicating by card/fact/node ID
+				seen := make(map[string]struct{})
+				for _, r := range results {
+					if r.CardID != "" {
+						seen[r.CardID] = struct{}{}
+					}
+					if r.FactID != "" {
+						seen[r.FactID] = struct{}{}
+					}
+					if r.NodeID != "" {
+						seen[r.NodeID] = struct{}{}
+					}
+				}
+				for _, lr := range likeResults {
+					isDup := false
+					if lr.CardID != "" {
+						if _, ok := seen[lr.CardID]; ok {
+							isDup = true
+						}
+					}
+					if lr.FactID != "" {
+						if _, ok := seen[lr.FactID]; ok {
+							isDup = true
+						}
+					}
+					if lr.NodeID != "" && lr.CardID == "" && lr.FactID == "" {
+						if _, ok := seen[lr.NodeID]; ok {
+							isDup = true
+						}
+					}
+					if !isDup {
+						results = append(results, lr)
+					}
+				}
+			}
+		}
+	}
+
+	// Embedding vector search: fuse with FTS/LIKE results using RRF.
+	// This provides semantic matching (e.g., "学历" matches "博士") that
+	// neither FTS nor LIKE can achieve.
+	if s.embedder != nil && !embedding.IsNoop(s.embedder) {
+		embResults, embErr := s.searchByEmbedding(ctx, opts)
+		if embErr == nil && len(embResults) > 0 {
+			results = rrfFuse(results, embResults, opts.Limit)
 		}
 	}
 
@@ -3538,10 +3617,14 @@ func insertCard(ctx context.Context, tx *sql.Tx, card Card) error {
 	entitiesJSON, _ := json.Marshal(card.Entities)
 	topicsJSON, _ := json.Marshal(card.Topics)
 	tagsJSON, _ := json.Marshal(card.Tags)
+	var embBlob interface{}
+	if len(card.Embedding) > 0 {
+		embBlob = float32SliceToBytes(card.Embedding)
+	}
 	_, err := tx.ExecContext(ctx, insertCardSQL,
 		card.ID, card.SourceID, nullableString(card.NodeID), card.Title, card.Claim, card.Summary, string(entitiesJSON), string(topicsJSON), string(tagsJSON),
 		card.ProjectPath, card.OwnerID, card.TenantID, formatTime(card.ValidAt), formatTime(card.InvalidAt), card.Confidence, card.Importance,
-		card.SourceTrust, nil, formatTime(card.CreatedAt), formatTime(card.UpdatedAt),
+		card.SourceTrust, embBlob, formatTime(card.CreatedAt), formatTime(card.UpdatedAt),
 	)
 	if err != nil {
 		return err
@@ -4055,13 +4138,36 @@ func quoteFTSTerm(term string) string {
 }
 
 // searchCJKLikeFallback performs a LIKE-based search when FTS fails for CJK text.
-// It searches cards, facts, and nodes using SQL LIKE with the raw query as substring.
+// It tokenizes the query using gse and searches for each meaningful term individually,
+// then scores results by how many terms matched.
 func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
 	query := strings.TrimSpace(opts.Query)
 	if query == "" {
 		return nil, nil
 	}
-	likePattern := "%" + query + "%"
+
+	// Extract meaningful search terms from the query using gse tokenization.
+	// This handles queries like "马勇是什么学历" → terms: ["马勇", "学历"]
+	// (stop words like "是", "什么" are filtered out)
+	var terms []string
+	if containsCJKRunes(query) {
+		tokens := bm25.Tokenize(query)
+		for _, t := range tokens {
+			t = strings.TrimSpace(t)
+			if t == "" {
+				continue
+			}
+			// Keep multi-char tokens (meaningful words) and single CJK chars (names)
+			if len([]rune(t)) >= 2 {
+				terms = append(terms, t)
+			}
+		}
+	}
+	if len(terms) == 0 {
+		// Fallback: use the raw query as a single term
+		terms = []string{query}
+	}
+
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 5
@@ -4069,10 +4175,24 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 
 	results := make([]SearchResult, 0, limit)
 
+	// Build OR-based LIKE conditions for each term
+	buildLikeWhere := func(columns []string) (string, []interface{}) {
+		var conditions []string
+		var args []interface{}
+		for _, col := range columns {
+			for _, term := range terms {
+				conditions = append(conditions, col+" LIKE ?")
+				args = append(args, "%"+term+"%")
+			}
+		}
+		return "(" + strings.Join(conditions, " OR ") + ")", args
+	}
+
 	// Search cards by claim/title LIKE
 	{
-		cardWhere := []string{"(c.claim LIKE ? OR c.title LIKE ?)", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
-		cardArgs := []interface{}{likePattern, likePattern}
+		likeExpr, likeArgs := buildLikeWhere([]string{"c.claim", "c.title", "c.summary"})
+		cardWhere := []string{likeExpr, "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		cardArgs := append([]interface{}{}, likeArgs...)
 		cardWhere, cardArgs = appendSearchFilters(cardWhere, cardArgs, "s", opts)
 		cardArgs = append(cardArgs, limit)
 		cardQuery := `SELECT c.id, COALESCE(c.node_id, ''), c.title, c.claim, c.summary,
@@ -4115,8 +4235,9 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 
 	// Search facts by subject/object LIKE
 	if len(results) < limit {
-		factWhere := []string{"(f.subject LIKE ? OR f.object LIKE ?)", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
-		factArgs := []interface{}{likePattern, likePattern}
+		likeExpr, likeArgs := buildLikeWhere([]string{"f.subject", "f.object"})
+		factWhere := []string{likeExpr, "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		factArgs := append([]interface{}{}, likeArgs...)
 		factWhere, factArgs = appendSearchFilters(factWhere, factArgs, "s", opts)
 		factArgs = append(factArgs, limit-len(results))
 		factQuery := `SELECT f.id, f.card_id, f.subject, f.predicate, f.object, c.title, COALESCE(c.node_id, ''), c.claim, c.summary,
@@ -4160,8 +4281,9 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 
 	// Search nodes by text LIKE
 	if len(results) < limit {
-		nodeWhere := []string{"(n.text LIKE ? OR n.title LIKE ?)"}
-		nodeArgs := []interface{}{likePattern, likePattern}
+		likeExpr, likeArgs := buildLikeWhere([]string{"n.text", "n.title"})
+		nodeWhere := []string{likeExpr}
+		nodeArgs := append([]interface{}{}, likeArgs...)
 		nodeWhere, nodeArgs = appendSearchFilters(nodeWhere, nodeArgs, "s", opts)
 		nodeArgs = append(nodeArgs, limit-len(results))
 		nodeQuery := `SELECT n.id, n.title, n.type,

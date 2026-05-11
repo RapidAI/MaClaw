@@ -11,7 +11,11 @@ const (
 )
 
 func normalizeCodeGenScanStatus(status string) codeGenScanStatus {
-	switch codeGenScanStatus(strings.ToLower(strings.TrimSpace(status))) {
+	return codeGenScanStatus(strings.ToLower(strings.TrimSpace(status))).Normalized()
+}
+
+func (s codeGenScanStatus) Normalized() codeGenScanStatus {
+	switch codeGenScanStatus(strings.ToLower(strings.TrimSpace(string(s)))) {
 	case codeGenScanStatusSuccess:
 		return codeGenScanStatusSuccess
 	case codeGenScanStatusExpired:
@@ -22,11 +26,11 @@ func normalizeCodeGenScanStatus(status string) codeGenScanStatus {
 }
 
 func (s codeGenScanStatus) IsSuccess() bool {
-	return normalizeCodeGenScanStatus(string(s)) == codeGenScanStatusSuccess
+	return s.Normalized() == codeGenScanStatusSuccess
 }
 
 func (s codeGenScanStatus) IsExpired() bool {
-	return normalizeCodeGenScanStatus(string(s)) == codeGenScanStatusExpired
+	return s.Normalized() == codeGenScanStatusExpired
 }
 
 type codeGenModelStatus string
@@ -51,8 +55,12 @@ func normalizeCodeGenModelStatus(status string) codeGenModelStatus {
 	return codeGenModelStatus(strings.ToLower(strings.TrimSpace(status)))
 }
 
+func (s codeGenModelStatus) Normalized() codeGenModelStatus {
+	return codeGenModelStatus(strings.ToLower(strings.TrimSpace(string(s))))
+}
+
 func (s codeGenModelStatus) IsUsable() bool {
-	switch normalizeCodeGenModelStatus(string(s)) {
+	switch s.Normalized() {
 	case codeGenModelStatusUnknown,
 		codeGenModelStatusOK,
 		codeGenModelStatusReady,

@@ -39,7 +39,7 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 		b.WriteString(fmt.Sprintf("- session_ready: %v\n", sessionReady))
 	}
 	if status.Summary.CurrentStep != "" {
-		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, firstNonEmptySkillRunStatus(string(status.Summary.CurrentStepStatus), "running")))
+		b.WriteString(fmt.Sprintf("- current_step: %s (%s)\n", status.Summary.CurrentStep, status.Summary.CurrentStepStatus.OrElse(skillStepStatusRunning)))
 	}
 	if status.Summary.LastCompletedStep != "" {
 		b.WriteString(fmt.Sprintf("- last_completed_step: %s\n", status.Summary.LastCompletedStep))
@@ -216,15 +216,6 @@ func emitSkillRunStatusAgentView(h *IMMessageHandler, status *SkillRunStatus, ru
 		return
 	}
 	h.app.emitAgentView(buildSkillRunStatusAgentView(status, runID))
-}
-
-func firstNonEmptySkillRunStatus(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func emitSkillRunProgress(onProgress tool.ProgressCallback, status *SkillRunStatus) {

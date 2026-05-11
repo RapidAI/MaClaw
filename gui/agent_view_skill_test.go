@@ -274,11 +274,11 @@ func TestBuildSkillRunStatusAgentViewShowsProgressWhenRunning(t *testing.T) {
 	status := &SkillRunStatus{
 		RunID:  "run-1",
 		Skill:  "demo",
-		Status: "running",
+		Status: skillRunStatusRunning,
 		Steps: []StepResult{{
 			Index:  0,
 			Action: "bash",
-			Status: "running",
+			Status: skillStepStatusRunning,
 			Output: "working",
 		}},
 	}
@@ -293,6 +293,9 @@ func TestBuildSkillRunStatusAgentViewShowsProgressWhenRunning(t *testing.T) {
 	if len(steps) != 1 || steps[0]["description"] != "working" {
 		t.Fatalf("step output should be visible in progress view: %#v", steps)
 	}
+	if steps[0]["status"] != string(agentViewStepStatusRunning) {
+		t.Fatalf("step status should stay typed as running in progress view: %#v", steps)
+	}
 	actions := view["actions"].([]map[string]interface{})
 	if len(actions) != 1 || actions[0]["viewId"] != "skill:status" {
 		t.Fatalf("progress view should include refresh action: %#v", actions)
@@ -303,18 +306,18 @@ func TestBuildSkillRunStatusAgentViewShowsResultWhenFinished(t *testing.T) {
 	status := &SkillRunStatus{
 		RunID:      "run-1",
 		Skill:      "demo",
-		Status:     "success",
+		Status:     skillRunStatusSuccess,
 		DurationMs: 123,
 		Steps: []StepResult{{
 			Index:      0,
 			Action:     "bash",
-			Status:     "success",
+			Status:     skillStepStatusSuccess,
 			Output:     "final output",
 			DurationMs: 123,
 		}},
 	}
 	status.Summary.ArtifactPath = "out.pdf"
-	status.Summary.ArtifactStatus = "verified"
+	status.Summary.ArtifactStatus = skillArtifactStatusVerified
 	view := buildSkillRunStatusAgentView(status, "run-1")
 	if view["type"] != "result_browser" {
 		t.Fatalf("finished status should render result browser, got %#v", view)

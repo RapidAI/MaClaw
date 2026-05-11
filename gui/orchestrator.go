@@ -277,7 +277,7 @@ func buildOrchestratorSummary(results map[string]SessionResult) string {
 	succeeded := 0
 	failed := 0
 	for _, sr := range results {
-		switch normalizeOrchestratorSessionStatus(string(sr.Status)) {
+		switch sr.Status.Normalized() {
 		case orchestratorSessionStatusSuccess:
 			succeeded++
 		case orchestratorSessionStatusFailed:

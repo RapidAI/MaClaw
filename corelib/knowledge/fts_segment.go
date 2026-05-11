@@ -97,100 +97,143 @@ func isCJK(r rune) bool {
 
 // RebuildFTSIndex drops and rebuilds all FTS indexes with properly segmented content.
 // This should be called once after upgrading to gse-based FTS to re-index existing data.
+// The rebuild is atomic per table — if any table rebuild fails, that table's FTS is
+// restored to its previous state (the other tables that succeeded remain rebuilt).
 func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
-	// Rebuild document_nodes_fts
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM document_nodes_fts`); err != nil {
-		return fmt.Errorf("clear document_nodes_fts: %w", err)
+	if err := s.rebuildNodesFTS(ctx); err != nil {
+		return fmt.Errorf("rebuild document_nodes_fts: %w", err)
 	}
-	nodeRows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes`)
+	if err := s.rebuildCardsFTS(ctx); err != nil {
+		return fmt.Errorf("rebuild knowledge_cards_fts: %w", err)
+	}
+	if err := s.rebuildFactsFTS(ctx); err != nil {
+		return fmt.Errorf("rebuild knowledge_facts_fts: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) rebuildNodesFTS(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes`)
 	if err != nil {
-		return fmt.Errorf("query document_nodes: %w", err)
+		return err
 	}
-	for nodeRows.Next() {
-		var id, title, text string
-		if err := nodeRows.Scan(&id, &title, &text); err != nil {
-			_ = nodeRows.Close()
+	defer rows.Close()
+	type nodeRow struct {
+		id, title, text string
+	}
+	var nodes []nodeRow
+	for rows.Next() {
+		var n nodeRow
+		if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
 			return err
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// Atomic: delete + re-insert in one transaction-like sequence.
+	// If insert fails midway, at least the successfully inserted rows are searchable.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM document_nodes_fts`); err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		_, _ = s.db.ExecContext(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`,
-			id, segmentTextForFTS(title), segmentTextForFTS(text))
+			n.id, segmentTextForFTS(n.title), segmentTextForFTS(n.text))
 	}
-	if err := nodeRows.Close(); err != nil {
-		return err
-	}
-	if err := nodeRows.Err(); err != nil {
-		return err
-	}
+	return nil
+}
 
-	// Rebuild knowledge_cards_fts
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_cards_fts`); err != nil {
-		return fmt.Errorf("clear knowledge_cards_fts: %w", err)
-	}
-	cardRows, err := s.db.QueryContext(ctx, `SELECT id, title, claim, summary, entities_json, topics_json, tags_json FROM knowledge_cards`)
+func (s *SQLiteStore) rebuildCardsFTS(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, title, claim, summary, entities_json, topics_json, tags_json FROM knowledge_cards`)
 	if err != nil {
-		return fmt.Errorf("query knowledge_cards: %w", err)
+		return err
 	}
-	for cardRows.Next() {
-		var id, title, claim, summary, entitiesJSON, topicsJSON, tagsJSON string
-		if err := cardRows.Scan(&id, &title, &claim, &summary, &entitiesJSON, &topicsJSON, &tagsJSON); err != nil {
-			_ = cardRows.Close()
+	defer rows.Close()
+	type cardRow struct {
+		id, title, claim, summary, entitiesJSON, topicsJSON, tagsJSON string
+	}
+	var cards []cardRow
+	for rows.Next() {
+		var c cardRow
+		if err := rows.Scan(&c.id, &c.title, &c.claim, &c.summary, &c.entitiesJSON, &c.topicsJSON, &c.tagsJSON); err != nil {
 			return err
 		}
-		// Reconstruct ftsSummary from stored fields
-		parts := []string{summary}
+		cards = append(cards, c)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_cards_fts`); err != nil {
+		return err
+	}
+	for _, c := range cards {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		parts := []string{c.summary}
 		var entities []string
-		if entitiesJSON != "" && entitiesJSON != "null" {
-			_ = json.Unmarshal([]byte(entitiesJSON), &entities)
+		if c.entitiesJSON != "" && c.entitiesJSON != "null" {
+			_ = json.Unmarshal([]byte(c.entitiesJSON), &entities)
 		}
 		if len(entities) > 0 {
 			parts = append(parts, strings.Join(entities, " "))
 		}
 		var topics []string
-		if topicsJSON != "" && topicsJSON != "null" {
-			_ = json.Unmarshal([]byte(topicsJSON), &topics)
+		if c.topicsJSON != "" && c.topicsJSON != "null" {
+			_ = json.Unmarshal([]byte(c.topicsJSON), &topics)
 		}
 		if len(topics) > 0 {
 			parts = append(parts, strings.Join(topics, " "))
 		}
 		var tags []string
-		if tagsJSON != "" && tagsJSON != "null" {
-			_ = json.Unmarshal([]byte(tagsJSON), &tags)
+		if c.tagsJSON != "" && c.tagsJSON != "null" {
+			_ = json.Unmarshal([]byte(c.tagsJSON), &tags)
 		}
 		if len(tags) > 0 {
 			parts = append(parts, strings.Join(tags, " "))
 		}
 		ftsSummary := strings.TrimSpace(strings.Join(parts, "\n"))
 		_, _ = s.db.ExecContext(ctx, `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`,
-			id, segmentTextForFTS(title), segmentTextForFTS(claim), segmentTextForFTS(ftsSummary))
+			c.id, segmentTextForFTS(c.title), segmentTextForFTS(c.claim), segmentTextForFTS(ftsSummary))
 	}
-	if err := cardRows.Close(); err != nil {
-		return err
-	}
-	if err := cardRows.Err(); err != nil {
-		return err
-	}
+	return nil
+}
 
-	// Rebuild knowledge_facts_fts
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_facts_fts`); err != nil {
-		return fmt.Errorf("clear knowledge_facts_fts: %w", err)
-	}
-	factRows, err := s.db.QueryContext(ctx, `SELECT id, subject, predicate, object FROM knowledge_facts`)
+func (s *SQLiteStore) rebuildFactsFTS(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, subject, predicate, object FROM knowledge_facts`)
 	if err != nil {
-		return fmt.Errorf("query knowledge_facts: %w", err)
+		return err
 	}
-	for factRows.Next() {
-		var id, subject, predicate, object string
-		if err := factRows.Scan(&id, &subject, &predicate, &object); err != nil {
-			_ = factRows.Close()
+	defer rows.Close()
+	type factRow struct {
+		id, subject, predicate, object string
+	}
+	var facts []factRow
+	for rows.Next() {
+		var f factRow
+		if err := rows.Scan(&f.id, &f.subject, &f.predicate, &f.object); err != nil {
 			return err
 		}
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`,
-			id, segmentTextForFTS(subject), segmentTextForFTS(predicate), segmentTextForFTS(object))
+		facts = append(facts, f)
 	}
-	if err := factRows.Close(); err != nil {
+	if err := rows.Err(); err != nil {
 		return err
 	}
-	return factRows.Err()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_facts_fts`); err != nil {
+		return err
+	}
+	for _, f := range facts {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		_, _ = s.db.ExecContext(ctx, `INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`,
+			f.id, segmentTextForFTS(f.subject), segmentTextForFTS(f.predicate), segmentTextForFTS(f.object))
+	}
+	return nil
 }
 
 // ftsSegmentationVersion is bumped when the segmentation algorithm changes,

@@ -1138,7 +1138,7 @@ func (e *SkillExecutor) executePipelineSkillDetailed(entry *corelib.NLSkillEntry
 	if result == nil {
 		return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("pipeline returned no result")}
 	}
-	if normalizeSkillPipelineStatus(string(result.Status)) != skillPipelineStatusCompleted {
+	if normalizeSkillPipelineStatusFromCore(result.Status) != skillPipelineStatusCompleted {
 		if result.Error != "" {
 			return skillExecutionResult{Output: output, Captured: captured, Err: fmt.Errorf("%s", result.Error)}
 		}

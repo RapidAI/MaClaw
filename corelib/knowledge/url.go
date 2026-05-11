@@ -45,9 +45,11 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 		return Source{}, err
 	}
 	defer tx.Rollback()
+	isDuplicate := false
 	if existing, ok, err := findExistingURLSourceForSave(ctx, tx, source); err != nil {
 		return Source{}, err
 	} else if ok {
+		isDuplicate = true
 		source.ID = existing.ID
 		source.CreatedAt = existing.CreatedAt
 		if err := deleteSourceDerivedRows(ctx, tx, existing.ID); err != nil {
@@ -84,6 +86,11 @@ func (s *SQLiteStore) SaveURL(ctx context.Context, req URLSaveRequest) (Source, 
 	if err := s.hydrateSourceLabels(ctx, sources); err != nil {
 		return Source{}, err
 	}
+	if isDuplicate {
+		sources[0].SaveStatus = SaveStatusDuplicate
+	} else {
+		sources[0].SaveStatus = SaveStatusCreated
+	}
 	return sources[0], nil
 }
 
@@ -117,6 +124,9 @@ func (s *SQLiteStore) SaveURLs(ctx context.Context, req URLBatchSaveRequest) URL
 			continue
 		}
 		result.Saved++
+		if source.SaveStatus == SaveStatusDuplicate {
+			result.Duplicates++
+		}
 		result.Sources = append(result.Sources, source)
 		result.Items = append(result.Items, URLBatchSaveItem{URL: rawURL, SourceID: source.ID, Title: source.Title, Status: URLBatchSaveStatusFromSource(source.Status)})
 	}

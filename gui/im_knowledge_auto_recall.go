@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -79,13 +80,19 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		return
 	}
 
-	// Dynamic threshold + injection count based on top score
+	// Dynamic threshold + injection count based on top score.
+	// LIKE fallback produces score=2.0 for confirmed substring matches.
+	// FTS on properly segmented index produces score 1.0+ for multi-doc corpora,
+	// but only ~0.4 for single-doc corpora (BM25 IDF≈0 when N=1).
+	// Threshold 0.3 ensures single-doc matches are still injected.
 	topScore := results[0].Score
 	var maxInject int
 	switch {
 	case topScore >= 3.0:
 		maxInject = 3
 	case topScore >= 1.0:
+		maxInject = 2
+	case topScore >= 0.3:
 		maxInject = 1
 	default:
 		log.Printf("[knowledge_auto_recall] below threshold: topScore=%.2f, results=%d, query=%d chars (took %s)",
@@ -102,7 +109,7 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		if injected >= maxInject {
 			break
 		}
-		if r.Score < 1.0 {
+		if r.Score < 0.3 {
 			break
 		}
 		source := r.Source.Title
@@ -140,7 +147,6 @@ func (h *IMMessageHandler) getAutoRecallStore() *knowledge.SQLiteStore {
 	defer knowledgeAutoRecallStoreMu.Unlock()
 
 	if knowledgeAutoRecallStore != nil {
-		h.ensureFTSRebuilt(knowledgeAutoRecallStore)
 		return knowledgeAutoRecallStore
 	}
 
@@ -150,28 +156,35 @@ func (h *IMMessageHandler) getAutoRecallStore() *knowledge.SQLiteStore {
 		return nil
 	}
 	knowledgeAutoRecallStore = store
-	h.ensureFTSRebuilt(store)
+	// Trigger FTS rebuild in background — does not block the current search.
+	// The current search will use LIKE fallback if FTS fails; once rebuild
+	// completes, subsequent searches will use the segmented FTS index.
+	go h.rebuildFTSInBackground(store)
 	return store
 }
 
-// ensureFTSRebuilt triggers a one-time synchronous FTS index rebuild with gse segmentation.
-// This migrates existing FTS data from raw text to segmented text for CJK search.
-// Uses a persistent marker in the database to avoid rebuilding on every app restart.
-func (h *IMMessageHandler) ensureFTSRebuilt(store *knowledge.SQLiteStore) {
+// rebuildFTSInBackground rebuilds the FTS index with gse segmentation.
+// Runs in a background goroutine so it doesn't block user requests.
+// Uses a persistent marker to avoid redundant rebuilds across restarts.
+func (h *IMMessageHandler) rebuildFTSInBackground(store *knowledge.SQLiteStore) {
 	knowledgeFTSRebuildMu.Lock()
 	defer knowledgeFTSRebuildMu.Unlock()
 	if knowledgeFTSRebuilt {
 		return
 	}
 	knowledgeFTSRebuilt = true
-	// Check persistent marker to avoid rebuilding on every restart
 	if store.HasFTSSegmentationMarker() {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// PrewarmDict ensures gse dictionary loading has started.
+	// bm25.Tokenize (called by RebuildFTSIndex) will block until loading completes.
+	bm25.PrewarmDict()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	if err := store.RebuildFTSIndex(ctx); err != nil {
 		log.Printf("[knowledge_auto_recall] FTS rebuild failed: %v", err)
+		// Reset flag so next getAutoRecallStore call retries
+		knowledgeFTSRebuilt = false
 	} else {
 		store.SetFTSSegmentationMarker()
 		log.Printf("[knowledge_auto_recall] FTS index rebuilt with gse segmentation")

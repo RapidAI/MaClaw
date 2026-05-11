@@ -314,7 +314,7 @@ func buildRecoverableSessionPayload(session *RemoteSession) *IMResponseRecoverab
 		Title:           strings.TrimSpace(firstNonEmptyTraceText(session.Title, session.Summary.CurrentTask, rc.OriginalTask)),
 		Summary:         strings.TrimSpace(firstNonEmptyTraceText(session.Summary.ProgressSummary, rc.LastProgress, session.Summary.LastResult, rc.LastOutput)),
 		ProjectPath:     strings.TrimSpace(firstNonEmptyTraceText(session.ProjectPath, rc.ProjectPath)),
-		Status:          strings.TrimSpace(string(session.Status)),
+		Status:          strings.TrimSpace(session.Status.String()),
 		ExitReason:      strings.TrimSpace(rc.ExitReason),
 		ResumeSessionID: strings.TrimSpace(rc.ResumeSessionID),
 		ResumeCount:     rc.ResumeCount,

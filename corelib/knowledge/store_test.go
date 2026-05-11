@@ -645,6 +645,12 @@ func TestSQLiteStoreSaveText(t *testing.T) {
 	if second.ID != source.ID || second.Title != "Conversation decision updated title" {
 		t.Fatalf("expected text save to upsert by content hash and scope: first=%#v second=%#v", source, second)
 	}
+	if source.SaveStatus != SaveStatusCreated {
+		t.Fatalf("expected first save to have SaveStatus=%q, got %q", SaveStatusCreated, source.SaveStatus)
+	}
+	if second.SaveStatus != SaveStatusDuplicate {
+		t.Fatalf("expected second save to have SaveStatus=%q, got %q", SaveStatusDuplicate, second.SaveStatus)
+	}
 	if !stringSliceContains(second.Labels, "inbox") || !stringSliceContains(second.Labels, "reviewed") {
 		t.Fatalf("expected repeated text save to append labels: %#v", second.Labels)
 	}

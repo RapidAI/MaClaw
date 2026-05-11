@@ -5,17 +5,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
 )
 
 func TestSummarizeSkillRun_PopulatesCurrentAndLastStep(t *testing.T) {
 	status := &SkillRunStatus{
 		RunID:  "run-1",
 		Skill:  "demo",
-		Status: "running",
+		Status: skillRunStatusRunning,
 		Steps: []StepResult{
-			{Index: 0, Action: "create_session", Status: "success", Output: "会话已创建: ID=sess-1"},
-			{Index: 1, Action: "send_and_observe", Status: "running"},
+			{Index: 0, Action: "create_session", Status: skillStepStatusSuccess, Output: "会话已创建: ID=sess-1"},
+			{Index: 1, Action: "send_and_observe", Status: skillStepStatusRunning},
 		},
 		Session: &SkillRunSessionMeta{SessionID: "sess-1"},
 	}
@@ -23,7 +22,7 @@ func TestSummarizeSkillRun_PopulatesCurrentAndLastStep(t *testing.T) {
 	if !status.Summary.HasSessionBinding {
 		t.Fatal("expected session binding summary")
 	}
-	if status.Summary.CurrentStep != "send_and_observe" || status.Summary.CurrentStepStatus != "running" {
+	if status.Summary.CurrentStep != "send_and_observe" || status.Summary.CurrentStepStatus != skillStepStatusRunning {
 		t.Fatalf("unexpected current step summary: %#v", status.Summary)
 	}
 	if status.Summary.LastCompletedStep != "create_session" {
@@ -39,11 +38,11 @@ func TestSummarizeSkillRun_MarksInstructionOnlyCraftTool(t *testing.T) {
 	status := &SkillRunStatus{
 		RunID:  "run-craft",
 		Skill:  "pptx-generator",
-		Status: "success",
+		Status: skillRunStatusSuccess,
 		Steps: []StepResult{{
 			Index:  0,
 			Action: "craft_tool",
-			Status: "success",
+			Status: skillStepStatusSuccess,
 			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\n" + outputPath + "\n\n✅ 脚本执行成功",
 		}},
 	}
@@ -54,7 +53,7 @@ func TestSummarizeSkillRun_MarksInstructionOnlyCraftTool(t *testing.T) {
 	if status.Summary.ArtifactPath != outputPath {
 		t.Fatalf("ArtifactPath = %q, want %q", status.Summary.ArtifactPath, outputPath)
 	}
-	if status.Summary.ArtifactStatus != "missing" {
+	if status.Summary.ArtifactStatus != skillArtifactStatusMissing {
 		t.Fatalf("ArtifactStatus = %q, want missing", status.Summary.ArtifactStatus)
 	}
 }
@@ -63,16 +62,16 @@ func TestSummarizeSkillRun_VerificationPassedSkipsArtifactVerification(t *testin
 	status := &SkillRunStatus{
 		RunID:  "run-craft-ok",
 		Skill:  "pptx-generator",
-		Status: "success",
+		Status: skillRunStatusSuccess,
 		Steps: []StepResult{{
 			Index:  0,
 			Action: "craft_tool",
-			Status: "success",
+			Status: skillStepStatusSuccess,
 			Output: "📝 脚本语言: python\n📁 脚本路径: C:/tmp/tool.py\nattempts: 1\nverification: passed\nartifact: C:/tmp/done.pdf\n\n✅ 脚本执行成功",
 		}},
 	}
 	summarizeSkillRun(status)
-	if status.Summary.ArtifactStatus != "verified" {
+	if status.Summary.ArtifactStatus != skillArtifactStatusVerified {
 		t.Fatalf("ArtifactStatus = %q, want verified", status.Summary.ArtifactStatus)
 	}
 	if status.Summary.NeedsArtifactVerification {
@@ -88,15 +87,15 @@ func TestSummarizeSkillRun_VerifiesExpectedOutputArtifact(t *testing.T) {
 	status := &SkillRunStatus{
 		RunID:          "run-artifact",
 		Skill:          "xh-md-to-pdf",
-		Status:         "success",
+		Status:         skillRunStatusSuccess,
 		ExpectedOutput: outputPath,
-		Steps:          []StepResult{{Index: 0, Action: "craft_tool", Status: "success", Output: "✅ 脚本执行成功"}},
+		Steps:          []StepResult{{Index: 0, Action: "craft_tool", Status: skillStepStatusSuccess, Output: "✅ 脚本执行成功"}},
 	}
 	summarizeSkillRun(status)
 	if status.Summary.ArtifactPath != outputPath {
 		t.Fatalf("ArtifactPath = %q, want %q", status.Summary.ArtifactPath, outputPath)
 	}
-	if status.Summary.ArtifactStatus != "verified" {
+	if status.Summary.ArtifactStatus != skillArtifactStatusVerified {
 		t.Fatalf("ArtifactStatus = %q, want verified", status.Summary.ArtifactStatus)
 	}
 	if status.Summary.NeedsArtifactVerification {
@@ -108,12 +107,12 @@ func TestSummarizeSkillRun_PopulatesErrorSnippet(t *testing.T) {
 	status := &SkillRunStatus{
 		RunID:  "run-2",
 		Skill:  "demo",
-		Status: "failed",
-		Steps:  []StepResult{{Index: 0, Action: "send_and_observe", Status: "failed", Error: "network timeout while waiting for output"}},
+		Status: skillRunStatusFailed,
+		Steps:  []StepResult{{Index: 0, Action: "send_and_observe", Status: skillStepStatusFailed, Error: "network timeout while waiting for output"}},
 		Error:  "step failed",
 	}
 	summarizeSkillRun(status)
-	if status.Summary.CurrentStep != "send_and_observe" || status.Summary.CurrentStepStatus != "failed" {
+	if status.Summary.CurrentStep != "send_and_observe" || status.Summary.CurrentStepStatus != skillStepStatusFailed {
 		t.Fatalf("unexpected failed current step summary: %#v", status.Summary)
 	}
 	if !strings.Contains(status.Summary.LastErrorSnippet, "network timeout") {
@@ -126,8 +125,8 @@ func TestSkillRunnerGetRunStatus_IncludesSummary(t *testing.T) {
 	runner.runs["run-3"] = &skillRun{status: SkillRunStatus{
 		RunID:   "run-3",
 		Skill:   "demo",
-		Status:  "running",
-		Steps:   []StepResult{{Index: 0, Action: "create_session", Status: "success", Output: "会话已创建: ID=sess-3"}},
+		Status:  skillRunStatusRunning,
+		Steps:   []StepResult{{Index: 0, Action: "create_session", Status: skillStepStatusSuccess, Output: "会话已创建: ID=sess-3"}},
 		Session: &SkillRunSessionMeta{SessionID: "sess-3"},
 	}}
 	status, err := runner.GetRunStatus("run-3")
