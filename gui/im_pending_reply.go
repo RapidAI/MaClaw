@@ -17,7 +17,7 @@ func shouldResumeIncompleteTask(text string) bool {
 
 	resumePhrases := []string{
 		"继续", "继续上次", "继续做完", "恢复", "接着做",
-		"缁х画", "缁х画瀹屾垚", "缁х画涓婃", "鎺ョ潃瀹屾垚", "鎺ョ潃涓婃", "鎭㈠涓婃", "鍋氬畬涓婃",
+		"继续", "继续完成", "继续上次", "接着完成", "接着上次", "恢复上次", "做完上次",
 		"continue", "continue it", "continue this", "resume", "resume it", "resume this", "pick up where you left off",
 	}
 	for _, phrase := range resumePhrases {

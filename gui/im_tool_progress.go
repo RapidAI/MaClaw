@@ -9,7 +9,7 @@ import (
 func userFacingToolProgressText(toolName string) string {
 	switch toolName {
 	case "craft_tool":
-		return "馃洜锔?姝ｅ湪鐢熸垚骞舵墽琛岃剼鏈紝鍑嗗缁х画瀹屾垚浜や粯..."
+		return "🛠️ 正在生成并执行脚本，准备继续完成交付..."
 	case "bash":
 		return "馃枼锔?姝ｅ湪鎵ц鍛戒护澶勭悊鏂囦欢锛岃绋嶅€?.."
 	case "run_skill":

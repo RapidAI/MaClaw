@@ -22,6 +22,7 @@ import {
     KnowledgeFactIndex,
     KnowledgeExportSnapshotWithOptions,
     KnowledgeHealth,
+    KnowledgeClearAll,
     KnowledgeImportDirectory,
     KnowledgeImportFiles,
     KnowledgeImportSnapshot,
@@ -1379,6 +1380,25 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
         await runTask('deleteSource', () => KnowledgeDeleteSource(source.id || ''), { refreshSources: true, refreshHealth: true });
     };
 
+    const handleClearAll = async () => {
+        // First confirmation
+        const confirm1 = window.confirm(
+            t('⚠️ This will permanently delete ALL knowledge base content (all imported documents, URLs, cards, facts). This cannot be undone.\n\nAre you sure?',
+              '⚠️ 此操作将永久删除知识库中的所有内容（所有导入的文档、URL、卡片、事实），且无法恢复。\n\n确定要继续吗？')
+        );
+        if (!confirm1) return;
+        // Second confirmation
+        const confirm2 = window.confirm(
+            t('⚠️ FINAL CONFIRMATION: All knowledge base data will be permanently erased. Proceed?',
+              '⚠️ 最终确认：知识库所有数据将被永久清除。确认执行？')
+        );
+        if (!confirm2) return;
+        await runTask('clearAll', async () => {
+            await KnowledgeClearAll();
+            return { ok: true };
+        }, { refreshSources: true, refreshHealth: true });
+    };
+
     useEffect(() => {
         const id = String(importJob?.id || '').trim();
         const status = String(importJob?.status || '').toLowerCase();
@@ -1406,9 +1426,14 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                     <h2 style={titleStyle}>{t('Knowledge Base', '知识库')}</h2>
                     <p style={subtleStyle}>{t('Ingest, search, inspect, and maintain local knowledge sources.', '导入、检索、查看并维护本地知识来源。')}</p>
                 </div>
-                <button type="button" style={buttonStyle} onClick={refresh} disabled={loading}>
-                    {loading ? t('Refreshing...', '刷新中...') : t('Refresh', '刷新')}
-                </button>
+                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                    <button type="button" style={buttonStyle} onClick={refresh} disabled={loading}>
+                        {loading ? t('Refreshing...', '刷新中...') : t('Refresh', '刷新')}
+                    </button>
+                    <button type="button" style={dangerButtonStyle} onClick={handleClearAll} disabled={!!busy}>
+                        {t('Clear All', '清空')}
+                    </button>
+                </div>
             </div>
             {error ? <div style={errorBoxStyle}>{error}</div> : null}
             <div style={tabsStyle}>
@@ -1508,7 +1533,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                     </PanelBlock>
                     <div style={twoColumnStyle}>
                         <PanelBlock title={`${t('Results', '结果')} (${searchResults.length})`}>
-                            <ResultList results={searchResults} empty={t('No results yet.', '暂无检索结果。')} />
+                            <ResultList results={searchResults} empty={t('No results yet.', '暂无检索结果。')} query={searchForm.query} />
                         </PanelBlock>
                         <PanelBlock title={t('Facets', '分面')}>
                             <KeyValueList values={[
@@ -1622,14 +1647,36 @@ function KeyValueList({ values, empty }: { values: string[]; empty: string }) {
     return <div style={chipListStyle}>{cleanValues.map(value => <span key={value} style={chipStyle}>{value}</span>)}</div>;
 }
 
-function ResultList({ results, empty }: { results: SearchResult[]; empty: string }) {
+const highlightMarkStyle: React.CSSProperties = { background: '#facc15', color: '#1a1a2e', borderRadius: 2, padding: '0 2px' };
+
+function buildHighlightRegex(query: string): RegExp | null {
+    if (!query) return null;
+    const keywords = query.split(/\s+/).filter(k => k.length > 0);
+    if (!keywords.length) return null;
+    const escaped = keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    return new RegExp(`(${escaped.join('|')})`, 'gi');
+}
+
+function highlightText(text: string, regex: RegExp | null): React.ReactNode {
+    if (!regex || !text) return text;
+    const parts = text.split(regex);
+    if (parts.length <= 1) return text;
+    return <>{parts.map((part, i) => {
+        if (!part) return null;
+        // split with capturing group: odd indices are matches
+        return i % 2 === 1 ? <mark key={i} style={highlightMarkStyle}>{part}</mark> : part;
+    })}</>;
+}
+
+function ResultList({ results, empty, query }: { results: SearchResult[]; empty: string; query?: string }) {
     if (!results.length) return <div style={emptyStyle}>{empty}</div>;
+    const regex = buildHighlightRegex((query || '').trim());
     return <div style={listStyle}>{results.map((result, index) => (
         <div key={`${result.result_type || 'result'}-${result.node_id || result.card_id || result.fact_id || index}`} style={rowStyle}>
             <div style={rowMainStyle}>
-                <strong>{result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result'}</strong>
+                <strong>{highlightText(result.card_title || result.node_title || result.subject || result.source?.title || result.source?.relative_path || 'Result', regex)}</strong>
                 <span style={mutedLineStyle}>{[result.result_type, result.source?.kind, result.source?.relative_path || result.source?.uri, result.score ? `score ${result.score.toFixed(3)}` : ''].filter(Boolean).join(' · ')}</span>
-                <span>{result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' ')}</span>
+                <span>{highlightText(result.summary || result.claim || result.snippet || [result.subject, result.predicate, result.object].filter(Boolean).join(' '), regex)}</span>
             </div>
         </div>
     ))}</div>;

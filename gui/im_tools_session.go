@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
-	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"log"
 	"os"
 	"strings"
@@ -212,24 +211,15 @@ func (h *IMMessageHandler) toolCreateSession(args map[string]interface{}) string
 		return fmt.Sprintf("加载配置失败: %s", cfgErr.Error())
 	}
 	if projectID != "" {
-		var found bool
-		for _, p := range cfg.Projects {
-			if p.Id == projectID {
-				projectPath = p.Path
-				found = true
-				hints = append(hints, fmt.Sprintf("📁 通过项目 ID 解析: %s → %s", projectID, p.Path))
-				break
-			}
+		resolvedProject := resolveCreateSessionProjectID(cfg, projectID)
+		if resolvedProject.Error != "" {
+			return resolvedProject.Error
 		}
-		if !found {
-			var available []string
-			for _, p := range cfg.Projects {
-				available = append(available, fmt.Sprintf("%s(%s)", p.Id, p.Name))
-			}
-			if len(available) == 0 {
-				return fmt.Sprintf("项目 ID %q 未找到，当前没有已配置的项目", projectID)
-			}
-			return fmt.Sprintf("项目 ID %q 未找到，可用项目: %s", projectID, strings.Join(available, ", "))
+		if resolvedProject.ProjectPath != "" {
+			projectPath = resolvedProject.ProjectPath
+		}
+		if resolvedProject.Hint != "" {
+			hints = append(hints, resolvedProject.Hint)
 		}
 	}
 
@@ -500,53 +490,17 @@ func (h *IMMessageHandler) toolGetSessionEvents(args map[string]interface{}) str
 	if !ok {
 		return fmt.Sprintf("会话 %s 不存在", sessionID)
 	}
-	session.mu.RLock()
-	events := make([]ImportantEvent, len(session.Events))
-	copy(events, session.Events)
-	session.mu.RUnlock()
-	if len(events) == 0 {
-		return fmt.Sprintf("会话 %s 暂无重要事件。", sessionID)
-	}
-	var b strings.Builder
-	for _, ev := range events {
-		b.WriteString(fmt.Sprintf("- [%s] %s: %s", ev.Severity, ev.Type, ev.Title))
-		if ev.Summary != "" {
-			b.WriteString(fmt.Sprintf(" — %s", ev.Summary))
-		}
-		if ev.RelatedFile != "" {
-			b.WriteString(fmt.Sprintf(" (文件: %s)", ev.RelatedFile))
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
+	return renderSessionEvents(sessionID, snapshotSessionEvents(session))
 }
 
 func (h *IMMessageHandler) toolInterruptSession(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
-	if sessionID == "" {
-		return "缺少 session_id 参数"
-	}
-	if h.manager == nil {
-		return "会话管理器未初始化"
-	}
-	if err := h.manager.Interrupt(sessionID); err != nil {
-		return fmt.Sprintf("中断失败: %s", err.Error())
-	}
-	return fmt.Sprintf("已向会话 %s 发送中断信号", sessionID)
+	return runSessionControlAction(h.manager, sessionID, sessionControlActionInterrupt)
 }
 
 func (h *IMMessageHandler) toolKillSession(args map[string]interface{}) string {
 	sessionID, _ := args["session_id"].(string)
-	if sessionID == "" {
-		return "缺少 session_id 参数"
-	}
-	if h.manager == nil {
-		return "会话管理器未初始化"
-	}
-	if err := h.manager.Kill(sessionID); err != nil {
-		return fmt.Sprintf("终止失败: %s", err.Error())
-	}
-	return fmt.Sprintf("已终止会话 %s", sessionID)
+	return runSessionControlAction(h.manager, sessionID, sessionControlActionKill)
 }
 
 // toolSendAndObserve combines send_input + get_session_output into a single
@@ -561,40 +515,7 @@ func (h *IMMessageHandler) toolSendAndObserve(args map[string]interface{}) strin
 	sessionID, _ := args["session_id"].(string)
 	text, _ := args["text"].(string)
 	timeoutSeconds, _ := args["timeout_seconds"].(float64)
-
-	// Task orchestrator enrichment: when active, prepend per-task context
-	// to the text being sent to the coding session.
-	userIDForOrch := h.lastUserID
-	var taskOrch *TaskExecutionOrchestrator
-	if h.taskOrchestratorRegistry != nil && userIDForOrch != "" {
-		taskOrch = h.taskOrchestratorRegistry.Get(userIDForOrch)
-	}
-	if taskOrch != nil && taskOrch.IsActive() {
-		task := taskOrch.CurrentTask()
-		if task != nil {
-			// Record which session is handling this task.
-			taskOrch.SetCurrentSessionID(sessionID)
-
-			// If the task is pending, this is the initial send — use the
-			// orchestrator's focused prompt instead of the LLM's text.
-			if task.Status == TaskExecPending {
-				taskPrompt := taskOrch.BuildTaskPrompt()
-				if taskPrompt != "" {
-					// Prepend the structured task prompt; append the LLM's
-					// original text as supplementary context (it may contain
-					// useful details the orchestrator doesn't know about).
-					if strings.TrimSpace(text) != "" {
-						text = taskPrompt + "\n\n---\n补充说明：\n" + text
-					} else {
-						text = taskPrompt
-					}
-					log.Printf("[task-orchestrator] enriched send_and_observe for task %d: %s",
-						task.Index+1, task.Title)
-				}
-				taskOrch.MarkCurrentStatus(TaskExecInProgress, "")
-			}
-		}
-	}
+	text = h.enrichSendAndObserveTextForTask(sessionID, text)
 
 	return SendAndObserveSession(h.manager, sessionID, text, SessionObserveOptions{
 		TimeoutSeconds: timeoutSeconds,
@@ -609,126 +530,38 @@ func (h *IMMessageHandler) toolControlSession(args map[string]interface{}) strin
 	sessionID, _ := args["session_id"].(string)
 	actionText, _ := args["action"].(string)
 	action := normalizeSessionControlAction(actionText)
-	if sessionID == "" {
-		return "缺少 session_id 参数"
-	}
-	if h.manager == nil {
-		return "会话管理器未初始化"
-	}
-	switch action {
-	case sessionControlActionInterrupt:
-		if err := h.manager.Interrupt(sessionID); err != nil {
-			return fmt.Sprintf("中断失败: %s", err.Error())
-		}
-		return fmt.Sprintf("已向会话 %s 发送中断信号", sessionID)
-	case sessionControlActionKill:
-		if err := h.manager.Kill(sessionID); err != nil {
-			return fmt.Sprintf("终止失败: %s", err.Error())
-		}
-		return fmt.Sprintf("已终止会话 %s", sessionID)
-	default:
-		return "action 参数无效，可选值: interrupt, kill"
-	}
-}
-
-// toolManageConfig merges all config operations into a single tool.
-// screenshotCooldown is the minimum interval between consecutive screenshots
-// to prevent accidental rapid-fire captures by the LLM.
-const screenshotCooldown = 30 * time.Second
-
-func hasSelectedLocalImagePath(userText string) bool {
-	lower := strings.ToLower(userText)
-	idx := strings.Index(lower, strings.ToLower(filePathPromptPrefix))
-	if idx < 0 {
-		return false
-	}
-	block := userText[idx+len(filePathPromptPrefix):]
-	for _, line := range strings.Split(block, "\n") {
-		if classifyLocalImagePathLine(line) == localImagePathLineImagePath {
-			return true
-		}
-	}
-	return false
+	return runSessionControlAction(h.manager, sessionID, action)
 }
 
 func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
-	if hasSelectedLocalImagePath(h.lastUserText) {
-		return "用户消息里已经提供了本地图片文件路径。不要调用 screenshot 或重新截图；请直接使用这些路径，并优先用 read_file 或 open 查看图片内容。"
+	if msg := screenshotLocalImagePathGuardMessage(h.lastUserText); msg != "" {
+		return msg
 	}
 
-	// Enforce cooldown to prevent accidental repeated screenshots.
-	if !h.lastScreenshotAt.IsZero() && time.Since(h.lastScreenshotAt) < screenshotCooldown {
-		remaining := screenshotCooldown - time.Since(h.lastScreenshotAt)
-		return fmt.Sprintf("截屏冷却中，请等待 %d 秒后再试", int(remaining.Seconds())+1)
+	if msg := screenshotCooldownMessage(h.lastScreenshotAt, time.Now()); msg != "" {
+		return msg
 	}
 
 	// Check for display parameter — capture a specific monitor directly.
 	if displayRaw, ok := args["display"]; ok {
-		var displayIndex int
-		switch v := displayRaw.(type) {
-		case float64:
-			displayIndex = int(v)
-		case int:
-			displayIndex = v
-		case string:
-			if _, err := fmt.Sscanf(v, "%d", &displayIndex); err != nil {
-				return fmt.Sprintf("display 参数无效: %s", v)
-			}
-		default:
-			return fmt.Sprintf("display 参数类型无效: %T", displayRaw)
-		}
-		if h.manager == nil {
-			return "会话管理器未初始化"
-		}
-		captureStart := time.Now()
-		base64Data, err := h.manager.CaptureScreenshotDirectForDisplay(displayIndex)
-		log.Printf("[screenshot] CaptureScreenshotDirectForDisplay(%d) took %v, data_len=%d, err=%v",
-			displayIndex, time.Since(captureStart), len(base64Data), err)
+		displayIndex, err := parseScreenshotDisplayIndex(displayRaw)
 		if err != nil {
-			return fmt.Sprintf("截取显示器 %d 失败: %s", displayIndex, err.Error())
+			return err.Error()
 		}
-		h.lastScreenshotAt = time.Now()
-		if len(base64Data) > 1_500_000 {
-			if ds, err := remote.DownsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
-				base64Data = ds
-			}
-		}
-		return fmt.Sprintf("[screenshot_base64]%s", base64Data)
+		return h.captureScreenshotForDisplay(displayIndex)
 	}
 
 	sessionID, _ := args["session_id"].(string)
 
-	// 如果未指定 session_id，自动选择唯一活跃会话
-	if sessionID == "" && h.manager != nil {
-		sessions := h.manager.List()
-		if len(sessions) == 1 {
-			sessionID = sessions[0].ID
-		} else if len(sessions) > 1 {
-			var lines []string
-			lines = append(lines, "有多个活跃会话，请指定 session_id：")
-			for _, s := range sessions {
-				s.mu.RLock()
-				status := string(s.Status)
-				s.mu.RUnlock()
-				lines = append(lines, fmt.Sprintf("- %s (工具=%s, 状态=%s)", s.ID, s.Tool, status))
-			}
-			return strings.Join(lines, "\n")
-		} else {
-			// 没有活跃会话时，直接截屏本机屏幕（不依赖 session）
-			captureStart := time.Now()
-			base64Data, err := h.manager.CaptureScreenshotDirect()
-			log.Printf("[screenshot] CaptureScreenshotDirect took %v, data_len=%d, err=%v", time.Since(captureStart), len(base64Data), err)
-			if err != nil {
-				return fmt.Sprintf("截图失败: %s", err.Error())
-			}
-			h.lastScreenshotAt = time.Now()
-			// Preemptive downsize for IM delivery (multi-monitor can be huge).
-			if len(base64Data) > 1_500_000 {
-				if ds, err := remote.DownsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
-					base64Data = ds
-				}
-			}
-			return fmt.Sprintf("[screenshot_base64]%s", base64Data)
+	if h.manager != nil {
+		selection := selectScreenshotSession(sessionID, h.manager.List())
+		switch selection.Kind {
+		case screenshotSessionSelectionSelected:
+			sessionID = selection.SessionID
+		case screenshotSessionSelectionMultiple:
+			return selection.Message
+		case screenshotSessionSelectionNone:
+			return h.captureDirectScreenshotResult()
 		}
 	}
 
@@ -739,34 +572,5 @@ func (h *IMMessageHandler) toolScreenshot(args map[string]interface{}) string {
 		return "会话管理器未初始化"
 	}
 
-	// Non-desktop platforms (WeChat, QQ, etc.) cannot receive session.image
-	// WebSocket pushes, so capture and return base64 data directly.
-	platform := ""
-	if h.currentLoopCtx != nil {
-		platform = h.currentLoopCtx.Platform
-	}
-	if !normalizeIMMessagePlatformKind(platform).IsDesktopPlaybackTarget() {
-		captureStart2 := time.Now()
-		base64Data, err := h.manager.CaptureScreenshotToBase64(sessionID)
-		log.Printf("[screenshot] CaptureScreenshotToBase64 took %v, data_len=%d, err=%v", time.Since(captureStart2), len(base64Data), err)
-		if err != nil {
-			return fmt.Sprintf("截图失败: %s", err.Error())
-		}
-		h.lastScreenshotAt = time.Now()
-		// Preemptive downsize for IM delivery.
-		if len(base64Data) > 1_500_000 {
-			if ds, err := remote.DownsizeScreenshotBase64(base64Data, 1_200_000); err == nil {
-				base64Data = ds
-			}
-		}
-		return fmt.Sprintf("[screenshot_base64]%s", base64Data)
-	}
-
-	if err := h.manager.CaptureScreenshot(sessionID); err != nil {
-		return fmt.Sprintf("截图失败: %s", err.Error())
-	}
-	// 截图已通过 session.image 通道直接发送给用户，
-	// 返回特殊标记让 runAgentLoop 立即终止，避免 Agent 继续推理导致重复发图。
-	h.lastScreenshotAt = time.Now()
-	return "[screenshot_sent]"
+	return h.captureSessionScreenshotResult(sessionID)
 }

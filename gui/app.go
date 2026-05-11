@@ -88,6 +88,8 @@ type App struct {
 	toolRouter            *ToolRouter
 	gateIntentClassifier  *GateIntentClassifier           // semantic gate classifier (wired in Task 12.1)
 	unifiedClassifier     *intent.UnifiedIntentClassifier // UIC: shared three-layer intent classifier
+	classifierOnce        sync.Once                       // guards single creation of unifiedClassifier + gateIntentClassifier
+	embeddingActivated    atomic.Bool                     // ensures activateEmbedderAsync runs at most once
 	usageTracker          *tool.UsageTracker
 	experienceExtractor   *ExperienceExtractor
 	orchestrator          *Orchestrator
@@ -293,7 +295,7 @@ func (a *App) initCoreInfra() {
 	// Wire skill-aware routing: when skillExecutor is available, connect it
 	// to the toolRouter so that Route() can match user messages against
 	// installed skills and enrich the manage_skill tool description with
-	// "鍙敤 Skill: xh-md-to-pdf" hints. Without this wiring, skillMatchScore
+	// "可用 Skill: xh-md-to-pdf" hints. Without this wiring, skillMatchScore
 	// always returns 0 and the LLM never gets skill-specific routing hints.
 	if a.toolRouter != nil && a.skillExecutor != nil {
 		a.toolRouter.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
@@ -1079,7 +1081,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 
 			// Prepend a hint so the agent knows this is an autonomous task
 			// that must complete in one shot (no user to "continue").
-			actionText := fmt.Sprintf("[闂傚倷鑳堕崢褔銆冩惔銏㈩洸婵犲﹤瀚崣蹇涙煃閸濆嫬鏆婇柛瀣尵閹叉挳宕熼褎娈规繝纰夌磿閸嬫盯宕愰崷顓犵焿闁圭儤姊圭€氭岸鏌熺紒妯轰刊婵?闂?闂備浇宕垫慨鏉懨洪埡浣碘偓鎺楀捶椤撶姴宕ラ梺鍝勵槹閸ㄧ喖寮告惔銊︾厓闁宠桨绀侀弳濠囨煕鐎ｎ偅宕勬い锔界叀閺岋綁鏁愭惔鈥斥拫濡ょ姷鍋涢澶愮嵁閸ヮ剙绀堝ù锝勮濡插嘲鈹戦悙鏉戠仸闁圭鎽滅划鏃堟倻婵劏鍋撻崨瀛樻櫆闁告挆鍥ｆ敽濠电姰鍨煎▔娑㈡晝閿斿墽鐜婚柨鐔哄У閻撶喐銇勯顐㈠濠碘€茬矙閺屾盯鍩￠崒婧惧濠电偟鍘х换姗€鐛鈧畷姗€骞撻幒鎾圭发]\n%s", task.Action)
+			actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
 
 			resp := hubClient.ensureIMHandler().HandleIMMessageWithProgress(IMUserMessage{
 				UserID:        "scheduled_task",
@@ -6635,28 +6637,28 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?1: ClawSkillHub / skillhub.space 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁?闂?/api/skills?search=test&limit=1
 	if probeSkillHubSpace(client, base) {
 		result["type"] = "skillhub_space"
-		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂?ClawSkillHub API (skillhub.space 闂傚倷鑳堕…鍫㈡崲閹烘鍌ㄧ憸鏃堛€?"
+		result["reason"] = "成功连接到 ClawSkillHub API (skillhub.space 格式)"
 		return result
 	}
 
 	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?2: 闂傚倷绀侀幖顐ょ矓閺夋嚚娲Χ婢跺﹪妫?Hub API 闂?/api/v1/skills/search?q=test
 	if hubType := probeStandardHub(client, base); hubType {
 		result["type"] = "standard"
-		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂備胶纭堕弲娑㈡儗閸屾凹鍤曞ù鐘差儏閻愬﹦鎲稿鍛瀺?SkillHub API"
+		result["reason"] = "成功连接到标准 SkillHub API"
 		return result
 	}
 
 	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?3: ClawHub 闂傚倸鍊搁崐鐢稿磻閹惧绡€濠电姴鍊搁弳娆撴煕?(topclawhubskills.com 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁? 闂?/api/stats
 	if hubType := probeClawHubMirror(client, base); hubType {
 		result["type"] = "clawhub_mirror"
-		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂?ClawHub 闂傚倸鍊搁崐鐢稿磻閹惧绡€濠电姴鍊搁弳娆撴煕?API (topclawhubskills.com 闂傚倷鑳堕…鍫㈡崲閹烘鍌ㄧ憸鏃堛€?"
+		result["reason"] = "成功连接到 ClawHub 镜像 API (topclawhubskills.com 格式)"
 		return result
 	}
 
 	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?4: ClawHub (clawhub.ai 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁? 闂?/api/v1/skills
 	if hubType := probeClawHub(client, base); hubType {
 		result["type"] = "clawhub"
-		result["reason"] = "濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒缁樼洴瀵爼骞嬮鐐插闂?ClawHub API (clawhub.ai 闂傚倷鑳堕…鍫㈡崲閹烘鍌ㄧ憸鏃堛€?"
+		result["reason"] = "成功连接到 ClawHub API (clawhub.ai 格式)"
 		return result
 	}
 
@@ -6665,12 +6667,12 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 		resp.Body.Close()
 		if resp.StatusCode < 400 {
 			result["type"] = "mirror"
-			result["reason"] = "\u7ad9\u70b9\u53ef\u8bbf\u95ee\uff0c\u4f46\u672a\u8bc6\u522b\u4e3a\u6807\u51c6 SkillHub API"
+			result["reason"] = "站点可访问，但未识别为标准 SkillHub API"
 			return result
 		}
 	}
 
-	result["reason"] = "\u672a\u8bc6\u522b\u4e3a\u53ef\u7528\u7684 SkillHub API"
+	result["reason"] = "未识别为可用的 SkillHub 或 ClawHub API"
 	return result
 }
 

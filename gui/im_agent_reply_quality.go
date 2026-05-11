@@ -29,10 +29,10 @@ func looksLikeNoToolStallReply(text string) bool {
 		"requires login", "needs login", "need to log in", "waiting for approval",
 	}
 	// These hints indicate the LLM intends to work on a different subtask.
-	// Deliberately excludes bare "缁х画" 鈥?it often appears in blocker context
-	// ("闇€瑕佺櫥褰曟墠鑳界户缁?) rather than indicating a parallel work track.
+	// Deliberately excludes bare "继续" — it often appears in blocker context
+	// ("需要登录才能继续") rather than indicating a parallel work track.
 	continueHints := []string{
-		"鍚屾椂鍑嗗", "鍚屾椂澶勭悊", "涓庢鍚屾椂", "鍙︿竴鏂归潰",
+		"同时准备", "同时处理", "与此同时", "另一方面",
 		"meanwhile", "in the meantime", "continue with", "proceed with", "at the same time",
 	}
 	hasBlocker := false
@@ -89,7 +89,7 @@ func hasFutureDeliveryPromise(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	futureDeliveryHints := []string{
-		"椹笂鍙戜綘", "缁х画鍙戜綘", "缁х画鐢熸垚", "缁х画鏁寸悊",
+		"马上发你", "继续发你", "继续生成", "继续整理",
 		"will send", "send it to you shortly", "send you shortly", "about to send", "going to send",
 	}
 	for _, hint := range futureDeliveryHints {
@@ -107,8 +107,8 @@ func looksLikeCompletedOrSummaryDeliverableReply(text string) bool {
 	}
 	lower := strings.ToLower(trimmed)
 	completedHints := []string{
-		"宸茬粡瀹屾垚", "宸茬粡鏁寸悊", "鏁寸悊濂戒簡",
-		"宸叉矇娣€", "娌夋穩瀹屾垚", "娌夋穩瀹屾瘯",
+		"宸茬粡完成", "宸茬粡整理", "整理濂戒簡",
+		"宸叉矇娣€", "娌夋穩完成", "娌夋穩瀹屾瘯",
 		"缁撴灉濡備笅", "鎬荤粨濡備笅", "缁撹濡備笅", "鎶ュ憡濡備笅", "鏂囨。濡備笅",
 		"completed", "done", "here is", "here's", "results below", "summary below", "below is",
 		"saved", "recorded",
@@ -137,11 +137,11 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	lower := strings.ToLower(trimmed)
 
 	// Negative patterns: self-introduction / capability-listing context.
-	// When the model describes what it *can* do (e.g. "甯綘鍐欐枃妗ｃ€佸仛鏁寸悊"),
+	// When the model describes what it *can* do (e.g. "甯綘鍐欐枃妗ｃ€佸仛整理"),
 	// the deliverable keywords appear in a descriptive context, not as an
 	// actual promise to deliver a specific file. Skip these.
 	selfIntroHints := []string{
-		"鎴戝彨", "鎴戠殑鍚嶅瓧", "骞虫椂鎴戜細", "鎴戣兘甯綘",
+		"鎴戝彨", "鎴戠殑鍚嶅瓧", "骞虫椂我会", "鎴戣兘甯綘",
 		"i'm ", "my name is", "i can help you", "nice to meet",
 	}
 	for _, hint := range selfIntroHints {
@@ -156,7 +156,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	}
 
 	deliverableHints := []string{
-		"pdf", "鐢熸垚pdf", "鐢熸垚 pdf", "鎶ュ憡", "鏂囨。", "鏂囦欢", "缁艰堪", "鍙戜綘",
+		"pdf", "生成pdf", "生成 pdf", "鎶ュ憡", "鏂囨。", "鏂囦欢", "缁艰堪", "发你",
 		"report", "document", "file", "send you", "deliver", "summary",
 	}
 	hasDeliverableIntent := false
@@ -175,7 +175,7 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 		return false
 	}
 	promiseHints := []string{
-		"鎴戞潵", "鎴戜細", "椹笂", "绔嬪埢", "鐩存帴", "缁х画", "鎵ц", "鐢熸垚", "鏁寸悊", "娣诲姞", "琛ュ厖",
+		"我来", "我会", "马上", "立刻", "直接", "继续", "执行", "生成", "整理", "添加", "补充",
 		"i will", "i'll", "let me", "going to", "about to", "right away", "prepare", "generate", "send", "continue", "append",
 	}
 	hasPromiseHint := false
@@ -199,8 +199,8 @@ func looksLikePromiseOnlyDeliverableReply(text string) bool {
 	}
 	futureDeliveryPromise := hasFutureDeliveryPromise(trimmed)
 	completionHints := []string{
-		"灏嗗彂閫佺粰鐢ㄦ埛", "宸插噯澶囧ソ", "澶辫触鍘熷洜", "鏃犳硶鐢熸垚", "localfile", "[file_base64|", "[voice_base64|",
-		"宸茬粡瀹屾垚", "缁撴灉濡備笅", "鎬荤粨濡備笅", "here is", "here's", "results below", "summary below",
+		"灏嗗彂閫佺粰鐢ㄦ埛", "宸插噯澶囧ソ", "澶辫触鍘熷洜", "鏃犳硶生成", "localfile", "[file_base64|", "[voice_base64|",
+		"宸茬粡完成", "缁撴灉濡備笅", "鎬荤粨濡備笅", "here is", "here's", "results below", "summary below",
 	}
 	for _, hint := range completionHints {
 		if strings.Contains(lower, hint) {
@@ -239,7 +239,7 @@ func shouldRecoverForPendingSkillRunNoToolReply(text string, runID string) bool 
 		return true
 	}
 	pendingRunContinuationHints := []string{
-		"缁х画娣诲姞", "缁х画琛ュ厖", "缁х画鏁寸悊", "缁х画鐢熸垚",
+		"继续添加", "继续补充", "继续整理", "继续生成",
 		"append more", "continue writing", "continue generating",
 	}
 	for _, hint := range pendingRunContinuationHints {
@@ -259,7 +259,7 @@ func looksLikePromiseOnlyPDFReply(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
-	hasPDFIntent := strings.Contains(lower, "pdf") || strings.Contains(lower, "鐢熸垚pdf") || strings.Contains(lower, "鐢熸垚 pdf")
+	hasPDFIntent := strings.Contains(lower, "pdf") || strings.Contains(lower, "生成pdf") || strings.Contains(lower, "生成 pdf")
 	if !hasPDFIntent {
 		return false
 	}

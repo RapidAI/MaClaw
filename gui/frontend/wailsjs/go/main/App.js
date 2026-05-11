@@ -1783,6 +1783,10 @@ export function KnowledgeHealth(arg1) {
   return window['go']['main']['App']['KnowledgeHealth'](arg1);
 }
 
+export function KnowledgeClearAll() {
+  return window['go']['main']['App']['KnowledgeClearAll']();
+}
+
 export function KnowledgeSourceQualityReport(arg1) {
   return window['go']['main']['App']['KnowledgeSourceQualityReport'](arg1);
 }

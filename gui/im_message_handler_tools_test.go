@@ -1788,7 +1788,7 @@ func TestToolCreateSession_NoProviderUsesDefault(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
+	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
 	// Will fail at StartRemoteSessionForProject (remote not enabled), but
 	// should NOT fail at provider resolution.
 	result := handler.toolCreateSession(map[string]interface{}{
@@ -1833,7 +1833,7 @@ func TestToolCreateSession_DefaultUnavailableFallbackHint(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
+	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool": "claude",
 	})
@@ -1886,7 +1886,7 @@ func TestToolCreateSession_UserSpecifiedProviderUsed(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
+	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":     "claude",
 		"provider": "DeepSeek",
@@ -1958,6 +1958,7 @@ func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
 	}
 
 	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
+	handler.unifiedClassifier = intent.New(intent.Config{Embedder: embedding.NoopEmbedder{}, LLMTimeout: time.Second})
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":       "claude",
 		"project_id": "proj-1",
@@ -1991,6 +1992,7 @@ func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
 	}
 
 	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
+	handler.unifiedClassifier = intent.New(intent.Config{Embedder: embedding.NoopEmbedder{}, LLMTimeout: time.Second})
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":       "claude",
 		"project_id": "nonexistent-id",
@@ -2031,6 +2033,7 @@ func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
 
 	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
 	// Provide both project_id and project_path — project_id should win.
+	handler.unifiedClassifier = intent.New(intent.Config{Embedder: embedding.NoopEmbedder{}, LLMTimeout: time.Second})
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":         "claude",
 		"project_id":   "proj-1",

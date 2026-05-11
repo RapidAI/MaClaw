@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -29,6 +31,26 @@ var knowledgeImportJobs sync.Map
 
 func (a *App) knowledgeDBPath() string {
 	return filepath.Join(a.GetDataDir(), "knowledge.db")
+}
+
+// KnowledgeClearAll removes all knowledge base content by deleting the database file.
+// The database will be recreated automatically on next access.
+func (a *App) KnowledgeClearAll() error {
+	// Close the cached auto-recall store before deleting the DB
+	CloseAutoRecallStore()
+	dbPath := a.knowledgeDBPath()
+	// Remove main DB file and any SQLite auxiliary files (-wal, -shm, -journal)
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		p := dbPath + suffix
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove %s: %w", p, err)
+		}
+	}
+	// Reset the source count cache so hasKnowledgeSources returns false immediately
+	atomic.StoreInt64(&knowledgeSourceCountCache, 0)
+	atomic.StoreInt64(&knowledgeSourceCountTime, time.Now().Unix())
+	log.Printf("[knowledge] ClearAll: database removed at %s", dbPath)
+	return nil
 }
 
 func (a *App) openKnowledgeStore() (*knowledge.SQLiteStore, error) {

@@ -71,7 +71,7 @@ func buildDriftRecoverPrompt(drift DriftResult) string {
 	if drift.DriftedTool != "" {
 		toolWarning = fmt.Sprintf("\nDo not call %s again after repeated failures. If no alternative exists, explain the limitation to the user.", drift.DriftedTool)
 	}
-	return "[Recover 闃舵]\n妫€娴嬪埌鎵ц璺緞鍑虹幇婕傜Щ鎴栧惊鐜紝褰撳墠杩涘叆 Recover 闃舵銆傝鍏堟殏鍋滈噸澶嶆搷浣滐紝鍥炲埌鍘熷鐩爣锛屽熀浜庡凡鐭ョ粨鏋滄敼鐢ㄤ笉鍚岃矾寰勭户缁畬鎴愪换鍔°€俓n" + detail + toolWarning + "\n[/Recover 闃舵]"
+	return "[Recover 阶段]\n检测到执行路径出现漂移或循环，当前进入 Recover 阶段。请先暂停重复操作，回到原始目标，基于已知结果改用不同路径继续完成任务。\n" + detail + toolWarning + "\n[/Recover 阶段]"
 }
 
 // truncateRunesForDrift truncates a string to maxRunes for use as a drift

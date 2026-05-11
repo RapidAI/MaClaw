@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
@@ -22,6 +24,10 @@ import (
 var (
 	knowledgeSourceCountCache int64 // atomic: cached source count
 	knowledgeSourceCountTime  int64 // atomic: unix seconds of last check
+
+	// Reusable store for auto-recall to avoid open/close per message.
+	knowledgeAutoRecallStore   *knowledge.SQLiteStore
+	knowledgeAutoRecallStoreMu sync.Mutex
 )
 
 // appendKnowledgeAutoRecall searches the knowledge base using the user message
@@ -31,23 +37,28 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 		return
 	}
 	if !h.hasKnowledgeSources() {
-		log.Printf("[knowledge_auto_recall] skipped: no sources in knowledge base")
 		return
 	}
 
-	store, err := h.app.openKnowledgeStore()
-	if err != nil {
-		log.Printf("[knowledge_auto_recall] skipped: openKnowledgeStore failed: %v", err)
+	// Truncate long messages to first 200 chars for FTS query —
+	// long pastes (code, logs) produce noisy tokens that hurt precision.
+	query := msg
+	if utf8.RuneCountInString(query) > 200 {
+		runes := []rune(query)
+		query = string(runes[:200])
+	}
+
+	store := h.getAutoRecallStore()
+	if store == nil {
 		return
 	}
-	defer store.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	queryStart := time.Now()
 	results, err := store.Search(ctx, knowledge.SearchOptions{
-		Query:       msg,
+		Query:       query,
 		Limit:       5,
 		ProjectPath: h.getCurrentProjectPath(),
 	})
@@ -73,7 +84,7 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	default:
 		log.Printf("[knowledge_auto_recall] below threshold: topScore=%.2f, results=%d, query=%d chars (took %s)",
 			topScore, len(results), len(msg), queryDuration)
-		return // No sufficiently relevant results
+		return
 	}
 
 	b.WriteString("\n## 知识库参考（自动检索）\n")
@@ -114,8 +125,40 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	}
 }
 
+// getAutoRecallStore returns a reusable knowledge store for auto-recall.
+// The store is kept open across messages to avoid repeated open/close overhead (~5ms each).
+// It is lazily created. Invalidation is handled by CloseAutoRecallStore() which is called
+// by KnowledgeClearAll and app shutdown.
+func (h *IMMessageHandler) getAutoRecallStore() *knowledge.SQLiteStore {
+	knowledgeAutoRecallStoreMu.Lock()
+	defer knowledgeAutoRecallStoreMu.Unlock()
+
+	if knowledgeAutoRecallStore != nil {
+		return knowledgeAutoRecallStore
+	}
+
+	store, err := h.app.openKnowledgeStore()
+	if err != nil {
+		log.Printf("[knowledge_auto_recall] getAutoRecallStore: open failed: %v", err)
+		return nil
+	}
+	knowledgeAutoRecallStore = store
+	return store
+}
+
+// CloseAutoRecallStore closes the cached auto-recall store.
+// Called on app shutdown or after KnowledgeClearAll.
+func CloseAutoRecallStore() {
+	knowledgeAutoRecallStoreMu.Lock()
+	defer knowledgeAutoRecallStoreMu.Unlock()
+	if knowledgeAutoRecallStore != nil {
+		knowledgeAutoRecallStore.Close()
+		knowledgeAutoRecallStore = nil
+	}
+}
+
 // hasKnowledgeSources checks if the knowledge base has any content.
-// Uses a 30-second cache to avoid opening the DB on every message.
+// Uses a 30-second cache to avoid querying the DB on every message.
 func (h *IMMessageHandler) hasKnowledgeSources() bool {
 	if h.app == nil {
 		return false
@@ -125,13 +168,11 @@ func (h *IMMessageHandler) hasKnowledgeSources() bool {
 	if now-lastCheck < 30 {
 		return atomic.LoadInt64(&knowledgeSourceCountCache) > 0
 	}
-	// Cache miss — use Stats which gives us source count
-	store, err := h.app.openKnowledgeStore()
-	if err != nil {
-		log.Printf("[knowledge_auto_recall] hasKnowledgeSources: openStore failed: %v", err)
+	// Cache miss — lightweight single-query check via the reusable store
+	store := h.getAutoRecallStore()
+	if store == nil {
 		return false
 	}
-	defer store.Close()
 	stats, err := store.Stats(context.Background())
 	if err != nil {
 		log.Printf("[knowledge_auto_recall] hasKnowledgeSources: Stats failed: %v", err)

@@ -32,7 +32,7 @@ func classifyIncompleteTaskMarker(text string) incompleteTaskMarkerKind {
 		return incompleteTaskMarkerCodingStillRunning
 	case strings.Contains(trimmed, "maximum reasoning rounds"):
 		return incompleteTaskMarkerMaxRoundsReached
-	case strings.Contains(trimmed, "宸茶揪鍒版渶澶ф帹鐞嗚疆娆★紝璇风户缁彂閫佹秷鎭互瀹屾垚浠诲姟"):
+	case strings.Contains(trimmed, "已达到最大推理轮次，请继续发送消息以完成任务"):
 		return incompleteTaskMarkerMaxRoundsReachedMojibake
 	case strings.Contains(trimmed, "(瀹歌尪鎻崚鐗堟付婢堆勫腹閻炲棜鐤嗗▎鈽呯礉鐠囬鎴风紒顓炲絺闁焦绉烽幁顖欎簰鐎瑰本鍨氭禒璇插)"):
 		return incompleteTaskMarkerMaxRoundsReachedMojibake

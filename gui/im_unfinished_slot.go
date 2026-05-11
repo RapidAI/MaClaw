@@ -300,14 +300,14 @@ func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n## 鏄惧紡鎭㈠鏈畬鎴愪换鍔n")
+	b.WriteString("\n## 显式恢复未完成任务\n")
 	if slot.LastTask != "" {
-		b.WriteString("- 浠诲姟: ")
+		b.WriteString("- 任务: ")
 		b.WriteString(slot.LastTask)
 		b.WriteString("\n")
 	}
 	if slot.Summary != "" {
-		b.WriteString("- 褰撳墠杩涘害: ")
+		b.WriteString("- 当前进度: ")
 		b.WriteString(slot.Summary)
 		b.WriteString("\n")
 	}
@@ -317,7 +317,7 @@ func buildUnfinishedSlotResumeContext(slot *agent.UnfinishedTaskSlot) string {
 			b.WriteString("\n")
 		}
 	}
-	b.WriteString("鐢ㄦ埛宸叉樉寮忛€夋嫨缁х画杩欎釜鏈畬鎴愪换鍔°€傝浠呭洿缁曡浠诲姟缁х画锛屼笉瑕佹贩鍏ュ叾浠栨棫浠诲姟銆俓n")
+	b.WriteString("用户已显式选择继续这个未完成任务。请仅围绕该任务继续，不要混入其他旧任务。\n")
 	return b.String()
 }
 
@@ -326,7 +326,7 @@ func buildResumeSlotActions(slot *agent.UnfinishedTaskSlot) []IMResponseAction {
 		return nil
 	}
 	return []IMResponseAction{
-		{Label: "缁х画涓婃浠诲姟", Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
+		{Label: "继续上次任务", Command: "__resume_unfinished__ " + slot.SlotID, Style: "default"},
 		{Label: "Start new task", Command: "__dismiss_unfinished__ " + slot.SlotID, Style: "primary"},
 	}
 }

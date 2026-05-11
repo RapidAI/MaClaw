@@ -38,30 +38,35 @@ var embeddingDownloadMu sync.Mutex
 //   - Before semantic classifiers are ready: conservative unknown
 //   - After embedding loads: embedding classification
 //   - After LLM is wired: embedding + LLM fusion
+//
+// Thread-safe: uses sync.Once to guarantee the UIC is created exactly once,
+// regardless of whether initEarlyClassifier or activateEmbedderAsync runs first.
 func (a *App) initEarlyClassifier() {
-	// Create UIC with noop embedder; no local keyword fallback is enabled.
-	uic := intent.New(intent.Config{
-		Embedder:   embedding.NoopEmbedder{},
-		LLMTimeout: 15 * time.Second,
+	a.classifierOnce.Do(func() {
+		// Create UIC with noop embedder; no local keyword fallback is enabled.
+		uic := intent.New(intent.Config{
+			Embedder:   embedding.NoopEmbedder{},
+			LLMTimeout: 15 * time.Second,
+		})
+		a.unifiedClassifier = uic
+
+		// Create GIC with nil embedder; it delegates to UIC or LLM when available.
+		gic := NewGateIntentClassifier(nil)
+		gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
+		gic.SetUnifiedClassifier(uic)
+		a.gateIntentClassifier = gic
+
+		// Wire to all consumers so they see the classifier immediately.
+		if a.toolRouter != nil {
+			a.toolRouter.SetUnifiedClassifier(uic)
+		}
+		if a.capabilityGapDetector != nil {
+			a.capabilityGapDetector.SetUnifiedClassifier(uic)
+		}
+		setUnifiedClassifierForIM(uic)
+
+		log.Println("[classifier] early init complete: semantic classifiers pending async wiring")
 	})
-	a.unifiedClassifier = uic
-
-	// Create GIC with nil embedder; it delegates to UIC or LLM when available.
-	gic := NewGateIntentClassifier(nil)
-	gic.SetLLMConfig(func() corelib.MaclawLLMConfig { return a.GetMaclawLLMConfig() }, &http.Client{Timeout: 5 * time.Second})
-	gic.SetUnifiedClassifier(uic)
-	a.gateIntentClassifier = gic
-
-	// Wire to all consumers so they see the classifier immediately.
-	if a.toolRouter != nil {
-		a.toolRouter.SetUnifiedClassifier(uic)
-	}
-	if a.capabilityGapDetector != nil {
-		a.capabilityGapDetector.SetUnifiedClassifier(uic)
-	}
-	setUnifiedClassifierForIM(uic)
-
-	log.Println("[classifier] early init complete: semantic classifiers pending async wiring")
 }
 
 // embeddingModelsDir returns ~/.maclaw/models, creating it if needed.
@@ -183,6 +188,8 @@ func (a *App) SetVectorSearchEnabled(enabled bool) error {
 				handler.toolBuilder.SetEmbedder(noop)
 			}
 		}
+		// Allow re-activation if user re-enables vector search later.
+		a.embeddingActivated.Store(false)
 		// Do NOT clear a.gateIntentClassifier or a.unifiedClassifier.
 		// initEarlyClassifier created conservative classifier instances that
 		// fail closed until semantic channels are available. Clearing them
@@ -516,6 +523,14 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 		return
 	}
 
+	// Ensure only one goroutine performs activation. Multiple call sites
+	// (ensureMemoryStore, SetVectorSearchEnabled, verifyAndEnableEmbedding)
+	// may race; the first one wins, subsequent calls close the redundant embedder.
+	if !a.embeddingActivated.CompareAndSwap(false, true) {
+		emb.Close()
+		return
+	}
+
 	a.logMemorySnapshot("activateEmbedderAsync:start")
 	t0 := time.Now()
 
@@ -543,31 +558,20 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// initEarlyClassifier created the UIC in conservative mode. Now we wire
 	// in the real embedder and LLM, upgrading it in-place.
 	// All consumers (including GIC, which delegates to UIC) already hold
-	// a reference to this UIC instance 鈥?no re-wiring needed.
-	if a.unifiedClassifier != nil {
-		a.unifiedClassifier.SetEmbedder(emb)
-		a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
-		log.Println("[embedding] UnifiedIntentClassifier upgraded: L2 embedding + L3 LLM now available")
-	} else {
-		// Fallback: initEarlyClassifier didn't run (shouldn't happen in production).
-		uic := intent.New(intent.Config{
-			Embedder:   emb,
-			LLMTimeout: 15 * time.Second,
-		})
-		uic.SetLLMFunc(a.buildUICLLMFunc())
-		a.unifiedClassifier = uic
-		setUnifiedClassifierForIM(uic)
-		if a.gateIntentClassifier != nil {
-			a.gateIntentClassifier.SetUnifiedClassifier(uic)
-		}
-		if a.toolRouter != nil {
-			a.toolRouter.SetUnifiedClassifier(uic)
-		}
-		if a.capabilityGapDetector != nil {
-			a.capabilityGapDetector.SetUnifiedClassifier(uic)
-		}
-		log.Println("[embedding] UnifiedIntentClassifier created fresh (early init missed)")
+	// a reference to this UIC instance — no re-wiring needed.
+	//
+	// Guarantee: classifierOnce.Do ensures the UIC exists before we reach here,
+	// even if this goroutine races ahead of the main startup sequence.
+	a.initEarlyClassifier() // idempotent via sync.Once
+	a.unifiedClassifier.SetEmbedder(emb)
+	a.unifiedClassifier.SetLLMFunc(a.buildUICLLMFunc())
+	// Ensure toolRouter has the UIC reference. initEarlyClassifier may have
+	// skipped this wiring if toolRouter was nil at that time (e.g., startup
+	// without Hub credentials where ensureRemoteInfra runs later).
+	if a.toolRouter != nil {
+		a.toolRouter.SetUnifiedClassifier(a.unifiedClassifier)
 	}
+	log.Println("[embedding] UnifiedIntentClassifier upgraded: L2 embedding + L3 LLM now available")
 
 	// Wire embedder into tool builder.
 	if a.remoteSessions != nil && a.remoteSessions.hubClient != nil {

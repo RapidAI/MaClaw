@@ -96,7 +96,7 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"skill_id":     map[string]string{"type": "string", "description": "Skill ID（install 时必填，从 search 结果中获取）"},
 				"hub_url":      map[string]string{"type": "string", "description": "来源 Hub URL（install 时必填，从 search 结果中获取）"},
 				"auto_run":     map[string]string{"type": "boolean", "description": "安装成功后是否立即执行（install 时可选，默认 true）"},
-				"name":         map[string]string{"type": "string", "description": "Skill 名称（run/upload 时必填）"},
+				"name":         map[string]string{"type": "string", "description": "Skill 名称（run/uninstall/upload 时必填）"},
 				"skill_name":   map[string]string{"type": "string", "description": "Skill 名称（patch/history 时必填，指定要修补或查看历史的 Skill）"},
 				"find":         map[string]string{"type": "string", "description": "要查找的原始文本（patch 时必填，必须精确匹配 Skill 定义文件中的唯一一处位置）"},
 				"replace":      map[string]string{"type": "string", "description": "替换后的新文本（patch 时必填）"},

@@ -47,6 +47,8 @@ func newManageSkillHandler(app *TUIApp) func(args map[string]interface{}) string
 			return skillSearch(app, args)
 		case "install":
 			return skillInstall(app, args)
+		case "uninstall":
+			return skillUninstall(app, args)
 		case "run":
 			return skillRun(app, args)
 		case "status":
@@ -227,6 +229,60 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 		sourceLabel = "GitHub"
 	}
 	return fmt.Sprintf("✅ Skill '%s' 已安装 (来源: %s)", entry.Name, sourceLabel)
+}
+
+// --- uninstall ---
+
+func skillUninstall(app *TUIApp, args map[string]interface{}) string {
+	name := sval(args, "name")
+	if name == "" {
+		return "缺少 name 参数（要卸载的 Skill 名称）"
+	}
+
+	// Remove from config.
+	store := commands.NewFileConfigStore(commands.ResolveDataDir())
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return fmt.Sprintf("加载配置失败: %v", err)
+	}
+
+	found := false
+	for i, s := range cfg.NLSkills {
+		if s.MatchesName(name) {
+			cfg.NLSkills = append(cfg.NLSkills[:i], cfg.NLSkills[i+1:]...)
+			found = true
+			break
+		}
+	}
+
+	if found {
+		if err := store.SaveConfig(cfg); err != nil {
+			return fmt.Sprintf("保存配置失败: %v", err)
+		}
+		app.appConfig = cfg
+	}
+
+	// Remove on-disk directories (using unfiltered scanner so any format is covered).
+	dirRemoved := false
+	for _, root := range skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs) {
+		for _, s := range skill.ScanSkillDirAll(root) {
+			if s.Name == name || s.DirName == name {
+				if s.SkillDir != "" {
+					if err := os.RemoveAll(s.SkillDir); err != nil {
+						log.Printf("[skill-uninstall] failed to remove %s: %v", s.SkillDir, err)
+					} else {
+						dirRemoved = true
+					}
+				}
+			}
+		}
+	}
+
+	if !found && !dirRemoved {
+		return fmt.Sprintf("Skill '%s' 未找到（不在配置中，也不在磁盘上）", name)
+	}
+
+	return fmt.Sprintf("✅ Skill '%s' 已卸载（配置和目录已清理）", name)
 }
 
 // --- run ---

@@ -826,6 +826,8 @@ export function KnowledgeDoctor():Promise<any>;
 
 export function KnowledgeHealth(arg1:any):Promise<any>;
 
+export function KnowledgeClearAll():Promise<void>;
+
 export function KnowledgeSourceQualityReport(arg1:any):Promise<any>;
 
 export function KnowledgeSourceQualityMaintenancePlan(arg1:any):Promise<any>;

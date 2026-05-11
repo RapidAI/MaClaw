@@ -11,15 +11,16 @@ type manageSkillAction string
 
 const (
 	manageSkillActionUnknown  manageSkillAction = ""
-	manageSkillActionList     manageSkillAction = "list"
-	manageSkillActionSearch   manageSkillAction = "search"
-	manageSkillActionInstall  manageSkillAction = "install"
-	manageSkillActionRun      manageSkillAction = "run"
-	manageSkillActionStatus   manageSkillAction = "status"
-	manageSkillActionUpload   manageSkillAction = "upload"
-	manageSkillActionValidate manageSkillAction = "validate"
-	manageSkillActionPatch    manageSkillAction = "patch"
-	manageSkillActionHistory  manageSkillAction = "history"
+	manageSkillActionList      manageSkillAction = "list"
+	manageSkillActionSearch    manageSkillAction = "search"
+	manageSkillActionInstall   manageSkillAction = "install"
+	manageSkillActionUninstall manageSkillAction = "uninstall"
+	manageSkillActionRun       manageSkillAction = "run"
+	manageSkillActionStatus    manageSkillAction = "status"
+	manageSkillActionUpload    manageSkillAction = "upload"
+	manageSkillActionValidate  manageSkillAction = "validate"
+	manageSkillActionPatch     manageSkillAction = "patch"
+	manageSkillActionHistory   manageSkillAction = "history"
 )
 
 func classifyManageSkillAction(action string) manageSkillAction {
@@ -30,6 +31,8 @@ func classifyManageSkillAction(action string) manageSkillAction {
 		return manageSkillActionSearch
 	case manageSkillActionInstall:
 		return manageSkillActionInstall
+	case manageSkillActionUninstall:
+		return manageSkillActionUninstall
 	case manageSkillActionRun:
 		return manageSkillActionRun
 	case manageSkillActionStatus:
@@ -57,6 +60,8 @@ func (h *IMMessageHandler) toolManageSkill(args map[string]interface{}, onProgre
 		return h.toolSearchSkillHub(args)
 	case manageSkillActionInstall:
 		return h.toolInstallSkillHub(args)
+	case manageSkillActionUninstall:
+		return h.toolUninstallSkill(args)
 	case manageSkillActionRun:
 		return h.toolRunSkill(args, onProgress)
 	case manageSkillActionStatus:

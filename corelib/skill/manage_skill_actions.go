@@ -24,6 +24,7 @@ var ManageSkillActions = []ManageSkillAction{
 	{"list", "列出本地已注册 Skill（无 Skill 时展示 Hub 推荐）"},
 	{"search", "在 SkillHub 搜索可用 Skill"},
 	{"install", "从 Hub 安装 Skill 到本地"},
+	{"uninstall", "卸载/移除本地已安装的 Skill（删除目录和配置）"},
 	{"run", "执行指定 Skill"},
 	{"status", "查询运行状态（run 返回 run_id 后继续观察进度）"},
 	{"upload", "上传本地 Skill 到 SkillMarket"},
