@@ -59,6 +59,15 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		log.Printf("[agent-loop] rejected execution of truncation-blocked tool %q (iter=%d)", tc.Function.Name, opts.Iteration)
 	}
 	if result.Text == "" {
+		// In agent loop context, intercept missing/invalid parameter errors BEFORE
+		// executeToolDetailed. executeToolDetailed would emit an AgentView panel
+		// (designed for user-manual tool invocations), which is wrong inside an
+		// agent loop — the LLM should receive an error message and self-correct.
+		if errResult := h.preCheckToolArgsForAgentLoop(tc.Function.Name, tc.Function.Arguments, opts.Iteration); errResult != nil {
+			result = *errResult
+		}
+	}
+	if result.Text == "" {
 		result = h.executeToolDetailed(tc.Function.Name, tc.Function.Arguments, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
 
@@ -182,4 +191,52 @@ func (h *IMMessageHandler) executeToolDetailed(name, argsJSON string, onProgress
 	}
 
 	return toolExecutionResult{Text: fmt.Sprintf("Unknown tool: %s", name), Outcome: toolOutcomeFailed, FailureKind: toolFailureUnknownTool}
+}
+
+// preCheckToolArgsForAgentLoop validates tool arguments in agent loop context.
+// When parameters are missing or invalid, it returns an error result for the LLM
+// to self-correct, instead of emitting an AgentView panel (which is designed for
+// user-manual tool invocations and would break the agent loop flow).
+// Returns nil when arguments are valid and execution should proceed normally.
+func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, iteration int) *toolExecutionResult {
+	if h.registry == nil {
+		return nil
+	}
+	tool, ok := h.registry.Get(strings.TrimSpace(name))
+	if !ok || tool == nil {
+		return nil
+	}
+	var args map[string]interface{}
+	if cleaned := coretool.CleanToolArguments(argsJSON); cleaned != "" {
+		_ = json.Unmarshal([]byte(cleaned), &args)
+	}
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	// Check missing required parameters.
+	if missing := registeredToolMissingRequired(tool, args); len(missing) > 0 {
+		errMsg := fmt.Sprintf("Tool %s requires parameter(s): %s. Please provide them and retry.", name, strings.Join(missing, ", "))
+		log.Printf("[agent-loop] tool %s missing required params %v, returning error to LLM (iter=%d)", name, missing, iteration)
+		return &toolExecutionResult{
+			Text:        errMsg,
+			ToolName:    name,
+			ToolKind:    classifyAgentToolKind(name),
+			Outcome:     toolOutcomeFailed,
+			FailureKind: toolFailureMissingParameters,
+		}
+	}
+	// Check schema validation (type errors, range violations, etc.).
+	if issues := registeredToolValidateArgIssues(*tool, args); len(issues) > 0 {
+		msgs := registeredToolValidationMessages(issues)
+		errMsg := fmt.Sprintf("Tool %s parameter validation failed: %s. Please correct and retry.", name, strings.Join(msgs, "; "))
+		log.Printf("[agent-loop] tool %s validation issues: %v (iter=%d)", name, msgs, iteration)
+		return &toolExecutionResult{
+			Text:        errMsg,
+			ToolName:    name,
+			ToolKind:    classifyAgentToolKind(name),
+			Outcome:     toolOutcomeFailed,
+			FailureKind: toolFailureValidation,
+		}
+	}
+	return nil
 }

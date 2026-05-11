@@ -413,7 +413,7 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, supportedExt
                                 </button>
                             </div>
                             {config.includeExts.length === 0 && (
-                                <div style={{ fontSize: 11, color: '#d97706', marginTop: -4 }}>{t('Please select at least one file format.', '请至少选择一种文件格式。')}</div>
+                                <div style={{ fontSize: 11, color: colors.warning, marginTop: -4 }}>{t('Please select at least one file format.', '请至少选择一种文件格式。')}</div>
                             )}
                         </div>
                     )}
@@ -600,7 +600,7 @@ const backBtnStyle: CSSProperties = { ...closeBtnStyle, fontSize: 16 };
 
 // Step 1: Choose
 const chooseGridStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 14, padding: '20px 0' };
-const chooseCardStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, width: '100%', maxWidth: 220, padding: '20px 16px', border: `1.5px solid ${colors.border}`, borderRadius: radius.sm, background: colors.surface, cursor: 'pointer', transition: 'border-color 0.15s, box-shadow 0.15s' };
+const chooseCardStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, width: '100%', maxWidth: 220, padding: '20px 16px', border: `1.5px solid ${colors.border}`, borderRadius: radius.sm, background: colors.surface, color: colors.text, cursor: 'pointer', transition: 'border-color 0.15s, box-shadow 0.15s' };
 const chooseIconStyle: CSSProperties = { fontSize: 28 };
 const chooseDescStyle: CSSProperties = { fontSize: 11, color: colors.textMuted, textAlign: 'center' };
 const formatHintStyle: CSSProperties = { fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: 4, width: '100%' };
@@ -612,7 +612,7 @@ const scanningStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, pa
 const scanResultBoxStyle: CSSProperties = { padding: '8px 12px', border: `1px solid ${colors.border}`, borderRadius: radius.sm, display: 'flex', flexDirection: 'column', gap: 4 };
 const scanStatStyle: CSSProperties = { fontSize: 13, fontWeight: 600, color: colors.text };
 const scanMetaStyle: CSSProperties = { fontWeight: 400, color: colors.textMuted };
-const scanWarnStyle: CSSProperties = { fontSize: 11, color: '#d97706' };
+const scanWarnStyle: CSSProperties = { fontSize: 11, color: colors.warning };
 const configGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 };
 const configLabelStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: colors.textMuted };
 const configInputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '5px 8px', background: colors.surface, color: colors.text, fontSize: 12 };
@@ -655,14 +655,14 @@ const logHiddenStyle: CSSProperties = { color: colors.textMuted, fontStyle: 'ita
 const logEmptyStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, textAlign: 'center', padding: 14 };
 
 // Skipped files summary
-const skippedSummaryStyle: CSSProperties = { border: `1px solid #f59e0b`, borderRadius: radius.sm, overflow: 'hidden', marginTop: 4 };
-const skippedHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: '#fffbeb', fontSize: 12, fontWeight: 600, color: '#92400e' };
-const exportBtnStyle: CSSProperties = { background: 'none', border: `1px solid #d97706`, borderRadius: radius.sm, padding: '3px 10px', fontSize: 11, color: '#92400e', cursor: 'pointer' };
+const skippedSummaryStyle: CSSProperties = { border: `1px solid ${colors.warning}`, borderRadius: radius.sm, overflow: 'hidden', marginTop: 4 };
+const skippedHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 10px', background: colors.warningBg, fontSize: 12, fontWeight: 600, color: colors.warning };
+const exportBtnStyle: CSSProperties = { background: 'none', border: `1px solid ${colors.warning}`, borderRadius: radius.sm, padding: '3px 10px', fontSize: 11, color: colors.warning, cursor: 'pointer' };
 const skippedListStyle: CSSProperties = { maxHeight: 140, overflowY: 'auto', padding: '4px 10px', fontSize: 11, lineHeight: '1.7' };
 const skippedItemStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 8, padding: '1px 0', color: colors.textSecondary };
 const skippedPathStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 };
 const skippedReasonStyle: CSSProperties = { flexShrink: 0, color: colors.textMuted, fontSize: 10 };
 const skippedMoreStyle: CSSProperties = { color: colors.textMuted, fontStyle: 'italic', padding: '2px 0' };
-const exportSuccessStyle: CSSProperties = { fontSize: 11, color: '#16a34a', padding: '4px 10px', borderTop: `1px solid ${colors.border}` };
+const exportSuccessStyle: CSSProperties = { fontSize: 11, color: colors.success, padding: '4px 10px', borderTop: `1px solid ${colors.border}` };
 
-const errorStyle: CSSProperties = { border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#b91c1c', fontSize: 13, marginBottom: 8 };
+const errorStyle: CSSProperties = { border: `1px solid ${colors.danger}`, borderRadius: radius.sm, padding: 10, background: colors.dangerBg, color: colors.danger, fontSize: 13, marginBottom: 8 };

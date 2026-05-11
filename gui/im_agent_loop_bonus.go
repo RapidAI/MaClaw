@@ -155,5 +155,10 @@ func (h *IMMessageHandler) executeBonusRoundTool(tc llm.ToolCall, onProgress too
 		result := fmt.Sprintf("[system rejected] %s is temporarily blocked because its arguments were repeatedly truncated. Use another currently available tool path.", tc.Function.Name)
 		return toolExecutionResult{Text: result, ToolName: tc.Function.Name, ToolKind: classifyAgentToolKind(tc.Function.Name), Outcome: toolOutcomeFailed, FailureKind: toolFailureTruncationBlocked}
 	}
+	// In bonus round (still agent loop context), intercept missing/invalid parameter
+	// errors before executeToolDetailed to prevent AgentView panel from popping up.
+	if errResult := h.preCheckToolArgsForAgentLoop(tc.Function.Name, tc.Function.Arguments, -1); errResult != nil {
+		return *errResult
+	}
 	return h.executeToolDetailed(tc.Function.Name, tc.Function.Arguments, onProgress)
 }

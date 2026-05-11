@@ -2,9 +2,9 @@
 
 [📖 User Manual](UserManual_EN.md) | [❓ FAQ](faq_en.md) | [English](README_EN.md) | [中文](README.md)
 
-**MaClaw** is a **general-purpose, self-evolving agent platform** — your personal digital work companion. It understands your intent, remembers your preferences, autonomously plans and executes complex tasks. Whether you're writing a business plan, conducting competitive analysis, reviewing contracts, developing software, or managing remote servers, it walks you through the entire process from requirements to deliverables. Built with Wails, Go, and React, it integrates **structured workflows, long-term memory, extensible skills, and multi-channel collaboration**.
+**MaClaw** is a **general-purpose, self-evolving agent platform** — your personal digital work companion. It understands your intent, remembers your preferences, autonomously plans and executes complex tasks. Whether you're writing a business plan, conducting competitive analysis, reviewing contracts, developing software, or managing remote servers, it walks you through the entire process from requirements to deliverables. Built with Wails, Go, and React, it integrates **structured workflows, knowledge base (external brain), long-term memory, extensible skills, and multi-channel collaboration**, and replaces traditional enterprise MIS fixed-form entries through **Agent Dynamic UI + Structured Data Management**.
 
-> Not just chat — it does the work. You share the idea, it delivers the result.
+> Not just chat — it does the work. You share the idea, it delivers the result. It has its own knowledge base — documents and web pages you import become its "external brain", enabling it to work with knowledge at hand.
 
 ## What It Can Do
 
@@ -22,6 +22,66 @@ MaClaw ships with **19 structured workflow templates** covering the full spectru
 Each workflow advances phase by phase. After each phase produces a document, it waits for your confirmation — you can revise, supplement, or skip. It works with you to get things right, not at you.
 
 ## Core Capabilities
+
+### Enterprise MIS Replacement — Agent Dynamic UI + Structured Data Management
+
+One of MaClaw's ultimate goals is to **replace traditional enterprise MIS systems' fixed menus, fixed pages, and fixed forms with Agent + natural language interaction**. Users no longer need to know "which system to open, which page to navigate to, which fields to fill in" — they simply express intent through natural language, images, voice, or files, and the system automatically handles everything from intent understanding to structured data persistence.
+
+#### Agent Dynamic UI (AG-UI)
+
+Traditional MIS form entries are replaced by Agent-generated controlled interfaces:
+
+*   **Dynamic form generation**: After understanding user intent, the Agent automatically generates input interfaces (forms, wizards, table editors, approval confirmations) from the Schema registry — no pre-built pages needed
+*   **Smart field extraction**: Automatically extracts candidate field values from natural language, attachments, images, and existing data — users only need to complete and confirm
+*   **Right-side Task Panel**: Left side for conversation + right side for structured operations — conversation handles understanding and explanation, panel handles precise input and confirmation
+*   **Adapter auto-inference**: Automatically generates UI adapters from Skill/Tool/MCP schemas, OpenAPI specs, and function signatures — standard Skills need no modification
+*   **Business object recognition**: User says "went to Hangzhou yesterday to meet a client, train ¥174, lunch ¥86" — system automatically recognizes it as an expense claim scenario and generates a draft
+*   **Security-controlled**: All interfaces rendered from registered components and Schema whitelists — LLM cannot generate arbitrary frontend code, cannot bypass validation, permissions, or approvals
+
+#### Structured Data Management (MaClawDataSrv)
+
+Built-in enterprise-grade structured data platform, replacing traditional MIS database layers:
+
+*   **Business datasets**: Supports Sales (customers/opportunities/orders), Finance (expenses/invoices/payments/vouchers), HR (employees/attendance/payroll), Legal (contracts), Procurement (suppliers/purchase orders), Inventory (items/warehouses/movements), Fixed Assets — complete enterprise data structures
+*   **One-click template initialization**: 30+ built-in enterprise MIS templates (customer management, sales orders, expense claims, payroll, contracts, procurement, inventory, etc.) — one click to create datasets and field definitions
+*   **Business action catalog**: Agent doesn't operate raw CRUD — it executes through business actions (expense_submit, order_upsert, contract_status_update, etc.) with built-in validation, approval, and audit
+*   **Business views**: Pre-defined query views (order overview, customer directory, expense review, contract register, etc.) with field projection and permission control — no raw SQL exposed to Agent
+*   **Dashboards & reports**: Built-in business dashboards and reports that Agent can run directly
+*   **Governance & approval**: Business rules engine (amount thresholds, duplicate detection, required field validation) + approval workflows (pending → approve/reject) + operation plans (high-risk operations require admin confirmation)
+*   **Full audit trail**: Every structured submission records complete audit logs (original input, Agent extraction results, user modifications, final data, validation results, approval results)
+*   **Multi-engine support**: Local SQLite (personal/small team) → PostgreSQL (team/enterprise), same API seamless switch
+*   **Agent-friendly API**: Agent calls business actions via `mis_data` tool, supporting dry-run pre-checks, business intent resolution, capability discovery, and operation plan generation
+
+#### Comparison with Traditional MIS
+
+| Dimension | Traditional MIS | MaClaw AG-UI + DataSrv |
+|-----------|----------------|----------------------|
+| **Entry point** | Fixed menu → Fixed page → Fixed form | Natural language → Agent understanding → Dynamic UI |
+| **Development cost** | Custom page for each business scenario | Schema declaration + Adapter auto-inference |
+| **User barrier** | Training required, memorize navigation paths | Just speak naturally, zero learning curve |
+| **Data entry** | Manual field-by-field input | Agent auto-extracts from conversation/attachments, user confirms |
+| **Query method** | Fixed filter conditions | Natural language queries, Agent auto-converts |
+| **Extension** | Change code, change database, change pages | Add templates, add Schemas, add business action definitions |
+
+### Knowledge Base (External Brain) — Structured Knowledge Engine
+
+MaClaw includes a full-featured knowledge base system (external brain), built on SQLite, that parses documents, web pages, and workflow outputs into structured knowledge for precise retrieval and citation during work:
+
+*   **Multi-format document import**: Supports PDF, Word (.docx/.doc), Excel (.xlsx/.xls/.csv), PowerPoint (.pptx), Markdown, plain text — batch import entire directories or individual files
+*   **Web knowledge collection**: Auto-fetches web page content from URLs, supports batch URL import, domain policies (allow/block), and automatic link discovery
+*   **Three-layer knowledge structure**: Raw documents → Structured nodes (DocumentNode, preserving heading/paragraph/table/page hierarchy) → Knowledge cards (Card, distilled core claims) → Fact triples (Fact, subject-predicate-object)
+*   **LLM distillation**: After import, optional LLM distillation automatically extracts entities, topics, tags, knowledge cards, and fact relationships
+*   **Full-text + semantic search**: SQLite FTS5 full-text index + vector embedding dual retrieval, with multi-dimensional filtering by source type, domain, labels, quality grade
+*   **Source knowledge graph**: Automatic topic-based linking between sources (Source Links), with graph visualization, path queries, and neighborhood exploration
+*   **Fact graph**: Entity-relation-entity triples extracted from knowledge cards, supporting entity profiles, relation queries, and graph browsing
+*   **Context Pack**: During work, the Agent automatically retrieves relevant knowledge from the knowledge base and packs it into LLM context — "working with knowledge at hand"
+*   **Version tracking**: Every refresh/update automatically saves a version snapshot, supporting change preview and history browsing
+*   **Quality management**: Automatic quality scoring (A/B/C/D grades), sensitive content scanning, duplicate card detection and suppression, auto-generated maintenance plans
+*   **Label system**: Manual labels + auto-labels (based on file path and content rules), with label-based filtering and batch management
+*   **Import/export**: Full JSONL snapshot export/import for cross-device knowledge base migration
+*   **Multi-tenant isolation**: Per-owner/tenant knowledge isolation in server deployments
+
+**Relationship with Long-Term Memory**: The knowledge base is the "external brain" — storing documents and web knowledge you actively import. Long-term memory is the "internal brain" — automatically remembering preferences, habits, and project progress from conversations. Both work together; the Agent searches both systems when answering questions.
 
 ### Long-Term Memory — It Remembers Everything
 
@@ -195,6 +255,30 @@ Launch local background tasks via `bash(background=true)` with automatic PID and
 
 *   Non-blocking status queries, blocking wait, task termination
 *   Symmetric Submit / Check / Wait / Kill pattern matching SSH background tasks
+
+### Passthrough Tasks — One-Click Execution for Emergencies
+
+Passthrough Tasks are a pre-registered command execution mechanism designed for **emergency operations, system rescue, and rapid actions**. They bypass Agent intent understanding and workflow orchestration, directly executing predefined scripts or commands — ideal for server crash recovery, emergency deployment rollbacks, batch operations, and other scenarios that can't wait for AI deliberation.
+
+*   **Pre-registered commands**: Register common ops scripts (restart services, clean logs, database backup, rollback deployments) as passthrough tasks — one command to trigger
+*   **Parameterized templates**: Define parameters (required/optional/defaults/examples), dynamically filled at execution time — no hardcoding
+*   **Confirmation mechanism**: High-risk operations require user confirmation by default (`confirm_required=true`) — prevents accidental execution
+*   **Timeout control**: Each task has a configurable timeout (default 120s) — prevents script hangs
+*   **Audit trail**: Every execution automatically logged (who, when, what parameters, exit code, duration) — compliance ready
+*   **Enable/disable**: Temporarily disable a task without deleting its definition
+*   **Multi-entry triggers**: Desktop panel `/runctl` command, IM channel slash commands, Agent tool calls (`passthrough_task`) — all can trigger
+*   **Cross-device sync**: Register remotely via Hub, IM channels can trigger passthrough tasks on desktop machines
+
+**Typical use cases**:
+
+| Scenario | Example Command |
+|----------|----------------|
+| Emergency server restart | `/runctl restart-nginx` |
+| Database backup | `/runctl backup-db --target=production` |
+| Deployment rollback | `/runctl rollback --version=v2.3.1` |
+| Disk space cleanup | `/runctl cleanup-logs --days=7` |
+| Batch certificate renewal | `/runctl renew-certs --domain=*.example.com` |
+| Emergency DNS switch | `/runctl switch-dns --target=backup` |
 
 ## Quick Start
 
