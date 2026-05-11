@@ -14,9 +14,9 @@ type sessionOutputHintFacts struct {
 	FatalSessionError     bool
 }
 
-func collectSessionOutputHintFacts(session *RemoteSession, status string, rawLines []string) sessionOutputHintFacts {
+func collectSessionOutputHintFacts(session *RemoteSession, status SessionStatus, rawLines []string) sessionOutputHintFacts {
 	facts := sessionOutputHintFacts{
-		Status:                normalizeSessionStatus(status),
+		Status:                status,
 		HasAPIRetry:           recentSessionOutputHasMarker(rawLines, 10, sessionOutputMarkerKind.IsAPIRetry),
 		HasRecentTransientAPI: recentSessionOutputHasMarker(rawLines, 5, sessionOutputMarkerKind.IsTransientAPIIssue),
 	}

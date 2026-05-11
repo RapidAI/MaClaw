@@ -32,9 +32,17 @@ func (s *SQLiteStore) SourceQualityReport(ctx context.Context, opts ListSourcesO
 	if linkErr != nil {
 		report.Notes = append(report.Notes, "source_link_check_unavailable:"+linkErr.Error())
 	}
+	duplicateHashSources, hashDupErr := s.duplicateContentHashSources(ctx)
+	if hashDupErr != nil {
+		report.Notes = append(report.Notes, "content_hash_duplicate_check_unavailable:"+hashDupErr.Error())
+	}
 	total := 0
 	for _, source := range sources {
-		item := sourceQualityItem(source, sensitiveCounts[source.ID], duplicateCounts[source.ID], linkCounts[source.ID], len(sources))
+		hashDupCount := 0
+		if duplicateHashSources != nil {
+			hashDupCount = duplicateHashSources[source.ID]
+		}
+		item := sourceQualityItem(source, sensitiveCounts[source.ID], duplicateCounts[source.ID], linkCounts[source.ID], len(sources), hashDupCount)
 		if !sourceQualityItemMatchesOptions(item, opts) {
 			continue
 		}
@@ -92,8 +100,8 @@ func SourceQualityMaintenancePolicies() []SourceQualityMaintenancePolicy {
 		{
 			Name:                      "balanced",
 			Title:                     "Balanced quality maintenance",
-			Description:               "Refresh missing parsed nodes, rebuild gaps, backfill labels, and reversibly suppress duplicate card groups. Does not disable sensitive sources and does not use LLM.",
-			Actions:                   []string{"refresh_or_reimport_missing_nodes", "rebuild_derived_gaps", "refresh_topic_links", "backfill_labels", "suppress_duplicate_groups"},
+			Description:               "Refresh missing parsed nodes, rebuild gaps, backfill labels, merge content-hash duplicates, and reversibly suppress duplicate card groups. Does not disable sensitive sources and does not use LLM.",
+			Actions:                   []string{"refresh_or_reimport_missing_nodes", "rebuild_derived_gaps", "refresh_topic_links", "backfill_labels", "suppress_duplicate_groups", "merge_duplicate_content_hash_sources"},
 			DefaultDryRun:             true,
 			DistillMode:               "rules_only",
 			MaxSourcesPerAction:       100,
@@ -229,6 +237,16 @@ func (s *SQLiteStore) SourceQualityMaintenancePlan(ctx context.Context, opts Lis
 		Signals:     []string{"missing_nodes"},
 		Tool:        "knowledge_refresh_sources",
 		Args:        sourceQualityToolArgs(opts, "missing_nodes"),
+	})
+	add(SourceQualityMaintenanceAction{
+		Kind:        "merge_duplicate_content_hash_sources",
+		Title:       "Merge duplicate content hash sources",
+		Description: "Delete duplicate sources that have the same content_hash (identical content imported under different scopes). Keeps the most recently updated source.",
+		Severity:    "warning",
+		SourceIDs:   sourceQualityIDsWithSignal(report.Items, "duplicate_content_hash"),
+		Signals:     []string{"duplicate_content_hash"},
+		Tool:        "knowledge_delete_sources",
+		Args:        sourceQualityToolArgs(opts, "duplicate_content_hash"),
 	})
 	plan.Count = len(plan.Actions)
 	sort.SliceStable(plan.Actions, func(i, j int) bool {
@@ -685,12 +703,14 @@ func sourceQualityActionPriority(kind string) int {
 		return 1
 	case "rebuild_derived_gaps":
 		return 2
-	case "refresh_topic_links":
+	case "merge_duplicate_content_hash_sources":
 		return 3
-	case "suppress_duplicate_groups":
+	case "refresh_topic_links":
 		return 4
-	case "backfill_labels":
+	case "suppress_duplicate_groups":
 		return 5
+	case "backfill_labels":
+		return 6
 	default:
 		return 10
 	}
@@ -745,7 +765,34 @@ func (s *SQLiteStore) sourceLinkCountsBySource(ctx context.Context) (map[string]
 	return counts, rows.Err()
 }
 
-func sourceQualityItem(source Source, sensitiveFindings, duplicateClaims, sourceLinks, totalSources int) SourceQualityItem {
+// duplicateContentHashSources finds sources that share the same content_hash with other sources.
+// Returns a map of source_id -> number of other sources with the same content_hash.
+func (s *SQLiteStore) duplicateContentHashSources(ctx context.Context) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, (SELECT COUNT(*) - 1 FROM knowledge_sources s2 WHERE s2.content_hash = s.content_hash AND s2.content_hash <> '') as dup_count
+		FROM knowledge_sources s
+		WHERE s.content_hash <> '' AND s.content_hash IN (
+			SELECT content_hash FROM knowledge_sources WHERE content_hash <> '' GROUP BY content_hash HAVING COUNT(*) > 1
+		)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var sourceID string
+		var count int
+		if err := rows.Scan(&sourceID, &count); err != nil {
+			return nil, err
+		}
+		if sourceID != "" && count > 0 {
+			counts[sourceID] = count
+		}
+	}
+	return counts, rows.Err()
+}
+
+func sourceQualityItem(source Source, sensitiveFindings, duplicateClaims, sourceLinks, totalSources, hashDuplicates int) SourceQualityItem {
 	score := 100
 	signals := make([]string, 0)
 	actions := make([]string, 0)
@@ -810,6 +857,11 @@ func sourceQualityItem(source Source, sensitiveFindings, duplicateClaims, source
 		score -= 8 * duplicateClaims
 		signals = append(signals, "duplicate_card_claims")
 		actions = append(actions, "inspect_and_suppress_duplicate_cards")
+	}
+	if hashDuplicates > 0 {
+		score -= 20
+		signals = append(signals, "duplicate_content_hash")
+		actions = append(actions, "merge_or_delete_duplicate_sources")
 	}
 	if score < 0 {
 		score = 0

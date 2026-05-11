@@ -332,7 +332,7 @@ func (s *SQLiteStore) SaveDocumentNode(ctx context.Context, node DocumentNode) e
 		return err
 	}
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM document_nodes_fts WHERE node_id = ?`, node.ID)
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`, node.ID, node.Title, node.Text)
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`, node.ID, segmentTextForFTS(node.Title), segmentTextForFTS(node.Text))
 	return nil
 }
 
@@ -369,7 +369,7 @@ func (s *SQLiteStore) SaveCard(ctx context.Context, card Card) error {
 	}
 	ftsSummary := cardFTSSummary(card)
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM knowledge_cards_fts WHERE card_id = ?`, card.ID)
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`, card.ID, card.Title, card.Claim, ftsSummary)
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`, card.ID, segmentTextForFTS(card.Title), segmentTextForFTS(card.Claim), segmentTextForFTS(ftsSummary))
 	return nil
 }
 
@@ -1257,7 +1257,7 @@ func normalizeSourceStatusFilterOptions(opts ListSourcesOptions) ListSourcesOpti
 }
 
 func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
-	query := buildFTSQuery(opts.Query)
+	query := buildFTSQuerySegmented(opts.Query)
 	if query == "" {
 		return []SearchResult{}, nil
 	}
@@ -1435,6 +1435,16 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		}
 		if err := nodeRows.Err(); err != nil {
 			return nil, err
+		}
+	}
+
+	// FTS fallback: if FTS returned no results and the query contains CJK characters,
+	// fall back to LIKE-based search on cards and nodes. SQLite FTS5's unicode61 tokenizer
+	// does not segment CJK text, so Chinese queries often fail FTS matching.
+	if len(results) == 0 && containsCJKRunes(opts.Query) {
+		likeResults, likeErr := s.searchCJKLikeFallback(ctx, opts)
+		if likeErr == nil && len(likeResults) > 0 {
+			results = likeResults
 		}
 	}
 
@@ -3492,7 +3502,7 @@ func insertDocumentNode(ctx context.Context, tx *sql.Tx, node DocumentNode) erro
 		return err
 	}
 	_, _ = tx.ExecContext(ctx, `DELETE FROM document_nodes_fts WHERE node_id = ?`, node.ID)
-	_, _ = tx.ExecContext(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`, node.ID, node.Title, node.Text)
+	_, _ = tx.ExecContext(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`, node.ID, segmentTextForFTS(node.Title), segmentTextForFTS(node.Text))
 	return nil
 }
 
@@ -3538,7 +3548,7 @@ func insertCard(ctx context.Context, tx *sql.Tx, card Card) error {
 	}
 	ftsSummary := cardFTSSummary(card)
 	_, _ = tx.ExecContext(ctx, `DELETE FROM knowledge_cards_fts WHERE card_id = ?`, card.ID)
-	_, _ = tx.ExecContext(ctx, `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`, card.ID, card.Title, card.Claim, ftsSummary)
+	_, _ = tx.ExecContext(ctx, `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`, card.ID, segmentTextForFTS(card.Title), segmentTextForFTS(card.Claim), segmentTextForFTS(ftsSummary))
 	return nil
 }
 
@@ -3557,7 +3567,7 @@ func insertFact(ctx context.Context, tx *sql.Tx, fact Fact) error {
 		return err
 	}
 	_, _ = tx.ExecContext(ctx, `DELETE FROM knowledge_facts_fts WHERE fact_id = ?`, fact.ID)
-	_, _ = tx.ExecContext(ctx, `INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`, fact.ID, fact.Subject, fact.Predicate, fact.Object)
+	_, _ = tx.ExecContext(ctx, `INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`, fact.ID, segmentTextForFTS(fact.Subject), segmentTextForFTS(fact.Predicate), segmentTextForFTS(fact.Object))
 	return nil
 }
 
@@ -4042,6 +4052,157 @@ func buildFTSQuery(query string) string {
 func quoteFTSTerm(term string) string {
 	term = strings.ReplaceAll(term, `"`, `""`)
 	return `"` + term + `"`
+}
+
+// searchCJKLikeFallback performs a LIKE-based search when FTS fails for CJK text.
+// It searches cards, facts, and nodes using SQL LIKE with the raw query as substring.
+func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
+	query := strings.TrimSpace(opts.Query)
+	if query == "" {
+		return nil, nil
+	}
+	likePattern := "%" + query + "%"
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 5
+	}
+
+	results := make([]SearchResult, 0, limit)
+
+	// Search cards by claim/title LIKE
+	{
+		cardWhere := []string{"(c.claim LIKE ? OR c.title LIKE ?)", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		cardArgs := []interface{}{likePattern, likePattern}
+		cardWhere, cardArgs = appendSearchFilters(cardWhere, cardArgs, "s", opts)
+		cardArgs = append(cardArgs, limit)
+		cardQuery := `SELECT c.id, COALESCE(c.node_id, ''), c.title, c.claim, c.summary,
+		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
+		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+		FROM knowledge_cards c
+		JOIN knowledge_sources s ON s.id = c.source_id
+		WHERE ` + strings.Join(cardWhere, " AND ") + ` ORDER BY c.importance DESC, c.updated_at DESC LIMIT ?`
+		rows, err := s.db.QueryContext(ctx, cardQuery, cardArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var result SearchResult
+			var source Source
+			var publishedAt, fetchedAt, createdAt, updatedAt string
+			if err := rows.Scan(&result.CardID, &result.NodeID, &result.CardTitle, &result.Claim, &result.Summary,
+				&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
+				&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
+				&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			source.PublishedAt = parseTime(publishedAt)
+			source.FetchedAt = parseTime(fetchedAt)
+			source.CreatedAt = parseTime(createdAt)
+			source.UpdatedAt = parseTime(updatedAt)
+			result.Source = source
+			result.ResultType = "card"
+			result.Snippet = result.Claim
+			result.Score = 2.0 // LIKE fallback gets a fixed moderate score
+			result.Citation = formatResultCitation(result)
+			results = append(results, result)
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Search facts by subject/object LIKE
+	if len(results) < limit {
+		factWhere := []string{"(f.subject LIKE ? OR f.object LIKE ?)", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		factArgs := []interface{}{likePattern, likePattern}
+		factWhere, factArgs = appendSearchFilters(factWhere, factArgs, "s", opts)
+		factArgs = append(factArgs, limit-len(results))
+		factQuery := `SELECT f.id, f.card_id, f.subject, f.predicate, f.object, c.title, COALESCE(c.node_id, ''), c.claim, c.summary,
+		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
+		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+		FROM knowledge_facts f
+		JOIN knowledge_cards c ON c.id = f.card_id
+		JOIN knowledge_sources s ON s.id = f.source_id
+		WHERE ` + strings.Join(factWhere, " AND ") + ` ORDER BY f.confidence DESC LIMIT ?`
+		rows, err := s.db.QueryContext(ctx, factQuery, factArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var result SearchResult
+			var source Source
+			var publishedAt, fetchedAt, createdAt, updatedAt string
+			if err := rows.Scan(&result.FactID, &result.CardID, &result.Subject, &result.Predicate, &result.Object, &result.CardTitle, &result.NodeID, &result.Claim, &result.Summary,
+				&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
+				&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
+				&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			source.PublishedAt = parseTime(publishedAt)
+			source.FetchedAt = parseTime(fetchedAt)
+			source.CreatedAt = parseTime(createdAt)
+			source.UpdatedAt = parseTime(updatedAt)
+			result.Source = source
+			result.ResultType = "fact"
+			result.Snippet = strings.TrimSpace(result.Subject + " " + result.Predicate + " " + result.Object)
+			result.Score = 2.0
+			result.Citation = formatResultCitation(result)
+			results = append(results, result)
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	// Search nodes by text LIKE
+	if len(results) < limit {
+		nodeWhere := []string{"(n.text LIKE ? OR n.title LIKE ?)"}
+		nodeArgs := []interface{}{likePattern, likePattern}
+		nodeWhere, nodeArgs = appendSearchFilters(nodeWhere, nodeArgs, "s", opts)
+		nodeArgs = append(nodeArgs, limit-len(results))
+		nodeQuery := `SELECT n.id, n.title, n.type,
+		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
+		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+		FROM document_nodes n
+		JOIN knowledge_sources s ON s.id = n.source_id
+		WHERE ` + strings.Join(nodeWhere, " AND ") + ` ORDER BY n.token_count DESC LIMIT ?`
+		rows, err := s.db.QueryContext(ctx, nodeQuery, nodeArgs...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var result SearchResult
+			var source Source
+			var publishedAt, fetchedAt, createdAt, updatedAt string
+			if err := rows.Scan(&result.NodeID, &result.NodeTitle, &result.NodeType,
+				&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
+				&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
+				&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			source.PublishedAt = parseTime(publishedAt)
+			source.FetchedAt = parseTime(fetchedAt)
+			source.CreatedAt = parseTime(createdAt)
+			source.UpdatedAt = parseTime(updatedAt)
+			result.Source = source
+			result.ResultType = "node"
+			result.Snippet = result.NodeTitle
+			result.Score = 1.5
+			result.Citation = formatResultCitation(result)
+			results = append(results, result)
+		}
+		_ = rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	return results, nil
 }
 
 func normalizeSource(source Source) Source {

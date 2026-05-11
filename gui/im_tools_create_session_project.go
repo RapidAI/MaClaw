@@ -13,6 +13,28 @@ type createSessionProjectIDResolution struct {
 	Error       string
 }
 
+type createSessionProjectSelection struct {
+	ProjectPath string
+	Hints       []string
+	Error       string
+}
+
+func resolveCreateSessionProjectSelection(cfg corelib.AppConfig, projectID, projectPath string) createSessionProjectSelection {
+	selection := createSessionProjectSelection{ProjectPath: projectPath}
+	resolvedProject := resolveCreateSessionProjectID(cfg, projectID)
+	if resolvedProject.Error != "" {
+		selection.Error = resolvedProject.Error
+		return selection
+	}
+	if resolvedProject.ProjectPath != "" {
+		selection.ProjectPath = resolvedProject.ProjectPath
+	}
+	if resolvedProject.Hint != "" {
+		selection.Hints = append(selection.Hints, resolvedProject.Hint)
+	}
+	return selection
+}
+
 func resolveCreateSessionProjectID(cfg corelib.AppConfig, projectID string) createSessionProjectIDResolution {
 	if projectID == "" {
 		return createSessionProjectIDResolution{}

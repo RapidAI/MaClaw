@@ -341,10 +341,16 @@ func (a *App) executeMISDataTool(args map[string]interface{}) string {
 	if err != nil {
 		return fmt.Sprintf("load MIS data config failed: %v", err)
 	}
-	if !cfg.Enabled {
-		return "MIS data service is disabled. Enable it in Settings > MIS data."
-	}
-	if strings.TrimSpace(cfg.Token) == "" {
+	// resolve_intent local fallback: when MIS service is disabled or token is empty,
+	// generate a local AgentView form from the LLM-provided field descriptions in args.
+	// This allows AG UI form generation to work without a remote MIS service.
+	if !cfg.Enabled || strings.TrimSpace(cfg.Token) == "" {
+		if action == misDataToolActionResolveIntent {
+			return a.resolveIntentLocalFallback(args)
+		}
+		if !cfg.Enabled {
+			return "MIS data service is disabled. Enable it in Settings > MIS data."
+		}
 		return "MIS data service token is empty. Configure it in Settings > MIS data."
 	}
 	if action == misDataToolActionUnknown {

@@ -118,6 +118,7 @@ func findExistingTextSourceForSave(ctx context.Context, tx *sql.Tx, source Sourc
 	if strings.TrimSpace(source.ContentHash) == "" {
 		return Source{}, false, nil
 	}
+	// First try exact match including project_path (same scope update)
 	q := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
 		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
 		FROM knowledge_sources
@@ -126,13 +127,29 @@ func findExistingTextSourceForSave(ctx context.Context, tx *sql.Tx, source Sourc
 	existing, err := scanSource(tx.QueryRowContext(ctx, q,
 		source.Kind, source.ContentHash, source.OwnerID, source.TenantID, source.ProjectPath,
 	))
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return Source{}, false, nil
-		}
+	if err == nil {
+		return existing, true, nil
+	}
+	if err != sql.ErrNoRows {
 		return Source{}, false, err
 	}
-	return existing, true, nil
+	// Cross-scope dedup: same content_hash + owner_id + tenant_id but different project_path.
+	// This prevents the same text from being stored twice under different scopes.
+	q2 := `SELECT id, kind, uri, canonical_uri, title, author, site_name, published_at, fetched_at, content_hash,
+		owner_id, tenant_id, project_path, topic_hint, source_trust, batch_id, relative_path, status, error_message, created_at, updated_at
+		FROM knowledge_sources
+		WHERE kind = ? AND content_hash = ? AND COALESCE(owner_id, '') = ? AND COALESCE(tenant_id, '') = ?
+		ORDER BY updated_at DESC LIMIT 1`
+	existing, err = scanSource(tx.QueryRowContext(ctx, q2,
+		source.Kind, source.ContentHash, source.OwnerID, source.TenantID,
+	))
+	if err == nil {
+		return existing, true, nil
+	}
+	if err == sql.ErrNoRows {
+		return Source{}, false, nil
+	}
+	return Source{}, false, err
 }
 
 func normalizeTextSourceKind(kind string) string {

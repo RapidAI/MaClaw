@@ -3,6 +3,7 @@ package main
 import "strings"
 
 type projectToolAction string
+type projectToolResultStatus string
 
 const (
 	projectToolActionUnknown projectToolAction = ""
@@ -10,6 +11,10 @@ const (
 	projectToolActionList    projectToolAction = "list"
 	projectToolActionDelete  projectToolAction = "delete"
 	projectToolActionSwitch  projectToolAction = "switch"
+
+	projectToolStatusCreated  projectToolResultStatus = "created"
+	projectToolStatusDeleted  projectToolResultStatus = "deleted"
+	projectToolStatusSwitched projectToolResultStatus = "switched"
 )
 
 func normalizeProjectToolAction(action string) projectToolAction {
@@ -25,4 +30,8 @@ func normalizeProjectToolAction(action string) projectToolAction {
 	default:
 		return projectToolAction(strings.TrimSpace(action))
 	}
+}
+
+func (status projectToolResultStatus) String() string {
+	return string(status)
 }

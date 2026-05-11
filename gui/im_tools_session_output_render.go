@@ -6,7 +6,7 @@ import (
 )
 
 type sessionOutputSnapshot struct {
-	Status   string
+	Status   SessionStatus
 	Summary  SessionSummary
 	RawLines []string
 }
@@ -21,7 +21,7 @@ func snapshotSessionOutput(session *RemoteSession) sessionOutputSnapshot {
 	rawLines := make([]string, len(session.RawOutputLines))
 	copy(rawLines, session.RawOutputLines)
 	return sessionOutputSnapshot{
-		Status:   string(session.Status),
+		Status:   session.Status,
 		Summary:  session.Summary,
 		RawLines: rawLines,
 	}

@@ -15,7 +15,7 @@ func TestSnapshotSessionOutputCopiesRawLines(t *testing.T) {
 	snapshot := snapshotSessionOutput(session)
 	session.RawOutputLines[0] = "changed"
 
-	if snapshot.Status != string(SessionBusy) {
+	if snapshot.Status != SessionBusy {
 		t.Fatalf("Status = %q, want %q", snapshot.Status, SessionBusy)
 	}
 	if snapshot.Summary.CurrentTask != "task" {
@@ -28,7 +28,7 @@ func TestSnapshotSessionOutputCopiesRawLines(t *testing.T) {
 
 func TestRenderSessionOutputIncludesSummaryAndLimitsRawLines(t *testing.T) {
 	out := renderSessionOutput("s1", 2, sessionOutputSnapshot{
-		Status: string(SessionWaitingInput),
+		Status: SessionWaitingInput,
 		Summary: SessionSummary{
 			CurrentTask:     "build",
 			ProgressSummary: "halfway",
@@ -62,7 +62,7 @@ func TestRenderSessionOutputIncludesSummaryAndLimitsRawLines(t *testing.T) {
 
 func TestRenderSessionOutputNoOutputUsesHintFacts(t *testing.T) {
 	out := renderSessionOutput("s1", 2, sessionOutputSnapshot{
-		Status: string(SessionRunning),
+		Status: SessionRunning,
 	}, sessionOutputHintFacts{Status: SessionRunning})
 
 	if !strings.Contains(out, "(暂无输出)") || !strings.Contains(out, "send_and_observe") {

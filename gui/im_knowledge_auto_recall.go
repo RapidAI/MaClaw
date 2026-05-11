@@ -28,6 +28,10 @@ var (
 	// Reusable store for auto-recall to avoid open/close per message.
 	knowledgeAutoRecallStore   *knowledge.SQLiteStore
 	knowledgeAutoRecallStoreMu sync.Mutex
+
+	// One-time FTS rebuild flag for gse segmentation migration.
+	knowledgeFTSRebuilt   bool
+	knowledgeFTSRebuildMu sync.Mutex
 )
 
 // appendKnowledgeAutoRecall searches the knowledge base using the user message
@@ -57,10 +61,12 @@ func (h *IMMessageHandler) appendKnowledgeAutoRecall(b *strings.Builder, msg str
 	defer cancel()
 
 	queryStart := time.Now()
+	// Search without ProjectPath restriction so personal-scope and project-scope
+	// sources are both included. The knowledge base is small enough that cross-scope
+	// search is not a performance concern.
 	results, err := store.Search(ctx, knowledge.SearchOptions{
-		Query:       query,
-		Limit:       5,
-		ProjectPath: h.getCurrentProjectPath(),
+		Query: query,
+		Limit: 5,
 	})
 	queryDuration := time.Since(queryStart)
 
@@ -134,6 +140,7 @@ func (h *IMMessageHandler) getAutoRecallStore() *knowledge.SQLiteStore {
 	defer knowledgeAutoRecallStoreMu.Unlock()
 
 	if knowledgeAutoRecallStore != nil {
+		h.ensureFTSRebuilt(knowledgeAutoRecallStore)
 		return knowledgeAutoRecallStore
 	}
 
@@ -143,7 +150,32 @@ func (h *IMMessageHandler) getAutoRecallStore() *knowledge.SQLiteStore {
 		return nil
 	}
 	knowledgeAutoRecallStore = store
+	h.ensureFTSRebuilt(store)
 	return store
+}
+
+// ensureFTSRebuilt triggers a one-time synchronous FTS index rebuild with gse segmentation.
+// This migrates existing FTS data from raw text to segmented text for CJK search.
+// Uses a persistent marker in the database to avoid rebuilding on every app restart.
+func (h *IMMessageHandler) ensureFTSRebuilt(store *knowledge.SQLiteStore) {
+	knowledgeFTSRebuildMu.Lock()
+	defer knowledgeFTSRebuildMu.Unlock()
+	if knowledgeFTSRebuilt {
+		return
+	}
+	knowledgeFTSRebuilt = true
+	// Check persistent marker to avoid rebuilding on every restart
+	if store.HasFTSSegmentationMarker() {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := store.RebuildFTSIndex(ctx); err != nil {
+		log.Printf("[knowledge_auto_recall] FTS rebuild failed: %v", err)
+	} else {
+		store.SetFTSSegmentationMarker()
+		log.Printf("[knowledge_auto_recall] FTS index rebuilt with gse segmentation")
+	}
 }
 
 // CloseAutoRecallStore closes the cached auto-recall store.

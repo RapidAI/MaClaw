@@ -49,3 +49,35 @@ func TestResolveCreateSessionProjectIDEmptyNoop(t *testing.T) {
 		t.Fatalf("empty project id resolution = %#v, want zero value", got)
 	}
 }
+
+func TestResolveCreateSessionProjectSelectionKeepsExplicitPathWithoutProjectID(t *testing.T) {
+	got := resolveCreateSessionProjectSelection(corelib.AppConfig{}, "", "/explicit")
+
+	if got.Error != "" {
+		t.Fatalf("Error = %q, want empty", got.Error)
+	}
+	if got.ProjectPath != "/explicit" {
+		t.Fatalf("ProjectPath = %q, want /explicit", got.ProjectPath)
+	}
+	if len(got.Hints) != 0 {
+		t.Fatalf("Hints = %#v, want empty", got.Hints)
+	}
+}
+
+func TestResolveCreateSessionProjectSelectionProjectIDOverridesPath(t *testing.T) {
+	cfg := corelib.AppConfig{Projects: []corelib.ProjectConfig{
+		{Id: "p1", Name: "One", Path: "/resolved"},
+	}}
+
+	got := resolveCreateSessionProjectSelection(cfg, "p1", "/explicit")
+
+	if got.Error != "" {
+		t.Fatalf("Error = %q, want empty", got.Error)
+	}
+	if got.ProjectPath != "/resolved" {
+		t.Fatalf("ProjectPath = %q, want /resolved", got.ProjectPath)
+	}
+	if len(got.Hints) != 1 {
+		t.Fatalf("Hints = %#v, want one project_id hint", got.Hints)
+	}
+}

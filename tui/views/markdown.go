@@ -852,16 +852,6 @@ func displayWidthVisible(s string) int {
 	return w
 }
 
-// padToWidthVisible pads a string (possibly containing ANSI codes) with
-// spaces to reach the target visible display width.
-func padToWidthVisible(s string, target int) string {
-	cur := displayWidthVisible(s)
-	if cur >= target {
-		return s
-	}
-	return s + strings.Repeat(" ", target-cur)
-}
-
 // truncateToWidthVisible truncates a string (possibly containing ANSI codes)
 // to fit within the target visible display width. ANSI escape sequences are
 // preserved (not counted as width) and a reset sequence is appended if the
@@ -996,20 +986,19 @@ func renderTable(lines []string, maxWidth int) []string {
 			if displayWidthVisible(cell) > colWidths[j] {
 				cell = truncateToWidthVisible(cell, colWidths[j])
 			}
-			padded := padToWidthVisible(cell, colWidths[j])
+			// Style cell content only, not padding spaces.
+			// Colored foreground on padding spaces appears as solid
+			// colored blocks on some terminals (especially Windows Terminal).
+			cellStyle := mdTableCellStyle
 			if r.isHeader {
-				// Only style the cell content, not the padding spaces.
-				// This prevents blue foreground from making padding spaces
-				// appear as solid blue blocks on some terminals.
-				cellW := displayWidthVisible(cell)
-				styled := mdTableHeaderStyle.Render(cell)
-				if cellW < colWidths[j] {
-					styled += strings.Repeat(" ", colWidths[j]-cellW)
-				}
-				b.WriteString(styled)
-			} else {
-				b.WriteString(mdTableCellStyle.Render(padded))
+				cellStyle = mdTableHeaderStyle
 			}
+			cellW := displayWidthVisible(cell)
+			styled := cellStyle.Render(cell)
+			if cellW < colWidths[j] {
+				styled += strings.Repeat(" ", colWidths[j]-cellW)
+			}
+			b.WriteString(styled)
 		}
 		result = append(result, b.String())
 

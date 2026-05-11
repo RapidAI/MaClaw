@@ -691,10 +691,15 @@ func (m ChatModel) View() string {
 		}
 
 		visibleCount := end - start
+		contentAreaWidth := max(1, m.width-4)
 		for i := 0; i < visibleCount; i++ {
 			line := lines[start+i]
 			if needsScrollBar {
-				line = truncateToWidthVisible(line, max(1, m.width-4))
+				line = truncateToWidthVisible(line, contentAreaWidth)
+				// Pad short lines so the scrollbar forms a straight vertical column.
+				if dw := displayWidthVisible(line); dw < contentAreaWidth {
+					line += strings.Repeat(" ", contentAreaWidth-dw)
+				}
 				b.WriteString("  " + line + " " + renderTrackChar(scrollTrack[i]) + "\n")
 			} else {
 				line = truncateToWidthVisible(line, max(1, m.width-2))

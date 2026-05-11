@@ -910,6 +910,7 @@ func TestToolCreateSession_SmartToolRecommendation(t *testing.T) {
 		app:          &App{},
 		lastUserText: "请修改代码并创建会话",
 	}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 
 	// Without contextResolver, empty tool should return error.
 	result := handler.toolCreateSession(map[string]interface{}{})
@@ -922,8 +923,10 @@ func TestToolCreateSession_SmartToolRecommendation(t *testing.T) {
 // uses the provided tool parameter directly (no auto-recommendation).
 func TestToolCreateSession_WithToolProvided(t *testing.T) {
 	handler := &IMMessageHandler{
-		app: &App{},
+		app:          &App{},
+		lastUserText: "fix code and create a coding session",
 	}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 
 	// With tool provided but no manager, should fail at session creation.
 	result := handler.toolCreateSession(map[string]interface{}{

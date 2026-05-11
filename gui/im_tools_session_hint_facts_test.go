@@ -17,7 +17,7 @@ func TestCollectSessionOutputHintFacts(t *testing.T) {
 	}
 	rawLines := []string{"working", "API retry scheduled"}
 
-	facts := collectSessionOutputHintFacts(session, string(SessionBusy), rawLines)
+	facts := collectSessionOutputHintFacts(session, SessionBusy, rawLines)
 	if !facts.Status.IsBusy() {
 		t.Fatalf("Status = %q, want busy", facts.Status)
 	}
@@ -48,7 +48,7 @@ func TestCollectSessionOutputHintFacts(t *testing.T) {
 }
 
 func TestCollectSessionOutputHintFactsNilSession(t *testing.T) {
-	facts := collectSessionOutputHintFacts(nil, string(SessionWaitingInput), nil)
+	facts := collectSessionOutputHintFacts(nil, SessionWaitingInput, nil)
 	if !facts.Status.IsWaitingInput() {
 		t.Fatalf("Status = %q, want waiting_input", facts.Status)
 	}
@@ -83,14 +83,14 @@ func TestSessionOutputHintFactsExitPredicates(t *testing.T) {
 func TestCollectSessionOutputHintFactsOnlyScansFatalErrorsForNonZeroTerminalExit(t *testing.T) {
 	rawLines := []string{"authentication failed"}
 	running := &RemoteSession{Status: SessionBusy}
-	runningFacts := collectSessionOutputHintFacts(running, string(SessionBusy), rawLines)
+	runningFacts := collectSessionOutputHintFacts(running, SessionBusy, rawLines)
 	if runningFacts.FatalSessionError {
 		t.Fatal("running session should not scan fatal error hints")
 	}
 
 	exitCode := 2
 	exited := &RemoteSession{Status: SessionExited, ExitCode: &exitCode}
-	exitedFacts := collectSessionOutputHintFacts(exited, string(SessionExited), rawLines)
+	exitedFacts := collectSessionOutputHintFacts(exited, SessionExited, rawLines)
 	if !exitedFacts.FatalSessionError {
 		t.Fatal("non-zero terminal exit should scan fatal error hints")
 	}
