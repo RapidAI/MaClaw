@@ -20,6 +20,16 @@ import (
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
+func testCodingIntentClassifier() *intent.UnifiedIntentClassifier {
+	return intent.New(intent.Config{
+		Embedder: embedding.NoopEmbedder{},
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"bug_fix","score":0.95,"reason":"test coding task"}]}`, nil
+		},
+		LLMTimeout: time.Second,
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Tests for IMMessageHandler dynamic tool integration (Task 6.3)
 // ---------------------------------------------------------------------------
@@ -1957,8 +1967,8 @@ func TestToolCreateSession_ProjectIDResolvesSuccessfully(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
-	handler.unifiedClassifier = intent.New(intent.Config{Embedder: embedding.NoopEmbedder{}, LLMTimeout: time.Second})
+	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":       "claude",
 		"project_id": "proj-1",
@@ -1991,8 +2001,8 @@ func TestToolCreateSession_ProjectIDNotFound(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
-	handler.unifiedClassifier = intent.New(intent.Config{Embedder: embedding.NoopEmbedder{}, LLMTimeout: time.Second})
+	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":       "claude",
 		"project_id": "nonexistent-id",
@@ -2031,9 +2041,9 @@ func TestToolCreateSession_ProjectIDPriorityOverProjectPath(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	handler := &IMMessageHandler{app: app, lastUserText: "请修改代码并创建会话"}
+	handler := &IMMessageHandler{app: app, lastUserText: "fix code and create a coding session"}
+	handler.unifiedClassifier = testCodingIntentClassifier()
 	// Provide both project_id and project_path — project_id should win.
-	handler.unifiedClassifier = intent.New(intent.Config{Embedder: embedding.NoopEmbedder{}, LLMTimeout: time.Second})
 	result := handler.toolCreateSession(map[string]interface{}{
 		"tool":         "claude",
 		"project_id":   "proj-1",
