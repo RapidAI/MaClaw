@@ -63,6 +63,39 @@ type ChatModel struct {
 	// 渲染缓存：避免 renderLines() 在一个事件周期内被重复调用。
 	cachedLines []string
 	cacheValid  bool
+
+	// 预输入队列：agent 忙碌时用户输入的消息暂存于此。
+	// agent 完成后自动发射第一条，或用户可手动管理（删除/编辑/发射）。
+	queue       []BufferEntry
+	queueCursor int  // 当前选中的队列项索引（-1 表示无选中）
+	queueActive bool // 队列面板是否激活（显示操作提示）
+}
+
+// BufferEntry 预输入队列中的一条消息。
+type BufferEntry struct {
+	Text      string
+	CreatedAt int64 // unix timestamp
+}
+
+// ChatQueueFireMsg 从队列中发射一条消息（由 ChatModel 发出，app.go 消费）。
+type ChatQueueFireMsg struct {
+	Text      string
+	AgentMode bool
+}
+
+// removeQueueEntry 移除队列中 cursor 位置的条目，调整 cursor 和 active 状态。
+// 返回被移除的条目。调用方必须确保 queue 非空且 queueCursor 有效。
+func (m *ChatModel) removeQueueEntry() BufferEntry {
+	entry := m.queue[m.queueCursor]
+	m.queue = append(m.queue[:m.queueCursor], m.queue[m.queueCursor+1:]...)
+	if m.queueCursor >= len(m.queue) {
+		m.queueCursor = max(0, len(m.queue)-1)
+	}
+	if len(m.queue) == 0 {
+		m.queueActive = false
+	}
+	m.invalidateCache()
+	return entry
 }
 
 // spinnerFrames defines the animated spinner shown while waiting for AI response.
@@ -204,6 +237,20 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		}
 		m.invalidateCache()
 		m.scrollToBottom()
+		// 自动发射队列中的第一条消息（agent 刚完成，队列非空）。
+		if len(m.queue) > 0 {
+			m.queueCursor = 0
+			entry := m.removeQueueEntry()
+			m.messages = append(m.messages, ChatMessage{Role: "user", Content: entry.Text})
+			m.waiting = true
+			m.spinnerTick = 0
+			m.scrollToBottom()
+			agentMode := m.agentMode
+			return m, tea.Batch(
+				func() tea.Msg { return ChatQueueFireMsg{Text: entry.Text, AgentMode: agentMode} },
+				tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return chatTickMsg{} }),
+			)
+		}
 		return m, nil
 	case chatTickMsg:
 		if m.waiting {
@@ -277,26 +324,81 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 		if m.input.Focused() {
 			switch key {
 			case "enter":
-				if !m.waiting {
-					text := strings.TrimSpace(m.input.Value())
-					if text != "" {
-						m.messages = append(m.messages, ChatMessage{Role: "user", Content: text})
-						m.input.SetValue("")
-						m.waiting = true
-						m.spinnerTick = 0
-						m.invalidateCache()
-						m.scrollToBottom()
-						agentMode := m.agentMode
-						return m, tea.Batch(
-							func() tea.Msg { return ChatSendMsg{Text: text, AgentMode: agentMode} },
-							tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return chatTickMsg{} }),
-						)
-					}
+				text := strings.TrimSpace(m.input.Value())
+				if text == "" {
+					return m, nil
+				}
+				if m.waiting {
+					// Agent 忙碌时，消息进入预输入队列。
+					m.queue = append(m.queue, BufferEntry{
+						Text:      text,
+						CreatedAt: time.Now().Unix(),
+					})
+					m.queueCursor = len(m.queue) - 1
+					m.queueActive = true
+					m.input.SetValue("")
+					m.invalidateCache()
+				} else {
+					m.messages = append(m.messages, ChatMessage{Role: "user", Content: text})
+					m.input.SetValue("")
+					m.waiting = true
+					m.spinnerTick = 0
+					m.queueActive = false
+					m.invalidateCache()
+					m.scrollToBottom()
+					agentMode := m.agentMode
+					return m, tea.Batch(
+						func() tea.Msg { return ChatSendMsg{Text: text, AgentMode: agentMode} },
+						tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return chatTickMsg{} }),
+					)
 				}
 				return m, nil
 			case "esc":
+				if m.queueActive {
+					m.queueActive = false
+					m.invalidateCache()
+					return m, nil
+				}
 				m.input.Blur()
 				return m, nil
+			// 队列操作快捷键（输入框聚焦 + 队列非空时）
+			case "ctrl+d":
+				if len(m.queue) > 0 && m.queueActive {
+					m.removeQueueEntry()
+					return m, nil
+				}
+			case "ctrl+e":
+				if len(m.queue) > 0 && m.queueActive {
+					entry := m.removeQueueEntry()
+					m.input.SetValue(entry.Text)
+					m.input.CursorEnd()
+					return m, nil
+				}
+			case "ctrl+f":
+				if len(m.queue) > 0 && m.queueActive && !m.waiting {
+					entry := m.removeQueueEntry()
+					m.messages = append(m.messages, ChatMessage{Role: "user", Content: entry.Text})
+					m.waiting = true
+					m.spinnerTick = 0
+					m.scrollToBottom()
+					agentMode := m.agentMode
+					return m, tea.Batch(
+						func() tea.Msg { return ChatQueueFireMsg{Text: entry.Text, AgentMode: agentMode} },
+						tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg { return chatTickMsg{} }),
+					)
+				}
+			case "ctrl+up":
+				if m.queueActive && m.queueCursor > 0 {
+					m.queueCursor--
+					m.invalidateCache()
+					return m, nil
+				}
+			case "ctrl+down":
+				if m.queueActive && m.queueCursor < len(m.queue)-1 {
+					m.queueCursor++
+					m.invalidateCache()
+					return m, nil
+				}
 			}
 			// All other keys go to textinput when focused.
 			var cmd tea.Cmd
@@ -351,6 +453,17 @@ func (m ChatModel) Update(msg tea.Msg) (ChatModel, tea.Cmd) {
 
 func (m *ChatModel) viewHeight() int {
 	vh := m.height - 3 // 减去分隔线、输入框、状态栏
+	// 预输入队列占用的行数。
+	if n := len(m.queue); n > 0 {
+		show := n
+		if show > 3 {
+			show = 4 // 3 items + "还有 N 条"
+		}
+		if m.queueActive {
+			show++ // 操作提示行
+		}
+		vh -= show
+	}
 	if vh < 1 {
 		vh = 1
 	}
@@ -484,6 +597,10 @@ func wrapLine(s string, maxW int) string {
 	lineStart := 0
 	w := 0
 	for i, r := range runes {
+		// Zero-width modifiers: don't count toward line width.
+		if r == 0xFE0F || r == 0xFE0E || r == 0x200D {
+			continue
+		}
 		rw := 1
 		if r >= 0x1100 && isCJKOrFullwidth(r) {
 			rw = 2
@@ -567,7 +684,6 @@ func (m ChatModel) View() string {
 		}
 
 		// 滚动条：内容超出视口时在右侧显示。
-		// 基于 getLines() 的缓存结果，零额外 renderLines() 调用。
 		needsScrollBar := totalLines > viewHeight
 		var scrollTrack []rune
 		if needsScrollBar {
@@ -602,6 +718,38 @@ func (m ChatModel) View() string {
 		w = 1
 	}
 	b.WriteString("  " + strings.Repeat("─", w) + "\n")
+
+	// 预输入队列显示（在分隔线和输入框之间）。
+	if len(m.queue) > 0 {
+		queueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+		selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Background(lipgloss.Color("57"))
+		maxShow := 3 // 最多显示 3 条，避免占据太多空间
+		showCount := len(m.queue)
+		if showCount > maxShow {
+			showCount = maxShow
+		}
+		for i := 0; i < showCount; i++ {
+			entry := m.queue[i]
+			preview := entry.Text
+			if len([]rune(preview)) > 40 {
+				preview = string([]rune(preview)[:40]) + "..."
+			}
+			label := fmt.Sprintf("  📋 %d. %s", i+1, preview)
+			if m.queueActive && i == m.queueCursor {
+				b.WriteString(selectedStyle.Render(fitDisplay(label, max(1, m.width-2))) + "\n")
+			} else {
+				b.WriteString(queueStyle.Render(fitDisplay(label, max(1, m.width-2))) + "\n")
+			}
+		}
+		if len(m.queue) > maxShow {
+			b.WriteString(queueStyle.Render(fmt.Sprintf("  ... 还有 %d 条", len(m.queue)-maxShow)) + "\n")
+		}
+		if m.queueActive {
+			hintText := "  Ctrl+D:删除  Ctrl+E:编辑  Ctrl+F:发射  Ctrl+↑↓:选择  Esc:关闭"
+			b.WriteString(dimStyle.Render(fitDisplay(hintText, max(1, m.width-2))) + "\n")
+		}
+	}
+
 	b.WriteString("  " + m.input.View() + "\n")
 
 	hint := i18n.T(i18n.MsgTUIChatHint, m.lang)
@@ -635,12 +783,12 @@ func (m ChatModel) View() string {
 
 // 滚动条样式（包级别，避免每帧重复分配）。
 var (
-	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("75")).Bold(true)
-	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
 // renderTrackChar 渲染单个滚动条轨道字符（带颜色）。
-// 滑块 '█' 用亮蓝色加粗，轨道 '┃' 用灰色。
+// 滑块 '█' 用青色，轨道 '|' 用中灰色（确保在深色背景上可见）。
 func renderTrackChar(ch rune) string {
 	if ch == '█' {
 		return scrollThumbStyle.Render(string(ch))
@@ -649,26 +797,29 @@ func renderTrackChar(ch rune) string {
 }
 
 // buildScrollTrack 生成垂直滚动条轨道。
-// 返回 viewHeight 长度的 rune 切片。滑块用 '█'，轨道用 '┃'。
-// 滑块大小与 viewport/total 比例成正比（最小 1 行）。
-// 滑块位置与 scroll/maxScroll 成正比。
+// 返回 viewHeight 长度的 rune 切片。滑块用 '█'，轨道用 '|'（ASCII pipe，兼容所有终端）。
+// 滑块大小上限为 viewHeight 的 1/3，确保滑块不会占据大部分轨道。
 func buildScrollTrack(viewHeight, totalLines, scroll int) []rune {
 	track := make([]rune, viewHeight)
 	for i := range track {
-		track[i] = '┃'
+		track[i] = '|'
 	}
 
 	if totalLines <= viewHeight || viewHeight < 1 {
 		return track
 	}
 
-	// 滑块大小：viewport/total 比例，最小 1 行。
+	// 滑块大小：viewport/total 比例，最小 1 行，最大 viewHeight/3。
 	thumbSize := viewHeight * viewHeight / totalLines
 	if thumbSize < 1 {
 		thumbSize = 1
 	}
-	if thumbSize > viewHeight {
-		thumbSize = viewHeight
+	maxThumb := viewHeight / 3
+	if maxThumb < 1 {
+		maxThumb = 1
+	}
+	if thumbSize > maxThumb {
+		thumbSize = maxThumb
 	}
 
 	maxScroll := totalLines - viewHeight

@@ -922,15 +922,15 @@ func (a *App) KnowledgeStartImportDirectory(req knowledge.DirectoryImportRequest
 	go func(jobID string, req knowledge.DirectoryImportRequest) {
 		store, err := a.openKnowledgeStore()
 		if err != nil {
-			finishKnowledgeImportJob(jobID, knowledge.DirectoryImportResult{Status: knowledge.ImportStatusFailed, RootPath: req.RootPath}, err)
+			finishKnowledgeImportJob(a, jobID, knowledge.DirectoryImportResult{Status: knowledge.ImportStatusFailed, RootPath: req.RootPath}, err)
 			return
 		}
 		defer store.Close()
 		store.SetImportProgressCallback(func(progress knowledge.DirectoryImportResult) {
-			updateKnowledgeImportJobProgress(jobID, progress)
+			updateKnowledgeImportJobProgress(a, jobID, progress)
 		})
 		result, err := store.ImportDirectory(a.knowledgeContext(), req)
-		finishKnowledgeImportJob(jobID, result, err)
+		finishKnowledgeImportJob(a, jobID, result, err)
 	}(job.ID, req)
 
 	return job, nil
@@ -953,15 +953,15 @@ func (a *App) KnowledgeStartImportFiles(req knowledge.DirectoryImportRequest, fi
 	go func(jobID string, req knowledge.DirectoryImportRequest, filePaths []string) {
 		store, err := a.openKnowledgeStore()
 		if err != nil {
-			finishKnowledgeImportJob(jobID, knowledge.DirectoryImportResult{Status: knowledge.ImportStatusFailed}, err)
+			finishKnowledgeImportJob(a, jobID, knowledge.DirectoryImportResult{Status: knowledge.ImportStatusFailed}, err)
 			return
 		}
 		defer store.Close()
 		store.SetImportProgressCallback(func(progress knowledge.DirectoryImportResult) {
-			updateKnowledgeImportJobProgress(jobID, progress)
+			updateKnowledgeImportJobProgress(a, jobID, progress)
 		})
 		result, err := store.ImportFiles(a.knowledgeContext(), req, filePaths)
-		finishKnowledgeImportJob(jobID, result, err)
+		finishKnowledgeImportJob(a, jobID, result, err)
 	}(job.ID, req, filePaths)
 
 	return job, nil
@@ -983,7 +983,7 @@ func (a *App) KnowledgeImportJobStatus(id string) (KnowledgeImportJob, error) {
 	return job, nil
 }
 
-func updateKnowledgeImportJobProgress(id string, result knowledge.DirectoryImportResult) {
+func updateKnowledgeImportJobProgress(a *App, id string, result knowledge.DirectoryImportResult) {
 	value, ok := knowledgeImportJobs.Load(id)
 	if !ok {
 		return
@@ -992,6 +992,9 @@ func updateKnowledgeImportJobProgress(id string, result knowledge.DirectoryImpor
 	if !ok {
 		return
 	}
+	prevProcessed := job.Result.ProcessedFiles
+	prevFailed := job.Result.FailedFiles
+	prevSkipped := job.Result.SkippedFiles
 	if result.Status == "" {
 		result.Status = knowledge.ImportStatusRunning
 	}
@@ -999,9 +1002,39 @@ func updateKnowledgeImportJobProgress(id string, result knowledge.DirectoryImpor
 	job.Status = result.Status
 	job.UpdatedAt = time.Now().UTC()
 	knowledgeImportJobs.Store(id, job)
+
+	// Emit Wails event for real-time frontend updates
+	if a != nil && a.ctx != nil {
+		eventData := map[string]interface{}{
+			"job_id":           id,
+			"status":           result.Status,
+			"total_files":      result.TotalFiles,
+			"processed_files":  result.ProcessedFiles,
+			"imported_files":   result.ImportedFiles,
+			"skipped_files":    result.SkippedFiles,
+			"failed_files":     result.FailedFiles,
+			"current_file":     result.CurrentFile,
+			"current_step":     result.CurrentStep,
+			"step_progress":    result.StepProgress,
+			"total_steps":      result.TotalSteps,
+			"current_step_num": result.CurrentStepNum,
+		}
+		// When a file finishes processing (ProcessedFiles increments), emit item info
+		if result.ProcessedFiles > prevProcessed && result.CurrentFile != "" {
+			itemStatus := "imported"
+			if result.FailedFiles > prevFailed {
+				itemStatus = "failed"
+			} else if result.SkippedFiles > prevSkipped {
+				itemStatus = "skipped"
+			}
+			eventData["last_item_path"] = result.CurrentFile
+			eventData["last_item_status"] = itemStatus
+		}
+		runtime.EventsEmit(a.ctx, "knowledge:import-progress", eventData)
+	}
 }
 
-func finishKnowledgeImportJob(id string, result knowledge.DirectoryImportResult, err error) {
+func finishKnowledgeImportJob(a *App, id string, result knowledge.DirectoryImportResult, err error) {
 	value, ok := knowledgeImportJobs.Load(id)
 	if !ok {
 		return
@@ -1022,6 +1055,19 @@ func finishKnowledgeImportJob(id string, result knowledge.DirectoryImportResult,
 		job.Result.Status = knowledge.ImportStatusFailed
 	}
 	knowledgeImportJobs.Store(id, job)
+
+	// Emit final status event
+	if a != nil && a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "knowledge:import-progress", map[string]interface{}{
+			"job_id":          id,
+			"status":          job.Status,
+			"total_files":     result.TotalFiles,
+			"processed_files": result.ProcessedFiles,
+			"imported_files":  result.ImportedFiles,
+			"skipped_files":   result.SkippedFiles,
+			"failed_files":    result.FailedFiles,
+		})
+	}
 }
 
 func (a *App) KnowledgeImportDirectory(req knowledge.DirectoryImportRequest) (knowledge.DirectoryImportResult, error) {

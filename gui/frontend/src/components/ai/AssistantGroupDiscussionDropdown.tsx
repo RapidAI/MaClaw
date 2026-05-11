@@ -1,4 +1,4 @@
-import type { CSSProperties, Dispatch, HTMLAttributes, SetStateAction } from "react";
+import { useState, type CSSProperties, type Dispatch, type HTMLAttributes, type SetStateAction } from "react";
 import { miniActionButtonStyle } from "./aiAssistantControls";
 import type { Theme } from "./aiAssistantPanelTheme";
 import type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./aiAssistantPanelTypes";
@@ -41,7 +41,7 @@ export function AssistantGroupDiscussionDropdown(props: Props) {
             <Stats {...props} />
             {(props.groupActiveTalks > 0 || props.groupReadyTalks > 0 || props.groupWaitingTalks > 0 || props.groupStaleTalks > 0) && <div style={{ fontSize: "10px", color: t.textMuted, marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(148, 163, 184, 0.12)" : "rgba(15, 23, 42, 0.04)" }}>{lang === "en" ? `Active ${props.groupActiveTalks} \u00b7 Ready ${props.groupReadyTalks} \u00b7 Waiting ${props.groupWaitingTalks} \u00b7 Stale ${props.groupStaleTalks}` : `\u8fdb\u884c\u4e2d ${props.groupActiveTalks} \u00b7 \u53ef\u6536\u5c3e ${props.groupReadyTalks} \u00b7 \u7b49\u5f85 ${props.groupWaitingTalks} \u00b7 \u8d85\u65f6 ${props.groupStaleTalks}`}</div>}
             {groupDiscussionStatus?.error && <div style={{ fontSize: "11px", color: dangerTextColor, marginBottom: "8px" }}>{String(groupDiscussionStatus.error)}</div>}
-            {props.safeHandoff && <SafeHandoff {...props} />}
+            {props.safeHandoff && hasMeaningfulActivity(props) && <SafeHandoff {...props} />}
             {groupPendingInvites.slice(0, 2).map((invite) => <InviteRow key={invite.invite_id || invite.id} invite={invite} {...props} dangerTextColor={dangerTextColor} dangerBorderColor={dangerBorderColor} />)}
             <div style={{ display: "grid", gridTemplateColumns: actionGridColumns, gap: "6px", marginTop: "10px" }}>
                 <button type="button" style={actionButtonStyle(t, themeMode, !props.groupDiscussionBusy)} disabled={!!props.groupDiscussionBusy} {...bindGroupDiscussionPress(() => props.runGroupDiscussionAction("refresh", groupDiscussion.onRefreshStatus))}>{props.groupDiscussionBusy === "refresh" ? (lang === "en" ? "Refreshing..." : "\u5237\u65b0\u4e2d...") : (lang === "en" ? "Refresh" : "\u5237\u65b0")}</button>
@@ -61,8 +61,29 @@ function Stats({ groupDiscussionStatus, groupPendingInvites, lang, theme: t, the
     return <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: "6px", marginBottom: "10px" }}>{items.map(([label, value]) => <div key={String(label)} style={{ padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(148, 163, 184, 0.14)" : "rgba(148, 163, 184, 0.10)", textAlign: "center", minWidth: 0 }}><div style={{ fontSize: "14px", fontWeight: 700 }}>{value}</div><div style={{ fontSize: "10px", color: t.textMuted }}>{label}</div></div>)}</div>;
 }
 
-function SafeHandoff({ bindGroupDiscussionPress, copiedHandoff, copySafeHandoff, lang, safeHandoff, theme: t, themeMode }: Props) {
-    return <div style={{ marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(34, 197, 94, 0.10)" : "rgba(16, 185, 129, 0.08)", border: `1px solid ${themeMode === "dark" ? "rgba(34, 197, 94, 0.22)" : "rgba(16, 185, 129, 0.22)"}` }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px", marginBottom: "5px" }}><strong style={{ fontSize: "10px", color: themeMode === "dark" ? "#86efac" : "#047857" }}>{lang === "en" ? "Safe Handoff" : "\u5b89\u5168\u4ea4\u63a5"}</strong><button type="button" style={{ ...miniActionButtonStyle, padding: "3px 6px", fontSize: "9px", background: t.fieldBg, color: t.text, borderColor: t.titleBarBorder }} {...bindGroupDiscussionPress(copySafeHandoff)}>{copiedHandoff ? (lang === "en" ? "Copied" : "\u5df2\u590d\u5236") : (lang === "en" ? "Copy" : "\u590d\u5236")}</button></div><pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "92px", overflow: "auto", fontSize: "9px", lineHeight: 1.45, color: t.textMuted }}>{safeHandoff}</pre></div>;
+function hasMeaningfulActivity(props: Props): boolean {
+    const { groupActiveTalks, groupReadyTalks, groupPendingInvites, groupStaleTalks, groupWaitingTalks, groupDiscussionStatus } = props;
+    return groupActiveTalks > 0 || groupReadyTalks > 0 || groupPendingInvites.length > 0 || groupStaleTalks > 0 || groupWaitingTalks > 0 || (Array.isArray(groupDiscussionStatus?.discussions) && groupDiscussionStatus!.discussions!.length > 0);
+}
+
+function SafeHandoff({ bindGroupDiscussionPress, copiedHandoff, copySafeHandoff, groupActiveTalks, groupPendingInvites, groupReadyTalks, groupWaitingTalks, lang, safeHandoff, theme: t, themeMode }: Props) {
+    const [expanded, setExpanded] = useState(false);
+    const summary = lang === "en"
+        ? [groupActiveTalks > 0 && `${groupActiveTalks} active`, groupReadyTalks > 0 && `${groupReadyTalks} ready`, groupWaitingTalks > 0 && `${groupWaitingTalks} waiting`, groupPendingInvites.length > 0 && `${groupPendingInvites.length} invite(s)`].filter(Boolean).join(" · ") || "Context available"
+        : [groupActiveTalks > 0 && `${groupActiveTalks} 进行中`, groupReadyTalks > 0 && `${groupReadyTalks} 可收尾`, groupWaitingTalks > 0 && `${groupWaitingTalks} 等待中`, groupPendingInvites.length > 0 && `${groupPendingInvites.length} 待处理邀请`].filter(Boolean).join(" · ") || "上下文可用";
+    return <div style={{ marginBottom: "8px", padding: "7px", borderRadius: "9px", background: themeMode === "dark" ? "rgba(34, 197, 94, 0.10)" : "rgba(16, 185, 129, 0.08)", border: `1px solid ${themeMode === "dark" ? "rgba(34, 197, 94, 0.22)" : "rgba(16, 185, 129, 0.22)"}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", minWidth: 0, flex: 1 }}>
+                <strong style={{ fontSize: "10px", color: themeMode === "dark" ? "#86efac" : "#047857", flexShrink: 0 }}>{lang === "en" ? "Safe Handoff" : "\u5b89\u5168\u4ea4\u63a5"}</strong>
+                <span style={{ fontSize: "9px", color: t.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
+            </div>
+            <div style={{ display: "flex", gap: "4px", flexShrink: 0 }}>
+                <button type="button" style={{ ...miniActionButtonStyle, padding: "3px 6px", fontSize: "9px", background: t.fieldBg, color: t.textMuted, borderColor: t.titleBarBorder }} {...bindGroupDiscussionPress(() => setExpanded(!expanded))}>{expanded ? "▲" : "▼"}</button>
+                <button type="button" style={{ ...miniActionButtonStyle, padding: "3px 6px", fontSize: "9px", background: t.fieldBg, color: t.text, borderColor: t.titleBarBorder }} {...bindGroupDiscussionPress(copySafeHandoff)}>{copiedHandoff ? (lang === "en" ? "Copied" : "\u5df2\u590d\u5236") : (lang === "en" ? "Copy" : "\u590d\u5236")}</button>
+            </div>
+        </div>
+        {expanded && <pre style={{ margin: "6px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: "120px", overflow: "auto", fontSize: "9px", lineHeight: 1.45, color: t.textMuted }}>{safeHandoff}</pre>}
+    </div>;
 }
 
 function InviteRow(props: Props & { invite: GroupDiscussionInvite; dangerTextColor: string; dangerBorderColor: string }) {

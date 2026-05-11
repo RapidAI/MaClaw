@@ -618,6 +618,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// that Update and this one). No artificial delay needed.
 		return m, m.handleChatSend(msg.Text)
 
+	case views.ChatQueueFireMsg:
+		// 预输入队列自动发射或手动发射——与 ChatSendMsg 相同处理。
+		if m.llmMissing() {
+			return m, m.routeMissingLLMFromChat()
+		}
+		return m, m.handleChatSend(msg.Text)
+
 	case views.ChatResponseMsg:
 		if m.activeCb == nil && msg.Error == "cancelled" {
 			return m, nil // ignore stale cancel response after Esc

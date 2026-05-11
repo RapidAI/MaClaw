@@ -105,11 +105,15 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
                 return { ...prev, status: data.status, result: merged };
             });
             if (data.last_item_path && data.last_item_status) {
-                setLogEntries(prev => [...prev, {
-                    path: data.last_item_path,
-                    status: data.last_item_status,
-                    reason: data.last_item_reason || '',
-                }]);
+                setLogEntries(prev => {
+                    const next = [...prev, {
+                        path: data.last_item_path,
+                        status: data.last_item_status,
+                        reason: data.last_item_reason || '',
+                    }];
+                    // Cap in-memory entries to prevent unbounded growth
+                    return next.length > 500 ? next.slice(-500) : next;
+                });
             }
             if (data.status === 'completed' || data.status === 'failed') {
                 setStep('done');
@@ -222,11 +226,11 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
         }
     };
 
-    const handleRetry = async () => {
+    const handleRetry = () => {
         setError('');
         setLogEntries([]);
-        setStep('progress');
-        await handleStartImport();
+        setJob(null);
+        void handleStartImport();
     };
 
     if (!open) return null;
@@ -243,8 +247,11 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
             <div style={modalStyle} onClick={e => e.stopPropagation()}>
                 {/* Header */}
                 <div style={modalHeaderStyle}>
-                    {step !== 'choose' && step !== 'progress' && (
-                        <button style={backBtnStyle} onClick={() => setStep(step === 'done' ? 'choose' : 'choose')}>←</button>
+                    {step === 'configure' && (
+                        <button style={backBtnStyle} onClick={() => setStep('choose')}>←</button>
+                    )}
+                    {step === 'done' && (
+                        <button style={backBtnStyle} onClick={() => { setStep('choose'); setJob(null); setLogEntries([]); }}>←</button>
                     )}
                     <div style={{ flex: 1 }}>
                         <h3 style={modalTitleStyle}>
@@ -356,42 +363,46 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
 
                     {(step === 'progress' || step === 'done') && (
                         <div style={progressStyle}>
-                            {/* Progress bar */}
-                            <div style={progressTrackStyle}>
-                                <div style={{
-                                    ...progressFillStyle,
-                                    width: `${percent}%`,
-                                    background: step === 'done'
-                                        ? (job?.status === 'failed' ? '#ef4444' : (job?.result?.failed_files || 0) > 0 ? '#f59e0b' : '#22c55e')
-                                        : '#3b82f6',
-                                }} />
-                            </div>
-                            <div style={percentRowStyle}>
-                                <span>{percent}%</span>
-                                <span style={currentFileStyle}>
-                                    {step === 'progress' && job?.result?.current_file ? `📄 ${truncatePath(job.result.current_file, 50)}` : ''}
-                                    {step === 'progress' && job?.result?.current_step ? ` — ${stepLabel(job.result.current_step, t)}` : ''}
-                                </span>
+                            {/* Progress bar + percent inline */}
+                            <div style={progressHeaderStyle}>
+                                <div style={progressTrackStyle}>
+                                    <div style={{
+                                        ...progressFillStyle,
+                                        width: `${percent}%`,
+                                        background: step === 'done'
+                                            ? (job?.status === 'failed' ? '#ef4444' : (job?.result?.failed_files || 0) > 0 ? '#f59e0b' : '#22c55e')
+                                            : '#3b82f6',
+                                    }} />
+                                </div>
+                                <span style={percentTextStyle}>{percent}%</span>
                             </div>
 
-                            {/* Stats grid */}
-                            <div style={statsGridStyle}>
-                                <div style={statCardStyle}><span style={statNumStyle}>{job?.result?.imported_files || 0}</span><span style={statLabelStyle}>✅ {t('Imported', '已导入')}</span></div>
-                                <div style={statCardStyle}><span style={statNumStyle}>{job?.result?.skipped_files || 0}</span><span style={statLabelStyle}>⏭️ {t('Skipped', '已跳过')}</span></div>
-                                <div style={statCardStyle}><span style={statNumStyle}>{job?.result?.failed_files || 0}</span><span style={statLabelStyle}>❌ {t('Failed', '失败')}</span></div>
-                                <div style={statCardStyle}><span style={statNumStyle}>{total}</span><span style={statLabelStyle}>📁 {t('Total', '总计')}</span></div>
+                            {/* Current file / step (only during progress) */}
+                            {step === 'progress' && job?.result?.current_file && (
+                                <div style={currentFileRowStyle}>
+                                    <span style={currentFileStyle}>{truncatePath(job.result.current_file, 60)}</span>
+                                    {job.result.current_step && <span style={currentStepStyle}>{stepLabel(job.result.current_step, t)}</span>}
+                                </div>
+                            )}
+
+                            {/* Compact stats row */}
+                            <div style={statsRowStyle}>
+                                <span style={statItemStyle}><span style={statDotImported} />{job?.result?.imported_files || 0} {t('imported', '已导入')}</span>
+                                <span style={statItemStyle}><span style={statDotSkipped} />{job?.result?.skipped_files || 0} {t('skipped', '跳过')}</span>
+                                <span style={statItemStyle}><span style={statDotFailed} />{job?.result?.failed_files || 0} {t('failed', '失败')}</span>
+                                <span style={statItemTotalStyle}>{processed}/{total}</span>
                             </div>
 
                             {/* Log */}
-                            <ImportLog entries={logEntries} t={t} />
+                            <ImportLog entries={logEntries} done={step === 'done'} t={t} />
 
                             {/* Done actions */}
                             {step === 'done' && (
-                                <div style={actionRowStyle}>
+                                <div style={doneActionRowStyle}>
                                     {job?.status === 'failed' && (
-                                        <button style={startBtnStyle} onClick={handleRetry}>{t('Retry', '重试')}</button>
+                                        <button style={retryBtnStyle} onClick={handleRetry}>{t('Retry', '重试')}</button>
                                     )}
-                                    <button style={cancelBtnStyle} onClick={handleClose}>{t('Close', '关闭')}</button>
+                                    <button style={closeDoneBtnStyle} onClick={handleClose}>{t('Close', '关闭')}</button>
                                 </div>
                             )}
                         </div>
@@ -402,14 +413,17 @@ export function KnowledgeImportDialog({ open, onClose, onJobUpdate, t, lang }: P
     );
 }
 
-function ImportLog({ entries, t }: { entries: LogEntry[]; t: TFunc }) {
+function ImportLog({ entries, done, t }: { entries: LogEntry[]; done?: boolean; t: TFunc }) {
     const bottomRef = useRef<HTMLDivElement>(null);
     useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [entries.length]);
     const maxVisible = 150;
     const visible = entries.length > maxVisible ? entries.slice(-maxVisible) : entries;
     const hidden = entries.length - visible.length;
 
-    if (!entries.length) return <div style={logEmptyStyle}>{t('Waiting for progress...', '等待处理...')}</div>;
+    if (!entries.length) {
+        if (done) return null;
+        return <div style={logEmptyStyle}>{t('Waiting for progress...', '等待处理...')}</div>;
+    }
 
     return (
         <div style={logContainerStyle}>
@@ -457,55 +471,63 @@ function stepLabel(step: string, t: TFunc): string {
 // ── Styles ──
 
 const overlayStyle: CSSProperties = { position: 'fixed', inset: 0, background: colors.overlay, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 };
-const modalStyle: CSSProperties = { width: 'min(640px, 92vw)', maxHeight: '85vh', borderRadius: radius.lg, background: colors.surface, boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', overflow: 'hidden' };
-const modalHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '16px 20px', borderBottom: `1px solid ${colors.border}` };
-const modalTitleStyle: CSSProperties = { margin: 0, fontSize: 16, fontWeight: 700, color: colors.text };
-const modalBodyStyle: CSSProperties = { flex: 1, overflow: 'auto', padding: '20px 24px' };
+const modalStyle: CSSProperties = { width: 'min(560px, 92vw)', maxHeight: '80vh', borderRadius: radius.lg, background: colors.surface, boxShadow: '0 16px 48px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column', overflow: 'hidden' };
+const modalHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: `1px solid ${colors.border}` };
+const modalTitleStyle: CSSProperties = { margin: 0, fontSize: 14, fontWeight: 600, color: colors.text };
+const modalBodyStyle: CSSProperties = { flex: 1, overflow: 'auto', padding: '14px 18px' };
 const closeBtnStyle: CSSProperties = { background: 'none', border: 'none', fontSize: 18, cursor: 'pointer', color: colors.textMuted, padding: '4px 8px', borderRadius: radius.sm };
 const backBtnStyle: CSSProperties = { ...closeBtnStyle, fontSize: 16 };
 
 // Step 1: Choose
-const chooseGridStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 20, padding: '32px 0' };
-const chooseCardStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', maxWidth: 260, padding: '28px 20px', border: `2px solid ${colors.border}`, borderRadius: radius.lg, background: colors.surface, cursor: 'pointer', transition: 'border-color 0.15s, box-shadow 0.15s' };
-const chooseIconStyle: CSSProperties = { fontSize: 36 };
-const chooseDescStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, textAlign: 'center' };
-const formatHintStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, textAlign: 'center', marginTop: 8, width: '100%' };
+const chooseGridStyle: CSSProperties = { display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 14, padding: '20px 0' };
+const chooseCardStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, width: '100%', maxWidth: 220, padding: '20px 16px', border: `1.5px solid ${colors.border}`, borderRadius: radius.sm, background: colors.surface, cursor: 'pointer', transition: 'border-color 0.15s, box-shadow 0.15s' };
+const chooseIconStyle: CSSProperties = { fontSize: 28 };
+const chooseDescStyle: CSSProperties = { fontSize: 11, color: colors.textMuted, textAlign: 'center' };
+const formatHintStyle: CSSProperties = { fontSize: 11, color: colors.textMuted, textAlign: 'center', marginTop: 4, width: '100%' };
 
 // Step 2: Configure
-const configureStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 14 };
-const pathDisplayStyle: CSSProperties = { fontSize: 13, color: colors.textSecondary, padding: '8px 12px', background: colors.surfaceMuted, borderRadius: radius.sm, wordBreak: 'break-all' };
-const scanningStyle: CSSProperties = { fontSize: 13, color: colors.textMuted, padding: 12, textAlign: 'center' };
-const scanResultBoxStyle: CSSProperties = { padding: '12px 14px', border: `1px solid ${colors.border}`, borderRadius: radius.sm, display: 'flex', flexDirection: 'column', gap: 6 };
-const scanStatStyle: CSSProperties = { fontSize: 14, fontWeight: 600, color: colors.text };
+const configureStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 };
+const pathDisplayStyle: CSSProperties = { fontSize: 12, color: colors.textSecondary, padding: '6px 10px', background: colors.surfaceMuted, borderRadius: radius.sm, wordBreak: 'break-all' };
+const scanningStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, padding: 10, textAlign: 'center' };
+const scanResultBoxStyle: CSSProperties = { padding: '8px 12px', border: `1px solid ${colors.border}`, borderRadius: radius.sm, display: 'flex', flexDirection: 'column', gap: 4 };
+const scanStatStyle: CSSProperties = { fontSize: 13, fontWeight: 600, color: colors.text };
 const scanMetaStyle: CSSProperties = { fontWeight: 400, color: colors.textMuted };
-const scanWarnStyle: CSSProperties = { fontSize: 12, color: '#d97706' };
-const configGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 };
-const configLabelStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: colors.textMuted };
-const configInputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '7px 9px', background: colors.surface, color: colors.text, fontSize: 13 };
-const checkboxRowStyle: CSSProperties = { display: 'flex', gap: 16, flexWrap: 'wrap' };
-const cbStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 13, color: colors.textMuted, cursor: 'pointer' };
-const advancedToggleStyle: CSSProperties = { background: 'none', border: 'none', color: colors.textMuted, fontSize: 12, cursor: 'pointer', padding: '4px 0', textAlign: 'left' };
-const actionRowStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 };
-const cancelBtnStyle: CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '8px 16px', background: colors.surface, color: colors.text, cursor: 'pointer', fontSize: 13 };
-const startBtnStyle: CSSProperties = { border: `1px solid ${colors.primary}`, borderRadius: radius.sm, padding: '8px 20px', background: colors.primaryLight, color: colors.primaryDark, fontWeight: 700, cursor: 'pointer', fontSize: 13 };
+const scanWarnStyle: CSSProperties = { fontSize: 11, color: '#d97706' };
+const configGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 };
+const configLabelStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11, color: colors.textMuted };
+const configInputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '5px 8px', background: colors.surface, color: colors.text, fontSize: 12 };
+const checkboxRowStyle: CSSProperties = { display: 'flex', gap: 14, flexWrap: 'wrap' };
+const cbStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, color: colors.textMuted, cursor: 'pointer' };
+const advancedToggleStyle: CSSProperties = { background: 'none', border: 'none', color: colors.textMuted, fontSize: 11, cursor: 'pointer', padding: '2px 0', textAlign: 'left' };
+const actionRowStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 6 };
+const cancelBtnStyle: CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '6px 14px', background: colors.surface, color: colors.text, cursor: 'pointer', fontSize: 12 };
+const startBtnStyle: CSSProperties = { border: `1px solid ${colors.primary}`, borderRadius: radius.sm, padding: '6px 16px', background: colors.primaryLight, color: colors.primaryDark, fontWeight: 600, cursor: 'pointer', fontSize: 12 };
 
-// Step 3: Progress
-const progressStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 14 };
-const progressTrackStyle: CSSProperties = { height: 10, borderRadius: 5, background: colors.surfaceMuted, overflow: 'hidden' };
-const progressFillStyle: CSSProperties = { height: '100%', borderRadius: 5, transition: 'width 0.3s ease' };
-const percentRowStyle: CSSProperties = { display: 'flex', justifyContent: 'space-between', fontSize: 13, color: colors.textMuted };
-const currentFileStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' };
-const statsGridStyle: CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 };
-const statCardStyle: CSSProperties = { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, padding: '10px 6px', border: `1px solid ${colors.border}`, borderRadius: radius.sm };
-const statNumStyle: CSSProperties = { fontSize: 20, fontWeight: 700, color: colors.text };
-const statLabelStyle: CSSProperties = { fontSize: 11, color: colors.textMuted };
+// Step 3: Progress (compact)
+const progressStyle: CSSProperties = { display: 'flex', flexDirection: 'column', gap: 10 };
+const progressHeaderStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10 };
+const progressTrackStyle: CSSProperties = { flex: 1, height: 6, borderRadius: 3, background: colors.surfaceMuted, overflow: 'hidden' };
+const progressFillStyle: CSSProperties = { height: '100%', borderRadius: 3, transition: 'width 0.3s ease' };
+const percentTextStyle: CSSProperties = { fontSize: 12, fontWeight: 600, color: colors.text, minWidth: 32, textAlign: 'right' as const };
+const currentFileRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 0' };
+const currentFileStyle: CSSProperties = { fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 };
+const currentStepStyle: CSSProperties = { fontSize: 11, color: colors.textSecondary, flexShrink: 0, padding: '1px 6px', background: colors.surfaceMuted, borderRadius: 3 };
+const statsRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', gap: 14, padding: '6px 10px', background: colors.surfaceMuted, borderRadius: radius.sm, fontSize: 12 };
+const statItemStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4, color: colors.textSecondary };
+const statItemTotalStyle: CSSProperties = { marginLeft: 'auto', color: colors.textMuted, fontWeight: 500 };
+const statDotImported: CSSProperties = { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#22c55e' };
+const statDotSkipped: CSSProperties = { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#f59e0b' };
+const statDotFailed: CSSProperties = { display: 'inline-block', width: 7, height: 7, borderRadius: '50%', background: '#ef4444' };
+const doneActionRowStyle: CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 };
+const retryBtnStyle: CSSProperties = { border: `1px solid ${colors.primary}`, borderRadius: radius.sm, padding: '6px 14px', background: colors.primaryLight, color: colors.primaryDark, fontWeight: 600, cursor: 'pointer', fontSize: 12 };
+const closeDoneBtnStyle: CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.sm, padding: '6px 14px', background: colors.surface, color: colors.text, cursor: 'pointer', fontSize: 12 };
 
-// Log
+// Log (compact)
 const logContainerStyle: CSSProperties = { border: `1px solid ${colors.border}`, borderRadius: radius.sm, overflow: 'hidden' };
-const logTitleStyle: CSSProperties = { fontSize: 12, fontWeight: 600, color: colors.textMuted, padding: '6px 10px', borderBottom: `1px solid ${colors.border}`, background: colors.surfaceMuted };
-const logScrollStyle: CSSProperties = { maxHeight: 160, overflowY: 'auto', padding: '6px 10px', fontSize: 12, fontFamily: 'monospace' };
-const logEntryStyle: CSSProperties = { padding: '2px 0', color: colors.textSecondary };
-const logReasonStyle: CSSProperties = { color: colors.textMuted };
-const logHiddenStyle: CSSProperties = { color: colors.textMuted, fontStyle: 'italic', padding: '2px 0' };
-const logEmptyStyle: CSSProperties = { fontSize: 13, color: colors.textMuted, textAlign: 'center', padding: 20 };
+const logTitleStyle: CSSProperties = { fontSize: 11, fontWeight: 600, color: colors.textMuted, padding: '4px 10px', borderBottom: `1px solid ${colors.border}`, background: colors.surfaceMuted, textTransform: 'uppercase' as const, letterSpacing: '0.5px' };
+const logScrollStyle: CSSProperties = { maxHeight: 120, overflowY: 'auto', padding: '4px 10px', fontSize: 11, fontFamily: 'monospace', lineHeight: '1.6' };
+const logEntryStyle: CSSProperties = { padding: '1px 0', color: colors.textSecondary };
+const logReasonStyle: CSSProperties = { color: colors.textMuted, fontSize: 10 };
+const logHiddenStyle: CSSProperties = { color: colors.textMuted, fontStyle: 'italic', padding: '1px 0', fontSize: 10 };
+const logEmptyStyle: CSSProperties = { fontSize: 12, color: colors.textMuted, textAlign: 'center', padding: 14 };
 const errorStyle: CSSProperties = { border: '1px solid #fecaca', borderRadius: radius.sm, padding: 10, background: '#fef2f2', color: '#b91c1c', fontSize: 13, marginBottom: 8 };

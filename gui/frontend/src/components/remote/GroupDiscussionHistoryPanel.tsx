@@ -500,8 +500,29 @@ function discussionSafeHandoffText(focusContext?: Record<string, unknown> | null
     ].filter(Boolean).join("\n\n");
 }
 
+function discussionSafeHandoffSummary(lang: string, focusContext: Record<string, unknown>): string {
+    const parts: string[] = [];
+    const active = Number(focusContext.active_count || 0);
+    const discussions = Number(focusContext.discussion_count || 0);
+    const experts = Number(focusContext.expert_count || 0);
+    const pending = Number(focusContext.pending_invite_count || 0);
+    if (lang === "zh-Hans" || lang === "zh-Hant") {
+        if (experts > 0) parts.push(`${experts} 专家`);
+        if (discussions > 0) parts.push(`${discussions} 讨论`);
+        if (active > 0) parts.push(`${active} 活跃`);
+        if (pending > 0) parts.push(`${pending} 待处理`);
+    } else {
+        if (experts > 0) parts.push(`${experts} expert(s)`);
+        if (discussions > 0) parts.push(`${discussions} discussion(s)`);
+        if (active > 0) parts.push(`${active} active`);
+        if (pending > 0) parts.push(`${pending} pending`);
+    }
+    return parts.length > 0 ? parts.join(" · ") : (lang === "zh-Hans" || lang === "zh-Hant" ? "Agent 交接上下文" : "Agent handoff context");
+}
+
 function DiscussionSafeHandoffBlock({ lang, focusContext, recommendedToolCall, boundary }: { lang: string; focusContext?: Record<string, unknown> | null; recommendedToolCall?: DiscussionToolCallSuggestion | null; boundary?: string }) {
     const [copied, setCopied] = useState(false);
+    const [expanded, setExpanded] = useState(false);
     const text = discussionSafeHandoffText(focusContext, recommendedToolCall, boundary);
     if (!text) return null;
     const copyHandoff = async () => {
@@ -514,12 +535,17 @@ function DiscussionSafeHandoffBlock({ lang, focusContext, recommendedToolCall, b
             setCopied(false);
         }
     };
+    const summary = focusContext ? discussionSafeHandoffSummary(lang, focusContext) : "";
     return <section style={detailBlockStyle}>
         <div style={composerHeaderStyle}>
             <h4 style={detailTitleStyle}>{localText(lang, "Safe Handoff", "\u5b89\u5168\u4ea4\u63a5", "\u5b89\u5168\u4ea4\u63a5")}</h4>
-            <button type="button" onClick={copyHandoff} style={buttonStyle}>{copied ? localText(lang, "Copied", "\u5df2\u590d\u5236", "\u5df2\u8907\u88fd") : localText(lang, "Copy", "\u590d\u5236", "\u8907\u88fd")}</button>
+            <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                <button type="button" onClick={() => setExpanded(!expanded)} style={buttonStyle}>{expanded ? localText(lang, "Collapse", "\u6536\u8d77", "\u6536\u8d77") : localText(lang, "Expand", "\u5c55\u5f00", "\u5c55\u958b")}</button>
+                <button type="button" onClick={copyHandoff} style={buttonStyle}>{copied ? localText(lang, "Copied", "\u5df2\u590d\u5236", "\u5df2\u8907\u88fd") : localText(lang, "Copy", "\u590d\u5236", "\u8907\u88fd")}</button>
+            </div>
         </div>
-        <pre style={preStyle}>{text}</pre>
+        {summary && <div style={{ fontSize: "11px", color: "#64748b", margin: "4px 0" }}>{summary}</div>}
+        {expanded && <pre style={preStyle}>{text}</pre>}
     </section>;
 }
 

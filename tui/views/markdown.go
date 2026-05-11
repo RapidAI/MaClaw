@@ -459,6 +459,8 @@ func wrapToWidth(s string, maxWidth int) []string {
 		rw := 1
 		if runes[i] >= 0x1100 && isCJKOrFullwidth(runes[i]) {
 			rw = 2
+		} else if runes[i] == 0xFE0F || runes[i] == 0xFE0E || runes[i] == 0x200D {
+			rw = 0
 		}
 
 		if w+rw > maxWidth {
@@ -741,6 +743,10 @@ func displayWidth(s string) int {
 	for len(s) > 0 {
 		r, size := utf8.DecodeRuneInString(s)
 		s = s[size:]
+		// Variation selectors and zero-width joiners are invisible modifiers.
+		if r == 0xFE0F || r == 0xFE0E || r == 0x200D {
+			continue
+		}
 		if r >= 0x1100 && isCJKOrFullwidth(r) {
 			w += 2
 		} else {
@@ -750,16 +756,21 @@ func displayWidth(s string) int {
 	return w
 }
 
-// isCJKOrFullwidth returns true for CJK Unified Ideographs and common
-// fullwidth character ranges.
+// isCJKOrFullwidth returns true for characters that occupy 2 terminal cells:
+// CJK Unified Ideographs, Hangul, fullwidth forms, and emoji.
 func isCJKOrFullwidth(r rune) bool {
-	return (r >= 0x2E80 && r <= 0x9FFF) || // CJK radicals, ideographs
-		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul
+	return (r >= 0x1100 && r <= 0x115F) || // Hangul Jamo
+		(r >= 0x2E80 && r <= 0x9FFF) || // CJK radicals, ideographs
+		(r >= 0xAC00 && r <= 0xD7AF) || // Hangul syllables
 		(r >= 0xF900 && r <= 0xFAFF) || // CJK compat ideographs
 		(r >= 0xFE30 && r <= 0xFE4F) || // CJK compat forms
 		(r >= 0xFF01 && r <= 0xFF60) || // Fullwidth forms
-		(r >= 0x1100 && r <= 0x115F) || // Hangul Jamo
-		(r >= 0x20000 && r <= 0x2FA1F) // CJK ext B-F
+		(r >= 0x20000 && r <= 0x2FA1F) || // CJK ext B-F
+		// Emoji and symbols that render as width 2 in terminals:
+		(r >= 0x2600 && r <= 0x27BF) || // Misc symbols, Dingbats
+		(r >= 0x2B50 && r <= 0x2B55) || // Stars, circles
+		(r >= 0x1F000 && r <= 0x1FAFF) || // Mahjong, Dominos, Playing Cards, Emoji
+		(r >= 0x1FC00 && r <= 0x1FFFF) // Supplemental symbols
 }
 
 // padToWidth pads a string with spaces to reach the target display width.
@@ -779,6 +790,9 @@ func truncateToWidth(s string, target int) string {
 	}
 	w := 0
 	for i, r := range s {
+		if r == 0xFE0F || r == 0xFE0E || r == 0x200D {
+			continue
+		}
 		rw := 1
 		if isCJKOrFullwidth(r) {
 			rw = 2
@@ -828,6 +842,8 @@ func displayWidthVisible(s string) int {
 		}
 		if runes[i] >= 0x1100 && isCJKOrFullwidth(runes[i]) {
 			w += 2
+		} else if runes[i] == 0xFE0F || runes[i] == 0xFE0E || runes[i] == 0x200D {
+			// Variation selectors and zero-width joiners are invisible.
 		} else {
 			w++
 		}
@@ -874,6 +890,8 @@ func truncateToWidthVisible(s string, target int) string {
 		rw := 1
 		if runes[i] >= 0x1100 && isCJKOrFullwidth(runes[i]) {
 			rw = 2
+		} else if runes[i] == 0xFE0F || runes[i] == 0xFE0E || runes[i] == 0x200D {
+			rw = 0
 		}
 		if w+rw > target {
 			result := string(runes[:i])

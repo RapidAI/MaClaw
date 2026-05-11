@@ -10,6 +10,14 @@ const (
 	sessionOutputMarkerAPIError
 )
 
+func (k sessionOutputMarkerKind) IsAPIRetry() bool {
+	return k == sessionOutputMarkerAPIRetry
+}
+
+func (k sessionOutputMarkerKind) IsTransientAPIIssue() bool {
+	return k == sessionOutputMarkerAPIRetry || k == sessionOutputMarkerAPIError
+}
+
 func classifySessionOutputMarker(line string) sessionOutputMarkerKind {
 	switch {
 	case strings.Contains(line, "API retry") || strings.Contains(line, "api_retry"):

@@ -1,32 +1,10 @@
 package main
 
-import "strings"
-
 // earlyExitLineThreshold is the maximum number of output lines below which
 // a session exit is considered "early" (the tool quit before doing real work).
 // Used by both CompletionAnalyzer and runExitLoop to avoid duplicating the
 // magic number.
 const earlyExitLineThreshold = 10
-
-// completionSignals are phrases that indicate a task has been completed.
-var completionSignals = []string{
-	"✅",
-	"i've completed",
-	"已完成",
-	"all done",
-	"successfully",
-	"changes applied",
-}
-
-// incompletionSignals are phrases that indicate a task is still in progress.
-var incompletionSignals = []string{
-	"i'll continue",
-	"接下来我会",
-	"next, i'll",
-	"let me continue",
-	"i need to",
-	"还需要",
-}
 
 // CompletionAnalyzerConfig holds configuration for the CompletionAnalyzer.
 type CompletionAnalyzerConfig struct {
@@ -82,8 +60,6 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 	}
 
 	for _, line := range tail {
-		lower := strings.ToLower(line)
-
 		// Check Gemini ACP turn-complete marker.
 		if marker := classifyGeminiACPTurnCompleteMarker(line); marker != sessionCompletionMarkerUnknown {
 			if marker == sessionCompletionMarkerCompleted {
@@ -94,17 +70,11 @@ func (a *CompletionAnalyzer) Analyze(lines []string, tool string, sdkResult *SDK
 			continue
 		}
 
-		for _, sig := range completionSignals {
-			if strings.Contains(lower, sig) {
-				completionCount++
-				break
-			}
-		}
-		for _, sig := range incompletionSignals {
-			if strings.Contains(lower, sig) {
-				incompletionCount++
-				break
-			}
+		switch classifySessionCompletionSignal(line) {
+		case sessionCompletionSignalCompleted:
+			completionCount++
+		case sessionCompletionSignalIncomplete:
+			incompletionCount++
 		}
 	}
 
