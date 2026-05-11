@@ -119,6 +119,7 @@ tui.exe
 cpu.prof
 tmp_gguf_tensors.txt
 _tmptest/
+_tmp_*.py
 *.pptx
 
 # Property test rapid cache

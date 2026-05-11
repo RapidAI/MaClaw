@@ -998,7 +998,15 @@ func renderTable(lines []string, maxWidth int) []string {
 			}
 			padded := padToWidthVisible(cell, colWidths[j])
 			if r.isHeader {
-				b.WriteString(mdTableHeaderStyle.Render(padded))
+				// Only style the cell content, not the padding spaces.
+				// This prevents blue foreground from making padding spaces
+				// appear as solid blue blocks on some terminals.
+				cellW := displayWidthVisible(cell)
+				styled := mdTableHeaderStyle.Render(cell)
+				if cellW < colWidths[j] {
+					styled += strings.Repeat(" ", colWidths[j]-cellW)
+				}
+				b.WriteString(styled)
 			} else {
 				b.WriteString(mdTableCellStyle.Render(padded))
 			}

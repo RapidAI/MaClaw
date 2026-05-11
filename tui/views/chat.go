@@ -783,26 +783,26 @@ func (m ChatModel) View() string {
 
 // 滚动条样式（包级别，避免每帧重复分配）。
 var (
-	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	scrollThumbStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("252")) // light gray thumb — visible but not distracting
+	scrollTrackStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238")) // dark gray track — subtle
 )
 
 // renderTrackChar 渲染单个滚动条轨道字符（带颜色）。
-// 滑块 '█' 用青色，轨道 '|' 用中灰色（确保在深色背景上可见）。
+// 滑块 '┃' 用浅灰色（明显但不刺眼），轨道 '│' 用深灰色（微妙）。
 func renderTrackChar(ch rune) string {
-	if ch == '█' {
+	if ch == '┃' {
 		return scrollThumbStyle.Render(string(ch))
 	}
 	return scrollTrackStyle.Render(string(ch))
 }
 
 // buildScrollTrack 生成垂直滚动条轨道。
-// 返回 viewHeight 长度的 rune 切片。滑块用 '█'，轨道用 '|'（ASCII pipe，兼容所有终端）。
+// 返回 viewHeight 长度的 rune 切片。滑块用 '┃'（粗竖线），轨道用 '│'（细竖线）。
 // 滑块大小上限为 viewHeight 的 1/3，确保滑块不会占据大部分轨道。
 func buildScrollTrack(viewHeight, totalLines, scroll int) []rune {
 	track := make([]rune, viewHeight)
 	for i := range track {
-		track[i] = '|'
+		track[i] = '│'
 	}
 
 	if totalLines <= viewHeight || viewHeight < 1 {
@@ -837,7 +837,7 @@ func buildScrollTrack(viewHeight, totalLines, scroll int) []rune {
 	}
 
 	for i := thumbStart; i < thumbStart+thumbSize && i < viewHeight; i++ {
-		track[i] = '█'
+		track[i] = '┃'
 	}
 
 	return track

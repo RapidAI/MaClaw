@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
+import { ConfirmDialog } from '../modals/ConfirmDialog';
 import {
     KnowledgeCapabilities,
     KnowledgeBackfillSourceAutoLabels,
@@ -1168,6 +1169,12 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [qualityFilter, setQualityFilter] = useState({ query: '', kind: 'all', status: 'all', coverage: 'all', domain: '', labels: '', limit: 100 });
     const [qualityOptions, setQualityOptions] = useState({ policy: 'balanced', dryRun: true, distillMode: '', maxSourcesPerAction: 100, allowSensitiveDisable: false, allowDuplicateSuppression: true });
     const [showImportDialog, setShowImportDialog] = useState(false);
+    const [confirmDialog, setConfirmDialog] = useState<{ show: boolean; title: string; message: string; onConfirm: () => void }>({ show: false, title: '', message: '', onConfirm: () => {} });
+
+    const confirmT = (key: string) => {
+        const map: Record<string, string> = { cancel: lang.startsWith('zh') ? '取消' : 'Cancel', confirm: lang.startsWith('zh') ? '确认' : 'Confirm' };
+        return map[key] || key;
+    };
 
     const refresh = async () => {
         setLoading(true);
@@ -1375,28 +1382,39 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
 
     const deleteSource = async (source: Source) => {
         if (!source.id) return;
-        const ok = window.confirm(t('Delete this knowledge source?', '确定删除这个知识来源？'));
-        if (!ok) return;
-        await runTask('deleteSource', () => KnowledgeDeleteSource(source.id || ''), { refreshSources: true, refreshHealth: true });
+        setConfirmDialog({
+            show: true,
+            title: t('Delete Source', '删除来源'),
+            message: t('Delete this knowledge source?', '确定删除这个知识来源？'),
+            onConfirm: async () => {
+                setConfirmDialog(prev => ({ ...prev, show: false }));
+                await runTask('deleteSource', () => KnowledgeDeleteSource(source.id || ''), { refreshSources: true, refreshHealth: true });
+            },
+        });
     };
 
     const handleClearAll = async () => {
-        // First confirmation
-        const confirm1 = window.confirm(
-            t('⚠️ This will permanently delete ALL knowledge base content (all imported documents, URLs, cards, facts). This cannot be undone.\n\nAre you sure?',
-              '⚠️ 此操作将永久删除知识库中的所有内容（所有导入的文档、URL、卡片、事实），且无法恢复。\n\n确定要继续吗？')
-        );
-        if (!confirm1) return;
-        // Second confirmation
-        const confirm2 = window.confirm(
-            t('⚠️ FINAL CONFIRMATION: All knowledge base data will be permanently erased. Proceed?',
-              '⚠️ 最终确认：知识库所有数据将被永久清除。确认执行？')
-        );
-        if (!confirm2) return;
-        await runTask('clearAll', async () => {
-            await KnowledgeClearAll();
-            return { ok: true };
-        }, { refreshSources: true, refreshHealth: true });
+        setConfirmDialog({
+            show: true,
+            title: t('Clear All', '清除全部'),
+            message: t('⚠️ This will permanently delete ALL knowledge base content (all imported documents, URLs, cards, facts). This cannot be undone.\n\nAre you sure?',
+                '⚠️ 此操作将永久删除知识库中的所有内容（所有导入的文档、URL、卡片、事实），且无法恢复。\n\n确定要继续吗？'),
+            onConfirm: () => {
+                setConfirmDialog({
+                    show: true,
+                    title: t('Final Confirmation', '最终确认'),
+                    message: t('⚠️ FINAL CONFIRMATION: All knowledge base data will be permanently erased. Proceed?',
+                        '⚠️ 最终确认：知识库所有数据将被永久清除。确认执行？'),
+                    onConfirm: async () => {
+                        setConfirmDialog(prev => ({ ...prev, show: false }));
+                        await runTask('clearAll', async () => {
+                            await KnowledgeClearAll();
+                            return { ok: true };
+                        }, { refreshSources: true, refreshHealth: true });
+                    },
+                });
+            },
+        });
     };
 
     useEffect(() => {
@@ -1633,6 +1651,15 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             t={t}
             lang={lang}
         />
+        {confirmDialog.show && (
+            <ConfirmDialog
+                title={confirmDialog.title}
+                message={confirmDialog.message}
+                t={confirmT}
+                onCancel={() => setConfirmDialog(prev => ({ ...prev, show: false }))}
+                onConfirm={confirmDialog.onConfirm}
+            />
+        )}
         </>
     );
 }
