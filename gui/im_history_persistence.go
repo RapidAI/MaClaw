@@ -145,15 +145,18 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// Process pending semantic dedup pairs asynchronously.
 	// This piggybacks on every agent loop exit to drain the pending queue
 	// without adding a separate timer. Each pair takes ~1-3s (one LLM call),
-	// so this runs in a goroutine to avoid blocking the response.
-	// The goroutine waits for chatLoopMu before starting, yielding to any
-	// new user message that arrives before dedup begins.
+	// --- Background LLM tasks ---
+	// Create a shared cancellable context for all background LLM work.
+	// If the user sends a new message, enterIMMessageSerializationBoundary
+	// will cancel this context, aborting in-flight background LLM calls
+	// to free API bandwidth for the new agent loop.
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	h.backgroundLLMCancel = bgCancel
+
+	// Process pending semantic dedup pairs asynchronously.
 	if h.memoryStore != nil && h.memoryStore.PendingDedupCount() > 0 {
 		go func() {
-			h.chatLoopMu.Lock()
-			h.chatLoopMu.Unlock()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
 			defer cancel()
 			merged := h.memoryStore.ProcessPendingDedup(ctx)
 			if merged > 0 {
@@ -171,26 +174,17 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	h.sedimentTaskEntry(userID, history)
 
 	// --- Online incremental extraction (Mem0-style) ---
-	// Trigger the online extractor asynchronously after each agent loop exit.
-	// This extracts salient facts from the latest conversation turn and
-	// integrates them via four-operation classification (ADD/UPDATE/DELETE/NOOP).
-	// Runs in a goroutine to avoid blocking the response.
-	// The goroutine waits for chatLoopMu before starting LLM work, ensuring
-	// it yields to any new user message that arrives before extraction begins.
-	h.triggerOnlineExtractionDeferred(userID, history)
+	// Uses the shared bgCtx — cancelled if user sends a new message.
+	h.triggerOnlineExtractionWithContext(bgCtx, userID, history)
 
 	// --- Deferred session-start extraction ---
-	// Consume the deferred extraction prepared during preflight. Now that the
-	// agent loop is complete and the response has been saved, the API bandwidth
-	// is free for background work. The goroutine waits for chatLoopMu before
-	// starting, ensuring it yields to any new user message.
 	if raw, ok := h.deferredSessionExtraction.LoadAndDelete(userID); ok {
 		if msgs, ok := raw.([]memory.ConversationMessage); ok {
 			go func() {
-				// Wait until no agent loop is running. If the user sends a new
-				// message before we acquire the lock, their agent loop runs first.
-				h.chatLoopMu.Lock()
-				h.chatLoopMu.Unlock()
+				// Check if cancelled before starting the expensive LLM call.
+				if bgCtx.Err() != nil {
+					return
+				}
 				h.sessionStartExtractor.MaybeExtractAsync(userID, msgs)
 			}()
 		}

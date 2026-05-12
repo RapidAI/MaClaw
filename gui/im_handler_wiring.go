@@ -250,6 +250,12 @@ type IMMessageHandler struct {
 	// []memory.ConversationMessage.
 	deferredSessionExtraction sync.Map
 
+	// backgroundLLMCancel cancels any running background LLM calls (online
+	// extraction, session-start extraction, semantic dedup) when a new agent
+	// loop starts. This ensures background work yields API bandwidth to the
+	// main path.
+	backgroundLLMCancel context.CancelFunc
+
 	// Optional test hooks for pending-reply intent classification. Production
 	// uses LLMClassify; tests inject deterministic classifiers without keyword
 	// matching hidden in the implementation.

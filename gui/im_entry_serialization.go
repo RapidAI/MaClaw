@@ -34,6 +34,12 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	}
 
 	h.chatLoopMu.Lock()
+	// Cancel any running background LLM tasks from the previous agent loop.
+	// This frees API bandwidth for the new agent loop's main LLM calls.
+	if h.backgroundLLMCancel != nil {
+		h.backgroundLLMCancel()
+		h.backgroundLLMCancel = nil
+	}
 	result.Unlock = h.chatLoopMu.Unlock
 	result.EntriesBeforeClear = h.memory.Load(msg.UserID)
 	result.UnfinishedSlot = h.memory.GetUnfinishedSlot(msg.UserID)

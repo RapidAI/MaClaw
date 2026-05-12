@@ -167,3 +167,40 @@ func extractConversationSummary(history []agent.ConversationEntry) string {
 	}
 	return truncate(first, 150) + "\n[...]\n" + truncate(last, 150)
 }
+
+// triggerOnlineExtractionWithContext is like triggerOnlineExtraction but uses
+// the provided context for cancellation. When the user sends a new message,
+// the context is cancelled, aborting the in-flight LLM call and freeing API
+// bandwidth for the new agent loop.
+func (h *IMMessageHandler) triggerOnlineExtractionWithContext(bgCtx context.Context, userID string, history []agent.ConversationEntry) {
+	if h.memoryStore == nil {
+		return
+	}
+
+	oe := h.memoryStore.OnlineExtractor()
+	if oe == nil {
+		return
+	}
+
+	if len(history) < 4 {
+		return
+	}
+
+	messages := convertHistoryToMessages(history, 10)
+	if len(messages) < 2 {
+		return
+	}
+
+	summary := extractConversationSummary(history)
+
+	go func() {
+		ctx, cancel := context.WithTimeout(bgCtx, 30*time.Second)
+		defer cancel()
+
+		result := oe.ExtractAndIntegrate(ctx, messages, summary, time.Now(), userID)
+		if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 {
+			log.Printf("[online_extraction] user=%s extracted=%d added=%d updated=%d deleted=%d noop=%d errors=%d",
+				userID, result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops, result.Errors)
+		}
+	}()
+}
