@@ -434,7 +434,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 			"stats":    map[string]string{"type": "boolean", "description": "include theme health diagnostics for action=themes"},
 			"tags": map[string]interface{}{
 				"type":        "array",
-				"description": "关联标签（save 时可选）",
+				"description": "3-5 个具体实体名用于搜索召回（如主机名、工具名、项目名）。必须是专有名词或标识符，不要用泛词如'服务器'、'配置'",
 				"items":       map[string]string{"type": "string"},
 			},
 			"keyword": map[string]string{"type": "string", "description": "按关键词搜索（list 时可选）"},

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"strings"
 	"time"
 
@@ -26,7 +25,15 @@ func (h *IMMessageHandler) extractSessionStartMemoryAsync(userID string, entries
 		}
 		msgs = append(msgs, memory.ConversationMessage{Role: e.Role, Content: text})
 	}
-	h.sessionStartExtractor.MaybeExtractAsync(userID, msgs)
+	// Delay session extraction by 30s to avoid competing with the main LLM
+	// call for API rate limit / concurrent connections. The extraction is
+	// purely background work — its results are only needed for the NEXT
+	// session, not the current one. A 30s delay ensures the main agent loop
+	// gets priority access to the API.
+	go func() {
+		time.Sleep(30 * time.Second)
+		h.sessionStartExtractor.MaybeExtractAsync(userID, msgs)
+	}()
 }
 
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
@@ -66,17 +73,9 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		(dynamicTokenLimit > 0 && estimateConversationEntryTokens(history) > dynamicTokenLimit)
 
 	// Build optional callbacks only when trimming will actually occur.
-	var summarizer func(string) string
 	var memorySink func(string, []string)
 
 	if willCompact {
-		// LLM summarizer for dropped entries (Phase 7).
-		if h.app != nil {
-			cfg := h.app.GetMaclawLLMConfig()
-			if cfg.URL != "" && cfg.Model != "" {
-				summarizer = makeSummarizer(cfg, &http.Client{Timeout: 15 * time.Second})
-			}
-		}
 		// Memory sink for substantial dropped assistant messages (Phase 1 supplement).
 		if h.memoryStore != nil {
 			memorySink = func(content string, tags []string) {
@@ -107,7 +106,12 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	}
 
 	beforeCount := len(history)
-	trimmed := trimHistoryWithSummary(history, summarizer, memorySink, dynamicLimit, dynamicTokenLimit)
+	// Compaction: trim without LLM summarizer (fast, <1ms). Uses static
+	// placeholder for dropped entries. The LLM summary was previously done
+	// synchronously (6.5s blocking), but its value is marginal — the static
+	// placeholder is functionally equivalent for the LLM's next turn.
+	// Removing the summarizer from the critical path saves 6.5s per compaction.
+	trimmed := trimHistoryWithSummary(history, nil, memorySink, dynamicLimit, dynamicTokenLimit)
 	h.memory.Save(userID, trimmed)
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
@@ -120,8 +124,8 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 
 		// Improvement 9: Compaction analytics 鈥?log compaction stats for
 		// observability and future optimization.
-		log.Printf("[compaction] trigger=auto entries=%d->%d summary=%v duration=%dms user=%s",
-			beforeCount, len(trimmed), summarizer != nil, elapsed.Milliseconds(), userID)
+		log.Printf("[compaction] trigger=auto entries=%d->%d duration=%dms user=%s",
+			beforeCount, len(trimmed), elapsed.Milliseconds(), userID)
 
 		// Improvement 7: Reset token calibration after compaction.
 		// The API-reported token count from the previous iteration is stale
@@ -181,12 +185,23 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 		return
 	}
 	assistantText := strings.TrimSpace(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
-	if !h.classifyPendingUserReplyPrompt(assistantText) {
+	if assistantText == "" {
 		h.pendingUserReply.Delete(userID)
 		return
 	}
-	h.pendingUserReply.Store(userID, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: cloneConversationEntries(history), Timestamp: time.Now()})
-	log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question=%q", userID, len(history), truncateRunes(assistantText, 80))
+	// Run the LLM classification in a background goroutine to avoid blocking
+	// the response return. The pending reply state is consumed on the NEXT
+	// user message, so there's no urgency — it just needs to be ready before
+	// the next message arrives (typically seconds to minutes later).
+	historyCopy := cloneConversationEntries(history)
+	go func() {
+		if !h.classifyPendingUserReplyPrompt(assistantText) {
+			h.pendingUserReply.Delete(userID)
+			return
+		}
+		h.pendingUserReply.Store(userID, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: historyCopy, Timestamp: time.Now()})
+		log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question=%q", userID, len(historyCopy), truncateRunes(assistantText, 80))
+	}()
 }
 
 func (h *IMMessageHandler) classifyPendingUserReplyPrompt(assistantText string) bool {
@@ -227,35 +242,33 @@ func (h *IMMessageHandler) classifyPendingUserReplyAnswer(question, answer strin
 	if question == "" || answer == "" {
 		return false, true
 	}
-	if h != nil && h.pendingReplyAnswerClassifier != nil {
-		ok, err := h.pendingReplyAnswerClassifier(question, answer)
-		if err == nil {
-			return ok, true
-		}
-		log.Printf("[PendingUserReply] answer test classifier failed: %v", err)
-	}
-	if h != nil {
-		result, err := h.LLMClassify(context.Background(), LLMClassifyRequest{
-			SystemPrompt: `You classify whether the user's new message answers the assistant's pending question from the same task, or starts a different task.
 
-Reply with exactly one word:
-- answer: the user is confirming, choosing, approving, correcting, or supplying information requested by the assistant question.
-- new: the user is asking for a separate unrelated task instead.`,
-			UserMessage: fmt.Sprintf("Assistant pending question:\n%s\n\nUser new message:\n%s", question, answer),
-			TimeoutSec:  6,
-			Tag:         "pending-reply-answer",
-		})
-		if err == nil {
-			intent, ok := parsePendingReplyAnswerIntent(result.Text)
-			if !ok {
-				log.Printf("[PendingUserReply] answer intent classification ambiguous: %q", truncateForLogGUI(result.Text, 60))
-				return false, false
-			}
-			return intent == pendingReplyAnswerIntentAnswer, true
+	// When this function is called, pendingFresh=true is already guaranteed by
+	// the caller (bindPendingUserReplyAnswer). This means the pending question
+	// is the last assistant message the user saw, and no other user message has
+	// been sent since.
+	//
+	// IMPORTANT: returning (true, true) here has downstream effects beyond just
+	// injecting a context hint — it sets HasPendingUserReply=true which SKIPS
+	// workflow interception and NeedsConfirm gate. So we must reject messages
+	// that are clearly new tasks (especially coding tasks that need three-phase).
+	//
+	// Strategy:
+	// - Messages containing task-initiation keywords → reject (new task)
+	// - Everything else → accept (contextual response to pending question)
+	//
+	// This avoids the LLM call (2-6s) while preserving correctness for the
+	// critical case (new coding task accidentally skipping three-phase).
+	lowerAnswer := strings.ToLower(answer)
+	for _, signal := range []string{"帮我", "帮忙", "请帮", "写一个", "做一个", "开发一个", "实现一个", "设计一个", "创建一个"} {
+		if strings.Contains(lowerAnswer, signal) {
+			log.Printf("[PendingUserReply] answer rejected as new task (keyword=%q): answer=%q question=%q",
+				signal, truncateForLogGUI(answer, 40), truncateForLogGUI(question, 40))
+			return false, true
 		}
-		log.Printf("[PendingUserReply] answer intent classification failed: %v", err)
 	}
-	return false, false
+
+	return true, true
 }
 
 // persistSessionTranscriptAsync converts the conversation history to a

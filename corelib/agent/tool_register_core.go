@@ -200,7 +200,12 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Properties: map[string]interface{}{
 			"action":   map[string]string{"type": "string", "description": "Action: save, recall, themes, list, delete"},
 			"content":  map[string]string{"type": "string", "description": "Memory content for save"},
-			"category": map[string]string{"type": "string", "description": "Optional category for save"},
+			"category": map[string]string{"type": "string", "description": "Optional category for save (user_fact, project_knowledge, preference, instruction)"},
+			"tags": map[string]interface{}{
+				"type":        "array",
+				"items":       map[string]string{"type": "string"},
+				"description": "3-5 specific entity names for search recall (e.g. hostnames, tool names, project names). Must be proper nouns or identifiers, NOT generic words like 'server' or 'config'.",
+			},
 			"query":    map[string]string{"type": "string", "description": "Search query for recall"},
 			"mode":     map[string]string{"type": "string", "description": "Recall mode: dynamic, hybrid, adaptive, or auto"},
 			"debug":    map[string]string{"type": "boolean", "description": "Include adaptive recall debug plan when adaptive recall is used"},

@@ -244,8 +244,26 @@ func (g *GateIntentClassifier) Classify(text string, userID string) GateIntentRe
 }
 
 func shouldAcceptGateResult(result GateIntentResult) bool {
+	// Accept degraded results when the intent is clearly non-coding.
+	// The gate's purpose is to decide "is this a coding task that needs
+	// three-phase workflow?" — for non-coding intents (non_coding, bug_fix,
+	// maintenance, continuation), even a degraded embedding-only result is
+	// sufficient to make this decision. Only escalate to LLM when the intent
+	// is new_project/unknown (where the three-phase decision matters) AND
+	// confidence is low.
 	if result.Degraded {
-		return false
+		switch result.Intent {
+		case GateIntentNonCoding, GateIntentBugFix, GateIntentMaintenance, GateIntentContinuation:
+			// Non-coding / non-creation intents: accept with moderate confidence.
+			// This saves 3s of LLM call for the common case (simple operations).
+			return result.Confidence >= 0.50
+		case GateIntentNewProject:
+			// New project intent needs higher confidence when degraded.
+			return result.Confidence >= 0.75
+		default:
+			// Unknown: escalate to LLM for clarification.
+			return false
+		}
 	}
 	if result.Intent == GateIntentUnknown {
 		return false

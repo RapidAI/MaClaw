@@ -266,13 +266,28 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 		cat := CategoryProjectKnowledge
 		if kp.Category == "instruction" {
 			cat = CategoryInstruction
+		} else if kp.Category == "preference" {
+			cat = CategoryPreference
+		} else if kp.Category == "user_fact" || kp.Category == "user" {
+			cat = CategoryUserFact
 		}
 
-		// Extract meaningful tags from content using ExpandQuery.
-		expanded := ExpandQuery(content)
+		// Use LLM-provided tags (specific entity names) when available.
+		// Fall back to ExpandQuery only if LLM didn't provide tags.
 		tags := []string{"extracted", userID}
-		for _, entity := range expanded.Entities {
-			tags = append(tags, entity)
+		if len(kp.Tags) > 0 {
+			for _, t := range kp.Tags {
+				t = strings.TrimSpace(t)
+				if t != "" {
+					tags = append(tags, t)
+				}
+			}
+		} else {
+			// Fallback: extract entities from content (pattern-based).
+			expanded := ExpandQuery(content)
+			for _, entity := range expanded.Entities {
+				tags = append(tags, entity)
+			}
 		}
 
 		entry := Entry{
@@ -291,8 +306,9 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 
 // knowledgePoint represents a single extracted knowledge item from the LLM.
 type knowledgePoint struct {
-	Content  string `json:"content"`
-	Category string `json:"category"` // "project_knowledge" or "instruction"
+	Content  string   `json:"content"`
+	Category string   `json:"category"` // "project_knowledge" or "instruction"
+	Tags     []string `json:"tags"`     // 3-5 core entity names for recall matching
 }
 
 // extractKnowledge calls the LLM to extract structured knowledge points
@@ -304,22 +320,33 @@ func (ke *KnowledgeExtractor) extractKnowledge(ctx context.Context, conversation
 	default:
 	}
 
-	systemPrompt := `You are a knowledge extraction assistant. Extract non-obvious technical knowledge points from the conversation below. Focus on:
-- Workarounds and undocumented behaviors
-- Configuration details and environment specifics
-- Architecture decisions and conventions
+	systemPrompt := `You are a knowledge extraction assistant. Extract important knowledge from the conversation below, GROUPED BY TOPIC/ENTITY.
+
+Focus on:
+- Server/infrastructure details (hostname, port, services, credentials — group ALL facts about the same server together)
+- Project architecture decisions and conventions
+- Tool configurations and environment specifics
 - Important error causes and solutions
-- Key technical facts discovered during the conversation
+- User preferences and workflow patterns
 
-Return a JSON array of objects, each with:
-  {"content": "<concise knowledge point>", "category": "project_knowledge" or "instruction"}
+Return a JSON array of objects:
+  {"content": "<knowledge grouped by topic>", "category": "<category>", "tags": ["entity1", "entity2", "entity3"]}
 
-Rules:
-- Each knowledge point should be self-contained and concise (1-3 sentences).
-- Do NOT include trivial or obvious information.
-- Do NOT include greetings, pleasantries, or meta-conversation.
+Category must be one of:
+- "project_knowledge": technical environment, server configs, architecture, APIs, tools, file paths
+- "instruction": how the user wants things done (coding style, workflow rules, preferences for process)
+- "preference": user's tool/language/style preferences (e.g. prefers Go over Python, uses vim)
+- "user_fact": personal information about the user (name, location, job, family)
+
+CRITICAL RULES:
+- Group ALL related facts about the same entity into ONE entry (e.g. all info about a server: hostname + port + services + credentials = ONE entry, not 4 separate entries)
+- Each entry should be 2-5 sentences, covering one complete topic
+- "tags" must contain 3-5 core entity NAMES (proper nouns, tool names, hostnames, project names) — these are used for search recall
+- Tags must be specific identifiers (e.g. "api.rapidai.tech", "OmniRoute", "GLM-5.1"), NOT generic words (e.g. "server", "config", "tool")
+- Do NOT split related information into separate entries
+- Do NOT include trivial or obvious information
 - If no knowledge worth extracting, return an empty array: []
-- Return ONLY the JSON array, no markdown, no commentary.`
+- Return ONLY the JSON array, no markdown, no commentary`
 
 	resp, err := ke.llm.ChatCall([]map[string]string{
 		{"role": "system", "content": systemPrompt},

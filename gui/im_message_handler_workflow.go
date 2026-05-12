@@ -661,11 +661,43 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string) bo
 		return false
 	}
 
+	threshold := uic.GetWorkflowRejectThreshold()
+
+	// Fast path: embedding-only classification (<100ms). For non-coding intents
+	// (ssh, bugfix, maintenance, non_coding, search, etc.), embedding alone is
+	// sufficient to bypass the workflow — shouldBypassWorkflowForClassification
+	// returns true unconditionally for these labels without checking Layer.
+	// Only coding intent needs the full fusion (tree channel provides
+	// CreationOriented signal required by the Layer==3||23 check).
+	embResult := uic.ClassifyEmbeddingOnly(intent.MessageContext{
+		Text:   text,
+		UserID: userID,
+	})
+	if embResult.Confidence >= threshold {
+		switch embResult.Primary {
+		case intent.LabelBugFix, intent.LabelMaintenance, intent.LabelSSH,
+			intent.LabelNonCoding, intent.LabelSearch, intent.LabelDocumentDelivery,
+			intent.LabelBrowser, intent.LabelOffice, intent.LabelBusinessData:
+			// Clear non-coding intent from embedding — bypass immediately.
+			// LabelSSH is included: pure SSH operations ("查看服务器状态",
+			// "登录服务器") are clearly non-workflow. The edge case "在服务器上
+			// 开发一个应用" would be classified as LabelCoding by embedding
+			// (the "开发"+"应用" anchors dominate over "服务器"), so it won't
+			// hit this fast path.
+			log.Printf("[WorkflowInterception] UIC fast-bypass (embedding-only): user=%s intent=%s conf=%.2f",
+				userID, embResult.Primary, embResult.Confidence)
+			return true
+		}
+	}
+
+	// Slow path: full fusion (embedding + tree LLM) for coding/ambiguous/unknown.
+	// Tree channel provides WorkflowType and CreationOriented signals needed
+	// to distinguish "new coding project" (needs workflow) from "maintenance"
+	// (bypass workflow).
 	result := uic.Classify(intent.MessageContext{
 		Text:   text,
 		UserID: userID,
 	})
-	threshold := uic.GetWorkflowRejectThreshold()
 
 	if result.Primary == intent.LabelContinuation {
 		history := h.recentConversationTexts(userID, 8)
@@ -721,10 +753,12 @@ func (h *IMMessageHandler) recentContextResolvesToNonWorkflow(uic *intent.Unifie
 		if entry == "" {
 			continue
 		}
-		result := uic.Classify(intent.MessageContext{
-			Text:          entry,
-			UserID:        userID,
-			RecentHistory: history[:i],
+		// Use embedding-only classification for history entries to avoid
+		// triggering the tree channel LLM call (3s deadline per entry).
+		// This function is on the critical path — each tree call adds 3s.
+		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
+			Text:   entry,
+			UserID: userID,
 		})
 		if result.Primary == intent.LabelContinuation || result.Primary == intent.LabelAmbiguous || result.Primary == intent.LabelUnknown {
 			continue

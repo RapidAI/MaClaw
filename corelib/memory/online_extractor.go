@@ -194,16 +194,17 @@ func (oe *OnlineExtractor) extractFacts(
 
 	refTimeStr := refTime.Format(time.RFC3339)
 
-	systemPrompt := `You are a memory extraction assistant. Extract salient facts from the CURRENT MESSAGES that are worth remembering long-term.
+	systemPrompt := `You are a memory extraction assistant. Extract salient facts from the CURRENT MESSAGES that are worth remembering long-term. GROUP related facts about the same entity/topic into a single entry.
 
 For each fact, provide:
-1. "content": A concise, self-contained statement (1-2 sentences)
+1. "content": A concise, self-contained statement (2-4 sentences). Group ALL related information about the same entity together.
 2. "category": One of "user_fact", "project_knowledge", "preference", "instruction"
 3. "entities": Entity-relation triples in the format ["entity:Name", "relation:relationship", "entity:Name2"]. Extract key entities (people, places, tools, projects) and their relationships. Use only canonical relationship names from this schema: ` + semanticRelationSchemaPrompt() + `
 4. "valid_at": ISO 8601 datetime if the fact has a specific start time (use the reference timestamp to resolve relative dates like "last week", "yesterday"). Leave empty if not applicable.
 5. "invalid_at": ISO 8601 datetime if the fact has a known end time. Leave empty if still true or unknown.
 
 Rules:
+- GROUP all facts about the same server/tool/project/person into ONE entry (e.g. hostname + port + services + credentials = ONE entry)
 - Extract ONLY non-trivial information worth remembering across sessions
 - DO NOT extract greetings, filler, or meta-conversation
 - DO NOT extract information that is purely about the current task execution (tool calls, file edits)
@@ -460,16 +461,17 @@ func (oe *OnlineExtractor) classifyOperation(
 	systemPrompt := `You are a memory management assistant. Given a NEW FACT extracted from conversation and a list of EXISTING MEMORIES that are semantically similar, determine the correct operation.
 
 Operations:
-- "add": The new fact contains genuinely new information not present in any existing memory. Create a new entry.
-- "update": The new fact augments or refines an existing memory. Merge the information. Provide the target_id and merged_text.
+- "add": The new fact contains genuinely new information not present in any existing memory, about a DIFFERENT topic/entity. Create a new entry.
+- "update": The new fact is about the SAME topic/entity as an existing memory. Merge all information together. Provide the target_id and merged_text.
 - "delete": The new fact contradicts an existing memory (e.g., user moved to a new city, changed job). Provide the target_id of the contradicted memory.
 - "noop": The new fact is already fully captured by an existing memory. No action needed.
 
 Rules:
-- For "update": merged_text must preserve ALL specific facts from BOTH the new fact and the existing memory. Be concise.
+- For "update": merged_text must preserve ALL specific facts from BOTH the new fact and the existing memory. Be concise but complete.
 - For "delete": only use when there is a genuine contradiction (not just additional information).
-- When in doubt between "add" and "noop", prefer "add" (safe: dedup will clean up later).
-- When in doubt between "update" and "add", prefer "update" if the topic is clearly the same.
+- PREFER "update" over "add" when the same entity/topic appears in both (same server, same project, same tool, same person). Consolidating related information into one entry is better than fragmenting it across multiple entries.
+- Use "add" only when the new fact is about a genuinely DIFFERENT entity/topic from all existing memories.
+- When in doubt between "add" and "noop", prefer "noop" if the information is already substantially covered.
 
 Reply with ONLY a JSON object:
 {"operation": "add|update|delete|noop", "target_id": "<entry ID or empty>", "merged_text": "<merged content or empty>", "reason": "<brief explanation>"}`
@@ -517,12 +519,13 @@ func (oe *OnlineExtractor) findSimilarMemories(content string, category Category
 	}
 
 	// Combine scores and find top-k.
-	// Use a higher threshold when only BM25 is available (no embedder),
-	// because BM25 scores for unrelated entries can exceed 0.5 on common
-	// words like "user", "project". With embedder, vector similarity
-	// provides a strong signal so a lower threshold is acceptable.
+	// BM25-only threshold is set conservatively low (1.0) to ensure same-topic
+	// entries are found for UPDATE classification. The LLM classifier will
+	// correctly distinguish "same topic, augment" (UPDATE) from "different topic"
+	// (ADD). A high threshold (2.0) causes same-topic entries to be missed,
+	// leading to fragmented duplicate entries instead of merged ones.
 	hasEmbedder := len(vecScores) > 0
-	threshold := 2.0 // BM25-only: require strong keyword overlap
+	threshold := 1.0 // BM25-only: moderate keyword overlap sufficient for candidate retrieval
 	if hasEmbedder {
 		threshold = 0.5 // hybrid: vector similarity provides strong signal
 	}

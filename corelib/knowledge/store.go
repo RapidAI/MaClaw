@@ -481,8 +481,7 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 		}
 	}
 	if opts.Status != "" {
-		where = append(where, "status = ?")
-		args = append(args, opts.Status)
+		where, args = appendSourceStatusFilter(where, args, opts.Status)
 	}
 	labels := normalizeSourceLabels(append(append([]string{}, opts.Labels...), opts.Label))
 	for _, label := range labels {
@@ -1359,6 +1358,21 @@ func (s *SQLiteStore) updateSourcesStatusByFilter(ctx context.Context, opts List
 func normalizeSourceStatusFilterOptions(opts ListSourcesOptions) ListSourcesOptions {
 	opts.Limit = sourceFilterLimit(opts, 100, 1000, 5000)
 	return opts
+}
+
+// appendSourceStatusFilter translates semantic status aliases into SQL conditions.
+// "active" = all non-disabled sources; "error" = alias for "failed"; others = exact match.
+func appendSourceStatusFilter(where []string, args []interface{}, status string) ([]string, []interface{}) {
+	switch status {
+	case "active":
+		where = append(where, "status != 'disabled'")
+	case "error":
+		where = append(where, "status = 'failed'")
+	default:
+		where = append(where, "status = ?")
+		args = append(args, status)
+	}
+	return where, args
 }
 
 func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {

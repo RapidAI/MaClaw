@@ -7,13 +7,11 @@ import {
     colors,
     remoteCardStyle,
     remoteCodeBlockStyle,
-    remoteDisabledBadgeStyle,
     remoteEmptyStateStyle,
     remoteErrorStateStyle,
     remoteInfoPanelStyle,
     remoteLoadingStateStyle,
     remoteStatusBadgeStyle,
-    remoteSuccessBadgeStyle,
     remoteTableCellStyle,
     remoteTableContainerStyle,
     remoteTableHeaderCellStyle,
@@ -235,6 +233,21 @@ function isLearnedSource(source: string): boolean {
     return LEARNED_SOURCES.has(source);
 }
 
+function getStatusBadgeVariant(status: string): CSSProperties {
+    switch (status) {
+        case "active":
+            return { background: colors.successBg, color: colors.success, border: `1px solid ${colors.success}` };
+        case "disabled":
+            return { background: colors.surfaceMuted, color: colors.textMuted, border: `1px solid ${colors.border}` };
+        case "needs_setup":
+            return { background: "#2d2000", color: "#f59e0b", border: "1px solid #f59e0b" };
+        case "needs_review":
+            return { background: "#1a1a2e", color: "#818cf8", border: "1px solid #818cf8" };
+        default:
+            return { background: colors.surfaceMuted, color: colors.textMuted, border: `1px solid ${colors.border}` };
+    }
+}
+
 function learnedSourceIcon(source: string): string {
     if (source === "learned") return "📖";
     if (source === "crafted") return "🔧";
@@ -251,6 +264,16 @@ export function getLearnedSkillDescriptionPreview(description: string, maxChars 
 export function SkillsManagementPanel({ localizeText }: Props) {
     const { showConfirm } = useDialog();
     const { showToast } = useToast();
+
+    const localizeSkillStatus = (status: string): string => {
+        switch (status) {
+            case "active": return localizeText("Active", "启用", "啟用");
+            case "disabled": return localizeText("Disabled", "已禁用", "已停用");
+            case "needs_setup": return localizeText("Needs Setup", "待配置", "待配置");
+            case "needs_review": return localizeText("Needs Review", "待审核", "待審核");
+            default: return status || "—";
+        }
+    };
     const backdropMouseDownRef = useRef(false);
     const [activeTab, setActiveTab] = useState<"local" | "hub" | "learned" | "extdirs">("local");
     const [skills, setSkills] = useState<NLSkillDefinition[]>([]);
@@ -1046,7 +1069,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                         <th style={{ ...thStyle, width: "8%", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
                                         <th style={{ ...thStyle, width: "4%", textAlign: "center", paddingLeft: 2, paddingRight: 2 }}>{localizeText("Version", "版本", "版本")}</th>
                                         <th style={{ ...thStyle, width: "9%", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                        <th style={{ ...thStyle, width: "6%", textAlign: "left", paddingLeft: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
+                                        <th style={{ ...thStyle, width: "1%", whiteSpace: "nowrap", textAlign: "left", paddingLeft: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
                                         <th style={{ ...thStyle, width: "28%", textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
                                     </tr>
                                 </thead>
@@ -1078,9 +1101,9 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
                                                 )}
                                             </td>
-                                            <td style={{ ...tdStyle, textAlign: "left", paddingLeft: 4 }}>
-                                                <span style={{ ...statusBadgeStyle, ...(s.status === "active" ? activeBadge : disabledBadge) }}>
-                                                    {s.status === "active" ? localizeText("Active", "启用", "啟用") : s.status}
+                                            <td style={{ ...tdStyle, textAlign: "left", paddingLeft: 4, whiteSpace: "nowrap" }}>
+                                                <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }}>
+                                                    {localizeSkillStatus(s.status)}
                                                 </span>
                                             </td>
                                             <td style={{ ...tdStyle, textAlign: "right" }}>
@@ -1096,14 +1119,19 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                         {"\u270E"}
                                                     </button>
                                                     <button
-                                                        className="btn-secondary btn-danger"
-                                                        style={dangerIconBtnStyle}
+                                                        className="btn-secondary"
+                                                        style={deleteIconBtnStyle}
                                                         onClick={() => handleDelete(s.name)}
                                                         disabled={busy}
                                                         title={localizeText("Delete", "删除", "刪除")}
                                                         aria-label={localizeText("Delete", "删除", "刪除")}
                                                     >
-                                                        {"\u2715"}
+                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                            <polyline points="3 6 5 6 21 6" />
+                                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                                            <line x1="10" y1="11" x2="10" y2="17" />
+                                                            <line x1="14" y1="11" x2="14" y2="17" />
+                                                        </svg>
                                                     </button>
                                                 </div>
                                             </td>
@@ -1765,7 +1793,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             <div style={detailGridStyle}>
                                 <div><strong>{localizeText("Name", "名称", "名稱")}</strong><div>{detailSkill.name}</div></div>
                                 <div><strong>{localizeText("Source", "来源", "來源")}</strong><div>{detailSkill.source || "—"}</div></div>
-                                <div><strong>{localizeText("Status", "状态", "狀態")}</strong><div>{detailSkill.status === "active" ? localizeText("Active", "启用", "啟用") : detailSkill.status || "—"}</div></div>
+                                <div><strong>{localizeText("Status", "状态", "狀態")}</strong><div>{localizeSkillStatus(detailSkill.status)}</div></div>
                                 <div><strong>{localizeText("Execution", "执行类型", "執行類型")}</strong><div>{getExecutionClassLabel(detailSkill.execution_class) || "—"}</div></div>
                                 <div><strong>{localizeText("Created", "创建时间", "建立時間")}</strong><div>{detailSkill.created_at ? new Date(detailSkill.created_at).toLocaleString() : "—"}</div></div>
                                 <div><strong>{localizeText("Usage", "使用统计", "使用統計")}</strong><div>{(detailSkill.usage_count ?? 0) > 0 ? `${detailSkill.usage_count}${localizeText("x", "次", "次")} / ${Math.round((detailSkill.success_rate ?? 0) * 100)}%` : localizeText("Unused", "未使用", "未使用")}</div></div>
@@ -1915,14 +1943,6 @@ const statusBadgeStyle: CSSProperties = {
     ...remoteStatusBadgeStyle,
 };
 
-const activeBadge: CSSProperties = {
-    ...remoteSuccessBadgeStyle,
-};
-
-const disabledBadge: CSSProperties = {
-    ...remoteDisabledBadgeStyle,
-};
-
 const smallBtnStyle: CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 8px",
@@ -1939,8 +1959,9 @@ const iconBtnStyle: CSSProperties = {
     lineHeight: 1,
 };
 
-const dangerIconBtnStyle: CSSProperties = {
+const deleteIconBtnStyle: CSSProperties = {
     ...iconBtnStyle,
+    color: colors.textMuted,
 };
 
 const detailGridStyle: CSSProperties = {

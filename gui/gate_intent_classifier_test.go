@@ -39,8 +39,28 @@ func TestShouldAcceptGateResult(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "degraded coding result rejected",
+			name: "degraded new_project high confidence accepted",
 			in:   GateIntentResult{Intent: GateIntentNewProject, Confidence: 0.95, Degraded: true},
+			want: true,
+		},
+		{
+			name: "degraded new_project low confidence rejected",
+			in:   GateIntentResult{Intent: GateIntentNewProject, Confidence: 0.60, Degraded: true},
+			want: false,
+		},
+		{
+			name: "degraded non_coding moderate confidence accepted",
+			in:   GateIntentResult{Intent: GateIntentNonCoding, Confidence: 0.55, Degraded: true},
+			want: true,
+		},
+		{
+			name: "degraded bug_fix moderate confidence accepted",
+			in:   GateIntentResult{Intent: GateIntentBugFix, Confidence: 0.55, Degraded: true},
+			want: true,
+		},
+		{
+			name: "degraded unknown rejected",
+			in:   GateIntentResult{Intent: GateIntentUnknown, Confidence: 0.80, Degraded: true},
 			want: false,
 		},
 		{

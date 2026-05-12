@@ -225,6 +225,38 @@ func (u *UnifiedIntentClassifier) InvalidateCache() {
 	})
 }
 
+// ClassifyEmbeddingOnly performs L2 embedding-only classification without
+// triggering the L3 tree reasoning LLM call. This is significantly faster
+// (~50-100ms vs 3-15s) and suitable for auxiliary checks where a rough
+// intent signal is sufficient (e.g., checking if conversation history
+// contains coding context).
+//
+// Results are NOT cached in the main cache to avoid polluting it with
+// lower-quality embedding-only results that would be returned by subsequent
+// full Classify() calls.
+func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) ClassificationResult {
+	u.mu.RLock()
+	emb := u.embedder
+	anchors := u.anchors
+	isReady := u.ready
+	u.mu.RUnlock()
+
+	isNoop := embedding.IsNoop(emb)
+	if isNoop || !isReady {
+		return ClassificationResult{
+			Primary:    LabelUnknown,
+			Confidence: 0.30,
+			Layer:      0,
+			Reason:     "embedding unavailable for fast classification",
+			Degraded:   true,
+		}
+	}
+
+	result, _ := classifyByEmbedding(emb, anchors, msg.Text)
+	result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)
+	return result
+}
+
 // Ready returns true when Layer 2 anchor embeddings are warmed up.
 func (u *UnifiedIntentClassifier) Ready() bool {
 	u.mu.RLock()
@@ -427,9 +459,29 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 		treeCh <- treeResult{candidates: candidates, ms: float64(time.Since(t).Milliseconds()), err: err}
 	}()
 
-	// Wait for both channels.
+	// Wait for embedding (fast, <100ms typically).
 	emb := <-embCh
-	tree := <-treeCh
+
+	// Wait for tree channel with a tight deadline. Reasoning models
+	// (deepseek-reasoner) have a thinking phase that makes them unable to
+	// respond within this budget. When tree times out, we proceed with
+	// embedding-only results — this is the designed degradation path.
+	// The 3s deadline here is independent of the LLM HTTP timeout (5s in
+	// buildUICLLMFunc): if the LLM responds in 2s we use it; if not, we
+	// don't wait. This ensures the critical path is bounded.
+	const treeDeadline = 3 * time.Second
+	var tree treeResult
+	treeTimer := time.NewTimer(treeDeadline)
+	select {
+	case tree = <-treeCh:
+		// Tree responded within deadline.
+		treeTimer.Stop()
+	case <-treeTimer.C:
+		// Tree too slow — proceed with embedding only.
+		tree = treeResult{err: fmt.Errorf("tree channel deadline exceeded (%s)", treeDeadline)}
+		// Let the goroutine finish in background (it will write to the
+		// buffered channel and be GC'd).
+	}
 
 	embOK := len(emb.scores) > 0
 	treeOK := tree.err == nil && len(tree.candidates) > 0

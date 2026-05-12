@@ -251,13 +251,18 @@ func (mc *Compressor) compactOneEntry(ctx context.Context, content string, cat C
 	default:
 	}
 
-	systemPrompt := `You are a memory compactor. Convert the memory entry into the shortest possible representation that preserves ALL key facts. Rules:
-- Use telegraphic style: drop articles, filler words, "the user said", etc.
-- Use → to show relationships (e.g. "用户→偏好→Go语言")
-- Use ; to separate independent facts
-- Keep names, numbers, paths, commands EXACTLY as-is
+	systemPrompt := `You are a memory compactor. Compress the memory entry into the shortest possible representation that preserves ALL key facts and remains searchable.
+
+Rules:
+- Use concise natural language sentences (NOT telegraphic arrows or symbols)
+- Keep entity names adjacent to their attributes (e.g. "api.rapidai.tech: OmniRoute Docker, port 18099, GLM-5.1")
+- Keep names, numbers, paths, commands, hostnames EXACTLY as-is
+- Use semicolons to separate independent facts within the same topic
 - Target ≤40% of original length
-- Return ONLY the compact text, no commentary`
+- Return ONLY the compact text, no commentary
+
+Good: "api.rapidai.tech 服务器部署 OmniRoute Docker 容器, 使用 GLM-5.1 模型, 端口 18099"
+Bad: "服务器→api.rapidai.tech→OmniRoute→Docker; 模型→GLM-5.1; 端口→18099"`
 
 	userPrompt := fmt.Sprintf("[%s] %s", cat, content)
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
@@ -1147,7 +1147,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [activeTab, setActiveTab] = useState<KnowledgeSubTab>('overview');
     const [health, setHealth] = useState<any>(null);
     const [capabilities, setCapabilities] = useState<KnowledgeCapabilitiesResult | null>(null);
-    const [sources, setSources] = useState<Source[]>([]);
+    const [sources, setSources] = useState<Source[] | null>(null);
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [facets, setFacets] = useState<SearchFacetsResult | null>(null);
     const [qualityReport, setQualityReport] = useState<SourceQualityReport | null>(null);
@@ -1205,6 +1205,11 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
 
     const summary = knowledgeHealthSummaryModel(health);
     const sourcePayload = useMemo(() => knowledgeSourceListPayload(capabilities, sourceFilter), [capabilities, sourceFilter]);
+    // Invalidate stale results when the query payload changes (filter or capabilities update).
+    // sourcePayload is the direct input to KnowledgeListSources — sources is its cached output.
+    useEffect(() => { setSources(null); }, [sourcePayload]);
+    const sourcePayloadRef = useRef(sourcePayload);
+    sourcePayloadRef.current = sourcePayload;
     const qualityPayload = useMemo(() => knowledgeSourceListPayload(capabilities, qualityFilter), [capabilities, qualityFilter]);
     const coverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, sourceFilter.coverage), [capabilities, sourceFilter.coverage]);
     const qualityCoverageOptions = useMemo(() => knowledgeSourceCoverageOptions(capabilities, qualityFilter.coverage), [capabilities, qualityFilter.coverage]);
@@ -1213,7 +1218,10 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const aliasSummary = knowledgeCoverageAliasSummary(capabilities, 4);
 
     const refreshSourceList = async () => {
-        const result = await KnowledgeListSources(sourcePayload);
+        const requestPayload = sourcePayload;
+        const result = await KnowledgeListSources(requestPayload);
+        // Discard stale response if filter changed during the request.
+        if (sourcePayloadRef.current !== requestPayload) return [];
         const nextSources = Array.isArray(result) ? result : [];
         setSources(nextSources);
         return nextSources;
@@ -1616,10 +1624,13 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                     <SourceFilters t={t} filter={sourceFilter} coverageOptions={coverageOptions} onChange={setSourceFilter} />
                     <div style={inlineActionsStyle}>
                         <button type="button" style={primaryButtonStyle} disabled={!!busy} onClick={loadSources}>{busy === 'sources' ? t('Loading...', '加载中...') : t('Load Sources', '加载来源')}</button>
+                        {sources !== null && <span style={mutedLineStyle}>{sources.length >= sourceFilter.limit ? `${sources.length}+ ${t('results (limit reached)', '条结果（已达上限）')}` : `${sources.length} ${t('results', '条结果')}`}</span>}
                         <span style={mutedLineStyle}>{t('Payload', '条件')} {JSON.stringify(sourcePayload)}</span>
                     </div>
                     <div style={listStyle}>
-                        {sources.length ? sources.map(source => (
+                        {sources === null ? (
+                            <div style={emptyStyle}>{t('Click "Load Sources" to query.', '点击「加载来源」按钮进行查询。')}</div>
+                        ) : sources.length ? sources.map(source => (
                             <div key={source.id || source.uri || source.title} style={rowStyle}>
                                 <div style={rowMainStyle}>
                                     <strong>{source.title || source.relative_path || source.uri || source.id}</strong>
@@ -1631,7 +1642,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                                     <button type="button" style={dangerButtonStyle} disabled={!!busy} onClick={() => deleteSource(source)}>{t('Delete', '删除')}</button>
                                 </div>
                             </div>
-                        )) : <div style={emptyStyle}>{t('No sources loaded.', '尚未加载来源。')}</div>}
+                        )) : <div style={emptyStyle}>{t('No sources match the current filters.', '当前筛选条件下没有匹配的来源。')}</div>}
                     </div>
                 </div>
             )}
@@ -1847,10 +1858,13 @@ function SourceFilters({ t, filter, coverageOptions, onChange }: {
                 <input style={inputStyle} value={filter.kind} onChange={event => onChange({ ...filter, kind: event.target.value })} placeholder={t('Kind', '类型')} />
                 <select style={inputStyle} value={filter.status} onChange={event => onChange({ ...filter, status: event.target.value })}>
                     <option value="all">{t('All statuses', '全部状态')}</option>
-                    <option value="active">active</option>
+                    <option value="active">{t('active (non-disabled)', 'active（非禁用）')}</option>
+                    <option value="pending">pending</option>
+                    <option value="parsed">parsed</option>
                     <option value="distilled">distilled</option>
+                    <option value="stale">stale</option>
+                    <option value="failed">failed</option>
                     <option value="disabled">disabled</option>
-                    <option value="error">error</option>
                 </select>
                 <select style={inputStyle} value={filter.coverage} onChange={event => onChange({ ...filter, coverage: event.target.value })}>
                     {coverageOptions.map(option => <option key={option} value={option}>{option}</option>)}

@@ -53,7 +53,7 @@ func (r *ClassificationResult) ToTaskIntent() (intent, matched string, evidence 
 //   - coding (without creation signals) -> "maintenance"
 //   - bug_fix -> "bug_fix"
 //   - maintenance -> "maintenance"
-//   - non_coding, search, document_delivery, business_data, office, browser -> "non_coding"
+//   - non_coding, search, document_delivery, business_data, office, browser, ssh -> "non_coding"
 //   - continuation -> "continuation"
 //   - ambiguous, unknown -> "unknown"
 func (r *ClassificationResult) ToGateIntent() (intent string, confidence float64, gap float64, layer int, reason string) {
@@ -68,7 +68,7 @@ func (r *ClassificationResult) ToGateIntent() (intent string, confidence float64
 		intent = "bug_fix"
 	case LabelMaintenance:
 		intent = "maintenance"
-	case LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelBusinessData, LabelOffice, LabelBrowser:
+	case LabelNonCoding, LabelSearch, LabelDocumentDelivery, LabelBusinessData, LabelOffice, LabelBrowser, LabelSSH:
 		intent = "non_coding"
 	case LabelContinuation:
 		intent = "continuation"

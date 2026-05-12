@@ -114,7 +114,12 @@ func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIn
 		if strings.TrimSpace(text) == strings.TrimSpace(h.lastUserText) {
 			continue
 		}
-		result := uic.Classify(intent.MessageContext{Text: text})
+		// Use embedding-only classification for history entries to avoid
+		// triggering the tree channel LLM call (3s deadline per entry).
+		// The full fusion pipeline is expensive for this check — we only
+		// need a rough "is this coding-like?" signal, not precise workflow
+		// type determination. Embedding alone is <100ms and sufficient.
+		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{Text: text})
 		return result.IsCodingLike()
 	}
 	return false

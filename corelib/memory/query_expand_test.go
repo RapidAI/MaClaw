@@ -242,3 +242,68 @@ func TestExpandQuery_TokenizeForTagMatch_MixedCompound(t *testing.T) {
 		t.Errorf("expected 'api服务器' in QueryTokens %v", result.QueryTokens)
 	}
 }
+
+func TestExpandQuery_TokenizeForTagMatch_NoFragments(t *testing.T) {
+	// Core invariant: tokenizeForTagMatch must NOT produce cross-boundary
+	// n-gram fragments. Every token must be a semantically meaningful unit.
+	result := ExpandQuery("北京天气预报服务器的资源状况")
+
+	// These are valid semantic units (boundary-split or stopword-split):
+	// "北京天气预报服务器" (full segment before "的"), "资源状况" (after "的"),
+	// or sub-phrases from stopword splitting.
+	// These are INVALID fragments that the old sliding window would produce:
+	invalidFragments := []string{
+		"京天", "天气预", "气预报", "报服", "服务", "务器",
+		"器的", "的资", "资源状", "源状况",
+	}
+
+	for _, frag := range invalidFragments {
+		for _, tok := range result.QueryTokens {
+			if tok == frag {
+				t.Errorf("found invalid fragment token %q in QueryTokens %v", frag, result.QueryTokens)
+			}
+		}
+	}
+
+	// Verify that meaningful tokens ARE present.
+	// After boundary split on Chinese/ASCII and stopword split on "的":
+	// "北京天气预报服务器" → stopword split → "北京天气预报服务器" (no stopwords inside)
+	// "资源状况" → stopword split → "资源状况" (no stopwords inside)
+	wantAny := []string{"资源状况"}
+	for _, want := range wantAny {
+		found := false
+		for _, tok := range result.QueryTokens {
+			if tok == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected meaningful token %q in QueryTokens %v", want, result.QueryTokens)
+		}
+	}
+}
+
+func TestExpandQuery_TokenizeForTagMatch_StopwordNotInToken(t *testing.T) {
+	// Tokens must not contain trailing/internal stopwords.
+	result := ExpandQuery("服务器的资源管理是很重要的功能")
+
+	for _, tok := range result.QueryTokens {
+		// No token should end with or contain "的" as a standalone stopword
+		// (it's fine if "的" is part of a longer word, but pure Chinese
+		// segments ending in "的" like "服务器的" should not appear).
+		runes := []rune(tok)
+		if len(runes) > 2 && isAllChinese(runes) {
+			lastChar := string(runes[len(runes)-1:])
+			if chineseStopwords[lastChar] && len(runes) > 2 {
+				// Check if the segment without the trailing stopword is different
+				// (meaning the stopword was appended, not part of a word).
+				withoutLast := string(runes[:len(runes)-1])
+				if len([]rune(withoutLast)) >= 2 {
+					t.Errorf("token %q ends with stopword %q — should have been split; full tokens: %v",
+						tok, lastChar, result.QueryTokens)
+				}
+			}
+		}
+	}
+}

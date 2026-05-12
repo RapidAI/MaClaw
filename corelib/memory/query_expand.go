@@ -183,8 +183,12 @@ func ExpandQuery(userMessage string) ExpandResult {
 	}
 }
 
-// tokenizeForTagMatch splits a user message into tokens suitable for
-// tag cross-matching. Handles Chinese/English mixed text.
+// tokenizeForTagMatch splits a user message into meaningful tokens suitable
+// for tag cross-matching. Only produces complete semantic units — no sliding
+// window n-gram fragments.
+//
+// Design principle: every token produced must be a meaningful word or phrase
+// that a human would recognize as a concept. "北京" ✓, "京天" ✗.
 func tokenizeForTagMatch(msg string) []string {
 	seen := make(map[string]bool)
 	var tokens []string
@@ -228,16 +232,26 @@ func tokenizeForTagMatch(msg string) []string {
 		// Check if it's purely Chinese, purely ASCII, or mixed
 		runes := []rune(part)
 		if isAllChinese(runes) {
-			// Add the whole Chinese segment
-			add(part)
-			// Also add sub-segments of 2-4 chars (sliding window for short terms)
-			if len(runes) > 2 {
-				for size := 2; size <= 4 && size <= len(runes); size++ {
-					for i := 0; i <= len(runes)-size; i++ {
-						sub := string(runes[i : i+size])
-						add(sub)
+			if len(runes) > 3 {
+				// Split on stopwords to extract meaningful noun phrases.
+				// Only add the sub-phrases (not the raw segment which may
+				// contain trailing/internal stopwords like "的", "了").
+				subPhrases := splitOnChineseStopwords(part)
+				if len(subPhrases) == 1 && subPhrases[0] == part {
+					// No stopwords found — the segment is a clean noun phrase.
+					add(part)
+				} else {
+					// Stopwords found — add only the clean sub-phrases.
+					for _, sp := range subPhrases {
+						if len([]rune(sp)) >= 2 {
+							add(sp)
+						}
 					}
 				}
+			} else {
+				// Short segment (2-3 chars) — add as-is. These are typically
+				// single Chinese words that passed boundary splitting.
+				add(part)
 			}
 		} else {
 			// ASCII or mixed: add as-is
