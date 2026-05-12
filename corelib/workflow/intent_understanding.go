@@ -15,9 +15,11 @@ import (
 const sessionExpiryDuration = 30 * time.Minute
 
 // llmIntentTimeout is the timeout for LLM calls during intent understanding.
-// Set to 30s to accommodate third-party API providers (e.g. Zhipu GLM at
-// open.bigmodel.cn) which can be significantly slower than direct Anthropic.
-const llmIntentTimeout = 30 * time.Second
+// 10s is sufficient for all models: fast models (deepseek-chat) respond in 1-3s,
+// reasoning models (deepseek-reasoner) respond in 3-8s. If the API doesn't
+// respond in 10s, it's likely overloaded — fall through to normal agent loop
+// rather than making the user wait 30s for a timeout.
+const llmIntentTimeout = 10 * time.Second
 
 // IntentUnderstandingManager manages multi-round intent clarification sessions.
 // It uses an independent LLM conversation (no tools) to understand user intent

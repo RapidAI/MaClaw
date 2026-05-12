@@ -25,15 +25,11 @@ func (h *IMMessageHandler) extractSessionStartMemoryAsync(userID string, entries
 		}
 		msgs = append(msgs, memory.ConversationMessage{Role: e.Role, Content: text})
 	}
-	// Delay session extraction by 30s to avoid competing with the main LLM
-	// call for API rate limit / concurrent connections. The extraction is
-	// purely background work — its results are only needed for the NEXT
-	// session, not the current one. A 30s delay ensures the main agent loop
-	// gets priority access to the API.
-	go func() {
-		time.Sleep(30 * time.Second)
-		h.sessionStartExtractor.MaybeExtractAsync(userID, msgs)
-	}()
+	// Store the prepared messages for deferred extraction. The actual LLM call
+	// is triggered AFTER the agent loop completes (in saveConversationHistoryTimed),
+	// ensuring it never competes with the main LLM call for API bandwidth.
+	// The extraction results are only needed for the NEXT session anyway.
+	h.deferredSessionExtraction.Store(userID, msgs)
 }
 
 func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {
@@ -175,6 +171,23 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	// integrates them via four-operation classification (ADD/UPDATE/DELETE/NOOP).
 	// Runs in a goroutine to avoid blocking the response.
 	h.triggerOnlineExtraction(userID, history)
+
+	// --- Deferred session-start extraction ---
+	// Consume the deferred extraction prepared during preflight. Now that the
+	// agent loop is complete and the response has been saved, the API bandwidth
+	// is free for background work. Add a short delay (5s) to give the user time
+	// to send a follow-up message — if they do, the next agent loop will start
+	// before extraction begins, and extraction will run after that loop too.
+	// The 5s window covers the typical "quick follow-up" pattern without
+	// significantly delaying extraction for normal conversations.
+	if raw, ok := h.deferredSessionExtraction.LoadAndDelete(userID); ok {
+		if msgs, ok := raw.([]memory.ConversationMessage); ok {
+			go func() {
+				time.Sleep(5 * time.Second)
+				h.sessionStartExtractor.MaybeExtractAsync(userID, msgs)
+			}()
+		}
+	}
 }
 
 func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, history []agent.ConversationEntry, resp *IMAgentResponse) {

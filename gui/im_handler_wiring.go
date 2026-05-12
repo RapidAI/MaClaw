@@ -243,6 +243,13 @@ type IMMessageHandler struct {
 	// request when intent classification was inconclusive. Keyed by userID.
 	suppressPendingUserReplyUpdate sync.Map
 
+	// deferredSessionExtraction stores prepared messages for session-start
+	// extraction. Set during preflight, consumed after agent loop completes.
+	// This ensures the extraction LLM call never competes with the main
+	// agent loop for API bandwidth. Keyed by userID, value is
+	// []memory.ConversationMessage.
+	deferredSessionExtraction sync.Map
+
 	// Optional test hooks for pending-reply intent classification. Production
 	// uses LLMClassify; tests inject deterministic classifiers without keyword
 	// matching hidden in the implementation.

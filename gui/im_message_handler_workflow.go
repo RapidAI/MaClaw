@@ -690,10 +690,10 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string) bo
 		}
 	}
 
-	// Slow path: full fusion (embedding + tree LLM) for coding/ambiguous/unknown.
-	// Tree channel provides WorkflowType and CreationOriented signals needed
-	// to distinguish "new coding project" (needs workflow) from "maintenance"
-	// (bypass workflow).
+	// Slow path: full fusion (embedding + tree LLM) for messages where embedding
+	// is not confident enough for the fast path. This call writes to UIC cache,
+	// so subsequent uic.Classify calls (e.g., in handleNeedsUnderstanding) will
+	// hit cache and return instantly (0ms) instead of re-triggering fusion.
 	result := uic.Classify(intent.MessageContext{
 		Text:   text,
 		UserID: userID,
@@ -1166,11 +1166,13 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 	//
 	// The "accept" power belongs to IUM (deep semantic confirmation) or the
 	// user (via confirmation panel after IUM confirms).
+	var uicTopConf float64
 	if uic := h.getUnifiedClassifier(); uic != nil {
 		uicResult := uic.Classify(intent.MessageContext{
 			Text:   text,
 			UserID: userID,
 		})
+		uicTopConf = uicResult.Confidence
 
 		// UIC says no workflow - check if it's a confident non-workflow signal.
 		//
@@ -1207,6 +1209,23 @@ func (h *IMMessageHandler) handleNeedsUnderstanding(engine *workflow.WorkflowEng
 				"not decisive, proceeding to IUM",
 				uicResult.Primary, uicResult.Confidence, uicResult.Layer, uicResult.WorkflowType)
 		}
+	}
+
+	// Short-circuit: when UIC's top confidence is low (< 0.55), it means UIC
+	// itself is uncertain whether this is a workflow task. In this case, IUM
+	// (which uses the same LLM) is also unlikely to classify it as a workflow
+	// task — it will almost certainly reject. Skip the 3-5s IUM LLM call.
+	//
+	// This is NOT a length-based heuristic. It's based on UIC's own judgment:
+	// "I'm not confident this is a workflow task." When UIC is confident
+	// (conf >= 0.55), we still call IUM for deep confirmation.
+	//
+	// Safety: if UIC is unavailable (nil), this variable stays at 0 and the
+	// check is skipped — IUM is always called as fallback.
+	if uicTopConf > 0 && uicTopConf < 0.55 {
+		log.Printf("[WorkflowInterception] low-confidence bypass (conf=%.2f < 0.55): user=%s text=%q",
+			uicTopConf, userID, text)
+		return nil
 	}
 
 	result, err := understanding.Start(userID, text)
