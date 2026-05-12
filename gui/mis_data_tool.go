@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 import (
 	"bytes"
@@ -1459,7 +1459,7 @@ func buildMISIntentAgentViewFromResolveResult(data []byte) map[string]interface{
 		"title":       title,
 		"description": fmt.Sprintf("Confidence %.0f%%. Business object: %s. Review and submit structured data.", top.Confidence*100, top.BusinessObjectID),
 		"fields":      fields,
-		"submitLabel": "Submit structured data",
+		"submitLabel": avTr("Submit structured data", "提交结构化数据"),
 		"meta":        meta,
 	}
 }
@@ -1504,10 +1504,10 @@ func buildMISIntentChoiceAgentView(result contract.ResolveBusinessIntentResult) 
 	return map[string]interface{}{
 		"type":        "form",
 		"id":          "mis:choose-intent",
-		"title":       "Choose business task",
-		"description": "The intent is plausible but not certain. Choose the target business operation to open its structured form.",
+		"title":       avTr("Choose business task", "选择业务任务"),
+		"description": avTr("The intent is plausible but not certain. Choose the target business operation to open its structured form.", "意图可能匹配但不确定。请选择目标业务操作以打开其结构化表单。"),
 		"fields":      fields,
-		"submitLabel": "Open form",
+		"submitLabel": avTr("Open form", "打开表单"),
 		"meta": map[string]interface{}{
 			"source": "mis.resolve_intent",
 			"query":  result.Query,
@@ -1530,8 +1530,8 @@ func buildMISTransactionResumeChoiceAgentView(actionID, businessObject, query st
 	return map[string]interface{}{
 		"type":        "form",
 		"id":          "mis:resume-transaction",
-		"title":       "Continue business transaction",
-		"description": "A matching unfinished business transaction already exists. Choose one to reopen its structured form, or start a new task from chat if this is unrelated.",
+		"title":       avTr("Continue business transaction", "继续业务事务"),
+		"description": avTr("A matching unfinished business transaction already exists. Choose one to reopen its structured form, or start a new task from chat if this is unrelated.", "已存在匹配的未完成业务事务。选择一个重新打开其表单，或从聊天中开始新任务。"),
 		"fields": []map[string]interface{}{
 			{
 				"name":        "transaction_id",
@@ -1542,7 +1542,7 @@ func buildMISTransactionResumeChoiceAgentView(actionID, businessObject, query st
 				"description": "Selection is based on active transaction state and business action binding.",
 			},
 		},
-		"submitLabel": "Continue",
+		"submitLabel": avTr("Continue", "继续"),
 		"meta": map[string]interface{}{
 			"source":             "mis.transaction_store",
 			"query":              strings.TrimSpace(query),
@@ -1557,11 +1557,11 @@ func buildMISTransactionWorkspaceAgentView(txns []misBusinessTransaction) map[st
 		return map[string]interface{}{
 			"type":        "result_browser",
 			"id":          "mis:transaction-workspace",
-			"title":       "Business transaction workspace",
-			"description": "No unfinished business transactions are available.",
+			"title":       avTr("Business transaction workspace", "业务事务工作区"),
+			"description": avTr("No unfinished business transactions are available.", "暂无未完成的业务事务。"),
 			"results": []map[string]interface{}{
 				{
-					"title":  "No active transactions",
+					"title":  avTr("No active transactions", "暂无活跃事务"),
 					"status": "empty",
 					"data":   map[string]interface{}{"count": 0},
 				},
@@ -1587,7 +1587,7 @@ func buildMISTransactionWorkspaceAgentView(txns []misBusinessTransaction) map[st
 			"data":     summary,
 			"actions": []map[string]interface{}{
 				{
-					"label":   "Continue",
+					"label":   avTr("Continue", "继续"),
 					"viewId":  "mis:resume-transaction",
 					"primary": true,
 					"data":    map[string]interface{}{"transaction_id": txn.ID},
@@ -1598,8 +1598,8 @@ func buildMISTransactionWorkspaceAgentView(txns []misBusinessTransaction) map[st
 	return map[string]interface{}{
 		"type":        "result_browser",
 		"id":          "mis:transaction-workspace",
-		"title":       "Business transaction workspace",
-		"description": "Choose an unfinished business transaction to reopen its structured form.",
+		"title":       avTr("Business transaction workspace", "业务事务工作区"),
+		"description": avTr("Choose an unfinished business transaction to reopen its structured form.", "选择一个未完成的业务事务以重新打开其表单。"),
 		"results":     results,
 		"meta":        map[string]interface{}{"source": "mis.transaction_workspace", "count": len(txns), "transactions": misTransactionWorkspaceSummaries(txns)},
 	}
@@ -1752,7 +1752,7 @@ func buildMISBusinessActionInputAgentViewForTransaction(action contract.Business
 		"title":       title,
 		"description": description,
 		"fields":      fields,
-		"submitLabel": "Submit structured data",
+		"submitLabel": avTr("Submit structured data", "提交结构化数据"),
 		"meta": map[string]interface{}{
 			"source":             "mis.business_action",
 			"domain":             action.Domain,
@@ -1808,7 +1808,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 				"rows":        normalizeMISTableRows(firstNonNilMISAgentView(field["value"], field["defaultValue"])),
 				"dataKey":     strings.TrimSpace(fmt.Sprint(field["name"])),
 				"hiddenData":  hiddenData,
-				"submitLabel": "Submit structured data",
+				"submitLabel": avTr("Submit structured data", "提交结构化数据"),
 				"meta":        cloneMISInterfaceMap(meta),
 			}
 			copyOptionalMISFieldConstraint(view, field, "minItems")
@@ -1833,7 +1833,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 				"value":        firstNonNilMISAgentView(field["value"], field["defaultValue"]),
 				"dataKey":      strings.TrimSpace(fmt.Sprint(field["name"])),
 				"hiddenData":   hiddenData,
-				"submitLabel":  "Submit structured data",
+				"submitLabel":  avTr("Submit structured data", "提交结构化数据"),
 				"meta":         cloneMISInterfaceMap(meta),
 			}
 		}
@@ -1853,7 +1853,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 				"value":        firstNonNilMISAgentView(field["value"], field["defaultValue"]),
 				"dataKey":      strings.TrimSpace(fmt.Sprint(field["name"])),
 				"hiddenData":   hiddenData,
-				"submitLabel":  "Submit structured data",
+				"submitLabel":  avTr("Submit structured data", "提交结构化数据"),
 				"meta":         cloneMISInterfaceMap(meta),
 			}
 		}
@@ -1881,7 +1881,7 @@ func buildMISAdaptiveInputAgentViewWithMeta(action contract.BusinessAction, titl
 		"title":       title,
 		"description": description,
 		"steps":       steps,
-		"submitLabel": "Submit structured data",
+		"submitLabel": avTr("Submit structured data", "提交结构化数据"),
 		"meta":        cloneMISInterfaceMap(meta),
 	}
 }
@@ -1976,11 +1976,11 @@ func buildMISBusinessActionPendingValidationAgentView(actionID string, submitted
 	return map[string]interface{}{
 		"type":        "form",
 		"id":          "mis:intent:" + strings.TrimSpace(actionID),
-		"title":       "Waiting for MIS validation",
-		"description": "The business transaction is saved locally and can be edited or retried from this panel.",
+		"title":       avTr("Waiting for MIS validation", "等待 MIS 验证"),
+		"description": avTr("The business transaction is saved locally and can be edited or retried from this panel.", "业务事务已本地保存，可在此面板中编辑或重试。"),
 		"fields":      fields,
 		"formErrors":  []string{message},
-		"submitLabel": "Retry validation",
+		"submitLabel": avTr("Retry validation", "重试验证"),
 		"meta": map[string]interface{}{
 			"source":             "mis.transaction_store",
 			"business_action_id": strings.TrimSpace(actionID),
@@ -2034,7 +2034,7 @@ func buildMISBusinessActionCommitFailedAgentView(actionID string, submittedData 
 	return map[string]interface{}{
 		"type":         "approval",
 		"id":           "mis:commit:" + strings.TrimSpace(actionID),
-		"title":        "Retry business commit",
+		"title":        avTr("Retry business commit", "重试业务提交"),
 		"description":  message,
 		"approveLabel": "Retry commit",
 		"rejectLabel":  "Keep editing",
@@ -2079,11 +2079,11 @@ func buildMISBusinessActionDryRunAgentViewWithTransaction(actionID string, submi
 	return map[string]interface{}{
 		"type":        "form",
 		"id":          "mis:intent:" + actionID,
-		"title":       "Validation failed",
-		"description": "Fix the highlighted business data and submit again.",
+		"title":       avTr("Validation failed", "验证失败"),
+		"description": avTr("Fix the highlighted business data and submit again.", "请修正标记的业务数据后重新提交。"),
 		"fields":      fields,
 		"formErrors":  misDryRunValidationErrors(result),
-		"submitLabel": "Validate again",
+		"submitLabel": avTr("Validate again", "重新验证"),
 	}
 }
 
@@ -2332,8 +2332,8 @@ func buildMISBusinessActionCommittedAgentViewWithTransaction(actionID string, re
 	return map[string]interface{}{
 		"type":        "result_browser",
 		"id":          "mis:committed:" + actionID,
-		"title":       "Business action committed",
-		"description": "The structured business data was written through MaClawDataSrv.",
+		"title":       avTr("Business action committed", "业务操作已提交"),
+		"description": avTr("The structured business data was written through MaClawDataSrv.", "结构化业务数据已通过 MaClawDataSrv 写入。"),
 		"results": []map[string]interface{}{
 			{
 				"title":  actionID,

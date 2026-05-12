@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	goruntime "runtime"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/session"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
@@ -49,34 +51,35 @@ type App struct {
 	watcher         *fsnotify.Watcher
 
 	// Managers to reduce struct complexity
-	managers          *AppManagers
-	testHomeDir       string // For testing purposes
-	downloadCancelers map[string]context.CancelFunc
-	downloadMutex     sync.Mutex
-	IsInitMode        bool
-	IsAutoStart       bool
-	installingNode    bool      // Flag to prevent concurrent Node.js installation
-	installingGit     bool      // Flag to prevent concurrent Git installation
-	nodeInstallDone   chan bool // Channel to signal Node.js installation completion
-	installMutex      sync.Mutex
-	toolInstallLocks  map[string]bool // Track which tools are currently being installed
-	toolLockMutex     sync.Mutex      // Mutex for toolInstallLocks map
-	remoteSessions    *RemoteSessionManager
-	browserSessions   *BrowserAgentManager
-	powerStateMutex   sync.Mutex
-	powerStateProcess *exec.Cmd
-	screenDimCancel   context.CancelFunc // cancels the screen-dim goroutine
-	workstationCancel context.CancelFunc // cancels the workstation-mode anti-lock goroutine
-	mcpRegistry       *MCPRegistry
-	localMCPManager   *LocalMCPManager
-	skillExecutor     *SkillExecutor
-	skillRunner       *SkillRunner
-	sessionStarter    *CodingSessionStarter
-	skillMarketClient *SkillMarketClient
-	skillLifecycle    *SkillLifecycleManager
-	gossipClient      *GossipClient
-	autoUploadTrigger *AutoUploadTrigger
-	gossipAutoPublish *AutoPublishTrigger
+	managers            *AppManagers
+	testHomeDir         string // For testing purposes
+	downloadCancelers   map[string]context.CancelFunc
+	downloadMutex       sync.Mutex
+	skillInstallConfirm sync.Map
+	IsInitMode          bool
+	IsAutoStart         bool
+	installingNode      bool      // Flag to prevent concurrent Node.js installation
+	installingGit       bool      // Flag to prevent concurrent Git installation
+	nodeInstallDone     chan bool // Channel to signal Node.js installation completion
+	installMutex        sync.Mutex
+	toolInstallLocks    map[string]bool // Track which tools are currently being installed
+	toolLockMutex       sync.Mutex      // Mutex for toolInstallLocks map
+	remoteSessions      *RemoteSessionManager
+	browserSessions     *BrowserAgentManager
+	powerStateMutex     sync.Mutex
+	powerStateProcess   *exec.Cmd
+	screenDimCancel     context.CancelFunc // cancels the screen-dim goroutine
+	workstationCancel   context.CancelFunc // cancels the workstation-mode anti-lock goroutine
+	mcpRegistry         *MCPRegistry
+	localMCPManager     *LocalMCPManager
+	skillExecutor       *SkillExecutor
+	skillRunner         *SkillRunner
+	sessionStarter      *CodingSessionStarter
+	skillMarketClient   *SkillMarketClient
+	skillLifecycle      *SkillLifecycleManager
+	gossipClient        *GossipClient
+	autoUploadTrigger   *AutoUploadTrigger
+	gossipAutoPublish   *AutoPublishTrigger
 	// Maclaw capability evolution components
 	riskAssessor          *RiskAssessor
 	policyEngine          *PolicyEngine
@@ -414,8 +417,8 @@ func (a *App) ensureMemoryStore() {
 	}
 	a.ensureAITrace()
 	a.logMemorySnapshot("ensureMemoryStore:start")
-	homeDir := a.GetUserHomeDir()
-	memPath := filepath.Join(homeDir, ".maclaw", "memories.json")
+	baseDir := a.getMaclawBaseDir()
+	memPath := filepath.Join(baseDir, "memories.json")
 	ms, err := memory.NewStore(memPath)
 	if err != nil {
 		fmt.Printf("[ensureMemoryStore] WARNING: failed to load memory store from %s: %v\n", memPath, err)
@@ -500,11 +503,20 @@ func (a *App) ensureScheduledTaskManager() {
 		return
 	}
 	a.ensureRemoteInfra()
-	homeDir := a.GetUserHomeDir()
-	stm, err := scheduler.NewManager(filepath.Join(homeDir, ".maclaw", "scheduled_tasks.json"))
+	baseDir := a.getMaclawBaseDir()
+	stm, err := scheduler.NewManager(filepath.Join(baseDir, "scheduled_tasks.json"))
 	if err == nil {
 		a.scheduledTaskManager = stm
-		a.scheduledTaskManager.Start()
+		// Notify frontend when task state changes (fire/expire/create/delete).
+		a.scheduledTaskManager.SetOnChange(func() {
+			a.emitEvent("scheduled-tasks-changed")
+		})
+		// Start the scheduler immediately with a local executor that doesn't
+		// depend on Hub connectivity. This ensures scheduled tasks fire even
+		// for desktop-only users who never connect to Hub.
+		// If Hub connects later, createAndWireHubClient() upgrades the executor
+		// to a Hub-aware version that also pushes results to IM channels.
+		a.scheduledTaskManager.StartWithExecutor(a.buildLocalScheduledTaskExecutor())
 	} else {
 		fmt.Printf("[ensureScheduledTaskManager] WARNING: failed to init: %v\n", err)
 	}
@@ -536,8 +548,8 @@ func (a *App) ensureTemplateManager() {
 	if a.templateManager != nil {
 		return
 	}
-	homeDir := a.GetUserHomeDir()
-	tm, err := NewSessionTemplateManager(filepath.Join(homeDir, ".maclaw", "templates.json"))
+	baseDir := a.getMaclawBaseDir()
+	tm, err := NewSessionTemplateManager(filepath.Join(baseDir, "templates.json"))
 	if err == nil {
 		a.templateManager = tm
 	}
@@ -1061,96 +1073,10 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	}
 	// Wire the scheduled task executor so that due tasks are sent to the
 	// agent loop via the IM handler, making scheduled tasks actually fire.
+	// This upgrades the local executor (set in ensureScheduledTaskManager)
+	// to a Hub-aware version that also pushes results to IM channels.
 	if a.scheduledTaskManager != nil {
-		a.scheduledTaskManager.SetExecutor(func(ctx context.Context, task *scheduler.ScheduledTask) (string, error) {
-			// Show a quiet notification when the task starts executing.
-			if ShowNotification != nil {
-				ShowNotification(
-					"\u5b9a\u65f6\u4efb\u52a1\u5f00\u59cb",
-					fmt.Sprintf("%s: %s", task.Name, scheduler.TruncateStr(task.Action, 100)),
-					1, // info icon
-				)
-			}
-
-			// Progress callback: only log locally, do NOT push intermediate
-			// progress to IM — users find frequent mid-execution notifications
-			// annoying. We only notify on start and final result/error.
-			onProgress := func(text string) {
-				fmt.Printf("[ScheduledTask] %s progress: %s\n", task.Name, text)
-			}
-
-			// Prepend a hint so the agent knows this is an autonomous task
-			// that must complete in one shot (no user to "continue").
-			actionText := fmt.Sprintf("[自动执行定时任务] 这是系统自动触发的定时任务，必须在一次执行中完成，不会有用户交互。请直接执行以下操作并返回结果：\n%s", task.Action)
-
-			handler := hubClient.ensureIMHandler()
-			resp := handler.HandleIMMessageWithProgressAndStream(IMUserMessage{
-				UserID:        "scheduled_task",
-				Platform:      "scheduler",
-				Text:          actionText,
-				MinIterations: 50, // complex tasks need more rounds
-				IsBackground:  true,
-				CancelCtx:     ctx, // propagate scheduler timeout to agent loop
-			}, onProgress, nil, nil, nil)
-			if resp == nil {
-				return "", fmt.Errorf("nil response from agent")
-			}
-
-			// Check if we were cancelled by the scheduler timeout.
-			if ctx.Err() != nil {
-				return resp.Text, ctx.Err()
-			}
-
-			// Push the result to the user's IM channels (Feishu/QQ) via Hub.
-			// Silently ignore send errors — Hub may be temporarily disconnected.
-			resultText := resp.Text
-			hasError := resp.Error != ""
-
-			// Build the proactive message: include error info when present.
-			var proactiveMsg string
-			if hasError {
-				if resultText != "" {
-					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nResult:\n%s\n\nError: %s", task.Name, resultText, resp.Error)
-				} else {
-					proactiveMsg = fmt.Sprintf("Task %s completed with an error.\n\nError: %s", task.Name, resp.Error)
-				}
-			} else if resultText != "" {
-				proactiveMsg = fmt.Sprintf("Task %s completed successfully.\n\nResult:\n%s", task.Name, resultText)
-			}
-
-			if proactiveMsg != "" {
-				if err := hubClient.SendIMProactiveMessage(proactiveMsg); err != nil {
-					a.log(fmt.Sprintf("[scheduled-task] proactive message send failed (will retry on next run): %v", err))
-				}
-			}
-
-			// Play sound + flash + notification on completion to draw attention.
-			notifSummary := resultText
-			if hasError && notifSummary == "" {
-				notifSummary = resp.Error
-			}
-			if notifSummary != "" {
-				if FlashAndBeep != nil {
-					FlashAndBeep()
-				}
-				notifTitle := "\u5b9a\u65f6\u4efb\u52a1\u5b8c\u6210"
-				if hasError {
-					notifTitle = "\u5b9a\u65f6\u4efb\u52a1\u5931\u8d25"
-				}
-				if ShowNotification != nil {
-					ShowNotification(
-						notifTitle,
-						fmt.Sprintf("%s: %s", task.Name, scheduler.TruncateStr(notifSummary, 200)),
-						1,
-					)
-				}
-			}
-
-			if resp.Error != "" {
-				return resp.Text, fmt.Errorf("%s", resp.Error)
-			}
-			return resp.Text, nil
-		})
+		a.scheduledTaskManager.SetExecutor(a.buildHubScheduledTaskExecutor(hubClient))
 		a.scheduledTaskManager.SetOnChange(func() {
 			a.emitEvent("scheduled-tasks-changed")
 		})
@@ -1224,6 +1150,8 @@ func (a *App) startup(ctx context.Context) {
 	a.codeEventEmitter = NewCodeEventEmitter(a)
 	// Migrate legacy ~/.cceasy data to ~/.maclaw/data on first launch.
 	a.MigrateDataDir()
+	// Migrate data to custom data_dir if configured and not yet migrated.
+	a.migrateToCustomDataDir()
 	// Platform specific initialization
 	a.platformStartup()
 	a.startConfigWatcher()
@@ -2155,6 +2083,7 @@ func (a *App) startConfigWatcher() {
 }
 func (a *App) SetLanguage(lang string) {
 	a.CurrentLanguage = lang
+	setAgentViewLang(lang)
 	if UpdateTrayMenu != nil {
 		UpdateTrayMenu(lang)
 	}
@@ -2245,10 +2174,11 @@ func (a *App) GetUserHomeDir() string {
 	return home
 }
 
-// GetDataDir returns ~/.maclaw/data 闂?the persistent data directory that
+// GetDataDir returns the persistent data directory that
 // survives uninstalls and is easy to back up / transfer.
+// When data_dir is configured, returns <data_dir>/data; otherwise ~/.maclaw/data.
 func (a *App) GetDataDir() string {
-	return filepath.Join(a.GetUserHomeDir(), ".maclaw", "data")
+	return filepath.Join(a.getMaclawBaseDir(), "data")
 }
 
 // sessionSearchDBPath returns the path to the session search FTS5 database.
@@ -2261,11 +2191,21 @@ func (a *App) userModelPath() string {
 	return filepath.Join(a.GetDataDir(), "user_model.json")
 }
 
-// GetTempDir returns ~/.maclaw/temp 闂?the temporary directory for maclaw.
+// GetTempDir returns the temporary directory for maclaw.
+// When data_dir is configured, returns <data_dir>/temp; otherwise ~/.maclaw/temp.
 func (a *App) GetTempDir() string {
-	tmp := filepath.Join(a.GetUserHomeDir(), ".maclaw", "temp")
+	tmp := filepath.Join(a.getMaclawBaseDir(), "temp")
 	_ = os.MkdirAll(tmp, 0o755)
 	return tmp
+}
+
+// getMaclawBaseDir returns the effective maclaw base directory for this App instance.
+// For tests it uses testHomeDir/.maclaw; otherwise delegates to corelib.MaclawBaseDir().
+func (a *App) getMaclawBaseDir() string {
+	if a.testHomeDir != "" {
+		return filepath.Join(a.testHomeDir, ".maclaw")
+	}
+	return corelib.MaclawBaseDir()
 }
 
 // BrandInfo is the JSON-friendly brand information exposed to the frontend.
@@ -6149,8 +6089,13 @@ func (a *App) validateSkillZip(path string) error {
 	rootHasLegacyMD := false
 	rootHasLegacyMeta := false
 	for _, f := range r.File {
-		name := strings.ToValidUTF8(f.Name, "")
-		name = filepath.ToSlash(name)
+		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
+		}
+		_, name, err := safeZipEntryTarget(os.TempDir(), f.Name)
+		if err != nil {
+			return err
+		}
 		parts := strings.Split(name, "/")
 		if len(parts) > 0 && (strings.HasPrefix(parts[0], "__MACOSX") || strings.HasPrefix(parts[0], ".")) {
 			continue
@@ -6209,6 +6154,122 @@ func (a *App) validateSkillZip(path string) error {
 	}
 	return nil
 }
+
+type skillZipInstallScanResult struct {
+	HighestReport *skill.ScanReport
+	ByName        map[string]*skill.ScanReport
+	ByDirName     map[string]*skill.ScanReport
+}
+
+func (a *App) scanSkillZipBeforeInstall(path, displayName, description string) (*skill.ScanReport, error) {
+	result, err := a.scanSkillZipBeforeInstallDetailed(path, displayName, description)
+	if result == nil {
+		return nil, err
+	}
+	return result.HighestReport, err
+}
+
+func (a *App) scanSkillZipBeforeInstallDetailed(path, displayName, description string) (*skillZipInstallScanResult, error) {
+	tmpDir, err := os.MkdirTemp("", "maclaw-skill-scan-*")
+	if err != nil {
+		return nil, fmt.Errorf("create skill scan staging directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := a.unzip(path, tmpDir); err != nil {
+		return nil, fmt.Errorf("extract skill for security scan: %w", err)
+	}
+
+	scanner := skill.NewSecurityScanner(nil)
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	roots := candidateInstalledSkillDirs(tmpDir)
+	if len(roots) == 0 {
+		roots = []string{tmpDir}
+	}
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		name = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	}
+	a.emitSkillInstallProgress(name, "extract", "Extracted skill package for pre-install security scan.", nil)
+	result := &skillZipInstallScanResult{
+		ByName:    make(map[string]*skill.ScanReport),
+		ByDirName: make(map[string]*skill.ScanReport),
+	}
+	for _, root := range roots {
+		entry, err := loadImportedSkillEntry(root)
+		if err != nil {
+			entry = &corelib.NLSkillEntry{
+				Name:        name,
+				Description: description,
+				SkillDir:    root,
+				Source:      "zip",
+				TrustLevel:  "community",
+			}
+		}
+		dirName := filepath.Base(root)
+		if strings.TrimSpace(entry.Name) == "" {
+			entry.Name = name
+		}
+		if strings.TrimSpace(entry.Description) == "" {
+			entry.Description = description
+		}
+		entry.SkillDir = root
+		entry.Source = firstNonEmpty(entry.Source, "zip")
+		entry.TrustLevel = firstNonEmpty(entry.TrustLevel, "community")
+		report := scanner.ScanInstallStaged(ctx, entry, root, func(status string) {
+			if a != nil {
+				a.log(status)
+				a.emitSkillInstallProgress(entry.Name, "scanning", status, nil)
+			}
+		})
+		result.HighestReport = higherSkillInstallScanReport(result.HighestReport, report)
+		if report != nil {
+			if key := strings.TrimSpace(entry.Name); key != "" {
+				result.ByName[key] = report
+			}
+			if key := strings.TrimSpace(dirName); key != "" {
+				result.ByDirName[key] = report
+			}
+		}
+		if err := a.admitManualSkillInstall(ctx, entry, "manual zip", report); err != nil {
+			return result, err
+		}
+	}
+	if result.HighestReport == nil {
+		entry := &corelib.NLSkillEntry{Name: name, Description: description, SkillDir: tmpDir, Source: "zip", TrustLevel: "community"}
+		result.HighestReport = scanner.ScanInstallStaged(ctx, entry, tmpDir, func(status string) {
+			if a != nil {
+				a.log(status)
+				a.emitSkillInstallProgress(name, "scanning", status, nil)
+			}
+		})
+		if result.HighestReport != nil {
+			result.ByName[name] = result.HighestReport
+			result.ByDirName[filepath.Base(tmpDir)] = result.HighestReport
+		}
+		if err := a.admitManualSkillInstall(ctx, entry, "manual zip", result.HighestReport); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func higherSkillInstallScanReport(current, next *skill.ScanReport) *skill.ScanReport {
+	if current == nil {
+		return next
+	}
+	if next == nil {
+		return current
+	}
+	if security.RiskLevelOrder[next.FinalLevel] > security.RiskLevelOrder[current.FinalLevel] {
+		return next
+	}
+	return current
+}
+
 func getToolConfigDirName(tool string) string {
 	return normalizeRemoteToolNameKind(tool).ConfigDirName()
 }
@@ -6377,11 +6438,26 @@ func (a *App) unzip(src, dest string) error {
 		return err
 	}
 	defer r.Close()
+	type zipEntry struct {
+		file      *zip.File
+		target    string
+		cleanName string
+	}
+	entries := make([]zipEntry, 0, len(r.File))
+	for _, f := range r.File {
+		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("zip contains unsupported symlink entry: %s", f.Name)
+		}
+		target, cleanName, err := safeZipEntryTarget(dest, f.Name)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, zipEntry{file: f, target: target, cleanName: cleanName})
+	}
 	// 1. Identify root directories to clean up
 	rootDirs := make(map[string]bool)
-	for _, f := range r.File {
-		path := filepath.ToSlash(f.Name)
-		parts := strings.Split(path, "/")
+	for _, entry := range entries {
+		parts := strings.Split(entry.cleanName, "/")
 		if len(parts) > 0 {
 			rootDir := parts[0]
 			if !strings.HasPrefix(rootDir, "__MACOSX") && !strings.HasPrefix(rootDir, ".") {
@@ -6397,11 +6473,9 @@ func (a *App) unzip(src, dest string) error {
 		}
 	}
 	os.MkdirAll(dest, 0755)
-	for _, f := range r.File {
-		fpath := filepath.Join(dest, f.Name)
-		if !strings.HasPrefix(fpath, filepath.Clean(dest)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal file path: %s", fpath)
-		}
+	for _, entry := range entries {
+		f := entry.file
+		fpath := entry.target
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(fpath, os.ModePerm)
 			continue
@@ -6427,6 +6501,46 @@ func (a *App) unzip(src, dest string) error {
 	}
 	return nil
 }
+
+func safeZipEntryTarget(dest, name string) (string, string, error) {
+	name = strings.ToValidUTF8(name, "")
+	slashName := strings.ReplaceAll(name, "\\", "/")
+	if slashName == "" || strings.HasPrefix(slashName, "/") || zipEntryHasDrivePrefix(slashName) || zipEntryHasColonPathComponent(slashName) || filepath.IsAbs(name) || filepath.IsAbs(filepath.FromSlash(slashName)) || filepath.VolumeName(filepath.FromSlash(slashName)) != "" {
+		return "", "", fmt.Errorf("illegal file path: %s", name)
+	}
+	cleanName := pathpkg.Clean(slashName)
+	if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, "../") {
+		return "", "", fmt.Errorf("illegal file path: %s", name)
+	}
+	destAbs, err := filepath.Abs(dest)
+	if err != nil {
+		return "", "", err
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(destAbs, filepath.FromSlash(cleanName)))
+	if err != nil {
+		return "", "", err
+	}
+	rel, err := filepath.Rel(destAbs, targetAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", "", fmt.Errorf("illegal file path: %s", name)
+	}
+	return targetAbs, cleanName, nil
+}
+
+func zipEntryHasDrivePrefix(name string) bool {
+	return len(name) >= 2 && name[1] == ':' &&
+		((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'))
+}
+
+func zipEntryHasColonPathComponent(name string) bool {
+	for _, part := range strings.Split(name, "/") {
+		if strings.Contains(part, ":") {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) InstallSkill(name, description, skillType, value, location, projectPath, toolName string) error {
 	skillKind := normalizeSkillTypeKind(skillType)
 	locationKind := normalizeSkillInstallLocationKind(location)
@@ -6436,17 +6550,36 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 	}
 	// For zip validation, we need to know if value is a path or filename
 	var fullPath string
+	var installScanReport *skill.ScanReport
+	var installScanReports *skillZipInstallScanResult
+	var zipSnapshotPath string
 	if skillKind.IsZip() {
 		if strings.Contains(value, string(os.PathSeparator)) {
 			fullPath = value
 		} else {
 			fullPath = filepath.Join(a.GetSkillsDir(toolName), value)
 		}
+		snapshot, cleanup, err := snapshotSkillZipForInstall(fullPath)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		fullPath = snapshot
+		zipSnapshotPath = snapshot
 		if err := a.validateSkillZip(fullPath); err != nil {
 			return err
 		}
+		report, err := a.scanSkillZipBeforeInstallDetailed(fullPath, name, description)
+		if err != nil {
+			return err
+		}
+		installScanReports = report
+		if report != nil {
+			installScanReport = report.HighestReport
+		}
 	}
 	configDirName := getToolConfigDirName(toolName)
+	var installedSkillDirs []string
 	// 2. Install to Tool
 	if locationKind.IsUser() {
 		if skillKind.IsAddress() {
@@ -6487,22 +6620,63 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 			// Unzip to ~/.<tool>/skills
 			home, _ := os.UserHomeDir()
 			destDir := filepath.Join(home, configDirName, "skills")
+			a.emitSkillInstallProgress(name, "installing", "Installing approved skill package.", installScanReport)
 			if err := a.unzip(fullPath, destDir); err != nil {
 				return fmt.Errorf("unzip failed: %v", err)
 			}
+			writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports)
+			installedSkillDirs = append(installedSkillDirs, candidateInstalledSkillDirs(destDir)...)
 		}
 	} else if locationKind.IsProject() {
 		if projectPath == "" {
 			return fmt.Errorf("project path required")
 		}
 		destDir := filepath.Join(projectPath, configDirName, "skills")
+		a.emitSkillInstallProgress(name, "installing", "Installing approved skill package.", installScanReport)
 		if err := a.unzip(fullPath, destDir); err != nil {
 			return fmt.Errorf("unzip failed: %v", err)
 		}
+		writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports)
+		installedSkillDirs = append(installedSkillDirs, candidateInstalledSkillDirs(destDir)...)
 	}
 	// 3. Add to App List
-	return a.AddSkill(name, description, skillType, value, toolName)
+	addSkillValue := value
+	if zipSnapshotPath != "" {
+		addSkillValue = zipSnapshotPath
+	}
+	if err := a.AddSkill(name, description, skillType, addSkillValue, toolName); err != nil {
+		cleanupImportedSkillDirs(installedSkillDirs)
+		return err
+	}
+	a.emitSkillInstallProgress(name, "done", "Skill installed successfully.", installScanReport)
+	return nil
 }
+
+func snapshotSkillZipForInstall(src string) (string, func(), error) {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return "", func() {}, fmt.Errorf("open skill zip: %w", err)
+	}
+	defer srcFile.Close()
+
+	tmp, err := os.CreateTemp("", "maclaw-skill-install-*.zip")
+	if err != nil {
+		return "", func() {}, fmt.Errorf("create skill zip snapshot: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if _, err := io.Copy(tmp, srcFile); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return "", func() {}, fmt.Errorf("copy skill zip snapshot: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return "", func() {}, fmt.Errorf("close skill zip snapshot: %w", err)
+	}
+	return tmpPath, cleanup, nil
+}
+
 func (a *App) DeleteSkill(name, toolName string) error {
 	// Prevent deletion of the hardcoded skill
 	if name == "Claude Official Documentation Skill Package" {

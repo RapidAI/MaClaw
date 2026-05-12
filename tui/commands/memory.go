@@ -19,7 +19,7 @@ import (
 // RunMemory 执行 memory 子命令。
 func RunMemory(args []string, dataDir string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui memory <list|search|recall|themes|eval|save|delete|compress|backup|auto-compress|stats|embed-status|graph|strength>")
+		return NewUsageError("usage: maclaw-tui memory <list|search|recall|themes|eval|save|delete|compress|backup|auto-compress|stats|embed-status|graph|strength|infer>")
 	}
 	switch args[0] {
 	case "list":
@@ -50,6 +50,8 @@ func RunMemory(args []string, dataDir string) error {
 		return memoryGraph(dataDir, args[1:])
 	case "strength":
 		return memoryStrength(dataDir)
+	case "infer":
+		return memoryInfer(dataDir, args[1:])
 	default:
 		return NewUsageError("unknown memory action: %s", args[0])
 	}
@@ -1070,5 +1072,76 @@ func memoryStrength(dataDir string) error {
 		fmt.Printf("%s%-24s %-10.4f %-12s %-20s %s\n",
 			marker, it.entry.ID, it.current, status, lastAccess, content)
 	}
+	return nil
+}
+
+func memoryInfer(dataDir string, args []string) error {
+	if len(args) == 0 {
+		return NewUsageError("usage: maclaw-tui memory infer <query>\n\nRuns the multi-hop inference engine on the given query and displays derived facts.")
+	}
+	query := strings.Join(args, " ")
+
+	store, err := openMemoryStore(dataDir)
+	if err != nil {
+		return err
+	}
+	defer store.Stop()
+
+	ie := store.InferenceEngine()
+	if ie == nil {
+		fmt.Println("Inference engine not available (semantic graph may be empty).")
+		return nil
+	}
+
+	expanded := memory.ExpandQuery(query)
+	if len(expanded.Entities) == 0 {
+		fmt.Printf("No entities extracted from query: %q\n", query)
+		return nil
+	}
+	fmt.Printf("Query entities: %v\n\n", expanded.Entities)
+
+	derived := ie.Infer(expanded.Entities, memory.InferenceOptions{
+		MaxDerived:      20,
+		MinConfidence:   0.40,
+		MaxVisitedFacts: 200,
+	})
+
+	if len(derived) == 0 {
+		fmt.Println("No derived facts found.")
+		fmt.Printf("\nSemantic graph stats:\n")
+		if sg := store.SemanticGraph(); sg != nil {
+			entities, facts, _ := sg.Stats()
+			fmt.Printf("  Entities: %d\n  Facts: %d\n", entities, facts)
+		}
+		return nil
+	}
+
+	fmt.Printf("Derived facts (%d):\n\n", len(derived))
+	fmt.Printf("%-20s %-15s %-20s %-10s %-30s %s\n", "SUBJECT", "PREDICATE", "OBJECT", "CONF", "RULE", "EXPLANATION")
+	fmt.Println(strings.Repeat("-", 120))
+
+	for _, df := range derived {
+		subj := df.Subject
+		if len(subj) > 18 {
+			subj = subj[:15] + "..."
+		}
+		obj := df.Object
+		if len(obj) > 18 {
+			obj = obj[:15] + "..."
+		}
+		ruleName := df.RuleName
+		if len(ruleName) > 28 {
+			ruleName = ruleName[:25] + "..."
+		}
+		fmt.Printf("%-20s %-15s %-20s %-10.0f%% %-30s %s\n",
+			subj, df.Predicate, obj, df.Confidence*100, ruleName, df.Explanation)
+	}
+
+	fmt.Printf("\nSemantic graph stats:\n")
+	if sg := store.SemanticGraph(); sg != nil {
+		entities, facts, _ := sg.Stats()
+		fmt.Printf("  Entities: %d\n  Facts: %d\n", entities, facts)
+	}
+	fmt.Printf("  Rules: %d\n", len(ie.Rules()))
 	return nil
 }

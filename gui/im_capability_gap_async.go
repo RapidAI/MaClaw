@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 )
@@ -21,15 +22,27 @@ func (h *IMMessageHandler) maybeStartAsyncCapabilityGapSearch(iteration int, vis
 }
 
 func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userID string) {
-	goCtx, goCancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer goCancel()
+	// Use a generous timeout for the search + download + install pipeline.
+	// The confirmation wait inside confirmRiskSkillInstall has its own independent
+	// timeout (confirmTimeout = 120s) managed by a cleanup goroutine. We pass
+	// a separate installCtx so that the confirmation wait is NOT bounded by the
+	// search timeout — the user can take the full confirmTimeout to respond.
+	searchCtx, searchCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	searcher := NewSkillSearcher(NewSkillMarketClient(h.app))
-	best, searchErr := searcher.SearchAndInstall(goCtx, userText)
+	best, searchErr := searcher.SearchAndInstall(searchCtx, userText)
+	searchCancel() // release timer immediately; search phase is done
 	if searchErr != nil || best == nil {
 		return
 	}
 	log.Printf("[skill-auto-async] found skill: %s (%s)", best.Name, best.Status)
-	installResult := h.installAndExecuteSkill(goCtx, best, userText, platform, userID, func(status string) {
+
+	// installAndExecuteSkill may block on user confirmation (up to confirmTimeout).
+	// Use a separate context that won't expire before the confirmation window closes.
+	// confirmTimeout (120s) + buffer for post-confirm install steps (30s) = 150s.
+	installCtx, installCancel := context.WithTimeout(context.Background(), confirmTimeout+30*time.Second)
+	defer installCancel()
+
+	installResult := h.installAndExecuteSkill(installCtx, best, userText, platform, userID, func(status string) {
 		log.Printf("[skill-auto-async] %s", status)
 	})
 	h.pendingCapabilityGap.Store(userID, &pendingCapabilityGapResult{
@@ -45,8 +58,29 @@ func (h *IMMessageHandler) runAsyncCapabilityGapSearch(userText, platform, userI
 				"name":   best.Name,
 				"result": installResult.Text,
 			})
+			h.emitAppEvent("skill-install-result", map[string]interface{}{
+				"name":    best.Name,
+				"success": true,
+				"message": fmt.Sprintf("✅ Skill「%s」安装成功。", best.Name),
+			})
 		}
 		return
 	}
 	log.Printf("[skill-auto-async] skill install/execute finished without success: %s", installResult.Text)
+	// Only emit failure feedback for cases where the user did NOT already see
+	// inline feedback from the confirmation buttons. The frontend's executeAction
+	// already shows "❌ 已拒绝安装。" when the user clicks reject, so we skip
+	// the event for user-initiated rejections to avoid duplicate messages.
+	if !installResult.SilentFailure && h.app != nil {
+		// Truncate long error text for the chat message (full text is in logs).
+		errText := installResult.Text
+		if len(errText) > 200 {
+			errText = errText[:200] + "..."
+		}
+		h.emitAppEvent("skill-install-result", map[string]interface{}{
+			"name":    best.Name,
+			"success": false,
+			"message": fmt.Sprintf("❌ Skill「%s」安装未成功：%s", best.Name, errText),
+		})
+	}
 }

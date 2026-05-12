@@ -11,6 +11,7 @@ type InstallSkillFooterProps = {
     showToastMessage: (message: string, duration?: number) => void;
     onClose: () => void;
     onInstallSelected: () => void;
+    closeDisabled?: boolean;
 };
 
 export const InstallSkillFooter = ({
@@ -23,6 +24,7 @@ export const InstallSkillFooter = ({
     showToastMessage,
     onClose,
     onInstallSelected,
+    closeDisabled = false,
 }: InstallSkillFooterProps) => (
     <div className="modal-footer" style={{ marginTop: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         {activeTool === 'claude' ? (
@@ -51,7 +53,7 @@ export const InstallSkillFooter = ({
             <div></div>
         )}
         <div style={{ display: 'flex', gap: '10px' }}>
-            <button className="btn-secondary" onClick={onClose}>{t("cancel")}</button>
+            <button className="btn-secondary" onClick={onClose} disabled={closeDisabled} style={{ opacity: closeDisabled ? 0.6 : 1 }}>{t("cancel")}</button>
             <button
                 className="btn-primary"
                 style={{ backgroundColor: 'var(--theme-success)', borderColor: 'var(--theme-success)', display: 'flex', alignItems: 'center', gap: '6px', opacity: (selectedSkillsToInstall.length === 0 || isBatchInstalling) ? 0.6 : 1 }}

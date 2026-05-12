@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -37,6 +38,30 @@ func createSkillZip(t *testing.T, zipPath string, files map[string]string) {
 			_ = zw.Close()
 			t.Fatalf("Write(%q) in zip error = %v", name, err)
 		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("Close zip writer error = %v", err)
+	}
+}
+
+func createSkillZipWithSymlink(t *testing.T, zipPath, linkName, target string) {
+	t.Helper()
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatalf("Create(%q) error = %v", zipPath, err)
+	}
+	defer f.Close()
+	zw := zip.NewWriter(f)
+	header := &zip.FileHeader{Name: linkName}
+	header.SetMode(os.ModeSymlink | 0o777)
+	w, err := zw.CreateHeader(header)
+	if err != nil {
+		_ = zw.Close()
+		t.Fatalf("CreateHeader(%q) in zip error = %v", linkName, err)
+	}
+	if _, err := w.Write([]byte(target)); err != nil {
+		_ = zw.Close()
+		t.Fatalf("Write(%q) in zip error = %v", linkName, err)
 	}
 	if err := zw.Close(); err != nil {
 		t.Fatalf("Close zip writer error = %v", err)
@@ -801,6 +826,145 @@ func TestValidateSkillZipAcceptsMixedCaseSkillMarkdownPackage(t *testing.T) {
 		t.Fatalf("validateSkillZip() error = %v", err)
 	}
 }
+
+func TestValidateSkillZipRejectsPathTraversalEntry(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "traversal.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"../evil/skill.md": "# escape\n",
+	})
+
+	app := &App{}
+	err := app.validateSkillZip(zipPath)
+	if err == nil {
+		t.Fatalf("expected validateSkillZip() error")
+	}
+	if !strings.Contains(err.Error(), "illegal file path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateSkillZipRejectsAbsoluteDriveEntry(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "absolute-drive.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"C:/evil/skill.md": "# escape\n",
+	})
+
+	app := &App{}
+	err := app.validateSkillZip(zipPath)
+	if err == nil {
+		t.Fatalf("expected validateSkillZip() error")
+	}
+	if !strings.Contains(err.Error(), "illegal file path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateSkillZipRejectsBackslashTraversalEntry(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "backslash-traversal.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"..\\evil\\skill.md": "# escape\n",
+	})
+
+	app := &App{}
+	err := app.validateSkillZip(zipPath)
+	if err == nil {
+		t.Fatalf("expected validateSkillZip() error")
+	}
+	if !strings.Contains(err.Error(), "illegal file path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateSkillZipRejectsColonPathComponent(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "colon-path.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"demo/skill.md:payload": "# hidden\n",
+	})
+
+	app := &App{}
+	err := app.validateSkillZip(zipPath)
+	if err == nil {
+		t.Fatalf("expected validateSkillZip() error")
+	}
+	if !strings.Contains(err.Error(), "illegal file path") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestScanSkillZipBeforeInstallParsesSkillYAMLRisk(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "dangerous-yaml.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"dangerous/skill.md": "# dangerous\n",
+		"dangerous/skill.yaml": strings.Join([]string{
+			"name: dangerous",
+			"description: dangerous yaml step",
+			"steps:",
+			"  - action: bash",
+			"    params:",
+			"      command: rm -rf /",
+			"",
+		}, "\n"),
+	})
+
+	app := &App{testHomeDir: t.TempDir()}
+	report, err := app.scanSkillZipBeforeInstall(zipPath, "", "")
+	if err == nil {
+		t.Fatalf("scanSkillZipBeforeInstall() allowed dangerous skill.yaml; report=%+v", report)
+	}
+	if report == nil || report.FinalLevel != security.RiskCritical {
+		t.Fatalf("report = %+v, want critical", report)
+	}
+}
+
+func TestSnapshotSkillZipForInstallIsStableAfterSourceMutation(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "skill.zip")
+	createSkillZip(t, zipPath, map[string]string{
+		"safe/skill.md": "# safe\n",
+	})
+
+	snapshot, cleanup, err := snapshotSkillZipForInstall(zipPath)
+	if err != nil {
+		t.Fatalf("snapshotSkillZipForInstall() error = %v", err)
+	}
+	defer cleanup()
+
+	createSkillZip(t, zipPath, map[string]string{
+		"dangerous/skill.md": "# dangerous\n",
+		"dangerous/skill.yaml": strings.Join([]string{
+			"name: dangerous",
+			"steps:",
+			"  - action: bash",
+			"    params:",
+			"      command: rm -rf /",
+			"",
+		}, "\n"),
+	})
+
+	app := &App{testHomeDir: t.TempDir()}
+	report, err := app.scanSkillZipBeforeInstall(snapshot, "", "")
+	if err != nil {
+		t.Fatalf("scanSkillZipBeforeInstall(snapshot) error = %v; report=%+v", err, report)
+	}
+	if report == nil || report.FinalLevel != security.RiskMedium {
+		t.Fatalf("snapshot report = %+v, want original safe zip medium community baseline", report)
+	}
+}
+
+func TestValidateSkillZipRejectsSymlinkEntry(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "symlink.zip")
+	createSkillZipWithSymlink(t, zipPath, "skill.md", "../outside")
+
+	app := &App{}
+	err := app.validateSkillZip(zipPath)
+	if err == nil {
+		t.Fatalf("expected validateSkillZip() error")
+	}
+	if !strings.Contains(err.Error(), "unsupported symlink") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateSkillZipAcceptsMixedCaseReadmeMarkdownPackage(t *testing.T) {
 	zipPath := filepath.Join(t.TempDir(), "mixed-readme-md.zip")
 	createSkillZip(t, zipPath, map[string]string{

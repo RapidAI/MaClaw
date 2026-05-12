@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 // criticalRiskConfirmResponse is sent on the response channel when the user
@@ -41,6 +43,21 @@ func (e *pendingCriticalConfirmEntry) tryResolve() bool {
 }
 
 const confirmTimeout = 120 * time.Second
+
+// buildSkillRiskPrompt formats a confirmation prompt for a risky skill
+// installation. It is shared by IM-driven and manual desktop installs.
+func buildSkillRiskPrompt(skillName, source string, level security.RiskLevel, factors []string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Security warning: Skill %q from %s was assessed as %s risk.\n", skillName, source, level)
+	if len(factors) > 0 {
+		sb.WriteString("\nRisk factors:\n")
+		for _, f := range factors {
+			fmt.Fprintf(&sb, "  - %s\n", f)
+		}
+	}
+	sb.WriteString("\nDo you want to allow this skill installation?\n")
+	return sb.String()
+}
 
 // buildCriticalRiskPrompt formats a confirmation prompt for a Critical-risk
 // skill installation.
@@ -78,13 +95,24 @@ func (h *IMMessageHandler) confirmCriticalRiskSkill(
 	platform string,
 	userID string,
 ) bool {
+	return h.confirmRiskSkillInstall(ctx, skillName, source, security.RiskCritical, factors, platform, userID)
+}
+
+func (h *IMMessageHandler) confirmRiskSkillInstall(
+	ctx context.Context,
+	skillName, source string,
+	level security.RiskLevel,
+	factors []string,
+	platform string,
+	userID string,
+) bool {
 	if platform == "" {
 		log.Printf("[critical-confirm] fail-closed: empty platform for skill %q", skillName)
 		return false
 	}
 
 	confirmID := fmt.Sprintf("crit_%d", time.Now().UnixNano())
-	promptText := buildCriticalRiskPrompt(skillName, source, factors)
+	promptText := buildSkillRiskPrompt(skillName, source, level, factors)
 
 	entry := &pendingCriticalConfirmEntry{
 		Ch: make(chan criticalRiskConfirmResponse, 1),

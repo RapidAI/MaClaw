@@ -258,20 +258,20 @@ func buildSkillRunAgentView(skill corelib.NLSkillEntry, runArgs map[string]inter
 	}
 	title := strings.TrimSpace(skill.Name)
 	if title == "" {
-		title = "Run skill"
+		title = avTr("Run skill", "运行技能")
 	}
 	description := strings.TrimSpace(skill.Description)
 	if description == "" {
-		description = "Fill required parameters before running this standard skill."
+		description = avTr("Fill required parameters before running this standard skill.", "请填写必要参数后运行此技能。")
 	}
 	return attachAgentViewSchemaVersion(map[string]interface{}{
 		"type":        "form",
 		"id":          "skill:run:" + skill.Name,
-		"title":       "Run " + title,
+		"title":       avTr("Run ", "运行 ") + title,
 		"description": description,
 		"fields":      fields,
-		"formErrors":  []string{"Required parameters are missing. Fill them here to run the skill safely."},
-		"submitLabel": "Run skill",
+		"formErrors":  []string{avTr("Required parameters are missing. Fill them here to run the skill safely.", "缺少必要参数，请在此填写后安全运行技能。")},
+		"submitLabel": avTr("Run skill", "运行技能"),
 		"meta": map[string]interface{}{
 			"source": "skill.adapter",
 			"skill":  skill.Name,
@@ -702,15 +702,15 @@ func buildSkillRunStatusAgentView(status *SkillRunStatus, runID string) map[stri
 
 func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[string]interface{} {
 	steps := []map[string]interface{}{}
-	title := "Skill running"
+	title := avTr("Skill running", "技能运行中")
 	descriptionParts := []string{"run_id: " + runID}
 	if status != nil {
 		if strings.TrimSpace(status.Skill) != "" {
-			title = "Running " + strings.TrimSpace(status.Skill)
+			title = avTr("Running ", "正在运行 ") + strings.TrimSpace(status.Skill)
 			descriptionParts = append(descriptionParts, "skill: "+strings.TrimSpace(status.Skill))
 		}
 		if strings.TrimSpace(status.Status.String()) != "" {
-			descriptionParts = append(descriptionParts, "status: "+strings.TrimSpace(status.Status.String()))
+			descriptionParts = append(descriptionParts, avTr("status: ", "状态: ")+strings.TrimSpace(status.Status.String()))
 		}
 		if status.SessionProgress != nil {
 			if text := strings.TrimSpace(firstNonEmptyMISAgentView(status.SessionProgress.CurrentTask, status.SessionProgress.ProgressSummary)); text != "" {
@@ -720,7 +720,7 @@ func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[st
 		for _, step := range status.Steps {
 			title := strings.TrimSpace(step.Action)
 			if title == "" {
-				title = fmt.Sprintf("Step %d", step.Index+1)
+				title = fmt.Sprintf(avTr("Step %d", "步骤 %d"), step.Index+1)
 			}
 			steps = append(steps, map[string]interface{}{
 				"id":          fmt.Sprintf("%d", step.Index),
@@ -737,7 +737,7 @@ func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[st
 		"description": strings.Join(descriptionParts, " | "),
 		"steps":       steps,
 		"actions": []map[string]interface{}{{
-			"label":   "Refresh",
+			"label":   avTr("Refresh", "刷新"),
 			"viewId":  "skill:status",
 			"primary": true,
 			"data": map[string]interface{}{
@@ -752,9 +752,9 @@ func buildSkillRunProgressAgentView(status *SkillRunStatus, runID string) map[st
 }
 
 func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[string]interface{} {
-	title := "Skill result"
+	title := avTr("Skill result", "技能结果")
 	if status != nil && strings.TrimSpace(status.Skill) != "" {
-		title = strings.TrimSpace(status.Skill) + " result"
+		title = strings.TrimSpace(status.Skill) + avTr(" result", " 结果")
 	}
 	resultStatus := ""
 	if status != nil {
@@ -763,12 +763,12 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 	results := []map[string]interface{}{
 		{
 			"id":       "summary",
-			"title":    "Summary",
+			"title":    avTr("Summary", "摘要"),
 			"subtitle": "run_id: " + runID,
 			"status":   resultStatus,
 			"data":     skillRunSummaryData(status, runID),
 			"actions": []map[string]interface{}{{
-				"label":   "Refresh",
+				"label":   avTr("Refresh", "刷新"),
 				"viewId":  "skill:status",
 				"primary": status != nil && status.IsRunning(),
 				"data": map[string]interface{}{
@@ -781,7 +781,7 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 		for _, step := range status.Steps {
 			stepTitle := strings.TrimSpace(firstNonEmptyMISAgentView(step.Name, step.Action))
 			if stepTitle == "" {
-				stepTitle = fmt.Sprintf("Step %d", step.Index+1)
+				stepTitle = fmt.Sprintf(avTr("Step %d", "步骤 %d"), step.Index+1)
 			}
 			data := map[string]interface{}{
 				"status":      step.Status.String(),
@@ -811,7 +811,7 @@ func buildSkillRunResultAgentView(status *SkillRunStatus, runID string) map[stri
 		"type":        "result_browser",
 		"id":          "skill:run-result:" + runID,
 		"title":       title,
-		"description": "Skill execution finished.",
+		"description": avTr("Skill execution finished.", "技能执行完成。"),
 		"results":     results,
 		"meta": map[string]interface{}{
 			"source": "skill.adapter",

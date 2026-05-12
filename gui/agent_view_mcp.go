@@ -101,7 +101,7 @@ func buildMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema m
 	}
 	tool := RegisteredTool{
 		Name:        toolName,
-		Description: "Fill MCP tool parameters before running.",
+		Description: avTr("Fill MCP tool parameters before running.", "请填写 MCP 工具参数后运行。"),
 		InputSchema: inputSchema,
 	}
 	callContext := map[string]interface{}{
@@ -112,9 +112,9 @@ func buildMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema m
 	}
 	if view := registeredToolSpecializedAgentView(tool, toolArgs, registeredToolSpecializedAgentViewOptions{
 		ViewID:      "mcp:call",
-		TitlePrefix: "Run MCP tool: ",
-		Description: "Server: " + firstNonEmptyMISAgentView(serverRef, resolvedID),
-		SubmitLabel: "Run MCP tool",
+		TitlePrefix: avTr("Run MCP tool: ", "运行 MCP 工具："),
+		Description: avTr("Server: ", "服务器：") + firstNonEmptyMISAgentView(serverRef, resolvedID),
+		SubmitLabel: avTr("Run MCP tool", "运行 MCP 工具"),
 		HiddenData: map[string]interface{}{
 			mcpAgentViewCallArgsField: callContext,
 		},
@@ -140,16 +140,16 @@ func buildMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema m
 		"value": callContext,
 	})
 	if len(formErrors) == 0 {
-		formErrors = []string{"MCP tool parameters need correction before execution."}
+		formErrors = []string{avTr("MCP tool parameters need correction before execution.", "MCP 工具参数需要修正后才能执行。")}
 	}
 	return attachAgentViewSchemaVersion(map[string]interface{}{
 		"type":        "form",
 		"id":          "mcp:call",
-		"title":       "Run MCP tool: " + toolName,
-		"description": "Server: " + firstNonEmptyMISAgentView(serverRef, resolvedID),
+		"title":       avTr("Run MCP tool: ", "运行 MCP 工具：") + toolName,
+		"description": avTr("Server: ", "服务器：") + firstNonEmptyMISAgentView(serverRef, resolvedID),
 		"fields":      fields,
 		"formErrors":  formErrors,
-		"submitLabel": "Run MCP tool",
+		"submitLabel": avTr("Run MCP tool", "运行 MCP 工具"),
 		"meta": map[string]interface{}{
 			"source": "mcp.adapter",
 			"server": firstNonEmptyMISAgentView(serverRef, resolvedID),
@@ -161,17 +161,17 @@ func buildMCPToolAgentView(serverRef, resolvedID, toolName string, inputSchema m
 func buildMCPToolResultAgentView(toolName, result string) map[string]interface{} {
 	title := strings.TrimSpace(toolName)
 	if title == "" {
-		title = "MCP tool"
+		title = avTr("MCP tool", "MCP 工具")
 	}
 	return map[string]interface{}{
 		"type":        "result_browser",
 		"id":          "mcp:result:" + title,
-		"title":       title + " result",
-		"description": "MCP tool execution completed.",
+		"title":       title + avTr(" result", " 结果"),
+		"description": avTr("MCP tool execution completed.", "MCP 工具执行完成。"),
 		"results": []map[string]interface{}{{
 			"id":     "result",
-			"title":  "Output",
-			"status": "done",
+			"title":  avTr("Output", "输出"),
+			"status": avTr("done", "完成"),
 			"data": map[string]interface{}{
 				"output": result,
 			},

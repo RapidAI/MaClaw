@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 )
 
@@ -48,11 +49,7 @@ func saveMediaToTempDir(subDir, namePrefix, userID, mediaType string, mediaData 
 	if normalizeIMMediaKind(mediaType).IsVoice() {
 		mediaData, mediaName, _ = convertVoiceToWAV(mediaData, mediaName)
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Join(home, ".maclaw", "temp", subDir)
+	dir := filepath.Join(corelib.MaclawBaseDir(), "temp", subDir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

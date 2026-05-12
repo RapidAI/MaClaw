@@ -24,7 +24,7 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -247,7 +247,7 @@ func TestStructuredRecordsCRUDAndFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	body := strings.NewReader(`{"title":"March payroll","tags":["payroll","finance"],"data":{"amount":12000,"currency":"CNY","department":"R&D","items":[{"name":"base","amount":10000}]}}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/records/finance", body)
@@ -408,7 +408,7 @@ func TestGetAdminAlerts(t *testing.T) {
 		t.Fatalf("SaveRun failed: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/alerts?kind=failed_run&limit=1", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -481,7 +481,7 @@ func TestGetAdminDashboard(t *testing.T) {
 	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_dash_1", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "dashboard.opened", ResourceType: "system", ResourceID: "dashboard", CreatedAt: now.Add(-30 * time.Minute)}); err != nil {
 		t.Fatalf("SaveAuditEvent: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -559,7 +559,7 @@ func TestGetAdminAlertsIncludesCredentialExpiry(t *testing.T) {
 		t.Fatalf("UpdateCredential far expires_at: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/alerts?kind=credential_expiring&credential_expiry_window_days=3", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -639,7 +639,7 @@ func TestGetAdminInsights(t *testing.T) {
 		t.Fatalf("SaveAuditEvent: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/insights?inactive_for_days=30&limit=5", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -688,7 +688,7 @@ func TestGetAdminInsightsRejectsInvalidQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/insights?inactive_for_days=soon", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -766,7 +766,7 @@ func TestGetAdminOverview(t *testing.T) {
 	if _, err := svc.UpdateCredential(context.Background(), tenant.ID, user.ID, expiredCred.ID, agentservice.UpdateCredentialInput{ExpiresAt: &expiredAt}); err != nil {
 		t.Fatalf("UpdateCredential expired expires_at: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/overview", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -834,7 +834,7 @@ func TestTenantDeleteCheckReportsCountsAndBlockers(t *testing.T) {
 	if err := store.SaveRun(agentservice.Run{ID: "run_delete_check", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusRunning, StartedAt: now}); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/delete-check", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -894,7 +894,7 @@ func TestUserDeleteCheckAllowsIdleUser(t *testing.T) {
 	if err := store.SaveRun(agentservice.Run{ID: "run_user_delete_check", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now, CompletedAt: &completed}); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/delete-check", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -948,7 +948,7 @@ func TestTenantRetirePlanReturnsDeleteCheckAndScopedExport(t *testing.T) {
 	if err := store.SaveRun(agentservice.Run{ID: "run_retire_plan", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: sess.ID, Status: agentservice.RunStatusSucceeded, StartedAt: now, CompletedAt: &completed}); err != nil {
 		t.Fatalf("SaveRun: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/retire-plan?include_audit=false", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1005,7 +1005,7 @@ func TestUserRetirePlanReturnsScopedExport(t *testing.T) {
 	if err := store.SaveMessage(agentservice.Message{ID: "msg_user_retire_plan", TenantID: tenant.ID, UserID: user1.ID, InstanceID: inst.ID, SessionID: sess.ID, Role: agentservice.MessageRoleUser, Content: "hello", CreatedAt: now}); err != nil {
 		t.Fatalf("SaveMessage: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user1.ID+"/retire-plan?include_messages=true", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1037,7 +1037,7 @@ func TestDeleteTenantRequiresExplicitConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID, nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1074,7 +1074,7 @@ func TestDeleteUserRequiresExplicitConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID, nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1107,7 +1107,7 @@ func TestProtectedTenantDeleteCheckAndDeleteBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/delete-check", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -1149,7 +1149,7 @@ func TestProtectedUserBlocksUserAndTenantDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/delete-check", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -1225,7 +1225,7 @@ func TestAdminCanListTenantsAndUsers(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/admin/tenants", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1291,7 +1291,7 @@ func TestAdminListTenantsSupportsFilters(t *testing.T) {
 		t.Fatalf("UpdateTenant beta: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants?status=disabled", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1352,7 +1352,7 @@ func TestAdminListAllUsersAcrossTenantsSupportsFilters(t *testing.T) {
 	if _, err := svc.UpdateUser(context.Background(), tenantB.ID, userB.ID, agentservice.UpdateUserInput{Status: &disabled}); err != nil {
 		t.Fatalf("UpdateUser B: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users?name=alpha", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -1411,7 +1411,7 @@ func TestAdminListAllUsersRejectsInvalidStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/users?status=paused", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1443,7 +1443,7 @@ func TestAdminListUsersSupportsFilters(t *testing.T) {
 		t.Fatalf("UpdateUser beta: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users?status=disabled", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1502,7 +1502,7 @@ func TestMetricsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -1617,7 +1617,7 @@ func TestReadyEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -1642,7 +1642,7 @@ func TestReadyEndpointReturnsUnavailableWhenDataRootMissing(t *testing.T) {
 	if err := os.RemoveAll(dataRoot); err != nil {
 		t.Fatalf("RemoveAll data root: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -1686,7 +1686,7 @@ func TestAdminSystemReadinessEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/readiness", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1720,7 +1720,7 @@ func TestAdminSystemReadinessEndpointReturnsUnavailableWhenDataRootMissing(t *te
 	if err := os.RemoveAll(dataRoot); err != nil {
 		t.Fatalf("RemoveAll data root: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/readiness", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -1751,7 +1751,7 @@ func TestAdminSystemReadinessEndpointRequiresAdminSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/readiness", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -1765,7 +1765,7 @@ func TestSystemEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	for _, path := range []string{"/health", "/livez"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -1817,7 +1817,7 @@ func TestAdminCanCreateGeneratedCredentialOneTimeReveal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	expiresAt := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
 	body := bytes.NewBufferString(fmt.Sprintf(`{"name":"Generated API","expires_at":"%s"}`, expiresAt.Format(time.RFC3339Nano)))
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials", body)
@@ -1894,7 +1894,7 @@ func TestAdminCanFilterCredentials(t *testing.T) {
 		t.Fatalf("UpdateCredential suspended: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	listCredentials := func(query string) []agentservice.Credential {
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials"+query, nil)
 		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -1950,7 +1950,7 @@ func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 		t.Fatalf("CreateCredential: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"/credentials", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -2008,7 +2008,7 @@ func TestAdminCredentialExpireViaPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -2092,7 +2092,7 @@ func TestAdminPaginationForTenantsUsersAndCredentials(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	var tenantsPage struct {
 		Items      []agentservice.Tenant `json:"items"`
@@ -2199,7 +2199,7 @@ func TestAdminCanListAuditEvents(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/admin/audit-events?tenant_id="+tenant.ID+"&action=user.created", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -2310,7 +2310,7 @@ func TestListRunsFiltersByStatus(t *testing.T) {
 		t.Fatalf("Issue token: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/runs?status=failed", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -2364,7 +2364,7 @@ func TestListRunsFiltersByResponseSourceAndWaitingForUser(t *testing.T) {
 		t.Fatalf("Issue token: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/runs?response_source=ask_user&waiting_for_user=true", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -2423,7 +2423,7 @@ func TestListMessagesFiltersByRoleAndSince(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/messages?role=assistant&since=2026-04-24T10:02:00Z", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -2491,7 +2491,7 @@ func TestGetInstanceSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/summary", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -2629,7 +2629,7 @@ func TestGetTenantSummary(t *testing.T) {
 		t.Fatalf("UpdateCredential expired expires_at: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/summary", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -2715,7 +2715,7 @@ func TestCreateInstanceReturnsTooManyRequestsWhenQuotaExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	body := `{"name":"first"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -2805,7 +2805,7 @@ func TestGetUsageSummary(t *testing.T) {
 		t.Fatalf("Issue token: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/usage/summary", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -2894,7 +2894,7 @@ func TestTokenRateLimitUsesClientIPNotSourcePort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	server.authLimiter = newAuthLimiter(1, time.Minute)
 
 	body := []byte(`{"api_key":"missing","api_secret":"wrong"}`)
@@ -2920,7 +2920,7 @@ func TestFailedTokenAttemptCreatesAuditEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest("POST", "/api/v1/auth/token", bytes.NewReader([]byte(`{"api_key":"missing-key","api_secret":"wrong"}`)))
 	req.RemoteAddr = "203.0.113.9:40123"
@@ -2950,7 +2950,7 @@ func TestTokenFailureThresholdTriggersTemporaryLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	server.authLimiter = newAuthLimiter(100, time.Minute)
 
 	for i := 0; i < 4; i++ {
@@ -3002,7 +3002,7 @@ func TestGetInstanceCapabilities(t *testing.T) {
 		t.Fatalf("Issue token: %v", err)
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/capabilities", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -3052,7 +3052,7 @@ func TestListSkillsSupportsNameCursorPagination(t *testing.T) {
 		}
 	}
 
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	var page struct {
 		Items      []corelib.NLSkillEntry `json:"items"`
 		Limit      int                    `json:"limit"`
@@ -3342,7 +3342,7 @@ func newMCPAuthenticatedServer(t *testing.T) (string, string, string, *HTTPServe
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	return tenant.ID, user.ID, token, NewHTTPServer(svc, "admin-secret")
+	return tenant.ID, user.ID, token, NewHTTPServer(svc, "admin-secret", nil)
 }
 
 func TestLocalMCPHelperProcess(t *testing.T) {
@@ -3408,7 +3408,7 @@ func TestCancelRunEndpointCancelsRunningExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	resultCh := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -3498,7 +3498,7 @@ func TestUpdateInstanceEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	body := bytes.NewBufferString(`{"name":"Renamed Instance","description":"new desc","metadata":{"tier":"prod","region":"cn"}}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/instances/"+inst.ID, body)
@@ -3549,7 +3549,7 @@ func TestUpdateSessionEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	body := bytes.NewBufferString(`{"title":"Renamed","metadata":{"env":"prod","region":"cn"}}`)
 	req := httptest.NewRequest(http.MethodPatch, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID, body)
@@ -3601,7 +3601,7 @@ func TestArchiveSessionLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/archive", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -3713,7 +3713,7 @@ func TestDeleteSessionRemovesMessagesAndRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -3772,7 +3772,7 @@ func TestDeleteInstanceRemovesRuntimeAndChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/v1/instances/"+inst.ID, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -3821,7 +3821,7 @@ func TestRunEventsStreamPublishesRunningAndDoneSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	httpSrv := httptest.NewServer(server.Handler())
 	defer httpSrv.Close()
 
@@ -3943,7 +3943,7 @@ func TestSkillMarketAccountEndpointReturnsValidationError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/skill-market/account", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -3986,7 +3986,7 @@ func TestListRunsRejectsInvalidStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runs?status=done", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -4026,7 +4026,7 @@ func TestListMessagesRejectsInvalidRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/sessions/"+sess.ID+"/messages?role=tool", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -4062,7 +4062,7 @@ func TestListSessionsRejectsInvalidIncludeArchived(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/sessions?include_archived=maybe", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -4098,7 +4098,7 @@ func TestListRunsRejectsInvalidResponseSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/runs?response_source=assistant", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
@@ -4113,7 +4113,7 @@ func TestAdminListTenantsRejectsInvalidStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants?status=paused", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -4132,7 +4132,7 @@ func TestAdminListUsersRejectsInvalidStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/tenants/"+tenant.ID+"/users?status=paused", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()

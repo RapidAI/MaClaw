@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestDataSrvStructuredDataKeepsExportedContractsInCorelib(t *testing.T) {
@@ -293,7 +294,7 @@ func TestWebConsoleHasProfessionalBilingualLocalization(t *testing.T) {
 			t.Fatalf("web console bilingual localization missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"�", "涓", "鎶", "閲", "鐘"} {
+	for _, forbidden := range []string{string(utf8.RuneError), "涓", "鎶", "閲", "鐘"} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("web console contains likely mojibake marker %q", forbidden)
 		}

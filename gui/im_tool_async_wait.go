@@ -18,12 +18,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -38,8 +38,7 @@ var localBgTaskMgrOnce sync.Once
 // Thread-safe via sync.Once.
 func (h *IMMessageHandler) ensureLocalBgTaskMgr() *coretool.LocalBackgroundTaskManager {
 	localBgTaskMgrOnce.Do(func() {
-		home, _ := os.UserHomeDir()
-		logDir := filepath.Join(home, ".maclaw", "data", "bg_tasks")
+		logDir := filepath.Join(corelib.MaclawBaseDir(), "data", "bg_tasks")
 		h.localBgTaskMgr = coretool.NewLocalBackgroundTaskManager(logDir)
 	})
 	return h.localBgTaskMgr

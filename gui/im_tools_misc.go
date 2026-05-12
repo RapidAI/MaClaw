@@ -297,6 +297,8 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		return fmt.Sprintf("安装失败 (%s): %s", sourceLabel, err.Error())
 	}
 
+	var installScanReport *cskill.ScanReport
+
 	// Security review: pattern scan (hard floor) + agent scan (upgrade only).
 	// Developer mode: skip entirely.
 	if !h.isSecurityDeveloperMode() {
@@ -307,11 +309,27 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		}
 
 		scanner := NewSkillSecurityScanner(h.app, nil)
-		scanReport := scanner.ScanStaged(ctx, entry, scanDir, func(status string) {
+		scanReport := scanner.ScanInstallStaged(ctx, entry, scanDir, func(status string) {
 			log.Printf("[skill-install] %s: %s", entry.Name, status)
 		})
+		installScanReport = scanReport
 
-		if scanReport.IsDangerous() || scanReport.NeedsUserReview() {
+		if scanReport.IsDangerous() {
+			cskill.CleanupStaging(stagingDir)
+			if h.getAuditLog() != nil {
+				_ = h.getAuditLog().Log(security.AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       security.AuditActionHubSkillReject,
+					ToolName:     "hub_skill_install",
+					RiskLevel:    security.RiskCritical,
+					PolicyAction: security.PolicyDeny,
+					Result:       fmt.Sprintf("pre-install policy rejected critical skill %s: %s", entry.Name, scanReport.Summary),
+				})
+			}
+			return FormatScanReportForUser(scanReport, entry.Name) +
+				fmt.Sprintf("\nSkill %q was rejected by security policy before installation.", entry.Name)
+		}
+		if scanReport.NeedsUserReview() {
 			platform := ""
 			if h.currentLoopCtx != nil {
 				platform = h.currentLoopCtx.Platform
@@ -328,22 +346,18 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 				allFactors = append(allFactors, f.Description)
 			}
 
-			confirmed := h.confirmCriticalRiskSkill(
-				confirmCtx, entry.Name, hubURL, allFactors, platform, h.lastUserID,
+			confirmed := h.confirmRiskSkillInstall(
+				confirmCtx, entry.Name, hubURL, scanReport.FinalLevel, allFactors, platform, h.lastUserID,
 			)
 
 			if !confirmed {
 				cskill.CleanupStaging(stagingDir) // reject → clean up staging
-				riskLevel := security.RiskHigh
-				if scanReport.IsDangerous() {
-					riskLevel = security.RiskCritical
-				}
 				if h.getAuditLog() != nil {
 					_ = h.getAuditLog().Log(security.AuditEntry{
 						Timestamp:    time.Now(),
 						Action:       security.AuditActionHubSkillReject,
 						ToolName:     "hub_skill_install",
-						RiskLevel:    riskLevel,
+						RiskLevel:    scanReport.FinalLevel,
 						PolicyAction: security.PolicyDeny,
 						Result:       fmt.Sprintf("user rejected skill %s: %s", entry.Name, scanReport.Summary),
 					})
@@ -367,6 +381,7 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	}
 
 	// Commit staging → final location.
+	committedDir := ""
 	if stagingDir != "" {
 		finalDir, commitErr := cskill.CommitStaging(stagingDir, entry.Name)
 		if commitErr != nil {
@@ -374,15 +389,32 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			return fmt.Sprintf("安装失败（提交到最终目录）: %s", commitErr.Error())
 		}
 		entry.SkillDir = finalDir
+		committedDir = finalDir
+	}
+	preNormalizeScanHash := ""
+	if installScanReport != nil {
+		if hash, err := skillContentHash(entry); err == nil {
+			preNormalizeScanHash = hash
+		} else {
+			log.Printf("[skill-install] failed to hash approved pre-normalize skill %s: %v", entry.Name, err)
+		}
 	}
 
 	// Normalize downloaded skills before registration: repair portable paths,
 	// remove packaging-only backups, and reload the disk definition so runtime
 	// uses the improved version rather than the raw download snapshot.
 	entry = h.app.normalizeInstalledSkill(entry)
+	if installScanReport != nil && preNormalizeScanHash != "" {
+		if err := writeSkillScanCacheForReportStatus(entry, entry.SkillDir, preNormalizeScanHash, installScanReport, skillScanCacheStatusAllowed); err != nil {
+			log.Printf("[skill-install] failed to write install scan cache for %s: %v", entry.Name, err)
+		}
+	}
 
 	// Register locally.
 	if err := h.getSkillExecutor().Register(*entry); err != nil {
+		if committedDir != "" {
+			_ = os.RemoveAll(committedDir)
+		}
 		return fmt.Sprintf("注册失败: %s", err.Error())
 	}
 	go h.appInstallSkillDepsIfMissing(entry.SkillDir, entry.Name)
@@ -396,12 +428,20 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	// Audit log
 	_ = h.getAuditLog() // ensure
 	if h.getAuditLog() != nil {
+		riskLevel := security.RiskLow
+		policyAction := security.PolicyAllow
+		if installScanReport != nil {
+			riskLevel = installScanReport.FinalLevel
+			if installScanReport.NeedsUserReview() {
+				policyAction = security.PolicyUserOverride
+			}
+		}
 		_ = h.getAuditLog().Log(security.AuditEntry{
 			Timestamp:    time.Now(),
 			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
-			RiskLevel:    security.RiskLow,
-			PolicyAction: security.PolicyAllow,
+			RiskLevel:    riskLevel,
+			PolicyAction: policyAction,
 			Result:       fmt.Sprintf("installed skill %s (%s) from %s, trust: %s", entry.Name, skillID, hubURL, entry.TrustLevel),
 		})
 	}

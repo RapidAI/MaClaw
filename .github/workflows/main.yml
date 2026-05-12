@@ -257,7 +257,10 @@ jobs:
           foreach ($arch in @('amd64','arm64')) {
             $env:GOOS='windows'; $env:GOARCH=$arch; $env:CGO_ENABLED='0'
             go build -ldflags $srvLdflags -o "dist/maclawsrv_${arch}.exe" ./MaClawSrv/
-            go build -ldflags $dataSrvLdflags -o "dist/maclaw-data-srv_${arch}.exe" ./cmd/maclaw-data-srv/
+            # datasrv is a separate Go module under datasrv/, build from that directory
+            Push-Location datasrv
+            go build -ldflags $dataSrvLdflags -o "../dist/maclaw-data-srv_${arch}.exe" ./cmd/maclaw-data-srv/
+            Pop-Location
           }
           # srvdemo: Wails GUI app (pre-committed frontend, no npm build needed)
           # amd64 with CGO (native WebView)
@@ -497,8 +500,9 @@ jobs:
           for ARCH in amd64 arm64; do
             CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
               go build -ldflags "$SRV_LDFLAGS" -o "dist/maclawsrv_${ARCH}_darwin" ./MaClawSrv/
-            CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
-              go build -ldflags "$DATA_SRV_LDFLAGS" -o "dist/maclaw-data-srv_${ARCH}_darwin" ./cmd/maclaw-data-srv/
+            # datasrv is a separate Go module under datasrv/, build from that directory
+            (cd datasrv && CGO_ENABLED=0 GOOS=darwin GOARCH=$ARCH \
+              go build -ldflags "$DATA_SRV_LDFLAGS" -o "../dist/maclaw-data-srv_${ARCH}_darwin" ./cmd/maclaw-data-srv/)
           done
           # srvdemo: Wails GUI app (pre-committed frontend)
           for ARCH in amd64 arm64; do
@@ -904,8 +908,9 @@ jobs:
           for ARCH in amd64 arm64; do
             CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
               go build -ldflags "$SRV_LDFLAGS" -o "dist/maclawsrv_${ARCH}_linux" ./MaClawSrv/
-            CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
-              go build -ldflags "$DATA_SRV_LDFLAGS" -o "dist/maclaw-data-srv_${ARCH}_linux" ./cmd/maclaw-data-srv/
+            # datasrv is a separate Go module under datasrv/, build from that directory
+            (cd datasrv && CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+              go build -ldflags "$DATA_SRV_LDFLAGS" -o "../dist/maclaw-data-srv_${ARCH}_linux" ./cmd/maclaw-data-srv/)
           done
           # srvdemo: Wails GUI app (pre-committed frontend), needs CGO for WebView
           CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \

@@ -198,15 +198,11 @@ func main() {
 	}
 }
 
-// initLogFile sets up log output to ~/.maclaw/logs/maclaw.log (with rotation)
+// initLogFile sets up log output to <MaclawBaseDir>/logs/maclaw.log (with rotation)
 // while keeping stderr as a fallback. Logs are rotated when the file exceeds
 // 10 MB; the previous log is kept as maclaw.log.1.
 func initLogFile() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-	dir := filepath.Join(home, ".maclaw", "logs")
+	dir := corelib.MaclawLogsDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}

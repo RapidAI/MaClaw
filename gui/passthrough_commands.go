@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type PassthroughParam struct {
@@ -97,11 +99,7 @@ var (
 )
 
 func defaultPassthroughRegistryPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil || strings.TrimSpace(home) == "" {
-		return filepath.Join(os.TempDir(), "maclaw-passthrough", "commands.json")
-	}
-	return filepath.Join(home, ".maclaw", "passthrough", "commands.json")
+	return filepath.Join(corelib.MaclawBaseDir(), "passthrough", "commands.json")
 }
 
 func newPassthroughRegistry(path string) *PassthroughRegistry {

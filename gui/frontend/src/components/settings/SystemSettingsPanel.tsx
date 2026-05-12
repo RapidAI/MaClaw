@@ -1,5 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { SaveConfig } from '../../../wailsjs/go/main/App';
+import { useState, useEffect } from 'react';
+import { SaveConfig, SetDataDir } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 import { SystemDiagnosticsTable } from './SystemDiagnosticsTable';
 
@@ -35,6 +36,39 @@ const emptyValue = (lang: string, kind: 'inactive' | 'unset' | 'generated') => {
 };
 
 export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, saveRemoteConfigField, showToastMessage }: SystemSettingsPanelProps) => {
+    const [dataDirInput, setDataDirInput] = useState(config?.data_dir || '');
+    const [dataDirSaving, setDataDirSaving] = useState(false);
+
+    // Sync input value when config loads asynchronously.
+    useEffect(() => {
+        if (config?.data_dir !== undefined) {
+            setDataDirInput(config.data_dir || '');
+        }
+    }, [config?.data_dir]);
+
+    const handleSaveDataDir = async () => {
+        if (!config) return;
+        setDataDirSaving(true);
+        try {
+            const errMsg = await SetDataDir(dataDirInput.trim());
+            if (errMsg) {
+                showToastMessage(errMsg);
+            } else {
+                const newConfig = new main.AppConfig({ ...config, data_dir: dataDirInput.trim() } as any);
+                setConfig(newConfig);
+                showToastMessage(textForLang(lang,
+                    'Data directory updated. Please restart maclaw for the change to take effect.',
+                    '数据目录已更新，请重启 maclaw 后生效。',
+                    '資料目錄已更新，請重啟 maclaw 後生效。'
+                ));
+            }
+        } catch (err: any) {
+            showToastMessage(err?.message || String(err));
+        } finally {
+            setDataDirSaving(false);
+        }
+    };
+
     const diagnostics: Array<[string, string]> = [
         ['Machine ID', config?.remote_machine_id || emptyValue(lang, 'inactive')],
         ['User ID', config?.remote_user_id || emptyValue(lang, 'inactive')],
@@ -135,6 +169,37 @@ export const SystemSettingsPanel = ({ config, setConfig, lang, audioDevices, sav
                         <button type="button" onClick={audioDevices.requestLabels} style={{ border: '1px solid var(--theme-border)', background: 'transparent', color: 'var(--theme-primary)', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer', fontSize: '0.68rem' }}>
                             {textForLang(lang, 'Show device names', '\u6388\u6743\u663e\u793a\u8bbe\u5907\u540d\u79f0', '\u6388\u6b0a\u986f\u793a\u88dd\u7f6e\u540d\u7a31')}
                         </button>
+                    )}
+                </div>
+            </div>
+
+            <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
+                <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
+                    {textForLang(lang, 'Data Directory', '数据目录', '資料目錄')}
+                </h4>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', maxWidth: '600px' }}>
+                    <input
+                        className="form-input"
+                        type="text"
+                        style={{ flex: 1 }}
+                        placeholder={textForLang(lang, 'Default: ~/.maclaw', '默认: ~/.maclaw', '預設: ~/.maclaw')}
+                        value={dataDirInput}
+                        onChange={(e) => setDataDirInput(e.target.value)}
+                    />
+                    <button
+                        type="button"
+                        onClick={handleSaveDataDir}
+                        disabled={dataDirSaving}
+                        style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-primary)', color: '#fff', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', opacity: dataDirSaving ? 0.6 : 1 }}
+                    >
+                        {dataDirSaving ? '...' : textForLang(lang, 'Save', '保存', '儲存')}
+                    </button>
+                </div>
+                <div style={{ marginTop: '6px', fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.5 }}>
+                    {textForLang(lang,
+                        'Set a custom directory for all maclaw data (memories, logs, skills, etc.). config.json always stays at ~/.maclaw. Changes take effect after restart.',
+                        '设置自定义数据目录（记忆、日志、技能等）。config.json 始终保留在 ~/.maclaw 下。修改后重启生效，数据将自动迁移。',
+                        '設定自訂資料目錄（記憶、日誌、技能等）。config.json 始終保留在 ~/.maclaw 下。修改後重啟生效，資料將自動遷移。'
                     )}
                 </div>
             </div>

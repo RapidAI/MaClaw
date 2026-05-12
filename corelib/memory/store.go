@@ -41,6 +41,7 @@ type Store struct {
 	gating           *RecallGating
 	partMgr          *partitionManager            // category-based partitioned persistence
 	lastSemanticHits map[string]SemanticSearchHit // debug: last semantic recall explanation by entry ID
+	lastDerivedFacts []DerivedFact                // debug: last inference engine results
 
 	// --- Project index ---
 	projIndex     *ProjectIndex  // aggregated project metadata for search
@@ -55,6 +56,9 @@ type Store struct {
 
 	// --- Online extractor (Mem0-style incremental extraction) ---
 	onlineExtractor *OnlineExtractor // real-time per-turn extraction pipeline
+
+	// --- Multi-hop inference engine ---
+	inferenceEngine *InferenceEngine // rule-based multi-hop fact reasoning
 
 	// --- Async semantic dedup ---
 	// pendingDedup holds (newEntryID, candidateEntryID) pairs that need
@@ -1336,6 +1340,8 @@ func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
 	}
 	if s.semanticGraph != nil {
 		s.semanticGraph.Rebuild(s.entries)
+		// Rebuild inference engine whenever semantic graph changes.
+		s.inferenceEngine = NewInferenceEngine(s.semanticGraph, nil)
 	}
 	if s.projIndex != nil {
 		s.projIndex.Rebuild(s.entries)
@@ -1444,6 +1450,29 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		}) {
 			semanticScores[hit.EntryID] = hit.Score
 			semanticHitDebug[hit.EntryID] = hit
+		}
+	}
+	// Multi-hop inference: derive implicit facts from the semantic graph.
+	// Note: s.inferenceEngine is read without s.mu — same pattern as s.semanticGraph
+	// above. Pointer read is safe on 64-bit (atomic at hardware level). Worst case
+	// is reading a stale engine (gives slightly outdated results) or nil (no results).
+	var derivedFacts []DerivedFact
+	if s.inferenceEngine != nil && len(expanded.Entities) > 0 {
+		derivedFacts = s.inferenceEngine.Infer(expanded.Entities, InferenceOptions{
+			Now:             time.Now(),
+			OwnerID:         firstOwnerID(ownerID...),
+			ProjectPath:     projectPath,
+			MaxDerived:      10,
+			MinConfidence:   0.50,
+			MaxVisitedFacts: 200,
+		})
+		// Boost source entries of derived facts so they rank higher.
+		for _, df := range derivedFacts {
+			for _, sf := range df.SourceFacts {
+				if sf.EntryID != "" {
+					semanticScores[sf.EntryID] += df.Confidence * 1.5
+				}
+			}
 		}
 	}
 	s.mu.RLock()
@@ -1560,6 +1589,7 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	}
 	s.mu.Lock()
 	s.lastSemanticHits = finalSemanticHits
+	s.lastDerivedFacts = derivedFacts
 	s.mu.Unlock()
 	return result
 }
@@ -2553,6 +2583,18 @@ func (s *Store) EntityIndex() *EntityIndex { return s.entityIndex }
 
 // SemanticGraph returns the typed Entity/Fact/Memory graph for relation-aware recall.
 func (s *Store) SemanticGraph() *SemanticGraph { return s.semanticGraph }
+
+// InferenceEngine returns the multi-hop reasoning engine (may be nil if graph is nil).
+func (s *Store) InferenceEngine() *InferenceEngine { return s.inferenceEngine }
+
+// LastDerivedFacts returns the derived facts from the most recent RecallDynamic call.
+func (s *Store) LastDerivedFacts() []DerivedFact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]DerivedFact, len(s.lastDerivedFacts))
+	copy(out, s.lastDerivedFacts)
+	return out
+}
 
 // LastSemanticHits returns the semantic graph explanations from the most recent RecallDynamic call.
 func (s *Store) LastSemanticHits() map[string]SemanticSearchHit {

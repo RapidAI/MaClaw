@@ -146,9 +146,24 @@ func (d *CapabilityGapDetector) Resolve(
 
 		// Security review: pattern scan (hard floor) + agent scan (upgrade only).
 		// Developer mode: skip security review entirely.
+		var githubScanReport *cskill.ScanReport
 		if !isDeveloper {
 			scanner := NewSkillSecurityScanner(d.app, nil)
-			scanReport := scanner.ScanStaged(ctx, imported, imported.SkillDir, sendStatus)
+			scanReport := scanner.ScanInstallStaged(ctx, imported, imported.SkillDir, sendStatus)
+			githubScanReport = scanReport
+			if scanReport.IsDangerous() {
+				if d.auditLog != nil {
+					_ = d.auditLog.Log(security.AuditEntry{
+						Timestamp:    time.Now(),
+						Action:       security.AuditActionHubSkillReject,
+						ToolName:     "github_skill_install",
+						RiskLevel:    security.RiskCritical,
+						PolicyAction: security.PolicyDeny,
+						Result:       fmt.Sprintf("pre-install policy rejected critical github skill %s: %s", imported.Name, scanReport.Summary),
+					})
+				}
+				return "", "", fmt.Errorf("GitHub Skill security scan rejected critical risk before installation")
+			}
 			if scanReport.NeedsUserReview() {
 				riskDetails := FormatScanReportForUser(scanReport, imported.Name)
 				confirmed := false
@@ -180,6 +195,9 @@ func (d *CapabilityGapDetector) Resolve(
 					})
 				}
 			}
+			if err := writeSkillScanCacheForReportStatus(imported, imported.SkillDir, "", scanReport, skillScanCacheStatusAllowed); err != nil && d.app != nil {
+				d.app.log(fmt.Sprintf("[capability-gap] failed to write install scan cache for %s: %v", imported.Name, err))
+			}
 		}
 
 		// Override source to indicate auto-installation by CapabilityGapDetector.
@@ -191,12 +209,20 @@ func (d *CapabilityGapDetector) Resolve(
 
 		// Audit log for GitHub install.
 		if d.auditLog != nil {
+			riskLevel := security.RiskLow
+			policyAction := security.PolicyAllow
+			if githubScanReport != nil {
+				riskLevel = githubScanReport.FinalLevel
+				if githubScanReport.NeedsUserReview() {
+					policyAction = security.PolicyUserOverride
+				}
+			}
 			_ = d.auditLog.Log(security.AuditEntry{
 				Timestamp:    time.Now(),
 				Action:       security.AuditActionHubSkillInstall,
 				ToolName:     "github_skill_install",
-				RiskLevel:    security.RiskLow,
-				PolicyAction: security.PolicyAllow,
+				RiskLevel:    riskLevel,
+				PolicyAction: policyAction,
 				Result:       fmt.Sprintf("installed github skill %s from %s", imported.Name, ghCandidates[0].RepoURL),
 			})
 		}
@@ -211,18 +237,38 @@ func (d *CapabilityGapDetector) Resolve(
 		return "", "", nil
 	}
 
-	// Step 4: Download / install Skill.
+	// Step 4: Download Skill into staging; final install happens after scan.
 	sendStatus(fmt.Sprintf("正在安装 Skill: %s ...", chosen.Name))
-	skill, err := d.hubClient.Install(ctx, chosen.ID, chosen.HubURL)
+	stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(chosen.ID, chosen.Name, "capability-gap-skill"))
 	if err != nil {
+		return "", "", fmt.Errorf("create skill staging dir: %w", err)
+	}
+	skill, err := d.hubClient.InstallToDir(ctx, chosen.ID, chosen.HubURL, stagingDir)
+	if err != nil {
+		cskill.CleanupStaging(stagingDir)
 		return "", "", fmt.Errorf("install skill: %w", err)
 	}
 
 	// Step 5: Security review: pattern scan (hard floor) + agent scan (upgrade only).
 	// Developer mode: skip security review entirely.
+	var scanReport *cskill.ScanReport
 	if !isDeveloper {
 		scanner := NewSkillSecurityScanner(d.app, nil)
-		scanReport := scanner.ScanStaged(ctx, skill, skill.SkillDir, sendStatus)
+		scanReport = scanner.ScanInstallStaged(ctx, skill, stagingDir, sendStatus)
+		if scanReport.IsDangerous() {
+			cskill.CleanupStaging(stagingDir)
+			if d.auditLog != nil {
+				_ = d.auditLog.Log(security.AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       security.AuditActionHubSkillReject,
+					ToolName:     "hub_skill_install",
+					RiskLevel:    security.RiskCritical,
+					PolicyAction: security.PolicyDeny,
+					Result:       fmt.Sprintf("pre-install policy rejected critical skill %s: %s", chosen.Name, scanReport.Summary),
+				})
+			}
+			return "", "", fmt.Errorf("Skill security scan rejected critical risk before installation")
+		}
 		if scanReport.NeedsUserReview() {
 			riskDetails := FormatScanReportForUser(scanReport, chosen.Name)
 			confirmed := false
@@ -231,6 +277,7 @@ func (d *CapabilityGapDetector) Resolve(
 				confirmed = d.confirmCallback(chosen.Name, riskDetails)
 			}
 			if !confirmed {
+				cskill.CleanupStaging(stagingDir)
 				if d.auditLog != nil {
 					_ = d.auditLog.Log(security.AuditEntry{
 						Timestamp:    time.Now(),
@@ -256,11 +303,35 @@ func (d *CapabilityGapDetector) Resolve(
 		}
 	}
 
+	finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
+	if err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return "", "", fmt.Errorf("commit staged skill: %w", err)
+	}
+	skill.SkillDir = finalDir
+	preNormalizeScanHash := ""
+	if scanReport != nil {
+		if hash, err := skillContentHash(skill); err == nil {
+			preNormalizeScanHash = hash
+		} else if d.app != nil {
+			d.app.log(fmt.Sprintf("[capability-gap] failed to hash approved pre-normalize skill %s: %v", skill.Name, err))
+		}
+	}
+	if d.app != nil {
+		skill = d.app.normalizeInstalledSkill(skill)
+	}
+	if scanReport != nil && preNormalizeScanHash != "" {
+		if err := writeSkillScanCacheForReportStatus(skill, skill.SkillDir, preNormalizeScanHash, scanReport, skillScanCacheStatusAllowed); err != nil && d.app != nil {
+			d.app.log(fmt.Sprintf("[capability-gap] failed to write install scan cache for %s: %v", skill.Name, err))
+		}
+	}
+
 	// Step 6: Register to local SkillExecutor.
 	// Override source to indicate auto-installation by CapabilityGapDetector.
 	skill.Source = "auto_hub"
 	sendStatus("正在注册 Skill...")
 	if err := d.skillExecutor.Register(*skill); err != nil {
+		_ = os.RemoveAll(finalDir)
 		return "", "", fmt.Errorf("register skill: %w", err)
 	}
 
@@ -274,12 +345,20 @@ func (d *CapabilityGapDetector) Resolve(
 		if execErr != nil {
 			auditResult = execErr.Error()
 		}
+		riskLevel := security.RiskLow
+		policyAction := security.PolicyAllow
+		if scanReport != nil {
+			riskLevel = scanReport.FinalLevel
+			if scanReport.NeedsUserReview() {
+				policyAction = security.PolicyUserOverride
+			}
+		}
 		_ = d.auditLog.Log(security.AuditEntry{
 			Timestamp:    time.Now(),
 			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     "hub_skill_install",
-			RiskLevel:    security.RiskLow,
-			PolicyAction: security.PolicyAllow,
+			RiskLevel:    riskLevel,
+			PolicyAction: policyAction,
 			Result:       fmt.Sprintf("installed and executed skill %s from %s: %s", skill.Name, chosen.HubURL, auditResult),
 		})
 	}

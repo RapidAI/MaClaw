@@ -158,6 +158,29 @@ func TestPatternScan_DoesNotMutateEntry(t *testing.T) {
 }
 
 // 闁冲厜鍋撻柍鍏夊亾 ScanStaged end-to-end with mock LLM 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
+func TestScanInstallStaged_IgnoresPackageTrustLevel(t *testing.T) {
+	scanner := NewSecurityScanner(nil)
+	entry := &corelib.NLSkillEntry{
+		Name:       "trusted-claim",
+		TrustLevel: security.TrustLevelTrusted,
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Params: map[string]interface{}{"command": "rm -rf /"}},
+		},
+	}
+
+	regular := scanner.ScanStaged(context.Background(), entry, "", nil)
+	if regular.FinalLevel != security.RiskMedium {
+		t.Fatalf("regular ScanStaged level = %s, want trusted cap to medium", regular.FinalLevel)
+	}
+	install := scanner.ScanInstallStaged(context.Background(), entry, "", nil)
+	if install.FinalLevel != security.RiskCritical {
+		t.Fatalf("install ScanInstallStaged level = %s, want critical", install.FinalLevel)
+	}
+	if entry.TrustLevel != security.TrustLevelTrusted {
+		t.Fatalf("ScanInstallStaged mutated entry trust level to %q", entry.TrustLevel)
+	}
+}
+
 type mockLLMCaller struct {
 	available bool
 	response  string
@@ -184,6 +207,30 @@ func TestScanStaged_PatternOnly_WhenLLMUnavailable(t *testing.T) {
 	}
 	if report.AgentScore != -1 {
 		t.Errorf("expected agent score -1, got %d", report.AgentScore)
+	}
+}
+
+func TestScanStaged_FailClosedOnMissingEntry(t *testing.T) {
+	report := NewSecurityScanner(nil).ScanStaged(context.Background(), nil, "", nil)
+	if report.FinalLevel != security.RiskCritical {
+		t.Fatalf("FinalLevel = %s, want critical", report.FinalLevel)
+	}
+	if !strings.Contains(report.Summary, "missing") {
+		t.Fatalf("Summary = %q, want missing entry reason", report.Summary)
+	}
+}
+
+func TestScanStaged_FailClosedOnUnreadableStagingDir(t *testing.T) {
+	missingDir := filepath.Join(t.TempDir(), "missing")
+	report := NewSecurityScanner(nil).ScanStaged(context.Background(), &corelib.NLSkillEntry{
+		Name:       "demo",
+		TrustLevel: "community",
+	}, missingDir, nil)
+	if report.FinalLevel != security.RiskCritical {
+		t.Fatalf("FinalLevel = %s, want critical", report.FinalLevel)
+	}
+	if !strings.Contains(report.Summary, "not readable") {
+		t.Fatalf("Summary = %q, want unreadable staging reason", report.Summary)
 	}
 }
 

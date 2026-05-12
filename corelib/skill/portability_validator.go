@@ -721,7 +721,7 @@ func containsEncodingDamageMarker(text string) bool {
 	if strings.ContainsRune(text, utf8.RuneError) {
 		return true
 	}
-	for _, marker := range []string{"锟斤拷", "ï¿½", "�"} {
+	for _, marker := range []string{"锟斤拷", "ï¿½", string(utf8.RuneError)} {
 		if strings.Contains(text, marker) {
 			return true
 		}

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -272,18 +273,64 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 	ctx := context.Background()
 	switch skillSearchSourceFromStatus(source) {
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
-		skill, err := downloadSkillJSONFromHubCenter(ctx, a, "/api/v1/skills/"+url.PathEscape(id)+"/download")
+		stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(id, "mixed-skill"))
 		if err != nil {
 			return err
 		}
-		return a.skillExecutor.Register(*skill)
+		skill, err := downloadSkillJSONFromHubCenterToDir(ctx, a, "/api/v1/skills/"+url.PathEscape(id)+"/download", stagingDir)
+		if err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return err
+		}
+		if a.skillNameAlreadyRegistered(skill.Name) {
+			cskill.CleanupStaging(stagingDir)
+			return fmt.Errorf("skill %q already exists", skill.Name)
+		}
+		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "mixed skill search")
+		if err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return err
+		}
+		committedDir := ""
+		if strings.TrimSpace(skill.SkillDir) != "" {
+			finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
+			if err != nil {
+				cskill.CleanupStaging(stagingDir)
+				return err
+			}
+			skill.SkillDir = finalDir
+			committedDir = finalDir
+		} else {
+			cskill.CleanupStaging(stagingDir)
+		}
+		if err := a.skillExecutor.Register(*skill); err != nil {
+			if committedDir != "" {
+				_ = os.RemoveAll(committedDir)
+			}
+			return err
+		}
+		writeSkillScanCacheForInstalledEntry(skill, report)
+		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
+		return nil
 
 	case skillSearchSourceClawHub:
 		skill, err := downloadClawHubSkill(ctx, id)
 		if err != nil {
 			return err
 		}
-		return a.skillExecutor.Register(*skill)
+		if a.skillNameAlreadyRegistered(skill.Name) {
+			return fmt.Errorf("skill %q already exists", skill.Name)
+		}
+		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "mixed clawhub search")
+		if err != nil {
+			return err
+		}
+		if err := a.skillExecutor.Register(*skill); err != nil {
+			return err
+		}
+		writeSkillScanCacheForInstalledEntry(skill, report)
+		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
+		return nil
 	case skillSearchSourceGitHub:
 		var candidate cskill.GitHubSkillCandidate
 		if strings.TrimSpace(installRef) == "" {
@@ -302,7 +349,19 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		if err != nil {
 			return err
 		}
-		return a.skillExecutor.Register(*skill)
+		if a.skillNameAlreadyRegistered(skill.Name) {
+			return fmt.Errorf("skill %q already exists", skill.Name)
+		}
+		report, err := a.scanAndAdmitSkillBeforeRegister(ctx, skill, "mixed github search")
+		if err != nil {
+			return err
+		}
+		if err := a.skillExecutor.Register(*skill); err != nil {
+			return err
+		}
+		writeSkillScanCacheForInstalledEntry(skill, report)
+		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
+		return nil
 	default:
 		return fmt.Errorf("unsupported skill source %q", source)
 	}
@@ -317,13 +376,37 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	entry, err := a.skillHubClient.Install(context.Background(), skillID, hubURL)
+	ctx := context.Background()
+	stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(skillID, "hub-skill"))
 	if err != nil {
 		return err
 	}
-	if err := a.skillExecutor.Register(*entry); err != nil {
+	entry, err := a.skillHubClient.InstallToDir(ctx, skillID, hubURL, stagingDir)
+	if err != nil {
+		cskill.CleanupStaging(stagingDir)
 		return err
 	}
+	if a.skillNameAlreadyRegistered(entry.Name) {
+		cskill.CleanupStaging(stagingDir)
+		return fmt.Errorf("skill %q already exists", entry.Name)
+	}
+	report, err := a.scanAndAdmitSkillBeforeRegister(ctx, entry, hubURL)
+	if err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return err
+	}
+	finalDir, err := cskill.CommitStaging(stagingDir, entry.Name)
+	if err != nil {
+		cskill.CleanupStaging(stagingDir)
+		return err
+	}
+	entry.SkillDir = finalDir
+	if err := a.skillExecutor.Register(*entry); err != nil {
+		_ = os.RemoveAll(finalDir)
+		return err
+	}
+	writeSkillScanCacheForInstalledEntry(entry, report)
+	a.emitSkillInstallProgress(entry.Name, "done", "Skill installed successfully.", report)
 	// Auto-install dependencies for file-backed skills (e.g. npm install, pip install).
 	go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
 	return nil
@@ -702,6 +785,127 @@ func sortCatRows(rows []MemoryStatusCatRow) {
 			rows[j], rows[j-1] = rows[j-1], rows[j]
 		}
 	}
+}
+
+// InferenceDiagnosticsData holds multi-hop reasoning diagnostics for the frontend.
+type InferenceDiagnosticsData struct {
+	EngineActive     bool                       `json:"engine_active"`
+	RuleCount        int                        `json:"rule_count"`
+	Rules            []InferenceDiagnosticsRule `json:"rules"`
+	LastDerived      []InferenceDiagnosticsFact `json:"last_derived"`
+	SemanticFacts    int                        `json:"semantic_facts"`
+	SemanticEntities int                        `json:"semantic_entities"`
+}
+
+// InferenceDiagnosticsRule describes one inference rule.
+type InferenceDiagnosticsRule struct {
+	Name            string  `json:"name"`
+	Type            string  `json:"type"`
+	Relation        string  `json:"relation,omitempty"`
+	InputRelation1  string  `json:"input_relation1,omitempty"`
+	InputRelation2  string  `json:"input_relation2,omitempty"`
+	OutputRelation  string  `json:"output_relation,omitempty"`
+	MaxChainLength  int     `json:"max_chain_length,omitempty"`
+	ConfidenceDecay float64 `json:"confidence_decay"`
+}
+
+// InferenceDiagnosticsFact describes one derived fact.
+type InferenceDiagnosticsFact struct {
+	Subject     string  `json:"subject"`
+	Predicate   string  `json:"predicate"`
+	Object      string  `json:"object"`
+	RuleName    string  `json:"rule_name"`
+	Confidence  float64 `json:"confidence"`
+	Explanation string  `json:"explanation"`
+	SourceCount int     `json:"source_count"`
+}
+
+// GetInferenceDiagnostics returns multi-hop reasoning engine diagnostics (Wails binding).
+func (a *App) GetInferenceDiagnostics() *InferenceDiagnosticsData {
+	a.ensureInteractionInfra()
+	result := &InferenceDiagnosticsData{}
+	if a.memoryStore == nil {
+		return result
+	}
+	ie := a.memoryStore.InferenceEngine()
+	if ie == nil {
+		return result
+	}
+	result.EngineActive = true
+	result.RuleCount = len(ie.Rules())
+	for _, r := range ie.Rules() {
+		dr := InferenceDiagnosticsRule{
+			Name:            r.Name,
+			Type:            string(r.Type),
+			ConfidenceDecay: r.ConfidenceDecay,
+		}
+		if r.Type == memory.RuleTransitive {
+			dr.Relation = r.Relation
+			dr.MaxChainLength = r.MaxChainLength
+		} else {
+			dr.InputRelation1 = r.InputRelation1
+			dr.InputRelation2 = r.InputRelation2
+			dr.OutputRelation = r.OutputRelation
+		}
+		result.Rules = append(result.Rules, dr)
+	}
+	for _, df := range a.memoryStore.LastDerivedFacts() {
+		result.LastDerived = append(result.LastDerived, InferenceDiagnosticsFact{
+			Subject:     df.Subject,
+			Predicate:   df.Predicate,
+			Object:      df.Object,
+			RuleName:    df.RuleName,
+			Confidence:  df.Confidence,
+			Explanation: df.Explanation,
+			SourceCount: len(df.SourceFacts),
+		})
+	}
+	sg := a.memoryStore.SemanticGraph()
+	if sg != nil {
+		entities, facts, _ := sg.Stats()
+		result.SemanticFacts = facts
+		result.SemanticEntities = entities
+	}
+	return result
+}
+
+// TestInference runs the inference engine on a query and returns derived facts (Wails binding).
+func (a *App) TestInference(query string) []InferenceDiagnosticsFact {
+	a.ensureInteractionInfra()
+	if a.memoryStore == nil || query == "" {
+		return nil
+	}
+	ie := a.memoryStore.InferenceEngine()
+	if ie == nil {
+		return nil
+	}
+	expanded := memory.ExpandQuery(query)
+	if len(expanded.Entities) == 0 {
+		return nil
+	}
+	projectPath := ""
+	if a.contextResolver != nil {
+		projectPath, _ = a.contextResolver.ResolveProject()
+	}
+	derived := ie.Infer(expanded.Entities, memory.InferenceOptions{
+		ProjectPath:     projectPath,
+		MaxDerived:      20,
+		MinConfidence:   0.40,
+		MaxVisitedFacts: 200,
+	})
+	var results []InferenceDiagnosticsFact
+	for _, df := range derived {
+		results = append(results, InferenceDiagnosticsFact{
+			Subject:     df.Subject,
+			Predicate:   df.Predicate,
+			Object:      df.Object,
+			RuleName:    df.RuleName,
+			Confidence:  df.Confidence,
+			Explanation: df.Explanation,
+			SourceCount: len(df.SourceFacts),
+		})
+	}
+	return results
 }
 
 // GetMemoryMaxBackups returns the configured max backup retention count (Wails binding).
@@ -1574,6 +1778,11 @@ func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
 // Returns an error if the confirmation has expired or the handler is unavailable,
 // so the frontend can show appropriate feedback.
 func (a *App) ResolveCriticalConfirm(confirmID string, confirmed bool) error {
+	if err := a.resolveSkillInstallConfirm(confirmID, confirmed); err == nil {
+		return nil
+	} else if strings.HasPrefix(confirmID, "skill_install_") {
+		return err
+	}
 	hubClient := a.hubClient()
 	if hubClient == nil {
 		return fmt.Errorf("AI assistant not initialized")
@@ -1728,9 +1937,14 @@ func (a *App) ImportAgentSkillDir(skillDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), entry, "agent skill directory import")
+	if err != nil {
+		return "", err
+	}
 	if err := a.skillExecutor.Register(*entry); err != nil {
 		return "", err
 	}
+	writeSkillScanCacheForInstalledEntry(entry, report)
 	return entry.Name, nil
 }
 
@@ -1812,15 +2026,11 @@ func (a *App) SavePastedImage(base64Data string, extension string) (string, erro
 	return absPath, nil
 }
 
-// ReadErrorLog reads ~/.maclaw/logs/maclaw.log and returns only lines
+// ReadErrorLog reads maclaw.log and returns only lines
 // containing error-level keywords. Returns the most recent 500 error lines
 // in reverse chronological order (newest first).
 func (a *App) ReadErrorLog() ([]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	logPath := filepath.Join(home, ".maclaw", "logs", "maclaw.log")
+	logPath := filepath.Join(corelib.MaclawLogsDir(), "maclaw.log")
 
 	f, err := os.Open(logPath)
 	if err != nil {

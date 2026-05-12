@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import type { AgentView, AgentViewField, AgentViewOption, AgentViewTableColumn, AgentViewVariant, AgentViewWizardStep } from "./agentViewTypes";
 import type { Theme } from "./aiAssistantPanelTheme";
+import { agentViewStrings, type AgentViewStrings } from "./agentViewI18n";
 
 interface AgentTaskPanelProps {
     view: AgentView;
@@ -10,6 +11,7 @@ interface AgentTaskPanelProps {
     onToggleMaximize?: () => void;
     onSubmit?: (viewId: string | undefined, data: Record<string, unknown>) => void | Promise<void>;
     theme: Theme;
+    lang?: string;
 }
 
 function optionValue(option: string | AgentViewOption): string {
@@ -478,6 +480,7 @@ function renderField(
     value: unknown,
     setValue: (name: string, next: unknown) => void,
     theme: Theme,
+    s: AgentViewStrings,
 ) {
     if (field.type === "hidden") return null;
     const label = field.label || field.name;
@@ -558,7 +561,7 @@ function renderField(
                                 />
                             ) : column.type === "select" ? (
                                 <select value={formatValue(nestedValue)} disabled={field.readOnly || column.readOnly} onChange={(event) => updateObjectField(column, event.target.value)} style={{ ...commonInputStyle, ...(field.readOnly || column.readOnly ? { opacity: 0.72, cursor: "not-allowed" } : {}) }}>
-                                    <option value="">Select...</option>
+                                    <option value="">{s.selectPlaceholder}</option>
                                     {(column.options || []).map((option) => (
                                         <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>
                                     ))}
@@ -625,7 +628,7 @@ function renderField(
                                                     />
                                                 ) : column.type === "select" ? (
                                                     <select value={formatValue(cellValue)} disabled={cellReadOnly} onChange={(event) => updateCell(rowIndex, column, event.target.value)} style={cellStyle}>
-                                                        <option value="">Select...</option>
+                                                        <option value="">{s.selectPlaceholder}</option>
                                                         {(column.options || []).map((option) => (
                                                             <option key={optionValue(option)} value={optionValue(option)}>{optionLabel(option)}</option>
                                                         ))}
@@ -665,7 +668,7 @@ function renderField(
                             ))}
                             {rows.length === 0 && (
                                 <tr>
-                                    <td colSpan={columns.length + 1} style={{ color: theme.textMuted, fontSize: 12, padding: 10 }}>No rows</td>
+                                    <td colSpan={columns.length + 1} style={{ color: theme.textMuted, fontSize: 12, padding: 10 }}>{s.noRows}</td>
                                 </tr>
                             )}
                         </tbody>
@@ -679,7 +682,7 @@ function renderField(
                     }}
                     style={{ alignSelf: "flex-start", border: `1px solid ${theme.btnBorder}`, background: "transparent", color: theme.btnColor, borderRadius: 6, padding: "6px 9px", cursor: field.readOnly ? "not-allowed" : "pointer", opacity: field.readOnly ? 0.6 : 1, fontSize: 12 }}
                 >
-                    Add row
+                    {s.addRow}
                 </button>
             </div>
         );
@@ -716,7 +719,7 @@ function renderField(
                 }}
                 style={{ ...commonInputStyle, ...readOnlyInputStyle }}
             >
-                <option value="">{field.placeholder || "Select..."}</option>
+                <option value="">{field.placeholder || s.selectPlaceholder}</option>
                 {(field.options || []).map((option) => (
                     <option key={optionValue(option)} value={optionValue(option)}>
                         {optionLabel(option)}
@@ -736,7 +739,7 @@ function renderField(
                         if (!field.readOnly) setValue(field.name, event.target.checked);
                     }}
                 />
-                Enabled
+                {s.enabled}
             </label>
         );
     } else {
@@ -796,7 +799,8 @@ function isPanelHeaderInteractiveTarget(target: EventTarget | null, currentTarge
     return !!target.closest('button, a, input, select, textarea, [role="button"], [data-preview-no-maximize="true"]');
 }
 
-export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme }: AgentTaskPanelProps) {
+export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximize, onSubmit, theme, lang }: AgentTaskPanelProps) {
+    const s = useMemo(() => agentViewStrings(lang || "en"), [lang]);
     const suppressNextHeaderDoubleClickRef = useRef(false);
     const [activeVariantId, setActiveVariantId] = useState<string | undefined>(() => {
         const variant = activeVariantFor(view);
@@ -963,7 +967,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 </div>
                 {onDismiss && (
                     <button type="button" onClick={() => onDismiss(view.id)} style={{ ...buttonStyle, borderColor: theme.divider, color: theme.closeBtnColor, "--wails-draggable": "no-drag" } as React.CSSProperties}>
-                        Close
+                        {s.close}
                     </button>
                 )}
             </header>
@@ -984,7 +988,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                         )}
                         {view.variants && view.variants.length > 0 && (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                <label htmlFor="agent-view-variant-mode" style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 600 }}>Mode</label>
+                                <label htmlFor="agent-view-variant-mode" style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 600 }}>{s.mode}</label>
                                 <select
                                     id="agent-view-variant-mode"
                                     value={activeVariant?.id || ""}
@@ -1012,13 +1016,13 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 {activeVariant?.description && <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.4 }}>{activeVariant.description}</div>}
                             </div>
                         )}
-                        {renderedFields.map((field) => renderField(field, formData[field.name], setFieldValue, theme))}
+                        {renderedFields.map((field) => renderField(field, formData[field.name], setFieldValue, theme, s))}
                         {validationErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 6, padding: 10, fontSize: 12 }}>
-                                Please fix: {validationErrors.join(", ")}
+                                {s.pleaseFix}{validationErrors.join(", ")}
                             </div>
                         )}
-                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? "Submitting..." : view.submitLabel || "Submit"}</button>
+                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.submit}</button>
                     </form>
                 )}
                 {view.type === "wizard" && activeWizardStep && (
@@ -1053,21 +1057,21 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 ))}
                             </div>
                             <div>
-                                <div style={{ color: theme.fieldLabel, fontSize: 12 }}>Step {wizardStepIndex + 1} of {view.steps.length}</div>
+                                <div style={{ color: theme.fieldLabel, fontSize: 12 }}>{s.stepOf(wizardStepIndex + 1, view.steps.length)}</div>
                                 <div style={{ fontWeight: 700, marginTop: 4 }}>{activeWizardStep.title}</div>
                                 {activeWizardStep.description && <div style={{ color: theme.textMuted, fontSize: 12, lineHeight: 1.4, marginTop: 4 }}>{activeWizardStep.description}</div>}
                             </div>
                         </div>
-                        {activeWizardStep.fields.map((field) => renderField(field, wizardData[field.name], setWizardFieldValue, theme))}
+                        {activeWizardStep.fields.map((field) => renderField(field, wizardData[field.name], setWizardFieldValue, theme, s))}
                         {wizardValidationErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 6, padding: 10, fontSize: 12 }}>
-                                Please fix: {wizardValidationErrors.join(", ")}
+                                {s.pleaseFix}{wizardValidationErrors.join(", ")}
                             </div>
                         )}
                         <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
-                            <button type="button" disabled={wizardStepIndex === 0 || submitting} onClick={() => setWizardStepIndex((current) => Math.max(0, current - 1))} style={{ ...buttonStyle, opacity: wizardStepIndex === 0 || submitting ? 0.6 : 1, cursor: wizardStepIndex === 0 || submitting ? "not-allowed" : "pointer" }}>Back</button>
+                            <button type="button" disabled={wizardStepIndex === 0 || submitting} onClick={() => setWizardStepIndex((current) => Math.max(0, current - 1))} style={{ ...buttonStyle, opacity: wizardStepIndex === 0 || submitting ? 0.6 : 1, cursor: wizardStepIndex === 0 || submitting ? "not-allowed" : "pointer" }}>{s.back}</button>
                             <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>
-                                {submitting ? "Submitting..." : wizardStepIndex < view.steps.length - 1 ? "Next" : view.submitLabel || "Submit"}
+                                {submitting ? s.submitting : wizardStepIndex < view.steps.length - 1 ? s.next : view.submitLabel || s.submit}
                             </button>
                         </div>
                     </form>
@@ -1086,13 +1090,13 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 {view.formErrors.map((error) => <div key={error}>{error}</div>)}
                             </div>
                         )}
-                        {renderField(tableEditorField, tableRows, (_name, next) => setTableRows(normalizeTableRows(next)), theme)}
+                        {renderField(tableEditorField, tableRows, (_name, next) => setTableRows(normalizeTableRows(next)), theme, s)}
                         {tableValidationErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 6, padding: 10, fontSize: 12 }}>
-                                Please fix: {tableValidationErrors.join(", ")}
+                                {s.pleaseFix}{tableValidationErrors.join(", ")}
                             </div>
                         )}
-                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? "Submitting..." : view.submitLabel || "Submit"}</button>
+                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.submit}</button>
                     </form>
                 )}
                 {view.type === "resource_picker" && (
@@ -1128,7 +1132,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                 outline: "none",
                             }}
                         >
-                            {!view.multiple && <option value="">Select...</option>}
+                            {!view.multiple && <option value="">{s.selectPlaceholder}</option>}
                             {view.options.map((option) => (
                                 <option key={option.value} value={option.value}>
                                     {[option.label, option.status].filter(Boolean).join(" - ")}
@@ -1146,10 +1150,10 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                         </div>
                         {resourceValidationErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 6, padding: 10, fontSize: 12 }}>
-                                Please fix: {resourceValidationErrors.join(", ")}
+                                {s.pleaseFix}{resourceValidationErrors.join(", ")}
                             </div>
                         )}
-                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? "Submitting..." : view.submitLabel || "Select"}</button>
+                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.select}</button>
                     </form>
                 )}
                 {view.type === "field_mapper" && (
@@ -1184,7 +1188,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                             outline: "none",
                                         }}
                                     >
-                                        <option value="">Ignore</option>
+                                        <option value="">{s.ignore}</option>
                                         {view.sourceFields.map((source) => (
                                             <option key={source} value={source}>{source}</option>
                                         ))}
@@ -1194,34 +1198,34 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                         </div>
                         {fieldMappingErrors.length > 0 && (
                             <div style={{ color: theme.errorText, background: theme.errorBg, border: `1px solid ${theme.errorBorder}`, borderRadius: 6, padding: 10, fontSize: 12 }}>
-                                Please fix: {fieldMappingErrors.join(", ")}
+                                {s.pleaseFix}{fieldMappingErrors.join(", ")}
                             </div>
                         )}
-                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? "Submitting..." : view.submitLabel || "Apply mapping"}</button>
+                        <button type="submit" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}>{submitting ? s.submitting : view.submitLabel || s.applyMapping}</button>
                     </form>
                 )}
                 {view.type === "approval" && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                         <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
                             <div style={{ fontWeight: 700, marginBottom: 8 }}>{view.action.summary}</div>
-                            {view.action.risk && <div style={{ color: theme.textMuted, fontSize: 12 }}>Risk: {view.action.risk}</div>}
+                            {view.action.risk && <div style={{ color: theme.textMuted, fontSize: 12 }}>{s.risk}: {view.action.risk}</div>}
                         </div>
                         {view.action.effects && view.action.effects.length > 0 && (
                             <div>
-                                <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Effects</div>
+                                <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{s.effects}</div>
                                 <ul style={{ margin: 0, paddingLeft: 18 }}>{view.action.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul>
                             </div>
                         )}
                         {view.action.reviewData && Object.keys(view.action.reviewData).length > 0 && (
                             <div>
-                                <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Data</div>
+                                <div style={{ color: theme.fieldLabel, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>{s.data}</div>
                                 {keyValueList(view.action.reviewData, theme)}
                             </div>
                         )}
                         {keyValueList(view.action.parameters, theme)}
                         <div style={{ display: "flex", gap: 8 }}>
-                            <button type="button" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }} onClick={() => void submitAgentView({ approved: true, parameters: view.action.parameters || {} })}>{submitting ? "Submitting..." : view.approveLabel || "Approve"}</button>
-                            <button type="button" disabled={submitting} style={{ ...buttonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }} onClick={() => void submitAgentView({ approved: false, parameters: view.action.parameters || {} })}>{view.rejectLabel || "Reject"}</button>
+                            <button type="button" disabled={submitting} style={{ ...primaryButtonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }} onClick={() => void submitAgentView({ approved: true, parameters: view.action.parameters || {} })}>{submitting ? s.submitting : view.approveLabel || s.approve}</button>
+                            <button type="button" disabled={submitting} style={{ ...buttonStyle, opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }} onClick={() => void submitAgentView({ approved: false, parameters: view.action.parameters || {} })}>{view.rejectLabel || s.reject}</button>
                         </div>
                     </div>
                 )}
@@ -1229,7 +1233,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                     <div style={{ display: "grid", gap: 10 }}>
                         {view.steps.map((step, index) => (
                             <div key={step.id || `${step.title}-${index}`} style={{ display: "grid", gridTemplateColumns: "72px 1fr", gap: 10, borderBottom: `1px solid ${theme.divider}`, paddingBottom: 10 }}>
-                                <span style={{ color: step.status === "error" ? theme.errorText : theme.textMuted, fontSize: 12 }}>{step.status || "pending"}</span>
+                                <span style={{ color: step.status === "error" ? theme.errorText : theme.textMuted, fontSize: 12 }}>{step.status || s.pending}</span>
                                 <div>
                                     <div style={{ fontWeight: 700 }}>{step.title}</div>
                                     {step.description && <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4 }}>{step.description}</div>}
@@ -1246,7 +1250,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                         style={{ ...(action.primary ? primaryButtonStyle : buttonStyle), opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}
                                         onClick={() => void submitAgentView(action.data || {}, action.viewId)}
                                     >
-                                        {submitting ? "Submitting..." : action.label}
+                                        {submitting ? s.submitting : action.label}
                                     </button>
                                 ))}
                             </div>
@@ -1273,7 +1277,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                                                 style={{ ...(action.primary ? primaryButtonStyle : buttonStyle), opacity: submitting ? 0.72 : 1, cursor: submitting ? "wait" : "pointer" }}
                                                 onClick={() => void submitAgentView(action.data || {}, action.viewId)}
                                             >
-                                                {submitting ? "Submitting..." : action.label}
+                                                {submitting ? s.submitting : action.label}
                                             </button>
                                         ))}
                                     </div>
@@ -1285,7 +1289,7 @@ export function AgentTaskPanel({ view, onDismiss, onResizeStart, onToggleMaximiz
                 {view.type === "artifact" && (
                     <div style={{ border: `1px solid ${theme.divider}`, borderRadius: 8, padding: 12, background: theme.fieldBg }}>
                         <div style={{ fontWeight: 700 }}>{view.artifact.label || view.title}</div>
-                        {view.artifact.kind && <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4 }}>Kind: {view.artifact.kind}</div>}
+                        {view.artifact.kind && <div style={{ color: theme.textMuted, fontSize: 12, marginTop: 4 }}>{s.kind}: {view.artifact.kind}</div>}
                         {view.artifact.uri && <div style={{ color: theme.linkColor, fontSize: 12, marginTop: 4, wordBreak: "break-all" }}>{view.artifact.uri}</div>}
                         {view.artifact.summary && <div style={{ color: theme.text, fontSize: 13, marginTop: 10, whiteSpace: "pre-wrap" }}>{view.artifact.summary}</div>}
                     </div>

@@ -46,15 +46,16 @@ type readinessReport struct {
 }
 
 type HTTPServer struct {
-	svc         *agentservice.Service
-	adminSecret string
-	mux         *http.ServeMux
-	authLimiter *authLimiter
-	jobs        *asyncJobManager
+	svc          *agentservice.Service
+	adminSecret  string
+	mux          *http.ServeMux
+	authLimiter  *authLimiter
+	jobs         *asyncJobManager
+	knowledgeMgr *knowledgeStoreManager
 }
 
-func NewHTTPServer(svc *agentservice.Service, adminSecret string) *HTTPServer {
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot())}
+func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager) *HTTPServer {
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr}
 	s.routes()
 	return s
 }
@@ -283,6 +284,27 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}", s.withPrincipal(s.handleGetRun))
 	s.mux.HandleFunc("GET /api/v1/instances/{instanceId}/runs/{runId}/events", s.withPrincipal(s.handleStreamRunEvents))
 	s.mux.HandleFunc("POST /api/v1/instances/{instanceId}/runs/{runId}/cancel", s.withPrincipal(s.handleCancelRun))
+
+	// Knowledge base endpoints
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/file", s.withPrincipal(s.handleKnowledgeImportFile))
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/url", s.withPrincipal(s.handleKnowledgeImportURL))
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/text", s.withPrincipal(s.handleKnowledgeImportText))
+	s.mux.HandleFunc("POST /api/v1/knowledge/import/directory", s.withPrincipal(s.handleKnowledgeImportDirectory))
+	s.mux.HandleFunc("GET /api/v1/knowledge/import/jobs/{jobId}", s.withPrincipal(s.handleKnowledgeImportJobStatus))
+	s.mux.HandleFunc("POST /api/v1/knowledge/search", s.withPrincipal(s.handleKnowledgeSearch))
+	s.mux.HandleFunc("POST /api/v1/knowledge/context-pack", s.withPrincipal(s.handleKnowledgeContextPack))
+	s.mux.HandleFunc("GET /api/v1/knowledge/sources", s.withPrincipal(s.handleKnowledgeListSources))
+	s.mux.HandleFunc("GET /api/v1/knowledge/sources/{sourceId}", s.withPrincipal(s.handleKnowledgeGetSource))
+	s.mux.HandleFunc("DELETE /api/v1/knowledge/sources/{sourceId}", s.withPrincipal(s.handleKnowledgeDeleteSource))
+	s.mux.HandleFunc("PATCH /api/v1/knowledge/sources/{sourceId}", s.withPrincipal(s.handleKnowledgeUpdateSource))
+	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/disable", s.withPrincipal(s.handleKnowledgeDisableSource))
+	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/enable", s.withPrincipal(s.handleKnowledgeEnableSource))
+	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/refresh", s.withPrincipal(s.handleKnowledgeRefreshSource))
+	s.mux.HandleFunc("GET /api/v1/knowledge/stats", s.withPrincipal(s.handleKnowledgeStats))
+	s.mux.HandleFunc("DELETE /api/v1/knowledge", s.withPrincipal(s.handleKnowledgeClearAll))
+	s.mux.HandleFunc("GET /api/v1/admin/knowledge/stats", s.withAdmin(s.handleAdminKnowledgeStats))
+	s.mux.HandleFunc("GET /api/v1/admin/knowledge/sources", s.withAdmin(s.handleAdminKnowledgeListSources))
+	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/knowledge", s.withAdmin(s.handleAdminKnowledgeClearTenant))
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -173,6 +173,10 @@ export function GetSystemInfo():Promise<main.SystemInfo>;
 
 export function GetUserHomeDir():Promise<string>;
 
+export function GetMaclawBaseDir():Promise<string>;
+
+export function SetDataDir(newDir:string):Promise<string>;
+
 export function GetBrandInfo():Promise<main.BrandInfo>;
 
 export function InstallDefaultMarketplace():Promise<void>;

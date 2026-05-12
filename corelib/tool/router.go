@@ -1190,12 +1190,23 @@ func routeLogPath() (string, bool) {
 			return path, true
 		}
 	}
+	// Use BaseDirFunc if set (injected by corelib package to avoid circular import).
+	if fn := BaseDirFunc.Load(); fn != nil {
+		if dirFn, ok := fn.(func() string); ok {
+			return filepath.Join(dirFn(), "logs", "tool_route.log"), true
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", false
 	}
 	return filepath.Join(home, ".maclaw", "logs", "tool_route.log"), true
 }
+
+// BaseDirFunc is an atomic.Value holding a func() string that returns the
+// effective maclaw base directory. Set by the corelib package at init time
+// to avoid circular imports. If not set, falls back to ~/.maclaw.
+var BaseDirFunc atomic.Value
 
 // clampFloat clamps v to [lo, hi].
 func clampFloat(v, lo, hi float64) float64 {

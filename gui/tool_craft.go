@@ -970,11 +970,44 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 		Status:         "active",
 		CreatedAt:      time.Now().Format(time.RFC3339),
 		Source:         "crafted",
+		TrustLevel:     "agent-created",
 	}
-	if err := app.skillExecutor.Register(entry); err != nil {
+	register := func(candidate corelib.NLSkillEntry) (*cskill.ScanReport, error) {
+		var scanDir string
+		if strings.TrimSpace(scriptPath) != "" {
+			var err error
+			scanDir, err = os.MkdirTemp("", "maclaw-crafted-skill-scan-*")
+			if err != nil {
+				return nil, err
+			}
+			defer os.RemoveAll(scanDir)
+			data, err := os.ReadFile(scriptPath)
+			if err != nil {
+				return nil, err
+			}
+			scanPath := filepath.Join(scanDir, filepath.Base(scriptPath))
+			if err := os.WriteFile(scanPath, data, 0o600); err != nil {
+				return nil, err
+			}
+		}
+		scanner := cskill.NewSecurityScanner(nil)
+		report := scanner.ScanInstallStaged(context.Background(), &candidate, scanDir, func(status string) {
+			app.emitSkillInstallProgress(candidate.Name, "scanning", status, nil)
+		})
+		if err := app.admitManualSkillInstall(context.Background(), &candidate, "crafted skill", report); err != nil {
+			return report, err
+		}
+		if err := app.skillExecutor.Register(candidate); err != nil {
+			return report, err
+		}
+		return report, nil
+	}
+	_, err := register(entry)
+	if err != nil {
 		if classifyCraftSkillRegistrationError(err).NeedsUniqueNameRetry() {
 			entry.Name = skillName + "_" + time.Now().Format("0102_1504")
-			if err2 := app.skillExecutor.Register(entry); err2 != nil {
+			_, err2 := register(entry)
+			if err2 != nil {
 				return fmt.Sprintf("⚠️ Skill 注册失败: %s", err2.Error())
 			}
 			return fmt.Sprintf("📦 已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)

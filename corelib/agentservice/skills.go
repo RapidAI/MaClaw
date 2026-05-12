@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -494,13 +495,25 @@ func (s *Service) installSkillArchiveBytes(p Principal, data []byte, overwrite b
 	if err != nil {
 		return nil, err
 	}
-	installed := make([]corelib.NLSkillEntry, 0, len(packageRoots))
+	type scannedPackageRoot struct {
+		entry *corelib.NLSkillEntry
+		root  string
+	}
+	scanned := make([]scannedPackageRoot, 0, len(packageRoots))
 	for _, root := range packageRoots {
 		entry, err := loadImportedSkillEntry(root)
 		if err != nil {
 			return nil, err
 		}
-		stored, err := s.persistExtractedSkillDir(p, *entry, root, overwrite)
+		if report, err := scanImportedSkillBeforeInstall(context.Background(), entry, root); err != nil {
+			s.recordSkillScanRejection(p, entry, report, err)
+			return nil, err
+		}
+		scanned = append(scanned, scannedPackageRoot{entry: entry, root: root})
+	}
+	installed := make([]corelib.NLSkillEntry, 0, len(scanned))
+	for _, item := range scanned {
+		stored, err := s.persistExtractedSkillDir(p, *item.entry, item.root, overwrite)
 		if err != nil {
 			return nil, err
 		}
@@ -509,19 +522,52 @@ func (s *Service) installSkillArchiveBytes(p Principal, data []byte, overwrite b
 	return installed, nil
 }
 
+func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillEntry, skillDir string) (*skill.ScanReport, error) {
+	if entry == nil {
+		return nil, fmt.Errorf("skill entry is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(entry.TrustLevel) == "" {
+		entry.TrustLevel = "community"
+	}
+	if strings.TrimSpace(skillDir) != "" {
+		entry.SkillDir = skillDir
+	}
+	report := skill.NewSecurityScanner(nil).ScanInstallStaged(ctx, entry, skillDir, nil)
+	if report != nil && report.NeedsUserReview() {
+		return report, fmt.Errorf("skill security scan blocked installation: level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
+	return report, nil
+}
+
 func (s *Service) persistImportedEntries(p Principal, entries []corelib.NLSkillEntry, overwrite bool) ([]corelib.NLSkillEntry, error) {
 	root, err := s.ensureUserSkillsRoot(p)
 	if err != nil {
 		return nil, err
 	}
 	installed := make([]corelib.NLSkillEntry, 0, len(entries))
+	scanned := make([]corelib.NLSkillEntry, 0, len(entries))
+	seenNames := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, fmt.Errorf("skill name is required")
 		}
+		if report, err := scanImportedSkillBeforeInstall(context.Background(), &entry, entry.SkillDir); err != nil {
+			s.recordSkillScanRejection(p, &entry, report, err)
+			return nil, err
+		}
+		if _, ok := seenNames[entry.Name]; ok {
+			return nil, fmt.Errorf("duplicate skill %q in import", entry.Name)
+		}
+		seenNames[entry.Name] = struct{}{}
 		if _, _, err := s.findSkill(p, entry.Name); err == nil && !overwrite {
 			return nil, fmt.Errorf("skill %q already exists", entry.Name)
 		}
+		scanned = append(scanned, entry)
+	}
+	for _, entry := range scanned {
 		dir := filepath.Join(root, normalizeSkillDirName(firstNonEmpty(entry.DirName, entry.Name)))
 		if overwrite {
 			_ = os.RemoveAll(dir)
@@ -538,6 +584,39 @@ func (s *Service) persistImportedEntries(p Principal, entries []corelib.NLSkillE
 		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.installed", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"source": entry.Source}})
 	}
 	return installed, nil
+}
+
+func (s *Service) recordSkillScanRejection(p Principal, entry *corelib.NLSkillEntry, report *skill.ScanReport, scanErr error) {
+	if s == nil || entry == nil {
+		return
+	}
+	level := ""
+	summary := ""
+	scannedBy := ""
+	if report != nil {
+		level = string(report.FinalLevel)
+		summary = report.Summary
+		scannedBy = report.ScannedBy
+	}
+	if summary == "" && scanErr != nil {
+		summary = scanErr.Error()
+	}
+	_ = s.recordAudit(auditRecord{
+		TenantID:      p.TenantID,
+		UserID:        p.UserID,
+		Action:        "skill.rejected",
+		ResourceType:  "skill",
+		ResourceID:    entry.Name,
+		ActorType:     "system",
+		ActorTenantID: p.TenantID,
+		ActorUserID:   p.UserID,
+		Metadata: map[string]string{
+			"level":      level,
+			"summary":    summary,
+			"scanned_by": scannedBy,
+			"source":     firstNonEmpty(entry.Source, "file"),
+		},
+	})
 }
 
 func (s *Service) persistExtractedSkillDir(p Principal, entry corelib.NLSkillEntry, extractedDir string, overwrite bool) (corelib.NLSkillEntry, error) {
@@ -798,20 +877,30 @@ func unzipBytes(data []byte, dest string) error {
 	if err != nil {
 		return err
 	}
+	type zipEntry struct {
+		file   *zip.File
+		target string
+	}
+	entries := make([]zipEntry, 0, len(reader.File))
 	for _, file := range reader.File {
-		target := filepath.Join(dest, filepath.FromSlash(file.Name))
-		cleanDest := filepath.Clean(dest) + string(os.PathSeparator)
-		cleanTarget := filepath.Clean(target)
-		if !strings.HasPrefix(cleanTarget, cleanDest) && cleanTarget != filepath.Clean(dest) {
-			return fmt.Errorf("zip contains invalid path %q", file.Name)
+		if file.FileInfo().Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("zip contains unsupported symlink entry %q", file.Name)
 		}
+		target, err := safeImportedZipTarget(dest, file.Name)
+		if err != nil {
+			return err
+		}
+		entries = append(entries, zipEntry{file: file, target: target})
+	}
+	for _, entry := range entries {
+		file := entry.file
 		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(cleanTarget, 0o755); err != nil {
+			if err := os.MkdirAll(entry.target, 0o755); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(cleanTarget), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(entry.target), 0o755); err != nil {
 			return err
 		}
 		src, err := file.Open()
@@ -823,11 +912,50 @@ func unzipBytes(data []byte, dest string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(cleanTarget, content, file.Mode()); err != nil {
+		if err := os.WriteFile(entry.target, content, file.Mode()); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func safeImportedZipTarget(dest, name string) (string, error) {
+	name = strings.ToValidUTF8(name, "")
+	slashName := strings.ReplaceAll(name, "\\", "/")
+	if slashName == "" || strings.HasPrefix(slashName, "/") || importedZipEntryHasDrivePrefix(slashName) || importedZipEntryHasColonPathComponent(slashName) || filepath.IsAbs(name) || filepath.IsAbs(filepath.FromSlash(slashName)) || filepath.VolumeName(filepath.FromSlash(slashName)) != "" {
+		return "", fmt.Errorf("zip contains invalid path %q", name)
+	}
+	cleanName := pathpkg.Clean(slashName)
+	if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, "../") {
+		return "", fmt.Errorf("zip contains invalid path %q", name)
+	}
+	destAbs, err := filepath.Abs(dest)
+	if err != nil {
+		return "", err
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(destAbs, filepath.FromSlash(cleanName)))
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(destAbs, targetAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("zip contains invalid path %q", name)
+	}
+	return targetAbs, nil
+}
+
+func importedZipEntryHasDrivePrefix(name string) bool {
+	return len(name) >= 2 && name[1] == ':' &&
+		((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z'))
+}
+
+func importedZipEntryHasColonPathComponent(name string) bool {
+	for _, part := range strings.Split(name, "/") {
+		if strings.Contains(part, ":") {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveImportedSkillPackageRoots(sandboxDir string) ([]string, error) {
@@ -926,6 +1054,9 @@ func copyDirContents(src, dst string) error {
 		if rel == "." {
 			return nil
 		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to copy symlink %q", rel)
+		}
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755)
@@ -951,6 +1082,9 @@ func zipDirectoryBytes(srcDir string) ([]byte, error) {
 		}
 		if rel == "." {
 			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to zip symlink %q", rel)
 		}
 		header, err := zip.FileInfoHeader(info)
 		if err != nil {

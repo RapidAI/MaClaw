@@ -13,8 +13,7 @@ import (
 // initWorkflowEngine initializes the workflow engine with all dependencies.
 // Called during app startup.
 func (a *App) initWorkflowEngine() {
-	homeDir := a.GetUserHomeDir()
-	dbPath := filepath.Join(homeDir, ".maclaw", "workflow.db")
+	dbPath := filepath.Join(a.getMaclawBaseDir(), "workflow.db")
 
 	// 1. Create SQLiteStore (fallback to NullStore on failure).
 	store, err := workflow.NewSQLiteStore(dbPath)

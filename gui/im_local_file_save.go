@@ -6,16 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // saveScreenshotToFile saves base64-encoded PNG data to a local file under
 // ~/.maclaw/data/screenshots/ and returns the absolute file path.
 func (h *IMMessageHandler) saveScreenshotToFile(base64Data string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	dir := filepath.Join(home, ".maclaw", "data", "screenshots")
+	dir := filepath.Join(corelib.MaclawBaseDir(), "data", "screenshots")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create screenshots directory: %w", err)
 	}
@@ -34,11 +32,7 @@ func (h *IMMessageHandler) saveScreenshotToFile(base64Data string) (string, erro
 // saveFileDataToLocal saves base64-encoded file data to ~/.maclaw/data/files/
 // and returns the absolute file path.
 func (h *IMMessageHandler) saveFileDataToLocal(name, base64Data string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	dir := filepath.Join(home, ".maclaw", "data", "files")
+	dir := filepath.Join(corelib.MaclawBaseDir(), "data", "files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create files directory: %w", err)
 	}

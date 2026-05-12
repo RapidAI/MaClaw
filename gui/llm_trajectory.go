@@ -9,12 +9,14 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // TrajectoryEntry represents a single turn in an LLM conversation trajectory.
 type TrajectoryEntry struct {
 	Timestamp  string      `json:"timestamp"`
-	Role       string      `json:"role"`                  // "system", "user", "assistant", "tool"
+	Role       string      `json:"role"`                   // "system", "user", "assistant", "tool"
 	Content    interface{} `json:"content"`                // text or multimodal content
 	ToolCalls  interface{} `json:"tool_calls,omitempty"`   // assistant tool calls
 	ToolCallID string      `json:"tool_call_id,omitempty"` // tool result correlation
@@ -48,12 +50,8 @@ var safeFilenameRe = regexp.MustCompile(`[^a-zA-Z0-9_\-]`)
 
 // NewTrajectoryRecorder creates a recorder that writes to ~/.maclaw/trajectories.
 func NewTrajectoryRecorder() *TrajectoryRecorder {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
 	return &TrajectoryRecorder{
-		dir: filepath.Join(home, ".maclaw", "trajectories"),
+		dir: filepath.Join(corelib.MaclawBaseDir(), "trajectories"),
 	}
 }
 

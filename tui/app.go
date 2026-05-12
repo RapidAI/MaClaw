@@ -33,6 +33,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -158,6 +159,14 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		ttsManager:    initTUITTSManager(),
 	}
 
+	// Initialize scheduled task manager with background ticker.
+	schPath := filepath.Join(dataDir, "scheduled_tasks.json")
+	if schMgr, err := scheduler.NewManager(schPath); err == nil {
+		app.scheduledTaskManager = schMgr
+	} else {
+		log.Printf("[TUI] WARNING: scheduled task manager init failed: %v", err)
+	}
+
 	// Initialize workflow engine (19 templates, same as GUI).
 	app.workflowEngine = app.initWorkflowEngine()
 
@@ -176,8 +185,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		TaskStore:   app.taskStore,
 		SSHHandler:  sshHandler,
 		ExtraHandlers: map[string]agent.ToolHandler{
-			"manage_skill": newManageSkillHandler(app),
-			"tts":          newTTSHandler(app),
+			"manage_skill":     newManageSkillHandler(app),
+			"manage_schedule":  newManageScheduleHandler(app),
+			"tts":             newTTSHandler(app),
 		},
 		WebSearchHandler: func(args map[string]interface{}) string {
 			// Use the first configured web search provider, or DuckDuckGo fallback.
@@ -202,6 +212,12 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 			return agent.ToolWebFetch(args)
 		},
 	})
+
+	// Start the scheduled task manager now that tools are registered.
+	// The executor uses agent.RunLoop with the full tool registry.
+	if app.scheduledTaskManager != nil && llmConfigured {
+		app.scheduledTaskManager.StartWithExecutor(app.buildScheduledTaskExecutor())
+	}
 
 	root := views.NewRootModel(lang)
 	root.Chat.FocusInput()
@@ -279,6 +295,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	}
 
 	// Cleanup.
+	if app.scheduledTaskManager != nil {
+		app.scheduledTaskManager.Stop()
+	}
 	if err := convMemory.FlushNow(); err != nil {
 		logger.Error("conversation memory flush failed: %v", err)
 	}
@@ -348,6 +367,9 @@ type TUIApp struct {
 	ttsManager    *tts.Manager
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go — no fields needed here.
+
+	// Scheduled task manager — background ticker fires due tasks.
+	scheduledTaskManager *scheduler.Manager
 
 	// Workflow engine integration (Fix #6).
 	workflowEngine *workflow.WorkflowEngine

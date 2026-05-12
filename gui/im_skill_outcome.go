@@ -11,6 +11,11 @@ import (
 type skillInstallExecutionResult struct {
 	Text    string
 	Success bool
+	// SilentFailure indicates the failure was already communicated to the user
+	// through another channel (e.g., the confirmation UI showed rejection/timeout
+	// feedback inline). When true, the caller should NOT emit additional failure
+	// notifications to avoid duplicate or confusing messages.
+	SilentFailure bool
 }
 
 func buildNoToolActionPrompt(preferSkill bool, skillName, runID string) string {

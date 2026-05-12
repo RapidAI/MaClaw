@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -15,6 +16,10 @@ import (
 // downloadSkillJSONFromHubCenter fetches a skill definition through the
 // current HubCenter discovery/failover pool.
 func downloadSkillJSONFromHubCenter(ctx context.Context, app *App, path string) (*corelib.NLSkillEntry, error) {
+	return downloadSkillJSONFromHubCenterToDir(ctx, app, path, "")
+}
+
+func downloadSkillJSONFromHubCenterToDir(ctx context.Context, app *App, path, targetDir string) (*corelib.NLSkillEntry, error) {
 	if app == nil {
 		return nil, fmt.Errorf("app is nil")
 	}
@@ -22,10 +27,14 @@ func downloadSkillJSONFromHubCenter(ctx context.Context, app *App, path string) 
 	if err != nil {
 		return nil, err
 	}
-	return decodeDownloadedSkillJSON(data)
+	return decodeDownloadedSkillJSONToDir(data, targetDir)
 }
 
 func decodeDownloadedSkillJSON(data []byte) (*corelib.NLSkillEntry, error) {
+	return decodeDownloadedSkillJSONToDir(data, "")
+}
+
+func decodeDownloadedSkillJSONToDir(data []byte, targetDir string) (*corelib.NLSkillEntry, error) {
 	var full struct {
 		ID          string            `json:"id"`
 		Name        string            `json:"name"`
@@ -56,8 +65,10 @@ func decodeDownloadedSkillJSON(data []byte) (*corelib.NLSkillEntry, error) {
 
 	installSkillDir := ""
 	if len(full.Files) > 0 && full.Name != "" {
-		extractSkillFiles(full.Name, full.Files, "")
-		if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
+		extractSkillFiles(full.Name, full.Files, targetDir)
+		if strings.TrimSpace(targetDir) != "" {
+			installSkillDir = targetDir
+		} else if skillsRoot, err := cskill.PrimarySkillsDir(); err == nil {
 			installSkillDir = filepath.Join(skillsRoot, full.Name)
 		}
 	}
@@ -84,5 +95,6 @@ func decodeDownloadedSkillJSON(data []byte) (*corelib.NLSkillEntry, error) {
 		HubSkillID:  full.ID,
 		HubVersion:  full.Version,
 		TrustLevel:  trustLevel,
+		SkillDir:    installSkillDir,
 	}, nil
 }

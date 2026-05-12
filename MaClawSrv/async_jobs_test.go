@@ -100,7 +100,7 @@ func newAsyncSkillTestServer(t *testing.T) (*agentservice.Service, agentservice.
 	if err != nil {
 		t.Fatalf("Issue token: %v", err)
 	}
-	return svc, principal, token, NewHTTPServer(svc, "admin-secret")
+	return svc, principal, token, NewHTTPServer(svc, "admin-secret", nil)
 }
 
 func waitForAsyncJob(t *testing.T, server *HTTPServer, token, jobID string) asyncJobView {

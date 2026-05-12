@@ -106,7 +106,7 @@ export const SidebarNavRail = ({
                         <img src={currentIcon} alt="Logo" style={{ width: '74px', height: '56px', objectFit: 'contain', transform: 'translateY(-2px)' }} />
                     </div>
                 )}
-                <div style={{ color: '#d94b3d', fontSize: '0.78rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
+                <div style={{ color: isTigerClaw ? '#7c3aed' : '#d94b3d', fontSize: isTigerClaw ? '0.68rem' : '0.78rem', fontWeight: 800, lineHeight: 1, fontFamily: 'Georgia, serif' }}>{brandSidebarName}</div>
             </div>
 
             <div

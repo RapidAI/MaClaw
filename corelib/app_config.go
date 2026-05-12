@@ -233,6 +233,11 @@ type AppConfig struct {
 	// agent tasks (bash, craft_tool, confirmation panel, etc.). When empty,
 	// falls back to ~/.maclaw/workspace via corelib.WorkspaceDir().
 	WorkingDirectory string `json:"working_directory,omitempty"`
+	// DataDir is the user-configured data directory for all maclaw persistent
+	// data (memories, logs, skills, conversations, etc.). When empty, defaults
+	// to ~/.maclaw. config.json always stays at ~/.maclaw/config.json regardless
+	// of this setting. Changes take effect after restart.
+	DataDir string `json:"data_dir,omitempty"`
 	// WorkflowEnabled controls whether the workflow engine (multi-phase
 	// guided workflows like coding, PPT design, etc.) is active. When false,
 	// all messages bypass workflow interception and go directly to the normal

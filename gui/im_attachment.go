@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // buildUserContent constructs the user message content for the LLM.
@@ -156,11 +158,7 @@ func buildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 // saveAttachmentToLocal saves a MessageAttachment to ~/.maclaw/im_files/
 // and returns the absolute path.
 func saveAttachmentToLocal(att *MessageAttachment) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine home directory: %w", err)
-	}
-	dir := filepath.Join(home, ".maclaw", "im_files")
+	dir := filepath.Join(corelib.MaclawBaseDir(), "im_files")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("cannot create im_files directory: %w", err)
 	}

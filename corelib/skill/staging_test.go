@@ -99,6 +99,51 @@ func TestBuildFileManifest_ListsFiles(t *testing.T) {
 	}
 }
 
+func TestBuildFileManifest_MarksSymlink(t *testing.T) {
+	if os.Getenv("OS") == "Windows_NT" {
+		t.Skip("symlink creation often requires elevated permissions on Windows")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target.txt")
+	if err := os.WriteFile(target, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	manifest := BuildFileManifest(dir)
+	if len(manifest) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(manifest))
+	}
+	if !manifest[0].IsSymlink {
+		t.Fatalf("expected symlink to be marked: %+v", manifest[0])
+	}
+}
+
+func TestCopyDirRejectsSymlink(t *testing.T) {
+	if os.Getenv("OS") == "Windows_NT" {
+		t.Skip("symlink creation often requires elevated permissions on Windows")
+	}
+	src := t.TempDir()
+	dst := filepath.Join(t.TempDir(), "dst")
+	target := filepath.Join(t.TempDir(), "target.txt")
+	if err := os.WriteFile(target, []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(src, "link.txt")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := copyDir(src, dst)
+	if err == nil {
+		t.Fatalf("expected copyDir() error")
+	}
+	if !strings.Contains(err.Error(), "unsupported symlink") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestBuildFileManifest_EmptyDir(t *testing.T) {
 	manifest := BuildFileManifest("")
 	if manifest != nil {

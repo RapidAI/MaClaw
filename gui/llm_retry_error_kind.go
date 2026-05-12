@@ -101,6 +101,12 @@ func isTransientServerError(err error) bool {
 	if isHubPeriodLimitError(err) {
 		return false
 	}
+	if strings.Contains(s, "\u670d\u52a1\u7e41\u5fd9") ||
+		strings.Contains(s, "\u8bf7\u7a0d\u540e\u91cd\u8bd5") ||
+		strings.Contains(s, "\u7f51\u7edc\u9519\u8bef") ||
+		strings.Contains(s, "\u8c03\u7528\u9891\u7387\u8d85\u9650") {
+		return true
+	}
 	if strings.Contains(s, "429") ||
 		strings.Contains(s, "rate limit") ||
 		strings.Contains(s, "rate_limit") ||

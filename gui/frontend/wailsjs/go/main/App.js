@@ -355,6 +355,14 @@ export function GetUserHomeDir() {
   return window['go']['main']['App']['GetUserHomeDir']();
 }
 
+export function GetMaclawBaseDir() {
+  return window['go']['main']['App']['GetMaclawBaseDir']();
+}
+
+export function SetDataDir(arg1) {
+  return window['go']['main']['App']['SetDataDir'](arg1);
+}
+
 export function GetBrandInfo() {
   return window['go']['main']['App']['GetBrandInfo']();
 }

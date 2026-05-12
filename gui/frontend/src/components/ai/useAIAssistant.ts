@@ -2712,6 +2712,28 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
     }, []);
 
+    // Listen for skill installation result events (success/failure feedback after
+    // the user confirms or the async install completes).
+    useEffect(() => {
+        const handler = (payload: unknown) => {
+            if (!payload || typeof payload !== 'object') return;
+            const data = payload as Record<string, unknown>;
+            const message = typeof data.message === 'string' ? data.message : '';
+            if (!message) return;
+            const msg: ChatMessage = {
+                id: nextId(),
+                role: 'assistant',
+                content: message,
+                timestamp: Date.now(),
+            };
+            setMessages(prev => [...prev, msg]);
+        };
+        const offSkillResult = subscribeEvent('skill-install-result', handler);
+        return () => {
+            offSkillResult();
+        };
+    }, []);
+
     const cancelSession = useCallback(async (): Promise<CancelAIAssistantResult> => {
         const canceledRound = activeRoundRef.current;
         const pendingTaskAtCancel = pendingTaskRef.current;

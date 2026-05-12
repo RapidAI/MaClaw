@@ -103,6 +103,9 @@ func (h *IMMessageHandler) handleRegisteredToolAgentViewSubmit(toolName string, 
 
 	baseArgs, _ := data[registeredToolAgentViewArgsField].(map[string]interface{})
 	args := cloneMISInterfaceMap(baseArgs)
+	if args == nil {
+		args = make(map[string]interface{})
+	}
 	for key, value := range data {
 		key = strings.TrimSpace(key)
 		if key == "" || strings.HasPrefix(key, "_") {
@@ -732,9 +735,9 @@ func registeredToolMissingRequired(tool *RegisteredTool, args map[string]interfa
 func buildRegisteredToolAgentView(tool RegisteredTool, args map[string]interface{}, missing []string) map[string]interface{} {
 	if view := registeredToolSpecializedAgentView(tool, args, registeredToolSpecializedAgentViewOptions{
 		ViewID:      "tool:run:" + tool.Name,
-		TitlePrefix: "Run ",
+		TitlePrefix: avTr("Run ", "运行 "),
 		Description: strings.TrimSpace(tool.Description),
-		SubmitLabel: "Run tool",
+		SubmitLabel: avTr("Run tool", "运行工具"),
 		HiddenData: map[string]interface{}{
 			registeredToolAgentViewArgsField: cloneMISInterfaceMap(args),
 		},
@@ -751,20 +754,20 @@ func buildRegisteredToolAgentView(tool RegisteredTool, args map[string]interface
 	}
 	title := strings.TrimSpace(tool.Name)
 	if title == "" {
-		title = "Tool"
+		title = avTr("Tool", "工具")
 	}
 	description := strings.TrimSpace(tool.Description)
 	if description == "" {
-		description = "Fill required parameters before running this tool."
+		description = avTr("Fill required parameters before running this tool.", "请填写必要参数后运行此工具。")
 	}
 	view := map[string]interface{}{
 		"type":        "form",
 		"id":          "tool:run:" + tool.Name,
-		"title":       "Run " + title,
+		"title":       avTr("Run ", "运行 ") + title,
 		"description": description,
 		"fields":      fields,
-		"formErrors":  []string{"Required tool parameters are missing. Fill them here to continue."},
-		"submitLabel": "Run tool",
+		"formErrors":  []string{avTr("Required tool parameters are missing. Fill them here to continue.", "缺少必要的工具参数，请在此填写后继续。")},
+		"submitLabel": avTr("Run tool", "运行工具"),
 		"meta": map[string]interface{}{
 			"source": "tool.adapter",
 			"tool":   tool.Name,
@@ -842,7 +845,7 @@ func registeredToolResourcePickerView(tool RegisteredTool, name string, prop map
 		"multiple":     boolFromAny(prop["x-multiple"]) || strings.EqualFold(strings.TrimSpace(fmt.Sprint(prop["type"])), "array"),
 		"dataKey":      name,
 		"hiddenData":   cloneMISInterfaceMap(opts.HiddenData),
-		"submitLabel":  firstNonEmptyMISAgentView(opts.SubmitLabel, "Submit"),
+		"submitLabel":  firstNonEmptyMISAgentView(opts.SubmitLabel, avTr("Submit", "提交")),
 	}
 	if value, ok := args[name]; ok && !registeredToolValueMissing(value) {
 		view["value"] = value
@@ -870,7 +873,7 @@ func registeredToolFieldMapperView(tool RegisteredTool, name string, prop map[st
 		"targetFields": targetFields,
 		"dataKey":      name,
 		"hiddenData":   cloneMISInterfaceMap(opts.HiddenData),
-		"submitLabel":  firstNonEmptyMISAgentView(opts.SubmitLabel, "Apply mapping"),
+		"submitLabel":  firstNonEmptyMISAgentView(opts.SubmitLabel, avTr("Apply mapping", "应用映射")),
 	}
 	if value, ok := args[name]; ok && !registeredToolValueMissing(value) {
 		view["value"] = value
@@ -1015,17 +1018,17 @@ func registeredToolAgentViewFieldsFromSchema(schema map[string]interface{}, args
 func buildRegisteredToolResultAgentView(tool RegisteredTool, result string) map[string]interface{} {
 	title := strings.TrimSpace(tool.Name)
 	if title == "" {
-		title = "Tool"
+		title = avTr("Tool", "工具")
 	}
 	return map[string]interface{}{
 		"type":        "result_browser",
 		"id":          "tool:result:" + title,
-		"title":       title + " result",
-		"description": "Tool execution completed.",
+		"title":       title + avTr(" result", " 结果"),
+		"description": avTr("Tool execution completed.", "工具执行完成。"),
 		"results": []map[string]interface{}{{
 			"id":     "result",
-			"title":  "Output",
-			"status": "done",
+			"title":  avTr("Output", "输出"),
+			"status": avTr("done", "完成"),
 			"data": map[string]interface{}{
 				"output": result,
 			},
@@ -1092,12 +1095,12 @@ func buildRegisteredToolApprovalAgentView(approval registeredToolPendingApproval
 	return map[string]interface{}{
 		"type":         "approval",
 		"id":           "tool:approval",
-		"title":        "Approve tool execution",
-		"description":  "Review this operation before it runs.",
-		"approveLabel": "Approve and run",
-		"rejectLabel":  "Reject",
+		"title":        avTr("Approve tool execution", "审批工具执行"),
+		"description":  avTr("Review this operation before it runs.", "请在执行前审查此操作。"),
+		"approveLabel": avTr("Approve and run", "批准并执行"),
+		"rejectLabel":  avTr("Reject", "拒绝"),
 		"action": map[string]interface{}{
-			"summary":    "Run " + approval.ToolName,
+			"summary":    avTr("Run ", "运行 ") + approval.ToolName,
 			"risk":       registeredToolApprovalRiskLabel(approval.Risk.Level),
 			"effects":    registeredToolApprovalEffects(approval),
 			"reviewData": reviewData,

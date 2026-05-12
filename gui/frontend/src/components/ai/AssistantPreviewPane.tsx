@@ -63,6 +63,7 @@ export function AssistantPreviewPane({
                     onToggleMaximize={inline ? onToggleMaximize : undefined}
                     onSubmit={submitAgentView}
                     theme={theme}
+                    lang={lang}
                 />
             </div>
         );

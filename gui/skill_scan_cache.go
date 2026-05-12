@@ -13,19 +13,24 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
-const skillScanCacheFileName = ".maclaw_scan_status.json"
+const (
+	skillScanCacheFileName       = ".maclaw_scan_status.json"
+	skillScanCacheScannerVersion = "2026-05-12.1"
+)
 
 type skillScanCacheRecord struct {
-	SkillName string               `json:"skill_name"`
-	Hash      string               `json:"hash"`
-	Status    skillScanCacheStatus `json:"status"`
-	Level     string               `json:"level,omitempty"`
-	Summary   string               `json:"summary,omitempty"`
-	ScannedBy string               `json:"scanned_by,omitempty"`
-	ScannedAt string               `json:"scanned_at"`
+	SkillName      string               `json:"skill_name"`
+	Hash           string               `json:"hash"`
+	ScannerVersion string               `json:"scanner_version,omitempty"`
+	Status         skillScanCacheStatus `json:"status"`
+	Level          string               `json:"level,omitempty"`
+	Summary        string               `json:"summary,omitempty"`
+	ScannedBy      string               `json:"scanned_by,omitempty"`
+	ScannedAt      string               `json:"scanned_at"`
 }
 
 func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) error {
@@ -43,8 +48,10 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 	if err != nil {
 		return fmt.Errorf("skill security scan hash failed for %q: %w", skill.Name, err)
 	}
-	if rec, err := readSkillScanCache(skill.SkillDir, skill.Name); err == nil && rec.Hash == hash {
+	if rec, err := readSkillScanCache(skill.SkillDir, skill.Name); err == nil && rec.Hash == hash && skillScanCacheRecordVersionMatches(rec) {
 		switch status := normalizeSkillScanCacheStatus(rec.Status); {
+		case skillScanCacheRecordIsCritical(rec):
+			return fmt.Errorf("skill %q was previously blocked by security scan (level=%s): %s", skill.Name, rec.Level, rec.Summary)
 		case status.IsAllowed():
 			return nil
 		case status.IsBlocked():
@@ -52,8 +59,11 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 		}
 	}
 
-	scanner := NewSkillSecurityScanner(app, nil)
-	report := scanner.ScanStaged(context.Background(), skill, skill.SkillDir, func(status string) {
+	// Runtime is only a safety net for legacy or locally modified skills.
+	// Pre-install scanning writes .maclaw_scan_status.json, so normal execution
+	// avoids LLM-backed scans and only pays the hash/cache check cost.
+	scanner := cskill.NewSecurityScanner(nil)
+	report := scanner.ScanInstallStaged(context.Background(), skill, skill.SkillDir, func(status string) {
 		app.log(fmt.Sprintf("[skill-runner] security scan %s: %s", skill.Name, status))
 	})
 	if err := writeSkillScanCacheForReport(skill, skill.SkillDir, hash, report); err != nil {
@@ -65,9 +75,32 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 	return nil
 }
 
+func skillScanCacheRecordIsCritical(rec skillScanCacheRecord) bool {
+	return strings.EqualFold(strings.TrimSpace(rec.Level), string(security.RiskCritical))
+}
+
+func skillScanCacheRecordVersionMatches(rec skillScanCacheRecord) bool {
+	return strings.TrimSpace(rec.ScannerVersion) == skillScanCacheScannerVersion
+}
+
 func writeSkillScanCacheForReport(skill *corelib.NLSkillEntry, skillDir, hash string, report *cskill.ScanReport) error {
+	status := skillScanCacheStatusAllowed
+	if report != nil && (report.IsDangerous() || report.NeedsUserReview()) {
+		status = skillScanCacheStatusBlocked
+	}
+	return writeSkillScanCacheForReportStatus(skill, skillDir, hash, report, status)
+}
+
+func writeSkillScanCacheForReportStatus(skill *corelib.NLSkillEntry, skillDir, hash string, report *cskill.ScanReport, status skillScanCacheStatus) error {
 	if skill == nil || strings.TrimSpace(skillDir) == "" || report == nil {
 		return nil
+	}
+	status = normalizeSkillScanCacheStatus(status)
+	if status == skillScanCacheStatusUnknown {
+		status = skillScanCacheStatusBlocked
+	}
+	if report.IsDangerous() {
+		status = skillScanCacheStatusBlocked
 	}
 	if hash == "" {
 		var err error
@@ -78,18 +111,15 @@ func writeSkillScanCacheForReport(skill *corelib.NLSkillEntry, skillDir, hash st
 			return err
 		}
 	}
-	status := skillScanCacheStatusAllowed
-	if report.IsDangerous() || report.NeedsUserReview() {
-		status = skillScanCacheStatusBlocked
-	}
 	rec := skillScanCacheRecord{
-		SkillName: skill.Name,
-		Hash:      hash,
-		Status:    status,
-		Level:     fmt.Sprint(report.FinalLevel),
-		Summary:   report.Summary,
-		ScannedBy: report.ScannedBy,
-		ScannedAt: time.Now().UTC().Format(time.RFC3339),
+		SkillName:      skill.Name,
+		Hash:           hash,
+		ScannerVersion: skillScanCacheScannerVersion,
+		Status:         status,
+		Level:          fmt.Sprint(report.FinalLevel),
+		Summary:        report.Summary,
+		ScannedBy:      report.ScannedBy,
+		ScannedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 	return writeSkillScanCache(skillDir, skill.Name, rec)
 }
@@ -115,19 +145,24 @@ func skillContentHash(skill *corelib.NLSkillEntry) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	includeRuntimeArtifacts := skillReferencesRuntimeArtifacts(skill)
 	var files []string
 	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
+		base := filepath.Base(path)
 		if info.IsDir() {
+			if path != root && !includeRuntimeArtifacts && isSkillRuntimePackageDir(base) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		if filepath.Base(rel) == skillScanCacheFileName {
+		if base == skillScanCacheFileName || (!includeRuntimeArtifacts && isSkillRuntimePackageFile(base)) {
 			return nil
 		}
 		files = append(files, rel)
@@ -158,8 +193,76 @@ func skillContentHash(skill *corelib.NLSkillEntry) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+func skillReferencesRuntimeArtifacts(skill *corelib.NLSkillEntry) bool {
+	if skill == nil {
+		return false
+	}
+	for _, step := range skill.Steps {
+		if textReferencesRuntimeArtifacts(step.Action) {
+			return true
+		}
+		for _, value := range step.Params {
+			if valueReferencesRuntimeArtifacts(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func valueReferencesRuntimeArtifacts(value interface{}) bool {
+	switch v := value.(type) {
+	case string:
+		return textReferencesRuntimeArtifacts(v)
+	case []string:
+		for _, item := range v {
+			if textReferencesRuntimeArtifacts(item) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			if valueReferencesRuntimeArtifacts(item) {
+				return true
+			}
+		}
+	case map[string]string:
+		for key, item := range v {
+			if textReferencesRuntimeArtifacts(key) || textReferencesRuntimeArtifacts(item) {
+				return true
+			}
+		}
+	case map[string]interface{}:
+		for key, item := range v {
+			if textReferencesRuntimeArtifacts(key) || valueReferencesRuntimeArtifacts(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func textReferencesRuntimeArtifacts(text string) bool {
+	lower := strings.ToLower(text)
+	for _, token := range []string{"node_modules", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".cache"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	for _, token := range []string{"upload_status.json", "quality_status.json", "skill_package_manifest.json", ".patches.json"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
 func readSkillScanCache(skillDir, skillName string) (skillScanCacheRecord, error) {
-	data, err := os.ReadFile(skillScanCachePath(skillDir, skillName))
+	cachePath := skillScanCachePath(skillDir, skillName)
+	if err := validateSkillScanCachePathForRead(cachePath); err != nil {
+		return skillScanCacheRecord{}, err
+	}
+	data, err := os.ReadFile(cachePath)
 	if err != nil {
 		return skillScanCacheRecord{}, err
 	}
@@ -175,11 +278,45 @@ func writeSkillScanCache(skillDir, skillName string, rec skillScanCacheRecord) e
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
 		return err
 	}
+	if err := validateSkillScanCachePathForWrite(cachePath); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(cachePath, data, 0o600)
+}
+
+func validateSkillScanCachePathForRead(cachePath string) error {
+	info, err := os.Lstat(cachePath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("skill scan cache is a symlink: %s", cachePath)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("skill scan cache is a directory: %s", cachePath)
+	}
+	return nil
+}
+
+func validateSkillScanCachePathForWrite(cachePath string) error {
+	info, err := os.Lstat(cachePath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write skill scan cache through symlink: %s", cachePath)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("refusing to write skill scan cache over directory: %s", cachePath)
+	}
+	return nil
 }
 
 func skillScanCachePath(skillDir, skillName string) string {

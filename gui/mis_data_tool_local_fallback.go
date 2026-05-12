@@ -29,10 +29,10 @@ func (a *App) resolveIntentLocalFallback(args map[string]interface{}) string {
 		fields = []map[string]interface{}{
 			{
 				"name":        "details",
-				"label":       "Details",
+				"label":       avTr("Details", "详情"),
 				"type":        agentViewFieldTypeTextarea.String(),
 				"required":    true,
-				"description": "Describe the structured business data to submit.",
+				"description": avTr("Describe the structured business data to submit.", "描述要提交的结构化业务数据。"),
 			},
 		}
 	}
@@ -42,7 +42,7 @@ func (a *App) resolveIntentLocalFallback(args map[string]interface{}) string {
 		title = inferLocalFormTitle(query)
 	}
 	if title == "" {
-		title = "Local business task"
+		title = avTr("Local business task", "本地业务任务")
 	}
 
 	actionID := strings.TrimSpace(firstNonEmptyMISAgentView(
@@ -68,9 +68,9 @@ func (a *App) resolveIntentLocalFallback(args map[string]interface{}) string {
 		"type":        "form",
 		"id":          "mis:intent:" + actionID,
 		"title":       title,
-		"description": "MIS data service is unavailable. Form generated locally from your description.",
+		"description": avTr("MIS data service is unavailable. Form generated locally from your description.", "MIS 数据服务不可用，已根据您的描述在本地生成表单。"),
 		"fields":      fields,
-		"submitLabel": "Submit",
+		"submitLabel": avTr("Submit", "提交"),
 		"meta":        meta,
 	}
 	a.emitAgentView(view)

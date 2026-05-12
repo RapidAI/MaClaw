@@ -65,10 +65,9 @@ func (d *MCPAutoDiscovery) ScanProject(projectPath string) error {
 	return d.scanFile(declPath, corelib.MCPSourceProject)
 }
 
-// ScanGlobal reads ~/.maclaw/mcp-servers.json and registers global servers.
+// ScanGlobal reads <MaclawBaseDir>/mcp-servers.json and registers global servers.
 func (d *MCPAutoDiscovery) ScanGlobal() error {
-	homeDir := d.app.GetUserHomeDir()
-	globalPath := filepath.Join(homeDir, ".maclaw", globalMCPFile)
+	globalPath := filepath.Join(d.app.getMaclawBaseDir(), globalMCPFile)
 	return d.scanFile(globalPath, corelib.MCPSourceManual)
 }
 

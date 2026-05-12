@@ -14,8 +14,7 @@ import (
 //
 // Called during app startup. Creates default files on first run.
 func (a *App) initSteeringStore() {
-	homeDir := a.GetUserHomeDir()
-	userDir := filepath.Join(homeDir, ".maclaw", "steering")
+	userDir := filepath.Join(a.getMaclawBaseDir(), "steering")
 
 	// Ensure default steering files exist.
 	if err := steering.EnsureDefaults(userDir); err != nil {

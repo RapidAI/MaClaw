@@ -70,6 +70,7 @@ import { InstallSkillModal } from './components/modals/InstallSkillModal';
 import { RemoteActivationDialog } from './components/modals/RemoteActivationDialog';
 import { ProviderSelectorDialog } from './components/modals/ProviderSelectorDialog';
 import { ConfirmDialog } from './components/modals/ConfirmDialog';
+import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import type { RemoteCenterHubOption, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 
 
@@ -2214,6 +2215,7 @@ ${instruction}`;
             className="app-viewport"
             style={{ ['--ui-scale' as any]: String(uiZoom) } as React.CSSProperties}
         >
+            <DataMigrationOverlay />
             <div className="app-scale-layer">
                 <div id="App" data-ai-theme={aiThemeMode}>
             <AppSidebarShell

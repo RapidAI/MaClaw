@@ -1162,6 +1162,86 @@ func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
 	return tx.Commit()
 }
 
+// DeleteSourcesByFilter deletes all sources matching the given owner/tenant filter
+// and their derived data (nodes, cards, facts, FTS entries) in a single transaction.
+// Returns the number of sources deleted.
+func (s *SQLiteStore) DeleteSourcesByFilter(ctx context.Context, opts ListSourcesOptions) (int, error) {
+	where := []string{"1=1"}
+	args := make([]interface{}, 0)
+	if opts.TenantID != "" {
+		where = append(where, "tenant_id = ?")
+		args = append(args, opts.TenantID)
+	}
+	if opts.OwnerID != "" {
+		where = append(where, "owner_id = ?")
+		args = append(args, opts.OwnerID)
+	}
+	if opts.TenantID == "" && opts.OwnerID == "" {
+		return 0, fmt.Errorf("at least one of tenant_id or owner_id is required for bulk delete")
+	}
+
+	// Collect source IDs matching the filter
+	query := `SELECT id FROM knowledge_sources WHERE ` + strings.Join(where, " AND ")
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	// Delete all in a single transaction
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	// Batch delete derived data using IN clause instead of per-ID loop.
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	deleteArgs := make([]interface{}, len(ids))
+	for i, id := range ids {
+		deleteArgs[i] = id
+	}
+
+	derivedDeletes := []string{
+		`DELETE FROM document_nodes_fts WHERE node_id IN (SELECT id FROM document_nodes WHERE source_id IN (` + placeholders + `))`,
+		`DELETE FROM knowledge_cards_fts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE source_id IN (` + placeholders + `))`,
+		`DELETE FROM knowledge_facts_fts WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE source_id IN (` + placeholders + `))`,
+		`DELETE FROM knowledge_facts WHERE source_id IN (` + placeholders + `)`,
+		`DELETE FROM knowledge_cards WHERE source_id IN (` + placeholders + `)`,
+		`DELETE FROM knowledge_card_suppressions WHERE card_id IN (SELECT id FROM knowledge_cards WHERE source_id IN (` + placeholders + `))`,
+		`DELETE FROM document_nodes WHERE source_id IN (` + placeholders + `)`,
+	}
+	for _, stmt := range derivedDeletes {
+		if _, err := tx.ExecContext(ctx, stmt, deleteArgs...); err != nil {
+			return 0, err
+		}
+	}
+
+	// Delete sources themselves
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_sources WHERE id IN (`+placeholders+`)`, deleteArgs...); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
 func (s *SQLiteStore) DisableSource(ctx context.Context, id string) (Source, error) {
 	return s.updateSourceStatus(ctx, id, StatusDisabled)
 }

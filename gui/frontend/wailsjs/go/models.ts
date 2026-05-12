@@ -268,6 +268,7 @@ export namespace main {
 	    default_tool: string;
 	    default_tool_provider: string;
 	    working_directory: string;
+	    data_dir: string;
 	    ui_zoom_factor: number;
 	    chat_font_size: number;
 	    workflow_enabled?: boolean;
@@ -433,6 +434,7 @@ export namespace main {
 	        this.default_tool = source["default_tool"];
 	        this.default_tool_provider = source["default_tool_provider"];
 	        this.working_directory = source["working_directory"];
+	        this.data_dir = source["data_dir"];
 	        this.ui_zoom_factor = source["ui_zoom_factor"];
 	        this.chat_font_size = source["chat_font_size"];
 	        this.workflow_enabled = source["workflow_enabled"];

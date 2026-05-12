@@ -28,9 +28,10 @@ func StagingDir() (string, error) {
 
 // StagedFile describes a single file in the staging directory.
 type StagedFile struct {
-	RelPath  string // relative path within the staging dir (forward slashes)
-	Size     int64
-	IsBinary bool
+	RelPath   string // relative path within the staging dir (forward slashes)
+	Size      int64
+	IsBinary  bool
+	IsSymlink bool
 }
 
 // PrepareStagingDir creates a clean staging directory for a skill.
@@ -137,10 +138,16 @@ func BuildFileManifest(dir string) []StagedFile {
 		if rel == "" {
 			rel = filepath.Base(path)
 		}
+		isSymlink := info.Mode()&os.ModeSymlink != 0
+		isBinary := false
+		if !isSymlink {
+			isBinary = security.IsBinaryFile(path)
+		}
 		files = append(files, StagedFile{
-			RelPath:  filepath.ToSlash(rel),
-			Size:     info.Size(),
-			IsBinary: security.IsBinaryFile(path),
+			RelPath:   filepath.ToSlash(rel),
+			Size:      info.Size(),
+			IsBinary:  isBinary,
+			IsSymlink: isSymlink,
 		})
 		return nil
 	})
@@ -394,6 +401,9 @@ func copyDir(src, dst string) error {
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
 			return os.MkdirAll(target, info.Mode())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("staged skill contains unsupported symlink: %s", rel)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {

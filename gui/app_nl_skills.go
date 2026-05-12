@@ -1853,7 +1853,15 @@ func (a *App) CreateNLSkill(def corelib.NLSkillEntry) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	return a.skillExecutor.Register(def)
+	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), &def, "manual skill create")
+	if err != nil {
+		return err
+	}
+	if err := a.skillExecutor.Register(def); err != nil {
+		return err
+	}
+	writeSkillScanCacheForInstalledEntry(&def, report)
+	return nil
 }
 
 // UpdateNLSkill updates an existing NL Skill definition (Wails binding).
@@ -1862,7 +1870,15 @@ func (a *App) UpdateNLSkill(def corelib.NLSkillEntry) error {
 	if a.skillExecutor == nil {
 		return fmt.Errorf("skill executor not initialized")
 	}
-	return a.skillExecutor.Update(def)
+	report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), &def, "manual skill update")
+	if err != nil {
+		return err
+	}
+	if err := a.skillExecutor.Update(def); err != nil {
+		return err
+	}
+	writeSkillScanCacheForInstalledEntry(&def, report)
+	return nil
 }
 
 // DeleteNLSkill removes an NL Skill by name (Wails binding).
@@ -1895,11 +1911,17 @@ func (a *App) ImportNLSkillZip() (string, error) {
 }
 
 func (a *App) importNLSkillZipPath(selection string) (string, error) {
-	name, importErr := a.importFileBackedSkillZipPath(selection)
+	snapshot, cleanup, err := snapshotSkillZipForInstall(selection)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	name, importErr := a.importFileBackedSkillZipPath(snapshot)
 	if importErr == nil {
 		return name, nil
 	}
-	if validationErr := a.validateSkillZip(selection); validationErr != nil && errors.Is(importErr, errNoRecognizableSkillDefinition) {
+	if validationErr := a.validateSkillZip(snapshot); validationErr != nil && errors.Is(importErr, errNoRecognizableSkillDefinition) {
 		return "", validationErr
 	}
 	return "", importErr
@@ -1928,6 +1950,7 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 	}
 
 	entries := make([]*corelib.NLSkillEntry, 0, len(packageRoots))
+	scanReports := make([]*skill.ScanReport, 0, len(packageRoots))
 	for _, packageRoot := range packageRoots {
 		entry, err := loadImportedSkillEntry(packageRoot)
 		if err != nil {
@@ -1937,7 +1960,12 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 			return "", fmt.Errorf("skill %q already exists", entry.Name)
 		}
 		existingNames[entry.Name] = true
+		report, err := a.scanAndAdmitSkillBeforeRegister(context.Background(), entry, "manual skill pack")
+		if err != nil {
+			return "", err
+		}
 		entries = append(entries, entry)
+		scanReports = append(scanReports, report)
 	}
 
 	primaryDir, err := skill.PrimarySkillsDir()
@@ -1965,11 +1993,15 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 				return "", err
 			}
 			installedDirs = append(installedDirs, destDir)
-			continue
+		} else {
+			installedDirs = append(installedDirs, destDir)
 		}
-		installedDirs = append(installedDirs, destDir)
+		installedEntry := *entry
+		installedEntry.SkillDir = destDir
+		writeSkillScanCacheForInstalledEntry(&installedEntry, scanReports[i])
 	}
 
+	a.emitSkillInstallProgress(entries[0].Name, "done", "Skill imported successfully.", scanReports[0])
 	return entries[0].Name, nil
 }
 

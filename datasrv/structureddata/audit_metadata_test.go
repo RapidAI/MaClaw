@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestAPIKeyRotationAuditMetadataIsActionable(t *testing.T) {
@@ -117,7 +118,7 @@ func TestGovernanceEvidenceChineseSummaryIsReadable(t *testing.T) {
 			t.Fatalf("Chinese governance summary missing %q: %s", want, pack.SummaryText)
 		}
 	}
-	for _, forbidden := range []string{"�", "涓", "鎶", "閲", "鐘", "灏", "闇"} {
+	for _, forbidden := range []string{string(utf8.RuneError), "涓", "鎶", "閲", "鐘", "灏", "闇"} {
 		if strings.Contains(pack.SummaryText, forbidden) {
 			t.Fatalf("Chinese governance summary contains mojibake marker %q: %s", forbidden, pack.SummaryText)
 		}

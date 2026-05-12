@@ -17,7 +17,7 @@ func TestAdminCredentialDetailUpdateRotateAndDeleteUserTenant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -173,7 +173,7 @@ func TestSystemOpsEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	cases := []struct {
 		path string
 		want int
@@ -197,7 +197,7 @@ func TestAdminExportServiceState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	ctx := context.Background()
 	tenant, err := svc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
@@ -288,7 +288,7 @@ func TestAdminExportServiceStateRequiresTenantForUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?user_id=user_x", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w := httptest.NewRecorder()
@@ -303,7 +303,7 @@ func TestAdminImportServiceStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService source: %v", err)
 	}
-	sourceServer := NewHTTPServer(sourceSvc, "admin-secret")
+	sourceServer := NewHTTPServer(sourceSvc, "admin-secret", nil)
 	ctx := context.Background()
 	tenant, err := sourceSvc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
@@ -354,7 +354,7 @@ func TestAdminImportServiceStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService target: %v", err)
 	}
-	targetServer := NewHTTPServer(targetSvc, "admin-secret")
+	targetServer := NewHTTPServer(targetSvc, "admin-secret", nil)
 	importReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/import", bytes.NewReader(exportBody))
 	importReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	importReq.Header.Set("Content-Type", "application/json")
@@ -397,7 +397,7 @@ func TestAdminImportServiceStateConflictAndOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService source: %v", err)
 	}
-	sourceServer := NewHTTPServer(sourceSvc, "admin-secret")
+	sourceServer := NewHTTPServer(sourceSvc, "admin-secret", nil)
 	ctx := context.Background()
 	tenant, err := sourceSvc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
@@ -427,7 +427,7 @@ func TestAdminImportServiceStateConflictAndOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService target: %v", err)
 	}
-	targetServer := NewHTTPServer(targetSvc, "admin-secret")
+	targetServer := NewHTTPServer(targetSvc, "admin-secret", nil)
 	for i, path := range []string{"/api/v1/admin/import", "/api/v1/admin/import", "/api/v1/admin/import?overwrite=true"} {
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(payload))
 		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -449,7 +449,7 @@ func TestAdminImportServiceStateDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService source: %v", err)
 	}
-	sourceServer := NewHTTPServer(sourceSvc, "admin-secret")
+	sourceServer := NewHTTPServer(sourceSvc, "admin-secret", nil)
 	ctx := context.Background()
 	tenant, err := sourceSvc.CreateTenant(ctx, agentservice.CreateTenantInput{Name: "Tenant"})
 	if err != nil {
@@ -479,7 +479,7 @@ func TestAdminImportServiceStateDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService target: %v", err)
 	}
-	targetServer := NewHTTPServer(targetSvc, "admin-secret")
+	targetServer := NewHTTPServer(targetSvc, "admin-secret", nil)
 	if err := targetStore.SaveTenant(*tenant); err != nil {
 		t.Fatalf("SaveTenant target: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Snapshot Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
@@ -688,7 +688,7 @@ func TestAdminPruneServiceSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	server := NewHTTPServer(svc, "admin-secret")
+	server := NewHTTPServer(svc, "admin-secret", nil)
 	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Prune Tenant"})
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)

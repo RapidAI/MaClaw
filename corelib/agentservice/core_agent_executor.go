@@ -37,10 +37,11 @@ type CoreAgentExecutor struct {
 	AllowDirectSSH             bool
 	AllowSSHFileTransfer       bool
 
-	mu         sync.Mutex
-	userMemory map[string]*memory.Store
-	tasks      map[string]*task.Store
-	userSSH    map[string]*coreAgentSSHResources
+	mu             sync.Mutex
+	userMemory     map[string]*memory.Store
+	tasks          map[string]*task.Store
+	userSSH        map[string]*coreAgentSSHResources
+	knowledgeStore KnowledgeStore
 }
 
 type coreAgentSSHResources struct {
@@ -68,6 +69,7 @@ type coreAgentCallbacks struct {
 	httpClient                 *http.Client
 	toolPolicy                 workflow.ToolFilterPolicy
 	opsApprovedCommands        []workflow.OpsApprovedCommand
+	knowledgeStore             KnowledgeStore
 }
 
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
@@ -96,6 +98,7 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		allowSSHFileTransfer: e.AllowSSHFileTransfer,
 		memory:               resources,
 		tasks:                taskStore,
+		knowledgeStore:       e.knowledgeStore,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:   sshResources.mgr,
 			BGTaskMgr: sshResources.bg,
@@ -224,7 +227,7 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if roleDescription == "" {
 		roleDescription = "A REST-served MaClaw agent runtime for end-user assistance."
 	}
-	return agent.BuildSystemPrompt(agent.SystemPromptDeps{
+	basePrompt := agent.BuildSystemPrompt(agent.SystemPromptDeps{
 		Config: agent.SystemPromptConfig{
 			RoleName:        roleName,
 			RoleDescription: roleDescription,
@@ -232,6 +235,17 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 		},
 		MemoryStore: c.memory,
 	}, userText, isFirstTurn)
+
+	// Append knowledge auto-recall if knowledge store is available.
+	// Only on first turn — subsequent iterations have the same user text,
+	// and knowledge results are already in the prompt from turn 1.
+	if c.knowledgeStore != nil && userText != "" && isFirstTurn {
+		var b strings.Builder
+		b.WriteString(basePrompt)
+		c.appendKnowledgeAutoRecall(&b, userText)
+		return b.String()
+	}
+	return basePrompt
 }
 
 type coreToolSpec struct {
@@ -362,6 +376,89 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"required": []string{"action"},
 			},
 		},
+		{
+			Name:        "knowledge_search",
+			Description: "Search the local knowledge base (documents, URLs, saved text). Returns ranked knowledge cards, facts, and source citations without calling an LLM. Use when the user asks about saved knowledge, imported documents, or previously stored information.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":        map[string]interface{}{"type": "string", "description": "Search query"},
+					"search_scope": map[string]interface{}{"type": "string", "description": "all | project | personal. Default all."},
+					"topic_hint":   map[string]interface{}{"type": "string", "description": "Optional topic hint for local re-ranking."},
+					"source_kinds": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: url, pdf, docx, xlsx, csv, markdown, text"},
+					"labels":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source labels to filter by."},
+					"limit":        map[string]interface{}{"type": "integer", "description": "Max results, default 8, max 50"},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			Name:        "knowledge_context_pack",
+			Description: "Build a compact, citation-backed knowledge context pack from the local knowledge base. Use before answering from stored knowledge when you need a prompt-ready bundle of ranked cards and facts under a character budget.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":     map[string]interface{}{"type": "string", "description": "Search query for the context pack"},
+					"max_items": map[string]interface{}{"type": "integer", "description": "Max items in pack, default 10"},
+					"max_chars": map[string]interface{}{"type": "integer", "description": "Max characters in pack, default 4000"},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			Name:        "knowledge_save_url",
+			Description: "Save a URL to the knowledge base. The content will be fetched, parsed, and indexed for future retrieval.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"url":        map[string]interface{}{"type": "string", "description": "URL to save"},
+					"title":      map[string]interface{}{"type": "string", "description": "Optional title override"},
+					"topic_hint": map[string]interface{}{"type": "string", "description": "Optional topic hint for better indexing"},
+				},
+				"required": []string{"url"},
+			},
+		},
+		{
+			Name:        "knowledge_save_text",
+			Description: "Save text or markdown content to the knowledge base for future retrieval.",
+			Enabled:     c.knowledgeStore != nil,
+			DisabledReason: func() string {
+				if c.knowledgeStore == nil {
+					return "knowledge base is not configured"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"text":       map[string]interface{}{"type": "string", "description": "Text content to save"},
+					"title":      map[string]interface{}{"type": "string", "description": "Optional title"},
+					"topic_hint": map[string]interface{}{"type": "string", "description": "Optional topic hint for better indexing"},
+				},
+				"required": []string{"text"},
+			},
+		},
 	}
 }
 
@@ -448,6 +545,14 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: agent.ToolAskUser(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "task":
 		return agent.ToolExecutionResult{Result: agent.ToolTask(c.tasks, args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "knowledge_search":
+		return agent.ToolExecutionResult{Result: c.executeKnowledgeSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "knowledge_context_pack":
+		return agent.ToolExecutionResult{Result: c.executeKnowledgeContextPack(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "knowledge_save_url":
+		return agent.ToolExecutionResult{Result: c.executeKnowledgeSaveURL(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "knowledge_save_text":
+		return agent.ToolExecutionResult{Result: c.executeKnowledgeSaveText(args), Outcome: agent.ToolExecutionOutcomeOK}
 	default:
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}

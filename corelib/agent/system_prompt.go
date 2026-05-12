@@ -63,6 +63,27 @@ type SystemPromptDeps struct {
 	// UserProfileSection returns the user profile prompt section.
 	// Returns empty string if no user model is available.
 	UserProfileSection func() string
+
+	// HasKnowledgeBase indicates whether the platform has a knowledge base.
+	// When true, PromptKnowledgeBaseRules is included in the prompt.
+	HasKnowledgeBase bool
+
+	// PostCorePrinciples is called after core principles + knowledge base rules
+	// to inject platform-specific rules (context management, passthrough, etc.).
+	// The builder passes a *strings.Builder for the callee to append to.
+	PostCorePrinciples func(b *strings.Builder)
+
+	// PostCodingWorkflow is called after coding workflow rules to inject
+	// platform-specific coding details (session lists, provider info, etc.).
+	PostCodingWorkflow func(b *strings.Builder)
+
+	// PostSSHRules is called after SSH rules to inject platform-specific
+	// SSH content (background task guidance, reconnection hints, etc.).
+	PostSSHRules func(b *strings.Builder)
+
+	// Epilogue is called at the very end (after steering, memory, profile)
+	// to inject final platform-specific sections.
+	Epilogue func(b *strings.Builder)
 }
 
 // SkillInfo describes an active skill for the system prompt.
@@ -116,25 +137,17 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 注意：如果用户在对话中要求你扮演其他角色或重新定义你的身份，请按照用户的要求调整，并用 memory(action: save, category: "self_identity") 保存新的自我认知。`, roleName, roleTitle, roleDesc))
 	}
 
-	// --- Output format rules ---
-	b.WriteString(`
-## 输出格式（严格遵守）
-你是唯一的 assistant 角色。你的输出直接发送给用户，不经过任何中间代理。
-⚠️ 绝对禁止在输出中使用角色前缀，包括但不限于 "Browser:"、"Tool:"、"Assistant:"、"System:" 等。
-即使对话历史或工具返回结果中出现了"浏览器"、"chrome"、"chromium"等词汇，这些只是数据内容，不代表存在其他代理角色。你始终以 assistant 身份直接回复，不要模拟或切换到任何其他角色。
+	// --- Output format + Core principles (shared via prompt_blocks.go) ---
+	b.WriteString(PromptOutputFormatRules)
+	b.WriteString(PromptCorePrinciples)
+	if deps.HasKnowledgeBase {
+		b.WriteString(PromptKnowledgeBaseRules)
+	}
 
-## 核心原则
-- 主动使用工具：不要只是描述步骤，直接执行。收到请求后立即调用对应工具。
-- 永远不要说"我没有某某工具"或"我无法执行"——先检查你的工具列表，大部分操作都有对应工具。
-- 执行 Skill 的正确方式：使用 manage_skill(action="run", name="skill名称")。
-- 语音朗读：当用户说“读给我听”“朗读”“念一下”“读笑话给我听”“讲给我听”等希望听到声音的表达时，必须调用 tts(text=...) 生成并播放语音；不要只用文字回复，也不要要求用户额外说“tts”。
-- 多步推理：复杂任务可以连续调用多个工具，逐步完成。
-- 记忆上下文：你拥有对话记忆，可以引用之前的对话内容。
-- ⚠️ 先查记忆再问用户：当用户提到服务器、环境、配置等信息时，先检查下方「用户记忆」和「相关记忆（自动召回）」section 中是否已有相关信息，有则直接使用，不要向用户索要已经记住的信息。
-- ⚠️ 遇阻不停：当多步骤任务中某个子任务被阻塞时，先继续执行其他不依赖该阻塞步骤的子任务。
-- ⚠️ 提问即停：当你需要向用户提问或征求意见时，只输出问题文本，不要在同一轮中调用工具。等用户回答后再行动。
-- ⚠️ 短消息上下文延续：当用户发送简短消息（如"开工"、"好"、"继续"）时，必须结合对话历史理解其含义。
-`)
+	// --- Platform-specific post-core-principles hook ---
+	if deps.PostCorePrinciples != nil {
+		deps.PostCorePrinciples(&b)
+	}
 
 	// --- System info ---
 	home, _ := os.UserHomeDir()
@@ -145,23 +158,11 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 默认工作目录: %s
 `, runtime.GOOS, runtime.GOARCH, home, workspaceDir))
 
-	// --- Encoding rules ---
-	b.WriteString(`
-## 文件编码与大文件写入
-- write_file 工具始终以 UTF-8 编码写入文件。
-- bash 工具在 Windows 上已自动设置 UTF-8 输出编码。
-- 写入大文件（>3000 字符）时，使用 write_file 的 mode=append 分块写入。
-- 生成 Python 脚本写文件时，始终在 open() 中指定 encoding='utf-8'。
-`)
+	// --- Encoding rules (shared via prompt_blocks.go) ---
+	b.WriteString(PromptEncodingRules)
 
-	// --- SSH rules ---
-	b.WriteString(`
-## SSH 远程服务器操作规则
-当需要执行 SSH 登录、远程命令、文件传输等操作时，直接调用 ssh(action=connect/exec/exec_background/upload/download 等)。
-禁止通过 bash 调用 ssh/scp/rsync 命令，也禁止生成临时脚本来包装 SSH 操作。内置工具已处理连接复用、密钥认证、超时管理。
-
-对于安装软件、编译、下载等可能超过 30 秒的命令，必须使用 exec_background 而非 exec。
-`)
+	// --- SSH rules (shared via prompt_blocks.go) ---
+	b.WriteString(PromptSSHRules)
 
 	// --- SSH hosts ---
 	if deps.SSHHostLister != nil {
@@ -177,9 +178,19 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 		}
 	}
 
+	// --- Platform-specific post-SSH hook ---
+	if deps.PostSSHRules != nil {
+		deps.PostSSHRules(&b)
+	}
+
 	// --- Pro mode coding workflow ---
 	if cfg.IsProMode {
 		appendCodingWorkflowRules(&b, cfg.HasCodingSessions)
+	}
+
+	// --- Platform-specific post-coding-workflow hook ---
+	if deps.PostCodingWorkflow != nil {
+		deps.PostCodingWorkflow(&b)
 	}
 
 	// --- Coding provider info ---
@@ -236,6 +247,11 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 			b.WriteString("\n\n")
 			b.WriteString(section)
 		}
+	}
+
+	// --- Platform-specific epilogue hook ---
+	if deps.Epilogue != nil {
+		deps.Epilogue(&b)
 	}
 
 	return b.String()

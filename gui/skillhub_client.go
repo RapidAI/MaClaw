@@ -192,8 +192,8 @@ var allowedFileExts = map[string]bool{
 }
 
 // Install downloads a Skill from the hub, extracts bundled files to
-// ~/.maclaw/data/skills/<name>/, installs declared dependencies, and converts
-// the skill to an NLSkillEntry.
+// ~/.maclaw/data/skills/<name>/, and converts the skill to an NLSkillEntry.
+// Dependency installation is intentionally deferred until after security scan.
 func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL string) (*corelib.NLSkillEntry, error) {
 	return c.InstallToDir(ctx, skillID, hubURL, "")
 }
@@ -201,6 +201,7 @@ func (c *SkillHubClient) Install(ctx context.Context, skillID string, hubURL str
 // InstallToDir downloads a Skill and extracts bundled files to targetDir.
 // When targetDir is empty, falls back to ~/.maclaw/data/skills/<name>/.
 // The returned entry's SkillDir is set to the actual extraction directory.
+// It must not perform dependency installation before the caller scans the skill.
 func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targetDir string) (*corelib.NLSkillEntry, error) {
 	path := "/api/v1/skills/" + url.PathEscape(skillID) + "/download"
 	var full hubSkillFull
@@ -235,13 +236,6 @@ func (c *SkillHubClient) InstallToDir(ctx context.Context, skillID, hubURL, targ
 	if len(full.Files) > 0 {
 		if err := c.extractFiles(full.Name, full.Files, targetDir); err != nil {
 			// Non-fatal: mark as needs_setup but continue.
-			status = skillEntryStatusNeedsSetup
-		}
-	}
-
-	// Install declared dependencies.
-	if len(full.Manifest.Dependencies) > 0 {
-		if err := c.installDependencies(full.Manifest.Dependencies); err != nil {
 			status = skillEntryStatusNeedsSetup
 		}
 	}

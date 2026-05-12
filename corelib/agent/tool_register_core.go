@@ -407,6 +407,26 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Required: []string{"text"},
 		Handler:  extraHandler(deps, "tts", "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS 并等待模型下载完成。"),
 	})
+
+	r.Register(ToolEntry{
+		Name:        "manage_schedule",
+		Description: "定时任务管理（action: create/list/delete/update）。create 创建定时任务，list 列出所有任务，delete 删除任务，update 修改任务。day_of_week: -1=每天, 0=周日, 1=周一...6=周六。day_of_month: -1=不限, 1-31。一次性任务请将 start_date 和 end_date 都设为目标日期。",
+		Properties: map[string]interface{}{
+			"action":           map[string]string{"type": "string", "description": "操作: create/list/delete/update"},
+			"id":               map[string]string{"type": "string", "description": "任务 ID（delete/update 时必填）"},
+			"name":             map[string]string{"type": "string", "description": "任务名称（create 时必填，delete 时可选）"},
+			"task_action":      map[string]string{"type": "string", "description": "到时要执行的操作（自然语言描述，create/update 时使用）"},
+			"hour":             map[string]string{"type": "integer", "description": "执行时间-小时（0-23）"},
+			"minute":           map[string]string{"type": "integer", "description": "执行时间-分钟（0-59，默认0）"},
+			"day_of_week":      map[string]string{"type": "integer", "description": "星期几（-1=每天, 0=周日...6=周六，默认-1）"},
+			"day_of_month":     map[string]string{"type": "integer", "description": "每月几号（-1=不限, 1-31，默认-1）"},
+			"interval_minutes": map[string]string{"type": "integer", "description": "重复间隔分钟数（>0 启用间隔模式）"},
+			"start_date":       map[string]string{"type": "string", "description": "生效开始日期（格式 2006-01-02）"},
+			"end_date":         map[string]string{"type": "string", "description": "生效结束日期（格式 2006-01-02）"},
+		},
+		Required: []string{"action"},
+		Handler:  extraHandler(deps, "manage_schedule", "定时任务管理器未初始化。"),
+	})
 }
 
 // extraHandler returns the host-injected handler for the given tool name,

@@ -116,6 +116,20 @@ func (m *Manager) SetExecutor(fn TaskExecutor) {
 	m.executor = fn
 }
 
+// StartWithExecutor atomically sets the executor and starts the background
+// scheduler. This is the recommended initialization method — it eliminates
+// the race between Start() and SetExecutor() where catch-up runs fire with
+// a nil executor because Start() was called before SetExecutor().
+//
+// Usage:
+//
+//	mgr, _ := scheduler.NewManager(path)
+//	mgr.StartWithExecutor(myExecutor)
+func (m *Manager) StartWithExecutor(fn TaskExecutor) {
+	m.SetExecutor(fn)
+	m.Start()
+}
+
 // SetOnChange sets an optional callback invoked after task state changes
 // (e.g. after a task fires or expires), useful for notifying the frontend.
 func (m *Manager) SetOnChange(fn func()) {

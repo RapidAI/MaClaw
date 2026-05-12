@@ -57,8 +57,26 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("create service: %w", err)
 	}
 
-	server := NewHTTPServer(svc, adminSecret)
+	// Initialize knowledge store (non-fatal: degrades to no-knowledge mode).
+	var knowledgeMgr *knowledgeStoreManager
+	km, kmErr := newKnowledgeStoreManager(dataRoot)
+	if kmErr != nil {
+		log.Printf("[knowledge] initialization failed (non-fatal, knowledge features disabled): %v", kmErr)
+	} else {
+		knowledgeMgr = km
+		executor.SetKnowledgeStore(km.Store())
+		log.Printf("[knowledge] initialized successfully")
+	}
+
+	server := NewHTTPServer(svc, adminSecret, knowledgeMgr)
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
+
+	// Initialize optional scheduler (MACLAW_ENABLE_SCHEDULER=true).
+	schMgr := initScheduler(dataRoot, svc, executor)
+	if schMgr != nil {
+		defer schMgr.Stop()
+	}
+
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           server.Handler(),
@@ -106,6 +124,10 @@ func runServer(ctx context.Context) error {
 		}
 		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
+		}
+		// Close knowledge store after HTTP server has drained all in-flight requests.
+		if knowledgeMgr != nil {
+			knowledgeMgr.Close()
 		}
 	}
 	return nil

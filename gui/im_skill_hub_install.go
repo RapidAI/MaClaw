@@ -135,9 +135,15 @@ func (h *IMMessageHandler) installAndExecuteSkill(ctx context.Context, best *Ski
 		return h.registerAndExecuteSkill(ctx, skill, best.Name, "auto_clawhub", platform, userID, sendStatus)
 	}
 
-	// SkillMarket result: download through the HubCenter failover pool.
-	skill, dlErr := downloadSkillJSONFromHubCenter(ctx, h.app, "/api/v1/skills/"+url.PathEscape(best.ID)+"/download")
+	// SkillMarket result: download through the HubCenter failover pool into
+	// staging so file contents are scanned before they reach the final skill dir.
+	stagingDir, dlErr := cskill.PrepareStagingDir(firstNonEmpty(best.ID, best.Name, "auto-hub-skill"))
 	if dlErr != nil {
+		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but staging failed: %v", best.Name, dlErr)}
+	}
+	skill, dlErr := downloadSkillJSONFromHubCenterToDir(ctx, h.app, "/api/v1/skills/"+url.PathEscape(best.ID)+"/download", stagingDir)
+	if dlErr != nil {
+		cskill.CleanupStaging(stagingDir)
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but download failed: %v", best.Name, dlErr)}
 	}
 	skill.Source = "auto_hub"
@@ -242,6 +248,29 @@ func downloadSkillJSON(ctx context.Context, endpoint string) (*corelib.NLSkillEn
 	}, nil
 }
 
+func skillStagingDir(skillDir string) string {
+	skillDir = strings.TrimSpace(skillDir)
+	if skillDir == "" {
+		return ""
+	}
+	root, err := cskill.StagingDir()
+	if err != nil {
+		return ""
+	}
+	absDir, err := filepath.Abs(skillDir)
+	if err != nil {
+		return ""
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	if absDir == absRoot || strings.HasPrefix(absDir, absRoot+string(filepath.Separator)) {
+		return absDir
+	}
+	return ""
+}
+
 // extractSkillFiles decodes base64-encoded files and writes them to the
 // specified targetDir, preserving subdirectory structure.
 // When targetDir is empty, falls back to ~/.maclaw/data/skills/<skillName>/.
@@ -289,7 +318,6 @@ func extractSkillFiles(skillName string, files map[string]string, targetDir stri
 }
 
 // registerAndExecuteSkill registers a skill locally, runs security review,
-// registerAndExecuteSkill registers a skill locally, runs security review,
 // executes it, and returns the result string.
 //
 // platform and userID are passed explicitly (not read from h.currentLoopCtx)
@@ -299,46 +327,36 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	if h.getSkillExecutor() == nil {
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Found skill %s but SkillExecutor is not initialized", displayName)}
 	}
+	stagingDir := skillStagingDir(skill.SkillDir)
 
 	// Security review: staging + intelligent scan.
 	// Developer mode: skip security review entirely.
+	var installScanReport *cskill.ScanReport
 	if !h.isSecurityDeveloperMode() {
 		scanner := NewSkillSecurityScanner(h.app, nil)
-		scanReport := scanner.ScanStaged(ctx, skill, skill.SkillDir, sendStatus)
+		scanReport := scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
+		installScanReport = scanReport
 
 		if scanReport.IsDangerous() {
-			confirmed := h.confirmCriticalRiskSkill(
-				ctx, displayName, source, scanReport.PatternAssessment.Factors, platform, userID,
-			)
-			if !confirmed {
-				if h.getAuditLog() != nil {
-					_ = h.getAuditLog().Log(security.AuditEntry{
-						Timestamp:    time.Now(),
-						Action:       security.AuditActionHubSkillReject,
-						ToolName:     source + "_skill_install",
-						RiskLevel:    security.RiskCritical,
-						PolicyAction: security.PolicyDeny,
-						Result:       fmt.Sprintf("user rejected critical skill %s: %s", displayName, scanReport.Summary),
-					})
-				}
-				return skillInstallExecutionResult{Text: FormatScanReportForUser(scanReport, displayName) +
-					fmt.Sprintf("\nSkill %s was rejected and not installed.", displayName)}
-			}
+			cskill.CleanupStaging(stagingDir)
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
 					Timestamp:    time.Now(),
-					Action:       security.AuditActionHubSkillInstall,
+					Action:       security.AuditActionHubSkillReject,
 					ToolName:     source + "_skill_install",
 					RiskLevel:    security.RiskCritical,
-					PolicyAction: security.PolicyUserOverride,
-					Result:       fmt.Sprintf("user confirmed critical skill %s, scanned_by=%s", displayName, scanReport.ScannedBy),
+					PolicyAction: security.PolicyDeny,
+					Result:       fmt.Sprintf("pre-install policy rejected critical skill %s: %s", displayName, scanReport.Summary),
 				})
 			}
+			return skillInstallExecutionResult{Text: FormatScanReportForUser(scanReport, displayName) +
+				fmt.Sprintf("\nSkill %s was rejected by security policy before installation.", displayName)}
 		} else if scanReport.NeedsUserReview() {
-			confirmed := h.confirmCriticalRiskSkill(
-				ctx, displayName, source, scanReport.PatternAssessment.Factors, platform, userID,
+			confirmed := h.confirmRiskSkillInstall(
+				ctx, displayName, source, scanReport.FinalLevel, scanReport.PatternAssessment.Factors, platform, userID,
 			)
 			if !confirmed {
+				cskill.CleanupStaging(stagingDir)
 				if h.getAuditLog() != nil {
 					_ = h.getAuditLog().Log(security.AuditEntry{
 						Timestamp:    time.Now(),
@@ -349,14 +367,45 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 						Result:       fmt.Sprintf("user rejected high-risk skill %s: %s", displayName, scanReport.Summary),
 					})
 				}
-				return skillInstallExecutionResult{Text: FormatScanReportForUser(scanReport, displayName) +
-					fmt.Sprintf("\nSkill %s was rejected and not installed.", displayName)}
+				return skillInstallExecutionResult{
+					Text:          FormatScanReportForUser(scanReport, displayName) + fmt.Sprintf("\nSkill %s was rejected and not installed.", displayName),
+					SilentFailure: true,
+				}
 			}
 		}
 	}
 
 	sendStatus(fmt.Sprintf("Registering Skill: %s ...", skill.Name))
+	preNormalizeScanHash := ""
+	committedDir := ""
+	if stagingDir != "" {
+		finalDir, err := cskill.CommitStaging(stagingDir, skill.Name)
+		if err != nil {
+			cskill.CleanupStaging(stagingDir)
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: %v", displayName, err)}
+		}
+		skill.SkillDir = finalDir
+		committedDir = finalDir
+		if installScanReport != nil {
+			if hash, err := skillContentHash(skill); err == nil {
+				preNormalizeScanHash = hash
+			} else {
+				log.Printf("[skill-auto] failed to hash approved pre-normalize skill %s: %v", skill.Name, err)
+			}
+		}
+		if h.app != nil {
+			skill = h.app.normalizeInstalledSkill(skill)
+		}
+	}
+	if installScanReport != nil && preNormalizeScanHash != "" {
+		if err := writeSkillScanCacheForReportStatus(skill, skill.SkillDir, preNormalizeScanHash, installScanReport, skillScanCacheStatusAllowed); err != nil {
+			log.Printf("[skill-auto] failed to write install scan cache for %s: %v", skill.Name, err)
+		}
+	}
 	if err := h.getSkillExecutor().Register(*skill); err != nil {
+		if committedDir != "" {
+			_ = os.RemoveAll(committedDir)
+		}
 		return skillInstallExecutionResult{Text: fmt.Sprintf("Registering Skill %s failed: %v", displayName, err)}
 	}
 
@@ -368,12 +417,20 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	// Audit log.
 	_ = h.getAuditLog() // ensure
 	if h.getAuditLog() != nil {
+		riskLevel := security.RiskLow
+		policyAction := security.PolicyAllow
+		if installScanReport != nil {
+			riskLevel = installScanReport.FinalLevel
+			if installScanReport.NeedsUserReview() {
+				policyAction = security.PolicyUserOverride
+			}
+		}
 		_ = h.getAuditLog().Log(security.AuditEntry{
 			Timestamp:    time.Now(),
 			Action:       security.AuditActionHubSkillInstall,
 			ToolName:     source + "_skill_install",
-			RiskLevel:    security.RiskLow,
-			PolicyAction: security.PolicyAllow,
+			RiskLevel:    riskLevel,
+			PolicyAction: policyAction,
 			Result:       fmt.Sprintf("installed skill %s from %s", displayName, source),
 		})
 	}

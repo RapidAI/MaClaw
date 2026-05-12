@@ -15,6 +15,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/nudge"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -471,8 +472,8 @@ func (h *IMMessageHandler) SetCapabilityGapDetector(detector *CapabilityGapDetec
 			// The riskDetails string is pre-formatted by the detector; pass it as a
 			// single-element factors slice so buildCriticalRiskPrompt includes it.
 			factors := []string{riskDetails}
-			return h.confirmCriticalRiskSkill(
-				context.Background(), skillName, "capability_gap_auto", factors, platform, h.lastUserID,
+			return h.confirmRiskSkillInstall(
+				context.Background(), skillName, "capability_gap_auto", security.RiskHigh, factors, platform, h.lastUserID,
 			)
 		})
 	}

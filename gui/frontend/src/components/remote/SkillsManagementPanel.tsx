@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type CSSProperties }
 import { useDialog } from "../CustomDialog";
 import { useToast } from "../Toast";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { SkillInstallProgressPanel } from "./SkillInstallProgressPanel";
 import {
     colors,
     remoteCardStyle,
@@ -315,7 +316,6 @@ export function SkillsManagementPanel({ localizeText }: Props) {
     const [stepsYaml, setStepsYaml] = useState("");
     const [formError, setFormError] = useState("");
 
-    // Delete confirmation
     const [importing, setImporting] = useState(false);
 
     // Learned skill detail state
@@ -999,6 +999,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                         )}
                     </div>
 
+                    <SkillInstallProgressPanel active={importing || installingSkills.size > 0 || (busy && showForm)} />
                     {/* Diagnose results */}
                     {diagEntries && diagEntries.length > 0 && (
                         <div style={{ ...remoteInfoPanelStyle, fontSize: "0.76rem" }}>

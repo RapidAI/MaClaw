@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -43,6 +44,23 @@ func NewSecurityScanner(llm LLMCaller) *SecurityScanner {
 	return &SecurityScanner{llm: llm}
 }
 
+// ScanInstallStaged scans a skill before installation. It deliberately ignores
+// package-provided trust metadata because trust is assigned by the installer or
+// source policy after admission, not by the untrusted package itself.
+func (s *SecurityScanner) ScanInstallStaged(
+	ctx context.Context,
+	entry *corelib.NLSkillEntry,
+	stagingDir string,
+	sendStatus func(string),
+) *ScanReport {
+	if entry == nil {
+		return s.ScanStaged(ctx, nil, stagingDir, sendStatus)
+	}
+	cp := *entry
+	cp.TrustLevel = security.TrustLevelCommunity
+	return s.ScanStaged(ctx, &cp, stagingDir, sendStatus)
+}
+
 // ScanStaged performs a security scan on a staged skill.
 // stagingDir is the directory where skill files have been extracted.
 // Always runs pattern scan first (hard floor), then optionally agent scan.
@@ -54,6 +72,18 @@ func (s *SecurityScanner) ScanStaged(
 ) *ScanReport {
 	if sendStatus == nil {
 		sendStatus = func(string) {}
+	}
+	if entry == nil {
+		return invalidScanReport("skill entry is missing")
+	}
+	if strings.TrimSpace(stagingDir) != "" {
+		info, err := os.Stat(stagingDir)
+		if err != nil {
+			return invalidScanReport(fmt.Sprintf("skill staging directory is not readable: %v", err))
+		}
+		if !info.IsDir() {
+			return invalidScanReport("skill staging path is not a directory")
+		}
 	}
 
 	manifest := BuildFileManifest(stagingDir)
@@ -71,13 +101,27 @@ func (s *SecurityScanner) ScanStaged(
 		ScannedBy:         "pattern",
 	}
 
+	// Step 1b: Pure-Go static file scan inspired by Cisco AI Defense's
+	// skill-scanner signature/YARA layer. This scans actual package files
+	// before install and can upgrade the deterministic risk floor.
+	staticFindings := runStaticFileScan(stagingDir, manifest)
+	if len(staticFindings) > 0 {
+		report.Findings = append(report.Findings, staticFindings...)
+		staticLevel := highestFindingLevel(staticFindings)
+		if security.RiskLevelOrder[staticLevel] > security.RiskLevelOrder[report.FinalLevel] {
+			report.FinalLevel = staticLevel
+			report.Summary = fmt.Sprintf("static file scan found %d issue(s); highest severity: %s", len(staticFindings), staticLevel)
+			report.Recommendation = RecommendationForLevel(report.FinalLevel)
+		}
+	}
+
 	// ── Step 2: Agent scan (optional, can only upgrade) ─────────────
 	if s.llm != nil && s.llm.Available() {
 		sendStatus("🔍 Agent 正在智能扫描 Skill 文件...")
 		agentResult := agentScan(ctx, s.llm, entry, stagingDir, manifest)
 		if agentResult != nil {
 			report.AgentScore = agentResult.AgentScore
-			report.Findings = agentResult.Findings
+			report.Findings = append(report.Findings, agentResult.Findings...)
 			report.ScannedBy = "agent+pattern"
 
 			// Agent can only UPGRADE risk, never downgrade.
@@ -100,6 +144,21 @@ func (s *SecurityScanner) ScanStaged(
 	}
 
 	return report
+}
+
+func invalidScanReport(reason string) *ScanReport {
+	return &ScanReport{
+		PatternAssessment: security.RiskAssessment{
+			Level:   security.RiskCritical,
+			Reason:  reason,
+			Factors: []string{reason},
+		},
+		AgentScore:     -1,
+		FinalLevel:     security.RiskCritical,
+		Summary:        reason,
+		Recommendation: RecommendationForLevel(security.RiskCritical),
+		ScannedBy:      "pattern",
+	}
 }
 
 // ── Pattern scan ────────────────────────────────────────────────────────
