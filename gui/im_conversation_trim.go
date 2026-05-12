@@ -515,6 +515,11 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	const maxTier1 = 10
 	const maxPreservedUserTokens = 8000 // Codex uses 20K; conservative for smaller contexts
 
+	// Build entry groups once — used by tier-1 extraction, recentStart
+	// group-alignment, and groupAlignedSlice. This is the single source of
+	// truth for group boundaries in this compaction pass.
+	groups := agent.BuildEntryGroups(entries)
+
 	tier1Indices := extractTurnBoundaryIndices(entries, maxTier1)
 
 	// First pass: compute recent window.
@@ -525,6 +530,11 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	var recentStart int
 	if entryOverLimit {
 		recentStart = len(entries) - limit
+		// Group-align so we don't split a tool-call group.
+		g := agent.GroupContaining(groups, recentStart)
+		if g != nil && recentStart > g.Start {
+			recentStart = g.End
+		}
 	} else {
 		// Token-only overflow: density-aware split.
 		tokenBudget := maxTokens * 7 / 10
@@ -540,7 +550,6 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 			runningTokens += entryTokens
 		}
 		// Group-align so we don't split a tool-call group.
-		groups := agent.BuildEntryGroups(entries)
 		g := agent.GroupContaining(groups, recentStart)
 		if g != nil && recentStart > g.Start {
 			recentStart = g.End
@@ -573,6 +582,17 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 	recentStart = len(entries) - recentCount
 	if recentStart < 0 {
 		recentStart = 0
+	}
+	// Group-align the second-pass recentStart so we never split a
+	// tool_calls group between outsideSet and the recent window.
+	// Without this, an assistant(tool_calls) at index N can end up in
+	// outsideSet while its tool result at N+1 falls into the recent window
+	// (excluded from outsideSet), producing an orphaned tool_calls message.
+	{
+		g := agent.GroupContaining(groups, recentStart)
+		if g != nil && recentStart > g.Start {
+			recentStart = g.End
+		}
 	}
 
 	// Build a set of outside-tier-1 indices against the FINAL recentStart

@@ -60,6 +60,7 @@ func buildOpenAIChatRequestBody(
 		messages = corelib.MergeSystemIntoUser(messages)
 	}
 	messages = normalizeMiniMaxToolCallMessages(cfg, messages)
+	messages = sanitizeOrphanedToolCalls(messages)
 
 	reqBody := map[string]interface{}{
 		"model":    cfg.Model,
@@ -217,6 +218,250 @@ func normalizeMiniMaxToolCalls(raw interface{}) (interface{}, bool) {
 		return patchedCalls, true
 	default:
 		return raw, false
+	}
+}
+
+// sanitizeOrphanedToolCalls detects assistant messages with tool_calls that
+// are NOT followed by the corresponding tool result messages, and strips the
+// tool_calls field from those orphaned messages. This prevents HTTP 400 errors
+// from providers like DeepSeek that strictly enforce:
+//
+//	"An assistant message with 'tool_calls' must be followed by tool messages
+//	 responding to each 'tool_call_id'."
+//
+// This is a compat/migration layer for persisted conversation histories that
+// were corrupted by a bug in trimHistoryWithSummary (missing group-align on
+// the second-pass recentStart calculation). The root cause is fixed in
+// gui/im_conversation_trim.go — new compactions will not produce orphans.
+// This function handles pre-existing corrupted data gracefully.
+func sanitizeOrphanedToolCalls(messages []interface{}) []interface{} {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	// Scan for assistant messages with tool_calls and verify each has
+	// corresponding tool messages immediately following.
+	// Only flag as orphaned if there IS a following message that isn't a tool
+	// message — if the assistant(tool_calls) is the last message, the API
+	// expects tool results to come in the next request (normal flow).
+	needsFix := false
+	for i, m := range messages {
+		if !msgIsAssistantWithToolCalls(m) {
+			continue
+		}
+		tcIDs := extractToolCallIDs(m)
+		if len(tcIDs) == 0 {
+			continue
+		}
+		// Collect tool_call_ids from immediately following tool messages.
+		j := i + 1
+		for j < len(messages) {
+			mm, ok := toMapInterface(messages[j])
+			if !ok {
+				break
+			}
+			if role, _ := mm["role"].(string); role != "tool" {
+				break
+			}
+			j++
+		}
+		// If we reached the end of messages, this is the last group — not orphaned.
+		if j >= len(messages) {
+			continue
+		}
+		// There are messages after the tool group. Check if all tool_call_ids
+		// have corresponding tool messages.
+		foundIDs := make(map[string]bool)
+		for k := i + 1; k < j; k++ {
+			mm, ok := toMapInterface(messages[k])
+			if !ok {
+				break
+			}
+			if tcID, _ := mm["tool_call_id"].(string); tcID != "" {
+				foundIDs[tcID] = true
+			}
+		}
+		for _, id := range tcIDs {
+			if !foundIDs[id] {
+				needsFix = true
+				break
+			}
+		}
+		if needsFix {
+			break
+		}
+	}
+
+	if !needsFix {
+		return messages
+	}
+
+	// Build a fixed copy, stripping tool_calls from orphaned assistant messages.
+	result := make([]interface{}, 0, len(messages))
+	for i, m := range messages {
+		if !msgIsAssistantWithToolCalls(m) {
+			result = append(result, m)
+			continue
+		}
+		tcIDs := extractToolCallIDs(m)
+		if len(tcIDs) == 0 {
+			result = append(result, m)
+			continue
+		}
+		// Find the end of the following tool messages.
+		j := i + 1
+		for j < len(messages) {
+			mm, ok := toMapInterface(messages[j])
+			if !ok {
+				break
+			}
+			if role, _ := mm["role"].(string); role != "tool" {
+				break
+			}
+			j++
+		}
+		// If this is the last group (no messages after), keep as-is.
+		if j >= len(messages) {
+			result = append(result, m)
+			continue
+		}
+		// Check following tool messages for completeness.
+		foundIDs := make(map[string]bool)
+		for k := i + 1; k < j; k++ {
+			mm, ok := toMapInterface(messages[k])
+			if !ok {
+				break
+			}
+			if tcID, _ := mm["tool_call_id"].(string); tcID != "" {
+				foundIDs[tcID] = true
+			}
+		}
+		allPresent := true
+		for _, id := range tcIDs {
+			if !foundIDs[id] {
+				allPresent = false
+				break
+			}
+		}
+		if allPresent {
+			result = append(result, m)
+			continue
+		}
+		// Orphaned: strip tool_calls from a copy of the message.
+		log.Printf("[LLM sanitize] stripping orphaned tool_calls from assistant message at index %d (ids=%v)", i, tcIDs)
+		patched := copyMapWithout(m, "tool_calls")
+		result = append(result, patched)
+	}
+	return result
+}
+
+// msgIsAssistantWithToolCalls checks if a message is an assistant message
+// with a non-empty tool_calls field.
+func msgIsAssistantWithToolCalls(m interface{}) bool {
+	mm, ok := toMapInterface(m)
+	if !ok {
+		return false
+	}
+	role, _ := mm["role"].(string)
+	if role != "assistant" {
+		return false
+	}
+	tc := mm["tool_calls"]
+	if tc == nil {
+		return false
+	}
+	switch v := tc.(type) {
+	case []interface{}:
+		return len(v) > 0
+	case []ToolCall:
+		return len(v) > 0
+	default:
+		// For other slice types, marshal to check.
+		data, err := json.Marshal(v)
+		if err != nil {
+			return false
+		}
+		return len(data) > 2 // "[]" is 2 bytes
+	}
+}
+
+// extractToolCallIDs extracts tool_call IDs from an assistant message.
+func extractToolCallIDs(m interface{}) []string {
+	mm, ok := toMapInterface(m)
+	if !ok {
+		return nil
+	}
+	tc := mm["tool_calls"]
+	if tc == nil {
+		return nil
+	}
+	switch v := tc.(type) {
+	case []ToolCall:
+		ids := make([]string, 0, len(v))
+		for _, call := range v {
+			if call.ID != "" {
+				ids = append(ids, call.ID)
+			}
+		}
+		return ids
+	case []interface{}:
+		ids := make([]string, 0, len(v))
+		for _, call := range v {
+			callMap, ok := call.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if id, _ := callMap["id"].(string); id != "" {
+				ids = append(ids, id)
+			}
+		}
+		return ids
+	default:
+		return nil
+	}
+}
+
+// toMapInterface converts a message to map[string]interface{} if possible.
+func toMapInterface(m interface{}) (map[string]interface{}, bool) {
+	switch v := m.(type) {
+	case map[string]interface{}:
+		return v, true
+	case map[string]string:
+		// Convert map[string]string to map[string]interface{} for uniform access.
+		result := make(map[string]interface{}, len(v))
+		for k, val := range v {
+			result[k] = val
+		}
+		return result, true
+	default:
+		return nil, false
+	}
+}
+
+// copyMapWithout creates a shallow copy of a message map, excluding the
+// specified key.
+func copyMapWithout(m interface{}, excludeKey string) interface{} {
+	switch v := m.(type) {
+	case map[string]interface{}:
+		patched := make(map[string]interface{}, len(v))
+		for k, val := range v {
+			if k == excludeKey {
+				continue
+			}
+			patched[k] = val
+		}
+		return patched
+	case map[string]string:
+		patched := make(map[string]string, len(v))
+		for k, val := range v {
+			if k == excludeKey {
+				continue
+			}
+			patched[k] = val
+		}
+		return patched
+	default:
+		return m
 	}
 }
 
