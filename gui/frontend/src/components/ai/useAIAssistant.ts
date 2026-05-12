@@ -2075,6 +2075,17 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
     const queueStreamToken = useCallback((round: ActiveRound, text: string) => {
         if (!round.assistantMessageId || !text) return;
+
+        // Reasoning tokens (\x01 prefix) are rendered immediately without
+        // buffering. They display in a collapsed "thinking" area — the DOM
+        // update cost is minimal (hidden content), and immediate rendering
+        // ensures the first reasoning token triggers the "thinking" UI state
+        // without delay.
+        if (text.startsWith('\x01')) {
+            appendTokenToAssistantMessage(round.assistantMessageId, text);
+            return;
+        }
+
         let buffer = streamTokenBufferRef.current;
         if (!buffer || buffer.requestId !== round.requestId || buffer.assistantMessageId !== round.assistantMessageId) {
             clearStreamTokenFlushTimer();
