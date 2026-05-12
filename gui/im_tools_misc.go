@@ -476,7 +476,6 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 			if statusErr != nil {
 				b.WriteString(fmt.Sprintf("已启动（run_id=%s），但读取状态失败: %s", runID, statusErr.Error()))
 			} else {
-				emitSkillRunStatusAgentView(h, status, runID)
 				appendSkillRunSummary(&b, status, runID)
 			}
 		}

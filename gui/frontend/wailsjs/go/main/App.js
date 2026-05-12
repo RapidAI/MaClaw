@@ -359,6 +359,10 @@ export function GetMaclawBaseDir() {
   return window['go']['main']['App']['GetMaclawBaseDir']();
 }
 
+export function SelectDataDir() {
+  return window['go']['main']['App']['SelectDataDir']();
+}
+
 export function SetDataDir(arg1) {
   return window['go']['main']['App']['SetDataDir'](arg1);
 }

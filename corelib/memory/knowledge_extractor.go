@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -330,14 +329,8 @@ Rules:
 		return nil, fmt.Errorf("llm extract call: %w", err)
 	}
 
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	var points []knowledgePoint
-	if err := json.Unmarshal([]byte(body), &points); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &points); err != nil {
 		return nil, fmt.Errorf("parse extract response: %w", err)
 	}
 	return points, nil

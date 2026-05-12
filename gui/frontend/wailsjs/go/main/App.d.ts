@@ -175,6 +175,8 @@ export function GetUserHomeDir():Promise<string>;
 
 export function GetMaclawBaseDir():Promise<string>;
 
+export function SelectDataDir():Promise<string>;
+
 export function SetDataDir(newDir:string):Promise<string>;
 
 export function GetBrandInfo():Promise<main.BrandInfo>;

@@ -1,9 +1,7 @@
 package memory
 
 import (
-	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -129,17 +127,11 @@ Only answer true if they contain genuinely incompatible information.`,
 		return false, "", err
 	}
 
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	var result struct {
 		Conflict bool   `json:"conflict"`
 		Reason   string `json:"reason"`
 	}
-	if err := json.Unmarshal([]byte(body), &result); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &result); err != nil {
 		return false, "", fmt.Errorf("parse conflict response: %w", err)
 	}
 	return result.Conflict, result.Reason, nil

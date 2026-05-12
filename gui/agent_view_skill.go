@@ -88,14 +88,19 @@ func (a *App) handleSkillRunAgentViewSubmit(skillName string, data map[string]in
 	if err != nil {
 		return &IMAgentResponse{Text: "Skill start failed.", Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}
-	status, err := waitForSkillRunnerSnapshot(a.skillRunner, runID, 2*time.Second)
-	if err != nil {
-		return &IMAgentResponse{Text: fmt.Sprintf("Skill started, but status snapshot failed. run_id=%s", runID), Error: err.Error(), ResponseSource: imResponseSourceAgentViewSubmit.String()}
-	}
+	// Wait for skill completion and return full results to the LLM, same as
+	// the toolRunSkill path. Previously this emitted a status panel instead,
+	// but the panel is unnecessary — the LLM should receive the result and
+	// relay it to the user in natural language.
+	status, _ := waitForSkillRunnerSnapshot(a.skillRunner, runID, 5*time.Second)
+	// Dismiss the parameter form panel after launch.
 	if a.ctx != nil {
-		a.emitAgentView(buildSkillRunStatusAgentView(status, runID))
+		a.clearAgentView("skill:run:" + skillName)
 	}
-	return &IMAgentResponse{Text: fmt.Sprintf("Skill started from task panel. run_id=%s", runID), ResponseSource: imResponseSourceAgentViewSubmit.String()}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("✅ Skill「%s」已从任务面板启动\n", skillName))
+	appendSkillRunSummary(&b, status, runID)
+	return &IMAgentResponse{Text: strings.TrimRight(b.String(), "\n"), ResponseSource: imResponseSourceAgentViewSubmit.String()}
 }
 
 func (a *App) handleSkillStatusAgentViewSubmit(data map[string]interface{}) *IMAgentResponse {

@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -126,19 +125,13 @@ CRITICAL category rules:
 		return &PromoteResult{Error: err.Error()}, nil
 	}
 
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	type candidate struct {
 		Content       string `json:"content"`
 		Category      string `json:"category"`
 		EvidenceCount int    `json:"evidence_count"`
 	}
 	var candidates []candidate
-	if err := json.Unmarshal([]byte(body), &candidates); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &candidates); err != nil {
 		return &PromoteResult{Error: fmt.Sprintf("parse promotion: %v", err)}, nil
 	}
 

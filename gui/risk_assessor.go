@@ -239,6 +239,7 @@ func buildReason(level security.RiskLevel, factors []string) string {
 func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel string) security.RiskAssessment {
 	maxRisk := security.RiskLow
 	var factors []string
+	hasHardSecuritySignal := false // tracks prompt injection, threat patterns, structural/unicode anomalies, dangerous keywords
 
 	for _, step := range skill.Steps {
 		stepAssessment := a.Assess(RiskContext{
@@ -249,6 +250,10 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 			maxRisk = stepAssessment.Level
 			factors = append(factors, stepAssessment.Factors...)
 		}
+		// Assess() sets critical for dangerous keywords/commands/format patterns.
+		if stepAssessment.Level == security.RiskCritical {
+			hasHardSecuritySignal = true
+		}
 
 		// Scan step commands/params against threat pattern categories
 		argStr := flattenArgs(step.Params)
@@ -257,6 +262,7 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 			if security.RiskLevelOrder[maxRisk] < security.RiskLevelOrder[security.RiskHigh] {
 				maxRisk = security.RiskHigh
 			}
+			hasHardSecuritySignal = true
 			factors = append(factors, fmt.Sprintf("threat pattern [%s]: %q matched", tm.Category, tm.Pattern))
 		}
 
@@ -266,6 +272,7 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 			if security.RiskLevelOrder[maxRisk] < security.RiskLevelOrder[security.RiskCritical] {
 				maxRisk = security.RiskCritical
 			}
+			hasHardSecuritySignal = true
 			factors = append(factors, fmt.Sprintf("prompt injection detected: %q matched", tm.Pattern))
 		}
 
@@ -274,22 +281,9 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 		unicodeMatches := security.ScanUnicodeAnomalies(argStr)
 		if len(unicodeMatches) > 0 {
 			maxRisk = escalateRiskLevel(maxRisk)
+			hasHardSecuritySignal = true
 			for _, tm := range unicodeMatches {
 				factors = append(factors, fmt.Sprintf("unicode anomaly: %s", tm.Pattern))
-			}
-		}
-	}
-
-	// Safe-tool category downgrade: if the skill name matches a known safe
-	// utility category, cap risk at medium. This prevents false-positive
-	// blocking of skills like "any2pdf", "QR Code Generator", "pptx-generator".
-	if maxRisk == security.RiskCritical || maxRisk == security.RiskHigh {
-		skillLower := strings.ToLower(skill.Name)
-		for _, cat := range safeToolCategories {
-			if strings.Contains(skillLower, cat) {
-				maxRisk = security.RiskMedium
-				factors = append(factors, fmt.Sprintf("safe-tool category %q matched: risk capped at medium", cat))
-				break
 			}
 		}
 	}
@@ -300,6 +294,7 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 		structuralMatches := security.ScanDirectoryStructure(skill.SkillDir)
 		if len(structuralMatches) > 0 {
 			maxRisk = escalateRiskLevel(maxRisk)
+			hasHardSecuritySignal = true
 			for _, tm := range structuralMatches {
 				factors = append(factors, fmt.Sprintf("structural anomaly: %s", tm.Pattern))
 			}
@@ -330,6 +325,24 @@ func (a *RiskAssessor) AssessSkill(skill *corelib.NLSkillEntry, trustLevel strin
 			maxRisk = escalated
 		}
 	// agent-created and any other value: standard assessment (no modification)
+	}
+
+	// Safe-tool category downgrade: MUST run AFTER trust level escalation.
+	// Caps safe-category skills (weather, translate, pdf, etc.) at medium,
+	// preventing the common false positive of bash(medium) + community(high).
+	//
+	// SECURITY GUARD: Does NOT apply when hard security signals are present
+	// (prompt injection, threat patterns, structural anomalies, unicode
+	// attacks, dangerous keywords). A skill name cannot override actual malice.
+	if (maxRisk == security.RiskCritical || maxRisk == security.RiskHigh) && skill.Name != "" && !hasHardSecuritySignal {
+		skillLower := strings.ToLower(skill.Name)
+		for _, cat := range safeToolCategories {
+			if strings.Contains(skillLower, cat) {
+				maxRisk = security.RiskMedium
+				factors = append(factors, fmt.Sprintf("safe-tool category %q matched: risk capped at medium", cat))
+				break
+			}
+		}
 	}
 
 	return security.RiskAssessment{

@@ -775,6 +775,7 @@ func NormalizeTrustLevel(trustLevel string) string {
 func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) RiskAssessment {
 	maxRisk := RiskLow
 	var factors []string
+	hasHardSecuritySignal := false // tracks prompt injection, threat patterns, structural/unicode anomalies, dangerous keywords
 
 	for _, step := range skill.Steps {
 		stepAssessment := a.Assess(RiskContext{
@@ -785,6 +786,10 @@ func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) Risk
 			maxRisk = stepAssessment.Level
 			factors = append(factors, stepAssessment.Factors...)
 		}
+		// Assess() sets critical for dangerous keywords/commands/format patterns.
+		if stepAssessment.Level == RiskCritical {
+			hasHardSecuritySignal = true
+		}
 
 		// Scan step commands/params against threat pattern categories
 		argStr := flattenArgs(step.Params)
@@ -793,6 +798,7 @@ func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) Risk
 			if RiskLevelOrder[maxRisk] < RiskLevelOrder[RiskHigh] {
 				maxRisk = RiskHigh
 			}
+			hasHardSecuritySignal = true
 			factors = append(factors, fmt.Sprintf("threat pattern [%s]: %q matched", tm.Category, tm.Pattern))
 		}
 
@@ -802,6 +808,7 @@ func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) Risk
 			if RiskLevelOrder[maxRisk] < RiskLevelOrder[RiskCritical] {
 				maxRisk = RiskCritical
 			}
+			hasHardSecuritySignal = true
 			factors = append(factors, fmt.Sprintf("prompt injection detected: %q matched", tm.Pattern))
 		}
 
@@ -810,21 +817,9 @@ func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) Risk
 		unicodeMatches := ScanUnicodeAnomalies(argStr)
 		if len(unicodeMatches) > 0 {
 			maxRisk = EscalateRiskLevel(maxRisk)
+			hasHardSecuritySignal = true
 			for _, tm := range unicodeMatches {
 				factors = append(factors, fmt.Sprintf("unicode anomaly: %s", tm.Pattern))
-			}
-		}
-	}
-
-	// Safe-tool category downgrade: if the skill name matches a known safe
-	// utility category, cap risk at medium.
-	if (maxRisk == RiskCritical || maxRisk == RiskHigh) && skill.Name != "" {
-		skillLower := strings.ToLower(skill.Name)
-		for _, cat := range safeToolCategories {
-			if strings.Contains(skillLower, cat) {
-				maxRisk = RiskMedium
-				factors = append(factors, fmt.Sprintf("safe-tool category %q matched: risk capped at medium", cat))
-				break
 			}
 		}
 	}
@@ -835,6 +830,7 @@ func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) Risk
 		structuralMatches := ScanDirectoryStructure(skill.SkillDir)
 		if len(structuralMatches) > 0 {
 			maxRisk = EscalateRiskLevel(maxRisk)
+			hasHardSecuritySignal = true
 			for _, tm := range structuralMatches {
 				factors = append(factors, fmt.Sprintf("structural anomaly: %s", tm.Pattern))
 			}
@@ -865,6 +861,24 @@ func (a *RiskAssessor) AssessSkill(skill SkillRiskInput, trustLevel string) Risk
 			maxRisk = escalated
 		}
 	// agent-created and any other value: standard assessment (no modification)
+	}
+
+	// Safe-tool category downgrade: MUST run AFTER trust level escalation.
+	// Caps safe-category skills (weather, translate, pdf, etc.) at medium,
+	// preventing the common false positive of bash(medium) + community(high).
+	//
+	// SECURITY GUARD: Does NOT apply when hard security signals are present
+	// (prompt injection, threat patterns, structural anomalies, unicode
+	// attacks, dangerous keywords). A skill name cannot override actual malice.
+	if (maxRisk == RiskCritical || maxRisk == RiskHigh) && skill.Name != "" && !hasHardSecuritySignal {
+		skillLower := strings.ToLower(skill.Name)
+		for _, cat := range safeToolCategories {
+			if strings.Contains(skillLower, cat) {
+				maxRisk = RiskMedium
+				factors = append(factors, fmt.Sprintf("safe-tool category %q matched: risk capped at medium", cat))
+				break
+			}
+		}
 	}
 
 	return RiskAssessment{Level: maxRisk, Reason: BuildReason(maxRisk, factors), Factors: factors}

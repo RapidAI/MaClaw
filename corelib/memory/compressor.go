@@ -493,14 +493,8 @@ Rules:
 		return 0, err
 	}
 
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	var instructions []mergeInstruction
-	if err := json.Unmarshal([]byte(body), &instructions); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &instructions); err != nil {
 		return 0, fmt.Errorf("parse merge response: %w", err)
 	}
 

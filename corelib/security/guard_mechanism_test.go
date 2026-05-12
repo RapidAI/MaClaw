@@ -315,6 +315,64 @@ func TestFirewall_StandardMode_DeniesRmRf(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Regression: safe-tool category + community trust ordering
+// ---------------------------------------------------------------------------
+
+// This test covers the exact bug that blocked weather-query in standard mode:
+// bash action (medium) + community trust escalation (medium→high) must be
+// capped back to medium by the safe-tool category check running AFTER trust.
+func TestAssessSkill_SafeToolCategory_CommunityTrust_CappedAtMedium(t *testing.T) {
+	ra := &RiskAssessor{}
+	input := SkillRiskInput{
+		Name: "weather-query",
+		Steps: []struct {
+			Action string
+			Params map[string]interface{}
+		}{
+			{Action: "bash", Params: map[string]interface{}{"command": "python weather.py weekly --lat 39.9 --lng 116.4"}},
+		},
+	}
+	result := ra.AssessSkill(input, TrustLevelCommunity)
+	if result.Level != RiskMedium {
+		t.Errorf("expected RiskMedium (safe-tool 'weather' caps community-escalated high to medium), got %s", result.Level)
+	}
+}
+
+func TestAssessSkill_SafeToolCategory_CommunityTrust_NonSafeStillHigh(t *testing.T) {
+	ra := &RiskAssessor{}
+	input := SkillRiskInput{
+		Name: "my-custom-tool",
+		Steps: []struct {
+			Action string
+			Params map[string]interface{}
+		}{
+			{Action: "bash", Params: map[string]interface{}{"command": "python script.py"}},
+		},
+	}
+	result := ra.AssessSkill(input, TrustLevelCommunity)
+	if result.Level != RiskHigh {
+		t.Errorf("expected RiskHigh (non-safe skill, community escalates medium to high), got %s", result.Level)
+	}
+}
+
+func TestAssessSkill_SafeToolCategory_TranslateSkill_CommunityTrust(t *testing.T) {
+	ra := &RiskAssessor{}
+	input := SkillRiskInput{
+		Name: "simple-translate",
+		Steps: []struct {
+			Action string
+			Params map[string]interface{}
+		}{
+			{Action: "bash", Params: map[string]interface{}{"command": "python translate.py --src en --dst zh"}},
+		},
+	}
+	result := ra.AssessSkill(input, TrustLevelCommunity)
+	if result.Level != RiskMedium {
+		t.Errorf("expected RiskMedium (safe-tool 'translate' caps to medium), got %s", result.Level)
+	}
+}
+
 // helper
 func mustCompileCI(pattern string) *regexp.Regexp {
 	return regexp.MustCompile("(?i)" + pattern)

@@ -294,6 +294,43 @@ func TestAssessSkill_CommunityTrust_CriticalStaysCritical(t *testing.T) {
 
 // --- NormalizeTrustLevel tests ---
 
+// --- Regression: safe-tool category + community trust interaction ---
+// This test covers the exact bug that blocked weather-query in standard mode:
+// bash action (medium) + community trust escalation (medium→high) must be
+// capped back to medium by the safe-tool category check.
+func TestAssessSkill_SafeToolCategory_CommunityTrust_CappedAtMedium(t *testing.T) {
+	ra := &RiskAssessor{}
+	skill := &corelib.NLSkillEntry{
+		Name: "weather-query",
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Params: map[string]interface{}{"command": "python weather.py weekly --lat 39.9 --lng 116.4"}},
+		},
+	}
+	// community trust would escalate bash's medium→high, but safe-tool "weather"
+	// must cap it back to medium.
+	result := ra.AssessSkill(skill, security.TrustLevelCommunity)
+	if result.Level != security.RiskMedium {
+		t.Errorf("expected security.RiskMedium (safe-tool 'weather' caps community-escalated high to medium), got %s", result.Level)
+	}
+}
+
+func TestAssessSkill_SafeToolCategory_CommunityTrust_NonSafeStillHigh(t *testing.T) {
+	ra := &RiskAssessor{}
+	skill := &corelib.NLSkillEntry{
+		Name: "my-custom-tool",
+		Steps: []corelib.NLSkillStep{
+			// Use capitalized "Bash" to match GUI's isWriteOrExecuteTool switch.
+			// (The corelib version uses substring matching on lowercase, so "bash" works there.)
+			{Action: "Bash", Params: map[string]interface{}{"command": "python script.py"}},
+		},
+	}
+	// Non-safe skill: community escalates medium→high, no safe-tool cap.
+	result := ra.AssessSkill(skill, security.TrustLevelCommunity)
+	if result.Level != security.RiskHigh {
+		t.Errorf("expected security.RiskHigh (non-safe skill, community escalates medium to high), got %s", result.Level)
+	}
+}
+
 func TestNormalizeTrustLevel(t *testing.T) {
 	tests := []struct {
 		input    string

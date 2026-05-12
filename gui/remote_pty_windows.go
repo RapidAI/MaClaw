@@ -217,7 +217,16 @@ func (p *WindowsPTYSession) startWaitLoopLocked(pty *conpty.ConPty) {
 		}
 
 		if err != nil {
-			log.Printf("[conpty-lifecycle] ◼ ConPTY process exited with error: pid=%d, error=%v", pty.Pid(), err)
+			// "The handle is invalid" is a benign race condition: the process
+			// was already terminated (e.g. session closed, reconnect replaced
+			// the handle) before Wait could read the exit code. Log at debug
+			// level to avoid alarming users.
+			errStr := err.Error()
+			if strings.Contains(errStr, "handle is invalid") || strings.Contains(errStr, "access is denied") {
+				log.Printf("[conpty-lifecycle] ◼ ConPTY process already exited: pid=%d (handle invalidated)", pty.Pid())
+			} else {
+				log.Printf("[conpty-lifecycle] ◼ ConPTY process exited with error: pid=%d, error=%v", pty.Pid(), err)
+			}
 		} else {
 			log.Printf("[conpty-lifecycle] ◼ ConPTY process exited: pid=%d, exit_code=%d", pty.Pid(), exitCode)
 		}

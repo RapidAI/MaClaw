@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -322,14 +321,8 @@ Return ONLY the JSON object, no markdown, no commentary.`
 		return "", "", fmt.Errorf("llm call: %w", err)
 	}
 
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	var result llmDedupResponse
-	if err := json.Unmarshal([]byte(body), &result); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &result); err != nil {
 		return "", "", fmt.Errorf("parse response: %w", err)
 	}
 

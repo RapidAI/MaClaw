@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -130,18 +129,12 @@ CRITICAL category rules for "type" field:
 	}
 
 	// Parse insights.
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	type insight struct {
 		Type    string `json:"type"`
 		Content string `json:"content"`
 	}
 	var insights []insight
-	if err := json.Unmarshal([]byte(body), &insights); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &insights); err != nil {
 		return &ReflectResult{Error: fmt.Sprintf("parse reflection: %v", err)}, nil
 	}
 

@@ -23,7 +23,6 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -237,14 +236,8 @@ Reference timestamp: ` + refTimeStr
 		return nil, fmt.Errorf("llm extract call: %w", err)
 	}
 
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	var facts []ExtractedFact
-	if err := json.Unmarshal([]byte(body), &facts); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &facts); err != nil {
 		return nil, fmt.Errorf("parse extract response: %w", err)
 	}
 	return facts, nil
@@ -491,14 +484,8 @@ Reply with ONLY a JSON object:
 		return nil, fmt.Errorf("llm classify call: %w", err)
 	}
 
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	var result ClassifiedOperation
-	if err := json.Unmarshal([]byte(body), &result); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &result); err != nil {
 		return nil, fmt.Errorf("parse classify response: %w", err)
 	}
 

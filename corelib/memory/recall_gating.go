@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -91,14 +90,8 @@ Rules:
 	}
 
 	// Parse LLM response.
-	body := strings.TrimSpace(resp)
-	body = strings.TrimPrefix(body, "```json")
-	body = strings.TrimPrefix(body, "```")
-	body = strings.TrimSuffix(body, "```")
-	body = strings.TrimSpace(body)
-
 	var decisions []gatingDecision
-	if err := json.Unmarshal([]byte(body), &decisions); err != nil {
+	if err := extractJSONFromLLMResponse(resp, &decisions); err != nil {
 		return candidates // parse failure → keep all
 	}
 

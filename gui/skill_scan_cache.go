@@ -21,7 +21,7 @@ import (
 
 const (
 	skillScanCacheFileName       = ".maclaw_scan_status.json"
-	skillScanCacheScannerVersion = "2026-05-12.2"
+	skillScanCacheScannerVersion = "2026-05-12.3"
 	skillScanCacheSigningKeyName = "skill_scan_cache_hmac.key"
 )
 
@@ -66,6 +66,11 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 	// Runtime is only a safety net for legacy or locally modified skills.
 	// Pre-install scanning writes .maclaw_scan_status.json, so normal execution
 	// avoids LLM-backed scans and only pays the hash/cache check cost.
+	// Uses ScanInstallStaged (community trust) for conservative assessment:
+	// if content changed since install, we don't trust the skill's claimed
+	// trust level. The safe-tool category check in AssessSkill (which runs
+	// AFTER trust escalation) will cap safe skills (weather, pdf, etc.) at
+	// medium regardless of community escalation.
 	scanner := cskill.NewSecurityScanner(nil)
 	report := scanner.ScanInstallStaged(context.Background(), skill, skill.SkillDir, func(status string) {
 		app.log(fmt.Sprintf("[skill-runner] security scan %s: %s", skill.Name, status))

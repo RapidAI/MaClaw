@@ -211,13 +211,8 @@ func appendSkillRunSummary(b *strings.Builder, status *SkillRunStatus, runID str
 	}
 }
 
-func emitSkillRunStatusAgentView(h *IMMessageHandler, status *SkillRunStatus, runID string) {
-	if h == nil || h.app == nil {
-		return
-	}
-	h.app.emitAgentView(buildSkillRunStatusAgentView(status, runID))
-}
-
+// emitSkillRunProgress sends a progress callback to the frontend streaming
+// indicator (not the agent view panel).
 func emitSkillRunProgress(onProgress tool.ProgressCallback, status *SkillRunStatus) {
 	if onProgress == nil || status == nil {
 		return
@@ -341,7 +336,6 @@ func (h *IMMessageHandler) toolRunSkill(args map[string]interface{}, onProgress 
 	emitSkillRunProgress(onProgress, status)
 	var b strings.Builder
 	b.WriteString("✅ Skill 已启动\n")
-	emitSkillRunStatusAgentView(h, status, runID)
 	appendSkillRunSummary(&b, status, runID)
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -363,7 +357,6 @@ func (h *IMMessageHandler) toolGetSkillRun(args map[string]interface{}) string {
 	}
 	var b strings.Builder
 	b.WriteString("🔎 Skill 状态查询结果\n")
-	emitSkillRunStatusAgentView(h, status, runID)
 	appendSkillRunSummary(&b, status, runID)
 	return strings.TrimRight(b.String(), "\n")
 }

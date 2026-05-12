@@ -257,6 +257,29 @@ func (a *App) GetMaclawBaseDir() string {
 	return a.getMaclawBaseDir()
 }
 
+// SelectDataDir opens a native directory picker dialog for the user to choose
+// a data directory migration target. Returns the selected path or empty string
+// if cancelled.
+// Note: CanCreateDirectories only takes effect on macOS. On Windows, the native
+// folder picker already supports creating new folders via right-click context menu.
+func (a *App) SelectDataDir() string {
+	// Start the dialog at the current data directory's parent for convenience.
+	defaultDir := a.getMaclawBaseDir()
+	if parent := filepath.Dir(defaultDir); parent != "" && parent != "." {
+		defaultDir = parent
+	}
+
+	selection, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title:                "选择数据目录 / Select Data Directory",
+		DefaultDirectory:     defaultDir,
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return ""
+	}
+	return selection
+}
+
 // SetDataDir is a Wails binding called from the settings UI to update the
 // data_dir configuration. Returns an error message if the path is invalid.
 // The change takes effect after restart.
