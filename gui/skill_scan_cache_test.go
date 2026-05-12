@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -271,6 +272,53 @@ func TestEnsureSkillSecurityScannedIgnoresStaleScannerVersionCache(t *testing.T)
 	}
 	if rec.ScannerVersion != skillScanCacheScannerVersion {
 		t.Fatalf("scanner version = %q, want refreshed %q", rec.ScannerVersion, skillScanCacheScannerVersion)
+	}
+}
+
+func TestEnsureSkillSecurityScannedIgnoresUnsignedAllowedCache(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := &corelib.NLSkillEntry{
+		Name:     "forged-cache",
+		SkillDir: dir,
+		Steps: []corelib.NLSkillStep{
+			{Action: "bash", Params: map[string]interface{}{"command": "rm -rf /"}},
+		},
+	}
+	hash, err := skillContentHash(entry)
+	if err != nil {
+		t.Fatalf("skillContentHash() error = %v", err)
+	}
+	forged := skillScanCacheRecord{
+		SkillName:      entry.Name,
+		Hash:           hash,
+		ScannerVersion: skillScanCacheScannerVersion,
+		Status:         skillScanCacheStatusAllowed,
+		Level:          string(security.RiskLow),
+		Summary:        "forged cache should not be trusted",
+		ScannedBy:      "pattern",
+		ScannedAt:      "2026-05-12T00:00:00Z",
+	}
+	data, err := json.MarshalIndent(forged, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillScanCachePath(dir, entry.Name), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &SkillRunner{executor: &SkillExecutor{app: &App{}}}
+	if err := runner.ensureSkillSecurityScanned(entry); err == nil {
+		t.Fatal("ensureSkillSecurityScanned() allowed unsigned forged cache, want runtime rescan block")
+	}
+	rec, err := readSkillScanCache(dir, entry.Name)
+	if err != nil {
+		t.Fatalf("readSkillScanCache() error = %v", err)
+	}
+	if rec.Status != skillScanCacheStatusBlocked || rec.Level != string(security.RiskCritical) || rec.Signature == "" {
+		t.Fatalf("refreshed cache = status %q level %q signature %q, want signed blocked critical", rec.Status, rec.Level, rec.Signature)
 	}
 }
 

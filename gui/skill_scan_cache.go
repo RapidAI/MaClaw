@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -19,7 +21,8 @@ import (
 
 const (
 	skillScanCacheFileName       = ".maclaw_scan_status.json"
-	skillScanCacheScannerVersion = "2026-05-12.1"
+	skillScanCacheScannerVersion = "2026-05-12.2"
+	skillScanCacheSigningKeyName = "skill_scan_cache_hmac.key"
 )
 
 type skillScanCacheRecord struct {
@@ -31,6 +34,7 @@ type skillScanCacheRecord struct {
 	Summary        string               `json:"summary,omitempty"`
 	ScannedBy      string               `json:"scanned_by,omitempty"`
 	ScannedAt      string               `json:"scanned_at"`
+	Signature      string               `json:"signature,omitempty"`
 }
 
 func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) error {
@@ -48,7 +52,7 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 	if err != nil {
 		return fmt.Errorf("skill security scan hash failed for %q: %w", skill.Name, err)
 	}
-	if rec, err := readSkillScanCache(skill.SkillDir, skill.Name); err == nil && rec.Hash == hash && skillScanCacheRecordVersionMatches(rec) {
+	if rec, err := readSkillScanCache(skill.SkillDir, skill.Name); err == nil && rec.Hash == hash && skillScanCacheRecordVersionMatches(rec) && skillScanCacheRecordSignatureValid(rec) {
 		switch status := normalizeSkillScanCacheStatus(rec.Status); {
 		case skillScanCacheRecordIsCritical(rec):
 			return fmt.Errorf("skill %q was previously blocked by security scan (level=%s): %s", skill.Name, rec.Level, rec.Summary)
@@ -81,6 +85,14 @@ func skillScanCacheRecordIsCritical(rec skillScanCacheRecord) bool {
 
 func skillScanCacheRecordVersionMatches(rec skillScanCacheRecord) bool {
 	return strings.TrimSpace(rec.ScannerVersion) == skillScanCacheScannerVersion
+}
+
+func skillScanCacheRecordSignatureValid(rec skillScanCacheRecord) bool {
+	expected, err := signSkillScanCacheRecord(rec)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal([]byte(strings.TrimSpace(rec.Signature)), []byte(expected))
 }
 
 func writeSkillScanCacheForReport(skill *corelib.NLSkillEntry, skillDir, hash string, report *cskill.ScanReport) error {
@@ -281,6 +293,11 @@ func writeSkillScanCache(skillDir, skillName string, rec skillScanCacheRecord) e
 	if err := validateSkillScanCachePathForWrite(cachePath); err != nil {
 		return err
 	}
+	signature, err := signSkillScanCacheRecord(rec)
+	if err != nil {
+		return err
+	}
+	rec.Signature = signature
 	data, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
 		return err
@@ -321,4 +338,58 @@ func validateSkillScanCachePathForWrite(cachePath string) error {
 
 func skillScanCachePath(skillDir, skillName string) string {
 	return filepath.Join(skillDir, skillScanCacheFileName)
+}
+
+func signSkillScanCacheRecord(rec skillScanCacheRecord) (string, error) {
+	key, err := skillScanCacheSigningKey()
+	if err != nil {
+		return "", err
+	}
+	rec.Signature = ""
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write(data)
+	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func skillScanCacheSigningKey() ([]byte, error) {
+	path := skillScanCacheSigningKeyPath()
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("skill scan cache signing key is a symlink: %s", path)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("skill scan cache signing key is a directory: %s", path)
+		}
+		key, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if len(key) < 32 {
+			return nil, fmt.Errorf("skill scan cache signing key is too short")
+		}
+		return key, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600); err != nil {
+		return nil, err
+	}
+	return []byte(hex.EncodeToString(key)), nil
+}
+
+func skillScanCacheSigningKeyPath() string {
+	return filepath.Join(corelib.MaclawBaseDir(), "data", skillScanCacheSigningKeyName)
 }

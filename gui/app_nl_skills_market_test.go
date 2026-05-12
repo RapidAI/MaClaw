@@ -965,6 +965,25 @@ func TestValidateSkillZipRejectsSymlinkEntry(t *testing.T) {
 	}
 }
 
+func TestValidateSkillZipRejectsTooManyEntries(t *testing.T) {
+	zipPath := filepath.Join(t.TempDir(), "too-many.zip")
+	files := make(map[string]string, maxSkillZipEntries+1)
+	files["skill.md"] = "# demo\n"
+	for i := 0; i < maxSkillZipEntries; i++ {
+		files[fmt.Sprintf("data/file-%04d.txt", i)] = "x"
+	}
+	createSkillZip(t, zipPath, files)
+
+	app := &App{}
+	err := app.validateSkillZip(zipPath)
+	if err == nil {
+		t.Fatalf("expected validateSkillZip() error")
+	}
+	if !strings.Contains(err.Error(), "too many entries") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateSkillZipAcceptsMixedCaseReadmeMarkdownPackage(t *testing.T) {
 	zipPath := filepath.Join(t.TempDir(), "mixed-readme-md.zip")
 	createSkillZip(t, zipPath, map[string]string{

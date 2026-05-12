@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,6 +140,21 @@ func TestUnzipBytesRejectsSymlinkEntry(t *testing.T) {
 		t.Fatalf("expected unzipBytes() error")
 	}
 	if !strings.Contains(err.Error(), "unsupported symlink") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestUnzipBytesRejectsTooManyEntries(t *testing.T) {
+	entries := make(map[string]string, maxImportedSkillZipEntries+1)
+	entries["skill.md"] = "# demo\n"
+	for i := 0; i < maxImportedSkillZipEntries; i++ {
+		entries[fmt.Sprintf("data/file-%04d.txt", i)] = "x"
+	}
+	err := unzipBytes(makeSkillZipBytes(t, entries), t.TempDir())
+	if err == nil {
+		t.Fatalf("expected unzipBytes() error")
+	}
+	if !strings.Contains(err.Error(), "too many entries") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

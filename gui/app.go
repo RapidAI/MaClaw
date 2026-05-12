@@ -6076,6 +6076,9 @@ func (a *App) validateSkillZip(path string) error {
 		return fmt.Errorf("invalid zip file: %v", err)
 	}
 	defer r.Close()
+	if err := validateSkillZipResourceLimits(r.File); err != nil {
+		return err
+	}
 
 	type zipSkillLayout struct {
 		hasMarkdown   bool
@@ -6150,6 +6153,33 @@ func (a *App) validateSkillZip(path string) error {
 		}
 		if !layout.hasMarkdown {
 			return fmt.Errorf("directory '%s' is missing skill.md/SKILL.md or README.md in a common case variant", dir)
+		}
+	}
+	return nil
+}
+
+const (
+	maxSkillZipEntries            = 2048
+	maxSkillZipFileBytes          = 64 << 20
+	maxSkillZipTotalExpandedBytes = 256 << 20
+)
+
+func validateSkillZipResourceLimits(files []*zip.File) error {
+	if len(files) > maxSkillZipEntries {
+		return fmt.Errorf("zip contains too many entries: %d > %d", len(files), maxSkillZipEntries)
+	}
+	var total uint64
+	for _, file := range files {
+		if file == nil || file.FileInfo().IsDir() {
+			continue
+		}
+		size := file.UncompressedSize64
+		if size > maxSkillZipFileBytes {
+			return fmt.Errorf("zip entry %q is too large after decompression: %d > %d bytes", file.Name, size, maxSkillZipFileBytes)
+		}
+		total += size
+		if total > maxSkillZipTotalExpandedBytes {
+			return fmt.Errorf("zip expands to too much data: %d > %d bytes", total, maxSkillZipTotalExpandedBytes)
 		}
 	}
 	return nil
@@ -6438,6 +6468,9 @@ func (a *App) unzip(src, dest string) error {
 		return err
 	}
 	defer r.Close()
+	if err := validateSkillZipResourceLimits(r.File); err != nil {
+		return err
+	}
 	type zipEntry struct {
 		file      *zip.File
 		target    string
@@ -6492,11 +6525,14 @@ func (a *App) unzip(src, dest string) error {
 			outFile.Close()
 			return err
 		}
-		_, err = io.Copy(outFile, rc)
+		written, err := io.Copy(outFile, io.LimitReader(rc, int64(maxSkillZipFileBytes)+1))
 		outFile.Close()
 		rc.Close()
 		if err != nil {
 			return err
+		}
+		if f.UncompressedSize64 > maxSkillZipFileBytes || written > maxSkillZipFileBytes {
+			return fmt.Errorf("zip entry %q is too large after decompression", f.Name)
 		}
 	}
 	return nil

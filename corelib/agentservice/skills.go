@@ -877,6 +877,9 @@ func unzipBytes(data []byte, dest string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateImportedZipResourceLimits(reader.File); err != nil {
+		return err
+	}
 	type zipEntry struct {
 		file   *zip.File
 		target string
@@ -907,13 +910,49 @@ func unzipBytes(data []byte, dest string) error {
 		if err != nil {
 			return err
 		}
-		content, err := io.ReadAll(src)
-		src.Close()
+		dst, err := os.OpenFile(entry.target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, file.Mode())
 		if err != nil {
+			src.Close()
 			return err
 		}
-		if err := os.WriteFile(entry.target, content, file.Mode()); err != nil {
-			return err
+		written, copyErr := io.Copy(dst, io.LimitReader(src, int64(maxImportedSkillZipFileBytes)+1))
+		closeErr := dst.Close()
+		src.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if file.UncompressedSize64 > maxImportedSkillZipFileBytes || written > maxImportedSkillZipFileBytes {
+			return fmt.Errorf("zip entry %q is too large after decompression", file.Name)
+		}
+	}
+	return nil
+}
+
+const (
+	maxImportedSkillZipEntries            = 2048
+	maxImportedSkillZipFileBytes          = 64 << 20
+	maxImportedSkillZipTotalExpandedBytes = 256 << 20
+)
+
+func validateImportedZipResourceLimits(files []*zip.File) error {
+	if len(files) > maxImportedSkillZipEntries {
+		return fmt.Errorf("zip contains too many entries: %d > %d", len(files), maxImportedSkillZipEntries)
+	}
+	var total uint64
+	for _, file := range files {
+		if file == nil || file.FileInfo().IsDir() {
+			continue
+		}
+		size := file.UncompressedSize64
+		if size > maxImportedSkillZipFileBytes {
+			return fmt.Errorf("zip entry %q is too large after decompression: %d > %d bytes", file.Name, size, maxImportedSkillZipFileBytes)
+		}
+		total += size
+		if total > maxImportedSkillZipTotalExpandedBytes {
+			return fmt.Errorf("zip expands to too much data: %d > %d bytes", total, maxImportedSkillZipTotalExpandedBytes)
 		}
 	}
 	return nil
