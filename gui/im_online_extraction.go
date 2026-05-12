@@ -53,6 +53,48 @@ func (h *IMMessageHandler) triggerOnlineExtraction(userID string, history []agen
 	}()
 }
 
+// triggerOnlineExtractionDeferred is like triggerOnlineExtraction but waits
+// for chatLoopMu before starting the LLM call. This ensures the extraction
+// yields to any new user message that arrives before it begins, preventing
+// background LLM calls from competing with the main agent loop for API bandwidth.
+func (h *IMMessageHandler) triggerOnlineExtractionDeferred(userID string, history []agent.ConversationEntry) {
+	if h.memoryStore == nil {
+		return
+	}
+
+	oe := h.memoryStore.OnlineExtractor()
+	if oe == nil {
+		return
+	}
+
+	if len(history) < 4 {
+		return
+	}
+
+	messages := convertHistoryToMessages(history, 10)
+	if len(messages) < 2 {
+		return
+	}
+
+	summary := extractConversationSummary(history)
+
+	go func() {
+		// Wait until no agent loop is running. If the user sends a new
+		// message before we acquire the lock, their agent loop runs first.
+		h.chatLoopMu.Lock()
+		h.chatLoopMu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		result := oe.ExtractAndIntegrate(ctx, messages, summary, time.Now(), userID)
+		if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 {
+			log.Printf("[online_extraction] user=%s extracted=%d added=%d updated=%d deleted=%d noop=%d errors=%d",
+				userID, result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops, result.Errors)
+		}
+	}()
+}
+
 // convertHistoryToMessages converts the last N conversation entries to
 // the ConversationMessage format expected by OnlineExtractor.
 func convertHistoryToMessages(history []agent.ConversationEntry, maxEntries int) []memory.ConversationMessage {
