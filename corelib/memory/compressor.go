@@ -628,6 +628,15 @@ func (mc *Compressor) Status() CompressorStatus {
 }
 
 func (mc *Compressor) loop(ctx context.Context) {
+	// Delay initial compaction to avoid competing with the user's first
+	// message for API bandwidth. The backfill and GC are background
+	// maintenance — they can wait until the system is idle.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(60 * time.Second):
+	}
+
 	mc.maybeRunGC(ctx)
 	mc.runOnce(ctx)
 	mc.runDreamCycle()
