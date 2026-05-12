@@ -260,8 +260,15 @@ func shouldAcceptGateResult(result GateIntentResult) bool {
 		case GateIntentNewProject:
 			// New project intent needs higher confidence when degraded.
 			return result.Confidence >= 0.75
+		case GateIntentUnknown:
+			// Unknown in degraded mode: UIC couldn't determine intent (embedding
+			// ambiguous + tree timed out). The gate's job is to catch CLEAR coding
+			// tasks — unknown is not a clear coding task. Accept as "not coding"
+			// to avoid a 3s LLM escalation that almost always confirms non-coding.
+			// If it IS a coding task, CodingToolGate (which runs inside the agent
+			// loop) will catch it on the first tool call attempt.
+			return true
 		default:
-			// Unknown: escalate to LLM for clarification.
 			return false
 		}
 	}

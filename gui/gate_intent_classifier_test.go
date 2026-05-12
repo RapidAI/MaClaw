@@ -59,9 +59,9 @@ func TestShouldAcceptGateResult(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "degraded unknown rejected",
+			name: "degraded unknown accepted (not clearly coding)",
 			in:   GateIntentResult{Intent: GateIntentUnknown, Confidence: 0.80, Degraded: true},
-			want: false,
+			want: true,
 		},
 		{
 			name: "confident semantic result accepted",
