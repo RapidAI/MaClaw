@@ -1073,13 +1073,13 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             <table style={localSkillsTableStyle}>
                                 <thead>
                                     <tr style={{ background: colors.surfaceMuted }}>
-                                        <th style={{ ...thStyle, width: "16%", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
-                                        <th style={{ ...thStyle, width: "29%" }}>{localizeText("Description", "描述", "描述")}</th>
-                                        <th style={{ ...thStyle, width: "8%", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
-                                        <th style={{ ...thStyle, width: "4%", textAlign: "center", paddingLeft: 2, paddingRight: 2 }}>{localizeText("Version", "版本", "版本")}</th>
-                                        <th style={{ ...thStyle, width: "9%", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
-                                        <th style={{ ...thStyle, width: "1%", whiteSpace: "nowrap", textAlign: "left", paddingLeft: 4 }}>{localizeText("Status", "状态", "狀態")}</th>
-                                        <th style={{ ...thStyle, width: "28%", textAlign: "right" }}>{localizeText("Actions", "操作", "操作")}</th>
+                                        <th style={{ ...thStyle, width: "140px", textAlign: "left" }}>{localizeText("Name", "名称", "名稱")}</th>
+                                        <th style={{ ...thStyle, textAlign: "left" }}>{localizeText("Description", "描述", "描述")}</th>
+                                        <th style={{ ...thStyle, width: "72px", textAlign: "left", paddingRight: 4 }}>{localizeText("Type", "类型", "類型")}</th>
+                                        <th style={{ ...thStyle, width: "40px", textAlign: "center", paddingLeft: 2, paddingRight: 2 }}>{localizeText("Version", "版本", "版本")}</th>
+                                        <th style={{ ...thStyle, width: "80px", textAlign: "left", paddingRight: 4 }}>{localizeText("Usage", "使用统计", "使用統計")}</th>
+                                        <th style={{ ...thStyle, width: "60px", whiteSpace: "nowrap", textAlign: "center", paddingRight: 2 }}>{localizeText("Status", "状态", "狀態")}</th>
+                                        <th style={{ ...thStyle, width: "56px", textAlign: "center", paddingLeft: 2 }}>{localizeText("Actions", "操作", "操作")}</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1110,12 +1110,12 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     <span style={{ fontSize: "0.72rem", color: colors.textMuted }}>{localizeText("Unused", "未使用", "未使用")}</span>
                                                 )}
                                             </td>
-                                            <td style={{ ...tdStyle, textAlign: "left", paddingLeft: 4, whiteSpace: "nowrap" }}>
+                                            <td style={{ ...tdStyle, textAlign: "center", whiteSpace: "nowrap", paddingRight: 2 }}>
                                                 <span style={{ ...statusBadgeStyle, ...getStatusBadgeVariant(s.status) }}>
                                                     {localizeSkillStatus(s.status)}
                                                 </span>
                                             </td>
-                                            <td style={{ ...tdStyle, textAlign: "right" }}>
+                                            <td style={{ ...tdStyle, textAlign: "center", paddingLeft: 2 }}>
                                                 <div style={localSkillsRowActionsStyle}>
                                                     <button
                                                         className="btn-secondary"
@@ -2072,10 +2072,10 @@ const localSkillsTableStyle: CSSProperties = {
 
 const localSkillsRowActionsStyle: CSSProperties = {
     display: "inline-flex",
-    justifyContent: "flex-end",
+    justifyContent: "center",
     alignItems: "center",
     gap: "6px",
-    flexWrap: "wrap",
+    flexWrap: "nowrap",
 };
 
 const tabBtnStyle: CSSProperties = {
