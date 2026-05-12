@@ -855,6 +855,11 @@ func (h *IMMessageHandler) doOpenAILLMRequestStream(
 
 		if delta.ReasoningContent != "" {
 			reasoningBuf.WriteString(delta.ReasoningContent)
+			// Forward reasoning content directly to the frontend (bypassing
+			// content filters which would corrupt it). The \x01 prefix lets
+			// the frontend distinguish thinking tokens from content tokens
+			// and render them with a different style (gray/collapsed).
+			onToken("\x01" + delta.ReasoningContent)
 		}
 		if delta.Content != "" {
 			contentBuf.WriteString(delta.Content)

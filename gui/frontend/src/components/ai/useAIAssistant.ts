@@ -237,6 +237,8 @@ export interface ChatMessage {
     role: 'user' | 'assistant' | 'progress' | 'error' | 'system';
     kind?: 'news' | 'trace';
     content: string;
+    /** Reasoning/thinking content from reasoning models (displayed as collapsed gray text). */
+    reasoning?: string;
     news?: NewsCardData;
     fields?: Array<{ label: string; value: string }>;
     actions?: ChatAction[];
@@ -718,6 +720,16 @@ function isConfirmationApprovalAction(action: ChatAction | undefined): boolean {
 }
 
 function appendTokenToMessage(message: ChatMessage, delta: string): ChatMessage {
+    // Reasoning tokens are prefixed with \x01 by the backend to distinguish
+    // them from content tokens. They represent the model's thinking phase.
+    if (delta.startsWith('\x01')) {
+        const reasoningDelta = delta.slice(1);
+        if (!reasoningDelta) return message;
+        const nextReasoning = message.reasoning ? message.reasoning + reasoningDelta : reasoningDelta;
+        if (nextReasoning === message.reasoning) return message;
+        return { ...message, reasoning: nextReasoning };
+    }
+
     const rawNextContent = message.content ? message.content + delta : delta;
     const nextContent = stripRolePrefixFrontend(rawNextContent);
     logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {

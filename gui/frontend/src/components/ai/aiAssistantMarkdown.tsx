@@ -658,6 +658,15 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                             )}
                         </div>
                     )}
+                    {/* Reasoning/thinking content from reasoning models — shown as collapsed gray text */}
+                    {msg.reasoning && (
+                        <details style={{ margin: "2px 0 4px 0", fontSize: "12px", color: t.textMuted }}>
+                            <summary style={{ cursor: "pointer", opacity: 0.7 }}>💭 思考中...</summary>
+                            <div style={{ padding: "4px 8px", whiteSpace: "pre-wrap", opacity: 0.6, maxHeight: "200px", overflow: "auto" }}>
+                                {msg.reasoning.length > 500 ? msg.reasoning.slice(-500) : msg.reasoning}
+                            </div>
+                        </details>
+                    )}
                     {renderContentWithCodeBlocks(msg.content, t)}
                     {msg.confirmation && renderConfirmationCard(msg.confirmation, msg.actions, executeAction, t)}
                     {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
