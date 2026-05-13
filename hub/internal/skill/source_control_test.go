@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // mockSystemSettings is a simple in-memory implementation for testing.
@@ -215,7 +217,7 @@ func TestIntersectSources(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := IntersectSources(tt.a, tt.b)
+			got := cskill.IntersectSources(tt.a, tt.b)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("IntersectSources(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
 			}
@@ -233,7 +235,7 @@ func TestSourceControl_CacheHit(t *testing.T) {
 	cfg1, _ := svc.GetGlobal(ctx)
 
 	// Directly modify the underlying store (bypass service).
-	mock.Set(ctx, settingsKeyGlobal, `{"enabled":true,"allowed_sources":["github"]}`)
+	mock.Set(ctx, "skill_source_control_global", `{"enabled":true,"allowed_sources":["github"]}`)
 
 	// Should still return cached value.
 	cfg2, _ := svc.GetGlobal(ctx)

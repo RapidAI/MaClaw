@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/internal/servicehost"
 )
 
@@ -57,15 +58,11 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("create service: %w", err)
 	}
 
-	// Wire skill source control from environment.
-	// MACLAW_SKILL_SOURCES_ALLOWED=skillhub,clawhub (comma-separated).
-	// Empty/unset = all sources allowed.
-	if envSources := os.Getenv("MACLAW_SKILL_SOURCES_ALLOWED"); envSources != "" {
-		allowed := parseCommaSeparated(envSources)
-		if len(allowed) > 0 {
-			svc.SkillSourceFilter = func(_, _ string) []string { return allowed }
-			log.Printf("[skill-sources] restricted to: %v", allowed)
-		}
+	// Wire skill source control — three-level resolution (global/tenant/user).
+	// Uses the same SourceControlService as the hub, backed by a file-based KVStore.
+	skillSourceSvc := cskill.NewSourceControlService(newFileKVStore(filepath.Join(dataRoot, "skill_source_control.json")))
+	svc.SkillSourceFilter = func(tenantID, userID string) []string {
+		return skillSourceSvc.ResolveForUser(context.Background(), userID, tenantID)
 	}
 
 	// Initialize knowledge store (non-fatal: degrades to no-knowledge mode).
@@ -79,7 +76,7 @@ func runServer(ctx context.Context) error {
 		log.Printf("[knowledge] initialized successfully")
 	}
 
-	server := NewHTTPServer(svc, adminSecret, knowledgeMgr)
+	server := NewHTTPServer(svc, adminSecret, knowledgeMgr, skillSourceSvc)
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 
 	// Initialize optional scheduler (MACLAW_ENABLE_SCHEDULER=true).

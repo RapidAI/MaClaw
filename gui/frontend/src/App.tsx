@@ -88,6 +88,18 @@ function App() {
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
     const [windowMaximized, setWindowMaximized] = useState(false);
+    useEffect(() => {
+        let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+        const syncMaximized = () => {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => { WindowIsMaximised().then(setWindowMaximized); }, 150);
+        };
+        window.addEventListener('resize', syncMaximized);
+        return () => {
+            window.removeEventListener('resize', syncMaximized);
+            if (debounceTimer) clearTimeout(debounceTimer);
+        };
+    }, []);
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
@@ -437,8 +449,8 @@ function App() {
     const handleWindowMaximizeToggle = (e: React.MouseEvent) => {
         e.preventDefault();
         e.stopPropagation();
+        setWindowMaximized(m => !m); // optimistic update for instant icon feedback
         WindowToggleMaximise();
-        WindowIsMaximised().then(setWindowMaximized);
     };
 
     const handleRecentTasksResizeStart = (e: React.MouseEvent<HTMLDivElement>) => {

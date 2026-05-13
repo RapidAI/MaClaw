@@ -93,7 +93,7 @@ export function AIAssistantPanel(props: any) {
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
-    const { ttsEnabled, setTtsEnabled, ttsPlaying, ttsAudioLevel } = useTTSReadback(audioOutputDeviceId);
+    const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
 
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire, extractEntry } = useBufferQueue();
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
@@ -438,7 +438,6 @@ export function AIAssistantPanel(props: any) {
                 trialReflectEnabled={trialReflectEnabled}
                 ttsEnabled={ttsEnabled}
                 ttsPlaying={ttsPlaying}
-                ttsAudioLevel={ttsAudioLevel}
                 toggleProjectSearch={projectSearch.toggle}
             />
             <KnowledgeDialog

@@ -78,7 +78,7 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		return result
 	}
 
-	conversation, cancelled := h.prepareAgentLoopIteration(
+	conversation, cancelled, injectedText := h.prepareAgentLoopIteration(
 		ctx,
 		opts.UserID,
 		opts.UserText,
@@ -94,6 +94,16 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		result.Conversation = conversation
 		result.Stop = true
 		return result
+	}
+
+	// When a merge injection changes the task direction (e.g. user says "use
+	// SSH to connect" while the loop was doing Nginx analysis), the tool list
+	// computed at loop start may not include the newly needed tools. Re-route
+	// with the injection text and augment the current tool set.
+	tools := opts.Tools
+	toolsTokenBudget := opts.ToolsTokenBudget
+	if injectedText != "" {
+		tools, toolsTokenBudget = h.augmentToolsFromInjection(injectedText, tools, opts.BaseTools, opts.GateConfig.active)
 	}
 
 	prepStartedAt := time.Now()
@@ -118,16 +128,16 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		opts.UserID,
 		opts.Phase,
 		conversation,
-		opts.Tools,
-		opts.ToolsTokenBudget,
+		tools,
+		toolsTokenBudget,
 		opts.BaseTools,
 		opts.GateConfig,
 		opts.SkipCodingGate,
 		opts.OrchestratorActive,
 	)
 	conversation = recoverPromptResult.Conversation
-	tools := recoverPromptResult.Tools
-	toolsTokenBudget := recoverPromptResult.ToolsTokenBudget
+	tools = recoverPromptResult.Tools
+	toolsTokenBudget = recoverPromptResult.ToolsTokenBudget
 	directModeToolsFiltered := opts.DirectModeToolsFiltered
 	if recoverPromptResult.Applied {
 		directModeToolsFiltered = recoverPromptResult.DirectModeToolsFiltered

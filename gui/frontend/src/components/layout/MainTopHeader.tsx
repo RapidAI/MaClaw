@@ -43,7 +43,7 @@ export const MainTopHeader = ({
     handleWindowMaximizeToggle,
     windowMaximized,
 }: MainTopHeaderProps) => (
-    <div className="top-header" style={{ '--wails-draggable': 'no-drag' } as any}>
+    <div className="top-header" style={{ '--wails-draggable': 'drag' } as any}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
             <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--theme-text-primary)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
                 <span>{getHeaderTitle(navTab, lang, t)}</span>
@@ -62,7 +62,7 @@ export const MainTopHeader = ({
                     setShowInstallSkillModal={setShowInstallSkillModal}
                 />
             </h2>
-            <div style={{ display: 'flex', gap: '4px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
+            <div className="top-header-window-controls" style={{ display: 'flex', gap: '4px', '--wails-draggable': 'no-drag', marginRight: '5px', pointerEvents: 'auto', position: 'relative', zIndex: 10000 } as any}>
                 <button
                     onMouseDown={handleWindowHide}
                     aria-label={lang === 'en' ? 'Minimize window' : zhHans.minimizeWindow}

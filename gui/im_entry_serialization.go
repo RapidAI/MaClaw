@@ -21,7 +21,7 @@ func (h *IMMessageHandler) enterIMMessageSerializationBoundary(msg IMUserMessage
 	if providedLoopCtx != nil || msg.IsBackground {
 		return result
 	}
-	if h.interruptHandler != nil && msg.Text != "" && h.currentLoopCtx != nil {
+	if h.interruptHandler != nil && msg.Text != "" && h.hasActiveInterruptableLoop() {
 		interrupt := h.interruptHandler.TryInterrupt(msg.UserID, msg.Text)
 		if interrupt.PendingConfirm || interrupt.Handled {
 			result.Handled = true

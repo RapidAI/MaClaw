@@ -40,7 +40,7 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 // Multiple rapid injections are accumulated (newline-separated) rather than
 // overwriting each other, so consecutive fire clicks don't lose messages.
 func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
-	if h.currentLoopCtx == nil || h.currentLoopCtx.IsCancelled() {
+	if !h.hasActiveInterruptableLoop() {
 		return false
 	}
 	h.accumulateInjection(userID, "[鐢ㄦ埛琛ュ厖] "+text)

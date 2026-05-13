@@ -19,6 +19,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 type configEnvelope struct {
@@ -46,16 +47,17 @@ type readinessReport struct {
 }
 
 type HTTPServer struct {
-	svc          *agentservice.Service
-	adminSecret  string
-	mux          *http.ServeMux
-	authLimiter  *authLimiter
-	jobs         *asyncJobManager
-	knowledgeMgr *knowledgeStoreManager
+	svc            *agentservice.Service
+	adminSecret    string
+	mux            *http.ServeMux
+	authLimiter    *authLimiter
+	jobs           *asyncJobManager
+	knowledgeMgr   *knowledgeStoreManager
+	skillSourceSvc *cskill.SourceControlService
 }
 
-func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager) *HTTPServer {
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr}
+func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc *cskill.SourceControlService) *HTTPServer {
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: skillSourceSvc}
 	s.routes()
 	return s
 }
@@ -305,6 +307,18 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge/stats", s.withAdmin(s.handleAdminKnowledgeStats))
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge/sources", s.withAdmin(s.handleAdminKnowledgeListSources))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/knowledge", s.withAdmin(s.handleAdminKnowledgeClearTenant))
+
+	// Skill source control admin API (global / tenant / user).
+	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/available", s.withAdmin(s.handleSkillSourcesAvailable))
+	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/global", s.withAdmin(s.handleSkillSourcesGetGlobal))
+	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/global", s.withAdmin(s.handleSkillSourcesSetGlobal))
+	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesGetTenant))
+	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesSetTenant))
+	s.mux.HandleFunc("DELETE /api/v1/admin/skill-sources/tenant/{id}", s.withAdmin(s.handleSkillSourcesDeleteTenant))
+	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/user/{email...}", s.withAdmin(s.handleSkillSourcesGetUser))
+	s.mux.HandleFunc("PUT /api/v1/admin/skill-sources/user/{email...}", s.withAdmin(s.handleSkillSourcesSetUser))
+	s.mux.HandleFunc("DELETE /api/v1/admin/skill-sources/user/{email...}", s.withAdmin(s.handleSkillSourcesDeleteUser))
+	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/resolve/{email...}", s.withAdmin(s.handleSkillSourcesResolve))
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {

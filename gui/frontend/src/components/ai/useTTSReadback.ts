@@ -4,16 +4,24 @@ import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { createLevelMeterRefs, startLevelMeter, stopLevelMeter, destroyLevelMeter } from "./ttsLevelMeter";
 
 /**
+ * Dispatch audio level as a DOM CustomEvent instead of React state.
+ * TTSLevelBars listens to this event and updates bar heights via direct DOM
+ * manipulation — zero React re-renders during playback.
+ */
+function emitTTSLevel(level: number): void {
+    window.dispatchEvent(new CustomEvent("tts-level", { detail: level }));
+}
+
+/**
  * TTS readback hook with real-time audio level metering.
  *
- * Plays audio entirely through Web Audio API (AudioBufferSourceNode → AnalyserNode → destination).
- * This guarantees the AnalyserNode receives audio data for level metering.
- * Audio device selection is handled via AudioContext.setSinkId (Chromium 110+).
+ * Audio level updates bypass React state entirely — they are dispatched as
+ * CustomEvents on `window` and consumed by TTSLevelBars via direct DOM ops.
+ * Only `ttsEnabled` and `ttsPlaying` are React state (low-frequency toggles).
  */
 export function useTTSReadback(audioOutputDeviceId?: string) {
     const [ttsEnabled, setTtsEnabledState] = useState(false);
     const [ttsPlaying, setTtsPlaying] = useState(false);
-    const [ttsAudioLevel, setTtsAudioLevel] = useState(0);
     const ttsEnabledRef = useRef(false);
     const ttsAudioQueueRef = useRef<string[]>([]);
     const ttsAudioPlayingRef = useRef(false);
@@ -29,7 +37,7 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
 
     const stopMetering = useCallback(() => {
         stopLevelMeter(meterRefs.current);
-        setTtsAudioLevel(0);
+        emitTTSLevel(0);
     }, []);
 
     const playNextTTSAudio = useCallback(() => {
@@ -55,7 +63,7 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
             meterRefs.current,
             b64wav,
             audioOutputDeviceId,
-            setTtsAudioLevel,
+            emitTTSLevel,
             onEnded,
         );
     }, [audioOutputDeviceId]);
@@ -83,5 +91,5 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
         return () => { destroyLevelMeter(meterRefs.current); };
     }, []);
 
-    return { ttsEnabled, setTtsEnabled, ttsPlaying, ttsAudioLevel };
+    return { ttsEnabled, setTtsEnabled, ttsPlaying };
 }

@@ -7,13 +7,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/progress"
 )
 
-func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, userText string, iteration int, effectiveMax int, maxIter int, conversation []interface{}, sendProgress func(string), milestoneTracker *progress.AgentProgressTracker, isDebug func() bool) ([]interface{}, bool) {
+func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, userText string, iteration int, effectiveMax int, maxIter int, conversation []interface{}, sendProgress func(string), milestoneTracker *progress.AgentProgressTracker, isDebug func() bool) ([]interface{}, bool, string) {
 	if ctx.Kind == LoopKindChat && ctx.StatusC != nil {
 		drainStatusEvents(ctx, &conversation, sendProgress)
 	}
 	if ctx.IsCancelled() {
 		ctx.SetLoopState(LoopStateStopped)
-		return conversation, true
+		return conversation, true, ""
 	}
 	if h.traceService != nil && ctx.RunID != "" {
 		h.traceService.UpdateRun(ctx.RunID, TraceRunStatusRunning, firstNonEmptyTraceText(ctx.Description, userText), "")
@@ -36,8 +36,9 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 			milestoneTracker.Tick()
 		}
 	}
+	var injectedText string
 	if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
-		injectedText, _ := injected.(string)
+		injectedText, _ = injected.(string)
 		if injectedText != "" {
 			conversation = append(conversation, map[string]string{
 				"role":    "system",
@@ -46,5 +47,5 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 			log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(injectedText, 50))
 		}
 	}
-	return conversation, false
+	return conversation, false, injectedText
 }

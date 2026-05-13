@@ -50,9 +50,8 @@ var DefaultPolicy = EffectivePolicy{
 	SkillSourcesAllowed:  nil, // nil = all sources allowed (skillhub, clawhub, github)
 }
 
-// AllSkillSources is the complete list of valid skill source identifiers.
-// Canonical definition is in hub/internal/skill.AllSources; this is kept
-// for reference by the admin UI when displaying policy options.
+// AllSkillSources re-exports the canonical list from corelib/skill.
+// Kept here for admin UI reference when displaying policy options.
 var AllSkillSources = []string{"skillhub", "clawhub", "github"}
 
 // GroupPolicyView 组策略视图（含继承信息）

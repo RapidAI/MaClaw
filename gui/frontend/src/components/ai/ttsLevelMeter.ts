@@ -110,9 +110,9 @@ export function startLevelMeter(
                     onLevel(0);
                     return;
                 }
-                // Throttle state updates to ~15fps to reduce re-renders
+                // Throttle state updates to ~30fps to reduce re-renders
                 const now = performance.now();
-                if (now - refs.throttleTs < 66) {
+                if (now - refs.throttleTs < 33) {
                     refs.raf = requestAnimationFrame(tick);
                     return;
                 }
@@ -131,12 +131,14 @@ export function startLevelMeter(
                 refs.raf = requestAnimationFrame(tick);
             };
             refs.raf = requestAnimationFrame(tick);
-        }).catch(() => {
-            // Decode failed — call onEnded so queue advances
+        }).catch((decodeErr) => {
+            // Decode failed — log for debugging and call onEnded so queue advances
+            console.warn("[tts-level-meter] decodeAudioData failed:", decodeErr);
             onEnded();
         });
-    } catch {
+    } catch (e) {
         // Web Audio API not available — degrade gracefully
+        console.warn("[tts-level-meter] startLevelMeter error:", e);
         onEnded();
     }
 }
