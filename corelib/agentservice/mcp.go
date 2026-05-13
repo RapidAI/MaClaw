@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 type MCPToolView struct {
@@ -914,6 +915,7 @@ func (c *localMCPClient) Start(ctx context.Context) error {
 	for k, v := range c.entry.Env {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
+	coretool.HideCommandWindow(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		c.stateMu.Unlock()

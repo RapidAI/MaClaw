@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // --- Overridable function variables for testability ---
@@ -45,7 +47,7 @@ func defaultFindPython() string {
 var checkPipInstalled = defaultCheckPipInstalled
 
 func defaultCheckPipInstalled(python, name string) bool {
-	cmd := exec.Command(python, "-m", "pip", "show", name)
+	cmd := coretool.Command(python, "-m", "pip", "show", name)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 	return cmd.Run() == nil
 }
@@ -53,7 +55,7 @@ func defaultCheckPipInstalled(python, name string) bool {
 var installPipPkg = defaultInstallPipPkg
 
 func defaultInstallPipPkg(python, pkg string) error {
-	cmd := exec.Command(python, "-m", "pip", "install", "--quiet", pkg)
+	cmd := coretool.Command(python, "-m", "pip", "install", "--quiet", pkg)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -68,14 +70,14 @@ func defaultInstallPipPkg(python, pkg string) error {
 var checkNpmInstalledInDir = defaultCheckNpmInstalledInDir
 
 func defaultCheckNpmInstalledInDir(name, dir string) bool {
-	cmd := exec.Command("npm", "list", name, "--depth=0")
+	cmd := coretool.Command("npm", "list", name, "--depth=0")
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	if cmd.Run() == nil {
 		return true
 	}
-	cmd = exec.Command("npm", "list", "-g", name, "--depth=0")
+	cmd = coretool.Command("npm", "list", "-g", name, "--depth=0")
 	return cmd.Run() == nil
 }
 
@@ -85,7 +87,7 @@ func defaultCheckNpmInstalledInDir(name, dir string) bool {
 var installNpmPkgInDir = defaultInstallNpmPkgInDir
 
 func defaultInstallNpmPkgInDir(pkg, dir string) error {
-	cmd := exec.Command("npm", "install", "--silent", pkg)
+	cmd := coretool.Command("npm", "install", "--silent", pkg)
 	if dir != "" {
 		cmd.Dir = dir
 	}

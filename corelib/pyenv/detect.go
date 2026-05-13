@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // MinPythonMajor 最低 Python 主版本。
@@ -110,7 +112,7 @@ func meetsMinVersion(major, minor int) bool {
 func checkPython(pythonPath string) (version string, ok bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, pythonPath, "--version")
+	cmd := coretool.CommandContext(ctx, pythonPath, "--version")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", false
@@ -343,7 +345,7 @@ func extractTarGz(archivePath, destDir string) error {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
-	cmd := exec.Command("tar", "xzf", archivePath, "-C", destDir)
+	cmd := coretool.Command("tar", "xzf", archivePath, "-C", destDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tar 解压失败: %w\n%s", err, string(out))
@@ -357,7 +359,7 @@ func extractZip(archivePath, destDir string) error {
 		return err
 	}
 	if runtime.GOOS == "windows" {
-		cmd := exec.Command("powershell", "-NoProfile", "-Command",
+		cmd := coretool.Command("powershell", "-NoProfile", "-Command",
 			fmt.Sprintf("Expand-Archive -Force -Path '%s' -DestinationPath '%s'", archivePath, destDir))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -365,7 +367,7 @@ func extractZip(archivePath, destDir string) error {
 		}
 		return nil
 	}
-	cmd := exec.Command("unzip", "-o", archivePath, "-d", destDir)
+	cmd := coretool.Command("unzip", "-o", archivePath, "-d", destDir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("unzip 失败: %w\n%s", err, string(out))
@@ -551,7 +553,7 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 		venvDir, _ := VenvDir()
 		os.RemoveAll(venvDir)
 
-		cmd := exec.Command(st.UVPath, "venv", "--python", st.PythonPath, venvDir)
+		cmd := coretool.Command(st.UVPath, "venv", "--python", st.PythonPath, venvDir)
 		cmd.Env = append(os.Environ(), "UV_PYTHON_PREFERENCE=only-system")
 		out, err := cmd.CombinedOutput()
 		if err != nil {

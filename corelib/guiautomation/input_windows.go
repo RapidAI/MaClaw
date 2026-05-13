@@ -2,17 +2,24 @@
 
 package guiautomation
 
-import ("fmt"; "os/exec"; "strings")
+import (
+	"fmt"
+	"strings"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
+)
 
 type windowsInputSimulator struct{}
 
 func NewInputSimulator() InputSimulator { return &windowsInputSimulator{} }
 
 func runInputPS(script string) error {
-cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
-out, err := cmd.CombinedOutput()
-if err != nil { return fmt.Errorf("input simulation failed: %w (output: %s)", err, strings.TrimSpace(string(out))) }
-return nil
+	cmd := coretool.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("input simulation failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 const u32Decl = "Add-Type @'\nusing System; using System.Runtime.InteropServices;\npublic class U32 {\n  [DllImport(\"user32.dll\")] public static extern bool SetCursorPos(int X,int Y);\n  [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f,int dx,int dy,int d,IntPtr e);\n  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte vk,byte sc,uint f,IntPtr e);\n  [DllImport(\"user32.dll\")] public static extern int GetSystemMetrics(int i);\n  public static int ClampX(int x){int w=GetSystemMetrics(0);if(x<0)return 0;if(x>=w)return w-1;return x;}\n  public static int ClampY(int y){int h=GetSystemMetrics(1);if(y<0)return 0;if(y>=h)return h-1;return y;}\n}\n'@; "

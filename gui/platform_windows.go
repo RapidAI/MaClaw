@@ -673,15 +673,14 @@ func (a *App) installToolsInBackground() {
 		status := tm.GetToolStatus(tool)
 
 		if !status.Installed {
-			a.log(a.tr("Background: %s not found in private directory. Installing...", tool))
-			a.emitEvent("tool-installing", tool)
-			if err := tm.InstallTool(tool); err != nil {
-				a.log(a.tr("Background: ERROR: Failed to install %s: %v", tool, err))
-			} else {
-				a.log(a.tr("Background: %s installed successfully to private directory.", tool))
-				a.updatePathForNode()
-				a.emitEvent("tool-installed", tool)
-			}
+			// Do NOT auto-install tools that the user hasn't explicitly installed.
+			// Auto-installation causes unwanted side effects: cmd window flashes,
+			// unexpected process launches (e.g. claude.exe --version triggers Node.js
+			// initialization), and wastes bandwidth/disk for unused tools.
+			// Users can install tools on-demand via the UI.
+			a.log(a.tr("Background: %s not installed, skipping (install via UI when needed).", tool))
+			a.unlockTool(tool)
+			continue
 		} else {
 			if !strings.HasPrefix(status.Path, expectedPrefix) {
 				a.log(a.tr("Background: WARNING: %s found at %s (not in private directory, skipping)", tool, status.Path))

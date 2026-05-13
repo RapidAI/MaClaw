@@ -5,8 +5,9 @@ package accessibility
 import (
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
+
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // windowsBridge implements Bridge using PowerShell + System.Windows.Automation.
@@ -52,7 +53,7 @@ func (e *psElement) toElement() Element {
 // runPS executes a PowerShell snippet and returns stdout.
 // Returns ("", nil) if the command fails — graceful degradation.
 func runPS(script string) (string, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := coretool.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
 		// Graceful degradation: app may not expose accessibility info.
