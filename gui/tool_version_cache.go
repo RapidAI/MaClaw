@@ -185,6 +185,7 @@ func (c *ToolVersionCache) detectVersion(ctx context.Context, name, path string)
 	for _, flag := range []string{"--version", "-v", "version"} {
 		cmd := exec.CommandContext(toolCtx, path, flag)
 		cmd.Env = os.Environ()
+		hideCommandWindow(cmd)
 		out, err := cmd.Output()
 		if err == nil {
 			version := strings.TrimSpace(string(out))
