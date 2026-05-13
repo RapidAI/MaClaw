@@ -97,6 +97,13 @@ if !errorlevel! neq 0 (
 
 REM -- Build Go Binaries --
 echo [Step 6/13] Compiling GUI binaries...
+REM -- Kill stale processes and clean locked Go temp dirs to prevent "Access is denied" errors --
+taskkill /F /IM %APP_NAME%.exe 2>nul
+taskkill /F /IM maclaw-tui.exe 2>nul
+taskkill /F /IM maclaw-tool.exe 2>nul
+taskkill /F /IM maclawsrv.exe 2>nul
+taskkill /F /IM maclaw-data-srv.exe 2>nul
+%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-2) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
 set "GOOS=windows"
 set "GOARCH=amd64"
 set "CGO_ENABLED=1"
@@ -287,7 +294,7 @@ if !errorlevel! equ 0 exit /b 0
 set "GO_BUILD_ERROR=!errorlevel!"
 if !GO_BUILD_ATTEMPT! geq 8 exit /b !GO_BUILD_ERROR!
 echo [WARN] go build failed with exit code !GO_BUILD_ERROR!, retrying...
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Get-Process go,compile,link,gcc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
+%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Get-Process go,compile,link,gcc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
 set /a GO_BUILD_ATTEMPT+=1
 goto :go_build_retry
 
@@ -299,7 +306,7 @@ if !errorlevel! equ 0 exit /b 0
 set "GO_BUILD_ERROR=!errorlevel!"
 if !GO_BUILD_ATTEMPT! geq 8 exit /b !GO_BUILD_ERROR!
 echo [WARN] datasrv go build failed with exit code !GO_BUILD_ERROR!, retrying...
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Get-Process go,compile,link,gcc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
+%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "Get-Process go,compile,link,gcc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Get-ChildItem $env:TEMP -Filter 'go-build*' -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-1) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue"
 set /a GO_BUILD_ATTEMPT+=1
 goto :go_build_datasrv_retry
 
