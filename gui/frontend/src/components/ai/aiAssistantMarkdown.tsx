@@ -107,7 +107,7 @@ function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
 function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     const parts: React.ReactNode[] = [];
-    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|:]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))[\w/.\-]+)/g;
+    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let idx = 0;
     while (true) {
@@ -158,7 +158,7 @@ function renderInlineMarkdownLegacyUnused(text: string, t: Theme): React.ReactNo
     // Path matching: two strategies per platform
     // 1. Broad match for paths with CJK/spaces - requires .ext ending as boundary anchor
     // 2. Original ASCII-only match - works without .ext
-    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))\/[^\n\r*?"<>|:]+\.\w+)|((~|\/(?:Users|home|tmp|var|opt|etc|usr))[\w/.\-]+)/g;
+    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let idx = 0;

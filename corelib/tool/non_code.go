@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,7 +11,7 @@ import (
 
 // RunGitCmd executes a git command in the given directory.
 func RunGitCmd(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -30,7 +29,7 @@ func SearchFilesInProject(projectPath, pattern, filePattern string) string {
 	}
 	args = append(args, projectPath)
 
-	cmd := exec.Command("rg", args...)
+	cmd := Command("rg", args...)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		result := string(out)
@@ -87,7 +86,7 @@ func CheckProjectHealth(projectPath string) string {
 	if _, err := os.Stat(filepath.Join(projectPath, "go.mod")); err == nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, "go", "vet", "./...")
+		cmd := CommandContext(ctx, "go", "vet", "./...")
 		cmd.Dir = projectPath
 		if out, err := cmd.CombinedOutput(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded {

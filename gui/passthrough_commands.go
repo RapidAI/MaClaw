@@ -866,6 +866,7 @@ func executePassthroughProcess(ctx context.Context, start time.Time, commandName
 	var out bytes.Buffer
 	execCmd.Stdout = &out
 	execCmd.Stderr = &out
+	hideCommandWindow(execCmd)
 	err := execCmd.Run()
 	finished := time.Now()
 	exitCode := 0

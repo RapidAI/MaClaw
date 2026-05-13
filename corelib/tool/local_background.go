@@ -103,7 +103,7 @@ func (m *LocalBackgroundTaskManager) Submit(command, workDir string) (*LocalBack
 		shellArgs = []string{"-c", command}
 	}
 
-	cmd := exec.CommandContext(ctx, shellName, shellArgs...)
+	cmd := CommandContext(ctx, shellName, shellArgs...)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}

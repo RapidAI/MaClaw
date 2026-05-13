@@ -2040,6 +2040,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const finalizeRound = useCallback((generation: number) => {
         if (activeRoundRef.current.generation !== generation) return;
         resetActiveRound();
+        progressTailRef.current = null;
+        setProgressMessages([]);
         emitPetStateForAssistant('idle', 'ai:round-done');
     }, [emitPetStateForAssistant, resetActiveRound]);
 
@@ -2814,6 +2816,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
         foregroundSendTailRef.current = Promise.resolve(true);
         resetActiveRound(nextGeneration);
+        progressTailRef.current = null;
+        setProgressMessages([]);
         setPendingTaskState(null);
         emitPetStateForAssistant('idle', 'ai:cancel');
         try {

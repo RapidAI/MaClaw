@@ -227,6 +227,18 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 		topN = 10
 	}
 	sources := normalizeSkillSearchSources(in.Sources)
+
+	// Apply source control filter: remove disallowed sources before searching.
+	if s.SkillSourceFilter != nil {
+		allowed := s.SkillSourceFilter(p.TenantID, p.UserID)
+		if len(allowed) > 0 {
+			sources = filterAllowedSources(sources, allowed)
+			if len(sources) == 0 {
+				return nil, nil // all requested sources are blocked
+			}
+		}
+	}
+
 	installed := map[string]bool{}
 	if in.IncludeInstalled {
 		if skills, err := s.ListSkills(ctx, p); err == nil {
@@ -306,6 +318,19 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
 	}
+
+	// Check source control before downloading.
+	if s.SkillSourceFilter != nil {
+		allowed := s.SkillSourceFilter(p.TenantID, p.UserID)
+		if len(allowed) > 0 {
+			// Map install source names to the canonical source identifiers.
+			canonical := installSourceToCanonical(source)
+			if canonical != "" && !isInSlice(canonical, allowed) {
+				return nil, fmt.Errorf("skill source %q is not allowed by policy (allowed: %v)", source, allowed)
+			}
+		}
+	}
+
 	switch source {
 	case "zip":
 		data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(in.ZipBase64))
@@ -1167,4 +1192,62 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// filterAllowedSources returns only the sources that are in the allowed list.
+// Maps search source names (github, skillmarket, skillhub) to canonical names
+// (github, skillhub, skillhub) for comparison.
+func filterAllowedSources(requested, allowed []string) []string {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, s := range allowed {
+		allowedSet[s] = true
+	}
+	var result []string
+	for _, src := range requested {
+		canonical := searchSourceToCanonical(src)
+		if canonical == "" || allowedSet[canonical] {
+			result = append(result, src)
+		}
+	}
+	return result
+}
+
+// searchSourceToCanonical maps search source names to the canonical source
+// identifiers used by the source control system.
+func searchSourceToCanonical(source string) string {
+	switch source {
+	case "github":
+		return "github"
+	case "skillhub", "skillmarket":
+		return "skillhub"
+	case "clawhub":
+		return "clawhub"
+	default:
+		return ""
+	}
+}
+
+// installSourceToCanonical maps install source names to canonical identifiers.
+func installSourceToCanonical(source string) string {
+	switch source {
+	case "github", "github_repo", "github_candidate":
+		return "github"
+	case "skillhub":
+		return "skillhub"
+	case "clawhub":
+		return "clawhub"
+	case "zip":
+		return "" // zip is local upload, not a remote source — always allowed
+	default:
+		return ""
+	}
+}
+
+func isInSlice(s string, slice []string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }

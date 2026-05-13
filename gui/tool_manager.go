@@ -716,6 +716,7 @@ func (tm *ToolManager) installClaudeNative(target string) error {
 	// Run the binary to confirm it's functional (not a truncated download).
 	verifyCmd := exec.Command(status.Path, "--version")
 	verifyCmd.Env = os.Environ()
+	hideCommandWindow(verifyCmd)
 	if out, err := verifyCmd.Output(); err != nil {
 		// Binary exists but doesn't run — remove it so next attempt retries.
 		os.Remove(status.Path)

@@ -112,7 +112,7 @@ export function AIAssistantPanel(props: any) {
 
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
     const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
-    const processingText = lang === "en" ? "Running tools... (you can type ahead)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
+    const processingText = lang === "en" ? "Processing... (you can type ahead)" : "\u6b63\u5728\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const idlePlaceholderText = lang === "en" ? "Type a message..." : "\u8f93\u5165\u6d88\u606f...";
     const savedFileLabel = lang === "en" ? "Saved file" : "\u6587\u4ef6\u5df2\u4fdd\u5b58";
     const isBusy = sending;

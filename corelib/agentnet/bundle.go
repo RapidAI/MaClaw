@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -69,6 +68,7 @@ func (n *BundleManager) runAnet(args ...string) (string, error) {
 		bin = "anet"
 	}
 	cmd := exec.Command(bin, args...)
+	hideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
@@ -132,9 +132,8 @@ func BundleBinaryVersion() string {
 	if bin == "" {
 		return ""
 	}
-	if runtime.GOOS == "windows" {
-	}
 	cmd := exec.Command(bin, "--version")
+	hideCommandWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ""

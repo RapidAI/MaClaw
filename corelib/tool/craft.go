@@ -98,23 +98,23 @@ func ExecuteScript(scriptPath, language string, timeout int) (string, error) {
 	var cmd *exec.Cmd
 	switch language {
 	case "python":
-		cmd = exec.CommandContext(ctx, "python3", scriptPath)
+		cmd = CommandContext(ctx, "python3", scriptPath)
 		if runtime.GOOS == "windows" {
-			cmd = exec.CommandContext(ctx, "python", scriptPath)
+			cmd = CommandContext(ctx, "python", scriptPath)
 		}
 	case "node", "javascript":
-		cmd = exec.CommandContext(ctx, "node", scriptPath)
+		cmd = CommandContext(ctx, "node", scriptPath)
 	case "powershell":
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+		cmd = CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 	default:
 		if runtime.GOOS == "windows" {
 			if _, err := exec.LookPath("bash"); err == nil {
-				cmd = exec.CommandContext(ctx, "bash", scriptPath)
+				cmd = CommandContext(ctx, "bash", scriptPath)
 			} else {
-				cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
+				cmd = CommandContext(ctx, "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath)
 			}
 		} else {
-			cmd = exec.CommandContext(ctx, "bash", scriptPath)
+			cmd = CommandContext(ctx, "bash", scriptPath)
 		}
 	}
 

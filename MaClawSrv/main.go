@@ -57,6 +57,17 @@ func runServer(ctx context.Context) error {
 		return fmt.Errorf("create service: %w", err)
 	}
 
+	// Wire skill source control from environment.
+	// MACLAW_SKILL_SOURCES_ALLOWED=skillhub,clawhub (comma-separated).
+	// Empty/unset = all sources allowed.
+	if envSources := os.Getenv("MACLAW_SKILL_SOURCES_ALLOWED"); envSources != "" {
+		allowed := parseCommaSeparated(envSources)
+		if len(allowed) > 0 {
+			svc.SkillSourceFilter = func(_, _ string) []string { return allowed }
+			log.Printf("[skill-sources] restricted to: %v", allowed)
+		}
+	}
+
 	// Initialize knowledge store (non-fatal: degrades to no-knowledge mode).
 	var knowledgeMgr *knowledgeStoreManager
 	km, kmErr := newKnowledgeStoreManager(dataRoot)
@@ -151,6 +162,17 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func parseCommaSeparated(s string) []string {
+	var result []string
+	for _, part := range strings.Split(s, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func defaultDataRoot() string {

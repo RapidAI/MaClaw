@@ -34,6 +34,11 @@ type Service struct {
 	credentialPepper string
 	now              func() time.Time
 
+	// SkillSourceFilter returns the allowed skill sources for a given principal.
+	// nil means all sources are allowed. Set by MaClawSrv at initialization
+	// to integrate with the skill source control system.
+	SkillSourceFilter func(tenantID, userID string) []string
+
 	runMu       sync.Mutex
 	runningRuns map[string]context.CancelFunc
 }

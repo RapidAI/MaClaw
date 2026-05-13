@@ -112,6 +112,7 @@ func gitShowOriginal(projectPath, absPath string) string {
 
 	cmd := exec.CommandContext(ctx, "git", "show", fmt.Sprintf("HEAD:%s", relPath))
 	cmd.Dir = projectPath
+	hideCommandWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		// git show fails for new files, non-git repos, or timeout — expected
