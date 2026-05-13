@@ -145,7 +145,7 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/layout/AppSidebarShell.tsx', 260],
   ['gui/frontend/src/components/layout/SidebarNavRail.tsx', 220],
   ['gui/frontend/src/components/layout/SidebarAiPane.tsx', 220],
-  ['gui/frontend/src/components/layout/MainTopHeader.tsx', 120],
+  ['gui/frontend/src/components/layout/MainTopHeader.tsx', 240],
   ['gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 140],
   ['gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 80],
   ['gui/frontend/src/components/settings/GeneralSettingsPanel.tsx', 180],

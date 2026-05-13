@@ -26,6 +26,27 @@ const zhHans = {
     restoreWindow: '\u8fd8\u539f\u7a97\u53e3',
 };
 
+const windowControlBtnStyle = {
+    '--wails-draggable': 'no-drag',
+    pointerEvents: 'auto',
+    cursor: 'pointer',
+    position: 'relative',
+    zIndex: 10001,
+    width: '36px',
+    height: '28px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'transparent',
+    border: 'none',
+    borderRadius: '4px',
+    padding: 0,
+    lineHeight: 1,
+    flexShrink: 0,
+    color: 'var(--theme-text-secondary)',
+    transition: 'background 120ms ease, color 120ms ease',
+} as any;
+
 export const MainTopHeader = ({
     navTab,
     lang,
@@ -67,26 +88,7 @@ export const MainTopHeader = ({
                     onMouseDown={handleWindowHide}
                     aria-label={lang === 'en' ? 'Minimize window' : zhHans.minimizeWindow}
                     title={lang === 'en' ? 'Minimize window' : zhHans.minimizeWindow}
-                    style={{
-                        '--wails-draggable': 'no-drag',
-                        pointerEvents: 'auto',
-                        cursor: 'pointer',
-                        position: 'relative',
-                        zIndex: 10001,
-                        width: '36px',
-                        height: '28px',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        background: 'transparent',
-                        border: 'none',
-                        borderRadius: '4px',
-                        padding: 0,
-                        lineHeight: 1,
-                        flexShrink: 0,
-                        color: 'var(--theme-text-secondary)',
-                        transition: 'background 120ms ease, color 120ms ease',
-                    } as any}
+                    style={windowControlBtnStyle}
                 >
                     <span style={{ width: '10px', borderTop: '1.5px solid currentColor', transform: 'translateY(4px)' }} />
                 </button>
@@ -94,26 +96,7 @@ export const MainTopHeader = ({
                     onMouseDown={handleWindowMaximizeToggle}
                     aria-label={windowMaximized ? (lang === 'en' ? 'Restore window' : zhHans.restoreWindow) : (lang === 'en' ? 'Maximize window' : zhHans.maximizeWindow)}
                     title={windowMaximized ? (lang === 'en' ? 'Restore window' : zhHans.restoreWindow) : (lang === 'en' ? 'Maximize window' : zhHans.maximizeWindow)}
-                    style={{
-                        '--wails-draggable': 'no-drag',
-                        pointerEvents: 'auto',
-                        cursor: 'pointer',
-                        position: 'relative',
-                        zIndex: 10001,
-                        width: '36px',
-                        height: '28px',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        background: 'transparent',
-                        border: 'none',
-                        borderRadius: '4px',
-                        padding: 0,
-                        lineHeight: 1,
-                        flexShrink: 0,
-                        color: 'var(--theme-text-secondary)',
-                        transition: 'background 120ms ease, color 120ms ease',
-                    } as any}
+                    style={windowControlBtnStyle}
                 >
                     {windowMaximized ? (
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.2">
