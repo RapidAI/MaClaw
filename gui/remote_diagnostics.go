@@ -6,11 +6,21 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 var remotePTYCapabilityProbe = remotePTYCapability
 var remotePTYInteractiveProbe = remotePTYInteractiveSmokeProbe
 var remoteClaudeLaunchProbe = remoteClaudeLaunchSmokeProbe
+
+// ptyProbeCache caches the ConPTY probe result for the lifetime of the process.
+// ConPTY availability does not change during a single app session, so probing
+// once is sufficient. This eliminates the cmd.exe window flash that occurs
+// every time the "remote" tab is opened.
+var (
+	ptyProbeCacheOnce   sync.Once
+	ptyProbeCacheResult RemotePTYProbeResult
+)
 
 type RemoteToolLaunchProbeResult struct {
 	Tool        string `json:"tool"`
@@ -106,11 +116,11 @@ func (a *App) CheckRemoteToolReadiness(toolName, projectDir string, useProxy boo
 		readiness.Issues = append(readiness.Issues, fmt.Sprintf("%s is not installed in ~/.maclaw/data/tools", tool))
 	}
 
-	ptySupported, ptyMessage := remotePTYCapabilityProbe()
-	readiness.PTYSupported = ptySupported
-	readiness.PTYMessage = ptyMessage
-	if !ptySupported {
-		readiness.Issues = append(readiness.Issues, ptyMessage)
+	ptyProbe := a.CheckRemotePTYProbe()
+	readiness.PTYSupported = ptyProbe.Supported
+	readiness.PTYMessage = ptyProbe.Message
+	if !ptyProbe.Supported {
+		readiness.Issues = append(readiness.Issues, ptyProbe.Message)
 	}
 
 	selectedModel := a.findSelectedModel(cfg, tool)
@@ -197,21 +207,19 @@ func (a *App) findSelectedModel(cfg corelib.AppConfig, toolName string) *corelib
 }
 
 func (a *App) CheckRemotePTYProbe() RemotePTYProbeResult {
-	supported, message := remotePTYCapabilityProbe()
-	if !supported {
-		return RemotePTYProbeResult{
-			Supported: false,
-			Ready:     false,
+	ptyProbeCacheOnce.Do(func() {
+		supported, message := remotePTYCapabilityProbe()
+		// ConPTY capability is determined by API availability check alone
+		// (conpty.IsConPtyAvailable). No need to launch cmd.exe for an
+		// interactive smoke probe — it flashes a console window and provides
+		// no additional signal beyond what the API check already confirms.
+		ptyProbeCacheResult = RemotePTYProbeResult{
+			Supported: supported,
+			Ready:     supported,
 			Message:   message,
 		}
-	}
-
-	ready, probeMessage := remotePTYInteractiveProbe()
-	return RemotePTYProbeResult{
-		Supported: true,
-		Ready:     ready,
-		Message:   probeMessage,
-	}
+	})
+	return ptyProbeCacheResult
 }
 
 func (a *App) CheckRemoteToolLaunchProbe(toolName, projectDir string, useProxy bool) RemoteToolLaunchProbeResult {
@@ -233,10 +241,10 @@ func (a *App) CheckRemoteToolLaunchProbe(toolName, projectDir string, useProxy b
 	projectDir = filepath.Clean(strings.TrimSpace(projectDir))
 	result.ProjectPath = projectDir
 
-	supported, message := remotePTYCapabilityProbe()
-	result.Supported = supported
-	if !supported {
-		result.Message = message
+	ptyProbe := a.CheckRemotePTYProbe()
+	result.Supported = ptyProbe.Supported
+	if !ptyProbe.Supported {
+		result.Message = ptyProbe.Message
 		return result
 	}
 

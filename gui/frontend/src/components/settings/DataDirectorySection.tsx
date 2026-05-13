@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { SetDataDir } from '../../../wailsjs/go/main/App';
+import { SetDataDir, SelectDataDir } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
 type DataDirectorySectionProps = {
@@ -46,6 +46,17 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
         }
     };
 
+    const handleBrowseDataDir = async () => {
+        try {
+            const selected = await SelectDataDir();
+            if (selected) {
+                setDataDirInput(selected);
+            }
+        } catch (err: any) {
+            showToastMessage(err?.message || String(err));
+        }
+    };
+
     return (
         <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
             <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
@@ -62,6 +73,14 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
                 />
                 <button
                     type="button"
+                    onClick={handleBrowseDataDir}
+                    disabled={dataDirSaving}
+                    style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-bg-secondary, #2a2a3e)', color: 'var(--theme-text)', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', opacity: dataDirSaving ? 0.6 : 1 }}
+                >
+                    {textForLang(lang, 'Browse', '浏览', '瀏覽')}
+                </button>
+                <button
+                    type="button"
                     onClick={handleSaveDataDir}
                     disabled={dataDirSaving}
                     style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-primary)', color: '#fff', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', opacity: dataDirSaving ? 0.6 : 1 }}
@@ -69,7 +88,7 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
                     {dataDirSaving ? '...' : textForLang(lang, 'Save', '保存', '儲存')}
                 </button>
             </div>
-            <div style={{ marginTop: '6px', fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.5 }}>
+            <div style={{ marginTop: '6px', fontSize: '0.7rem', color: 'var(--theme-text-muted)', lineHeight: 1.5, textAlign: 'left' }}>
                 {textForLang(lang,
                     'Set a custom directory for all maclaw data (memories, logs, skills, etc.). config.json always stays at ~/.maclaw. Changes take effect after restart.',
                     '设置自定义数据目录（记忆、日志、技能等）。config.json 始终保留在 ~/.maclaw 下。修改后重启生效，数据将自动迁移。',
