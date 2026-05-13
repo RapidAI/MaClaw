@@ -845,6 +845,10 @@ body {
     min-width: 0;
 }
 
+.top-header button:hover {
+    background: rgba(148, 163, 184, 0.14) !important;
+}
+
 .main-content {
     flex: 1;
     padding: 10px 12px 0 12px;

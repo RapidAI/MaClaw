@@ -7,7 +7,7 @@ import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
 import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
 
-import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen } from "../wailsjs/runtime";
+import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
@@ -87,6 +87,7 @@ function App() {
     const [navTab, setNavTab] = useState<string>("ai");
     const audioDevices = useAudioDevices();
     const [aiPanelMaximized, setAiPanelMaximized] = useState(false);
+    const [windowMaximized, setWindowMaximized] = useState(false);
     const navTabRef = useRef(navTab);
     useEffect(() => { navTabRef.current = navTab; }, [navTab]);
     const [bbsContent, setBbsContent] = useState<string>("");
@@ -433,6 +434,13 @@ function App() {
         WindowHide();
     };
 
+    const handleWindowMaximizeToggle = (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        WindowToggleMaximise();
+        WindowIsMaximised().then(setWindowMaximized);
+    };
+
     const handleRecentTasksResizeStart = (e: React.MouseEvent<HTMLDivElement>) => {
         e.preventDefault();
         e.stopPropagation();
@@ -509,7 +517,7 @@ function App() {
             }
         };
         const doneHandler = () => {
-            ResizeWindow(788, 528);
+            ResizeWindow(867, 554);
             setIsLoading(false);
             setIsManualCheck(false);
         };
@@ -2331,6 +2339,8 @@ ${instruction}`;
                     setSelectedSkillsToInstall={setSelectedSkillsToInstall}
                     setShowInstallSkillModal={setShowInstallSkillModal}
                     handleWindowHide={handleWindowHide}
+                    handleWindowMaximizeToggle={handleWindowMaximizeToggle}
+                    windowMaximized={windowMaximized}
                 />
 
                 <div className="main-content elegant-scrollbar" style={{ overflowY: navTab === 'projects' ? 'hidden' : 'auto', paddingBottom: '20px', '--wails-draggable': 'no-drag' } as any}>
