@@ -4,7 +4,7 @@ $args = @(
   '/V4',
   '/DINFO_PROJECTNAME=MaClaw',
   '/DPRODUCT_EXECUTABLE=MaClaw.exe',
-  '"/DINFO_PRODUCTNAME=码卡龙·琢光 (MaClaw)"',
+  '"/DINFO_PRODUCTNAME=码卡龙·流心 (MaClaw)"',
   '/DINFO_COMPANYNAME=RapidAI',
   '"/DINFO_COPYRIGHT=Copyright (C) 2026 RapidAI"',
   '/DINFO_PRODUCTVERSION=5.12.0.10336',

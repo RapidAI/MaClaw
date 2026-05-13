@@ -1,6 +1,9 @@
 package main
 
 import (
+	"log"
+	"time"
+
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -26,6 +29,7 @@ func (h *IMMessageHandler) HandleIMMessageWithProgressAndStream(msg IMUserMessag
 }
 
 func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback, onNewRound NewRoundCallback, onStreamDone StreamDoneCallback) (result *IMAgentResponse) {
+	msgReceivedAt := time.Now()
 	lifecycle := h.beginIMMessageLifecycle(msg, &result)
 	defer lifecycle.Cleanup()
 	trimmed := lifecycle.Trimmed
@@ -34,10 +38,17 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		return resp
 	}
 
+	// Emit immediate progress feedback before any heavy processing (preflight/entry_context).
+	// This ensures the frontend shows "正在思考..." within <100ms of message receipt.
+	if onProgress != nil {
+		onProgress("正在思考...")
+	}
+
 	preflight := h.prepareIMMessagePreflight(&msg, &trimmed)
 	if preflight.Handled {
 		return preflight.Response
 	}
+	preflightDone := time.Since(msgReceivedAt)
 	httpClient := preflight.HTTPClient
 	entriesBeforeClear := preflight.EntriesBeforeClear
 	unfinishedSlot := preflight.UnfinishedSlot
@@ -55,6 +66,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	entriesBeforeClear = serialization.EntriesBeforeClear
 	unfinishedSlot = serialization.UnfinishedSlot
 	decision = serialization.Decision
+	serializationDone := time.Since(msgReceivedAt)
 
 	entryContext := h.resolveIMEntryContext(imEntryContextOptions{
 		Message:                    &msg,
@@ -68,6 +80,11 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	})
 	if entryContext.Handled {
 		return entryContext.Response
+	}
+	entryContextDone := time.Since(msgReceivedAt)
+	if entryContextDone > 500*time.Millisecond {
+		log.Printf("[handleIMMessage] slow pre-execution: preflight=%v serialization=%v entry_context=%v user=%s",
+			preflightDone, serializationDone-preflightDone, entryContextDone-serializationDone, msg.UserID)
 	}
 	unfinishedSlot = entryContext.UnfinishedSlot
 	freshTask = entryContext.FreshTask

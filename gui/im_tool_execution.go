@@ -1,4 +1,4 @@
-package main
+﻿package main
 
 // Tool execution: dispatcher that routes tool calls to registered handlers.
 
@@ -32,8 +32,11 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if opts.MilestoneTracker != nil {
 		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, false)
 	}
-	if opts.Debug && opts.SendToolProgress != nil {
-		opts.SendToolProgress(userFacingToolProgressText(tc.Function.Name))
+	// Always send tool-specific progress to the frontend so users see which
+	// tool is being executed (e.g. "🔍 正在搜索网络..." instead of generic
+	// "正在执行工具..."). Previously gated behind opts.Debug.
+	if opts.SendToolProgress != nil {
+		opts.SendToolProgress(userFacingToolProgressTextWithArgs(tc.Function.Name, tc.Function.Arguments))
 	}
 	if opts.RecordToolCall != nil {
 		opts.RecordToolCall(tc.ID, tc.Function.Name, tc.Function.Arguments)

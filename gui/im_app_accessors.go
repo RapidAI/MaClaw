@@ -12,6 +12,7 @@ package main
 import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"os"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 )
@@ -139,6 +140,37 @@ func (h *IMMessageHandler) getMaclawLLMConfig() corelib.MaclawLLMConfig {
 		return corelib.MaclawLLMConfig{}
 	}
 	return h.app.GetMaclawLLMConfig()
+}
+
+// getLightweightLLMConfig returns a non-reasoning model config for classification
+// tasks. It uses the same provider URL/key but substitutes a lighter model name.
+// Reasoning models (deepseek-reasoner, o1-*, etc.) generate chain-of-thought
+// before answering, adding 1-2s latency for simple yes/no classification tasks.
+//
+// Strategy: if the current model is a known reasoning model, substitute with
+// the corresponding chat model from the same provider. Otherwise return the
+// main config unchanged (it's already a chat model).
+func (h *IMMessageHandler) getLightweightLLMConfig() corelib.MaclawLLMConfig {
+	cfg := h.getMaclawLLMConfig()
+	if cfg.URL == "" || cfg.Model == "" {
+		return cfg
+	}
+
+	// Map reasoning models to their lightweight counterparts.
+	// Same provider, same API key, just a faster model.
+	model := strings.ToLower(strings.TrimSpace(cfg.Model))
+	switch {
+	case strings.Contains(model, "deepseek-reasoner") || strings.Contains(model, "deepseek-r1"):
+		cfg.Model = "deepseek-chat"
+	case strings.HasPrefix(model, "o1-") || strings.HasPrefix(model, "o3-"):
+		cfg.Model = "gpt-4o-mini"
+	case strings.Contains(model, "qwen3"):
+		// Qwen3 reasoning models — use qwen-turbo for classification
+		cfg.Model = "qwen-turbo"
+	}
+	// For non-reasoning models (deepseek-chat, gpt-4o, glm-4, etc.),
+	// return unchanged — they're already fast enough for classification.
+	return cfg
 }
 
 func (h *IMMessageHandler) isMaclawLLMConfigured() bool {

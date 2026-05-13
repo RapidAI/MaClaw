@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { GetTTSEnabled, SetTTSEnabled } from "../../../wailsjs/go/main/App";
 import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
+import { createLevelMeterRefs, startLevelMeter, stopLevelMeter, destroyLevelMeter } from "./ttsLevelMeter";
 
+/**
+ * TTS readback hook with real-time audio level metering.
+ *
+ * Plays audio entirely through Web Audio API (AudioBufferSourceNode → AnalyserNode → destination).
+ * This guarantees the AnalyserNode receives audio data for level metering.
+ * Audio device selection is handled via AudioContext.setSinkId (Chromium 110+).
+ */
 export function useTTSReadback(audioOutputDeviceId?: string) {
     const [ttsEnabled, setTtsEnabledState] = useState(false);
+    const [ttsPlaying, setTtsPlaying] = useState(false);
+    const [ttsAudioLevel, setTtsAudioLevel] = useState(0);
     const ttsEnabledRef = useRef(false);
     const ttsAudioQueueRef = useRef<string[]>([]);
     const ttsAudioPlayingRef = useRef(false);
-    const ttsCurrentAudioRef = useRef<HTMLAudioElement | null>(null);
+    const meterRefs = useRef(createLevelMeterRefs());
 
     useEffect(() => { ttsEnabledRef.current = ttsEnabled; }, [ttsEnabled]);
     useEffect(() => { GetTTSEnabled().then(v => setTtsEnabledState(!!v)).catch(() => {}); }, []);
@@ -17,6 +27,11 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
         void SetTTSEnabled(next).catch(() => {});
     }, []);
 
+    const stopMetering = useCallback(() => {
+        stopLevelMeter(meterRefs.current);
+        setTtsAudioLevel(0);
+    }, []);
+
     const playNextTTSAudio = useCallback(() => {
         if (ttsAudioPlayingRef.current) return;
         if (!ttsEnabledRef.current) {
@@ -24,41 +39,34 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
             return;
         }
         const b64wav = ttsAudioQueueRef.current.shift();
-        if (!b64wav) return;
+        if (!b64wav) {
+            setTtsPlaying(false);
+            return;
+        }
         ttsAudioPlayingRef.current = true;
-        try {
-            const audio = new Audio("data:audio/wav;base64," + b64wav);
-            ttsCurrentAudioRef.current = audio;
-            if (audioOutputDeviceId && typeof (audio as any).setSinkId === "function") {
-                void (audio as any).setSinkId(audioOutputDeviceId).catch(() => {});
-            }
-            const finish = () => {
-                audio.onended = null;
-                audio.onerror = null;
-                if (ttsCurrentAudioRef.current === audio) ttsCurrentAudioRef.current = null;
-                ttsAudioPlayingRef.current = false;
-                playNextTTSAudio();
-            };
-            audio.onended = finish;
-            audio.onerror = finish;
-            void audio.play().catch(finish);
-        } catch {
+        setTtsPlaying(true);
+
+        const onEnded = () => {
             ttsAudioPlayingRef.current = false;
             playNextTTSAudio();
-        }
+        };
+
+        startLevelMeter(
+            meterRefs.current,
+            b64wav,
+            audioOutputDeviceId,
+            setTtsAudioLevel,
+            onEnded,
+        );
     }, [audioOutputDeviceId]);
 
     useEffect(() => {
         if (ttsEnabled) return;
         ttsAudioQueueRef.current = [];
         ttsAudioPlayingRef.current = false;
-        const audio = ttsCurrentAudioRef.current;
-        if (audio) {
-            audio.pause();
-            audio.src = "";
-            ttsCurrentAudioRef.current = null;
-        }
-    }, [ttsEnabled]);
+        setTtsPlaying(false);
+        stopMetering();
+    }, [ttsEnabled, stopMetering]);
 
     useEffect(() => {
         const handler = (b64wav: string) => {
@@ -70,5 +78,10 @@ export function useTTSReadback(audioOutputDeviceId?: string) {
         return () => { EventsOff("tts:audio"); };
     }, [playNextTTSAudio]);
 
-    return { ttsEnabled, setTtsEnabled };
+    // Cleanup AudioContext on unmount
+    useEffect(() => {
+        return () => { destroyLevelMeter(meterRefs.current); };
+    }, []);
+
+    return { ttsEnabled, setTtsEnabled, ttsPlaying, ttsAudioLevel };
 }

@@ -115,7 +115,7 @@ func (h *IMMessageHandler) conversationHasCodingContextUIC(uic *intent.UnifiedIn
 			continue
 		}
 		// Use embedding-only classification for history entries to avoid
-		// triggering the tree channel LLM call (3s deadline per entry).
+		// triggering the tree channel LLM call (1.5s deadline per entry).
 		// The full fusion pipeline is expensive for this check — we only
 		// need a rough "is this coding-like?" signal, not precise workflow
 		// type determination. Embedding alone is <100ms and sufficient.

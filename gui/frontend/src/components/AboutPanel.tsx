@@ -66,7 +66,7 @@ export function AboutPanel({
 
     // Override product name for TigerClaw brand on About panel
     const productName = brandInfo?.id === 'qianxin'
-        ? '\u864e\u722a\u00b7\u82e5\u611a TigerClaw'
+        ? '\u864e\u722a\u00b7\u6d41\u5fc3 TigerClaw'
         : t("aboutProductName");
 
     const [showHealthDialog, setShowHealthDialog] = useState(false);

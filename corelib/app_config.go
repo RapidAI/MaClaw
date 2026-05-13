@@ -110,13 +110,14 @@ type AppConfig struct {
 	AgentNetAutoPickerPollMin   int     `json:"agentnet_auto_picker_poll_min,omitempty"`
 	AgentNetAutoPickerMinReward float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
 	// Security
-	SecurityPolicyMode     string `json:"security_policy_mode,omitempty"`
-	SandboxMode            string `json:"sandbox_mode,omitempty"`  // "none" (default), "os", "docker"
-	NetworkLevel           string `json:"network_level,omitempty"` // "none", "intranet", "full" (default)
-	YoloModeAllowed        bool   `json:"yolo_mode_allowed"`       // default true
-	GossipEnabled          bool   `json:"gossip_enabled"`          // default true (local preference, overridden by Hub)
-	FileOutboundEnabled    bool   `json:"file_outbound_enabled"`   // default true
-	ImageOutboundEnabled   bool   `json:"image_outbound_enabled"`  // default true
+	SecurityPolicyMode     string   `json:"security_policy_mode,omitempty"`
+	SandboxMode            string   `json:"sandbox_mode,omitempty"`  // "none" (default), "os", "docker"
+	NetworkLevel           string   `json:"network_level,omitempty"` // "none", "intranet", "full" (default)
+	YoloModeAllowed        bool     `json:"yolo_mode_allowed"`       // default true
+	GossipEnabled          bool     `json:"gossip_enabled"`          // default true (local preference, overridden by Hub)
+	FileOutboundEnabled    bool     `json:"file_outbound_enabled"`   // default true
+	ImageOutboundEnabled   bool     `json:"image_outbound_enabled"`  // default true
+	SkillSourcesAllowed    []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all; values: "skillhub","clawhub","github"
 	MaclawDebugToolCalls   bool   `json:"maclaw_debug_tool_calls,omitempty"`
 	ShowAITraceEntry       bool   `json:"show_ai_trace_entry,omitempty"`
 	ShowAssistantEntry     bool   `json:"show_assistant_entry"`

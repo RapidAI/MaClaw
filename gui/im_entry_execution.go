@@ -1,7 +1,9 @@
 package main
 
 import (
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -31,6 +33,8 @@ type preparedIMEntryExecutionOptions struct {
 
 func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionOptions) *IMAgentResponse {
 	msg := opts.Message
+	execStart := time.Now()
+
 	if resp, handled := h.handleBackgroundIMRoute(msg, opts.ProvidedLoopContext, opts.HTTPClient, opts.OnProgress); handled {
 		return resp
 	}
@@ -40,9 +44,17 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	if resp, handled := h.maybeReturnUnfinishedSlotHint(msg, opts.Trimmed, opts.FreshTask, opts.Decision, opts.UnfinishedSlot); handled {
 		return resp
 	}
+	gatesDone := time.Since(execStart)
 
+	historyStart := time.Now()
 	history := h.memory.Load(msg.UserID)
+	historyElapsed := time.Since(historyStart)
+
+	promptStart := time.Now()
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, opts.WorkflowAgentLoop, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
+	promptElapsed := time.Since(promptStart)
+
+	loopCtxStart := time.Now()
 	loopCtx := h.prepareIMLoopContext(
 		opts.ProvidedLoopContext,
 		msg,
@@ -50,12 +62,20 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.SkipNeedsConfirmGate,
 		opts.AskUserContext != "" || opts.PendingUserReplyContext != "",
 	)
+	loopCtxElapsed := time.Since(loopCtxStart)
 
 	if resp, updatedHistory, handled := h.routeSubAgentExecution(msg, opts.HTTPClient, loopCtx, history, opts.OnProgress, opts.OnToken); handled {
 		return resp
 	} else {
 		history = updatedHistory
 	}
+
+	totalPreLoop := time.Since(execStart)
+	if totalPreLoop > 500*time.Millisecond {
+		log.Printf("[executePreparedIMEntry] slow pre-loop: gates=%v history_load=%v system_prompt=%v loop_ctx=%v total=%v user=%s",
+			gatesDone, historyElapsed, promptElapsed, loopCtxElapsed, totalPreLoop, msg.UserID)
+	}
+
 	agentLoopUserText := h.agentLoopUserTextForWorkflow(msg, opts.WorkflowAgentLoop)
 	resp := h.runAgentLoop(loopCtx, msg.UserID, systemPrompt, history, agentLoopUserText, msg.Attachments, opts.OnProgress, opts.OnToken, opts.OnNewRound, opts.OnStreamDone, msg.MinIterations, msg.Platform)
 	return h.finalizeIMAgentLoopResponse(msg, loopCtx, resp, opts.WorkflowAgentLoop, opts.ClearUIAfterContextSwitch, opts.ConfirmedResume)

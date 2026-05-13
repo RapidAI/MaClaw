@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -900,7 +901,7 @@ func TestPolicyToMapRoundTrip(t *testing.T) {
 	p = DefaultPolicy // start from default
 	applyPolicyOverrides(&p, m)
 
-	if p != DefaultPolicy {
+	if !reflect.DeepEqual(p, DefaultPolicy) {
 		t.Fatal("round-trip through policyToMap/applyPolicyOverrides should preserve DefaultPolicy")
 	}
 }
@@ -908,3 +909,111 @@ func TestPolicyToMapRoundTrip(t *testing.T) {
 // --- Unused import guard for time ---
 var _ = time.Now
 var _ = json.Marshal
+
+// --- SkillSourcesProvider integration tests ---
+
+// mockSkillSourcesProvider implements SkillSourcesResolver for testing.
+type mockSkillSourcesProvider struct {
+	result []string
+}
+
+func (m *mockSkillSourcesProvider) ResolveForUser(_ context.Context, _, _ string) []string {
+	return m.result
+}
+
+func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOff(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Inject skill source provider that restricts to skillhub only.
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: []string{"skillhub"}})
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.CentralizedSecurity {
+		t.Fatal("expected centralized_security=false")
+	}
+	// SkillSourcesAllowed should be set at payload level (independent control).
+	if !reflect.DeepEqual(payload.SkillSourcesAllowed, []string{"skillhub"}) {
+		t.Fatalf("expected [skillhub], got %v", payload.SkillSourcesAllowed)
+	}
+}
+
+func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOff_NoRestriction(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Provider returns nil (all allowed) — should not set SkillSourcesAllowed.
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: nil})
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.SkillSourcesAllowed) != 0 {
+		t.Fatalf("expected empty SkillSourcesAllowed, got %v", payload.SkillSourcesAllowed)
+	}
+}
+
+func TestServiceGetHeartbeatPolicy_SkillSources_CentralizedOn_Merge(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Enable centralized security.
+	svc.UpdateSettings(ctx, &SecuritySettings{CentralizedSecurityEnabled: true}, "admin")
+	root, _ := svc.store.GetRootGroup(ctx)
+	svc.AssignUser(ctx, "user@test.com", root.ID)
+
+	// Set group policy to allow skillhub + clawhub.
+	svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{
+		"skill_sources_allowed": []interface{}{"skillhub", "clawhub"},
+	})
+	svc.InvalidateCache("user@test.com")
+
+	// Inject provider that restricts to skillhub + github.
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: []string{"skillhub", "github"}})
+
+	payload, err := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !payload.CentralizedSecurity {
+		t.Fatal("expected centralized_security=true")
+	}
+	// Intersection of [skillhub, clawhub] and [skillhub, github] = [skillhub].
+	if !reflect.DeepEqual(payload.Policy.SkillSourcesAllowed, []string{"skillhub"}) {
+		t.Fatalf("expected intersection [skillhub], got %v", payload.Policy.SkillSourcesAllowed)
+	}
+}
+
+func TestServiceGetHeartbeatPolicy_SkillSources_NoCachePollution(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Enable centralized security.
+	svc.UpdateSettings(ctx, &SecuritySettings{CentralizedSecurityEnabled: true}, "admin")
+	root, _ := svc.store.GetRootGroup(ctx)
+	svc.AssignUser(ctx, "user@test.com", root.ID)
+
+	// Inject provider that restricts to clawhub.
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: []string{"clawhub"}})
+
+	// First call — merges into policy.
+	payload1, _ := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if !reflect.DeepEqual(payload1.Policy.SkillSourcesAllowed, []string{"clawhub"}) {
+		t.Fatalf("first call: expected [clawhub], got %v", payload1.Policy.SkillSourcesAllowed)
+	}
+
+	// Change provider to allow all (nil).
+	svc.SetSkillSourcesProvider(&mockSkillSourcesProvider{result: nil})
+
+	// Second call — should NOT have stale [clawhub] from cache pollution.
+	// The cached EffectivePolicy should have nil SkillSourcesAllowed (default).
+	payload2, _ := svc.GetHeartbeatPolicy(ctx, "user@test.com")
+	if len(payload2.Policy.SkillSourcesAllowed) != 0 {
+		t.Fatalf("second call: expected nil/empty (no restriction), got %v — cache pollution detected", payload2.Policy.SkillSourcesAllowed)
+	}
+}
+

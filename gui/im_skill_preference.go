@@ -246,6 +246,14 @@ func processSkillPreferenceToolExecutions(phase *agentLoopPhase, toolCalls []llm
 	if runID := extractSkillRunID(toolCalls, nil, toolExecResults); strings.TrimSpace(runID) != "" {
 		phase.PreferredSkillRunID = strings.TrimSpace(runID)
 	}
+	// Clear PreferredSkillRunID when the skill run has reached a terminal state.
+	// A terminal run (status: success/failed/error/cancelled/timeout) does not
+	// need further polling or follow-up. Keeping a stale run_id causes the
+	// no-tool branch to inject [Execution requirement] indefinitely, forcing
+	// the LLM to continue even after the task is complete.
+	if phase.PreferredSkillRunID != "" && isSkillRunTerminalInResults(toolExecResults) {
+		phase.PreferredSkillRunID = ""
+	}
 	if phase.SkillMode == skillPreferenceRemoteRequired {
 		phase.RemoteSearchAttempted = true
 	}
@@ -266,7 +274,9 @@ func processSkillPreferenceToolExecutions(phase *agentLoopPhase, toolCalls []llm
 			phase.FailedSkillError = se
 			log.Printf("[skill-workaround] skill %q failed, marking as pending workaround: %s", sn, truncateRunes(se, 120))
 		}
-		enterRecoverPhase(phase, agentRecoverSkillFailed, buildSkillRecoverPrompt(phase.PreferredSkillName, phase.PreferredSkillRunID))
+		recoverPrompt := buildSkillRecoverPrompt(phase.PreferredSkillName, phase.PreferredSkillRunID)
+		phase.PreferredSkillRunID = "" // terminal: skill failed, no further polling needed
+		enterRecoverPhase(phase, agentRecoverSkillFailed, recoverPrompt)
 		return
 	}
 	if shouldRestrictToSkillSearch(*phase) && hasSearchTool {
@@ -300,6 +310,22 @@ func extractSkillRunID(toolCalls []llm.ToolCall, toolResults []string, toolExecR
 		}
 	}
 	return ""
+}
+
+// isSkillRunTerminalInResults returns true if any skill-related tool execution
+// result indicates the run has reached a terminal state. This is used to clear
+// PreferredSkillRunID after a skill completes — preventing the no-tool branch
+// from injecting [Execution requirement] on subsequent iterations.
+func isSkillRunTerminalInResults(toolExecResults []toolExecutionResult) bool {
+	for _, r := range toolExecResults {
+		switch r.ToolKind {
+		case agentToolKindRunSkill, agentToolKindGetSkillRun, agentToolKindManageSkill:
+			if r.Metadata.SkillRunTerminal {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func buildSkillRecoverPrompt(skillName, runID string) string {

@@ -122,7 +122,7 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 		knownByName[s.Name] = i
 	}
 
-	fileSkills := skill.ScanAllSkillDirsWithExternal(cfg.ExternalSkillDirs)
+	fileSkills := e.scanFileSkills(cfg.ExternalSkillDirs)
 	for _, fs := range fileSkills {
 		// Primary: match by directory path (stable identity).
 		// Fallback: match by Name (backward compat for config entries without SkillDir).
@@ -183,6 +183,27 @@ func (e *SkillExecutor) invalidateSkillCache() {
 	e.skillCacheAt = time.Time{}
 	e.skillCacheKey = ""
 	e.skillCacheMu.Unlock()
+
+	// Also invalidate the CachedSkillScanner so the next Route() call
+	// picks up the updated skill list from disk.
+	if e.app != nil && e.app.cachedSkillScanner != nil {
+		e.app.cachedSkillScanner.Invalidate()
+	}
+}
+
+// scanFileSkills returns file-based skill entries using the CachedSkillScanner
+// when available (async + 30s TTL cache), falling back to synchronous scan.
+func (e *SkillExecutor) scanFileSkills(externalDirs []string) []corelib.NLSkillEntry {
+	if e.app != nil && e.app.cachedSkillScanner != nil {
+		cached := e.app.cachedSkillScanner.Get()
+		if cached != nil {
+			// cached is non-nil: scan completed (may be empty slice if no skills found).
+			return cached
+		}
+		// nil: scan not yet complete — fall through to synchronous scan.
+	}
+	// Fallback: CachedSkillScanner not available or scan not yet complete.
+	return skill.ScanAllSkillDirsWithExternal(externalDirs)
 }
 
 func skillLoadCacheKey(skills []corelib.NLSkillEntry, externalDirs []string) string {

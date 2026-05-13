@@ -170,6 +170,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	// Initialize workflow engine (19 templates, same as GUI).
 	app.workflowEngine = app.initWorkflowEngine()
 
+	// Initialize WeChat gateway (runs in background if configured).
+	app.weixinGateway = newTUIWeixinGateway(app)
+
 	// Register tools: definition + handler bound together.
 	sshHandler := func(args map[string]interface{}) string {
 		deps := sshtool.SSHToolDeps{
@@ -289,12 +292,21 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	p := tea.NewProgram(tuiModel, tea.WithAltScreen())
 	tuiModel.program = p
 
+	// Start WeChat gateway now that the program is available for UI messages.
+	if app.weixinGateway != nil {
+		app.weixinGateway.SetProgram(p)
+		app.weixinGateway.Start()
+	}
+
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
 		os.Exit(1)
 	}
 
 	// Cleanup.
+	if app.weixinGateway != nil {
+		app.weixinGateway.Shutdown()
+	}
 	if app.scheduledTaskManager != nil {
 		app.scheduledTaskManager.Stop()
 	}
@@ -370,6 +382,9 @@ type TUIApp struct {
 
 	// Scheduled task manager — background ticker fires due tasks.
 	scheduledTaskManager *scheduler.Manager
+
+	// WeChat gateway — runs in background, receives/sends WeChat messages.
+	weixinGateway *tuiWeixinGateway
 
 	// Workflow engine integration (Fix #6).
 	workflowEngine *workflow.WorkflowEngine
@@ -592,6 +607,14 @@ func tuiRemoteActivationReady(cfg corelib.AppConfig) bool {
 	return strings.TrimSpace(cfg.RemoteHubURL) != "" && strings.TrimSpace(cfg.RemoteViewerToken) != ""
 }
 
+// cancelActiveLoop cancels the running agent loop (if any) and clears the reference.
+func (m *tuiModel) cancelActiveLoop() {
+	if m.activeCb != nil {
+		m.activeCb.Cancel()
+		m.activeCb = nil
+	}
+}
+
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tuiReadyMsg:
@@ -599,7 +622,13 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" {
+		if msg.String() == "ctrl+c" || msg.String() == "ctrl+q" {
+			m.cancelActiveLoop()
+			return m, tea.Quit
+		}
+		// 'q' quits when no view has a focused text input and help is not visible.
+		if msg.String() == "q" && !m.root.AcceptsTextInput() && !m.root.Help.IsVisible() {
+			m.cancelActiveLoop()
 			return m, tea.Quit
 		}
 		if (msg.String() == "f3" || msg.String() == "alt+3") && m.shouldOpenMCPTemplateShortcut() {
@@ -610,9 +639,9 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Esc while waiting: cancel the running agent loop.
-		if msg.String() == "esc" && m.activeCb != nil {
-			m.activeCb.Cancel()
-			m.activeCb = nil
+		// But if Help is visible, let Esc close Help instead (handled by root→help).
+		if msg.String() == "esc" && m.activeCb != nil && !m.root.Help.IsVisible() {
+			m.cancelActiveLoop()
 			m.root.Chat.AppendSystemMessage(tuiText(m.uiLang(), "cancelled"))
 			return m, nil
 		}
@@ -736,6 +765,12 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.app.llmConfig = buildLLMConfigFromAppConfig(cfg)
 				m.refreshStatusBarModelInfo()
 			}
+			// Re-sync WeChat gateway on IM config changes.
+			if strings.HasPrefix(msg.Key, "weixin_") || msg.Key == "im_channel_profile" {
+				if m.app.weixinGateway != nil {
+					m.app.weixinGateway.Start()
+				}
+			}
 		}
 		m.root.StatusBar.SetMessage(savedMessage)
 		if nextCmd != nil {
@@ -780,8 +815,20 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if result, ok := msg.(views.OnboardingWeixinPollResultMsg); ok && result.Success {
 			m.reloadConfigBackedViews()
 			m.root.StatusBar.SetMessage(tuiText(m.uiLang(), "weixinBound"))
+			// Start WeChat gateway after successful binding.
+			if m.app.weixinGateway != nil {
+				m.app.weixinGateway.Start()
+			}
 		}
 		return m, cmd
+
+	case tuiWeixinStatusMsg:
+		handleTUIWeixinStatus(m, msg)
+		return m, nil
+
+	case tuiWeixinIncomingMsg:
+		handleTUIWeixinIncoming(m, msg)
+		return m, nil
 
 	case views.OnboardingFinishMsg:
 		return m, m.finishOnboardingFromTUI()

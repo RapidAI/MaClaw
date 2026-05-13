@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -632,6 +633,26 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 		return nil
 	}
 
+	// Short message fast path: messages with fewer than 10 runes cannot be
+	// workflow tasks (which require detailed descriptions like "开发一个贪吃蛇游戏").
+	// Skip QuickFilter.Classify → handleNeedsUnderstanding → UIC fusion entirely.
+	// This eliminates the 1.5-2s UIC fusion call for short queries like "北京天气".
+	// Note: shouldBypassWorkflowForIntent already skips UIC for short messages,
+	// but QuickFilter.Classify may still route to FilterNeedsUnderstanding via
+	// BM25 template matching, triggering a second UIC fusion in handleNeedsUnderstanding.
+	const shortMsgWorkflowThreshold = 10
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < shortMsgWorkflowThreshold {
+		// Still check for active workflow/understanding — short messages like
+		// "确认" or "继续" may be responses to an active workflow session.
+		if engine.GetActiveWorkflow(userID) != nil {
+			return h.handleActiveWorkflow(engine, userID, text)
+		}
+		if engine.GetUnderstanding() != nil && engine.GetUnderstanding().HasActiveSession(userID) {
+			return h.handleActiveUnderstanding(engine, userID, text)
+		}
+		return nil
+	}
+
 	classification := filter.Classify(userID, text)
 
 	switch classification {
@@ -656,6 +677,21 @@ func (h *IMMessageHandler) shouldBypassWorkflowForIntent(userID, text string) bo
 	if strings.TrimSpace(text) == "" {
 		return false
 	}
+
+	// Short message optimization: skip L2 embedding + L3 tree classification
+	// for messages with fewer than 10 runes. These are typically continuation
+	// signals ("继续", "ok", "开工") or very short commands that don't benefit
+	// from expensive semantic classification. L1 keyword matching in the
+	// QuickFilter.Classify path is preserved for fast-path intent detection.
+	const shortMessageThreshold = 10
+	trimmedText := strings.TrimSpace(text)
+	runeCount := utf8.RuneCountInString(trimmedText)
+	if runeCount < shortMessageThreshold {
+		log.Printf("[WorkflowInterception] UIC fusion skipped: short message (%d runes < %d threshold), text=%q",
+			runeCount, shortMessageThreshold, trimmedText)
+		return false
+	}
+
 	uic := h.getUnifiedClassifier()
 	if uic == nil {
 		return false
@@ -754,8 +790,8 @@ func (h *IMMessageHandler) recentContextResolvesToNonWorkflow(uic *intent.Unifie
 			continue
 		}
 		// Use embedding-only classification for history entries to avoid
-		// triggering the tree channel LLM call (3s deadline per entry).
-		// This function is on the critical path — each tree call adds 3s.
+		// triggering the tree channel LLM call (1.5s deadline per entry).
+		// This function is on the critical path — each tree call adds 1.5s.
 		result := uic.ClassifyEmbeddingOnly(intent.MessageContext{
 			Text:   entry,
 			UserID: userID,

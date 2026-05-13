@@ -144,7 +144,7 @@ export interface NewsCardData {
 }
 
 export type NewsCategory = 'notice' | 'update' | 'tip' | 'alert' | '';
-export type AIAssistantInitStatus = 'connecting' | 'loading' | 'warming' | 'ready';
+export type AIAssistantInitStatus = 'connecting' | 'loading' | 'warming' | 'ready' | 'degraded';
 
 export type ChatActionStyle = 'default' | 'danger';
 
@@ -283,10 +283,7 @@ const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
 const MAX_LIVE_PROGRESS_MESSAGES = 100;
 const HIDDEN_PROGRESS_PATTERNS = [
-    /^[🚀⏳✅❌]\s*Skill\b/,
-    /^[🖥️⏳]\s*正在执行命令处理文件，请稍候(?:\.\.\.)?$/,
     /^[⏳]\s*命令仍在执行中（已\s*\d+s）:/,
-    /^[🛠️🧠💾🚀📦⏳]\s*正在生成并执行脚本，准备继续完成交付(?:\.\.\.)?$/,
 ];
 
 function shouldHideProgressText(progressText: string): boolean {
@@ -1530,7 +1527,7 @@ function normalizeActionStyle(style: unknown): ChatActionStyle {
 }
 
 function normalizeInitStatus(status: unknown): AIAssistantInitStatus {
-    return status === 'loading' || status === 'warming' || status === 'ready' ? status : 'connecting';
+    return status === 'loading' || status === 'warming' || status === 'ready' || status === 'degraded' ? status : 'connecting';
 }
 
 function normalizeActions(actions: any): ChatAction[] | undefined {
@@ -1822,6 +1819,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const latestNewsPayloadRef = useRef<string>("[]");
     const progressTailRef = useRef<string | null>(null);
     const streamTokenBufferRef = useRef<StreamTokenBuffer | null>(null);
+    const responseTimeoutClearRef = useRef<(() => void) | null>(null);
     const scrollOnNextNewsRef = useRef(true);
     const refreshSessionsOnlyRef = useRef(options?.refreshSessionsOnly);
     const lastPetSpeakingEmitAtRef = useRef(0);
@@ -1906,7 +1904,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const sending = activeRound.phase !== 'idle' || !!pendingTask;
     const streaming = activeRound.phase === 'streaming';
     const visualBusy = streaming;
-    const ready = initStatus === 'ready';
+    const ready = initStatus === 'ready' || initStatus === 'degraded';
 
     const setInitStatusState = useCallback((nextStatus: AIAssistantInitStatus) => {
         if (initStatusRef.current === nextStatus) {
@@ -1939,7 +1937,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const check = async () => {
             try {
                 const { ready: isReady, status } = await checkInitReadiness();
-                if (cancelled || initStatusRef.current === 'ready') return;
+                if (cancelled || initStatusRef.current === 'ready' || initStatusRef.current === 'degraded') return;
                 if (isReady) {
                     clearPollTimer();
                     setInitStatusState('ready');
@@ -1948,7 +1946,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 setInitStatusState(status);
                 scheduleCheck();
             } catch {
-                if (!cancelled && initStatusRef.current !== 'ready') {
+                if (!cancelled && initStatusRef.current !== 'ready' && initStatusRef.current !== 'degraded') {
                     scheduleCheck();
                 }
             }
@@ -1958,7 +1956,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
 
         const progressHandler = (status: string) => {
             const nextStatus = normalizeInitStatus(status);
-            if (nextStatus === 'ready') {
+            if (nextStatus === 'ready' || nextStatus === 'degraded') {
                 clearPollTimer();
             }
             setInitStatusState(nextStatus);
@@ -2249,6 +2247,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             });
             if (!isActiveRequest) return;
             if (!currentRound.assistantMessageId || !event.text) return;
+            // Reset the sliding-window activity timeout — backend is alive.
+            if (responseTimeoutClearRef.current) {
+                responseTimeoutClearRef.current();
+            }
             emitPetStateForAssistant('speaking', 'ai:stream-token', 1800);
             queueStreamToken(currentRound, event.text);
         };
@@ -2257,6 +2259,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
             if (!matchesActiveRequest(currentRound, event)) return;
+            // Reset the sliding-window activity timeout — backend is alive.
+            if (responseTimeoutClearRef.current) {
+                responseTimeoutClearRef.current();
+            }
             emitPetStateForAssistant('thinking', 'ai:new-round', 10000);
             ensureRoundPlaceholder(currentRound.generation);
         };
@@ -2324,10 +2330,41 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             return [...nextMessages, userMsg, placeholderMsg];
         });
 
+        // Sliding-window activity timeout: reset whenever the backend shows signs
+        // of life (token, progress, new-round). Only fires when the backend is
+        // completely silent for 120s — not from the initial send time.
+        const ACTIVITY_TIMEOUT_MS = 120_000;
+        let activityTimer: ReturnType<typeof setTimeout> | null = setTimeout(fireActivityTimeout, ACTIVITY_TIMEOUT_MS);
+        function fireActivityTimeout() {
+            activityTimer = null;
+            const currentRound = activeRoundRef.current;
+            if (currentRound.generation !== generation) return;
+            if (currentRound.phase === 'streaming') return; // tokens actively arriving
+            setMessages(prev => replaceRoundWithError(prev, assistantMessageId, requestId,
+                '⏱️ 请求超时（120秒无响应），请重试。'));
+            resetActiveRound(generation);
+            emitPetStateForAssistant('idle', 'ai:timeout');
+        }
+        const resetActivityTimeout = () => {
+            if (activityTimer) {
+                clearTimeout(activityTimer);
+                activityTimer = setTimeout(fireActivityTimeout, ACTIVITY_TIMEOUT_MS);
+            }
+        };
+        const clearResponseTimeout = () => {
+            if (activityTimer) {
+                clearTimeout(activityTimer);
+                activityTimer = null;
+            }
+            responseTimeoutClearRef.current = null;
+        };
+        responseTimeoutClearRef.current = resetActivityTimeout;
+
         try {
             const rawResponse = await SendAIAssistantMessage(
                 buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, options)
             ) as AIAssistantSendResult;
+            clearResponseTimeout();
             flushStreamTokenBuffer();
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
@@ -2379,6 +2416,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 setPendingTaskState(null);
             }
         } catch (err: any) {
+            clearResponseTimeout();
             resetStreamTokenBuffer();
             const currentRound = activeRoundRef.current;
             if (currentRound.generation !== generation || currentRound.phase === 'idle') {
@@ -2387,11 +2425,12 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             setMessages(prev => resolveSendResult(prev, assistantMessageId, requestId, null, preferences, err?.message || String(err)));
             setPendingTaskState(null);
         } finally {
+            clearResponseTimeout();
             resetStreamTokenBuffer();
             finalizeRound(generation);
         }
         return true;
-    }, [emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, preferences, resetStreamTokenBuffer, setRoundState, waitForForegroundIdle]);
+    }, [emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, preferences, resetActiveRound, resetStreamTokenBuffer, setRoundState, waitForForegroundIdle]);
 
     const sendMessage = useCallback((text: string, options?: SendMessageOptions): Promise<boolean> => {
         const outgoingText = text.trim();
@@ -2645,6 +2684,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             if (!progressText) return;
             if (!matchesActiveProgressRequest(activeRoundRef.current, event)) {
                 return;
+            }
+            // Reset the sliding-window activity timeout — backend is alive.
+            if (responseTimeoutClearRef.current) {
+                responseTimeoutClearRef.current();
             }
             if (shouldHideProgressText(progressText)) {
                 return;

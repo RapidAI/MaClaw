@@ -19,6 +19,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/qqbot"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
+	skillpkg "github.com/RapidAI/CodeClaw/hub/internal/skill"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
@@ -235,6 +236,21 @@ func NewRouter(
 		// Public endpoint for enrollment group tree
 		mux.HandleFunc("GET /api/enroll/group-tree", EnrollGroupTreeHandler(securitySvc))
 	}
+
+	// Skill source control API (independent of security group policy).
+	// Supports global / tenant / user level control.
+	{
+		skillSourceSvc := skillpkg.NewSourceControlService(system)
+		adminWrap := func(h http.HandlerFunc) http.HandlerFunc {
+			return RequireAdmin(admins, h)
+		}
+		skillpkg.RegisterRoutes(mux, skillSourceSvc, adminWrap)
+		// Wire into SecurityService so GetHeartbeatPolicy merges the result.
+		if securitySvc != nil {
+			securitySvc.SetSkillSourcesProvider(skillSourceSvc)
+		}
+	}
+
 	// Conversation stats
 	if convStatsFn != nil {
 		mux.HandleFunc("GET /api/admin/conversation_stats", RequireAdmin(admins, func(w http.ResponseWriter, r *http.Request) {

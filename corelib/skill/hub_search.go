@@ -116,16 +116,46 @@ func DefaultHubClient() *HubClient {
 // Results are ordered: SkillHub first, then ClawHub, then GitHub.
 // Errors from individual sources are non-fatal (silently skipped).
 func (c *HubClient) SearchAll(ctx context.Context, skillHubURL, query string) []HubSearchResult {
+	return c.SearchAllFiltered(ctx, skillHubURL, query, nil)
+}
+
+// SearchAllFiltered queries allowed sources and returns merged results.
+// allowedSources filters which sources to query. nil/empty = all sources.
+// Valid source values: "skillhub", "clawhub", "github".
+func (c *HubClient) SearchAllFiltered(ctx context.Context, skillHubURL, query string, allowedSources []string) []HubSearchResult {
 	var results []HubSearchResult
-	results = append(results, c.SearchSkillHub(ctx, skillHubURL, query)...)
-	results = append(results, c.SearchClawHub(ctx, query)...)
+	if isSourceAllowed("skillhub", allowedSources) {
+		results = append(results, c.SearchSkillHub(ctx, skillHubURL, query)...)
+	}
+	if isSourceAllowed("clawhub", allowedSources) {
+		results = append(results, c.SearchClawHub(ctx, query)...)
+	}
 
 	// GitHub search uses its own HTTP client with a 30s timeout (inside
 	// GitHubSearcher). Check ctx before starting to avoid wasted work.
-	if ctx.Err() == nil {
+	if isSourceAllowed("github", allowedSources) && ctx.Err() == nil {
 		results = append(results, c.SearchGitHub(query)...)
 	}
 	return results
+}
+
+// isSourceAllowed checks if a source is in the allowed list.
+// Returns true when allowedSources is nil or empty (all allowed).
+func isSourceAllowed(source string, allowedSources []string) bool {
+	if len(allowedSources) == 0 {
+		return true
+	}
+	for _, s := range allowedSources {
+		if s == source {
+			return true
+		}
+	}
+	return false
+}
+
+// IsSourceAllowed is the exported version for use by consumers.
+func IsSourceAllowed(source string, allowedSources []string) bool {
+	return isSourceAllowed(source, allowedSources)
 }
 
 // SearchSkillHub queries the SkillHub API.

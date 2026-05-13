@@ -67,7 +67,7 @@ func (m HelpModel) Update(msg tea.Msg) (HelpModel, tea.Cmd) {
 		m.SetViewport(msg.Width, max(1, msg.Height-4))
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "?", "esc":
+		case "?", "esc", "q":
 			m.visible = false
 		case "up", "k":
 			m.scroll--
@@ -170,7 +170,7 @@ func (m HelpModel) renderContent() string {
 			{"Tab / ->", i18n.T(i18n.MsgTUIHelpDescNextTab, m.lang)},
 			{"Shift+Tab / <-", i18n.T(i18n.MsgTUIHelpDescPreviousTab, m.lang)},
 			{"q", i18n.T(i18n.MsgTUIHelpDescQuit, m.lang)},
-			{"Ctrl+C", i18n.T(i18n.MsgTUIHelpDescForceQuit, m.lang)},
+			{"Ctrl+C / Ctrl+Q", i18n.T(i18n.MsgTUIHelpDescForceQuit, m.lang)},
 			{"?", i18n.T(i18n.MsgTUIHelpDescShowCloseHelp, m.lang)},
 		}},
 		{i18n.T(i18n.MsgTUIHelpSectionListNavigation, m.lang), []struct{ key, desc string }{

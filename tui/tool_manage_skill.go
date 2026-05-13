@@ -124,7 +124,9 @@ func skillSearch(app *TUIApp, args map[string]interface{}) string {
 	defer cancel()
 
 	client := skill.DefaultHubClient()
-	results := client.SearchAll(ctx, hubURL, query)
+	// Filter by allowed sources from local config (Hub push not available in TUI yet).
+	allowedSources := app.appConfig.SkillSourcesAllowed
+	results := client.SearchAllFiltered(ctx, hubURL, query, allowedSources)
 
 	// Rerank by local execution history: demote skills with poor local
 	// success rates or disabled status (P2 #A signal feedback).
@@ -173,6 +175,17 @@ func skillInstall(app *TUIApp, args map[string]interface{}) string {
 		case strings.Contains(hubURL, "clawhub") || strings.Contains(hubURL, "clawhub-mirror"):
 			source = "clawhub"
 		}
+	}
+
+	// Determine effective source for permission check.
+	effectiveSource := source
+	if effectiveSource == "" {
+		effectiveSource = "skillhub"
+	}
+
+	// Check if source is allowed by policy/config.
+	if !skill.IsSourceAllowed(effectiveSource, app.appConfig.SkillSourcesAllowed) {
+		return fmt.Sprintf("❌ 来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, app.appConfig.SkillSourcesAllowed)
 	}
 
 	if hubURL == "" {

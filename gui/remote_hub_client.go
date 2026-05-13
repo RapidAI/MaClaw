@@ -334,6 +334,112 @@ func (c *RemoteHubClient) connectLocked() error {
 	return nil
 }
 
+// connectAuthOnlyLocked performs WebSocket dial + machine auth + reads auth response,
+// but does NOT call sendMachineHelloLocked(). This allows the caller to emit the
+// "ready" event immediately after auth succeeds and run sendMachineHelloLocked()
+// in a separate goroutine without blocking the ready signal.
+// Caller must hold c.mu.
+func (c *RemoteHubClient) connectAuthOnlyLocked() error {
+	start := time.Now()
+	if err := c.loadConfig(); err != nil {
+		c.lastError = err.Error()
+		return err
+	}
+
+	wsURL := c.toWebSocketURL(c.hubURL) + "/ws"
+	dialStart := time.Now()
+	conn, err := c.dial(wsURL)
+	if err != nil {
+		c.lastError = err.Error()
+		return err
+	}
+	log.Printf("[asyncHubConnect] dial_ws=%s url=%s", time.Since(dialStart), wsURL)
+
+	c.conn = conn
+	c.connected = true
+
+	conn.SetPongHandler(func(string) error {
+		_ = conn.SetReadDeadline(time.Now().Add(hubPongWait))
+		return nil
+	})
+
+	c.summaryMu.Lock()
+	c.lastSummary = make(map[string]string)
+	c.summaryMu.Unlock()
+
+	if err := c.sendMachineAuthLocked(); err != nil {
+		_ = c.conn.Close()
+		c.conn = nil
+		c.connected = false
+		c.lastError = err.Error()
+		return err
+	}
+
+	// Read auth response with 10s timeout.
+	var authResp inboundHubEnvelope
+	_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if err := c.conn.ReadJSON(&authResp); err != nil {
+		_ = c.conn.Close()
+		c.conn = nil
+		c.connected = false
+		c.lastError = "failed to read auth response"
+		return fmt.Errorf("read auth response: %w", err)
+	}
+	_ = c.conn.SetReadDeadline(time.Now().Add(hubPongWait))
+
+	authRespType := normalizeHubInboundMessageType(authResp.Type)
+	if authRespType.IsError() {
+		_ = c.conn.Close()
+		c.conn = nil
+		c.connected = false
+		c.lastError = "Machine authentication failed"
+		return errHubAuthFailed
+	}
+
+	// Extract viewer_token from auth.ok payload if present.
+	if authRespType.IsAuthOK() && len(authResp.Payload) > 0 {
+		var authPayload struct {
+			ViewerToken string `json:"viewer_token"`
+		}
+		if json.Unmarshal(authResp.Payload, &authPayload) == nil && authPayload.ViewerToken != "" {
+			c.persistViewerToken(authPayload.ViewerToken)
+		}
+	}
+
+	log.Printf("[asyncHubConnect] auth completed in %s", time.Since(start))
+	return nil
+}
+
+// ConnectAuthOnly performs WebSocket dial + auth without sendMachineHelloLocked.
+// After success, it starts the read loop, heartbeat, and sync goroutines.
+// The caller is responsible for calling sendMachineHelloLocked() separately.
+func (c *RemoteHubClient) ConnectAuthOnly() error {
+	start := time.Now()
+	c.mu.Lock()
+	if err := c.connectAuthOnlyLocked(); err != nil {
+		// lastError already set by connectAuthOnlyLocked
+		c.mu.Unlock()
+		log.Printf("[asyncHubConnect] ConnectAuthOnly failed total=%s err=%v", time.Since(start), err)
+		return err
+	}
+
+	c.allowReconnect.Store(true)
+	c.lastError = ""
+	c.mu.Unlock()
+
+	c.app.emitRemoteStateChanged()
+	go c.readLoop()
+	go c.heartbeatLoop()
+	go c.SyncSessions()
+	go c.SyncLaunchProjects()
+	go c.SyncTools()
+	c.startPreviewFlusher()
+	go c.syncIMGatewayClaims()
+	log.Printf("[asyncHubConnect] ConnectAuthOnly total=%s", time.Since(start))
+
+	return nil
+}
+
 func (c *RemoteHubClient) toWebSocketURL(base string) string {
 	if strings.HasPrefix(base, "https://") {
 		return "wss://" + strings.TrimPrefix(base, "https://")
@@ -360,16 +466,40 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 	cfg, _ := c.app.LoadConfig()
 	_ = c.applyConfig(cfg)
 	profile := c.app.currentRemoteMachineProfile(cfg.RemoteHeartbeatSec, 0)
-	tools := listRemoteToolMetadataForApp(c.app)
-	toolNames := make([]string, 0, len(tools))
-	for _, t := range tools {
-		if t.Visible && t.CanStart {
-			toolNames = append(toolNames, t.Name)
+
+	// Use ToolVersionCache to get tool names without executing external processes.
+	// This avoids the slow listRemoteToolMetadataForApp which calls GetToolStatus
+	// (which executes tool binaries to get version info).
+	var toolNames []string
+	if c.app.toolVersionCache != nil {
+		toolNames = c.app.toolVersionCache.GetCachedToolNames()
+	}
+
+	// If cache is empty (first startup or no prior cache), use install-status-only
+	// detection via GetInstallStatus (exec.LookPath / file stat, no process execution).
+	if len(toolNames) == 0 {
+		defaultTools := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo", "browser"}
+		for _, name := range defaultTools {
+			if name == "browser" {
+				// browser is always a builtin capability
+				toolNames = append(toolNames, name)
+				continue
+			}
+			if c.app.toolVersionCache == nil {
+				// No cache available — skip install detection for this tool.
+				// This can happen if toolVersionCache initialization failed.
+				continue
+			}
+			if installed, _ := c.app.toolVersionCache.GetInstallStatus(name); installed {
+				toolNames = append(toolNames, name)
+			}
 		}
 	}
+
 	if len(toolNames) == 0 {
 		toolNames = []string{"claude"}
 	}
+
 	msg := HubEnvelope{
 		Type:      "machine.hello",
 		TS:        time.Now().Unix(),
@@ -390,7 +520,16 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 			},
 		},
 	}
-	return c.conn.WriteJSON(msg)
+	err := c.conn.WriteJSON(msg)
+
+	// After sending hello, asynchronously refresh version cache for all tools.
+	// This runs external processes in background goroutines with a 10s combined timeout.
+	if c.app.toolVersionCache != nil {
+		allTools := []string{"claude", "gemini", "codex", "opencode", "cursor", "codebuddy", "iflow", "kilo"}
+		c.app.toolVersionCache.RefreshAllAsync(allTools, 10*time.Second)
+	}
+
+	return err
 }
 
 func (c *RemoteHubClient) SendSessionCreated(s *RemoteSession) error {

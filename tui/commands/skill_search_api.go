@@ -186,7 +186,8 @@ func SearchSkillHub(query string) ([]SkillSearchResult, error) {
 	hubURL = ResolveHubCenterWithFailover(cfg, hubURL, nil, nil)
 
 	client := skill.DefaultHubClient()
-	results := client.SearchAll(ctx, hubURL, query)
+	// Filter by allowed sources from local config.
+	results := client.SearchAllFiltered(ctx, hubURL, query, cfg.SkillSourcesAllowed)
 
 	var out []SkillSearchResult
 	for _, r := range results {

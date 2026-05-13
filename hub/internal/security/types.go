@@ -26,14 +26,15 @@ type GroupTreeNode struct {
 
 // EffectivePolicy 生效策略
 type EffectivePolicy struct {
-	FileOutboundEnabled  bool   `json:"file_outbound_enabled"`
-	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`
-	GossipEnabled        bool   `json:"gossip_enabled"`
-	GuardrailMode        string `json:"guardrail_mode"`
-	SandboxMode          string `json:"sandbox_mode"`
-	NetworkLevel         string `json:"network_level"`
-	YoloModeAllowed      bool   `json:"yolo_mode_allowed"`
-	SmartRouteEnabled    bool   `json:"smart_route_enabled"`
+	FileOutboundEnabled  bool     `json:"file_outbound_enabled"`
+	ImageOutboundEnabled bool     `json:"image_outbound_enabled"`
+	GossipEnabled        bool     `json:"gossip_enabled"`
+	GuardrailMode        string   `json:"guardrail_mode"`
+	SandboxMode          string   `json:"sandbox_mode"`
+	NetworkLevel         string   `json:"network_level"`
+	YoloModeAllowed      bool     `json:"yolo_mode_allowed"`
+	SmartRouteEnabled    bool     `json:"smart_route_enabled"`
+	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed; values: "skillhub","clawhub","github"
 }
 
 // DefaultPolicy 根组默认策略
@@ -46,7 +47,13 @@ var DefaultPolicy = EffectivePolicy{
 	NetworkLevel:         "full",
 	YoloModeAllowed:      true,
 	SmartRouteEnabled:    true,
+	SkillSourcesAllowed:  nil, // nil = all sources allowed (skillhub, clawhub, github)
 }
+
+// AllSkillSources is the complete list of valid skill source identifiers.
+// Canonical definition is in hub/internal/skill.AllSources; this is kept
+// for reference by the admin UI when displaying policy options.
+var AllSkillSources = []string{"skillhub", "clawhub", "github"}
 
 // GroupPolicyView 组策略视图（含继承信息）
 type GroupPolicyView struct {
@@ -73,6 +80,11 @@ type SecuritySettings struct {
 type HeartbeatSecurityPayload struct {
 	CentralizedSecurity bool             `json:"centralized_security"`
 	Policy              *EffectivePolicy `json:"policy,omitempty"`
+	// SkillSourcesAllowed is set independently of CentralizedSecurity.
+	// When centralized=true, sources are in Policy.SkillSourcesAllowed (merged).
+	// When centralized=false but source control is configured, this field carries
+	// the restriction so clients can enforce it without full centralized mode.
+	SkillSourcesAllowed []string `json:"skill_sources_allowed,omitempty"`
 }
 
 // SecurityPolicyProvider 安全策略提供者接口（供 OutboundInterceptor 和 ws.Gateway 使用）

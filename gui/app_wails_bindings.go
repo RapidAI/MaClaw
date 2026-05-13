@@ -40,8 +40,31 @@ func isVisibleAIAssistantProgressText(text string) bool {
 	if trimmed == "" {
 		return false
 	}
+
+	// Allow tool-name progress messages through (e.g. "⚙️ 正在执行 weather-query...")
+	if strings.HasPrefix(trimmed, "⚙️ 正在执行 ") ||
+		strings.HasPrefix(trimmed, "🛠️ ") ||
+		strings.HasPrefix(trimmed, "🖥️ ") ||
+		strings.HasPrefix(trimmed, "🚀 ") ||
+		strings.HasPrefix(trimmed, "📎 ") ||
+		strings.HasPrefix(trimmed, "📄 ") ||
+		strings.HasPrefix(trimmed, "🔍 ") ||
+		strings.HasPrefix(trimmed, "📂 ") ||
+		strings.HasPrefix(trimmed, "✏️ ") ||
+		strings.HasPrefix(trimmed, "💾 ") ||
+		strings.HasPrefix(trimmed, "📸 ") ||
+		strings.HasPrefix(trimmed, "🔊 ") ||
+		strings.HasPrefix(trimmed, "📝 ") ||
+		strings.HasPrefix(trimmed, "📖 ") ||
+		strings.HasPrefix(trimmed, "🔗 ") ||
+		strings.HasPrefix(trimmed, "🌐 ") ||
+		strings.HasPrefix(trimmed, "🧠 ") ||
+		strings.HasPrefix(trimmed, "📦 ") {
+		return true
+	}
+
 	lower := strings.ToLower(trimmed)
-	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing", "执行工具", "先搜索"}
+	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing", "先搜索"}
 
 	for _, marker := range blockedMarkers {
 		if strings.Contains(lower, strings.ToLower(marker)) {
@@ -54,7 +77,7 @@ func isVisibleAIAssistantProgressText(text string) bool {
 	if isCodingAgentEventText(trimmed) {
 		return true
 	}
-	visiblePrefixes := []string{"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving", "正在生成", "已接近", "⏳"}
+	visiblePrefixes := []string{"Preparing", "Running", "Generating", "Uploading", "Downloading", "Saving", "正在生成", "正在执行", "已接近", "⏳"}
 	for _, prefix := range visiblePrefixes {
 		if strings.HasPrefix(trimmed, prefix) {
 			return true
@@ -1642,6 +1665,12 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		}
 	}
 	streamTailElapsed = handlerTailElapsed + memorySaveElapsed + capabilityGapElapsed + fileMaterializeElapsed + finalizeTraceElapsed
+	// Per-message timing log (fires for every message, not just the first).
+	// This is the primary diagnostic tool for "user sent message → response slow" issues.
+	log.Printf("[AI assistant] agent_loop=%v first_token=%v ensure_infra=%v ensure_handler=%v pre_llm=%v llm_http=%v llm_first_sse=%v stream_tail=%v text_len=%d",
+		agentLoopElapsed, firstTokenElapsed, ensureInteractionInfraElapsed, ensureIMHandlerElapsed,
+		preLLMPrepElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, streamTailElapsed,
+		len(text))
 	return resp, nil
 }
 

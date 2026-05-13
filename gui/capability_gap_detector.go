@@ -123,14 +123,26 @@ func (d *CapabilityGapDetector) Resolve(
 		query = userMessage
 	}
 
-	// Step 2: Search SkillHub.
-	sendStatus("正在搜索可用的 Skill...")
-	candidates, err := d.hubClient.Search(ctx, query)
-	if err != nil {
-		return "", "", fmt.Errorf("search hub: %w", err)
+	// Determine allowed sources for filtering.
+	var allowedSources []string
+	if d.app != nil {
+		allowedSources = d.app.GetAllowedSkillSources()
+	}
+
+	// Step 2: Search SkillHub (if allowed).
+	var candidates []HubSkillMeta
+	if cskill.IsSourceAllowed("skillhub", allowedSources) {
+		sendStatus("正在搜索可用的 Skill...")
+		candidates, err = d.hubClient.Search(ctx, query)
+		if err != nil {
+			return "", "", fmt.Errorf("search hub: %w", err)
+		}
 	}
 	if len(candidates) == 0 {
-		// Fallback: search GitHub for skill.yaml files.
+		// Fallback: search GitHub for skill.yaml files (if allowed).
+		if !cskill.IsSourceAllowed("github", allowedSources) {
+			return "", "", nil
+		}
 		sendStatus("SkillHub 未找到匹配技能，正在搜索 GitHub...")
 		gs := cskill.NewGitHubSearcher("")
 		ghCandidates, ghErr := gs.SearchGitHub(query)

@@ -26,10 +26,11 @@ func (a *taskContextLLMAdapter) Classify(systemPrompt, userMessage string, timeo
 		return "", fmt.Errorf("handler not initialized")
 	}
 	result, err := a.handler.LLMClassify(context.Background(), LLMClassifyRequest{
-		SystemPrompt: systemPrompt,
-		UserMessage:  userMessage,
-		TimeoutSec:   timeoutSec,
-		Tag:          "task-context",
+		SystemPrompt:    systemPrompt,
+		UserMessage:     userMessage,
+		TimeoutSec:      timeoutSec,
+		Tag:             "task-context",
+		PreferLightweight: true,
 	})
 	if err != nil {
 		return "", err

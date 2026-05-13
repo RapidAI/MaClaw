@@ -41,6 +41,13 @@ type SystemPromptDeps struct {
 	Config      SystemPromptConfig
 	MemoryStore *memory.Store
 
+	// SkipMemoryRecall disables the built-in appendMemoryRecall call.
+	// Set to true when the platform handles memory recall in its own Epilogue
+	// (e.g. GUI's appendGUIEpilogue does proactive recall with additional
+	// features like memory index, derived facts, and knowledge auto-recall).
+	// The MemoryStore is still used for SelfIdentitySummary (identity section).
+	SkipMemoryRecall bool
+
 	// SkillLister returns a list of active skills for the prompt.
 	// Returns nil if no skill system is available.
 	SkillLister func() []SkillInfo
@@ -237,7 +244,7 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	}
 
 	// --- Memory recall ---
-	if deps.MemoryStore != nil && userMessage != "" {
+	if deps.MemoryStore != nil && userMessage != "" && !deps.SkipMemoryRecall {
 		appendMemoryRecall(&b, deps.MemoryStore, userMessage, isFirstTurn)
 	}
 

@@ -73,6 +73,7 @@ type App struct {
 	mcpRegistry         *MCPRegistry
 	localMCPManager     *LocalMCPManager
 	skillExecutor       *SkillExecutor
+	cachedSkillScanner  *CachedSkillScanner
 	skillRunner         *SkillRunner
 	sessionStarter      *CodingSessionStarter
 	skillMarketClient   *SkillMarketClient
@@ -128,6 +129,7 @@ type App struct {
 	warmupDone                 atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
 	agentNetClient             *AgentNetClient
 	mcpAutoDiscovery           *MCPAutoDiscovery
+	toolVersionCache           *ToolVersionCache
 	securityFirewall           *SecurityFirewall
 	securityRiskAnalyzer       *SecurityRiskAnalyzer
 	hubSecurityCache           hubSecurityCache
@@ -210,6 +212,7 @@ func NewApp() *App {
 		managers:          NewAppManagers(bgCtx),
 		hubUpdCache:       newHubUpdateCache(),
 		hubCenterCache:    remote.NewHubCenterSelectionCache(60 * time.Second),
+		toolVersionCache:  NewToolVersionCache(),
 	}
 }
 
@@ -241,8 +244,10 @@ func (a *App) ensureRemoteInfra() {
 		return
 	}
 	a.remoteInfraOnce.Do(func() {
+		t0 := time.Now()
 		a.initCoreInfra()
 		a.remoteInfraReady.Store(true)
+		log.Printf("[ensureRemoteInfra] first-time init done in %v", time.Since(t0))
 	})
 }
 
@@ -259,6 +264,7 @@ func (a *App) initRemoteInfra() {
 // basic IM message routing. Initialized at startup.
 // ---------------------------------------------------------------------------
 func (a *App) initCoreInfra() {
+	coreStart := time.Now()
 	if a.remoteSessions == nil {
 		a.remoteSessions = NewRemoteSessionManager(a)
 	}
@@ -270,6 +276,17 @@ func (a *App) initCoreInfra() {
 	}
 	if a.skillExecutor == nil {
 		a.skillExecutor = NewSkillExecutor(a, a.mcpRegistry, a.remoteSessions)
+	}
+	if a.cachedSkillScanner == nil {
+		a.cachedSkillScanner = &CachedSkillScanner{}
+		cfg, err := a.LoadConfig()
+		if err == nil {
+			roots := skill.SkillScanRootsWithExternal(cfg.ExternalSkillDirs)
+			a.cachedSkillScanner.Init(roots)
+		} else {
+			roots := skill.SkillScanRootsWithExternal(nil)
+			a.cachedSkillScanner.Init(roots)
+		}
 	}
 	if a.sessionStarter == nil {
 		a.sessionStarter = NewCodingSessionStarter(a)
@@ -285,12 +302,14 @@ func (a *App) initCoreInfra() {
 		a.policyEngine = NewPolicyEngineWithMode(mode)
 	}
 	if a.toolDefGenerator == nil {
+		tdgStart := time.Now()
 		builtins := (&IMMessageHandler{}).buildToolDefinitions()
 		a.toolDefGenerator = NewToolDefinitionGenerator(a.mcpRegistry, builtins)
 		a.toolDefGenerator.SetLocalMCPManager(a.localMCPManager)
 		// Progressive tool discovery: defer low-frequency tools so they don't
 		// bloat the initial prompt. The LLM can discover them via discover_tool.
 		a.toolDefGenerator.SetDeferredTools(DeferredToolNames)
+		log.Printf("[initCoreInfra] toolDefGenerator built in %v", time.Since(tdgStart))
 	}
 	if a.toolRouter == nil {
 		a.toolRouter = NewToolRouter(a.toolDefGenerator)
@@ -334,6 +353,7 @@ func (a *App) initCoreInfra() {
 			fmt.Printf("[initCoreInfra] WARNING: failed to register OEM extra tools: %v\n", err)
 		}
 	}
+	log.Printf("[initCoreInfra] done in %v", time.Since(coreStart))
 }
 
 // ---------------------------------------------------------------------------
@@ -947,8 +967,10 @@ func (a *App) ensureAuditLog() {
 // handlers into it, and connects. This consolidates the repeated hub-client
 // setup code that was duplicated in startup() and LaunchTool().
 func (a *App) createAndWireHubClient() *RemoteHubClient {
+	cwStart := time.Now()
 	a.logMemorySnapshot("createAndWireHubClient:start")
 	a.ensureInteractionInfra()
+	log.Printf("[createAndWireHubClient] ensureInteractionInfra done in %v", time.Since(cwStart))
 	hubClient := NewRemoteHubClient(a, a.remoteSessions)
 	a.remoteSessions.SetHubClient(hubClient)
 	hubClient.configureIMHandler = func(handler *IMMessageHandler) {
@@ -1083,10 +1105,15 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	}
 	// Pre-initialize the IM handler before exposing AI assistant readiness so the
 	// first chat request does not pay handler construction/configuration cost.
+	preInitStart := time.Now()
 	hubClient.ensureIMHandler()
+	log.Printf("[createAndWireHubClient] ensureIMHandler (pre-init) done in %v", time.Since(preInitStart))
+	connectStart := time.Now()
 	_ = hubClient.Connect()
+	log.Printf("[createAndWireHubClient] Hub Connect done in %v", time.Since(connectStart))
 	a.logMemorySnapshot("createAndWireHubClient:connected")
 	a.markAIAssistantReady()
+	log.Printf("[createAndWireHubClient] total=%v — AI assistant now ready", time.Since(cwStart))
 	a.emitEvent("ai-assistant-init-progress", "ready")
 	// Do not eagerly warm tools or HTTP connections after Hub login/connect.
 	// That extra preload is not required for correctness and causes a large
@@ -1108,6 +1135,221 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	a.ensureThirdPartyGateway()
 
 	return hubClient
+}
+
+// prepareHubClientSync performs the synchronous (fast, no network I/O) portion of
+// Hub client setup: creates the client, configures the IM handler, and wires all
+// subsystems. This is safe to call on the startup critical path because it only
+// does in-memory initialization and local file reads.
+func (a *App) prepareHubClientSync() {
+	cwStart := time.Now()
+	a.logMemorySnapshot("prepareHubClientSync:start")
+	a.ensureInteractionInfra()
+	log.Printf("[prepareHubClientSync] ensureInteractionInfra done in %v", time.Since(cwStart))
+	hubClient := NewRemoteHubClient(a, a.remoteSessions)
+	a.remoteSessions.SetHubClient(hubClient)
+	hubClient.configureIMHandler = a.buildHubClientIMHandlerConfigurator(hubClient)
+	if a.ioRelay != nil {
+		hubClient.SetIORelay(a.ioRelay)
+	}
+	// Wire the scheduled task executor so that due tasks are sent to the
+	// agent loop via the IM handler, making scheduled tasks actually fire.
+	if a.scheduledTaskManager != nil {
+		a.scheduledTaskManager.SetExecutor(a.buildHubScheduledTaskExecutor(hubClient))
+		a.scheduledTaskManager.SetOnChange(func() {
+			a.emitEvent("scheduled-tasks-changed")
+		})
+	}
+	// Pre-initialize the IM handler so the first chat request does not pay
+	// handler construction/configuration cost.
+	preInitStart := time.Now()
+	hubClient.ensureIMHandler()
+	log.Printf("[prepareHubClientSync] ensureIMHandler (pre-init) done in %v", time.Since(preInitStart))
+	a.logMemorySnapshot("prepareHubClientSync:done")
+	log.Printf("[prepareHubClientSync] total=%v", time.Since(cwStart))
+}
+
+// asyncHubConnect performs Hub WebSocket connection, authentication, and post-connect
+// setup in a background goroutine. This is the network I/O portion that was previously
+// blocking startup(). After successful auth, it emits the "ready" event and starts
+// IM gateways. sendMachineHelloLocked() runs in a separate goroutine so it doesn't
+// delay the "ready" signal. On failure, the system operates in degraded mode (local
+// features work).
+func (a *App) asyncHubConnect() {
+	connectStart := time.Now()
+	log.Printf("[asyncHubConnect] starting Hub connection in background")
+
+	hubClient := a.remoteSessions.GetHubClient()
+	if hubClient == nil {
+		log.Printf("[asyncHubConnect] no hub client available, skipping")
+		return
+	}
+
+	// ConnectAuthOnly performs WebSocket dial + sendMachineAuth + read auth response
+	// without calling sendMachineHelloLocked(). This allows us to emit "ready"
+	// immediately after auth succeeds.
+	err := hubClient.ConnectAuthOnly()
+	if err != nil {
+		log.Printf("[asyncHubConnect] Hub auth failed in %v: %v — operating in degraded mode", time.Since(connectStart), err)
+		// Degraded mode: local LLM, local tools still work. Only Hub-dependent
+		// features (IM relay, remote session sync, scheduled task push to IM
+		// channels) are unavailable until reconnection succeeds.
+		a.emitEvent("ai-assistant-init-progress", "degraded")
+		return
+	}
+
+	log.Printf("[asyncHubConnect] Hub auth succeeded in %v", time.Since(connectStart))
+	a.logMemorySnapshot("asyncHubConnect:connected")
+	a.emitEvent("ai-assistant-init-progress", "ready")
+
+	// sendMachineHelloLocked() runs in a separate goroutine so its network
+	// latency (tool version checks, skill list sync) doesn't delay UI
+	// interactivity or the "ready" signal.
+	go func() {
+		helloStart := time.Now()
+		hubClient.mu.Lock()
+		// Verify connection is still alive before sending hello.
+		// Between auth completion and acquiring the lock, the connection
+		// may have been closed by a concurrent disconnect/reconnect.
+		if hubClient.conn == nil || !hubClient.connected {
+			hubClient.mu.Unlock()
+			log.Printf("[asyncHubConnect] sendMachineHelloLocked skipped: connection lost before hello")
+			return
+		}
+		err := hubClient.sendMachineHelloLocked()
+		hubClient.mu.Unlock()
+		if err != nil {
+			log.Printf("[asyncHubConnect] sendMachineHelloLocked failed in %v: %v", time.Since(helloStart), err)
+			// Hello failure is non-fatal — connection is already established,
+			// auth succeeded, and local features work. Hub will eventually
+			// receive hello on next heartbeat or reconnect.
+			return
+		}
+		log.Printf("[asyncHubConnect] sendMachineHelloLocked done in %v", time.Since(helloStart))
+	}()
+
+	// Start IM gateways after successful Hub connection.
+	a.ensureQQBotGateway()
+	a.ensureTelegramGateway()
+	a.ensureWeixinGateway()
+	a.ensureLansengerGateway()
+	a.ensureThirdPartyGateway()
+}
+
+// buildHubClientIMHandlerConfigurator returns the configureIMHandler closure used by
+// both createAndWireHubClient (legacy path) and prepareHubClientSync (new non-blocking path).
+func (a *App) buildHubClientIMHandlerConfigurator(hubClient *RemoteHubClient) func(handler *IMMessageHandler) {
+	return func(handler *IMMessageHandler) {
+		if a.capabilityGapDetector == nil {
+			a.ensureCapabilityGapDetector()
+		}
+		if a.capabilityGapDetector != nil {
+			handler.SetCapabilityGapDetector(a.capabilityGapDetector)
+		}
+		if a.toolDefGenerator != nil {
+			a.ensureLocalMCPManager()
+			handler.SetToolDefGenerator(a.toolDefGenerator)
+		}
+		if a.toolRouter != nil {
+			handler.SetToolRouter(a.toolRouter)
+		}
+		if a.usageTracker != nil {
+			handler.SetUsageTracker(a.usageTracker)
+		}
+		if a.memoryStore == nil {
+			a.ensureMemoryStore()
+		}
+		if a.memoryStore != nil {
+			handler.SetMemoryStore(a.memoryStore)
+		}
+		if a.aiConfirmationStore == nil {
+			a.ensureAIConfirmationStore()
+		}
+		if a.aiConfirmationStore != nil {
+			handler.SetConfirmationStore(a.aiConfirmationStore)
+		}
+		a.ensureAITrace()
+		if a.aiTrace != nil {
+			handler.SetTraceService(a.aiTrace)
+		}
+		handler.SetTrajectoryRecorderFactory(a.buildTrajectoryRecorderFactory())
+		if a.configManager != nil {
+			handler.SetConfigManager(a.configManager)
+		}
+		if a.templateManager != nil {
+			handler.SetTemplateManager(a.templateManager)
+		}
+		if a.scheduledTaskManager != nil {
+			handler.SetScheduledTaskManager(a.scheduledTaskManager)
+		}
+		if a.contextResolver == nil {
+			a.ensureContextResolver()
+		}
+		if a.contextResolver != nil {
+			handler.SetContextResolver(a.contextResolver)
+		}
+		if a.sessionPrecheck == nil {
+			a.ensureSessionPrecheck()
+		}
+		if a.sessionPrecheck != nil {
+			handler.SetSessionPrecheck(a.sessionPrecheck)
+		}
+		a.ensureStartupFeedback()
+		if a.startupFeedback != nil {
+			handler.SetStartupFeedback(a.startupFeedback)
+		}
+		if a.securityFirewall == nil {
+			a.ensureSecurityFirewall()
+		}
+		if a.securityFirewall != nil {
+			handler.SetSecurityFirewall(a.securityFirewall)
+		}
+		// Wire IM file sender so the desktop AI assistant can forward files to
+		// the user's Feishu/WeChat via the Hub WebSocket.
+		handler.SetIMFileSender(func(b64Data, fileName, mimeType, message string) error {
+			return hubClient.SendIMProactiveFile(b64Data, fileName, mimeType, message)
+		})
+		// Initialize and wire BackgroundLoopManager + SessionMonitor.
+		statusC := make(chan StatusEvent, 32)
+		blm := NewBackgroundLoopManager(statusC)
+		// Emit Wails event when background loop state changes.
+		blm.OnChange = func() {
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "background-loops-changed")
+			}
+		}
+		handler.SetBackgroundLoopManager(blm)
+		// Register GUI automation tools with async background replay support.
+		registerGUIAutomationTools(handler.registry, blm, handler.agentActivity, statusC)
+		// Keep group discussion available after late tool registration rebuilds.
+		registerGroupDiscussionTools(handler.registry, a, handler)
+		// Keep local knowledge tools available after late tool registration rebuilds.
+		registerKnowledgeTools(handler.registry, a)
+		// Rebuild the tool builder so it picks up the newly registered GUI tools.
+		handler.toolBuilder = NewDynamicToolBuilder(handler.registry)
+		// Wire skill-aware routing to the tool builder.
+		if a.skillExecutor != nil {
+			handler.toolBuilder.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
+		}
+		// Reuse the already-loaded embedder if vector search is active.
+		if a.memoryStore != nil {
+			emb := a.memoryStore.Embedder()
+			if emb != nil && !embedding.IsNoop(emb) {
+				handler.toolBuilder.SetEmbedder(emb)
+				if handler.interruptHandler != nil {
+					handler.interruptHandler.SetEmbedder(emb)
+				}
+			}
+		}
+
+		sm := NewSessionMonitor(a.remoteSessions, statusC, 20*time.Second)
+		handler.SetSessionMonitor(sm)
+
+		a.ensureConversationArchiver()
+		if a.conversationArchiver != nil {
+			handler.memory.Archiver = a.conversationArchiver
+		}
+	}
 }
 
 // tryLockTool attempts to acquire a lock for installing a specific tool
@@ -1145,6 +1387,8 @@ func (a *App) IsToolBeingInstalled(toolName string) bool {
 // startup is called when the app starts. The context is saved
 // so we can call the runtime methods
 func (a *App) startup(ctx context.Context) {
+	startupBegin := time.Now()
+	log.Printf("[startup] begin")
 	a.ctx = ctx
 	// Initialize code event emitter for code preview panel.
 	a.codeEventEmitter = NewCodeEventEmitter(a)
@@ -1155,11 +1399,13 @@ func (a *App) startup(ctx context.Context) {
 	// Platform specific initialization
 	a.platformStartup()
 	a.startConfigWatcher()
+	log.Printf("[startup] platform+config_watcher done in %v", time.Since(startupBegin))
 	// Pre-warm gse Chinese segmenter dictionary in background so BM25
 	// tool routing doesn't block on first use.
 	bm25.PrewarmDict()
 	// Initialize CodeBuddy config in project directory
 	if config, err := a.LoadConfig(); err == nil {
+		log.Printf("[startup] LoadConfig done in %v (since startup begin: %v)", time.Since(startupBegin), time.Since(startupBegin))
 		// Apply user-configured working directory (or keep default).
 		corelib.SetWorkspaceDir(config.WorkingDirectory)
 		// a.syncToCodeBuddySettings(config, ")
@@ -1167,10 +1413,21 @@ func (a *App) startup(ctx context.Context) {
 			a.SetLanguage(config.Language)
 		}
 		if config.RemoteMachineID != "" && config.RemoteMachineToken != "" && config.RemoteHubURL != "" {
-			a.createAndWireHubClient()
+			// Synchronous: prepare Hub client infrastructure (fast, no network I/O).
+			hubPrepStart := time.Now()
+			a.prepareHubClientSync()
+			log.Printf("[startup] prepareHubClientSync done in %v (since startup begin: %v)", time.Since(hubPrepStart), time.Since(startupBegin))
+			// Mark AI assistant ready BEFORE Hub connection — user can interact immediately.
+			a.markAIAssistantReady()
+			// Background: Hub WebSocket connect + auth + sendHello (network I/O).
+			go a.asyncHubConnect()
 		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
-			// Auto-register on startup: saved email + hub but no machine credentials yet
+			// No full credentials yet — mark ready immediately, auto-register in background.
+			a.markAIAssistantReady()
 			go a.autoRegisterOnStartup(config)
+		} else {
+			// No Hub credentials at all — mark ready immediately without attempting connection.
+			a.markAIAssistantReady()
 		}
 		a.refreshPowerOptimizationStateFromConfig(config)
 		a.refreshWorkstationMode(config)
@@ -1245,15 +1502,20 @@ func (a *App) startup(ctx context.Context) {
 
 		// Create shared intent classifiers synchronously. Until semantic classifiers are ready,
 		// they return conservative unknown/ambiguous results instead of local keyword decisions.
+		classifierStart := time.Now()
 		a.initEarlyClassifier()
+		log.Printf("[startup] initEarlyClassifier done in %v", time.Since(classifierStart))
 
+		log.Printf("[startup] complete in %v", time.Since(startupBegin))
 		return
 	}
 	a.setPowerOptimizationEnabled(false)
+	log.Printf("[startup] complete (no config) in %v", time.Since(startupBegin))
 }
 
 // domReady is called after the frontend Dom has been loaded
 func (a *App) domReady(ctx context.Context) {
+	log.Printf("[domReady] frontend DOM loaded, warmup_done=%v interaction_infra_ready=%v", a.warmupDone.Load(), a.interactionInfraReady())
 	// Trigger environment check on startup
 	// IsInitMode and PauseEnvCheck logic is handled inside CheckEnvironment
 	a.CheckEnvironment(false)

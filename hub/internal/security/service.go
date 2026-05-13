@@ -25,6 +25,11 @@ type SecurityService struct {
 	users  store.UserRepository // optional; used to discover bound users not yet in any security group
 	cache  sync.Map             // userEmail -> *EffectivePolicy
 
+	// skillSourcesProvider resolves per-user skill source restrictions from the
+	// independent three-level control (global/tenant/user). When set, GetHeartbeatPolicy
+	// intersects its result with the security group policy's SkillSourcesAllowed.
+	skillSourcesProvider SkillSourcesResolver
+
 	groupTreeMu          sync.RWMutex
 	groupTreeCached      *GroupTreeNode
 	groupTreeCachedUntil time.Time
@@ -50,6 +55,19 @@ func NewSecurityService(
 		svc.users = users[0]
 	}
 	return svc
+}
+
+// SkillSourcesResolver resolves per-user skill source restrictions.
+// Defined here (consumer side) to avoid import cycles with hub/internal/skill.
+type SkillSourcesResolver interface {
+	ResolveForUser(ctx context.Context, email, tenantID string) []string
+}
+
+// SetSkillSourcesProvider injects the skill source control provider.
+// Called during hub initialization after both SecurityService and SourceControlService
+// are created.
+func (s *SecurityService) SetSkillSourcesProvider(p SkillSourcesResolver) {
+	s.skillSourcesProvider = p
 }
 
 // --- Group Management ---
@@ -640,6 +658,10 @@ func applyPolicyOverrides(p *EffectivePolicy, overrides map[string]interface{}) 
 			if b, ok := toBool(v); ok {
 				p.SmartRouteEnabled = b
 			}
+		case "skill_sources_allowed":
+			if arr, ok := toStringSlice(v); ok {
+				p.SkillSourcesAllowed = arr
+			}
 		}
 	}
 }
@@ -653,6 +675,23 @@ func toBool(v interface{}) (bool, bool) {
 		return b != 0, true
 	}
 	return false, false
+}
+
+// toStringSlice converts an interface{} to []string, handling JSON arrays.
+func toStringSlice(v interface{}) ([]string, bool) {
+	switch arr := v.(type) {
+	case []interface{}:
+		result := make([]string, 0, len(arr))
+		for _, item := range arr {
+			if s, ok := item.(string); ok {
+				result = append(result, s)
+			}
+		}
+		return result, true
+	case []string:
+		return arr, true
+	}
+	return nil, false
 }
 
 func dedupeEmails(emails []string) []string {
@@ -675,7 +714,7 @@ func dedupeEmails(emails []string) []string {
 
 // policyToMap converts an EffectivePolicy to a map[string]interface{}.
 func policyToMap(p EffectivePolicy) map[string]interface{} {
-	return map[string]interface{}{
+	m := map[string]interface{}{
 		"file_outbound_enabled":  p.FileOutboundEnabled,
 		"image_outbound_enabled": p.ImageOutboundEnabled,
 		"gossip_enabled":         p.GossipEnabled,
@@ -685,6 +724,15 @@ func policyToMap(p EffectivePolicy) map[string]interface{} {
 		"yolo_mode_allowed":      p.YoloModeAllowed,
 		"smart_route_enabled":    p.SmartRouteEnabled,
 	}
+	if len(p.SkillSourcesAllowed) > 0 {
+		// Convert to []interface{} for JSON compatibility in sparse override storage.
+		arr := make([]interface{}, len(p.SkillSourcesAllowed))
+		for i, s := range p.SkillSourcesAllowed {
+			arr[i] = s
+		}
+		m["skill_sources_allowed"] = arr
+	}
+	return m
 }
 
 // --- System Settings ---
@@ -887,7 +935,8 @@ func (s *SecurityService) InvalidateCacheForSubtree(groupID string) {
 
 // GetHeartbeatPolicy returns the heartbeat security payload for a user.
 // If centralized security is disabled, returns {centralized_security: false}.
-// If enabled, returns the user's effective policy.
+// If enabled, returns the user's effective policy with skill source restrictions
+// merged from both the security group policy and the independent source control.
 func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string) (*HeartbeatSecurityPayload, error) {
 	settings, err := s.GetSettings(ctx)
 	if err != nil {
@@ -895,6 +944,19 @@ func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string)
 	}
 
 	if !settings.CentralizedSecurityEnabled {
+		// Even when centralized security is off, we still merge skill source
+		// control if configured (it's an independent control plane).
+		if s.skillSourcesProvider != nil {
+			tenantID := s.resolveUserTenantID(ctx, userID)
+			srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, userID, tenantID)
+			if srcAllowed != nil {
+				// Push skill source restriction even without centralized security.
+				return &HeartbeatSecurityPayload{
+					CentralizedSecurity: false,
+					SkillSourcesAllowed: srcAllowed,
+				}, nil
+			}
+		}
 		return &HeartbeatSecurityPayload{
 			CentralizedSecurity: false,
 		}, nil
@@ -903,6 +965,23 @@ func (s *SecurityService) GetHeartbeatPolicy(ctx context.Context, userID string)
 	policy, err := s.GetEffectivePolicy(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get effective policy: %w", err)
+	}
+
+	// Merge independent skill source control into the policy.
+	// The final SkillSourcesAllowed is the intersection of:
+	//   - Security group policy's SkillSourcesAllowed
+	//   - Independent source control's ResolveForUser result
+	//
+	// IMPORTANT: copy the policy before mutating to avoid polluting the
+	// EffectivePolicy cache (sync.Map stores pointers).
+	if s.skillSourcesProvider != nil {
+		tenantID := s.resolveUserTenantID(ctx, userID)
+		srcAllowed := s.skillSourcesProvider.ResolveForUser(ctx, userID, tenantID)
+		if srcAllowed != nil || len(policy.SkillSourcesAllowed) > 0 {
+			policyCopy := *policy
+			policyCopy.SkillSourcesAllowed = intersectSources(policy.SkillSourcesAllowed, srcAllowed)
+			policy = &policyCopy
+		}
 	}
 
 	return &HeartbeatSecurityPayload{
@@ -918,6 +997,39 @@ func (s *SecurityService) IsCentralizedEnabled(ctx context.Context) (bool, error
 		return false, err
 	}
 	return settings.CentralizedSecurityEnabled, nil
+}
+
+// resolveUserTenantID looks up the user's security group ID (tenant).
+// Returns empty string if the user has no group assignment.
+func (s *SecurityService) resolveUserTenantID(ctx context.Context, email string) string {
+	groupID, err := s.store.GetUserGroup(ctx, email)
+	if err != nil || groupID == "" {
+		return ""
+	}
+	return groupID
+}
+
+// intersectSources computes the intersection of two allowed-sources lists.
+// nil/empty means "all allowed". The intersection of nil with X is X.
+// NOTE: duplicated from hub/internal/skill.IntersectSources to avoid import cycle.
+func intersectSources(a, b []string) []string {
+	if len(a) == 0 {
+		return b
+	}
+	if len(b) == 0 {
+		return a
+	}
+	set := make(map[string]bool, len(b))
+	for _, s := range b {
+		set[s] = true
+	}
+	var result []string
+	for _, s := range a {
+		if set[s] {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 // GetEffectivePolicyByUserID is an alias for GetEffectivePolicy,

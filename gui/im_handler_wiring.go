@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -352,6 +353,7 @@ type IMMessageHandler struct {
 
 // NewIMMessageHandler creates a new handler.
 func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHandler {
+	handlerStart := time.Now()
 	// Response-header timeout: how long to wait for the FIRST byte from the
 	// LLM API after sending the request. This is NOT the total streaming
 	// duration 鈥?once headers arrive, SSE streaming continues without this
@@ -437,6 +439,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 	// Initialize the nudge tracker for post-use skill nudge system.
 	h.nudgeTracker = nudge.NewNudgeTracker()
 
+	log.Printf("[NewIMMessageHandler] constructed in %v", time.Since(handlerStart))
 	return h
 }
 

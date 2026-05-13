@@ -49,5 +49,6 @@ func failureKindForOutcome(outcome toolOutcome) toolFailureKind {
 }
 
 type toolResultMetadata struct {
-	SkillRunID string
+	SkillRunID       string
+	SkillRunTerminal bool // true when the skill run reached a terminal state (success/failed/etc.)
 }

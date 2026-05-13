@@ -466,10 +466,12 @@ func (u *UnifiedIntentClassifier) classifyWithFusion(text string) FusionResult {
 	// (deepseek-reasoner) have a thinking phase that makes them unable to
 	// respond within this budget. When tree times out, we proceed with
 	// embedding-only results — this is the designed degradation path.
-	// The 3s deadline here is independent of the LLM HTTP timeout (5s in
-	// buildUICLLMFunc): if the LLM responds in 2s we use it; if not, we
+	// The 1.5s deadline here is independent of the LLM HTTP timeout (5s in
+	// buildUICLLMFunc): if the LLM responds quickly we use it; if not, we
 	// don't wait. This ensures the critical path is bounded.
-	const treeDeadline = 3 * time.Second
+	// Timeout returns: tree channel contributes label="ambiguous",
+	// confidence=0.0, Degraded=true to the fusion result.
+	const treeDeadline = 1500 * time.Millisecond
 	var tree treeResult
 	treeTimer := time.NewTimer(treeDeadline)
 	select {

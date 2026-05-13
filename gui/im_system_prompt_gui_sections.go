@@ -7,6 +7,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -263,11 +264,16 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 // steering (handled by deps), memory, knowledge auto-recall, knowledge skills,
 // skill repairs, bundle context.
 func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string) {
+	epilogueStart := time.Now()
+
 	// Memory section (frozen snapshot + proactive recall)
 	h.appendMemorySection(b, includeMemoryGuide, msg)
+	memoryElapsed := time.Since(epilogueStart)
 
 	// Knowledge base auto-recall
+	knowledgeStart := time.Now()
 	h.appendKnowledgeAutoRecall(b, msg)
+	knowledgeElapsed := time.Since(knowledgeStart)
 
 	// Knowledge skill section
 	h.appendKnowledgeSkillSection(b, msg)
@@ -277,4 +283,9 @@ func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGu
 
 	// Bundle context banner
 	h.appendBundleContextBanner(b)
+
+	totalElapsed := time.Since(epilogueStart)
+	if totalElapsed > 200*time.Millisecond {
+		log.Printf("[appendGUIEpilogue] slow: memory=%v knowledge=%v total=%v", memoryElapsed, knowledgeElapsed, totalElapsed)
+	}
 }

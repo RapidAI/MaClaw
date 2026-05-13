@@ -103,11 +103,63 @@ func TestResolve_EmptyHistory_ShortMsg_StillNewTask(t *testing.T) {
 	}
 }
 
+func TestResolve_ShortHistory_SkipsLLM_DefaultsToNew(t *testing.T) {
+	llm := &mockLLMClassifier{response: "continue"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	// With < 5 entries, the LLM call should be skipped and default to TaskNew.
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "帮我搜索论文",
+		History: []ConversationEntry{
+			{Role: "user", Content: "之前的任务"},
+			{Role: "assistant", Content: "好的"},
+		},
+	})
+	if d.Action != TaskNew {
+		t.Fatalf("expected TaskNew for short history (<5 entries), got %s", d.Action)
+	}
+	if d.Source != "structural" {
+		t.Fatalf("expected source=structural, got %s", d.Source)
+	}
+	if llm.calls != 0 {
+		t.Fatalf("expected LLM not to be called for short history, got %d calls", llm.calls)
+	}
+}
+
+func TestResolve_ExactlyFiveEntries_UsesLLM(t *testing.T) {
+	llm := &mockLLMClassifier{response: "continue"}
+	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
+	// With exactly 5 entries, the LLM should be called.
+	d := mgr.Resolve(ResolveInput{
+		UserMessage: "继续",
+		History: []ConversationEntry{
+			{Role: "user", Content: "任务1"},
+			{Role: "assistant", Content: "好的"},
+			{Role: "user", Content: "继续"},
+			{Role: "assistant", Content: "完成"},
+			{Role: "user", Content: "再来"},
+		},
+	})
+	if d.Action != TaskContinue {
+		t.Fatalf("expected TaskContinue, got %s", d.Action)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("expected LLM to be called for 5 entries, got %d calls", llm.calls)
+	}
+}
+
 func TestResolve_ShortMessage_IsContinue(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
+	// With < 5 entries, short history defaults to TaskNew.
+	// With >= 5 entries and no LLM, defaults to TaskContinue (fallback).
 	d := mgr.Resolve(ResolveInput{
 		UserMessage: "好的",
-		History:     []ConversationEntry{{Role: "user", Content: "之前的任务"}},
+		History: []ConversationEntry{
+			{Role: "user", Content: "之前的任务"},
+			{Role: "assistant", Content: "好的"},
+			{Role: "user", Content: "继续"},
+			{Role: "assistant", Content: "完成了"},
+			{Role: "user", Content: "再来"},
+		},
 	})
 	if d.Action != TaskContinue {
 		t.Fatalf("expected TaskContinue for short message, got %s", d.Action)
@@ -119,8 +171,14 @@ func TestResolve_ShortMessageWithClassifierUsesLLM(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), llm)
 	d := mgr.Resolve(ResolveInput{
 		UserMessage: "天气",
-		History:     []ConversationEntry{{Role: "user", Content: "之前的任务"}},
-		LastAccess:  time.Now().Add(-30 * time.Second),
+		History: []ConversationEntry{
+			{Role: "user", Content: "之前的任务"},
+			{Role: "assistant", Content: "好的"},
+			{Role: "user", Content: "继续"},
+			{Role: "assistant", Content: "完成了"},
+			{Role: "user", Content: "再来"},
+		},
+		LastAccess: time.Now().Add(-30 * time.Second),
 	})
 	if d.Action != TaskNew {
 		t.Fatalf("expected TaskNew from classifier for short message, got %s", d.Action)
@@ -136,8 +194,14 @@ func TestResolve_ActiveConversation_NoLLM_IsContinue(t *testing.T) {
 	mgr := NewTaskContextManager(DefaultTaskContextConfig(), nil)
 	d := mgr.Resolve(ResolveInput{
 		UserMessage: "生成方便AI工具访问的markdown版本",
-		History:     []ConversationEntry{{Role: "user", Content: "安装skill并评估"}},
-		LastAccess:  time.Now().Add(-30 * time.Second), // 30 seconds ago
+		History: []ConversationEntry{
+			{Role: "user", Content: "安装skill并评估"},
+			{Role: "assistant", Content: "好的，开始安装"},
+			{Role: "user", Content: "继续"},
+			{Role: "assistant", Content: "安装完成"},
+			{Role: "user", Content: "评估结果呢"},
+		},
+		LastAccess: time.Now().Add(-30 * time.Second), // 30 seconds ago
 	})
 	if d.Action != TaskContinue {
 		t.Fatalf("expected TaskContinue for active conversation without LLM, got %s", d.Action)
@@ -152,6 +216,9 @@ func TestResolve_LLM_Continue(t *testing.T) {
 		History: []ConversationEntry{
 			{Role: "user", Content: "帮我安装并评估所有skill"},
 			{Role: "assistant", Content: "已完成skill评估，以下是报告..."},
+			{Role: "user", Content: "好的"},
+			{Role: "assistant", Content: "还需要什么帮助吗？"},
+			{Role: "user", Content: "再看看"},
 		},
 		LastAccess: time.Now().Add(-10 * time.Minute), // 10 minutes ago
 	})
@@ -168,6 +235,9 @@ func TestResolve_LLM_New(t *testing.T) {
 		History: []ConversationEntry{
 			{Role: "user", Content: "帮我安装并评估所有skill"},
 			{Role: "assistant", Content: "已完成skill评估"},
+			{Role: "user", Content: "好的"},
+			{Role: "assistant", Content: "还需要什么？"},
+			{Role: "user", Content: "看看"},
 		},
 		LastAccess: time.Now().Add(-10 * time.Minute),
 	})
@@ -183,6 +253,10 @@ func TestResolve_LLM_Recall(t *testing.T) {
 		UserMessage: "继续处理上次那个部署的事",
 		History: []ConversationEntry{
 			{Role: "user", Content: "当前任务"},
+			{Role: "assistant", Content: "好的"},
+			{Role: "user", Content: "继续"},
+			{Role: "assistant", Content: "完成了"},
+			{Role: "user", Content: "再来"},
 		},
 		ArchivedTasks: []ArchivedTask{
 			{ID: "task-123", Summary: "部署到生产环境", Status: "abandoned"},
@@ -204,6 +278,10 @@ func TestResolve_LLM_RecallInvalidID(t *testing.T) {
 		UserMessage: "继续处理上次那个部署的事",
 		History: []ConversationEntry{
 			{Role: "user", Content: "当前任务"},
+			{Role: "assistant", Content: "好的"},
+			{Role: "user", Content: "继续"},
+			{Role: "assistant", Content: "完成了"},
+			{Role: "user", Content: "再来"},
 		},
 		ArchivedTasks: []ArchivedTask{
 			{ID: "task-123", Summary: "部署到生产环境", Status: "abandoned"},
@@ -223,6 +301,9 @@ func TestResolve_LLM_Failure_FallbackToContinue(t *testing.T) {
 		History: []ConversationEntry{
 			{Role: "user", Content: "安装skill"},
 			{Role: "assistant", Content: "已完成"},
+			{Role: "user", Content: "好的"},
+			{Role: "assistant", Content: "还需要什么？"},
+			{Role: "user", Content: "看看"},
 		},
 		LastAccess: time.Now().Add(-10 * time.Minute),
 	})
@@ -242,6 +323,9 @@ func TestResolve_ActiveConversation_UsesLLMForFollowUp(t *testing.T) {
 		History: []ConversationEntry{
 			{Role: "user", Content: "安装 skill"},
 			{Role: "assistant", Content: "已完成"},
+			{Role: "user", Content: "好的"},
+			{Role: "assistant", Content: "还需要什么？"},
+			{Role: "user", Content: "看看结果"},
 		},
 		LastAccess: time.Now().Add(-30 * time.Second), // very recent
 	})
@@ -263,6 +347,9 @@ func TestResolve_ActiveConversation_SubstantiveNewTaskUsesLLM(t *testing.T) {
 		History: []ConversationEntry{
 			{Role: "user", Content: "帮我整理 Hugging Face Agent 论文并生成 PDF"},
 			{Role: "assistant", Content: "PDF 已经生成并发送，重点论文包括 GLM-5V-Turbo。"},
+			{Role: "user", Content: "好的"},
+			{Role: "assistant", Content: "还需要什么帮助吗？"},
+			{Role: "user", Content: "看看"},
 		},
 		LastAccess: time.Now().Add(-30 * time.Second),
 	})
@@ -281,6 +368,9 @@ func TestResolve_IncompleteTaskMarker_UsesLLM(t *testing.T) {
 		History: []ConversationEntry{
 			{Role: "user", Content: "之前的任务"},
 			{Role: "assistant", Content: "(已达到最大推理轮次，请继续发送消息以完成任务)"},
+			{Role: "user", Content: "好的"},
+			{Role: "assistant", Content: "继续处理中..."},
+			{Role: "user", Content: "看看进度"},
 		},
 		HasIncompleteTaskMarker: true,
 		LastAccess:              time.Now().Add(-30 * time.Second), // even if active

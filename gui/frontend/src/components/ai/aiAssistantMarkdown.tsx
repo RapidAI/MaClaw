@@ -625,9 +625,11 @@ export function renderMessage(msg: ChatMessage, executeAction: (cmd: string) => 
                     margin: "2px 0",
                     color: t.text,
                 }}>
-                    {/* Streaming: show blinking cursor only on the last assistant message */}
+                    {/* Streaming: show thinking indicator on the last assistant message placeholder */}
                     {isLastAssistant && !msg.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && (
-                        <span style={{ opacity: 0.5, animation: "blink 1s step-end infinite" }}>{"|"}</span>
+                        <span style={{ color: t.textMuted, fontSize: "12px", fontStyle: "italic", opacity: 0.8, animation: "blink 1.2s step-end infinite" }}>
+                            {lang === "en" ? "Thinking..." : "\u6b63\u5728\u601d\u8003..."}
+                        </span>
                     )}
                     {screenshotBase64 && (
                         <div style={{ margin: "4px 0 6px 0" }}>

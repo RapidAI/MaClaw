@@ -105,7 +105,7 @@ func DefaultTaskContextConfig() TaskContextConfig {
 	return TaskContextConfig{
 		MaxArchivedTasks:         10,
 		ActiveConversationWindow: 5 * time.Minute,
-		LLMTimeout:               8 * time.Second,
+		LLMTimeout:               2 * time.Second,
 	}
 }
 
@@ -235,6 +235,18 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 
 	// --- Layer 3: LLM classification ---
 
+	// Short history optimization: when fewer than 5 entries exist, the
+	// conversation is too brief for meaningful task-context classification.
+	// Default to TaskNew — the user likely started a new topic.
+	// This avoids a 2s LLM call that adds latency without value.
+	if len(input.History) < 5 {
+		return TaskContextDecision{
+			Action: TaskNew,
+			Reason: fmt.Sprintf("short history (%d entries < 5), defaulting to new task", len(input.History)),
+			Source: "structural",
+		}
+	}
+
 	if m.llm != nil {
 		return m.classifyWithLLM(input)
 	}
@@ -252,6 +264,10 @@ func (m *TaskContextManager) Resolve(input ResolveInput) TaskContextDecision {
 // classifyWithLLM uses a lightweight LLM call to determine the task action.
 // It is the only path for ambiguous messages with existing history; recency
 // and message length must not decide task continuity by themselves.
+//
+// The LLM call runs in a goroutine with a 2s deadline. If the call completes
+// before the deadline, the result is used immediately. If it times out,
+// we default to TaskContinue (conservative assumption).
 func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDecision {
 	// Build a compact context summary for the LLM.
 	currentTaskSummary := buildCurrentTaskSummary(input.History)
@@ -269,17 +285,39 @@ func (m *TaskContextManager) classifyWithLLM(input ResolveInput) TaskContextDeci
 	}
 	fmt.Fprintf(&userMsg, "\n用户新消息：%s", strings.TrimSpace(input.UserMessage))
 
-	resp, err := m.llm.Classify(systemPrompt, userMsg.String(), int(m.config.LLMTimeout.Seconds()))
-	if err != nil {
-		log.Printf("[TaskContext] LLM classification failed: %v, falling back to continue", err)
+	// Run LLM call in a goroutine to allow parallel work by the caller.
+	type llmResult struct {
+		resp string
+		err  error
+	}
+	resultCh := make(chan llmResult, 1)
+	go func() {
+		resp, err := m.llm.Classify(systemPrompt, userMsg.String(), int(m.config.LLMTimeout.Seconds()))
+		resultCh <- llmResult{resp: resp, err: err}
+	}()
+
+	// Wait for result with timeout (defensive — the LLM.Classify already
+	// has its own timeout, but this ensures we never block longer than LLMTimeout + 500ms).
+	deadline := m.config.LLMTimeout + 500*time.Millisecond
+	select {
+	case r := <-resultCh:
+		if r.err != nil {
+			log.Printf("[TaskContext] LLM classification failed: %v, falling back to continue", r.err)
+			return TaskContextDecision{
+				Action: TaskContinue,
+				Reason: fmt.Sprintf("LLM failed: %v, defaulting to continue", r.err),
+				Source: "fallback",
+			}
+		}
+		return m.parseLLMResponse(r.resp, input.ArchivedTasks)
+	case <-time.After(deadline):
+		log.Printf("[TaskContext] LLM classification timed out after %v, falling back to continue", deadline)
 		return TaskContextDecision{
 			Action: TaskContinue,
-			Reason: fmt.Sprintf("LLM failed: %v, defaulting to continue", err),
+			Reason: fmt.Sprintf("LLM timed out after %v, defaulting to continue", deadline),
 			Source: "fallback",
 		}
 	}
-
-	return m.parseLLMResponse(resp, input.ArchivedTasks)
 }
 
 // parseLLMResponse interprets the LLM's classification response.

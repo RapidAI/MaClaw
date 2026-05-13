@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -17,13 +18,19 @@ func (h *IMMessageHandler) buildSystemPrompt() string {
 }
 
 func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history []agent.ConversationEntry, workflowAgentLoop bool, askUserContext, pendingUserReplyContext, capabilityGapContext string) string {
+	promptBuildStart := time.Now()
+
 	var systemPrompt string
 	if h.memoryStore != nil {
 		systemPrompt = h.buildSystemPromptWithMemory(msg.Text, len(history) == 0)
 	} else {
 		systemPrompt = h.buildSystemPrompt()
 	}
+	basePromptElapsed := time.Since(promptBuildStart)
+
+	resumeStart := time.Now()
 	systemPrompt += h.buildResumeTraceContext(msg.UserID, msg.Text)
+	resumeElapsed := time.Since(resumeStart)
 
 	if workflowAgentLoop && h.getWorkflowEngine() != nil {
 		if stashed, ok := h.stashedPhasePrompt.LoadAndDelete(msg.UserID); ok {
@@ -51,6 +58,12 @@ func (h *IMMessageHandler) buildIMEntrySystemPrompt(msg IMUserMessage, history [
 		systemPrompt += desktopWorkflowDocOverride()
 	} else if platformKind.IsKnown() || msg.Platform != "" {
 		systemPrompt += imWorkflowDocDeliveryRule()
+	}
+
+	totalPromptBuild := time.Since(promptBuildStart)
+	if totalPromptBuild > 500*time.Millisecond {
+		log.Printf("[buildIMEntrySystemPrompt] slow: base_prompt=%v resume_trace=%v total=%v prompt_len=%d user=%s",
+			basePromptElapsed, resumeElapsed, totalPromptBuild, len(systemPrompt), msg.UserID)
 	}
 	return systemPrompt
 }
@@ -91,7 +104,8 @@ func (h *IMMessageHandler) buildSystemPromptBase(includeMemoryGuide bool, userMe
 			HasCodingSessions: true,
 			TrialReflect:      trialReflectEnabled,
 		},
-		MemoryStore:    h.memoryStore,
+		MemoryStore:      h.memoryStore,
+		SkipMemoryRecall: true, // GUI handles memory recall in appendGUIEpilogue (with memory index, derived facts, knowledge auto-recall, frozen snapshot caching)
 		HasKnowledgeBase: true,
 	}
 
@@ -228,13 +242,22 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 // memory section (user_fact summary + proactive recall + dynamic recall hint).
 // The isFirstTurn flag controls whether the full memory management guide is included.
 func (h *IMMessageHandler) buildSystemPromptWithMemory(userMessage string, isFirstTurn bool) string {
+	start := time.Now()
 	base := h.buildSystemPromptBase(isFirstTurn, userMessage)
+	baseElapsed := time.Since(start)
 	if !isFirstTurn {
+		if baseElapsed > 200*time.Millisecond {
+			log.Printf("[buildSystemPromptWithMemory] base_prompt=%v (not first turn)", baseElapsed)
+		}
 		return base
 	}
 	var b strings.Builder
 	b.WriteString(base)
 	b.WriteString(h.buildNicknameInstruction())
+	totalElapsed := time.Since(start)
+	if totalElapsed > 200*time.Millisecond {
+		log.Printf("[buildSystemPromptWithMemory] base_prompt=%v total=%v (first turn)", baseElapsed, totalElapsed)
+	}
 	return b.String()
 }
 
@@ -346,13 +369,15 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 	if h.memoryStore == nil || msg == "" {
 		return
 	}
+	recallStart := time.Now()
 
 	projectPath := ""
 	if h.contextResolver != nil {
 		projectPath, _ = h.contextResolver.ResolveProject()
 	}
 	recalled := h.memoryStore.RecallDynamic(msg, "", projectPath)
-	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries (RecallDynamic)", len(msg), projectPath, len(recalled))
+	primaryRecallElapsed := time.Since(recallStart)
+	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries (RecallDynamic) took=%v", len(msg), projectPath, len(recalled), primaryRecallElapsed)
 
 	// Supplementary recall: ExpandQuery extracts key entities (e.g. "4090服务器",
 	// "GPU", "api服务器") from the user message. When the full message is long
@@ -445,6 +470,11 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 				b.WriteString(inferenceSection)
 			}
 		}
+	}
+
+	totalRecallElapsed := time.Since(recallStart)
+	if totalRecallElapsed > 200*time.Millisecond {
+		log.Printf("[proactive_recall] total_elapsed=%v (primary_recall=%v)", totalRecallElapsed, primaryRecallElapsed)
 	}
 }
 

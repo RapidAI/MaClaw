@@ -28,6 +28,7 @@ import type { AIAssistantPanelProps } from "./aiAssistantPanelTypes";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { AssistantPreviewPane } from "./AssistantPreviewPane";
 import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
+import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
 
 if (typeof document !== "undefined" && !document.getElementById(AI_PANEL_STATIC_STYLE_ID)) {
     const style = document.createElement("style");
@@ -92,7 +93,7 @@ export function AIAssistantPanel(props: any) {
     const inputRef = useRef<HTMLTextAreaElement | null>(null);
     const cancelRestoreSeqRef = useRef(0);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
-    const { ttsEnabled, setTtsEnabled } = useTTSReadback(audioOutputDeviceId);
+    const { ttsEnabled, setTtsEnabled, ttsPlaying, ttsAudioLevel } = useTTSReadback(audioOutputDeviceId);
 
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire, extractEntry } = useBufferQueue();
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
@@ -123,7 +124,13 @@ export function AIAssistantPanel(props: any) {
     const showBusySpinner = isBusy;
     const codingAgentTurnSnapshot = useMemo(() => sending ? latestCodingAgentTurnSnapshot(progressMessages) : null, [progressMessages, sending]);
     const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(progressMessages, sending), [codingAgentTurnSnapshot, progressMessages, sending]);
-    const activeProcessingText = codingAgentProgress ? codingAgentCompactText(codingAgentProgress, lang) : processingText;
+    // Use the latest tool-specific progress message if available (e.g. "⚙️ 正在执行 weather-query...")
+    const latestToolProgress = useMemo(() => findLatestToolProgressText(progressMessages, sending), [progressMessages, sending]);
+    const activeProcessingText = codingAgentProgress
+        ? codingAgentCompactText(codingAgentProgress, lang)
+        : latestToolProgress
+            ? `${latestToolProgress}${lang === "en" ? " (you can type ahead)" : "（可继续输入）"}`
+            : processingText;
     const projectSearch = useProjectSearch(lang);
     const handleProjectSearchSwitch = useCallback(async (msg: string) => {
         if (isBusy && cancelSession) {
@@ -430,6 +437,8 @@ export function AIAssistantPanel(props: any) {
                 title={title}
                 trialReflectEnabled={trialReflectEnabled}
                 ttsEnabled={ttsEnabled}
+                ttsPlaying={ttsPlaying}
+                ttsAudioLevel={ttsAudioLevel}
                 toggleProjectSearch={projectSearch.toggle}
             />
             <KnowledgeDialog

@@ -111,21 +111,31 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	var results []MixedSkillSearchResult
 	var errs []string
 
-	marketResults, err := s.Search(ctx, query, nil, 10)
-	if err != nil {
-		errs = append(errs, fmt.Sprintf("skillmarket: %v", err))
-	} else {
-		for _, r := range marketResults {
-			results = append(results, s.toMixedSkillSearchResult(r))
+	// Determine allowed sources from Hub policy / local config.
+	var allowedSources []string
+	if s.app != nil {
+		allowedSources = s.app.GetAllowedSkillSources()
+	}
+
+	if cskill.IsSourceAllowed("skillhub", allowedSources) {
+		marketResults, err := s.Search(ctx, query, nil, 10)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("skillmarket: %v", err))
+		} else {
+			for _, r := range marketResults {
+				results = append(results, s.toMixedSkillSearchResult(r))
+			}
 		}
 	}
 
 	// ClawHub + GitHub via shared HubClient (single implementation).
 	hubClient := cskill.DefaultHubClient()
-	for _, r := range hubClient.SearchClawHub(ctx, query) {
-		results = append(results, hubSearchResultToMixed(r))
+	if cskill.IsSourceAllowed("clawhub", allowedSources) {
+		for _, r := range hubClient.SearchClawHub(ctx, query) {
+			results = append(results, hubSearchResultToMixed(r))
+		}
 	}
-	if ctx.Err() == nil {
+	if cskill.IsSourceAllowed("github", allowedSources) && ctx.Err() == nil {
 		for _, r := range hubClient.SearchGitHub(query) {
 			results = append(results, hubSearchResultToMixed(r))
 		}

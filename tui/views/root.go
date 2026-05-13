@@ -335,6 +335,34 @@ func (m *RootModel) updateActiveTab(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+// IsEditing returns true when the active view is in an editing/input mode
+// (e.g. chat input focused, config field editing). Used by the top-level
+// quit handler to decide whether 'q' should quit or be typed.
+func (m RootModel) IsEditing() bool {
+	return m.activeViewIsEditing()
+}
+
+// AcceptsTextInput returns true when the active view has a focused text input
+// that would consume single-character keys. This is broader than IsEditing —
+// e.g. ServiceRedeem has an always-focused input but IsEditing returns false
+// to allow Tab navigation.
+func (m RootModel) AcceptsTextInput() bool {
+	switch m.tab {
+	case TabOnboarding:
+		return m.Onboarding.IsEditing()
+	case TabTools:
+		return m.Tools.IsEditing()
+	case TabServiceRedeem:
+		return true // always has a focused code input
+	case TabConfig:
+		return m.Config.IsEditing()
+	case TabChat:
+		return m.Chat.IsInputFocused()
+	default:
+		return false
+	}
+}
+
 func (m RootModel) activeViewIsEditing() bool {
 	switch m.tab {
 	case TabOnboarding:

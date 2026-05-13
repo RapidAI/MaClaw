@@ -10,6 +10,10 @@ import (
 )
 
 // toolTTS synthesizes speech from text and delivers it as a voice message.
+// On the desktop panel, synthesis runs asynchronously — the tool returns
+// immediately and audio is pushed to the frontend via "tts:audio" event
+// once ready. On IM channels, synthesis is synchronous because the voice
+// payload must be returned inline for delivery.
 func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 	text, _ := args["text"].(string)
 	if text == "" {
@@ -23,17 +27,30 @@ func (h *IMMessageHandler) toolTTS(args map[string]interface{}) string {
 		return "语音合成未启用。请在设置 → 语音合成中开启。"
 	}
 
-	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, text, 300)
-
 	platform := ""
 	if h.currentLoopCtx != nil {
 		platform = h.currentLoopCtx.Platform
 	}
 
-	// Desktop panel: emit WAV for frontend playback only for non-IM contexts.
-	if shouldEmitDesktopTTSPlayback(platform) && h.app.ctx != nil && wav != nil {
-		runtime.EventsEmit(h.app.ctx, "tts:audio", base64.StdEncoding.EncodeToString(wav))
+	// Desktop panel: async synthesis — return immediately, push audio when ready.
+	if shouldEmitDesktopTTSPlayback(platform) {
+		app := h.app
+		mgr := app.ttsManager // capture before goroutine to avoid nil race
+		go func() {
+			_, wav, synthErr := tts.SynthesizeVoiceOGG(mgr, text, 300)
+			if synthErr != nil {
+				log.Printf("[tts-tool] async synthesis error: %v", synthErr)
+				return
+			}
+			if wav != nil && app.ctx != nil {
+				runtime.EventsEmit(app.ctx, "tts:audio", base64.StdEncoding.EncodeToString(wav))
+			}
+		}()
+		return "Voice message is being generated and will play shortly."
 	}
+
+	// IM channels: synchronous synthesis — voice payload returned inline.
+	ogg, wav, err := tts.SynthesizeVoiceOGG(h.app.ttsManager, text, 300)
 	amr := synthesizeAMRForPlatform(platform, wav)
 	voiceData, voiceName, voiceMime := selectTTSVoicePayload(platform, ogg, wav, amr)
 	if voiceData != nil {

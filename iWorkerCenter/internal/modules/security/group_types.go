@@ -36,14 +36,15 @@ type PolicyItemView struct {
 
 // EffectivePolicy is the resolved policy for a user.
 type EffectivePolicy struct {
-	FileOutboundEnabled  bool   `json:"file_outbound_enabled"`
-	ImageOutboundEnabled bool   `json:"image_outbound_enabled"`
-	GossipEnabled        bool   `json:"gossip_enabled"`
-	GuardrailMode        string `json:"guardrail_mode"`
-	SandboxMode          string `json:"sandbox_mode"`
-	NetworkLevel         string `json:"network_level"`
-	YoloModeAllowed      bool   `json:"yolo_mode_allowed"`
-	SmartRouteEnabled    bool   `json:"smart_route_enabled"`
+	FileOutboundEnabled  bool     `json:"file_outbound_enabled"`
+	ImageOutboundEnabled bool     `json:"image_outbound_enabled"`
+	GossipEnabled        bool     `json:"gossip_enabled"`
+	GuardrailMode        string   `json:"guardrail_mode"`
+	SandboxMode          string   `json:"sandbox_mode"`
+	NetworkLevel         string   `json:"network_level"`
+	YoloModeAllowed      bool     `json:"yolo_mode_allowed"`
+	SmartRouteEnabled    bool     `json:"smart_route_enabled"`
+	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed; values: "skillhub","clawhub","github"
 }
 
 // DefaultEffectivePolicy is the root group default.

@@ -203,21 +203,23 @@ func (h *IMMessageHandler) toolSearchSkillHub(args map[string]interface{}) strin
 		return "缺少 query 参数"
 	}
 
-	// Use the unified HubClient.SearchAll() which searches all three sources
+	// Use the unified HubClient.SearchAllFiltered() which searches allowed sources
 	// (SkillHub + ClawHub + GitHub) through a single code path. This ensures
 	// the LLM tool call sees the same results as the GUI/TUI search panels.
 	//
 	// Resolve the SkillHub base URL from HubCenter (same as SkillHubClient).
-	// If resolution fails, SearchAll still queries ClawHub and GitHub.
+	// If resolution fails, SearchAllFiltered still queries ClawHub and GitHub.
 	hubURL := ""
+	var allowedSources []string
 	if h.app != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if base, _, err := h.app.resolveHubCenterBaseURLCached(ctx, &http.Client{Timeout: 10 * time.Second}); err == nil {
 			hubURL = base
 		}
+		allowedSources = h.app.GetAllowedSkillSources()
 	}
-	results := cskill.DefaultHubClient().SearchAll(context.Background(), hubURL, query)
+	results := cskill.DefaultHubClient().SearchAllFiltered(context.Background(), hubURL, query, allowedSources)
 	if len(results) == 0 {
 		return fmt.Sprintf("在 SkillHub/ClawHub/GitHub 上均未找到与 %q 相关的 Skill", query)
 	}
@@ -254,6 +256,21 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 	if h.getSkillExecutor() == nil {
 		return "Skill Executor 未初始化"
+	}
+
+	// Determine effective source and check permission before downloading.
+	var effectiveSource string
+	switch {
+	case strings.EqualFold(hubURL, "github"):
+		effectiveSource = "github"
+	case strings.Contains(hubURL, "clawhub") || strings.Contains(hubURL, "clawhub-mirror"):
+		effectiveSource = "clawhub"
+	default:
+		effectiveSource = "skillhub"
+	}
+	if h.app != nil && !h.app.IsSkillSourceAllowed(effectiveSource) {
+		allowed := h.app.GetAllowedSkillSources()
+		return fmt.Sprintf("❌ 来源 '%s' 已被管理策略禁止。当前允许的来源: %v", effectiveSource, allowed)
 	}
 
 	ctx := context.Background()

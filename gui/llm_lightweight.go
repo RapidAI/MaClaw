@@ -39,6 +39,12 @@ type LLMClassifyRequest struct {
 
 	// Tag is a short label for logging (e.g. "workflow-confirm", "intent-detect").
 	Tag string
+
+	// PreferLightweight indicates this call should use a lightweight (non-reasoning)
+	// model if available. Classification tasks (task-context, workflow-confirm, etc.)
+	// don't need chain-of-thought reasoning and complete much faster on chat models.
+	// When true, getLightweightLLMConfig() is tried first; falls back to main model.
+	PreferLightweight bool
 }
 
 // LLMClassifyResult holds the response from a lightweight LLM call.
@@ -81,6 +87,15 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 	}
 
 	cfg := h.getMaclawLLMConfig()
+	// When PreferLightweight is set, try to use a non-reasoning model for
+	// classification tasks. Reasoning models (deepseek-reasoner, o1, etc.)
+	// generate chain-of-thought before answering, adding 1-2s latency for
+	// simple classification tasks that only need "continue" or "new".
+	if req.PreferLightweight {
+		if lightCfg := h.getLightweightLLMConfig(); lightCfg.URL != "" && lightCfg.Model != "" {
+			cfg = lightCfg
+		}
+	}
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("LLM not configured")
 	}
