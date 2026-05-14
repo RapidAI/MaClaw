@@ -66,6 +66,32 @@ func TestDecideCapabilityUpdateRules(t *testing.T) {
 	}
 }
 
+func TestDecideCapabilityUpdateHonorsNonAutoPolicy(t *testing.T) {
+	policy := DefaultCapabilityMarketPolicy()
+	policy.UpdatePolicy.HubCenter.FreeCapability = "notify_admin"
+	decision := DecideCapabilityUpdate(CapabilityUpdateDecisionInput{Policy: policy, Source: CapabilitySourceHubCenter, Pricing: CapabilityPricingFree})
+	if decision.AutoUpdate || decision.Policy != "notify_admin" {
+		t.Fatalf("decision = %#v, want notify_admin without auto update", decision)
+	}
+
+	policy.UpdatePolicy.EnterpriseHub.Default = "auto_update_disabled"
+	decision = DecideCapabilityUpdate(CapabilityUpdateDecisionInput{Policy: policy, Source: CapabilitySourceEnterpriseHub, Pricing: CapabilityPricingFree})
+	if decision.AutoUpdate || decision.Policy != "auto_update_disabled" {
+		t.Fatalf("decision = %#v, want disabled enterprise auto update", decision)
+	}
+
+	policy.UpdatePolicy.EnterpriseHub.Default = "auto_update_patch_only"
+	decision = DecideCapabilityUpdate(CapabilityUpdateDecisionInput{Policy: policy, Source: CapabilitySourceEnterpriseHub, Pricing: CapabilityPricingFree})
+	if decision.AutoUpdate || decision.Policy != "auto_update_patch_only" {
+		t.Fatalf("decision = %#v, want patch-only policy to wait for version checks", decision)
+	}
+
+	policy.UpdatePolicy.EnterpriseHub.Default = "auto_update_trusted_publisher"
+	decision = DecideCapabilityUpdate(CapabilityUpdateDecisionInput{Policy: policy, Source: CapabilitySourceEnterpriseHub, Pricing: CapabilityPricingFree})
+	if decision.AutoUpdate || decision.Policy != "auto_update_trusted_publisher" {
+		t.Fatalf("decision = %#v, want trusted-publisher policy to wait for publisher checks", decision)
+	}
+}
 func TestAdminMarketplaceSearchSources(t *testing.T) {
 	hubSources := AdminMarketplaceSearchSources(CapabilityMarketplaceHostHub)
 	wantHub := []string{CapabilitySourceHubCenter, CapabilitySourceClawHub, CapabilitySourceGitHub}
@@ -79,6 +105,9 @@ func TestAdminMarketplaceSearchSources(t *testing.T) {
 	}
 	if !AdminMarketplaceCanSearchSource(CapabilityMarketplaceHostHub, CapabilitySourceHubCenter) {
 		t.Fatal("hub admin should be able to search hubcenter")
+	}
+	if !AdminMarketplaceCanSearchSource(CapabilityMarketplaceHostHub, "hub_center") {
+		t.Fatal("hub admin should accept hub_center alias")
 	}
 	if AdminMarketplaceCanSearchSource(CapabilityMarketplaceHostHubCenter, CapabilitySourceHubCenter) {
 		t.Fatal("hubcenter admin should not search hubcenter as an external source")

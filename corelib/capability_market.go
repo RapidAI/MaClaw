@@ -40,7 +40,7 @@ type CapabilityInstallDecision struct {
 
 func DecideCapabilityInstall(in CapabilityInstallDecisionInput) CapabilityInstallDecision {
 	policy := in.Policy.WithDefaults()
-	source := strings.TrimSpace(strings.ToLower(in.Source))
+	source := NormalizeCapabilitySource(in.Source)
 	pricing := strings.TrimSpace(strings.ToLower(in.Pricing))
 	if pricing == "" {
 		pricing = CapabilityPricingFree
@@ -80,21 +80,48 @@ type CapabilityUpdateDecision struct {
 
 func DecideCapabilityUpdate(in CapabilityUpdateDecisionInput) CapabilityUpdateDecision {
 	policy := in.Policy.WithDefaults()
-	source := strings.TrimSpace(strings.ToLower(in.Source))
+	source := NormalizeCapabilitySource(in.Source)
 	pricing := strings.TrimSpace(strings.ToLower(in.Pricing))
 	if pricing == "" {
 		pricing = CapabilityPricingFree
 	}
 	if source == CapabilitySourceEnterpriseHub {
-		return CapabilityUpdateDecision{AutoUpdate: true, Policy: policy.UpdatePolicy.EnterpriseHub.Default}
+		policyName := policy.UpdatePolicy.EnterpriseHub.Default
+		return CapabilityUpdateDecision{AutoUpdate: capabilityUpdatePolicyAllowsAuto(policyName), Policy: policyName}
 	}
 	if source == CapabilitySourceHubCenter && pricing == CapabilityPricingFree {
-		return CapabilityUpdateDecision{AutoUpdate: true, Policy: policy.UpdatePolicy.HubCenter.FreeCapability}
+		policyName := policy.UpdatePolicy.HubCenter.FreeCapability
+		return CapabilityUpdateDecision{AutoUpdate: capabilityUpdatePolicyAllowsAuto(policyName), Policy: policyName}
 	}
 	if source == CapabilitySourceHubCenter {
-		return CapabilityUpdateDecision{AutoUpdate: false, Policy: policy.UpdatePolicy.HubCenter.PaidCapability}
+		policyName := policy.UpdatePolicy.HubCenter.PaidCapability
+		return CapabilityUpdateDecision{AutoUpdate: capabilityUpdatePolicyAllowsAuto(policyName), Policy: policyName}
 	}
 	return CapabilityUpdateDecision{AutoUpdate: false, Policy: "notify_admin"}
+}
+
+func capabilityUpdatePolicyAllowsAuto(policyName string) bool {
+	switch strings.TrimSpace(strings.ToLower(policyName)) {
+	case "auto_update", "auto_update_approved":
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeCapabilitySource(source string) string {
+	switch strings.TrimSpace(strings.ToLower(source)) {
+	case "hub", "enterprise", "enterprise_hub":
+		return CapabilitySourceEnterpriseHub
+	case "hubcenter", "hub_center":
+		return CapabilitySourceHubCenter
+	case "clawhub", "claw_hub":
+		return CapabilitySourceClawHub
+	case "github", "git_hub":
+		return CapabilitySourceGitHub
+	default:
+		return strings.TrimSpace(strings.ToLower(source))
+	}
 }
 
 const (
@@ -114,7 +141,7 @@ func AdminMarketplaceSearchSources(host string) []string {
 }
 
 func AdminMarketplaceCanSearchSource(host, source string) bool {
-	source = strings.TrimSpace(strings.ToLower(source))
+	source = NormalizeCapabilitySource(source)
 	for _, allowed := range AdminMarketplaceSearchSources(host) {
 		if source == allowed {
 			return true

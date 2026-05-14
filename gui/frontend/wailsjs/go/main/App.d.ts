@@ -1021,3 +1021,22 @@ export function SaveHubMCPSecretBinding(arg1:any):Promise<void>;
 export function GetHubMCPHubSecrets(arg1:string):Promise<Array<any>>;
 export function SaveHubMCPHubSecret(arg1:any):Promise<any>;
 export function RequestHubCapabilityInstallIntent(arg1:any):Promise<any>;
+
+// Virtual Employee bindings
+export function ListVirtualEmployees():Promise<Array<any>>;
+
+export function RegisterVirtualEmployee(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+
+export function UpdateVESettings(arg1:string,arg2:string,arg3:string,arg4:Array<string>):Promise<void>;
+
+export function GetVEStatus():Promise<any>;
+
+export function InitiateVEConversation(arg1:string):Promise<any>;
+
+export function SendVEMessage(arg1:string,arg2:string):Promise<void>;
+
+export function CloseVESession(arg1:string):Promise<void>;
+
+export function AddVEToGroup(arg1:string,arg2:string):Promise<void>;
+
+export function RespondAuthRequest(arg1:string,arg2:string):Promise<void>;

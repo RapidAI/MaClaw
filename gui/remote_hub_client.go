@@ -1032,6 +1032,8 @@ func (c *RemoteHubClient) readLoop() {
 			c.handleIMGatewayClaimResult(msg)
 		case hubInboundMessageNicknameAssigned:
 			c.handleNicknameAssigned(msg)
+		case hubInboundMessageVEEvent:
+			c.handleVEEvent(msg)
 		case hubInboundMessageAck:
 			c.handleAck(msg)
 		}

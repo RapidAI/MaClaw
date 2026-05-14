@@ -277,6 +277,7 @@ func CapabilityInstallIntentHandler(svc *capability.Service, settings store.Syst
 		if req.CapabilityID == "" {
 			req.CapabilityID = r.PathValue("id")
 		}
+		normalizeCapabilityInstallIntentRequest(&req)
 		policy := corelib.DefaultCapabilityMarketPolicy()
 		if settings != nil {
 			if loaded, err := loadCapabilityMarketPolicy(r, settings); err == nil {
@@ -336,11 +337,15 @@ func CapabilityInstallIntentHandler(svc *capability.Service, settings store.Syst
 				}
 				created, err := importFreeHubCenterCapabilityForIntent(r.Context(), svc, centerStatus, req)
 				if err != nil {
+					markAcquisitionImportFailed(r.Context(), svc, requestID, err)
 					writeError(w, http.StatusBadGateway, "HUBCENTER_IMPORT_FAILED", err.Error())
 					return
 				}
 				if created != nil {
-					_ = svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter}))
+					if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
+						writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
+						return
+					}
 					resp["capability"] = created
 					writeJSON(w, http.StatusOK, resp)
 					return
@@ -374,6 +379,17 @@ func CapabilityInstallIntentHandler(svc *capability.Service, settings store.Syst
 		}
 	}
 }
+func normalizeCapabilityInstallIntentRequest(req *capabilityInstallIntentRequest) {
+	if req == nil {
+		return
+	}
+	req.CapabilityType = strings.TrimSpace(strings.ToLower(req.CapabilityType))
+	req.Source = corelib.NormalizeCapabilitySource(req.Source)
+	req.Pricing = strings.TrimSpace(strings.ToLower(req.Pricing))
+	req.CapabilityID = strings.TrimSpace(req.CapabilityID)
+	req.Version = strings.TrimSpace(req.Version)
+}
+
 func findEnterpriseCapabilityForInstallIntent(ctx context.Context, svc *capability.Service, req capabilityInstallIntentRequest) (*capability.CapabilitySummary, error) {
 	if svc == nil {
 		return nil, capability.ErrNotFound
@@ -455,7 +471,8 @@ func CapabilityRecommendationsHandler(svc *capability.Service) http.HandlerFunc 
 }
 
 func findOpenAcquisitionRequest(ctx context.Context, svc *capability.Service, req capabilityInstallIntentRequest, kind string) *capability.AcquisitionRequest {
-	if svc == nil || strings.TrimSpace(kind) != "purchase" {
+	kind = strings.TrimSpace(kind)
+	if svc == nil || kind == "" {
 		return nil
 	}
 	items, err := svc.ListAcquisitionRequests(ctx, "")
@@ -468,11 +485,11 @@ func findOpenAcquisitionRequest(ctx context.Context, svc *capability.Service, re
 	version := strings.TrimSpace(req.Version)
 	for i := range items {
 		item := items[i]
-		status := strings.TrimSpace(item.Status)
+		status := strings.ToLower(strings.TrimSpace(item.Status))
 		if status != "pending_review" && status != "approved" {
 			continue
 		}
-		if strings.TrimSpace(item.RequestKind) != kind || strings.TrimSpace(item.Source) != source || strings.TrimSpace(item.SourceCapabilityKey) != capabilityID {
+		if !strings.EqualFold(strings.TrimSpace(item.RequestKind), kind) || !strings.EqualFold(strings.TrimSpace(item.Source), source) || strings.TrimSpace(item.SourceCapabilityKey) != capabilityID {
 			continue
 		}
 		if capabilityType != "" && !strings.EqualFold(strings.TrimSpace(item.CapabilityType), capabilityType) {
@@ -484,6 +501,12 @@ func findOpenAcquisitionRequest(ctx context.Context, svc *capability.Service, re
 		return &item
 	}
 	return nil
+}
+func markAcquisitionImportFailed(ctx context.Context, svc *capability.Service, requestID string, cause error) {
+	if svc == nil || strings.TrimSpace(requestID) == "" || cause == nil {
+		return
+	}
+	_ = svc.RejectAcquisitionRequest(ctx, requestID, "system", jsonObjectString(map[string]any{"mode": "import_failed", "error": cause.Error()}))
 }
 func AdminCapabilityAcquisitionRequestsHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -523,12 +546,12 @@ func AdminCapabilityApproveAcquisitionHandler(svc *capability.Service, deps ...a
 			writeError(w, http.StatusInternalServerError, "ACQUISITION_GET_FAILED", getErr.Error())
 			return
 		}
+		if item != nil && acquisitionRequestStatusTerminal(item.Status) {
+			writeError(w, http.StatusConflict, "ACQUISITION_ALREADY_TERMINAL", "terminal acquisition requests cannot be approved")
+			return
+		}
 		if err := svc.ApproveAcquisitionRequest(r.Context(), requestID, "admin", rawJSONOrDefault(req.Approval)); err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, capability.ErrNotFound) {
-				status = http.StatusNotFound
-			}
-			writeError(w, status, "ACQUISITION_APPROVE_FAILED", err.Error())
+			writeError(w, acquisitionStatusCode(err), "ACQUISITION_APPROVE_FAILED", err.Error())
 			return
 		}
 		settings, centerStatus := capabilityApprovalDeps(deps...)
@@ -539,7 +562,7 @@ func AdminCapabilityApproveAcquisitionHandler(svc *capability.Service, deps ...a
 				return
 			}
 			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, purchaseJSON); err != nil {
-				writeError(w, http.StatusInternalServerError, "ACQUISITION_COMPLETE_FAILED", err.Error())
+				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "purchased": true, "capability": created})
@@ -552,7 +575,7 @@ func AdminCapabilityApproveAcquisitionHandler(svc *capability.Service, deps ...a
 				return
 			}
 			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, purchaseJSON); err != nil {
-				writeError(w, http.StatusInternalServerError, "ACQUISITION_COMPLETE_FAILED", err.Error())
+				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "purchased": true, "capability": created})
@@ -568,18 +591,37 @@ func AdminCapabilityRejectAcquisitionHandler(svc *capability.Service) http.Handl
 			Approval json.RawMessage `json:"approval,omitempty"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		if err := svc.RejectAcquisitionRequest(r.Context(), r.PathValue("id"), "admin", rawJSONOrDefault(req.Approval)); err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, capability.ErrNotFound) {
-				status = http.StatusNotFound
-			}
-			writeError(w, status, "ACQUISITION_REJECT_FAILED", err.Error())
+		requestID := r.PathValue("id")
+		item, getErr := svc.GetAcquisitionRequest(r.Context(), requestID)
+		if getErr != nil && !errors.Is(getErr, capability.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "ACQUISITION_GET_FAILED", getErr.Error())
+			return
+		}
+		if item != nil && acquisitionRequestStatusTerminal(item.Status) {
+			writeError(w, http.StatusConflict, "ACQUISITION_ALREADY_TERMINAL", "terminal acquisition requests cannot be rejected")
+			return
+		}
+		if err := svc.RejectAcquisitionRequest(r.Context(), requestID, "admin", rawJSONOrDefault(req.Approval)); err != nil {
+			writeError(w, acquisitionStatusCode(err), "ACQUISITION_REJECT_FAILED", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 
+func acquisitionStatusCode(err error) int {
+	if errors.Is(err, capability.ErrNotFound) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, capability.ErrInvalidState) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+func acquisitionRequestStatusTerminal(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	return status == "completed" || status == "rejected"
+}
 func AdminCapabilityCompleteAcquisitionHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -590,12 +632,22 @@ func AdminCapabilityCompleteAcquisitionHandler(svc *capability.Service) http.Han
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
-		if err := svc.CompleteAcquisitionRequest(r.Context(), r.PathValue("id"), req.ResultCapabilityID, rawJSONOrDefault(req.Purchase)); err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, capability.ErrNotFound) {
-				status = http.StatusNotFound
-			}
-			writeError(w, status, "ACQUISITION_COMPLETE_FAILED", err.Error())
+		if strings.TrimSpace(req.ResultCapabilityID) == "" {
+			writeError(w, http.StatusBadRequest, "RESULT_CAPABILITY_REQUIRED", "result_capability_id is required")
+			return
+		}
+		requestID := r.PathValue("id")
+		item, getErr := svc.GetAcquisitionRequest(r.Context(), requestID)
+		if getErr != nil && !errors.Is(getErr, capability.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "ACQUISITION_GET_FAILED", getErr.Error())
+			return
+		}
+		if item != nil && acquisitionRequestStatusTerminal(item.Status) {
+			writeError(w, http.StatusConflict, "ACQUISITION_ALREADY_TERMINAL", "terminal acquisition requests cannot be completed")
+			return
+		}
+		if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, req.ResultCapabilityID, rawJSONOrDefault(req.Purchase)); err != nil {
+			writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -818,7 +870,7 @@ type capabilityMarketCenterStatusProvider interface {
 
 func AdminCapabilityExternalSearchHandler(centerStatus capabilityMarketCenterStatusProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		source := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("source")))
+		source := corelib.NormalizeCapabilitySource(r.URL.Query().Get("source"))
 		allowedSources := corelib.AdminMarketplaceSearchSources(corelib.CapabilityMarketplaceHostHub)
 		if source != "" && !corelib.AdminMarketplaceCanSearchSource(corelib.CapabilityMarketplaceHostHub, source) {
 			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for Hub marketplace admin search")
@@ -1229,6 +1281,9 @@ func purchaseAndImportHubCenterMCPMarketplaceEntry(ctx context.Context, svc *cap
 	}
 	status, _ := centerStatus.Status(ctx)
 	adminEmail := hubMarketplaceAdminEmail(ctx, settings)
+	if adminEmail == "" {
+		return nil, "", errors.New("admin email is required for paid MCP purchase")
+	}
 	payload := map[string]any{
 		"hub_id":      "",
 		"admin_email": adminEmail,
@@ -1425,6 +1480,7 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
+		normalizeCapabilityInstallIntentRequest(&req)
 		if !corelib.AdminMarketplaceCanSearchSource(corelib.CapabilityMarketplaceHostHub, req.Source) {
 			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for Hub marketplace admin import")
 			return
@@ -1487,10 +1543,14 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 			}
 			created, err := importHubCenterMCPMarketplaceEntry(r.Context(), svc, centerStatus, req.CapabilityID)
 			if err != nil {
+				markAcquisitionImportFailed(r.Context(), svc, requestID, err)
 				writeError(w, http.StatusBadGateway, "HUBCENTER_IMPORT_FAILED", err.Error())
 				return
 			}
-			_ = svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter}))
+			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
+				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"action": decision.Action, "reason": decision.Reason, "request_id": requestID, "capability": created})
 			return
 		}
@@ -1501,20 +1561,28 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 			}
 			created, err := importHubCenterSkillMarketplaceEntry(r.Context(), svc, centerStatus, req.CapabilityID)
 			if err != nil {
+				markAcquisitionImportFailed(r.Context(), svc, requestID, err)
 				writeError(w, http.StatusBadGateway, "HUBCENTER_IMPORT_FAILED", err.Error())
 				return
 			}
-			_ = svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter}))
+			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
+				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"action": decision.Action, "reason": decision.Reason, "request_id": requestID, "capability": created})
 			return
 		}
 		if (decision.Action == corelib.CapabilityInstallCreateImportRequest || decision.Action == corelib.CapabilityInstallExternalDirect) && strings.EqualFold(req.CapabilityType, corelib.CapabilityTypeSkill) && (req.Source == corelib.CapabilitySourceClawHub || req.Source == corelib.CapabilitySourceGitHub) {
 			created, err := importFreeExternalSkillCapability(r.Context(), svc, req)
 			if err != nil {
+				markAcquisitionImportFailed(r.Context(), svc, requestID, err)
 				writeError(w, http.StatusBadGateway, "EXTERNAL_SKILL_IMPORT_FAILED", err.Error())
 				return
 			}
-			_ = svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": req.Source}))
+			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": req.Source})); err != nil {
+				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"action": decision.Action, "reason": decision.Reason, "request_id": requestID, "capability": created})
 			return
 		}

@@ -190,12 +190,51 @@ func TestMCPSecretRequirementsNeedUserConfigHonorsExistingBindings(t *testing.T)
 	defer server.Close()
 
 	client := &capabilityMarketClient{baseURL: server.URL, token: "viewer-token", http: server.Client()}
-	needsConfig := mcpSecretRequirementsNeedUserConfig(context.Background(), client, corelib.MCPServerEntry{ID: "billing"}, []HubMCPSecretRequirement{{Name: "api_token", StoragePolicy: "local", Required: true}})
+	needsConfig := mcpSecretRequirementsNeedUserConfig(context.Background(), client, corelib.MCPServerEntry{ID: "billing", AuthSecret: "local-token"}, []HubMCPSecretRequirement{{Name: "api_token", StoragePolicy: "local", Required: true}})
 	if needsConfig {
 		t.Fatal("expected configured local binding to satisfy required secret")
 	}
 }
 
+func TestMCPSecretRequirementsNeedUserConfigRequiresLocalSecretForLocalBinding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/capabilities/mcp-secret-bindings":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []HubMCPSecretBinding{{MCPServerID: "billing", RequirementName: "api_token", Storage: "local", LocalSecretRef: "mcp:billing:api_token", Status: "configured"}}})
+		case "/api/capabilities/mcp-hub-secrets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []HubMCPHubSecret{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &capabilityMarketClient{baseURL: server.URL, token: "viewer-token", http: server.Client()}
+	needsConfig := mcpSecretRequirementsNeedUserConfig(context.Background(), client, corelib.MCPServerEntry{ID: "billing"}, []HubMCPSecretRequirement{{Name: "api_token", StoragePolicy: "local", Required: true}})
+	if !needsConfig {
+		t.Fatal("expected stale local binding without a local auth secret to need config")
+	}
+}
+
+func TestMCPSecretRequirementsNeedUserConfigRequiresRealHubSecretForHubBinding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/capabilities/mcp-secret-bindings":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []HubMCPSecretBinding{{MCPServerID: "billing", RequirementName: "api_token", Storage: "hub", HubSecretRef: "hub://mcp-secrets/billing/api_token", Status: "configured"}}})
+		case "/api/capabilities/mcp-hub-secrets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []HubMCPHubSecret{}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := &capabilityMarketClient{baseURL: server.URL, token: "viewer-token", http: server.Client()}
+	needsConfig := mcpSecretRequirementsNeedUserConfig(context.Background(), client, corelib.MCPServerEntry{ID: "billing"}, []HubMCPSecretRequirement{{Name: "api_token", StoragePolicy: "hub", Required: true}})
+	if !needsConfig {
+		t.Fatal("expected stale hub binding without stored hub secret to need config")
+	}
+}
 func TestMCPSecretRequirementsNeedUserConfigRequiresMissingHubSecret(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})

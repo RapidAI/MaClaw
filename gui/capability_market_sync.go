@@ -778,6 +778,7 @@ func mcpSecretRequirementsNeedUserConfig(ctx context.Context, client *capability
 		return false
 	}
 	bindingsByName := map[string]HubMCPSecretBinding{}
+	hubSecretsByName := map[string]bool{}
 	if client != nil {
 		bindings, err := client.listMCPSecretBindings(ctx, server.ID)
 		if err != nil {
@@ -799,7 +800,7 @@ func mcpSecretRequirementsNeedUserConfig(ctx context.Context, client *capability
 				if name == "" || strings.TrimSpace(secret.SecretDigest) == "" {
 					continue
 				}
-				bindingsByName[name] = HubMCPSecretBinding{MCPServerID: server.ID, RequirementName: name, Storage: "hub", HubSecretRef: secret.ID, Status: "configured"}
+				hubSecretsByName[name] = true
 			}
 		}
 	}
@@ -811,7 +812,7 @@ func mcpSecretRequirementsNeedUserConfig(ctx context.Context, client *capability
 		if name == "" {
 			continue
 		}
-		if mcpSecretRequirementConfigured(req, bindingsByName[name], server) {
+		if mcpSecretRequirementConfigured(req, bindingsByName[name], server, hubSecretsByName[name]) {
 			continue
 		}
 		return true
@@ -819,15 +820,15 @@ func mcpSecretRequirementsNeedUserConfig(ctx context.Context, client *capability
 	return false
 }
 
-func mcpSecretRequirementConfigured(req HubMCPSecretRequirement, binding HubMCPSecretBinding, server corelib.MCPServerEntry) bool {
+func mcpSecretRequirementConfigured(req HubMCPSecretRequirement, binding HubMCPSecretBinding, server corelib.MCPServerEntry, hubSecretConfigured bool) bool {
 	policy := strings.TrimSpace(strings.ToLower(req.StoragePolicy))
 	storage := strings.TrimSpace(strings.ToLower(binding.Storage))
 	status := strings.TrimSpace(strings.ToLower(binding.Status))
 	configured := status == "configured" || status == "ready"
-	if storage == "hub" && policy != "local" && (configured || strings.TrimSpace(binding.HubSecretRef) != "") {
+	if storage == "hub" && policy != "local" && hubSecretConfigured && (configured || strings.TrimSpace(binding.HubSecretRef) != "") {
 		return true
 	}
-	if storage == "local" && policy != "hub" && (configured || strings.TrimSpace(binding.LocalSecretRef) != "") {
+	if storage == "local" && policy != "hub" && (configured || strings.TrimSpace(binding.LocalSecretRef) != "") && strings.TrimSpace(server.AuthSecret) != "" {
 		return true
 	}
 	return policy != "hub" && strings.TrimSpace(server.AuthSecret) != ""

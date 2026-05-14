@@ -45,7 +45,11 @@ func (h *VEMessageHandler) HandleGroupEnvelope(envelope a2a.GroupEnvelope) {
 	if envelope.Type != a2a.GroupMessageDiscussionMessage {
 		return
 	}
-	if envelope.Message == nil || strings.TrimSpace(envelope.Message.Content) == "" {
+	if envelope.Message == nil {
+		return
+	}
+	// Allow messages with attachments even if content is empty
+	if strings.TrimSpace(envelope.Message.Content) == "" && !HasAttachments(*envelope.Message) {
 		return
 	}
 
@@ -64,7 +68,17 @@ func (h *VEMessageHandler) HandleGroupEnvelope(envelope a2a.GroupEnvelope) {
 // HandleIncomingMessage processes an incoming A2A discussion message
 // when this maclaw instance is acting as a virtual employee.
 // It runs the local AI agent and sends streaming responses back via Hub.
+// If the message contains attachments (TextAttachment/ImageAttachment/FileAttachment),
+// they are decoded/downloaded and appended to the AI Agent input as context.
 func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.GroupDiscussionMessage) {
+	// Process attachments and append context to message content
+	if HasAttachments(msg) {
+		attachmentContext := h.ProcessMessageAttachments(msg)
+		if attachmentContext != "" {
+			msg.Content = msg.Content + attachmentContext
+		}
+	}
+
 	if strings.TrimSpace(msg.Content) == "" {
 		return
 	}

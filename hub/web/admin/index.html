@@ -382,7 +382,7 @@
           <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceBillingTitle"></div><div class="item-meta" data-i18n="marketplaceBillingDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplaceBilling()" data-i18n="marketplaceLoadBilling"></button></div><div id="marketplaceBillingBody" style="display:grid;gap:8px;margin-top:10px"></div></div>
         </div>
         <div class="grid2" style="margin-top:10px">
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceRequestsTitle"></div><div class="item-meta" data-i18n="marketplaceRequestsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceRequestsStatus"></label><select id="marketplaceRequestStatus" onchange="loadMarketplace()"><option value="pending">pending</option><option value="approved">approved</option><option value="completed">completed</option><option value="rejected">rejected</option><option value="">all</option></select></div></div><div id="marketplaceRequestsList" style="display:grid;gap:8px;margin-top:10px"></div></div>
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceRequestsTitle"></div><div class="item-meta" data-i18n="marketplaceRequestsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceRequestsStatus"></label><select id="marketplaceRequestStatus" onchange="loadMarketplace()"><option value="pending_review">pending_review</option><option value="approved">approved</option><option value="completed">completed</option><option value="rejected">rejected</option><option value="">all</option></select></div></div><div id="marketplaceRequestsList" style="display:grid;gap:8px;margin-top:10px"></div></div>
           <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceCapabilityType" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option></select></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div id="marketplaceCapabilitiesList" style="display:grid;gap:8px;margin-top:10px"></div></div>
         </div>
         <div class="grid2" style="margin-top:10px">
@@ -1193,6 +1193,3 @@
 <script src="/admin/admin-bootstrap.js"></script>
 </body>
 </html>
-
-
-

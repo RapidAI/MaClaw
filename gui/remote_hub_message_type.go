@@ -20,10 +20,16 @@ const (
 	hubInboundMessageGatewayClaimResult hubInboundMessageType = "im.gateway_claim_result"
 	hubInboundMessageNicknameAssigned   hubInboundMessageType = "machine.nickname_assigned"
 	hubInboundMessageAck                hubInboundMessageType = "ack"
+	hubInboundMessageVEEvent            hubInboundMessageType = "ve_event" // sentinel for all ve:* events
 )
 
 func normalizeHubInboundMessageType(messageType string) hubInboundMessageType {
-	switch hubInboundMessageType(strings.TrimSpace(messageType)) {
+	trimmed := strings.TrimSpace(messageType)
+	// VE events all start with "ve:"; route them to a single handler
+	if strings.HasPrefix(trimmed, "ve:") {
+		return hubInboundMessageVEEvent
+	}
+	switch hubInboundMessageType(trimmed) {
 	case hubInboundMessageError:
 		return hubInboundMessageError
 	case hubInboundMessageAuthOK:

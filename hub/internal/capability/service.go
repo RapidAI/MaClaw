@@ -8,11 +8,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
 
 var ErrNotFound = errors.New("capability not found")
+var ErrInvalidState = errors.New("capability invalid state")
 
 type Service struct {
 	db *sql.DB
@@ -457,14 +459,31 @@ func (s *Service) updateAcquisitionStatus(ctx context.Context, requestID, status
 	if len(resultCapabilityID) > 0 {
 		resultID = strings.TrimSpace(resultCapabilityID[0])
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE capability_acquisition_requests SET status = ?, approval_json = CASE WHEN ? <> '{}' THEN ? ELSE approval_json END, purchase_json = CASE WHEN ? <> '{}' THEN ? ELSE purchase_json END, result_capability_id = CASE WHEN ? <> '' THEN ? ELSE result_capability_id END, updated_at = ? WHERE id = ?`, strings.TrimSpace(status), approvalJSON, approvalJSON, purchaseJSON, purchaseJSON, resultID, resultID, time.Now().UTC().Format(time.RFC3339), strings.TrimSpace(requestID))
+	requestID = strings.TrimSpace(requestID)
+	res, err := s.db.ExecContext(ctx, `UPDATE capability_acquisition_requests SET status = ?, approval_json = CASE WHEN ? <> '{}' THEN ? ELSE approval_json END, purchase_json = CASE WHEN ? <> '{}' THEN ? ELSE purchase_json END, result_capability_id = CASE WHEN ? <> '' THEN ? ELSE result_capability_id END, updated_at = ? WHERE id = ? AND LOWER(TRIM(status)) NOT IN ('completed', 'rejected')`, strings.TrimSpace(status), approvalJSON, approvalJSON, purchaseJSON, purchaseJSON, resultID, resultID, time.Now().UTC().Format(time.RFC3339), requestID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		var currentStatus string
+		err := s.db.QueryRowContext(ctx, `SELECT status FROM capability_acquisition_requests WHERE id = ? LIMIT 1`, requestID).Scan(&currentStatus)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if acquisitionStatusTerminal(currentStatus) {
+			return ErrInvalidState
+		}
 		return ErrNotFound
 	}
 	return nil
+}
+
+func acquisitionStatusTerminal(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	return status == "completed" || status == "rejected"
 }
 
 type ManagedDeploymentInput struct {
@@ -712,6 +731,16 @@ func (s *Service) UpsertMCPSecretBinding(ctx context.Context, in MCPSecretBindin
 	}
 	if strings.TrimSpace(in.Status) == "" {
 		in.Status = "configured"
+	}
+	in.Storage = strings.TrimSpace(strings.ToLower(in.Storage))
+	if in.Storage == "hub" && (strings.TrimSpace(in.HubSecretRef) != "" || strings.EqualFold(strings.TrimSpace(in.Status), "configured") || strings.EqualFold(strings.TrimSpace(in.Status), "ready")) {
+		secret, err := s.GetMCPHubSecret(ctx, in.UserID, in.MCPServerID, in.RequirementName)
+		if err != nil {
+			return nil, fmt.Errorf("hub secret is required before configuring hub secret binding: %w", err)
+		}
+		if strings.TrimSpace(secret.SecretDigest) == "" {
+			return nil, errors.New("hub secret digest is required before configuring hub secret binding")
+		}
 	}
 	id := newID("mcp_secret")
 	now := time.Now().UTC().Format(time.RFC3339)

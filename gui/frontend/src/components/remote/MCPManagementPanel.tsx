@@ -596,7 +596,7 @@ function RemoteMCPPanel({ translate }: Props) {
                 const configured = new Set<string>();
                 if (Array.isArray(hubSecrets)) {
                     for (const item of hubSecrets as any[]) {
-                        if (item.requirement_name) {
+                        if (item.requirement_name && item.secret_digest) {
                             const req = required.find((candidate) => candidate.name === item.requirement_name);
                             if (secretStorageAllowed("hub", req?.storage_policy)) configured.add(item.requirement_name);
                         }
@@ -607,9 +607,7 @@ function RemoteMCPPanel({ translate }: Props) {
                         if (!binding.requirement_name) continue;
                         const req = required.find((candidate) => candidate.name === binding.requirement_name);
                         const storage = binding.storage === "local" ? "local" : "hub";
-                        if (storage === "local") {
-                            if (secretStorageAllowed("local", req?.storage_policy) && binding.local_secret_ref && server.auth_secret) configured.add(binding.requirement_name);
-                        } else if (secretStorageAllowed("hub", req?.storage_policy) && (binding.status === "configured" || binding.hub_secret_ref)) {
+                        if (storage === "local" && secretStorageAllowed("local", req?.storage_policy) && binding.local_secret_ref && server.auth_secret) {
                             configured.add(binding.requirement_name);
                         }
                     }
@@ -723,7 +721,7 @@ function RemoteMCPPanel({ translate }: Props) {
                         const existing = await GetHubMCPHubSecrets(server.id);
                         if (Array.isArray(existing)) {
                             for (const item of existing as any[]) {
-                                if (item.requirement_name && next[item.requirement_name]) {
+                                if (item.requirement_name && item.secret_digest && next[item.requirement_name]) {
                                     const req = requirements.find((candidate) => candidate.name === item.requirement_name);
                                     if (secretStorageAllowed("hub", req?.storage_policy)) {
                                         next[item.requirement_name] = { ...next[item.requirement_name], storage: "hub", configured: true };
@@ -740,7 +738,7 @@ function RemoteMCPPanel({ translate }: Props) {
                                     const req = requirements.find((candidate) => candidate.name === binding.requirement_name);
                                     const bindingStorage = binding.storage === "local" ? "local" : "hub";
                                     const storage = normalizeSecretStorage(bindingStorage, req?.storage_policy);
-                                    const configured = storage === "local" ? bindingStorage === "local" && !!server.auth_secret : bindingStorage === "hub" && (binding.status === "configured" || !!binding.hub_secret_ref);
+                                    const configured = storage === "local" ? bindingStorage === "local" && !!server.auth_secret : false;
                                     next[binding.requirement_name] = { ...next[binding.requirement_name], storage, configured };
                                 }
                             }
@@ -777,10 +775,9 @@ function RemoteMCPPanel({ translate }: Props) {
             if (!req.required) continue;
             const input = secretInputs[req.name];
             const policy = req.storage_policy || "hub_or_local";
-            const storage = input?.storage || (policy === "local" ? "local" : "hub");
             const hasNewValue = !!input?.value.trim();
             const alreadyConfigured = !!input?.configured;
-            const hasLocalAuthSecret = storage === "local" && !!formData.auth_secret.trim();
+            const hasLocalAuthSecret = secretStorageAllowed("local", policy) && !!formData.auth_secret.trim();
             if (!hasNewValue && !alreadyConfigured && !hasLocalAuthSecret) {
                 return `${translate("mcpSecretRequired")}: ${req.label || req.name}`;
             }
@@ -810,12 +807,22 @@ function RemoteMCPPanel({ translate }: Props) {
             const input = secretInputs[req.name];
             if (!input) continue;
             if (input.storage === "hub") {
-                if (!input.value.trim()) continue;
-                await SaveHubMCPHubSecret({
+                if (input.value.trim()) {
+                    await SaveHubMCPHubSecret({
+                        mcp_server_id: serverID,
+                        requirement_name: req.name,
+                        secret_value: input.value,
+                        metadata: { capability_id: editingServer.capability.capability_id, version_key: editingServer.capability.version_key || "" },
+                    });
+                    continue;
+                }
+                if (!secretStorageAllowed("local", req.storage_policy) || !formData.auth_secret.trim()) continue;
+                await SaveHubMCPSecretBinding({
                     mcp_server_id: serverID,
                     requirement_name: req.name,
-                    secret_value: input.value,
-                    metadata: { capability_id: editingServer.capability.capability_id, version_key: editingServer.capability.version_key || "" },
+                    storage: "local",
+                    local_secret_ref: `mcp:${serverID}:${req.name}`,
+                    status: "configured",
                 });
             } else {
                 const hasLocalSecret = !!input.value.trim() || !!formData.auth_secret.trim() || !!input.configured;

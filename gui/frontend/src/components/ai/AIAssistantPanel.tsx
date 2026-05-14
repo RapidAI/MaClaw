@@ -30,6 +30,9 @@ import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { AssistantPreviewPane } from "./AssistantPreviewPane";
 import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
 import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
+import { AITabBar } from "./AITabBar";
+import { useAITabManager } from "./useAITabManager";
+import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 export function AIAssistantPanel(props: any) {
     const { onClose, lang, chatFontSize = 14, groupDiscussion, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0 } = props;
     const state = props.state || props;
@@ -92,6 +95,37 @@ export function AIAssistantPanel(props: any) {
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
+
+    // --- Tab System ---
+    const {
+        tabState,
+        activeTab,
+        activateTab,
+        createVETab,
+        createGroupTab,
+        closeTab,
+        saveTabState,
+        getTabState,
+        tabLimitError,
+        clearTabLimitError,
+    } = useAITabManager();
+
+    const isLocalTabActive = activeTab.id === "local";
+
+    // Handle starting a VE conversation from VirtualEmployeeTab
+    const handleStartVEConversation = useCallback((ve: VirtualEmployeeEntry) => {
+        const tab = createVETab(ve.id, ve.name);
+        if (!tab) {
+            // Max limit reached — error is set in the hook
+        }
+    }, [createVETab]);
+
+    // Clear tab limit error after 3 seconds
+    useEffect(() => {
+        if (!tabLimitError) return;
+        const timer = setTimeout(clearTabLimitError, 3000);
+        return () => clearTimeout(timer);
+    }, [tabLimitError, clearTabLimitError]);
 
     const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
@@ -451,7 +485,33 @@ export function AIAssistantPanel(props: any) {
                 lang={lang}
                 theme={t}
             />
-            {/* Chat area */}
+            {/* Tab Bar — shown when there are multiple tabs */}
+            <AITabBar
+                tabs={tabState.tabs}
+                activeTabId={tabState.activeTabId}
+                theme={t}
+                onActivate={activateTab}
+                onClose={closeTab}
+            />
+            {/* Tab limit error toast */}
+            {tabLimitError && (
+                <div
+                    data-testid="ai-tab-limit-error"
+                    style={{
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        color: t.errorText,
+                        background: t.errorBg,
+                        borderBottom: `1px solid ${t.errorBorder}`,
+                        textAlign: "center",
+                    }}
+                >
+                    {tabLimitError}
+                </div>
+            )}
+            {/* Chat area — only rendered for local tab (inactive tabs don't render DOM) */}
+            {isLocalTabActive && (
+            <>
             <AssistantWorkflowMaximizeSuggestion
                 inline={!!inline}
                 lang={lang}
@@ -551,6 +611,40 @@ export function AIAssistantPanel(props: any) {
                 updateInputValue={updateInputValue}
                 voiceInput={voiceInput}
             />
+            </>
+            )}
+            {/* VE conversation tabs — placeholder for future VEConversationView */}
+            {!isLocalTabActive && activeTab.type === "ve" && (
+                <div
+                    data-testid={`ai-ve-tab-content-${activeTab.id}`}
+                    style={{
+                        flex: 1,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: t.textMuted,
+                        fontSize: 13,
+                    }}
+                >
+                    <span>VE 对话: {activeTab.title}</span>
+                </div>
+            )}
+            {/* Group chat tabs — placeholder for future GroupChatView */}
+            {!isLocalTabActive && activeTab.type === "group" && (
+                <div
+                    data-testid={`ai-group-tab-content-${activeTab.id}`}
+                    style={{
+                        flex: 1,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: t.textMuted,
+                        fontSize: 13,
+                    }}
+                >
+                    <span>群聊: {activeTab.title}</span>
+                </div>
+            )}
             </div>
             <AssistantPreviewPane
                 agentView={agentView}

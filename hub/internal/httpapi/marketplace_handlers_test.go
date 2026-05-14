@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -157,6 +158,24 @@ func (fakeMarketplaceViewerAuth) AuthenticateViewer(ctx context.Context, rawToke
 	return &auth.ViewerPrincipal{UserID: "user-1", Email: "user@example.com"}, nil
 }
 
+func TestMCPSecretBindingUpsertRejectsMissingHubSecret(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	body := []byte(`{"mcp_server_id":"billing-api","requirement_name":"api_token","storage":"hub","hub_secret_ref":"hub://mcp-secrets/billing-api/api_token","status":"configured"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/capabilities/mcp-secret-bindings", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	rec := httptest.NewRecorder()
+
+	MCPSecretBindingUpsertHandler(fakeMarketplaceViewerAuth{}, svc)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("upsert status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	bindings, err := svc.ListMCPSecretBindings(req.Context(), "user-1", "billing-api")
+	if err != nil || len(bindings) != 0 {
+		t.Fatalf("bindings=%+v err=%v", bindings, err)
+	}
+}
 func TestMCPHubSecretUpsertStoresMetadataAndBinding(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
@@ -351,7 +370,7 @@ func TestAdminCapabilityExternalSearchHubCenterMCP(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": []any{map[string]any{"capability_id": "billing-api", "display_name": "Billing API"}}})
 	}))
 	defer server.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=hubcenter&type=mcp&q=billing", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=hub_center&type=mcp&q=billing", nil)
 	rec := httptest.NewRecorder()
 
 	AdminCapabilityExternalSearchHandler(fakeCapabilityMarketCenterStatus{state: &center.RegistrationState{ActiveBaseURL: server.URL}})(rec, req)
@@ -431,6 +450,25 @@ func TestAdminCapabilityImportIntentIgnoresClientEnterpriseOnlySearch(t *testing
 	items, err := svc.ListAcquisitionRequests(context.Background(), "completed")
 	if err != nil || len(items) != 1 || items[0].RequestKind != "import" {
 		t.Fatalf("requests=%+v err=%v", items, err)
+	}
+}
+func TestAdminCapabilityImportIntentRejectsFailedFreeImportRequest(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	settings := &testSystemSettingsRepo{}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities/import-intent", bytes.NewReader([]byte(`{"capability_type":"mcp","capability_id":"missing-mcp","source":"hubcenter","pricing":"free"}`)))
+	rec := httptest.NewRecorder()
+	AdminCapabilityImportIntentHandler(svc, settings)(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	items, err := svc.ListAcquisitionRequests(context.Background(), "rejected")
+	if err != nil || len(items) != 1 || items[0].RequestKind != "import" {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	if !strings.Contains(items[0].ApprovalJSON, "import_failed") {
+		t.Fatalf("approval json = %s", items[0].ApprovalJSON)
 	}
 }
 func TestAdminCapabilityImportIntentImportsFreeHubCenterSkill(t *testing.T) {
@@ -593,6 +631,68 @@ func TestAdminCapabilityImportIntentImportsFreeHubCenterMCP(t *testing.T) {
 	}
 }
 
+func TestCapabilityInstallIntentRejectsFailedFreeImportRequest(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	settings := &testSystemSettingsRepo{}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/missing-mcp/install-intent", bytes.NewReader([]byte(`{"capability_type":"mcp","source":"hubcenter","pricing":"free"}`)))
+	req.SetPathValue("id", "missing-mcp")
+	rec := httptest.NewRecorder()
+	CapabilityInstallIntentHandler(svc, settings)(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	items, err := svc.ListAcquisitionRequests(context.Background(), "rejected")
+	if err != nil || len(items) != 1 || items[0].RequestKind != "import" {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+	if !strings.Contains(items[0].ApprovalJSON, "import_failed") {
+		t.Fatalf("approval json = %s", items[0].ApprovalJSON)
+	}
+}
+func TestCapabilityInstallIntentNormalizesSourceBeforeFreeHubCenterImport(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	settings := &testSystemSettingsRepo{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/capability-market/mcp/free-mcp" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"capability_id": "free-mcp",
+			"display_name":  "Free MCP",
+			"version":       "1.0.0",
+			"mcp":           map[string]any{"id": "free-mcp", "name": "Free MCP", "endpoint_url": "https://example.com/mcp"},
+		})
+	}))
+	defer server.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/capabilities/free-mcp/install-intent", bytes.NewReader([]byte(`{"capability_type":"MCP","source":"HubCenter","pricing":"Free"}`)))
+	req.SetPathValue("id", "free-mcp")
+	rec := httptest.NewRecorder()
+
+	CapabilityInstallIntentHandler(svc, settings, fakeCapabilityMarketCenterStatus{state: &center.RegistrationState{ActiveBaseURL: server.URL}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Action     string                        `json:"action"`
+		RequestID  string                        `json:"request_id"`
+		Capability *capability.CapabilitySummary `json:"capability"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Capability == nil || resp.Capability.ID == "" {
+		t.Fatalf("expected imported capability, got %+v", resp)
+	}
+	items, err := svc.ListAcquisitionRequests(context.Background(), "completed")
+	if err != nil || len(items) != 1 || items[0].Source != corelib.CapabilitySourceHubCenter || items[0].CapabilityType != corelib.CapabilityTypeMCP {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+}
 func TestCapabilityInstallIntentImportsFreeHubCenterMCP(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
@@ -771,6 +871,59 @@ func TestCapabilityInstallIntentReusesOpenPurchaseRequest(t *testing.T) {
 	}
 }
 
+func TestFindOpenAcquisitionRequestNormalizesStatusSourceAndKind(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	reqID, err := svc.CreateAcquisitionRequest(context.Background(), capability.AcquisitionRequestInput{CapabilityType: corelib.CapabilityTypeMCP, Source: "HubCenter", SourceCapabilityKey: "paid-case", SourceVersionKey: "v1", RequestKind: "Purchase"})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if err := svc.ApproveAcquisitionRequest(context.Background(), reqID, "admin", `{"mode":"test"}`); err != nil {
+		t.Fatalf("approve request: %v", err)
+	}
+
+	found := findOpenAcquisitionRequest(context.Background(), svc, capabilityInstallIntentRequest{CapabilityType: corelib.CapabilityTypeMCP, Source: "hubcenter", CapabilityID: "paid-case", Version: "v1"}, "purchase")
+	if found == nil || found.ID != reqID {
+		t.Fatalf("found=%+v want %s", found, reqID)
+	}
+}
+func TestCapabilityInstallIntentReusesOpenImportRequest(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	settings := &testSystemSettingsRepo{}
+
+	body := []byte(`{"capability_type":"skill","source":"github","pricing":"free","user_reason":"please import"}`)
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/owner%2Frepo%2Fskill/install-intent", bytes.NewReader(body))
+	firstReq.SetPathValue("id", "owner/repo/skill")
+	firstRec := httptest.NewRecorder()
+	CapabilityInstallIntentHandler(svc, settings)(firstRec, firstReq)
+	if firstRec.Code != http.StatusAccepted {
+		t.Fatalf("first status=%d body=%s", firstRec.Code, firstRec.Body.String())
+	}
+	var firstResp map[string]any
+	if err := json.Unmarshal(firstRec.Body.Bytes(), &firstResp); err != nil {
+		t.Fatalf("decode first response: %v", err)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/capabilities/owner%2Frepo%2Fskill/install-intent", bytes.NewReader(body))
+	secondReq.SetPathValue("id", "owner/repo/skill")
+	secondRec := httptest.NewRecorder()
+	CapabilityInstallIntentHandler(svc, settings)(secondRec, secondReq)
+	if secondRec.Code != http.StatusAccepted {
+		t.Fatalf("second status=%d body=%s", secondRec.Code, secondRec.Body.String())
+	}
+	var secondResp map[string]any
+	if err := json.Unmarshal(secondRec.Body.Bytes(), &secondResp); err != nil {
+		t.Fatalf("decode second response: %v", err)
+	}
+	if firstResp["request_id"] == "" || secondResp["request_id"] != firstResp["request_id"] {
+		t.Fatalf("request ids first=%v second=%v", firstResp["request_id"], secondResp["request_id"])
+	}
+	items, err := svc.ListAcquisitionRequests(context.Background(), "pending_review")
+	if err != nil || len(items) != 1 || items[0].RequestKind != "import" {
+		t.Fatalf("items=%+v err=%v", items, err)
+	}
+}
 func TestAdminCapabilityImportIntentReusesOpenPurchaseRequest(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
@@ -971,6 +1124,37 @@ func TestAdminCapabilityApprovePaidHubCenterSkillCompletesPurchaseAndImport(t *t
 	}
 }
 
+func TestAdminCapabilityApprovePaidHubCenterMCPRequiresAdminEmailBeforePurchase(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	settings := &testSystemSettingsRepo{}
+	purchaseCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		purchaseCalled = true
+		writeJSON(w, http.StatusOK, map[string]any{"purchase_id": "pur-1", "status": "purchased"})
+	}))
+	defer server.Close()
+	reqID, err := svc.CreateAcquisitionRequest(context.Background(), capability.AcquisitionRequestInput{CapabilityType: corelib.CapabilityTypeMCP, Source: corelib.CapabilitySourceHubCenter, SourceCapabilityKey: "paid-mcp", RequestKind: "purchase", PriceJSON: `{"amount_cents":9900}`})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/approve", bytes.NewReader([]byte(`{"approval":{"admin":"ok"}}`)))
+	req.SetPathValue("id", reqID)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityApproveAcquisitionHandler(svc, settings, fakeCapabilityMarketCenterStatus{state: &center.RegistrationState{ActiveBaseURL: server.URL, HubID: "hub-paid"}})(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("approve status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if purchaseCalled {
+		t.Fatalf("purchase endpoint should not be called without admin email")
+	}
+	acq, err := svc.GetAcquisitionRequest(req.Context(), reqID)
+	if err != nil || acq.Status != "approved" {
+		t.Fatalf("acquisition=%+v err=%v", acq, err)
+	}
+}
 func TestAdminCapabilityApprovePaidHubCenterMCPCompletesPurchaseAndImport(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)
@@ -1065,6 +1249,116 @@ func TestAdminCapabilityAcquisitionApprovalFlow(t *testing.T) {
 	items, err := svc.ListAcquisitionRequests(req.Context(), "approved")
 	if err != nil || len(items) != 1 || items[0].ID != reqID {
 		t.Fatalf("approved items=%v err=%v", items, err)
+	}
+}
+
+func TestAdminCapabilityAcquisitionCompletedRequestIsTerminal(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	reqID, err := svc.CreateAcquisitionRequest(context.Background(), capability.AcquisitionRequestInput{CapabilityType: "skill", Source: "hubcenter", SourceCapabilityKey: "done-skill", RequestKind: "purchase"})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if err := svc.CompleteAcquisitionRequest(context.Background(), reqID, "capability-1", `{"mode":"test"}`); err != nil {
+		t.Fatalf("complete request: %v", err)
+	}
+
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/approve", bytes.NewReader([]byte(`{"approval":{"admin":"late"}}`)))
+	approveReq.SetPathValue("id", reqID)
+	approveRec := httptest.NewRecorder()
+	AdminCapabilityApproveAcquisitionHandler(svc)(approveRec, approveReq)
+	if approveRec.Code != http.StatusConflict {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	rejectReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/reject", bytes.NewReader([]byte(`{"approval":{"admin":"late"}}`)))
+	rejectReq.SetPathValue("id", reqID)
+	rejectRec := httptest.NewRecorder()
+	AdminCapabilityRejectAcquisitionHandler(svc)(rejectRec, rejectReq)
+	if rejectRec.Code != http.StatusConflict {
+		t.Fatalf("reject status=%d body=%s", rejectRec.Code, rejectRec.Body.String())
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/complete", bytes.NewReader([]byte(`{"result_capability_id":"capability-2"}`)))
+	completeReq.SetPathValue("id", reqID)
+	completeRec := httptest.NewRecorder()
+	AdminCapabilityCompleteAcquisitionHandler(svc)(completeRec, completeReq)
+	if completeRec.Code != http.StatusConflict {
+		t.Fatalf("complete status=%d body=%s", completeRec.Code, completeRec.Body.String())
+	}
+
+	if err := svc.RejectAcquisitionRequest(context.Background(), reqID, "admin", `{"mode":"late"}`); !errors.Is(err, capability.ErrInvalidState) {
+		t.Fatalf("terminal service reject err=%v", err)
+	}
+
+	item, err := svc.GetAcquisitionRequest(context.Background(), reqID)
+	if err != nil || item.Status != "completed" || item.ResultCapabilityID != "capability-1" {
+		t.Fatalf("item=%+v err=%v", item, err)
+	}
+}
+func TestAdminCapabilityCompleteRequiresResultCapabilityID(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	reqID, err := svc.CreateAcquisitionRequest(context.Background(), capability.AcquisitionRequestInput{CapabilityType: "skill", Source: "hubcenter", SourceCapabilityKey: "manual-complete", RequestKind: "purchase"})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/complete", bytes.NewReader([]byte(`{"purchase":{"mode":"manual"}}`)))
+	req.SetPathValue("id", reqID)
+	rec := httptest.NewRecorder()
+	AdminCapabilityCompleteAcquisitionHandler(svc)(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	item, err := svc.GetAcquisitionRequest(context.Background(), reqID)
+	if err != nil || item.Status != "pending_review" || item.ResultCapabilityID != "" {
+		t.Fatalf("item=%+v err=%v", item, err)
+	}
+}
+func TestAdminCapabilityAcquisitionRejectedRequestCannotBeApprovedOrCompleted(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	reqID, err := svc.CreateAcquisitionRequest(context.Background(), capability.AcquisitionRequestInput{CapabilityType: "skill", Source: "hubcenter", SourceCapabilityKey: "rejected-skill", RequestKind: "purchase"})
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	if err := svc.RejectAcquisitionRequest(context.Background(), reqID, "admin", `{"mode":"test"}`); err != nil {
+		t.Fatalf("reject request: %v", err)
+	}
+
+	approveReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/approve", bytes.NewReader([]byte(`{"approval":{"admin":"late"}}`)))
+	approveReq.SetPathValue("id", reqID)
+	approveRec := httptest.NewRecorder()
+	AdminCapabilityApproveAcquisitionHandler(svc)(approveRec, approveReq)
+	if approveRec.Code != http.StatusConflict {
+		t.Fatalf("approve status=%d body=%s", approveRec.Code, approveRec.Body.String())
+	}
+
+	rejectReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/reject", bytes.NewReader([]byte(`{"approval":{"admin":"again"}}`)))
+	rejectReq.SetPathValue("id", reqID)
+	rejectRec := httptest.NewRecorder()
+	AdminCapabilityRejectAcquisitionHandler(svc)(rejectRec, rejectReq)
+	if rejectRec.Code != http.StatusConflict {
+		t.Fatalf("reject status=%d body=%s", rejectRec.Code, rejectRec.Body.String())
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/acquisition-requests/"+reqID+"/complete", bytes.NewReader([]byte(`{"result_capability_id":"capability-1"}`)))
+	completeReq.SetPathValue("id", reqID)
+	completeRec := httptest.NewRecorder()
+	AdminCapabilityCompleteAcquisitionHandler(svc)(completeRec, completeReq)
+	if completeRec.Code != http.StatusConflict {
+		t.Fatalf("complete status=%d body=%s", completeRec.Code, completeRec.Body.String())
+	}
+
+	if err := svc.CompleteAcquisitionRequest(context.Background(), reqID, "capability-2", `{"mode":"late"}`); !errors.Is(err, capability.ErrInvalidState) {
+		t.Fatalf("terminal service complete err=%v", err)
+	}
+
+	item, err := svc.GetAcquisitionRequest(context.Background(), reqID)
+	if err != nil || item.Status != "rejected" || item.ResultCapabilityID != "" {
+		t.Fatalf("item=%+v err=%v", item, err)
 	}
 }
 

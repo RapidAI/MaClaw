@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -123,6 +124,11 @@ func (a *App) ListVirtualEmployees() ([]VirtualEmployeeEntry, error) {
 
 // InitiateVEConversation starts a conversation with a virtual employee.
 func (a *App) InitiateVEConversation(veID string) (*VESessionInfo, error) {
+	veID = strings.TrimSpace(veID)
+	if veID == "" {
+		return nil, fmt.Errorf("veID is required")
+	}
+
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
 		return nil, err
@@ -159,6 +165,11 @@ func (a *App) SendVEMessage(sessionID, content string) error {
 
 // CloseVESession ends a VE conversation session.
 func (a *App) CloseVESession(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("sessionID is required")
+	}
+
 	// Cancel the A2A session via Hub
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
@@ -170,6 +181,15 @@ func (a *App) CloseVESession(sessionID string) error {
 
 // AddVEToGroup adds a virtual employee to an existing group chat.
 func (a *App) AddVEToGroup(sessionID, veID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	veID = strings.TrimSpace(veID)
+	if sessionID == "" {
+		return fmt.Errorf("sessionID is required")
+	}
+	if veID == "" {
+		return fmt.Errorf("veID is required")
+	}
+
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
 		return err
@@ -185,6 +205,15 @@ func (a *App) AddVEToGroup(sessionID, veID string) error {
 
 // RespondAuthRequest responds to a per-request authorization request.
 func (a *App) RespondAuthRequest(requestID, decision string) error {
+	requestID = strings.TrimSpace(requestID)
+	decision = strings.TrimSpace(decision)
+	if requestID == "" {
+		return fmt.Errorf("requestID is required")
+	}
+	if decision != "allow" && decision != "deny" {
+		return fmt.Errorf("decision must be 'allow' or 'deny'")
+	}
+
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
 		return err
@@ -263,7 +292,7 @@ func (a *App) doHubJSON(hubURL, token, method, path string, body any) ([]byte, e
 		if err != nil {
 			return nil, err
 		}
-		bodyReader = strings.NewReader(string(data))
+		bodyReader = bytes.NewReader(data)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, hubURL+path, bodyReader)

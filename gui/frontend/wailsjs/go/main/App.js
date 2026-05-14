@@ -2196,3 +2196,40 @@ export function SaveHubMCPHubSecret(arg1) {
 export function RequestHubCapabilityInstallIntent(arg1) {
   return window['go']['main']['App']['RequestHubCapabilityInstallIntent'](arg1);
 }
+
+// Virtual Employee bindings
+export function ListVirtualEmployees() {
+  return window['go']['main']['App']['ListVirtualEmployees']();
+}
+
+export function RegisterVirtualEmployee(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['RegisterVirtualEmployee'](arg1, arg2, arg3, arg4);
+}
+
+export function UpdateVESettings(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['UpdateVESettings'](arg1, arg2, arg3, arg4);
+}
+
+export function GetVEStatus() {
+  return window['go']['main']['App']['GetVEStatus']();
+}
+
+export function InitiateVEConversation(arg1) {
+  return window['go']['main']['App']['InitiateVEConversation'](arg1);
+}
+
+export function SendVEMessage(arg1, arg2) {
+  return window['go']['main']['App']['SendVEMessage'](arg1, arg2);
+}
+
+export function CloseVESession(arg1) {
+  return window['go']['main']['App']['CloseVESession'](arg1);
+}
+
+export function AddVEToGroup(arg1, arg2) {
+  return window['go']['main']['App']['AddVEToGroup'](arg1, arg2);
+}
+
+export function RespondAuthRequest(arg1, arg2) {
+  return window['go']['main']['App']['RespondAuthRequest'](arg1, arg2);
+}

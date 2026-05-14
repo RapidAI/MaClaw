@@ -243,7 +243,7 @@ func TestAdminCapabilityMarketMCPDelete(t *testing.T) {
 }
 
 func TestAdminCapabilityMarketExternalSearchPolicy(t *testing.T) {
-	forbiddenReq := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=hubcenter&type=skill", nil)
+	forbiddenReq := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=hub_center&type=skill", nil)
 	forbiddenRec := httptest.NewRecorder()
 	AdminCapabilityMarketExternalSearchHandler()(forbiddenRec, forbiddenReq)
 	if forbiddenRec.Code != http.StatusForbidden {

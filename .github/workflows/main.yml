@@ -407,15 +407,19 @@ jobs:
 
       - name: Sync Ins-maclaw assets
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File ./Ins-maclaw/sync-assets.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./Ins-maclaw/sync-assets.ps1
 
       - name: Test Ins-maclaw bootstrap app
         shell: pwsh
-        run: go test ./Ins-maclaw
+        run: go test ./Ins-maclaw -count=1
+
+      - name: Vet Ins-maclaw bootstrap app
+        shell: pwsh
+        run: go vet ./Ins-maclaw
 
       - name: Build Ins-maclaw bootstrap installers
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File ./Ins-maclaw/build.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./Ins-maclaw/build.ps1
 
       - name: Upload Ins-maclaw bootstrap artifacts
         uses: actions/upload-artifact@v4

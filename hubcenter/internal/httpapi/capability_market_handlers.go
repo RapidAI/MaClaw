@@ -376,7 +376,7 @@ func AdminCapabilityMarketMCPDeleteHandler(settings store.SystemSettingsReposito
 
 func AdminCapabilityMarketExternalSearchHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		source := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("source")))
+		source := corelib.NormalizeCapabilitySource(r.URL.Query().Get("source"))
 		allowedSources := corelib.AdminMarketplaceSearchSources(corelib.CapabilityMarketplaceHostHubCenter)
 		if source != "" && !corelib.AdminMarketplaceCanSearchSource(corelib.CapabilityMarketplaceHostHubCenter, source) {
 			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for HubCenter marketplace admin search")

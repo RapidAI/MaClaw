@@ -1,4 +1,4 @@
-﻿import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManagementPanel } from "../MCPManagementPanel";
 import {
@@ -273,6 +273,35 @@ describe("MCPManagementPanel marketplace integration", () => {
             }));
         });
     });
+    it("allows the native local auth secret for hub-or-local requirements", async () => {
+        vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
+            { name: "api_token", label: "API token", required: true, storage_policy: "hub_or_local" },
+        ]);
+
+        render(<MCPManagementPanel translate={t} />);
+
+        fireEvent.click(await screen.findByText("Install"));
+        expect(await screen.findByText("MCP secrets")).toBeTruthy();
+
+        fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "bearer" } });
+        fireEvent.change(screen.getByPlaceholderText("Enter bearer token"), { target: { value: "native-token" } });
+        fireEvent.click(screen.getByText("Save"));
+
+        await waitFor(() => {
+            expect(UpdateMCPServer).toHaveBeenCalledWith(expect.objectContaining({
+                id: "jira-server",
+                auth_type: "bearer",
+                auth_secret: "native-token",
+            }));
+            expect(SaveHubMCPSecretBinding).toHaveBeenCalledWith(expect.objectContaining({
+                mcp_server_id: "jira-server",
+                requirement_name: "api_token",
+                storage: "local",
+                status: "configured",
+            }));
+        });
+        expect(SaveHubMCPHubSecret).not.toHaveBeenCalled();
+    });
     it("highlights installed marketplace MCPs that still need secrets", async () => {
         servers = [jiraServer];
 
@@ -299,7 +328,7 @@ describe("MCPManagementPanel marketplace integration", () => {
             { name: "api_key", label: "API key", required: true, storage_policy: "hub" },
         ]);
         vi.mocked(GetHubMCPHubSecrets).mockResolvedValue([
-            { requirement_name: "api_key", metadata: { capability_id: "jira-mcp" } },
+            { requirement_name: "api_key", secret_digest: "digest", metadata: { capability_id: "jira-mcp" } },
         ]);
 
         render(<MCPManagementPanel translate={t} />);
@@ -373,6 +402,20 @@ describe("MCPManagementPanel marketplace integration", () => {
         expect(await screen.findByText("Needs secret")).toBeTruthy();
     });
 
+    it("does not treat a stale Hub binding as configured without a stored Hub secret", async () => {
+        servers = [jiraServer];
+        vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([
+            { name: "api_key", label: "API key", required: true, storage_policy: "hub" },
+        ]);
+        vi.mocked(GetHubMCPSecretBindings).mockResolvedValue([
+            { requirement_name: "api_key", storage: "hub", hub_secret_ref: "hub://mcp-secrets/jira-server/api_key", status: "configured" },
+        ]);
+        vi.mocked(GetHubMCPHubSecrets).mockResolvedValue([]);
+
+        render(<MCPManagementPanel translate={t} />);
+
+        expect(await screen.findByText("Needs secret")).toBeTruthy();
+    });
     it("does not treat a stale Hub secret as configured when policy is local-only", async () => {
         servers = [jiraServer];
         vi.mocked(GetHubMCPSecretRequirements).mockResolvedValue([

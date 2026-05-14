@@ -88,11 +88,18 @@ type FileMetadata struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
+// SessionParticipantValidator verifies that a participant belongs to a session.
+// If no validator is set (nil), the FileRelay falls back to session_id match only.
+type SessionParticipantValidator interface {
+	IsSessionParticipant(sessionID, participantID string) bool
+}
+
 // FileRelay manages temporary file storage for VE conversations.
 type FileRelay struct {
-	dataDir string
-	mu      sync.RWMutex
-	files   map[string]*FileMetadata // key: file_id
+	dataDir   string
+	mu        sync.RWMutex
+	files     map[string]*FileMetadata // key: file_id
+	validator SessionParticipantValidator
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -106,6 +113,12 @@ func NewFileRelay(dataDir string) *FileRelay {
 		files:   make(map[string]*FileMetadata),
 		done:    make(chan struct{}),
 	}
+}
+
+// SetParticipantValidator sets the validator used to verify participant membership
+// in sessions. If nil, the FileRelay falls back to session_id match only.
+func (fr *FileRelay) SetParticipantValidator(v SessionParticipantValidator) {
+	fr.validator = v
 }
 
 // Start begins the TTL cleanup goroutine.
@@ -141,17 +154,39 @@ func (fr *FileRelay) cleanupLoop(ctx context.Context) {
 // cleanExpired removes files that have exceeded their TTL.
 func (fr *FileRelay) cleanExpired() {
 	now := time.Now()
+
+	// Phase 1: Collect expired file IDs under read lock.
+	fr.mu.RLock()
+	var expired []string
+	for id, meta := range fr.files {
+		if now.After(meta.ExpiresAt) {
+			expired = append(expired, id)
+		}
+	}
+	fr.mu.RUnlock()
+
+	if len(expired) == 0 {
+		return
+	}
+
+	// Phase 2: Remove expired files under write lock.
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 
-	for id, meta := range fr.files {
-		if now.After(meta.ExpiresAt) {
-			// Remove file from disk.
-			ext := filepath.Ext(meta.Filename)
-			diskPath := filepath.Join(fr.dataDir, id+ext)
-			_ = os.Remove(diskPath)
-			delete(fr.files, id)
+	for _, id := range expired {
+		meta, ok := fr.files[id]
+		if !ok {
+			continue
 		}
+		// Re-check expiry in case it was refreshed between phases.
+		if !now.After(meta.ExpiresAt) {
+			continue
+		}
+		// Remove file from disk.
+		ext := filepath.Ext(meta.Filename)
+		diskPath := filepath.Join(fr.dataDir, id+ext)
+		_ = os.Remove(diskPath)
+		delete(fr.files, id)
 	}
 }
 
@@ -323,10 +358,43 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authorization check: session_id must match (if the file has one),
-	// or participant_id must match the uploader.
-	if meta.SessionID != "" && sessionID != "" && meta.SessionID != sessionID {
-		writeVEError(w, http.StatusForbidden, "access_denied", "session mismatch")
+	// Authorization for group chat attachment broadcast (Requirement 11.11, Task 17.7):
+	//
+	// In group chats, all participants share the same session_id. When participant A
+	// uploads a file, the GroupDiscussionMessage containing the file_url is broadcast
+	// to all participants (B, C, D...). Each participant needs to download the file
+	// using their own participant_id but the shared session_id.
+	//
+	// Authorization paths (any one grants access):
+	// 1. Session match: requester's session_id == file's session_id (covers all
+	//    participants in the same group session).
+	// 2. Participant validator confirms membership (defense-in-depth for group sessions).
+	// 3. Uploader match: requester is the original uploader (owner access fallback).
+	authorized := false
+
+	// Path 1: Direct session_id match — covers 1:1 and group chats where all
+	// participants share the same session_id.
+	if meta.SessionID != "" && sessionID != "" && meta.SessionID == sessionID {
+		authorized = true
+	}
+
+	// Path 2: Participant validator confirms the requester belongs to the file's
+	// session. This is the primary authorization path for group chat participants
+	// accessing files uploaded by other participants in the same group.
+	if !authorized && fr.validator != nil && meta.SessionID != "" && participantID != "" {
+		if fr.validator.IsSessionParticipant(meta.SessionID, participantID) {
+			authorized = true
+		}
+	}
+
+	// Path 3: Uploader/owner access — the participant who uploaded the file can
+	// always access it regardless of session_id.
+	if !authorized && participantID != "" && meta.UploaderID != "" && participantID == meta.UploaderID {
+		authorized = true
+	}
+
+	if !authorized {
+		writeVEError(w, http.StatusForbidden, "access_denied", "not authorized to access this file")
 		return
 	}
 
@@ -339,8 +407,10 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
+	// Sanitize filename for Content-Disposition header to prevent header injection.
+	safeFilename := sanitizeFilename(meta.Filename)
 	w.Header().Set("Content-Type", meta.MimeType)
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, meta.Filename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, safeFilename))
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, f)
 }
@@ -409,6 +479,23 @@ func extractFileID(path string) string {
 		id = id[:idx]
 	}
 	return id
+}
+
+// sanitizeFilename removes characters that could cause header injection or path traversal.
+func sanitizeFilename(name string) string {
+	// Remove path separators and control characters.
+	var sb strings.Builder
+	for _, r := range name {
+		if r == '/' || r == '\\' || r == '"' || r < 32 || r == 127 {
+			continue
+		}
+		sb.WriteRune(r)
+	}
+	result := sb.String()
+	if result == "" {
+		return "download"
+	}
+	return result
 }
 
 // writeVEError writes a JSON error response (local helper matching hub pattern).

@@ -273,17 +273,24 @@ func (a *App) updateHubHeartbeatConfig(payload json.RawMessage) bool {
 		return false
 	}
 	policy := wrapper.HubConfig.CapabilityMarketPolicy.WithDefaults()
-	cfg, err := a.LoadConfig()
-	if err != nil {
+	if cfg, err := a.LoadConfig(); err != nil {
 		log.Printf("[hub-config] failed to load config for hub update: %v", err)
 		return false
-	}
-	if reflect.DeepEqual(cfg.CapabilityMarketPolicy.WithDefaults(), policy) {
+	} else if reflect.DeepEqual(cfg.CapabilityMarketPolicy.WithDefaults(), policy) {
 		return false
 	}
-	cfg.CapabilityMarketPolicy = policy
-	if err := a.SaveConfig(cfg); err != nil {
+	changed := false
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		if reflect.DeepEqual(cfg.CapabilityMarketPolicy.WithDefaults(), policy) {
+			return
+		}
+		cfg.CapabilityMarketPolicy = policy
+		changed = true
+	}); err != nil {
 		log.Printf("[hub-config] failed to save hub-pushed config: %v", err)
+		return false
+	}
+	if !changed {
 		return false
 	}
 	a.emitEvent("hub-config-options-changed", wrapper.HubConfig)

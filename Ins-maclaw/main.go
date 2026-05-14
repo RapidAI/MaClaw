@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -27,6 +26,7 @@ type installOptions struct {
 	CurrentVersion string
 	CheckOnly      bool
 	NoLaunch       bool
+	WaitInstaller  bool
 	Progress       progressFunc
 	Log            func(string)
 }
@@ -104,6 +104,7 @@ func runCLI(brand brandOption, currentVersion string, checkOnly, noLaunch bool) 
 		CurrentVersion: currentVersion,
 		CheckOnly:      checkOnly,
 		NoLaunch:       noLaunch,
+		WaitInstaller:  true,
 		Log:            func(msg string) { fmt.Println(msg) },
 		Progress: func(downloaded, total int64) {
 			if total > 0 {
@@ -208,7 +209,7 @@ func runInstall(ctx context.Context, opts installOptions) (installResult, error)
 		return result, nil
 	}
 	log(tr("cli.launching"))
-	if err := launchInstaller(path); err != nil {
+	if err := launchInstaller(path, opts.WaitInstaller); err != nil {
 		return result, fmt.Errorf("launch failed: %w", err)
 	}
 	time.Sleep(300 * time.Millisecond)
@@ -225,26 +226,6 @@ func resolveBrand(input string) (brandOption, error) {
 		}
 	}
 	return brandOption{}, fmt.Errorf(tr("invalid.brand"), input)
-}
-
-func launchInstaller(path string) error {
-	switch runtime.GOOS {
-	case "windows":
-		return exec.Command("cmd", "/c", "start", "", path).Start()
-	case "darwin":
-		return exec.Command("open", path).Start()
-	case "linux":
-		if err := os.Chmod(path, 0755); err != nil {
-			return err
-		}
-		cmd := exec.Command(path)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-		return cmd.Start()
-	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
-	}
 }
 
 func isTerminal() bool {

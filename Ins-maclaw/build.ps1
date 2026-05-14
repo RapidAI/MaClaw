@@ -171,7 +171,7 @@ foreach ($target in $targets) {
   $ldflags = "-s -w -X main.version=$version"
   $resourcePath = Join-Path $root "Ins-maclaw\resource_windows_$($target.GOARCH).syso"
   Remove-Item $resourcePath -Force -ErrorAction SilentlyContinue
-  if ($target.GOOS -eq 'windows' -and $target.Gui) {
+  if ($target.GOOS -eq 'windows') {
     $resourcePath = New-WindowsResource $version $target.GOARCH
   }
   if ($target.GOOS -eq 'windows' -and $target.Gui) { $ldflags = "$ldflags -H windowsgui -X main.windowsGUI=true" }

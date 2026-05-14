@@ -35,6 +35,7 @@ const (
 	bsAutoRadio     = 0x00000009
 	bsGroupBox      = 0x00000007
 	wsClipChildren  = 0x02000000
+	swpNoZOrder     = 0x0004
 
 	wizardWindowStyle  = wsOverlapped | wsCaption | wsSysMenu | wsMinimizeBox | wsClipChildren
 	wizardClientWidth  = 780
@@ -46,6 +47,7 @@ const (
 	wmCreate          = 0x0001
 	wmDestroy         = 0x0002
 	wmCommand         = 0x0111
+	wmSetIcon         = 0x0080
 	wmLButtonDown     = 0x0201
 	wmPaint           = 0x000F
 	wmSetFont         = 0x0030
@@ -60,6 +62,7 @@ const (
 	srccopy          = 0x00CC0020
 	halftone         = 4
 	dtLeft           = 0x00000000
+	dtRight          = 0x00000002
 	dtSingleLine     = 0x00000020
 	dtWordBreak      = 0x00000010
 	dtNoPrefix       = 0x00000800
@@ -72,6 +75,8 @@ const (
 	idBrandTiger     = 1002
 	idWizardNext     = 1003
 	idWizardCancel   = 1004
+	iconSmall        = 0
+	iconBig          = 1
 )
 
 type wndClassEx struct {
@@ -161,6 +166,7 @@ var (
 	procDispatchMessageW     = user32.NewProc("DispatchMessageW")
 	procPostMessageW         = user32.NewProc("PostMessageW")
 	procSetWindowTextW       = user32.NewProc("SetWindowTextW")
+	procSetWindowPos         = user32.NewProc("SetWindowPos")
 	procEnableWindow         = user32.NewProc("EnableWindow")
 	procInvalidateRect       = user32.NewProc("InvalidateRect")
 	procCheckRadioButton     = user32.NewProc("CheckRadioButton")
@@ -266,14 +272,17 @@ func showBrandWizard(defaultBrand brandOption) (brandOption, bool) {
 	initProgressControls()
 
 	className := utf16Ptr("InsMaclawWizardWindow")
-	icon := loadWindowIcon()
+	instance := currentModuleHandle()
+	icon := loadWindowIconBig()
+	smallIcon := loadWindowIconSmall()
 	wc := wndClassEx{
 		Size:       uint32(unsafe.Sizeof(wndClassEx{})),
 		WndProc:    syscall.NewCallback(wizardWndProc),
 		Icon:       icon,
+		Instance:   instance,
 		Background: colorWindow + 1,
 		ClassName:  className,
-		IconSm:     icon,
+		IconSm:     smallIcon,
 	}
 	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
 
@@ -285,12 +294,13 @@ func showBrandWizard(defaultBrand brandOption) (brandOption, bool) {
 		uintptr(unsafe.Pointer(utf16Ptr(tr("app.title")))),
 		wizardWindowStyle,
 		uintptr(x), uintptr(y), uintptr(width), uintptr(height),
-		0, 0, 0, 0,
+		0, 0, instance, 0,
 	)
 	if hwnd == 0 {
 		return brandOption{}, false
 	}
 	wizardHwnd = hwnd
+	setWindowIcons(hwnd, smallIcon, icon)
 	procShowWindow.Call(hwnd, swShow)
 	procUpdateWindow.Call(hwnd)
 
@@ -382,7 +392,9 @@ func wizardWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		return 0
 	case wmInstallDone:
 		if wizardInstallMode {
-			finishWizardInstall()
+			if finishWizardInstall(hwnd) {
+				return 0
+			}
 		}
 		return 0
 	case wmDestroy:
@@ -403,10 +415,10 @@ func createWizardControls(hwnd uintptr) {
 	wizardHeaderHwnd = addStatic(hwnd, tr("welcome.title"), 210, 34, 440, 30)
 	setControlFont(wizardHeaderHwnd, wizardTitleFont)
 	wizardIntroHwnd = addStatic(hwnd, tr("welcome.body"), 210, 74, 440, 58)
-	wizardGroupHwnd = addStatic(hwnd, tr("choose.brand"), 210, 158, 430, 22)
-	wizardMaclawHwnd = addRadio(hwnd, idBrandMaclaw, brandLabel(brandOptions[0]), 226, 190, 390, 24)
-	wizardTigerHwnd = addRadio(hwnd, idBrandTiger, brandLabel(brandOptions[1]), 226, 242, 390, 24)
-	wizardDetailHwnd = addStatic(hwnd, tr("step.select"), 210, 304, 440, 32)
+	wizardGroupHwnd = addStatic(hwnd, tr("choose.brand"), 210, 186, 390, 22)
+	wizardMaclawHwnd = addRadio(hwnd, idBrandMaclaw, brandLabel(brandOptions[0]), 226, 226, 310, 26)
+	wizardTigerHwnd = addRadio(hwnd, idBrandTiger, brandLabel(brandOptions[1]), 226, 296, 330, 26)
+	wizardDetailHwnd = addStatic(hwnd, tr("step.select"), 210, 370, 440, 32)
 	wizardProgressHwnd = addProgress(hwnd, 210, 340, 440, 12)
 	showControl(wizardProgressHwnd, false)
 	wizardNextHwnd = addButton(hwnd, idWizardNext, tr("next"), 514, 428, 90, 30, bsDefPushButton)
@@ -418,11 +430,11 @@ func selectBrandFromPoint(lParam uintptr) {
 	x := int32(lParam & 0xffff)
 	y := int32((lParam >> 16) & 0xffff)
 	if x >= 214 && x <= 646 {
-		if y >= 184 && y <= 226 {
+		if y >= 216 && y <= 284 {
 			selectWizardBrand(0)
 			return
 		}
-		if y >= 236 && y <= 278 {
+		if y >= 286 && y <= 354 {
 			selectWizardBrand(1)
 		}
 	}
@@ -448,6 +460,7 @@ func startWizardInstall(hwnd uintptr) {
 	setControlText(wizardHeaderHwnd, fmt.Sprintf(tr("installing"), brand.ProductName))
 	setControlText(wizardIntroHwnd, brandLabel(brand))
 	setControlText(wizardDetailHwnd, tr("step.download")+"\n"+tr("checking"))
+	configureWizardBusyLayout()
 	setProgress(0)
 	showControl(wizardProgressHwnd, true)
 	invalidateWizard()
@@ -470,6 +483,7 @@ func startWizardInstall(hwnd uintptr) {
 			CurrentVersion: currentVersion,
 			CheckOnly:      checkOnly,
 			NoLaunch:       noLaunch,
+			WaitInstaller:  true,
 			Log:            func(string) {},
 			Progress: func(downloaded, total int64) {
 				text := fmt.Sprintf(tr("downloading.bytes"), humanBytes(downloaded))
@@ -498,16 +512,23 @@ func startWizardInstall(hwnd uintptr) {
 	}()
 }
 
-func finishWizardInstall() {
+func finishWizardInstall(hwnd uintptr) bool {
 	wizardMu.Lock()
 	result := wizardResult
 	err := wizardInstallErr
 	wizardMu.Unlock()
 	wizardInstallState = 2
 	wizardInstallCancel = nil
+	if err == nil && !result.Skipped && !wizardCheckOnly && !wizardNoLaunch {
+		wizardOK = true
+		procDestroyWindow.Call(hwnd)
+		return true
+	}
+	configureWizardDoneLayout()
 	enableControl(wizardNextHwnd, true)
 	setControlText(wizardNextHwnd, tr("close"))
 	setControlText(wizardCancelHwnd, tr("close"))
+	showControl(wizardCancelHwnd, false)
 	enableControl(wizardCancelHwnd, false)
 	if err != nil {
 		setControlText(wizardHeaderHwnd, tr("failed.title"))
@@ -516,13 +537,14 @@ func finishWizardInstall() {
 		showControl(wizardProgressHwnd, false)
 		setProgress(0)
 		invalidateWizard()
-		return
+		return false
 	}
 	setControlText(wizardHeaderHwnd, tr("completed.title"))
 	setControlText(wizardIntroHwnd, tr("completed.body"))
 	setControlText(wizardDetailHwnd, tr("step.done")+"\n"+guiResultMessage(result, wizardCheckOnly, wizardNoLaunch))
 	setProgress(100)
 	invalidateWizard()
+	return false
 }
 
 func setControlText(hwnd uintptr, text string) {
@@ -552,6 +574,28 @@ func showControl(hwnd uintptr, visible bool) {
 	procShowWindow.Call(hwnd, cmd)
 }
 
+func moveControl(hwnd uintptr, x, y, width, height int32) {
+	if hwnd != 0 {
+		procSetWindowPos.Call(hwnd, 0, uintptr(x), uintptr(y), uintptr(width), uintptr(height), swpNoZOrder)
+	}
+}
+
+func configureWizardBusyLayout() {
+	showControl(wizardGroupHwnd, false)
+	showControl(wizardMaclawHwnd, false)
+	showControl(wizardTigerHwnd, false)
+	moveControl(wizardDetailHwnd, 210, 190, 440, 92)
+	moveControl(wizardProgressHwnd, 210, 306, 440, 14)
+}
+
+func configureWizardDoneLayout() {
+	showControl(wizardGroupHwnd, false)
+	showControl(wizardMaclawHwnd, false)
+	showControl(wizardTigerHwnd, false)
+	showControl(wizardProgressHwnd, false)
+	moveControl(wizardDetailHwnd, 210, 190, 440, 178)
+}
+
 func paintWizard(hwnd uintptr) {
 	var ps paintStruct
 	hdc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
@@ -560,20 +604,26 @@ func paintWizard(hwnd uintptr) {
 	}
 	defer procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 	fill(hdc, 0, 0, wizardClientWidth, wizardClientHeight, rgb(248, 250, 252))
-	fill(hdc, 0, 0, 164, wizardClientHeight, rgb(238, 246, 255))
-	fill(hdc, 164, 0, 166, wizardClientHeight, rgb(219, 234, 254))
+	fill(hdc, 0, 0, 178, wizardClientHeight, rgb(238, 246, 255))
+	fill(hdc, 178, 0, 180, wizardClientHeight, rgb(219, 234, 254))
 	fill(hdc, 0, 0, wizardClientWidth, 6, rgb(59, 130, 246))
 	drawWizardLogo(hdc)
-	drawPanel(hdc, 194, 146, 666, 292)
-	drawBrandOptionPanel(hdc, 0, 214, 184, wizardSelected == 0)
-	drawBrandOptionPanel(hdc, 1, 214, 236, wizardSelected == 1)
-	drawTextWithFont(hdc, tr("brand.maclaw.desc"), 246, 216, 640, 234, rgb(100, 116, 139), dtLeft|dtSingleLine|dtNoPrefix, wizardFont)
-	drawTextWithFont(hdc, tr("brand.tiger.desc"), 246, 268, 640, 286, rgb(100, 116, 139), dtLeft|dtSingleLine|dtNoPrefix, wizardFont)
-	drawTextWithFont(hdc, tr("sidebar.subtitle"), 30, 166, 142, 190, rgb(59, 130, 246), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
+	if wizardInstallState == 0 {
+		drawPanel(hdc, 194, 174, 594, 358)
+		drawBrandOptionPanel(hdc, 0, 214, 216, wizardSelected == 0)
+		drawBrandOptionPanel(hdc, 1, 214, 286, wizardSelected == 1)
+		drawTextWithFont(hdc, tr("brand.maclaw.desc"), 254, 254, 572, 282, rgb(100, 116, 139), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
+		drawTextWithFont(hdc, tr("brand.tiger.desc"), 254, 324, 572, 352, rgb(100, 116, 139), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
+	} else if wizardInstallState == 1 {
+		drawPanel(hdc, 194, 158, 666, 342)
+	} else {
+		drawPanel(hdc, 194, 158, 666, 398)
+	}
+	drawTextWithFont(hdc, tr("sidebar.subtitle"), 30, 166, 156, 190, rgb(59, 130, 246), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
 	drawWizardSteps(hdc)
-	drawTextWithFont(hdc, tr("language"), 30, 326, 142, 350, rgb(71, 85, 105), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
-	drawTextWithFont(hdc, tr("sidebar.secure"), 30, 356, 146, 390, rgb(100, 116, 139), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
-	drawTextWithFont(hdc, "v"+version, 650, 34, 736, 56, rgb(100, 116, 139), dtLeft|dtSingleLine|dtNoPrefix, wizardFont)
+	drawTextWithFont(hdc, tr("language"), 30, 326, 164, 350, rgb(71, 85, 105), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
+	drawTextWithFont(hdc, tr("sidebar.secure"), 30, 356, 166, 402, rgb(100, 116, 139), dtLeft|dtWordBreak|dtNoPrefix, wizardFont)
+	drawTextWithFont(hdc, "v"+version, 594, 34, 744, 56, rgb(100, 116, 139), dtRight|dtSingleLine|dtNoPrefix, wizardFont)
 	fill(hdc, 194, 420, 726, 422, rgb(226, 232, 240))
 }
 
@@ -660,8 +710,8 @@ func drawPanel(hdc uintptr, left, top, right, bottom int32) {
 
 func drawBrandOptionPanel(hdc uintptr, index int, left, top int32, selected bool) {
 	_ = index
-	right := int32(646)
-	bottom := top + 42
+	right := int32(572)
+	bottom := top + 66
 	fillColor := rgb(255, 255, 255)
 	borderColor := rgb(226, 232, 240)
 	accentColor := rgb(203, 213, 225)
@@ -701,7 +751,7 @@ func drawWizardStep(hdc uintptr, index int, y int32, number, label string, compl
 	}
 	fill(hdc, 26, y, 48, y+22, boxColor)
 	drawTextWithFont(hdc, number, 33, y+2, 46, y+20, rgb(255, 255, 255), dtLeft|dtSingleLine|dtNoPrefix, wizardFont)
-	drawTextWithFont(hdc, label, 58, y+1, 144, y+24, textColor, dtLeft|dtSingleLine|dtNoPrefix, wizardFont)
+	drawTextWithFont(hdc, label, 58, y+1, 168, y+24, textColor, dtLeft|dtSingleLine|dtNoPrefix, wizardFont)
 }
 
 func initWizardDPI() {
@@ -773,7 +823,7 @@ func initWizardBrushes() {
 func paintControlBackground(hdc, child uintptr) uintptr {
 	procSetBkMode.Call(hdc, bkTransparent)
 	procSetTextColor.Call(hdc, rgb(15, 23, 42))
-	if child == wizardMaclawHwnd || child == wizardTigerHwnd || child == wizardGroupHwnd {
+	if child == wizardMaclawHwnd || child == wizardTigerHwnd || child == wizardGroupHwnd || (child == wizardDetailHwnd && wizardInstallState > 0) {
 		return nonZeroBrush(wizardPanelBrush, wizardSurfaceBrush)
 	}
 	return nonZeroBrush(wizardSurfaceBrush, wizardPanelBrush)
@@ -919,6 +969,18 @@ func centerPoint(width, height int32) (int32, int32) {
 	sw, _, _ := procGetSystemMetrics.Call(0)
 	sh, _, _ := procGetSystemMetrics.Call(1)
 	return (int32(sw) - width) / 2, (int32(sh) - height) / 2
+}
+
+func setWindowIcons(hwnd, smallIcon, bigIcon uintptr) {
+	if hwnd == 0 {
+		return
+	}
+	if smallIcon != 0 {
+		procSendMessageW.Call(hwnd, wmSetIcon, iconSmall, smallIcon)
+	}
+	if bigIcon != 0 {
+		procSendMessageW.Call(hwnd, wmSetIcon, iconBig, bigIcon)
+	}
 }
 
 func defWindowProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
