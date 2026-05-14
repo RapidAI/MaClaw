@@ -473,11 +473,13 @@ func TestScanAndAdmitSkillBeforeRegisterIgnoresClaimedTrustedLevel(t *testing.T)
 	}
 	app := &App{testHomeDir: t.TempDir()}
 	report, err := app.scanAndAdmitSkillBeforeRegister(context.Background(), entry, "unit test")
-	if err == nil {
-		t.Fatalf("scanAndAdmitSkillBeforeRegister() allowed claimed trusted critical skill; report=%+v", report)
-	}
+	// Critical skill now goes through user confirmation (auto-approved in test harness).
+	// The key assertion is that the scan still detects critical risk despite claimed trusted level.
 	if report == nil || report.FinalLevel != security.RiskCritical {
-		t.Fatalf("report level = %v, want critical", report)
+		t.Fatalf("report level = %v, want critical (claimed trusted level must not bypass scan)", report)
+	}
+	if err != nil {
+		t.Fatalf("scanAndAdmitSkillBeforeRegister() returned error %v; critical skills should be user-confirmable", err)
 	}
 	if entry.TrustLevel != security.TrustLevelTrusted {
 		t.Fatalf("scanAndAdmitSkillBeforeRegister mutated trust level to %q", entry.TrustLevel)

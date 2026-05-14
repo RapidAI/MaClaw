@@ -36,6 +36,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
     }, [onClose, tab.id]);
 
     const isOnline = tab.type === "ve" || tab.type === "group";
+    const readOnlyLabel = tab.readOnly ? "\u53ea\u8bfb" : "";
 
     return (
         <div
@@ -68,7 +69,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
             {isOnline && (
                 <span
                     data-testid={`ai-tab-indicator-${tab.id}`}
-                    aria-label={`${tab.title} 在线`}
+                    aria-label={`${tab.title} online`}
                     style={{
                         width: 6,
                         height: 6,
@@ -81,11 +82,16 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
                 {tab.title}
             </span>
+            {readOnlyLabel && (
+                <span style={{ flexShrink: 0, fontSize: 10, lineHeight: 1, padding: "2px 4px", borderRadius: 4, border: `1px solid ${theme.divider}`, color: theme.textMuted }}>
+                    {readOnlyLabel}
+                </span>
+            )}
             {tab.closable && (
                 <span
                     data-testid={`ai-tab-close-${tab.id}`}
                     role="button"
-                    aria-label={`关闭 ${tab.title}`}
+                    aria-label={`Close ${tab.title}`}
                     tabIndex={0}
                     onClick={handleClose}
                     onKeyDown={handleCloseKeyDown}
@@ -99,7 +105,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
                         borderRadius: 3,
                         padding: "0 2px",
                     }}
-                    title="关闭"
+                    title="Close"
                 >
                     ×
                 </span>

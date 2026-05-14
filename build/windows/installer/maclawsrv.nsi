@@ -9,7 +9,7 @@ Unicode true
 !define INFO_PRODUCTNAME "MaClaw Service"
 !endif
 !ifndef INFO_PRODUCTVERSION
-!define INFO_PRODUCTVERSION "5.12.0.0"
+!define INFO_PRODUCTVERSION "6.0.0.0"
 !endif
 !ifndef INFO_COPYRIGHT
 !define INFO_COPYRIGHT "Copyright (C) 2026 RapidAI"

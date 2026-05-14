@@ -136,6 +136,7 @@ type App struct {
 	securityFirewall           *SecurityFirewall
 	securityRiskAnalyzer       *SecurityRiskAnalyzer
 	hubSecurityCache           hubSecurityCache
+	digitalEmployeeAuthCache   digitalEmployeeAuthorizationCache
 	capabilitySyncRunning      atomic.Bool
 	contextBridge              *ContextBridge
 	aiTrace                    *AITraceService

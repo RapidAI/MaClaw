@@ -165,7 +165,7 @@ export function VEAuthorizationDialog({
                             </div>
                             <div>
                                 <span style={{ color: theme.textMuted, fontSize: 12 }}>
-                                    {isZh ? "目标VE：" : "Target VE: "}
+                                    {isZh ? "目标数字员工：" : "Target digital employee: "}
                                 </span>
                                 <strong>{req.target_ve_name}</strong>
                             </div>

@@ -137,7 +137,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	coordinator := im.NewCoordinator(messageRouter, deviceFinder, llmConfigProvider)
 	imAdapter.SetCoordinator(coordinator)
 
-	// 闁冲厜鍋撻柍鍏夊亾 Workflow Engine (removed) 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?	// Workflow logic is now handled by the device-side agent (corelib/workflow).
+	// 闂佸啿鍘滈崑鎾绘煃閸忓浜?Workflow Engine (removed) 闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑鎾绘煃閸忓浜鹃梺鍐插帨閸嬫捇鏌嶉崗澶婁壕闂佸啿鍘滈崑?	// Workflow logic is now handled by the device-side agent (corelib/workflow).
 	// Hub no longer creates WorkflowEngine, WorkflowRegistry, or UnderstandingManager.
 	// The /workflow command is forwarded to the device via RouteToAgent.
 
@@ -238,7 +238,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	}
 
 	// 8a. Remote Gateway Plugins 闂?client-side IM gateways (QQ Bot, Telegram)
-	//     forwarded through the existing Hub闂佹剚鍋呴幗鏄筰ent WebSocket.
+	//     forwarded through the existing Hub闂備焦鍓氶崑鍛村箺閺勭ent WebSocket.
 	qqRemotePlugin := im.NewRemoteGatewayPlugin("qqbot_remote", deviceService, st.Users, st.System)
 	if err := imAdapter.RegisterPlugin(qqRemotePlugin); err != nil {
 		log.Printf("[bootstrap] failed to register qqbot_remote plugin: %v", err)
@@ -547,5 +547,5 @@ func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID 
 			policy = policy.WithDefaults()
 		}
 	}
-	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy}, nil
+	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorization(ctx, p.settings)}, nil
 }

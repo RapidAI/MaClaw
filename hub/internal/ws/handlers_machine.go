@@ -22,7 +22,8 @@ type HeartbeatConfigProvider interface {
 }
 
 type HeartbeatConfigPayload struct {
-	CapabilityMarketPolicy corelib.CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
+	CapabilityMarketPolicy       corelib.CapabilityMarketPolicy        `json:"capability_market_policy,omitempty"`
+	DigitalEmployeeAuthorization *corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorization,omitempty"`
 }
 
 type ConnContext struct {

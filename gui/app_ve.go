@@ -100,7 +100,7 @@ func (a *App) GetVEStatus() (*VEStatusResponse, error) {
 	return &resp, nil
 }
 
-// ListVirtualEmployees returns the list of discoverable virtual employees from the Hub.
+// ListVirtualEmployees returns the list of discoverable digital employees from the Hub.
 func (a *App) ListVirtualEmployees() ([]VirtualEmployeeEntry, error) {
 	hubURL, token, err := a.getHubCredentials()
 	if err != nil {
@@ -122,7 +122,7 @@ func (a *App) ListVirtualEmployees() ([]VirtualEmployeeEntry, error) {
 	return resp.Employees, nil
 }
 
-// InitiateVEConversation starts a conversation with a virtual employee.
+// InitiateVEConversation starts a conversation with a digital employee.
 func (a *App) InitiateVEConversation(veID string) (*VESessionInfo, error) {
 	veID = strings.TrimSpace(veID)
 	if veID == "" {
@@ -179,7 +179,7 @@ func (a *App) CloseVESession(sessionID string) error {
 	return err
 }
 
-// AddVEToGroup adds a virtual employee to an existing group chat.
+// AddVEToGroup adds a digital employee to an existing group chat.
 func (a *App) AddVEToGroup(sessionID, veID string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	veID = strings.TrimSpace(veID)

@@ -66,6 +66,8 @@ type InviteListResponse struct {
 type HubDiscussionSummary struct {
 	ID                  string    `json:"id"`
 	Role                string    `json:"role,omitempty"`
+	LocalRelation       string    `json:"local_relation,omitempty"`
+	Readonly            bool      `json:"readonly"`
 	Status              string    `json:"status,omitempty"`
 	Topic               string    `json:"topic,omitempty"`
 	Question            string    `json:"question,omitempty"`

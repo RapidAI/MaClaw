@@ -1,9 +1,9 @@
 /*
- * Virtual Employee admin module.
+ * Digital Employee admin module.
  * ASCII only - all Chinese text uses \uXXXX escape sequences.
  *
  * Tasks covered:
- * 7.1 - Add "Virtual Employee" Tab to Hub Admin Panel
+ * 7.1 - Add "Digital Employee" Tab to Hub Admin Panel
  * 7.2 - Pending/Active list views with name/skill_description/access_policy/online_status/registered_at
  * 7.3 - Approve/Reject/Disable action buttons calling Admin API
  * 7.4 - Group chat participant limit config (1-10, default 5), push ve:group_config event on change
@@ -14,16 +14,16 @@
   // --- i18n ---
   var VE_I18N = {
     en: {
-      tabTitle: 'Virtual Employees',
-      tabSubtitle: 'Manage virtual employee registrations and group chat settings.',
-      navTitle: 'Virtual Employees',
+      tabTitle: 'Digital Employees',
+      tabSubtitle: 'Manage digital employee registrations and group chat settings.',
+      navTitle: 'Digital Employees',
       navDesc: 'Approval, status, and group config',
-      panelTitle: 'Virtual Employee Management',
-      panelDesc: 'Review pending registrations, manage active virtual employees, and configure group chat limits.',
+      panelTitle: 'Digital Employee Management',
+      panelDesc: 'Review pending registrations, manage active digital employees, and configure group chat limits.',
       pendingTitle: 'Pending Approval',
       activeTitle: 'Active Employees',
       emptyPending: 'No pending registration requests.',
-      emptyActive: 'No active virtual employees.',
+      emptyActive: 'No active digital employees.',
       name: 'Name',
       skillDesc: 'Skill Description',
       accessPolicy: 'Access Policy',
@@ -40,7 +40,7 @@
       policyBlacklist: 'Blacklist',
       policyPerRequest: 'Per-Request',
       groupConfigTitle: 'Group Chat Configuration',
-      groupConfigDesc: 'Maximum number of virtual employee participants in a single group chat.',
+      groupConfigDesc: 'Maximum number of digital employee participants in a single group chat.',
       maxParticipants: 'Max Participants',
       saveConfig: 'Save',
       configSaved: 'Group chat configuration saved.',
@@ -51,22 +51,22 @@
       rejectFailed: 'Reject failed: {error}',
       disableSuccess: 'Virtual employee disabled.',
       disableFailed: 'Disable failed: {error}',
-      loadFailed: 'Load virtual employees failed: {error}',
+      loadFailed: 'Load digital employees failed: {error}',
       refresh: 'Refresh',
       quotaInfo: 'Active: {active} / Quota: {quota}',
       status: 'Status'
     },
     zh: {
-      tabTitle: '\u865a\u62df\u5458\u5de5',
-      tabSubtitle: '\u7ba1\u7406\u865a\u62df\u5458\u5de5\u6ce8\u518c\u548c\u7fa4\u804a\u8bbe\u7f6e\u3002',
-      navTitle: '\u865a\u62df\u5458\u5de5',
+      tabTitle: '\u6570\u5b57\u5458\u5de5',
+      tabSubtitle: '\u7ba1\u7406\u6570\u5b57\u5458\u5de5\u6ce8\u518c\u548c\u7fa4\u804a\u8bbe\u7f6e\u3002',
+      navTitle: '\u6570\u5b57\u5458\u5de5',
       navDesc: '\u5ba1\u6279\u3001\u72b6\u6001\u4e0e\u7fa4\u804a\u914d\u7f6e',
-      panelTitle: '\u865a\u62df\u5458\u5de5\u7ba1\u7406',
-      panelDesc: '\u5ba1\u6838\u5f85\u5ba1\u6279\u6ce8\u518c\u3001\u7ba1\u7406\u5df2\u6fc0\u6d3b\u865a\u62df\u5458\u5de5\u3001\u914d\u7f6e\u7fa4\u804a\u4e0a\u9650\u3002',
+      panelTitle: '\u6570\u5b57\u5458\u5de5\u7ba1\u7406',
+      panelDesc: '\u5ba1\u6838\u5f85\u5ba1\u6279\u6ce8\u518c\u3001\u7ba1\u7406\u5df2\u6fc0\u6d3b\u6570\u5b57\u5458\u5de5\u3001\u914d\u7f6e\u7fa4\u804a\u4e0a\u9650\u3002',
       pendingTitle: '\u5f85\u5ba1\u6279',
       activeTitle: '\u5df2\u6fc0\u6d3b',
       emptyPending: '\u6682\u65e0\u5f85\u5ba1\u6279\u7684\u6ce8\u518c\u8bf7\u6c42\u3002',
-      emptyActive: '\u6682\u65e0\u5df2\u6fc0\u6d3b\u7684\u865a\u62df\u5458\u5de5\u3002',
+      emptyActive: '\u6682\u65e0\u5df2\u6fc0\u6d3b\u7684\u6570\u5b57\u5458\u5de5\u3002',
       name: '\u540d\u79f0',
       skillDesc: '\u6280\u80fd\u63cf\u8ff0',
       accessPolicy: '\u8bbf\u95ee\u7b56\u7565',
@@ -83,18 +83,18 @@
       policyBlacklist: '\u9ed1\u540d\u5355',
       policyPerRequest: '\u9010\u6b21\u6388\u6743',
       groupConfigTitle: '\u7fa4\u804a\u914d\u7f6e',
-      groupConfigDesc: '\u5355\u4e2a\u7fa4\u804a\u4e2d\u865a\u62df\u5458\u5de5\u53c2\u4e0e\u8005\u7684\u6700\u5927\u6570\u91cf\u3002',
+      groupConfigDesc: '\u5355\u4e2a\u7fa4\u804a\u4e2d\u6570\u5b57\u5458\u5de5\u53c2\u4e0e\u8005\u7684\u6700\u5927\u6570\u91cf\u3002',
       maxParticipants: '\u6700\u5927\u53c2\u4e0e\u8005',
       saveConfig: '\u4fdd\u5b58',
       configSaved: '\u7fa4\u804a\u914d\u7f6e\u5df2\u4fdd\u5b58\u3002',
       configSaveFailed: '\u4fdd\u5b58\u914d\u7f6e\u5931\u8d25\uff1a{error}',
-      approveSuccess: '\u865a\u62df\u5458\u5de5\u5df2\u901a\u8fc7\u5ba1\u6279\u3002',
+      approveSuccess: '\u6570\u5b57\u5458\u5de5\u5df2\u901a\u8fc7\u5ba1\u6279\u3002',
       approveFailed: '\u5ba1\u6279\u5931\u8d25\uff1a{error}',
-      rejectSuccess: '\u865a\u62df\u5458\u5de5\u5df2\u62d2\u7edd\u3002',
+      rejectSuccess: '\u6570\u5b57\u5458\u5de5\u5df2\u62d2\u7edd\u3002',
       rejectFailed: '\u62d2\u7edd\u5931\u8d25\uff1a{error}',
-      disableSuccess: '\u865a\u62df\u5458\u5de5\u5df2\u7981\u7528\u3002',
+      disableSuccess: '\u6570\u5b57\u5458\u5de5\u5df2\u7981\u7528\u3002',
       disableFailed: '\u7981\u7528\u5931\u8d25\uff1a{error}',
-      loadFailed: '\u52a0\u8f7d\u865a\u62df\u5458\u5de5\u5217\u8868\u5931\u8d25\uff1a{error}',
+      loadFailed: '\u52a0\u8f7d\u6570\u5b57\u5458\u5de5\u5217\u8868\u5931\u8d25\uff1a{error}',
       refresh: '\u5237\u65b0',
       quotaInfo: '\u5df2\u6fc0\u6d3b\uff1a{active} / \u914d\u989d\uff1a{quota}',
       status: '\u72b6\u6001'

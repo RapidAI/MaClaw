@@ -102,8 +102,7 @@ export const SidebarSystemStatus = ({
     const imOnline = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || (showLansenger && lansengerStatus === 'connected');
     const statusSignals = [
         { label: 'LLM', on: maclawLLMOnline },
-        ...(!hideAgentNet ? [{ label: textForLang(lang, 'Net', '\u667a\u7f51', '\u667a\u7db2'), on: agentNetRunning }] : []),
-        { label: textForLang(lang, 'Mob', '\u79fb\u52a8', '\u79fb\u52d5'), on: !!remoteActivationStatus?.activated },
+        { label: 'HUB', on: !!remoteActivationStatus?.activated },
         { label: 'IM', on: imOnline },
     ];
     const hubCreditStatus = String(sidebarHubCredits?.status || '').toLowerCase();

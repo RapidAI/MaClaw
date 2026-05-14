@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -28,6 +29,7 @@ var ErrEmailBlocked = errors.New("email blocked")
 var ErrIPBlocked = errors.New("ip blocked")
 var ErrInvalidConfirmationToken = errors.New("invalid confirmation token")
 var ErrHubNotFound = errors.New("hub not found")
+var ErrDigitalEmployeeQuotaDecrease = errors.New("digital employee quota cannot decrease")
 
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const systemKeyPublicBaseURL = "server_public_base_url"
@@ -1263,6 +1265,77 @@ func (s *Service) ensureTargetHub(ctx context.Context, hubID string) error {
 	return nil
 }
 
+type DigitalEmployeeAuthorizationUpdate struct {
+	Quota   int
+	Years   int
+	Enabled *bool
+}
+
+func (s *Service) HubDigitalEmployeeAuthorization(ctx context.Context, hubID string) (*corelib.DigitalEmployeeAuthorization, error) {
+	hub, err := s.hubs.GetByID(ctx, strings.TrimSpace(hubID))
+	if err != nil {
+		return nil, err
+	}
+	if hub == nil {
+		return nil, ErrHubNotFound
+	}
+	auth := corelib.DigitalEmployeeAuthorization{
+		Quota:   hub.DigitalEmployeeQuota,
+		Enabled: hub.DigitalEmployeeAuthorizationEnabled,
+	}
+	if hub.DigitalEmployeeAuthorizationExpiresAt != nil {
+		auth.ExpiresAt = hub.DigitalEmployeeAuthorizationExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return ptrDigitalEmployeeAuthorization(corelib.NormalizeDigitalEmployeeAuthorization(auth, time.Now().UTC())), nil
+}
+
+func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID string, req DigitalEmployeeAuthorizationUpdate) (*corelib.DigitalEmployeeAuthorization, error) {
+	hubID = strings.TrimSpace(hubID)
+	if hubID == "" {
+		return nil, errors.New("hub id is required")
+	}
+	hub, err := s.hubs.GetByID(ctx, hubID)
+	if err != nil {
+		return nil, err
+	}
+	if hub == nil {
+		return nil, ErrHubNotFound
+	}
+	if req.Quota < hub.DigitalEmployeeQuota {
+		return nil, ErrDigitalEmployeeQuotaDecrease
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	years := req.Years
+	if enabled && years <= 0 {
+		years = 1
+	}
+	var expiresAt *time.Time
+	if enabled {
+		base := time.Now().UTC()
+		if hub.DigitalEmployeeAuthorizationExpiresAt != nil && hub.DigitalEmployeeAuthorizationExpiresAt.After(base) {
+			base = hub.DigitalEmployeeAuthorizationExpiresAt.UTC()
+		}
+		next := base.AddDate(years, 0, 0)
+		expiresAt = &next
+	} else {
+		expiresAt = hub.DigitalEmployeeAuthorizationExpiresAt
+	}
+	quota := req.Quota
+	if quota < 0 {
+		quota = 0
+	}
+	if err := s.hubs.UpdateDigitalEmployeeAuthorization(ctx, hubID, quota, enabled, expiresAt, time.Now()); err != nil {
+		return nil, err
+	}
+	return s.HubDigitalEmployeeAuthorization(ctx, hubID)
+}
+
+func ptrDigitalEmployeeAuthorization(auth corelib.DigitalEmployeeAuthorization) *corelib.DigitalEmployeeAuthorization {
+	return &auth
+}
 func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string) error {
 	if strings.TrimSpace(hubID) == "" {
 		return errors.New("hub id is required")

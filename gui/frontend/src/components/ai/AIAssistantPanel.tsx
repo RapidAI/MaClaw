@@ -17,7 +17,6 @@ import { useAssistantOutputScroll } from "./useAssistantOutputScroll";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory } from "./useAssistantInputHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
-import { useGroupDiscussionControls } from "./useGroupDiscussionControls";
 import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
 import { AssistantConversationBody } from "./AssistantConversationBody";
@@ -33,8 +32,9 @@ import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
 import { AITabBar } from "./AITabBar";
 import { useAITabManager } from "./useAITabManager";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
+import { AssistantActiveTabContent } from "./AssistantActiveTabContent";
 export function AIAssistantPanel(props: any) {
-    const { onClose, lang, chatFontSize = 14, groupDiscussion, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0 } = props;
+    const { onClose, lang, chatFontSize = 14, groupDiscussion, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -95,7 +95,6 @@ export function AIAssistantPanel(props: any) {
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
-
     // --- Tab System ---
     const {
         tabState,
@@ -109,24 +108,44 @@ export function AIAssistantPanel(props: any) {
         tabLimitError,
         clearTabLimitError,
     } = useAITabManager();
-
     const isLocalTabActive = activeTab.id === "local";
-
     // Handle starting a VE conversation from VirtualEmployeeTab
     const handleStartVEConversation = useCallback((ve: VirtualEmployeeEntry) => {
-        const tab = createVETab(ve.id, ve.name);
-        if (!tab) {
-            // Max limit reached — error is set in the hook
-        }
+        createVETab(ve.id, ve.name);
     }, [createVETab]);
-
+    const isHistoryDiscussionReadOnly = useCallback((discussion: any) => {
+        if (typeof discussion?.readonly === "boolean") return discussion.readonly;
+        const relation = String(discussion?.local_relation || discussion?.role || "").toLowerCase();
+        if (relation === "initiated_by_me") return false;
+        if (relation === "owned_ve_invited") return true;
+        return relation !== "initiated" && relation !== "owner" && relation !== "creator";
+    }, []);
+    const openHistoryDiscussion = useCallback((discussion: any) => {
+        const discussionId = String(discussion?.id || "").trim();
+        if (!discussionId) return;
+        const titleBase = discussion?.topic || discussion?.question || discussionId;
+        const readOnly = isHistoryDiscussionReadOnly(discussion);
+        const label = readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
+        const title = label ? `${titleBase} - ${label}` : titleBase;
+        const role = discussion?.local_relation || discussion?.role;
+        createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role });
+    }, [createGroupTab, isHistoryDiscussionReadOnly, lang]);
+    useEffect(() => {
+        if (!pendingVEOpen) return;
+        handleStartVEConversation(pendingVEOpen);
+        onPendingVEOpenHandled?.();
+    }, [handleStartVEConversation, onPendingVEOpenHandled, pendingVEOpen]);
+    useEffect(() => {
+        if (!pendingHistoryDiscussionOpen) return;
+        openHistoryDiscussion(pendingHistoryDiscussionOpen);
+        onPendingHistoryDiscussionOpenHandled?.();
+    }, [onPendingHistoryDiscussionOpenHandled, openHistoryDiscussion, pendingHistoryDiscussionOpen]);
     // Clear tab limit error after 3 seconds
     useEffect(() => {
         if (!tabLimitError) return;
         const timer = setTimeout(clearTabLimitError, 3000);
         return () => clearTimeout(timer);
     }, [tabLimitError, clearTabLimitError]);
-
     const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
     const showAgentView = !!agentView;
@@ -135,7 +154,6 @@ export function AIAssistantPanel(props: any) {
     const anySplitActive = showWorkflowPreview || showCodePreview || showAgentView;
     const splitRatio = anySplitActive ? workflowState.splitRatio : 1;
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
-
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
     const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const processingText = lang === "en" ? "Processing... (you can type ahead)" : "\u6b63\u5728\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
@@ -150,12 +168,12 @@ export function AIAssistantPanel(props: any) {
     const showBusySpinner = isBusy;
     const codingAgentTurnSnapshot = useMemo(() => sending ? latestCodingAgentTurnSnapshot(progressMessages) : null, [progressMessages, sending]);
     const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(progressMessages, sending), [codingAgentTurnSnapshot, progressMessages, sending]);
-    // Use the latest tool-specific progress message if available (e.g. "⚙️ 正在执行 weather-query...")
+    // Use the latest tool-specific progress message if available.
     const latestToolProgress = useMemo(() => findLatestToolProgressText(progressMessages, sending), [progressMessages, sending]);
     const activeProcessingText = codingAgentProgress
         ? codingAgentCompactText(codingAgentProgress, lang)
         : latestToolProgress
-            ? `${latestToolProgress}${lang === "en" ? " (you can type ahead)" : "（可继续输入）"}`
+            ? `${latestToolProgress}${lang === "en" ? " (you can type ahead)" : "\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09"}`
             : processingText;
     const projectSearch = useProjectSearch(lang);
     const handleProjectSearchSwitch = useCallback(async (msg: string) => {
@@ -166,27 +184,7 @@ export function AIAssistantPanel(props: any) {
         }
         await sendMessage(msg);
     }, [cancelSession, isBusy, lang, sendMessage]);
-
-    const {
-        bindGroupDiscussionPress,
-        groupActiveTalks,
-        groupDiscussionBusy,
-        groupDiscussionConfig,
-        groupDiscussionDiscoverable,
-        groupDiscussionEnabled,
-        groupDiscussionLabel,
-        groupDiscussionOpen,
-        groupDiscussionScopeText,
-        groupDiscussionStatus,
-        groupPendingInvites,
-        groupReadyTalks,
-        groupStaleTalks,
-        groupWaitingTalks,
-        runGroupDiscussionAction,
-        setGroupDiscussionOpen,
-    } = useGroupDiscussionControls(groupDiscussion, inline, lang);
     const initLabel = getAssistantInitLabel(initStatus, lang);
-
     const placeholderText = !ready
         ? initLabel
         : showThinkingState
@@ -219,18 +217,15 @@ export function AIAssistantPanel(props: any) {
         scrollToBottom("auto", true, 2);
     }, [scrollToBottom]);
     const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputValue, handleInputResizeEnd);
-
     // Sync local draft from parent-owned draft state.
     useEffect(() => {
         setLocalDraftInputValue(draftInputValue);
     }, [draftInputValue]);
-
     // Focus input on mount
     useEffect(() => {
         const timer = setTimeout(() => inputRef.current?.focus(), 100);
         return () => clearTimeout(timer);
     }, []);
-
     // Escape key closes overlay mode, or exits maximized inline mode.
     useEffect(() => {
         if (!maximized && inline) return;
@@ -245,7 +240,6 @@ export function AIAssistantPanel(props: any) {
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
     }, [onClose, inline, maximized, onToggleMaximize]);
-
     const applyInputValue = useCallback((nextValue: string) => {
         updateInputValue(nextValue);
         requestAnimationFrame(() => {
@@ -256,9 +250,7 @@ export function AIAssistantPanel(props: any) {
             inputRef.current.setSelectionRange(caret, caret);
         });
     }, [resizeInput, updateInputValue]);
-
     const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue, submittedPrompts });
-
     const submitRecognizedVoiceText = useCallback(async (text: string, _source?: VoiceInputSource) => {
         const trimmed = text.trim();
         if (!trimmed || !ready || inputLocked) return;
@@ -270,7 +262,6 @@ export function AIAssistantPanel(props: any) {
             console.warn("[AIAssistantPanel] Voice prompt send failed", err);
         });
     }, [inputLocked, ready, recordSubmittedPrompt, resetHistoryBrowsing, sendMessage, setDraftInputValue]);
-
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId || '');
     const { finishVoicePointer, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave } = useAIAssistantVoiceControls({
         inputRef,
@@ -279,7 +270,6 @@ export function AIAssistantPanel(props: any) {
         ready,
         voiceInput,
     });
-
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
         // /btw side query: always execute immediately, never buffer.
@@ -339,7 +329,6 @@ export function AIAssistantPanel(props: any) {
         const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
         await sendMessage(outgoing);
     }, [inputValue, submitLocked, queueEditDraftActive, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessage, sendBtwMessage]);
-
     useEffect(() => {
         if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {
             const result = mergeAndFire();
@@ -351,7 +340,6 @@ export function AIAssistantPanel(props: any) {
         }
         prevSubmitLockedRef.current = submitLocked;
     }, [submitLocked, queue.length, mergeAndFire, sendMessage, recordSubmittedPrompt]);
-
     const handleFireEntry = useCallback(async (id: string) => {
         const entry = extractEntry(id);
         if (!entry) return;
@@ -370,7 +358,6 @@ export function AIAssistantPanel(props: any) {
             addEntry(entry.text, entry.attachments);
         }
     }, [addEntry, extractEntry, injectSupplementary, recordSubmittedPrompt, sendMessage]);
-
     const handleEditEntry = useCallback((id: string) => {
         const entry = extractEntry(id);
         if (!entry) return;
@@ -413,12 +400,10 @@ export function AIAssistantPanel(props: any) {
             setCancelPending(false);
         }
     }, [cancelPending, cancelSession, draftInputValue, inputValue, resetHistoryBrowsing, resizeInput, updateInputValue]);
-
     const lastAssistantIdx = useMemo(() => findLastIndex(otherMessages, m => m.role === 'assistant'), [otherMessages]);
     const renderedOtherMessages = useMemo(() => {
         return otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel, lang));
     }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel, lang]);
-
     const renderedProgressMessages = useMemo(() => {
         return progressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang));
     }, [progressMessages, executeAction, t, savedFileLabel, lang]);
@@ -427,11 +412,10 @@ export function AIAssistantPanel(props: any) {
             ? maximizedInlineStyle
             : { display: "flex", flex: "1 1 0%", flexDirection: "column", minWidth: 0, minHeight: 0, boxSizing: "border-box", overflow: "hidden", background: t.bg, textAlign: "left", width: "100%", height: "100%", position: "relative" })
         : overlayStyle;
-
     return (
         <div data-testid="ai-panel-root" style={{ ...containerStyle, flexDirection: "row" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
-            {/* Drag overlay (inline mode) — scoped to ai-panel-body only */}
+            {/* Drag overlay (inline mode), scoped to ai-panel-body only */}
             {inline && !maximized && (
                 <div style={{
                     height: "30px", width: "100%",
@@ -439,53 +423,14 @@ export function AIAssistantPanel(props: any) {
                     '--wails-draggable': 'drag',
                 } as any} />
             )}
-            <AssistantTitleBar
-                bindGroupDiscussionPress={bindGroupDiscussionPress}
-                clearHistory={clearHistory}
-                codingAgentProgress={codingAgentProgress}
-                groupActiveTalks={groupActiveTalks}
-                groupDiscussion={groupDiscussion}
-                groupDiscussionBusy={groupDiscussionBusy}
-                groupDiscussionDiscoverable={groupDiscussionDiscoverable}
-                groupDiscussionEnabled={groupDiscussionEnabled}
-                groupDiscussionLabel={groupDiscussionLabel}
-                groupDiscussionOpen={groupDiscussionOpen}
-                groupDiscussionScopeText={groupDiscussionScopeText}
-                groupDiscussionStatus={groupDiscussionStatus}
-                groupPendingInvites={groupPendingInvites}
-                groupReadyTalks={groupReadyTalks}
-                groupStaleTalks={groupStaleTalks}
-                groupWaitingTalks={groupWaitingTalks}
-                inline={!!inline}
-                lang={lang}
-                maximized={!!maximized}
-                onClose={onClose}
-                onHideWindow={onHideWindow}
-                onOpenKnowledge={() => setKnowledgeDialogOpen(true)}
-                onOpenTutorial={onOpenTutorial}
-                onToggleMaximize={onToggleMaximize}
-                projectSearchOpen={projectSearch.open}
-                refreshNews={refreshNews}
-                runGroupDiscussionAction={runGroupDiscussionAction}
-                setGroupDiscussionOpen={setGroupDiscussionOpen}
-                setThemeMode={setThemeMode}
-                setTtsEnabled={setTtsEnabled}
-                showMaximizeToggle={showMaximizeToggle}
-                theme={t}
-                themeMode={themeMode}
-                title={title}
-                trialReflectEnabled={trialReflectEnabled}
-                ttsEnabled={ttsEnabled}
-                ttsPlaying={ttsPlaying}
-                toggleProjectSearch={projectSearch.toggle}
-            />
+            <AssistantTitleBar clearHistory={clearHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onHideWindow={onHideWindow} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} />
             <KnowledgeDialog
                 open={knowledgeDialogOpen}
                 onClose={() => setKnowledgeDialogOpen(false)}
                 lang={lang}
                 theme={t}
             />
-            {/* Tab Bar — shown when there are multiple tabs */}
+            {/* Tab bar, shown when there are multiple tabs */}
             <AITabBar
                 tabs={tabState.tabs}
                 activeTabId={tabState.activeTabId}
@@ -509,7 +454,7 @@ export function AIAssistantPanel(props: any) {
                     {tabLimitError}
                 </div>
             )}
-            {/* Chat area — only rendered for local tab (inactive tabs don't render DOM) */}
+            {/* Chat area, only rendered for local tab */}
             {isLocalTabActive && (
             <>
             <AssistantWorkflowMaximizeSuggestion
@@ -522,7 +467,6 @@ export function AIAssistantPanel(props: any) {
                 theme={t}
                 themeMode={themeMode}
             />
-
             <ProjectSearchPanel
                 search={projectSearch}
                 lang={lang}
@@ -531,7 +475,6 @@ export function AIAssistantPanel(props: any) {
                 onProjectSwitch={handleProjectSearchSwitch}
                 onTaskPrefsChanged={onTaskPrefsChanged}
             />
-
             <div
                 ref={outputContainerRef}
                 data-testid="ai-output-container"
@@ -563,109 +506,13 @@ export function AIAssistantPanel(props: any) {
                 />
                 <div ref={outputEndRef} />
             </div>
-
             {/* Input bar */}
-            <AssistantInputStack
-                browseFile={browseFile}
-                canSend={canSend}
-                cancelPending={cancelPending}
-                cancelSession={cancelSession}
-                clearSelectedFile={clearSelectedFile}
-                editingEntryId={editingEntryId}
-                exitHistoryBrowsing={exitHistoryBrowsing}
-                finishVoicePointer={finishVoicePointer}
-                handleCancel={handleCancel}
-                handleCancelEdit={handleCancelEdit}
-                handleEditEntry={handleEditEntry}
-                handlePaste={handlePaste}
-                handleSaveEdit={handleSaveEdit}
-                handleFireEntry={handleFireEntry}
-                handleSend={handleSend}
-                handleVoiceClick={handleVoiceClick}
-                handleVoicePointerDown={handleVoicePointerDown}
-                handleVoicePointerLeave={handleVoicePointerLeave}
-                inputAreaHeight={inputAreaHeight}
-                inputLocked={inputLocked}
-                inputRef={inputRef}
-                inputValue={inputValue}
-                inline={!!inline}
-                isBusy={isBusy}
-                isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary}
-                lang={lang}
-                pendingAttachments={pendingAttachments}
-                placeholderText={placeholderText}
-                queue={queue}
-                ready={ready}
-                recallHistory={recallHistory}
-                rememberHistoryEdit={rememberHistoryEdit}
-                removeEntry={removeEntry}
-                removeSelectedFile={removeSelectedFile}
-                reorderEntry={reorderEntry}
-                resizeInput={resizeInput}
-                selectedFilePaths={selectedFilePaths}
-                setPendingAttachments={setPendingAttachments}
-                showBusySpinner={showBusySpinner}
-                startInputResize={startInputResize}
-                theme={t}
-                themeMode={themeMode}
-                updateInputValue={updateInputValue}
-                voiceInput={voiceInput}
-            />
+            <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={!!inline} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={removeEntry} removeSelectedFile={removeSelectedFile} reorderEntry={reorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />
             </>
             )}
-            {/* VE conversation tabs — placeholder for future VEConversationView */}
-            {!isLocalTabActive && activeTab.type === "ve" && (
-                <div
-                    data-testid={`ai-ve-tab-content-${activeTab.id}`}
-                    style={{
-                        flex: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: t.textMuted,
-                        fontSize: 13,
-                    }}
-                >
-                    <span>VE 对话: {activeTab.title}</span>
-                </div>
-            )}
-            {/* Group chat tabs — placeholder for future GroupChatView */}
-            {!isLocalTabActive && activeTab.type === "group" && (
-                <div
-                    data-testid={`ai-group-tab-content-${activeTab.id}`}
-                    style={{
-                        flex: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: t.textMuted,
-                        fontSize: 13,
-                    }}
-                >
-                    <span>群聊: {activeTab.title}</span>
-                </div>
-            )}
+            <AssistantActiveTabContent activeTab={activeTab} isLocalTabActive={isLocalTabActive} lang={lang} theme={t} />
             </div>
-            <AssistantPreviewPane
-                agentView={agentView}
-                codePreviewState={codePreviewState}
-                closeCodePreview={closeCodePreview}
-                closeDocPreview={closeDocPreview}
-                dismissAgentView={dismissAgentView}
-                inline={!!inline}
-                lang={lang}
-                onToggleMaximize={onToggleMaximize}
-                selectCodeFile={selectCodeFile}
-                submitAgentView={submitAgentView}
-                showCodePreview={showCodePreview}
-                showAgentView={showAgentView}
-                showWorkflowPreview={showWorkflowPreview}
-                splitRatio={splitRatio}
-                startPreviewResize={startPreviewResize}
-                theme={t}
-                themeMode={themeMode}
-                workflowState={workflowState}
-            />
+            <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} inline={!!inline} lang={lang} onToggleMaximize={onToggleMaximize} selectCodeFile={selectCodeFile} submitAgentView={submitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
         </div>
     );
 }

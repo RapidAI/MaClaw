@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { SidebarNavRail } from '../SidebarNavRail';
 
 const baseProps = {
@@ -23,13 +23,15 @@ const baseProps = {
 describe('SidebarNavRail AgentNet visibility', () => {
     it('hides AgentNet for TigerClaw', () => {
         render(<SidebarNavRail {...baseProps} brandInfo={{ id: 'qianxin' }} />);
+        fireEvent.click(screen.getByTitle('System'));
 
-        expect(screen.queryByTitle('AgentNet')).toBeNull();
+        expect(screen.queryByText('AgentNet')).toBeNull();
     });
 
     it('shows AgentNet for the default brand', () => {
         render(<SidebarNavRail {...baseProps} brandInfo={{ id: 'maclaw' }} />);
+        fireEvent.click(screen.getByTitle('System'));
 
-        expect(screen.getByTitle('AgentNet')).toBeTruthy();
+        expect(screen.getByText('AgentNet')).toBeTruthy();
     });
 });

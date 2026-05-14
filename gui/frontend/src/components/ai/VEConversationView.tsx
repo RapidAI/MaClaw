@@ -777,7 +777,7 @@ function formatError(error: VEConversationError, isZh: boolean): string {
         case "hub_disconnected":
             return isZh ? "Hub 连接中断" : "Hub disconnected";
         case "ve_offline":
-            return isZh ? "该虚拟员工当前不在线" : "VE is offline";
+            return isZh ? "该数字员工当前不在线" : "Digital employee is offline";
         case "send_failed":
             return isZh ? "消息发送失败" : "Message send failed";
         case "session_timeout":

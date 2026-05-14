@@ -337,21 +337,7 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		scanReport := scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
 		installScanReport = scanReport
 
-		if scanReport.IsDangerous() {
-			cskill.CleanupStaging(stagingDir)
-			if h.getAuditLog() != nil {
-				_ = h.getAuditLog().Log(security.AuditEntry{
-					Timestamp:    time.Now(),
-					Action:       security.AuditActionHubSkillReject,
-					ToolName:     source + "_skill_install",
-					RiskLevel:    security.RiskCritical,
-					PolicyAction: security.PolicyDeny,
-					Result:       fmt.Sprintf("pre-install policy rejected critical skill %s: %s", displayName, scanReport.Summary),
-				})
-			}
-			return skillInstallExecutionResult{Text: FormatScanReportForUser(scanReport, displayName) +
-				fmt.Sprintf("\nSkill %s was rejected by security policy before installation.", displayName)}
-		} else if scanReport.NeedsUserReview() {
+		if scanReport.IsDangerous() || scanReport.NeedsUserReview() {
 			confirmed := h.confirmRiskSkillInstall(
 				ctx, displayName, source, scanReport.FinalLevel, scanReport.PatternAssessment.Factors, platform, userID,
 			)
@@ -362,15 +348,25 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 						Timestamp:    time.Now(),
 						Action:       security.AuditActionHubSkillReject,
 						ToolName:     source + "_skill_install",
-						RiskLevel:    security.RiskHigh,
+						RiskLevel:    scanReport.FinalLevel,
 						PolicyAction: security.PolicyDeny,
-						Result:       fmt.Sprintf("user rejected high-risk skill %s: %s", displayName, scanReport.Summary),
+						Result:       fmt.Sprintf("user rejected %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
 					})
 				}
 				return skillInstallExecutionResult{
-					Text:          FormatScanReportForUser(scanReport, displayName) + fmt.Sprintf("\nSkill %s was rejected and not installed.", displayName),
+					Text:          FormatScanReportForUser(scanReport, displayName) + fmt.Sprintf("\nSkill %s was rejected by user and not installed.", displayName),
 					SilentFailure: true,
 				}
+			}
+			if h.getAuditLog() != nil {
+				_ = h.getAuditLog().Log(security.AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       security.AuditActionHubSkillInstall,
+					ToolName:     source + "_skill_install",
+					RiskLevel:    scanReport.FinalLevel,
+					PolicyAction: security.PolicyUserOverride,
+					Result:       fmt.Sprintf("user approved %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
+				})
 			}
 		}
 	}

@@ -1,8 +1,11 @@
-import type { MouseEvent as ReactMouseEvent } from 'react';
+﻿import type { MouseEvent as ReactMouseEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
 import type { SidebarHubCredits } from '../../types/appShell';
 import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
+import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
+import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
+import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
 import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 
 type RecentProject = {
@@ -38,8 +41,8 @@ interface AppSidebarShellProps {
     t: (key: string) => string;
     gossipAllowed: boolean;
     config: any;
-    sidebarExpanded: boolean;
-    setSidebarExpanded: (updater: (prev: boolean) => boolean) => void;
+    sidebarExpanded?: boolean;
+    setSidebarExpanded?: (updater: (prev: boolean) => boolean) => void;
     activeTool: string;
     toolDropdownOpen: boolean;
     setToolDropdownOpen: (updater: (prev: boolean) => boolean) => void;
@@ -73,6 +76,14 @@ interface AppSidebarShellProps {
     codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
     handleRecentTasksResizeStart: (e: ReactMouseEvent<HTMLDivElement>) => void;
     isRecentTasksResizing: boolean;
+    onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
+    favoriteEmployees?: FavoriteEmployeeSlot[];
+    veAuthorized?: boolean;
+    digitalEmployeeFeatureStatus?: any;
+    onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
+    onStartVEConversation?: (veId: string) => void;
+    onReorderFavorites?: (newOrder: string[]) => void;
+    showCodingToolEntry?: boolean;
 }
 
 
@@ -132,6 +143,14 @@ export const AppSidebarShell = ({
     codingAgentTurnSnapshot = null,
     handleRecentTasksResizeStart,
     isRecentTasksResizing,
+    onOpenVEConversation,
+    favoriteEmployees = [],
+    veAuthorized = false,
+    digitalEmployeeFeatureStatus = null,
+    onOpenHistoryDiscussion,
+    onStartVEConversation,
+    onReorderFavorites,
+    showCodingToolEntry = false,
 }: AppSidebarShellProps) => (
 <>
             <div style={{
@@ -159,8 +178,10 @@ export const AppSidebarShell = ({
                     t={t}
                     gossipAllowed={gossipAllowed}
                     config={config}
-                    sidebarExpanded={sidebarExpanded}
-                    setSidebarExpanded={setSidebarExpanded}
+                    favoriteEmployees={favoriteEmployees}
+                    veAuthorized={veAuthorized}
+                    onStartVEConversation={onStartVEConversation || (() => {})}
+                    onReorderFavorites={onReorderFavorites || (() => {})}
                 />        {navTab === 'ai' && (
                     <SidebarAiPane
                         recentTasksPaneWidth={recentTasksPaneWidth}
@@ -210,8 +231,14 @@ export const AppSidebarShell = ({
                         handleRecentTasksResizeStart={handleRecentTasksResizeStart}
                         isRecentTasksResizing={isRecentTasksResizing}
                         switchTool={switchTool}
+                        onOpenVEConversation={onOpenVEConversation}
+                        showCodingToolEntry={showCodingToolEntry}
+                        digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
+                        onOpenHistoryDiscussion={onOpenHistoryDiscussion}
                     />
                 )}
             </div>
 </>
 );
+
+

@@ -134,7 +134,12 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online"})
+		auth, authErr := service.HubDigitalEmployeeAuthorization(r.Context(), hubID)
+		if authErr != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online", "digital_employee_authorization": auth})
 	}
 }
 
@@ -277,6 +282,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/admin/hubs/runtime", RequireAdmin(adminService, ListHubRuntimeStatusesHandler(hubService)))
 	mux.HandleFunc("GET /api/admin/users/dashboard", RequireAdmin(adminService, ListUserDashboardHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/visibility", RequireAdmin(adminService, UpdateHubVisibilityHandler(hubService)))
+	mux.HandleFunc("POST /api/admin/hubs/{id}/digital-employee-authorization", RequireAdmin(adminService, UpdateDigitalEmployeeAuthorizationHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/disable", RequireAdmin(adminService, DisableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/enable", RequireAdmin(adminService, EnableHubHandler(hubService)))
 	mux.HandleFunc("POST /api/admin/hubs/{id}/confirm", RequireAdmin(adminService, ConfirmHubHandler(hubService)))

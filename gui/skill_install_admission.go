@@ -118,15 +118,18 @@ func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source s
 		}
 	}()
 
+	emitFactors := factors
+	if emitFactors == nil {
+		emitFactors = []string{}
+	}
 	payload := map[string]interface{}{
 		"confirm_id": confirmID,
-		"summary":    buildSkillRiskPrompt(skillName, source, level, factors),
-		"actions": []map[string]string{
-			{"label": "Allow install", "command": "confirm"},
-			{"label": "Reject install", "command": "reject"},
-		},
+		"skill_name": skillName,
+		"source":     source,
+		"level":      string(level),
+		"factors":    emitFactors,
 	}
-	a.emitEvent("critical-risk-confirm", payload)
+	a.emitEvent("skill-install-risk-confirm", payload)
 	log.Printf("[skill-install-confirm] desktop event emitted confirm_id=%s skill=%q level=%s", confirmID, skillName, level)
 
 	select {
@@ -191,20 +194,12 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 	}
 
 	factors := skillInstallRiskFactors(report)
-	if report.IsDangerous() {
-		a.emitSkillInstallProgress(entry.Name, "blocked", "Critical risk found. Installation blocked by policy.", report)
-		a.logSkillInstallSecurityEvent(
-			security.AuditActionHubSkillReject,
-			"manual_skill_install",
-			security.RiskCritical,
-			security.PolicyDeny,
-			fmt.Sprintf("pre-install scan rejected critical skill %s: %s", entry.Name, report.Summary),
-		)
-		return fmt.Errorf("skill security scan rejected installation: level=%s summary=%s", report.FinalLevel, report.Summary)
-	}
-
-	if report.NeedsUserReview() {
-		a.emitSkillInstallProgress(entry.Name, "awaiting-confirmation", "High risk found. Waiting for your allow or reject decision.", report)
+	if report.IsDangerous() || report.NeedsUserReview() {
+		statusMsg := "High risk found. Waiting for your allow or reject decision."
+		if report.IsDangerous() {
+			statusMsg = "Critical risk found. Waiting for your allow or reject decision."
+		}
+		a.emitSkillInstallProgress(entry.Name, "awaiting-confirmation", statusMsg, report)
 		confirmed := a.confirmManualSkillInstall(ctx, entry.Name, source, report.FinalLevel, factors)
 		if !confirmed {
 			a.emitSkillInstallProgress(entry.Name, "rejected", "Installation rejected.", report)

@@ -174,7 +174,12 @@ func doSimpleOpenAIRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, mes
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if readErr != nil && len(body) == 0 {
+		// Context timeout or network error during body read with no data received.
+		// Return the read error directly instead of trying to parse empty/partial body.
+		return nil, readErr
+	}
 	if resp.StatusCode != http.StatusOK {
 		msg := string(body)
 		if len(msg) > 512 {
@@ -250,7 +255,10 @@ func doSimpleAnthropicRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, 
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if readErr != nil && len(body) == 0 {
+		return nil, readErr
+	}
 	if resp.StatusCode != http.StatusOK {
 		msg := string(body)
 		if len(msg) > 512 {

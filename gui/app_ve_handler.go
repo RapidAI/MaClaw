@@ -8,11 +8,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/config"
 )
 
 // VEMessageHandler processes incoming A2A messages when this maclaw instance
-// is acting as a virtual employee. It receives GroupEnvelope messages (Type=discussion_message)
+// is acting as a digital employee. It receives GroupEnvelope messages (Type=discussion_message)
 // from the Hub, extracts content, processes them through the local AI agent (reusing
 // the IMMessageHandler agent loop pattern), and sends streaming responses back.
 type VEMessageHandler struct {
@@ -27,6 +30,8 @@ type veSession struct {
 	RequesterID  string
 	LastActivity time.Time
 	Cancel       context.CancelFunc
+	ctx          context.Context
+	History      []agent.ConversationEntry
 }
 
 // NewVEMessageHandler creates a new VE message handler.
@@ -38,7 +43,7 @@ func NewVEMessageHandler(app *App) *VEMessageHandler {
 }
 
 // HandleGroupEnvelope processes an incoming GroupEnvelope when this maclaw instance
-// is acting as a virtual employee. It validates the envelope type is discussion_message,
+// is acting as a digital employee. It validates the envelope type is discussion_message,
 // extracts the content from the embedded GroupDiscussionMessage, and invokes the local
 // AI agent (reusing the IMMessageHandler agent loop pattern).
 func (h *VEMessageHandler) HandleGroupEnvelope(envelope a2a.GroupEnvelope) {
@@ -66,7 +71,7 @@ func (h *VEMessageHandler) HandleGroupEnvelope(envelope a2a.GroupEnvelope) {
 }
 
 // HandleIncomingMessage processes an incoming A2A discussion message
-// when this maclaw instance is acting as a virtual employee.
+// when this maclaw instance is acting as a digital employee.
 // It runs the local AI agent and sends streaming responses back via Hub.
 // If the message contains attachments (TextAttachment/ImageAttachment/FileAttachment),
 // they are decoded/downloaded and appended to the AI Agent input as context.
@@ -92,22 +97,25 @@ func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.Group
 			RequesterID:  msg.FromID,
 			LastActivity: time.Now(),
 			Cancel:       cancel,
+			ctx:          ctx,
 		}
 		h.activeSessions[sessionID] = session
-		_ = ctx // used by cancel
 	}
 	session.LastActivity = time.Now()
+	sessionCtx := session.ctx
 	h.mu.Unlock()
 
 	// Process in background goroutine to not block the WebSocket reader
-	go h.processAndRespond(sessionID, msg)
+	go h.processAndRespond(sessionCtx, sessionID, msg)
 }
 
 // processAndRespond runs the AI agent on the incoming message and streams the response back.
 // It implements the 60s first-response timeout: if no chunk is produced within 60s,
 // a timeout error message is sent back.
-func (h *VEMessageHandler) processAndRespond(sessionID string, msg a2a.GroupDiscussionMessage) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, sessionID string, msg a2a.GroupDiscussionMessage) {
+	// Derive a per-message context from the session context so that
+	// CloseSession() cancellation propagates to in-flight processing.
+	ctx, cancel := context.WithTimeout(sessionCtx, 5*time.Minute)
 	defer cancel()
 
 	userMessage := msg.Content
@@ -143,7 +151,7 @@ func (h *VEMessageHandler) processAndRespond(sessionID string, msg a2a.GroupDisc
 			log.Printf("[ve-handler] error generating response for session %s: %v", sessionID, r.err)
 			h.sendMessage(sessionID, a2a.GroupDiscussionMessage{
 				Kind:    a2a.MessageStatement,
-				Content: fmt.Sprintf("[閿欒] 澶勭悊娑堟伅鏃跺嚭閿? %v", r.err),
+				Content: fmt.Sprintf("[error] Failed to process message: %v", r.err),
 			})
 		}
 	case <-firstResponseTimer.C:
@@ -151,13 +159,11 @@ func (h *VEMessageHandler) processAndRespond(sessionID string, msg a2a.GroupDisc
 		cancel() // cancel the agent processing
 		h.sendMessage(sessionID, a2a.GroupDiscussionMessage{
 			Kind:    a2a.MessageStatement,
-			Content: "[瓒呮椂] VE 澶勭悊娑堟伅瓒呮椂锛?0绉掑唴鏃犲搷搴旓級锛岃绋嶅悗閲嶈瘯",
+			Content: "[timeout] Digital employee response timed out after 60 seconds. Please try again later",
 		})
-		// Drain the result channel
-		<-resultCh
+		// Let the buffered result channel receive later; do not block after timeout.
 	case <-ctx.Done():
-		// Overall context cancelled
-		<-resultCh
+		// Let the buffered result channel receive later; do not block after cancellation.
 	}
 }
 
@@ -167,6 +173,20 @@ func (h *VEMessageHandler) processAndRespond(sessionID string, msg a2a.GroupDisc
 // The firstChunkSent channel is closed after the first chunk is sent.
 func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID, userMessage string, firstChunkSent chan<- struct{}) error {
 	firstSent := false
+
+	if query, ok := detectDigitalEmployeeSensitiveQuery(userMessage); ok {
+		h.SendStreamChunk(sessionID, "??????????...")
+		firstSent = true
+		select {
+		case firstChunkSent <- struct{}{}:
+		default:
+		}
+		if !h.authorizeSensitiveQuery(ctx, sessionID, query) {
+			h.SendStreamChunk(sessionID, "?????????????????????")
+			h.SendStreamEnd(sessionID)
+			return nil
+		}
+	}
 
 	// onToken callback: called for each generated token/chunk
 	onToken := func(chunk string) {
@@ -192,6 +212,10 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		return err
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	// If no streaming was done (agent returned full response without streaming),
 	// send the complete response as a single stream_chunk + stream_end
 	if !firstSent && strings.TrimSpace(fullResponse) != "" {
@@ -209,28 +233,124 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 
 // runAgentForVE runs the AI agent for a VE session.
 // The onToken callback is invoked for each generated token during streaming.
-// This reuses the IMMessageHandler's agent loop pattern.
+// This reuses the IMMessageHandler's agent loop pattern via corelib/agent.RunLoop.
 func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMessage string, onToken func(string)) (string, error) {
 	if h.app == nil {
 		return "", fmt.Errorf("app is nil")
 	}
 
-	// Build a simple LLM request using the app's configured LLM
-	if _, err := h.app.LoadConfig(); err != nil {
-		return "", fmt.Errorf("failed to load config: %w", err)
+	llmCfg := h.app.GetMaclawLLMConfig()
+	if llmCfg.URL == "" && llmCfg.Key == "" {
+		return "", fmt.Errorf("LLM not configured")
 	}
 
-	// Use the agent loop pattern: construct a prompt and call the LLM
-	// In the full implementation, this delegates to corelib/agent.RunLoop
-	// with VE-specific system prompt and tool set.
-	// For now, we use a simplified single-turn LLM call with streaming.
-	_ = ctx
-	_ = sessionID
-	_ = onToken
+	// Build VE-specific callbacks for the agent loop
+	callbacks := &veAgentCallbacks{
+		app:       h.app,
+		ctx:       ctx,
+		sessionID: sessionID,
+		llmCfg:    llmCfg,
+		onToken:   onToken,
+	}
 
-	// Placeholder: in production this connects to the full agent loop
-	// via corelib/agent.RunLoop with onToken callback for streaming
-	return fmt.Sprintf("[VE 宸插鐞哴 %s", userMessage), nil
+	// Load conversation history for this VE session
+	h.mu.Lock()
+	history := h.getSessionHistory(sessionID)
+	h.mu.Unlock()
+
+	// Run the shared agent loop
+	result := agent.RunLoop(callbacks, userMessage, history, nil)
+
+	// Save updated history
+	h.mu.Lock()
+	h.updateSessionHistory(sessionID, userMessage, result.Text)
+	h.mu.Unlock()
+
+	if result.Error != "" {
+		return "", fmt.Errorf("%s", result.Error)
+	}
+
+	return result.Text, nil
+}
+
+// veAgentCallbacks implements agent.LoopCallbacks for VE sessions.
+// It provides a simplified agent loop with VE-specific system prompt and tools.
+type veAgentCallbacks struct {
+	app       *App
+	ctx       context.Context
+	sessionID string
+	llmCfg    corelib.MaclawLLMConfig
+	onToken   func(string)
+}
+
+func (c *veAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
+	return c.llmCfg
+}
+
+func (c *veAgentCallbacks) GetMaxIterations() int {
+	return config.EffectiveMaxIterations(0) // use default
+}
+
+func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
+	return "You are a digital employee AI assistant. Answer the user professionally and accurately." +
+		"\n\nSecurity guidelines:\n- Do not reveal passwords, tokens, API keys, private keys, or other sensitive credentials unless the local human employee approval gate has already allowed this request.\n- If sensitive information is unavailable or approval was not granted, say that you cannot provide it." +
+		"\n\nResponse guidelines:\n- Be concise and direct\n- Provide complete runnable examples when code is needed\n- Say clearly when you are unsure"
+}
+
+func (c *veAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
+	// VE sessions use a minimal tool set: no tools for now
+	return nil
+}
+
+func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
+	return fmt.Sprintf("[tool %s is unavailable in digital employee mode]", name)
+}
+
+func (c *veAgentCallbacks) OnToken(delta string) {
+	if c.onToken != nil {
+		c.onToken(delta)
+	}
+}
+
+func (c *veAgentCallbacks) OnProgress(text string) {}
+
+func (c *veAgentCallbacks) OnToolCall(name string) {}
+
+func (c *veAgentCallbacks) OnToolResult(name string) {}
+
+func (c *veAgentCallbacks) ShouldStop() bool {
+	return c.ctx.Err() != nil
+}
+
+// getSessionHistory returns the conversation history for a VE session.
+// Must be called with h.mu held.
+func (h *VEMessageHandler) getSessionHistory(sessionID string) []agent.ConversationEntry {
+	session, ok := h.activeSessions[sessionID]
+	if !ok || session == nil {
+		return nil
+	}
+	return session.History
+}
+
+// updateSessionHistory appends the user message and assistant response to the session history.
+// Must be called with h.mu held.
+func (h *VEMessageHandler) updateSessionHistory(sessionID, userMessage, assistantResponse string) {
+	session, ok := h.activeSessions[sessionID]
+	if !ok || session == nil {
+		return
+	}
+	session.History = append(session.History,
+		agent.ConversationEntry{Role: "user", Content: userMessage},
+	)
+	if strings.TrimSpace(assistantResponse) != "" {
+		session.History = append(session.History,
+			agent.ConversationEntry{Role: "assistant", Content: assistantResponse},
+		)
+	}
+	// Keep history bounded
+	if len(session.History) > 40 {
+		session.History = session.History[len(session.History)-40:]
+	}
 }
 
 // sendMessage sends a discussion message back through the Hub.

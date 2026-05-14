@@ -21,6 +21,10 @@ export interface VETabProps {
     lang?: string;
     /** Override for testing — if provided, used instead of the Wails binding */
     listVirtualEmployees?: () => Promise<VirtualEmployeeEntry[]>;
+    /** IDs of currently favorited employees */
+    favoriteEmployeeIds?: string[];
+    /** Called when user clicks "Set as Favorite" in context menu */
+    onSetFavorite?: (ve: VirtualEmployeeEntry) => void;
 }
 
 // --- Helpers ---
@@ -45,7 +49,7 @@ export function policyIcon(policy: string): string {
 
 // --- Component ---
 
-export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, lang, listVirtualEmployees }: VETabProps) {
+export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, lang, listVirtualEmployees, favoriteEmployeeIds, onSetFavorite }: VETabProps) {
     const [employees, setEmployees] = useState<VirtualEmployeeEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>("");
@@ -161,7 +165,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
     if (error === "hub_unavailable") {
         return (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, color: theme.textMuted }} data-testid="ve-empty-hub">
-                <span>{isZh ? "Hub 不可用，无法获取虚拟员工列表" : "Hub unavailable"}</span>
+                <span>{isZh ? "Hub 不可用，无法获取数字员工列表" : "Hub unavailable"}</span>
             </div>
         );
     }
@@ -169,7 +173,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
     if (employees.length === 0) {
         return (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, color: theme.textMuted }} data-testid="ve-empty-list">
-                <span>{isZh ? "暂无可用的虚拟员工" : "No virtual employees available"}</span>
+                <span>{isZh ? "暂无可用的数字员工" : "No digital employees available"}</span>
             </div>
         );
     }
@@ -185,6 +189,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                         e.preventDefault();
                         setContextMenu({ x: e.clientX, y: e.clientY, ve });
                     }}
+                    title={ve.skill_description || ve.name}
                     style={{
                         display: "flex",
                         alignItems: "center",
@@ -278,6 +283,29 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                     >
                         👥 {isZh ? "添加到群聊" : "Add to group"}
                     </div>
+                    {onSetFavorite && (
+                        <div
+                            data-testid="ve-menu-set-favorite"
+                            role="menuitem"
+                            onClick={() => {
+                                if (!favoriteEmployeeIds?.includes(contextMenu.ve.id)) {
+                                    onSetFavorite(contextMenu.ve);
+                                }
+                                setContextMenu(null);
+                            }}
+                            style={{
+                                padding: "6px 14px",
+                                cursor: favoriteEmployeeIds?.includes(contextMenu.ve.id) ? "default" : "pointer",
+                                fontSize: 13,
+                                color: favoriteEmployeeIds?.includes(contextMenu.ve.id) ? theme.textMuted : theme.text,
+                                opacity: favoriteEmployeeIds?.includes(contextMenu.ve.id) ? 0.6 : 1,
+                            }}
+                            onMouseEnter={(e) => { if (!favoriteEmployeeIds?.includes(contextMenu.ve.id)) (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            ⭐ {favoriteEmployeeIds?.includes(contextMenu.ve.id) ? (isZh ? "已是常用" : "Already favorite") : (isZh ? "设为常用" : "Set as favorite")}
+                        </div>
+                    )}
                 </div>
             )}
         </div>

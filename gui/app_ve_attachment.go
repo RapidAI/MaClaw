@@ -18,9 +18,9 @@ import (
 
 // File size limits.
 const (
-	maxTextFileSize     = 500 * 1024          // 500KB
-	maxImageFileSize    = 10 * 1024 * 1024    // 10MB
-	maxDocumentFileSize = 20 * 1024 * 1024    // 20MB
+	maxTextFileSize     = 500 * 1024       // 500KB
+	maxImageFileSize    = 10 * 1024 * 1024 // 10MB
+	maxDocumentFileSize = 20 * 1024 * 1024 // 20MB
 )
 
 // File type extension sets.
@@ -93,6 +93,17 @@ func base64EncodeFile(path string) (string, error) {
 	return base64.StdEncoding.EncodeToString(data), nil
 }
 
+// veFileRelayHTTPClient is a shared HTTP client for file relay uploads.
+// Reusing a single client enables TCP connection pooling and keep-alive.
+var veFileRelayHTTPClient = &http.Client{
+	Timeout: 60 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        5,
+		MaxIdleConnsPerHost: 3,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
 // uploadToFileRelay uploads a file to the Hub file relay endpoint via multipart/form-data.
 // Returns the file_url on success.
 func (a *App) uploadToFileRelay(hubURL, token, filePath, sessionID string) (string, error) {
@@ -142,9 +153,8 @@ func (a *App) uploadToFileRelay(hubURL, token, filePath, sessionID string) (stri
 		req.Header.Set("X-Machine-ID", cfg.RemoteMachineID)
 	}
 
-	// Execute with a generous timeout for large files.
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
+	// Execute with the shared HTTP client (connection pooling).
+	resp, err := veFileRelayHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("upload request failed: %w", err)
 	}
@@ -224,9 +234,9 @@ func mimeTypeForFile(path string) string {
 
 // SendVEMessageWithAttachments sends a message with file attachments in a VE conversation.
 // For each file in filePaths:
-//   - Text files (≤500KB): read content → base64 encode → inline TextAttachment
-//   - Image files (≤10MB): upload to Hub file relay → ImageAttachment with file_url
-//   - Document files (≤20MB): upload to Hub file relay → FileAttachment with file_url
+//   - Text files (<=500KB): read content, base64 encode, inline TextAttachment
+//   - Image files (<=10MB): upload to Hub file relay as ImageAttachment with file_url
+//   - Document files (<=20MB): upload to Hub file relay as FileAttachment with file_url
 //
 // On upload failure, returns a specific error; the message text is preserved for retry.
 func (a *App) SendVEMessageWithAttachments(sessionID string, content string, filePaths []string) error {

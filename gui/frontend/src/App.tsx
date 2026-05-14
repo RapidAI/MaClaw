@@ -5,7 +5,7 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest } from "../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
@@ -23,10 +23,11 @@ import { useAudioDevices } from './components/ai/useAudioDevices';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
 import { AgentNetPanel } from './components/remote/AgentNetPanel';
 import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
-import { GroupDiscussionSettingsPanel } from './components/remote/GroupDiscussionSettingsPanel';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
+import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
+import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
 import { PetSettingsPanel } from './components/PetSettingsPanel';
@@ -50,6 +51,9 @@ import { SystemSettingsPanel } from './components/settings/SystemSettingsPanel';
 import { ProxySettingsPanel } from './components/settings/ProxySettingsPanel';
 import { IMSettingsPanel } from './components/settings/IMSettingsPanel';
 import { AppSidebarShell } from './components/layout/AppSidebarShell';
+import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
+import { FavoriteEmployeeSettingsPanel } from './components/settings/FavoriteEmployeeSettingsPanel';
+import { VirtualEmployeeSettingsPanel } from './components/settings/VirtualEmployeeSettingsPanel';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
 import { TutorialPage } from './components/pages/TutorialPage';
@@ -81,6 +85,13 @@ const APP_VERSION = appVersion
 const MACLAW_CODE_REPOSITORY_URL = "https://github.com/rapidai/maclaw";
 
 
+type SensitivePermissionRequest = {
+    request_id: string;
+    session_id?: string;
+    query: string;
+    timeout_seconds?: number;
+};
+
 function App() {
     const { showAlert } = useDialog();
     const [config, setConfig] = useState<main.AppConfig | null>(null);
@@ -111,11 +122,10 @@ function App() {
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
     const [codexConfigUpdateCount, setCodexConfigUpdateCount] = useState(0);
-    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(180);
+    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(240);
     const [isRecentTasksResizing, setIsRecentTasksResizing] = useState(false);
     const recentTasksResizeStartX = useRef(0);
-    const recentTasksResizeStartWidth = useRef(180);
-    const [sidebarExpanded, setSidebarExpanded] = useState(false);
+    const recentTasksResizeStartWidth = useRef(240);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
@@ -155,6 +165,117 @@ function App() {
     const [envCheckInterval, setEnvCheckInterval] = useState<number>(7);
     const [uiZoom, setUiZoom] = useState<number>(1.0);
     const [chatFontSize, setChatFontSize] = useState<number>(14);
+    const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
+    const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
+
+    // --- Favorite Employees state ---
+    const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
+    const [veList, setVeList] = useState<VirtualEmployeeEntry[]>([]);
+    const [digitalEmployeeFeatureStatus, setDigitalEmployeeFeatureStatus] = useState<any>({ visible: false, actual_count: 0 });
+    const [showFavReplacePicker, setShowFavReplacePicker] = useState<{ ve: VirtualEmployeeEntry } | null>(null);
+
+    // Load favorite employees from config
+    useEffect(() => {
+        if (config?.favorite_employees) {
+            setFavoriteEmployeeIds(config.favorite_employees);
+        }
+    }, [config?.favorite_employees]);
+
+    // Fetch VE list for sidebar favorites resolution
+    useEffect(() => {
+        if (!config?.remote_hub_url || !config?.remote_machine_id) return;
+        let cancelled = false;
+        const fetchVeList = () => {
+            import("../wailsjs/go/main/App").then((mod) => {
+                if (cancelled) return;
+                if ((mod as any).ListVirtualEmployees) {
+                    (mod as any).ListVirtualEmployees().then((list: VirtualEmployeeEntry[]) => {
+                        if (!cancelled) setVeList(list || []);
+                    }).catch(() => {});
+                }
+            }).catch(() => {});
+        };
+        fetchVeList();
+        // Refresh on VE status changes
+        const unsub1 = EventsOn("ve:list_update", fetchVeList);
+        const unsub2 = EventsOn("ve:status_change", fetchVeList);
+        return () => {
+            cancelled = true;
+            if (typeof unsub1 === "function") unsub1(); else EventsOff("ve:list_update");
+            if (typeof unsub2 === "function") unsub2(); else EventsOff("ve:status_change");
+        };
+    }, [config?.remote_hub_url, config?.remote_machine_id]);
+
+
+    useEffect(() => {
+        let cancelled = false;
+        const refresh = () => {
+            GetDigitalEmployeeFeatureStatus()
+                .then((status: any) => { if (!cancelled) setDigitalEmployeeFeatureStatus(status || { visible: false }); })
+                .catch(() => { if (!cancelled) setDigitalEmployeeFeatureStatus({ visible: false, reason: 'unavailable' }); });
+        };
+        refresh();
+        EventsOn("digital-employee-authorization-changed", refresh);
+        return () => {
+            cancelled = true;
+            EventsOff("digital-employee-authorization-changed");
+        };
+    }, [config?.remote_hub_url, config?.remote_machine_id, veList.length]);
+    // VE authorized = active HubCenter subscription + at least one actual digital employee
+    const veAuthorized = !!digitalEmployeeFeatureStatus?.visible;
+
+    // Resolve favorite IDs to display slots
+    const favoriteEmployeeSlots = useMemo(() => {
+        return favoriteEmployeeIds.map(id => {
+            const ve = veList.find(v => v.id === id);
+            return { veId: id, name: ve?.name || id.slice(0, 6), online: ve?.online_status === 'online', skillDescription: ve?.skill_description || '' };
+        });
+    }, [favoriteEmployeeIds, veList]);
+
+    const updateFavoriteEmployees = useCallback(async (newList: string[]) => {
+        setFavoriteEmployeeIds(newList);
+        try {
+            const latest = await LoadConfig();
+            const updated = new main.AppConfig({ ...latest, favorite_employees: newList } as any);
+            await SaveConfig(updated);
+            setConfig(updated);
+        } catch {}
+    }, []);
+
+    const handleSetFavoriteEmployee = useCallback((ve: VirtualEmployeeEntry) => {
+        if (favoriteEmployeeIds.includes(ve.id)) return;
+        if (favoriteEmployeeIds.length < 5) {
+            updateFavoriteEmployees([...favoriteEmployeeIds, ve.id]);
+        } else {
+            setShowFavReplacePicker({ ve });
+        }
+    }, [favoriteEmployeeIds, updateFavoriteEmployees]);
+
+    const handleReplaceFavorite = useCallback((index: number) => {
+        if (!showFavReplacePicker) return;
+        const newList = [...favoriteEmployeeIds];
+        newList[index] = showFavReplacePicker.ve.id;
+        updateFavoriteEmployees(newList);
+        setShowFavReplacePicker(null);
+    }, [favoriteEmployeeIds, showFavReplacePicker, updateFavoriteEmployees]);
+
+    const handleRemoveFavoriteEmployee = useCallback((veId: string) => {
+        updateFavoriteEmployees(favoriteEmployeeIds.filter(id => id !== veId));
+    }, [favoriteEmployeeIds, updateFavoriteEmployees]);
+
+    const handleReorderFavorites = useCallback((newOrder: string[]) => {
+        updateFavoriteEmployees(newOrder);
+    }, [updateFavoriteEmployees]);
+
+    const handleStartFavoriteVEConversation = useCallback((veId: string) => {
+        const ve = veList.find(v => v.id === veId);
+        if (ve) {
+            setPendingVEOpen(ve);
+        } else {
+            // VE not in list yet (still loading or removed) — create a minimal entry to open the tab
+            setPendingVEOpen({ id: veId, name: veId.slice(0, 8), skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' });
+        }
+    }, [veList]);
 
     const updateSidebarNavVisibility = useCallback((key: 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet', visible: boolean) => {
         if (!config) return;
@@ -299,6 +420,7 @@ function App() {
     );
     const [toastMessage, setToastMessage] = useState<string>("");
     const [showToast, setShowToast] = useState(false);
+    const [sensitivePermissionRequest, setSensitivePermissionRequest] = useState<SensitivePermissionRequest | null>(null);
     const [skills, setSkills] = useState<main.Skill[]>([]);
 
     const [showAddSkillModal, setShowAddSkillModal] = useState(false);
@@ -345,6 +467,32 @@ function App() {
         }, duration);
     };
 
+
+    useEffect(() => {
+        const unsubscribe = EventsOn('digital-employee-sensitive-request', (payload: SensitivePermissionRequest) => {
+            setSensitivePermissionRequest(payload);
+            const timeoutMs = Math.max(1, Number(payload?.timeout_seconds || 60)) * 1000;
+            window.setTimeout(() => {
+                setSensitivePermissionRequest(current => current?.request_id === payload.request_id ? null : current);
+            }, timeoutMs);
+        });
+        return () => {
+            if (typeof unsubscribe === 'function') unsubscribe();
+            else EventsOff('digital-employee-sensitive-request');
+        };
+    }, []);
+
+    const respondSensitivePermission = useCallback(async (decision: 'allow' | 'deny') => {
+        const request = sensitivePermissionRequest;
+        if (!request) return;
+        setSensitivePermissionRequest(null);
+        try {
+            await RespondDigitalEmployeeSensitiveRequest(request.request_id, decision);
+        } catch (err: any) {
+            showToastMessage(err?.message || String(err || 'Failed to respond'));
+        }
+    }, [sensitivePermissionRequest]);
+
     const handleShowThanks = async () => {
         try {
             const content = await ReadThanks();
@@ -368,7 +516,7 @@ function App() {
     }, [navTab, thanksContent]);
 
     const handleDeleteSkill = async (name: string) => {
-        if (name === "Claude Official Documentation Skill Package" || name === "超能力技能包") {
+        if (name === "Claude Official Documentation Skill Package" || name === "瓒呰兘鍔涙妧鑳藉寘") {
             showToastMessage(t("cannotDeleteSystemSkill"));
             return;
         }
@@ -465,7 +613,7 @@ function App() {
         if (!isRecentTasksResizing) return;
         const handleMove = (event: MouseEvent) => {
             const nextWidth = recentTasksResizeStartWidth.current + event.clientX - recentTasksResizeStartX.current;
-            setRecentTasksPaneWidth(Math.min(300, Math.max(140, nextWidth)));
+            setRecentTasksPaneWidth(Math.min(380, Math.max(180, nextWidth)));
         };
         const handleUp = () => setIsRecentTasksResizing(false);
         window.addEventListener('mousemove', handleMove);
@@ -673,7 +821,7 @@ function App() {
                     if (idx !== -1) setActiveTab(idx);
 
                     // NOTE: removed auto-popup of provider config when no API key is set.
-                    // Users can open it manually via the "服务商配置" button.
+                    // Users can open it manually via the "鏈嶅姟鍟嗛厤缃? button.
                 }
             }
         }).catch(err => {
@@ -691,7 +839,7 @@ function App() {
                 }).catch(err2 => {
                     console.error("Retry load config also failed:", err2);
                     // Last resort: set a minimal default config so the UI is not stuck
-                    // on "加载配置中" forever. User can still use the app and reconfigure.
+                    // on "鍔犺浇閰嶇疆涓? forever. User can still use the app and reconfigure.
                     setConfig(new main.AppConfig({}));
                 });
             }, 1500);
@@ -710,7 +858,7 @@ function App() {
                     setChatFontSize(s);
                 }
             }).catch(() => {});
-            // Sync with tray menu changes — but don't yank the user away from
+            // Sync with tray menu changes 鈥?but don't yank the user away from
             // the AI assistant panel.  'ai' is never persisted as active_tool,
             // so a config-changed event would always overwrite it.
             if (navTabRef.current !== 'ai') {
@@ -759,23 +907,23 @@ function App() {
 
         // Listen for background tool installation events
         EventsOn("tool-checking", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `检查 ${toolName}...` : `Checking ${toolName}...`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `妫€鏌?${toolName}...` : `Checking ${toolName}...`);
             setBackgroundInstallingTool("");  // Clear previous tool's installing state
         });
 
         EventsOn("tool-installing", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `安装 ${toolName}...` : `Installing ${toolName}...`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `瀹夎 ${toolName}...` : `Installing ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
         EventsOn("tool-updating", (toolName: string) => {
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `更新 ${toolName}...` : `Updating ${toolName}...`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `鏇存柊 ${toolName}...` : `Updating ${toolName}...`);
             setBackgroundInstallingTool(toolName);
         });
 
         EventsOn("tool-installed", (toolName: string) => {
             console.log("Tool installed in background:", toolName);
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `✓ ${toolName} 安装完成` : `✓ ${toolName} installed`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `鉁?${toolName} 瀹夎瀹屾垚` : `鉁?${toolName} installed`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
@@ -786,7 +934,7 @@ function App() {
 
         EventsOn("tool-updated", (toolName: string) => {
             console.log("Tool updated in background:", toolName);
-            setBackgroundInstallStatus(lang === 'zh-Hans' ? `✓ ${toolName} 已更新` : `✓ ${toolName} updated`);
+            setBackgroundInstallStatus(lang === 'zh-Hans' ? `${toolName} 已更新` : `${toolName} updated`);
             setBackgroundInstallingTool("");
             setTimeout(() => setBackgroundInstallStatus(""), 3000);
             // Refresh tool statuses
@@ -850,10 +998,10 @@ function App() {
 
     // Poll AgentNet running status so the globe indicator lights up without
     // requiring the user to visit the settings panel first.
-    // When the settings tab is active, AgentNetPanel also polls — but the
+    // When the settings tab is active, AgentNetPanel also polls 鈥?but the
     // lightweight AgentNetIsRunning() call is idempotent, so the overlap is
     // harmless and keeps the globe indicator responsive on tab switches.
-    // NOTE: Only poll when agentnet_enabled — if disabled, report as not running.
+    // NOTE: Only poll when agentnet_enabled 鈥?if disabled, report as not running.
     const agentNetAutoStarted = useRef(false);
     const agentNetPrevUp = useRef(false);
     const agentNetEnabledRef = useRef(!!config?.agentnet_enabled);
@@ -874,7 +1022,7 @@ function App() {
             }
             AgentNetIsRunning().then(up => {
                 if (!up && agentNetPrevUp.current) {
-                    // Was online, now looks offline — quick retry in 2s to
+                    // Was online, now looks offline 鈥?quick retry in 2s to
                     // avoid flashing the icon gray on a transient hiccup.
                     retryTimer = setTimeout(() => {
                         retryTimer = null;
@@ -906,7 +1054,7 @@ function App() {
     // have to visit the settings panel to light up the globe icon.
     // When disabled, actively stop any residual daemon.
     useEffect(() => {
-        // Skip when config hasn't loaded yet — don't kill a daemon before
+        // Skip when config hasn't loaded yet 鈥?don't kill a daemon before
         // we know the user's preference.
         if (!config || !brandInfoLoaded) return;
         if (isTigerClawBrand) {
@@ -917,7 +1065,7 @@ function App() {
         }
         if (!config.agentnet_enabled) {
             agentNetAutoStarted.current = false;
-            // Disabled — stop residual daemon if it's still running.
+            // Disabled 鈥?stop residual daemon if it's still running.
             AgentNetIsRunning().then(up => {
                 if (up) {
                     AgentNetStopDaemon().catch(() => {});
@@ -1017,7 +1165,7 @@ function App() {
         }
 
         if (tool === 'message') {
-            // message tab removed — redirect to AI assistant
+            // message tab removed 鈥?redirect to AI assistant
             switchTool('ai');
             return;
         }
@@ -1033,7 +1181,7 @@ function App() {
         }
 
         if (config) {
-            // Don't persist 'ai' as active_tool — it's a UI nav state, not a coding tool
+            // Don't persist 'ai' as active_tool 鈥?it's a UI nav state, not a coding tool
             if (tool !== 'ai') {
                 const newConfig = new main.AppConfig({ ...config, active_tool: tool });
                 setConfig(newConfig);
@@ -1068,7 +1216,7 @@ function App() {
         e.preventDefault();
         e.stopPropagation();
 
-        if (skillName === "Claude Official Documentation Skill Package" || skillName === "超能力技能包") {
+        if (skillName === "Claude Official Documentation Skill Package" || skillName === "瓒呰兘鍔涙妧鑳藉寘") {
              return;
         }
 
@@ -1799,8 +1947,8 @@ function App() {
             if (p.includes("aigocode")) return "claude-3-5-sonnet-20241022";
             if (p.includes("aicodemirror")) return "Haiku";
             if (p.includes("coderelay")) return "claude-3-5-sonnet-20241022";
-            if (p.includes("摩尔线程")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
+            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
@@ -1816,8 +1964,8 @@ function App() {
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
-            if (p.includes("摩尔线程")) return "GLM-4.7";
-            if (p.includes("快手")) return "kat-coder-pro-v1";
+            if (p.includes("鎽╁皵绾跨▼")) return "GLM-4.7";
+            if (p.includes("蹇墜")) return "kat-coder-pro-v1";
         }
         return "";
     };
@@ -1975,7 +2123,7 @@ function App() {
         }
         setShowRemoteActivationModal(false);
         if (pendingRemoteLaunchTool) {
-            setStatus(lang === 'zh-Hans' ? '正在远程启动...' : lang === 'zh-Hant' ? '正在遠端啟動...' : 'Starting remotely...');
+            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杩滅▼鍚姩...' : lang === 'zh-Hant' ? '姝ｅ湪閬犵鍟熷嫊...' : 'Starting remotely...');
             setLaunchingTool(pendingRemoteLaunchTool);
             await quickStartRemoteSession(pendingRemoteLaunchTool as any);
             setPendingRemoteLaunchTool("");
@@ -2072,9 +2220,9 @@ function App() {
 
             // Prepare mailto body
             const instruction = lang === 'zh-Hans'
-                ? `请将刚刚打开的文件夹中的压缩包（aicoder_log_....zip）作为附件添加到此邮件中发送。\n\n`
+                ? `璇峰皢鍒氬垰鎵撳紑鐨勬枃浠跺す涓殑鍘嬬缉鍖咃紙aicoder_log_....zip锛変綔涓洪檮浠舵坊鍔犲埌姝ら偖浠朵腑鍙戦€併€俓n\n`
                 : lang === 'zh-Hant'
-                    ? `請將剛剛打開的文件夾中的壓縮包（aicoder_log_....zip）作為附件添加到此郵件中發送。\n\n`
+                    ? `璜嬪皣鍓涘墰鎵撻枊鐨勬枃浠跺ぞ涓殑澹撶府鍖咃紙aicoder_log_....zip锛変綔鐐洪檮浠舵坊鍔犲埌姝ら兊浠朵腑鐧奸€併€俓n\n`
                     : `Please attach the zip file (aicoder_log_....zip) from the opened folder to this email.\n\n`;
 
             const body = `Product: ${brandInfo?.displayName || 'MaClaw'}
@@ -2259,8 +2407,6 @@ ${instruction}`;
                 t={t}
                 gossipAllowed={gossipAllowed}
                 config={config}
-                sidebarExpanded={sidebarExpanded}
-                setSidebarExpanded={setSidebarExpanded}
                 activeTool={activeTool}
                 toolDropdownOpen={toolDropdownOpen}
                 setToolDropdownOpen={setToolDropdownOpen}
@@ -2294,6 +2440,14 @@ ${instruction}`;
                 codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                 handleRecentTasksResizeStart={handleRecentTasksResizeStart}
                 isRecentTasksResizing={isRecentTasksResizing}
+                onOpenVEConversation={(ve) => setPendingVEOpen(ve)}
+                onOpenHistoryDiscussion={(discussion) => setPendingHistoryDiscussionOpen(discussion)}
+                favoriteEmployees={favoriteEmployeeSlots}
+                veAuthorized={veAuthorized}
+                digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
+                onStartVEConversation={handleStartFavoriteVEConversation}
+                onReorderFavorites={handleReorderFavorites}
+                showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
             />
             <div className="main-container" data-ai-theme={aiThemeMode}>
                 {/* AI assistant as main content (both lite and pro modes) */}
@@ -2307,15 +2461,8 @@ ${instruction}`;
                             onThemeModeChange={setAIThemeMode}
                             audioInputDeviceId={(config as any)?.audio_input_device_id || ''}
                             audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
-                            groupDiscussion={{
-                                config: groupDiscussionConfig,
-                                status: groupDiscussionStatus,
-                                onRefreshStatus: refreshGroupDiscussionStatus,
-                                onPublishProfile: publishGroupDiscussionProfile,
-                                onAcceptInvite: handleGroupDiscussionAcceptInvite,
-                                onRejectInvite: handleGroupDiscussionRejectInvite,
-                                onOpenExperienceTrace: handleOpenExperienceTrace,
-                            }}
+                            pendingVEOpen={pendingVEOpen}
+                            onPendingVEOpenHandled={() => setPendingVEOpen(null)}
                             state={{
                                 ...aiAssistant.panelState,
                                 selectedFilePath: aiAssistant.selectedFilePaths?.[0] ?? "",
@@ -2522,10 +2669,6 @@ ${instruction}`;
                                 />
                             </div>}
 
-                            <div className="settings-panel" style={{ display: settingsTab === 'groupDiscussion' ? 'block' : 'none' }}>
-                                <GroupDiscussionSettingsPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} onOpenExperienceTrace={handleOpenExperienceTrace} />
-                            </div>
-
                             <IMSettingsPanel
                                 settingsTab={settingsTab}
                                 config={config}
@@ -2572,6 +2715,22 @@ ${instruction}`;
                             <div className="settings-panel" style={{ display: settingsTab === 'security' ? 'block' : 'none' }}>
                                 <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
+
+                            {veAuthorized && (
+                                <div className="settings-panel" style={{ display: settingsTab === 'virtualEmployee' ? 'block' : 'none' }}>
+                                    <FavoriteEmployeeSettingsPanel
+                                        favoriteEmployeeIds={favoriteEmployeeIds}
+                                        veList={veList}
+                                        onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' })}
+                                        onRemove={handleRemoveFavoriteEmployee}
+                                        onReorder={handleReorderFavorites}
+                                        lang={lang}
+                                    />
+                                    <div style={{ marginTop: '24px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
+                                        <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
+                                    </div>
+                                </div>
+                            )}
 
                             <div style={{ display: settingsTab === 'system' ? 'block' : 'none' }}>
                                 <SystemSettingsPanel
@@ -2646,10 +2805,10 @@ ${instruction}`;
                                     setStatus("");
                                 }).catch((err: any) => {
                                     console.error("CheckUpdate error:", err);
-                                    setStatus("检查更新失败: " + err);
+                                    setStatus("妫€鏌ユ洿鏂板け璐? " + err);
                                     setUpdateResult({
                                         has_update: false,
-                                        latest_version: "获取失败",
+                                        latest_version: "鑾峰彇澶辫触",
                                         release_url: ""
                                     });
                                     setIsStartupUpdateCheck(false);
@@ -2747,7 +2906,7 @@ ${instruction}`;
                                             style={{ marginLeft: '4px', cursor: 'pointer', opacity: 0.7 }}
                                             title={t("proxySettings")}
                                         >
-                                            ⚙️
+                                            鈿欙笍
                                         </span>
                                     </label>
                                 )}
@@ -2812,7 +2971,7 @@ ${instruction}`;
                                                 cursor: isRemoteCapableActiveTool ? 'pointer' : 'not-allowed',
                                                 opacity: isRemoteCapableActiveTool ? 1 : 0.4
                                             }}
-                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : (lang === 'zh-Hans' ? '当前工具暂不支持远程' : lang === 'zh-Hant' ? '目前工具暫不支援遠端' : 'This tool does not support remote mode')}
+                                            title={isRemoteCapableActiveTool ? t("remoteModeDesc") : (lang === 'zh-Hans' ? '褰撳墠宸ュ叿鏆備笉鏀寔杩滅▼' : lang === 'zh-Hant' ? '鐩墠宸ュ叿鏆笉鏀彺閬犵' : 'This tool does not support remote mode')}
                                         >
                                             {t("remoteModeLabel")}
                                         </button>
@@ -2826,7 +2985,7 @@ ${instruction}`;
                                                 openRemoteActivationModal(activeTool);
                                             }
                                         }}
-                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '点击注册' : lang === 'zh-Hant' ? '點擊註冊' : 'Click to register')}
+                                        title={remoteActivationStatus?.activated ? t("remoteActivated") : (lang === 'zh-Hans' ? '鐐瑰嚮娉ㄥ唽' : lang === 'zh-Hant' ? '榛炴搳瑷诲唺' : 'Click to register')}
                                     >
                                         <span style={{ fontSize: '0.75rem', color: remoteActivationStatus?.activated ? '#16a34a' : '#d97706', whiteSpace: 'nowrap' }}>
                                             {remoteActivationStatus?.activated ? t("remoteActivated") : t("remoteRegister")}
@@ -2940,11 +3099,11 @@ ${instruction}`;
                                         </button>
                                     </div>
                                 </div>
-                                {/* Handoff: local → remote icon button */}
+                                {/* Handoff: local 鈫?remote icon button */}
                                 {!launchRemoteEnabled && isRemoteCapableActiveTool && (
                                     <button
                                         type="button"
-                                        title={lang === 'zh-Hans' ? '转为远程' : lang === 'zh-Hant' ? '轉為遠端' : 'Switch to Remote'}
+                                        title={lang === 'zh-Hans' ? '杞负杩滅▼' : lang === 'zh-Hant' ? '杞夌偤閬犵' : 'Switch to Remote'}
                                         style={{
                                             width: '36px',
                                             height: '36px',
@@ -2974,7 +3133,7 @@ ${instruction}`;
                                                 openRemoteActivationModal(activeTool);
                                                 return;
                                             }
-                                            setStatus(lang === 'zh-Hans' ? '正在转为远程...' : lang === 'zh-Hant' ? '正在轉為遠端...' : 'Switching to remote...');
+                                            setStatus(lang === 'zh-Hans' ? '姝ｅ湪杞负杩滅▼...' : lang === 'zh-Hant' ? '姝ｅ湪杞夌偤閬犵...' : 'Switching to remote...');
                                             setLaunchingTool(activeTool);
                                             try {
                                                 const newConfig = new main.AppConfig({ ...config, default_launch_mode: 'remote', remote_enabled: true });
@@ -2988,8 +3147,7 @@ ${instruction}`;
                                             }
                                         }}
                                     >
-                                        ☁
-                                    </button>
+                                        鈽?                                    </button>
                                 )}
                                 <button
                                     className="btn-launch"
@@ -3008,14 +3166,14 @@ ${instruction}`;
                                         if (selectedProj && selectedProj.path && selectedProj.path.trim() !== "") {
                                             if (launchRemoteEnabled) {
                                                 if (remoteToolMetadata.length > 0 && !isRemoteCapableActiveTool) {
-                                                    setStatus(lang === 'zh-Hans' ? '当前工具暂不支持远程启动' : lang === 'zh-Hant' ? '目前工具暫不支援遠端啟動' : 'This tool does not support remote launch');
+                                                    setStatus(lang === 'zh-Hans' ? '褰撳墠宸ュ叿鏆備笉鏀寔杩滅▼鍚姩' : lang === 'zh-Hant' ? '鐩墠宸ュ叿鏆笉鏀彺閬犵鍟熷嫊' : 'This tool does not support remote launch');
                                                     return;
                                                 }
                                                 if (!config?.remote_hub_url?.trim() || !remoteActivationStatus?.activated || !config?.remote_email?.trim()) {
                                                     openRemoteActivationModal(activeTool);
                                                     return;
                                                 }
-                                                setStatus(lang === 'zh-Hans' ? '正在远程启动...' : lang === 'zh-Hant' ? '正在遠端啟動...' : 'Starting remotely...');
+                                                setStatus(lang === 'zh-Hans' ? '姝ｅ湪杩滅▼鍚姩...' : lang === 'zh-Hant' ? '姝ｅ湪閬犵鍟熷嫊...' : 'Starting remotely...');
                                                 setLaunchingTool(activeTool);
                                                 try {
                                                     await quickStartRemoteSession(activeTool as any);
@@ -3033,18 +3191,18 @@ ${instruction}`;
                                                 const isBeingInstalled = await IsToolBeingInstalled(activeTool);
                                                 if (isBeingInstalled) {
                                                     // Tool is being installed in background, just wait
-                                                    setStatus(lang === 'zh-Hans' ? `${activeTool} 正在后台安装中，请稍候...` : `${activeTool} is being installed in background, please wait...`);
+                                                    setStatus(lang === 'zh-Hans' ? `${activeTool} 姝ｅ湪鍚庡彴瀹夎涓紝璇风◢鍊?..` : `${activeTool} is being installed in background, please wait...`);
                                                     setOnDemandInstallingTool(activeTool);
                                                     try {
                                                         await InstallToolOnDemand(activeTool);
                                                         // Refresh tool statuses
                                                         const updatedStatuses = await CheckToolsStatus();
                                                         setToolStatuses(updatedStatuses);
-                                                        setStatus(lang === 'zh-Hans' ? `${activeTool} 安装完成` : `${activeTool} installed`);
+                                                        setStatus(lang === 'zh-Hans' ? `${activeTool} 瀹夎瀹屾垚` : `${activeTool} installed`);
                                                         setOnDemandInstallingTool("");
                                                         // Auto launch
                                                         setTimeout(async () => {
-                                                            setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
+                                                            setStatus(lang === 'zh-Hans' ? "姝ｅ湪鍚姩..." : "Launching...");
                                                             setLaunchingTool(activeTool);
                                                             try {
                                                                 await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
@@ -3076,7 +3234,7 @@ ${instruction}`;
                                                         setToolRepairStatus(prev => ({...prev, show: false}));
                                                         setOnDemandInstallingTool("");
                                                         // Launch the tool
-                                                        setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
+                                                        setStatus(lang === 'zh-Hans' ? "姝ｅ湪鍚姩..." : "Launching...");
                                                         setLaunchingTool(activeTool);
                                                         try {
                                                             await LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false);
@@ -3098,7 +3256,7 @@ ${instruction}`;
                                             }
 
                                             console.log("Launching tool with project:", selectedProj.name, "path:", selectedProj.path);
-                                            setStatus(lang === 'zh-Hans' ? "正在启动..." : "Launching...");
+                                            setStatus(lang === 'zh-Hans' ? "姝ｅ湪鍚姩..." : "Launching...");
                                             setLaunchingTool(activeTool);
                                             LaunchTool(activeTool, selectedProj.yolo_mode, selectedProj.admin_mode || false, selectedProj.python_project || false, selectedProj.python_env || "", selectedProj.path || "", selectedProj.use_proxy || false)
                                                 .then(() => {
@@ -3120,7 +3278,7 @@ ${instruction}`;
                                         }
                                     }}
                                 >
-                                    <span style={{ marginRight: '6px' }}>{launchRemoteEnabled ? '☁' : '➤'}</span>
+                                    <span style={{ marginRight: '6px' }}>{launchRemoteEnabled ? 'on' : 'off'}</span>
                                     {launchRemoteEnabled
                                         ? (hasActiveRemoteSessionForTool ? t("remoteStopTool") : t("remoteStartTool"))
                                         : t("launch")}
@@ -3135,9 +3293,9 @@ ${instruction}`;
                         <div className="codex-config-progress-panel">
                             <div className="codex-config-progress-title">
                                 {lang === 'zh-Hans' || lang === 'zh'
-                                    ? '正在更新 Codex 配置'
+                                    ? '姝ｅ湪鏇存柊 Codex 閰嶇疆'
                                     : lang === 'zh-Hant'
-                                        ? '正在更新 Codex 配置'
+                                        ? '姝ｅ湪鏇存柊 Codex 閰嶇疆'
                                         : 'Updating Codex configuration'}
                             </div>
                             <div className="codex-config-progress-track" aria-hidden="true">
@@ -3275,7 +3433,7 @@ ${instruction}`;
                                                             padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
                                                         }}
                                                     >
-                                                        ◀
+                                                        鈼€
                                                     </button>
                                                 )}
                                             </div>
@@ -3341,8 +3499,7 @@ ${instruction}`;
                                                             padding: '6px 4px', color: '#9ca3af', fontSize: '1rem'
                                                         }}
                                                     >
-                                                        ▶
-                                                    </button>
+                                                        鈻?                                                    </button>
                                                 )}
                                             </div>
                                         )}
@@ -3395,7 +3552,7 @@ ${instruction}`;
                                                     <button
                                                         style={{ border: '1px solid #d1d5db', background: '#ffffff', color: '#374151', borderRadius: '6px', padding: '6px 8px', cursor: 'pointer', fontSize: '0.8rem', whiteSpace: 'nowrap', flexShrink: 0 }}
                                                         onClick={() => setShowModelRecommend(!showModelRecommend)}
-                                                        title="推荐模型"
+                                                        title="鎺ㄨ崘妯″瀷"
                                                     >...</button>
                                                 );
                                             })()}
@@ -3647,6 +3804,27 @@ ${instruction}`;
                 />
             )}
 
+            {sensitivePermissionRequest && (
+                <div className="modal-overlay" data-testid="sensitive-permission-dialog">
+                    <div className="modal-content" style={{ width: '460px', textAlign: 'left' }}>
+                        <h3>{localizeText('Sensitive Information Request', '\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u786e\u8ba4', '\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u78ba\u8a8d')}</h3>
+                        <p style={{ color: 'var(--theme-text-muted)', lineHeight: 1.6 }}>
+                            {localizeText('A digital employee is requesting permission to answer a password or sensitive information query.', '\u6570\u5b57\u5458\u5de5\u6b63\u5728\u8bf7\u6c42\u8bb8\u53ef\uff0c\u4ee5\u56de\u590d\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u3002', '\u6578\u5b57\u54e1\u5de5\u6b63\u5728\u8acb\u6c42\u8a31\u53ef\uff0c\u4ee5\u56de\u8986\u5bc6\u78bc\u6216\u654f\u611f\u8cc7\u8a0a\u67e5\u8a62\u3002')}
+                        </p>
+                        <div style={{ marginTop: '12px', padding: '10px', border: '1px solid var(--theme-border)', borderRadius: '8px', background: 'var(--theme-surface-subtle)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                            {sensitivePermissionRequest.query}
+                        </div>
+                        <p style={{ color: 'var(--theme-text-muted)', fontSize: '12px', marginTop: '10px' }}>
+                            {localizeText('No response within 1 minute will be treated as denied.', '1 \u5206\u949f\u5185\u672a\u54cd\u5e94\u5c06\u9ed8\u8ba4\u62d2\u7edd\u3002', '1 \u5206\u9418\u5167\u672a\u56de\u61c9\u5c07\u9810\u8a2d\u62d2\u7d55\u3002')}
+                        </p>
+                        <div className="modal-actions" style={{ justifyContent: 'flex-end' }}>
+                            <button className="btn-secondary" onClick={() => respondSensitivePermission('deny')}>{localizeText('Deny', '\u62d2\u7edd', '\u62d2\u7d55')}</button>
+                            <button className="btn-primary" onClick={() => respondSensitivePermission('allow')}>{localizeText('Allow', '\u5141\u8bb8', '\u5141\u8a31')}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Thanks Modal */}
             {showThanksModal && (
                 <ThanksModal
@@ -3664,6 +3842,17 @@ ${instruction}`;
                     t={t}
                     onCancel={() => setConfirmDialog({ ...confirmDialog, show: false })}
                     onConfirm={confirmDialog.onConfirm}
+                />
+            )}
+
+            {/* Favorite Employee Replace Picker */}
+            {showFavReplacePicker && (
+                <FavoriteEmployeeReplacePicker
+                    currentSlots={favoriteEmployeeSlots.map(s => ({ veId: s.veId, name: s.name }))}
+                    newVeName={showFavReplacePicker.ve.name}
+                    onReplace={handleReplaceFavorite}
+                    onCancel={() => setShowFavReplacePicker(null)}
+                    lang={lang}
                 />
             )}
 
@@ -3713,3 +3902,7 @@ ${instruction}`;
 }
 
 export default App;
+
+
+
+

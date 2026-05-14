@@ -75,11 +75,14 @@ type ListInvitationsFilter struct {
 }
 
 type AddMessageRequest struct {
-	FromID   string              `json:"from_id"`
-	ToIDs    []string            `json:"to_ids"`
-	Kind     corea2a.MessageKind `json:"kind"`
-	Content  string              `json:"content"`
-	Evidence []string            `json:"evidence"`
+	FromID           string                    `json:"from_id"`
+	ToIDs            []string                  `json:"to_ids"`
+	Kind             corea2a.MessageKind       `json:"kind"`
+	Content          string                    `json:"content"`
+	Evidence         []string                  `json:"evidence"`
+	TextAttachments  []corea2a.TextAttachment  `json:"text_attachments,omitempty"`
+	ImageAttachments []corea2a.ImageAttachment `json:"image_attachments,omitempty"`
+	FileAttachments  []corea2a.FileAttachment  `json:"file_attachments,omitempty"`
 }
 
 type AddProposalRequest struct {
@@ -173,6 +176,7 @@ func (s *GroupDiscussionService) AdminGroupDiscussionSnapshot(tenantID string) (
 }
 
 func (s *GroupDiscussionService) ListDiscussionSummaries(tenantID string, filter ListSessionsFilter) ([]corea2a.HubDiscussionSummary, error) {
+	filter.ParticipantID = strings.TrimSpace(filter.ParticipantID)
 	sessions, err := s.ListSessions(tenantID, filter)
 	if err != nil {
 		return nil, err
@@ -184,11 +188,25 @@ func (s *GroupDiscussionService) ListDiscussionSummaries(tenantID string, filter
 		}
 		summary := discussionSummaryFromSession(session)
 		if filter.ParticipantID != "" {
-			summary.Role = participantRole(session, filter.ParticipantID)
+			decorateSummaryForParticipant(&summary, session, filter.ParticipantID)
 		}
 		out = append(out, summary)
 	}
 	return out, nil
+}
+
+func decorateSummaryForParticipant(summary *corea2a.HubDiscussionSummary, session *corea2a.Session, participantID string) {
+	if summary == nil || session == nil {
+		return
+	}
+	role := strings.TrimSpace(participantRole(session, participantID))
+	summary.Role = role
+	if role == "initiator" {
+		summary.LocalRelation = "initiated_by_me"
+	} else if role != "" {
+		summary.LocalRelation = "owned_ve_invited"
+	}
+	summary.Readonly = summary.LocalRelation != "initiated_by_me" || session.Status != corea2a.SessionOpen
 }
 
 func discussionSummaryFromSession(session *corea2a.Session) corea2a.HubDiscussionSummary {
@@ -478,7 +496,7 @@ func (s *GroupDiscussionService) AddDiscussionMessage(tenantID, sessionID string
 	if kind == "" {
 		kind = corea2a.MessageStatement
 	}
-	return s.AddMessage(tenantID, sessionID, AddMessageRequest{FromID: msg.FromID, Kind: kind, Content: msg.Content})
+	return s.AddMessage(tenantID, sessionID, AddMessageRequest{FromID: msg.FromID, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments})
 }
 
 func (s *GroupDiscussionService) SubmitDiscussionResult(tenantID, sessionID string, result corea2a.GroupDiscussionResult) (*corea2a.Session, error) {
@@ -587,7 +605,7 @@ func (s *GroupDiscussionService) GetSession(tenantID, sessionID string) (*corea2
 
 func (s *GroupDiscussionService) AddMessage(tenantID, sessionID string, req AddMessageRequest) (*corea2a.Session, error) {
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
-		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: req.FromID, ToIDs: req.ToIDs, Kind: req.Kind, Content: req.Content, Evidence: req.Evidence, CreatedAt: time.Now().UTC()})
+		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: req.FromID, ToIDs: req.ToIDs, Kind: req.Kind, Content: req.Content, Evidence: req.Evidence, TextAttachments: req.TextAttachments, ImageAttachments: req.ImageAttachments, FileAttachments: req.FileAttachments, CreatedAt: time.Now().UTC()})
 	})
 }
 

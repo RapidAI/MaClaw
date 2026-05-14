@@ -4,8 +4,14 @@ import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
 
 export interface UseAITabManagerOptions {
     maxVETabs?: number;
-    /** Called when a VE tab is closed — should end the A2A session */
+    /** Called when a VE tab is closed; should end the A2A session */
     onCloseVESession?: (sessionId: string) => Promise<void>;
+}
+
+export interface CreateGroupTabOptions {
+    discussionId?: string;
+    readOnly?: boolean;
+    role?: string;
 }
 
 export interface UseAITabManagerResult {
@@ -16,7 +22,7 @@ export interface UseAITabManagerResult {
     /** Create a new VE conversation tab. Returns the tab or null if limit reached. */
     createVETab: (veId: string, veName: string, sessionId?: string) => AITab | null;
     /** Create a new group chat tab */
-    createGroupTab: (id: string, title: string, participants: string[]) => AITab | null;
+    createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     /** Close a tab by ID */
     closeTab: (tabId: string) => void;
     /** Save state for the current active tab before switching */
@@ -79,7 +85,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         // Check max VE tab limit
         const veTabCount = prev.tabs.filter(t => t.type === "ve").length;
         if (veTabCount >= prev.maxVETabs) {
-            setTabLimitError(`VE 对话标签页已达上限（最多 ${prev.maxVETabs} 个）`);
+            setTabLimitError(`Digital employee tab limit reached (max ${prev.maxVETabs})`);
             return null;
         }
 
@@ -111,7 +117,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return newTab;
     }, [updateTabState]);
 
-    const createGroupTab = useCallback((id: string, title: string, participants: string[]): AITab | null => {
+    const createGroupTab = useCallback((id: string, title: string, participants: string[], options: CreateGroupTabOptions = {}): AITab | null => {
         const prev = tabStateRef.current;
 
         // Check for duplicate
@@ -126,6 +132,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             type: "group",
             title,
             participants,
+            discussionId: options.discussionId,
+            readOnly: options.readOnly,
+            role: options.role,
             closable: true,
         };
 

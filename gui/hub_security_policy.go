@@ -5,6 +5,7 @@ import (
 	"log"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -23,10 +24,79 @@ type HubEffectivePolicy struct {
 	SkillSourcesAllowed  []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all allowed
 }
 
+type digitalEmployeeAuthorizationCache struct {
+	mu   sync.RWMutex
+	auth *corelib.DigitalEmployeeAuthorization
+}
+
+func (c *digitalEmployeeAuthorizationCache) get() *corelib.DigitalEmployeeAuthorization {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.auth == nil {
+		return nil
+	}
+	copy := *c.auth
+	return &copy
+}
+
+func (c *digitalEmployeeAuthorizationCache) update(auth *corelib.DigitalEmployeeAuthorization) bool {
+	if auth != nil {
+		normalized := corelib.NormalizeDigitalEmployeeAuthorization(*auth, nowUTC())
+		auth = &normalized
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	changed := !reflect.DeepEqual(c.auth, auth)
+	if auth == nil {
+		c.auth = nil
+	} else {
+		copy := *auth
+		c.auth = &copy
+	}
+	return changed
+}
+
+func nowUTC() time.Time { return time.Now().UTC() }
+
+type DigitalEmployeeFeatureStatus struct {
+	Authorization *corelib.DigitalEmployeeAuthorization `json:"authorization,omitempty"`
+	ActualCount   int                                   `json:"actual_count"`
+	Visible       bool                                  `json:"visible"`
+	Reason        string                                `json:"reason,omitempty"`
+}
+
+func (a *App) GetDigitalEmployeeFeatureStatus() DigitalEmployeeFeatureStatus {
+	auth := a.digitalEmployeeAuthCache.get()
+	actualCount := 0
+	if list, err := a.ListVirtualEmployees(); err == nil {
+		actualCount = len(list)
+	}
+	status := DigitalEmployeeFeatureStatus{Authorization: auth, ActualCount: actualCount}
+	if auth == nil {
+		status.Reason = "authorization_unknown"
+		return status
+	}
+	if !auth.Active {
+		status.Reason = auth.Reason
+		return status
+	}
+	if auth.Quota <= 0 {
+		status.Reason = "quota_zero"
+		return status
+	}
+	if actualCount <= 0 {
+		status.Reason = "no_digital_employees"
+		return status
+	}
+	status.Visible = true
+	return status
+}
+
 // HubSecurityPolicy mirrors hub/internal/security.HeartbeatSecurityPayload on the client side.
 
 type HubHeartbeatConfig struct {
-	CapabilityMarketPolicy corelib.CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
+	CapabilityMarketPolicy       corelib.CapabilityMarketPolicy        `json:"capability_market_policy,omitempty"`
+	DigitalEmployeeAuthorization *corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorization,omitempty"`
 }
 type HubSecurityPolicy struct {
 	CentralizedSecurity bool                `json:"centralized_security"`
@@ -271,6 +341,9 @@ func (a *App) updateHubHeartbeatConfig(payload json.RawMessage) bool {
 	}
 	if wrapper.HubConfig == nil {
 		return false
+	}
+	if a.digitalEmployeeAuthCache.update(wrapper.HubConfig.DigitalEmployeeAuthorization) {
+		a.emitEvent("digital-employee-authorization-changed", a.GetDigitalEmployeeFeatureStatus())
 	}
 	policy := wrapper.HubConfig.CapabilityMarketPolicy.WithDefaults()
 	if cfg, err := a.LoadConfig(); err != nil {

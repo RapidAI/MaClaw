@@ -39,6 +39,9 @@ func RunMigrations(db *sql.DB) error {
 			disabled_reason TEXT NOT NULL DEFAULT '',
 			capabilities_json TEXT NOT NULL DEFAULT '{}',
 			hub_secret_hash TEXT NOT NULL,
+			digital_employee_quota INTEGER NOT NULL DEFAULT 0,
+			digital_employee_authorization_enabled INTEGER NOT NULL DEFAULT 0,
+			digital_employee_authorization_expires_at TEXT,
 			last_seen_at TEXT,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -143,6 +146,9 @@ func RunMigrations(db *sql.DB) error {
 		return err
 	}
 	if err := ensureCorporateEmailDomainColumn(db); err != nil {
+		return err
+	}
+	if err := ensureDigitalEmployeeAuthorizationColumns(db); err != nil {
 		return err
 	}
 	if err := ensureAcceptPublicSignupColumn(db); err != nil {
@@ -437,4 +443,51 @@ func ensureGossipFlaggedColumn(db *sql.DB) error {
 		return fmt.Errorf("add gossip flagged column: %w", err)
 	}
 	return nil
+}
+
+func ensureDigitalEmployeeAuthorizationColumns(db *sql.DB) error {
+	columns := map[string]string{
+		"digital_employee_quota":                    "ALTER TABLE hub_instances ADD COLUMN digital_employee_quota INTEGER NOT NULL DEFAULT 0",
+		"digital_employee_authorization_enabled":    "ALTER TABLE hub_instances ADD COLUMN digital_employee_authorization_enabled INTEGER NOT NULL DEFAULT 0",
+		"digital_employee_authorization_expires_at": "ALTER TABLE hub_instances ADD COLUMN digital_employee_authorization_expires_at TEXT",
+	}
+	for name, stmt := range columns {
+		ok, err := hubInstanceColumnExists(db, name)
+		if err != nil {
+			return err
+		}
+		if ok {
+			continue
+		}
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("add hub_instances.%s column: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func hubInstanceColumnExists(db *sql.DB, target string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(hub_instances)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect hub_instances columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultVal sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return false, fmt.Errorf("scan hub_instances column: %w", err)
+		}
+		if name == target {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate hub_instances columns: %w", err)
+	}
+	return false, nil
 }

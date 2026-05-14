@@ -116,3 +116,19 @@ func TestAdminMarketplaceSearchSources(t *testing.T) {
 		t.Fatal("hubcenter admin should be able to search github")
 	}
 }
+
+func TestNormalizeCapabilityTypeAliases(t *testing.T) {
+	cases := map[string]string{
+		"skill":                  CapabilityTypeSkill,
+		"Skills":                 CapabilityTypeSkill,
+		"mcp":                    CapabilityTypeMCP,
+		"MCP_SERVER":             CapabilityTypeMCP,
+		"mcp-server":             CapabilityTypeMCP,
+		"model_context_protocol": CapabilityTypeMCP,
+	}
+	for input, want := range cases {
+		if got := NormalizeCapabilityType(input); got != want {
+			t.Fatalf("NormalizeCapabilityType(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

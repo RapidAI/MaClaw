@@ -28,36 +28,13 @@ const saveConfigPatch = (
 
 export const GeneralSettingsPanel = ({ config, setConfig, lang, t, onLanguageChange }: GeneralSettingsPanelProps) => (
     <div className="settings-panel">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '20px', marginBottom: '15px' }}>
-            <div className="form-group" style={{ flex: '1', marginBottom: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("language")}</label>
-                <select value={lang} onChange={onLanguageChange} className="form-input" style={{ width: 'auto', fontSize: '0.8rem', padding: '2px 8px', height: '28px' }}>
-                    <option value="en">English</option>
-                    <option value="zh-Hans">{'\u7b80\u4f53\u4e2d\u6587'}</option>
-                    <option value="zh-Hant">{'\u7e41\u9ad4\u4e2d\u6587'}</option>
-                </select>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-                <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("defaultLaunchModeLabel")}</label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                    <input
-                        type="radio"
-                        name="launchMode"
-                        checked={!config?.default_launch_mode || config.default_launch_mode === 'local'}
-                        onChange={() => saveConfigPatch(config, setConfig, { default_launch_mode: 'local', remote_enabled: false })}
-                    />
-                    {t("localModeLabel")}
-                </label>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
-                    <input
-                        type="radio"
-                        name="launchMode"
-                        checked={config?.default_launch_mode === 'remote'}
-                        onChange={() => saveConfigPatch(config, setConfig, { default_launch_mode: 'remote', remote_enabled: true })}
-                    />
-                    {t("remoteModeLabel")}
-                </label>
-            </div>
+        <div className="form-group" style={{ marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <label className="form-label" style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{t("language")}</label>
+            <select value={lang} onChange={onLanguageChange} className="form-input" style={{ width: 'auto', fontSize: '0.8rem', padding: '2px 8px', height: '28px' }}>
+                <option value="en">English</option>
+                <option value="zh-Hans">{'\u7b80\u4f53\u4e2d\u6587'}</option>
+                <option value="zh-Hant">{'\u7e41\u9ad4\u4e2d\u6587'}</option>
+            </select>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>

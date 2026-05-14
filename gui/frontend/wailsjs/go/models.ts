@@ -272,6 +272,8 @@ export namespace main {
 	    ui_zoom_factor: number;
 	    chat_font_size: number;
 	    workflow_enabled?: boolean;
+	    favorite_employees?: string[];
+	    show_coding_tool_entry?: boolean;
 	    tts_enabled?: boolean;
 	    tts_voice_id?: string;
 	    asr_enabled?: boolean;
@@ -438,6 +440,8 @@ export namespace main {
 	        this.ui_zoom_factor = source["ui_zoom_factor"];
 	        this.chat_font_size = source["chat_font_size"];
 	        this.workflow_enabled = source["workflow_enabled"];
+	        this.favorite_employees = source["favorite_employees"];
+	        this.show_coding_tool_entry = source["show_coding_tool_entry"];
 	        this.tts_enabled = source["tts_enabled"];
 	        this.tts_voice_id = source["tts_voice_id"];
 	        this.asr_enabled = source["asr_enabled"];

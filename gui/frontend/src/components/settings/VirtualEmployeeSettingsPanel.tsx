@@ -3,7 +3,7 @@ import { EventsOn, EventsOff } from '../../../wailsjs/runtime';
 
 // Wails bindings — these functions are defined in gui/app_ve.go.
 // The generated App.js may not include them yet; the test mocks this module.
-import { RegisterVirtualEmployee, UpdateVESettings, GetVEStatus } from '../../../wailsjs/go/main/App';
+import { RegisterVirtualEmployee, UpdateVESettings, GetVEStatus, GetDigitalEmployeeSensitiveQueryPolicy, SaveDigitalEmployeeSensitiveQueryPolicy } from '../../../wailsjs/go/main/App';
 
 // --- Types ---
 
@@ -63,6 +63,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
     const [registered, setRegistered] = useState(false);
     const [listInput, setListInput] = useState('');
     const [approvalNotice, setApprovalNotice] = useState('');
+    const [sensitiveQueryPolicy, setSensitiveQueryPolicy] = useState<'confirm' | 'deny' | 'allow'>('confirm');
 
     const [nameError, setNameError] = useState('');
     const [skillError, setSkillError] = useState('');
@@ -80,13 +81,30 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [remoteMachineId]);
 
+    useEffect(() => {
+        GetDigitalEmployeeSensitiveQueryPolicy()
+            .then((policy) => {
+                if (policy === 'deny' || policy === 'allow' || policy === 'confirm') setSensitiveQueryPolicy(policy);
+            })
+            .catch(() => setSensitiveQueryPolicy('confirm'));
+    }, []);
+
+    const handleSensitiveQueryPolicyChange = useCallback(async (value: 'confirm' | 'deny' | 'allow') => {
+        setSensitiveQueryPolicy(value);
+        try {
+            await SaveDigitalEmployeeSensitiveQueryPolicy(value);
+        } catch {
+            // Keep UI responsive; config save failures are surfaced by backend logs for now.
+        }
+    }, []);
+
     // --- Listen for ve:approved event (task 9.5) ---
     useEffect(() => {
         if (!remoteMachineId) return;
         const unsub = EventsOn('ve:approved', () => {
             loadStatus();
             if (mountedRef.current) {
-                setApprovalNotice('🎉 您的虚拟员工注册已通过审批！');
+                setApprovalNotice('🎉 您的数字员工注册已通过审批！');
                 setTimeout(() => { if (mountedRef.current) setApprovalNotice(''); }, 8000);
             }
         });
@@ -192,7 +210,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
 
     return (
         <div data-testid="ve-settings-panel">
-            <h3>虚拟员工设置</h3>
+            <h3>数字员工设置</h3>
 
             {/* --- Approval notification (task 9.5) --- */}
             {approvalNotice && (
@@ -220,7 +238,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                         setName(e.target.value);
                         setNameError(validateName(e.target.value));
                     }}
-                    placeholder="虚拟员工名称"
+                    placeholder="数字员工名称"
                 />
                 {nameError && <span data-testid="name-error" role="alert">{nameError}</span>}
             </div>
@@ -236,7 +254,7 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                         setSkillDescription(e.target.value);
                         setSkillError(validateSkillDescription(e.target.value));
                     }}
-                    placeholder="描述虚拟员工的技能和能力"
+                    placeholder="描述数字员工的技能和能力"
                 />
                 {skillError && <span data-testid="skill-error" role="alert">{skillError}</span>}
             </div>
@@ -287,9 +305,25 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
                 </div>
             )}
 
+            <div style={{ marginBottom: '14px', padding: '10px', border: '1px solid var(--theme-border)', borderRadius: '8px' }}>
+                <label htmlFor="ve-sensitive-policy">{"\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2"}</label>
+                <select
+                    id="ve-sensitive-policy"
+                    value={sensitiveQueryPolicy}
+                    onChange={e => handleSensitiveQueryPolicyChange(e.target.value as 'confirm' | 'deny' | 'allow')}
+                >
+                    <option value="confirm">{"\u4eba\u5de5\u786e\u8ba4"}</option>
+                    <option value="deny">{"\u62d2\u7edd"}</option>
+                    <option value="allow">{"\u81ea\u52a8\u5141\u8bb8"}</option>
+                </select>
+                <div style={{ marginTop: '6px', fontSize: '12px', color: 'var(--theme-text-muted)' }}>
+                    {"\u9ed8\u8ba4\u4eba\u5de5\u786e\u8ba4\u3002\u9009\u62e9\u4eba\u5de5\u786e\u8ba4\u65f6\uff0c\u6570\u5b57\u5458\u5de5\u9047\u5230\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2\u4f1a\u7b49\u5f85\u672c\u5730\u4eba\u7c7b\u5458\u5de5\u8bb8\u53ef\uff0c1 \u5206\u949f\u65e0\u54cd\u5e94\u5219\u9ed8\u8ba4\u62d2\u7edd\u3002"}
+                </div>
+            </div>
+
             {/* --- Submit button --- */}
             <button onClick={handleSubmit} data-testid="ve-submit-btn">
-                {registered ? '更新设置' : '注册虚拟员工'}
+                {registered ? '更新设置' : '注册数字员工'}
             </button>
         </div>
     );

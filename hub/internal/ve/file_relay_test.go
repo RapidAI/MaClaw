@@ -178,6 +178,36 @@ func TestFileRelay_StartStop(t *testing.T) {
 	fr.Stop()
 }
 
+func TestFileRelay_StopBeforeStartDoesNotHang(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+
+	done := make(chan struct{})
+	go func() {
+		fr.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Stop before Start should not hang")
+	}
+}
+
+func TestFileRelay_StartIsIdempotentAndRestartable(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	fr.Start(ctx)
+	fr.Start(ctx)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	fr.Start(context.Background())
+	fr.Stop()
+}
 func TestFileRelay_HandleUpload_HTTP(t *testing.T) {
 	dir := t.TempDir()
 	fr := NewFileRelay(dir)
@@ -301,7 +331,7 @@ func TestFileRelay_HandleUpload_UnsupportedType(t *testing.T) {
 
 func TestIsAllowedMIME(t *testing.T) {
 	tests := []struct {
-		mime    string
+		mime   string
 		expect bool
 	}{
 		{"text/plain", true},

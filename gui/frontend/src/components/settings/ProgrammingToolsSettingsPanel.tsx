@@ -27,6 +27,41 @@ const saveConfigPatch = (
 
 export const ProgrammingToolsSettingsPanel = ({ config, setConfig, lang, remoteToolMetadata, toolProviders }: ProgrammingToolsSettingsPanelProps) => (
     <div className="settings-panel">
+        {/* Show/hide coding tool entry in sidebar */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px', padding: '8px 12px', borderRadius: '8px', background: 'color-mix(in srgb, var(--theme-primary) 6%, transparent)', border: '1px solid color-mix(in srgb, var(--theme-primary) 15%, transparent)' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.8rem', color: 'var(--theme-text)', margin: 0 }}>
+                <input
+                    type="checkbox"
+                    checked={!!(config as any)?.show_coding_tool_entry}
+                    onChange={(e) => saveConfigPatch(config, setConfig, { show_coding_tool_entry: e.target.checked })}
+                />
+                {textForLang(lang, 'Show coding tool entry in sidebar', '在侧边栏显示编程工具入口', '在側邊欄顯示程式工具入口')}
+            </label>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '16px' }}>
+            <label style={{ marginBottom: 0, whiteSpace: 'nowrap', fontSize: '0.8rem', color: 'var(--theme-text)' }}>
+                {textForLang(lang, 'Default Launch Mode', '\u9ed8\u8ba4\u542f\u52a8\u6a21\u5f0f', '\u9810\u8a2d\u555f\u52d5\u6a21\u5f0f')}
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                <input
+                    type="radio"
+                    name="launchMode"
+                    checked={!config?.default_launch_mode || config.default_launch_mode === 'local'}
+                    onChange={() => saveConfigPatch(config, setConfig, { default_launch_mode: 'local', remote_enabled: false })}
+                />
+                {textForLang(lang, 'Local', '\u672c\u5730', '\u672c\u6a5f')}
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '3px', cursor: 'pointer', fontSize: '0.78rem' }}>
+                <input
+                    type="radio"
+                    name="launchMode"
+                    checked={config?.default_launch_mode === 'remote'}
+                    onChange={() => saveConfigPatch(config, setConfig, { default_launch_mode: 'remote', remote_enabled: true })}
+                />
+                {textForLang(lang, 'Remote', '\u8fdc\u7a0b', '\u9060\u7aef')}
+            </label>
+        </div>
         <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0' }}>
             <div style={{ display: 'flex', gap: '24px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                 <div style={{ flex: '1 1 0', minWidth: '180px', maxWidth: config?.default_tool ? undefined : '320px' }}>

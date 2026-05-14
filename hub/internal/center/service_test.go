@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 )
 
@@ -129,6 +130,48 @@ func TestStatusIncludesAdminAndStartupFlags(t *testing.T) {
 	}
 	if status.Host != "hub.example.com" {
 		t.Fatalf("Host = %q, want %q", status.Host, "hub.example.com")
+	}
+}
+
+func TestSendHeartbeatLockedDisablesDigitalEmployeeAuthorization(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusLocked)
+		_, _ = w.Write([]byte(`{"code":"HUB_DISABLED","message":"Hub has been disabled by Hub Center"}`))
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	cfg.Center.BaseURL = server.URL
+	cfg.Center.Enabled = true
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		HubID:      "hub_disabled",
+		HubSecret:  "secret_disabled",
+		DigitalEmployeeAuthorization: &corelib.DigitalEmployeeAuthorization{
+			Quota:     3,
+			Enabled:   true,
+			ExpiresAt: expiresAt,
+			Active:    true,
+		},
+	})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	svc := NewService(cfg, settings)
+	if err := svc.sendHeartbeat(context.Background()); err != nil {
+		t.Fatalf("SendHeartbeat() error = %v", err)
+	}
+	auth := LoadDigitalEmployeeAuthorization(context.Background(), settings)
+	if auth == nil {
+		t.Fatal("expected disabled digital employee authorization")
+	}
+	if auth.Active || auth.Enabled || auth.Reason != "disabled" {
+		t.Fatalf("auth = %+v, want inactive disabled", *auth)
 	}
 }
 

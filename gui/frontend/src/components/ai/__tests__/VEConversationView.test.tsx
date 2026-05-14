@@ -110,7 +110,7 @@ describe("VEConversationView", () => {
 
         it("formats ve_offline error in English", () => {
             const err: VEConversationError = { type: "ve_offline", message: "" };
-            expect(formatError(err, false)).toBe("VE is offline");
+            expect(formatError(err, false)).toBe("Digital employee is offline");
         });
 
         it("formats session_timeout error", () => {
@@ -330,10 +330,10 @@ describe("VEConversationView", () => {
         });
 
         it("displays VE offline error", async () => {
-            const initiate = vi.fn().mockRejectedValue(new Error("VE is offline"));
+            const initiate = vi.fn().mockRejectedValue(new Error("Digital employee is offline"));
             renderConversation({ initiateConversation: initiate });
             await act(async () => { await vi.runAllTimersAsync(); });
-            expect(screen.getByTestId("ve-error-banner").textContent).toContain("虚拟员工当前不在线");
+            expect(screen.getByTestId("ve-error-banner").textContent).toContain("数字员工当前不在线");
         });
     });
 

@@ -73,7 +73,49 @@ func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, 
 	role = strings.TrimSpace(role)
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	return client.ListDiscussionsForAgent(ctx, agentID, role)
+	discussions, err := client.ListDiscussionsForAgent(ctx, agentID, role)
+	store, storeErr := a.openGroupDiscussionHistoryStore()
+	if storeErr == nil {
+		defer store.Close()
+	}
+	if err != nil {
+		if storeErr == nil {
+			if cached, cacheErr := store.CachedSummaries(ctx, false); cacheErr == nil && len(cached) > 0 {
+				cached = filterGroupDiscussionSummariesByRole(cached, role)
+				if len(cached) > 0 {
+					return cached, nil
+				}
+			}
+		}
+		return nil, err
+	}
+	if storeErr == nil {
+		_ = store.CacheSummaries(ctx, discussions, a.groupDiscussionAttachmentRoot)
+		discussions, _ = store.VisibleSummaries(ctx, discussions)
+	}
+	return discussions, nil
+}
+
+func (a *App) GroupDiscussionSetLocalHidden(consultationID string, hidden bool) error {
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.SetHidden(ctx, consultationID, hidden)
+}
+
+func (a *App) GroupDiscussionListLocalHidden() ([]a2a.HubDiscussionSummary, error) {
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	return store.HiddenSummaries(ctx)
 }
 
 func (a *App) GroupDiscussionListInvites() ([]a2a.GroupInviteSummary, error) {
@@ -176,7 +218,11 @@ func (a *App) GroupDiscussionCreateConsultation(req a2a.GroupConsultationRequest
 	if cfg.GroupDiscussion.ConfirmBeforeStart {
 		return a2a.ConsultationCreateResponse{}, fmt.Errorf("group discussion requires user confirmation before start")
 	}
-	return createGroupDiscussionConsultation(client, cfg, req)
+	out, err := createGroupDiscussionConsultation(client, cfg, req)
+	if err == nil {
+		cacheCreatedGroupDiscussion(a, out)
+	}
+	return out, err
 }
 
 func (a *App) GroupDiscussionStartAuthorizedConsultation(start GroupDiscussionAuthorizedStartRequest) (GroupDiscussionAuthorizedStartResult, error) {
@@ -188,6 +234,7 @@ func (a *App) GroupDiscussionStartAuthorizedConsultation(start GroupDiscussionAu
 	if err != nil {
 		return GroupDiscussionAuthorizedStartResult{}, err
 	}
+	cacheCreatedGroupDiscussion(a, consultation)
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	experts, _ := client.ListExperts(ctx)
@@ -229,6 +276,21 @@ func (a *App) GroupDiscussionStartAuthorizedConsultation(start GroupDiscussionAu
 		}
 	}
 	return GroupDiscussionAuthorizedStartResult{Consultation: consultation, InviteIDs: inviteIDs, Experts: invitedExperts}, nil
+}
+
+func cacheCreatedGroupDiscussion(a *App, out a2a.ConsultationCreateResponse) {
+	if a == nil || strings.TrimSpace(out.Discussion.ID) == "" {
+		return
+	}
+	ctx, cancel := groupDiscussionContext()
+	defer cancel()
+	if store, err := a.openGroupDiscussionHistoryStore(); err == nil {
+		out.Discussion.LocalRelation = firstNonEmptyGroupString(out.Discussion.LocalRelation, "initiated_by_me")
+		out.Discussion.Role = firstNonEmptyGroupString(out.Discussion.Role, "initiator")
+		out.Discussion.Readonly = !normalizeGroupDiscussionSessionStatus(out.Discussion.Status).IsOpen()
+		_ = store.CacheSummaries(ctx, []a2a.HubDiscussionSummary{out.Discussion}, a.groupDiscussionAttachmentRoot)
+		_ = store.Close()
+	}
 }
 
 func (a *App) GroupDiscussionRankExperts(req a2a.GroupConsultationRequest) (GroupDiscussionExpertRankingResult, error) {
@@ -480,7 +542,24 @@ func (a *App) GroupDiscussionGetConsultationDetail(consultationID string) (a2a.H
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	return client.GetConsultationDetail(ctx, consultationID)
+	detail, err := client.GetConsultationDetail(ctx, consultationID)
+	store, storeErr := a.openGroupDiscussionHistoryStore()
+	if storeErr == nil {
+		defer store.Close()
+	}
+	if err != nil {
+		if storeErr == nil {
+			if cached, ok, cacheErr := store.CachedDetail(ctx, consultationID); cacheErr == nil && ok {
+				return cached, nil
+			}
+		}
+		return a2a.HubDiscussionDetail{}, err
+	}
+	if storeErr == nil {
+		_ = store.CacheDetail(ctx, detail, a.groupDiscussionAttachmentRoot)
+		detail = store.EnrichDetailAttachments(ctx, detail)
+	}
+	return detail, nil
 }
 
 func (a *App) GroupDiscussionGetReadiness(consultationID string) (GroupDiscussionReadiness, error) {
@@ -1526,7 +1605,36 @@ func (a *App) GroupDiscussionSendMessage(consultationID string, msg a2a.GroupDis
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	return client.SendDiscussionMessage(ctx, consultationID, msg)
+	if err := client.SendDiscussionMessage(ctx, consultationID, msg); err != nil {
+		return err
+	}
+	if detail, err := client.GetConsultationDetail(ctx, consultationID); err == nil {
+		if store, storeErr := a.openGroupDiscussionHistoryStore(); storeErr == nil {
+			_ = store.CacheDetail(ctx, detail, a.groupDiscussionAttachmentRoot)
+			_ = store.Close()
+		}
+	}
+	return nil
+}
+
+func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.GroupDiscussionMessage) error {
+	detail, err := a.GroupDiscussionGetConsultationDetail(consultationID)
+	if err != nil {
+		return err
+	}
+	if !isWritableHistoryDiscussionSummary(detail.Discussion) {
+		return fmt.Errorf("history discussion is read-only")
+	}
+	return a.GroupDiscussionSendMessage(consultationID, msg)
+}
+
+func isWritableHistoryDiscussionSummary(summary a2a.HubDiscussionSummary) bool {
+	if summary.Readonly || !normalizeGroupDiscussionSessionStatus(summary.Status).IsOpen() {
+		return false
+	}
+	relation := strings.ToLower(strings.TrimSpace(summary.LocalRelation))
+	role := strings.ToLower(strings.TrimSpace(summary.Role))
+	return relation == "initiated_by_me" || role == "initiator"
 }
 
 func (a *App) GroupDiscussionAddProposal(consultationID string, proposal a2a.Proposal) error {

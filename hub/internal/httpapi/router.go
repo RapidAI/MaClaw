@@ -38,7 +38,7 @@ func NewRouter(
 	invitationSvc *invitation.Service,
 	emailInviteRepo store.EmailInviteRepository,
 	system store.SystemSettingsRepository,
-	groupDiscussionDB *sql.DB,
+	hubDB *sql.DB,
 	llmPromptCache *llmcache.Cache,
 	adminAudit store.AdminAuditRepository,
 	failureLogs store.FailureEventLogRepository,
@@ -87,9 +87,9 @@ func NewRouter(
 		imCleaners = append(imCleaners, dingtalkPlugin)
 	}
 	mux := http.NewServeMux()
-	groupDiscussionSvc := NewGroupDiscussionService(groupDiscussionDB)
+	groupDiscussionSvc := NewGroupDiscussionService(hubDB)
 	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc)
-	capabilitySvc := capability.NewService(groupDiscussionDB)
+	capabilitySvc := capability.NewService(hubDB)
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
 	groupDiscussionHandler.RegisterHubRoutes(mux)

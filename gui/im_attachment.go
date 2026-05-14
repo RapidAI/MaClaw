@@ -109,7 +109,7 @@ func buildOpenAIVisionContent(text string, images []MessageAttachment) []interfa
 	var blocks []interface{}
 	if text != "" {
 		blocks = append(blocks, map[string]interface{}{
-			"type": imContentBlockText,
+			"type": string(imContentBlockText),
 			"text": text,
 		})
 	}
@@ -119,7 +119,7 @@ func buildOpenAIVisionContent(text string, images []MessageAttachment) []interfa
 			mime = "image/png"
 		}
 		blocks = append(blocks, map[string]interface{}{
-			"type": imContentBlockImageURL,
+			"type": string(imContentBlockImageURL),
 			"image_url": map[string]interface{}{
 				"url": fmt.Sprintf("data:%s;base64,%s", mime, img.Data),
 			},
@@ -134,7 +134,7 @@ func buildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 	var blocks []interface{}
 	if text != "" {
 		blocks = append(blocks, map[string]interface{}{
-			"type": imContentBlockText,
+			"type": string(imContentBlockText),
 			"text": text,
 		})
 	}
@@ -144,7 +144,7 @@ func buildAnthropicVisionContent(text string, images []MessageAttachment) []inte
 			mime = "image/png"
 		}
 		blocks = append(blocks, map[string]interface{}{
-			"type": imContentBlockImage,
+			"type": string(imContentBlockImage),
 			"source": map[string]interface{}{
 				"type":       "base64",
 				"media_type": mime,
@@ -265,7 +265,7 @@ func stripHistoryAttachments(msg interface{}) interface{} {
 		if imageCount > 0 {
 			placeholder := fmt.Sprintf("[之前上传了 %d 张图片]", imageCount)
 			newBlocks = append(newBlocks, map[string]interface{}{
-				"type": imContentBlockText,
+				"type": string(imContentBlockText),
 				"text": placeholder,
 			})
 		}

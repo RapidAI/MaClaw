@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
@@ -71,15 +72,16 @@ type RegistrationState struct {
 }
 
 type registrationRecord struct {
-	Registered          bool   `json:"registered"`
-	PendingConfirmation bool   `json:"pending_confirmation"`
-	Disabled            bool   `json:"disabled"`
-	HubID               string `json:"hub_id,omitempty"`
-	HubSecret           string `json:"hub_secret,omitempty"`
-	DisabledReason      string `json:"disabled_reason,omitempty"`
-	LastError           string `json:"last_error,omitempty"`
-	LastBaseURL         string `json:"last_base_url,omitempty"`
-	LastRegisteredAt    int64  `json:"last_registered_at,omitempty"`
+	Registered                   bool                                  `json:"registered"`
+	PendingConfirmation          bool                                  `json:"pending_confirmation"`
+	Disabled                     bool                                  `json:"disabled"`
+	HubID                        string                                `json:"hub_id,omitempty"`
+	HubSecret                    string                                `json:"hub_secret,omitempty"`
+	DisabledReason               string                                `json:"disabled_reason,omitempty"`
+	LastError                    string                                `json:"last_error,omitempty"`
+	LastBaseURL                  string                                `json:"last_base_url,omitempty"`
+	LastRegisteredAt             int64                                 `json:"last_registered_at,omitempty"`
+	DigitalEmployeeAuthorization *corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorization,omitempty"`
 }
 
 type centerQualityProbe struct {
@@ -864,6 +866,36 @@ func (s *Service) invitationCodeRequired(ctx context.Context) (bool, error) {
 	return payload.Value, nil
 }
 
+func LoadDigitalEmployeeAuthorization(ctx context.Context, settings SystemSettingsRepository) *corelib.DigitalEmployeeAuthorization {
+	if settings == nil {
+		return nil
+	}
+	raw, err := settings.Get(ctx, systemKeyCenterRegistration)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var record registrationRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return nil
+	}
+	if record.Disabled {
+		if record.DigitalEmployeeAuthorization != nil {
+			auth := corelib.NormalizeDigitalEmployeeAuthorization(*record.DigitalEmployeeAuthorization, time.Now().UTC())
+			return &auth
+		}
+		return disabledDigitalEmployeeAuthorization()
+	}
+	if !record.Registered || record.PendingConfirmation || record.DigitalEmployeeAuthorization == nil {
+		return nil
+	}
+	auth := corelib.NormalizeDigitalEmployeeAuthorization(*record.DigitalEmployeeAuthorization, time.Now().UTC())
+	return &auth
+}
+
+func disabledDigitalEmployeeAuthorization() *corelib.DigitalEmployeeAuthorization {
+	auth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Enabled: false, Reason: "disabled"}, time.Now().UTC())
+	return &auth
+}
 func (s *Service) loadRegistration(ctx context.Context) (registrationRecord, error) {
 	raw, err := s.settings.Get(ctx, systemKeyCenterRegistration)
 	if err != nil {
@@ -1109,6 +1141,14 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 		}
 
 		if resp.StatusCode == http.StatusOK {
+			var okResp struct {
+				DigitalEmployeeAuthorization *corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorization"`
+			}
+			_ = json.Unmarshal(body, &okResp)
+			if okResp.DigitalEmployeeAuthorization != nil {
+				auth := corelib.NormalizeDigitalEmployeeAuthorization(*okResp.DigitalEmployeeAuthorization, time.Now().UTC())
+				record.DigitalEmployeeAuthorization = &auth
+			}
 			record.Registered = true
 			record.PendingConfirmation = false
 			record.Disabled = false
@@ -1152,6 +1192,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			record.PendingConfirmation = false
 			record.Disabled = true
 			record.DisabledReason = message
+			record.DigitalEmployeeAuthorization = disabledDigitalEmployeeAuthorization()
 			record.LastError = message
 			record.LastBaseURL = baseURL
 			record.LastRegisteredAt = time.Now().Unix()
@@ -1167,6 +1208,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 		record.HubID = ""
 		record.HubSecret = ""
 		record.DisabledReason = ""
+		record.DigitalEmployeeAuthorization = nil
 		msg := "hub registration was removed by Hub Center"
 		s.recordFailure(ctx, "heartbeat", "hub_unregistered", msg, record.HubID, "", nil)
 		record.LastError = msg

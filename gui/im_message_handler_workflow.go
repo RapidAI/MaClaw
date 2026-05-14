@@ -622,6 +622,14 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 			h.stashedPhasePrompt.Delete(userID)
 			h.workflowAgentLoopMarker.Delete(userID)
 			log.Printf("[WorkflowInterception] bypassing active workflow by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
+		} else if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
+			// UIC determined this message is NOT a workflow task, but there's an
+			// active understanding session that would trap it. Cancel the session
+			// so the message falls through to the normal agent loop (which has tools).
+			// This prevents the IUM LLM (which has no tools) from receiving messages
+			// it cannot handle (e.g., file paths, operational commands).
+			understanding.CancelSession(userID)
+			log.Printf("[WorkflowInterception] bypassing active understanding session by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
 		} else {
 			log.Printf("[WorkflowInterception] bypassing workflow start by UIC intent: user=%s text=%q", userID, truncateRunes(text, 80))
 		}
@@ -631,6 +639,43 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 	filter := engine.GetFilter()
 	if filter == nil {
 		return nil
+	}
+
+	// Active understanding session escape hatch: understanding sessions are
+	// system-initiated (user may not know they're "in a session"). The IUM LLM
+	// has NO tools — it cannot read files, execute commands, or access URLs.
+	// If UIC is not confident this is a workflow task (ambiguous/low confidence),
+	// it's safer to cancel the session and let the message fall through to the
+	// normal agent loop (which has full tool access) than to trap the user in
+	// a toolless IUM that will hallucinate capability denials.
+	//
+	// Cost of false bypass: session cancelled, message handled by capable agent loop.
+	// Cost of false non-bypass: user trapped in toolless IUM, gets "I cannot access files".
+	//
+	// Guards:
+	// - Only for messages >= 10 runes. Short messages ("确认", "开工", "C++ cmake")
+	//   are typically session-internal responses and should go to handleActiveUnderstanding.
+	// - Only after the first round (len(Rounds) > 0). Start() always records
+	//   round 0, so this is always true for active sessions.
+	if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
+		sess := understanding.GetSession(userID)
+		trimmedText := strings.TrimSpace(text)
+		isLongEnough := utf8.RuneCountInString(trimmedText) >= 10
+		if sess != nil && len(sess.Rounds) > 0 && isLongEnough {
+			uic := h.getUnifiedClassifier()
+			if uic != nil {
+				result := uic.Classify(intent.MessageContext{Text: text, UserID: userID})
+				threshold := uic.GetWorkflowRejectThreshold()
+				isConfident := result.Confidence >= threshold
+				hasConcreteType := isConcreteWorkflowType(result.WorkflowType)
+				if !(hasConcreteType && isConfident) {
+					understanding.CancelSession(userID)
+					log.Printf("[WorkflowInterception] escaping understanding session (UIC not confident, rounds=%d): user=%s intent=%s conf=%.2f wf=%s threshold=%.2f text=%q",
+						len(sess.Rounds), userID, result.Primary, result.Confidence, result.WorkflowType, threshold, truncateRunes(text, 80))
+					return nil
+				}
+			}
+		}
 	}
 
 	// Short message fast path: messages with fewer than 10 runes cannot be
@@ -647,7 +692,19 @@ func (h *IMMessageHandler) handleWorkflowInterception(userID, text string) *IMAg
 		if engine.GetActiveWorkflow(userID) != nil {
 			return h.handleActiveWorkflow(engine, userID, text)
 		}
-		if engine.GetUnderstanding() != nil && engine.GetUnderstanding().HasActiveSession(userID) {
+		if understanding := engine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession(userID) {
+			// Understanding sessions are weakly-bound (system-initiated, user may
+			// not be aware). Only route short messages to the session if it's
+			// "fresh" — updated within the last 5 minutes. If stale, the user has
+			// likely moved on; clean up and fall through to the normal agent loop
+			// which has full conversation history context.
+			const sessionStaleThreshold = 5 * time.Minute
+			if sess := understanding.GetSession(userID); sess != nil && time.Since(sess.UpdatedAt) > sessionStaleThreshold {
+				understanding.CancelSession(userID)
+				log.Printf("[WorkflowInterception] stale understanding session cancelled for user %s (last update %s ago), falling through",
+					userID, time.Since(sess.UpdatedAt).Round(time.Second))
+				return nil
+			}
 			return h.handleActiveUnderstanding(engine, userID, text)
 		}
 		return nil
@@ -1135,22 +1192,10 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] understanding HandleInput error for user %s: %v", userID, err)
-		// The understanding LLM failed (timeout, truncated JSON, network error).
-		// Clean up the broken session and fall through to the normal agent loop.
-		// The user's message will be processed by the main LLM which has full
-		// conversation context. Keeping the user trapped in a broken understanding
-		// session is worse than falling through — the main agent loop can handle
-		// conversational follow-ups like "刚才呀" correctly.
-		understanding.CancelSession(userID)
-		return nil
-	}
-
-	// Detect contract breach: the IUM LLM has completely departed from its
-	// structured JSON contract (capability denial, long free-form explanation,
-	// etc.). Cancel the understanding session and fall through to the normal
-	// agent loop which has full tool access (read_file/write_file/bash/etc).
-	if workflow.IsContractBreachReply(reply) {
-		log.Printf("[WorkflowInterception] IUM contract breach detected for user %s, cancelling understanding session and falling through to agent loop", userID)
+		// The understanding LLM failed (timeout, network error, contract breach).
+		// The session is already cleaned up by HandleInput for contract breaches,
+		// and we cancel it here for other errors. Fall through to the normal
+		// agent loop which has full tool access and conversation context.
 		understanding.CancelSession(userID)
 		return nil
 	}

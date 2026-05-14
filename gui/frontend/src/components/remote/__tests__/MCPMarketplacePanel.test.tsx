@@ -147,6 +147,23 @@ describe("MCPMarketplacePanel", () => {
         });
     });
 
+    it("does not claim direct external install succeeded without an imported Hub capability", async () => {
+        const onChanged = vi.fn();
+        vi.mocked(ListHubCapabilities).mockResolvedValue([
+            { id: "jira-mcp", external: true, capability_type: "mcp", capability_id: "jira-mcp", display_name: "Jira MCP", source: "hubcenter", metadata_json: JSON.stringify({ pricing: { mode: "free" } }) },
+        ]);
+        vi.mocked(RequestHubCapabilityInstallIntent).mockResolvedValue({ action: "install_external_direct", reason: "missing_import" });
+
+        render(<MCPMarketplacePanel translate={t} onChanged={onChanged} />);
+
+        fireEvent.click(await screen.findByText("Install"));
+
+        await waitFor(() => {
+            expect(InstallHubCapability).not.toHaveBeenCalled();
+            expect(onChanged).toHaveBeenCalledWith(expect.objectContaining({ action: "install_external_direct" }));
+        });
+        expect(await screen.findByText("Marketplace sync needs attention: missing_import")).toBeTruthy();
+    });
     it("submits Hub purchase intent for external paid HubCenter MCP results", async () => {
         const onChanged = vi.fn();
         vi.mocked(ListHubCapabilities).mockResolvedValue([

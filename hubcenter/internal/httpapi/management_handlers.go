@@ -62,6 +62,48 @@ func ListUserDashboardHandler(service *hubs.Service) http.HandlerFunc {
 	}
 }
 
+type UpdateDigitalEmployeeAuthorizationRequest struct {
+	Quota   int   `json:"quota"`
+	Years   int   `json:"years"`
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hubID := r.PathValue("id")
+		if hubID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_HUB_ID", "Hub id is required")
+			return
+		}
+		var req UpdateDigitalEmployeeAuthorizationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
+			return
+		}
+		if req.Quota < 0 {
+			writeError(w, http.StatusBadRequest, "INVALID_QUOTA", "Quota must be >= 0")
+			return
+		}
+		if req.Years < 0 {
+			writeError(w, http.StatusBadRequest, "INVALID_YEARS", "Years must be >= 0")
+			return
+		}
+		auth, err := service.UpdateDigitalEmployeeAuthorization(r.Context(), hubID, hubs.DigitalEmployeeAuthorizationUpdate{Quota: req.Quota, Years: req.Years, Enabled: req.Enabled})
+		if err != nil {
+			if errors.Is(err, hubs.ErrDigitalEmployeeQuotaDecrease) {
+				writeError(w, http.StatusBadRequest, "DIGITAL_EMPLOYEE_QUOTA_DECREASE", "Digital employee authorization count can only increase")
+				return
+			}
+			if errors.Is(err, hubs.ErrHubNotFound) {
+				writeError(w, http.StatusNotFound, "HUB_NOT_FOUND", "Hub not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "UPDATE_DIGITAL_EMPLOYEE_AUTHORIZATION_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "digital_employee_authorization": auth})
+	}
+}
 func UpdateHubVisibilityHandler(service *hubs.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hubID := r.PathValue("id")

@@ -227,7 +227,8 @@ func TestAdminMCPMarketplaceUpsertCreatesCapabilityAndSecrets(t *testing.T) {
 		"version":"1.2.0",
 		"mcp":{"id":"billing-api","name":"Billing API","endpoint_url":"https://billing.example.com/mcp","auth_type":"bearer","headers":{"X-Tenant":"acme"}},
 		"secret_requirements":[{"name":"api_token","label":"API Token","storage_policy":"hub_or_local"}],
-		"pricing":{"mode":"free"}
+		"pricing":{"mode":"paid","amount_cents":9900},
+		"license":{"seats":5}
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/mcp", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -254,6 +255,13 @@ func TestAdminMCPMarketplaceUpsertCreatesCapabilityAndSecrets(t *testing.T) {
 	secrets, err := svc.ListMCPSecretRequirements(req.Context(), created.ID, created.CurrentVersionKey)
 	if err != nil || len(secrets) != 1 || secrets[0].Name != "api_token" {
 		t.Fatalf("secrets=%v err=%v", secrets, err)
+	}
+	versions, err := svc.ListVersions(req.Context(), created.ID)
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("versions=%v err=%v", versions, err)
+	}
+	if !strings.Contains(versions[0].PricingJSON, "paid") || !strings.Contains(versions[0].LicenseJSON, "seats") {
+		t.Fatalf("pricing/license were not preserved: pricing=%s license=%s", versions[0].PricingJSON, versions[0].LicenseJSON)
 	}
 }
 
@@ -370,7 +378,7 @@ func TestAdminCapabilityExternalSearchHubCenterMCP(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": []any{map[string]any{"capability_id": "billing-api", "display_name": "Billing API"}}})
 	}))
 	defer server.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=hub_center&type=mcp&q=billing", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=hub_center&type=mcp_server&q=billing", nil)
 	rec := httptest.NewRecorder()
 
 	AdminCapabilityExternalSearchHandler(fakeCapabilityMarketCenterStatus{state: &center.RegistrationState{ActiveBaseURL: server.URL}})(rec, req)

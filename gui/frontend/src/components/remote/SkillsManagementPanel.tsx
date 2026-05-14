@@ -48,6 +48,7 @@ import {
     GetHubRecommendations,
     GetExperienceAuditHealth,
     ListExperienceAudit,
+    ResolveCriticalConfirm,
 } from "../../../wailsjs/go/main/App";
 
 interface NLSkillStep {
@@ -420,6 +421,49 @@ export function SkillsManagementPanel({ localizeText }: Props) {
             EventsOff("skill:usage_updated");
         };
     }, [loadData]);
+
+    // Listen for skill-install-risk-confirm events from the backend (manual install path).
+    // Shows a localized confirmation dialog when a skill has security risks.
+    useEffect(() => {
+        const cleanup = EventsOn("skill-install-risk-confirm", async (payload: unknown) => {
+            if (!payload || typeof payload !== "object") return;
+            const data = payload as Record<string, unknown>;
+            const confirmID = typeof data.confirm_id === "string" ? data.confirm_id : "";
+            const skillName = typeof data.skill_name === "string" ? data.skill_name : "";
+            const level = typeof data.level === "string" ? data.level : "";
+            const factors = Array.isArray(data.factors) ? (data.factors as string[]) : [];
+            if (!confirmID) return;
+
+            // Build localized message from structured data.
+            let message = localizeText(
+                `Security warning: Skill "${skillName}" was assessed as ${level} risk.`,
+                `安全警告：技能「${skillName}」被评估为 ${level} 风险。`,
+                `安全警告：技能「${skillName}」被評估為 ${level} 風險。`,
+            );
+            if (factors.length > 0) {
+                message += "\n\n" + localizeText("Risk factors:", "风险因素:", "風險因素:");
+                for (const f of factors) {
+                    message += `\n  • ${f}`;
+                }
+            }
+            message += "\n\n" + localizeText(
+                "Do you want to allow this installation?",
+                "是否允许安装此技能？",
+                "是否允許安裝此技能？",
+            );
+
+            const confirmed = await showConfirm(
+                message,
+                localizeText("⚠️ Security Risk", "⚠️ 安全风险", "⚠️ 安全風險"),
+            );
+            try {
+                await ResolveCriticalConfirm(confirmID, confirmed);
+            } catch {
+                // Confirmation expired or already handled — ignore.
+            }
+        });
+        return cleanup;
+    }, [showConfirm, localizeText]);
 
     const handleHubSearch = useCallback(async () => {
         const q = hubSearchQuery.trim();

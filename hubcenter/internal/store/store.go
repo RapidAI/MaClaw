@@ -47,27 +47,30 @@ type FailureEventLogFilter struct {
 }
 
 type HubInstance struct {
-	ID                     string     `json:"id"`
-	InstallationID         string     `json:"installation_id"`
-	OwnerEmail             string     `json:"owner_email"`
-	Name                   string     `json:"name"`
-	Description            string     `json:"description"`
-	BaseURL                string     `json:"base_url"`
-	Host                   string     `json:"host"`
-	Port                   int        `json:"port"`
-	Visibility             string     `json:"visibility"`
-	EnrollmentMode         string     `json:"enrollment_mode"`
-	CorporateEmailDomain   string     `json:"corporate_email_domain"`
-	AcceptPublicSignup     bool       `json:"accept_public_signup"`
-	Status                 string     `json:"status"`
-	IsDisabled             bool       `json:"is_disabled"`
-	DisabledReason         string     `json:"disabled_reason"`
-	CapabilitiesJSON       string     `json:"capabilities_json,omitempty"`
-	HubSecretHash          string     `json:"hub_secret_hash,omitempty"`
-	InvitationCodeRequired bool       `json:"invitation_code_required"`
-	LastSeenAt             *time.Time `json:"last_seen_at"`
-	CreatedAt              time.Time  `json:"created_at"`
-	UpdatedAt              time.Time  `json:"updated_at"`
+	ID                                    string     `json:"id"`
+	InstallationID                        string     `json:"installation_id"`
+	OwnerEmail                            string     `json:"owner_email"`
+	Name                                  string     `json:"name"`
+	Description                           string     `json:"description"`
+	BaseURL                               string     `json:"base_url"`
+	Host                                  string     `json:"host"`
+	Port                                  int        `json:"port"`
+	Visibility                            string     `json:"visibility"`
+	EnrollmentMode                        string     `json:"enrollment_mode"`
+	CorporateEmailDomain                  string     `json:"corporate_email_domain"`
+	AcceptPublicSignup                    bool       `json:"accept_public_signup"`
+	Status                                string     `json:"status"`
+	IsDisabled                            bool       `json:"is_disabled"`
+	DisabledReason                        string     `json:"disabled_reason"`
+	CapabilitiesJSON                      string     `json:"capabilities_json,omitempty"`
+	HubSecretHash                         string     `json:"hub_secret_hash,omitempty"`
+	InvitationCodeRequired                bool       `json:"invitation_code_required"`
+	DigitalEmployeeQuota                  int        `json:"digital_employee_quota"`
+	DigitalEmployeeAuthorizationEnabled   bool       `json:"digital_employee_authorization_enabled"`
+	DigitalEmployeeAuthorizationExpiresAt *time.Time `json:"digital_employee_authorization_expires_at,omitempty"`
+	LastSeenAt                            *time.Time `json:"last_seen_at"`
+	CreatedAt                             time.Time  `json:"created_at"`
+	UpdatedAt                             time.Time  `json:"updated_at"`
 }
 
 type HubUserLink struct {
@@ -188,6 +191,7 @@ type HubRepository interface {
 	SetDisabled(ctx context.Context, hubID string, disabled bool, reason string, updatedAt time.Time) error
 	UpdateRegistration(ctx context.Context, hub *HubInstance) error
 	UpdateInvitationCodeRequired(ctx context.Context, hubID string, required bool, updatedAt time.Time) error
+	UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID string, quota int, enabled bool, expiresAt *time.Time, updatedAt time.Time) error
 	DeleteByID(ctx context.Context, hubID string) error
 }
 

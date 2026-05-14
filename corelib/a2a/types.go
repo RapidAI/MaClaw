@@ -81,14 +81,17 @@ type Session struct {
 }
 
 type Message struct {
-	ID        string      `json:"id"`
-	SessionID string      `json:"session_id"`
-	FromID    string      `json:"from_id"`
-	ToIDs     []string    `json:"to_ids,omitempty"`
-	Kind      MessageKind `json:"kind"`
-	Content   string      `json:"content"`
-	Evidence  []string    `json:"evidence,omitempty"`
-	CreatedAt time.Time   `json:"created_at"`
+	ID               string            `json:"id"`
+	SessionID        string            `json:"session_id"`
+	FromID           string            `json:"from_id"`
+	ToIDs            []string          `json:"to_ids,omitempty"`
+	Kind             MessageKind       `json:"kind"`
+	Content          string            `json:"content"`
+	Evidence         []string          `json:"evidence,omitempty"`
+	TextAttachments  []TextAttachment  `json:"text_attachments,omitempty"`
+	ImageAttachments []ImageAttachment `json:"image_attachments,omitempty"`
+	FileAttachments  []FileAttachment  `json:"file_attachments,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
 }
 
 type Proposal struct {
@@ -146,26 +149,29 @@ type Escalation struct {
 
 // TextAttachment represents an inline text file attachment (base64-encoded content).
 type TextAttachment struct {
-	Content  string `json:"content"`            // base64-encoded text content
-	Filename string `json:"filename"`           // original filename
-	MimeType string `json:"mime_type,omitempty"` // e.g. "text/plain", "text/markdown"
+	Content   string `json:"content"`              // base64-encoded text content
+	Filename  string `json:"filename"`             // original filename
+	MimeType  string `json:"mime_type,omitempty"`  // e.g. "text/plain", "text/markdown"
+	LocalPath string `json:"local_path,omitempty"` // local cached copy path, when downloaded
 }
 
 // ImageAttachment represents an image file attachment referenced by URL.
 type ImageAttachment struct {
-	FileURL  string `json:"file_url"`           // Hub file relay URL
-	Filename string `json:"filename"`           // original filename
-	MimeType string `json:"mime_type,omitempty"` // e.g. "image/png", "image/jpeg"
-	Width    int    `json:"width,omitempty"`     // image width in pixels
-	Height   int    `json:"height,omitempty"`    // image height in pixels
+	FileURL   string `json:"file_url"`             // Hub file relay URL
+	Filename  string `json:"filename"`             // original filename
+	MimeType  string `json:"mime_type,omitempty"`  // e.g. "image/png", "image/jpeg"
+	Width     int    `json:"width,omitempty"`      // image width in pixels
+	Height    int    `json:"height,omitempty"`     // image height in pixels
+	LocalPath string `json:"local_path,omitempty"` // local cached copy path, when downloaded
 }
 
 // FileAttachment represents a document/file attachment referenced by URL.
 type FileAttachment struct {
-	FileURL   string `json:"file_url"`            // Hub file relay URL
-	Filename  string `json:"filename"`            // original filename
+	FileURL   string `json:"file_url"`             // Hub file relay URL
+	Filename  string `json:"filename"`             // original filename
 	MimeType  string `json:"mime_type,omitempty"`  // e.g. "application/pdf"
 	SizeBytes int64  `json:"size_bytes,omitempty"` // file size in bytes
+	LocalPath string `json:"local_path,omitempty"` // local cached copy path, when downloaded
 }
 
 type ReviewSummary struct {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/progress"
@@ -123,11 +124,16 @@ func (h *IMMessageHandler) startAgentLoopMilestoneTracker(userID, userText strin
 	return tracker, cleanup
 }
 
-func startAgentLoopHeartbeat(sendProgress func(string)) func() {
-	const hubHeartbeatInterval = 60 * time.Second
+// startHeartbeatTicker starts a periodic heartbeat that sends imHeartbeatMsg
+// through the given progress callback. Returns a stop function.
+// If sendProgress is nil, returns a no-op stop function.
+func startHeartbeatTicker(interval time.Duration, sendProgress func(string)) func() {
+	if sendProgress == nil {
+		return func() {}
+	}
 	done := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(hubHeartbeatInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -138,43 +144,22 @@ func startAgentLoopHeartbeat(sendProgress func(string)) func() {
 			}
 		}
 	}()
+	var once sync.Once
 	return func() {
-		close(done)
+		once.Do(func() { close(done) })
 	}
 }
 
-// startRequestLevelHeartbeat starts a heartbeat ticker that covers the entire
-// request processing lifecycle — from message receipt to response return.
-// Unlike startAgentLoopHeartbeat (which only runs inside the agent loop),
-// this ticker also covers pre-loop phases: IUM LLM calls, proactive_recall,
-// system prompt construction, workflow interception, etc.
-//
-// The interval is 30s (half of the frontend's 120s activity timeout) to
-// guarantee at least one heartbeat arrives before the timeout fires, even
-// accounting for goroutine scheduling jitter.
-//
-// If onProgress is nil (e.g. background tasks), returns a no-op stop function.
+func startAgentLoopHeartbeat(sendProgress func(string)) func() {
+	return startHeartbeatTicker(60*time.Second, sendProgress)
+}
+
+// startRequestLevelHeartbeat covers the entire request processing lifecycle,
+// including pre-loop phases (IUM LLM calls, proactive_recall, system prompt
+// construction) that happen before the agent loop's own heartbeat starts.
+// Interval is 30s — half of the frontend's 120s activity timeout.
 func startRequestLevelHeartbeat(onProgress func(string)) func() {
-	if onProgress == nil {
-		return func() {}
-	}
-	const interval = 30 * time.Second
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				onProgress(imHeartbeatMsg)
-			case <-done:
-				return
-			}
-		}
-	}()
-	return func() {
-		close(done)
-	}
+	return startHeartbeatTicker(30*time.Second, onProgress)
 }
 
 func agentLoopProgressSender(onProgress func(string)) func(string) {

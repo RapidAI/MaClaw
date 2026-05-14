@@ -260,6 +260,12 @@ type AppConfig struct {
 	// all messages bypass workflow interception and go directly to the normal
 	// agent loop. Default: true (enabled).
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
+	// FavoriteEmployees stores the IDs of up to 5 pinned digital employees
+	// shown as quick-access buttons in the sidebar nav rail. Order matters.
+	FavoriteEmployees []string `json:"favorite_employees,omitempty"`
+	// ShowCodingToolEntry controls whether the coding tool selector (Claude Code,
+	// Gemini CLI, etc.) is visible in the sidebar. Default: false (hidden).
+	ShowCodingToolEntry bool `json:"show_coding_tool_entry,omitempty"`
 }
 
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
@@ -464,6 +470,7 @@ type GroupDiscussionConfig struct {
 	ConcurrentLimit                  int      `json:"concurrent_limit,omitempty"`
 	ContributionScore                float64  `json:"contribution_score,omitempty"`
 	ContributionEvidence             int      `json:"contribution_evidence,omitempty"`
+	SensitiveQueryPolicy             string   `json:"sensitive_query_policy,omitempty"`
 }
 
 func (gd GroupDiscussionConfig) CrossAgentExperienceEnabled() bool {
@@ -565,6 +572,11 @@ func applyGroupDiscussionFieldDefaults(gd *GroupDiscussionConfig) {
 	}
 	if len(gd.Languages) == 0 {
 		gd.Languages = []string{"zh-Hans"}
+	}
+	switch gd.SensitiveQueryPolicy {
+	case "deny", "allow", "confirm":
+	default:
+		gd.SensitiveQueryPolicy = "confirm"
 	}
 }
 

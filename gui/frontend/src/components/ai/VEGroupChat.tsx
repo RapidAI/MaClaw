@@ -36,6 +36,7 @@ export interface GroupMessageAttachment {
     type: "text" | "image" | "file";
     filename: string;
     fileUrl?: string;
+    localPath?: string;
     sizeBytes?: number;
 }
 
@@ -55,10 +56,14 @@ export interface VEGroupChatProps {
     onAddParticipant?: (veId: string) => Promise<void>;
     /** Callback to update tab title */
     onTitleChange?: (title: string) => void;
-    /** Override for testing — list available VEs */
+    /** Override for testing — list available digital employees */
     listVirtualEmployees?: () => Promise<VirtualEmployeeEntry[]>;
     /** Override for testing — add VE to group binding */
     addVEToGroup?: (sessionId: string, veId: string) => Promise<void>;
+    /** Download a persisted group-discussion attachment */
+    onDownloadAttachment?: (attachment: GroupMessageAttachment, message: GroupMessage) => void;
+    /** Whether the header should expose the participant add control */
+    allowParticipantAdd?: boolean;
 }
 
 // --- Constants ---
@@ -176,7 +181,7 @@ export function ParticipantSelector({
                 fn = (mod as any).ListVirtualEmployees;
             }
             const all = await fn!();
-            // Filter out VEs already in the group
+            // Filter out digital employees already in the group
             const currentIds = new Set(currentParticipants.map((p) => p.id));
             const filtered = (all || []).filter(
                 (ve) => !currentIds.has(ve.id) && ve.online_status === "online"
@@ -294,7 +299,7 @@ export function ParticipantSelector({
                             data-testid="group-picker-empty"
                             style={{ padding: "8px 12px", color: theme.textMuted, fontSize: 12 }}
                         >
-                            {isZh ? "没有可添加的虚拟员工" : "No available VEs"}
+                            {isZh ? "没有可添加的数字员工" : "No available digital employees"}
                         </div>
                     )}
                     {!loading &&
@@ -347,9 +352,10 @@ export interface GroupMessageBubbleProps {
     participantIndex: number;
     theme: Theme;
     isUser?: boolean;
+    onDownloadAttachment?: (attachment: GroupMessageAttachment, message: GroupMessage) => void;
 }
 
-export function GroupMessageBubble({ message, participantIndex, theme, isUser }: GroupMessageBubbleProps) {
+export function GroupMessageBubble({ message, participantIndex, theme, isUser, onDownloadAttachment }: GroupMessageBubbleProps) {
     const color = isUser ? theme.text : getParticipantColor(participantIndex);
 
     return (
@@ -403,8 +409,8 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser }:
                                 fontSize: 11,
                             }}
                         >
-                            <span>{att.type === "image" ? "🖼️" : "📄"}</span>
-                            <span>{att.filename}</span>
+                            <span>{att.type === "image" ? "IMG" : att.type === "text" ? "TXT" : "FILE"}</span>
+                            {att.fileUrl || att.localPath ? <button type="button" onClick={() => onDownloadAttachment?.(att, message)} title={att.localPath || att.fileUrl} style={{ border: 0, padding: 0, background: "transparent", color: theme.text, textDecoration: "underline", cursor: "pointer", font: "inherit" }}><span>{att.filename}</span><span style={{ marginLeft: 5, color: theme.textMuted, fontSize: 10 }}>{att.localPath ? "OPEN" : "GET"}</span></button> : <span>{att.filename}</span>}
                         </div>
                     ))}
                 </div>
@@ -454,6 +460,8 @@ export function VEGroupChatView({
     onTitleChange,
     listVirtualEmployees,
     addVEToGroup,
+    onDownloadAttachment,
+    allowParticipantAdd = true,
 }: VEGroupChatProps) {
     const { maxGroupParticipants } = useGroupConfig(initialMax);
     const [offlineNotices, setOfflineNotices] = useState<string[]>([]);
@@ -562,6 +570,7 @@ export function VEGroupChatView({
                             participantIndex={pIdx}
                             theme={theme}
                             isUser={isUser}
+                            onDownloadAttachment={onDownloadAttachment}
                         />
                     );
                 })}

@@ -47,9 +47,9 @@ func NewIntentUnderstandingManager(store PersistenceStore, llm LLMCaller, regist
 // determined this is NOT a workflow task — the caller should fall through to
 // the normal agent loop without creating a session.
 type StartResult struct {
-	Reply    string           // LLM's reply text (empty when rejected)
-	Rejected bool             // true = LLM says "not a workflow", no session created
-	Ready    bool             // true = LLM is confident enough to start immediately (no clarification needed)
+	Reply    string            // LLM's reply text (empty when rejected)
+	Rejected bool              // true = LLM says "not a workflow", no session created
+	Ready    bool              // true = LLM is confident enough to start immediately (no clarification needed)
 	Intent   *StructuredIntent // non-nil when Ready=true; the confirmed intent
 }
 
@@ -160,14 +160,28 @@ func (m *IntentUnderstandingManager) HandleInput(userID, text string) (reply str
 	replyText, parsedIntent, isReady, parseOK := parseLLMIntentResponse(raw)
 
 	// JSON parse failure means the clarification model drifted from the
-	// structured contract. Keep the understanding session alive so the user's
-	// follow-up remains attached to the workflow task instead of falling through
-	// to the normal agent loop and being reclassified against unrelated history.
+	// structured contract.
 	if !parseOK {
 		log.Printf("[IntentUnderstanding] parse failed for user %s, preserving session. raw=%s",
 			userID, truncateForLog(raw, 200))
 
 		fallbackReply := buildIntentParseFailureReply(raw)
+
+		// Contract breach: the LLM has completely departed from the structured
+		// JSON contract (capability denial, long free-form explanation, etc.).
+		// Cancel the session HERE rather than returning a marker for the caller
+		// to cancel — this eliminates the contradictory state of "returning a
+		// cancel signal while preserving the session".
+		if fallbackReply == contractBreachMarker {
+			log.Printf("[IntentUnderstanding] contract breach for user %s, cancelling session", userID)
+			m.cleanupSession(userID)
+			// Return error so the caller falls through to the normal agent loop.
+			// The error message is internal — the caller (handleActiveUnderstanding)
+			// already handles err != nil by cancelling and returning nil.
+			return "", false, false, nil, fmt.Errorf("IUM contract breach: LLM departed from structured contract")
+		}
+
+		// Minor format drift (short clarification question) — preserve session.
 		now := time.Now()
 		m.mu.Lock()
 		if current := m.sessions[userID]; current != nil {
@@ -355,19 +369,17 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 
 	b.WriteString("Cancellation rule: if the user wants to cancel or abandon the current clarification, return JSON with intent.category=\"cancel\", ready=false, and a short acknowledgement in reply.\n\n")
 
-	// Critical capability declaration: prevent the LLM from claiming it cannot
-	// access local files. The IUM LLM has no tools, but the main agent does.
-	// Without this declaration, the LLM defaults to generic AI training data
-	// ("I cannot access your local files") when it sees file paths.
-	b.WriteString("## 重要：系统能力声明\n\n")
-	b.WriteString("你所在的系统（MaClaw）是一个**桌面应用程序**，运行在用户的本地电脑上，拥有以下能力：\n")
-	b.WriteString("- 可以直接读取和写入用户本地文件（通过 read_file/write_file 工具）\n")
-	b.WriteString("- 可以执行本地命令（通过 bash 工具）\n")
-	b.WriteString("- 可以访问用户提供的任何本地文件路径（如 d:\\workprj\\... 或 ~/Documents/...）\n\n")
-	b.WriteString("**严禁回复\"我无法访问你的本地文件\"或类似的能力否认。** 当用户提供文件路径时，你应该：\n")
-	b.WriteString("- 将其视为任务的输入材料\n")
-	b.WriteString("- 判断用户想对这个文件做什么（编辑/分析/转换/基于它创作新内容）\n")
-	b.WriteString("- 按正常的意图分类流程处理\n\n")
+	// IUM operates without tools — it classifies intent only. The system prompt
+	// must teach it how to correctly classify inputs that are NOT intent descriptions
+	// (file paths, URLs, data) so it returns category="none" instead of hallucinating
+	// capability limitations.
+	b.WriteString("## 重要：你的运行环境\n\n")
+	b.WriteString("你所在的系统（MaClaw）是一个**桌面应用程序**，运行在用户的本地电脑上。\n")
+	b.WriteString("系统可以直接读写本地文件、执行命令、访问任何本地路径。\n")
+	b.WriteString("你的职责仅是**意图分类**——判断用户的任务是否需要多阶段工作流。\n")
+	b.WriteString("你不需要执行任何操作，也不需要判断系统能否执行——那是后续模块的事。\n\n")
+	b.WriteString("当用户提供文件路径、URL 或数据内容时，将其视为任务的输入材料，\n")
+	b.WriteString("按正常的意图分类流程判断即可。\n\n")
 
 	b.WriteString("你是一个智能助手的意图理解模块。你的任务是判断用户消息是否需要启动一个多阶段工作流，如果需要，将其分类到合适的工作流类型。\n\n")
 
@@ -495,6 +507,20 @@ func (m *IntentUnderstandingManager) buildSystemPrompt() string {
 	b.WriteString("- 通过语义分析综合判断，不要仅匹配关键词\n")
 	b.WriteString("- 首轮 ready=true 的判据：用户消息包含明确的目标 + 足够的约束条件（技术栈/平台/规模等），无需追问即可开始规划\n\n")
 
+	b.WriteString("## 操作对象输入规则（关键）\n\n")
+	b.WriteString("当用户的回复主要是**操作对象**（文件路径、URL、粘贴的文本/数据）而非意图描述时，\n")
+	b.WriteString("说明用户的任务是「对这个对象做操作」——这是内容处理任务，不需要多阶段工作流。\n\n")
+	b.WriteString("判断方法：消息的主体内容是路径/URL/数据，而非动词+目标的意图句式。\n\n")
+	b.WriteString("处理方式：返回 category=\"none\", ready=true。\n\n")
+	b.WriteString("示例：\n")
+	b.WriteString("- \"d:\\workprj\\report.md\" → category=\"none\", ready=true（用户在提供文件路径）\n")
+	b.WriteString("- \"C:\\Users\\ma139\\Desktop\\合同.pdf\" → category=\"none\", ready=true\n")
+	b.WriteString("- \"/home/user/data.csv\" → category=\"none\", ready=true\n")
+	b.WriteString("- \"https://example.com/article\" → category=\"none\", ready=true\n")
+	b.WriteString("- 大段粘贴的文本内容 → category=\"none\", ready=true\n\n")
+	b.WriteString("**例外**：如果之前的对话上下文明确是工作流任务（如用户说了\"帮我做份PPT\"，你追问\"基于什么素材？\"，用户回复文件路径），\n")
+	b.WriteString("则保持原 category 不变，将文件路径记入 constraints，设 ready=true。\n\n")
+
 	b.WriteString("## 易混淆 ready 示例\n\n")
 	b.WriteString("- \"开始吧\" → ready=true\n")
 	b.WriteString("- \"开工\" → ready=true\n")
@@ -544,54 +570,40 @@ func parseLLMIntentResponse(raw string) (reply string, intent StructuredIntent, 
 }
 
 func buildIntentParseFailureReply(raw string) string {
-text := strings.TrimSpace(raw)
-if text == "" || looksLikeStructuredGarbage(text) {
-return parseFailureRetryHint
-}
+	text := strings.TrimSpace(raw)
+	if text == "" || looksLikeStructuredGarbage(text) {
+		return parseFailureRetryHint
+	}
 
-// Mechanism: when the IUM LLM produces a response that is completely
-// outside the structured JSON contract, it has entered "free conversation"
-// mode and will NOT recover in subsequent rounds. Keeping the session alive
-// traps the user in a broken IUM loop.
-//
-// Detection: a non-JSON response that is either:
-//   1. A capability denial (LLM claims it cannot access files/execute commands)
-//   2. A long free-form response (>200 runes without any JSON structure)
-//
-// In both cases, return the contract breach marker so the caller can cancel
-// the session and fall through to the normal agent loop (which has tools).
-if looksLikeContractBreach(text) {
-return contractBreachMarker
-}
+	// Mechanism: when the IUM LLM produces a response that is completely
+	// outside the structured JSON contract, it has entered "free conversation"
+	// mode and will NOT recover in subsequent rounds. Keeping the session alive
+	// traps the user in a broken IUM loop.
+	//
+	// Detection: a non-JSON response that is either:
+	//   1. A capability denial (LLM claims it cannot access files/execute commands)
+	//   2. A long free-form response (>200 runes without any JSON structure)
+	//
+	// In both cases, return the contract breach marker so the caller can cancel
+	// the session and fall through to the normal agent loop (which has tools).
+	if looksLikeContractBreach(text) {
+		return contractBreachMarker
+	}
 
-// Short natural-language clarification (e.g., a brief question) —
-// the LLM drifted from JSON format but the content is still a valid
-// clarification question. Surface it to the user and keep the session.
-return truncateForLog(text, 500)
+	// Short natural-language clarification (e.g., a brief question) ---
+	// the LLM drifted from JSON format but the content is still a valid
+	// clarification question. Surface it to the user and keep the session.
+	return truncateForLog(text, 500)
 }
 
 // parseFailureRetryHint is returned when the raw response is empty or
 // structured garbage (malformed JSON). The session is preserved for retry.
 const parseFailureRetryHint = "I received your supplement, but the workflow understanding step failed temporarily. Please send the supplement again or confirm to continue the current task."
 
-// contractBreachMarker is returned by buildIntentParseFailureReply when the
-// IUM LLM has completely departed from the structured JSON contract (capability
-// denial, long free-form explanation, etc.). The caller detects this marker,
-// cancels the understanding session, and falls through to the normal agent loop.
+// contractBreachMarker is an internal sentinel used by buildIntentParseFailureReply
+// to signal that the LLM has completely departed from the structured JSON contract.
+// HandleInput detects this marker and cancels the session + returns error.
 const contractBreachMarker = "__CONTRACT_BREACH__"
-
-// IsContractBreachReply checks if a reply from HandleInput indicates the IUM
-// LLM has departed from its structured contract and the session should be
-// cancelled to fall through to the normal agent loop.
-func IsContractBreachReply(reply string) bool {
-return reply == contractBreachMarker
-}
-
-// IsCapabilityDenialReply is kept for backward compatibility.
-// Use IsContractBreachReply for new code.
-func IsCapabilityDenialReply(reply string) bool {
-return reply == contractBreachMarker
-}
 
 // looksLikeContractBreach detects when the IUM LLM has completely departed
 // from the structured JSON contract. Two cases:
@@ -599,60 +611,55 @@ return reply == contractBreachMarker
 //  2. Long free-form response: >200 runes without JSON structure, indicating
 //     the LLM has entered "free conversation" mode
 func looksLikeContractBreach(text string) bool {
-// Case 1: capability denial patterns
-if looksLikeCapabilityDenial(text) {
-return true
+	// Case 1: capability denial patterns
+	if looksLikeCapabilityDenial(text) {
+		return true
+	}
+
+	// Case 2: long free-form response without JSON structure.
+	runeCount := utf8.RuneCountInString(text)
+	if runeCount > 200 && !containsJSONStructure(text) {
+		return true
+	}
+
+	return false
 }
 
-// Case 2: long free-form response without JSON structure.
-// A valid IUM response (even if JSON parsing failed due to minor format
-// issues) would be relatively short (<200 runes) and contain JSON-like
-// characters. A 200+ rune response without any JSON structure means the
-// LLM is writing a free-form essay/explanation — it won't recover.
-runeCount := utf8.RuneCountInString(text)
-if runeCount > 200 && !containsJSONStructure(text) {
-return true
-}
-
-return false
-}
-
-// containsJSONStructure checks if text contains basic JSON structural elements
-// that suggest the LLM was attempting to produce JSON (even if malformed).
+// containsJSONStructure checks if text contains basic JSON structural elements.
 func containsJSONStructure(text string) bool {
-return strings.Contains(text, `"intent"`) ||
-strings.Contains(text, `"category"`) ||
-strings.Contains(text, `"reply"`) ||
-strings.Contains(text, `"ready"`) ||
-(strings.Contains(text, "{") && strings.Contains(text, "}"))
+	return strings.Contains(text, `"intent"`) ||
+		strings.Contains(text, `"category"`) ||
+		strings.Contains(text, `"reply"`) ||
+		strings.Contains(text, `"ready"`) ||
+		(strings.Contains(text, "{") && strings.Contains(text, "}"))
 }
 
 // looksLikeCapabilityDenial detects when the IUM LLM incorrectly claims it
 // cannot access local files, execute commands, or perform other operations
 // that the main agent actually supports.
 func looksLikeCapabilityDenial(text string) bool {
-denialPatterns := []string{
-"无法访问",
-"无法直接访问",
-"不能访问",
-"无法读取",
-"不能读取",
-"无法打开",
-"不能打开",
-"cannot access",
-"unable to access",
-"cannot read",
-"无法访问本地文件",
-"技术架构限制",
-"路径解析限制",
-}
-lower := strings.ToLower(text)
-for _, p := range denialPatterns {
-if strings.Contains(lower, strings.ToLower(p)) {
-return true
-}
-}
-return false
+	denialPatterns := []string{
+		"无法访问",
+		"无法直接访问",
+		"不能访问",
+		"无法读取",
+		"不能读取",
+		"无法打开",
+		"不能打开",
+		"cannot access",
+		"unable to access",
+		"cannot read",
+		"无法访问本地文件",
+		"技术架构限制",
+		"路径解析限制",
+	}
+	lower := strings.ToLower(text)
+	for _, p := range denialPatterns {
+		if strings.Contains(lower, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeStructuredGarbage(text string) bool {

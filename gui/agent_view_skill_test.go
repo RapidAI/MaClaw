@@ -271,6 +271,10 @@ func TestHandleSkillRunAgentViewSubmitRevalidatesMissingOperation(t *testing.T) 
 }
 
 func TestBuildSkillRunStatusAgentViewShowsProgressWhenRunning(t *testing.T) {
+	previousLang, _ := agentViewCurrentLang.Load().(string)
+	setAgentViewLang("en")
+	t.Cleanup(func() { setAgentViewLang(previousLang) })
+
 	status := &SkillRunStatus{
 		RunID:  "run-1",
 		Skill:  "demo",

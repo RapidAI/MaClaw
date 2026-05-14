@@ -327,3 +327,97 @@ func TestBuildIntentParseFailureReply_AllowsNaturalLanguageClarification(t *test
 		t.Fatalf("expected natural-language clarification to be preserved, got %q", reply)
 	}
 }
+
+func TestHandleInput_ContractBreach_CancelsSession(t *testing.T) {
+	// When the IUM LLM returns a capability denial (e.g., "I cannot access
+	// your local files"), HandleInput must cancel the session and return an
+	// error so the caller falls through to the normal agent loop (which has
+	// read_file/write_file/bash tools).
+	llm := &MockLLMCaller{
+		Response: `{"intent":{"category":"coding"},"reply":"ok","ready":false}`,
+	}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
+
+	// Start a session.
+	_, err := mgr.Start("u1", "改进对比文档")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	if !mgr.HasActiveSession("u1") {
+		t.Fatal("expected active session")
+	}
+
+	// Simulate the LLM returning a capability denial (non-JSON, long text).
+	llm.Response = "感谢你提供文件路径，但我无法直接访问你本地的 `d:\\workprj\\report.md` 文件。\n\n要帮你改进这份文档，请先把文件内容粘贴到对话中，或者使用支持文件上传的界面。"
+
+	_, _, _, _, err = mgr.HandleInput("u1", `d:\workprj\report.md`)
+	if err == nil {
+		t.Fatal("expected error on contract breach, got nil")
+	}
+	if !strings.Contains(err.Error(), "contract breach") {
+		t.Fatalf("expected contract breach error, got: %v", err)
+	}
+	// Session must be cancelled after contract breach.
+	if mgr.HasActiveSession("u1") {
+		t.Error("session should be cancelled after contract breach")
+	}
+}
+
+func TestHandleInput_ContractBreach_LongFreeFormResponse(t *testing.T) {
+	// A 200+ rune response without JSON structure is a contract breach.
+	llm := &MockLLMCaller{
+		Response: `{"intent":{"category":"coding"},"reply":"ok","ready":false}`,
+	}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
+
+	_, err := mgr.Start("u1", "做个系统")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// 200+ rune response without any JSON structure.
+	llm.Response = strings.Repeat("这是一段很长的自由文本回复，完全没有JSON结构。", 10)
+
+	_, _, _, _, err = mgr.HandleInput("u1", "继续")
+	if err == nil {
+		t.Fatal("expected error on long free-form contract breach")
+	}
+	if !mgr.HasActiveSession("u1") == true {
+		// Session should be cancelled.
+	}
+	if mgr.HasActiveSession("u1") {
+		t.Error("session should be cancelled after long free-form contract breach")
+	}
+}
+
+func TestHandleInput_ShortClarification_PreservesSession(t *testing.T) {
+	// A short natural-language clarification (<200 runes, no denial patterns)
+	// should preserve the session — the LLM drifted from JSON format but the
+	// content is still a valid clarification question.
+	llm := &MockLLMCaller{
+		Response: `{"intent":{"category":"coding"},"reply":"ok","ready":false}`,
+	}
+	mgr := NewIntentUnderstandingManager(NullStore{}, llm, nil)
+
+	_, err := mgr.Start("u1", "做个系统")
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Short clarification question (no JSON, no denial, <200 runes).
+	llm.Response = "你想用什么技术栈来开发？前端还是后端？"
+
+	reply, ready, cancelled, _, err := mgr.HandleInput("u1", "继续")
+	if err != nil {
+		t.Fatalf("short clarification should not error: %v", err)
+	}
+	if ready || cancelled {
+		t.Fatal("short clarification should not be ready or cancelled")
+	}
+	if !strings.Contains(reply, "技术栈") {
+		t.Fatalf("expected clarification to be preserved, got %q", reply)
+	}
+	if !mgr.HasActiveSession("u1") {
+		t.Error("session should remain active after short clarification")
+	}
+}

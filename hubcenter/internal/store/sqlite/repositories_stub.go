@@ -112,6 +112,8 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 	var isDisabled int
 	var invitationCodeRequired int
 	var acceptPublicSignup int
+	var digitalEmployeeAuthEnabled int
+	var digitalEmployeeAuthExpiresAt sql.NullString
 	var lastSeen sql.NullString
 	var createdAt string
 	var updatedAt string
@@ -134,6 +136,9 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 		&item.CapabilitiesJSON,
 		&item.HubSecretHash,
 		&invitationCodeRequired,
+		&item.DigitalEmployeeQuota,
+		&digitalEmployeeAuthEnabled,
+		&digitalEmployeeAuthExpiresAt,
 		&lastSeen,
 		&createdAt,
 		&updatedAt,
@@ -143,6 +148,12 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 	item.IsDisabled = isDisabled == 1
 	item.AcceptPublicSignup = acceptPublicSignup == 1
 	item.InvitationCodeRequired = invitationCodeRequired == 1
+	item.DigitalEmployeeAuthorizationEnabled = digitalEmployeeAuthEnabled == 1
+	if digitalEmployeeAuthExpiresAt.Valid && strings.TrimSpace(digitalEmployeeAuthExpiresAt.String) != "" {
+		if ts, err := time.Parse(time.RFC3339, digitalEmployeeAuthExpiresAt.String); err == nil {
+			item.DigitalEmployeeAuthorizationExpiresAt = &ts
+		}
+	}
 	if lastSeen.Valid {
 		ts, err := time.Parse(time.RFC3339, lastSeen.String)
 		if err == nil {
@@ -332,8 +343,8 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		INSERT INTO hub_instances (
 			id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 			accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-			invitation_code_required, last_seen_at, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, last_seen_at, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		hub.ID,
 		hub.InstallationID,
@@ -353,6 +364,9 @@ func (r *hubRepo) Create(ctx context.Context, hub *store.HubInstance) error {
 		hub.CapabilitiesJSON,
 		hub.HubSecretHash,
 		boolToInt(hub.InvitationCodeRequired),
+		hub.DigitalEmployeeQuota,
+		boolToInt(hub.DigitalEmployeeAuthorizationEnabled),
+		timePtrString(hub.DigitalEmployeeAuthorizationExpiresAt),
 		timePtrString(hub.LastSeenAt),
 		hub.CreatedAt.Format(time.RFC3339),
 		hub.UpdatedAt.Format(time.RFC3339),
@@ -363,7 +377,7 @@ func (r *hubRepo) GetByID(ctx context.Context, id string) (*store.HubInstance, e
 	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 		       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-		       invitation_code_required, last_seen_at, created_at, updated_at
+		       invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		WHERE id = ?
 	`, id)
@@ -381,7 +395,7 @@ func (r *hubRepo) GetByInstallationID(ctx context.Context, installationID string
 	row := r.readDB.QueryRowContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 		       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-		       invitation_code_required, last_seen_at, created_at, updated_at
+		       invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		WHERE installation_id = ?
 	`, installationID)
@@ -407,7 +421,7 @@ func (r *hubRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubIn
 	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT DISTINCT h.id, h.installation_id, h.owner_email, h.name, h.description, h.base_url, h.host, h.port, h.visibility,
 		       h.enrollment_mode, h.corporate_email_domain, h.accept_public_signup, h.status, h.is_disabled, h.disabled_reason,
-		       h.capabilities_json, h.hub_secret_hash, h.invitation_code_required, h.last_seen_at, h.created_at, h.updated_at
+		       h.capabilities_json, h.hub_secret_hash, h.invitation_code_required, h.digital_employee_quota, h.digital_employee_authorization_enabled, h.digital_employee_authorization_expires_at, h.last_seen_at, h.created_at, h.updated_at
 		FROM hub_instances h
 		LEFT JOIN hub_user_links l ON l.hub_id = h.id
 		WHERE h.owner_email = ? OR l.email = ?
@@ -433,7 +447,7 @@ func (r *hubRepo) ListAll(ctx context.Context) ([]*store.HubInstance, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
 		SELECT id, installation_id, owner_email, name, description, base_url, host, port, visibility, enrollment_mode, corporate_email_domain,
 		       accept_public_signup, status, is_disabled, disabled_reason, capabilities_json, hub_secret_hash,
-		       invitation_code_required, last_seen_at, created_at, updated_at
+		       invitation_code_required, digital_employee_quota, digital_employee_authorization_enabled, digital_employee_authorization_expires_at, last_seen_at, created_at, updated_at
 		FROM hub_instances
 		ORDER BY updated_at DESC
 	`)
@@ -516,6 +530,14 @@ func (r *hubRepo) UpdateInvitationCodeRequired(ctx context.Context, hubID string
 	return err
 }
 
+func (r *hubRepo) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID string, quota int, enabled bool, expiresAt *time.Time, updatedAt time.Time) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE hub_instances
+		SET digital_employee_quota = ?, digital_employee_authorization_enabled = ?, digital_employee_authorization_expires_at = ?, updated_at = ?
+		WHERE id = ?
+	`, quota, boolToInt(enabled), timePtrString(expiresAt), updatedAt.Format(time.RFC3339), hubID)
+	return err
+}
 func (r *hubRepo) DeleteByID(ctx context.Context, hubID string) error {
 	_, err := r.db.ExecContext(ctx, `
 		DELETE FROM hub_instances
@@ -1238,7 +1260,7 @@ func timePtrString(v *time.Time) any {
 	return v.Format(time.RFC3339)
 }
 
-// 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?Gossip Repository 闂傚倸鍊风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛瀛樼矒缁犳牕顫忓ú顏勭闁圭粯甯掓潏鍛存⒑缁嬫鍎愰柟鐟版喘瀵顓兼径濠勵槯婵犮垼娉涢敃锝嗙珶閺囥垺鈷掑ù锝囶焾閺嗛亶鏌涘Ο鑽ょ煉鐎规洘鍨块獮妯肩磼濡厧甯楅梻浣侯焾缁绘劙藝椤栨稓顩插Δ锝呭暞閳锋垿鏌涢幇顓炵祷閻㈩垬鍔戦弻娑氣偓锝庡亝瀹曞矂鏌＄仦鐣屝х€规洘顨嗗鍕節娴ｅ壊妫滈梻鍌氬€风粈渚€宕崸妤€鍌ㄦ繝濠傜墕绾惧鏌熼崜褏甯涢柣鎾冲暣閺屾稖绠涢幙鍐┬︽繛?
+// 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾?Gossip Repository 闂傚倸鍊搁崐椋庣矆娓氣偓瀹曨垶宕稿Δ鈧崒銊︾節婵犲倻澧曠痪鎯ь煼閺岀喖宕滆鐢盯鏌ｉ幘鍐叉殻闁哄本绋栫粻娑㈠箼閸愨敩锔界箾鐎涙鐭掔紒鐘崇墪椤繐煤椤忓嫮顦ㄩ梺鍦帛鐢帗娼忛崨瀛樷拺缂佸顑欓崕鎰版煙閻熺増鍠樼€殿喛顕ч鍏煎緞婵犲嫷妲┑鐘灱濞夋盯鏁冮敐鍡欑彾闁哄洢鍨洪埛鎺懨归敐鍥剁劸闁哄棝浜堕弻娑樜熼懡銈囩厜閻庤娲橀崹鍧楃嵁濡偐纾兼俊顖滃帶鐢姊绘担渚劸缂佺粯鍔欒棟妞ゆ牗绋撻々鎻捨旈敐鍛殲闁抽攱鍨块弻娑㈠箛椤撶偟绁烽柣銏╁灛閸旀垿寮诲☉姘ｅ亾閿濆骸浜濈€规洖鐭傞弻锛勪沪閻ｅ睗褏鈧娲橀〃鍡楊嚗閸曨剛绡€濞达絽澹婂Λ婊堟⒒閸屾艾鈧绮堟笟鈧畷顖炲锤濡も偓閸屻劍绻濇繝鍌滃缁炬儳顭烽弻鐔煎礈瑜忕敮娑㈡煟閹惧啿鏆ｉ柡灞剧缁犳盯骞欓崘鈹附绻涚€涙鐭掔紒鐘崇墪椤繐煤椤忓嫮顦ㄩ梺鍦帛鐢帗娼忛崨瀛樷拺缂佸顑欓崕鎰版煙閻熺増鍠樼€殿喛顕ч鍏煎緞婵犲嫷妲┑鐘灱濞夋盯鏁冮敐鍡欑彾闁哄洢鍨洪埛鎺懨归敐鍥剁劸闁哄棝浜堕弻娑樜熼懡銈囩厜閻庤娲橀崹鍧楃嵁濡偐纾兼俊顖滃帶鐢姊绘担渚劸缂佺粯鍔欒棟妞ゆ牗绋撻々鎻捨旈敐鍛殲闁抽攱鍨块弻娑㈠箛椤撶偟绁烽柣銏╁灛閸旀垿寮诲☉姘ｅ亾閿濆骸浜濈€规洖鐭傞弻锛勪沪閻ｅ睗褏鈧娲橀〃鍡楊嚗閸曨剛绡€濞达絽澹婂Λ婊堟⒒閸屾艾鈧绮堟笟鈧畷顖炲锤濡も偓閸屻劍绻濇繝鍌滃缁炬儳顭烽弻鐔煎礈瑜忕敮娑㈡煟閹惧啿鏆ｉ柡灞剧缁犳盯骞欓崘鈹附绻涚€涙鐭掔紒鐘崇墪椤繐煤椤忓嫮顦ㄩ梺鍦帛鐢帗娼忛崨瀛樷拺缂佸顑欓崕鎰版煙閻熺増鍠樼€殿喛顕ч鍏煎緞婵犲嫷妲┑鐘灱濞夋盯鏁冮敐鍡欑彾闁哄洢鍨洪埛鎺懨归敐鍥剁劸闁哄棝浜堕弻娑樜熼懡銈囩厜閻庤娲橀崹鍧楃嵁濡偐纾兼俊顖滃帶鐢姊绘担渚劸缂佺粯鍔欒棟妞ゆ牗绋撻々鎻捨旈敐鍛殲闁抽攱鍨块弻娑㈠箛椤撶偟绁烽柣銏╁灛閸旀垿寮诲☉姘ｅ亾閿濆骸浜濈€规洖鐭傞弻锛勪沪閻ｅ睗褏鈧娲橀〃鍡楊嚗閸曨剛绡€濞达絽澹婂Λ婊堟⒒閸屾艾鈧绮堟笟鈧畷顖炲锤濡も偓閸屻劍绻濇繝鍌滃缁炬儳顭烽弻鐔煎礈瑜忕敮娑㈡煟閹惧啿鏆ｉ柡灞剧缁犳盯骞欓崘鈹附绻涚€涙鐭掔紒鐘崇墪椤繐煤椤忓嫮顦ㄩ梺鍦帛鐢帗娼忛崨瀛樷拺缂佸顑欓崕鎰版煙閻熺増鍠樼€殿喛顕ч鍏煎緞婵犲嫷妲┑鐘灱濞夋盯鏁冮敐鍡欑彾闁哄洢鍨洪埛鎺懨归敐鍥剁劸闁哄棝浜堕弻娑樜熼懡銈囩厜閻庤娲橀崹鍧楃嵁濡偐纾兼俊顖滃帶鐢姊绘担渚劸缂佺粯鍔欒棟妞ゆ牗绋撻々鎻捨旈敐鍛殲闁抽攱鍨块弻娑㈠箛椤撶偟绁烽柣銏╁灛閸旀垿寮诲☉姘ｅ亾閿濆骸浜濈€规洖鐭傞弻锛勪沪閻ｅ睗褏鈧娲橀〃鍡楊嚗閸曨剛绡€濞达絽澹婂Λ婊堟⒒閸屾艾鈧绮堟笟鈧畷顖炲锤濡も偓閸屻劍绻濇繝鍌滃缁炬儳顭烽弻鐔煎礈瑜忕敮娑㈡煟閹惧啿鏆ｉ柡灞剧缁犳盯骞欓崘鈹附绻涚€涙鐭掔紒鐘崇墪椤繐煤椤忓嫮顦ㄩ梺鍦帛鐢帗娼忛崨瀛樷拺缂佸顑欓崕鎰版煙閻熺増鍠樼€殿喛顕ч鍏煎緞婵犲嫷妲┑鐘灱濞夋盯鏁冮敐鍡欑彾闁哄洢鍨洪埛鎺懨归敐鍥剁劸闁哄棝浜堕弻娑樜熼懡銈囩厜閻庤娲橀崹鍧楃嵁濡偐纾兼俊顖滃帶鐢姊绘担渚劸缂佺粯鍔欒棟妞ゆ牗绋撻々鎻捨旈敐鍛殲闁抽攱鍨块弻娑㈠箛椤撶偟绁烽柣銏╁灛閸旀垿寮诲☉姘ｅ亾閿濆骸浜濈€规洖鐭傞弻锛勪沪閻ｅ睗褏鈧娲橀〃鍡楊嚗閸曨剛绡€濞达絽澹婂Λ婊堟⒒閸屾艾鈧绮堟笟鈧畷顖炲锤濡も偓閸屻劍绻濇繝鍌滃缁炬儳顭烽弻鐔煎礈瑜忕敮娑㈡煟閹惧啿鏆ｉ柡灞剧缁犳盯骞欓崘鈹附绻涚€涙鐭掔紒鐘崇墪椤繐煤椤忓嫮顦ㄩ梺鍦帛鐢帗娼忛崨瀛樷拺缂佸顑欓崕鎰版煙閻熺増鍠樼€殿喛顕ч鍏煎緞婵犲嫷妲┑鐘灱濞夋盯鏁冮敐鍡欑彾闁哄洢鍨洪埛鎺懨归敐鍥剁劸闁哄棝浜堕弻娑樜熼懡銈囩厜閻庤娲橀崹鍧楃嵁濡偐纾兼俊顖滃帶鐢姊绘担渚劸缂佺粯鍔欒棟妞ゆ牗绋撻々鎻捨旈敐鍛殲闁抽攱鍨块弻娑㈠箛椤撶偟绁烽柣銏╁灛閸旀垿寮诲☉姘ｅ亾閿濆骸浜濈€规洖鐭傞弻锛勪沪閻ｅ睗褏鈧娲橀〃鍡楊嚗閸曨剛绡€濞达絽澹婂Λ婊堟⒒閸屾艾鈧绮堟笟鈧畷顖炲锤濡も偓閸屻劍绻濇繝鍌滃缁炬儳顭烽弻鐔煎礈瑜忕敮娑㈡煟閹惧啿鏆ｉ柡灞剧缁犳盯骞欓崘鈹附绻?
 func (r *gossipRepo) CreatePost(ctx context.Context, post *store.GossipPost) error {
 	return execWrite(ctx, r.batch, r.db,
 		`INSERT INTO gossip_posts (id, machine_id, user_email, nickname, content, category, score, votes, locked, flagged, created_at)

@@ -1,4 +1,4 @@
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'agentnet' | 'groupDiscussion' | 'security' | 'im' | 'system';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'agentnet' | 'virtualEmployee' | 'security' | 'im' | 'system';
 
 export interface SettingsTabOption {
     id: SettingsTabId;
@@ -10,7 +10,7 @@ const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = 
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: boolean } = {}): SettingsTabOption[] => {
+export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: boolean; hideVirtualEmployee?: boolean } = {}): SettingsTabOption[] => {
     const tabs: SettingsTabOption[] = [
         {
             id: 'general' as const,
@@ -83,10 +83,11 @@ export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: bo
             desc: textForLang(lang, 'AgentNet decentralized P2P agent network', 'AgentNet P2P 去中心化 Agent 网络', 'AgentNet P2P 去中心化 Agent 網路'),
         },
         {
-            id: 'groupDiscussion' as const,
-            label: textForLang(lang, 'A2A Group', 'A2A 群组', 'A2A 群組'),
-            desc: textForLang(lang, 'Current-Hub expert discovery, invites, and discussion policy', '当前 Hub 的专家发现、邀请与群组讨论策略', '目前 Hub 的專家發現、邀請與群組討論策略'),
+            id: 'virtualEmployee' as const,
+            label: textForLang(lang, 'Employees', '数字员工', '數位員工'),
+            desc: textForLang(lang, 'Manage favorite digital employees', '常用数字员工管理', '常用數位員工管理'),
         },
+
         {
             id: 'im' as const,
             label: 'IM',
@@ -103,5 +104,8 @@ export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: bo
             desc: textForLang(lang, 'Heartbeat, screen dimming and other system settings', '心跳、熄屏等系统级设置', '心跳、熄屏等系統級設定'),
         },
     ];
-    return options.hideAgentNet ? tabs.filter(tab => tab.id !== 'agentnet') : tabs;
+    let filtered = tabs;
+    if (options.hideAgentNet) filtered = filtered.filter(tab => tab.id !== 'agentnet');
+    if (options.hideVirtualEmployee) filtered = filtered.filter(tab => tab.id !== 'virtualEmployee');
+    return filtered;
 };

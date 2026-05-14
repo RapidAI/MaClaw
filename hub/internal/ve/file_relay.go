@@ -20,8 +20,8 @@ import (
 // File size limits by category.
 const (
 	MaxTextFileSize     = 500 * 1024       // 500KB
-	MaxImageFileSize    = 10 * 1024 * 1024  // 10MB
-	MaxDocumentFileSize = 20 * 1024 * 1024  // 20MB
+	MaxImageFileSize    = 10 * 1024 * 1024 // 10MB
+	MaxDocumentFileSize = 20 * 1024 * 1024 // 20MB
 	FileTTL             = 24 * time.Hour
 	CleanupInterval     = 1 * time.Hour
 )
@@ -122,22 +122,48 @@ func (fr *FileRelay) SetParticipantValidator(v SessionParticipantValidator) {
 }
 
 // Start begins the TTL cleanup goroutine.
+// Calling Start() on an already-started FileRelay is a no-op.
 func (fr *FileRelay) Start(ctx context.Context) {
-	ctx, fr.cancel = context.WithCancel(ctx)
-	go fr.cleanupLoop(ctx)
+	fr.mu.Lock()
+	if fr.cancel != nil {
+		fr.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	fr.cancel = cancel
+	fr.done = done
+	fr.mu.Unlock()
+
+	go fr.cleanupLoop(ctx, done)
 }
 
 // Stop terminates the cleanup goroutine.
 func (fr *FileRelay) Stop() {
-	if fr.cancel != nil {
-		fr.cancel()
+	fr.mu.Lock()
+	cancel := fr.cancel
+	done := fr.done
+	if cancel == nil {
+		fr.mu.Unlock()
+		return
 	}
-	<-fr.done
+	fr.cancel = nil
+	fr.mu.Unlock()
+
+	cancel()
+	<-done
 }
 
 // cleanupLoop periodically removes expired files.
-func (fr *FileRelay) cleanupLoop(ctx context.Context) {
-	defer close(fr.done)
+func (fr *FileRelay) cleanupLoop(ctx context.Context, done chan struct{}) {
+	defer close(done)
+	defer func() {
+		fr.mu.Lock()
+		if fr.done == done {
+			fr.cancel = nil
+		}
+		fr.mu.Unlock()
+	}()
 	ticker := time.NewTicker(CleanupInterval)
 	defer ticker.Stop()
 
@@ -372,7 +398,7 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	// 3. Uploader match: requester is the original uploader (owner access fallback).
 	authorized := false
 
-	// Path 1: Direct session_id match — covers 1:1 and group chats where all
+	// Path 1: Direct session_id match: covers 1:1 and group chats where all
 	// participants share the same session_id.
 	if meta.SessionID != "" && sessionID != "" && meta.SessionID == sessionID {
 		authorized = true
@@ -387,7 +413,7 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Path 3: Uploader/owner access — the participant who uploaded the file can
+	// Path 3: Uploader/owner access: the participant who uploaded the file can
 	// always access it regardless of session_id.
 	if !authorized && participantID != "" && meta.UploaderID != "" && participantID == meta.UploaderID {
 		authorized = true
