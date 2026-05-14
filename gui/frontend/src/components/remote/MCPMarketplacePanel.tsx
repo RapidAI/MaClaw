@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
 import {
     SyncHubManagedCapabilities,
@@ -326,7 +326,10 @@ function capabilityLicense(item: HubCapabilitySummary | undefined): Record<strin
 
 function installIntentText(intent: any, translate: (key: string) => string): string {
     if (!intent || typeof intent !== "object") return translate("mcpMarketplaceRequestSubmitted");
-    if (intent.action === "install_external_direct") return translate("mcpMarketplaceReadyToInstall");
+    if (intent.action === "install_external_direct") {
+        if (intent.capability?.id) return translate("mcpMarketplaceReadyToInstall");
+        return `${translate("mcpMarketplaceNeedsAttention")}: ${intent.reason || "missing_capability"}`;
+    }
     if (intent.action === "create_purchase_request") return `${translate("mcpMarketplacePurchaseRequested")}${intent.request_id ? `: ${intent.request_id}` : ""}`;
     if (intent.action === "create_import_request") return `${translate("mcpMarketplaceImportRequested")}${intent.request_id ? `: ${intent.request_id}` : ""}`;
     if (intent.action === "blocked") return `${translate("mcpMarketplaceNeedsAttention")}: ${intent.reason || "blocked"}`;
@@ -399,3 +402,5 @@ const smallBtnStyle: CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 8px",
 };
+
+

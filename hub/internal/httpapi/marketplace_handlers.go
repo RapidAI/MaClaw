@@ -383,7 +383,7 @@ func normalizeCapabilityInstallIntentRequest(req *capabilityInstallIntentRequest
 	if req == nil {
 		return
 	}
-	req.CapabilityType = strings.TrimSpace(strings.ToLower(req.CapabilityType))
+	req.CapabilityType = corelib.NormalizeCapabilityType(req.CapabilityType)
 	req.Source = corelib.NormalizeCapabilitySource(req.Source)
 	req.Pricing = strings.TrimSpace(strings.ToLower(req.Pricing))
 	req.CapabilityID = strings.TrimSpace(req.CapabilityID)
@@ -876,7 +876,7 @@ func AdminCapabilityExternalSearchHandler(centerStatus capabilityMarketCenterSta
 			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for Hub marketplace admin search")
 			return
 		}
-		capabilityType := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("type")))
+		capabilityType := corelib.NormalizeCapabilityType(r.URL.Query().Get("type"))
 		if capabilityType == "" {
 			capabilityType = corelib.CapabilityTypeSkill
 		}
@@ -1846,3 +1846,4 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
+

@@ -109,6 +109,17 @@ func capabilityUpdatePolicyAllowsAuto(policyName string) bool {
 	}
 }
 
+func NormalizeCapabilityType(capabilityType string) string {
+	switch strings.TrimSpace(strings.ToLower(capabilityType)) {
+	case "skill", "skills":
+		return CapabilityTypeSkill
+	case "mcp", "mcps", "mcp_server", "mcp-server", "mcpserver", "model_context_protocol":
+		return CapabilityTypeMCP
+	default:
+		return strings.TrimSpace(strings.ToLower(capabilityType))
+	}
+}
+
 func NormalizeCapabilitySource(source string) string {
 	switch strings.TrimSpace(strings.ToLower(source)) {
 	case "hub", "enterprise", "enterprise_hub":
