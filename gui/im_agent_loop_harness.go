@@ -143,6 +143,40 @@ func startAgentLoopHeartbeat(sendProgress func(string)) func() {
 	}
 }
 
+// startRequestLevelHeartbeat starts a heartbeat ticker that covers the entire
+// request processing lifecycle — from message receipt to response return.
+// Unlike startAgentLoopHeartbeat (which only runs inside the agent loop),
+// this ticker also covers pre-loop phases: IUM LLM calls, proactive_recall,
+// system prompt construction, workflow interception, etc.
+//
+// The interval is 30s (half of the frontend's 120s activity timeout) to
+// guarantee at least one heartbeat arrives before the timeout fires, even
+// accounting for goroutine scheduling jitter.
+//
+// If onProgress is nil (e.g. background tasks), returns a no-op stop function.
+func startRequestLevelHeartbeat(onProgress func(string)) func() {
+	if onProgress == nil {
+		return func() {}
+	}
+	const interval = 30 * time.Second
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				onProgress(imHeartbeatMsg)
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
+	}
+}
+
 func agentLoopProgressSender(onProgress func(string)) func(string) {
 	return func(text string) {
 		if onProgress != nil {

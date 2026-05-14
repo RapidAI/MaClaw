@@ -423,7 +423,10 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 	entry = h.app.normalizeInstalledSkill(entry)
 	if installScanReport != nil && preNormalizeScanHash != "" {
 		if err := writeSkillScanCacheForReportStatus(entry, entry.SkillDir, preNormalizeScanHash, installScanReport, skillScanCacheStatusAllowed); err != nil {
-			log.Printf("[skill-install] failed to write install scan cache for %s: %v", entry.Name, err)
+			if committedDir != "" {
+				_ = os.RemoveAll(committedDir)
+			}
+			return fmt.Sprintf("瀹夎澶辫触锛堝啓鍏ュ畨鍏ㄦ壂鎻忕紦瀛橈級: %s", err.Error())
 		}
 	}
 
@@ -949,18 +952,31 @@ func (h *IMMessageHandler) toolValidateSkill(args map[string]interface{}) string
 		return cskill.FormatPortabilityReport(report)
 	}
 
-	// Auto-fix flow: fix → re-validate.
+	snapshotDir, cleanupSnapshot, snapshotErr := snapshotSkillDirForRollback(skillDir)
+	if snapshotErr != nil {
+		return fmt.Sprintf("automatic repair snapshot failed: %s\n\n%s", snapshotErr.Error(), cskill.FormatPortabilityReport(report))
+	}
+	defer cleanupSnapshot()
+
 	changes, fixErr := cskill.AutoFixPortability(skillDir)
 	if fixErr != nil {
-		return fmt.Sprintf("自动修复失败: %s\n\n%s", fixErr.Error(), cskill.FormatPortabilityReport(report))
+		return fmt.Sprintf("automatic repair failed: %s\n\n%s", fixErr.Error(), cskill.FormatPortabilityReport(report))
 	}
 
-	// Re-validate after fixes.
+	// Re-validate and run install-grade security scan before keeping writeback.
 	finalReport, revalidateErr := cskill.ValidateSkillPortability(skillDir)
 	if revalidateErr != nil {
-		return fmt.Sprintf("修复后重新验证失败: %s\n\n%s", revalidateErr.Error(), cskill.FormatPortabilityChanges(changes))
+		if restoreErr := restoreSkillDirFromSnapshot(skillDir, snapshotDir); restoreErr != nil {
+			return fmt.Sprintf("repair re-validation failed: %s; rollback failed: %v\n\n%s", revalidateErr.Error(), restoreErr, cskill.FormatPortabilityChanges(changes))
+		}
+		return fmt.Sprintf("repair re-validation failed and changes were rolled back: %s\n\n%s", revalidateErr.Error(), cskill.FormatPortabilityChanges(changes))
 	}
-
+	if scanErr := h.scanManagedSkillWriteback(skillDir, name); scanErr != nil {
+		if restoreErr := restoreSkillDirFromSnapshot(skillDir, snapshotDir); restoreErr != nil {
+			return fmt.Sprintf("repair blocked by security scan: %s; rollback failed: %v\n\n%s", scanErr.Error(), restoreErr, cskill.FormatPortabilityChanges(changes))
+		}
+		return fmt.Sprintf("repair blocked by security scan and changes were rolled back: %s\n\n%s", scanErr.Error(), cskill.FormatPortabilityChanges(changes))
+	}
 	var b strings.Builder
 	b.WriteString(cskill.FormatPortabilityChanges(changes))
 	b.WriteByte('\n')
@@ -968,6 +984,71 @@ func (h *IMMessageHandler) toolValidateSkill(args map[string]interface{}) string
 	return b.String()
 }
 
+func snapshotSkillDirForRollback(skillDir string) (string, func(), error) {
+	if strings.TrimSpace(skillDir) == "" {
+		return "", func() {}, fmt.Errorf("skill directory is empty")
+	}
+	parent := filepath.Dir(skillDir)
+	snapshotDir, err := os.MkdirTemp(parent, ".skill-rollback-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(snapshotDir) }
+	if err := copyDirContents(skillDir, snapshotDir); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return snapshotDir, cleanup, nil
+}
+
+func restoreSkillDirFromSnapshot(skillDir, snapshotDir string) error {
+	if strings.TrimSpace(skillDir) == "" || strings.TrimSpace(snapshotDir) == "" {
+		return fmt.Errorf("skill directory and snapshot directory are required")
+	}
+	if err := os.RemoveAll(skillDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return err
+	}
+	return copyDirContents(snapshotDir, skillDir)
+}
+
+func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string) error {
+	entry, err := loadImportedSkillEntry(skillDir)
+	if err != nil {
+		return fmt.Errorf("reload repaired skill: %w", err)
+	}
+	if strings.TrimSpace(entry.Name) == "" {
+		entry.Name = skillName
+	}
+	entry.SkillDir = skillDir
+	scanner := cskill.NewSecurityScanner(nil)
+	report := scanner.ScanInstallStaged(context.Background(), entry, skillDir, func(status string) {
+		if h != nil && h.app != nil {
+			h.app.log(fmt.Sprintf("[manage_skill] security scan %s: %s", entry.Name, status))
+		}
+	})
+	if report == nil {
+		return fmt.Errorf("security scan produced no report")
+	}
+	if report.IsDangerous() || report.NeedsUserReview() {
+		if h != nil && h.app != nil {
+			h.app.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillReject,
+				"manage_skill_autofix",
+				report.FinalLevel,
+				security.PolicyDeny,
+				fmt.Sprintf("skill autofix writeback rejected for %s: %s", entry.Name, report.Summary),
+			)
+		}
+		return fmt.Errorf("level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
+	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
+		return fmt.Errorf("write skill scan cache: %w", err)
+	}
+	return nil
+}
 func (h *IMMessageHandler) toolParallelExecute(args map[string]interface{}) string {
 	h.app.ensureOrchestrator()
 	orch := h.app.orchestrator
@@ -1372,7 +1453,7 @@ func rebuildIMMemoryThemes(store *corememory.Store) {
 	if store == nil || store.ThemeManager() == nil {
 		return
 	}
-	store.ThemeManager().Rebuild(store.List("", ""), nil)
+	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
 }
 
 func formatIMMemoryThemeHealth(health corememory.ThemeHealth) string {

@@ -39,7 +39,9 @@ func NewRootModel(lang string) RootModel {
 	lang = i18n.NormalizeLang(lang)
 	chat := NewChatModel(lang)
 	chat.FocusInput()
-	return RootModel{
+	m := RootModel{
+		width:      80,
+		height:     24,
 		tab:        TabChat,
 		lang:       lang,
 		Onboarding: NewOnboardingModel(lang),
@@ -51,6 +53,8 @@ func NewRootModel(lang string) RootModel {
 		StatusBar:  NewStatusBarModel(lang),
 		Help:       NewHelpModel(lang),
 	}
+	_ = m.updateChildSizes(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	return m
 }
 
 func (m *RootModel) SetLang(lang string) {

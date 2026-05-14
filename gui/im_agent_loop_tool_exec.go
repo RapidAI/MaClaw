@@ -278,6 +278,14 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 		h.emitAgentLoopSteeringDocUpdate(opts.UserID, opts.SteeringDetector, tc.Function.Name, tc.Function.Arguments)
 
 		truncated := truncateToolResultForTool(tc.Function.Name, toolContent)
+		// OpenHuman-inspired: check tool result for prompt injection attempts.
+		// Only check external-source tools (web_fetch, web_search, read_file, bash)
+		// to avoid wasting CPU on internal tools that return safe content.
+		if isExternalSourceTool(tc.Function.Name) {
+			if injectionWarning := h.checkToolResultInjection(tc.Function.Name, truncated); injectionWarning != "" {
+				truncated = injectionWarning + truncated
+			}
+		}
 		commitResult := h.commitAgentLoopToolResult(agentLoopToolCommitOptions{
 			UserID:                     opts.UserID,
 			ToolCall:                   tc,

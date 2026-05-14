@@ -22,5 +22,10 @@ func (h *IMMessageHandler) recordLLMUsageSnapshot(label string, resp *llm.Respon
 		log.Printf("[LLM] finish_reason=%q content_len=%d tool_calls=%d", resp.Choices[0].FinishReason, len(resp.Choices[0].Message.Content), len(resp.Choices[0].Message.ToolCalls))
 	}
 	h.accumulateLLMTokenUsage(providerName, input, output)
+	// OpenHuman-inspired: record cost for budget tracking
+	if input > 0 || output > 0 {
+		model := h.getMaclawLLMConfig().Model
+		h.recordLLMCost(model, input, output)
+	}
 	return llmUsageSnapshot{Input: input, Output: output}
 }

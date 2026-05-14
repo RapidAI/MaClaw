@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import hashlib
 import json
 import os
 import pathlib
+import urllib.parse
 
 def log(message):
     print(f"[cos-release-sync] {message}", flush=True)
@@ -66,27 +68,47 @@ def collect_assets():
     return assets
 
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def validate_public_base_url(name, value):
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise RuntimeError(f"{name} must be an https URL with a host: {value!r}")
+    return value.rstrip("/")
+
+
 def asset_urls(path):
     urls = []
     if r2_public_base_url:
-        urls.append(f"{r2_public_base_url}/latest/{path.name}")
-    urls.append(f"{public_base_url}/latest/{path.name}")
+        urls.append(f"{validate_public_base_url('R2_PUBLIC_BASE_URL', r2_public_base_url)}/latest/{path.name}")
+    urls.append(f"{validate_public_base_url('COS_PUBLIC_BASE_URL', public_base_url)}/latest/{path.name}")
     return urls
+
+
+def manifest_asset(path):
+    urls = asset_urls(path)
+    if not urls:
+        raise RuntimeError(f"no public URLs configured for {path.name}")
+    return {
+        "name": path.name,
+        "size": path.stat().st_size,
+        "sha256": sha256_file(path),
+        "url": urls[-1],
+        "urls": urls,
+    }
 
 
 def write_latest_manifest(assets):
     latest = {
         "version": tag,
         "tag": tag,
-        "assets": {
-            path.name: {
-                "name": path.name,
-                "size": path.stat().st_size,
-                "url": asset_urls(path)[-1],
-                "urls": asset_urls(path),
-            }
-            for path in assets
-        },
+        "assets": {path.name: manifest_asset(path) for path in assets},
     }
     latest_path = asset_dir / "latest.json"
     latest_path.write_text(json.dumps(latest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

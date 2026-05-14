@@ -49,8 +49,22 @@ func NewSubAgentTaskRunner(
 	}
 }
 
+type subAgentTaskFunc func(
+	handler *IMMessageHandler,
+	cfg corelib.MaclawLLMConfig,
+	httpClient *http.Client,
+	task *TaskItem,
+	projectPath, reqCtx, designCtx string,
+	prevOutputs []string,
+	loopCtx *LoopContext,
+	onToken func(string),
+	onProgress func(string),
+) *CodingSubAgentResult
+
 // runTaskWithSubAgent is overridden in tests to simulate long-running SubAgent outcomes.
-var runTaskWithSubAgent = RunTaskWithSubAgent
+// Nil means use RunTaskWithSubAgent; this avoids a package initialization cycle
+// through the full GUI call graph.
+var runTaskWithSubAgent subAgentTaskFunc
 
 func emitCodingSubAgentProgress(onProgress func(string), message string) {
 	if onProgress == nil {
@@ -188,7 +202,11 @@ func (r *SubAgentTaskRunner) runTaskWithRecover(
 			result = nil
 		}
 	}()
-	return runTaskWithSubAgent(
+	runner := runTaskWithSubAgent
+	if runner == nil {
+		runner = RunTaskWithSubAgent
+	}
+	return runner(
 		r.handler,
 		r.cfg,
 		r.httpClient,

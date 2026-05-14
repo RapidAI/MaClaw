@@ -81,12 +81,15 @@ type GroupInvitationResponse struct {
 }
 
 type GroupDiscussionMessage struct {
-	ID        string      `json:"id"`
-	SessionID string      `json:"session_id"`
-	FromID    string      `json:"from_id"`
-	Kind      MessageKind `json:"kind"`
-	Content   string      `json:"content"`
-	CreatedAt time.Time   `json:"created_at"`
+	ID               string            `json:"id"`
+	SessionID        string            `json:"session_id"`
+	FromID           string            `json:"from_id"`
+	Kind             MessageKind       `json:"kind"`
+	Content          string            `json:"content"`
+	TextAttachments  []TextAttachment  `json:"text_attachments,omitempty"`
+	ImageAttachments []ImageAttachment `json:"image_attachments,omitempty"`
+	FileAttachments  []FileAttachment  `json:"file_attachments,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
 }
 
 type GroupDiscussionResult struct {

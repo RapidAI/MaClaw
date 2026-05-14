@@ -19,13 +19,15 @@ const (
 type MessageKind string
 
 const (
-	MessageStatement  MessageKind = "statement"
-	MessageQuestion   MessageKind = "question"
-	MessageAnswer     MessageKind = "answer"
-	MessageEvidence   MessageKind = "evidence"
-	MessageObjection  MessageKind = "objection"
-	MessageHandoff    MessageKind = "handoff"
-	MessageEscalation MessageKind = "escalation"
+	MessageStatement   MessageKind = "statement"
+	MessageQuestion    MessageKind = "question"
+	MessageAnswer      MessageKind = "answer"
+	MessageEvidence    MessageKind = "evidence"
+	MessageObjection   MessageKind = "objection"
+	MessageHandoff     MessageKind = "handoff"
+	MessageEscalation  MessageKind = "escalation"
+	MessageStreamChunk MessageKind = "stream_chunk" // VE streaming response fragment
+	MessageStreamEnd   MessageKind = "stream_end"   // VE streaming response complete
 )
 
 type ProposalStatus string
@@ -140,6 +142,30 @@ type Escalation struct {
 	Reason    string    `json:"reason"`
 	Target    string    `json:"target"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// TextAttachment represents an inline text file attachment (base64-encoded content).
+type TextAttachment struct {
+	Content  string `json:"content"`            // base64-encoded text content
+	Filename string `json:"filename"`           // original filename
+	MimeType string `json:"mime_type,omitempty"` // e.g. "text/plain", "text/markdown"
+}
+
+// ImageAttachment represents an image file attachment referenced by URL.
+type ImageAttachment struct {
+	FileURL  string `json:"file_url"`           // Hub file relay URL
+	Filename string `json:"filename"`           // original filename
+	MimeType string `json:"mime_type,omitempty"` // e.g. "image/png", "image/jpeg"
+	Width    int    `json:"width,omitempty"`     // image width in pixels
+	Height   int    `json:"height,omitempty"`    // image height in pixels
+}
+
+// FileAttachment represents a document/file attachment referenced by URL.
+type FileAttachment struct {
+	FileURL   string `json:"file_url"`            // Hub file relay URL
+	Filename  string `json:"filename"`            // original filename
+	MimeType  string `json:"mime_type,omitempty"`  // e.g. "application/pdf"
+	SizeBytes int64  `json:"size_bytes,omitempty"` // file size in bytes
 }
 
 type ReviewSummary struct {

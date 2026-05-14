@@ -248,8 +248,7 @@ func rebuildStoreThemes(store *memory.Store) {
 	if store == nil || store.ThemeManager() == nil {
 		return
 	}
-	entries := store.List("", "")
-	store.ThemeManager().Rebuild(entries, nil)
+	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
 }
 
 func memoryThemes(dataDir string, args []string) error {

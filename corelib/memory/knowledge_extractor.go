@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -190,6 +191,16 @@ func (ke *KnowledgeExtractor) Extract(userID string, messages []ConversationMess
 	// LLM not configured: no-op.
 	if ke.llm == nil || !ke.llm.IsConfigured() {
 		return nil
+	}
+
+	// Mutual exclusion with OnlineExtractor: if the online pipeline has
+	// successfully extracted facts recently, skip this fallback extraction
+	// to avoid producing duplicate entries.
+	if ke.store != nil {
+		if oe := ke.store.OnlineExtractor(); oe != nil && oe.HasRecentSuccess(60*time.Minute) {
+			log.Printf("[knowledge_extractor] skipped: online extractor active in last 60min")
+			return nil
+		}
 	}
 
 	// Mutual exclusion: if the main agent already wrote memories in this

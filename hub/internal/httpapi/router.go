@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
@@ -88,6 +89,7 @@ func NewRouter(
 	mux := http.NewServeMux()
 	groupDiscussionSvc := NewGroupDiscussionService(groupDiscussionDB)
 	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc)
+	capabilitySvc := capability.NewService(groupDiscussionDB)
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
 	groupDiscussionHandler.RegisterHubRoutes(mux)
@@ -322,6 +324,35 @@ func NewRouter(
 	mux.HandleFunc("GET /api/debug/session", RequireAdmin(admins, DebugGetSessionHandler(sessionSvc)))
 	mux.HandleFunc("/ws", gateway.HandleWS)
 	mux.HandleFunc("GET /api/shortcuts", GetShortcutsHandler(identity, system))
+	mux.HandleFunc("GET /marketplace", MarketplacePageHandler("hub"))
+	mux.HandleFunc("GET /api/capabilities", CapabilityListHandler(capabilitySvc))
+	mux.HandleFunc("POST /api/admin/capabilities", RequireAdmin(admins, AdminCapabilityUpsertHandler(capabilitySvc)))
+	mux.HandleFunc("GET /api/capabilities/{id}", CapabilityDetailHandler(capabilitySvc))
+	mux.HandleFunc("GET /api/capabilities/{id}/versions", CapabilityVersionsHandler(capabilitySvc))
+	mux.HandleFunc("GET /api/capabilities/{id}/mcp-secret-requirements", MCPSecretRequirementsHandler(capabilitySvc))
+	mux.HandleFunc("POST /api/capabilities/{id}/install-intent", CapabilityInstallIntentHandler(capabilitySvc, system, centerSvc))
+	mux.HandleFunc("GET /api/capabilities/managed-deployments", CapabilityManagedDeploymentsHandler(capabilitySvc))
+	mux.HandleFunc("GET /api/capabilities/recommended", CapabilityRecommendationsHandler(capabilitySvc))
+	mux.HandleFunc("GET /api/capabilities/mcp-secret-bindings", MCPSecretBindingsHandler(identity, capabilitySvc))
+	mux.HandleFunc("PUT /api/capabilities/mcp-secret-bindings", MCPSecretBindingUpsertHandler(identity, capabilitySvc))
+	mux.HandleFunc("GET /api/capabilities/mcp-hub-secrets", MCPHubSecretsHandler(identity, capabilitySvc))
+	mux.HandleFunc("PUT /api/capabilities/mcp-hub-secrets", MCPHubSecretUpsertHandler(identity, capabilitySvc))
+	mux.HandleFunc("GET /api/admin/billing/customer-account", RequireAdmin(admins, AdminBillingCustomerAccountHandler(system, centerSvc)))
+	mux.HandleFunc("GET /api/admin/billing/licenses", RequireAdmin(admins, AdminBillingLicensesHandler(system, centerSvc)))
+	mux.HandleFunc("GET /api/admin/capability-market/policy", RequireAdmin(admins, AdminCapabilityMarketPolicyGetHandler(system)))
+	mux.HandleFunc("PUT /api/admin/capability-market/policy", RequireAdmin(admins, AdminCapabilityMarketPolicyUpdateHandler(system)))
+	mux.HandleFunc("GET /api/admin/capability-market/acquisition-requests", RequireAdmin(admins, AdminCapabilityAcquisitionRequestsHandler(capabilitySvc)))
+	mux.HandleFunc("GET /api/admin/capability-market/acquisition-requests/{id}", RequireAdmin(admins, AdminCapabilityAcquisitionRequestDetailHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/approve", RequireAdmin(admins, AdminCapabilityApproveAcquisitionHandler(capabilitySvc, system, centerSvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/reject", RequireAdmin(admins, AdminCapabilityRejectAcquisitionHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/complete", RequireAdmin(admins, AdminCapabilityCompleteAcquisitionHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/managed-deployments", RequireAdmin(admins, AdminCapabilityManagedDeploymentCreateHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/recommendations", RequireAdmin(admins, AdminCapabilityRecommendationCreateHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/mcp", RequireAdmin(admins, AdminMCPMarketplaceUpsertHandler(capabilitySvc)))
+	mux.HandleFunc("PUT /api/admin/capability-market/mcp", RequireAdmin(admins, AdminMCPMarketplaceUpsertHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/mcp-secret-requirements", RequireAdmin(admins, AdminMCPSecretRequirementUpsertHandler(capabilitySvc)))
+	mux.HandleFunc("GET /api/admin/capabilities/external-search", RequireAdmin(admins, AdminCapabilityExternalSearchHandler(centerSvc)))
+	mux.HandleFunc("POST /api/admin/capabilities/import-intent", RequireAdmin(admins, AdminCapabilityImportIntentHandler(capabilitySvc, system, centerSvc)))
 	mux.HandleFunc("PUT /api/shortcuts", PutShortcutsHandler(identity, system))
 	// Webhook session endpoint (Bearer token auth handled internally)
 	mux.HandleFunc("POST /api/webhook/session", WebhookCreateSessionHandler(deviceSvc, sessionSvc))

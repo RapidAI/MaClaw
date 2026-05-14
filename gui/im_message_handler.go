@@ -44,6 +44,18 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		onProgress("正在思考...")
 	}
 
+	// Start a request-level heartbeat ticker that covers the ENTIRE request
+	// lifecycle — including pre-loop phases (IUM LLM calls, proactive_recall,
+	// system prompt build) that happen before the agent loop's own heartbeat
+	// ticker starts. This ensures the frontend's activity timeout (120s) is
+	// never triggered while the backend is actively processing.
+	//
+	// The agent loop has its own heartbeat ticker (startAgentLoopHeartbeat)
+	// which is redundant with this one but harmless — multiple resets of the
+	// frontend timer are idempotent.
+	stopRequestHeartbeat := startRequestLevelHeartbeat(onProgress)
+	defer stopRequestHeartbeat()
+
 	preflight := h.prepareIMMessagePreflight(&msg, &trimmed)
 	if preflight.Handled {
 		return preflight.Response

@@ -399,7 +399,10 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	}
 	if installScanReport != nil && preNormalizeScanHash != "" {
 		if err := writeSkillScanCacheForReportStatus(skill, skill.SkillDir, preNormalizeScanHash, installScanReport, skillScanCacheStatusAllowed); err != nil {
-			log.Printf("[skill-auto] failed to write install scan cache for %s: %v", skill.Name, err)
+			if committedDir != "" {
+				_ = os.RemoveAll(committedDir)
+			}
+			return skillInstallExecutionResult{Text: fmt.Sprintf("Installing Skill %s failed: write scan cache: %v", displayName, err)}
 		}
 	}
 	if err := h.getSkillExecutor().Register(*skill); err != nil {

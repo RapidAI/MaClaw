@@ -266,6 +266,13 @@ func (h *IMMessageHandler) appendGUIPostCodingWorkflow(b *strings.Builder, cfg c
 func (h *IMMessageHandler) appendGUIEpilogue(b *strings.Builder, includeMemoryGuide bool, msg string) {
 	epilogueStart := time.Now()
 
+	// OpenHuman-inspired: inject situation report (active tasks, SSH sessions, etc.)
+	if report := h.buildSituationReport(h.lastUserID); report != "" {
+		b.WriteString("\n\n")
+		b.WriteString(report)
+		b.WriteString("\n")
+	}
+
 	// Memory section (frozen snapshot + proactive recall)
 	h.appendMemorySection(b, includeMemoryGuide, msg)
 	memoryElapsed := time.Since(epilogueStart)

@@ -1,6 +1,8 @@
 package a2a
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,5 +79,195 @@ func TestEscalationClosesLocalDecisionPath(t *testing.T) {
 	}
 	if err := s.AddMessage(Message{ID: "msg-1", FromID: "ops", Content: "late note"}); err == nil {
 		t.Fatal("expected escalated session to reject new messages")
+	}
+}
+
+func TestTextAttachment_JSONRoundTrip(t *testing.T) {
+	att := TextAttachment{
+		Content:  "SGVsbG8gV29ybGQ=", // base64 "Hello World"
+		Filename: "readme.txt",
+		MimeType: "text/plain",
+	}
+	data, err := json.Marshal(att)
+	if err != nil {
+		t.Fatalf("Marshal TextAttachment: %v", err)
+	}
+	var got TextAttachment
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal TextAttachment: %v", err)
+	}
+	if got.Content != att.Content || got.Filename != att.Filename || got.MimeType != att.MimeType {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", got, att)
+	}
+}
+
+func TestImageAttachment_JSONRoundTrip(t *testing.T) {
+	att := ImageAttachment{
+		FileURL:  "https://hub.local/api/ve/files/img-001",
+		Filename: "screenshot.png",
+		MimeType: "image/png",
+		Width:    1920,
+		Height:   1080,
+	}
+	data, err := json.Marshal(att)
+	if err != nil {
+		t.Fatalf("Marshal ImageAttachment: %v", err)
+	}
+	var got ImageAttachment
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal ImageAttachment: %v", err)
+	}
+	if got.FileURL != att.FileURL || got.Filename != att.Filename || got.MimeType != att.MimeType {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", got, att)
+	}
+	if got.Width != att.Width || got.Height != att.Height {
+		t.Fatalf("dimensions mismatch: got %dx%d, want %dx%d", got.Width, got.Height, att.Width, att.Height)
+	}
+}
+
+func TestFileAttachment_JSONRoundTrip(t *testing.T) {
+	att := FileAttachment{
+		FileURL:   "https://hub.local/api/ve/files/doc-001",
+		Filename:  "report.pdf",
+		MimeType:  "application/pdf",
+		SizeBytes: 2048576,
+	}
+	data, err := json.Marshal(att)
+	if err != nil {
+		t.Fatalf("Marshal FileAttachment: %v", err)
+	}
+	var got FileAttachment
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal FileAttachment: %v", err)
+	}
+	if got.FileURL != att.FileURL || got.Filename != att.Filename || got.MimeType != att.MimeType || got.SizeBytes != att.SizeBytes {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", got, att)
+	}
+}
+
+func TestGroupDiscussionMessage_OmitemptyAttachments(t *testing.T) {
+	msg := GroupDiscussionMessage{
+		ID:        "msg-1",
+		SessionID: "session-1",
+		FromID:    "user-a",
+		Kind:      MessageStatement,
+		Content:   "Hello",
+		CreatedAt: time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	s := string(data)
+	if strings.Contains(s, "text_attachments") {
+		t.Fatalf("empty TextAttachments should be omitted, got: %s", s)
+	}
+	if strings.Contains(s, "image_attachments") {
+		t.Fatalf("empty ImageAttachments should be omitted, got: %s", s)
+	}
+	if strings.Contains(s, "file_attachments") {
+		t.Fatalf("empty FileAttachments should be omitted, got: %s", s)
+	}
+}
+
+func TestGroupDiscussionMessage_MixedAttachments_JSONRoundTrip(t *testing.T) {
+	msg := GroupDiscussionMessage{
+		ID:        "msg-2",
+		SessionID: "session-2",
+		FromID:    "user-b",
+		Kind:      MessageStatement,
+		Content:   "Here are the files",
+		TextAttachments: []TextAttachment{
+			{Content: "cHJpbnQoImhlbGxvIik=", Filename: "script.py", MimeType: "text/x-python"},
+		},
+		ImageAttachments: []ImageAttachment{
+			{FileURL: "https://hub.local/api/ve/files/img-1", Filename: "arch.png", MimeType: "image/png", Width: 800, Height: 600},
+			{FileURL: "https://hub.local/api/ve/files/img-2", Filename: "flow.jpg", MimeType: "image/jpeg", Width: 1024, Height: 768},
+		},
+		FileAttachments: []FileAttachment{
+			{FileURL: "https://hub.local/api/ve/files/doc-1", Filename: "spec.pdf", MimeType: "application/pdf", SizeBytes: 1048576},
+		},
+		CreatedAt: time.Date(2026, 5, 1, 11, 0, 0, 0, time.UTC),
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var got GroupDiscussionMessage
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	// Verify basic fields
+	if got.ID != msg.ID || got.SessionID != msg.SessionID || got.FromID != msg.FromID {
+		t.Fatalf("basic fields mismatch: got ID=%s SessionID=%s FromID=%s", got.ID, got.SessionID, got.FromID)
+	}
+	if got.Kind != msg.Kind || got.Content != msg.Content {
+		t.Fatalf("kind/content mismatch: got Kind=%s Content=%s", got.Kind, got.Content)
+	}
+
+	// Verify text attachments
+	if len(got.TextAttachments) != 1 {
+		t.Fatalf("TextAttachments len = %d, want 1", len(got.TextAttachments))
+	}
+	if got.TextAttachments[0].Filename != "script.py" || got.TextAttachments[0].Content != "cHJpbnQoImhlbGxvIik=" {
+		t.Fatalf("TextAttachments[0] mismatch: %+v", got.TextAttachments[0])
+	}
+
+	// Verify image attachments
+	if len(got.ImageAttachments) != 2 {
+		t.Fatalf("ImageAttachments len = %d, want 2", len(got.ImageAttachments))
+	}
+	if got.ImageAttachments[0].Filename != "arch.png" || got.ImageAttachments[0].Width != 800 {
+		t.Fatalf("ImageAttachments[0] mismatch: %+v", got.ImageAttachments[0])
+	}
+	if got.ImageAttachments[1].Filename != "flow.jpg" || got.ImageAttachments[1].Height != 768 {
+		t.Fatalf("ImageAttachments[1] mismatch: %+v", got.ImageAttachments[1])
+	}
+
+	// Verify file attachments
+	if len(got.FileAttachments) != 1 {
+		t.Fatalf("FileAttachments len = %d, want 1", len(got.FileAttachments))
+	}
+	if got.FileAttachments[0].Filename != "spec.pdf" || got.FileAttachments[0].SizeBytes != 1048576 {
+		t.Fatalf("FileAttachments[0] mismatch: %+v", got.FileAttachments[0])
+	}
+}
+
+func TestGroupDiscussionMessage_AttachmentsDeserializeFromExternalJSON(t *testing.T) {
+	// Simulate JSON from an external source (e.g., Hub relay)
+	raw := `{
+		"id": "msg-ext",
+		"session_id": "sess-ext",
+		"from_id": "ve-1",
+		"kind": "statement",
+		"content": "Analysis complete",
+		"text_attachments": [
+			{"content": "dGVzdA==", "filename": "notes.md", "mime_type": "text/markdown"}
+		],
+		"image_attachments": [
+			{"file_url": "http://hub/files/img-99", "filename": "chart.webp", "mime_type": "image/webp", "width": 640, "height": 480}
+		],
+		"file_attachments": [
+			{"file_url": "http://hub/files/doc-99", "filename": "data.csv", "mime_type": "text/csv", "size_bytes": 4096}
+		],
+		"created_at": "2026-05-01T12:00:00Z"
+	}`
+	var msg GroupDiscussionMessage
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("Unmarshal external JSON: %v", err)
+	}
+	if msg.ID != "msg-ext" || msg.Content != "Analysis complete" {
+		t.Fatalf("basic fields: %+v", msg)
+	}
+	if len(msg.TextAttachments) != 1 || msg.TextAttachments[0].Content != "dGVzdA==" {
+		t.Fatalf("TextAttachments: %+v", msg.TextAttachments)
+	}
+	if len(msg.ImageAttachments) != 1 || msg.ImageAttachments[0].Width != 640 {
+		t.Fatalf("ImageAttachments: %+v", msg.ImageAttachments)
+	}
+	if len(msg.FileAttachments) != 1 || msg.FileAttachments[0].SizeBytes != 4096 {
+		t.Fatalf("FileAttachments: %+v", msg.FileAttachments)
 	}
 }

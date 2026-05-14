@@ -22,6 +22,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -301,7 +302,6 @@ func (s *Service) SearchSkills(ctx context.Context, p Principal, in SkillSearchI
 }
 
 func (s *Service) ImportSkillArchive(ctx context.Context, p Principal, in SkillImportInput) ([]corelib.NLSkillEntry, error) {
-	_ = ctx
 	if strings.TrimSpace(in.ZipBase64) == "" {
 		return nil, fmt.Errorf("zip_base64 is required")
 	}
@@ -309,11 +309,10 @@ func (s *Service) ImportSkillArchive(ctx context.Context, p Principal, in SkillI
 	if err != nil {
 		return nil, fmt.Errorf("decode zip_base64: %w", err)
 	}
-	return s.installSkillArchiveBytes(p, data, in.Overwrite)
+	return s.installSkillArchiveBytes(ctx, p, data, in.Overwrite)
 }
 
 func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstallInput) ([]corelib.NLSkillEntry, error) {
-	_ = ctx
 	source := strings.ToLower(strings.TrimSpace(in.Source))
 	if source == "" {
 		return nil, fmt.Errorf("source is required")
@@ -337,36 +336,38 @@ func (s *Service) InstallSkill(ctx context.Context, p Principal, in SkillInstall
 		if err != nil {
 			return nil, fmt.Errorf("decode zip_base64: %w", err)
 		}
-		return s.installSkillArchiveBytes(p, data, in.Overwrite)
+		return s.installSkillArchiveBytes(ctx, p, data, in.Overwrite)
 	case "github_repo":
 		gs := skill.NewGitHubSearcher(strings.TrimSpace(in.GitHubToken))
 		entries, err := gs.ImportFromRepoURL(strings.TrimSpace(in.RepoURL))
 		if err != nil {
 			return nil, err
 		}
-		return s.persistImportedEntries(p, entries, in.Overwrite)
+		return s.persistImportedEntries(ctx, p, entries, in.Overwrite)
 	case "github_candidate", "github":
 		gs := skill.NewGitHubSearcher(strings.TrimSpace(in.GitHubToken))
 		entry, err := gs.ImportFromCandidate(skill.GitHubSkillCandidate{RepoFullName: strings.TrimSpace(in.RepoFullName), RepoURL: strings.TrimSpace(in.RepoURL), RawURL: strings.TrimSpace(in.RawURL), FilePath: strings.TrimSpace(in.FilePath), Branch: strings.TrimSpace(in.Branch), DefinitionType: strings.TrimSpace(in.DefinitionType)})
 		if err != nil {
 			return nil, err
 		}
-		return s.persistImportedEntries(p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
+		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	case "skillhub":
 		entry, err := downloadSkillHubEntry(ctx, strings.TrimSpace(in.SkillHubURL), strings.TrimSpace(in.SkillID))
 		if err != nil {
 			return nil, err
 		}
-		return s.persistImportedEntries(p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
+		return s.persistImportedEntries(ctx, p, []corelib.NLSkillEntry{*entry}, in.Overwrite)
 	default:
 		return nil, fmt.Errorf("unsupported skill install source %q", source)
 	}
 }
 
 func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*SkillExportResult, error) {
-	_ = ctx
 	entry, dir, err := s.findSkill(p, name)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.scanSkillForOutbound(ctx, p, entry, dir, "export"); err != nil {
 		return nil, err
 	}
 	archive, err := zipDirectoryBytes(dir)
@@ -378,6 +379,23 @@ func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*S
 		fileName = "skill"
 	}
 	return &SkillExportResult{Name: entry.Name, FileName: fileName + ".zip", ArchiveBase64: base64.StdEncoding.EncodeToString(archive), SizeBytes: int64(len(archive))}, nil
+}
+
+func (s *Service) scanSkillForOutbound(ctx context.Context, p Principal, entry corelib.NLSkillEntry, dir, phase string) error {
+	scanEntry := entry
+	scanEntry.SkillDir = dir
+	report := skill.NewSecurityScanner(nil).ScanInstallStaged(ctx, &scanEntry, dir, nil)
+	if report != nil && !report.NeedsUserReview() {
+		return nil
+	}
+	level := security.RiskCritical
+	summary := "security scan unavailable"
+	if report != nil {
+		level = report.FinalLevel
+		summary = report.Summary
+	}
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.rejected", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"phase": phase, "risk_level": string(level), "summary": summary}})
+	return fmt.Errorf("skill %s blocked by security scan: level=%s summary=%s", phase, level, summary)
 }
 
 func (s *Service) ValidateSkill(ctx context.Context, p Principal, name string) (*SkillValidateResult, error) {
@@ -394,8 +412,10 @@ func (s *Service) ValidateSkill(ctx context.Context, p Principal, name string) (
 }
 
 func (s *Service) ImproveSkill(ctx context.Context, p Principal, name string, in SkillImproveInput) (*SkillImproveResult, error) {
-	_ = ctx
-	_, dir, err := s.findSkill(p, name)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	entry, dir, err := s.findSkill(p, name)
 	if err != nil {
 		return nil, err
 	}
@@ -407,6 +427,10 @@ func (s *Service) ImproveSkill(ctx context.Context, p Principal, name string, in
 	if !in.AutoFix {
 		return result, nil
 	}
+	snapshot, err := zipDirectoryBytes(dir)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot skill before improvement: %w", err)
+	}
 	changes, err := skill.AutoFixPortability(dir)
 	if err != nil {
 		return nil, err
@@ -415,15 +439,28 @@ func (s *Service) ImproveSkill(ctx context.Context, p Principal, name string, in
 	if err != nil {
 		return nil, err
 	}
+	improvedEntry, loadErr := loadImportedSkillEntry(dir)
+	if loadErr != nil {
+		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			return nil, fmt.Errorf("improved skill is no longer importable: %w; rollback failed: %v", loadErr, restoreErr)
+		}
+		return nil, fmt.Errorf("improved skill is no longer importable; changes rolled back: %w", loadErr)
+	}
+	if report, scanErr := scanImportedSkillBeforeInstall(ctx, improvedEntry, dir); scanErr != nil {
+		s.recordSkillScanRejection(p, improvedEntry, report, scanErr)
+		if restoreErr := restoreSkillDirFromArchive(dir, snapshot); restoreErr != nil {
+			return nil, fmt.Errorf("skill improvement blocked by security scan: %w; rollback failed: %v", scanErr, restoreErr)
+		}
+		return nil, fmt.Errorf("skill improvement blocked by security scan and rolled back: %w", scanErr)
+	}
 	result.Changes = changes
 	result.ReportAfter = after
 	result.SummaryText = skill.FormatPortabilityReport(after)
-	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.improved", ResourceType: "skill", ResourceID: name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"auto_fix": fmt.Sprintf("%v", in.AutoFix), "changes": fmt.Sprintf("%d", len(changes))}})
+	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.improved", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"auto_fix": fmt.Sprintf("%v", in.AutoFix), "changes": fmt.Sprintf("%d", len(changes))}})
 	return result, nil
 }
 
 func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in SkillUploadInput) (*SkillUploadResult, error) {
-	_ = ctx
 	entry, dir, err := s.findSkill(p, name)
 	if err != nil {
 		return nil, err
@@ -442,6 +479,9 @@ func (s *Service) UploadSkill(ctx context.Context, p Principal, name string, in 
 	}
 	if report.Summary.Errors > 0 {
 		return nil, fmt.Errorf("upload blocked: %d portability error(s) found", report.Summary.Errors)
+	}
+	if err := s.scanSkillForOutbound(ctx, p, entry, dir, "upload"); err != nil {
+		return nil, err
 	}
 	archive, err := zipDirectoryBytes(dir)
 	if err != nil {
@@ -507,7 +547,7 @@ func (s *Service) findSkill(p Principal, name string) (corelib.NLSkillEntry, str
 	}
 	return corelib.NLSkillEntry{}, "", fmt.Errorf("skill %q not found", name)
 }
-func (s *Service) installSkillArchiveBytes(p Principal, data []byte, overwrite bool) ([]corelib.NLSkillEntry, error) {
+func (s *Service) installSkillArchiveBytes(ctx context.Context, p Principal, data []byte, overwrite bool) ([]corelib.NLSkillEntry, error) {
 	tmpDir, err := os.MkdirTemp("", "maclawsrv-skill-import-*")
 	if err != nil {
 		return nil, err
@@ -530,7 +570,7 @@ func (s *Service) installSkillArchiveBytes(p Principal, data []byte, overwrite b
 		if err != nil {
 			return nil, err
 		}
-		if report, err := scanImportedSkillBeforeInstall(context.Background(), entry, root); err != nil {
+		if report, err := scanImportedSkillBeforeInstall(ctx, entry, root); err != nil {
 			s.recordSkillScanRejection(p, entry, report, err)
 			return nil, err
 		}
@@ -561,13 +601,16 @@ func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillE
 		entry.SkillDir = skillDir
 	}
 	report := skill.NewSecurityScanner(nil).ScanInstallStaged(ctx, entry, skillDir, nil)
-	if report != nil && report.NeedsUserReview() {
+	if report == nil {
+		return nil, fmt.Errorf("skill security scan produced no report")
+	}
+	if report.NeedsUserReview() {
 		return report, fmt.Errorf("skill security scan blocked installation: level=%s summary=%s", report.FinalLevel, report.Summary)
 	}
 	return report, nil
 }
 
-func (s *Service) persistImportedEntries(p Principal, entries []corelib.NLSkillEntry, overwrite bool) ([]corelib.NLSkillEntry, error) {
+func (s *Service) persistImportedEntries(ctx context.Context, p Principal, entries []corelib.NLSkillEntry, overwrite bool) ([]corelib.NLSkillEntry, error) {
 	root, err := s.ensureUserSkillsRoot(p)
 	if err != nil {
 		return nil, err
@@ -579,7 +622,7 @@ func (s *Service) persistImportedEntries(p Principal, entries []corelib.NLSkillE
 		if strings.TrimSpace(entry.Name) == "" {
 			return nil, fmt.Errorf("skill name is required")
 		}
-		if report, err := scanImportedSkillBeforeInstall(context.Background(), &entry, entry.SkillDir); err != nil {
+		if report, err := scanImportedSkillBeforeInstall(ctx, &entry, entry.SkillDir); err != nil {
 			s.recordSkillScanRejection(p, &entry, report, err)
 			return nil, err
 		}
@@ -666,6 +709,28 @@ func (s *Service) persistExtractedSkillDir(p Principal, entry corelib.NLSkillEnt
 	entry.Source = firstNonEmpty(entry.Source, "file")
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "skill.imported", ResourceType: "skill", ResourceID: entry.Name, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID, Metadata: map[string]string{"source": entry.Source}})
 	return entry, nil
+}
+
+func restoreSkillDirFromArchive(skillDir string, archive []byte) error {
+	if strings.TrimSpace(skillDir) == "" {
+		return fmt.Errorf("skill directory is required")
+	}
+	parent := filepath.Dir(skillDir)
+	tmpDir, err := os.MkdirTemp(parent, ".skill-rollback-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	if err := unzipBytes(archive, tmpDir); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(skillDir); err != nil {
+		return err
+	}
+	if err := secureMkdirAll(skillDir); err != nil {
+		return err
+	}
+	return copyDirContents(tmpDir, skillDir)
 }
 
 func normalizeSkillSearchSources(sources []string) []string {
@@ -768,6 +833,7 @@ func downloadSkillHubEntry(ctx context.Context, baseURL, skillID string) (*corel
 	entry := &corelib.NLSkillEntry{Name: payload.Name, Description: payload.Description, Triggers: payload.Triggers, Steps: payload.Steps, Status: "active", CreatedAt: time.Now().Format(time.RFC3339), Source: firstNonEmpty(payload.Source, "skillhub"), SourceProject: baseURL, HubSkillID: payload.ID, HubVersion: payload.Version, TrustLevel: payload.TrustLevel, Type: payload.Type, Content: payload.Content}
 	return entry, nil
 }
+
 func submitSkillArchive(ctx context.Context, baseURL, email, fileName string, archive []byte, authToken string) (string, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -1062,6 +1128,7 @@ func importedSkillDefinitionExists(dir string) bool {
 	}
 	return false
 }
+
 func loadImportedSkillEntry(skillDir string) (*corelib.NLSkillEntry, error) {
 	if parsed, _, err := loadSkillFromExtractedDir(skillDir); err == nil {
 		parsed.SkillDir = skillDir
@@ -1237,7 +1304,7 @@ func installSourceToCanonical(source string) string {
 	case "clawhub":
 		return "clawhub"
 	case "zip":
-		return "" // zip is local upload, not a remote source — always allowed
+		return "" // zip is local upload, not a remote source; always allowed
 	default:
 		return ""
 	}

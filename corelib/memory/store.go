@@ -50,9 +50,7 @@ type Store struct {
 	// --- Entity index (inspired by Graphiti Semantic Entity Subgraph) ---
 	entityIndex *EntityIndex // entity name -> entry ID mapping for entity-centric queries
 
-	// --- Topic clusterer (inspired by Graphiti Community Subgraph) ---
-	topicClusterer *TopicClusterer // tag-based topic clustering
-	themeManager   *ThemeManager   // embedding-aware xMemory-style theme layer
+	themeManager *ThemeManager // embedding-aware xMemory-style theme layer
 
 	// --- Online extractor (Mem0-style incremental extraction) ---
 	onlineExtractor *OnlineExtractor // real-time per-turn extraction pipeline
@@ -109,9 +107,8 @@ func NewStore(path string) (*Store, error) {
 		partMgr:        newPartitionManager(filepath.Dir(absPath)),
 		projIndex:      NewProjectIndex(filepath.Dir(absPath)),
 		semanticGraph:  NewSemanticGraph(),
-		entityIndex:    NewEntityIndex(),
-		topicClusterer: NewTopicClusterer(),
-		themeManager:   NewThemeManager(),
+		entityIndex:  NewEntityIndex(),
+		themeManager: NewThemeManager(),
 		queryEmbCache:  make(map[string]queryEmbeddingCacheEntry),
 		queryEmbFlight: make(map[string]*queryEmbeddingFlight),
 	}
@@ -690,6 +687,8 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	for i, c := range candidates {
 		fusedRelevance := rrfScores[i]
 		sc := memoryStreamScore(c.entry, fusedRelevance, c.bm25, projectLower, now)
+		// OpenHuman-inspired: stability boost/penalty
+		sc += c.entry.Stability.StabilityBoost()
 		others = append(others, recallScored{entry: c.entry, score: sc})
 	}
 
@@ -705,11 +704,6 @@ func (s *Store) recallForProjectLocked(query string, bm25Scores map[string]float
 	others = filterRecallProjectOthers(others, projectLower)
 	if ClassifyComplexity(query, queryTokens, nil) != ComplexitySimple && s.themeManager != nil {
 		others = themeAwareDiversityRerank(others, s.themeManager.Themes(), graphExpandSeeds)
-	}
-
-	// Recall gating: LLM-based post-retrieval filtering.
-	if s.gating != nil {
-		others = s.gating.Filter(query, others)
 	}
 
 	// === Phase 5: Type-quota assembly ===
@@ -1352,14 +1346,15 @@ func (s *Store) rebuildDerivedIndexesLocked(syncGraphLinks bool) bool {
 
 // rebuildThemeLayerLocked keeps the xMemory-style theme layer in sync with the
 // authoritative store entries. Caller MUST hold s.mu write lock, or be in Store
-// construction before sharing.
+// rebuildThemeLayerLocked marks the theme layer as needing a rebuild.
+// The actual rebuild happens lazily via ThemeManager.EnsureUpToDate()
+// when themes are queried (adaptive recall, memory tool, diversity rerank).
+// Caller MUST hold s.mu write lock, or be in Store construction before sharing.
 func (s *Store) rebuildThemeLayerLocked() {
 	if s.themeManager == nil {
 		return
 	}
-	entries := make([]Entry, len(s.entries))
-	copy(entries, s.entries)
-	s.themeManager.Rebuild(entries, nil)
+	s.themeManager.MarkDirty()
 }
 
 func firstOwnerID(ownerID ...string) string {
@@ -1546,6 +1541,12 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		}
 	}
 
+	// OpenHuman-inspired: apply stability boost/penalty.
+	// Stable knowledge (+2.0) is more reliable; volatile knowledge (-1.0) may be outdated.
+	for i := range candidates {
+		candidates[i].score += candidates[i].entry.Stability.StabilityBoost()
+	}
+
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].score > candidates[j].score
 	})
@@ -1561,11 +1562,8 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
 	}
 
-	// Recall gating: LLM-based post-retrieval filtering.
-	if s.gating != nil {
-		candidates = s.gating.Filter(query, candidates)
-	}
-
+	// Recall gating removed from hot path (see memory-simplification-plan.md).
+	// Gating is available via RecallAdaptiveHier for precision-sensitive paths.
 	var result []Entry
 	tokenBudget := maxTokens
 	for _, sc := range candidates {
@@ -2634,9 +2632,6 @@ func (s *Store) SemanticRecallDebugForProject(query string, projectPath string, 
 		TemporalMode:    temporalMode,
 	})
 }
-
-// TopicClusterer returns the topic clusterer for community-like summaries.
-func (s *Store) TopicClusterer() *TopicClusterer { return s.topicClusterer }
 
 // ThemeManager returns the embedding-aware theme layer used by adaptive recall.
 func (s *Store) ThemeManager() *ThemeManager { return s.themeManager }

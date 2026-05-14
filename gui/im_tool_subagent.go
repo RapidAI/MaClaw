@@ -2,7 +2,12 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
 // SubAgentSpec defines a specialized sub-agent with its own system prompt.
@@ -14,6 +19,8 @@ type SubAgentSpec struct {
 
 // builtinSubAgents defines the available sub-agent specializations.
 // The main agent can delegate tasks to these via the delegate_task tool.
+// NOTE: The AgentRegistry (corelib/agent/definition.go) is checked first;
+// these are kept as fallback for when the registry is not initialized.
 var builtinSubAgents = map[string]SubAgentSpec{
 	"coding_workflow": {
 		Name:        "coding_workflow",
@@ -51,37 +58,74 @@ var builtinSubAgents = map[string]SubAgentSpec{
 }
 
 // toolDelegateTask handles the delegate_task tool call.
-// It runs a sub-agent with a specialized system prompt and returns the result.
-// For now, this is a lightweight implementation that injects the sub-agent's
-// prompt as context rather than spawning a separate LLM session.
+// It checks the AgentRegistry first (user-defined YAML agents), then falls
+// back to builtinSubAgents. This allows users to create custom agents in
+// ~/.maclaw/agents/*.yaml without modifying code.
 func (h *IMMessageHandler) toolDelegateTask(args map[string]interface{}) string {
 	agentName, _ := args["agent"].(string)
 	if agentName == "" {
 		return h.listSubAgents()
 	}
 
+	userRequest, _ := args["request"].(string)
+	if userRequest == "" {
+		return fmt.Sprintf("错误: 缺少 request 参数。请描述要委派给 %s 的任务。", agentName)
+	}
+
+	// Priority 1: Check AgentRegistry (user-defined + project-defined YAML agents)
+	registry := h.getAgentRegistry()
+	if registry != nil {
+		if def := registry.Get(agentName); def != nil {
+			return fmt.Sprintf("__SUBAGENT_CONTEXT__\n[%s 子 Agent 已激活]\n\n专业领域: %s\n\n指导原则:\n%s\n\n用户请求: %s\n\n请按照上述指导原则处理用户请求。",
+				def.Name, def.Description, def.SystemPrompt, userRequest)
+		}
+	}
+
+	// Priority 2: Fallback to hardcoded builtinSubAgents
 	spec, ok := builtinSubAgents[agentName]
 	if !ok {
 		return fmt.Sprintf("未知子 Agent: %s\n\n%s", agentName, h.listSubAgents())
 	}
 
-	userRequest, _ := args["request"].(string)
-	if userRequest == "" {
-		return fmt.Sprintf("错误: 缺少 request 参数。请描述要委派给 %s 的任务。", spec.Name)
-	}
-
-	// Return a context injection that the agent loop will use to augment
-	// the next round's system prompt. The main agent receives the sub-agent's
-	// expertise as additional context.
 	return fmt.Sprintf("__SUBAGENT_CONTEXT__\n[%s 子 Agent 已激活]\n\n专业领域: %s\n\n指导原则:\n%s\n\n用户请求: %s\n\n请按照上述指导原则处理用户请求。",
 		spec.Name, spec.Description, spec.Prompt, userRequest)
+}
+
+// getAgentRegistry returns the lazily-initialized agent registry.
+// Scans ~/.maclaw/agents/ and <project>/.maclaw/agents/ for YAML definitions.
+func (h *IMMessageHandler) getAgentRegistry() *agent.AgentRegistry {
+	if h.app == nil {
+		return nil
+	}
+	h.app.agentRegistryOnce.Do(func() {
+		userDir := filepath.Join(corelib.MaclawBaseDir(), "agents")
+		dirs := []string{userDir}
+		if wd := corelib.EffectiveWorkspaceDir(); wd != "" {
+			projectDir := filepath.Join(wd, ".maclaw", "agents")
+			if info, err := os.Stat(projectDir); err == nil && info.IsDir() {
+				dirs = append(dirs, projectDir)
+			}
+		}
+		h.app.agentRegistry = agent.NewAgentRegistry(dirs...)
+		_ = h.app.agentRegistry.Load()
+	})
+	return h.app.agentRegistry
 }
 
 func (h *IMMessageHandler) listSubAgents() string {
 	var b strings.Builder
 	b.WriteString("可用的子 Agent:\n")
-	for name, spec := range builtinSubAgents {
-		b.WriteString(fmt.Sprintf("\n- **%s**: %s", name, spec.Description))
+
+	// List from registry first
+	if registry := h.getAgentRegistry(); registry != nil {
+		for _, def := range registry.List() {
+			b.WriteString(fmt.Sprintf("\n- **%s**: %s", def.Name, def.Description))
+		}
+	} else {
+		// Fallback to builtins
+		for name, spec := range builtinSubAgents {
+			b.WriteString(fmt.Sprintf("\n- **%s**: %s", name, spec.Description))
+		}
 	}
 	b.WriteString("\n\n使用方式: delegate_task(agent=\"coding_workflow\", request=\"用户的需求描述\")")
 	return b.String()

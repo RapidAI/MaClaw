@@ -31,33 +31,34 @@ type SkillDiagEntry struct {
 
 // NLSkillDefinition is the Wails-facing view of a Skill.
 type NLSkillDefinition struct {
-	Name             string                 `json:"name"`
-	DirName          string                 `json:"dir_name,omitempty"`
-	Description      string                 `json:"description"`
-	Triggers         []string               `json:"triggers"`
-	Steps            []corelib.NLSkillStep  `json:"steps"`
-	Status           string                 `json:"status"`
-	CreatedAt        time.Time              `json:"created_at"`
-	Source           string                 `json:"source"`
-	SourceProject    string                 `json:"source_project"`
-	ExecutionClass   string                 `json:"execution_class,omitempty"`
-	HubSkillID       string                 `json:"hub_skill_id,omitempty"`
-	HubVersion       string                 `json:"hub_version,omitempty"`
-	TrustLevel       string                 `json:"trust_level,omitempty"`
-	Type             string                 `json:"type,omitempty"`          // "executable" (default) | "knowledge"
-	Content          string                 `json:"content,omitempty"`       // Markdown content for knowledge-type skills
-	Publisher        string                 `json:"publisher,omitempty"`     // Plugin namespace publisher
-	Mode             string                 `json:"mode,omitempty"`          // "sequential" (default) | "interactive" | "api_workflow"
-	HasDocumentation bool                   `json:"has_documentation"`       // true if SKILL.md exists in skill directory
-	SkillDir         string                 `json:"-"`                       // skill directory path (internal use, not serialized to frontend)
-	Params           []corelib.NLSkillParam `json:"params,omitempty"`        // parameter schema (explicit or synthesized)
-	RequiredArgs     []string               `json:"required_args,omitempty"` // required template variables
-	UsageCount       int                    `json:"usage_count"`
-	SuccessCount     int                    `json:"success_count"`
-	FailureCount     int                    `json:"failure_count"`
-	SuccessRate      float64                `json:"success_rate"` // computed: SuccessCount / UsageCount
-	LastUsedAt       *time.Time             `json:"last_used_at,omitempty"`
-	LastError        string                 `json:"last_error,omitempty"`
+	Name             string                      `json:"name"`
+	DirName          string                      `json:"dir_name,omitempty"`
+	Description      string                      `json:"description"`
+	Triggers         []string                    `json:"triggers"`
+	Steps            []corelib.NLSkillStep       `json:"steps"`
+	Status           string                      `json:"status"`
+	CreatedAt        time.Time                   `json:"created_at"`
+	Source           string                      `json:"source"`
+	SourceProject    string                      `json:"source_project"`
+	ExecutionClass   string                      `json:"execution_class,omitempty"`
+	HubSkillID       string                      `json:"hub_skill_id,omitempty"`
+	HubVersion       string                      `json:"hub_version,omitempty"`
+	Capability       *corelib.SkillCapabilityRef `json:"capability,omitempty"`
+	TrustLevel       string                      `json:"trust_level,omitempty"`
+	Type             string                      `json:"type,omitempty"`          // "executable" (default) | "knowledge"
+	Content          string                      `json:"content,omitempty"`       // Markdown content for knowledge-type skills
+	Publisher        string                      `json:"publisher,omitempty"`     // Plugin namespace publisher
+	Mode             string                      `json:"mode,omitempty"`          // "sequential" (default) | "interactive" | "api_workflow"
+	HasDocumentation bool                        `json:"has_documentation"`       // true if SKILL.md exists in skill directory
+	SkillDir         string                      `json:"-"`                       // skill directory path (internal use, not serialized to frontend)
+	Params           []corelib.NLSkillParam      `json:"params,omitempty"`        // parameter schema (explicit or synthesized)
+	RequiredArgs     []string                    `json:"required_args,omitempty"` // required template variables
+	UsageCount       int                         `json:"usage_count"`
+	SuccessCount     int                         `json:"success_count"`
+	FailureCount     int                         `json:"failure_count"`
+	SuccessRate      float64                     `json:"success_rate"` // computed: SuccessCount / UsageCount
+	LastUsedAt       *time.Time                  `json:"last_used_at,omitempty"`
+	LastError        string                      `json:"last_error,omitempty"`
 }
 
 // SkillExecutor manages and executes locally-defined NL Skills.
@@ -151,9 +152,10 @@ func (e *SkillExecutor) loadSkills() []corelib.NLSkillEntry {
 				if strings.TrimSpace(configSkill.Description) == "" {
 					configSkill.Description = fs.Description
 				}
-				// Stats-only stubs (source == "file") have empty Status;
-				// inherit from the on-disk YAML so the skill is usable.
-				if configSkill.Status == "" && fs.Status != "" {
+				// The file remains the source of truth for normal status.
+				// Only a non-active config overlay (for example a security block)
+				// is allowed to override the on-disk value.
+				if fs.Status != "" && !fileSkillStatusIsOverlay(configSkill.Status) {
 					configSkill.Status = fs.Status
 				}
 			}
@@ -391,18 +393,24 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	filtered := make([]corelib.NLSkillEntry, 0, len(skills))
 	for _, s := range skills {
 		if normalizeSkillEntrySource(s.Source) == skillEntrySourceFile {
-			// Only persist the stats overlay; strip definition data so
+			// Only persist the runtime overlay; strip definition data so
 			// config.json is not polluted with YAML-managed content.
-			if s.UsageCount > 0 || s.SuccessCount > 0 || s.FailureCount > 0 || s.WorkaroundCount > 0 {
+			// Repair metadata is runtime/audit state, not definition state.
+			if fileSkillHasRuntimeOverlay(s) {
 				filtered = append(filtered, corelib.NLSkillEntry{
-					Name:            s.Name,
-					Source:          string(skillEntrySourceFile),
-					UsageCount:      s.UsageCount,
-					SuccessCount:    s.SuccessCount,
-					FailureCount:    s.FailureCount,
-					WorkaroundCount: s.WorkaroundCount,
-					LastUsedAt:      s.LastUsedAt,
-					LastError:       s.LastError,
+					Name:               s.Name,
+					Source:             string(skillEntrySourceFile),
+					SkillDir:           s.SkillDir,
+					Status:             fileSkillOverlayStatus(s.Status),
+					UsageCount:         s.UsageCount,
+					SuccessCount:       s.SuccessCount,
+					FailureCount:       s.FailureCount,
+					WorkaroundCount:    s.WorkaroundCount,
+					LastUsedAt:         s.LastUsedAt,
+					LastError:          s.LastError,
+					RepairAttemptCount: s.RepairAttemptCount,
+					LastRepairAt:       s.LastRepairAt,
+					RepairHistory:      append([]corelib.SkillRepairRecord(nil), s.RepairHistory...),
 				})
 			}
 			continue
@@ -415,6 +423,31 @@ func (e *SkillExecutor) saveSkills(skills []corelib.NLSkillEntry) error {
 	}
 	e.invalidateSkillCache()
 	return nil
+}
+
+func fileSkillStatusIsOverlay(status string) bool {
+	status = strings.TrimSpace(status)
+	return status != "" && normalizeSkillEntryStatus(status) != skillEntryStatusActive
+}
+
+func fileSkillOverlayStatus(status string) string {
+	if fileSkillStatusIsOverlay(status) {
+		return strings.TrimSpace(status)
+	}
+	return ""
+}
+
+func fileSkillHasRuntimeOverlay(s corelib.NLSkillEntry) bool {
+	return s.UsageCount > 0 ||
+		s.SuccessCount > 0 ||
+		s.FailureCount > 0 ||
+		s.WorkaroundCount > 0 ||
+		strings.TrimSpace(s.LastUsedAt) != "" ||
+		strings.TrimSpace(s.LastError) != "" ||
+		fileSkillStatusIsOverlay(s.Status) ||
+		s.RepairAttemptCount > 0 ||
+		strings.TrimSpace(s.LastRepairAt) != "" ||
+		len(s.RepairHistory) > 0
 }
 
 // Register adds a new Skill definition.
@@ -1878,10 +1911,12 @@ func (a *App) CreateNLSkill(def corelib.NLSkillEntry) error {
 	if err != nil {
 		return err
 	}
+	if err := writeSkillScanCacheForInstalledEntry(&def, report); err != nil {
+		return fmt.Errorf("write skill scan cache: %w", err)
+	}
 	if err := a.skillExecutor.Register(def); err != nil {
 		return err
 	}
-	writeSkillScanCacheForInstalledEntry(&def, report)
 	return nil
 }
 
@@ -1895,10 +1930,12 @@ func (a *App) UpdateNLSkill(def corelib.NLSkillEntry) error {
 	if err != nil {
 		return err
 	}
+	if err := writeSkillScanCacheForInstalledEntry(&def, report); err != nil {
+		return fmt.Errorf("write skill scan cache: %w", err)
+	}
 	if err := a.skillExecutor.Update(def); err != nil {
 		return err
 	}
-	writeSkillScanCacheForInstalledEntry(&def, report)
 	return nil
 }
 
@@ -2019,7 +2056,10 @@ func (a *App) importFileBackedSkillZipPath(selection string) (string, error) {
 		}
 		installedEntry := *entry
 		installedEntry.SkillDir = destDir
-		writeSkillScanCacheForInstalledEntry(&installedEntry, scanReports[i])
+		if err := writeSkillScanCacheForInstalledEntry(&installedEntry, scanReports[i]); err != nil {
+			cleanupImportedSkillDirs(installedDirs)
+			return "", fmt.Errorf("write skill scan cache: %w", err)
+		}
 	}
 
 	a.emitSkillInstallProgress(entries[0].Name, "done", "Skill imported successfully.", scanReports[0])
@@ -2583,6 +2623,14 @@ func (a *App) packageSkillForMarket(skillName string) (string, error) {
 // the temporary directory containing the packaged copy. The caller is responsible
 // for cleaning up both the zip file and the tmpDir.
 func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, error) {
+	return a.packageSkillForMarketWithDirOptions(skillName, false)
+}
+
+func (a *App) packageSkillForMarketWithDirForOutbound(skillName string) (string, string, error) {
+	return a.packageSkillForMarketWithDirOptions(skillName, true)
+}
+
+func (a *App) packageSkillForMarketWithDirOptions(skillName string, strictOutbound bool) (string, string, error) {
 	a.skillExecutor.mu.RLock()
 	var target *corelib.NLSkillEntry
 	for _, s := range a.skillExecutor.loadSkills() {
@@ -2647,6 +2695,12 @@ func (a *App) packageSkillForMarketWithDir(skillName string) (string, string, er
 	if !quality.MarketReady {
 		os.RemoveAll(tmpDir)
 		return "", "", fmt.Errorf("skill quality gate blocked upload: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
+	}
+	if strictOutbound {
+		if err := scanSkillDirForOutboundPackage(tmpDir); err != nil {
+			os.RemoveAll(tmpDir)
+			return "", "", err
+		}
 	}
 
 	zipPath := filepath.Join(a.GetTempDir(), fmt.Sprintf("skill-%s-%d.zip", toKebabCase(skillName), time.Now().UnixMilli()))

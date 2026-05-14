@@ -207,8 +207,11 @@ func (d *CapabilityGapDetector) Resolve(
 					})
 				}
 			}
-			if err := writeSkillScanCacheForReportStatus(imported, imported.SkillDir, "", scanReport, skillScanCacheStatusAllowed); err != nil && d.app != nil {
-				d.app.log(fmt.Sprintf("[capability-gap] failed to write install scan cache for %s: %v", imported.Name, err))
+			if err := writeSkillScanCacheForReportStatus(imported, imported.SkillDir, "", scanReport, skillScanCacheStatusAllowed); err != nil {
+				if d.app != nil {
+					d.app.log(fmt.Sprintf("[capability-gap] failed to write install scan cache for %s: %v", imported.Name, err))
+				}
+				return "", "", fmt.Errorf("write skill scan cache: %w", err)
 			}
 		}
 
@@ -333,8 +336,12 @@ func (d *CapabilityGapDetector) Resolve(
 		skill = d.app.normalizeInstalledSkill(skill)
 	}
 	if scanReport != nil && preNormalizeScanHash != "" {
-		if err := writeSkillScanCacheForReportStatus(skill, skill.SkillDir, preNormalizeScanHash, scanReport, skillScanCacheStatusAllowed); err != nil && d.app != nil {
-			d.app.log(fmt.Sprintf("[capability-gap] failed to write install scan cache for %s: %v", skill.Name, err))
+		if err := writeSkillScanCacheForReportStatus(skill, skill.SkillDir, preNormalizeScanHash, scanReport, skillScanCacheStatusAllowed); err != nil {
+			if d.app != nil {
+				d.app.log(fmt.Sprintf("[capability-gap] failed to write install scan cache for %s: %v", skill.Name, err))
+			}
+			_ = os.RemoveAll(finalDir)
+			return "", "", fmt.Errorf("write skill scan cache: %w", err)
 		}
 	}
 
@@ -578,7 +585,31 @@ func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry core
 	deps := d.scanDependencies(entry.Steps)
 
 	// Package local files from ~/.maclaw/data/skills/<name>/.
-	files := d.packageLocalFiles(entry.Name)
+	skillDir := d.localSkillDir(entry.Name)
+	files := d.packageLocalFilesFromDir(skillDir)
+
+	// Auto-publish has no interactive approval channel, so fail closed for
+	// high/critical reports before the skill is propagated to other machines.
+	scanEntry := entry
+	scanEntry.SkillDir = skillDir
+	scanner := NewSkillSecurityScanner(d.app, nil)
+	report := scanner.ScanInstallStaged(ctx, &scanEntry, skillDir, sendStatus)
+	if report == nil {
+		return fmt.Errorf("skill auto-publish security scan produced no report")
+	}
+	if report.NeedsUserReview() {
+		if d.auditLog != nil {
+			_ = d.auditLog.Log(security.AuditEntry{
+				Timestamp:    time.Now(),
+				Action:       security.AuditActionHubSkillReject,
+				ToolName:     "skill_auto_publish",
+				RiskLevel:    report.FinalLevel,
+				PolicyAction: security.PolicyDeny,
+				Result:       fmt.Sprintf("auto-publish blocked skill %s by pre-publish security scan: %s", entry.Name, report.Summary),
+			})
+		}
+		return fmt.Errorf("skill auto-publish blocked by security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
 
 	full := hubSkillFull{
 		hubSkillItem: hubSkillItem{
@@ -705,45 +736,67 @@ func (d *CapabilityGapDetector) scanDependencies(steps []corelib.NLSkillStep) []
 	return deps
 }
 
-// packageLocalFiles reads files from ~/.maclaw/data/skills/<name>/ and returns
-// a map of relative path → base64 content, respecting size and extension limits.
-func (d *CapabilityGapDetector) packageLocalFiles(skillName string) map[string]string {
+// localSkillDir resolves a skill's local file directory without creating it.
+func (d *CapabilityGapDetector) localSkillDir(skillName string) string {
+	if strings.TrimSpace(skillName) == "" {
+		return ""
+	}
 	skillsRoot, err := cskill.PrimarySkillsDir()
-	if err != nil {
+	if err == nil {
+		skillDir := filepath.Join(skillsRoot, skillName)
+		if info, statErr := os.Stat(skillDir); statErr == nil && info.IsDir() {
+			return skillDir
+		}
+	}
+	// Fallback: check all scan roots in case migration has not moved this skill.
+	for _, root := range cskill.SkillScanRoots() {
+		alt := filepath.Join(root, skillName)
+		if fi, statErr := os.Stat(alt); statErr == nil && fi.IsDir() {
+			return alt
+		}
+	}
+	return ""
+}
+
+// packageLocalFiles reads files from ~/.maclaw/data/skills/<name>/ and returns
+// a map of relative path to base64 content, respecting size and extension
+// limits. Symlinks and non-regular files are deliberately skipped so export
+// cannot leak files outside the skill directory.
+func (d *CapabilityGapDetector) packageLocalFiles(skillName string) map[string]string {
+	return d.packageLocalFilesFromDir(d.localSkillDir(skillName))
+}
+
+func (d *CapabilityGapDetector) packageLocalFilesFromDir(skillDir string) map[string]string {
+	if strings.TrimSpace(skillDir) == "" {
 		return nil
 	}
-	skillDir := filepath.Join(skillsRoot, skillName)
 	info, err := os.Stat(skillDir)
 	if err != nil || !info.IsDir() {
-		// Fallback: check legacy path in case migration hasn't moved this skill.
-		for _, root := range cskill.SkillScanRoots() {
-			alt := filepath.Join(root, skillName)
-			if fi, e := os.Stat(alt); e == nil && fi.IsDir() {
-				skillDir = alt
-				break
-			}
-		}
-		// Re-check after fallback.
-		if fi, e := os.Stat(skillDir); e != nil || !fi.IsDir() {
-			return nil
-		}
+		return nil
 	}
 
 	files := make(map[string]string)
 	var totalSize int64
 
-	_ = filepath.Walk(skillDir, func(path string, fi os.FileInfo, err error) error {
-		if err != nil || fi.IsDir() {
+	_ = filepath.WalkDir(skillDir, func(path string, de os.DirEntry, err error) error {
+		if err != nil || de.IsDir() {
 			return nil
 		}
-		ext := strings.ToLower(filepath.Ext(fi.Name()))
+		info, err := de.Info()
+		if err != nil {
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(de.Name()))
 		if !allowedFileExts[ext] {
 			return nil
 		}
-		if fi.Size() > maxSingleFileSize {
+		if info.Size() > maxSingleFileSize {
 			return nil
 		}
-		totalSize += fi.Size()
+		totalSize += info.Size()
 		if totalSize > maxTotalFileSize {
 			return filepath.SkipAll
 		}
@@ -752,7 +805,10 @@ func (d *CapabilityGapDetector) packageLocalFiles(skillName string) map[string]s
 		if err != nil {
 			return nil
 		}
-		rel, _ := filepath.Rel(skillDir, path)
+		rel, err := filepath.Rel(skillDir, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			return nil
+		}
 		rel = filepath.ToSlash(rel)
 		files[rel] = base64.StdEncoding.EncodeToString(data)
 		return nil

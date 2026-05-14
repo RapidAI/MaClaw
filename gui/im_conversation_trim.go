@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/i18n"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
+	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 func estimateConversationEntryTokens(entries []agent.ConversationEntry) int {
@@ -952,6 +953,13 @@ const webFetchMaxToolResult = 32768
 
 func truncateToolResultForTool(toolName, s string) string {
 	toolKind := classifyAgentToolKind(toolName)
+
+	// Phase 0: TokenJuice content-type-aware compression — classifies the
+	// content (HTML/JSON/terminal/plain) and applies type-specific rules
+	// (strip HTML tags/scripts, truncate JSON arrays, collapse ANSI/progress,
+	// shorten URLs, replace base64). This is the first compression pass.
+	s = coretool.CompressToolResult(toolName, s)
+
 	// Phase 1: semantic compression — deduplicate repeated lines and
 	// collapse homogeneous blocks BEFORE size truncation. This reduces
 	// the effective size so more unique information survives the budget.

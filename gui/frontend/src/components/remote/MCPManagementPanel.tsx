@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
-import JSON5 from "json5";
 import { colors, radius } from "./styles";
+import { MCPMarketplacePanel } from "./MCPMarketplacePanel";
+import { parseRelaxedJson } from "./MCPJsonImportParser";
+import { MCPSecretRequirementsNotice } from "./MCPSecretRequirementsNotice";
+import { MCPSecretConfigurationEditor } from "./MCPSecretConfigurationEditor";
+import { MCPRemoteServerRow } from "./MCPRemoteServerRow";
+import type { HubMCPSecretRequirement } from "./MCPSecretRequirementsNotice";
 import {
     ListMCPServers,
     RegisterMCPServer,
@@ -17,14 +22,23 @@ import {
     SyncLocalMCPServers,
     SetLocalMCPAutoStart,
     GetLocalMCPServerStatuses,
+    GetHubMCPSecretRequirements,
+    GetHubMCPHubSecrets,
+    GetHubMCPSecretBindings,
+    SaveHubMCPHubSecret,
+    SaveHubMCPSecretBinding,
 } from "../../../wailsjs/go/main/App";
-
 interface MCPToolView {
     name: string;
     description: string;
     input_schema: Record<string, any>;
 }
-
+interface MCPServerCapabilityRef {
+    capability_id: string;
+    version_key?: string;
+    source?: string;
+    global_key?: string;
+}
 interface MCPServerView {
     id: string;
     name: string;
@@ -32,13 +46,13 @@ interface MCPServerView {
     auth_type: "none" | "api_key" | "bearer";
     auth_secret: string;
     headers?: Record<string, string>; // custom HTTP headers
+    capability?: MCPServerCapabilityRef;
     tools: MCPToolView[];
     health_status: "healthy" | "slow" | "unavailable" | "unknown" | "checking";
     fail_count: number;
     last_check_at: string;
     created_at: string;
 }
-
 interface LocalMCPServer {
     id: string;
     name: string;
@@ -49,13 +63,11 @@ interface LocalMCPServer {
     auto_start?: boolean;
     created_at: string;
 }
-
 type Props = {
     translate: (key: string) => string;
 };
-
 type MCPTab = "local" | "remote";
-
+type MCPSecretStatus = "configured" | "needs_config" | "optional";
 const emptyServer: MCPServerView = {
     id: "",
     name: "",
@@ -68,7 +80,6 @@ const emptyServer: MCPServerView = {
     last_check_at: "",
     created_at: "",
 };
-
 const emptyLocalServer: LocalMCPServer = {
     id: "",
     name: "",
@@ -79,7 +90,6 @@ const emptyLocalServer: LocalMCPServer = {
     auto_start: false,
     created_at: "",
 };
-
 const tabStyle: CSSProperties = {
     flex: 1,
     padding: "6px 0",
@@ -94,13 +104,11 @@ const tabStyle: CSSProperties = {
     borderRadius: 0,
     transition: "color 0.15s, border-color 0.15s",
 };
-
 const tabActiveStyle: CSSProperties = {
     ...tabStyle,
     color: "var(--theme-primary)",
     borderBottom: "2px solid var(--theme-primary)",
 };
-
 /**
  * Returns onMouseDown + onClick props for a modal backdrop.
  * Only fires `onClose` when the mousedown *started* on the backdrop itself,
@@ -120,40 +128,8 @@ function makeBackdropProps(onClose: () => void, ref: React.MutableRefObject<bool
         },
     };
 }
-
-/**
- * Strip BOM and zero-width invisible characters that can sneak in from
- * copy-paste, then replace fullwidth CJK punctuation with ASCII equivalents.
- * This pre-processing runs before JSON5.parse() to handle characters that
- * even JSON5 doesn't accept.
- */
-function preCleanJsonText(raw: string): string {
-    return raw
-        .replace(/[\uFEFF\u200B\u200C\u200D\u2060]/g, "")
-        .replace(/\uff0c/g, ",")   // ，→ ,
-        .replace(/\uff1a/g, ":")   // ：→ :
-        .replace(/\uff1b/g, ";")   // ；→ ;
-        .replace(/\u201c/g, '"')   // " → "
-        .replace(/\u201d/g, '"')   // " → "
-        .replace(/\uff5b/g, "{")   // ｛→ {
-        .replace(/\uff5d/g, "}")   // ｝→ }
-        .replace(/\uff3b/g, "[")   // ［→ [
-        .replace(/\uff3d/g, "]");  // ］→ ]
-}
-
-/**
- * Parse a relaxed JSON/JSONC/JSON5 string into an object.
- * Handles comments, trailing commas, single quotes, unquoted keys,
- * fullwidth CJK punctuation, and BOM — all common when users paste
- * config snippets from editors or Chinese IME.
- */
-function parseRelaxedJson(raw: string): any {
-    return JSON5.parse(preCleanJsonText(raw));
-}
-
 export function MCPManagementPanel({ translate }: Props) {
     const [activeTab, setActiveTab] = useState<MCPTab>("remote");
-
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}` }}>
@@ -170,13 +146,11 @@ export function MCPManagementPanel({ translate }: Props) {
                     {translate("mcpTabRemote")}
                 </button>
             </div>
-
             {activeTab === "local" && <LocalMCPPanel translate={translate} />}
             {activeTab === "remote" && <RemoteMCPPanel translate={translate} />}
         </div>
     );
 }
-
 function LocalMCPPanel({ translate }: Props) {
     const [servers, setServers] = useState<LocalMCPServer[]>([]);
     const [loading, setLoading] = useState(false);
@@ -184,20 +158,17 @@ function LocalMCPPanel({ translate }: Props) {
     const [busy, setBusy] = useState(false);
     const [statusMap, setStatusMap] = useState<Record<string, boolean>>({});
     const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
     const [showForm, setShowForm] = useState(false);
     const [editingServer, setEditingServer] = useState<LocalMCPServer | null>(null);
     const [formData, setFormData] = useState<LocalMCPServer>({ ...emptyLocalServer });
     const [formError, setFormError] = useState("");
     const [argsText, setArgsText] = useState("");
     const [envPairs, setEnvPairs] = useState<{ key: string; value: string }[]>([]);
-
     const [deleteTarget, setDeleteTarget] = useState<LocalMCPServer | null>(null);
     const [showJsonImport, setShowJsonImport] = useState(false);
     const [jsonText, setJsonText] = useState("");
     const [jsonError, setJsonError] = useState("");
     const backdropRef = useRef(false);
-
     const fetchStatuses = useCallback(async () => {
         try {
             const statuses = await GetLocalMCPServerStatuses();
@@ -208,7 +179,6 @@ function LocalMCPPanel({ translate }: Props) {
             }
         } catch {}
     }, []);
-
     const loadData = useCallback(async () => {
         setLoading(true);
         setError("");
@@ -222,26 +192,22 @@ function LocalMCPPanel({ translate }: Props) {
         }
         await fetchStatuses();
     }, [fetchStatuses]);
-
     const reloadAndSync = useCallback(async () => {
         await loadData();
         try { await SyncLocalMCPServers(); } catch {}
         if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
         syncTimerRef.current = setTimeout(() => { fetchStatuses(); }, 1500);
     }, [loadData, fetchStatuses]);
-
     useEffect(() => {
         loadData();
         if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
         syncTimerRef.current = setTimeout(() => { fetchStatuses(); }, 1500);
     }, [loadData, fetchStatuses]);
-
     useEffect(() => {
         return () => {
             if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
         };
     }, []);
-
     const openCreateForm = () => {
         setEditingServer(null);
         setFormData({ ...emptyLocalServer });
@@ -250,7 +216,6 @@ function LocalMCPPanel({ translate }: Props) {
         setFormError("");
         setShowForm(true);
     };
-
     const openEditForm = (server: LocalMCPServer) => {
         setEditingServer(server);
         setFormData({ ...server });
@@ -259,13 +224,11 @@ function LocalMCPPanel({ translate }: Props) {
         setFormError("");
         setShowForm(true);
     };
-
     const closeForm = () => {
         setShowForm(false);
         setEditingServer(null);
         setFormError("");
     };
-
     const handleSubmit = async () => {
         if (!formData.name.trim()) { setFormError(translate("mcpNameRequired")); return; }
         if (!formData.command.trim()) { setFormError(translate("mcpCommandRequired")); return; }
@@ -291,7 +254,6 @@ function LocalMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const handleDelete = async (server: LocalMCPServer) => {
         setBusy(true);
         try {
@@ -304,7 +266,6 @@ function LocalMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const handleToggleDisabled = async (server: LocalMCPServer) => {
         setBusy(true);
         try {
@@ -316,7 +277,6 @@ function LocalMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const handleToggleAutoStart = async (server: LocalMCPServer) => {
         setBusy(true);
         try {
@@ -330,7 +290,6 @@ function LocalMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const handleJsonImport = async () => {
         setJsonError("");
         let parsed: any;
@@ -368,7 +327,6 @@ function LocalMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -384,10 +342,8 @@ function LocalMCPPanel({ translate }: Props) {
                     </button>
                 </div>
             </div>
-
             {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: colors.textMuted }}>{translate("mcpLoading")}</div>}
             {error && <div style={{ fontSize: "0.78rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "6px 10px", borderRadius: "4px", border: `1px solid ${colors.danger}` }}>{error}</div>}
-
             {!loading && servers.length > 0 && (
                 <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     {servers.map((s) => (
@@ -441,19 +397,17 @@ function LocalMCPPanel({ translate }: Props) {
                     ))}
                 </div>
             )}
-
             {!loading && servers.length === 0 && !error && (
                 <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: colors.textMuted }}>
                     {translate("mcpNoLocalServers")}
                 </div>
             )}
-
             {deleteTarget && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setDeleteTarget(null), backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "280px" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
-                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>×</button>
+                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>&times;</button>
                         </div>
                         <div className="modal-body">
                             <p style={{ fontSize: "0.8rem", color: colors.textSecondary, margin: 0 }}>
@@ -469,13 +423,12 @@ function LocalMCPPanel({ translate }: Props) {
                     </div>
                 </div>
             )}
-
             {showJsonImport && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setShowJsonImport(false), backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "480px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpImportJsonTitle")}</h3>
-                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>×</button>
+                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>&times;</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
@@ -513,13 +466,12 @@ function LocalMCPPanel({ translate }: Props) {
                     </div>
                 </div>
             )}
-
             {showForm && (
                 <div className="modal-backdrop" {...makeBackdropProps(closeForm, backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "440px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditLocalServer") : translate("mcpAddLocalServer")}</h3>
-                            <button className="btn-close" onClick={closeForm}>×</button>
+                            <button className="btn-close" onClick={closeForm}>&times;</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -571,7 +523,7 @@ function LocalMCPPanel({ translate }: Props) {
                                             placeholder="value"
                                             spellCheck={false}
                                         />
-                                        <button className="btn-secondary btn-danger" style={{ fontSize: "0.68rem", padding: "2px 6px" }} onClick={() => setEnvPairs(envPairs.filter((_, i) => i !== idx))}>×</button>
+                                        <button className="btn-secondary btn-danger" style={{ fontSize: "0.68rem", padding: "2px 6px" }} onClick={() => setEnvPairs(envPairs.filter((_, i) => i !== idx))}>&times;</button>
                                     </div>
                                 ))}
                                 <button className="btn-secondary" style={{ fontSize: "0.72rem", padding: "2px 8px" }} onClick={() => setEnvPairs([...envPairs, { key: "", value: "" }])}>
@@ -604,19 +556,19 @@ function LocalMCPPanel({ translate }: Props) {
         </div>
     );
 }
-
 function RemoteMCPPanel({ translate }: Props) {
     const [servers, setServers] = useState<MCPServerView[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [busy, setBusy] = useState(false);
-
     const [showForm, setShowForm] = useState(false);
     const [editingServer, setEditingServer] = useState<MCPServerView | null>(null);
     const [formData, setFormData] = useState<MCPServerView>({ ...emptyServer });
     const [formError, setFormError] = useState("");
     const [headerPairs, setHeaderPairs] = useState<{ key: string; value: string }[]>([]);
-
+    const [secretRequirements, setSecretRequirements] = useState<HubMCPSecretRequirement[]>([]);
+    const [secretInputs, setSecretInputs] = useState<Record<string, { storage: "hub" | "local"; value: string; configured?: boolean }>>({});
+    const [secretStatusMap, setSecretStatusMap] = useState<Record<string, MCPSecretStatus>>({});
     const [deleteTarget, setDeleteTarget] = useState<MCPServerView | null>(null);
     const [expandedServerID, setExpandedServerID] = useState<string | null>(null);
     const [expandedTools, setExpandedTools] = useState<MCPToolView[]>([]);
@@ -626,20 +578,71 @@ function RemoteMCPPanel({ translate }: Props) {
     const [jsonText, setJsonText] = useState("");
     const [jsonError, setJsonError] = useState("");
     const backdropRef = useRef(false);
-
+    const refreshSecretStatuses = useCallback(async (list: MCPServerView[]) => {
+        const marketServers = list.filter((s) => s.capability?.capability_id);
+        if (marketServers.length === 0) {
+            setSecretStatusMap({});
+            return;
+        }
+        const pairs = await Promise.all(marketServers.map(async (server): Promise<[string, MCPSecretStatus | undefined]> => {
+            try {
+                const requirements = await GetHubMCPSecretRequirements(server.capability!.capability_id, server.capability!.version_key || "");
+                const required = Array.isArray(requirements) ? requirements.filter((req: HubMCPSecretRequirement) => req.required) : [];
+                if (required.length === 0) return [server.id, "optional"];
+                const [hubSecrets, bindings] = await Promise.all([
+                    GetHubMCPHubSecrets(server.id).catch(() => []),
+                    GetHubMCPSecretBindings(server.id).catch(() => []),
+                ]);
+                const configured = new Set<string>();
+                if (Array.isArray(hubSecrets)) {
+                    for (const item of hubSecrets as any[]) {
+                        if (item.requirement_name) {
+                            const req = required.find((candidate) => candidate.name === item.requirement_name);
+                            if (secretStorageAllowed("hub", req?.storage_policy)) configured.add(item.requirement_name);
+                        }
+                    }
+                }
+                if (Array.isArray(bindings)) {
+                    for (const binding of bindings as any[]) {
+                        if (!binding.requirement_name) continue;
+                        const req = required.find((candidate) => candidate.name === binding.requirement_name);
+                        const storage = binding.storage === "local" ? "local" : "hub";
+                        if (storage === "local") {
+                            if (secretStorageAllowed("local", req?.storage_policy) && binding.local_secret_ref && server.auth_secret) configured.add(binding.requirement_name);
+                        } else if (secretStorageAllowed("hub", req?.storage_policy) && (binding.status === "configured" || binding.hub_secret_ref)) {
+                            configured.add(binding.requirement_name);
+                        }
+                    }
+                }
+                return [server.id, required.every((req) => configured.has(req.name)) ? "configured" : "needs_config"];
+            } catch {
+                return [server.id, undefined];
+            }
+        }));
+        const next: Record<string, MCPSecretStatus> = {};
+        for (const [id, status] of pairs) {
+            if (status) next[id] = status;
+        }
+        setSecretStatusMap(next);
+    }, []);
+    const loadServerList = useCallback(async (): Promise<MCPServerView[]> => {
+        const list = await ListMCPServers();
+        const normalized = Array.isArray(list) ? list : [];
+        setServers(normalized);
+        void refreshSecretStatuses(normalized);
+        return normalized;
+    }, [refreshSecretStatuses]);
     const loadData = useCallback(async () => {
         setLoading(true);
         setError("");
         try {
-            const list = await ListMCPServers();
-            setServers(Array.isArray(list) ? list : []);
+            await loadServerList();
         } catch (err) {
             setError(String(err));
         } finally {
             setLoading(false);
         }
-    }, []);
-
+    }, [loadServerList]);
     // On mount: load servers, then auto-probe any with "unknown" status.
     useEffect(() => {
         let cancelled = false;
@@ -655,12 +658,11 @@ function RemoteMCPPanel({ translate }: Props) {
             }
             if (cancelled) return;
             setServers(list);
+            void refreshSecretStatuses(list);
             setLoading(false);
-
             // Step 2: Find servers that need probing.
             const unknowns = list.filter((s) => !s.health_status || s.health_status === "unknown");
             if (unknowns.length === 0) return;
-
             // Mark them as "checking" in the UI.
             setServers((prev) =>
                 prev.map((s) =>
@@ -669,7 +671,6 @@ function RemoteMCPPanel({ translate }: Props) {
                         : s
                 )
             );
-
             // Step 3: Check each server (same call as manual "Check Now").
             for (const s of unknowns) {
                 if (cancelled) return;
@@ -679,42 +680,161 @@ function RemoteMCPPanel({ translate }: Props) {
                     // Backend records the failure; we'll pick it up below.
                 }
             }
-
             // Step 4: Reload the full list with updated statuses + tools.
             if (cancelled) return;
             try {
                 const updated = await ListMCPServers();
-                if (!cancelled) setServers(Array.isArray(updated) ? updated : []);
+                if (!cancelled) {
+                    const normalized = Array.isArray(updated) ? updated : [];
+                    setServers(normalized);
+                    void refreshSecretStatuses(normalized);
+                }
             } catch {}
         })();
         return () => { cancelled = true; };
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
+    }, [refreshSecretStatuses]);
     const openCreateForm = () => {
         setEditingServer(null);
         setFormData({ ...emptyServer });
         setHeaderPairs([]);
+        setSecretRequirements([]);
+        setSecretInputs({});
         setFormError("");
         setShowForm(true);
     };
-
     const openEditForm = (server: MCPServerView) => {
         setEditingServer(server);
         setFormData({ ...server });
         setHeaderPairs(Object.entries(server.headers || {}).map(([key, value]) => ({ key, value })));
+        setSecretRequirements([]);
         setFormError("");
         setShowForm(true);
+        if (server.capability?.capability_id) {
+            GetHubMCPSecretRequirements(server.capability.capability_id, server.capability.version_key || "")
+                .then(async (items) => {
+                    const requirements = Array.isArray(items) ? items : [];
+                    setSecretRequirements(requirements);
+                    const next: Record<string, { storage: "hub" | "local"; value: string; configured?: boolean }> = {};
+                    for (const req of requirements) {
+                        const policy = req.storage_policy || "hub_or_local";
+                        next[req.name] = { storage: policy === "local" ? "local" : "hub", value: "" };
+                    }
+                    try {
+                        const existing = await GetHubMCPHubSecrets(server.id);
+                        if (Array.isArray(existing)) {
+                            for (const item of existing as any[]) {
+                                if (item.requirement_name && next[item.requirement_name]) {
+                                    const req = requirements.find((candidate) => candidate.name === item.requirement_name);
+                                    if (secretStorageAllowed("hub", req?.storage_policy)) {
+                                        next[item.requirement_name] = { ...next[item.requirement_name], storage: "hub", configured: true };
+                                    }
+                                }
+                            }
+                        }
+                    } catch {}
+                    try {
+                        const bindings = await GetHubMCPSecretBindings(server.id);
+                        if (Array.isArray(bindings)) {
+                            for (const binding of bindings as any[]) {
+                                if (binding.requirement_name && next[binding.requirement_name]) {
+                                    const req = requirements.find((candidate) => candidate.name === binding.requirement_name);
+                                    const bindingStorage = binding.storage === "local" ? "local" : "hub";
+                                    const storage = normalizeSecretStorage(bindingStorage, req?.storage_policy);
+                                    const configured = storage === "local" ? bindingStorage === "local" && !!server.auth_secret : bindingStorage === "hub" && (binding.status === "configured" || !!binding.hub_secret_ref);
+                                    next[binding.requirement_name] = { ...next[binding.requirement_name], storage, configured };
+                                }
+                            }
+                        }
+                    } catch {}
+                    setSecretInputs(next);
+                })
+                .catch(() => { setSecretRequirements([]); setSecretInputs({}); });
+        }
     };
-
     const closeForm = () => {
         setShowForm(false);
         setEditingServer(null);
         setFormError("");
     };
-
+    const normalizeSecretStorage = (storage: "hub" | "local", policy?: string): "hub" | "local" => {
+        if (policy === "local") return "local";
+        if (policy === "hub") return "hub";
+        return storage;
+    };
+    const secretStorageAllowed = (storage: "hub" | "local", policy?: string): boolean => {
+        return normalizeSecretStorage(storage, policy) === storage;
+    };
+    const handleMarketplaceChanged = async (status?: any) => {
+        const nextServers = await loadServerList();
+        const refs = Array.isArray(status?.needs_user_config) ? status.needs_user_config.filter(Boolean) : [];
+        if (refs.length === 0) return;
+        const target = nextServers.find((server) => refs.includes(server.id) || refs.includes(server.capability?.capability_id || "") || refs.includes(server.capability?.global_key || ""));
+        if (target) openEditForm(target);
+    };
+    const validateMarketplaceSecrets = (): string => {
+        if (!editingServer?.capability || secretRequirements.length === 0) return "";
+        for (const req of secretRequirements) {
+            if (!req.required) continue;
+            const input = secretInputs[req.name];
+            const policy = req.storage_policy || "hub_or_local";
+            const storage = input?.storage || (policy === "local" ? "local" : "hub");
+            const hasNewValue = !!input?.value.trim();
+            const alreadyConfigured = !!input?.configured;
+            const hasLocalAuthSecret = storage === "local" && !!formData.auth_secret.trim();
+            if (!hasNewValue && !alreadyConfigured && !hasLocalAuthSecret) {
+                return `${translate("mcpSecretRequired")}: ${req.label || req.name}`;
+            }
+        }
+        return "";
+    };
+    const applyLocalMarketplaceSecretsToServer = (server: MCPServerView): MCPServerView => {
+        if (!editingServer?.capability || secretRequirements.length === 0) return server;
+        let next = { ...server };
+        for (const req of secretRequirements) {
+            const input = secretInputs[req.name];
+            if (!input || input.storage !== "local" || !input.value.trim()) continue;
+            if (!next.auth_secret.trim()) {
+                next.auth_secret = input.value.trim();
+                if (next.auth_type === "none") {
+                    const name = `${req.name} ${req.label || ""}`.toLowerCase();
+                    next.auth_type = name.includes("bearer") || name.includes("token") ? "bearer" : "api_key";
+                }
+            }
+            break;
+        }
+        return next;
+    };
+    const saveMarketplaceSecrets = async (serverID: string) => {
+        if (!editingServer?.capability || secretRequirements.length === 0) return;
+        for (const req of secretRequirements) {
+            const input = secretInputs[req.name];
+            if (!input) continue;
+            if (input.storage === "hub") {
+                if (!input.value.trim()) continue;
+                await SaveHubMCPHubSecret({
+                    mcp_server_id: serverID,
+                    requirement_name: req.name,
+                    secret_value: input.value,
+                    metadata: { capability_id: editingServer.capability.capability_id, version_key: editingServer.capability.version_key || "" },
+                });
+            } else {
+                const hasLocalSecret = !!input.value.trim() || !!formData.auth_secret.trim() || !!input.configured;
+                if (!hasLocalSecret && !req.required) continue;
+                await SaveHubMCPSecretBinding({
+                    mcp_server_id: serverID,
+                    requirement_name: req.name,
+                    storage: "local",
+                    local_secret_ref: `mcp:${serverID}:${req.name}`,
+                    status: hasLocalSecret ? "configured" : "needs_config",
+                });
+            }
+        }
+    };
     const handleSubmit = async () => {
         if (!formData.name.trim()) { setFormError(translate("mcpNameRequired")); return; }
         if (!formData.endpoint_url.trim()) { setFormError(translate("mcpEndpointRequired")); return; }
+        const secretError = validateMarketplaceSecrets();
+        if (secretError) { setFormError(secretError); return; }
         setBusy(true);
         setFormError("");
         // Build headers from headerPairs, skipping empty keys
@@ -722,10 +842,11 @@ function RemoteMCPPanel({ translate }: Props) {
         for (const p of headerPairs) {
             if (p.key.trim()) headers[p.key.trim()] = p.value;
         }
-        const cleanedData = { ...formData, headers: Object.keys(headers).length > 0 ? headers : undefined };
+        const cleanedData = applyLocalMarketplaceSecretsToServer({ ...formData, headers: Object.keys(headers).length > 0 ? headers : undefined });
         try {
             if (editingServer) {
                 await UpdateMCPServer(cleanedData);
+                await saveMarketplaceSecrets(cleanedData.id);
             } else {
                 // Auto-generate id from name for new registrations
                 const payload = { ...cleanedData };
@@ -744,7 +865,6 @@ function RemoteMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const handleDelete = async (server: MCPServerView) => {
         setBusy(true);
         try {
@@ -757,7 +877,6 @@ function RemoteMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const toggleTools = async (serverID: string) => {
         if (expandedServerID === serverID) {
             setExpandedServerID(null);
@@ -771,7 +890,7 @@ function RemoteMCPPanel({ translate }: Props) {
             setExpandedTools(cached.tools);
             return;
         }
-        // No cache — fetch from backend.
+        // No cache; fetch from backend.
         setToolsLoading(true);
         try {
             const tools = await GetMCPServerTools(serverID);
@@ -783,7 +902,6 @@ function RemoteMCPPanel({ translate }: Props) {
             setToolsLoading(false);
         }
     };
-
     const handleHealthCheck = async (serverID: string) => {
         setBusy(true);
         try {
@@ -801,11 +919,9 @@ function RemoteMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const toggleHealthDetail = (serverID: string) => {
         setHealthDetailID(healthDetailID === serverID ? null : serverID);
     };
-
     const handleJsonImport = async () => {
         setJsonError("");
         let parsed: any;
@@ -884,7 +1000,6 @@ function RemoteMCPPanel({ translate }: Props) {
             setBusy(false);
         }
     };
-
     const healthColor = (status: string): string => {
         switch (status) {
             case "healthy": return "var(--theme-success)";
@@ -894,7 +1009,6 @@ function RemoteMCPPanel({ translate }: Props) {
             default: return colors.textMuted; // "unknown"
         }
     };
-
     const healthBg = (status: string): string => {
         switch (status) {
             case "healthy": return "var(--theme-success-bg)";
@@ -904,7 +1018,6 @@ function RemoteMCPPanel({ translate }: Props) {
             default: return colors.surfaceMuted;
         }
     };
-
     const healthBorder = (status: string): string => {
         switch (status) {
             case "healthy": return "var(--theme-success)";
@@ -914,17 +1027,15 @@ function RemoteMCPPanel({ translate }: Props) {
             default: return colors.border;
         }
     };
-
     const healthLabel = (status: string): string => {
         switch (status) {
             case "healthy": return translate("mcpHealthy");
             case "slow": return translate("mcpSlow");
             case "unavailable": return translate("mcpUnavailable");
             case "checking": return translate("mcpChecking");
-            default: return translate("mcpNotChecked"); // "unknown" → 未检测
+            default: return translate("mcpNotChecked"); // "unknown"
         }
     };
-
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -940,10 +1051,9 @@ function RemoteMCPPanel({ translate }: Props) {
                     </button>
                 </div>
             </div>
-
+            <MCPMarketplacePanel translate={translate} onChanged={handleMarketplaceChanged} installedCapabilities={servers.flatMap((s) => [s.capability?.capability_id || "", s.capability?.global_key || "", s.id]).filter(Boolean)} />
             {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: colors.textMuted }}>{translate("mcpLoading")}</div>}
             {error && <div style={{ fontSize: "0.78rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "6px 10px", borderRadius: "4px", border: `1px solid ${colors.danger}` }}>{error}</div>}
-
             {!loading && servers.length > 0 && (
                 <div style={{ border: `1px solid ${colors.border}`, borderRadius: "6px", overflow: "hidden" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.76rem" }}>
@@ -957,7 +1067,7 @@ function RemoteMCPPanel({ translate }: Props) {
                         </thead>
                         <tbody>
                             {servers.map((s) => (
-                                <ServerRow
+                                <MCPRemoteServerRow
                                     key={s.id}
                                     server={s}
                                     busy={busy}
@@ -974,6 +1084,7 @@ function RemoteMCPPanel({ translate }: Props) {
                                     healthBg={healthBg}
                                     healthBorder={healthBorder}
                                     healthLabel={healthLabel}
+                                    secretStatus={secretStatusMap[s.id]}
                                     translate={translate}
                                 />
                             ))}
@@ -981,19 +1092,17 @@ function RemoteMCPPanel({ translate }: Props) {
                     </table>
                 </div>
             )}
-
             {!loading && servers.length === 0 && !error && (
                 <div style={{ textAlign: "center", padding: "20px", fontSize: "0.78rem", color: colors.textMuted }}>
                     {translate("mcpNoRemoteServers")}
                 </div>
             )}
-
             {deleteTarget && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setDeleteTarget(null), backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "280px" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpConfirmDelete")}</h3>
-                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>×</button>
+                            <button className="btn-close" onClick={() => setDeleteTarget(null)}>&times;</button>
                         </div>
                         <div className="modal-body">
                             <p style={{ fontSize: "0.8rem", color: colors.textSecondary, margin: 0 }}>
@@ -1009,13 +1118,12 @@ function RemoteMCPPanel({ translate }: Props) {
                     </div>
                 </div>
             )}
-
             {showForm && (
                 <div className="modal-backdrop" {...makeBackdropProps(closeForm, backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "420px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{editingServer ? translate("mcpEditServer") : translate("mcpRegisterServerTitle")}</h3>
-                            <button className="btn-close" onClick={closeForm}>×</button>
+                            <button className="btn-close" onClick={closeForm}>&times;</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div className="form-group" style={{ marginBottom: 0 }}>
@@ -1034,6 +1142,10 @@ function RemoteMCPPanel({ translate }: Props) {
                                     <option value="bearer">{translate("mcpAuthBearer")}</option>
                                 </select>
                             </div>
+                            {editingServer?.capability && <MCPSecretRequirementsNotice requirements={secretRequirements} translate={translate} />}
+                            {editingServer?.capability && (
+                                <MCPSecretConfigurationEditor requirements={secretRequirements} inputs={secretInputs} onChange={setSecretInputs} translate={translate} />
+                            )}
                             {formData.auth_type !== "none" && (
                                 <div className="form-group" style={{ marginBottom: 0 }}>
                                     <label className="form-label">{formData.auth_type === "api_key" ? translate("mcpAuthApiKey") : translate("mcpAuthBearer")}</label>
@@ -1087,7 +1199,7 @@ function RemoteMCPPanel({ translate }: Props) {
                                                     style={{ fontSize: "0.68rem", padding: "2px 6px", lineHeight: "1.4", flexShrink: 0 }}
                                                     onClick={() => setHeaderPairs(headerPairs.filter((_, i) => i !== idx))}
                                                 >
-                                                    ×
+                                                    &times;
                                                 </button>
                                             </div>
                                         ))}
@@ -1111,13 +1223,12 @@ function RemoteMCPPanel({ translate }: Props) {
                     </div>
                 </div>
             )}
-
             {showJsonImport && (
                 <div className="modal-backdrop" {...makeBackdropProps(() => setShowJsonImport(false), backdropRef)}>
                     <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ width: "500px", textAlign: "left" }}>
                         <div className="modal-header">
                             <h3 style={{ fontSize: "0.88rem", margin: 0 }}>{translate("mcpRemoteImportJsonTitle")}</h3>
-                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>×</button>
+                            <button className="btn-close" onClick={() => setShowJsonImport(false)}>&times;</button>
                         </div>
                         <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                             <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
@@ -1161,127 +1272,6 @@ function RemoteMCPPanel({ translate }: Props) {
         </div>
     );
 }
-
-function ServerRow({
-    server,
-    busy,
-    expandedServerID,
-    expandedTools,
-    toolsLoading,
-    healthDetailID,
-    onEdit,
-    onDelete,
-    onToggleTools,
-    onHealthCheck,
-    onToggleHealthDetail,
-    healthColor,
-    healthBg,
-    healthBorder,
-    healthLabel,
-    translate,
-}: {
-    server: MCPServerView;
-    busy: boolean;
-    expandedServerID: string | null;
-    expandedTools: MCPToolView[];
-    toolsLoading: boolean;
-    healthDetailID: string | null;
-    onEdit: () => void;
-    onDelete: () => void;
-    onToggleTools: () => void;
-    onHealthCheck: () => void;
-    onToggleHealthDetail: () => void;
-    healthColor: (s: string) => string;
-    healthBg: (s: string) => string;
-    healthBorder: (s: string) => string;
-    healthLabel: (s: string) => string;
-    translate: (key: string) => string;
-}) {
-    const isExpanded = expandedServerID === server.id;
-    const showHealthDetail = healthDetailID === server.id;
-    const toolCount = server.tools ? server.tools.length : 0;
-    const toolCountDisplay = server.health_status === "checking" ? "…" : String(toolCount);
-
-    return (
-        <>
-            <tr style={{ borderTop: `1px solid ${colors.border}` }}>
-                <td style={tdStyle} title={server.endpoint_url}>
-                    <span style={{ cursor: "default", borderBottom: `1px dashed ${colors.textMuted}`, paddingBottom: "1px" }}>{server.name}</span>
-                </td>
-                <td style={{ ...tdStyle, textAlign: "right" }}>
-                    <span
-                        style={{
-                            ...statusBadgeStyle,
-                            background: healthBg(server.health_status),
-                            color: healthColor(server.health_status),
-                            border: `1px solid ${healthBorder(server.health_status)}`,
-                            cursor: "pointer",
-                        }}
-                        onClick={onToggleHealthDetail}
-                        title={translate("mcpHealthRecord")}
-                    >
-                        {server.health_status === "checking" ? "◌" : "●"} {healthLabel(server.health_status)}
-                    </span>
-                </td>
-                <td style={{ ...tdStyle, textAlign: "center" }}>{toolCountDisplay}</td>
-                <td style={tdStyle}>
-                    <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-                        <button className="btn-secondary" style={smallBtnStyle} onClick={onToggleTools} disabled={busy}>
-                            {isExpanded ? translate("mcpCollapse") : translate("mcpTools")}
-                        </button>
-                        <button className="btn-secondary" style={smallBtnStyle} onClick={onEdit} disabled={busy}>{translate("mcpEdit")}</button>
-                        <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={onDelete} disabled={busy}>{translate("mcpDelete")}</button>
-                    </div>
-                </td>
-            </tr>
-
-            {showHealthDetail && (
-                <tr>
-                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
-                        <div style={{ fontSize: "0.72rem", color: colors.textSecondary }}>
-                            <div style={{ fontWeight: 600, marginBottom: "4px" }}>{translate("mcpHealthRecord")}</div>
-                            <div style={{ display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
-                                <span>{translate("mcpHealthStatus")}: <span style={{ color: healthColor(server.health_status), fontWeight: 600 }}>{healthLabel(server.health_status)}</span></span>
-                                <span>·</span>
-                                <span>{translate("mcpFailCount")}: {server.fail_count}</span>
-                                <span>·</span>
-                                <span>{translate("mcpLastCheck")}: {server.last_check_at ? new Date(server.last_check_at).toLocaleString() : "—"}</span>
-                                <button className="btn-secondary" style={{ ...smallBtnStyle, marginLeft: "8px" }} onClick={onHealthCheck} disabled={busy}>
-                                    {translate("mcpCheckNow")}
-                                </button>
-                            </div>
-                        </div>
-                    </td>
-                </tr>
-            )}
-
-            {isExpanded && (
-                <tr>
-                    <td colSpan={4} style={{ padding: "6px 8px", background: colors.surfaceMuted, borderTop: `1px solid ${colors.border}` }}>
-                        {toolsLoading ? (
-                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0" }}>{translate("mcpLoadingTools")}</div>
-                        ) : expandedTools.length > 0 ? (
-                            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                                <div style={{ fontSize: "0.72rem", fontWeight: 600, color: colors.textSecondary, marginBottom: "2px" }}>
-                                    {translate("mcpToolList")} ({expandedTools.length})
-                                </div>
-                                {expandedTools.map((tool) => (
-                                    <div key={tool.name} style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: "4px", padding: "4px 8px" }}>
-                                        <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.text }}>{tool.name}</div>
-                                        <div style={{ fontSize: "0.7rem", color: colors.textSecondary }}>{tool.description || translate("mcpNoDescription")}</div>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : (
-                            <div style={{ fontSize: "0.74rem", color: colors.textMuted, padding: "4px 0" }}>{translate("mcpNoTools")}</div>
-                        )}
-                    </td>
-                </tr>
-            )}
-        </>
-    );
-}
-
 const thStyle: CSSProperties = {
     padding: "6px 8px",
     textAlign: "left",
@@ -1290,23 +1280,8 @@ const thStyle: CSSProperties = {
     color: colors.textSecondary,
     borderBottom: `1px solid ${colors.border}`,
 };
-
-const tdStyle: CSSProperties = {
-    padding: "6px 8px",
-    fontSize: "0.76rem",
-    color: colors.text,
-    verticalAlign: "top",
-};
-
-const statusBadgeStyle: CSSProperties = {
-    display: "inline-block",
-    padding: "1px 8px",
-    borderRadius: "999px",
-    fontSize: "0.68rem",
-    fontWeight: 600,
-};
-
 const smallBtnStyle: CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 8px",
 };
+

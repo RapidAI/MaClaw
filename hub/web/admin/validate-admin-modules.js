@@ -14,8 +14,10 @@ const expectedScripts = [
   'admin-ui.js',
   'center-tab.js',
   'governance-tab.js',
+  'marketplace-tab.js',
   'security-tab.js',
   'machines-tab.js',
+  'group-discussion-tab.js',
   'im-tab.js',
   'hub-llm-tab.js',
   'feishu-tab.js',
@@ -26,6 +28,7 @@ const expectedScripts = [
   'llm-provider-tab.js',
   'llm-service-tabs.js',
   'usage-stats-tab.js',
+  'failure-logs-tab.js',
   'admin-module-health.js',
   'admin-bootstrap.js'
 ];

@@ -154,7 +154,7 @@ var staticFileRules = compileStaticFileRules([]struct {
 			`(?i)(?:iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n|;&]{0,240}\|\s*(?:iex|invoke-expression|powershell|pwsh)\b`,
 			`(?i)(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,180}(?:-enc|-encodedcommand|iex|invoke-expression)\b`,
 		},
-		excludes: []string{`(?i)never\s+use`, `(?i)avoid`},
+		excludes: []string{`(?i)^\s*(?:#|//|/\*)?\s*never\s+use\b`, `(?i)^\s*(?:#|//|/\*)\s*avoid\b`},
 	},
 	{
 		id:          "COMMAND_INJECTION_JS_CHILD_PROCESS",

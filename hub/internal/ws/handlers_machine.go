@@ -10,11 +10,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	"github.com/gorilla/websocket"
 )
+
+type HeartbeatConfigProvider interface {
+	GetHeartbeatConfig(ctx context.Context, userID string) (*HeartbeatConfigPayload, error)
+}
+
+type HeartbeatConfigPayload struct {
+	CapabilityMarketPolicy corelib.CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
+}
 
 type ConnContext struct {
 	Conn        *websocket.Conn
@@ -273,6 +282,9 @@ type Gateway struct {
 	// SecurityProvider provides security policy data for heartbeat ack injection.
 	// Set via SetSecurityProvider after construction.
 	SecurityProvider security.SecurityPolicyProvider
+
+	// ConfigProvider provides Hub-managed client config options for heartbeat ack injection.
+	ConfigProvider HeartbeatConfigProvider
 
 	mu                sync.RWMutex
 	viewersByMachine  map[string]map[*ConnContext]struct{}
@@ -843,7 +855,24 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 		log.Printf("[ws] handleMachineHeartbeat: Heartbeat FAILED for machine_id=%s: %v", ctx.MachineID, err)
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())
 	}
-	return writeAck(ctx.Conn, msg.RequestID)
+	ackPayload := map[string]any{"ok": true}
+	if g.SecurityProvider != nil {
+		policy, err := g.SecurityProvider.GetHeartbeatPolicy(context.Background(), ctx.UserID)
+		if err != nil {
+			log.Printf("[ws] handleMachineHeartbeat: security policy unavailable for user_id=%s: %v", ctx.UserID, err)
+		} else if policy != nil {
+			ackPayload["security_policy"] = policy
+		}
+	}
+	if g.ConfigProvider != nil {
+		cfg, err := g.ConfigProvider.GetHeartbeatConfig(context.Background(), ctx.UserID)
+		if err != nil {
+			log.Printf("[ws] handleMachineHeartbeat: hub config unavailable for user_id=%s: %v", ctx.UserID, err)
+		} else if cfg != nil {
+			ackPayload["hub_config"] = cfg
+		}
+	}
+	return writeAckPayload(ctx.Conn, msg.RequestID, ackPayload)
 }
 
 func (g *Gateway) handleMachineProjects(ctx *ConnContext, msg Envelope) error {
@@ -1416,7 +1445,17 @@ func writeWSError(conn *websocket.Conn, code, message string) error {
 }
 
 func writeAck(conn *websocket.Conn, requestID string) error {
-	return conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": map[string]any{"ok": true}})
+	return writeAckPayload(conn, requestID, map[string]any{"ok": true})
+}
+
+func writeAckPayload(conn *websocket.Conn, requestID string, payload map[string]any) error {
+	if payload == nil {
+		payload = map[string]any{"ok": true}
+	}
+	if _, ok := payload["ok"]; !ok {
+		payload["ok"] = true
+	}
+	return conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": payload})
 }
 
 // handleDeviceProfileUpdate processes a device.profile_update message from a
@@ -1430,7 +1469,6 @@ func (g *Gateway) handleDeviceProfileUpdate(ctx *ConnContext, msg Envelope) erro
 	}
 	return writeAck(ctx.Conn, msg.RequestID)
 }
-
 
 // handleMachineNicknameUpdate processes a runtime nickname change from a machine.
 // It checks for Alias conflicts with other same-user online devices before

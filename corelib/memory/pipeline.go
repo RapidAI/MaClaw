@@ -23,16 +23,27 @@ type PipelineResult struct {
 	Duration      string                   `json:"duration"`
 }
 
+// PromoteResult holds the outcome of an episodic→semantic promotion run.
+type PromoteResult struct {
+	Promoted int    `json:"promoted"`
+	Error    string `json:"error,omitempty"`
+}
+
+// ReflectResult holds the outcome of a reflection run.
+type ReflectResult struct {
+	InsightsGenerated int    `json:"insights_generated"`
+	Error             string `json:"error,omitempty"`
+}
+
 // Pipeline orchestrates the background memory maintenance cycle:
 //
-//	decay strengths -> compress -> promote -> reflect
+//	decay strengths -> compress -> synthesize -> consolidate -> profile -> themes
 //
 // It runs every 6 hours when started.
 type Pipeline struct {
 	store        *Store
 	compressor   *Compressor
-	promoter     *Promoter
-	reflector    *Reflector
+	synthesizer  *Synthesizer
 	experience   *ExperienceDistiller
 	consolidator *Consolidator
 	profiler     *ProfileConsolidator
@@ -46,15 +57,22 @@ type Pipeline struct {
 }
 
 // NewPipeline creates a Pipeline. Any component can be nil (skipped).
-func NewPipeline(store *Store, compressor *Compressor, promoter *Promoter, reflector *Reflector, emitter corelib.EventEmitter) *Pipeline {
+// The second and third positional parameters are deprecated (formerly Promoter
+// and Reflector) — use SetSynthesizer to wire the combined module.
+func NewPipeline(store *Store, compressor *Compressor, _ interface{}, _ interface{}, emitter corelib.EventEmitter) *Pipeline {
 	return &Pipeline{
 		store:      store,
 		compressor: compressor,
-		promoter:   promoter,
-		reflector:  reflector,
 		experience: NewExperienceDistiller(),
 		emitter:    emitter,
 	}
+}
+
+// SetSynthesizer wires the combined Promoter+Reflector module.
+func (p *Pipeline) SetSynthesizer(s *Synthesizer) {
+	p.mu.Lock()
+	p.synthesizer = s
+	p.mu.Unlock()
 }
 
 // RunOnce executes one full maintenance cycle synchronously.
@@ -100,8 +118,8 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 	if p.compressor != nil {
 		p.compressor.SetExperienceProtectionSamples(protectedSamples)
 	}
-	if p.promoter != nil {
-		p.promoter.SetExperienceProtectionSamples(protectedSamples)
+	if p.synthesizer != nil {
+		p.synthesizer.SetExperienceProtectionSamples(protectedSamples)
 	}
 
 	// Step 2: Compress (dedup + LLM compress).
@@ -112,19 +130,17 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		}
 	}
 
-	// Step 2: Promote (episodic -> semantic).
-	if p.promoter != nil && ctx.Err() == nil {
-		pr, err := p.promoter.Promote(ctx)
-		if err == nil {
-			result.Promote = pr
-		}
-	}
-
-	// Step 3: Reflect (generate insights).
-	if p.reflector != nil && ctx.Err() == nil {
-		rr, err := p.reflector.Reflect(ctx)
-		if err == nil {
-			result.Reflect = rr
+	// Step 3: Synthesize (combined promotion + reflection in a single LLM call).
+	if p.synthesizer != nil && ctx.Err() == nil {
+		sr, err := p.synthesizer.Synthesize(ctx)
+		if err != nil {
+			log.Printf("[pipeline] synthesize error: %v", err)
+		} else if sr != nil {
+			result.Promote = &PromoteResult{Promoted: sr.Promoted, Error: sr.Error}
+			result.Reflect = &ReflectResult{InsightsGenerated: sr.InsightsGenerated, Error: sr.Error}
+			if sr.Promoted > 0 || sr.InsightsGenerated > 0 {
+				log.Printf("[pipeline] synthesize: promoted=%d insights=%d", sr.Promoted, sr.InsightsGenerated)
+			}
 		}
 	}
 
@@ -178,27 +194,7 @@ func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
 		}
 	}
 
-	// Step 6: Topic clustering (inspired by Graphiti Community Subgraph).
-	// Rebuild topic clusters and the embedding-aware theme layer from current
-	// entries. TopicClusterer remains as a lightweight fallback; ThemeManager is
-	// the xMemory-style layer used by adaptive recall.
-	if p.store.topicClusterer != nil && ctx.Err() == nil {
-		p.store.mu.RLock()
-		entries := make([]Entry, len(p.store.entries))
-		copy(entries, p.store.entries)
-		p.store.mu.RUnlock()
-
-		clusters := p.store.topicClusterer.Cluster(entries)
-
-		// Generate summaries for clusters (uses LLM if available).
-		if p.compressor != nil && p.compressor.llm != nil {
-			clusters = p.store.topicClusterer.GenerateSummaries(clusters, entries, p.compressor.llm)
-		}
-
-		if len(clusters) > 0 {
-			log.Printf("[pipeline] topic clustering: %d clusters discovered", len(clusters))
-		}
-	}
+	// Step 6: Rebuild the embedding-aware theme layer from current entries.
 	if p.store.themeManager != nil && ctx.Err() == nil {
 		p.store.mu.RLock()
 		entries := make([]Entry, len(p.store.entries))
@@ -290,8 +286,7 @@ func (p *Pipeline) SetConsolidator(consolidator *Consolidator, profiler *Profile
 func (p *Pipeline) SetLLM(llm LLMChatCaller) {
 	p.mu.Lock()
 	compressor := p.compressor
-	promoter := p.promoter
-	reflector := p.reflector
+	synthesizer := p.synthesizer
 	consolidator := p.consolidator
 	profiler := p.profiler
 	p.mu.Unlock()
@@ -299,11 +294,8 @@ func (p *Pipeline) SetLLM(llm LLMChatCaller) {
 	if compressor != nil {
 		compressor.SetLLM(llm)
 	}
-	if promoter != nil {
-		promoter.SetLLM(llm)
-	}
-	if reflector != nil {
-		reflector.SetLLM(llm)
+	if synthesizer != nil {
+		synthesizer.SetLLM(llm)
 	}
 	if consolidator != nil {
 		consolidator.SetLLM(llm)

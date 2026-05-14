@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/gorilla/websocket"
 )
 
 func TestRemoteHubClientConnectAndSyncSessions(t *testing.T) {
@@ -543,6 +543,17 @@ func TestRemoteHubClientReconnectsAndResyncsSessions(t *testing.T) {
 		client.IsConnected(), connectionCount.Load(), authCount.Load(), summaryConnIDs, client.LastError())
 }
 
+func TestHubAckHasConfigOnlyMatchesHubConfigPayload(t *testing.T) {
+	if !hubAckHasConfig(json.RawMessage(`{"ok":true,"hub_config":{"capability_market_policy":{}}}`)) {
+		t.Fatal("expected ack with hub_config to match")
+	}
+	if hubAckHasConfig(json.RawMessage(`{"ok":true}`)) {
+		t.Fatal("expected generic ack to skip capability sync")
+	}
+	if hubAckHasConfig(json.RawMessage(`{"ok":true,"hub_config":null}`)) {
+		t.Fatal("expected null hub_config to skip capability sync")
+	}
+}
 func collectMessageTypes(t *testing.T, messageCh <-chan map[string]any, count int, timeout time.Duration) []string {
 	return messageTypes(collectMessages(t, messageCh, count, timeout))
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -75,6 +76,9 @@ func (r *SkillRunner) ensureSkillSecurityScanned(skill *corelib.NLSkillEntry) er
 	report := scanner.ScanInstallStaged(context.Background(), skill, skill.SkillDir, func(status string) {
 		app.log(fmt.Sprintf("[skill-runner] security scan %s: %s", skill.Name, status))
 	})
+	if report == nil {
+		return fmt.Errorf("skill %q security scan produced no report", skill.Name)
+	}
 	if err := writeSkillScanCacheForReport(skill, skill.SkillDir, hash, report); err != nil {
 		app.log(fmt.Sprintf("[skill-runner] failed to write scan cache for %s: %v", skill.Name, err))
 	}
@@ -147,12 +151,60 @@ func skillContentHash(skill *corelib.NLSkillEntry) (string, error) {
 	}
 	h := sha256.New()
 	meta := struct {
-		Name        string                `json:"name"`
-		Description string                `json:"description"`
-		Triggers    []string              `json:"triggers,omitempty"`
-		Platforms   []string              `json:"platforms,omitempty"`
-		Steps       []corelib.NLSkillStep `json:"steps,omitempty"`
-	}{Name: skill.Name, Description: skill.Description, Triggers: skill.Triggers, Platforms: skill.Platforms, Steps: skill.Steps}
+		Name                    string                     `json:"name"`
+		DirName                 string                     `json:"dir_name,omitempty"`
+		Description             string                     `json:"description"`
+		Triggers                []string                   `json:"triggers,omitempty"`
+		Type                    string                     `json:"type,omitempty"`
+		Content                 string                     `json:"content,omitempty"`
+		Platforms               []string                   `json:"platforms,omitempty"`
+		RequiresGUI             bool                       `json:"requires_gui,omitempty"`
+		RequiresTools           []string                   `json:"requires_tools,omitempty"`
+		FallbackForTools        []string                   `json:"fallback_for_tools,omitempty"`
+		RequiresToolsets        []string                   `json:"requires_toolsets,omitempty"`
+		FallbackForToolsets     []string                   `json:"fallback_for_toolsets,omitempty"`
+		RequiredCredentialFiles []string                   `json:"required_credential_files,omitempty"`
+		RequiresPython          []string                   `json:"requires_python,omitempty"`
+		RequiresNode            []string                   `json:"requires_node,omitempty"`
+		RequiresBins            []string                   `json:"requires_bins,omitempty"`
+		RequiredEnv             []string                   `json:"required_env,omitempty"`
+		PreferredShell          string                     `json:"preferred_shell,omitempty"`
+		Mode                    string                     `json:"mode,omitempty"`
+		ExecMode                string                     `json:"exec_mode,omitempty"`
+		GlobalTimeout           int                        `json:"global_timeout,omitempty"`
+		ProducesArtifact        bool                       `json:"produces_artifact"`
+		Operations              []corelib.NLSkillOperation `json:"operations,omitempty"`
+		Params                  []corelib.NLSkillParam     `json:"params,omitempty"`
+		RequiredArgs            []string                   `json:"required_args,omitempty"`
+		Steps                   []corelib.NLSkillStep      `json:"steps,omitempty"`
+	}{
+		Name:                    skill.Name,
+		DirName:                 skill.DirName,
+		Description:             skill.Description,
+		Triggers:                skill.Triggers,
+		Type:                    skill.Type,
+		Content:                 skill.Content,
+		Platforms:               skill.Platforms,
+		RequiresGUI:             skill.RequiresGUI,
+		RequiresTools:           skill.RequiresTools,
+		FallbackForTools:        skill.FallbackForTools,
+		RequiresToolsets:        skill.RequiresToolsets,
+		FallbackForToolsets:     skill.FallbackForToolsets,
+		RequiredCredentialFiles: skill.RequiredCredentialFiles,
+		RequiresPython:          skill.RequiresPython,
+		RequiresNode:            skill.RequiresNode,
+		RequiresBins:            skill.RequiresBins,
+		RequiredEnv:             skill.RequiredEnv,
+		PreferredShell:          skill.PreferredShell,
+		Mode:                    skill.Mode,
+		ExecMode:                skill.ExecMode,
+		GlobalTimeout:           skill.GlobalTimeout,
+		ProducesArtifact:        skill.ProducesArtifact,
+		Operations:              skill.Operations,
+		Params:                  skill.Params,
+		RequiredArgs:            skill.RequiredArgs,
+		Steps:                   skill.Steps,
+	}
 	metaData, _ := json.Marshal(meta)
 	h.Write(metaData)
 	if strings.TrimSpace(skill.SkillDir) == "" {
@@ -307,7 +359,7 @@ func writeSkillScanCache(skillDir, skillName string, rec skillScanCacheRecord) e
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cachePath, data, 0o600)
+	return fileutil.AtomicWriteFile(cachePath, data, 0o600)
 }
 
 func validateSkillScanCachePathForRead(cachePath string) error {
@@ -389,7 +441,7 @@ func skillScanCacheSigningKey() ([]byte, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(key)), 0o600); err != nil {
+	if err := fileutil.AtomicWriteFile(path, []byte(hex.EncodeToString(key)), 0o600); err != nil {
 		return nil, err
 	}
 	return []byte(hex.EncodeToString(key)), nil

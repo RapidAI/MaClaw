@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/RapidAI/CodeClaw/corelib"
 	"os"
@@ -62,6 +63,9 @@ func normalizeImportedAgentSkillCommand(cmd string) string {
 // ExportAgentSkill converts an NLSkillEntry to Anthropic Agent Skills format,
 // writing SKILL.md and scripts/ to outputDir.
 func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string) error {
+	if err := scanAgentSkillExport(entry); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("鍒涘缓杈撳嚭鐩綍澶辫触: %v", err)
 	}
@@ -124,6 +128,17 @@ func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string) error {
 		return fmt.Errorf("鍐欏叆 SKILL.md 澶辫触: %v", err)
 	}
 
+	return nil
+}
+
+func scanAgentSkillExport(entry corelib.NLSkillEntry) error {
+	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &entry, entry.SkillDir, nil)
+	if report == nil {
+		return fmt.Errorf("agent skill export security scan produced no report")
+	}
+	if report.NeedsUserReview() {
+		return fmt.Errorf("agent skill export blocked by security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
 	return nil
 }
 

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skillmarket"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
@@ -1043,6 +1044,35 @@ func (h *SkillMarketHandlers) AdminRefund(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "refunded"})
+}
+
+func (h *SkillMarketHandlers) CapabilityMarketSkillLicenses(ctx context.Context, buyerEmail string) ([]CapabilityMarketLicenseRecord, error) {
+	if h == nil || h.refundSvc == nil {
+		return []CapabilityMarketLicenseRecord{}, nil
+	}
+	records, _, err := h.refundSvc.ListPurchases(ctx, strings.TrimSpace(buyerEmail), "", 0, 200)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]CapabilityMarketLicenseRecord, 0, len(records))
+	for _, rec := range records {
+		if rec.Status != "active" {
+			continue
+		}
+		items = append(items, CapabilityMarketLicenseRecord{
+			CapabilityType: corelib.CapabilityTypeSkill,
+			CapabilityID:   rec.SkillID,
+			Source:         corelib.CapabilitySourceHubCenter,
+			PurchaseID:     rec.ID,
+			BuyerEmail:     rec.BuyerEmail,
+			AdminEmail:     rec.BuyerEmail,
+			Status:         rec.Status,
+			Pricing:        map[string]any{"mode": corelib.CapabilityPricingPaid, "credits": rec.AmountPaid},
+			License:        map[string]any{"purchase_type": rec.PurchaseType, "purchased_version": rec.PurchasedVersion, "key_status": rec.KeyStatus},
+			CreatedAt:      rec.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return items, nil
 }
 
 // AdminListPurchases handles GET /api/v1/admin/purchases.

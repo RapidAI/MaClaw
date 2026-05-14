@@ -335,9 +335,6 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, er
 	if err := saveUserConfigToFile(s.userConfigPath(in.TenantID, u.ID), defaultCfg); err != nil {
 		return nil, err
 	}
-	if err := writeRuntimeConfig(s.userDataRoot(in.TenantID, u.ID), defaultCfg.AppConfig); err != nil {
-		return nil, err
-	}
 	_ = s.recordAudit(auditRecord{TenantID: u.TenantID, UserID: u.ID, Action: "user.created", ResourceType: "user", ResourceID: u.ID, ActorType: "admin"})
 	return &u, nil
 }
@@ -975,9 +972,6 @@ func (s *Service) UpdateUserConfig(ctx context.Context, p Principal, next coreli
 	if err := saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg); err != nil {
 		return nil, err
 	}
-	if err := writeRuntimeConfig(s.userDataRoot(p.TenantID, p.UserID), cfg.AppConfig); err != nil {
-		return nil, err
-	}
 	_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "config.updated", ResourceType: "user_config", ResourceID: p.UserID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID})
 	cfg.AppConfig = SanitizeAppConfig(cfg.AppConfig)
 	return &cfg, nil
@@ -1193,7 +1187,6 @@ func (s *Service) GetInstanceBootstrap(ctx context.Context, p Principal, instanc
 		DataDir:               inst.DataDir,
 		RuntimeDir:            inst.RuntimeDir,
 		WorkspaceDir:          inst.Workspace,
-		ConfigPath:            runtimeConfigPath(inst.DataDir),
 		ConversationStorePath: filepath.Join(inst.RuntimeDir, "conversation_memory.json"),
 		ConfirmationStorePath: filepath.Join(inst.RuntimeDir, "ai_confirmations.json"),
 		Metadata:              cloneMap(inst.Metadata),
@@ -3002,9 +2995,6 @@ func (s *Service) ImportServiceState(ctx context.Context, in ImportServiceStateR
 				return nil, err
 			}
 			if err := saveUserConfigToFile(s.userConfigPath(exportedUser.User.TenantID, exportedUser.User.ID), cfg); err != nil {
-				return nil, err
-			}
-			if err := writeRuntimeConfig(s.userDataRoot(exportedUser.User.TenantID, exportedUser.User.ID), cfg.AppConfig); err != nil {
 				return nil, err
 			}
 		}

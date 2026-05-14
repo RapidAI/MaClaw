@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -279,7 +280,15 @@ func executeCraftToolCoreWithContext(ctx context.Context, app *App, client *http
 			break
 		}
 
-		sendProgress("💾 正在保存脚本...")
+		sendProgress("Security scanning generated script before execution...")
+		if report, scanErr := scanCraftedScriptBeforeExecution(ctx, app, request.OriginalTask, script, request.Language, sendProgress); scanErr != nil {
+			lastAttempt = craftAttemptResult{Language: request.Language, Script: script, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: scanErr.Error()}
+			if app != nil {
+				app.emitSkillInstallProgress(generateSkillName(request.OriginalTask), "blocked", "Crafted script blocked before execution by security scan.", report)
+			}
+			break
+		}
+		sendProgress("Saving generated script...")
 		scriptPath, saveErr := saveScript(script, request.Language, request.OriginalTask)
 		if saveErr != nil {
 			lastAttempt = craftAttemptResult{Language: request.Language, Attempts: attempt, VerificationStatus: craftVerificationExecutionFailed, VerificationMessage: saveErr.Error()}
@@ -1015,6 +1024,67 @@ func registerCraftedSkillEntry(app *App, task, skillName, scriptPath, language s
 		return fmt.Sprintf("⚠️ Skill 注册失败: %s", err.Error())
 	}
 	return fmt.Sprintf("📦 已注册为 Skill「%s」，下次可直接用 run_skill 执行", entry.Name)
+}
+
+func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, script, language string, sendProgress func(string)) (*cskill.ScanReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if strings.TrimSpace(script) == "" {
+		return nil, fmt.Errorf("generated script is empty")
+	}
+	skillName := generateSkillName(task)
+	scanDir, err := os.MkdirTemp("", "maclaw-crafted-skill-prescan-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(scanDir)
+	scanPath := filepath.Join(scanDir, "script"+scriptExtension(language))
+	if err := os.WriteFile(scanPath, []byte(script), 0o600); err != nil {
+		return nil, err
+	}
+	entry := corelib.NLSkillEntry{
+		Name:        skillName,
+		Description: task,
+		Steps:       []corelib.NLSkillStep{{Action: "script_prescan"}},
+		Source:      "crafted",
+		TrustLevel:  "agent-created",
+	}
+	if app != nil {
+		app.emitSkillInstallProgress(skillName, "scan-start", "Security scanning generated script before execution.", nil)
+	}
+	scanner := cskill.NewSecurityScanner(nil)
+	report := scanner.ScanInstallStaged(ctx, &entry, scanDir, func(status string) {
+		if sendProgress != nil {
+			sendProgress(status)
+		}
+		if app != nil {
+			app.emitSkillInstallProgress(skillName, "scanning", status, nil)
+		}
+	})
+	if report == nil {
+		return nil, fmt.Errorf("crafted script security scan failed")
+	}
+	if report.IsDangerous() || report.NeedsUserReview() {
+		if app != nil {
+			level := report.FinalLevel
+			if report.IsDangerous() {
+				level = security.RiskCritical
+			}
+			app.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillReject,
+				"craft_tool_prescan",
+				level,
+				security.PolicyDeny,
+				fmt.Sprintf("crafted script rejected before execution for skill %s: %s", skillName, report.Summary),
+			)
+		}
+		return report, fmt.Errorf("crafted script security scan blocked execution: level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
+	if app != nil {
+		app.emitSkillInstallProgress(skillName, "scan-complete", "Generated script security scan passed.", report)
+	}
+	return report, nil
 }
 
 // stripScriptCodeFences removes ```lang ... ``` wrappers from LLM output.

@@ -311,7 +311,10 @@ func (app *TUIApp) handleActiveUnderstandingTUI(text string) string {
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[TUI-workflow] understanding HandleInput error: %v", err)
-		return i18n.T(i18n.MsgWorkflowUnderstandError, app.workflowLang())
+		// The understanding LLM failed — clean up the broken session and fall
+		// through to the normal agent loop (return empty string).
+		understanding.CancelSession(userID)
+		return ""
 	}
 	if cancelled {
 		return i18n.T(i18n.MsgWorkflowCancelled, app.workflowLang())

@@ -110,6 +110,7 @@ type ThemeMaintenancePlan struct {
 type ThemeManager struct {
 	mu     sync.RWMutex
 	themes []ThemeNode
+	dirty  bool // true when entries changed since last Rebuild
 
 	attachThreshold float64
 	mergeThreshold  float64
@@ -125,7 +126,65 @@ func NewThemeManager() *ThemeManager {
 		minCohesion:     defaultThemeMinCohesion,
 		maxThemeSize:    defaultThemeMaxSize,
 		neighborK:       defaultThemeNeighborK,
+		dirty:           true, // start dirty so first EnsureUpToDate triggers Rebuild
 	}
+}
+
+// MarkDirty signals that entries have changed and themes need rebuilding.
+func (tm *ThemeManager) MarkDirty() {
+	if tm == nil {
+		return
+	}
+	tm.mu.Lock()
+	tm.dirty = true
+	tm.mu.Unlock()
+}
+
+// EnsureUpToDate rebuilds themes only if entries have changed since last Rebuild.
+// This avoids expensive O(n²) centroid/cohesion recomputation on every adaptive recall.
+func (tm *ThemeManager) EnsureUpToDate(entries []Entry, llm LLMChatCaller) {
+	if tm == nil {
+		return
+	}
+	// Atomically check and clear dirty flag to avoid redundant concurrent rebuilds.
+	tm.mu.Lock()
+	if !tm.dirty {
+		tm.mu.Unlock()
+		return
+	}
+	tm.dirty = false
+	tm.mu.Unlock()
+	tm.Rebuild(entries, llm)
+}
+
+// trivialTags is the set of tags too generic for theme clustering.
+var trivialTags = map[string]bool{
+	"extracted":            true,
+	"online_extracted":     true,
+	"conversation_summary": true,
+	"trimmed":              true,
+	"auto_salvaged":        true,
+	"tmt":                  true,
+	"l1":                   true,
+	"l2":                   true,
+	"segment":              true,
+	"workflow":             true,
+}
+
+// isTrivialTag returns true for tags that are too generic for theme clustering.
+func isTrivialTag(tag string) bool {
+	if trivialTags[tag] {
+		return true
+	}
+	// Skip date-like tags (e.g. "2026-04-30").
+	if len(tag) == 10 && tag[4] == '-' && tag[7] == '-' {
+		return true
+	}
+	// Skip very short tags.
+	if len(tag) < 2 {
+		return true
+	}
+	return false
 }
 
 // Rebuild reconstructs the theme layer from active entries. Entries with

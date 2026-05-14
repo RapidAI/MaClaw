@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	experience "github.com/RapidAI/CodeClaw/corelib/experience"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // ExperienceExtractor adapts GUI remote sessions to the corelib experience pipeline.
@@ -201,6 +204,9 @@ func (s experienceSkillStore) Register(entry corelib.NLSkillEntry) error {
 	if s.executor == nil {
 		return errors.New("experience skill store is not configured")
 	}
+	if _, err := s.scanBeforePersist(&entry, "register"); err != nil {
+		return err
+	}
 	return s.executor.Register(entry)
 }
 
@@ -208,5 +214,56 @@ func (s experienceSkillStore) Update(entry corelib.NLSkillEntry) error {
 	if s.executor == nil {
 		return errors.New("experience skill store is not configured")
 	}
+	if _, err := s.scanBeforePersist(&entry, "update"); err != nil {
+		return err
+	}
 	return s.executor.Update(entry)
+}
+
+func (s experienceSkillStore) scanBeforePersist(entry *corelib.NLSkillEntry, operation string) (*cskill.ScanReport, error) {
+	if entry == nil {
+		return nil, errors.New("experience skill entry is required")
+	}
+	cp := *entry
+	cp.TrustLevel = security.TrustLevelAgentCreated
+	scanner := cskill.NewSecurityScanner(nil)
+	report := scanner.ScanStaged(context.Background(), &cp, cp.SkillDir, nil)
+	if report == nil {
+		return nil, fmt.Errorf("experience skill %s security scan produced no report", operation)
+	}
+	app := (*App)(nil)
+	if s.executor != nil {
+		app = s.executor.app
+	}
+	auditAction := security.AuditActionHubSkillInstall
+	if operation == "update" {
+		auditAction = security.AuditActionHubSkillUpdate
+	}
+	if report.IsDangerous() || report.NeedsUserReview() {
+		if app != nil {
+			app.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillReject,
+				"experience_skill_"+operation,
+				report.FinalLevel,
+				security.PolicyDeny,
+				fmt.Sprintf("experience skill %s blocked before persist: %s", cp.Name, report.Summary),
+			)
+		}
+		return report, fmt.Errorf("experience skill security scan rejected %s for %q: level=%s summary=%s", operation, cp.Name, report.FinalLevel, report.Summary)
+	}
+	if app != nil {
+		app.logSkillInstallSecurityEvent(
+			auditAction,
+			"experience_skill_"+operation,
+			report.FinalLevel,
+			security.PolicyAllow,
+			fmt.Sprintf("experience skill %s allowed before persist, scanned_by=%s, level=%s", cp.Name, report.ScannedBy, report.FinalLevel),
+		)
+	}
+	if strings.TrimSpace(cp.SkillDir) != "" {
+		if err := writeSkillScanCacheForReportStatus(&cp, cp.SkillDir, "", report, skillScanCacheStatusAllowed); err != nil {
+			return report, fmt.Errorf("write experience skill scan cache: %w", err)
+		}
+	}
+	return report, nil
 }

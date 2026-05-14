@@ -151,6 +151,11 @@ func (h *IMMessageHandler) getMaclawLLMConfig() corelib.MaclawLLMConfig {
 // the corresponding chat model from the same provider. Otherwise return the
 // main config unchanged (it's already a chat model).
 func (h *IMMessageHandler) getLightweightLLMConfig() corelib.MaclawLLMConfig {
+	// OpenHuman-inspired: try ModelRouter first for fast tasks.
+	if h.app != nil && h.app.ohModules.modelRouter != nil && h.app.ohModules.modelRouter.HasRoute("fast") {
+		return h.routeLLMConfig("fast")
+	}
+
 	cfg := h.getMaclawLLMConfig()
 	if cfg.URL == "" || cfg.Model == "" {
 		return cfg

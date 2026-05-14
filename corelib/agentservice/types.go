@@ -181,7 +181,6 @@ type InstanceBootstrap struct {
 	DataDir               string            `json:"data_dir"`
 	RuntimeDir            string            `json:"runtime_dir"`
 	WorkspaceDir          string            `json:"workspace_dir"`
-	ConfigPath            string            `json:"config_path"`
 	ConversationStorePath string            `json:"conversation_store_path"`
 	ConfirmationStorePath string            `json:"confirmation_store_path"`
 	Metadata              map[string]string `json:"metadata,omitempty"`

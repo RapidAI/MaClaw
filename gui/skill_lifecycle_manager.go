@@ -153,7 +153,7 @@ func (m *SkillLifecycleManager) UploadNow(ctx context.Context, skillName, reason
 		return "", fmt.Errorf("skill market client not initialized")
 	}
 
-	zipPath, tmpDir, err := m.app.packageSkillForMarketWithDir(skillName)
+	zipPath, tmpDir, err := m.app.packageSkillForMarketWithDirForOutbound(skillName)
 	if err != nil {
 		return "", fmt.Errorf("package skill: %w", err)
 	}
@@ -177,7 +177,6 @@ func (m *SkillLifecycleManager) UploadNow(ctx context.Context, skillName, reason
 		msg := fmt.Sprintf("upload blocked by quality gate: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
 		return "", &skillUploadBlockedError{Message: msg, Score: quality.Score}
 	}
-
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
@@ -249,8 +248,8 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 		msg := fmt.Sprintf("upload blocked by quality gate: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
 		return "", &skillUploadBlockedError{Message: msg, Score: quality.Score}
 	}
-
 	cfg, err := m.app.LoadConfig()
+
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
 	}
@@ -281,6 +280,9 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 	if !packageQuality.MarketReady {
 		msg := fmt.Sprintf("upload blocked by package quality gate: score=%d reasons=%s", packageQuality.Score, strings.Join(packageQuality.Reasons, "; "))
 		return "", &skillUploadBlockedError{Message: msg, Score: packageQuality.Score}
+	}
+	if err := scanSkillDirForOutboundPackage(tmpDir); err != nil {
+		return "", err
 	}
 	if err := writeSkillPackageManifest(tmpDir, entry, packageQuality, reasonStage(reason), requireRuntimeProof); err != nil {
 		return "", fmt.Errorf("write skill package manifest: %w", err)

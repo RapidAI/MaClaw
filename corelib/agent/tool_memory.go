@@ -212,7 +212,7 @@ func rebuildAgentMemoryThemes(store *memory.Store) {
 	if store == nil || store.ThemeManager() == nil {
 		return
 	}
-	store.ThemeManager().Rebuild(store.List("", ""), nil)
+	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
 }
 
 func formatMemoryThemes(themes []memory.ThemeNode) string {

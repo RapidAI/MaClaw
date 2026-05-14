@@ -387,6 +387,43 @@ jobs:
             dist/srvdemo_arm64.exe
 
 
+
+  # ============================================================
+  # Ins-maclaw: small native bootstrap installer for all platforms
+  # ============================================================
+  build-ins-maclaw:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install goversioninfo
+        shell: pwsh
+        run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+
+      - name: Sync Ins-maclaw assets
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File ./Ins-maclaw/sync-assets.ps1
+
+      - name: Test Ins-maclaw bootstrap app
+        shell: pwsh
+        run: go test ./Ins-maclaw
+
+      - name: Build Ins-maclaw bootstrap installers
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File ./Ins-maclaw/build.ps1
+
+      - name: Upload Ins-maclaw bootstrap artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ins-maclaw-artifacts
+          if-no-files-found: error
+          path: dist/Ins-maclaw/*
+
   # ============================================================
   # macOS: GUI universal binary + PKG + TUI/tool (darwin)
   # ============================================================
@@ -1218,7 +1255,7 @@ jobs:
   # Release: collect all artifacts and create GitHub Release
   # ============================================================
   release:
-    needs: [build-windows, build-macos, build-linux, build-linux-arm64]
+    needs: [build-windows, build-ins-maclaw, build-macos, build-linux, build-linux-arm64]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -1273,6 +1310,8 @@ jobs:
           COS_RELEASE_ONLY_ASSETS: |
             MaClaw-aarch64-u2204.AppImage
             MaClaw-aarch64-u2404.AppImage
+            MaClaw-x86_64-u2204.AppImage
+            MaClaw-x86_64-u2404.AppImage
             MaClaw-Setup.exe
             MaClaw-Universal.pkg
             maclawsrv-Setup.exe
@@ -1281,8 +1320,18 @@ jobs:
             maclaw-data-srv-Universal.pkg
             TigerClaw-aarch64-u2204.AppImage
             TigerClaw-aarch64-u2404.AppImage
+            TigerClaw-x86_64-u2204.AppImage
+            TigerClaw-x86_64-u2404.AppImage
             TigerClaw-Setup.exe
             TigerClaw-Universal.pkg
+            Ins-maclaw-windows-amd64.exe
+            Ins-maclaw-windows-arm64.exe
+            Ins-maclaw-windows-amd64-tui.exe
+            Ins-maclaw-windows-arm64-tui.exe
+            Ins-maclaw-darwin-amd64
+            Ins-maclaw-darwin-arm64
+            Ins-maclaw-linux-amd64
+            Ins-maclaw-linux-arm64
         run: |
           if [ -z "$COS_PUBLIC_BASE_URL" ]; then
             echo "COS_PUBLIC_BASE_URL is not configured; latest.json cannot include fallback URLs." >&2
@@ -1314,6 +1363,8 @@ jobs:
           R2_RELEASE_ONLY_ASSETS: |
             MaClaw-aarch64-u2204.AppImage
             MaClaw-aarch64-u2404.AppImage
+            MaClaw-x86_64-u2204.AppImage
+            MaClaw-x86_64-u2404.AppImage
             MaClaw-Setup.exe
             MaClaw-Universal.pkg
             maclawsrv-Setup.exe
@@ -1322,8 +1373,18 @@ jobs:
             maclaw-data-srv-Universal.pkg
             TigerClaw-aarch64-u2204.AppImage
             TigerClaw-aarch64-u2404.AppImage
+            TigerClaw-x86_64-u2204.AppImage
+            TigerClaw-x86_64-u2404.AppImage
             TigerClaw-Setup.exe
             TigerClaw-Universal.pkg
+            Ins-maclaw-windows-amd64.exe
+            Ins-maclaw-windows-arm64.exe
+            Ins-maclaw-windows-amd64-tui.exe
+            Ins-maclaw-windows-arm64-tui.exe
+            Ins-maclaw-darwin-amd64
+            Ins-maclaw-darwin-arm64
+            Ins-maclaw-linux-amd64
+            Ins-maclaw-linux-arm64
         run: |
           if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$R2_BUCKET" ]; then
             echo "Cloudflare R2 secrets are not configured; skipping R2 upload."
@@ -1362,6 +1423,8 @@ jobs:
           COS_RELEASE_ONLY_ASSETS: |
             MaClaw-aarch64-u2204.AppImage
             MaClaw-aarch64-u2404.AppImage
+            MaClaw-x86_64-u2204.AppImage
+            MaClaw-x86_64-u2404.AppImage
             MaClaw-Setup.exe
             MaClaw-Universal.pkg
             maclawsrv-Setup.exe
@@ -1370,8 +1433,18 @@ jobs:
             maclaw-data-srv-Universal.pkg
             TigerClaw-aarch64-u2204.AppImage
             TigerClaw-aarch64-u2404.AppImage
+            TigerClaw-x86_64-u2204.AppImage
+            TigerClaw-x86_64-u2404.AppImage
             TigerClaw-Setup.exe
             TigerClaw-Universal.pkg
+            Ins-maclaw-windows-amd64.exe
+            Ins-maclaw-windows-arm64.exe
+            Ins-maclaw-windows-amd64-tui.exe
+            Ins-maclaw-windows-arm64-tui.exe
+            Ins-maclaw-darwin-amd64
+            Ins-maclaw-darwin-arm64
+            Ins-maclaw-linux-amd64
+            Ins-maclaw-linux-arm64
         run: |
           if [ -z "$COS_SECRET_ID" ] || [ -z "$COS_SECRET_KEY" ] || [ -z "$COS_BUCKET" ] || [ -z "$COS_REGION" ] || [ -z "$COS_PUBLIC_BASE_URL" ]; then
             echo "Tencent COS secrets are not configured; skipping COS upload."
@@ -1519,6 +1592,7 @@ jobs:
 
       - name: Skip Gitee release asset upload
         run: echo "Release packages are uploaded to Tencent COS; skipping slow Gitee asset upload."
+
 
 
 

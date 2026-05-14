@@ -218,8 +218,10 @@
         <button data-tab="overview" class="active" onclick="openTab('overview')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"></path><path d="M5 10.5V20h14v-9.5"></path><path d="M10 20v-5h4v5"></path></svg></span><div class="nav-copy"><span data-i18n="navOverview"></span><small data-i18n="navOverviewDesc"></small></div></div></button>
         <button data-tab="center" onclick="openTab('center')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M4 12h16"></path><path d="M12 4a12 12 0 0 1 0 16"></path><path d="M12 4a12 12 0 0 0 0 16"></path></svg></span><div class="nav-copy"><span data-i18n="navCenter"></span><small data-i18n="navCenterDesc"></small></div></div></button>
         <button data-tab="governance" onclick="openTab('governance')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 6h14"></path><path d="M7 12h10"></path><path d="M9 18h6"></path><path d="M12 6v12"></path></svg></span><div class="nav-copy"><span data-i18n="navGovernance"></span><small data-i18n="navGovernanceDesc"></small></div></div></button>
+        <button data-tab="marketplace" onclick="openTab('marketplace')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16"></path><path d="M6 7l1 13h10l1-13"></path><path d="M9 7a3 3 0 0 1 6 0"></path><path d="M9 12h6"></path></svg></span><div class="nav-copy"><span data-i18n="navMarketplace"></span><small data-i18n="navMarketplaceDesc"></small></div></div></button>
         <button data-tab="im" onclick="openTab('im')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v9H9l-4 3V7Z"></path><path d="M9 11h6"></path></svg></span><div class="nav-copy"><span id="navIM"></span><small id="navIMDesc"></small></div></div></button>
         <button data-tab="machines" onclick="openTab('machines')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 19h8"></path><path d="M12 16v3"></path></svg></span><div class="nav-copy"><span data-i18n="navMachines"></span><small data-i18n="navMachinesDesc"></small></div></div></button>
+        <button data-tab="virtualemployees" onclick="openTab('virtualemployees')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span><div class="nav-copy"><span id="navVirtualEmployees"></span><small id="navVirtualEmployeesDesc"></small></div></div></button>
         <button data-tab="groupdiscussion" onclick="openTab('groupdiscussion')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 8h10"></path><path d="M5 12h14"></path><path d="M8 16h8"></path><circle cx="5" cy="8" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle><circle cx="6" cy="16" r="1.5"></circle></svg></span><div class="nav-copy"><span id="navGroupDiscussion"></span><small id="navGroupDiscussionDesc"></small></div></div></button>
         <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z"></path><path d="M12 10v8"></path><path d="M9 13h6"></path></svg></span><div class="nav-copy"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></div></div></button>
         <button data-tab="pwarequests" onclick="openTab('pwarequests')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 7h4"></path><path d="M12 17h.01"></path></svg></span><div class="nav-copy"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></div></div></button>
@@ -372,7 +374,22 @@
         </div>
       </section>
 
-      <!-- Tab: System -->
+      <!-- Tab: Marketplace -->
+      <section id="tab-marketplace" class="panel card">
+        <div class="head"><div><h3 data-i18n="marketplaceTabTitle"></h3><div class="desc" data-i18n="marketplaceTabSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div>
+        <div class="grid2">
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplacePolicyTitle"></div><div class="item-meta" data-i18n="marketplacePolicyDesc"></div></div></div><div id="marketplacePolicyBody" style="margin-top:10px"></div></div>
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceBillingTitle"></div><div class="item-meta" data-i18n="marketplaceBillingDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplaceBilling()" data-i18n="marketplaceLoadBilling"></button></div><div id="marketplaceBillingBody" style="display:grid;gap:8px;margin-top:10px"></div></div>
+        </div>
+        <div class="grid2" style="margin-top:10px">
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceRequestsTitle"></div><div class="item-meta" data-i18n="marketplaceRequestsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceRequestsStatus"></label><select id="marketplaceRequestStatus" onchange="loadMarketplace()"><option value="pending">pending</option><option value="approved">approved</option><option value="completed">completed</option><option value="rejected">rejected</option><option value="">all</option></select></div></div><div id="marketplaceRequestsList" style="display:grid;gap:8px;margin-top:10px"></div></div>
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceCapabilityType" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option></select></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div id="marketplaceCapabilitiesList" style="display:grid;gap:8px;margin-top:10px"></div></div>
+        </div>
+        <div class="grid2" style="margin-top:10px">
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceSearchTitle"></div><div class="item-meta" data-i18n="marketplaceSearchDesc"></div></div></div><div class="grid3" style="margin-top:10px"><div><label data-i18n="marketplaceSource"></label><select id="marketplaceSearchSource"><option value="hubcenter">hubcenter</option><option value="clawhub">clawhub</option><option value="github">github</option></select></div><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceSearchType"><option value="skill">skill</option><option value="mcp">mcp</option></select></div><div><label data-i18n="marketplaceQuery"></label><input id="marketplaceSearchQuery"></div></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="searchMarketplaceExternal()" data-i18n="marketplaceSearch"></button></div><div id="marketplaceSearchResults" style="display:grid;gap:8px;margin-top:10px"></div></div>
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceMCPTitle"></div><div class="item-meta" data-i18n="marketplaceMCPDesc"></div></div></div><div class="grid2" style="margin-top:10px"><div><label data-i18n="marketplaceMCPId"></label><input id="marketplaceMCPId" placeholder="example-mcp"></div><div><label data-i18n="marketplaceMCPName"></label><input id="marketplaceMCPName" placeholder="Example MCP"></div><div><label data-i18n="marketplaceMCPPublisher"></label><input id="marketplaceMCPPublisher" value="enterprise"></div><div><label data-i18n="marketplaceMCPVersion"></label><input id="marketplaceMCPVersion" value="1.0.0"></div></div><div style="margin-top:10px"><label data-i18n="marketplaceMCPJson"></label><textarea id="marketplaceMCPJson" style="min-height:120px;font-family:Consolas,monospace">{"id":"example-mcp","name":"Example MCP","endpoint_url":"https://example.com/mcp","auth_type":"none","headers":{}}</textarea></div><div style="margin-top:10px"><label data-i18n="marketplaceMCPSecrets"></label><textarea id="marketplaceMCPSecrets" style="min-height:84px;font-family:Consolas,monospace">[]</textarea></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveMarketplaceMCP()" data-i18n="marketplaceSaveMCP"></button></div></div>
+        </div>
+      </section>
       <section id="tab-system" class="panel card">
         <div class="head"><div><h3 data-i18n="systemTitle"></h3><div class="desc" data-i18n="systemDesc"></div></div></div>
         <!-- Enterprise email routing -->
@@ -810,6 +827,34 @@
         </div>
       </section>
 
+      <!-- Tab: Virtual Employees -->
+      <section id="tab-virtualemployees" class="panel card">
+        <div class="head">
+          <div><h3 id="vePanelTitle"></h3><div class="desc" id="vePanelDesc"></div></div>
+          <div class="actions">
+            <span class="item-meta" id="veQuotaInfo"></span>
+            <button class="btn-ghost" onclick="loadVEList()" id="veRefreshBtn"></button>
+          </div>
+        </div>
+        <div class="item" style="margin-bottom:12px">
+          <div class="item-title" id="veGroupConfigTitle"></div>
+          <div class="item-meta" id="veGroupConfigDesc" style="margin-bottom:8px"></div>
+          <div class="actions" style="gap:8px;align-items:center">
+            <label for="veMaxParticipantsInput" id="veMaxParticipantsLabel" style="margin:0;font-size:12px;white-space:nowrap"></label>
+            <input type="number" id="veMaxParticipantsInput" min="1" max="10" value="5" style="max-width:80px;height:34px">
+            <button class="btn-primary" onclick="veSaveGroupConfig()" id="veSaveConfigBtn" style="height:34px;padding:0 12px;font-size:12px"></button>
+          </div>
+        </div>
+        <div class="item" style="margin-bottom:12px">
+          <div class="item-title" id="vePendingTitle"></div>
+          <div class="table" id="vePendingList"></div>
+        </div>
+        <div class="item">
+          <div class="item-title" id="veActiveTitle"></div>
+          <div class="table" id="veActiveList"></div>
+        </div>
+      </section>
+
       <!-- Tab: Group Discussion -->
       <section id="tab-groupdiscussion" class="panel card gd-page">
         <div class="gd-hero card">
@@ -1128,8 +1173,10 @@
 <script src="/admin/admin-ui.js"></script>
 <script src="/admin/center-tab.js"></script>
 <script src="/admin/governance-tab.js"></script>
+<script src="/admin/marketplace-tab.js"></script>
 <script src="/admin/security-tab.js"></script>
 <script src="/admin/machines-tab.js"></script>
+<script src="/admin/ve-tab.js"></script>
 <script src="/admin/group-discussion-tab.js"></script>
 <script src="/admin/im-tab.js"></script>
 <script src="/admin/hub-llm-tab.js"></script>

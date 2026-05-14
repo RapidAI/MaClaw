@@ -94,18 +94,37 @@ const (
 	MCPSourceManual  MCPServerSource = "manual"
 	MCPSourceMDNS    MCPServerSource = "mdns"
 	MCPSourceProject MCPServerSource = "project"
+	MCPSourceMarket  MCPServerSource = "marketplace"
 )
 
 // MCPServerEntry 描述一个 MCP 服务器注册条目。
 type MCPServerEntry struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	EndpointURL string            `json:"endpoint_url"`
-	AuthType    string            `json:"auth_type"` // "none", "api_key", "bearer"
-	AuthSecret  string            `json:"auth_secret"`
-	Headers     map[string]string `json:"headers,omitempty"` // custom HTTP headers (e.g. Authorization, X-Custom-Key)
-	CreatedAt   string            `json:"created_at"`
-	Source      MCPServerSource   `json:"source"`
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	EndpointURL string                  `json:"endpoint_url"`
+	AuthType    string                  `json:"auth_type"` // "none", "api_key", "bearer"
+	AuthSecret  string                  `json:"auth_secret"`
+	Headers     map[string]string       `json:"headers,omitempty"` // custom HTTP headers (e.g. Authorization, X-Custom-Key)
+	CreatedAt   string                  `json:"created_at"`
+	Source      MCPServerSource         `json:"source"`
+	Capability  *MCPServerCapabilityRef `json:"capability,omitempty"`
+}
+
+type MCPServerCapabilityRef struct {
+	CapabilityID string `json:"capability_id"`
+	VersionKey   string `json:"version_key,omitempty"`
+	Source       string `json:"source,omitempty"`
+	GlobalKey    string `json:"global_key,omitempty"`
+}
+
+// SkillCapabilityRef links an installed Skill to a marketplace capability.
+// HubSkillID/HubVersion continue to track the underlying SkillHub package,
+// while this ref tracks the enterprise capability and version policy.
+type SkillCapabilityRef struct {
+	CapabilityID string `json:"capability_id"`
+	VersionKey   string `json:"version_key,omitempty"`
+	Source       string `json:"source,omitempty"`
+	GlobalKey    string `json:"global_key,omitempty"`
 }
 
 // LocalMCPServerEntry 描述一个本地 MCP 服务器配置（通过命令启动，如 npx）。
@@ -181,22 +200,23 @@ type NLSkillOperation struct {
 
 // NLSkillEntry 描述一个自然语言技能条目。
 type NLSkillEntry struct {
-	Name          string        `json:"name"`
-	DirName       string        `json:"dir_name,omitempty"` // 目录名（当与 Name 不同时用于别名查找）
-	Description   string        `json:"description"`
-	Triggers      []string      `json:"triggers"`
-	Steps         []NLSkillStep `json:"steps"`
-	Status        string        `json:"status"` // "active", "disabled"
-	CreatedAt     string        `json:"created_at"`
-	Source        string        `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import" | "github" | "clawhub" | "auto_hub" | "auto_github" | "auto_clawhub"
-	SourceProject string        `json:"source_project"`
-	HubSkillID    string        `json:"hub_skill_id,omitempty"`
-	HubVersion    string        `json:"hub_version,omitempty"`
-	TrustLevel    string        `json:"trust_level,omitempty"`
-	Type          string        `json:"type,omitempty"`         // "executable" (default) | "knowledge"
-	Content       string        `json:"content,omitempty"`      // Markdown content for knowledge-type skills
-	Platforms     []string      `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
-	RequiresGUI   bool          `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
+	Name          string              `json:"name"`
+	DirName       string              `json:"dir_name,omitempty"` // 目录名（当与 Name 不同时用于别名查找）
+	Description   string              `json:"description"`
+	Triggers      []string            `json:"triggers"`
+	Steps         []NLSkillStep       `json:"steps"`
+	Status        string              `json:"status"` // "active", "disabled"
+	CreatedAt     string              `json:"created_at"`
+	Source        string              `json:"source"` // "manual" | "learned" | "hub" | "crafted" | "file" | "zip_import" | "github" | "clawhub" | "auto_hub" | "auto_github" | "auto_clawhub"
+	SourceProject string              `json:"source_project"`
+	HubSkillID    string              `json:"hub_skill_id,omitempty"`
+	HubVersion    string              `json:"hub_version,omitempty"`
+	Capability    *SkillCapabilityRef `json:"capability,omitempty"`
+	TrustLevel    string              `json:"trust_level,omitempty"`
+	Type          string              `json:"type,omitempty"`         // "executable" (default) | "knowledge"
+	Content       string              `json:"content,omitempty"`      // Markdown content for knowledge-type skills
+	Platforms     []string            `json:"platforms,omitempty"`    // "windows","linux","macos"; empty = universal
+	RequiresGUI   bool                `json:"requires_gui,omitempty"` // Linux 下是否需要 GUI 环境
 
 	// Tool availability conditions
 	RequiresTools       []string `json:"requires_tools,omitempty"`

@@ -2,15 +2,19 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/security"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // SkillManifest is the metadata stored in manifest.json inside a skill backup zip.
@@ -35,66 +39,14 @@ func (e *SkillExecutor) BackupSkills(outputPath string) error {
 	e.mu.RLock()
 	skills := e.loadSkills()
 	e.mu.RUnlock()
-
-	outFile, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create backup file: %w", err)
-	}
-
-	zw := zip.NewWriter(outFile)
-
-	// Write manifest.json
-	manifest := SkillManifest{
-		BackupTime:    time.Now().Format(time.RFC3339),
-		SkillCount:    len(skills),
-		MaclawVersion: remoteAppVersion(),
-	}
-	manifestData, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		zw.Close()
-		outFile.Close()
-		return fmt.Errorf("failed to marshal manifest: %w", err)
-	}
-	mw, err := zw.Create("manifest.json")
-	if err != nil {
-		zw.Close()
-		outFile.Close()
-		return fmt.Errorf("failed to create manifest entry in zip: %w", err)
-	}
-	if _, err := mw.Write(manifestData); err != nil {
-		zw.Close()
-		outFile.Close()
-		return fmt.Errorf("failed to write manifest: %w", err)
-	}
-
-	// Write each skill as an individual JSON file
 	for _, skill := range skills {
-		data, err := json.MarshalIndent(skill, "", "  ")
-		if err != nil {
-			zw.Close()
-			outFile.Close()
-			return fmt.Errorf("failed to marshal skill %q: %w", skill.Name, err)
-		}
-		fileName := toKebabCase(skill.Name) + ".json"
-		sw, err := zw.Create(fileName)
-		if err != nil {
-			zw.Close()
-			outFile.Close()
-			return fmt.Errorf("failed to create zip entry for skill %q: %w", skill.Name, err)
-		}
-		if _, err := sw.Write(data); err != nil {
-			zw.Close()
-			outFile.Close()
-			return fmt.Errorf("failed to write skill %q: %w", skill.Name, err)
+		if err := scanSkillBeforeArchiveExport(skill); err != nil {
+			return err
 		}
 	}
 
-	// Close the zip writer first (writes central directory), then the file.
-	if err := zw.Close(); err != nil {
-		outFile.Close()
-		return fmt.Errorf("failed to finalize zip: %w", err)
-	}
-	return outFile.Close()
+	return writeSkillsZipAtomic(outputPath, skills, true)
+
 }
 
 // ExportLearnedSkillsZip exports the specified learned/crafted skills (by name)
@@ -125,70 +77,153 @@ func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string
 	if len(selected) == 0 {
 		return fmt.Errorf("no matching learned/crafted skills found")
 	}
-
-	outFile, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("failed to create export file: %w", err)
+	for _, skill := range selected {
+		if err := scanSkillBeforeArchiveExport(skill); err != nil {
+			return err
+		}
 	}
 
-	zw := zip.NewWriter(outFile)
+	return writeSkillsZipAtomic(outputPath, selected, true)
 
+}
+
+func writeSkillsZipAtomic(outputPath string, skills []corelib.NLSkillEntry, dedupeNames bool) error {
+	outFile, err := createAtomicSkillZipTemp(outputPath)
+	if err != nil {
+		return err
+	}
+	tmpPath := outFile.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = outFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	zw := zip.NewWriter(outFile)
+	if err := writeSkillsZipContents(zw, skills, dedupeNames); err != nil {
+		_ = zw.Close()
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return fmt.Errorf("failed to finalize zip: %w", err)
+	}
+	if err := outFile.Sync(); err != nil {
+		return fmt.Errorf("failed to sync zip file: %w", err)
+	}
+	if err := outFile.Close(); err != nil {
+		return fmt.Errorf("failed to close zip file: %w", err)
+	}
+	if err := replaceFileWithTemp(tmpPath, outputPath); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func replaceFileWithTemp(tmpPath, outputPath string) error {
+	if err := os.Rename(tmpPath, outputPath); err == nil {
+		return nil
+	} else if _, statErr := os.Stat(outputPath); os.IsNotExist(statErr) {
+		return fmt.Errorf("failed to move zip into place: %w", err)
+	}
+
+	backup, err := os.CreateTemp(filepath.Dir(outputPath), "."+filepath.Base(outputPath)+"-replace-*.bak")
+	if err != nil {
+		return fmt.Errorf("failed to create replacement backup marker: %w", err)
+	}
+	backupPath := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupPath)
+		return fmt.Errorf("failed to close replacement backup marker: %w", err)
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return fmt.Errorf("failed to prepare replacement backup path: %w", err)
+	}
+
+	if err := os.Rename(outputPath, backupPath); err != nil {
+		return fmt.Errorf("failed to move existing zip aside: %w", err)
+	}
+	restored := false
+	defer func() {
+		if !restored {
+			_ = os.Remove(backupPath)
+		}
+	}()
+	if err := os.Rename(tmpPath, outputPath); err != nil {
+		if restoreErr := os.Rename(backupPath, outputPath); restoreErr != nil {
+			return fmt.Errorf("failed to move zip into place: %w; additionally failed to restore previous zip: %v", err, restoreErr)
+		}
+		restored = true
+		return fmt.Errorf("failed to move zip into place: %w", err)
+	}
+	return nil
+}
+
+func createAtomicSkillZipTemp(outputPath string) (*os.File, error) {
+	if strings.TrimSpace(outputPath) == "" {
+		return nil, fmt.Errorf("output path is required")
+	}
+	dir := filepath.Dir(outputPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create output directory: %w", err)
+	}
+	base := filepath.Base(outputPath)
+	return os.CreateTemp(dir, "."+base+"-*.tmp")
+}
+
+func writeSkillsZipContents(zw *zip.Writer, skills []corelib.NLSkillEntry, dedupeNames bool) error {
 	manifest := SkillManifest{
 		BackupTime:    time.Now().Format(time.RFC3339),
-		SkillCount:    len(selected),
+		SkillCount:    len(skills),
 		MaclawVersion: remoteAppVersion(),
 	}
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		zw.Close()
-		outFile.Close()
 		return fmt.Errorf("failed to marshal manifest: %w", err)
 	}
 	mw, err := zw.Create("manifest.json")
 	if err != nil {
-		zw.Close()
-		outFile.Close()
-		return fmt.Errorf("failed to create manifest entry: %w", err)
+		return fmt.Errorf("failed to create manifest entry in zip: %w", err)
 	}
 	if _, err := mw.Write(manifestData); err != nil {
-		zw.Close()
-		outFile.Close()
 		return fmt.Errorf("failed to write manifest: %w", err)
 	}
 
-	usedNames := make(map[string]bool, len(selected))
-	for _, skill := range selected {
+	usedNames := make(map[string]bool, len(skills))
+	for _, skill := range skills {
 		data, err := json.MarshalIndent(skill, "", "  ")
 		if err != nil {
-			zw.Close()
-			outFile.Close()
 			return fmt.Errorf("failed to marshal skill %q: %w", skill.Name, err)
 		}
 		fileName := toKebabCase(skill.Name) + ".json"
-		// Deduplicate file names within the zip (different skill names may
-		// produce the same kebab-case, e.g. "my skill" vs "my-skill").
-		if usedNames[fileName] {
-			fileName = toKebabCase(skill.Name) + "-" + fmt.Sprintf("%d", len(usedNames)) + ".json"
+		if dedupeNames {
+			for usedNames[fileName] {
+				fileName = toKebabCase(skill.Name) + "-" + fmt.Sprintf("%d", len(usedNames)) + ".json"
+			}
 		}
 		usedNames[fileName] = true
 		sw, err := zw.Create(fileName)
 		if err != nil {
-			zw.Close()
-			outFile.Close()
-			return fmt.Errorf("failed to create zip entry for %q: %w", skill.Name, err)
+			return fmt.Errorf("failed to create zip entry for skill %q: %w", skill.Name, err)
 		}
 		if _, err := sw.Write(data); err != nil {
-			zw.Close()
-			outFile.Close()
 			return fmt.Errorf("failed to write skill %q: %w", skill.Name, err)
 		}
 	}
+	return nil
+}
 
-	if err := zw.Close(); err != nil {
-		outFile.Close()
-		return fmt.Errorf("failed to finalize zip: %w", err)
+func scanSkillBeforeArchiveExport(entry corelib.NLSkillEntry) error {
+	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &entry, entry.SkillDir, nil)
+	if report == nil {
+		return fmt.Errorf("skill export security scan produced no report")
 	}
-	return outFile.Close()
+	if report.NeedsUserReview() {
+		return fmt.Errorf("skill export blocked by security scan: %s level=%s summary=%s", entry.Name, report.FinalLevel, report.Summary)
+	}
+	return nil
 }
 
 // RestoreSkills reads a skill backup zip from zipPath and restores the
@@ -249,7 +284,7 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 		rc, err := f.Open()
 		if err != nil {
 			report.Failed++
-			report.Details = append(report.Details, fmt.Sprintf("%s: failed to open — %v", f.Name, err))
+			report.Details = append(report.Details, fmt.Sprintf("%s: failed to open - %v", f.Name, err))
 			continue
 		}
 
@@ -257,14 +292,14 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 		rc.Close()
 		if err != nil {
 			report.Failed++
-			report.Details = append(report.Details, fmt.Sprintf("%s: failed to read — %v", f.Name, err))
+			report.Details = append(report.Details, fmt.Sprintf("%s: failed to read - %v", f.Name, err))
 			continue
 		}
 
 		var skill corelib.NLSkillEntry
 		if err := json.Unmarshal(data, &skill); err != nil {
 			report.Failed++
-			report.Details = append(report.Details, fmt.Sprintf("%s: invalid JSON — %v", f.Name, err))
+			report.Details = append(report.Details, fmt.Sprintf("%s: invalid JSON - %v", f.Name, err))
 			continue
 		}
 
@@ -277,6 +312,19 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 		if existingNames[skill.Name] {
 			report.Skipped++
 			report.Details = append(report.Details, fmt.Sprintf("%s: skipped (duplicate)", skill.Name))
+			continue
+		}
+
+		scanReport := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &skill, skill.SkillDir, nil)
+		if scanReport == nil || scanReport.NeedsUserReview() {
+			report.Failed++
+			level := security.RiskCritical
+			summary := "security scan unavailable"
+			if scanReport != nil {
+				level = scanReport.FinalLevel
+				summary = scanReport.Summary
+			}
+			report.Details = append(report.Details, fmt.Sprintf("%s: blocked by security scan (level=%s): %s", skill.Name, level, summary))
 			continue
 		}
 
@@ -316,7 +364,7 @@ func SerializeSkill(skill corelib.NLSkillEntry) ([]byte, error) {
 func DeserializeSkill(data []byte) (corelib.NLSkillEntry, error) {
 	var skill corelib.NLSkillEntry
 	if err := json.Unmarshal(data, &skill); err != nil {
-		return corelib.NLSkillEntry{}, fmt.Errorf("deserialize skill: invalid JSON — %w", err)
+		return corelib.NLSkillEntry{}, fmt.Errorf("deserialize skill: invalid JSON - %w", err)
 	}
 	if strings.TrimSpace(skill.Name) == "" {
 		return corelib.NLSkillEntry{}, fmt.Errorf("deserialize skill: name is required")

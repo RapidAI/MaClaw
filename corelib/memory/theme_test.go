@@ -301,6 +301,8 @@ func TestStoreKeepsThemeLayerInSync(t *testing.T) {
 	if err := store.Save(second); err != nil {
 		t.Fatal(err)
 	}
+	// Theme layer is lazily rebuilt — call EnsureUpToDate before checking.
+	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
 	if !themeLayerContainsEntry(store.ThemeManager().Themes(), "go2") {
 		t.Fatalf("expected saved entry in theme layer: %+v", store.ThemeManager().Themes())
 	}
@@ -308,6 +310,7 @@ func TestStoreKeepsThemeLayerInSync(t *testing.T) {
 	if err := store.Update("go2", "PostgreSQL restore drill", CategoryProjectKnowledge, []string{"postgresql"}); err != nil {
 		t.Fatal(err)
 	}
+	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
 	themes := store.ThemeManager().Themes()
 	if !themeLayerContainsEntry(themes, "go2") {
 		t.Fatalf("expected updated entry to remain represented: %+v", themes)
@@ -316,6 +319,7 @@ func TestStoreKeepsThemeLayerInSync(t *testing.T) {
 	if err := store.Delete("go2"); err != nil {
 		t.Fatal(err)
 	}
+	store.ThemeManager().EnsureUpToDate(store.List("", ""), nil)
 	if themeLayerContainsEntry(store.ThemeManager().Themes(), "go2") {
 		t.Fatalf("deleted entry should be removed from theme layer: %+v", store.ThemeManager().Themes())
 	}

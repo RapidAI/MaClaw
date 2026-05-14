@@ -202,3 +202,71 @@ func TestAppConfig_GroupDiscussionExplicitFalseSurvivesUnmarshal(t *testing.T) {
 		t.Errorf("Availability = %q, want available", gd.Availability)
 	}
 }
+
+func TestCapabilityMarketPolicyDefaults(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{}`), &cfg); err != nil {
+		t.Fatalf("unmarshal empty config: %v", err)
+	}
+
+	policy := cfg.CapabilityMarketPolicy
+	if !policy.EffectiveEnterpriseOnlyInstall() {
+		t.Fatal("enterprise_only_install should default to true")
+	}
+	if policy.EffectiveEnterpriseOnlySearch() {
+		t.Fatal("enterprise_only_search should default to false")
+	}
+	if policy.ViewMode != "merged" {
+		t.Fatalf("ViewMode = %q, want merged", policy.ViewMode)
+	}
+	if policy.ManagedDeployment.RetryIntervalMinutes != 60 {
+		t.Fatalf("RetryIntervalMinutes = %d, want 60", policy.ManagedDeployment.RetryIntervalMinutes)
+	}
+	if policy.UpdatePolicy.EnterpriseHub.Default != "auto_update_approved" {
+		t.Fatalf("enterprise hub update default = %q", policy.UpdatePolicy.EnterpriseHub.Default)
+	}
+	if policy.UpdatePolicy.HubCenter.FreeCapability != "auto_update" {
+		t.Fatalf("hubcenter free update = %q", policy.UpdatePolicy.HubCenter.FreeCapability)
+	}
+	if policy.UpdatePolicy.HubCenter.PaidCapability != "require_license_and_purchase_policy" {
+		t.Fatalf("hubcenter paid update = %q", policy.UpdatePolicy.HubCenter.PaidCapability)
+	}
+	if got := policy.SourcePriority["enterprise_hub"]; got != 100 {
+		t.Fatalf("enterprise_hub priority = %d, want 100", got)
+	}
+	if got := policy.ResourceTypes["mcp"].DefaultSources; len(got) != 1 || got[0] != "enterprise_hub" {
+		t.Fatalf("mcp default sources = %#v", got)
+	}
+}
+
+func TestCapabilityMarketPolicyExplicitEnterpriseSearchSurvivesUnmarshal(t *testing.T) {
+	raw := `{
+		"capability_market_policy": {
+			"enterprise_only_install": false,
+			"enterprise_only_search": true,
+			"update_policy": {
+				"hubcenter": {
+					"free_capability": "notify_admin",
+					"paid_capability": "require_license_and_purchase_policy"
+				}
+			}
+		}
+	}`
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal explicit capability_market_policy: %v", err)
+	}
+	policy := cfg.CapabilityMarketPolicy
+	if policy.EffectiveEnterpriseOnlyInstall() {
+		t.Fatal("explicit enterprise_only_install=false should survive unmarshal")
+	}
+	if !policy.EffectiveEnterpriseOnlySearch() {
+		t.Fatal("explicit enterprise_only_search=true should survive unmarshal")
+	}
+	if policy.UpdatePolicy.HubCenter.FreeCapability != "notify_admin" {
+		t.Fatalf("hubcenter free update = %q, want notify_admin", policy.UpdatePolicy.HubCenter.FreeCapability)
+	}
+	if policy.UpdatePolicy.EnterpriseHub.Default != "auto_update_approved" {
+		t.Fatalf("enterprise hub update default should be filled, got %q", policy.UpdatePolicy.EnterpriseHub.Default)
+	}
+}

@@ -1246,11 +1246,16 @@ func (s *HTTPServer) handleGetConfig(w http.ResponseWriter, r *http.Request, p a
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	var in corelib.AppConfig
-	if !decodeJSON(w, r, &in) {
+	// Accept both raw AppConfig JSON and {"app_config": {...}} envelope format.
+	inPtr, ok := decodeOptionalAppConfig(w, r)
+	if !ok {
 		return
 	}
-	out, err := s.svc.UpdateUserConfig(r.Context(), p, in)
+	if inPtr == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty or invalid config body"})
+		return
+	}
+	out, err := s.svc.UpdateUserConfig(r.Context(), p, *inPtr)
 	if err != nil {
 		writeError(w, err)
 		return

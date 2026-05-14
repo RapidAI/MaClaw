@@ -7,7 +7,8 @@ import { useCodePreviewState } from "./useCodePreviewState";
 import { useBufferQueue } from "./useBufferQueue";
 import type { AttachmentInfo } from "./useBufferQueue";
 import { renderMessage } from "./aiAssistantMarkdown";
-import { AI_PANEL_STATIC_STYLE_ID, AI_PANEL_STATIC_STYLE_TEXT, darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme } from "./aiAssistantPanelTheme";
+import { darkTheme, lightTheme, maximizedInlineStyle, overlayStyle, overlayTheme } from "./aiAssistantPanelTheme";
+import "./ensureAIAssistantPanelStyles";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchPanel, useProjectSearch } from "./ProjectSearchPanel";
 import { useTTSReadback } from "./useTTSReadback";
@@ -29,14 +30,6 @@ import { useAssistantThemeMode } from "./useAssistantThemeMode";
 import { AssistantPreviewPane } from "./AssistantPreviewPane";
 import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTurnSnapshot } from "./CodingAgentProgressStatus";
 import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
-
-if (typeof document !== "undefined" && !document.getElementById(AI_PANEL_STATIC_STYLE_ID)) {
-    const style = document.createElement("style");
-    style.id = AI_PANEL_STATIC_STYLE_ID;
-    style.textContent = AI_PANEL_STATIC_STYLE_TEXT;
-    document.head.appendChild(style);
-}
-
 export function AIAssistantPanel(props: any) {
     const { onClose, lang, chatFontSize = 14, groupDiscussion, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0 } = props;
     const state = props.state || props;
@@ -64,6 +57,7 @@ export function AIAssistantPanel(props: any) {
         clearSelectedFile,
         removeSelectedFile,
         sendMessage,
+        sendBtwMessage,
         injectSupplementary,
         clearHistory,
         recordSubmittedPrompt,
@@ -94,12 +88,10 @@ export function AIAssistantPanel(props: any) {
     const cancelRestoreSeqRef = useRef(0);
     const { themeMode, setThemeMode } = useAssistantThemeMode(controlledThemeMode, onThemeModeChange);
     const { ttsEnabled, setTtsEnabled, ttsPlaying } = useTTSReadback(audioOutputDeviceId);
-
     const { queue, addEntry, removeEntry, updateEntry, reorderEntry, mergeAndFire, extractEntry } = useBufferQueue();
     const { handlePaste, pendingAttachments, setPendingAttachments } = usePastedImageAttachments();
     const t = themeMode === 'dark' ? darkTheme : (inline ? lightTheme : overlayTheme);
     const showMaximizeToggle = inline && !!onToggleMaximize;
-
 
     const { state: workflowState, closeDocPreview, setSplitRatio: setWorkflowSplitRatio, dismissMaximizeSuggestion } = useWorkflowState();
     const { state: codePreviewState, closePanel: closeCodePreview, selectFile: selectCodeFile } = useCodePreviewState(workflowState.splitMode);
@@ -140,7 +132,6 @@ export function AIAssistantPanel(props: any) {
         }
         await sendMessage(msg);
     }, [cancelSession, isBusy, lang, sendMessage]);
-
 
     const {
         bindGroupDiscussionPress,
@@ -257,6 +248,20 @@ export function AIAssistantPanel(props: any) {
 
     const handleSend = useCallback(async () => {
         const text = inputValue.trim();
+        // /btw side query: always execute immediately, never buffer.
+        // /btw runs in an independent agent loop and does not block the main loop.
+        if ((text === '/btw' || text.startsWith('/btw ')) && sendBtwMessage) {
+            const btwQuery = text.slice(4).trim(); // strip "/btw" prefix
+            recordSubmittedPrompt?.(text);
+            resetHistoryBrowsing();
+            updateInputValue("");
+            if (inputRef.current) inputRef.current.style.height = "auto";
+            setPendingAttachments([]);
+            clearSelectedFile?.();
+            requestAnimationFrame(() => inputRef.current?.focus());
+            await sendBtwMessage(btwQuery);
+            return;
+        }
         if (submitLocked || queueEditDraftActive) {
             if (!text && pendingAttachments.length === 0 && selectedFilePaths.length === 0) {
                 if (queueEditDraftActive) {
@@ -299,7 +304,7 @@ export function AIAssistantPanel(props: any) {
         userScrolledUpRef.current = false;
         const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
         await sendMessage(outgoing);
-    }, [inputValue, submitLocked, queueEditDraftActive, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessage]);
+    }, [inputValue, submitLocked, queueEditDraftActive, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessage, sendBtwMessage]);
 
     useEffect(() => {
         if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {

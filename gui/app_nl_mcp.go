@@ -53,18 +53,19 @@ func mcpWireToolsToViews(wire []mcpWireToolView) []MCPToolView {
 
 // MCPServerView is the Wails-facing view of an MCP Server including runtime state.
 type MCPServerView struct {
-	ID           string                  `json:"id"`
-	Name         string                  `json:"name"`
-	EndpointURL  string                  `json:"endpoint_url"`
-	AuthType     string                  `json:"auth_type"`
-	AuthSecret   string                  `json:"auth_secret"`
-	Headers      map[string]string       `json:"headers,omitempty"`
-	Source       corelib.MCPServerSource `json:"source"`
-	Tools        []MCPToolView           `json:"tools"`
-	HealthStatus mcpHealthStatus         `json:"health_status"`
-	FailCount    int                     `json:"fail_count"`
-	LastCheckAt  time.Time               `json:"last_check_at"`
-	CreatedAt    time.Time               `json:"created_at"`
+	ID           string                          `json:"id"`
+	Name         string                          `json:"name"`
+	EndpointURL  string                          `json:"endpoint_url"`
+	AuthType     string                          `json:"auth_type"`
+	AuthSecret   string                          `json:"auth_secret"`
+	Headers      map[string]string               `json:"headers,omitempty"`
+	Source       corelib.MCPServerSource         `json:"source"`
+	Capability   *corelib.MCPServerCapabilityRef `json:"capability,omitempty"`
+	Tools        []MCPToolView                   `json:"tools"`
+	HealthStatus mcpHealthStatus                 `json:"health_status"`
+	FailCount    int                             `json:"fail_count"`
+	LastCheckAt  time.Time                       `json:"last_check_at"`
+	CreatedAt    time.Time                       `json:"created_at"`
 }
 
 // MCPRegistry manages locally-registered MCP Servers on the MaClaw client.
@@ -198,6 +199,9 @@ func (r *MCPRegistry) Update(entry corelib.MCPServerEntry) error {
 			servers[i].AuthType = entry.AuthType
 			servers[i].AuthSecret = entry.AuthSecret
 			servers[i].Headers = entry.Headers
+			if entry.Capability != nil {
+				servers[i].Capability = entry.Capability
+			}
 			// Invalidate cached tools and health when endpoint or auth changes —
 			// the old cache is from a different server configuration.
 			if endpointChanged || entry.AuthType != s.AuthType || entry.AuthSecret != s.AuthSecret {
@@ -243,6 +247,7 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 			AuthSecret:   s.AuthSecret,
 			Headers:      s.Headers,
 			Source:       s.Source,
+			Capability:   s.Capability,
 			HealthStatus: mcpHealthStatusUnknown,
 		}
 		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
@@ -775,7 +780,11 @@ func (a *App) UpdateMCPServer(server corelib.MCPServerEntry) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
-	return a.mcpRegistry.Update(server)
+	if err := a.mcpRegistry.Update(server); err != nil {
+		return err
+	}
+	a.recordMarketplaceMCPSecretBinding(server)
+	return nil
 }
 
 // UnregisterMCPServer removes an MCP Server by ID (Wails binding).

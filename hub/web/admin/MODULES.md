@@ -24,6 +24,7 @@ This folder now uses a thin-shell structure.
 
 - center-tab.js: Hub Center registration/status
 - governance-tab.js: manual bind, blocklist, invites, content audit, smart route
+- marketplace-tab.js: capability marketplace policy, approvals, imports, MCP editor
 - security-tab.js: security management and org tree
 - machines-tab.js: machine list and session inspection
 - group-discussion-tab.js: current-Hub MaClaw expert list, discussions, and results

@@ -2151,3 +2151,48 @@ export function SaveMISDataConfig(arg1) {
 export function TestMISDataConnection(arg1) {
   return window['go']['main']['App']['TestMISDataConnection'](arg1);
 }
+
+// Capability marketplace bindings
+export function SyncHubManagedCapabilities() {
+  return window['go']['main']['App']['SyncHubManagedCapabilities']();
+}
+
+export function GetHubRecommendedCapabilities() {
+  return window['go']['main']['App']['GetHubRecommendedCapabilities']();
+}
+
+export function ListHubCapabilities(arg1, arg2) {
+  return window['go']['main']['App']['ListHubCapabilities'](arg1, arg2);
+}
+
+export function GetHubCapability(arg1) {
+  return window['go']['main']['App']['GetHubCapability'](arg1);
+}
+
+export function InstallHubCapability(arg1) {
+  return window['go']['main']['App']['InstallHubCapability'](arg1);
+}
+
+export function GetHubMCPSecretRequirements(arg1, arg2) {
+  return window['go']['main']['App']['GetHubMCPSecretRequirements'](arg1, arg2);
+}
+
+export function GetHubMCPSecretBindings(arg1) {
+  return window['go']['main']['App']['GetHubMCPSecretBindings'](arg1);
+}
+
+export function SaveHubMCPSecretBinding(arg1) {
+  return window['go']['main']['App']['SaveHubMCPSecretBinding'](arg1);
+}
+
+export function GetHubMCPHubSecrets(arg1) {
+  return window['go']['main']['App']['GetHubMCPHubSecrets'](arg1);
+}
+
+export function SaveHubMCPHubSecret(arg1) {
+  return window['go']['main']['App']['SaveHubMCPHubSecret'](arg1);
+}
+
+export function RequestHubCapabilityInstallIntent(arg1) {
+  return window['go']['main']['App']['RequestHubCapabilityInstallIntent'](arg1);
+}

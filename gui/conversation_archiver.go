@@ -46,7 +46,10 @@ func (a *ConversationArchiver) SetSlotScopeResolver(fn func(userID string) *agen
 // as a long-term memory. It skips archiving when:
 //   - The conversation is too short (< 4 entries) — simple Q&A not worth archiving.
 //   - The Maclaw LLM is not configured.
-//   - The LLM call fails (error is returned to the caller).
+//   - The OnlineExtractor has been active (summary would be filtered out anyway).
+//
+// LLM failures during summary generation are logged but do not fail the call,
+// allowing session eviction to proceed regardless of transient LLM issues.
 func (a *ConversationArchiver) Archive(userID string, entries []agent.ConversationEntry) error {
 	// Skip trivial conversations.
 	if len(entries) < 4 {
@@ -63,61 +66,72 @@ func (a *ConversationArchiver) Archive(userID string, entries []agent.Conversati
 		return nil
 	}
 
-	// Build the conversation text for the LLM prompt.
-	var convoBuilder strings.Builder
-	for _, e := range entries {
-		contentStr := formatEntryContent(e.Content)
-		if contentStr == "" {
-			continue
-		}
-		convoBuilder.WriteString(fmt.Sprintf("[%s]: %s\n", e.Role, contentStr))
-	}
-	conversationText := convoBuilder.String()
-	if strings.TrimSpace(conversationText) == "" {
-		return nil
-	}
-
-	// Call the LLM to generate a summary.
-	summary, err := a.callLLMForSummary(llmCfg, conversationText)
-	if err != nil {
-		return fmt.Errorf("conversation_archiver: llm call: %w", err)
-	}
-
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		return nil
-	}
-
-	// Store the summary as a MemoryEntry.
-	now := time.Now()
-	tags := []string{
-		"conversation_summary",
-		userID,
-		now.Format("2006-01-02"),
-	}
-	if a.slotScopeResolver != nil {
-		if slot := a.slotScopeResolver(userID); slot != nil {
-			tags = append(tags,
-				"scope:unfinished_slot",
-				"slot:"+slot.SlotID,
-				"project:"+slot.ProjectPath,
-			)
-		} else {
-			tags = append(tags, "scope:main_conversation")
+	// Mutual exclusion with OnlineExtractor: if the online pipeline has been
+	// actively extracting during this session, skip summary generation.
+	// The conversation_summary category is filtered out by RecallDynamic anyway,
+	// so generating it when OnlineExtractor is active wastes LLM calls and capacity.
+	skipSummary := false
+	if a.memoryStore != nil {
+		if oe := a.memoryStore.OnlineExtractor(); oe != nil && oe.HasRecentSuccess(60*time.Minute) {
+			skipSummary = true
 		}
 	}
-	entry := memory.Entry{
-		Content:  summary,
-		Category: memory.CategoryConversationSummary,
-		Tags:     tags,
-		OwnerID:  userID, // multi-tenant: associate with the user who had this conversation
-	}
-	if err := a.memoryStore.Save(entry); err != nil {
-		return err
+
+	if !skipSummary {
+		// Build the conversation text for the LLM prompt.
+		var convoBuilder strings.Builder
+		for _, e := range entries {
+			contentStr := formatEntryContent(e.Content)
+			if contentStr == "" {
+				continue
+			}
+			convoBuilder.WriteString(fmt.Sprintf("[%s]: %s\n", e.Role, contentStr))
+		}
+		conversationText := convoBuilder.String()
+
+		if strings.TrimSpace(conversationText) != "" {
+			// Call the LLM to generate a summary.
+			summary, err := a.callLLMForSummary(llmCfg, conversationText)
+			if err != nil {
+				log.Printf("[conversation_archiver] summary generation error (non-fatal): %v", err)
+			} else {
+				summary = strings.TrimSpace(summary)
+				if summary != "" {
+					// Store the summary as a MemoryEntry.
+					now := time.Now()
+					tags := []string{
+						"conversation_summary",
+						userID,
+						now.Format("2006-01-02"),
+					}
+					if a.slotScopeResolver != nil {
+						if slot := a.slotScopeResolver(userID); slot != nil {
+							tags = append(tags,
+								"scope:unfinished_slot",
+								"slot:"+slot.SlotID,
+								"project:"+slot.ProjectPath,
+							)
+						} else {
+							tags = append(tags, "scope:main_conversation")
+						}
+					}
+					entry := memory.Entry{
+						Content:  summary,
+						Category: memory.CategoryConversationSummary,
+						Tags:     tags,
+						OwnerID:  userID,
+					}
+					if err := a.memoryStore.Save(entry); err != nil {
+						return err
+					}
+				}
+			}
+		}
 	}
 
 	// Post-session knowledge extraction: convert entries to ConversationMessages
 	// and run the KnowledgeExtractor. Errors are logged but do not fail Archive.
+	// Note: KnowledgeExtractor has its own mutual exclusion with OnlineExtractor.
 	if a.knowledgeExtractor != nil {
 		var msgs []memory.ConversationMessage
 		for _, e := range entries {

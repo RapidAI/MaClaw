@@ -294,6 +294,10 @@ type Entry struct {
 	// In GUI/TUI (single-user): always empty, all memories belong to the same user.
 	// In maclawsrv (multi-tenant): set to the IM user ID (e.g. feishu_ou_xxx).
 	OwnerID string `json:"owner_id,omitempty"`
+	// --- Knowledge stability tracking (OpenHuman-inspired) ---
+	// Tracks how reliable this knowledge is based on confirmation/contradiction signals.
+	// Pointer type so omitempty correctly omits when nil (unverified entries).
+	Stability *StabilityMeta `json:"stability_meta,omitempty"`
 }
 
 // IsActive returns true if the entry participates in normal recall.

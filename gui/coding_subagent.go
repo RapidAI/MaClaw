@@ -2805,6 +2805,12 @@ func RunTaskWithSubAgent(
 	onToken func(string),
 	onProgress func(string),
 ) *CodingSubAgentResult {
+	// OpenHuman-inspired: route to reasoning model for coding tasks
+	if handler != nil && handler.app != nil && handler.app.ohModules.modelRouter != nil {
+		if handler.app.ohModules.modelRouter.HasRoute("reasoning") {
+			cfg = handler.routeLLMConfig("reasoning")
+		}
+	}
 	sa := NewCodingSubAgent(handler, cfg, httpClient, projectPath, loopCtx)
 	sa.SetCallbacks(onToken, onProgress)
 	return sa.ExecuteTask(task, reqCtx, designCtx, prevOutputs)

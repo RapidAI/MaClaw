@@ -283,6 +283,7 @@ const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico", ".tif", ".tiff"]);
 const MAX_LIVE_PROGRESS_MESSAGES = 100;
 const HIDDEN_PROGRESS_PATTERNS = [
+    /^__heartbeat__$/,
     /^[⏳]\s*命令仍在执行中（已\s*\d+s）:/,
 ];
 
@@ -2921,6 +2922,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         clearSelectedFile,
         removeSelectedFile,
         sendMessage,
+        sendBtwMessage,
         sendMessageInBackground,
         injectSupplementary,
         clearHistory,
@@ -2931,7 +2933,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         cancelSession,
         submitAgentView,
         dismissAgentView,
-    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendMessageInBackground, injectSupplementary, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView]);
+    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView]);
 
     return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, submitAgentView, dismissAgentView, panelState, panelActions };
 }

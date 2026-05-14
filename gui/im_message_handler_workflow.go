@@ -1120,7 +1120,8 @@ func (h *IMMessageHandler) reviewBarrierResponse(engine *workflow.WorkflowEngine
 	if tmpl := engine.GetRegistry().Match(ws.Type); tmpl != nil && ws.PhaseIndex < len(tmpl.Phases) {
 		phaseName = tmpl.Phases[ws.PhaseIndex].Name
 	}
-	return &IMAgentResponse{Text: fmt.Sprintf("Current workflow is waiting for confirmation/supplement at phase %q. Reply confirm to continue, provide changes to update this phase, or reply cancel to stop the workflow.", phaseName)}
+	lang := h.getWorkflowLang()
+	return &IMAgentResponse{Text: i18n.Tf(i18n.MsgWorkflowAwaitingReview, lang, phaseName)}
 }
 
 // handleActiveUnderstanding processes input for a user with an active
@@ -1134,13 +1135,28 @@ func (h *IMMessageHandler) handleActiveUnderstanding(engine *workflow.WorkflowEn
 	reply, ready, cancelled, intent, err := understanding.HandleInput(userID, text)
 	if err != nil {
 		log.Printf("[WorkflowInterception] understanding HandleInput error for user %s: %v", userID, err)
-		// Keep the active understanding session bound to the user. A transient
-		// clarification error should not hand the follow-up to the normal agent
-		// loop, where task-context may classify it against unrelated history.
-		return &IMAgentResponse{Text: "I received your supplement, but the workflow understanding step failed temporarily. Please send the supplement again or confirm to continue the current task."}
+		// The understanding LLM failed (timeout, truncated JSON, network error).
+		// Clean up the broken session and fall through to the normal agent loop.
+		// The user's message will be processed by the main LLM which has full
+		// conversation context. Keeping the user trapped in a broken understanding
+		// session is worse than falling through — the main agent loop can handle
+		// conversational follow-ups like "刚才呀" correctly.
+		understanding.CancelSession(userID)
+		return nil
+	}
+
+	// Detect contract breach: the IUM LLM has completely departed from its
+	// structured JSON contract (capability denial, long free-form explanation,
+	// etc.). Cancel the understanding session and fall through to the normal
+	// agent loop which has full tool access (read_file/write_file/bash/etc).
+	if workflow.IsContractBreachReply(reply) {
+		log.Printf("[WorkflowInterception] IUM contract breach detected for user %s, cancelling understanding session and falling through to agent loop", userID)
+		understanding.CancelSession(userID)
+		return nil
 	}
 	if cancelled {
-		return &IMAgentResponse{Text: "Cancelled. Anything else I can help with?"}
+		lang := h.getWorkflowLang()
+		return &IMAgentResponse{Text: i18n.T(i18n.MsgWorkflowCancelled, lang)}
 	}
 	if ready && intent != nil {
 		// Guard: if the LLM returned category="none" or empty with ready=true,

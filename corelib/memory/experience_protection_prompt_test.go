@@ -51,7 +51,7 @@ func TestCompressorMergeBatchIncludesExperienceProtectionAnchors(t *testing.T) {
 	}
 }
 
-func TestPromoterIncludesExperienceProtectionAnchors(t *testing.T) {
+func TestSynthesizerIncludesExperienceProtectionAnchors(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
@@ -63,8 +63,9 @@ func TestPromoterIncludesExperienceProtectionAnchors(t *testing.T) {
 	}
 	store.SetEntries(entries)
 	llm := &recordingExperienceProtectionLLM{response: "[]"}
-	promoter := NewPromoter(store, llm)
-	promoter.SetExperienceProtectionSamples([]ProtectedExperienceCandidate{{
+	synthesizer := NewSynthesizer(store, llm)
+	synthesizer.SetMinEntries(1) // lower guard for testing
+	synthesizer.SetExperienceProtectionSamples([]ProtectedExperienceCandidate{{
 		ID:       "tool-retry",
 		Title:    "browser retry recovery",
 		Summary:  "retry browser click after observe",
@@ -74,14 +75,14 @@ func TestPromoterIncludesExperienceProtectionAnchors(t *testing.T) {
 		Tags:     []string{"tool:browser"},
 	}})
 
-	if _, err := promoter.Promote(context.Background()); err != nil {
-		t.Fatalf("Promote: %v", err)
+	if _, err := synthesizer.Synthesize(context.Background()); err != nil {
+		t.Fatalf("Synthesize: %v", err)
 	}
 	if len(llm.messages) != 2 {
 		t.Fatalf("expected LLM messages, got %#v", llm.messages)
 	}
 	userPrompt := llm.messages[1]["content"]
 	if !strings.Contains(userPrompt, "Protected experience candidates") || !strings.Contains(userPrompt, "browser retry recovery") || !strings.Contains(userPrompt, "experience_protection:") {
-		t.Fatalf("promotion prompt missing protection anchors:\n%s", userPrompt)
+		t.Fatalf("synthesis prompt missing protection anchors:\n%s", userPrompt)
 	}
 }

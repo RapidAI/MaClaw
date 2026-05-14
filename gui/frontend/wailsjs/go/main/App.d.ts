@@ -1008,3 +1008,16 @@ export function ExportTextFile(arg1:string,arg2:string):Promise<string>;
 export function GetMISDataConfig():Promise<any>;
 export function SaveMISDataConfig(arg1:any):Promise<void>;
 export function TestMISDataConnection(arg1:any):Promise<any>;
+
+// Capability marketplace bindings
+export function SyncHubManagedCapabilities():Promise<any>;
+export function GetHubRecommendedCapabilities():Promise<Array<any>>;
+export function ListHubCapabilities(arg1:string,arg2:string):Promise<Array<any>>;
+export function GetHubCapability(arg1:string):Promise<any>;
+export function InstallHubCapability(arg1:string):Promise<any>;
+export function GetHubMCPSecretRequirements(arg1:string,arg2:string):Promise<Array<any>>;
+export function GetHubMCPSecretBindings(arg1:string):Promise<Array<any>>;
+export function SaveHubMCPSecretBinding(arg1:any):Promise<void>;
+export function GetHubMCPHubSecrets(arg1:string):Promise<Array<any>>;
+export function SaveHubMCPHubSecret(arg1:any):Promise<any>;
+export function RequestHubCapabilityInstallIntent(arg1:any):Promise<any>;

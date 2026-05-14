@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // AppManagers holds all the manager instances to reduce App struct complexity
@@ -597,4 +599,8 @@ func (um *UIManager) GetWorkstationCancel() interface{} {
 // SetWorkstationCancel sets the workstation cancel
 func (um *UIManager) SetWorkstationCancel(cancel interface{}) {
 	um.workstationCancel = cancel
+}
+
+func (am *AppManagers) HTTPClient() *http.Client {
+	return &http.Client{Timeout: 30 * time.Second}
 }

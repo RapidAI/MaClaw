@@ -294,7 +294,23 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		}
 	}()
 	ctx := context.Background()
-	switch skillSearchSourceFromStatus(source) {
+	kind := skillSearchSourceFromStatus(source)
+	if kind != skillSearchSourceEnterpriseHub {
+		if cfg, err := a.LoadConfig(); err == nil && strings.TrimSpace(cfg.RemoteHubURL) != "" && cfg.CapabilityMarketPolicy.WithDefaults().EffectiveEnterpriseOnlyInstall() {
+			return fmt.Errorf("enterprise policy only allows installing skills from enterprise Hub")
+		}
+	}
+	switch kind {
+	case skillSearchSourceEnterpriseHub:
+		ref := strings.TrimSpace(firstNonEmpty(installRef, id))
+		if ref == "" {
+			return fmt.Errorf("enterprise capability id is required")
+		}
+		status := a.InstallHubCapability(ref)
+		if len(status.Errors) > 0 {
+			return fmt.Errorf("%s", strings.Join(status.Errors, "; "))
+		}
+		return nil
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		stagingDir, err := cskill.PrepareStagingDir(firstNonEmpty(id, "mixed-skill"))
 		if err != nil {
@@ -326,13 +342,18 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		} else {
 			cskill.CleanupStaging(stagingDir)
 		}
+		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
+			if committedDir != "" {
+				_ = os.RemoveAll(committedDir)
+			}
+			return fmt.Errorf("write skill scan cache: %w", err)
+		}
 		if err := a.skillExecutor.Register(*skill); err != nil {
 			if committedDir != "" {
 				_ = os.RemoveAll(committedDir)
 			}
 			return err
 		}
-		writeSkillScanCacheForInstalledEntry(skill, report)
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return nil
 
@@ -348,10 +369,12 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		if err != nil {
 			return err
 		}
+		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
+			return fmt.Errorf("write skill scan cache: %w", err)
+		}
 		if err := a.skillExecutor.Register(*skill); err != nil {
 			return err
 		}
-		writeSkillScanCacheForInstalledEntry(skill, report)
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return nil
 	case skillSearchSourceGitHub:
@@ -379,10 +402,12 @@ func (a *App) InstallMixedSkill(source, id, installRef string) error {
 		if err != nil {
 			return err
 		}
+		if err := writeSkillScanCacheForInstalledEntry(skill, report); err != nil {
+			return fmt.Errorf("write skill scan cache: %w", err)
+		}
 		if err := a.skillExecutor.Register(*skill); err != nil {
 			return err
 		}
-		writeSkillScanCacheForInstalledEntry(skill, report)
 		a.emitSkillInstallProgress(skill.Name, "done", "Skill installed successfully.", report)
 		return nil
 	default:
@@ -423,16 +448,37 @@ func (a *App) InstallHubSkill(skillID, hubURL string) error {
 		cskill.CleanupStaging(stagingDir)
 		return err
 	}
+	rewriteSkillStepWorkingDir(entry, finalDir)
 	entry.SkillDir = finalDir
+	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
+		_ = os.RemoveAll(finalDir)
+		return fmt.Errorf("write skill scan cache: %w", err)
+	}
 	if err := a.skillExecutor.Register(*entry); err != nil {
 		_ = os.RemoveAll(finalDir)
 		return err
 	}
-	writeSkillScanCacheForInstalledEntry(entry, report)
 	a.emitSkillInstallProgress(entry.Name, "done", "Skill installed successfully.", report)
 	// Auto-install dependencies for file-backed skills (e.g. npm install, pip install).
 	go a.installSkillDepsIfMissing(entry.SkillDir, entry.Name)
 	return nil
+}
+
+func rewriteSkillStepWorkingDir(entry *corelib.NLSkillEntry, finalDir string) {
+	if entry == nil || strings.TrimSpace(finalDir) == "" {
+		return
+	}
+	oldDir := strings.TrimSpace(entry.SkillDir)
+	for i := range entry.Steps {
+		if entry.Steps[i].Params == nil {
+			continue
+		}
+		if workingDir, ok := entry.Steps[i].Params["working_dir"].(string); ok {
+			if strings.TrimSpace(workingDir) == "" || oldDir == "" || filepath.Clean(workingDir) == filepath.Clean(oldDir) {
+				entry.Steps[i].Params["working_dir"] = finalDir
+			}
+		}
+	}
 }
 
 // installSkillDepsIfMissing checks for package.json / requirements.txt in the
@@ -452,7 +498,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 	nodeModules := filepath.Join(skillDir, "node_modules")
 
 	if _, err := os.Stat(pkgJSON); err == nil {
-		// Has package.json 鈥?check if node_modules exists.
+		// Has package.json — check if node_modules exists.
 		if _, err := os.Stat(nodeModules); os.IsNotExist(err) {
 			log.Printf("[skill-deps] installing npm dependencies for %s...", skillName)
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -469,7 +515,7 @@ func (a *App) installSkillDepsIfMissing(skillDir, skillName string) {
 		}
 	}
 	if _, err := os.Stat(reqTxt); err == nil {
-		// Has requirements.txt 鈥?run pip install.
+		// Has requirements.txt — run pip install.
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "pip", "install", "-r", reqTxt)
@@ -1495,6 +1541,10 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	onProgress := func(progressText string) {
 		if progressText == imHeartbeatMsg {
+			// Heartbeat must reach the frontend to reset the activity timeout
+			// timer, but should not be rendered to the user. The frontend's
+			// shouldHideProgressText filters it after resetting the timer.
+			emitEvent("ai-assistant-progress", progressText)
 			return
 		}
 		if !isVisibleAIAssistantProgressText(progressText) {
@@ -1642,7 +1692,7 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	}
 	// Trace enrichment and gossip detection are non-critical post-processing.
 	// Run them asynchronously so the Wails binding returns immediately after
-	// the agent loop completes 鈥?this unblocks the frontend input box which
+	// the agent loop completes — this unblocks the frontend input box which
 	// was locked while awaiting this synchronous call.
 	// Note: resp.TraceSummary/TraceEventCount/EvidenceCount are already
 	// populated by finalizeTraceResult inside the agent loop. The async
@@ -1733,7 +1783,7 @@ func (a *App) ClearAIAssistantHistory() error {
 	}
 	handler := hubClient.ensureIMHandler()
 	handler.memory.Clear(desktopUserID)
-	// 鍚屾娓呯┖ gossip 妫€娴嬬紦鍐插尯
+	// Clear pending gossip auto-publish buffer as well.
 	if a.gossipAutoPublish != nil {
 		a.gossipAutoPublish.ClearBuffer()
 	}
@@ -1970,10 +2020,12 @@ func (a *App) ImportAgentSkillDir(skillDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
+		return "", fmt.Errorf("write skill scan cache: %w", err)
+	}
 	if err := a.skillExecutor.Register(*entry); err != nil {
 		return "", err
 	}
-	writeSkillScanCacheForInstalledEntry(entry, report)
 	return entry.Name, nil
 }
 
@@ -2014,7 +2066,7 @@ func (a *App) SavePastedImage(base64Data string, extension string) (string, erro
 		return "", fmt.Errorf("unsupported image extension: %s", ext)
 	}
 
-	// Validate base64 data size (鈮?50MB before decoding).
+	// Validate base64 data size (<= 50MB before decoding).
 	const maxBase64Size = 50 * 1024 * 1024 // 50MB
 	if len(base64Data) > maxBase64Size {
 		return "", fmt.Errorf("image data too large (max 50MB)")
@@ -2098,7 +2150,7 @@ func (a *App) ReadErrorLog() ([]string, error) {
 }
 
 // ---------------------------------------------------------------------------
-// IM Audit Store 鈥?Wails bindings
+// IM Audit Store - Wails bindings
 // ---------------------------------------------------------------------------
 
 // ensureIMAuditStore lazily initializes the IM audit SQLite store.

@@ -115,6 +115,18 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 	var allowedSources []string
 	if s.app != nil {
 		allowedSources = s.app.GetAllowedSkillSources()
+		if cfg, err := s.app.LoadConfig(); err == nil && skillMarketplaceEnterpriseOnlySearch(cfg) {
+			allowedSources = []string{corelib.CapabilitySourceEnterpriseHub}
+		}
+	}
+
+	if isEnterpriseHubSkillSourceAllowed(allowedSources) {
+		hubResults, err := s.searchEnterpriseHubSkills(ctx, query)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("enterprise_hub: %v", err))
+		} else {
+			results = append(results, hubResults...)
+		}
 	}
 
 	if cskill.IsSourceAllowed("skillhub", allowedSources) {
@@ -169,6 +181,11 @@ func (s *SkillSearcher) SearchAll(ctx context.Context, query string) ([]MixedSki
 				skillMap[localSkills[i].Name] = &localSkills[i]
 			}
 			sort.SliceStable(results, func(i, j int) bool {
+				li := sourcePriority(results[i].Source)
+				lj := sourcePriority(results[j].Source)
+				if li != lj {
+					return li < lj
+				}
 				pi := localSearchPenalty(results[i].Name, results[i].InstalledName, skillMap)
 				pj := localSearchPenalty(results[j].Name, results[j].InstalledName, skillMap)
 				return pi < pj
@@ -196,19 +213,23 @@ func localSearchPenalty(name, installedName string, skillMap map[string]*corelib
 
 func sourcePriority(source string) int {
 	switch skillSearchSourceFromStatus(source) {
-	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
+	case skillSearchSourceEnterpriseHub:
 		return 0
-	case skillSearchSourceClawHub:
+	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		return 1
-	case skillSearchSourceGitHub:
+	case skillSearchSourceClawHub:
 		return 2
-	default:
+	case skillSearchSourceGitHub:
 		return 3
+	default:
+		return 4
 	}
 }
 
 func mixedSourceLabel(source string) string {
 	switch skillSearchSourceFromStatus(source) {
+	case skillSearchSourceEnterpriseHub:
+		return "Enterprise Hub"
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		return "SkillMarket"
 	case skillSearchSourceClawHub:
@@ -220,6 +241,65 @@ func mixedSourceLabel(source string) string {
 	}
 }
 
+func skillMarketplaceEnterpriseOnlySearch(cfg corelib.AppConfig) bool {
+	policy := cfg.CapabilityMarketPolicy.WithDefaults()
+	return strings.TrimSpace(cfg.RemoteHubURL) != "" && policy.EffectiveEnterpriseOnlySearch()
+}
+func isEnterpriseHubSkillSourceAllowed(allowedSources []string) bool {
+	if len(allowedSources) == 0 {
+		return true
+	}
+	for _, source := range allowedSources {
+		switch strings.TrimSpace(source) {
+		case corelib.CapabilitySourceEnterpriseHub, "hub", "enterprise":
+			return true
+		}
+	}
+	return false
+}
+
+func (s *SkillSearcher) searchEnterpriseHubSkills(ctx context.Context, query string) ([]MixedSkillSearchResult, error) {
+	if s.app == nil {
+		return nil, nil
+	}
+	cfg, err := s.app.LoadConfig()
+	if err != nil {
+		return nil, err
+	}
+	client, err := newCapabilityMarketClient(cfg)
+	if err != nil {
+		if skillMarketplaceEnterpriseOnlySearch(cfg) {
+			return nil, err
+		}
+		return nil, nil
+	}
+	items, err := client.listCapabilities(ctx, corelib.CapabilityTypeSkill, query)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]MixedSkillSearchResult, 0, len(items))
+	for _, item := range items {
+		if !strings.EqualFold(item.CapabilityType, corelib.CapabilityTypeSkill) {
+			continue
+		}
+		id := firstNonEmpty(item.ID, item.CapabilityID)
+		if id == "" {
+			continue
+		}
+		results = append(results, MixedSkillSearchResult{
+			ID:          id,
+			Name:        firstNonEmpty(item.DisplayName, item.CapabilityID, item.ID),
+			Description: item.Description,
+			Source:      corelib.CapabilitySourceEnterpriseHub,
+			SourceLabel: mixedSourceLabel(corelib.CapabilitySourceEnterpriseHub),
+			InstallRef:  id,
+			Version:     item.CurrentVersionKey,
+			TrustLevel:  "enterprise",
+			Score:       100,
+		})
+	}
+	return results, nil
+}
 func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkillSearchResult {
 	source := string(r.SourceKind())
 	return MixedSkillSearchResult{
@@ -242,6 +322,8 @@ func (s *SkillSearcher) toMixedSkillSearchResult(r SkillSearchResult) MixedSkill
 
 func mixedTrustLevel(source string) string {
 	switch skillSearchSourceFromStatus(source) {
+	case skillSearchSourceEnterpriseHub:
+		return "enterprise"
 	case skillSearchSourceClawHub, skillSearchSourceGitHub:
 		return "community"
 	default:
@@ -298,6 +380,8 @@ func (s *SkillSearcher) enrichInstalledState(results []MixedSkillSearchResult) {
 
 func mixedResultMatchesSkill(result MixedSkillSearchResult, skill corelib.NLSkillEntry) bool {
 	switch skillSearchSourceFromStatus(result.Source) {
+	case skillSearchSourceEnterpriseHub:
+		return skill.Capability != nil && (strings.EqualFold(skill.Capability.CapabilityID, result.ID))
 	case skillSearchSourceSkillMarket, skillSearchSourceSkillHub:
 		return normalizeSkillEntrySource(skill.Source) == skillEntrySourceHub && skill.HubSkillID == result.ID
 	case skillSearchSourceClawHub:
@@ -317,7 +401,7 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 		log.Printf("[skill-search] skillmarket search error: %v", err)
 	}
 	if len(results) == 0 {
-		// Step 2: ClawHub 中国镜像
+		// Step 2: try ClawHub mirror.
 		log.Printf("[skill-search] no skillmarket results for: %s, trying ClawHub mirror...", query)
 		results = s.searchClawHubMirror(ctx, query)
 	}
@@ -327,7 +411,7 @@ func (s *SkillSearcher) SearchAndInstall(ctx context.Context, query string) (*Sk
 		return s.searchGitHubFallback(ctx, query)
 	}
 
-	// 根据 Skill获取策略 过滤
+	// Apply configured purchase mode filter.
 	mode := s.client.getSkillPurchaseMode()
 	if mode == "free_only" {
 		var filtered []SkillSearchResult

@@ -11,6 +11,7 @@ This directory contains architecture notes, design records, and operational guid
 ## Knowledge Base (外脑)
 
 - [Memory architecture improvement plan](memory-architecture-improvement-plan.md): Full architecture of the three-layer memory system (conversation history → long-term memory → cold storage) and improvement phases.
+- [OpenHuman inspired improvements](openhuman-inspired-improvements.md): Comprehensive improvement plan inspired by tinyhumansai/openhuman — TokenJuice, Model Routing, Memory Tree, Subconscious Engine, Tool-Scoped Memory, and more.
 
 ## MaClawDataSrv
 

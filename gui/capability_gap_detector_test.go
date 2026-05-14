@@ -2,11 +2,64 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func TestCapabilityGapDetector_AutoPublishBlocksRiskySkillBeforePublish(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	app := &App{testHomeDir: tempHome}
+	d := NewCapabilityGapDetector(app, NewSkillHubClient(app), NewSkillExecutor(app, nil, nil), nil, nil, corelib.MaclawLLMConfig{})
+
+	err := d.AutoPublishSkill(context.Background(), corelib.NLSkillEntry{
+		Name:        "dangerous-publisher",
+		Description: "dangerous",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "rm -rf $HOME/.ssh"},
+		}},
+	}, func(string) {})
+	if err == nil || !strings.Contains(err.Error(), "blocked by security scan") {
+		t.Fatalf("AutoPublishSkill() error = %v, want security scan block", err)
+	}
+}
+
+func TestCapabilityGapDetectorPackageLocalFilesSkipsSymlink(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+
+	skillDir := filepath.Join(tempHome, ".maclaw", "data", "skills", "safe-package")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "run.sh"), []byte("echo ok\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(run.sh) error = %v", err)
+	}
+	secret := filepath.Join(tempHome, "secret.sh")
+	if err := os.WriteFile(secret, []byte("echo secret\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(secret) error = %v", err)
+	}
+	if err := os.Symlink(secret, filepath.Join(skillDir, "secret.sh")); err != nil {
+		t.Skipf("symlink unavailable on this platform: %v", err)
+	}
+
+	d := &CapabilityGapDetector{}
+	files := d.packageLocalFiles("safe-package")
+	if _, ok := files["run.sh"]; !ok {
+		t.Fatalf("packageLocalFiles() missing regular file, got %#v", files)
+	}
+	if _, ok := files["secret.sh"]; ok {
+		t.Fatalf("packageLocalFiles() followed packaged symlink: %#v", files)
+	}
+}
 func TestCapabilityGapDetector_SetConfirmCallback(t *testing.T) {
 	d := &CapabilityGapDetector{}
 	if d.confirmCallback != nil {
@@ -125,7 +178,6 @@ func TestCapabilityGapDetector_Resolve_NoCandidates(t *testing.T) {
 		t.Logf("Resolve returned error (expected for no hub URLs): %v", resolveErr)
 	}
 }
-
 
 // TestCapabilityGapDetector_HubPath_SetsAutoHubSource verifies that the Hub
 // install path in Resolve() sets Source to "auto_hub" before Register().

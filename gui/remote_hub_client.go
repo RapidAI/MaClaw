@@ -55,13 +55,13 @@ type RemoteHubClient struct {
 	// Preview delta batching: accumulate lines per session and flush periodically
 	// to reduce WebSocket message frequency for PWA viewers.
 	previewMu      sync.Mutex
-	previewPending map[string]*pendingPreviewDelta // sessionID → accumulated delta
+	previewPending map[string]*pendingPreviewDelta // sessionID -> accumulated delta
 	previewTicker  *time.Ticker
 	previewStopCh  chan struct{}
 
 	// Summary throttling: avoid sending identical summaries repeatedly.
 	summaryMu   sync.Mutex
-	lastSummary map[string]string // sessionID → JSON of last sent summary
+	lastSummary map[string]string // sessionID -> JSON of last sent summary
 
 	// IM message handler for Agent Passthrough.
 	imHandlerMu        sync.Mutex
@@ -185,6 +185,7 @@ func (c *RemoteHubClient) Connect() error {
 	go c.SyncSessions()
 	go c.SyncLaunchProjects()
 	go c.SyncTools()
+	c.app.TriggerHubManagedCapabilitySync("hub-connect")
 	c.startPreviewFlusher()
 
 	// Re-send IM gateway claims for any already-connected gateways that are
@@ -433,6 +434,7 @@ func (c *RemoteHubClient) ConnectAuthOnly() error {
 	go c.SyncSessions()
 	go c.SyncLaunchProjects()
 	go c.SyncTools()
+	c.app.TriggerHubManagedCapabilitySync("hub-connect")
 	c.startPreviewFlusher()
 	go c.syncIMGatewayClaims()
 	log.Printf("[asyncHubConnect] ConnectAuthOnly total=%s", time.Since(start))
@@ -486,7 +488,7 @@ func (c *RemoteHubClient) sendMachineHelloLocked() error {
 				continue
 			}
 			if c.app.toolVersionCache == nil {
-				// No cache available — skip install detection for this tool.
+				// No cache available - skip install detection for this tool.
 				// This can happen if toolVersionCache initialization failed.
 				continue
 			}
@@ -951,12 +953,30 @@ func (c *RemoteHubClient) SendHeartbeat() error {
 }
 
 // handleAck processes heartbeat ack messages from the Hub.
-// It extracts the security_policy field and updates the local cache.
+// It extracts Hub-pushed policy/config fields and updates local state.
 func (c *RemoteHubClient) handleAck(msg inboundHubEnvelope) {
 	if len(msg.Payload) == 0 {
 		return
 	}
 	c.app.updateHubSecurityPolicy(msg.Payload)
+	configChanged := c.app.updateHubHeartbeatConfig(msg.Payload)
+	if hubAckHasConfig(msg.Payload) {
+		reason := "hub-heartbeat"
+		if configChanged {
+			reason = "hub-config-update"
+		}
+		c.app.TriggerHubManagedCapabilitySync(reason)
+	}
+}
+
+func hubAckHasConfig(payload json.RawMessage) bool {
+	var wrapper struct {
+		HubConfig json.RawMessage `json:"hub_config"`
+	}
+	if err := json.Unmarshal(payload, &wrapper); err != nil {
+		return false
+	}
+	return len(wrapper.HubConfig) > 0 && string(wrapper.HubConfig) != "null"
 }
 
 func (c *RemoteHubClient) readLoop() {
@@ -1126,7 +1146,7 @@ func (c *RemoteHubClient) handleSessionScreenshot(msg inboundHubEnvelope) {
 	_ = json.Unmarshal(msg.Payload, &payload)
 
 	// Run screenshot capture in a goroutine to avoid blocking the WebSocket
-	// read loop — screenshot commands can take several seconds.
+	// read loop - screenshot commands can take several seconds.
 	sessionID := msg.SessionID
 	windowTitle := payload.WindowTitle
 	go func() {
@@ -1180,7 +1200,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 		if handler.shouldTryInlineInterrupt(payload) {
 			result := handler.interruptHandler.TryInterrupt(payload.UserID, payload.Text)
 			if result.PendingConfirm {
-				// Scheduler uncertain — send confirmation with corrections.
+				// Scheduler uncertain - send confirmation with corrections.
 				// Hub frontend renders buttons; user clicks one to resolve.
 				// TODO: Hub-side correction store + fallback timer.
 				if result.Reply != "" {
@@ -1192,7 +1212,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 						c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 					}
 				}
-				return // Message held — not consumed, not queued.
+				return // Message held - not consumed, not queued.
 			}
 			if result.Handled {
 				if result.Reply != "" {
@@ -1204,10 +1224,10 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 						c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 					}
 				}
-				return // Fully handled — message was a control signal, not a new task.
+				return // Fully handled - message was a control signal, not a new task.
 			}
 			if result.Queued && result.Reply != "" {
-				// Queue — send instant feedback, then fall through
+				// Queue - send instant feedback, then fall through
 				// to HandleIMMessageWithProgress (which will block on chatLoopMu
 				// until the current loop finishes, then process normally).
 				resp := &IMAgentResponse{
@@ -1217,7 +1237,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 				if err := c.sendIMAgentResponse(requestID, resp); err != nil {
 					c.setLastError(fmt.Sprintf("im.agent_response send error: %s", err.Error()))
 				}
-				// Don't return — let the message continue to normal processing below.
+				// Don't return - let the message continue to normal processing below.
 			}
 		}
 
@@ -1235,7 +1255,7 @@ func (c *RemoteHubClient) handleIMUserMessage(msg inboundHubEnvelope) {
 	}()
 }
 
-// handleIMCancelSession handles im.cancel_session from Hub — cancels the
+// handleIMCancelSession handles im.cancel_session from Hub - cancels the
 // currently running agent loop so the user can start a new task.
 func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 	log.Printf("[hub-client] im.cancel_session received")
@@ -1244,7 +1264,7 @@ func (c *RemoteHubClient) handleIMCancelSession(msg inboundHubEnvelope) {
 	}
 }
 
-// handleIMGatewayReply handles im.gateway_reply from Hub — delivers the
+// handleIMGatewayReply handles im.gateway_reply from Hub - delivers the
 // reply to the appropriate client-side IM gateway (QQ Bot or Telegram).
 func (c *RemoteHubClient) handleIMGatewayReply(msg inboundHubEnvelope) {
 	var payload struct {
@@ -1399,7 +1419,7 @@ func (c *RemoteHubClient) handleNicknameAssigned(msg inboundHubEnvelope) {
 	if err != nil {
 		return
 	}
-	// Always accept hub-assigned nickname — the hub only sends this when
+	// Always accept hub-assigned nickname - the hub only sends this when
 	// auto-assigning (first time) or resolving a conflict with another
 	// online device, so it should always take effect.
 	cfg.RemoteNickname = nickname
@@ -1763,7 +1783,7 @@ func (c *RemoteHubClient) reconnectLoop() {
 				// Re-enrollment succeeded; retry connect immediately with new creds.
 				continue
 			}
-			// Re-enrollment also failed — the server may have unbound this user.
+			// Re-enrollment also failed - the server may have unbound this user.
 			// Verify activation status and clear local state if needed.
 			if !c.app.VerifyRemoteActivation() {
 				return // activation was invalidated, stop reconnecting

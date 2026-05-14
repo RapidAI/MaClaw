@@ -279,7 +279,9 @@ func craftToolStepsFromBundledSkillFiles(files map[string]string, skillDir strin
 			continue
 		}
 		params := map[string]interface{}{
-			"instructions": string(decoded),
+			"instructions":      string(decoded),
+			"verification_mode": "artifact_optional",
+			"register_policy":   "manual",
 		}
 		if strings.TrimSpace(skillDir) != "" {
 			params["working_dir"] = skillDir

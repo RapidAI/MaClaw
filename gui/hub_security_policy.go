@@ -5,6 +5,8 @@ import (
 	"log"
 	"reflect"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // HubEffectivePolicy mirrors hub/internal/security.EffectivePolicy on the client side.
@@ -22,6 +24,10 @@ type HubEffectivePolicy struct {
 }
 
 // HubSecurityPolicy mirrors hub/internal/security.HeartbeatSecurityPayload on the client side.
+
+type HubHeartbeatConfig struct {
+	CapabilityMarketPolicy corelib.CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
+}
 type HubSecurityPolicy struct {
 	CentralizedSecurity bool                `json:"centralized_security"`
 	Policy              *HubEffectivePolicy `json:"policy,omitempty"`
@@ -97,11 +103,11 @@ func (a *App) updateHubSecurityPolicy(payload json.RawMessage) {
 // applyHubSecurityPolicy enforces the Hub-pushed security policy on local components.
 //
 // Enforcement actions (Requirements 4.5, 7.5, 7.6, 7.7, 7.8):
-//   - guardrail_mode  → PolicyEngine.SetMode
-//   - sandbox_mode    → stored for Firewall sandbox configuration
-//   - network_level   → stored for network access level enforcement
-//   - yolo_mode_allowed=false → YOLO mode is force-disabled at launch time
-//   - centralized_security=true → frontend switches to read-only mode (via event)
+//   - guardrail_mode  -> PolicyEngine.SetMode
+//   - sandbox_mode    -> stored for Firewall sandbox configuration
+//   - network_level   -> stored for network access level enforcement
+//   - yolo_mode_allowed=false -> YOLO mode is force-disabled at launch time
+//   - centralized_security=true -> frontend switches to read-only mode (via event)
 func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 	if policy == nil {
 		return
@@ -114,35 +120,35 @@ func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 	}
 
 	if !policy.CentralizedSecurity || policy.Policy == nil {
-		// Centralized security is off — no further enforcement needed.
+		// Centralized security is off - no further enforcement needed.
 		// The frontend event will restore editable mode.
 		return
 	}
 
 	ep := policy.Policy
 
-	// 1. guardrail_mode → PolicyEngine.SetMode (Req 7.5)
+	// 1. guardrail_mode -> PolicyEngine.SetMode (Req 7.5)
 	if ep.GuardrailMode != "" && a.policyEngine != nil {
 		a.policyEngine.SetMode(ep.GuardrailMode)
 		log.Printf("[hub-security] guardrail_mode applied: %s", ep.GuardrailMode)
 	}
 
-	// 2. sandbox_mode → update Firewall sandbox configuration (Req 7.6)
+	// 2. sandbox_mode -> update Firewall sandbox configuration (Req 7.6)
 	if ep.SandboxMode != "" {
 		log.Printf("[hub-security] sandbox_mode applied: %s", ep.SandboxMode)
 	}
 
-	// 3. network_level → update network access level (Req 7.7)
+	// 3. network_level -> update network access level (Req 7.7)
 	if ep.NetworkLevel != "" {
 		log.Printf("[hub-security] network_level applied: %s", ep.NetworkLevel)
 	}
 
-	// 4. yolo_mode_allowed=false → force-disable YOLO mode (Req 7.8)
+	// 4. yolo_mode_allowed=false -> force-disable YOLO mode (Req 7.8)
 	if !ep.YoloModeAllowed {
 		log.Printf("[hub-security] yolo_mode forced disabled by hub policy")
 	}
 
-	// 5. skill_sources_allowed → restrict skill search/download sources
+	// 5. skill_sources_allowed -> restrict skill search/download sources
 	if len(ep.SkillSourcesAllowed) > 0 {
 		log.Printf("[hub-security] skill_sources_allowed applied (centralized): %v", ep.SkillSourcesAllowed)
 	}
@@ -154,7 +160,7 @@ func (a *App) applyHubSecurityPolicy(policy *HubSecurityPolicy) {
 func (a *App) isGossipAllowed() bool {
 	p := a.hubSecurityCache.get()
 	if p == nil || !p.CentralizedSecurity || p.Policy == nil {
-		return true // no centralized policy — allow local preference
+		return true // no centralized policy - allow local preference
 	}
 	return p.Policy.GossipEnabled
 }
@@ -172,7 +178,7 @@ func (a *App) IsGossipAllowed() bool {
 func (a *App) isYoloModeAllowed() bool {
 	p := a.hubSecurityCache.get()
 	if p == nil || !p.CentralizedSecurity || p.Policy == nil {
-		return true // no centralized policy — allow local preference
+		return true // no centralized policy - allow local preference
 	}
 	return p.Policy.YoloModeAllowed
 }
@@ -204,13 +210,12 @@ func (a *App) getHubNetworkLevel() string {
 func (a *App) GetAllowedSkillSources() []string {
 	p := a.hubSecurityCache.get()
 	if p != nil {
-		// Case 1: Centralized security on — use Policy.SkillSourcesAllowed (already
+		// Case 1: Centralized security on - use Policy.SkillSourcesAllowed (already
 		// merged with independent source control on the server side).
 		if p.CentralizedSecurity && p.Policy != nil && len(p.Policy.SkillSourcesAllowed) > 0 {
 			return p.Policy.SkillSourcesAllowed
 		}
-		// Case 2: Centralized security off but independent source control is active —
-		// the server pushes SkillSourcesAllowed at the payload level.
+		// Case 2: Centralized security off but independent source control is active - the server pushes SkillSourcesAllowed at the payload level.
 		if len(p.SkillSourcesAllowed) > 0 {
 			return p.SkillSourcesAllowed
 		}
@@ -244,7 +249,7 @@ func (a *App) IsSkillSourceAllowed(source string) bool {
 // Returns the (possibly overridden) value and a human-readable reason if overridden.
 func (a *App) enforceYoloMode(requested bool) (bool, string) {
 	if requested && !a.isYoloModeAllowed() {
-		return false, "YOLO 模式已被 Hub 安全策略禁止"
+		return false, "YOLO mode is disabled by Hub security policy"
 	}
 	return requested, ""
 }
@@ -254,4 +259,34 @@ func (a *App) enforceYoloMode(requested bool) (bool, string) {
 func (a *App) enforceYoloModeQuiet(requested bool) bool {
 	v, _ := a.enforceYoloMode(requested)
 	return v
+}
+
+func (a *App) updateHubHeartbeatConfig(payload json.RawMessage) bool {
+	var wrapper struct {
+		HubConfig *HubHeartbeatConfig `json:"hub_config"`
+	}
+	if err := json.Unmarshal(payload, &wrapper); err != nil {
+		log.Printf("[hub-config] failed to parse ack payload: %v", err)
+		return false
+	}
+	if wrapper.HubConfig == nil {
+		return false
+	}
+	policy := wrapper.HubConfig.CapabilityMarketPolicy.WithDefaults()
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[hub-config] failed to load config for hub update: %v", err)
+		return false
+	}
+	if reflect.DeepEqual(cfg.CapabilityMarketPolicy.WithDefaults(), policy) {
+		return false
+	}
+	cfg.CapabilityMarketPolicy = policy
+	if err := a.SaveConfig(cfg); err != nil {
+		log.Printf("[hub-config] failed to save hub-pushed config: %v", err)
+		return false
+	}
+	a.emitEvent("hub-config-options-changed", wrapper.HubConfig)
+	log.Printf("[hub-config] capability market policy updated from hub heartbeat")
+	return true
 }

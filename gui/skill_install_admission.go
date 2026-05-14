@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -34,9 +35,10 @@ func (a *App) emitSkillInstallProgress(skillName, phase, status string, report *
 		return
 	}
 	payload := map[string]interface{}{
-		"skill":  skillName,
-		"phase":  phase,
-		"status": status,
+		"skill":   skillName,
+		"phase":   phase,
+		"status":  status,
+		"percent": skillInstallProgressPercent(phase),
 	}
 	if report != nil {
 		payload["level"] = string(report.FinalLevel)
@@ -44,6 +46,31 @@ func (a *App) emitSkillInstallProgress(skillName, phase, status string, report *
 		payload["scanned_by"] = report.ScannedBy
 	}
 	a.emitEvent("skill-install-progress", payload)
+}
+
+func skillInstallProgressPercent(phase string) int {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "queued":
+		return 5
+	case "scan-start":
+		return 12
+	case "extract":
+		return 25
+	case "scanning":
+		return 45
+	case "awaiting-confirmation":
+		return 65
+	case "approved":
+		return 80
+	case "installing":
+		return 90
+	case "scan-complete", "done":
+		return 100
+	case "blocked", "rejected":
+		return 100
+	default:
+		return 20
+	}
 }
 
 func (a *App) logSkillInstallSecurityEvent(action security.AuditAction, toolName string, level security.RiskLevel, policy security.PolicyAction, result string) {
@@ -137,17 +164,29 @@ func (a *App) resolveSkillInstallConfirm(confirmID string, confirmed bool) error
 }
 
 func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkillEntry, source string, report *cskill.ScanReport) error {
-	if report == nil || report.IsSafe() {
-		if report != nil {
-			a.emitSkillInstallProgress(entry.Name, "scan-complete", "Security scan passed.", report)
-			a.logSkillInstallSecurityEvent(
-				security.AuditActionHubSkillInstall,
-				"manual_skill_install",
-				report.FinalLevel,
-				security.PolicyAllow,
-				fmt.Sprintf("pre-install scan allowed skill %s, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
-			)
-		}
+	if entry == nil {
+		return fmt.Errorf("skill entry is required")
+	}
+	if report == nil {
+		a.emitSkillInstallProgress(entry.Name, "blocked", "Security scan did not produce a report. Installation blocked by policy.", nil)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillReject,
+			"manual_skill_install",
+			security.RiskCritical,
+			security.PolicyDeny,
+			fmt.Sprintf("pre-install scan rejected skill %s because scan report was missing", entry.Name),
+		)
+		return fmt.Errorf("skill security scan rejected installation: scan report is missing")
+	}
+	if report.IsSafe() {
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Security scan passed.", report)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"manual_skill_install",
+			report.FinalLevel,
+			security.PolicyAllow,
+			fmt.Sprintf("pre-install scan allowed skill %s, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
+		)
 		return nil
 	}
 
@@ -218,10 +257,11 @@ func (a *App) scanAndAdmitSkillBeforeRegister(ctx context.Context, entry *coreli
 	return report, nil
 }
 
-func writeSkillScanCacheForInstalledZip(name, description, destRoot string, fallbackReport *cskill.ScanReport, reports *skillZipInstallScanResult) {
+func writeSkillScanCacheForInstalledZip(name, description, destRoot string, fallbackReport *cskill.ScanReport, reports *skillZipInstallScanResult) error {
 	if (fallbackReport == nil && reports == nil) || strings.TrimSpace(destRoot) == "" {
-		return
+		return nil
 	}
+	var errs []error
 	for _, dir := range candidateInstalledSkillDirs(destRoot) {
 		entry, err := loadImportedSkillEntry(dir)
 		if err != nil {
@@ -243,8 +283,10 @@ func writeSkillScanCacheForInstalledZip(name, description, destRoot string, fall
 		}
 		if err := writeSkillScanCacheForReportStatus(entry, dir, "", report, skillScanCacheStatusAllowed); err != nil {
 			log.Printf("[skill-install] failed to write scan cache for %s in %s: %v", entry.Name, dir, err)
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
 		}
 	}
+	return errors.Join(errs...)
 }
 
 func scanReportForInstalledZipEntry(entry *corelib.NLSkillEntry, dir string, fallback *cskill.ScanReport, reports *skillZipInstallScanResult) *cskill.ScanReport {
@@ -264,13 +306,15 @@ func scanReportForInstalledZipEntry(entry *corelib.NLSkillEntry, dir string, fal
 	return fallback
 }
 
-func writeSkillScanCacheForInstalledEntry(entry *corelib.NLSkillEntry, report *cskill.ScanReport) {
+func writeSkillScanCacheForInstalledEntry(entry *corelib.NLSkillEntry, report *cskill.ScanReport) error {
 	if entry == nil || report == nil || strings.TrimSpace(entry.SkillDir) == "" {
-		return
+		return nil
 	}
 	if err := writeSkillScanCacheForReportStatus(entry, entry.SkillDir, "", report, skillScanCacheStatusAllowed); err != nil {
 		log.Printf("[skill-install] failed to write scan cache for %s in %s: %v", entry.Name, entry.SkillDir, err)
+		return err
 	}
+	return nil
 }
 
 func (a *App) skillNameAlreadyRegistered(name string) bool {

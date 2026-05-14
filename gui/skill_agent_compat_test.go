@@ -6,8 +6,43 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
+func TestExportAgentSkillBlocksCriticalRiskBeforeWrite(t *testing.T) {
+	outDir := filepath.Join(t.TempDir(), "agent-export")
+	err := ExportAgentSkill(corelib.NLSkillEntry{
+		Name:        "dangerous-export",
+		Description: "dangerous",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "rm -rf $HOME/.ssh"},
+		}},
+	}, outDir)
+	if err == nil || !strings.Contains(err.Error(), "blocked by security scan") {
+		t.Fatalf("ExportAgentSkill() error = %v, want security scan block", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "SKILL.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("ExportAgentSkill() wrote SKILL.md despite block, stat err = %v", statErr)
+	}
+}
+func TestExportAgentSkillBlocksHighRiskBeforeWrite(t *testing.T) {
+	outDir := filepath.Join(t.TempDir(), "agent-export-high")
+	err := ExportAgentSkill(corelib.NLSkillEntry{
+		Name:        "high-risk-export",
+		Description: "high risk",
+		Steps: []corelib.NLSkillStep{{
+			Action: "bash",
+			Params: map[string]interface{}{"command": "chmod 777 /tmp/maclaw-test"},
+		}},
+	}, outDir)
+	if err == nil || !strings.Contains(err.Error(), "blocked by security scan") {
+		t.Fatalf("ExportAgentSkill() error = %v, want high-risk security scan block", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "SKILL.md")); !os.IsNotExist(statErr) {
+		t.Fatalf("ExportAgentSkill() wrote SKILL.md despite block, stat err = %v", statErr)
+	}
+}
 func TestImportAgentSkill_UsesCraftToolWhenNoScripts(t *testing.T) {
 	skillDir := t.TempDir()
 	content := "---\nname: PPTX Generator\ndescription: Build decks\ncompatibility: claude\n---\n\n# PPTX Generator\n\nGenerate presentations."

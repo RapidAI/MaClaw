@@ -14,6 +14,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
@@ -2329,18 +2330,23 @@ func TestSkillRunnerPersistRepairResultWritesFileBackedYAML(t *testing.T) {
 	app.skillExecutor = NewSkillExecutor(app, nil, nil)
 	runner := NewSkillRunner(app.skillExecutor)
 
-	runner.persistRepairResult(&corelib.NLSkillEntry{
+	if err := runner.persistRepairResult(&corelib.NLSkillEntry{
 		Name:               "repair-file-skill",
 		Description:        "A file backed skill that should persist repairs.",
 		Triggers:           []string{"repair-file-skill"},
 		Source:             "file",
 		SkillDir:           dir,
-		Status:             "active",
+		Status:             "needs_review",
 		Platforms:          []string{"universal"},
 		Steps:              []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo repaired"}}},
 		FailureCount:       1,
+		LastError:          "security blocked",
 		RepairAttemptCount: 1,
-	})
+		LastRepairAt:       "2026-05-14T10:00:00Z",
+		RepairHistory:      []corelib.SkillRepairRecord{{Timestamp: "2026-05-14T10:00:00Z", ErrorClass: "security_scan_blocked", Explanation: "blocked", Success: false}},
+	}); err != nil {
+		t.Fatalf("persistRepairResult() error = %v", err)
+	}
 
 	reloaded, err := loadImportedSkillEntry(dir)
 	if err != nil {
@@ -2355,6 +2361,178 @@ func TestSkillRunnerPersistRepairResultWritesFileBackedYAML(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "skill.yaml.bak")); err != nil {
 		t.Fatalf("expected skill.yaml.bak, stat err = %v", err)
+	}
+	reloadedCfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() after repair error = %v", err)
+	}
+	if len(reloadedCfg.NLSkills) != 1 {
+		t.Fatalf("config skills = %+v, want one file overlay", reloadedCfg.NLSkills)
+	}
+	overlay := reloadedCfg.NLSkills[0]
+	if overlay.Status != "needs_review" || overlay.RepairAttemptCount != 1 || overlay.LastRepairAt == "" || len(overlay.RepairHistory) != 1 {
+		t.Fatalf("file overlay repair metadata = %+v", overlay)
+	}
+}
+
+func TestSkillRunnerPersistRepairResultReturnsYAMLWriteError(t *testing.T) {
+	if os.Getenv("OS") == "Windows_NT" {
+		t.Skip("symlink creation often requires elevated permissions on Windows")
+	}
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	dir := filepath.Join(tempHome, "skills", "repair-symlink")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("name: outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "skill.yaml")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.NLSkills = []corelib.NLSkillEntry{{Name: "repair-symlink", Source: "file", SkillDir: dir}}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+
+	err = runner.persistRepairResult(&corelib.NLSkillEntry{
+		Name:     "repair-symlink",
+		Source:   "file",
+		SkillDir: dir,
+		Status:   "needs_review",
+		Steps:    []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo repaired"}}},
+	})
+	if err == nil {
+		t.Fatal("persistRepairResult() error = nil, want YAML write error")
+	}
+	data, readErr := os.ReadFile(outside)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "name: outside\n" {
+		t.Fatalf("outside file mutated to %q", string(data))
+	}
+}
+
+func TestFileSkillRuntimeOverlayDoesNotPersistDefaultActiveStatus(t *testing.T) {
+	active := corelib.NLSkillEntry{Name: "file-skill", Source: "file", Status: "active"}
+	if fileSkillHasRuntimeOverlay(active) {
+		t.Fatal("active-only file skill should not create a config overlay")
+	}
+	withStats := active
+	withStats.UsageCount = 1
+	if !fileSkillHasRuntimeOverlay(withStats) {
+		t.Fatal("file skill usage stats should create an overlay")
+	}
+	if got := fileSkillOverlayStatus(withStats.Status); got != "" {
+		t.Fatalf("active status overlay = %q, want empty so YAML remains source of truth", got)
+	}
+	blocked := active
+	blocked.Status = "needs_review"
+	if !fileSkillHasRuntimeOverlay(blocked) {
+		t.Fatal("blocked file skill status should create an overlay")
+	}
+	if got := fileSkillOverlayStatus(blocked.Status); got != "needs_review" {
+		t.Fatalf("blocked status overlay = %q", got)
+	}
+}
+
+func TestWriteSkillYAMLForEntryRejectsSymlinkDefinition(t *testing.T) {
+	if os.Getenv("OS") == "Windows_NT" {
+		t.Skip("symlink creation often requires elevated permissions on Windows")
+	}
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("name: outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "skill.yaml")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	err := writeSkillYAMLForEntry(dir, &corelib.NLSkillEntry{
+		Name:  "repair-file-skill",
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo repaired"}}},
+	})
+	if err == nil {
+		t.Fatal("writeSkillYAMLForEntry() wrote through symlink, want error")
+	}
+	data, readErr := os.ReadFile(outside)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "name: outside\n" {
+		t.Fatalf("outside file mutated to %q", string(data))
+	}
+}
+
+func TestSkillRunnerBlockedRepairRestoresOriginalSteps(t *testing.T) {
+	repaired := &corelib.NLSkillEntry{
+		Name:               "blocked-repair",
+		Status:             "active",
+		Steps:              []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "rm -rf /"}}},
+		RepairAttemptCount: 1,
+		LastRepairAt:       "2026-05-14T10:00:00Z",
+		RepairHistory: []corelib.SkillRepairRecord{{
+			Timestamp:   "2026-05-14T10:00:00Z",
+			Explanation: "replace cleanup command",
+			Success:     false,
+		}},
+	}
+	original := []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "echo old"}}}
+	report := &cskill.ScanReport{FinalLevel: security.RiskHigh, Summary: "dangerous command"}
+
+	markRepairBlockedBySecurity(repaired, original, report)
+
+	if repaired.Status != "needs_review" {
+		t.Fatalf("status = %q, want needs_review", repaired.Status)
+	}
+	cmd, _ := repaired.Steps[0].Params["command"].(string)
+	if cmd != "echo old" {
+		t.Fatalf("command = %q, want original safe command", cmd)
+	}
+	if repaired.RepairHistory[0].ErrorClass != "security_scan_blocked" {
+		t.Fatalf("repair history error_class = %q", repaired.RepairHistory[0].ErrorClass)
+	}
+	if !strings.Contains(repaired.LastError, "level=high") {
+		t.Fatalf("last_error = %q, want scan level", repaired.LastError)
+	}
+}
+
+func TestSkillRunnerScanRepairedSkillBlocksDangerousRepair(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("USERPROFILE", tempHome)
+	t.Setenv("AppData", filepath.Join(tempHome, "AppData", "Roaming"))
+
+	app := &App{testHomeDir: tempHome}
+	app.skillExecutor = NewSkillExecutor(app, nil, nil)
+	runner := NewSkillRunner(app.skillExecutor)
+	entry := &corelib.NLSkillEntry{
+		Name:       "dangerous-repair",
+		TrustLevel: security.TrustLevelTrusted,
+		Steps: []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{
+			"command": "rm -rf /",
+		}}},
+	}
+
+	report := runner.scanRepairedSkill(entry)
+	if report == nil || report.FinalLevel != security.RiskCritical {
+		t.Fatalf("scanRepairedSkill() report = %+v, want critical", report)
+	}
+	if entry.TrustLevel != security.TrustLevelTrusted {
+		t.Fatalf("scanRepairedSkill mutated trust level to %q", entry.TrustLevel)
 	}
 }
 

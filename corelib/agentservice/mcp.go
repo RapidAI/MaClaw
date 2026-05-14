@@ -457,10 +457,7 @@ func (s *Service) saveRawUserConfig(p Principal, appCfg corelib.AppConfig) error
 	if err := s.store.SaveUserConfig(cfg); err != nil {
 		return err
 	}
-	if err := saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg); err != nil {
-		return err
-	}
-	return writeRuntimeConfig(s.userDataRoot(p.TenantID, p.UserID), cfg.AppConfig)
+	return saveUserConfigToFile(s.userConfigPath(p.TenantID, p.UserID), cfg)
 }
 
 func (s *Service) lookupMCPServer(p Principal, cfg corelib.AppConfig, serverID string) (*MCPServerView, *corelib.MCPServerEntry, *corelib.LocalMCPServerEntry, error) {

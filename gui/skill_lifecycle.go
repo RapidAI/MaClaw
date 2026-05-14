@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
-	"github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
+	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 const skillMarketReadyMinScore = 70
@@ -21,7 +23,7 @@ type skillQualityReport struct {
 	Score       int
 	MarketReady bool
 	Reasons     []string
-	Portability *skill.PortabilityReport
+	Portability *cskill.PortabilityReport
 	Package     skillPackageQualitySummary
 }
 
@@ -43,7 +45,7 @@ type persistedSkillQualityStatus struct {
 	MarketReady         bool                        `json:"market_ready"`
 	MinMarketScore      int                         `json:"min_market_score"`
 	Reasons             []string                    `json:"reasons,omitempty"`
-	PortabilitySummary  skill.IssueSummary          `json:"portability_summary"`
+	PortabilitySummary  cskill.IssueSummary         `json:"portability_summary"`
 	PackageSummary      skillPackageQualitySummary  `json:"package_summary"`
 	RequireRuntimeProof bool                        `json:"require_runtime_proof"`
 	UsageCount          int                         `json:"usage_count"`
@@ -183,7 +185,7 @@ func writeSkillPackageManifest(skillDir string, entry *corelib.NLSkillEntry, qua
 	return os.WriteFile(filepath.Join(skillDir, "skill_package_manifest.json"), data, 0o644)
 }
 
-func skillYAMLFromEntry(entry *corelib.NLSkillEntry) *skill.SkillYAMLFile {
+func skillYAMLFromEntry(entry *corelib.NLSkillEntry) *cskill.SkillYAMLFile {
 	return buildSkillYAMLFileFromPackageEntry(entry)
 }
 
@@ -195,33 +197,91 @@ func writeSkillYAMLForEntry(skillDir string, entry *corelib.NLSkillEntry) error 
 		return err
 	}
 	yamlPath := filepath.Join(skillDir, "skill.yaml")
-	if data, err := os.ReadFile(yamlPath); err == nil {
-		_ = os.WriteFile(yamlPath+".bak", data, 0o644)
+	if err := validateSkillYAMLWritePath(yamlPath); err != nil {
+		return err
 	}
-	data, err := skill.FormatSkillYAMLFile(skillYAMLFromEntry(entry))
+	if data, err := os.ReadFile(yamlPath); err == nil {
+		if err := fileutil.AtomicWriteFile(yamlPath+".bak", data, 0o644); err != nil {
+			return fmt.Errorf("backup skill.yaml: %w", err)
+		}
+	}
+	data, err := cskill.FormatSkillYAMLFile(skillYAMLFromEntry(entry))
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(yamlPath, data, 0o644)
+	return fileutil.AtomicWriteFile(yamlPath, data, 0o644)
 }
 
-func prepareSkillDirForMarket(skillDir string, autoFix bool) ([]skill.PortabilityChange, *skill.PortabilityReport, error) {
+func validateSkillYAMLWritePath(yamlPath string) error {
+	for _, path := range []string{yamlPath, yamlPath + ".bak"} {
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to write skill definition through symlink: %s", path)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("refusing to write skill definition over directory: %s", path)
+		}
+	}
+	return nil
+}
+
+func prepareSkillDirForMarket(skillDir string, autoFix bool) ([]cskill.PortabilityChange, *cskill.PortabilityReport, error) {
 	if strings.TrimSpace(skillDir) == "" {
 		return nil, nil, fmt.Errorf("skill directory is empty")
 	}
-	var changes []skill.PortabilityChange
+	var changes []cskill.PortabilityChange
 	if autoFix {
-		fixes, err := skill.AutoFixPortability(skillDir)
+		fixes, err := cskill.AutoFixPortability(skillDir)
 		if err != nil {
 			return nil, nil, err
 		}
 		changes = append(changes, fixes...)
 	}
-	report, err := skill.ValidateSkillPortability(skillDir)
+	report, err := cskill.ValidateSkillPortability(skillDir)
 	if err != nil {
 		return changes, nil, err
 	}
+	if scanReport, scanErr := scanSkillDirForWriteback(skillDir); scanErr != nil {
+		return changes, nil, scanErr
+	} else if scanReport.IsDangerous() {
+		return changes, nil, fmt.Errorf("skill package blocked by security scan: level=%s summary=%s", scanReport.FinalLevel, scanReport.Summary)
+	}
 	return changes, report, nil
+}
+
+func scanSkillDirForOutboundPackage(skillDir string) error {
+	entry, err := loadImportedSkillEntry(skillDir)
+	if err != nil {
+		return fmt.Errorf("reload skill for outbound security scan: %w", err)
+	}
+	entry.SkillDir = skillDir
+	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), entry, skillDir, nil)
+	if report == nil {
+		return fmt.Errorf("skill package outbound security scan produced no report")
+	}
+	if report.NeedsUserReview() {
+		return fmt.Errorf("skill package blocked by outbound security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
+	return nil
+}
+
+func scanSkillDirForWriteback(skillDir string) (*cskill.ScanReport, error) {
+	entry, err := loadImportedSkillEntry(skillDir)
+	if err != nil {
+		return nil, fmt.Errorf("reload skill for security scan: %w", err)
+	}
+	entry.SkillDir = skillDir
+	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), entry, skillDir, nil)
+	if report == nil {
+		return nil, fmt.Errorf("security scan produced no report")
+	}
+	return report, nil
 }
 
 func removeSkillPackagingBackups(skillDir string) error {
@@ -240,7 +300,7 @@ func removeSkillPackagingBackups(skillDir string) error {
 	})
 }
 
-func evaluateSkillQuality(entry *corelib.NLSkillEntry, report *skill.PortabilityReport, requireRuntimeSuccess bool) skillQualityReport {
+func evaluateSkillQuality(entry *corelib.NLSkillEntry, report *cskill.PortabilityReport, requireRuntimeSuccess bool) skillQualityReport {
 	skillDir := ""
 	if entry != nil {
 		skillDir = entry.SkillDir
@@ -248,7 +308,7 @@ func evaluateSkillQuality(entry *corelib.NLSkillEntry, report *skill.Portability
 	return evaluateSkillQualityForDir(entry, report, requireRuntimeSuccess, skillDir)
 }
 
-func evaluateSkillQualityForDir(entry *corelib.NLSkillEntry, report *skill.PortabilityReport, requireRuntimeSuccess bool, skillDir string) skillQualityReport {
+func evaluateSkillQualityForDir(entry *corelib.NLSkillEntry, report *cskill.PortabilityReport, requireRuntimeSuccess bool, skillDir string) skillQualityReport {
 	q := skillQualityReport{Score: 100, MarketReady: true, Portability: report}
 	if entry == nil {
 		q.Score = 0

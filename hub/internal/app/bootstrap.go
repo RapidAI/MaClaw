@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
@@ -397,6 +398,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	// Inject SecurityProvider into ws.Gateway for heartbeat policy delivery.
 	gateway.SecurityProvider = securitySvc
+	gateway.ConfigProvider = heartbeatConfigProvider{settings: st.System}
 
 	// Wire OutboundInterceptor into im.Adapter for file/image outbound checks.
 	outboundInterceptor := im.NewOutboundInterceptor(securitySvc, nil)
@@ -525,4 +527,25 @@ func (a *smartRouteUserAdapter) GetSmartRouteByUserID(ctx context.Context, userI
 		return false, nil
 	}
 	return user.SmartRoute, nil
+}
+
+type heartbeatConfigProvider struct {
+	settings store.SystemSettingsRepository
+}
+
+func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID string) (*ws.HeartbeatConfigPayload, error) {
+	policy := corelib.DefaultCapabilityMarketPolicy()
+	if p.settings != nil {
+		raw, err := p.settings.Get(ctx, "capability_market_policy")
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(raw) != "" {
+			if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+				return nil, err
+			}
+			policy = policy.WithDefaults()
+		}
+	}
+	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy}, nil
 }

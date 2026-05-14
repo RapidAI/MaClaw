@@ -110,37 +110,38 @@ type AppConfig struct {
 	AgentNetAutoPickerPollMin   int     `json:"agentnet_auto_picker_poll_min,omitempty"`
 	AgentNetAutoPickerMinReward float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
 	// Security
-	SecurityPolicyMode     string   `json:"security_policy_mode,omitempty"`
-	SandboxMode            string   `json:"sandbox_mode,omitempty"`  // "none" (default), "os", "docker"
-	NetworkLevel           string   `json:"network_level,omitempty"` // "none", "intranet", "full" (default)
-	YoloModeAllowed        bool     `json:"yolo_mode_allowed"`       // default true
-	GossipEnabled          bool     `json:"gossip_enabled"`          // default true (local preference, overridden by Hub)
-	FileOutboundEnabled    bool     `json:"file_outbound_enabled"`   // default true
-	ImageOutboundEnabled   bool     `json:"image_outbound_enabled"`  // default true
-	SkillSourcesAllowed    []string `json:"skill_sources_allowed,omitempty"` // nil/empty = all; values: "skillhub","clawhub","github"
-	MaclawDebugToolCalls   bool   `json:"maclaw_debug_tool_calls,omitempty"`
-	ShowAITraceEntry       bool   `json:"show_ai_trace_entry,omitempty"`
-	ShowAssistantEntry     bool   `json:"show_assistant_entry"`
-	PetEnabled             bool   `json:"pet_enabled,omitempty"`
-	PetSkin                string `json:"pet_skin,omitempty"`
-	PetSize                int    `json:"pet_size,omitempty"`
-	PetMotionEnabled       *bool  `json:"pet_motion_enabled,omitempty"`
-	PetMotionSound         *bool  `json:"pet_motion_sound_enabled,omitempty"`
-	PetMotionSoundPreset   string `json:"pet_motion_sound_preset,omitempty"`
-	PetTextInteraction     *bool  `json:"pet_text_interaction_enabled,omitempty"`
-	PetVoiceInput          bool   `json:"pet_voice_input_enabled,omitempty"`
-	PetVoiceReadback       bool   `json:"pet_voice_readback_enabled,omitempty"`
-	PetFileDropEnabled     *bool  `json:"pet_file_drop_enabled,omitempty"`
-	PetInteractionMode     string `json:"pet_interaction_mode,omitempty"`
-	PetConversationMode    string `json:"pet_conversation_mode,omitempty"`
-	PetReadbackMode        string `json:"pet_readback_mode,omitempty"`
-	PetAutoRetryOnNoHear   bool   `json:"pet_auto_retry_on_no_hear,omitempty"`
-	PetContinuousTimeout   int    `json:"pet_continuous_timeout_sec,omitempty"`
-	PetQuietMode           bool   `json:"pet_quiet_mode,omitempty"`
-	FloatingBtnX           int    `json:"floating_btn_x,omitempty"`
-	FloatingBtnY           int    `json:"floating_btn_y,omitempty"`
-	FloatingBtnPositionSet bool   `json:"floating_btn_position_set,omitempty"`
-	LogDetailEnabled       bool   `json:"log_detail_enabled,omitempty"`
+	SecurityPolicyMode     string                 `json:"security_policy_mode,omitempty"`
+	SandboxMode            string                 `json:"sandbox_mode,omitempty"`          // "none" (default), "os", "docker"
+	NetworkLevel           string                 `json:"network_level,omitempty"`         // "none", "intranet", "full" (default)
+	YoloModeAllowed        bool                   `json:"yolo_mode_allowed"`               // default true
+	GossipEnabled          bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
+	FileOutboundEnabled    bool                   `json:"file_outbound_enabled"`           // default true
+	ImageOutboundEnabled   bool                   `json:"image_outbound_enabled"`          // default true
+	SkillSourcesAllowed    []string               `json:"skill_sources_allowed,omitempty"` // nil/empty = all; values: "skillhub","clawhub","github"
+	CapabilityMarketPolicy CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
+	MaclawDebugToolCalls   bool                   `json:"maclaw_debug_tool_calls,omitempty"`
+	ShowAITraceEntry       bool                   `json:"show_ai_trace_entry,omitempty"`
+	ShowAssistantEntry     bool                   `json:"show_assistant_entry"`
+	PetEnabled             bool                   `json:"pet_enabled,omitempty"`
+	PetSkin                string                 `json:"pet_skin,omitempty"`
+	PetSize                int                    `json:"pet_size,omitempty"`
+	PetMotionEnabled       *bool                  `json:"pet_motion_enabled,omitempty"`
+	PetMotionSound         *bool                  `json:"pet_motion_sound_enabled,omitempty"`
+	PetMotionSoundPreset   string                 `json:"pet_motion_sound_preset,omitempty"`
+	PetTextInteraction     *bool                  `json:"pet_text_interaction_enabled,omitempty"`
+	PetVoiceInput          bool                   `json:"pet_voice_input_enabled,omitempty"`
+	PetVoiceReadback       bool                   `json:"pet_voice_readback_enabled,omitempty"`
+	PetFileDropEnabled     *bool                  `json:"pet_file_drop_enabled,omitempty"`
+	PetInteractionMode     string                 `json:"pet_interaction_mode,omitempty"`
+	PetConversationMode    string                 `json:"pet_conversation_mode,omitempty"`
+	PetReadbackMode        string                 `json:"pet_readback_mode,omitempty"`
+	PetAutoRetryOnNoHear   bool                   `json:"pet_auto_retry_on_no_hear,omitempty"`
+	PetContinuousTimeout   int                    `json:"pet_continuous_timeout_sec,omitempty"`
+	PetQuietMode           bool                   `json:"pet_quiet_mode,omitempty"`
+	FloatingBtnX           int                    `json:"floating_btn_x,omitempty"`
+	FloatingBtnY           int                    `json:"floating_btn_y,omitempty"`
+	FloatingBtnPositionSet bool                   `json:"floating_btn_position_set,omitempty"`
+	LogDetailEnabled       bool                   `json:"log_detail_enabled,omitempty"`
 	// IM 闂?per-user QQ Bot (client-side gateway)
 	QQBotEnabled   bool   `json:"qqbot_enabled,omitempty"`
 	QQBotAppID     string `json:"qqbot_app_id,omitempty"`
@@ -222,11 +223,26 @@ type AppConfig struct {
 	SSHHosts []SSHHostEntry `json:"ssh_hosts,omitempty"`
 	// Knowledge Skill token budget.
 	KnowledgeSkillTokenBudget int `json:"knowledge_skill_token_budget,omitempty"`
-	// AuxiliaryLLM 闂?lightweight LLM for background tasks (compression,
+	// AuxiliaryLLM — lightweight LLM for background tasks (compression,
 	// skill repair, session search summarization). When configured, used
 	// in preference to the main LLM to reduce cost and latency.
 	AuxiliaryLLM AuxiliaryLLMConfig `json:"auxiliary_llm,omitempty"`
-	// NudgeDisabled 鈥?when true, the post-use skill nudge system is
+	// ModelRoutes — per-task-type model overrides. Keys are task types
+	// (intent/fast/reasoning/vision/summary/default), values override
+	// the primary LLM config for that task type. When a task type has no
+	// route, falls back to AuxiliaryLLM (for lightweight tasks) or primary.
+	// Example: {"intent": {"model": "glm-4-flash"}, "reasoning": {"model": "deepseek-coder"}}
+	ModelRoutes map[string]ModelRouteConfig `json:"model_routes,omitempty"`
+	// DailyLLMBudgetUSD — daily LLM API cost budget in USD. When exceeded,
+	// the agent warns the user and may throttle non-essential LLM calls.
+	// 0 means unlimited (default).
+	DailyLLMBudgetUSD float64 `json:"daily_llm_budget_usd,omitempty"`
+	// AutoFetch — periodic data fetching from external sources.
+	AutoFetchEnabled     bool     `json:"auto_fetch_enabled,omitempty"`
+	AutoFetchIntervalMin int      `json:"auto_fetch_interval_min,omitempty"` // default 20
+	AutoFetchRSSFeeds    []string `json:"auto_fetch_rss_feeds,omitempty"`
+	AutoFetchWatchDirs   []string `json:"auto_fetch_watch_dirs,omitempty"`
+	// NudgeDisabled — when true, the post-use skill nudge system is
 	// completely disabled. No nudge messages will be injected into the
 	// conversation after complex tasks, skill failures, or user corrections.
 	NudgeDisabled bool `json:"nudge_disabled,omitempty"`
@@ -244,6 +260,155 @@ type AppConfig struct {
 	// all messages bypass workflow interception and go directly to the normal
 	// agent loop. Default: true (enabled).
 	WorkflowEnabled *bool `json:"workflow_enabled,omitempty"`
+}
+
+// CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
+type CapabilityMarketPolicy struct {
+	ViewMode              string                                  `json:"view_mode,omitempty"`
+	EnterpriseOnlyInstall *bool                                   `json:"enterprise_only_install,omitempty"`
+	EnterpriseOnlySearch  *bool                                   `json:"enterprise_only_search,omitempty"`
+	ManagedDeployment     CapabilityManagedDeploymentPolicy       `json:"managed_deployment,omitempty"`
+	RecommendedCapability CapabilityRecommendedCapabilityPolicy   `json:"recommended_capability,omitempty"`
+	UpdatePolicy          CapabilityUpdatePolicy                  `json:"update_policy,omitempty"`
+	SourcePriority        map[string]int                          `json:"source_priority,omitempty"`
+	ResourceTypes         map[string]CapabilityResourceTypePolicy `json:"resource_types,omitempty"`
+}
+
+type CapabilityManagedDeploymentPolicy struct {
+	Enabled              *bool `json:"enabled,omitempty"`
+	RetryIntervalMinutes int   `json:"retry_interval_minutes,omitempty"`
+	ReinstallIfRemoved   *bool `json:"reinstall_if_removed,omitempty"`
+}
+
+type CapabilityRecommendedCapabilityPolicy struct {
+	Enabled          *bool `json:"enabled,omitempty"`
+	AllowUserDismiss *bool `json:"allow_user_dismiss,omitempty"`
+}
+type CapabilityUpdatePolicy struct {
+	EnterpriseHub CapabilitySourceUpdatePolicy `json:"enterprise_hub,omitempty"`
+	HubCenter     CapabilitySourceUpdatePolicy `json:"hubcenter,omitempty"`
+}
+
+type CapabilitySourceUpdatePolicy struct {
+	Default               string   `json:"default,omitempty"`
+	FreeCapability        string   `json:"free_capability,omitempty"`
+	PaidCapability        string   `json:"paid_capability,omitempty"`
+	LicenseOrPriceChanged string   `json:"license_or_price_changed,omitempty"`
+	ApplyTo               []string `json:"apply_to,omitempty"`
+	Options               []string `json:"options,omitempty"`
+}
+
+type CapabilityResourceTypePolicy struct {
+	AllowedSources          []string `json:"allowed_sources,omitempty"`
+	DefaultSources          []string `json:"default_sources,omitempty"`
+	UserConfigurableSources []string `json:"user_configurable_sources,omitempty"`
+}
+
+func DefaultCapabilityMarketPolicy() CapabilityMarketPolicy {
+	enterpriseOnlyInstall := true
+	enterpriseOnlySearch := false
+	managedEnabled := true
+	reinstallIfRemoved := true
+	recommendedEnabled := true
+	allowUserDismiss := true
+	return CapabilityMarketPolicy{
+		ViewMode:              "merged",
+		EnterpriseOnlyInstall: &enterpriseOnlyInstall,
+		EnterpriseOnlySearch:  &enterpriseOnlySearch,
+		ManagedDeployment: CapabilityManagedDeploymentPolicy{
+			Enabled:              &managedEnabled,
+			RetryIntervalMinutes: 60,
+			ReinstallIfRemoved:   &reinstallIfRemoved,
+		},
+		RecommendedCapability: CapabilityRecommendedCapabilityPolicy{
+			Enabled:          &recommendedEnabled,
+			AllowUserDismiss: &allowUserDismiss,
+		},
+		UpdatePolicy: CapabilityUpdatePolicy{
+			EnterpriseHub: CapabilitySourceUpdatePolicy{
+				Default: "auto_update_approved",
+				ApplyTo: []string{"managed_deployments", "installed_enterprise_capabilities", "recommended_capabilities_installed_by_user"},
+			},
+			HubCenter: CapabilitySourceUpdatePolicy{
+				FreeCapability:        "auto_update",
+				PaidCapability:        "require_license_and_purchase_policy",
+				LicenseOrPriceChanged: "require_admin_or_purchase_policy",
+				Options:               []string{"auto_update_disabled", "notify_admin", "auto_import_pending_review", "auto_update_patch_only", "auto_update_trusted_publisher"},
+			},
+		},
+		SourcePriority: map[string]int{
+			"enterprise_hub": 100,
+			"hubcenter":      80,
+			"clawhub":        40,
+			"github":         20,
+		},
+		ResourceTypes: map[string]CapabilityResourceTypePolicy{
+			"skill": {
+				AllowedSources:          []string{"enterprise_hub", "hubcenter", "clawhub", "github"},
+				DefaultSources:          []string{"enterprise_hub", "hubcenter"},
+				UserConfigurableSources: []string{"clawhub", "github"},
+			},
+			"mcp": {
+				AllowedSources: []string{"enterprise_hub", "hubcenter"},
+				DefaultSources: []string{"enterprise_hub"},
+			},
+		},
+	}
+}
+
+func (p CapabilityMarketPolicy) WithDefaults() CapabilityMarketPolicy {
+	defaults := DefaultCapabilityMarketPolicy()
+	if strings.TrimSpace(p.ViewMode) == "" {
+		p.ViewMode = defaults.ViewMode
+	}
+	if p.EnterpriseOnlyInstall == nil {
+		p.EnterpriseOnlyInstall = defaults.EnterpriseOnlyInstall
+	}
+	if p.EnterpriseOnlySearch == nil {
+		p.EnterpriseOnlySearch = defaults.EnterpriseOnlySearch
+	}
+	if p.ManagedDeployment.Enabled == nil {
+		p.ManagedDeployment.Enabled = defaults.ManagedDeployment.Enabled
+	}
+	if p.ManagedDeployment.RetryIntervalMinutes <= 0 {
+		p.ManagedDeployment.RetryIntervalMinutes = defaults.ManagedDeployment.RetryIntervalMinutes
+	}
+	if p.ManagedDeployment.ReinstallIfRemoved == nil {
+		p.ManagedDeployment.ReinstallIfRemoved = defaults.ManagedDeployment.ReinstallIfRemoved
+	}
+	if p.RecommendedCapability.Enabled == nil {
+		p.RecommendedCapability.Enabled = defaults.RecommendedCapability.Enabled
+	}
+	if p.RecommendedCapability.AllowUserDismiss == nil {
+		p.RecommendedCapability.AllowUserDismiss = defaults.RecommendedCapability.AllowUserDismiss
+	}
+	if strings.TrimSpace(p.UpdatePolicy.EnterpriseHub.Default) == "" && len(p.UpdatePolicy.EnterpriseHub.ApplyTo) == 0 {
+		p.UpdatePolicy.EnterpriseHub = defaults.UpdatePolicy.EnterpriseHub
+	}
+	if strings.TrimSpace(p.UpdatePolicy.HubCenter.FreeCapability) == "" && strings.TrimSpace(p.UpdatePolicy.HubCenter.PaidCapability) == "" {
+		p.UpdatePolicy.HubCenter = defaults.UpdatePolicy.HubCenter
+	}
+	if len(p.SourcePriority) == 0 {
+		p.SourcePriority = defaults.SourcePriority
+	}
+	if len(p.ResourceTypes) == 0 {
+		p.ResourceTypes = defaults.ResourceTypes
+	}
+	return p
+}
+
+func (p CapabilityMarketPolicy) EffectiveEnterpriseOnlyInstall() bool {
+	if p.EnterpriseOnlyInstall == nil {
+		return true
+	}
+	return *p.EnterpriseOnlyInstall
+}
+
+func (p CapabilityMarketPolicy) EffectiveEnterpriseOnlySearch() bool {
+	if p.EnterpriseOnlySearch == nil {
+		return false
+	}
+	return *p.EnterpriseOnlySearch
 }
 
 // MISDataConfig stores the MaClawDataSrv connection used by MaClaw UI and agent tools.
@@ -350,6 +515,7 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		c.GroupDiscussion = *raw.GroupDiscussion
 		c.applyGroupDiscussionFieldDefaults()
 	}
+	c.CapabilityMarketPolicy = c.CapabilityMarketPolicy.WithDefaults()
 	return nil
 }
 
@@ -416,6 +582,17 @@ type AuxiliaryLLMConfig struct {
 // IsConfigured returns true if the auxiliary LLM has a URL and key set.
 func (c AuxiliaryLLMConfig) IsConfigured() bool {
 	return c.URL != "" && c.Key != ""
+}
+
+// ModelRouteConfig defines a model override for a specific task type.
+// Used in AppConfig.ModelRoutes to route different task types to different models.
+// Empty fields inherit from the primary LLM config.
+type ModelRouteConfig struct {
+	Model    string `json:"model"`              // model name override (required)
+	URL      string `json:"url,omitempty"`      // API URL override
+	Key      string `json:"key,omitempty"`      // API key override
+	Protocol string `json:"protocol,omitempty"` // protocol override
+	Provider string `json:"provider,omitempty"` // provider name (display only)
 }
 
 // SSHHostEntry describes a preconfigured SSH remote host.

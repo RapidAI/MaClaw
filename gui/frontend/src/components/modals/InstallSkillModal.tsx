@@ -5,6 +5,7 @@ import { EventsOn } from '../../../wailsjs/runtime';
 import { InstallSkillList } from './InstallSkillList';
 import { InstallLocationSelector } from './InstallLocationSelector';
 import { InstallSkillFooter } from './InstallSkillFooter';
+import { InstallSkillProgress, type SkillInstallProgress } from './InstallSkillProgress';
 
 type InstallSkillModalProps = {
     config: main.AppConfig;
@@ -25,6 +26,7 @@ type InstallSkillModalProps = {
     showToastMessage: (message: string, duration?: number) => void;
     onClose: () => void;
 };
+
 export const InstallSkillModal = ({
     config,
     skills,
@@ -44,13 +46,7 @@ export const InstallSkillModal = ({
     showToastMessage,
     onClose,
 }: InstallSkillModalProps) => {
-    const [installProgress, setInstallProgress] = useState<{
-        skill?: string;
-        phase?: string;
-        status?: string;
-        level?: string;
-        summary?: string;
-    } | null>(null);
+    const [installProgress, setInstallProgress] = useState<SkillInstallProgress | null>(null);
 
     useEffect(() => {
         const cleanup = EventsOn('skill-install-progress', (payload: any) => {
@@ -61,6 +57,7 @@ export const InstallSkillModal = ({
                 status: typeof payload.status === 'string' ? payload.status : undefined,
                 level: typeof payload.level === 'string' ? payload.level : undefined,
                 summary: typeof payload.summary === 'string' ? payload.summary : undefined,
+                percent: typeof payload.percent === 'number' ? Math.max(0, Math.min(100, payload.percent)) : undefined,
             });
         });
         return cleanup;
@@ -72,7 +69,7 @@ export const InstallSkillModal = ({
 
     const installSelectedSkills = async () => {
         setIsBatchInstalling(true);
-        setInstallProgress({ phase: 'queued', status: 'Preparing selected skills for installation.' });
+        setInstallProgress({ phase: 'queued', status: 'Preparing selected skills for installation.', percent: 5 });
         let successCount = 0;
         let failCount = 0;
 
@@ -85,7 +82,7 @@ export const InstallSkillModal = ({
         for (const name of selectedSkillsToInstall) {
             const skill = skills.find(s => s.name === name);
             if (skill) {
-                setInstallProgress({ skill: skill.name, phase: 'queued', status: 'Queued for install.' });
+                setInstallProgress({ skill: skill.name, phase: 'queued', status: 'Queued for install.', percent: 5 });
                 const isGeminiOrCodex = activeTool?.toLowerCase() === 'gemini' || activeTool?.toLowerCase() === 'codex';
                 if (isGeminiOrCodex && skill.type === 'address') {
                     console.warn('Skill ' + skill.name + ' is not supported for ' + activeTool);
@@ -167,35 +164,7 @@ export const InstallSkillModal = ({
                     setSelectedSkillsToInstall={setSelectedSkillsToInstall}
                     t={t}
                 />
-                {installProgress && (
-                    <div
-                        role="status"
-                        aria-live="polite"
-                        style={{
-                            marginTop: '12px',
-                            padding: '10px 12px',
-                            border: '1px solid var(--theme-border)',
-                            borderRadius: '8px',
-                            background: 'var(--theme-bg-secondary)',
-                            color: 'var(--theme-text)',
-                            display: 'grid',
-                            gap: '8px',
-                        }}
-                    >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-                            {isBatchInstalling && (
-                                <div style={{ width: '14px', height: '14px', border: '2px solid var(--theme-primary)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite', flex: '0 0 auto' }} />
-                            )}
-                            <div style={{ minWidth: 0, fontSize: '0.86rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                {installProgress.skill ? installProgress.skill : 'Skill install'}
-                                {installProgress.level ? ` - risk ${installProgress.level}` : ''}
-                            </div>
-                        </div>
-                        <div style={{ fontSize: '0.82rem', color: 'var(--theme-text-secondary)', lineHeight: 1.4 }}>
-                            {installProgress.status || installProgress.summary || 'Working...'}
-                        </div>
-                    </div>
-                )}
+                <InstallSkillProgress progress={installProgress} isInstalling={isBatchInstalling} />
                 <InstallSkillFooter
                     activeTool={activeTool}
                     selectedSkillsToInstall={selectedSkillsToInstall}

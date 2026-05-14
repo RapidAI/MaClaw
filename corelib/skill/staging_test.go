@@ -239,6 +239,14 @@ func TestBuildAgentScanPrompt_FileContentsInXMLTags(t *testing.T) {
 	}
 }
 
+func TestBuildAgentScanPrompt_UsesReadableReviewerInstructions(t *testing.T) {
+	prompt := BuildAgentScanPrompt("demo", "desc", "community", nil, nil, nil)
+	for _, want := range []string{"You are a security reviewer", "Risk scoring rules", "Output strict JSON only"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
 func TestBuildAgentScanPrompt_UsesStepInfo(t *testing.T) {
 	steps := []StepInfo{
 		{Action: "bash", Params: map[string]interface{}{"command": "echo hello"}},
@@ -289,6 +297,29 @@ func TestScanReport_IsDangerous(t *testing.T) {
 	}
 }
 
+func TestScanReport_DecisionMethodsFailClosedForNilAndUnknown(t *testing.T) {
+	var nilReport *ScanReport
+	if !nilReport.NeedsUserReview() {
+		t.Fatal("nil report should require review")
+	}
+	if !nilReport.IsDangerous() {
+		t.Fatal("nil report should be dangerous")
+	}
+	if nilReport.IsSafe() {
+		t.Fatal("nil report should not be safe")
+	}
+
+	r := &ScanReport{FinalLevel: ""}
+	if !r.NeedsUserReview() {
+		t.Fatal("unknown risk level should require review")
+	}
+	if r.IsSafe() {
+		t.Fatal("unknown risk level should not be safe")
+	}
+	if r.IsDangerous() {
+		t.Fatal("unknown risk level should require review without being classified critical")
+	}
+}
 func TestCollectScanContent_IncludesReadmeOnlySkillDocs(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# docs\n"), 0o644); err != nil {

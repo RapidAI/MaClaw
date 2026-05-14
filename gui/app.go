@@ -101,6 +101,9 @@ type App struct {
 	toolSelector          *ToolSelector
 	skillHubClient        *SkillHubClient
 	capabilityGapDetector *CapabilityGapDetector
+	agentRegistry         *agent.AgentRegistry
+	agentRegistryOnce     sync.Once
+	ohModules             openhumanModules
 	stopHubTicker         chan struct{} // signals the 24h recommendation refresh goroutine to stop
 	hubUpdCache           *hubUpdateCache
 	hubCenterCache        *remote.HubCenterSelectionCache // shared cache from corelib/remote
@@ -133,6 +136,7 @@ type App struct {
 	securityFirewall           *SecurityFirewall
 	securityRiskAnalyzer       *SecurityRiskAnalyzer
 	hubSecurityCache           hubSecurityCache
+	capabilitySyncRunning      atomic.Bool
 	contextBridge              *ContextBridge
 	aiTrace                    *AITraceService
 	taskOrchestrator2          *TaskOrchestrator2
@@ -252,7 +256,7 @@ func (a *App) ensureRemoteInfra() {
 }
 
 // initRemoteInfra initializes ALL subsystems (Layer 0 + Layer 1 + Layer 2).
-// Kept for backward compatibility 闂?goes through the proper Once guards.
+// Kept for backward compatibility �?goes through the proper Once guards.
 func (a *App) initRemoteInfra() {
 	a.ensureRemoteInfra()
 	a.ensureInteractionInfra()
@@ -260,7 +264,7 @@ func (a *App) initRemoteInfra() {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 0 闂?Core infrastructure: minimal set needed for Hub connection and
+// Layer 0 �?Core infrastructure: minimal set needed for Hub connection and
 // basic IM message routing. Initialized at startup.
 // ---------------------------------------------------------------------------
 func (a *App) initCoreInfra() {
@@ -357,7 +361,7 @@ func (a *App) initCoreInfra() {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 1 闂?Interaction infrastructure: components needed when the user
+// Layer 1 �?Interaction infrastructure: components needed when the user
 // actually starts interacting (first IM message, first session launch, etc.).
 // Deferred from startup to reduce idle memory.
 // ---------------------------------------------------------------------------
@@ -411,7 +415,7 @@ func (a *App) initDeferredInteractionInfra() {
 }
 
 // ---------------------------------------------------------------------------
-// Layer 2 闂?On-demand infrastructure: heavy or rarely-used components
+// Layer 2 �?On-demand infrastructure: heavy or rarely-used components
 // initialized only when the user explicitly accesses the feature.
 // ---------------------------------------------------------------------------
 func (a *App) initOnDemandInfra() {
@@ -456,9 +460,9 @@ func (a *App) ensureMemoryStore() {
 		// Register ProjectIndex change callback. When any memory entry
 		// updates the project index (new project or activity change),
 		// notify the frontend to refresh the "鏈€杩戜换鍔? sidebar.
-		// This is the single notification point 鈥?all write paths
+		// This is the single notification point �?all write paths
 		// (sedimentTaskEntry, workflow_artifact_saver, memorySink,
-		// conversation_archiver, etc.) flow through Store.Save 鈫?		// ProjectIndex.IndexEntry 鈫?OnChanged. No per-writer event
+		// conversation_archiver, etc.) flow through Store.Save �?		// ProjectIndex.IndexEntry �?OnChanged. No per-writer event
 		// emission needed.
 		if pi := ms.ProjectIndex(); pi != nil {
 			pi.OnChanged = func(_ string) {
@@ -467,13 +471,14 @@ func (a *App) ensureMemoryStore() {
 				}
 			}
 		}
-		// Wire up all pipeline components. LLM-dependent components (promoter,
-		// reflector, consolidator) gracefully skip when LLM is nil/unconfigured.
+		// Wire up all pipeline components. LLM-dependent components (synthesizer,
+		// consolidator) gracefully skip when LLM is nil/unconfigured.
 		// Step 0 (decay/dormant marking) always runs regardless.
 		compressor := memory.NewCompressor(ms, nil, nil)
-		promoter := memory.NewPromoter(ms, nil)
-		reflector := memory.NewReflector(ms, nil)
-		a.memPipeline = memory.NewPipeline(ms, compressor, promoter, reflector, nil)
+		a.memPipeline = memory.NewPipeline(ms, compressor, nil, nil, nil)
+		// Attach combined Promoter+Reflector as Synthesizer.
+		synthesizer := memory.NewSynthesizer(ms, nil)
+		a.memPipeline.SetSynthesizer(synthesizer)
 		// Attach TiMem consolidators.
 		consolidator := memory.NewConsolidator(ms, ms.TMT(), nil)
 		profiler := memory.NewProfileConsolidator(ms, ms.TMT(), nil)
@@ -1066,7 +1071,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 			handler.toolBuilder.SetSkillProvider(&skillExecutorProvider{executor: a.skillExecutor})
 		}
 		// Reuse the already-loaded embedder if vector search is active.
-		// Do not load a second Gemma model here 闂?that duplicates mmap-backed
+		// Do not load a second Gemma model here �?that duplicates mmap-backed
 		// state and causes a large idle memory jump right after Hub connect.
 		if a.memoryStore != nil {
 			emb := a.memoryStore.Embedder()
@@ -1113,7 +1118,7 @@ func (a *App) createAndWireHubClient() *RemoteHubClient {
 	log.Printf("[createAndWireHubClient] Hub Connect done in %v", time.Since(connectStart))
 	a.logMemorySnapshot("createAndWireHubClient:connected")
 	a.markAIAssistantReady()
-	log.Printf("[createAndWireHubClient] total=%v — AI assistant now ready", time.Since(cwStart))
+	log.Printf("[createAndWireHubClient] total=%v �?AI assistant now ready", time.Since(cwStart))
 	a.emitEvent("ai-assistant-init-progress", "ready")
 	// Do not eagerly warm tools or HTTP connections after Hub login/connect.
 	// That extra preload is not required for correctness and causes a large
@@ -1190,7 +1195,7 @@ func (a *App) asyncHubConnect() {
 	// immediately after auth succeeds.
 	err := hubClient.ConnectAuthOnly()
 	if err != nil {
-		log.Printf("[asyncHubConnect] Hub auth failed in %v: %v — operating in degraded mode", time.Since(connectStart), err)
+		log.Printf("[asyncHubConnect] Hub auth failed in %v: %v �?operating in degraded mode", time.Since(connectStart), err)
 		// Degraded mode: local LLM, local tools still work. Only Hub-dependent
 		// features (IM relay, remote session sync, scheduled task push to IM
 		// channels) are unavailable until reconnection succeeds.
@@ -1220,7 +1225,7 @@ func (a *App) asyncHubConnect() {
 		hubClient.mu.Unlock()
 		if err != nil {
 			log.Printf("[asyncHubConnect] sendMachineHelloLocked failed in %v: %v", time.Since(helloStart), err)
-			// Hello failure is non-fatal — connection is already established,
+			// Hello failure is non-fatal �?connection is already established,
 			// auth succeeded, and local features work. Hub will eventually
 			// receive hello on next heartbeat or reconnect.
 			return
@@ -1417,16 +1422,16 @@ func (a *App) startup(ctx context.Context) {
 			hubPrepStart := time.Now()
 			a.prepareHubClientSync()
 			log.Printf("[startup] prepareHubClientSync done in %v (since startup begin: %v)", time.Since(hubPrepStart), time.Since(startupBegin))
-			// Mark AI assistant ready BEFORE Hub connection — user can interact immediately.
+			// Mark AI assistant ready BEFORE Hub connection �?user can interact immediately.
 			a.markAIAssistantReady()
 			// Background: Hub WebSocket connect + auth + sendHello (network I/O).
 			go a.asyncHubConnect()
 		} else if config.RemoteEmail != "" && config.RemoteHubURL != "" {
-			// No full credentials yet — mark ready immediately, auto-register in background.
+			// No full credentials yet �?mark ready immediately, auto-register in background.
 			a.markAIAssistantReady()
 			go a.autoRegisterOnStartup(config)
 		} else {
-			// No Hub credentials at all — mark ready immediately without attempting connection.
+			// No Hub credentials at all �?mark ready immediately without attempting connection.
 			a.markAIAssistantReady()
 		}
 		a.refreshPowerOptimizationStateFromConfig(config)
@@ -1552,7 +1557,7 @@ func (a *App) GetUIZoomFactor() float64 {
 	return cfg.UIZoomFactor
 }
 
-// SetUIZoomFactor persists the UI zoom factor (clamped to 0.5闂?.0).
+// SetUIZoomFactor persists the UI zoom factor (clamped to 0.5�?.0).
 func (a *App) SetUIZoomFactor(factor float64) error {
 	if factor < 0.5 {
 		factor = 0.5
@@ -1583,7 +1588,7 @@ func (a *App) GetChatFontSize() int {
 	return cfg.ChatFontSize
 }
 
-// SetChatFontSize persists the chat font size (clamped to 12鈥?4).
+// SetChatFontSize persists the chat font size (clamped to 12�?4).
 func (a *App) SetChatFontSize(size int) error {
 	if size < 12 {
 		size = 12
@@ -1629,6 +1634,22 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.memoryStore != nil {
 		a.memoryStore.Stop()
+	}
+	// OpenHuman modules shutdown
+	if a.ohModules.toolMemory != nil {
+		a.ohModules.toolMemory.Flush()
+	}
+	if a.ohModules.heartbeat != nil {
+		a.ohModules.heartbeat.Stop()
+	}
+	if a.ohModules.subconsciousEngine != nil {
+		a.ohModules.subconsciousEngine.Stop()
+	}
+	if a.ohModules.autoFetchEngine != nil {
+		a.ohModules.autoFetchEngine.Stop()
+	}
+	if a.ohModules.eventBus != nil {
+		a.ohModules.eventBus.Close()
 	}
 	if a.memoryCompressor != nil {
 		a.memoryCompressor.Stop()
@@ -1792,7 +1813,7 @@ func (a *App) buildClaudeLaunchEnv(
 	}
 
 	// For all non-builtin (third-party) providers: disable nonessential traffic
-	// and increase API timeout. Third-party Anthropic-compatible APIs (闂傚倷绀侀幖顐﹀箠濡偐纾芥慨姗嗗墻濞? 闂傚倷娴囬惃顐﹀礋椤愩垹袘闂佽姘﹂～澶嬬箾婵犲倻鏆﹂柨鐔哄Т缁€鍐煏婵炑冨缁?
+	// and increase API timeout. Third-party Anthropic-compatible APIs (闂傚倷绀侀幖顐﹀箠濡偐纾芥慨姗嗗墻�? 闂傚倷娴囬惃顐﹀礋椤愩垹袘闂佽姘﹂～澶嬬箾婵犲倻鏆﹂柨鐔哄Т缁€鍐煏婵炑冨缁?
 	// DeepSeek, etc.) typically have stricter rate limits than Anthropic's own API.
 	// Claude Code's internal agent loop sends requests very rapidly without human
 	// interaction pauses, which easily triggers 429 rate limits on these providers.
@@ -1833,11 +1854,11 @@ func (a *App) buildClaudeLaunchEnv(
 		}
 
 		// Backward-compat migration: if a pre-fix backup directory exists
-		// (created by the old clearClaudeConfig 闂?backupToolNativeConfig flow),
+		// (created by the old clearClaudeConfig �?backupToolNativeConfig flow),
 		// restore it one last time so users don't lose their old state.
 		backupDir := filepath.Join(a.configBackupDir("claude"), ".claude")
 		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-			log.Printf("[LaunchTool] Claude: pre-fix backup found at %s 闂?running one-time migration restore", backupDir)
+			log.Printf("[LaunchTool] Claude: pre-fix backup found at %s �?running one-time migration restore", backupDir)
 			a.restoreToolNativeConfig("claude")
 		}
 	}
@@ -1888,11 +1909,11 @@ func (a *App) buildCodexLaunchEnv(
 		}
 
 		// Backward-compat migration: if a pre-fix backup directory exists
-		// (created by the old clearCodexConfig 闂?backupToolNativeConfig flow),
+		// (created by the old clearCodexConfig �?backupToolNativeConfig flow),
 		// restore it one last time so users don't lose their old state.
 		backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
 		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-			log.Printf("[LaunchTool] Codex: pre-fix backup found at %s 闂?running one-time migration restore", backupDir)
+			log.Printf("[LaunchTool] Codex: pre-fix backup found at %s �?running one-time migration restore", backupDir)
 			a.restoreToolNativeConfig("codex")
 		}
 	}
@@ -2066,11 +2087,11 @@ func (a *App) buildGeminiLaunchEnv(
 		}
 
 		// Backward-compat migration: if a pre-fix backup directory exists
-		// (created by the old clearGeminiConfig 闂?backupToolNativeConfig flow),
+		// (created by the old clearGeminiConfig �?backupToolNativeConfig flow),
 		// restore it one last time so users don't lose their old state.
 		backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
 		if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-			log.Printf("[LaunchTool] Gemini: pre-fix backup found at %s 闂?running one-time migration restore", backupDir)
+			log.Printf("[LaunchTool] Gemini: pre-fix backup found at %s �?running one-time migration restore", backupDir)
 			a.restoreToolNativeConfig("gemini")
 		}
 	}
@@ -2357,11 +2378,11 @@ func (a *App) ResizeWindow(width, height int) {
 	runtime.WindowCenter(a.ctx)
 }
 
-// RestoreWindowGeometry is no longer used 闂?kept as no-op for binding compatibility.
+// RestoreWindowGeometry is no longer used �?kept as no-op for binding compatibility.
 func (a *App) RestoreWindowGeometry() {
 }
 
-// MaximiseAndSaveGeometry is no longer used 闂?kept as no-op for binding compatibility.
+// MaximiseAndSaveGeometry is no longer used �?kept as no-op for binding compatibility.
 func (a *App) MaximiseAndSaveGeometry() bool {
 	return false
 }
@@ -2526,9 +2547,9 @@ func (a *App) MigrateDataDir() {
 			continue // destination already exists, skip
 		}
 		if err := os.Rename(src, dst); err != nil {
-			log.Printf("[MigrateDataDir] failed to move %s 闂?%s: %v", src, dst, err)
+			log.Printf("[MigrateDataDir] failed to move %s �?%s: %v", src, dst, err)
 		} else {
-			log.Printf("[MigrateDataDir] migrated %s 闂?%s", src, dst)
+			log.Printf("[MigrateDataDir] migrated %s �?%s", src, dst)
 		}
 	}
 
@@ -2711,7 +2732,7 @@ func (a *App) backupToolNativeConfig(tool string) {
 	// Only backup if the source directory actually exists and is non-empty.
 	if info, err := os.Stat(srcDir); err == nil && info.IsDir() {
 		backupDirDst := filepath.Join(backupBase, filepath.Base(srcDir))
-		// Don't overwrite an existing backup 闂?it may contain a valid login.
+		// Don't overwrite an existing backup �?it may contain a valid login.
 		if _, err := os.Stat(backupDirDst); os.IsNotExist(err) {
 			os.MkdirAll(backupBase, 0755)
 			if err := os.Rename(srcDir, backupDirDst); err != nil {
@@ -3814,7 +3835,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			// Backward-compat: restore pre-fix backup if it exists (one-time migration).
 			backupDir := filepath.Join(a.configBackupDir("claude"), ".claude")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found 闂?running one-time migration restore")
+				log.Printf("[LaunchTool-desktop] Claude: pre-fix backup found �?running one-time migration restore")
 				a.restoreToolNativeConfig("claude")
 			}
 		case remoteToolNameGemini:
@@ -3823,7 +3844,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			backupDir := filepath.Join(a.configBackupDir("gemini"), ".gemini")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Gemini: pre-fix backup found 闂?running one-time migration restore")
+				log.Printf("[LaunchTool-desktop] Gemini: pre-fix backup found �?running one-time migration restore")
 				a.restoreToolNativeConfig("gemini")
 			}
 		case remoteToolNameCodex:
@@ -3833,7 +3854,7 @@ func (a *App) LaunchTool(toolName string, yoloMode bool, adminMode bool, pythonP
 			}
 			backupDir := filepath.Join(a.configBackupDir("codex"), ".codex")
 			if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
-				log.Printf("[LaunchTool-desktop] Codex: pre-fix backup found 闂?running one-time migration restore")
+				log.Printf("[LaunchTool-desktop] Codex: pre-fix backup found �?running one-time migration restore")
 				a.restoreToolNativeConfig("codex")
 			}
 		default:
@@ -4391,7 +4412,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if config.Claude.CurrentModel == "" && len(config.Claude.Models) > 0 {
 		config.Claude.CurrentModel = config.Claude.Models[0].ModelName
 	}
-	// Helper to rename a model (migrate old name 鈫?new name), preserving user's API key and settings.
+	// Helper to rename a model (migrate old name �?new name), preserving user's API key and settings.
 	// If newName already exists, the old entry is removed to avoid duplicates.
 	renameModel := func(models *[]corelib.ModelConfig, oldName, newName string, currentModel *string) {
 		newIdx := -1
@@ -4408,7 +4429,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			return // old name not found, nothing to migrate
 		}
 		if newIdx != -1 && newIdx != oldIdx {
-			// Both old and new exist 鈥?merge: copy user settings from old to new if new has none, then remove old
+			// Both old and new exist �?merge: copy user settings from old to new if new has none, then remove old
 			if (*models)[newIdx].ApiKey == "" && (*models)[oldIdx].ApiKey != "" {
 				(*models)[newIdx].ApiKey = (*models)[oldIdx].ApiKey
 			}
@@ -4423,7 +4444,7 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			}
 			*models = append((*models)[:oldIdx], (*models)[oldIdx+1:]...)
 		} else if newIdx == -1 {
-			// Only old exists 鈥?just rename
+			// Only old exists �?just rename
 			(*models)[oldIdx].ModelName = newName
 		}
 		// Update current_model reference
@@ -4435,12 +4456,12 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	// Migrate Chinese provider names to English (legacy config compatibility).
 	// Previous versions used Chinese names; current version uses English names.
 	chineseToEnglish := map[string]string{
-		"腾讯云":  "Tencent Cloud",
-		"摩尔线程": "Moore Threads",
-		"快手":   "Kuaishou",
-		"阿里云":  "Aliyun",
-		"百度千帆": "Baidu Qianfan",
-		"讯飞星辰": "iFlytek",
+		"\u817e\u8baf\u4e91":       "Tencent Cloud",
+		"\u6469\u5c14\u7ebf\u7a0b": "Moore Threads",
+		"\u5feb\u624b":             "Kuaishou",
+		"\u963f\u91cc\u4e91":       "Aliyun",
+		"\u767e\u5ea6\u5343\u5e06": "Baidu Qianfan",
+		"\u8baf\u98de\u661f\u8fb0": "iFlytek",
 	}
 	allToolCfgs := []*corelib.ToolConfig{
 		&config.Claude, &config.Gemini, &config.Codex, &config.Opencode,
@@ -4954,7 +4975,7 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 	corelib.SetLogDetailEnabled(config.LogDetailEnabled)
 	// Sync workflow enabled/disabled state to the atomic flag so that
 	// getWorkflowEngine() returns nil when workflow is disabled. This is
-	// the single enforcement point 鈥?all workflow consumers go through
+	// the single enforcement point �?all workflow consumers go through
 	// getWorkflowEngine(), so no per-consumer guards are needed.
 	a.workflowDisabled.Store(!config.IsWorkflowEnabled())
 	policyModeChanged := a.policyEngine != nil && config.SecurityPolicyMode != oldConfig.SecurityPolicyMode
@@ -5015,8 +5036,8 @@ func (a *App) SaveConfig(config corelib.AppConfig) error {
 
 // PatchConfig performs an atomic read-modify-write on the config file.
 // The patchFn receives the current config and may modify any fields.
-// The entire operation (load 鈫?patch 鈫?save) runs under configMu, eliminating
-// the TOCTOU race window that exists when callers do LoadConfig 鈫?modify 鈫?// SaveConfig with the lock released in between.
+// The entire operation (load �?patch �?save) runs under configMu, eliminating
+// the TOCTOU race window that exists when callers do LoadConfig �?modify �?// SaveConfig with the lock released in between.
 //
 // Use PatchConfig when updating a small number of fields (credentials, flags)
 // while other goroutines may be concurrently modifying the config. Use
@@ -6922,8 +6943,11 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 			if err := a.unzip(fullPath, destDir); err != nil {
 				return fmt.Errorf("unzip failed: %v", err)
 			}
-			writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports)
 			installedSkillDirs = append(installedSkillDirs, candidateInstalledSkillDirs(destDir)...)
+			if err := writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports); err != nil {
+				cleanupImportedSkillDirs(installedSkillDirs)
+				return fmt.Errorf("write skill scan cache: %w", err)
+			}
 		}
 	} else if locationKind.IsProject() {
 		if projectPath == "" {
@@ -6934,8 +6958,11 @@ func (a *App) InstallSkill(name, description, skillType, value, location, projec
 		if err := a.unzip(fullPath, destDir); err != nil {
 			return fmt.Errorf("unzip failed: %v", err)
 		}
-		writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports)
 		installedSkillDirs = append(installedSkillDirs, candidateInstalledSkillDirs(destDir)...)
+		if err := writeSkillScanCacheForInstalledZip(name, description, destDir, installScanReport, installScanReports); err != nil {
+			cleanupImportedSkillDirs(installedSkillDirs)
+			return fmt.Errorf("write skill scan cache: %w", err)
+		}
 	}
 	// 3. Add to App List
 	addSkillValue := value
@@ -7006,8 +7033,8 @@ func (a *App) DeleteSkill(name, toolName string) error {
 // Translation logic
 var translations = map[string]map[string]string{
 	"Show AI assistant button": {
-		"zh-Hans": "閺勫墽銇?AI 閸斺晜澧滈幐澶愭尦",
-		"zh-Hant": "妞ゎ垳銇?AI 閸斺晜澧滈幐澶愬灔",
+		"zh-Hans": "\u663e\u793a AI \u52a9\u624b\u6309\u94ae",
+		"zh-Hant": "\u986f\u793a AI \u52a9\u624b\u6309\u9215",
 	},
 	"Service Redeem": {
 		"zh-Hans": "\u670d\u52a1\u5151\u6362",
@@ -7098,7 +7125,7 @@ func (a *App) PingSkillHub(url string) map[string]interface{} {
 	return result
 }
 
-// ValidateSkillHub 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻牓鎮楅棃娑欐喐缁炬儳鍚嬬换娑㈠幢濡ゅ啰顔婇梺?URL 闂?Hub 缂傚倸鍊风欢锟犲磻婢舵劦鏁嬬憸鏃堝箖濡ゅ懏鍊婚柤鎭掑劜濞呮牠鎮楅崗澶婁壕闂佸憡鍔︽禍鐐侯敊婢舵劖鈷戦柟鑲╁仜閸斻倝鏌涚€ｎ剙鏋旈柟顕呭櫍椤㈡洟鏁冮埀顒勫垂閸岀偞鍊甸柨婵嗙凹缁ㄥジ鎮楀顓犲弨闁哄本绋戣灒闁绘挸瀛╅悗璇测攽閻愭彃绾х紒顔芥尰娣?// 闂備礁鎼ˇ顐﹀疾濠婂牆钃熼柕濞垮剭?map: {"type": "standard"|"clawhub"|"clawhub_mirror"|"unsupported", "reason": "..."}
+// ValidateSkillHub 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻牓鎮楅棃娑欐喐缁炬儳鍚嬬换娑㈠幢濡ゅ啰顔婇梺?URL �?Hub 缂傚倸鍊风欢锟犲磻婢舵劦鏁嬬憸鏃堝箖濡ゅ懏鍊婚柤鎭掑劜濞呮牠鎮楅崗澶婁壕闂佸憡鍔︽禍鐐侯敊婢舵劖鈷戦柟鑲╁仜閸斻倝鏌涚€ｎ剙鏋旈柟顕呭櫍椤㈡洟鏁冮埀顒勫垂閸岀偞鍊甸柨婵嗙凹缁ㄥジ鎮楀顓犲弨闁哄本绋戣灒闁绘挸瀛╅悗璇测攽閻愭彃绾х紒顔芥尰�?// 闂備礁鎼ˇ顐﹀疾濠婂牆钃熼柕濞垮剭?map: {"type": "standard"|"clawhub"|"clawhub_mirror"|"unsupported", "reason": "..."}
 func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	result := map[string]interface{}{
 		"type":   "unsupported",
@@ -7113,50 +7140,50 @@ func (a *App) ValidateSkillHub(rawURL string) map[string]interface{} {
 	base := strings.TrimRight(rawURL, "/")
 	client := &http.Client{Timeout: 8 * time.Second}
 
-	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?1: ClawSkillHub / skillhub.space 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁?闂?/api/skills?search=test&limit=1
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡�?1: ClawSkillHub / skillhub.space 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚�?�?/api/skills?search=test&limit=1
 	if probeSkillHubSpace(client, base) {
 		result["type"] = "skillhub_space"
-		result["reason"] = "成功连接到 ClawSkillHub API (skillhub.space 格式)"
+		result["reason"] = "Connected to ClawSkillHub API (skillhub.space format)"
 		return result
 	}
 
-	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?2: 闂傚倷绀侀幖顐ょ矓閺夋嚚娲Χ婢跺﹪妫?Hub API 闂?/api/v1/skills/search?q=test
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡�?2: 闂傚倷绀侀幖顐ょ矓閺夋嚚娲Χ婢跺﹪�?Hub API �?/api/v1/skills/search?q=test
 	if hubType := probeStandardHub(client, base); hubType {
 		result["type"] = "standard"
-		result["reason"] = "成功连接到标准 SkillHub API"
+		result["reason"] = "Connected to standard SkillHub API"
 		return result
 	}
 
-	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?3: ClawHub 闂傚倸鍊搁崐鐢稿磻閹惧绡€濠电姴鍊搁弳娆撴煕?(topclawhubskills.com 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁? 闂?/api/stats
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡�?3: ClawHub 闂傚倸鍊搁崐鐢稿磻閹惧绡€濠电姴鍊搁弳娆撴�?(topclawhubskills.com 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚�? �?/api/stats
 	if hubType := probeClawHubMirror(client, base); hubType {
 		result["type"] = "clawhub_mirror"
-		result["reason"] = "成功连接到 ClawHub 镜像 API (topclawhubskills.com 格式)"
+		result["reason"] = "Connected to ClawHub mirror API (topclawhubskills.com format)"
 		return result
 	}
 
-	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?4: ClawHub (clawhub.ai 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁? 闂?/api/v1/skills
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡�?4: ClawHub (clawhub.ai 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚�? �?/api/v1/skills
 	if hubType := probeClawHub(client, base); hubType {
 		result["type"] = "clawhub"
-		result["reason"] = "成功连接到 ClawHub API (clawhub.ai 格式)"
+		result["reason"] = "Connected to ClawHub API (clawhub.ai format)"
 		return result
 	}
 
-	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡閻?4: 闂?API 婵犵數鍋犻幓顏嗗緤閽樺）娑樜旈崟鈺€姹楅梺鍛婄懃椤︽壆绱?闂?婵犵數鍋犻幓顏嗗緤閸撗冨灊闁割偁鍨虹€氬鏌ｉ弬鎸庢喐闁崇粯妫冮幃妤呮晲鎼粹€崇缂備椒妞掗崡鍐差潖婵犳艾鐒垫い鎺嗗亾妞ゎ厹鍔戝畷姗€濡搁妷銉婵犵數鍋犻幓顏嗙礊閳ь剚绻涙径瀣鐎?
+	// 闂傚倷娴囬～澶嬬娴犲鍨傞柧蹇撴贡�?4: �?API 婵犵數鍋犻幓顏嗗緤閽樺）娑樜旈崟鈺€姹楅梺鍛婄懃椤︽壆绱?�?婵犵數鍋犻幓顏嗗緤閸撗冨灊闁割偁鍨虹€氬鏌ｉ弬鎸庢喐闁崇粯妫冮幃妤呮晲鎼粹€崇缂備椒妞掗崡鍐差潖婵犳艾鐒垫い鎺嗗亾妞ゎ厹鍔戝畷姗€濡搁妷銉婵犵數鍋犻幓顏嗙礊閳ь剚绻涙径瀣鐎?
 	if resp, err := client.Get(base); err == nil {
 		resp.Body.Close()
 		if resp.StatusCode < 400 {
 			result["type"] = "mirror"
-			result["reason"] = "站点可访问，但未识别为标准 SkillHub API"
+			result["reason"] = "Site is reachable, but it was not identified as a standard SkillHub API"
 			return result
 		}
 	}
 
-	result["reason"] = "未识别为可用的 SkillHub 或 ClawHub API"
+	result["reason"] = "Not identified as a usable SkillHub or ClawHub API"
 	return result
 }
 
-// probeSkillHubSpace 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?clawskillhub.com / skillhub.space 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻崜?API
-// GET /api/skills?search=test&limit=1 闂備礁婀遍崢褔鎮洪妸銉庢稒鎷呴悜妯哄簥闂佺鎻粻鎴︽倷?JSON 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃閸?
+// probeSkillHubSpace 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?clawskillhub.com / skillhub.space 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻�?API
+// GET /api/skills?search=test&limit=1 闂備礁婀遍崢褔鎮洪妸銉庢稒鎷呴悜妯哄簥闂佺鎻粻鎴︽�?JSON 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃�?
 func probeSkillHubSpace(client *http.Client, base string) bool {
 	endpoint := base + "/api/skills?search=test&limit=1"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -7172,7 +7199,7 @@ func probeSkillHubSpace(client *http.Client, base string) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	// 闂備礁婀遍崢褔鎮洪妸銉庢稒鎷呴悜妯哄簥闂佺鎻粻鎴︽倷?JSON 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃閸?[{"id":..., "slug":..., "owner":...}, ...]
+	// 闂備礁婀遍崢褔鎮洪妸銉庢稒鎷呴悜妯哄簥闂佺鎻粻鎴︽�?JSON 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃�?[{"id":..., "slug":..., "owner":...}, ...]
 	var items []json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
 		return false
@@ -7196,7 +7223,7 @@ func probeStandardHub(client *http.Client, base string) bool {
 	if resp.StatusCode != http.StatusOK {
 		return false
 	}
-	// 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅宕岄柡宀嬬磿娴狅妇鎷犻幓鎺懶撶紓鍌欒兌缁垶宕归崹顔炬殾闁割偅娲橀崐鐑芥煕椤垵浜為柡?JSON 闂傚倷绀侀幖顐も偓姘卞厴瀹曡瀵奸弶鎴犵暰婵炴挻鍩冮崑鎾垛偓瑙勬礈婵炩偓鐎规洏鍔戦、姗€鎮㈠畡鏉款棐 "skills" 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃閸?
+	// 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅宕岄柡宀嬬磿娴狅妇鎷犻幓鎺懶撶紓鍌欒兌缁垶宕归崹顔炬殾闁割偅娲橀崐鐑芥煕椤垵浜為柡?JSON 闂傚倷绀侀幖顐も偓姘卞厴瀹曡瀵奸弶鎴犵暰婵炴挻鍩冮崑鎾垛偓瑙勬礈婵炩偓鐎规洏鍔戦、姗€鎮㈠畡鏉款�?"skills" 闂傚倷娴囧銊╂倿閿旂晫鐝堕柛鈩冪懃�?
 	var body map[string]json.RawMessage
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return false
@@ -7205,7 +7232,7 @@ func probeStandardHub(client *http.Client, base string) bool {
 	return hasSkills
 }
 
-// probeClawHubMirror 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?topclawhubskills.com 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻崜?API
+// probeClawHubMirror 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?topclawhubskills.com 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻�?API
 func probeClawHubMirror(client *http.Client, base string) bool {
 	endpoint := base + "/api/stats"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
@@ -7234,7 +7261,7 @@ func probeClawHubMirror(client *http.Client, base string) bool {
 	return false
 }
 
-// probeClawHub 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?clawhub.ai 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻崜?API
+// probeClawHub 濠电姷顣藉Σ鍛村磻閳ь剟鏌涚€ｎ偅灏扮紒?clawhub.ai 婵犵绱曢崑娑㈩敄閸涱垪鍋撳☉鎺撴珚闁诡啫鍥х濞达絿鎳撻�?API
 func probeClawHub(client *http.Client, base string) bool {
 	endpoint := base + "/api/v1/skills"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)

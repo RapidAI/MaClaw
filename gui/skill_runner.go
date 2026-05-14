@@ -21,6 +21,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -1676,18 +1677,47 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 		return
 	}
 
+	originalSteps := cloneSkillSteps(entry.Steps)
 	if !cskill.ApplyRepair(entry, result) {
 		log.Printf("[skill-repair-gui] repair not applied for %q: repaired=%v should_disable=%v",
 			entry.Name, result.Repaired, result.ShouldDisable)
 		// If should_disable, persist the status change.
 		if result.ShouldDisable {
-			r.persistRepairResult(entry)
+			if err := r.persistRepairResult(entry); err != nil {
+				log.Printf("[skill-repair-gui] persist disabled repair result for %q failed: %v", entry.Name, err)
+			}
+		}
+		return
+	}
+
+	repairReport := r.scanRepairedSkill(entry)
+	if repairReport == nil || repairReport.NeedsUserReview() {
+		markRepairBlockedBySecurity(entry, originalSteps, repairReport)
+		log.Printf("[skill-repair-gui] blocked repaired skill %q by security scan: %s", entry.Name, entry.LastError)
+		if err := r.persistRepairResult(entry); err != nil {
+			log.Printf("[skill-repair-gui] persist blocked repair result for %q failed: %v", entry.Name, err)
+		}
+		if r.executor != nil && r.executor.app != nil {
+			r.executor.app.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillReject,
+				"skill_auto_repair",
+				repairScanRiskLevel(repairReport),
+				security.PolicyDeny,
+				fmt.Sprintf("auto-repair rejected for skill %s: %s", entry.Name, entry.LastError),
+			)
 		}
 		return
 	}
 
 	// Persist the repaired steps back to config.
-	r.persistRepairResult(entry)
+	if err := r.persistRepairResult(entry); err != nil {
+		log.Printf("[skill-repair-gui] repaired skill %q passed scan but failed to persist: %v", entry.Name, err)
+		return
+	}
+	if err := writeSkillScanCacheForInstalledEntry(entry, repairReport); err != nil {
+		log.Printf("[skill-repair-gui] repaired skill %q persisted but scan cache write failed: %v", entry.Name, err)
+		return
+	}
 	log.Printf("[skill-repair-gui] repaired skill %q: %s", entry.Name, result.Explanation)
 
 	// Store repair notification for LLM context injection.
@@ -1708,11 +1738,63 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 	}
 }
 
+func markRepairBlockedBySecurity(entry *corelib.NLSkillEntry, originalSteps []corelib.NLSkillStep, report *cskill.ScanReport) {
+	if entry == nil {
+		return
+	}
+	entry.Steps = cloneSkillSteps(originalSteps)
+	entry.Status = "needs_review"
+	entry.LastError = "auto-repair blocked by security scan: scan unavailable"
+	if report != nil {
+		entry.LastError = fmt.Sprintf("auto-repair blocked by security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	if entry.LastRepairAt == "" {
+		entry.LastRepairAt = now
+	}
+	blocked := corelib.SkillRepairRecord{
+		Timestamp:   entry.LastRepairAt,
+		ErrorClass:  "security_scan_blocked",
+		Explanation: entry.LastError,
+		Success:     false,
+	}
+	if len(entry.RepairHistory) == 0 {
+		entry.RepairHistory = append(entry.RepairHistory, blocked)
+		return
+	}
+	entry.RepairHistory[len(entry.RepairHistory)-1] = blocked
+}
+
+func repairScanRiskLevel(report *cskill.ScanReport) security.RiskLevel {
+	if report == nil {
+		return security.RiskCritical
+	}
+	return report.FinalLevel
+}
+
+func (r *SkillRunner) scanRepairedSkill(entry *corelib.NLSkillEntry) *cskill.ScanReport {
+	if entry == nil {
+		return nil
+	}
+	scanner := cskill.NewSecurityScanner(nil)
+	return scanner.ScanInstallStaged(context.Background(), entry, entry.SkillDir, func(status string) {
+		if r != nil && r.executor != nil && r.executor.app != nil {
+			r.executor.app.log(fmt.Sprintf("[skill-repair-gui] security scan %s: %s", entry.Name, status))
+		}
+	})
+}
+
 // persistRepairResult writes the repaired skill entry back to the config and,
 // for file-backed skills, to the authoritative skill.yaml definition.
-func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) {
+func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) error {
+	if r == nil || r.executor == nil || entry == nil {
+		return nil
+	}
+	var yamlErr error
 	if strings.TrimSpace(entry.SkillDir) != "" {
 		if err := writeSkillYAMLForEntry(entry.SkillDir, entry); err != nil {
+			yamlErr = err
 			log.Printf("[skill-repair-gui] persist repaired skill.yaml for %q failed: %v", entry.Name, err)
 		}
 	}
@@ -1729,10 +1811,13 @@ func (r *SkillRunner) persistRepairResult(entry *corelib.NLSkillEntry) {
 			skills[i].RepairAttemptCount = entry.RepairAttemptCount
 			skills[i].LastRepairAt = entry.LastRepairAt
 			skills[i].RepairHistory = entry.RepairHistory
-			_ = r.executor.saveSkills(skills)
-			return
+			if err := r.executor.saveSkills(skills); err != nil {
+				return err
+			}
+			return yamlErr
 		}
 	}
+	return yamlErr
 }
 
 // ConsumeRepairNotifications returns and clears all pending repair

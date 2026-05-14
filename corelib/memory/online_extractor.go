@@ -41,6 +41,7 @@ type OnlineExtractor struct {
 	mu          sync.Mutex
 	cooldown    time.Duration
 	lastExtract time.Time
+	lastSuccess time.Time // set only when ≥1 fact was actually applied (ADD/UPDATE/DELETE)
 }
 
 // NewOnlineExtractor creates an OnlineExtractor with a 3-minute cooldown.
@@ -68,6 +69,19 @@ func (oe *OnlineExtractor) SetLLM(llm LLMChatCaller) {
 	oe.mu.Lock()
 	oe.llm = llm
 	oe.mu.Unlock()
+}
+
+// HasRecentSuccess returns true if the OnlineExtractor has successfully
+// applied at least one fact (ADD/UPDATE/DELETE) within the given time window.
+// Used by KnowledgeExtractor and Archiver to skip redundant extraction when
+// the online pipeline is actively maintaining memories.
+func (oe *OnlineExtractor) HasRecentSuccess(window time.Duration) bool {
+	if oe == nil {
+		return false
+	}
+	oe.mu.Lock()
+	defer oe.mu.Unlock()
+	return !oe.lastSuccess.IsZero() && time.Since(oe.lastSuccess) < window
 }
 
 // ExtractAndIntegrate is the main entry point. It extracts facts from the
@@ -163,6 +177,9 @@ func (oe *OnlineExtractor) ExtractAndIntegrate(
 	}
 
 	if result.Added > 0 || result.Updated > 0 || result.Deleted > 0 {
+		oe.mu.Lock()
+		oe.lastSuccess = time.Now()
+		oe.mu.Unlock()
 		log.Printf("[online_extractor] completed: extracted=%d added=%d updated=%d deleted=%d noop=%d",
 			result.ExtractedFacts, result.Added, result.Updated, result.Deleted, result.Noops)
 	}
