@@ -70,7 +70,7 @@ func (h *IMMessageHandler) classifyConfirmationIntent(userID, text string, pendi
 
 	// Add the last assistant message for conversational context.
 	if lastAssistant := h.getLastAssistantSnippet(userID, 300); lastAssistant != "" {
-		ctx += fmt.Sprintf("\n鍔╂墜鏈€鍚庝竴鏉℃秷鎭細%s", lastAssistant)
+		ctx += fmt.Sprintf("\n\u52a9\u624b\u6700\u540e\u4e00\u6761\u6d88\u606f\uff1a%s", lastAssistant)
 	}
 
 	userMessage := fmt.Sprintf("[Context]\n%s\n\n[User reply]\n%s", ctx, text)

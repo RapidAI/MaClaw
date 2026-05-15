@@ -17,10 +17,17 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
-// RunSkillMarket 执行 skillmarket 子命令。
+// RunCapabilityMarket 执行 capabilitymarket 子命令（capability market 的主入口）。
+// "skillmarket" 保留为向后兼容的别名。
+func RunCapabilityMarket(args []string) error {
+	return RunSkillMarket(args)
+}
+
+// RunSkillMarket 执行 skillmarket/capabilitymarket 子命令。
+// 注意："skillmarket" 是 "capabilitymarket" 的向后兼容别名。
 func RunSkillMarket(args []string) error {
 	if len(args) == 0 {
-		return NewUsageError("usage: maclaw-tui skillmarket <search|submit|status|account|login|register|lookup|verify|whoami>")
+		return NewUsageError("usage: maclaw-tui capabilitymarket <search|submit|status|account|login|register|lookup|verify|whoami>\n  (alias: maclaw-tui skillmarket)")
 	}
 	switch args[0] {
 	case "search":
@@ -34,7 +41,7 @@ func RunSkillMarket(args []string) error {
 	case "login", "register", "lookup", "verify", "whoami":
 		return RunSkillMarketAuth(args[0], args[1:])
 	default:
-		return NewUsageError("unknown skillmarket action: %s", args[0])
+		return NewUsageError("unknown capability market action: %s", args[0])
 	}
 }
 
@@ -89,12 +96,12 @@ func smSearch(args []string) error {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("搜索 SkillMarket 失败: %w", err)
+		return fmt.Errorf("搜索 Capability Market 失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("SkillMarket 返回 HTTP %d", resp.StatusCode)
+		return fmt.Errorf("Capability Market 返回 HTTP %d", resp.StatusCode)
 	}
 
 	var result struct {
@@ -122,7 +129,7 @@ func smSearch(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("SkillMarket 搜索结果 — 共 %d 个\n\n", result.Total)
+	fmt.Printf("Capability Market 搜索结果 — 共 %d 个\n\n", result.Total)
 	fmt.Printf("%-24s %-6s %-5s %-8s %-12s %s\n", "ID", "PRICE", "★", "DOWNLOADS", "AUTHOR", "NAME")
 	fmt.Println(strings.Repeat("-", 90))
 	for _, s := range result.Results {
@@ -150,7 +157,7 @@ func smSubmit(args []string) error {
 	fs.Parse(args)
 
 	if fs.NArg() == 0 {
-		return NewUsageError("usage: skillmarket submit <skill.zip> [--email <email>]")
+		return NewUsageError("usage: capabilitymarket submit <skill.zip> [--email <email>]")
 	}
 	zipPath := fs.Arg(0)
 
@@ -213,7 +220,7 @@ func smSubmit(args []string) error {
 		return PrintJSON(result)
 	}
 	fmt.Printf("✓ 提交成功，submission_id: %s\n", result.SubmissionID)
-	fmt.Println("  使用 skillmarket status <submission_id> 查看审核状态")
+	fmt.Println("  使用 capabilitymarket status <submission_id> 查看审核状态")
 	return nil
 }
 
@@ -224,7 +231,7 @@ func smStatus(args []string) error {
 	fs.Parse(args)
 
 	if fs.NArg() == 0 {
-		return NewUsageError("usage: skillmarket status <submission-id>")
+		return NewUsageError("usage: capabilitymarket status <submission-id>")
 	}
 	submissionID := fs.Arg(0)
 
@@ -310,7 +317,7 @@ func smAccount(args []string) error {
 	if *jsonOut {
 		return PrintJSON(info)
 	}
-	fmt.Printf("SkillMarket 账户: %s\n", info.Email)
+	fmt.Printf("Capability Market 账户: %s\n", info.Email)
 	fmt.Printf("  状态:     %s\n", info.Status)
 	fmt.Printf("  积分:     %d\n", info.Credits)
 	fmt.Printf("  已结算:   %d\n", info.SettledCredits)

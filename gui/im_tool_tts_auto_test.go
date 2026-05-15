@@ -60,7 +60,7 @@ func TestSelectTTSVoicePayloadIsPlatformAware(t *testing.T) {
 }
 
 func TestShouldEmitDesktopTTSPlaybackSkipsIMPlatforms(t *testing.T) {
-	for _, platform := range []string{"weixin", "weixin_local", "telegram_local", "qqbot_local", "lansenger_local", "scheduler", "agentnet"} {
+	for _, platform := range []string{"weixin", "weixin_local", "telegram_local", "qqbot_local", "lansenger_local", "scheduler"} {
 		if shouldEmitDesktopTTSPlayback(platform) {
 			t.Fatalf("shouldEmitDesktopTTSPlayback(%q) = true, want false", platform)
 		}

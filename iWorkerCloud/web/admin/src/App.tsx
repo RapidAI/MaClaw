@@ -9,11 +9,17 @@ import { CentersPage } from './pages/CentersPage';
 import { LicensesPage } from './pages/LicensesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ComputePowerPage } from './pages/ComputePowerPage';
-import { SkillMarketPage } from './pages/SkillMarketPage';
+import { CapabilityMarketPage } from './pages/CapabilityMarketPage';
 import { LanguageSwitcher } from './components/LanguageSwitcher';
 
-type Tab = 'overview' | 'centers' | 'licenses' | 'compute' | 'skills' | 'settings';
-const tabs: Tab[] = ['overview', 'centers', 'licenses', 'compute', 'skills', 'settings'];
+type Tab = 'overview' | 'centers' | 'licenses' | 'compute' | 'capabilitymarket' | 'settings';
+const tabs: Tab[] = ['overview', 'centers', 'licenses', 'compute', 'capabilitymarket', 'settings'];
+
+/** Legacy tab aliases that redirect to their new names */
+const tabAliases: Record<string, Tab> = {
+  skills: 'capabilitymarket',
+  skillmarket: 'capabilitymarket',
+};
 
 function isTab(value: string): value is Tab {
   return tabs.includes(value as Tab);
@@ -21,7 +27,14 @@ function isTab(value: string): value is Tab {
 
 function readTabFromHash(): Tab {
   const raw = window.location.hash.replace(/^#\/?/, '');
-  return isTab(raw) ? raw : 'overview';
+  if (isTab(raw)) return raw;
+  // Support legacy hash values with redirect
+  if (raw in tabAliases) {
+    const target = tabAliases[raw];
+    window.location.hash = target;
+    return target;
+  }
+  return 'overview';
 }
 
 export default function App() {
@@ -66,7 +79,7 @@ export default function App() {
       case 'centers': return <CentersPage />;
       case 'licenses': return <LicensesPage />;
       case 'compute': return <ComputePowerPage />;
-      case 'skills': return <SkillMarketPage />;
+      case 'capabilitymarket': return <CapabilityMarketPage />;
       case 'settings': return <SettingsPage />;
     }
   })();

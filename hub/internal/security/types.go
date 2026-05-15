@@ -24,6 +24,13 @@ type GroupTreeNode struct {
 	Children    []*GroupTreeNode `json:"children,omitempty"`
 }
 
+// PolicyGroupPathItem describes one node in a root-to-leaf policy path.
+type PolicyGroupPathItem struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	ParentID string `json:"parent_id"`
+}
+
 // EffectivePolicy 生效策略
 type EffectivePolicy struct {
 	FileOutboundEnabled  bool     `json:"file_outbound_enabled"`

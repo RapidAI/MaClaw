@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -25,6 +26,37 @@ type hubAdminRouterTestServices struct {
 	store   *store.Store
 }
 
+func TestResolveHubRuntimeDataDirPrefersSQLiteDSNDirectory(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Database.DSN = filepath.Join(dir, "hub.db")
+	if got := resolveHubRuntimeDataDir(cfg, ""); got != dir {
+		t.Fatalf("runtime data dir = %q, want %q", got, dir)
+	}
+
+	cfg.Database.DSN = "file:" + filepath.Join(dir, "hub-file.db") + "?cache=shared&_pragma=busy_timeout(5000)"
+	if got := resolveHubRuntimeDataDir(cfg, ""); got != dir {
+		t.Fatalf("file DSN runtime data dir = %q, want %q", got, dir)
+	}
+}
+
+func TestResolveHubRuntimeDataDirFallsBackForMemorySQLite(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("create data dir: %v", err)
+	}
+	cfg := config.Default()
+	cfg.Database.DSN = ":memory:"
+	configPath := filepath.Join(configDir, "hub.yaml")
+	if got := resolveHubRuntimeDataDir(cfg, configPath); got != dataDir {
+		t.Fatalf("memory DSN runtime data dir = %q, want %q", got, dataDir)
+	}
+}
 func newAdminRouterTestServices(t *testing.T) (http.Handler, *auth.AdminService) {
 	t.Helper()
 	services := newAdminRouterTestContext(t)
@@ -59,6 +91,7 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 	promptCache := llmcache.New(st.LLMPromptCache, llmcache.Config{})
 	identity := auth.NewIdentityService(st.Users, st.Enrollments, st.EmailBlocks, st.Machines, st.ViewerTokens, st.LoginTokens, st.System, nil, "open", true, nil, "http://127.0.0.1:8080")
 	testCfg := config.Default()
+	testCfg.Database.DSN = dbPath
 	testCfg.Center.BaseURL = ""
 	testCfg.Center.BaseURLs = nil
 	centerSvc := center.NewService(testCfg, st.System)
@@ -98,7 +131,7 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		nil,
 		nil,
 		nil,
-		config.Default(),
+		testCfg,
 		"",
 		nil,
 		"",

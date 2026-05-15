@@ -1,4 +1,4 @@
-﻿# Experience Learning Layer Improvement Plan
+# Experience Learning Layer Improvement Plan
 
 ## Purpose
 
@@ -147,7 +147,7 @@ Implemented in this slice:
 - A2A project-memory promotion now preserves decision rationale, rollback triggers, and structured review counts as durable evidence tags/content instead of reducing them to the final summary only.
 - A2A escalation is now summarized and promoted as governance evidence, preserving escalation reason, target, and raiser with a hashed target tag for later routing analysis.
 - Discussion detail now renders per-proposal structured review badges for approvals, concerns, rejections, abstains, and reviewers, using Hub canonical summaries with local fallback statistics.
-- Escalation requests now normalize empty targets to `iworkercenter` and empty raisers to the local MaClaw identity across Wails/app and agent-tool paths, keeping UI and tool escalation routing behavior consistent.
+- Escalation requests now normalize empty targets to `human_owner` and empty raisers to the local MaClaw identity across Wails/app and agent-tool paths, keeping UI and tool escalation routing behavior consistent.
 - A2A decisions with rollback triggers now emit rollback-condition hash tags and appear as `a2a_rollback_review` trace details in Experience Learning, making rollback execution explicitly review-gated rather than automatic.
 - Experience Learning snapshot and UI now expose a `review_required_trace_count`, so A2A conflict and rollback review traces are visible at a glance instead of only inside trace detail rows.
 - Experience trace detail ordering now prioritizes A2A conflict/rollback review items before ordinary routing and usage signals, and review-required counts are computed before trace-list truncation.

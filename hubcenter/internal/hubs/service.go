@@ -1266,9 +1266,10 @@ func (s *Service) ensureTargetHub(ctx context.Context, hubID string) error {
 }
 
 type DigitalEmployeeAuthorizationUpdate struct {
-	Quota   int
-	Years   int
-	Enabled *bool
+	Quota     int
+	Years     int
+	Enabled   *bool
+	StartDate string // optional ISO date (YYYY-MM-DD); if set, overrides the default base date for expiry calculation
 }
 
 func (s *Service) HubDigitalEmployeeAuthorization(ctx context.Context, hubID string) (*corelib.DigitalEmployeeAuthorization, error) {
@@ -1301,12 +1302,16 @@ func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID 
 	if hub == nil {
 		return nil, ErrHubNotFound
 	}
-	if req.Quota < hub.DigitalEmployeeQuota {
-		return nil, ErrDigitalEmployeeQuotaDecrease
-	}
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled
+	}
+	requestedQuota := req.Quota
+	if requestedQuota == 0 && hub.DigitalEmployeeQuota > 0 {
+		requestedQuota = hub.DigitalEmployeeQuota
+	}
+	if requestedQuota < hub.DigitalEmployeeQuota {
+		return nil, ErrDigitalEmployeeQuotaDecrease
 	}
 	years := req.Years
 	if enabled && years <= 0 {
@@ -1315,15 +1320,25 @@ func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID 
 	var expiresAt *time.Time
 	if enabled {
 		base := time.Now().UTC()
-		if hub.DigitalEmployeeAuthorizationExpiresAt != nil && hub.DigitalEmployeeAuthorizationExpiresAt.After(base) {
+		// If a custom start date is provided, use it as the base for expiry calculation.
+		if req.StartDate != "" {
+			parsed, parseErr := time.Parse("2006-01-02", req.StartDate)
+			if parseErr != nil {
+				return nil, fmt.Errorf("invalid start_date format (expected YYYY-MM-DD): %w", parseErr)
+			}
+			base = parsed.UTC()
+		} else if hub.DigitalEmployeeAuthorizationExpiresAt != nil && hub.DigitalEmployeeAuthorizationExpiresAt.After(base) {
 			base = hub.DigitalEmployeeAuthorizationExpiresAt.UTC()
 		}
 		next := base.AddDate(years, 0, 0)
+		if hub.DigitalEmployeeAuthorizationExpiresAt != nil && hub.DigitalEmployeeAuthorizationExpiresAt.After(next) {
+			next = hub.DigitalEmployeeAuthorizationExpiresAt.UTC()
+		}
 		expiresAt = &next
 	} else {
 		expiresAt = hub.DigitalEmployeeAuthorizationExpiresAt
 	}
-	quota := req.Quota
+	quota := requestedQuota
 	if quota < 0 {
 		quota = 0
 	}

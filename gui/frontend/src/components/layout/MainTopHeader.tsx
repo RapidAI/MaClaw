@@ -16,7 +16,7 @@ interface MainTopHeaderProps {
     setSelectedSkillsToInstall: Dispatch<SetStateAction<string[]>>;
     setShowInstallSkillModal: Dispatch<SetStateAction<boolean>>;
     handleWindowHide: (e: ReactMouseEvent) => void;
-    handleWindowMaximizeToggle: (e: ReactMouseEvent) => void;
+    handleWindowMaximizeToggle: (e?: ReactMouseEvent) => void;
     windowMaximized: boolean;
 }
 
@@ -64,7 +64,7 @@ export const MainTopHeader = ({
     handleWindowMaximizeToggle,
     windowMaximized,
 }: MainTopHeaderProps) => (
-    <div className="top-header" style={{ '--wails-draggable': 'drag' } as any}>
+    <div className="top-header" style={{ '--wails-draggable': 'drag' } as any} onDoubleClick={() => handleWindowMaximizeToggle()}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
             <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--theme-text-primary)', fontWeight: 'bold', marginLeft: '20px', '--wails-draggable': 'drag', flex: 1, display: 'flex', alignItems: 'center' } as any}>
                 <span>{getHeaderTitle(navTab, lang, t)}</span>

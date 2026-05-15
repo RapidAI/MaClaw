@@ -169,6 +169,7 @@ func cloneLLMServiceRegistry(reg *llmservice.Registry) *llmservice.Registry {
 			}
 		}
 	}
+	clone.GlobalServiceGroupIDs = append([]string(nil), reg.GlobalServiceGroupIDs...)
 	clone.GroupBindings = make([]llmservice.GroupBinding, len(reg.GroupBindings))
 	for i, binding := range reg.GroupBindings {
 		clone.GroupBindings[i] = binding

@@ -56,8 +56,12 @@ type HTTPServer struct {
 	skillSourceSvc *cskill.SourceControlService
 }
 
-func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc *cskill.SourceControlService) *HTTPServer {
-	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: skillSourceSvc}
+func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *knowledgeStoreManager, skillSourceSvc ...*cskill.SourceControlService) *HTTPServer {
+	var sourceSvc *cskill.SourceControlService
+	if len(skillSourceSvc) > 0 {
+		sourceSvc = skillSourceSvc[0]
+	}
+	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
 	s.routes()
 	return s
 }

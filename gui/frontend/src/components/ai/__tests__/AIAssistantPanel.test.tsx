@@ -41,6 +41,9 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     RenameTask: vi.fn(),
     PinTask: vi.fn(),
     HideTask: vi.fn(),
+    GroupDiscussionGetConsultationDetail: vi.fn().mockResolvedValue({ discussion: { id: 'disc-1', topic: 'Vendor audit', status: 'open', local_relation: 'owned_ve_invited', readonly: true, participant_ids: ['ve-a'] }, messages: [] }),
+    GroupDiscussionSendHistoryMessage: vi.fn().mockResolvedValue(undefined),
+    GroupDiscussionDownloadAttachment: vi.fn().mockResolvedValue({ local_path: 'D:/maclaw/data/file.pdf' }),
     GetTTSEnabled: vi.fn().mockResolvedValue(false),
     SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
     SpeakText: vi.fn().mockResolvedValue(undefined),
@@ -146,7 +149,7 @@ describe('AIAssistantPanel property tests', () => {
     });
 
     it('keeps the title bar and input area boxed inside the inline panel', () => {
-        const { getByTestId, getByText } = renderPanel({
+        const { getByTestId } = renderPanel({
             window: { inline: true },
             actions: {
                 sendMessage: async () => {},
@@ -293,87 +296,13 @@ describe('AIAssistantPanel property tests', () => {
 
         const toolsGroup = getByTestId('ai-titlebar-tools-group');
         const buttons = Array.from(toolsGroup.querySelectorAll('button'));
-        expect(buttons).toHaveLength(5);
+        expect(buttons).toHaveLength(6);
         expect(buttons[0]?.getAttribute('title')).toBe('Search tasks');
         expect(buttons[1]?.getAttribute('title')).toContain('Voice readback OFF');
         expect(buttons[2]?.getAttribute('title')).toBe('Switch to dark mode');
-        expect(buttons[3]?.getAttribute('title')).toBe('Refresh news');
-        expect(buttons[4]?.getAttribute('title')).toBe('Clear history');
-    });
-
-    it('shows a non-executing handoff in the group discussion menu', () => {
-        const { getByLabelText, getByText } = renderPanel({
-            groupDiscussion: {
-                config: { enabled: true, discoverable: true },
-                status: {
-                    enabled: true,
-                    discoverable: true,
-                    experts: [{ agent_id: 'expert-a' }],
-                    discussions: [{ id: 'disc-1', updated_at: '2026-05-07T10:00:00Z', ready_to_summarize: true }],
-                    pending_invites: [],
-                    active_discussion_count: 1,
-                    ready_discussion_count: 1,
-                },
-                onRefreshStatus: async () => {},
-                onPublishProfile: async () => {},
-                onOpenExperienceTrace: () => {},
-            },
-        });
-
-        fireEvent.click(getByLabelText('Group discussion (GD): Group Listed'));
-
-        expect(getByText('Safe Handoff')).toBeTruthy();
-        expect(getByText(/recommended_focus_context/)).toBeTruthy();
-        expect(getByText(/"action": "get_detail"/)).toBeTruthy();
-        expect(getByText(/"consultation_id": "disc-1"/)).toBeTruthy();
-        expect(getByText(/non_executing_boundary/)).toBeTruthy();
-        expect(getByText(/no discussion was started/)).toBeTruthy();
-    });
-
-    it('omits empty consultation id from group discussion status handoff fallback', () => {
-        const { getByLabelText, getByText, queryByText } = renderPanel({
-            groupDiscussion: {
-                config: { enabled: true, discoverable: true },
-                status: {
-                    enabled: true,
-                    discoverable: true,
-                    experts: [],
-                    discussions: [],
-                    pending_invites: [],
-                },
-                onRefreshStatus: async () => {},
-                onPublishProfile: async () => {},
-            },
-        });
-
-        fireEvent.click(getByLabelText('Group discussion (GD): Group Listed'));
-
-        expect(getByText(/"action": "status"/)).toBeTruthy();
-        expect(queryByText(/consultation_id/)).toBeNull();
-    });
-
-    it('keeps pending invite status handoff read-only in the group discussion menu', () => {
-        const { getByLabelText, getByText } = renderPanel({
-            groupDiscussion: {
-                config: { enabled: true, discoverable: true },
-                status: {
-                    enabled: true,
-                    discoverable: true,
-                    experts: [],
-                    discussions: [],
-                    pending_invites: [{ id: 'invite-1', session_id: 'disc-invite', from_id: 'expert-a', role: 'speak', topic: 'review rollout' }],
-                },
-                onRefreshStatus: async () => {},
-                onPublishProfile: async () => {},
-            },
-        });
-
-        fireEvent.click(getByLabelText('Group discussion (GD): Group Listed'));
-
-        expect(getByText(/"recommended_action_kind": "review_pending_invites"/)).toBeTruthy();
-        expect(getByText(/"recommended_invite_id": "invite-1"/)).toBeTruthy();
-        expect(getByText(/"recommended_consultation_id": "disc-invite"/)).toBeTruthy();
-        expect(getByText(/"action": "status"/)).toBeTruthy();
+        expect(buttons[3]?.getAttribute('title')).toBe('Knowledge Base');
+        expect(buttons[4]?.getAttribute('title')).toBe('Refresh news');
+        expect(buttons[5]?.getAttribute('title')).toBe('Clear history');
     });
 
     it('shows trial-reflect badge when mode is enabled', () => {
@@ -1527,5 +1456,24 @@ describe('AIAssistantPanel property tests', () => {
             ),
             { numRuns: 12 },
         );
+    });
+    it('opens pending history discussions as read-only group tabs', async () => {
+        const onHandled = vi.fn();
+        const { getByTestId, getAllByText } = renderPanel({
+            pendingHistoryDiscussionOpen: {
+                id: 'disc-1',
+                topic: 'Vendor audit',
+                local_relation: 'owned_ve_invited',
+                readonly: true,
+                status: 'open',
+                participant_ids: ['ve-a'],
+            } as any,
+            onPendingHistoryDiscussionOpenHandled: onHandled,
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+        expect(getByTestId('ai-tab-history-disc-1')).toBeTruthy();
+        expect(getAllByText('Read-only').length).toBeGreaterThan(0);
+        expect(getByTestId('ai-history-group-tab-disc-1')).toBeTruthy();
     });
 });

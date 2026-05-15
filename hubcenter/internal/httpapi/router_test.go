@@ -536,6 +536,83 @@ func TestEntryResolveHandlerRejectsBlockedIP(t *testing.T) {
 	}
 }
 
+func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
+	svc := newHubCenterHTTPTestServices(t)
+	token := issueAdminToken(t, svc)
+
+	registered := registerConfirmAndHeartbeatHub(t, svc, map[string]any{
+		"owner_email":     "owner-ve@example.com",
+		"name":            "Digital Employee Hub",
+		"base_url":        "https://ve.example.com",
+		"visibility":      "shared",
+		"enrollment_mode": "approval",
+	})
+	hubID := registered["hub_id"].(string)
+	hubSecret := registered["hub_secret"].(string)
+
+	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"quota":   4,
+		"years":   1,
+		"enabled": true,
+	}, token)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("authorization update status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(resp.Body.Bytes(), []byte("\"active\":true")) {
+		t.Fatalf("expected active quota response, body=%s", resp.Body.String())
+	}
+
+	decreaseResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"quota":   3,
+		"years":   1,
+		"enabled": true,
+	}, token)
+	if decreaseResp.Code != http.StatusBadRequest || !bytes.Contains(decreaseResp.Body.Bytes(), []byte("DIGITAL_EMPLOYEE_QUOTA_DECREASE")) {
+		t.Fatalf("expected quota decrease rejection, status=%d body=%s", decreaseResp.Code, decreaseResp.Body.String())
+	}
+
+	renewResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"years":   1,
+		"enabled": true,
+	}, token)
+	if renewResp.Code != http.StatusOK {
+		t.Fatalf("authorization renew without quota status=%d body=%s", renewResp.Code, renewResp.Body.String())
+	}
+	if !bytes.Contains(renewResp.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(renewResp.Body.Bytes(), []byte("\"active\":true")) {
+		t.Fatalf("renew without quota should preserve active quota, body=%s", renewResp.Body.String())
+	}
+
+	heartbeatResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
+		"hub_secret": hubSecret,
+	}, "")
+	if heartbeatResp.Code != http.StatusOK {
+		t.Fatalf("heartbeat status=%d body=%s", heartbeatResp.Code, heartbeatResp.Body.String())
+	}
+	if !bytes.Contains(heartbeatResp.Body.Bytes(), []byte("\"digital_employee_authorization\"")) || !bytes.Contains(heartbeatResp.Body.Bytes(), []byte("\"quota\":4")) {
+		t.Fatalf("heartbeat should push digital employee authorization, body=%s", heartbeatResp.Body.String())
+	}
+
+	disableResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"enabled": false,
+	}, token)
+	if disableResp.Code != http.StatusOK {
+		t.Fatalf("authorization disable status=%d body=%s", disableResp.Code, disableResp.Body.String())
+	}
+	if !bytes.Contains(disableResp.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(disableResp.Body.Bytes(), []byte("\"active\":false")) || !bytes.Contains(disableResp.Body.Bytes(), []byte("disabled")) {
+		t.Fatalf("disable should preserve quota but mark inactive, body=%s", disableResp.Body.String())
+	}
+
+	disabledHeartbeat := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
+		"hub_secret": hubSecret,
+	}, "")
+	if disabledHeartbeat.Code != http.StatusOK {
+		t.Fatalf("disabled heartbeat status=%d body=%s", disabledHeartbeat.Code, disabledHeartbeat.Body.String())
+	}
+	if !bytes.Contains(disabledHeartbeat.Body.Bytes(), []byte("\"quota\":4")) || !bytes.Contains(disabledHeartbeat.Body.Bytes(), []byte("\"active\":false")) || !bytes.Contains(disabledHeartbeat.Body.Bytes(), []byte("disabled")) {
+		t.Fatalf("heartbeat should push disabled digital employee authorization, body=%s", disabledHeartbeat.Body.String())
+	}
+}
+
 func TestManagementHandlersRequireAdminToken(t *testing.T) {
 	svc := newHubCenterHTTPTestServices(t)
 

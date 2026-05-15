@@ -123,6 +123,59 @@ func TestSyncHubUserLinkReplacesPreviousUserBinding(t *testing.T) {
 	}
 }
 
+func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	hub := &store.HubInstance{ID: "hub_ve", OwnerEmail: "owner@example.com", Name: "Hub VE", BaseURL: "https://hub.example.com", Status: "online", HubSecretHash: hashToken("secret"), CreatedAt: now, UpdatedAt: now}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+
+	enabled := true
+	auth, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 3, Years: 1, Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("initial update: %v", err)
+	}
+	if auth == nil || !auth.Active || auth.Quota != 3 || auth.ExpiresAt == "" {
+		t.Fatalf("unexpected active auth: %+v", auth)
+	}
+	firstExpiry := auth.ExpiresAt
+
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 2, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeQuotaDecrease {
+		t.Fatalf("decrease error = %v, want ErrDigitalEmployeeQuotaDecrease", err)
+	}
+
+	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Years: 1, Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("renew update without quota should preserve current quota: %v", err)
+	}
+	if auth.Quota != 3 || auth.ExpiresAt <= firstExpiry {
+		t.Fatalf("renewal should keep quota and extend expiry: first=%s next=%+v", firstExpiry, auth)
+	}
+	extendedExpiry := auth.ExpiresAt
+
+	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 4, Years: 1, Enabled: &enabled, StartDate: now.Format("2006-01-02")})
+	if err != nil {
+		t.Fatalf("quota increase with explicit start date should not reduce expiry: %v", err)
+	}
+	if auth.Quota != 4 || auth.ExpiresAt < extendedExpiry {
+		t.Fatalf("explicit start date should preserve later existing expiry: previous=%s next=%+v", extendedExpiry, auth)
+	}
+
+	disabled := false
+	auth, err = svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Enabled: &disabled})
+	if err != nil {
+		t.Fatalf("disable update should preserve existing quota when omitted: %v", err)
+	}
+	if auth.Active || auth.Enabled || auth.Reason != "disabled" || auth.Quota != 4 {
+		t.Fatalf("unexpected disabled auth: %+v", auth)
+	}
+}
+
 func TestUserRegistrationReportGroupsByHubWithRecentWindows(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)

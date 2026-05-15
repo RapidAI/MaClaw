@@ -84,15 +84,6 @@ func (h *IMMessageHandler) isSecurityDeveloperMode() bool {
 	return h.app.policyEngine != nil && h.app.policyEngine.IsDeveloperMode()
 }
 
-// --- AgentNet Client ---
-
-func (h *IMMessageHandler) getAgentNetClient() *AgentNetClient {
-	if h.app == nil {
-		return nil
-	}
-	return h.app.agentNetClient
-}
-
 // --- MCP Registry ---
 
 func (h *IMMessageHandler) getMCPRegistry() *MCPRegistry {

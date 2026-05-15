@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -20,7 +21,7 @@ func TestGroupDiscussionAttachmentDownloadURLAddsSessionAndParticipant(t *testin
 	if err != nil {
 		t.Fatalf("parse result: %v", err)
 	}
-	if u.String() != "https://hub.example/api/ve/files/file-1?participant_id=machine-1&session_id=disc-1&x=1" {
+	if u.String() != "https://hub.example/api/ve/files/download/file-1?participant_id=machine-1&session_id=disc-1&x=1" {
 		t.Fatalf("download url = %q", u.String())
 	}
 	if attachmentID != "file-1" {
@@ -58,10 +59,30 @@ func TestGroupDiscussionAttachmentDownloadURLRejectsNonFileRelayPath(t *testing.
 		t.Fatalf("expected non-file-relay path to be rejected")
 	}
 }
+func TestGroupDiscussionAttachmentDownloadURLRejectsUploadEndpoint(t *testing.T) {
+	_, _, err := groupDiscussionAttachmentDownloadURL("https://hub.example", "https://hub.example/api/ve/files/upload", "disc-1", "machine-1")
+	if err == nil {
+		t.Fatalf("expected upload endpoint to be rejected as an attachment download")
+	}
+}
+func TestGroupDiscussionAttachmentDownloadURLRejectsAmbiguousFileID(t *testing.T) {
+	cases := []string{
+		"https://hub.example/api/ve/files/download/file-1/extra",
+		"https://hub.example/api/ve/files/file%2F1",
+	}
+	for _, rawURL := range cases {
+		_, _, err := groupDiscussionAttachmentDownloadURL("https://hub.example", rawURL, "disc-1", "machine-1")
+		if err == nil {
+			t.Fatalf("expected ambiguous file url %q to be rejected", rawURL)
+		}
+	}
+}
 
 func TestGroupDiscussionDownloadAttachmentSavesUnderDiscussionDir(t *testing.T) {
+	hitCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/ve/files/file-42" {
+		hitCount++
+		if r.URL.Path != "/api/ve/files/download/file-42" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("session_id"); got != "disc/one" {
@@ -108,5 +129,64 @@ func TestGroupDiscussionDownloadAttachmentSavesUnderDiscussionDir(t *testing.T) 
 	}
 	if string(data) != "attachment body" {
 		t.Fatalf("downloaded body = %q", string(data))
+	}
+
+	second, err := app.GroupDiscussionDownloadAttachment("disc/one", "/api/ve/files/file-42", "../report?.txt")
+	if err != nil {
+		t.Fatalf("GroupDiscussionDownloadAttachment cached: %v", err)
+	}
+	if second.LocalPath != result.LocalPath || second.SizeBytes != result.SizeBytes {
+		t.Fatalf("cached result = %+v, want local path %q size %d", second, result.LocalPath, result.SizeBytes)
+	}
+	if hitCount != 1 {
+		t.Fatalf("expected cached second download to avoid HTTP request, hits=%d", hitCount)
+	}
+}
+
+func TestGroupDiscussionDownloadAttachmentRefetchesWhenCachedFileMissing(t *testing.T) {
+	hitCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount++
+		_, _ = w.Write([]byte("fresh attachment"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:       server.URL,
+			RemoteMachineID:    "machine-1",
+			RemoteMachineToken: "token-1",
+		},
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	missingPath := filepath.Join(app.GetDataDir(), "group-discussions", "disc-missing", "attachments", "missing.pdf")
+	if err := store.UpsertDownloadedAttachment(context.Background(), GroupDiscussionAttachmentRecord{AttachmentID: "file-99", DiscussionID: "disc-missing", Filename: "missing.pdf", HubURL: "/api/ve/files/file-99", LocalPath: missingPath, DownloadState: "downloaded"}); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpsertDownloadedAttachment: %v", err)
+	}
+	_ = store.Close()
+
+	result, err := app.GroupDiscussionDownloadAttachment("disc-missing", "/api/ve/files/file-99", "missing.pdf")
+	if err != nil {
+		t.Fatalf("GroupDiscussionDownloadAttachment: %v", err)
+	}
+	if hitCount != 1 {
+		t.Fatalf("expected missing cached file to be refetched once, hits=%d", hitCount)
+	}
+	data, err := os.ReadFile(result.LocalPath)
+	if err != nil {
+		t.Fatalf("read refetched attachment: %v", err)
+	}
+	if string(data) != "fresh attachment" {
+		t.Fatalf("refetched body = %q", string(data))
 	}
 }

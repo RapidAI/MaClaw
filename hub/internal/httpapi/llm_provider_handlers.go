@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ type llmProviderRegistryResponse struct {
 
 type llmServiceAdminResponse struct {
 	ModelServiceGroups          []llmservice.ModelServiceGroup `json:"model_service_groups"`
+	GlobalServiceGroupIDs       []string                       `json:"global_service_group_ids,omitempty"`
 	GroupBindings               []llmservice.GroupBinding      `json:"group_bindings,omitempty"`
 	UserBindings                []llmservice.UserBinding       `json:"user_bindings,omitempty"`
 	Cards                       []map[string]any               `json:"cards,omitempty"`
@@ -318,8 +320,9 @@ func GetLLMServicesAdminHandler(system store.SystemSettingsRepository) http.Hand
 	}
 }
 
-func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
+func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -328,6 +331,7 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 		var raw map[string]json.RawMessage
 		_ = json.Unmarshal(body, &raw)
 		_, cardsProvided := raw["cards"]
+		_, grantsProvided := raw["grants"]
 
 		var req llmservice.Registry
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -346,6 +350,9 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 				req.Cards[i].CodeHash = ""
 			}
 			preserveCardHashes(&req, oldReg)
+		}
+		if !grantsProvided && oldReg != nil {
+			req.Grants = append([]llmservice.Grant(nil), oldReg.Grants...)
 		}
 		req.Normalize()
 		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
@@ -374,9 +381,77 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_SAVE_FAILED", err.Error())
 			return
 		}
+		writeLLMServiceBindingAudit(r.Context(), audit, adminAuditUserID(r), oldReg, &req)
 		invalidateLLMRuntimeCaches(system)
 		writeJSON(w, http.StatusOK, toLLMServiceAdminResponse(r, &req, nil))
 	}
+}
+
+func writeLLMServiceBindingAudit(ctx context.Context, audit store.AdminAuditRepository, adminUserID string, oldReg, nextReg *llmservice.Registry) {
+	oldSnapshot := buildLLMServiceBindingAuditSnapshot(oldReg)
+	nextSnapshot := buildLLMServiceBindingAuditSnapshot(nextReg)
+	if reflect.DeepEqual(oldSnapshot, nextSnapshot) {
+		return
+	}
+	writeAdminAuditLog(ctx, audit, adminUserID, "llm.service_bindings.update", map[string]any{"old": oldSnapshot, "new": nextSnapshot})
+}
+
+type llmServiceBindingAuditSnapshot struct {
+	GlobalServiceGroupIDs       []string                      `json:"global_service_group_ids"`
+	DefaultNewUserServiceGroups []string                      `json:"default_new_user_service_groups"`
+	GroupBindings               []llmServiceBindingAuditGroup `json:"group_bindings"`
+	UserBindings                []llmServiceBindingAuditUser  `json:"user_bindings"`
+}
+
+type llmServiceBindingAuditGroup struct {
+	GroupID         string   `json:"group_id"`
+	ServiceGroupIDs []string `json:"service_group_ids"`
+}
+
+type llmServiceBindingAuditUser struct {
+	Email           string   `json:"email"`
+	ServiceGroupIDs []string `json:"service_group_ids"`
+}
+
+func cloneLLMServiceRegistryForAudit(reg *llmservice.Registry) llmservice.Registry {
+	if reg == nil {
+		return llmservice.Registry{}
+	}
+	data, err := json.Marshal(reg)
+	if err != nil {
+		return *reg
+	}
+	var clone llmservice.Registry
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return *reg
+	}
+	return clone
+}
+
+func buildLLMServiceBindingAuditSnapshot(reg *llmservice.Registry) llmServiceBindingAuditSnapshot {
+	clone := cloneLLMServiceRegistryForAudit(reg)
+	clone.Normalize()
+	snapshot := llmServiceBindingAuditSnapshot{
+		GlobalServiceGroupIDs:       append([]string(nil), clone.GlobalServiceGroupIDs...),
+		DefaultNewUserServiceGroups: append([]string(nil), clone.DefaultNewUserServiceGroups...),
+		GroupBindings:               make([]llmServiceBindingAuditGroup, 0, len(clone.GroupBindings)),
+		UserBindings:                make([]llmServiceBindingAuditUser, 0, len(clone.UserBindings)),
+	}
+	for _, binding := range clone.GroupBindings {
+		if strings.TrimSpace(binding.GroupID) == "" || len(binding.ServiceGroupIDs) == 0 {
+			continue
+		}
+		snapshot.GroupBindings = append(snapshot.GroupBindings, llmServiceBindingAuditGroup{GroupID: binding.GroupID, ServiceGroupIDs: append([]string(nil), binding.ServiceGroupIDs...)})
+	}
+	for _, binding := range clone.UserBindings {
+		if strings.TrimSpace(binding.Email) == "" || len(binding.ServiceGroupIDs) == 0 {
+			continue
+		}
+		snapshot.UserBindings = append(snapshot.UserBindings, llmServiceBindingAuditUser{Email: binding.Email, ServiceGroupIDs: append([]string(nil), binding.ServiceGroupIDs...)})
+	}
+	sort.Slice(snapshot.GroupBindings, func(i, j int) bool { return snapshot.GroupBindings[i].GroupID < snapshot.GroupBindings[j].GroupID })
+	sort.Slice(snapshot.UserBindings, func(i, j int) bool { return snapshot.UserBindings[i].Email < snapshot.UserBindings[j].Email })
+	return snapshot
 }
 
 func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository) http.HandlerFunc {
@@ -1826,6 +1901,7 @@ func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, provid
 	baseURL := externalLLMBaseURL(r)
 	return llmServiceAdminResponse{
 		ModelServiceGroups:          reg.ModelServiceGroups,
+		GlobalServiceGroupIDs:       append([]string(nil), reg.GlobalServiceGroupIDs...),
 		GroupBindings:               reg.GroupBindings,
 		UserBindings:                reg.UserBindings,
 		Cards:                       cards,
@@ -1847,6 +1923,20 @@ func validateLLMServiceGroupReferences(reg *llmservice.Registry) []string {
 		return nil
 	}
 	issues := []string{}
+	seenServiceGroups := map[string]string{}
+	for _, group := range reg.ModelServiceGroups {
+		id := strings.TrimSpace(group.ID)
+		if id == "" {
+			issues = append(issues, "model service group id is required")
+			continue
+		}
+		key := strings.ToLower(id)
+		if prev, ok := seenServiceGroups[key]; ok {
+			issues = append(issues, fmt.Sprintf("duplicate model service group id: %s conflicts with %s", id, prev))
+			continue
+		}
+		seenServiceGroups[key] = id
+	}
 	check := func(context string, ids []string) {
 		for _, id := range ids {
 			id = strings.TrimSpace(id)
@@ -1858,6 +1948,7 @@ func validateLLMServiceGroupReferences(reg *llmservice.Registry) []string {
 			}
 		}
 	}
+	check("global service groups", reg.GlobalServiceGroupIDs)
 	check("new-user default grants", reg.DefaultNewUserServiceGroups)
 	for _, binding := range reg.GroupBindings {
 		label := strings.TrimSpace(binding.GroupID)

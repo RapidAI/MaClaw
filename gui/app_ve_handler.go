@@ -76,6 +76,10 @@ func (h *VEMessageHandler) HandleGroupEnvelope(envelope a2a.GroupEnvelope) {
 // If the message contains attachments (TextAttachment/ImageAttachment/FileAttachment),
 // they are decoded/downloaded and appended to the AI Agent input as context.
 func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.GroupDiscussionMessage) {
+	if h.shouldIgnoreIncomingVEMessage(msg) {
+		return
+	}
+
 	// Process attachments and append context to message content
 	if HasAttachments(msg) {
 		attachmentContext := h.ProcessMessageAttachments(msg)
@@ -90,17 +94,27 @@ func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.Group
 
 	h.mu.Lock()
 	session, ok := h.activeSessions[sessionID]
+	h.mu.Unlock()
 	if !ok {
-		ctx, cancel := context.WithCancel(context.Background())
-		session = &veSession{
-			SessionID:    sessionID,
-			RequesterID:  msg.FromID,
-			LastActivity: time.Now(),
-			Cancel:       cancel,
-			ctx:          ctx,
+		restoredHistory := h.restoreSessionHistory(sessionID, msg)
+		h.mu.Lock()
+		session, ok = h.activeSessions[sessionID]
+		if !ok {
+			ctx, cancel := context.WithCancel(context.Background())
+			session = &veSession{
+				SessionID:    sessionID,
+				RequesterID:  msg.FromID,
+				LastActivity: time.Now(),
+				Cancel:       cancel,
+				ctx:          ctx,
+				History:      restoredHistory,
+			}
+			h.activeSessions[sessionID] = session
 		}
-		h.activeSessions[sessionID] = session
+		h.mu.Unlock()
 	}
+
+	h.mu.Lock()
 	session.LastActivity = time.Now()
 	sessionCtx := session.ctx
 	h.mu.Unlock()
@@ -112,6 +126,23 @@ func (h *VEMessageHandler) HandleIncomingMessage(sessionID string, msg a2a.Group
 // processAndRespond runs the AI agent on the incoming message and streams the response back.
 // It implements the 60s first-response timeout: if no chunk is produced within 60s,
 // a timeout error message is sent back.
+func (h *VEMessageHandler) shouldIgnoreIncomingVEMessage(msg a2a.GroupDiscussionMessage) bool {
+	switch msg.Kind {
+	case a2a.MessageStreamChunk, a2a.MessageStreamEnd:
+		return true
+	}
+	fromID := strings.TrimSpace(msg.FromID)
+	if fromID == "" || h == nil || h.app == nil {
+		return false
+	}
+	cfg, err := h.app.LoadConfig()
+	if err != nil {
+		return false
+	}
+	localID := firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
+	return localID != "" && strings.EqualFold(fromID, localID)
+}
+
 func (h *VEMessageHandler) processAndRespond(sessionCtx context.Context, sessionID string, msg a2a.GroupDiscussionMessage) {
 	// Derive a per-message context from the session context so that
 	// CloseSession() cancellation propagates to in-flight processing.
@@ -175,14 +206,16 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 	firstSent := false
 
 	if query, ok := detectDigitalEmployeeSensitiveQuery(userMessage); ok {
-		h.SendStreamChunk(sessionID, "??????????...")
-		firstSent = true
-		select {
-		case firstChunkSent <- struct{}{}:
-		default:
+		if h.shouldAnnounceSensitivePermissionRequest() {
+			h.SendStreamChunk(sessionID, "\u6b63\u5728\u5bfb\u6c42\u4eba\u7c7b\u5458\u5de5\u8bb8\u53ef...")
+			firstSent = true
+			select {
+			case firstChunkSent <- struct{}{}:
+			default:
+			}
 		}
 		if !h.authorizeSensitiveQuery(ctx, sessionID, query) {
-			h.SendStreamChunk(sessionID, "?????????????????????")
+			h.SendStreamChunk(sessionID, "\u4eba\u7c7b\u5458\u5de5\u672a\u6388\u6743\u63d0\u4f9b\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\uff0c\u5df2\u62d2\u7edd\u3002")
 			h.SendStreamEnd(sessionID)
 			return nil
 		}
@@ -320,6 +353,109 @@ func (c *veAgentCallbacks) OnToolResult(name string) {}
 
 func (c *veAgentCallbacks) ShouldStop() bool {
 	return c.ctx.Err() != nil
+}
+
+const sensitivePermissionWaitingText = "\u6b63\u5728\u5bfb\u6c42\u4eba\u7c7b\u5458\u5de5\u8bb8\u53ef..."
+
+func (h *VEMessageHandler) restoreSessionHistory(sessionID string, current a2a.GroupDiscussionMessage) []agent.ConversationEntry {
+	if h == nil || h.app == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	detail, err := h.app.GroupDiscussionGetConsultationDetail(sessionID)
+	if err != nil {
+		return nil
+	}
+	cfg, _ := h.app.LoadConfig()
+	localID := firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
+	messages := detail.Messages
+	if len(messages) == 0 && detail.Session != nil {
+		messages = detail.Session.Messages
+	}
+	return buildVEConversationHistoryFromMessages(messages, localID, current)
+}
+
+func buildVEConversationHistoryFromMessages(messages []a2a.Message, localID string, current a2a.GroupDiscussionMessage) []agent.ConversationEntry {
+	localID = strings.TrimSpace(localID)
+	entries := make([]agent.ConversationEntry, 0, len(messages))
+	var stream strings.Builder
+	streamFrom := ""
+	flushStream := func() {
+		content := cleanVESessionHistoryContent(stream.String())
+		fromID := strings.TrimSpace(streamFrom)
+		stream.Reset()
+		streamFrom = ""
+		if content == "" {
+			return
+		}
+		entries = append(entries, agent.ConversationEntry{Role: veHistoryRoleForSender(fromID, localID), Content: veHistoryContentForSender(fromID, localID, content)})
+	}
+	for _, msg := range messages {
+		if isCurrentVEHistoryMessage(msg, current) {
+			break
+		}
+		fromID := strings.TrimSpace(msg.FromID)
+		switch msg.Kind {
+		case a2a.MessageStreamChunk:
+			if streamFrom != "" && !strings.EqualFold(streamFrom, fromID) {
+				flushStream()
+			}
+			streamFrom = fromID
+			stream.WriteString(msg.Content)
+			continue
+		case a2a.MessageStreamEnd:
+			flushStream()
+			continue
+		default:
+			flushStream()
+		}
+		content := cleanVESessionHistoryContent(msg.Content)
+		if content == "" {
+			continue
+		}
+		entries = append(entries, agent.ConversationEntry{Role: veHistoryRoleForSender(fromID, localID), Content: veHistoryContentForSender(fromID, localID, content)})
+	}
+	flushStream()
+	if len(entries) > 40 {
+		entries = entries[len(entries)-40:]
+	}
+	return entries
+}
+
+func isCurrentVEHistoryMessage(msg a2a.Message, current a2a.GroupDiscussionMessage) bool {
+	currentID := strings.TrimSpace(current.ID)
+	if currentID != "" {
+		return strings.EqualFold(strings.TrimSpace(msg.ID), currentID)
+	}
+	if current.CreatedAt.IsZero() || !msg.CreatedAt.Equal(current.CreatedAt) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.FromID), strings.TrimSpace(current.FromID)) &&
+		msg.Kind == current.Kind &&
+		strings.TrimSpace(msg.Content) == strings.TrimSpace(current.Content)
+}
+
+func veHistoryRoleForSender(fromID, localID string) string {
+	if localID != "" && strings.EqualFold(strings.TrimSpace(fromID), localID) {
+		return "assistant"
+	}
+	return "user"
+}
+
+func veHistoryContentForSender(fromID, localID, content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" || veHistoryRoleForSender(fromID, localID) == "assistant" {
+		return content
+	}
+	fromID = strings.TrimSpace(fromID)
+	if fromID == "" {
+		return content
+	}
+	return "[" + fromID + "] " + content
+}
+
+func cleanVESessionHistoryContent(content string) string {
+	content = strings.ReplaceAll(content, sensitivePermissionWaitingText, "")
+	return strings.TrimSpace(content)
 }
 
 // getSessionHistory returns the conversation history for a VE session.

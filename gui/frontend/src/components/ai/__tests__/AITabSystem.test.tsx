@@ -58,7 +58,7 @@ describe('useAITabManager', () => {
 
             let tab: AITab | null = null;
             act(() => {
-                tab = result.current.createGroupTab("group-1", "技术讨论", ["ve-1", "ve-2"]);
+                tab = result.current.createGroupTab("group-1", "Tech discussion", ["ve-1", "ve-2"]);
             });
 
             expect(tab).not.toBeNull();
@@ -95,7 +95,24 @@ describe('useAITabManager', () => {
                 result.current.createVETab("ve-2", "助手B");
             });
 
-            expect(result.current.tabState.tabs).toHaveLength(3); // local + 2 VE tabs
+            expect(result.current.tabState.tabs).toHaveLength(3); // local + 2 digital employee tabs
+        });
+
+        it('refreshes metadata when reopening an existing group tab', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            act(() => {
+                result.current.createGroupTab("history-disc-1", "Open case", ["me"], { discussionId: "disc-1", readOnly: false, role: "initiated_by_me" });
+            });
+            act(() => {
+                result.current.createGroupTab("history-disc-1", "Closed case", ["me", "ve-1"], { discussionId: "disc-1", readOnly: true, role: "initiated_by_me" });
+            });
+
+            expect(result.current.tabState.tabs).toHaveLength(2);
+            const tab = result.current.activeTab;
+            expect(tab.title).toBe("Closed case");
+            expect(tab.readOnly).toBe(true);
+            expect(tab.participants).toEqual(["me", "ve-1"]);
         });
     });
 
@@ -335,8 +352,8 @@ describe('useAITabManager', () => {
         });
     });
 
-    describe('default max VE tabs is 8', () => {
-        it('allows up to 8 VE tabs by default', () => {
+    describe('default max digital employee tabs is 8', () => {
+        it('allows up to 8 digital employee tabs by default', () => {
             const { result } = renderHook(() => useAITabManager());
 
             for (let i = 1; i <= 8; i++) {
@@ -345,7 +362,7 @@ describe('useAITabManager', () => {
                 });
             }
 
-            expect(result.current.tabState.tabs).toHaveLength(9); // local + 8 VE
+            expect(result.current.tabState.tabs).toHaveLength(9); // local + 8 digital employee tabs
 
             let tab9: AITab | null = null;
             act(() => {

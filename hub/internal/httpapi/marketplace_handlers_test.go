@@ -10,11 +10,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
 )
 
@@ -131,6 +133,31 @@ func TestAdminCapabilityUpsertAndManagementFlow(t *testing.T) {
 	if err != nil || len(recommendations) != 1 {
 		t.Fatalf("recommendations len=%d err=%v", len(recommendations), err)
 	}
+
+	delDepReq := httptest.NewRequest(http.MethodDelete, "/api/admin/capability-market/managed-deployments/"+items[0].ID, nil)
+	delDepReq.SetPathValue("id", items[0].ID)
+	delDepRec := httptest.NewRecorder()
+	AdminCapabilityManagedDeploymentDeleteHandler(svc)(delDepRec, delDepReq)
+	if delDepRec.Code != http.StatusOK {
+		t.Fatalf("delete deployment status=%d body=%s", delDepRec.Code, delDepRec.Body.String())
+	}
+	items, err = svc.ListManagedDeployments(req.Context())
+	if err != nil || len(items) != 0 {
+		t.Fatalf("deployments after delete len=%d err=%v", len(items), err)
+	}
+
+	delRecReq := httptest.NewRequest(http.MethodDelete, "/api/admin/capability-market/recommendations/"+recommendations[0].ID, nil)
+	delRecReq.SetPathValue("id", recommendations[0].ID)
+	delRecRec := httptest.NewRecorder()
+	AdminCapabilityRecommendationDeleteHandler(svc)(delRecRec, delRecReq)
+	if delRecRec.Code != http.StatusOK {
+		t.Fatalf("delete recommendation status=%d body=%s", delRecRec.Code, delRecRec.Body.String())
+	}
+	recommendations, err = svc.ListRecommendations(req.Context())
+	if err != nil || len(recommendations) != 0 {
+		t.Fatalf("recommendations after delete len=%d err=%v", len(recommendations), err)
+	}
+
 	secrets, err := svc.ListMCPSecretRequirements(req.Context(), created.ID, created.CurrentVersionKey)
 	if err != nil || len(secrets) != 1 || secrets[0].Name != "api_key" {
 		t.Fatalf("secrets=%v err=%v", secrets, err)
@@ -149,6 +176,87 @@ func TestAdminCapabilityUpsertAndManagementFlow(t *testing.T) {
 	}
 }
 
+func TestAdminCapabilityDeploymentCreateWritesAudit(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	created := createTestCapability(t, svc, "mcp", "audit-mcp", "Audit MCP", "1.0.0")
+	audit := &testAdminAuditRepo{}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/managed-deployments", bytes.NewReader([]byte(`{"capability_ref":"`+created.ID+`","deployment_policy":"required","scope":{"type":"group","group_id":"dept-a"}}`)))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-audit"}))
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityManagedDeploymentCreateHandler(svc, audit)(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(audit.logs) != 1 {
+		t.Fatalf("expected audit log, got %d", len(audit.logs))
+	}
+	if audit.logs[0].Action != "capability.managed_deployment.create" {
+		t.Fatalf("unexpected audit action: %s", audit.logs[0].Action)
+	}
+	if audit.logs[0].AdminUserID != "adm-audit" {
+		t.Fatalf("unexpected admin id: %s", audit.logs[0].AdminUserID)
+	}
+}
+
+func TestAdminAuditLogsHandlerListsAuditLogs(t *testing.T) {
+	audit := &testAdminAuditRepo{}
+	audit.logs = []*store.AdminAuditLog{{ID: "audit-1", AdminUserID: "adm-1", Action: "security.group.create", PayloadJSON: `{"group_id":"dept-a","name":"Dept A"}`, CreatedAt: time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC)}}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs?limit=10&q=dept-a&action=security.group.create&from=2026-05-15&to=2026-05-16", nil)
+	rec := httptest.NewRecorder()
+
+	AdminAuditLogsHandler(audit)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []struct {
+			Action  string         `json:"action"`
+			Payload map[string]any `json:"payload"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Action != "security.group.create" {
+		t.Fatalf("unexpected audit items: %+v", resp.Items)
+	}
+	if resp.Items[0].Payload["group_id"] != "dept-a" {
+		t.Fatalf("payload not decoded: %+v", resp.Items[0].Payload)
+	}
+	if audit.lastFilter.Limit != 10 || audit.lastFilter.Query != "dept-a" || audit.lastFilter.Action != "security.group.create" {
+		t.Fatalf("filter not passed through: %+v", audit.lastFilter)
+	}
+	if audit.lastFilter.CreatedFrom.IsZero() || audit.lastFilter.CreatedTo.IsZero() {
+		t.Fatalf("date filter not parsed: %+v", audit.lastFilter)
+	}
+}
+
+func TestAdminAuditLogsHandlerRejectsInvalidDate(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs?from=not-a-date", nil)
+	rec := httptest.NewRecorder()
+
+	AdminAuditLogsHandler(&testAdminAuditRepo{})(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminAuditLogsHandlerRejectsInvertedDateRange(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs?from=2026-05-16&to=2026-05-15", nil)
+	rec := httptest.NewRecorder()
+
+	AdminAuditLogsHandler(&testAdminAuditRepo{})(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 type fakeMarketplaceViewerAuth struct{}
 
 func (fakeMarketplaceViewerAuth) AuthenticateViewer(ctx context.Context, rawToken string) (*auth.ViewerPrincipal, error) {
@@ -156,6 +264,316 @@ func (fakeMarketplaceViewerAuth) AuthenticateViewer(ctx context.Context, rawToke
 		return nil, auth.ErrInvalidUserCredentials
 	}
 	return &auth.ViewerPrincipal{UserID: "user-1", Email: "user@example.com"}, nil
+}
+
+type fakeCapabilityGroupResolver struct {
+	chain []string
+	err   error
+}
+
+func (f fakeCapabilityGroupResolver) ResolveUserGroupChain(ctx context.Context, email string) ([]string, error) {
+	return f.chain, f.err
+}
+
+func (f fakeCapabilityGroupResolver) ResolveGroupChain(ctx context.Context, groupID string) ([]string, error) {
+	return f.chain, f.err
+}
+
+func TestAdminUserCapabilityEffectivePoliciesResolvesPriority(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	created := createTestCapability(t, svc, "skill", "code-review", "Code Review", "1.0.0")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "global"}, "recommended")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "group", "group_id": "root"}, "required")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "group", "group_id": "dept-a"}, "blocked")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/dev@example.com/effective-policies", nil)
+	req.SetPathValue("email", "dev@example.com")
+	rec := httptest.NewRecorder()
+	AdminUserCapabilityEffectivePoliciesHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("effective policies status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []adminEffectiveCapabilityPolicy `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode policies: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].CapabilityRef != created.ID || resp.Items[0].Policy != "blocked" || resp.Items[0].Source != "group" {
+		t.Fatalf("unexpected effective policies: %+v", resp.Items)
+	}
+}
+
+func TestAdminUserCapabilityEffectivePoliciesUserOverride(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	created := createTestCapability(t, svc, "mcp", "billing", "Billing MCP", "1.0.0")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "group", "group_id": "dept-a"}, "blocked")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "user", "user_email": "dev@example.com"}, "required")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/dev@example.com/effective-policies", nil)
+	req.SetPathValue("email", "dev@example.com")
+	rec := httptest.NewRecorder()
+	AdminUserCapabilityEffectivePoliciesHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("effective policies status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []adminEffectiveCapabilityPolicy `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode policies: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Policy != "required" || resp.Items[0].Source != "user" {
+		t.Fatalf("unexpected user override policies: %+v", resp.Items)
+	}
+}
+
+func TestAdminGroupCapabilityEffectivePoliciesResolvesInheritance(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	created := createTestCapability(t, svc, "skill", "legal-draft", "Legal Draft", "1.0.0")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "global"}, "recommended")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "group", "group_id": "root"}, "required")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "group", "group_id": "legal"}, "blocked")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/groups/legal/effective-policies", nil)
+	req.SetPathValue("id", "legal")
+	rec := httptest.NewRecorder()
+	AdminGroupCapabilityEffectivePoliciesHandler(svc, fakeCapabilityGroupResolver{chain: []string{"legal", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("group effective policies status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items      []adminEffectiveCapabilityPolicy `json:"items"`
+		GroupChain []string                         `json:"group_chain"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode policies: %v", err)
+	}
+	if len(resp.GroupChain) != 2 || resp.GroupChain[0] != "legal" || resp.GroupChain[1] != "root" {
+		t.Fatalf("unexpected group chain: %+v", resp.GroupChain)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].CapabilityRef != created.ID || resp.Items[0].Policy != "blocked" || resp.Items[0].Source != "group" {
+		t.Fatalf("unexpected group effective policies: %+v", resp.Items)
+	}
+}
+
+func TestAdminCapabilityEffectivePoliciesSortedDeterministically(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	alpha := createTestCapability(t, svc, "skill", "alpha", "Alpha", "1.0.0")
+	beta := createTestCapability(t, svc, "skill", "beta", "Beta", "1.0.0")
+	createDeploymentForTest(t, svc, beta.ID, "", map[string]any{"type": "global"}, "recommended")
+	createDeploymentForTest(t, svc, alpha.ID, "", map[string]any{"type": "user", "user_email": "dev@example.com"}, "required")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/dev@example.com/effective-policies", nil)
+	req.SetPathValue("email", "dev@example.com")
+	rec := httptest.NewRecorder()
+	AdminUserCapabilityEffectivePoliciesHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("effective policies status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []adminEffectiveCapabilityPolicy `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode policies: %v", err)
+	}
+	if len(resp.Items) != 2 || resp.Items[0].CapabilityRef != alpha.ID || resp.Items[1].CapabilityRef != beta.ID {
+		t.Fatalf("unexpected sorted policies: %+v", resp.Items)
+	}
+}
+
+func TestAdminUserCapabilityComplianceHandler(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	created := createTestCapability(t, svc, "skill", "code-review", "Code Review", "1.0.0")
+	createDeploymentForTest(t, svc, created.ID, created.CurrentVersionKey, map[string]any{"type": "user", "user_email": "dev@example.com"}, "required")
+	_, err := svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "dev@example.com", CapabilityRef: created.ID, CapabilityVersionKey: "older", CapabilityType: "skill", InstallStatus: "installed", Installed: true})
+	if err != nil {
+		t.Fatalf("upsert inventory: %v", err)
+	}
+	_, err = svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "dev@example.com", CapabilityRef: "extra-cap", CapabilityVersionKey: "v1", CapabilityType: "mcp", InstallStatus: "installed", Installed: true})
+	if err != nil {
+		t.Fatalf("upsert extra inventory: %v", err)
+	}
+	_, err = svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "dev@example.com", CapabilityRef: "another-extra", CapabilityVersionKey: "v1", CapabilityType: "skill", InstallStatus: "installed", Installed: true})
+	if err != nil {
+		t.Fatalf("upsert second extra inventory: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/dev@example.com/compliance", nil)
+	req.SetPathValue("email", "dev@example.com")
+	rec := httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+		GeneratedAt     string                                   `json:"generated_at"`
+		StaleAfterHours int                                      `json:"stale_after_hours"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compliance: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Status != "version_mismatch" || resp.Summary.VersionMismatch != 1 || resp.Summary.UnmanagedInstalled != 2 || len(resp.UnmanagedItems) != 2 || resp.UnmanagedItems[0].CapabilityRef != "another-extra" || resp.UnmanagedItems[1].CapabilityRef != "extra-cap" {
+		t.Fatalf("unexpected compliance: %+v summary=%+v", resp.Items, resp.Summary)
+	}
+	if resp.GeneratedAt == "" || resp.StaleAfterHours != 168 {
+		t.Fatalf("unexpected compliance metadata: generated_at=%q stale_after_hours=%d", resp.GeneratedAt, resp.StaleAfterHours)
+	}
+}
+
+func TestAdminUserCapabilityComplianceRiskStates(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	blocked := createTestCapability(t, svc, "mcp", "blocked-tool", "Blocked Tool", "1.0.0")
+	stale := createTestCapability(t, svc, "skill", "stale-skill", "Stale Skill", "1.0.0")
+	createDeploymentForTest(t, svc, blocked.ID, blocked.CurrentVersionKey, map[string]any{"type": "user", "user_email": "risk@example.com"}, "blocked")
+	createDeploymentForTest(t, svc, stale.ID, stale.CurrentVersionKey, map[string]any{"type": "user", "user_email": "risk@example.com"}, "required")
+	_, err := svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "risk@example.com", CapabilityRef: blocked.ID, CapabilityVersionKey: blocked.CurrentVersionKey, CapabilityType: "mcp", InstallStatus: "installed", Installed: true})
+	if err != nil {
+		t.Fatalf("upsert blocked inventory: %v", err)
+	}
+	_, err = svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "risk@example.com", CapabilityRef: stale.ID, CapabilityVersionKey: stale.CurrentVersionKey, CapabilityType: "skill", InstallStatus: "installed", Installed: true, LastSeenAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)})
+	if err != nil {
+		t.Fatalf("upsert stale inventory: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/risk@example.com/compliance?stale_after_hours=1", nil)
+	req.SetPathValue("email", "risk@example.com")
+	rec := httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items   []adminCapabilityComplianceItem  `json:"items"`
+		Summary adminCapabilityComplianceSummary `json:"summary"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compliance: %v", err)
+	}
+	byRef := map[string]adminCapabilityComplianceItem{}
+	for _, item := range resp.Items {
+		byRef[item.CapabilityRef] = item
+	}
+	if byRef[blocked.ID].Status != "blocked_installed" || byRef[stale.ID].Status != "stale" || resp.Summary.BlockedInstalled != 1 || resp.Summary.Stale != 1 {
+		t.Fatalf("unexpected risk compliance: items=%+v summary=%+v", resp.Items, resp.Summary)
+	}
+}
+
+func TestAdminUserCapabilityComplianceUsesCurrentVersionWhenPolicyVersionEmpty(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	created := createTestCapability(t, svc, "skill", "versioned", "Versioned", "1.0.0")
+	createDeploymentForTest(t, svc, created.ID, "", map[string]any{"type": "user", "user_email": "version@example.com"}, "required")
+	_, err := svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "version@example.com", CapabilityRef: created.ID, CapabilityVersionKey: "old-version", CapabilityType: "skill", InstallStatus: "installed", Installed: true})
+	if err != nil {
+		t.Fatalf("upsert inventory: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/version@example.com/compliance", nil)
+	req.SetPathValue("email", "version@example.com")
+	rec := httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []adminCapabilityComplianceItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compliance: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].Status != "version_mismatch" || resp.Items[0].CapabilityVersionKey != created.CurrentVersionKey {
+		t.Fatalf("unexpected current version compliance: %+v", resp.Items)
+	}
+}
+
+func TestAdminUserCapabilityComplianceFilters(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+
+	missing := createTestCapability(t, svc, "skill", "missing-one", "Missing One", "1.0.0")
+	ok := createTestCapability(t, svc, "skill", "ok-one", "OK One", "1.0.0")
+	createDeploymentForTest(t, svc, missing.ID, missing.CurrentVersionKey, map[string]any{"type": "user", "user_email": "filter@example.com"}, "required")
+	createDeploymentForTest(t, svc, ok.ID, ok.CurrentVersionKey, map[string]any{"type": "user", "user_email": "filter@example.com"}, "required")
+	_, err := svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "filter@example.com", CapabilityRef: ok.ID, CapabilityVersionKey: ok.CurrentVersionKey, CapabilityType: "skill", InstallStatus: "installed", Installed: true})
+	if err != nil {
+		t.Fatalf("upsert inventory: %v", err)
+	}
+	_, err = svc.UpsertUserCapabilityInventory(context.Background(), capability.UserCapabilityInventoryInput{UserID: "user-1", UserEmail: "filter@example.com", CapabilityRef: "extra-filter", CapabilityVersionKey: "v1", CapabilityType: "mcp", InstallStatus: "installed", Installed: true})
+	if err != nil {
+		t.Fatalf("upsert unmanaged inventory: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=missing&include_unmanaged=false", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec := httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items          []adminCapabilityComplianceItem          `json:"items"`
+		Summary        adminCapabilityComplianceSummary         `json:"summary"`
+		UnmanagedItems []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode compliance: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].CapabilityRef != missing.ID || resp.Summary.Total != 2 || len(resp.UnmanagedItems) != 0 {
+		t.Fatalf("unexpected filtered compliance: items=%+v summary=%+v unmanaged=%+v", resp.Items, resp.Summary, resp.UnmanagedItems)
+	}
+}
+
+func createTestCapability(t *testing.T, svc *capability.Service, capabilityType, capabilityID, displayName, version string) capability.CapabilitySummary {
+	t.Helper()
+	body := []byte(`{"capability_type":"` + capabilityType + `","publisher":"acme","capability_id":"` + capabilityID + `","display_name":"` + displayName + `","source":"enterprise_hub","status":"approved","version":"` + version + `","manifest":{"name":"` + capabilityID + `"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capabilities", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	AdminCapabilityUpsertHandler(svc)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create capability status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created capability.CapabilitySummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode capability: %v", err)
+	}
+	return created
+}
+
+func createDeploymentForTest(t *testing.T, svc *capability.Service, capabilityRef, version string, scope map[string]any, policy string) {
+	t.Helper()
+	scopeRaw, err := json.Marshal(scope)
+	if err != nil {
+		t.Fatalf("marshal scope: %v", err)
+	}
+	_, err = svc.CreateManagedDeployment(context.Background(), capability.ManagedDeploymentInput{CapabilityRef: capabilityRef, CapabilityVersionKey: version, ScopeJSON: string(scopeRaw), DeploymentPolicy: policy, ReinstallIfRemoved: true, RetryIntervalMinutes: 60, CreatedBy: "test", Enabled: true})
+	if err != nil {
+		t.Fatalf("create deployment: %v", err)
+	}
 }
 
 func TestMCPSecretBindingUpsertRejectsMissingHubSecret(t *testing.T) {
@@ -176,6 +594,81 @@ func TestMCPSecretBindingUpsertRejectsMissingHubSecret(t *testing.T) {
 		t.Fatalf("bindings=%+v err=%v", bindings, err)
 	}
 }
+
+func TestUserCapabilityInventoryFlow(t *testing.T) {
+	db := openCapabilityTestDB(t)
+	svc := capability.NewService(db)
+	body := []byte(`{"items":[{"capability_ref":"cap-1","capability_version_key":"v1","capability_type":"skill","install_status":"installed","installed":true,"metadata":{"path":"local"}},{"capability_ref":"cap-2","capability_version_key":"v2","capability_type":"mcp","install_status":"missing","installed":false}]}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/capabilities/inventory", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer viewer-token")
+	rec := httptest.NewRecorder()
+
+	UserCapabilityInventoryUpsertHandler(fakeMarketplaceViewerAuth{}, svc)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upsert inventory status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/user@example.com/inventory", nil)
+	listReq.SetPathValue("email", "user@example.com")
+	listRec := httptest.NewRecorder()
+	AdminUserCapabilityInventoryHandler(svc)(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list inventory status=%d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var resp struct {
+		Items []capability.UserCapabilityInventoryItem `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode inventory: %v", err)
+	}
+	byRef := map[string]capability.UserCapabilityInventoryItem{}
+	for _, item := range resp.Items {
+		byRef[item.CapabilityRef] = item
+	}
+	if len(resp.Items) != 2 || !byRef["cap-1"].Installed || byRef["cap-2"].Installed {
+		t.Fatalf("unexpected inventory: %+v", resp.Items)
+	}
+
+	snapshotBody := []byte(`{"full_snapshot":true,"items":[{"capability_ref":"cap-1","capability_version_key":"v1","capability_type":"skill","installed":true}]}`)
+	snapshotReq := httptest.NewRequest(http.MethodPut, "/api/capabilities/inventory", bytes.NewReader(snapshotBody))
+	snapshotReq.Header.Set("Authorization", "Bearer viewer-token")
+	snapshotRec := httptest.NewRecorder()
+	UserCapabilityInventoryUpsertHandler(fakeMarketplaceViewerAuth{}, svc)(snapshotRec, snapshotReq)
+	if snapshotRec.Code != http.StatusOK {
+		t.Fatalf("snapshot inventory status=%d body=%s", snapshotRec.Code, snapshotRec.Body.String())
+	}
+	listRec = httptest.NewRecorder()
+	AdminUserCapabilityInventoryHandler(svc)(listRec, listReq)
+	if err := json.Unmarshal(listRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode snapshot inventory: %v", err)
+	}
+	byRef = map[string]capability.UserCapabilityInventoryItem{}
+	for _, item := range resp.Items {
+		byRef[item.CapabilityRef] = item
+	}
+	if !byRef["cap-1"].Installed || byRef["cap-2"].Installed || byRef["cap-2"].InstallStatus != "missing" {
+		t.Fatalf("unexpected snapshot inventory: %+v", resp.Items)
+	}
+
+	emptySnapshotReq := httptest.NewRequest(http.MethodPut, "/api/capabilities/inventory", bytes.NewReader([]byte(`{"full_snapshot":true,"items":[]}`)))
+	emptySnapshotReq.Header.Set("Authorization", "Bearer viewer-token")
+	emptySnapshotRec := httptest.NewRecorder()
+	UserCapabilityInventoryUpsertHandler(fakeMarketplaceViewerAuth{}, svc)(emptySnapshotRec, emptySnapshotReq)
+	if emptySnapshotRec.Code != http.StatusOK {
+		t.Fatalf("empty snapshot inventory status=%d body=%s", emptySnapshotRec.Code, emptySnapshotRec.Body.String())
+	}
+	listRec = httptest.NewRecorder()
+	AdminUserCapabilityInventoryHandler(svc)(listRec, listReq)
+	if err := json.Unmarshal(listRec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode empty snapshot inventory: %v", err)
+	}
+	for _, item := range resp.Items {
+		if item.Installed || item.InstallStatus != "missing" {
+			t.Fatalf("expected all missing after empty snapshot: %+v", resp.Items)
+		}
+	}
+}
+
 func TestMCPHubSecretUpsertStoresMetadataAndBinding(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)

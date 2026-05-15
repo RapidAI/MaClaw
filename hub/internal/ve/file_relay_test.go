@@ -106,6 +106,48 @@ func TestFileRelay_Upload_DocumentSizeExceeded(t *testing.T) {
 	}
 }
 
+func TestFileRelay_MetadataPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	content := []byte("persisted file")
+	meta, err := fr.Upload("persisted.txt", "text/plain", "sess-1", "user-1", int64(len(content)), bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("Upload failed: %v", err)
+	}
+
+	restarted := NewFileRelay(dir)
+	loaded := restarted.GetFile(meta.ID)
+	if loaded == nil {
+		t.Fatal("expected uploaded metadata to load after restart")
+	}
+	if loaded.Filename != "persisted.txt" || loaded.SessionID != "sess-1" || loaded.UploaderID != "user-1" {
+		t.Fatalf("loaded metadata = %+v", loaded)
+	}
+	data, err := os.ReadFile(restarted.FilePath(loaded))
+	if err != nil {
+		t.Fatalf("read persisted file: %v", err)
+	}
+	if !bytes.Equal(data, content) {
+		t.Fatalf("persisted content = %q", string(data))
+	}
+}
+
+func TestFileRelay_LoadMetadataSkipsMissingDiskFile(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	meta, err := fr.Upload("missing.txt", "text/plain", "sess-1", "user-1", 4, strings.NewReader("data"))
+	if err != nil {
+		t.Fatalf("Upload failed: %v", err)
+	}
+	if err := os.Remove(fr.FilePath(meta)); err != nil {
+		t.Fatalf("remove uploaded file: %v", err)
+	}
+
+	restarted := NewFileRelay(dir)
+	if got := restarted.GetFile(meta.ID); got != nil {
+		t.Fatalf("expected missing disk file metadata to be ignored, got %+v", got)
+	}
+}
 func TestFileRelay_GetFile_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	fr := NewFileRelay(dir)
@@ -303,6 +345,71 @@ func TestFileRelay_HandleDownload_SessionMismatch(t *testing.T) {
 	}
 }
 
+type staticParticipantValidator map[string]map[string]bool
+
+func (v staticParticipantValidator) IsSessionParticipant(sessionID, participantID string) bool {
+	participants := v[sessionID]
+	return participants != nil && participants[participantID]
+}
+
+func TestFileRelay_HandleUpload_RequiresValidatedParticipantWhenValidatorIsSet(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	fr.SetParticipantValidator(staticParticipantValidator{
+		"sess-1": {"user-1": true},
+	})
+
+	buildRequest := func(participantID string) *http.Request {
+		var buf bytes.Buffer
+		writer := multipart.NewWriter(&buf)
+		_ = writer.WriteField("session_id", "sess-1")
+		_ = writer.WriteField("participant_id", participantID)
+		part, _ := writer.CreateFormFile("file", "hello.txt")
+		_, _ = part.Write([]byte("hello world"))
+		writer.Close()
+		req := httptest.NewRequest(http.MethodPost, "/api/ve/files/upload", &buf)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		return req
+	}
+
+	rec := httptest.NewRecorder()
+	fr.HandleUpload(rec, buildRequest("user-attacker"))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-participant upload, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	fr.HandleUpload(rec, buildRequest("user-1"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for validated participant upload, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+func TestFileRelay_HandleDownload_ValidatorOverridesSessionMatch(t *testing.T) {
+	dir := t.TempDir()
+	fr := NewFileRelay(dir)
+	fr.SetParticipantValidator(staticParticipantValidator{
+		"sess-owner": {"user-1": true, "user-2": true},
+	})
+
+	content := []byte("shared secret")
+	meta, _ := fr.Upload("secret.txt", "text/plain", "sess-owner", "user-1", int64(len(content)), bytes.NewReader(content))
+
+	// A caller with the right session_id but not in the participant set must not be
+	// able to download when the validator is available.
+	req := httptest.NewRequest(http.MethodGet, "/api/ve/files/"+meta.ID+"?session_id=sess-owner&participant_id=user-attacker", nil)
+	rec := httptest.NewRecorder()
+	fr.HandleDownload(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-participant, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/ve/files/"+meta.ID+"?session_id=sess-owner&participant_id=user-2", nil)
+	rec = httptest.NewRecorder()
+	fr.HandleDownload(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for validated participant, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
 func TestFileRelay_HandleUpload_UnsupportedType(t *testing.T) {
 	dir := t.TempDir()
 	fr := NewFileRelay(dir)
@@ -336,11 +443,13 @@ func TestIsAllowedMIME(t *testing.T) {
 	}{
 		{"text/plain", true},
 		{"text/markdown", true},
+		{"application/json", true},
 		{"text/html", true},
 		{"image/png", true},
 		{"image/jpeg", true},
 		{"image/gif", true},
 		{"image/webp", true},
+		{"image/bmp", true},
 		{"application/pdf", true},
 		{"application/vnd.openxmlformats-officedocument.wordprocessingml.document", true},
 		{"application/x-executable", false},
@@ -430,7 +539,7 @@ func TestFileRelay_AllowedImageTypes(t *testing.T) {
 	// Small PNG content (1x1 pixel).
 	pngData := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
 
-	for _, mimeType := range []string{"image/png", "image/jpeg", "image/gif", "image/webp"} {
+	for _, mimeType := range []string{"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp"} {
 		meta, err := fr.Upload("test"+filepath.Ext(".png"), mimeType, "s1", "u1", int64(len(pngData)), bytes.NewReader(pngData))
 		if err != nil {
 			t.Errorf("Upload with mime %s failed: %v", mimeType, err)

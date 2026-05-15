@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import agentnetIcon from '../../assets/images/agentnet.svg';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import { FavoriteEmployeeButtons, type FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
@@ -12,7 +11,6 @@ type SidebarNavRailProps = {
     switchTool: (tool: string) => void;
     lang: string;
     maclawLLMOnline?: boolean;
-    agentNetRunning?: boolean;
     remoteActivationStatus?: any;
     runningTaskCount: number;
     t: (key: string) => string;
@@ -28,7 +26,6 @@ const zhHans = {
     aiAssistant: 'AI \u52a9\u624b',
     system: '\u7cfb\u7edf',
     monitor: '\u76d1\u63a7',
-    agentNet: '\u667a\u7f51',
     settings: '\u8bbe\u7f6e',
 };
 
@@ -36,7 +33,6 @@ const zhHant = {
     aiAssistant: 'AI \u52a9\u624b',
     system: '\u7cfb\u7d71',
     monitor: '\u76e3\u63a7',
-    agentNet: '\u667a\u7db2',
     settings: '\u8a2d\u5b9a',
 };
 
@@ -59,7 +55,6 @@ export const SidebarNavRail = ({
     switchTool,
     lang,
     maclawLLMOnline,
-    agentNetRunning,
     remoteActivationStatus,
     runningTaskCount,
     t,
@@ -83,7 +78,6 @@ export const SidebarNavRail = ({
         { id: 'skills', icon: <span>{icon.skills}</span>, label: t('skills'), visible: true },
         { id: 'mcp', icon: <span>{icon.mcp}</span>, label: 'MCP', visible: true },
         { id: 'gossip', icon: <span>{icon.gossip}</span>, label: t('gossip'), visible: gossipAllowed },
-        { id: 'agentnet', icon: <img src={agentnetIcon} alt="AgentNet" style={{ width: '16px', height: '16px' }} />, label: lang === 'zh-Hans' ? zhHans.agentNet : lang === 'zh-Hant' ? zhHant.agentNet : 'AgentNet', visible: !isTigerClaw && config?.show_nav_agentnet !== false },
     ];
 
     return (

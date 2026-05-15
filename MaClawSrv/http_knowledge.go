@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
@@ -570,7 +571,17 @@ func (s *HTTPServer) handleKnowledgeStats(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("stats failed: %v", err)})
 		return
 	}
-	writeJSON(w, http.StatusOK, stats)
+
+	// Augment stats with embedding/vector search status for observability.
+	s.knowledgeMgr.mu.RLock()
+	vectorSearchActive := s.knowledgeMgr.embedder != nil && !embedding.IsNoop(s.knowledgeMgr.embedder)
+	s.knowledgeMgr.mu.RUnlock()
+
+	result := map[string]interface{}{
+		"stats":                stats,
+		"vector_search_active": vectorSearchActive,
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *HTTPServer) handleKnowledgeClearAll(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {

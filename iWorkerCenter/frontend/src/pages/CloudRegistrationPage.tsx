@@ -164,7 +164,7 @@ const createLabels = (t: (zh: string, en: string) => string) => ({
   optionalMissing: t('\u5efa\u8bae\u8865\u5145', 'Recommended'),
   modules: {
     compute: t('\u7b97\u529b', 'Compute'),
-    skill_market: t('\u6280\u80fd\u5e02\u573a', 'Skill Market'),
+    capability_market: t('\u80fd\u529b\u5e02\u573a', 'Capability Market'),
     upgrade: t('\u5347\u7ea7', 'Upgrade'),
     support: t('\u652f\u6301', 'Support'),
     all: t('\u5168\u90e8\u6a21\u5757', 'All Modules'),

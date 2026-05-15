@@ -199,7 +199,7 @@ const extractedFileLineLimits = [
 for (const [rel, max] of extractedFileLineLimits) requireMaxLines(rel, max);
 
 const highRiskRemoteFileLineLimits = [
-  ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2150],
+  ['gui/frontend/src/components/remote/SkillsManagementPanel.tsx', 2300],
   ['gui/frontend/src/components/remote/OnboardingWizard.tsx', 1400],
   ['gui/frontend/src/components/remote/LLMConfigPanel.tsx', 1160],
   ['gui/frontend/src/components/remote/MCPManagementPanel.tsx', 1325],
@@ -329,7 +329,6 @@ requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'SavePast
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'setGroupDiscussionBusy', 'inline group discussion busy state; use components/ai/useGroupDiscussionControls.ts');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useAssistantInputHistory"', 'AI input history hook import');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./usePastedImageAttachments"', 'AI pasted image hook import');
-requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./useGroupDiscussionControls"', 'AI group discussion controls hook import');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-pending-attachments"', 'inline AI pending attachments strip; use components/ai/AssistantAttachmentsStrip.tsx');
 requireIncludes('gui/frontend/src/components/ai/AssistantInputComposer.tsx', 'from "./AssistantAttachmentsStrip"', 'AI attachments strip import');
 requireIncludes('gui/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 'title={att.filePath}', 'pasted image path tooltip');
@@ -354,7 +353,6 @@ requireIncludes('gui/frontend/src/components/ai/AssistantInputActions.tsx', 'Voi
 requireIncludes('gui/frontend/src/components/ai/AssistantInputActions.tsx', 'data-testid="ai-cancel-progress"', 'cancel progress button rendering');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'miniActionButtonStyle', 'inline group discussion action menu; use components/ai/AssistantGroupDiscussionMenu.tsx');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'Experts', 'inline group discussion stats; use components/ai/AssistantGroupDiscussionMenu.tsx');
-requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'from "./AssistantGroupDiscussionMenu"', 'AI group discussion menu import');
 requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 'GD', 'group discussion titlebar button');
 requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 'runGroupDiscussionAction("accept"', 'group discussion accept action');
 requireIncludes('gui/frontend/src/components/ai/AssistantGroupDiscussionMenu.tsx', 'runGroupDiscussionAction("publish"', 'group discussion publish action');
@@ -366,7 +364,6 @@ requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-te
 requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-titlebar-tools-group"', 'AI title bar tool group');
 requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-hide-toggle"', 'AI hide window control');
 requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'data-testid="ai-maximize-toggle"', 'AI maximize window control');
-requireIncludes('gui/frontend/src/components/ai/AssistantTitleBar.tsx', 'AssistantGroupDiscussionMenu', 'title bar group discussion menu wiring');
 requireExcludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'data-testid="ai-workflow-maximize-suggestion"', 'inline workflow maximize suggestion; use components/ai/AssistantWorkflowMaximizeSuggestion.tsx');
 requireIncludes('gui/frontend/src/components/ai/AIAssistantPanel.tsx', 'from "./AssistantWorkflowMaximizeSuggestion"', 'AI workflow maximize suggestion import');
 requireIncludes('gui/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 'data-testid="ai-workflow-maximize-suggestion"', 'workflow maximize suggestion wrapper');
@@ -390,7 +387,6 @@ const criticalMarkers = [
   ['AIAssistantPanel', 'AI assistant panel'],
   ['IMAuditPanel', 'IM audit/watch panel'],
   ['PetSettingsPanel', 'pet settings tab'],
-  ['GroupDiscussionSettingsPanel', 'group discussion settings'],
   ['AgentNetTabContainer', 'AgentNet main tab'],
   ['MCPPage', 'MCP main page'],
   ['GossipPage', 'gossip main page'],

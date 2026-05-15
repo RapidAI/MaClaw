@@ -292,6 +292,97 @@ function Stage-SourceTree {
     }
 }
 
+function Stage-DeployAssets {
+    param(
+        [string]$SourceRoot,
+        [string]$StageRoot
+    )
+
+    $assetDirs = @(
+        [pscustomobject]@{ Path = 'hubcenter'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
+        [pscustomobject]@{ Path = 'hub'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
+        [pscustomobject]@{ Path = 'openclaw-bridge'; ExcludePaths = @('node_modules', 'dist') }
+    )
+
+    foreach ($dir in $assetDirs) {
+        $src = Join-Path $SourceRoot $dir.Path
+        if (Test-Path $src) {
+            $dst = Join-Path $StageRoot $dir.Path
+            $dstParent = Split-Path -Parent $dst
+            if (-not [string]::IsNullOrWhiteSpace($dstParent)) {
+                New-Item -ItemType Directory -Path $dstParent -Force | Out-Null
+            }
+            Copy-StageDirectory -SourceRoot $src -DestinationRoot $dst -ExcludePaths $dir.ExcludePaths -ExcludeFilePatterns @('*.exe', '*.exe~')
+        }
+    }
+}
+
+function Build-LocalBinaries {
+    param(
+        [string]$SourceRoot,
+        [string]$OutputRoot,
+        [string]$HubBinaryName,
+        [string]$HubCenterBinaryName,
+        [string]$BrandBuildTag,
+        [bool]$BuildHub
+    )
+
+    $goExe = Require-Tool 'go.exe'
+    $goos = Get-EnvOrDefault 'DEPLOY_GOOS' 'linux'
+    $goarch = Get-EnvOrDefault 'DEPLOY_GOARCH' 'amd64'
+    $cgo = Get-EnvOrDefault 'CGO_ENABLED' '0'
+    $goproxyValue = Get-EnvOrDefault 'GOPROXY' 'https://goproxy.cn,direct'
+    $tags = $BrandBuildTag.Trim()
+    $binDir = Join-Path $OutputRoot 'bin'
+    $binDirForGo = (New-Item -ItemType Directory -Path $binDir -Force).FullName
+
+    $oldGoos = $env:GOOS
+    $oldGoarch = $env:GOARCH
+    $oldCgo = $env:CGO_ENABLED
+    $oldGoproxy = $env:GOPROXY
+    try {
+        $env:GOOS = $goos
+        $env:GOARCH = $goarch
+        $env:CGO_ENABLED = $cgo
+        $env:GOPROXY = $goproxyValue
+        Push-Location -LiteralPath $SourceRoot
+
+        Write-Host ("  - target: {0}/{1}, CGO_ENABLED={2}" -f $goos, $goarch, $cgo)
+        Write-Host '  - building hubcenter locally...'
+        $hubCenterOut = Join-Path $binDirForGo $HubCenterBinaryName
+        $hubCenterArgs = @('build')
+        if (-not [string]::IsNullOrWhiteSpace($tags)) {
+            $hubCenterArgs += @('-tags', $tags)
+        }
+        $hubCenterArgs += @('-o', $hubCenterOut, './hubcenter/cmd/hubcenter')
+        & $goExe @hubCenterArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Local hubcenter build failed.'
+        }
+
+        if ($BuildHub) {
+            Write-Host '  - building hub locally...'
+            $hubOut = Join-Path $binDirForGo $HubBinaryName
+            $hubArgs = @('build')
+            if (-not [string]::IsNullOrWhiteSpace($tags)) {
+                $hubArgs += @('-tags', $tags)
+            }
+            $hubArgs += @('-o', $hubOut, './hub/cmd/hub')
+            & $goExe @hubArgs
+            if ($LASTEXITCODE -ne 0) {
+                throw 'Local hub build failed.'
+            }
+        }
+    }
+    finally {
+        Pop-Location
+        $env:GOOS = $oldGoos
+        $env:GOARCH = $oldGoarch
+        $env:CGO_ENABLED = $oldCgo
+        $env:GOPROXY = $oldGoproxy
+    }
+}
+
 function Write-InventoryFile {
     param(
         [string]$Path,
@@ -374,8 +465,6 @@ function Write-RemoteScript {
         ': "${REMOTE_TMP_DIR:=/tmp/aicoder_deploy}"',
         ': "${REMOTE_HUB_DIR:=/data/soft/hub}"',
         ': "${REMOTE_HUBCENTER_DIR:=/data/soft/hubcenter}"',
-        ': "${CGO_ENABLED:=0}"',
-        ': "${GOPROXY:=https://goproxy.cn,direct}"',
         ': "${DEPLOY_HUB:=0}"',
         ': "${ENSURE_HUB_MODELS:=0}"',
         ': "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"',
@@ -384,19 +473,12 @@ function Write-RemoteScript {
         ': "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"',
         ': "${HUB_BINARY_NAME:=maclaw-hub}"',
         ': "${HUBCENTER_BINARY_NAME:=maclaw-hubcenter}"',
-        ': "${BRAND_BUILD_TAG:=}"',
         '',
         'PATH="$PATH:/usr/local/go/bin:/root/go/bin"',
         'export PATH',
         '',
-        'if ! command -v go >/dev/null 2>&1; then',
-        '  echo "[ERROR] go is not installed on remote host" >&2',
-        '  exit 1',
-        'fi',
-        '',
         'SRC_ROOT="$REMOTE_TMP_DIR/src"',
-        'BUILD_ROOT="$REMOTE_TMP_DIR/build"',
-        'ARCHIVE_PATH="$REMOTE_TMP_DIR/maclaw-src.tar.gz"',
+        'ARCHIVE_PATH="$REMOTE_TMP_DIR/maclaw-deploy.tar.gz"',
         'HUB_DATA_DIR="$REMOTE_HUB_DIR/data"',
         'HUB_MODELS_DIR="$HUB_DATA_DIR/models"',
         'HOME_MODELS_DIR="$HOME/.maclaw/models"',
@@ -405,44 +487,12 @@ function Write-RemoteScript {
         'MODEL_SCRIPT="$HUB_DATA_DIR/download-models.sh"',
         'MODEL_LOG="$HUB_DATA_DIR/logs/model-download.log"',
         '',
-        'rm -rf "$SRC_ROOT" "$BUILD_ROOT"',
-        'mkdir -p "$SRC_ROOT" "$BUILD_ROOT"',
+        'rm -rf "$SRC_ROOT"',
+        'mkdir -p "$SRC_ROOT"',
         'tar -xzf "$ARCHIVE_PATH" -C "$SRC_ROOT"',
         'cd "$SRC_ROOT"',
         '',
-        'echo "[remote] Downloading dependencies..."',
-        'GOPROXY="$GOPROXY" go mod download',
-        '',
-        'RS_BUILD_SCRIPT="$SRC_ROOT/build/build_rapidspeech.sh"',
-        'RS_LIB="$SRC_ROOT/RapidSpeech.cpp/build/librapidspeech_static.a"',
-        'EXTRA_TAGS=""',
-        'BUILD_TAGS=""',
-        'if [ -f "$RS_BUILD_SCRIPT" ]; then',
-        '  echo "[remote] Building RapidSpeech static library (optional)..."',
-        '  chmod +x "$RS_BUILD_SCRIPT"',
-        '  if "$RS_BUILD_SCRIPT" && [ -f "$RS_LIB" ]; then',
-        '    echo "[remote] RapidSpeech built. Enabling cgo_embedding."',
-        '    CGO_ENABLED=1',
-        '    EXTRA_TAGS="cgo_embedding"',
-        '  else',
-        '    echo "[remote] RapidSpeech build skipped or failed. Continuing without cgo_embedding."',
-        '  fi',
-        'fi',
-        '',
-        'if [ -n "$BRAND_BUILD_TAG" ]; then',
-        '  BUILD_TAGS="$EXTRA_TAGS $BRAND_BUILD_TAG"',
-        'else',
-        '  BUILD_TAGS="$EXTRA_TAGS"',
-        'fi',
-        'BUILD_TAGS=$(printf "%s" "$BUILD_TAGS" | xargs)',
-        '',
-        'echo "[remote] Building hubcenter..."',
-        'GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$BUILD_TAGS" -o "$BUILD_ROOT/$HUBCENTER_BINARY_NAME" ./hubcenter/cmd/hubcenter',
-        '',
-        'if [ "$DEPLOY_HUB" = "1" ]; then',
-        '  echo "[remote] Building hub..."',
-        '  GOPROXY="$GOPROXY" CGO_ENABLED="$CGO_ENABLED" go build -tags "$BUILD_TAGS" -o "$BUILD_ROOT/$HUB_BINARY_NAME" ./hub/cmd/hub',
-        'fi',
+        'echo "[remote] Using uploaded local binaries."',
         '',
         'backup_and_write_config() {',
         '  target_path="$1"',
@@ -592,7 +642,11 @@ function Write-RemoteScript {
         '',
         'deploy_hubcenter() {',
         '  mkdir -p "$REMOTE_HUBCENTER_DIR" "$REMOTE_HUBCENTER_DIR/configs" "$REMOTE_HUBCENTER_DIR/data" "$REMOTE_HUBCENTER_DIR/data/logs"',
-        '  cp -f "$BUILD_ROOT/$HUBCENTER_BINARY_NAME" "$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME"',
+        '  if [ ! -f "$SRC_ROOT/bin/$HUBCENTER_BINARY_NAME" ]; then',
+        '    echo "[ERROR] Missing hubcenter binary: $SRC_ROOT/bin/$HUBCENTER_BINARY_NAME" >&2',
+        '    exit 1',
+        '  fi',
+        '  cp -f "$SRC_ROOT/bin/$HUBCENTER_BINARY_NAME" "$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME"',
         '  chmod +x "$REMOTE_HUBCENTER_DIR/$HUBCENTER_BINARY_NAME"',
         '  if [ -f "$SRC_ROOT/hubcenter/start.sh" ]; then',
         '    cp -f "$SRC_ROOT/hubcenter/start.sh" "$REMOTE_HUBCENTER_DIR/start.sh"',
@@ -612,7 +666,11 @@ function Write-RemoteScript {
         '',
         'deploy_hub() {',
         '  mkdir -p "$REMOTE_HUB_DIR" "$REMOTE_HUB_DIR/configs" "$REMOTE_HUB_DIR/data" "$REMOTE_HUB_DIR/data/logs"',
-        '  cp -f "$BUILD_ROOT/$HUB_BINARY_NAME" "$REMOTE_HUB_DIR/$HUB_BINARY_NAME"',
+        '  if [ ! -f "$SRC_ROOT/bin/$HUB_BINARY_NAME" ]; then',
+        '    echo "[ERROR] Missing hub binary: $SRC_ROOT/bin/$HUB_BINARY_NAME" >&2',
+        '    exit 1',
+        '  fi',
+        '  cp -f "$SRC_ROOT/bin/$HUB_BINARY_NAME" "$REMOTE_HUB_DIR/$HUB_BINARY_NAME"',
         '  chmod +x "$REMOTE_HUB_DIR/$HUB_BINARY_NAME"',
         '  if [ -f "$SRC_ROOT/hub/start.sh" ]; then',
         '    cp -f "$SRC_ROOT/hub/start.sh" "$REMOTE_HUB_DIR/start.sh"',
@@ -679,7 +737,7 @@ function Write-RemoteScript {
         '  fi',
         'fi',
         '',
-        'rm -rf "$SRC_ROOT" "$BUILD_ROOT"',
+        'rm -rf "$SRC_ROOT"',
         'rm -f "$ARCHIVE_PATH" "$REMOTE_TMP_DIR/remote_deploy.sh"',
         'if [ -n "$HUBCENTER_CONFIG_BASENAME" ]; then',
         '  rm -f "$REMOTE_TMP_DIR/$HUBCENTER_CONFIG_BASENAME"',
@@ -832,7 +890,6 @@ function Invoke-RemotePrecheck {
         'PATH="$PATH:/usr/local/go/bin:/root/go/bin"; export PATH',
         '[ -n "$(command -v sh 2>/dev/null)" ] || { echo "missing:sh"; exit 1; }',
         '[ -n "$(command -v tar 2>/dev/null)" ] || { echo "missing:tar"; exit 1; }',
-        '[ -n "$(command -v go 2>/dev/null)" ] || { echo "missing:go"; exit 1; }',
         ('mkdir -p "{0}" "{1}" "{2}" >/dev/null 2>&1 || {{ echo "mkdir-failed"; exit 1; }}' -f $Target.RemoteTmpDir, $Target.RemoteHubDir, $Target.RemoteHubCenterDir),
         ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteTmpDir),
         ('[ -w "{0}" ] || {{ echo "not-writable:{0}"; exit 1; }}' -f $Target.RemoteHubCenterDir)
@@ -867,8 +924,6 @@ $tarExe = Require-Tool 'tar.exe'
 
 $sshUser = Get-EnvOrDefault 'REMOTE_USER' 'root'
 $sshPort = [int](Get-EnvOrDefault 'REMOTE_PORT' '22')
-$cgoEnabled = Get-EnvOrDefault 'CGO_ENABLED' '0'
-$goproxy = Get-EnvOrDefault 'GOPROXY' 'https://goproxy.cn,direct'
 $hubModelBaseUrl = Get-EnvOrDefault 'HUB_MODEL_BASE_URL' 'https://github.com/RapidAI/MaClaw/releases/download/Model_Release'
 $hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'embeddinggemma-300M-Q8_0.gguf moonshine-base-zh.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro.zip'
 
@@ -935,7 +990,7 @@ $runStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $buildRoot = Join-Path $buildBaseRoot ('run-{0}-{1}' -f $runStamp, $PID)
 $stageRoot = Join-Path $buildRoot 'stage'
 $renderedDir = Join-Path $rootDir 'deploy\rendered-configs-temp'
-$archivePath = Join-Path $buildRoot 'maclaw-src.tar.gz'
+$archivePath = Join-Path $buildRoot 'maclaw-deploy.tar.gz'
 $remoteScriptPath = Join-Path $buildRoot 'remote_deploy.sh'
 $inventoryPath = Join-Path $rootDir 'deploy\hubcenter-ha.inventory.generated.psd1'
 $modelStatuses = @()
@@ -988,13 +1043,15 @@ try {
         throw 'HA config rendering failed.'
     }
 
-    Write-Host '[5/9] Staging source tree...' -ForegroundColor Cyan
-    Stage-SourceTree -SourceRoot $rootDir -StageRoot $stageRoot
+    Write-Host '[5/9] Building local Linux binaries and staging deploy assets...' -ForegroundColor Cyan
+    $shouldBuildHub = ($targets | Where-Object { $_.DeployHub }).Count -gt 0
+    Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub
+    Stage-DeployAssets -SourceRoot $rootDir -StageRoot $stageRoot
 
-    Write-Host '[6/9] Creating source archive...' -ForegroundColor Cyan
+    Write-Host '[6/9] Creating deploy archive...' -ForegroundColor Cyan
     & $tarExe -czf $archivePath -C $stageRoot .
     if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to create source archive.'
+        throw 'Failed to create deploy archive.'
     }
 
     Write-Host '[7/9] Writing remote deployment script...' -ForegroundColor Cyan
@@ -1011,7 +1068,7 @@ try {
         Write-Host ''
         Write-Host ("[8/9][{0}/{1}] Uploading artifacts to {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText "mkdir -p $($target.RemoteTmpDir)"
-        Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $archivePath -RemotePath "$($target.RemoteTmpDir)/maclaw-src.tar.gz"
+        Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $archivePath -RemotePath "$($target.RemoteTmpDir)/maclaw-deploy.tar.gz"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $remoteScriptPath -RemotePath "$($target.RemoteTmpDir)/remote_deploy.sh"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $hubCenterConfigPath -RemotePath "$($target.RemoteTmpDir)/$($target.HubCenterConfig)"
         if ($target.DeployHub) {
@@ -1036,8 +1093,6 @@ try {
 
         $deployHubFlag = if ($target.DeployHub) { '1' } else { '0' }
         $envParts = @(
-            ("export CGO_ENABLED={0}" -f (Quote-ShellEnvValue $cgoEnabled)),
-            ("export GOPROXY={0}" -f (Quote-ShellEnvValue $goproxy)),
             ("export REMOTE_TMP_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteTmpDir)),
             ("export REMOTE_HUB_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubDir)),
             ("export REMOTE_HUBCENTER_DIR={0}" -f (Quote-ShellEnvValue $target.RemoteHubCenterDir)),
@@ -1047,8 +1102,7 @@ try {
             ("export HUB_MODEL_FILES={0}" -f (Quote-ShellEnvValue $hubModelFiles)),
             ("export HUBCENTER_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubCenterConfig)),
             ("export HUB_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubBinaryName)),
-            ("export HUBCENTER_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubCenterBinaryName)),
-            ("export BRAND_BUILD_TAG={0}" -f (Quote-ShellEnvValue $brandBuildTag))
+            ("export HUBCENTER_BINARY_NAME={0}" -f (Quote-ShellEnvValue $hubCenterBinaryName))
         )
         if ($target.DeployHub) {
             $envParts += ("export HUB_CONFIG_BASENAME={0}" -f (Quote-ShellEnvValue $target.HubConfig))
@@ -1056,7 +1110,7 @@ try {
 
         $remoteCommand = "sed -i 's/\r$//' $($target.RemoteTmpDir)/remote_deploy.sh && chmod +x $($target.RemoteTmpDir)/remote_deploy.sh && {0} && $($target.RemoteTmpDir)/remote_deploy.sh" -f ($envParts -join ' && ')
 
-        Write-Host ("[9/9][{0}/{1}] Building and deploying on {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
+        Write-Host ("[9/9][{0}/{1}] Deploying uploaded binaries on {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $remoteCommand
     }
 

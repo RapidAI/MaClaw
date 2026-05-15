@@ -382,7 +382,7 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		DisableCompression:    true, // Disable automatic gzip for streaming responses.
 	}
 	// Separate transport for background tasks (scheduled tasks, auto-picked
-	// AgentNet tasks) so they never starve the chat connection pool.
+	// tasks) so they never starve the chat connection pool.
 	taskTransport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -638,8 +638,7 @@ func (h *IMMessageHandler) getTools() []map[string]interface{} {
 		if cached != nil && time.Since(cacheTime) < toolsCacheTTL {
 			tools = cached
 		} else {
-			// Sync dynamic tools (AgentNet, SkillHub) only on cache rebuild, not every call.
-			h.syncAgentNetTools()
+			// Sync dynamic tools (SkillHub) only on cache rebuild, not every call.
 			h.syncSkillHubTools()
 
 			tools = h.toolBuilder.BuildAll()

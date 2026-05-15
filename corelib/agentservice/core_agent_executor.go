@@ -42,6 +42,8 @@ type CoreAgentExecutor struct {
 	tasks          map[string]*task.Store
 	userSSH        map[string]*coreAgentSSHResources
 	knowledgeStore KnowledgeStore
+	mcpProvider    MCPToolProvider
+	skillProvider  SkillToolProvider
 }
 
 type coreAgentSSHResources struct {
@@ -70,6 +72,8 @@ type coreAgentCallbacks struct {
 	toolPolicy                 workflow.ToolFilterPolicy
 	opsApprovedCommands        []workflow.OpsApprovedCommand
 	knowledgeStore             KnowledgeStore
+	mcpProvider                MCPToolProvider
+	skillProvider              SkillToolProvider
 }
 
 func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
@@ -99,6 +103,8 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 		memory:               resources,
 		tasks:                taskStore,
 		knowledgeStore:       e.knowledgeStore,
+		mcpProvider:          e.mcpProvider,
+		skillProvider:        e.skillProvider,
 		sshDeps: sshtool.SSHToolDeps{
 			Manager:   sshResources.mgr,
 			BGTaskMgr: sshResources.bg,
@@ -459,6 +465,135 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"required": []string{"text"},
 			},
 		},
+		{
+			Name:        "memory",
+			Description: "Save information to or recall from long-term memory. Actions: save (store a fact/preference/knowledge), recall (search memory by query), list (show recent entries), delete (remove an entry by ID).",
+			Enabled:     c.memory != nil,
+			DisabledReason: func() string {
+				if c.memory == nil {
+					return "memory store is not initialized"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"action":   map[string]interface{}{"type": "string", "description": "Action: save, recall, list, delete"},
+					"content":  map[string]interface{}{"type": "string", "description": "Content to save (for save action)"},
+					"category": map[string]interface{}{"type": "string", "description": "Category: user_fact, project_knowledge, preference, instruction"},
+					"query":    map[string]interface{}{"type": "string", "description": "Search query (for recall action)"},
+					"id":       map[string]interface{}{"type": "string", "description": "Entry ID (for delete action)"},
+				},
+				"required": []string{"action"},
+			},
+		},
+		{
+			Name:        "read_file",
+			Description: "Read the contents of a file. Supports line ranges (start_line, lines) and tail reading (offset). Files are scoped to the instance workspace.",
+			Enabled:     c.workspace != "",
+			DisabledReason: func() string {
+				if c.workspace == "" {
+					return "no workspace configured for this instance"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":       map[string]interface{}{"type": "string", "description": "File path (relative to workspace or absolute within workspace)"},
+					"start_line": map[string]interface{}{"type": "integer", "description": "Start reading from this line number (1-based)"},
+					"lines":      map[string]interface{}{"type": "integer", "description": "Maximum number of lines to return"},
+					"offset":     map[string]interface{}{"type": "integer", "description": "Read last N lines from end (like tail -n). Mutually exclusive with start_line/lines."},
+				},
+				"required": []string{"path"},
+			},
+		},
+		{
+			Name:        "write_file",
+			Description: "Write content to a file. Supports overwrite (default) and append mode. Files are scoped to the instance workspace. Content is always UTF-8.",
+			Enabled:     c.workspace != "",
+			DisabledReason: func() string {
+				if c.workspace == "" {
+					return "no workspace configured for this instance"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":    map[string]interface{}{"type": "string", "description": "File path (relative to workspace or absolute within workspace)"},
+					"content": map[string]interface{}{"type": "string", "description": "Content to write"},
+					"mode":    map[string]interface{}{"type": "string", "description": "Write mode: overwrite (default) or append"},
+				},
+				"required": []string{"path", "content"},
+			},
+		},
+		{
+			Name:        "edit_file",
+			Description: "Edit a file by replacing a specific text occurrence. Use old_string to find the exact text and new_string to replace it. Files are scoped to the instance workspace.",
+			Enabled:     c.workspace != "",
+			DisabledReason: func() string {
+				if c.workspace == "" {
+					return "no workspace configured for this instance"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path":        map[string]interface{}{"type": "string", "description": "File path (relative to workspace or absolute within workspace)"},
+					"old_string":  map[string]interface{}{"type": "string", "description": "Exact text to find and replace"},
+					"new_string":  map[string]interface{}{"type": "string", "description": "Replacement text"},
+					"replace_all": map[string]interface{}{"type": "boolean", "description": "Replace all occurrences (default: first only)"},
+				},
+				"required": []string{"path", "old_string", "new_string"},
+			},
+		},
+		{
+			Name:        "list_directory",
+			Description: "List the contents of a directory. Shows files and subdirectories with sizes. Scoped to the instance workspace.",
+			Enabled:     c.workspace != "",
+			DisabledReason: func() string {
+				if c.workspace == "" {
+					return "no workspace configured for this instance"
+				}
+				return ""
+			}(),
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{"type": "string", "description": "Directory path (relative to workspace or absolute within workspace). Defaults to workspace root."},
+				},
+			},
+		},
+		{
+			Name:        "web_search",
+			Description: "Search the internet for information. Returns a list of results with title, URL, and snippet. Useful for finding documentation, latest information, technical references.",
+			Enabled:     true,
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":       map[string]interface{}{"type": "string", "description": "Search keywords"},
+					"max_results": map[string]interface{}{"type": "integer", "description": "Maximum results (default 8, max 20)"},
+				},
+				"required": []string{"query"},
+			},
+		},
+		{
+			Name:        "web_fetch",
+			Description: "Fetch and extract text content from a URL. Supports automatic encoding detection (GBK/UTF-8), HTML body extraction. Long pages support continuation: when has_more=true, pass offset=next_offset to read more.",
+			Enabled:     true,
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"url":       map[string]interface{}{"type": "string", "description": "URL to fetch (http/https)"},
+					"offset":    map[string]interface{}{"type": "integer", "description": "Character offset for continuation reading (from previous next_offset)"},
+					"max_chars": map[string]interface{}{"type": "integer", "description": "Maximum characters to return (default 16384)"},
+					"timeout":   map[string]interface{}{"type": "integer", "description": "Timeout in seconds (default 30)"},
+				},
+				"required": []string{"url"},
+			},
+		},
 	}
 }
 
@@ -485,6 +620,15 @@ func (c *coreAgentCallbacks) BuildTools(string) []map[string]interface{} {
 			continue
 		}
 		tools = append(tools, functionToolDefinition(spec.Name, spec.Description, spec.Parameters))
+	}
+	// Append MCP tools from all healthy/running servers.
+	// Called on every iteration to pick up newly installed MCP servers.
+	if mcpDefs := c.mcpToolDefs(); len(mcpDefs) > 0 {
+		tools = append(tools, mcpDefs...)
+	}
+	// Append manage_skill tool if skill provider is available.
+	if skillDefs := c.skillToolDefs(); len(skillDefs) > 0 {
+		tools = append(tools, skillDefs...)
 	}
 	return tools
 }
@@ -545,6 +689,22 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		return agent.ToolExecutionResult{Result: agent.ToolAskUser(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "task":
 		return agent.ToolExecutionResult{Result: agent.ToolTask(c.tasks, args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "memory":
+		return agent.ToolExecutionResult{Result: agent.ToolMemory(c.memory, args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "read_file":
+		return agent.ToolExecutionResult{Result: c.executeReadFile(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "write_file":
+		return agent.ToolExecutionResult{Result: c.executeWriteFile(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "edit_file":
+		return agent.ToolExecutionResult{Result: c.executeEditFile(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "list_directory":
+		return agent.ToolExecutionResult{Result: c.executeListDirectory(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "manage_skill":
+		return c.executeManageSkill(args)
+	case "web_search":
+		return agent.ToolExecutionResult{Result: c.executeWebSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
+	case "web_fetch":
+		return agent.ToolExecutionResult{Result: c.executeWebFetch(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_search":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeSearch(args), Outcome: agent.ToolExecutionOutcomeOK}
 	case "knowledge_context_pack":
@@ -554,6 +714,14 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	case "knowledge_save_text":
 		return agent.ToolExecutionResult{Result: c.executeKnowledgeSaveText(args), Outcome: agent.ToolExecutionOutcomeOK}
 	default:
+		// Try MCP tool dispatch before returning unknown tool error.
+		if result, handled := c.executeMCPTool(strings.TrimSpace(name), args); handled {
+			outcome := agent.ToolExecutionOutcomeOK
+			if strings.HasPrefix(result, "Error:") {
+				outcome = agent.ToolExecutionOutcomeError
+			}
+			return agent.ToolExecutionResult{Result: result, Outcome: outcome}
+		}
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
 }

@@ -1011,7 +1011,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                     }}
                     onClick={() => setActiveTab("hub")}
                 >
-                    {localizeText("Skill Market", "技能市场", "技能市場")}
+                    {localizeText("Capability Market", "能力市场", "能力市場")}
                 </button>
                 <button
                     style={{
@@ -1264,7 +1264,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                             alignItems: "center",
                             justifyContent: "center",
                         }}>
-                            {localizeText("Searching Skill Market...", "正在搜索技能市场...", "正在搜尋技能市場...")}
+                            {localizeText("Searching Capability Market...", "正在搜索能力市场...", "正在搜尋能力市場...")}
                         </div>
                     )}
 
@@ -1427,7 +1427,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                     alignItems: "center",
                                     justifyContent: "center",
                                 }}>
-                                    {localizeText("Enter keywords to search the Skill Market", "输入关键词搜索技能市场上的 Skill", "輸入關鍵詞搜尋技能市場上的 Skill")}
+                                    {localizeText("Enter keywords to search the Capability Market", "输入关键词搜索能力市场上的 Skill", "輸入關鍵詞搜尋能力市場上的 Skill")}
                                 </div>
                             )}
                         </>
@@ -1677,7 +1677,7 @@ export function SkillsManagementPanel({ localizeText }: Props) {
                                                     >
                                                         {uploadingSkill === s.name ? localizeText("Uploading...", "上传中...", "上傳中...") : s.hub_skill_id ? localizeText("⬆ Re-upload", "⬆ 重新上传", "⬆ 重新上傳") : localizeText("⬆ Upload", "⬆ 上传", "⬆ 上傳")}
                                                     </button>
-                                                    {s.hub_skill_id && <span title={localizeText("Uploaded to Skill Market", "已上传到技能市场", "已上傳到技能市場")} style={{ fontSize: "0.68rem", color: colors.success }}>✅</span>}
+                                                    {s.hub_skill_id && <span title={localizeText("Uploaded to Capability Market", "已上传到能力市场", "已上傳到能力市場")} style={{ fontSize: "0.68rem", color: colors.success }}>✅</span>}
                                                 </div>
                                             </td>
                                         </tr>
@@ -2074,14 +2074,12 @@ const skillsTabContentStyle: CSSProperties = {
     padding: "0 0 4px 0",
 };
 
-
 const localSkillsToolbarStyle: CSSProperties = {
     display: "grid",
     gridTemplateColumns: "minmax(140px, 1fr) auto",
     gap: "12px",
     alignItems: "center",
 };
-
 const localSkillsActionBarStyle: CSSProperties = {
     display: "flex",
     gap: "8px",
@@ -2089,7 +2087,6 @@ const localSkillsActionBarStyle: CSSProperties = {
     alignItems: "center",
     flexWrap: "wrap",
 };
-
 const localSkillsHintStyle: CSSProperties = {
     fontSize: "0.74rem",
     color: colors.textMuted,
@@ -2097,7 +2094,6 @@ const localSkillsHintStyle: CSSProperties = {
     lineHeight: 1.5,
     margin: "2px 0 4px",
 };
-
 const localSkillsTableContainerStyle: CSSProperties = {
     ...remoteTableContainerStyle,
     flex: "1 1 auto",
@@ -2105,7 +2101,6 @@ const localSkillsTableContainerStyle: CSSProperties = {
     width: "100%",
     overflow: "auto",
 };
-
 const localSkillsTableStyle: CSSProperties = {
     width: "100%",
     minWidth: "880px",

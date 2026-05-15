@@ -9,6 +9,10 @@ import (
 // DefaultModelFilename is the standard filename for the Gemma embedding model.
 const DefaultModelFilename = "embeddinggemma-300M-Q8_0.gguf"
 
+// DefaultModelDownloadURL is the primary download source for the embedding model (GitHub Releases).
+// Used by GUI and maclawsrv for background model preloading.
+const DefaultModelDownloadURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/embeddinggemma-300M-Q8_0.gguf"
+
 // DefaultModelPath returns the default model path: ~/.maclaw/models/embeddinggemma-300M-Q8_0.gguf.
 // Returns an empty string if the home directory cannot be determined.
 func DefaultModelPath() string {

@@ -44,6 +44,10 @@ type ProjectRecord struct {
 	// Categories lists the distinct memory categories present for this project.
 	Categories []Category `json:"categories,omitempty"`
 
+	// Archived indicates whether this project has been archived.
+	// Archived projects are hidden by default but can be found via search.
+	Archived bool `json:"archived,omitempty"`
+
 	// seenIDs tracks entry IDs already counted to prevent double-counting
 	// when the same entry is re-indexed (e.g. after tag merge in dedup paths).
 	seenIDs      map[string]bool `json:"-"`
@@ -77,9 +81,10 @@ type ProjectIndex struct {
 
 // TaskPref stores user-defined preferences for a task in the recent tasks list.
 type TaskPref struct {
-	Name   string `json:"name,omitempty"`   // custom display name (empty = auto-generated)
-	Pinned bool   `json:"pinned,omitempty"` // pinned to top of list
-	Hidden bool   `json:"hidden,omitempty"` // hidden from list (soft delete)
+	Name     string `json:"name,omitempty"`     // custom display name (empty = auto-generated)
+	Pinned   bool   `json:"pinned,omitempty"`   // pinned to top of list
+	Hidden   bool   `json:"hidden,omitempty"`   // hidden from list (soft delete)
+	Archived bool   `json:"archived,omitempty"` // archived (hidden + read-only, experience preserved)
 }
 
 // NewProjectIndex creates an empty ProjectIndex.
@@ -260,7 +265,12 @@ func (pi *ProjectIndex) Search(query string, limit int) []ProjectRecord {
 	for _, rec := range pi.records {
 		score := pi.scoreRecord(rec, queryLower, queryTokens)
 		if score > 0 {
-			results = append(results, scored{rec: *rec, score: score})
+			clone := *rec
+			// Populate Archived from prefs.
+			if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
+				clone.Archived = true
+			}
+			results = append(results, scored{rec: clone, score: score})
 		}
 	}
 
@@ -303,6 +313,10 @@ func (pi *ProjectIndex) Get(projectPath string) *ProjectRecord {
 	key := normalizeProjectPath(toForwardSlash(projectPath))
 	if rec, ok := pi.records[key]; ok {
 		clone := *rec
+		// Populate Archived from prefs.
+		if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
+			clone.Archived = true
+		}
 		return &clone
 	}
 	return nil
@@ -384,6 +398,28 @@ func (pi *ProjectIndex) IsHidden(projectPath string) bool {
 	return false
 }
 
+// SetArchived marks a task as archived or unarchived.
+// Archived tasks are hidden by default (same as Hidden) but retain their
+// experience in long-term memory.
+func (pi *ProjectIndex) SetArchived(projectPath string, archived bool) {
+	pi.mu.Lock()
+	p := pi.getOrCreatePrefLocked(projectPath)
+	p.Archived = archived
+	pi.cleanupPrefLocked(projectPath)
+	pi.mu.Unlock()
+	pi.savePrefs()
+}
+
+// IsArchived returns whether a task is archived.
+func (pi *ProjectIndex) IsArchived(projectPath string) bool {
+	pi.mu.RLock()
+	defer pi.mu.RUnlock()
+	if p, ok := pi.prefs[projectPath]; ok {
+		return p.Archived
+	}
+	return false
+}
+
 // getOrCreatePrefLocked returns the pref for a path, creating if needed.
 // Caller must hold pi.mu.Lock.
 func (pi *ProjectIndex) getOrCreatePrefLocked(projectPath string) *TaskPref {
@@ -399,7 +435,7 @@ func (pi *ProjectIndex) getOrCreatePrefLocked(projectPath string) *TaskPref {
 // keeping the JSON file clean.
 func (pi *ProjectIndex) cleanupPrefLocked(projectPath string) {
 	if p, ok := pi.prefs[projectPath]; ok {
-		if p.Name == "" && !p.Pinned && !p.Hidden {
+		if p.Name == "" && !p.Pinned && !p.Hidden && !p.Archived {
 			delete(pi.prefs, projectPath)
 		}
 	}
@@ -477,8 +513,8 @@ func (pi *ProjectIndex) savePrefs() {
 func (pi *ProjectIndex) allSortedByActivityLocked(limit int) []ProjectRecord {
 	all := make([]ProjectRecord, 0, len(pi.records))
 	for _, rec := range pi.records {
-		// Skip hidden tasks.
-		if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Hidden {
+		// Skip hidden and archived tasks.
+		if p, ok := pi.prefs[rec.ProjectPath]; ok && (p.Hidden || p.Archived) {
 			continue
 		}
 		all = append(all, *rec)
@@ -504,6 +540,13 @@ func (pi *ProjectIndex) scoreRecord(rec *ProjectRecord, queryLower string, query
 	nameLower := strings.ToLower(rec.Name)
 	pathLower := strings.ToLower(rec.ProjectPath)
 	previewLower := strings.ToLower(rec.Preview)
+
+	// Archive keyword matching: "归档" or "archived" finds archived tasks.
+	if p, ok := pi.prefs[rec.ProjectPath]; ok && p.Archived {
+		if strings.Contains(queryLower, "归档") || strings.Contains(queryLower, "archived") {
+			score += 10.0
+		}
+	}
 
 	// Exact substring match in name (highest weight).
 	if strings.Contains(nameLower, queryLower) {

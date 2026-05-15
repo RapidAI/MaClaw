@@ -183,7 +183,7 @@ func TestBuildExperienceEscalationBriefFromEscalationEvidence(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "A2A escalation",
-		Content:    "A2A discussion result\nSummary: needs owner input\nEscalation:\n- Reason: unresolved policy owner\n- Target: iworkercenter\n- Raised by: agent-a",
+		Content:    "A2A discussion result\nSummary: needs owner input\nEscalation:\n- Reason: unresolved policy owner\n- Target: human_owner\n- Raised by: agent-a",
 		Category:   memory.CategoryProjectKnowledge,
 		Tags:       []string{groupDiscussionResultTag, "discussion:disc-1", "has_escalation", "escalation_target:abc"},
 		SourceType: groupDiscussionMemorySourceType,
@@ -198,7 +198,7 @@ func TestBuildExperienceEscalationBriefFromEscalationEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildExperienceEscalationBrief: %v", err)
 	}
-	if draft.Target != "iworkercenter" || draft.RaisedBy != "agent-a" || draft.Reason != "unresolved policy owner" {
+	if draft.Target != "human_owner" || draft.RaisedBy != "agent-a" || draft.Reason != "unresolved policy owner" {
 		t.Fatalf("unexpected escalation brief metadata: %#v", draft)
 	}
 	assertExperienceRecommendedFocusContext(t, draft.RecommendedFocusContext, "memory:"+entry.ID, "A2A escalation", "escalation")
@@ -768,7 +768,7 @@ func TestExperienceLearningToolBuildsNonExecutingEscalationBrief(t *testing.T) {
 	t.Cleanup(store.Stop)
 	if err := store.Save(memory.Entry{
 		Title:      "A2A escalation",
-		Content:    "A2A discussion result\nEscalation:\n- Reason: needs owner\n- Target: iworkercenter\n- Raised by: agent-a",
+		Content:    "A2A discussion result\nEscalation:\n- Reason: needs owner\n- Target: human_owner\n- Raised by: agent-a",
 		Category:   memory.CategoryProjectKnowledge,
 		Tags:       []string{groupDiscussionResultTag, "discussion:disc-1", "has_escalation"},
 		SourceType: groupDiscussionMemorySourceType,

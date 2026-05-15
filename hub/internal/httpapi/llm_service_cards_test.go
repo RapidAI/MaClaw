@@ -58,13 +58,21 @@ func (s *testLLMServiceSystemSettings) counterForKey(key string) *atomic.Int32 {
 }
 
 type testAdminAuditRepo struct {
-	logs []*store.AdminAuditLog
+	logs       []*store.AdminAuditLog
+	lastFilter store.AdminAuditLogFilter
 }
 
 func (r *testAdminAuditRepo) Create(_ context.Context, log *store.AdminAuditLog) error {
 	clone := *log
 	r.logs = append(r.logs, &clone)
 	return nil
+}
+
+func (r *testAdminAuditRepo) List(_ context.Context, filter store.AdminAuditLogFilter) ([]*store.AdminAuditLog, error) {
+	r.lastFilter = filter
+	items := make([]*store.AdminAuditLog, len(r.logs))
+	copy(items, r.logs)
+	return items, nil
 }
 
 func TestCreateLLMServiceCardHandlerGeneratesBatchCodes(t *testing.T) {
@@ -381,6 +389,7 @@ func TestListLLMServiceCardsHandlerClampsPageToLastPage(t *testing.T) {
 		t.Fatalf("expected last page item, got %#v", resp.Items)
 	}
 }
+
 func TestListLLMServiceCardsHandlerRejectsInvalidStatus(t *testing.T) {
 	system := newTestLLMServiceSystemSettings()
 	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{}); err != nil {
@@ -394,6 +403,7 @@ func TestListLLMServiceCardsHandlerRejectsInvalidStatus(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
 func TestExportLLMServiceCardsHandlerFiltersStatusAndFormat(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()
@@ -492,6 +502,7 @@ func TestExportSelectedLLMServiceCardsHandlerRejectsMissingMatches(t *testing.T)
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
 func TestUpdateLLMServicesAdminHandlerPreservesCardsWhenOmitted(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()
@@ -535,6 +546,84 @@ func TestUpdateLLMServicesAdminHandlerPreservesCardsWhenOmitted(t *testing.T) {
 		t.Fatalf("expected coding-basic group to update, got %#v", saved.ModelServiceGroups)
 	}
 }
+
+func TestUpdateLLMServicesAdminHandlerPreservesGrantsWhenOmitted(t *testing.T) {
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		Grants: []llmservice.Grant{
+			{ID: "grant-1", Email: "user@example.com", ServiceGroupID: "coding-basic", Source: "card", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now, CreditsTotal: 100},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model_service_groups":[{"id":"coding-basic","name":"Coding Basic Updated"}],"group_bindings":[],"user_bindings":[],"default_new_user_service_groups":["coding-basic"],"default_new_user_duration_days":30,"tokens_per_credit":10000}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	saved, err := llmservice.LoadRegistry(context.Background(), system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 1 || saved.Grants[0].ID != "grant-1" || saved.Grants[0].Email != "user@example.com" {
+		t.Fatalf("expected existing grants to be preserved, got %#v", saved.Grants)
+	}
+}
+
+func TestUpdateLLMServicesAdminHandlerRejectsDeletingReferencedServiceGroup(t *testing.T) {
+	now := time.Now().UTC()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid"}},
+		Cards: []llmservice.RechargeCard{
+			{ID: "card-1", CodeHash: "hash-1", Label: "Paid Card", ServiceGroupIDs: []string{"paid"}, DurationDays: 30, Credits: 100, CreatedAt: now},
+		},
+		Grants: []llmservice.Grant{
+			{ID: "grant-1", Email: "user@example.com", ServiceGroupID: "paid", Source: "card", StartsAt: now, ExpiresAt: now.Add(24 * time.Hour), CreatedAt: now, CreditsTotal: 100},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model_service_groups":[{"id":"default","name":"Default (No Model Access)"}],"group_bindings":[],"user_bindings":[],"default_new_user_service_groups":["default"],"default_new_user_duration_days":30,"tokens_per_credit":10000}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	bodyText := rec.Body.String()
+	if !strings.Contains(bodyText, "service exchange card") || !strings.Contains(bodyText, "grant") || !strings.Contains(bodyText, "paid") {
+		t.Fatalf("expected preserved card/grant reference validation error, got %s", bodyText)
+	}
+}
+
+func TestUpdateLLMServicesAdminHandlerRejectsDuplicateServiceGroupIDs(t *testing.T) {
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(context.Background(), system, &llmservice.Registry{}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := []byte(`{"model_service_groups":[{"id":"ops","name":"Ops"},{"id":"OPS","name":"Ops Duplicate"}],"group_bindings":[],"user_bindings":[],"default_new_user_service_groups":["default"],"default_new_user_duration_days":30,"tokens_per_credit":10000}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "duplicate model service group id") {
+		t.Fatalf("expected duplicate service group validation error, got %s", rec.Body.String())
+	}
+}
+
 func TestDeleteLLMServiceCardHandlerDeletesCardsAndLinkedGrants(t *testing.T) {
 	now := time.Now().UTC()
 	system := newTestLLMServiceSystemSettings()
@@ -655,6 +744,7 @@ func TestDeleteLLMServiceGrantHandlerDeletesGrant(t *testing.T) {
 		t.Fatalf("expected grant to be deleted, got %d", len(saved.Grants))
 	}
 }
+
 func TestCreateLLMServiceCardHandlerPersistsEncryptedCode(t *testing.T) {
 	ctx := context.Background()
 	system := newTestLLMServiceSystemSettings()
@@ -811,5 +901,54 @@ func TestExportLLMServiceCardsIncludesCode(t *testing.T) {
 	txtText := string(txtBody)
 	if !strings.Contains(txtText, expectedCode) {
 		t.Fatalf("export TXT does not contain card code %q:\n%s", expectedCode, txtText)
+	}
+}
+
+func TestUpdateLLMServicesAdminHandlerWritesBindingAudit(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups:          []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}, {ID: "ops-pro", Name: "Ops Pro"}},
+		DefaultNewUserServiceGroups: []string{"coding-basic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	audit := &testAdminAuditRepo{}
+	body := []byte(`{"model_service_groups":[{"id":"coding-basic","name":"Coding Basic"},{"id":"ops-pro","name":"Ops Pro"}],"global_service_group_ids":["ops-pro"],"group_bindings":[{"group_id":"ops","service_group_ids":["ops-pro"]}],"user_bindings":[{"email":"lead@example.com","service_group_ids":["ops-pro"]}],"default_new_user_service_groups":["coding-basic"]}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-bind"}))
+	rec := httptest.NewRecorder()
+
+	UpdateLLMServicesAdminHandler(system, nil, audit).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(audit.logs) != 1 {
+		t.Fatalf("expected 1 audit log, got %d", len(audit.logs))
+	}
+	if audit.logs[0].Action != "llm.service_bindings.update" || audit.logs[0].AdminUserID != "adm-bind" {
+		t.Fatalf("unexpected audit log: %#v", audit.logs[0])
+	}
+	if !strings.Contains(audit.logs[0].PayloadJSON, "global_service_group_ids") || !strings.Contains(audit.logs[0].PayloadJSON, "lead@example.com") || !strings.Contains(audit.logs[0].PayloadJSON, "ops-pro") {
+		t.Fatalf("audit payload missing binding details: %s", audit.logs[0].PayloadJSON)
+	}
+}
+
+func TestBuildLLMServiceBindingAuditSnapshotDoesNotMutateRegistry(t *testing.T) {
+	reg := &llmservice.Registry{
+		ModelServiceGroups:          []llmservice.ModelServiceGroup{{ID: " team ", Name: " Team "}},
+		GlobalServiceGroupIDs:       []string{" team "},
+		DefaultNewUserServiceGroups: []string{" team "},
+		GroupBindings:               []llmservice.GroupBinding{{GroupID: " ops ", ServiceGroupIDs: []string{" team "}}},
+		UserBindings:                []llmservice.UserBinding{{Email: " Lead@Example.COM ", ServiceGroupIDs: []string{" team "}}},
+	}
+
+	snapshot := buildLLMServiceBindingAuditSnapshot(reg)
+	if len(snapshot.UserBindings) != 1 || snapshot.UserBindings[0].Email != "lead@example.com" {
+		t.Fatalf("snapshot did not normalize copied user binding: %#v", snapshot.UserBindings)
+	}
+	if reg.ModelServiceGroups[0].ID != " team " || reg.GlobalServiceGroupIDs[0] != " team " || reg.UserBindings[0].Email != " Lead@Example.COM " {
+		t.Fatalf("audit snapshot mutated source registry: %#v", reg)
 	}
 }

@@ -46,6 +46,9 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	if cached, ok := a.cachedGroupDiscussionDownloadedAttachment(ctx, discussionID, fileURL, attachmentID, filename); ok {
+		return cached, nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return GroupDiscussionAttachmentDownloadResult{}, err
@@ -98,6 +101,52 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 	return result, nil
 }
 
+func (a *App) cachedGroupDiscussionDownloadedAttachment(ctx context.Context, discussionID, fileURL, attachmentID, filename string) (GroupDiscussionAttachmentDownloadResult, bool) {
+	store, err := a.openGroupDiscussionHistoryStore()
+	if err != nil {
+		return GroupDiscussionAttachmentDownloadResult{}, false
+	}
+	defer store.Close()
+	records, err := store.DownloadedAttachments(ctx, discussionID)
+	if err != nil {
+		return GroupDiscussionAttachmentDownloadResult{}, false
+	}
+	for _, record := range records {
+		if !downloadedAttachmentRecordMatches(record, fileURL, attachmentID) {
+			continue
+		}
+		localPath := strings.TrimSpace(record.LocalPath)
+		if localPath == "" {
+			continue
+		}
+		info, err := os.Stat(localPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		size := record.SizeBytes
+		if size <= 0 {
+			size = info.Size()
+		}
+		return GroupDiscussionAttachmentDownloadResult{
+			DiscussionID: strings.TrimSpace(discussionID),
+			AttachmentID: firstNonEmptyGroupString(strings.TrimSpace(attachmentID), strings.TrimSpace(record.AttachmentID)),
+			Filename:     firstNonEmptyGroupString(strings.TrimSpace(record.Filename), strings.TrimSpace(filename), "attachment"),
+			LocalPath:    localPath,
+			SizeBytes:    size,
+		}, true
+	}
+	return GroupDiscussionAttachmentDownloadResult{}, false
+}
+
+func downloadedAttachmentRecordMatches(record GroupDiscussionAttachmentRecord, fileURL, attachmentID string) bool {
+	fileURL = strings.TrimSpace(fileURL)
+	attachmentID = strings.TrimSpace(attachmentID)
+	if attachmentID != "" && strings.EqualFold(strings.TrimSpace(record.AttachmentID), attachmentID) {
+		return true
+	}
+	return fileURL != "" && strings.TrimSpace(record.HubURL) == fileURL
+}
+
 func groupDiscussionAttachmentDownloadURL(hubURL, rawURL, discussionID, participantID string) (string, string, error) {
 	base := strings.TrimRight(strings.TrimSpace(hubURL), "/")
 	if base == "" {
@@ -117,16 +166,25 @@ func groupDiscussionAttachmentDownloadURL(hubURL, rawURL, discussionID, particip
 	if !sameGroupDiscussionAttachmentOrigin(baseURL, u) {
 		return "", "", fmt.Errorf("attachment file url must belong to the configured Hub")
 	}
-	if !strings.HasPrefix(u.EscapedPath(), "/api/ve/files/") {
+	path := u.EscapedPath()
+	if !strings.HasPrefix(path, "/api/ve/files/") {
 		return "", "", fmt.Errorf("attachment file url must use the Hub file relay")
 	}
+	if path == "/api/ve/files/upload" || strings.HasPrefix(path, "/api/ve/files/upload/") {
+		return "", "", fmt.Errorf("attachment file url must use a file download endpoint")
+	}
+	attachmentID, err := groupDiscussionAttachmentIDFromRelayPath(path)
+	if err != nil {
+		return "", "", err
+	}
+	u.Path = "/api/ve/files/download/" + attachmentID
+	u.RawPath = ""
 	q := u.Query()
 	q.Set("session_id", discussionID)
 	if participantID != "" {
 		q.Set("participant_id", participantID)
 	}
 	u.RawQuery = q.Encode()
-	attachmentID := pathBaseNoQuery(u.Path)
 	return u.String(), attachmentID, nil
 }
 
@@ -135,6 +193,30 @@ func sameGroupDiscussionAttachmentOrigin(baseURL, fileURL *url.URL) bool {
 		return false
 	}
 	return strings.EqualFold(fileURL.Scheme, baseURL.Scheme) && strings.EqualFold(fileURL.Host, baseURL.Host)
+}
+
+func groupDiscussionAttachmentIDFromRelayPath(escapedPath string) (string, error) {
+	var escapedID string
+	switch {
+	case strings.HasPrefix(escapedPath, "/api/ve/files/download/"):
+		escapedID = strings.TrimPrefix(escapedPath, "/api/ve/files/download/")
+	case strings.HasPrefix(escapedPath, "/api/ve/files/"):
+		escapedID = strings.TrimPrefix(escapedPath, "/api/ve/files/")
+	default:
+		return "", fmt.Errorf("attachment file url must use the Hub file relay")
+	}
+	if escapedID == "" || strings.Contains(escapedID, "/") {
+		return "", fmt.Errorf("attachment file url must identify exactly one file")
+	}
+	id, err := url.PathUnescape(escapedID)
+	if err != nil {
+		return "", fmt.Errorf("invalid attachment file id: %w", err)
+	}
+	id = strings.TrimSpace(id)
+	if id == "" || strings.ContainsAny(id, `/\`) {
+		return "", fmt.Errorf("attachment file url must identify exactly one file")
+	}
+	return safeGroupDiscussionPathSegment(id), nil
 }
 
 func pathBaseNoQuery(path string) string {

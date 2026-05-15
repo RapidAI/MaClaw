@@ -432,6 +432,56 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Required: []string{"action"},
 		Handler:  extraHandler(deps, "manage_schedule", "定时任务管理器未初始化。"),
 	})
+
+	// --- Knowledge tools (host-injected via ExtraHandlers) ---
+
+	r.Register(ToolEntry{
+		Name:        "knowledge_search",
+		Description: "Search the local knowledge base (SQLite FTS). Returns ranked results with score, source, and snippet. Use when the user asks about saved documents, imported files, or stored knowledge.",
+		Properties: map[string]interface{}{
+			"query":        map[string]string{"type": "string", "description": "Search query"},
+			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
+			"limit":        map[string]string{"type": "integer", "description": "Max results, default 8, max 50"},
+		},
+		Required: []string{"query"},
+		Handler:  extraHandler(deps, "knowledge_search", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "knowledge_context_pack",
+		Description: "Build a compact, citation-backed context bundle from the local knowledge base under a character budget. Use when you need a prompt-ready bundle of ranked cards, facts, and source nodes for answering from stored knowledge.",
+		Properties: map[string]interface{}{
+			"query":        map[string]string{"type": "string", "description": "Search query for the context pack"},
+			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
+			"max_items":    map[string]string{"type": "integer", "description": "Max context items, default 8, max 30"},
+			"max_chars":    map[string]string{"type": "integer", "description": "Max total context characters, default 6000, max 20000"},
+		},
+		Required: []string{"query"},
+		Handler:  extraHandler(deps, "knowledge_context_pack", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "knowledge_save_text",
+		Description: "Save text into the local knowledge base. Only use when the user explicitly asks to save, remember, or persist a specific piece of text to the knowledge base.",
+		Properties: map[string]interface{}{
+			"text":       map[string]string{"type": "string", "description": "Text content to save"},
+			"title":      map[string]string{"type": "string", "description": "Optional source title"},
+			"topic_hint": map[string]string{"type": "string", "description": "Optional topic hint to improve write-time structure"},
+		},
+		Required: []string{"text"},
+		Handler:  extraHandler(deps, "knowledge_save_text", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "knowledge_save_url",
+		Description: "Fetch a public URL and save its content into the local knowledge base. Only use when the user explicitly asks to save, archive, or add a web page to the knowledge base.",
+		Properties: map[string]interface{}{
+			"url":        map[string]string{"type": "string", "description": "Public HTTP(S) URL to save"},
+			"topic_hint": map[string]string{"type": "string", "description": "Optional topic hint to improve write-time structure"},
+		},
+		Required: []string{"url"},
+		Handler:  extraHandler(deps, "knowledge_save_url", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
+	})
 }
 
 // extraHandler returns the host-injected handler for the given tool name,

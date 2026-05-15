@@ -1,7 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
 
 func TestIsVEEvent(t *testing.T) {
@@ -20,7 +27,7 @@ func TestIsVEEvent(t *testing.T) {
 		{"im.user_message", false},
 		{"error", false},
 		{"", false},
-		{"ve", false},  // no colon
+		{"ve", false},             // no colon
 		{"VE:list_update", false}, // case sensitive
 	}
 
@@ -71,5 +78,154 @@ func TestNormalizeHubInboundMessageType_VEEventWithWhitespace(t *testing.T) {
 	got := normalizeHubInboundMessageType("  ve:list_update  ")
 	if got != hubInboundMessageVEEvent {
 		t.Errorf("expected hubInboundMessageVEEvent, got %q", got)
+	}
+}
+
+func TestShouldHandleIncomingDigitalEmployeeMessage(t *testing.T) {
+	for _, kind := range []a2a.MessageKind{"", a2a.MessageQuestion, a2a.MessageStatement} {
+		if !shouldHandleIncomingDigitalEmployeeMessage(kind) {
+			t.Fatalf("kind %q should be handled by the digital employee", kind)
+		}
+	}
+	for _, kind := range []a2a.MessageKind{a2a.MessageAnswer, a2a.MessageStreamChunk, a2a.MessageStreamEnd, a2a.MessageHandoff} {
+		if shouldHandleIncomingDigitalEmployeeMessage(kind) {
+			t.Fatalf("kind %q should not trigger a digital employee reply", kind)
+		}
+	}
+}
+
+func TestShouldDigitalEmployeeRespondToDiscussionHonorsRole(t *testing.T) {
+	for _, role := range []string{"", "speak", "speaker", "review", "participant"} {
+		if !shouldDigitalEmployeeRespondToDiscussion(role, a2a.MessageStatement) {
+			t.Fatalf("role %q should allow digital employee response", role)
+		}
+	}
+	for _, role := range []string{"initiator", "observe", "observer", "readonly", "read_only"} {
+		if shouldDigitalEmployeeRespondToDiscussion(role, a2a.MessageStatement) {
+			t.Fatalf("role %q should not allow digital employee response", role)
+		}
+	}
+	if shouldDigitalEmployeeRespondToDiscussion("speak", a2a.MessageAnswer) {
+		t.Fatalf("answer messages should not trigger another digital employee response")
+	}
+}
+
+func TestDecodeVEDiscussionPayloadWrappedAndLegacy(t *testing.T) {
+	envelope := a2a.GroupEnvelope{SessionID: "disc-1", Message: &a2a.GroupDiscussionMessage{Content: "hello"}}
+	wrappedRaw, err := json.Marshal(map[string]any{"envelope": envelope, "target_role": "initiator"})
+	if err != nil {
+		t.Fatalf("marshal wrapped: %v", err)
+	}
+	got, role, err := decodeVEDiscussionPayload(wrappedRaw)
+	if err != nil || role != "initiator" || got.SessionID != "disc-1" || got.Message == nil || got.Message.Content != "hello" {
+		t.Fatalf("wrapped decode got=%+v role=%q err=%v", got, role, err)
+	}
+	legacyRaw, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("marshal legacy: %v", err)
+	}
+	got, role, err = decodeVEDiscussionPayload(legacyRaw)
+	if err != nil || role != "" || got.SessionID != "disc-1" {
+		t.Fatalf("legacy decode got=%+v role=%q err=%v", got, role, err)
+	}
+}
+
+func TestCachePushedVEDiscussionSnapshotFallsBackToRemoteClientID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("participant_id"); got != "client-1" {
+			t.Fatalf("participant_id = %q, want client-1", got)
+		}
+		if got := r.Header.Get("X-Machine-ID"); got != "client-1" {
+			t.Fatalf("X-Machine-ID = %q, want client-1", got)
+		}
+		_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+			Discussion: a2a.HubDiscussionSummary{ID: "disc-client", Role: "initiator", Status: string(a2a.SessionOpen)},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.configCache = corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteClientID:     "client-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}
+	app.configCacheValid = true
+	client := &RemoteHubClient{app: app}
+
+	client.cachePushedVEDiscussionSnapshot(a2a.GroupEnvelope{SessionID: "disc-client", Message: &a2a.GroupDiscussionMessage{SessionID: "disc-client", Kind: a2a.MessageAnswer}})
+
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	if _, ok, err := store.CachedDetail(t.Context(), "disc-client"); err != nil || !ok {
+		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
+	}
+}
+
+func TestCachePushedVEDiscussionSnapshotCachesHubDetail(t *testing.T) {
+	now := time.Now().UTC().Round(0)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/consultations/disc-push/detail" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("participant_id"); got != "machine-1" {
+			t.Fatalf("participant_id = %q, want machine-1", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(a2a.HubDiscussionDetail{
+			Discussion: a2a.HubDiscussionSummary{
+				ID:            "disc-push",
+				Role:          "review",
+				LocalRelation: "owned_ve_invited",
+				Readonly:      true,
+				Status:        string(a2a.SessionOpen),
+				Topic:         "Contract review",
+				MessageCount:  1,
+				UpdatedAt:     now,
+			},
+			Messages: []a2a.Message{{
+				ID:        "msg-1",
+				SessionID: "disc-push",
+				FromID:    "expert-1",
+				Kind:      a2a.MessageAnswer,
+				Content:   "Use the revised indemnity clause.",
+				CreatedAt: now,
+			}},
+		})
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	app.configCache = corelib.AppConfig{
+		RemoteHubURL:       server.URL,
+		RemoteMachineID:    "machine-1",
+		RemoteMachineToken: "token-1",
+		GroupDiscussion:    corelib.GroupDiscussionConfig{Enabled: true},
+	}
+	app.configCacheValid = true
+	client := &RemoteHubClient{app: app}
+
+	client.cachePushedVEDiscussionSnapshot(a2a.GroupEnvelope{SessionID: "disc-push", Message: &a2a.GroupDiscussionMessage{SessionID: "disc-push", Kind: a2a.MessageAnswer}})
+
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	defer store.Close()
+	cached, ok, err := store.CachedDetail(t.Context(), "disc-push")
+	if err != nil || !ok {
+		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
+	}
+	if len(cached.Messages) != 1 || cached.Messages[0].Content != "Use the revised indemnity clause." {
+		t.Fatalf("cached messages = %+v", cached.Messages)
+	}
+	if !cached.Discussion.Readonly || cached.Discussion.LocalRelation != "owned_ve_invited" {
+		t.Fatalf("cached discussion relation/readonly = %+v", cached.Discussion)
 	}
 }

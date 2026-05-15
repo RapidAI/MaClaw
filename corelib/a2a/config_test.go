@@ -14,12 +14,22 @@ func TestNewHubClientFromConfigRequiresCurrentHubCredentials(t *testing.T) {
 	if _, err := NewHubClientFromConfig(corelib.AppConfig{RemoteHubURL: "https://hub.example.com"}); err == nil {
 		t.Fatal("expected missing token error")
 	}
-	client, err := NewHubClientFromConfig(corelib.AppConfig{RemoteHubURL: "https://hub.example.com/", RemoteMachineToken: "machine-token"})
+	client, err := NewHubClientFromConfig(corelib.AppConfig{RemoteHubURL: "https://hub.example.com/", RemoteMachineToken: "machine-token", RemoteMachineID: "machine-1"})
 	if err != nil {
 		t.Fatalf("NewHubClientFromConfig returned error: %v", err)
 	}
-	if client.baseURL != "https://hub.example.com" || client.token != "machine-token" {
+	if client.baseURL != "https://hub.example.com" || client.token != "machine-token" || client.machineID != "machine-1" {
 		t.Fatalf("client = %+v", client)
+	}
+}
+
+func TestNewHubClientFromConfigFallsBackToRemoteClientID(t *testing.T) {
+	client, err := NewHubClientFromConfig(corelib.AppConfig{RemoteHubURL: "https://hub.example.com/", RemoteMachineToken: "machine-token", RemoteClientID: "client-1"})
+	if err != nil {
+		t.Fatalf("NewHubClientFromConfig returned error: %v", err)
+	}
+	if client.machineID != "client-1" {
+		t.Fatalf("client machineID = %q, want client-1", client.machineID)
 	}
 }
 

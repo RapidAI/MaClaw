@@ -161,8 +161,8 @@ func (e GroupEnvelope) ValidateCurrentHub() error {
 			return fmt.Errorf("invitation response decision is required")
 		}
 	case GroupMessageDiscussionMessage:
-		if e.Message == nil || strings.TrimSpace(e.Message.Content) == "" {
-			return fmt.Errorf("discussion message content is required")
+		if e.Message == nil || !groupDiscussionMessageHasPayload(*e.Message) {
+			return fmt.Errorf("discussion message content or attachment payload is required")
 		}
 	case GroupMessageDiscussionResult:
 		if e.Result == nil || strings.TrimSpace(e.Result.Summary) == "" {
@@ -172,6 +172,14 @@ func (e GroupEnvelope) ValidateCurrentHub() error {
 		return fmt.Errorf("unknown group message type %q", e.Type)
 	}
 	return nil
+}
+
+func groupDiscussionMessageHasPayload(msg GroupDiscussionMessage) bool {
+	return strings.TrimSpace(msg.Content) != "" ||
+		msg.Kind == MessageStreamEnd ||
+		len(msg.TextAttachments) > 0 ||
+		len(msg.ImageAttachments) > 0 ||
+		len(msg.FileAttachments) > 0
 }
 
 func (p GroupProfile) DiscoveryView(modelVisibility string) GroupProfile {

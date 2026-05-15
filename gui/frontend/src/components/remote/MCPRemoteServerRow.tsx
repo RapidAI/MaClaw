@@ -29,6 +29,8 @@ interface MCPServerView {
     fail_count: number;
     last_check_at: string;
     created_at: string;
+    source?: "manual" | "mdns" | "project" | "marketplace";
+    managed?: boolean;
 }
 
 type Props = {
@@ -101,12 +103,16 @@ export function MCPRemoteServerRow({
                 </td>
                 <td style={{ ...tdStyle, textAlign: "center" }}>{toolCountDisplay}</td>
                 <td style={tdStyle}>
-                    <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", alignItems: "center" }}>
                         <button className="btn-secondary" style={smallBtnStyle} onClick={onToggleTools} disabled={busy}>
                             {isExpanded ? translate("mcpCollapse") : translate("mcpTools")}
                         </button>
                         <button className={secretStatus === "needs_config" ? "btn-primary" : "btn-secondary"} style={smallBtnStyle} onClick={onEdit} disabled={busy}>{secretStatus === "needs_config" ? translate("mcpConfigureSecret") : translate("mcpEdit")}</button>
-                        <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={onDelete} disabled={busy}>{translate("mcpDelete")}</button>
+                        {server.managed ? (
+                            <span style={managedBadgeStyle} title={translate("mcpCannotDeleteManaged")}>🔒 {translate("mcpManagedLabel")}</span>
+                        ) : (
+                            <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={onDelete} disabled={busy}>{translate("mcpDelete")}</button>
+                        )}
                     </div>
                 </td>
             </tr>
@@ -184,4 +190,17 @@ const secretConfiguredStyle: CSSProperties = {
 const smallBtnStyle: CSSProperties = {
     fontSize: "0.72rem",
     padding: "2px 8px",
+};
+const managedBadgeStyle: CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "2px",
+    padding: "1px 8px",
+    borderRadius: "999px",
+    fontSize: "0.68rem",
+    fontWeight: 600,
+    color: colors.textMuted,
+    border: `1px solid ${colors.border}`,
+    background: colors.surfaceMuted,
+    cursor: "default",
 };

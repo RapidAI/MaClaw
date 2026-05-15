@@ -18,7 +18,6 @@ const expectedScripts = [
   'security-tab.js',
   'machines-tab.js',
   've-tab.js',
-  'group-discussion-tab.js',
   'im-tab.js',
   'hub-llm-tab.js',
   'feishu-tab.js',

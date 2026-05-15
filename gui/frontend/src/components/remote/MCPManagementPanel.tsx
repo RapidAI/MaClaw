@@ -52,6 +52,7 @@ interface MCPServerView {
     fail_count: number;
     last_check_at: string;
     created_at: string;
+    source?: "manual" | "mdns" | "project" | "marketplace"; managed?: boolean;
 }
 interface LocalMCPServer {
     id: string;
@@ -62,11 +63,14 @@ interface LocalMCPServer {
     disabled: boolean;
     auto_start?: boolean;
     created_at: string;
+    source?: "manual" | "marketplace";
+    capability?: MCPServerCapabilityRef;
+    managed?: boolean;
 }
 type Props = {
     translate: (key: string) => string;
 };
-type MCPTab = "local" | "remote";
+type MCPTab = "local" | "remote" | "marketplace";
 type MCPSecretStatus = "configured" | "needs_config" | "optional";
 const emptyServer: MCPServerView = {
     id: "",
@@ -130,24 +134,45 @@ function makeBackdropProps(onClose: () => void, ref: React.MutableRefObject<bool
 }
 export function MCPManagementPanel({ translate }: Props) {
     const [activeTab, setActiveTab] = useState<MCPTab>("remote");
+    const [installedCapabilityIDs, setInstalledCapabilityIDs] = useState<string[]>([]);
+    const refreshInstalledCapabilities = useCallback(async () => {
+        try {
+            const [remoteServers, localServers] = await Promise.all([
+                ListMCPServers().catch(() => []),
+                ListLocalMCPServers().catch(() => []),
+            ]);
+            const ids: string[] = [];
+            if (Array.isArray(remoteServers)) {
+                for (const s of remoteServers as MCPServerView[]) {
+                    if (s.capability?.capability_id) ids.push(s.capability.capability_id);
+                    if (s.capability?.global_key) ids.push(s.capability.global_key);
+                    if (s.id) ids.push(s.id);
+                }
+            }
+            if (Array.isArray(localServers)) {
+                for (const s of localServers as LocalMCPServer[]) {
+                    if (s.capability?.capability_id) ids.push(s.capability.capability_id);
+                    if (s.capability?.global_key) ids.push(s.capability.global_key);
+                    if (s.id) ids.push(s.id);
+                }
+            }
+            setInstalledCapabilityIDs(ids.filter(Boolean));
+        } catch {
+            // ignore
+        }
+    }, []);
+    useEffect(() => { void refreshInstalledCapabilities(); }, [refreshInstalledCapabilities]);
+    const handleMarketplaceChanged = useCallback(async () => { await refreshInstalledCapabilities(); }, [refreshInstalledCapabilities]);
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
             <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}` }}>
-                <button
-                    style={activeTab === "local" ? tabActiveStyle : tabStyle}
-                    onClick={() => setActiveTab("local")}
-                >
-                    {translate("mcpTabLocal")}
-                </button>
-                <button
-                    style={activeTab === "remote" ? tabActiveStyle : tabStyle}
-                    onClick={() => setActiveTab("remote")}
-                >
-                    {translate("mcpTabRemote")}
-                </button>
+                <button style={activeTab === "local" ? tabActiveStyle : tabStyle} onClick={() => setActiveTab("local")}>{translate("mcpTabLocal")}</button>
+                <button style={activeTab === "remote" ? tabActiveStyle : tabStyle} onClick={() => setActiveTab("remote")}>{translate("mcpTabRemote")}</button>
+                <button style={activeTab === "marketplace" ? tabActiveStyle : tabStyle} onClick={() => setActiveTab("marketplace")}>{translate("mcpTabMarketplace")}</button>
             </div>
             {activeTab === "local" && <LocalMCPPanel translate={translate} />}
             {activeTab === "remote" && <RemoteMCPPanel translate={translate} />}
+            {activeTab === "marketplace" && <MCPMarketplacePanel translate={translate} onChanged={handleMarketplaceChanged} installedCapabilities={installedCapabilityIDs} />}
         </div>
     );
 }
@@ -379,7 +404,11 @@ function LocalMCPPanel({ translate }: Props) {
                                         {s.auto_start ? translate("mcpAutoStartOff") : translate("mcpAutoStartOn")}
                                     </button>
                                     <button className="btn-secondary" style={smallBtnStyle} onClick={() => openEditForm(s)} disabled={busy}>{translate("mcpEdit")}</button>
-                                    <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => setDeleteTarget(s)} disabled={busy}>{translate("mcpDelete")}</button>
+                                    {s.managed ? (
+                                        <span style={{ display: "inline-flex", alignItems: "center", gap: "2px", padding: "1px 8px", borderRadius: "999px", fontSize: "0.68rem", fontWeight: 600, color: colors.textMuted, border: `1px solid ${colors.border}`, background: colors.surfaceMuted, cursor: "default" }} title={translate("mcpCannotDeleteManaged")}>🔒 {translate("mcpManagedLabel")}</span>
+                                    ) : (
+                                        <button className="btn-secondary btn-danger" style={smallBtnStyle} onClick={() => setDeleteTarget(s)} disabled={busy}>{translate("mcpDelete")}</button>
+                                    )}
                                 </div>
                             </div>
                             <div style={{ fontSize: "0.72rem", color: colors.textSecondary, fontFamily: "monospace", marginTop: "4px", wordBreak: "break-all" }}>
@@ -762,13 +791,6 @@ function RemoteMCPPanel({ translate }: Props) {
     const secretStorageAllowed = (storage: "hub" | "local", policy?: string): boolean => {
         return normalizeSecretStorage(storage, policy) === storage;
     };
-    const handleMarketplaceChanged = async (status?: any) => {
-        const nextServers = await loadServerList();
-        const refs = Array.isArray(status?.needs_user_config) ? status.needs_user_config.filter(Boolean) : [];
-        if (refs.length === 0) return;
-        const target = nextServers.find((server) => refs.includes(server.id) || refs.includes(server.capability?.capability_id || "") || refs.includes(server.capability?.global_key || ""));
-        if (target) openEditForm(target);
-    };
     const validateMarketplaceSecrets = (): string => {
         if (!editingServer?.capability || secretRequirements.length === 0) return "";
         for (const req of secretRequirements) {
@@ -1058,7 +1080,6 @@ function RemoteMCPPanel({ translate }: Props) {
                     </button>
                 </div>
             </div>
-            <MCPMarketplacePanel translate={translate} onChanged={handleMarketplaceChanged} installedCapabilities={servers.flatMap((s) => [s.capability?.capability_id || "", s.capability?.global_key || "", s.id]).filter(Boolean)} />
             {loading && <div style={{ textAlign: "center", padding: "16px", fontSize: "0.78rem", color: colors.textMuted }}>{translate("mcpLoading")}</div>}
             {error && <div style={{ fontSize: "0.78rem", color: colors.danger, background: "var(--theme-danger-bg)", padding: "6px 10px", borderRadius: "4px", border: `1px solid ${colors.danger}` }}>{error}</div>}
             {!loading && servers.length > 0 && (

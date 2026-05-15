@@ -75,6 +75,11 @@ type SystemPromptDeps struct {
 	// When true, PromptKnowledgeBaseRules is included in the prompt.
 	HasKnowledgeBase bool
 
+	// KnowledgeAutoRecall is called during system prompt construction to inject
+	// relevant knowledge base snippets. The callback receives the builder and
+	// the user message text for FTS query. Nil disables auto-recall.
+	KnowledgeAutoRecall func(b *strings.Builder, userMsg string)
+
 	// PostCorePrinciples is called after core principles + knowledge base rules
 	// to inject platform-specific rules (context management, passthrough, etc.).
 	// The builder passes a *strings.Builder for the callee to append to.
@@ -246,6 +251,11 @@ func BuildSystemPrompt(deps SystemPromptDeps, userMessage string, isFirstTurn bo
 	// --- Memory recall ---
 	if deps.MemoryStore != nil && userMessage != "" && !deps.SkipMemoryRecall {
 		appendMemoryRecall(&b, deps.MemoryStore, userMessage, isFirstTurn)
+	}
+
+	// --- Knowledge auto-recall ---
+	if deps.KnowledgeAutoRecall != nil && userMessage != "" {
+		deps.KnowledgeAutoRecall(&b, userMessage)
 	}
 
 	// --- User profile ---

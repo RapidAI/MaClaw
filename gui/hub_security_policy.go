@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +36,7 @@ func (c *digitalEmployeeAuthorizationCache) get() *corelib.DigitalEmployeeAuthor
 	if c.auth == nil {
 		return nil
 	}
-	copy := *c.auth
+	copy := corelib.NormalizeDigitalEmployeeAuthorization(*c.auth, nowUTC())
 	return &copy
 }
 
@@ -67,11 +68,7 @@ type DigitalEmployeeFeatureStatus struct {
 
 func (a *App) GetDigitalEmployeeFeatureStatus() DigitalEmployeeFeatureStatus {
 	auth := a.digitalEmployeeAuthCache.get()
-	actualCount := 0
-	if list, err := a.ListVirtualEmployees(); err == nil {
-		actualCount = len(list)
-	}
-	status := DigitalEmployeeFeatureStatus{Authorization: auth, ActualCount: actualCount}
+	status := DigitalEmployeeFeatureStatus{Authorization: auth}
 	if auth == nil {
 		status.Reason = "authorization_unknown"
 		return status
@@ -84,12 +81,28 @@ func (a *App) GetDigitalEmployeeFeatureStatus() DigitalEmployeeFeatureStatus {
 		status.Reason = "quota_zero"
 		return status
 	}
-	if actualCount <= 0 {
+	status.ActualCount = a.localDigitalEmployeeCount()
+	if status.ActualCount <= 0 {
 		status.Reason = "no_digital_employees"
 		return status
 	}
 	status.Visible = true
 	return status
+}
+
+func (a *App) localDigitalEmployeeCount() int {
+	status, err := a.GetVEStatus()
+	if err != nil || status == nil || !status.Registered || status.Employee == nil {
+		return 0
+	}
+	if strings.EqualFold(strings.TrimSpace(status.Employee.Status), "active") {
+		return 1
+	}
+	return 0
+}
+
+func (a *App) emitDigitalEmployeeFeatureStatusChanged() {
+	a.emitEvent("digital-employee-authorization-changed", a.GetDigitalEmployeeFeatureStatus())
 }
 
 // HubSecurityPolicy mirrors hub/internal/security.HeartbeatSecurityPayload on the client side.

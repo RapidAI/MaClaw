@@ -49,7 +49,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
         <div data-testid="fav-employee-settings">
             <h3 style={{ marginBottom: '12px' }}>{isZh ? '常用数字员工' : 'Favorite Employees'}</h3>
             <p style={{ fontSize: '12px', color: 'var(--theme-text-muted)', marginBottom: '16px' }}>
-                {isZh ? '最多设置 5 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。' : 'Pin up to 5 digital employees to the sidebar. Drag to reorder.'}
+                {isZh ? '最多设置 6 个常用数字员工，显示在左侧导航栏中。拖动调整顺序。' : 'Pin up to 6 digital employees to the sidebar. Drag to reorder.'}
             </p>
 
             {/* Current favorites list */}
@@ -101,7 +101,7 @@ export function FavoriteEmployeeSettingsPanel({ favoriteEmployeeIds, veList, onA
             )}
 
             {/* Add button */}
-            {favoriteVEs.length < 5 && (
+            {favoriteVEs.length < 6 && (
                 <div style={{ position: 'relative' }}>
                     <button
                         onClick={() => setShowAddPicker(!showAddPicker)}

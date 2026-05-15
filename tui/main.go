@@ -32,6 +32,15 @@ func main() {
 	// Migrate ~/.maclaw/skills → ~/.maclaw/data/skills (one-time).
 	skill.MigrateSkillsDir()
 
+	// --- -p / --prompt flag: non-interactive single-prompt mode ---
+	// Usage: maclaw-tui -p "your prompt here"
+	// Runs the agent loop once, prints the result to stdout, and exits.
+	// Supports piping: maclaw-tui -p "return JSON" | jq .version
+	if promptText := parsePipePromptFlag(); promptText != "" {
+		runPrompt(promptText)
+		return
+	}
+
 	if len(os.Args) < 2 {
 		// 默认启动 TUI 交互模式
 		runTUI()
@@ -70,18 +79,19 @@ func main() {
 		runLocalCommand("template", os.Args[2:])
 	case "memory":
 		runLocalCommand("memory", os.Args[2:])
+	case "knowledge":
+		dataDir := commands.ResolveDataDir()
+		if err := commands.RunKnowledge(os.Args[2:], dataDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(exitCodeForError(err))
+		}
 	case "schedule":
 		runLocalCommand("schedule", os.Args[2:])
 	case "audit":
 		runLocalCommand("audit", os.Args[2:])
 	case "policy":
 		runLocalCommand("policy", os.Args[2:])
-	case "agentnet":
-		if err := commands.RunAgentNet(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(exitCodeForError(err))
-		}
-	case "tool", "skill", "skillhub", "skillmarket":
+	case "tool", "skill", "skillhub", "skillmarket", "capabilitymarket":
 		runToolsBackedCommand(os.Args[1], os.Args[2:])
 	case "mcp":
 		runMCPCommand(os.Args[2:])
@@ -174,19 +184,10 @@ Commands:
   project       项目管理（create/list/delete/switch）
   template      会话模板管理（list/create/delete）
   memory        兼容脚本记忆命令（无参数打开聊天页；记忆在 TUI 后台自动维护）
+  knowledge     知识库管理（import/list/search/status/delete/clear）
   schedule      定时任务管理（无参数打开 TUI 任务页；list/create/delete/pause/resume/trigger 为脚本命令）
   audit         兼容审计命令（无参数打开服务兑换；list 查看本地审计日志）
   policy        安全策略配置（无参数打开 TUI 安全设置；list 为脚本命令）
-  agentnet      AgentNet P2P 网络
-                  status/peers/tasks/credits/knowledge/dm/swarm/prediction
-				  topic/overlay/resume/diagnostics
-                  identity (has-identity/export-identity/import-identity/backup-key/restore-key)
-                  leaderboard/transactions/credits-audit
-                  auto-picker (status/configure/trigger)
-                  daemon (ensure/stop/info)
-				  binary (install/update/path)
-				  profile (get/update/set-motto)
-				  bundle (pack/unpack/attach/download)
   tool          工具管理（无参数打开 TUI Tools；recommend/status 为脚本命令）
   skill         技能管理（无参数打开 TUI Skill；list/add/delete/backup/restore/import/export 为脚本命令）
   skillhub      SkillHub 市场（无参数打开 TUI Skill；search/install/rate/check-updates/update 为脚本命令）
@@ -205,6 +206,8 @@ Commands:
   gossip        八卦社区（browse/publish/comment/rate/comments）
 
 Flags:
+  -p "prompt"   非交互模式：执行单次 prompt 后退出（支持管道：-p "..." | jq .）
+  --prompt      同 -p
   --no-tui      批处理模式（无交互 UI）
   --version     显示版本号
   --help        显示帮助信息
@@ -226,7 +229,6 @@ func buildKernelOptions(logger corelib.Logger, emitter corelib.EventEmitter) cor
 		MachineID:       os.Getenv("MACLAW_MACHINE_ID"),
 		Logger:          logger,
 		EventEmitter:    emitter,
-		AgentNetEnabled: os.Getenv("MACLAW_AGENTNET") == "1",
 	}
 }
 
@@ -1013,8 +1015,8 @@ func runToolsBackedCommand(name string, args []string) {
 		err = commands.RunSkill(args)
 	case "skillhub":
 		err = commands.RunSkillHub(args)
-	case "skillmarket":
-		err = commands.RunSkillMarket(args)
+	case "skillmarket", "capabilitymarket":
+		err = commands.RunCapabilityMarket(args)
 	case "nlskill":
 		err = commands.RunNLSkill(args)
 	default:

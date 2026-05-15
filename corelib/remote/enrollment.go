@@ -49,7 +49,7 @@ type EnrollResult struct {
 	ViewerToken  string `json:"viewer_token,omitempty"`
 	ExpiresAt    string `json:"expires_at,omitempty"`
 	VIPFlag      bool   `json:"vip_flag,omitempty"`
-	VEQuota      int    `json:"ve_quota,omitempty"` // Virtual employee quota approved by HubCenter (0-10000)
+	VEQuota      int    `json:"ve_quota,omitempty"` // Digital employee quota approved by HubCenter (0-10000)
 
 	// Resolved metadata — not from the enroll response, filled by the client.
 	HubURL         string   // the hub URL actually used for enrollment

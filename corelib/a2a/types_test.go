@@ -74,11 +74,27 @@ func TestEscalationClosesLocalDecisionPath(t *testing.T) {
 	if err := s.Escalate(Escalation{ID: "esc-1", RaisedBy: "ops", Reason: "budget threshold exceeded"}); err != nil {
 		t.Fatalf("Escalate returned error: %v", err)
 	}
-	if s.Status != SessionEscalated || s.Escalation.Target != "iworkercenter" {
+	if s.Status != SessionEscalated || s.Escalation.Target != "human_owner" {
 		t.Fatalf("unexpected escalation state: %+v", s.Escalation)
 	}
 	if err := s.AddMessage(Message{ID: "msg-1", FromID: "ops", Content: "late note"}); err == nil {
 		t.Fatal("expected escalated session to reject new messages")
+	}
+}
+
+func TestSessionAddMessageAllowsStreamEndAndAttachmentOnlyPayloads(t *testing.T) {
+	s, err := NewSession("a2a-stream", "stream", "reply", []Participant{{ID: "maclaw-a"}}, PolicyMajority, time.Now())
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if err := s.AddMessage(Message{ID: "msg-end", FromID: "maclaw-a", Kind: MessageStreamEnd}); err != nil {
+		t.Fatalf("stream_end without content should be accepted: %v", err)
+	}
+	if err := s.AddMessage(Message{ID: "msg-file", FromID: "maclaw-a", Kind: MessageStatement, FileAttachments: []FileAttachment{{FileURL: "https://hub.local/file", Filename: "report.pdf"}}}); err != nil {
+		t.Fatalf("attachment-only message should be accepted: %v", err)
+	}
+	if err := s.AddMessage(Message{ID: "msg-empty", FromID: "maclaw-a", Kind: MessageStatement}); err == nil {
+		t.Fatalf("empty non-stream message should be rejected")
 	}
 }
 

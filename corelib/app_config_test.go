@@ -164,6 +164,16 @@ func TestAppConfig_GroupDiscussionDefaultsWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestAppConfig_GroupDiscussionSensitiveQueryPolicyNormalizesCaseAndSpaces(t *testing.T) {
+	var cfg AppConfig
+	if err := json.Unmarshal([]byte(`{"group_discussion":{"sensitive_query_policy":" ALLOW "}}`), &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if cfg.GroupDiscussion.SensitiveQueryPolicy != "allow" {
+		t.Fatalf("SensitiveQueryPolicy = %q, want allow", cfg.GroupDiscussion.SensitiveQueryPolicy)
+	}
+}
+
 func TestAppConfig_GroupDiscussionExplicitFalseSurvivesUnmarshal(t *testing.T) {
 	raw := `{
 		"group_discussion": {

@@ -1,326 +1,320 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { VirtualEmployeeSettingsPanel } from '../VirtualEmployeeSettingsPanel';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { VirtualEmployeeSettingsPanel } from "../VirtualEmployeeSettingsPanel";
+import { EventsOn } from "../../../../wailsjs/runtime";
 
 const RegisterVirtualEmployeeMock = vi.fn();
 const UpdateVESettingsMock = vi.fn();
 const GetVEStatusMock = vi.fn();
+const GetDigitalEmployeeSensitiveQueryPolicyMock = vi.fn();
+const SaveDigitalEmployeeSensitiveQueryPolicyMock = vi.fn();
 
-vi.mock('../../../../wailsjs/go/main/App', () => ({
-    RegisterVirtualEmployee: (...args: unknown[]) => RegisterVirtualEmployeeMock(...args),
-    UpdateVESettings: (...args: unknown[]) => UpdateVESettingsMock(...args),
-    GetVEStatus: (...args: unknown[]) => GetVEStatusMock(...args),
+vi.mock("../../../../wailsjs/go/main/App", () => ({
+  RegisterVirtualEmployee: (...args: unknown[]) =>
+    RegisterVirtualEmployeeMock(...args),
+  UpdateVESettings: (...args: unknown[]) => UpdateVESettingsMock(...args),
+  GetVEStatus: (...args: unknown[]) => GetVEStatusMock(...args),
+  GetDigitalEmployeeSensitiveQueryPolicy: (...args: unknown[]) =>
+    GetDigitalEmployeeSensitiveQueryPolicyMock(...args),
+  SaveDigitalEmployeeSensitiveQueryPolicy: (...args: unknown[]) =>
+    SaveDigitalEmployeeSensitiveQueryPolicyMock(...args),
 }));
 
-vi.mock('../../../../wailsjs/runtime', () => ({
-    EventsOn: vi.fn(() => vi.fn()),
-    EventsOff: vi.fn(),
+vi.mock("../../../../wailsjs/runtime", () => ({
+  EventsOn: vi.fn(() => vi.fn()),
+  EventsOff: vi.fn(),
 }));
 
-afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
+beforeEach(() => {
+  (EventsOn as unknown as ReturnType<typeof vi.fn>).mockImplementation(() =>
+    vi.fn(),
+  );
+  GetVEStatusMock.mockResolvedValue({ registered: false });
+  GetDigitalEmployeeSensitiveQueryPolicyMock.mockResolvedValue("confirm");
+  SaveDigitalEmployeeSensitiveQueryPolicyMock.mockResolvedValue(undefined);
 });
 
-describe('VirtualEmployeeSettingsPanel', () => {
-    // ─── Conditional Rendering ───────────────────────────────────────────
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
 
-    describe('conditional rendering', () => {
-        it('does not render when remoteMachineId is empty', () => {
-            GetVEStatusMock.mockResolvedValue({ registered: false });
-            const { container } = render(
-                <VirtualEmployeeSettingsPanel remoteMachineId="" />
-            );
-            expect(container.querySelector('[data-testid="ve-settings-panel"]')).toBeNull();
-        });
+describe("VirtualEmployeeSettingsPanel", () => {
+  it("does not render when remoteMachineId is empty", () => {
+    const { container } = render(
+      <VirtualEmployeeSettingsPanel remoteMachineId="" />,
+    );
+    expect(
+      container.querySelector('[data-testid="ve-settings-panel"]'),
+    ).toBeNull();
+  });
 
-        it('renders when remoteMachineId is non-empty', () => {
-            GetVEStatusMock.mockResolvedValue({ registered: false });
-            render(
-                <VirtualEmployeeSettingsPanel remoteMachineId="machine-123" />
-            );
-            expect(screen.getByTestId('ve-settings-panel')).toBeTruthy();
-        });
+  it("renders digital employee settings text when remoteMachineId is present", () => {
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="machine-123" />);
+    expect(screen.getByTestId("ve-settings-panel")).toBeTruthy();
+    expect(
+      screen.getByText("\u6570\u5b57\u5458\u5de5\u8bbe\u7f6e"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/\u865a\u62df\u5458\u5de5/)).toBeNull();
+  });
+
+  it("validates required fields with readable Chinese copy", () => {
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    fireEvent.click(screen.getByTestId("ve-submit-btn"));
+    expect(screen.getByTestId("name-error").textContent).toBe(
+      "\u540d\u79f0\u4e0d\u80fd\u4e3a\u7a7a",
+    );
+    expect(screen.getByTestId("skill-error").textContent).toBe(
+      "\u6280\u80fd\u63cf\u8ff0\u4e0d\u80fd\u4e3a\u7a7a",
+    );
+    expect(screen.getByTestId("policy-error").textContent).toBe(
+      "\u8bf7\u9009\u62e9\u8bbf\u95ee\u7b56\u7565",
+    );
+    expect(RegisterVirtualEmployeeMock).not.toHaveBeenCalled();
+  });
+
+  it("shows whitelist and blacklist editors for matching access policies", () => {
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    fireEvent.change(screen.getByLabelText("\u8bbf\u95ee\u7b56\u7565"), {
+      target: { value: "whitelist" },
     });
-
-    // ─── Form Validation ─────────────────────────────────────────────────
-
-    describe('form validation', () => {
-        beforeEach(() => {
-            GetVEStatusMock.mockResolvedValue({ registered: false });
-        });
-
-        it('shows error when name is empty on submit', async () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.click(screen.getByTestId('ve-submit-btn'));
-
-            expect(screen.getByTestId('name-error')).toBeTruthy();
-            expect(screen.getByTestId('name-error').textContent).toBe('名称不能为空');
-            expect(RegisterVirtualEmployeeMock).not.toHaveBeenCalled();
-        });
-
-        it('shows error when name exceeds 50 characters', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            const nameInput = screen.getByLabelText('名称');
-            // The input has maxLength=50, but we test the validation logic
-            fireEvent.change(nameInput, { target: { value: 'a'.repeat(51) } });
-
-            expect(screen.getByTestId('name-error').textContent).toBe('名称不能超过50个字符');
-        });
-
-        it('shows error when skill description is empty on submit', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            // Fill name but leave skill empty
-            fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'Test VE' } });
-            fireEvent.click(screen.getByTestId('ve-submit-btn'));
-
-            expect(screen.getByTestId('skill-error')).toBeTruthy();
-            expect(screen.getByTestId('skill-error').textContent).toBe('技能描述不能为空');
-        });
-
-        it('shows error when skill description exceeds 500 characters', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            const skillInput = screen.getByLabelText('技能描述');
-            fireEvent.change(skillInput, { target: { value: 'x'.repeat(501) } });
-
-            expect(screen.getByTestId('skill-error').textContent).toBe('技能描述不能超过500个字符');
-        });
-
-        it('shows error when access policy is not selected on submit', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'Test VE' } });
-            fireEvent.change(screen.getByLabelText('技能描述'), { target: { value: 'Some skill' } });
-            fireEvent.click(screen.getByTestId('ve-submit-btn'));
-
-            expect(screen.getByTestId('policy-error')).toBeTruthy();
-            expect(screen.getByTestId('policy-error').textContent).toBe('请选择访问策略');
-        });
-
-        it('clears validation errors when valid input is provided', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            // Trigger errors
-            fireEvent.click(screen.getByTestId('ve-submit-btn'));
-            expect(screen.getByTestId('name-error')).toBeTruthy();
-
-            // Fix name
-            fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'Valid Name' } });
-            expect(screen.queryByTestId('name-error')).toBeNull();
-        });
+    expect(screen.getByText("\u767d\u540d\u5355")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("\u8bbf\u95ee\u7b56\u7565"), {
+      target: { value: "blacklist" },
     });
-
-    // ─── Policy Switch Behavior ──────────────────────────────────────────
-
-    describe('policy switch behavior', () => {
-        beforeEach(() => {
-            GetVEStatusMock.mockResolvedValue({ registered: false });
-        });
-
-        it('shows whitelist editor when "whitelist" is selected', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'whitelist' } });
-
-            expect(screen.getByTestId('list-editor')).toBeTruthy();
-            expect(screen.getByText('白名单')).toBeTruthy();
-        });
-
-        it('shows blacklist editor when "blacklist" is selected', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'blacklist' } });
-
-            expect(screen.getByTestId('list-editor')).toBeTruthy();
-            expect(screen.getByText('黑名单')).toBeTruthy();
-        });
-
-        it('hides list editor when "public" is selected', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            // First select whitelist to show editor
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'whitelist' } });
-            expect(screen.getByTestId('list-editor')).toBeTruthy();
-
-            // Switch to public
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'public' } });
-            expect(screen.queryByTestId('list-editor')).toBeNull();
-        });
-
-        it('hides list editor when "per_request" is selected', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            // First select blacklist to show editor
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'blacklist' } });
-            expect(screen.getByTestId('list-editor')).toBeTruthy();
-
-            // Switch to per_request
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'per_request' } });
-            expect(screen.queryByTestId('list-editor')).toBeNull();
-        });
-
-        it('allows adding items to whitelist', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'whitelist' } });
-
-            const input = screen.getByTestId('list-input');
-            fireEvent.change(input, { target: { value: 'user-abc' } });
-            fireEvent.click(screen.getByTestId('list-add-btn'));
-
-            expect(screen.getByText('user-abc')).toBeTruthy();
-        });
-
-        it('allows removing items from blacklist', () => {
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'blacklist' } });
-
-            // Add an item
-            const input = screen.getByTestId('list-input');
-            fireEvent.change(input, { target: { value: 'blocked-user' } });
-            fireEvent.click(screen.getByTestId('list-add-btn'));
-            expect(screen.getByText('blocked-user')).toBeTruthy();
-
-            // Remove it
-            fireEvent.click(screen.getByTestId('remove-blocked-user'));
-            expect(screen.queryByText('blocked-user')).toBeNull();
-        });
+    expect(screen.getByText("\u9ed1\u540d\u5355")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("\u8bbf\u95ee\u7b56\u7565"), {
+      target: { value: "public" },
     });
+    expect(screen.queryByTestId("list-editor")).toBeNull();
+  });
 
-    // ─── Status Display ──────────────────────────────────────────────────
-
-    describe('status display', () => {
-        it('shows "审核中" badge when status is pending', async () => {
-            GetVEStatusMock.mockResolvedValue({
-                registered: true,
-                employee: { name: 'VE1', skill_description: 'skill', access_policy: 'public', status: 'pending' },
-            });
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            await waitFor(() => {
-                expect(screen.getByTestId('ve-status-badge').textContent).toBe('审核中');
-            });
-        });
-
-        it('shows "已激活" badge when status is active', async () => {
-            GetVEStatusMock.mockResolvedValue({
-                registered: true,
-                employee: { name: 'VE1', skill_description: 'skill', access_policy: 'public', status: 'active' },
-            });
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            await waitFor(() => {
-                expect(screen.getByTestId('ve-status-badge').textContent).toBe('已激活');
-            });
-        });
-
-        it('shows "已禁用" badge when status is disabled', async () => {
-            GetVEStatusMock.mockResolvedValue({
-                registered: true,
-                employee: { name: 'VE1', skill_description: 'skill', access_policy: 'public', status: 'disabled' },
-            });
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            await waitFor(() => {
-                expect(screen.getByTestId('ve-status-badge').textContent).toBe('已禁用');
-            });
-        });
-
-        it('shows "已拒绝" badge when status is rejected', async () => {
-            GetVEStatusMock.mockResolvedValue({
-                registered: true,
-                employee: { name: 'VE1', skill_description: 'skill', access_policy: 'public', status: 'rejected' },
-            });
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            await waitFor(() => {
-                expect(screen.getByTestId('ve-status-badge').textContent).toBe('已拒绝');
-            });
-        });
-
-        it('does not show status badge when not registered', () => {
-            GetVEStatusMock.mockResolvedValue({ registered: false });
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            expect(screen.queryByTestId('ve-status-badge')).toBeNull();
-        });
+  it("registers a digital employee with selected policy and list values", async () => {
+    RegisterVirtualEmployeeMock.mockResolvedValue(undefined);
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    fireEvent.change(screen.getByLabelText("\u540d\u79f0"), {
+      target: { value: "My Digital Employee" },
     });
-
-    // ─── Registration / Update Submission ────────────────────────────────
-
-    describe('form submission', () => {
-        it('calls RegisterVirtualEmployee with correct args on first registration', async () => {
-            GetVEStatusMock.mockResolvedValue({ registered: false });
-            RegisterVirtualEmployeeMock.mockResolvedValue(undefined);
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'My VE' } });
-            fireEvent.change(screen.getByLabelText('技能描述'), { target: { value: 'AI assistant' } });
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'public' } });
-
-            fireEvent.click(screen.getByTestId('ve-submit-btn'));
-
-            await waitFor(() => {
-                expect(RegisterVirtualEmployeeMock).toHaveBeenCalledWith('My VE', 'AI assistant', 'public', []);
-            });
-        });
-
-        it('calls UpdateVESettings when already registered', async () => {
-            GetVEStatusMock.mockResolvedValue({
-                registered: true,
-                employee: { name: 'Old Name', skill_description: 'old skill', access_policy: 'public', status: 'active' },
-            });
-            UpdateVESettingsMock.mockResolvedValue(undefined);
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            await waitFor(() => {
-                expect(screen.getByTestId('ve-status-badge')).toBeTruthy();
-            });
-
-            // Update name
-            fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'New Name' } });
-            fireEvent.click(screen.getByTestId('ve-submit-btn'));
-
-            await waitFor(() => {
-                expect(UpdateVESettingsMock).toHaveBeenCalledWith('New Name', 'old skill', 'public', []);
-            });
-        });
-
-        it('passes whitelist array when policy is whitelist', async () => {
-            GetVEStatusMock.mockResolvedValue({ registered: false });
-            RegisterVirtualEmployeeMock.mockResolvedValue(undefined);
-
-            render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
-
-            fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'VE' } });
-            fireEvent.change(screen.getByLabelText('技能描述'), { target: { value: 'skill' } });
-            fireEvent.change(screen.getByLabelText('访问策略'), { target: { value: 'whitelist' } });
-
-            // Add whitelist items
-            const input = screen.getByTestId('list-input');
-            fireEvent.change(input, { target: { value: 'user-a' } });
-            fireEvent.click(screen.getByTestId('list-add-btn'));
-            fireEvent.change(input, { target: { value: 'user-b' } });
-            fireEvent.click(screen.getByTestId('list-add-btn'));
-
-            fireEvent.click(screen.getByTestId('ve-submit-btn'));
-
-            await waitFor(() => {
-                expect(RegisterVirtualEmployeeMock).toHaveBeenCalledWith('VE', 'skill', 'whitelist', ['user-a', 'user-b']);
-            });
-        });
+    fireEvent.change(screen.getByLabelText("\u6280\u80fd\u63cf\u8ff0"), {
+      target: { value: "AI assistant" },
     });
+    fireEvent.change(screen.getByLabelText("\u8bbf\u95ee\u7b56\u7565"), {
+      target: { value: "whitelist" },
+    });
+    fireEvent.change(screen.getByTestId("list-input"), {
+      target: { value: "user-a" },
+    });
+    fireEvent.click(screen.getByTestId("list-add-btn"));
+    fireEvent.click(screen.getByTestId("ve-submit-btn"));
+    await waitFor(() => {
+      expect(RegisterVirtualEmployeeMock).toHaveBeenCalledWith(
+        "My Digital Employee",
+        "AI assistant",
+        "whitelist",
+        ["user-a"],
+      );
+    });
+  });
+
+  it("loads existing whitelist and preserves it when updating", async () => {
+    GetVEStatusMock.mockResolvedValue({
+      registered: true,
+      employee: {
+        name: "Existing Name",
+        skill_description: "existing skill",
+        access_policy: "whitelist",
+        whitelist: ["user-a", "user-b"],
+        blacklist: ["blocked-user"],
+        status: "active",
+      },
+    });
+    UpdateVESettingsMock.mockResolvedValue(undefined);
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+
+    await waitFor(() => expect(screen.getByText("user-a")).toBeTruthy());
+    expect(screen.getByText("user-b")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("ve-submit-btn"));
+    await waitFor(() => {
+      expect(UpdateVESettingsMock).toHaveBeenCalledWith(
+        "Existing Name",
+        "existing skill",
+        "whitelist",
+        ["user-a", "user-b"],
+      );
+    });
+  });
+
+  it("updates settings when already registered", async () => {
+    GetVEStatusMock.mockResolvedValue({
+      registered: true,
+      employee: {
+        name: "Old Name",
+        skill_description: "old skill",
+        access_policy: "public",
+        status: "active",
+      },
+    });
+    UpdateVESettingsMock.mockResolvedValue(undefined);
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-status-badge").textContent).toBe(
+        "\u5df2\u6fc0\u6d3b",
+      ),
+    );
+    fireEvent.change(screen.getByLabelText("\u540d\u79f0"), {
+      target: { value: "New Name" },
+    });
+    fireEvent.click(screen.getByTestId("ve-submit-btn"));
+    await waitFor(() => {
+      expect(UpdateVESettingsMock).toHaveBeenCalledWith(
+        "New Name",
+        "old skill",
+        "public",
+        [],
+      );
+    });
+  });
+
+  it("clears stale registration fields when backend reports unregistered", async () => {
+    GetVEStatusMock.mockResolvedValueOnce({
+      registered: true,
+      employee: {
+        name: "Old Name",
+        skill_description: "old skill",
+        access_policy: "public",
+        status: "active",
+      },
+    }).mockResolvedValueOnce({ registered: false });
+
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect((screen.getByLabelText("\u540d\u79f0") as HTMLInputElement).value).toBe("Old Name"),
+    );
+
+    fireEvent.change(screen.getByLabelText("\u540d\u79f0"), {
+      target: { value: "Edited stale name" },
+    });
+    fireEvent.click(screen.getByTestId("ve-submit-btn"));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("\u540d\u79f0") as HTMLInputElement).value).toBe(""),
+    );
+    expect((screen.getByLabelText("\u8bbf\u95ee\u7b56\u7565") as HTMLSelectElement).value).toBe("");
+  });
+
+  it("clears stale registration fields when status refresh fails", async () => {
+    GetVEStatusMock.mockResolvedValueOnce({
+      registered: true,
+      employee: {
+        name: "Old Name",
+        skill_description: "old skill",
+        access_policy: "public",
+        status: "active",
+      },
+    }).mockRejectedValueOnce(new Error("hub unavailable"));
+
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect((screen.getByLabelText("\u540d\u79f0") as HTMLInputElement).value).toBe("Old Name"),
+    );
+
+    fireEvent.click(screen.getByTestId("ve-submit-btn"));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("\u540d\u79f0") as HTMLInputElement).value).toBe(""),
+    );
+    expect(screen.queryByTestId("ve-status-badge")).toBeNull();
+  });
+
+  it("refreshes status when disabled event arrives", async () => {
+    const handlers = new Map<string, () => void>();
+    (EventsOn as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+      (event: string, handler: () => void) => {
+        handlers.set(event, handler);
+        return vi.fn();
+      },
+    );
+    GetVEStatusMock.mockResolvedValueOnce({
+      registered: true,
+      employee: {
+        name: "Old Name",
+        skill_description: "old skill",
+        access_policy: "public",
+        status: "active",
+      },
+    }).mockResolvedValueOnce({
+      registered: true,
+      employee: {
+        name: "Old Name",
+        skill_description: "old skill",
+        access_policy: "public",
+        status: "disabled",
+      },
+    });
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-status-badge").textContent).toBe(
+        "\u5df2\u6fc0\u6d3b",
+      ),
+    );
+    handlers.get("ve:disabled")?.();
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-status-badge").textContent).toBe(
+        "\u5df2\u7981\u7528",
+      ),
+    );
+  });
+  it("keeps sensitive query policy editable while registration is pending", async () => {
+    GetVEStatusMock.mockResolvedValue({
+      registered: true,
+      employee: {
+        name: "Pending Name",
+        skill_description: "pending skill",
+        access_policy: "public",
+        status: "pending",
+      },
+    });
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-status-badge").textContent).toBe(
+        "\u5ba1\u6838\u4e2d",
+      ),
+    );
+    const sensitiveSelect = screen.getByLabelText(
+      "\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2",
+    ) as HTMLSelectElement;
+    expect(sensitiveSelect.disabled).toBe(false);
+  });
+
+  it("loads and saves sensitive query policy", async () => {
+    GetDigitalEmployeeSensitiveQueryPolicyMock.mockResolvedValue("deny");
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    const select = (await screen.findByLabelText(
+      "\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("deny"));
+    fireEvent.change(select, { target: { value: "allow" } });
+    await waitFor(() =>
+      expect(SaveDigitalEmployeeSensitiveQueryPolicyMock).toHaveBeenCalledWith(
+        "allow",
+      ),
+    );
+  });
+
+  it("normalizes sensitive query policy loaded from backend", async () => {
+    GetDigitalEmployeeSensitiveQueryPolicyMock.mockResolvedValue(" ALLOW ");
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    const select = (await screen.findByLabelText(
+      "\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("allow"));
+  });
 });

@@ -883,7 +883,21 @@ func (cm *ConversationMemory) loadFromDisk() error {
 		return err
 	}
 	needsRewrite := legacyNeedsRewrite
+	now := time.Now()
+	const projectTabSessionMaxAge = 30 * 24 * time.Hour
 	for userID, session := range snapshot.Sessions {
+		// T18: Skip project tab sessions that haven't been accessed in 30 days.
+		// Project tab sessions have userID format "desktop-user:{path}" (contains
+		// a colon after the "desktop-user" prefix, distinguishing them from the
+		// plain "desktop-user" local session).
+		if strings.HasPrefix(userID, "desktop-user:") && len(userID) > len("desktop-user:") {
+			if !session.LastAccess.IsZero() && now.Sub(session.LastAccess) > projectTabSessionMaxAge {
+				log.Printf("[ConversationMemory] evicting stale project tab session user=%s (last_access=%v, age=%v)",
+					userID, session.LastAccess, now.Sub(session.LastAccess))
+				needsRewrite = true
+				continue
+			}
+		}
 		entries := make([]ConversationEntry, len(session.Entries))
 		copy(entries, session.Entries)
 

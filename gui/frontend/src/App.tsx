@@ -5,9 +5,9 @@ import appIcon from './assets/images/maclaw2.png';
 import qianxinIcon from './assets/images/qianxin.png';
 import lobsterOffline from './assets/images/lobster_offline.svg';
 import lobsterHalf from './assets/images/lobster_half.svg';
-import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, AgentNetIsRunning, AgentNetEnsureDaemonWithDownload, AgentNetStopDaemon, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest } from "../wailsjs/go/main/App";
+import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalled, LoadConfig, SaveConfig, CheckEnvironment, ResizeWindow, LaunchTool, SelectProjectDir, SetLanguage, GetUserHomeDir, ReadBBS, ReadTutorial, ReadThanks, ListPythonEnvironments, PackLog, ShowItemInFolder, GetSystemInfo, OpenSystemUrl, DownloadUpdate, CancelDownload, LaunchInstallerAndExit, ListSkills, ListSkillsWithInstallStatus, DeleteSkill, GetEnvCheckInterval, ShouldCheckEnvironment, UpdateLastEnvCheckTime, IsWindowsTerminalAvailable, ListRemoteHubs, ListToolProviders, PingMaclawLLM, GetQQBotStatus, GetTelegramStatus, GetWeixinStatus, GetWeixinLocalMode, GetQQBotLocalMode, GetTelegramLocalMode, GetLansengerStatus, GetLansengerLocalMode, GetThirdPartyGatewayStatus, GetThirdPartyGatewayLocalMode, IsGossipAllowed, GetBrandInfo, GetUIZoomFactor, GetChatFontSize, ListBackgroundLoops, GetAllLLMTokenUsage, GetMaclawLLMProviders, GetHubLLMServiceStatus, GroupDiscussionStatus, GroupDiscussionPublishProfile, GroupDiscussionProcessPendingInvites, GroupDiscussionAcceptInvite, GroupDiscussionRejectInvite, SearchProjects, CreateRecentTask, ResumeProject, RenameTask, PinTask, HideTask, GetDigitalEmployeeFeatureStatus, RespondDigitalEmployeeSensitiveRequest } from "../wailsjs/go/main/App";
 
-import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
+import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
@@ -21,8 +21,6 @@ import { ASRConfigPanel } from './components/remote/ASRConfigPanel';
 import { TTSConfigPanel } from './components/remote/TTSConfigPanel';
 import { useAudioDevices } from './components/ai/useAudioDevices';
 import { MemoryManagementPanel } from './components/remote/MemoryManagementPanel';
-import { AgentNetPanel } from './components/remote/AgentNetPanel';
-import { AgentNetTabContainer } from './components/remote/AgentNetTabContainer';
 import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
@@ -103,7 +101,14 @@ function App() {
         let debounceTimer: ReturnType<typeof setTimeout> | null = null;
         const syncMaximized = () => {
             if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => { WindowIsMaximised().then(setWindowMaximized); }, 150);
+            debounceTimer = setTimeout(() => {
+                // Window state is a 3-state enum: normal | maximised | fullscreen.
+                // The title bar restore button should show "restore" icon when the
+                // window is in ANY non-normal state (maximised OR fullscreen).
+                Promise.all([WindowIsMaximised(), WindowIsFullscreen()]).then(
+                    ([isMax, isFs]) => setWindowMaximized(isMax || isFs)
+                );
+            }, 150);
         };
         window.addEventListener('resize', syncMaximized);
         return () => {
@@ -122,15 +127,17 @@ function App() {
     const [refreshKey, setRefreshKey] = useState<number>(0);
     const [activeTool, setActiveTool] = useState<string>("claude");
     const [codexConfigUpdateCount, setCodexConfigUpdateCount] = useState(0);
-    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(240);
+    const [recentTasksPaneWidth, setRecentTasksPaneWidth] = useState(260);
     const [isRecentTasksResizing, setIsRecentTasksResizing] = useState(false);
     const recentTasksResizeStartX = useRef(0);
-    const recentTasksResizeStartWidth = useRef(240);
+    const recentTasksResizeStartWidth = useRef(380);
     const [toolDropdownOpen, setToolDropdownOpen] = useState(false);
     const [taskContextMenu, setTaskContextMenu] = useState<{ x: number; y: number; projectPath: string; name: string; pinned: boolean } | null>(null);
     const [renamingTaskPath, setRenamingTaskPath] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
     const [recentProjects, setRecentProjects] = useState<Array<{ id?: string; name?: string; project_path: string; workflow_type?: string; preview?: string; last_activity?: string; pinned?: boolean }>>([]);
+    const recentProjectsRef = useRef(recentProjects);
+    recentProjectsRef.current = recentProjects;
     const [status, setStatus] = useState("");
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
@@ -167,6 +174,7 @@ function App() {
     const [chatFontSize, setChatFontSize] = useState<number>(14);
     const [pendingVEOpen, setPendingVEOpen] = useState<VirtualEmployeeEntry | null>(null);
     const [pendingHistoryDiscussionOpen, setPendingHistoryDiscussionOpen] = useState<HistoryDiscussionSummary | null>(null);
+    const [pendingProjectTabOpen, setPendingProjectTabOpen] = useState<{ projectPath: string; taskTitle: string; initialMessage?: string; autoSend?: boolean } | null>(null);
 
     // --- Favorite Employees state ---
     const [favoriteEmployeeIds, setFavoriteEmployeeIds] = useState<string[]>([]);
@@ -206,6 +214,11 @@ function App() {
         };
     }, [config?.remote_hub_url, config?.remote_machine_id]);
 
+    const refreshDigitalEmployeeFeatureStatus = useCallback(() => {
+        return GetDigitalEmployeeFeatureStatus()
+            .then((status: any) => setDigitalEmployeeFeatureStatus(status || { visible: false }))
+            .catch(() => setDigitalEmployeeFeatureStatus({ visible: false, reason: 'unavailable' }));
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -215,15 +228,58 @@ function App() {
                 .catch(() => { if (!cancelled) setDigitalEmployeeFeatureStatus({ visible: false, reason: 'unavailable' }); });
         };
         refresh();
-        EventsOn("digital-employee-authorization-changed", refresh);
+        const subscriptions = [
+            ["digital-employee-authorization-changed", EventsOn("digital-employee-authorization-changed", refresh)] as const,
+            ["ve:status_change", EventsOn("ve:status_change", refresh)] as const,
+            ["ve:list_update", EventsOn("ve:list_update", refresh)] as const,
+            ["ve:approved", EventsOn("ve:approved", refresh)] as const,
+            ["ve:rejected", EventsOn("ve:rejected", refresh)] as const,
+            ["ve:disabled", EventsOn("ve:disabled", refresh)] as const,
+        ];
         return () => {
             cancelled = true;
-            EventsOff("digital-employee-authorization-changed");
+            subscriptions.forEach(([name, unsubscribe]) => {
+                if (typeof unsubscribe === "function") unsubscribe();
+                else EventsOff(name);
+            });
         };
     }, [config?.remote_hub_url, config?.remote_machine_id, veList.length]);
-    // VE authorized = active HubCenter subscription + at least one actual digital employee
-    const veAuthorized = !!digitalEmployeeFeatureStatus?.visible;
 
+    useEffect(() => {
+        let cancelled = false;
+        let timer: number | undefined;
+        const expiresAt = digitalEmployeeFeatureStatus?.authorization?.expires_at;
+        const schedule = () => {
+            if (!expiresAt) return;
+            const expiresAtMs = new Date(expiresAt).getTime();
+            if (!Number.isFinite(expiresAtMs)) return;
+            const remainingMs = expiresAtMs - Date.now();
+            if (remainingMs <= 0) {
+                void refreshDigitalEmployeeFeatureStatus();
+                return;
+            }
+            timer = window.setTimeout(() => {
+                if (cancelled) return;
+                if (new Date(expiresAt).getTime() <= Date.now()) {
+                    void refreshDigitalEmployeeFeatureStatus();
+                } else {
+                    schedule();
+                }
+            }, Math.min(remainingMs + 1000, 60 * 60 * 1000));
+        };
+        schedule();
+        return () => {
+            cancelled = true;
+            if (timer !== undefined) window.clearTimeout(timer);
+        };
+    }, [digitalEmployeeFeatureStatus?.authorization?.expires_at, refreshDigitalEmployeeFeatureStatus]);
+
+    // Middle panel tabs require active HubCenter authorization and an active local digital employee.
+    const veAuthorized = !!digitalEmployeeFeatureStatus?.visible;
+    const veSettingsAuthorized = !!digitalEmployeeFeatureStatus?.authorization?.active && Number(digitalEmployeeFeatureStatus?.authorization?.quota || 0) > 0;
+    useEffect(() => {
+        if (!veSettingsAuthorized && settingsTab === 'virtualEmployee') setSettingsTab('general');
+    }, [veSettingsAuthorized, settingsTab]);
     // Resolve favorite IDs to display slots
     const favoriteEmployeeSlots = useMemo(() => {
         return favoriteEmployeeIds.map(id => {
@@ -244,7 +300,7 @@ function App() {
 
     const handleSetFavoriteEmployee = useCallback((ve: VirtualEmployeeEntry) => {
         if (favoriteEmployeeIds.includes(ve.id)) return;
-        if (favoriteEmployeeIds.length < 5) {
+        if (favoriteEmployeeIds.length < 6) {
             updateFavoriteEmployees([...favoriteEmployeeIds, ve.id]);
         } else {
             setShowFavReplacePicker({ ve });
@@ -277,7 +333,7 @@ function App() {
         }
     }, [veList]);
 
-    const updateSidebarNavVisibility = useCallback((key: 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet', visible: boolean) => {
+    const updateSidebarNavVisibility = useCallback((key: 'show_nav_mcp' | 'show_nav_gossip', visible: boolean) => {
         if (!config) return;
         const newConfig = new main.AppConfig({ ...config, [key]: visible } as any);
         setConfig(newConfig);
@@ -305,18 +361,13 @@ function App() {
     const brandDisplayTitle = brandInfo ? `${brandInfo.displayNameCN} ${brandInfo.displayName}` : '\u7801\u5361\u9f99 MaClaw';
     const brandSidebarName = brandInfo?.displayName || 'MaClaw';
     const isTigerClawBrand = brandInfo?.id === 'qianxin';
-    const agentNetAllowedForBrand = brandInfoLoaded && !isTigerClawBrand;
-
+    
     // MaClaw LLM online status (lobster indicator)
     const [maclawLLMOnline, setMaclawLLMOnline] = useState<boolean>(false);
     const [maclawLLMConfigured, setMaclawLLMConfigured] = useState<boolean>(false);
     const [sidebarCurrentProviderTokenUsage, setSidebarCurrentProviderTokenUsage] = useState<{ provider: string; isHubService: boolean; input: number; output: number; total: number }>({ provider: '', isHubService: false, input: 0, output: 0, total: 0 });
     const [sidebarHubCredits, setSidebarHubCredits] = useState<SidebarHubCredits | null>(null);
-    const maclawLLMFirstPingDone = useRef(false);
-
-    // AgentNet P2P network running status (globe indicator)
-    const [agentNetRunning, setAgentNetRunning] = useState<boolean>(false);
-    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
+    const maclawLLMFirstPingDone = useRef(false);    const maclawLLMFirstPingResult = useRef<{online: boolean; configured: boolean} | null>(null);
 
     useEffect(() => {
         // activeTab 0 is Original (hidden), so configurable models start at 1.
@@ -594,11 +645,22 @@ function App() {
         WindowHide();
     };
 
-    const handleWindowMaximizeToggle = (e: React.MouseEvent) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setWindowMaximized(m => !m); // optimistic update for instant icon feedback
-        WindowToggleMaximise();
+    const handleWindowMaximizeToggle = (e?: React.MouseEvent) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        // If the AI panel is in fullscreen mode, WindowToggleMaximise won't
+        // work — must exit fullscreen first.  Use the tracked React state
+        // (aiPanelMaximized) to avoid an async round-trip on every click.
+        if (aiPanelMaximized) {
+            WindowUnfullscreen();
+            setAiPanelMaximized(false);
+            setWindowMaximized(false);
+        } else {
+            setWindowMaximized(m => !m); // optimistic update for instant icon feedback
+            WindowToggleMaximise();
+        }
     };
 
     const handleRecentTasksResizeStart = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -613,7 +675,7 @@ function App() {
         if (!isRecentTasksResizing) return;
         const handleMove = (event: MouseEvent) => {
             const nextWidth = recentTasksResizeStartWidth.current + event.clientX - recentTasksResizeStartX.current;
-            setRecentTasksPaneWidth(Math.min(380, Math.max(180, nextWidth)));
+            setRecentTasksPaneWidth(Math.min(460, Math.max(180, nextWidth)));
         };
         const handleUp = () => setIsRecentTasksResizing(false);
         window.addEventListener('mousemove', handleMove);
@@ -996,98 +1058,6 @@ function App() {
         };
     }, [brandInfoLoaded, isTigerClawBrand]);
 
-    // Poll AgentNet running status so the globe indicator lights up without
-    // requiring the user to visit the settings panel first.
-    // When the settings tab is active, AgentNetPanel also polls 鈥?but the
-    // lightweight AgentNetIsRunning() call is idempotent, so the overlap is
-    // harmless and keeps the globe indicator responsive on tab switches.
-    // NOTE: Only poll when agentnet_enabled 鈥?if disabled, report as not running.
-    const agentNetAutoStarted = useRef(false);
-    const agentNetPrevUp = useRef(false);
-    const agentNetEnabledRef = useRef(!!config?.agentnet_enabled);
-    useEffect(() => { agentNetEnabledRef.current = !!config?.agentnet_enabled && agentNetAllowedForBrand; }, [config?.agentnet_enabled, agentNetAllowedForBrand]);
-    useEffect(() => {
-        let retryTimer: ReturnType<typeof setTimeout> | null = null;
-        const clearRetry = () => {
-            if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
-        };
-        const checkAgentNet = () => {
-            clearRetry();
-            // When AgentNet is disabled in config, don't report as running
-            // even if a residual daemon process happens to be alive.
-            if (!agentNetEnabledRef.current) {
-                agentNetPrevUp.current = false;
-                setAgentNetRunning(false);
-                return;
-            }
-            AgentNetIsRunning().then(up => {
-                if (!up && agentNetPrevUp.current) {
-                    // Was online, now looks offline 鈥?quick retry in 2s to
-                    // avoid flashing the icon gray on a transient hiccup.
-                    retryTimer = setTimeout(() => {
-                        retryTimer = null;
-                        AgentNetIsRunning()
-                            .then(up2 => {
-                                agentNetPrevUp.current = up2;
-                                setAgentNetRunning(up2);
-                            })
-                            .catch(() => {
-                                agentNetPrevUp.current = false;
-                                setAgentNetRunning(false);
-                            });
-                    }, 2000);
-                } else {
-                    agentNetPrevUp.current = up;
-                    setAgentNetRunning(up);
-                }
-            }).catch(() => {
-                agentNetPrevUp.current = false;
-                setAgentNetRunning(false);
-            });
-        };
-        checkAgentNet();
-        const timer = setInterval(checkAgentNet, 5000);
-        return () => { clearInterval(timer); clearRetry(); };
-    }, []);
-
-    // Auto-start AgentNet daemon when enabled in config, so the user doesn't
-    // have to visit the settings panel to light up the globe icon.
-    // When disabled, actively stop any residual daemon.
-    useEffect(() => {
-        // Skip when config hasn't loaded yet 鈥?don't kill a daemon before
-        // we know the user's preference.
-        if (!config || !brandInfoLoaded) return;
-        if (isTigerClawBrand) {
-            agentNetAutoStarted.current = false;
-            agentNetPrevUp.current = false;
-            setAgentNetRunning(false);
-            return;
-        }
-        if (!config.agentnet_enabled) {
-            agentNetAutoStarted.current = false;
-            // Disabled 鈥?stop residual daemon if it's still running.
-            AgentNetIsRunning().then(up => {
-                if (up) {
-                    AgentNetStopDaemon().catch(() => {});
-                }
-            }).catch(() => {});
-            setAgentNetRunning(false);
-            return;
-        }
-        if (agentNetAutoStarted.current) return;
-        agentNetAutoStarted.current = true;
-        AgentNetIsRunning().then(up => {
-            if (!up) {
-                AgentNetEnsureDaemonWithDownload()
-                    .then(() => AgentNetIsRunning())
-                    .then(up2 => setAgentNetRunning(up2))
-                    .catch(() => {});
-            } else {
-                setAgentNetRunning(true);
-            }
-        }).catch(() => {});
-    }, [config?.agentnet_enabled, brandInfoLoaded, isTigerClawBrand]);
-
     // Poll MaClaw LLM status every 60 seconds.
     // Also re-ping immediately when the user navigates to/from the LLM settings
     // tab (settingsTab changes), which covers the "just saved config" scenario.
@@ -1152,12 +1122,7 @@ function App() {
     };
 
     const switchTool = (tool: string) => {
-        if (isTigerClawBrand && tool === 'agentnet') {
-            setNavTab('ai');
-            setToolDropdownOpen(false);
-            return;
-        }
-        setNavTab(tool);
+                setNavTab(tool);
         setToolDropdownOpen(false);
         if (isToolTab(tool)) {
             setActiveTool(tool);
@@ -1197,10 +1162,7 @@ function App() {
     };
 
     useEffect(() => {
-        if (isTigerClawBrand && navTab === 'agentnet') {
-            setNavTab('ai');
-        }
-        const visibleSettingsTabs = getSettingsTabOptions(lang, { hideAgentNet: isTigerClawBrand });
+                const visibleSettingsTabs = getSettingsTabOptions(lang, {});
         if (!visibleSettingsTabs.some((tab) => tab.id === settingsTab)) {
             setSettingsTab('general');
         }
@@ -1473,15 +1435,22 @@ function App() {
 
     const resumeRecentProject = useCallback(async (projectPath: string) => {
         try {
-            const msg = await ResumeProject(projectPath);
-            if (msg) {
-                switchTool('ai');
-                await aiAssistant.sendMessage(msg);
-            }
+            switchTool('ai');
+            // Find the task title from recentProjects for the tab label
+            const proj = recentProjectsRef.current.find(p => p.project_path === projectPath);
+            const title = proj?.name || projectPath.split(/[\\/]/).pop() || projectPath;
+            // Open (or activate) the project tab. If the tab is new, autoSend
+            // sends the task title as the first message. If the tab already has
+            // conversation history (duplicate), it just activates without sending.
+            setPendingProjectTabOpen({
+                projectPath,
+                taskTitle: title,
+                autoSend: true,
+            });
         } catch (error) {
-            console.error("ResumeProject failed:", error);
+            console.error("resumeRecentProject failed:", error);
         }
-    }, [aiAssistant]);
+    }, [switchTool]);
 
     const createRecentTask = useCallback(async (name: string) => {
         const taskName = name.trim();
@@ -1495,13 +1464,16 @@ function App() {
                 return;
             }
             switchTool('ai');
-            await aiAssistant.sendMessage('/clear');
-            await aiAssistant.sendMessage(created.name || taskName);
+            setPendingProjectTabOpen({
+                projectPath: created.project_path,
+                taskTitle: created.name || taskName,
+                autoSend: true,
+            });
             refreshRecentProjects();
         } catch (error) {
             console.error("CreateRecentTask failed:", error);
         }
-    }, [aiAssistant, refreshRecentProjects, switchTool]);
+    }, [refreshRecentProjects, switchTool]);
 
     useEffect(() => {
         let cancelled = false;
@@ -2371,7 +2343,7 @@ ${instruction}`;
         : null;
 
     const currentProject = getCurrentProject();
-    const settingsTabOptions = getSettingsTabOptions(lang, { hideAgentNet: isTigerClawBrand });
+    const settingsTabOptions = getSettingsTabOptions(lang, { hideVirtualEmployee: !veSettingsAuthorized });
     const isRemoteCapableActiveTool = remoteToolMetadata.some(
         (meta) => meta.name === activeTool && meta.supports_remote === true
     );
@@ -2396,7 +2368,6 @@ ${instruction}`;
                 switchTool={switchTool}
                 lang={lang}
                 maclawLLMOnline={maclawLLMOnline}
-                agentNetRunning={agentNetRunning}
                 showLansenger={isTigerClawBrand}
                 remoteActivationStatus={remoteActivationStatus}
                 qqBotStatus={qqBotStatus}
@@ -2440,8 +2411,8 @@ ${instruction}`;
                 codingAgentTurnSnapshot={codingAgentTurnSnapshot}
                 handleRecentTasksResizeStart={handleRecentTasksResizeStart}
                 isRecentTasksResizing={isRecentTasksResizing}
-                onOpenVEConversation={(ve) => setPendingVEOpen(ve)}
-                onOpenHistoryDiscussion={(discussion) => setPendingHistoryDiscussionOpen(discussion)}
+                onOpenVEConversation={(ve) => { switchTool('ai'); setPendingVEOpen(ve); }}
+                onOpenHistoryDiscussion={(discussion) => { switchTool('ai'); setPendingHistoryDiscussionOpen(discussion); }}
                 favoriteEmployees={favoriteEmployeeSlots}
                 veAuthorized={veAuthorized}
                 digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
@@ -2463,6 +2434,10 @@ ${instruction}`;
                             audioOutputDeviceId={(config as any)?.audio_output_device_id || ''}
                             pendingVEOpen={pendingVEOpen}
                             onPendingVEOpenHandled={() => setPendingVEOpen(null)}
+                            pendingHistoryDiscussionOpen={pendingHistoryDiscussionOpen}
+                            onPendingHistoryDiscussionOpenHandled={() => setPendingHistoryDiscussionOpen(null)}
+                            pendingProjectTabOpen={pendingProjectTabOpen}
+                            onPendingProjectTabOpenHandled={() => setPendingProjectTabOpen(null)}
                             state={{
                                 ...aiAssistant.panelState,
                                 selectedFilePath: aiAssistant.selectedFilePaths?.[0] ?? "",
@@ -2660,15 +2635,6 @@ ${instruction}`;
                             </div>
 
 
-                            {!isTigerClawBrand && <div className="settings-panel" style={{ display: settingsTab === 'agentnet' ? 'block' : 'none' }}>
-                                <AgentNetPanel
-                                    lang={lang}
-                                    config={config}
-                                    saveRemoteConfigField={saveRemoteConfigField}
-                                    onRunningChange={setAgentNetRunning}
-                                />
-                            </div>}
-
                             <IMSettingsPanel
                                 settingsTab={settingsTab}
                                 config={config}
@@ -2716,17 +2682,19 @@ ${instruction}`;
                                 <SecurityPolicyPanel config={config} saveRemoteConfigField={saveRemoteConfigField} lang={lang} />
                             </div>
 
-                            {veAuthorized && (
+                            {veSettingsAuthorized && (
                                 <div className="settings-panel" style={{ display: settingsTab === 'virtualEmployee' ? 'block' : 'none' }}>
-                                    <FavoriteEmployeeSettingsPanel
-                                        favoriteEmployeeIds={favoriteEmployeeIds}
-                                        veList={veList}
-                                        onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' })}
-                                        onRemove={handleRemoveFavoriteEmployee}
-                                        onReorder={handleReorderFavorites}
-                                        lang={lang}
-                                    />
-                                    <div style={{ marginTop: '24px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
+                                    <div style={{ maxWidth: '600px', margin: '0 auto' }}>
+                                        <FavoriteEmployeeSettingsPanel
+                                            favoriteEmployeeIds={favoriteEmployeeIds}
+                                            veList={veList}
+                                            onAdd={(veId) => handleSetFavoriteEmployee(veList.find(v => v.id === veId) || { id: veId, name: veId, skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' })}
+                                            onRemove={handleRemoveFavoriteEmployee}
+                                            onReorder={handleReorderFavorites}
+                                            lang={lang}
+                                        />
+                                    </div>
+                                    <div style={{ maxWidth: '600px', margin: '24px auto 0', borderTop: '1px solid var(--theme-border)', paddingTop: '16px' }}>
                                         <VirtualEmployeeSettingsPanel remoteMachineId={config?.remote_machine_id || ''} lang={lang} />
                                     </div>
                                 </div>
@@ -2753,7 +2721,6 @@ ${instruction}`;
                                     chatFontSize={chatFontSize}
                                     setChatFontSize={setChatFontSize}
                                     gossipAllowed={gossipAllowed}
-                                    hideAgentNet={isTigerClawBrand}
                                     updateSidebarNavVisibility={updateSidebarNavVisibility}
                                 />
                             </div>
@@ -2780,10 +2747,6 @@ ${instruction}`;
                                 />
                             </div>
                         </div>
-                    )}
-
-                    {!isTigerClawBrand && navTab === 'agentnet' && (
-                        <AgentNetTabContainer lang={lang} agentNetRunning={agentNetRunning} />
                     )}
 
                     {navTab === 'about' && (
@@ -3316,8 +3279,6 @@ ${instruction}`;
                     maclawLLMOnline={maclawLLMOnline}
                     maclawLLMConfigured={maclawLLMConfigured}
                     remoteActivated={!!remoteActivationStatus?.activated}
-                    agentNetRunning={agentNetRunning}
-                    hideAgentNet={isTigerClawBrand}
                     showLansenger={isTigerClawBrand}
                     navTab={navTab}
                     settingsTab={settingsTab}

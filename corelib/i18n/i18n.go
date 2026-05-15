@@ -1,4 +1,4 @@
-// Package i18n provides lightweight internationalisation for user-facing
+﻿// Package i18n provides lightweight internationalisation for user-facing
 // progress and status messages across IM channels (WeChat, Telegram, QQ, Feishu).
 //
 // Usage:
@@ -51,7 +51,6 @@ const (
 	MsgTUITabSessions                     = "msg.tui_tab_sessions"
 	MsgTUITabTools                        = "msg.tui_tab_tools"
 	MsgTUITabSchedule                     = "msg.tui_tab_schedule"
-	MsgTUITabAgentNet                     = "msg.tui_tab_agentnet"
 	MsgTUITabConfig                       = "msg.tui_tab_config"
 	MsgTUITabChat                         = "msg.tui_tab_chat"
 	MsgTUIInitializing                    = "msg.tui_initializing"
@@ -143,7 +142,6 @@ const (
 	MsgTUIHelpSectionSessions             = "msg.tui_help_section_sessions"
 	MsgTUIHelpSectionScheduledTasks       = "msg.tui_help_section_scheduled_tasks"
 	MsgTUIHelpSectionConfig               = "msg.tui_help_section_config"
-	MsgTUIHelpSectionAgentNet             = "msg.tui_help_section_agentnet"
 	MsgTUIHelpSectionSessionDetail        = "msg.tui_help_section_session_detail"
 	MsgTUIHelpSectionAIAssistant          = "msg.tui_help_section_ai_assistant"
 	MsgTUIHelpDescNextTab                 = "msg.tui_help_desc_next_tab"
@@ -192,7 +190,6 @@ const (
 	MsgTUIConfigDescToken                 = "msg.tui_config_desc_token"
 	MsgTUIConfigDescDataDir               = "msg.tui_config_desc_data_dir"
 	MsgTUIConfigDescMaxIterations         = "msg.tui_config_desc_max_iterations"
-	MsgTUIConfigDescAgentNetEnabled       = "msg.tui_config_desc_agentnet_enabled"
 	MsgTUIConfigDescLLMProviderPreset     = "msg.tui_config_desc_llm_provider_preset"
 	MsgTUIConfigDescLLMURL                = "msg.tui_config_desc_llm_url"
 	MsgTUIConfigDescLLMKey                = "msg.tui_config_desc_llm_key"
@@ -254,30 +251,6 @@ const (
 	MsgTUIConfigDescDebugTools         = "msg.tui_config_desc_debug_tools"
 	MsgTUIConfigDescGossip             = "msg.tui_config_desc_gossip"
 	MsgTUIConfigDescTrialReflect       = "msg.tui_config_desc_trial_reflect"
-	MsgTUIAgentNetLoading              = "msg.tui_agentnet_loading"
-	MsgTUIAgentNetTabPeers             = "msg.tui_agentnet_tab_peers"
-	MsgTUIAgentNetTabTasks             = "msg.tui_agentnet_tab_tasks"
-	MsgTUIAgentNetTabStatus            = "msg.tui_agentnet_tab_status"
-	MsgTUIAgentNetNoPeers              = "msg.tui_agentnet_no_peers"
-	MsgTUIAgentNetNoTasks              = "msg.tui_agentnet_no_tasks"
-	MsgTUIAgentNetHeaderPeerID         = "msg.tui_agentnet_header_peer_id"
-	MsgTUIAgentNetHeaderAddr           = "msg.tui_agentnet_header_addr"
-	MsgTUIAgentNetHeaderLatency        = "msg.tui_agentnet_header_latency"
-	MsgTUIAgentNetHeaderCountry        = "msg.tui_agentnet_header_country"
-	MsgTUIAgentNetHeaderReward         = "msg.tui_agentnet_header_reward"
-	MsgTUIAgentNetFooterPeers          = "msg.tui_agentnet_footer_peers"
-	MsgTUIAgentNetFooterTasks          = "msg.tui_agentnet_footer_tasks"
-	MsgTUIAgentNetStatusTitle          = "msg.tui_agentnet_status_title"
-	MsgTUIAgentNetCreditsTitle         = "msg.tui_agentnet_credits_title"
-	MsgTUIAgentNetStatusPeerID         = "msg.tui_agentnet_status_peer_id"
-	MsgTUIAgentNetStatusPeers          = "msg.tui_agentnet_status_peers"
-	MsgTUIAgentNetStatusUnread         = "msg.tui_agentnet_status_unread"
-	MsgTUIAgentNetStatusVersion        = "msg.tui_agentnet_status_version"
-	MsgTUIAgentNetStatusUptime         = "msg.tui_agentnet_status_uptime"
-	MsgTUIAgentNetStatusBalance        = "msg.tui_agentnet_status_balance"
-	MsgTUIAgentNetStatusTier           = "msg.tui_agentnet_status_tier"
-	MsgTUIAgentNetStatusEnergy         = "msg.tui_agentnet_status_energy"
-	MsgTUIAgentNetFooterStatus         = "msg.tui_agentnet_footer_status"
 	MsgTUIAgentLoadConfigFailed        = "msg.tui_agent_load_config_failed"
 	MsgTUIAgentLLMCallFailed           = "msg.tui_agent_llm_call_failed"
 	MsgTUIAgentNoValidReply            = "msg.tui_agent_no_valid_reply"
@@ -342,7 +315,6 @@ var translations = map[string]map[string]string{
 		MsgTUITabSessions:                     "编程",
 		MsgTUITabTools:                        "工具",
 		MsgTUITabSchedule:                     "任务",
-		MsgTUITabAgentNet:                     "智网",
 		MsgTUITabConfig:                       "配置",
 		MsgTUITabChat:                         "聊天",
 		MsgTUIInitializing:                    "正在初始化...",
@@ -434,7 +406,6 @@ var translations = map[string]map[string]string{
 		MsgTUIHelpSectionSessions:             "编程",
 		MsgTUIHelpSectionScheduledTasks:       "任务",
 		MsgTUIHelpSectionConfig:               "配置",
-		MsgTUIHelpSectionAgentNet:             "智网",
 		MsgTUIHelpSectionSessionDetail:        "会话详情",
 		MsgTUIHelpSectionAIAssistant:          "AI 助手",
 		MsgTUIHelpDescNextTab:                 "下一个标签页",
@@ -483,7 +454,6 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescToken:                 "认证令牌",
 		MsgTUIConfigDescDataDir:               "数据目录",
 		MsgTUIConfigDescMaxIterations:         "Agent 最大迭代次数 (30-300)",
-		MsgTUIConfigDescAgentNetEnabled:       "启用 AgentNet",
 		MsgTUIConfigDescLLMProviderPreset:     "LLM 服务商预设",
 		MsgTUIConfigDescLLMURL:                "LLM API 地址",
 		MsgTUIConfigDescLLMKey:                "LLM API 密钥",
@@ -545,30 +515,6 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescDebugTools:         "调试工具调用",
 		MsgTUIConfigDescGossip:             "启用 Gossip",
 		MsgTUIConfigDescTrialReflect:       "启用试错反思",
-		MsgTUIAgentNetLoading:              "正在加载 AgentNet...",
-		MsgTUIAgentNetTabPeers:             "Peers",
-		MsgTUIAgentNetTabTasks:             "Tasks",
-		MsgTUIAgentNetTabStatus:            "Status",
-		MsgTUIAgentNetNoPeers:              "暂无已连接节点",
-		MsgTUIAgentNetNoTasks:              "暂无任务",
-		MsgTUIAgentNetHeaderPeerID:         "PEER ID",
-		MsgTUIAgentNetHeaderAddr:           "ADDR",
-		MsgTUIAgentNetHeaderLatency:        "LATENCY",
-		MsgTUIAgentNetHeaderCountry:        "COUNTRY",
-		MsgTUIAgentNetHeaderReward:         "REWARD",
-		MsgTUIAgentNetFooterPeers:          "共 %d 个节点  Up/Down:选择  r:刷新",
-		MsgTUIAgentNetFooterTasks:          "共 %d 个任务  Up/Down:选择  r:刷新",
-		MsgTUIAgentNetStatusTitle:          "AgentNet 状态",
-		MsgTUIAgentNetCreditsTitle:         "积分信息",
-		MsgTUIAgentNetStatusPeerID:         "PeerID",
-		MsgTUIAgentNetStatusPeers:          "Peers",
-		MsgTUIAgentNetStatusUnread:         "Unread",
-		MsgTUIAgentNetStatusVersion:        "Version",
-		MsgTUIAgentNetStatusUptime:         "Uptime",
-		MsgTUIAgentNetStatusBalance:        "Balance",
-		MsgTUIAgentNetStatusTier:           "Tier",
-		MsgTUIAgentNetStatusEnergy:         "Energy",
-		MsgTUIAgentNetFooterStatus:         "r:刷新  1:peers  2:tasks  3:status",
 		MsgTUIAgentLoadConfigFailed:        "加载 LLM 配置失败: %v",
 		MsgTUIAgentLLMCallFailed:           "LLM 调用失败: %v",
 		MsgTUIAgentNoValidReply:            "LLM 未返回有效回复",
@@ -621,7 +567,6 @@ var translations = map[string]map[string]string{
 		MsgTUITabSessions:                     "Coding",
 		MsgTUITabTools:                        "Tools",
 		MsgTUITabSchedule:                     "Tasks",
-		MsgTUITabAgentNet:                     "AgentNet",
 		MsgTUITabConfig:                       "Config",
 		MsgTUITabChat:                         "Chat",
 		MsgTUIInitializing:                    "Initializing...",
@@ -713,7 +658,6 @@ var translations = map[string]map[string]string{
 		MsgTUIHelpSectionSessions:             "Coding",
 		MsgTUIHelpSectionScheduledTasks:       "Tasks",
 		MsgTUIHelpSectionConfig:               "Config",
-		MsgTUIHelpSectionAgentNet:             "AgentNet",
 		MsgTUIHelpSectionSessionDetail:        "Session Detail",
 		MsgTUIHelpSectionAIAssistant:          "AI Assistant",
 		MsgTUIHelpDescNextTab:                 "next tab",
@@ -762,7 +706,6 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescToken:                 "auth token",
 		MsgTUIConfigDescDataDir:               "data directory",
 		MsgTUIConfigDescMaxIterations:         "Agent max iterations (30-300)",
-		MsgTUIConfigDescAgentNetEnabled:       "enable AgentNet",
 		MsgTUIConfigDescLLMProviderPreset:     "LLM provider preset",
 		MsgTUIConfigDescLLMURL:                "LLM API URL",
 		MsgTUIConfigDescLLMKey:                "LLM API Key",
@@ -824,30 +767,6 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescDebugTools:         "Debug tool calls",
 		MsgTUIConfigDescGossip:             "Enable Gossip",
 		MsgTUIConfigDescTrialReflect:       "Enable trial-and-reflect",
-		MsgTUIAgentNetLoading:              "Loading AgentNet...",
-		MsgTUIAgentNetTabPeers:             "Peers",
-		MsgTUIAgentNetTabTasks:             "Tasks",
-		MsgTUIAgentNetTabStatus:            "Status",
-		MsgTUIAgentNetNoPeers:              "No connected peers",
-		MsgTUIAgentNetNoTasks:              "No tasks",
-		MsgTUIAgentNetHeaderPeerID:         "PEER ID",
-		MsgTUIAgentNetHeaderAddr:           "ADDR",
-		MsgTUIAgentNetHeaderLatency:        "LATENCY",
-		MsgTUIAgentNetHeaderCountry:        "COUNTRY",
-		MsgTUIAgentNetHeaderReward:         "REWARD",
-		MsgTUIAgentNetFooterPeers:          "Total %d peers  Up/Down:select  r:refresh",
-		MsgTUIAgentNetFooterTasks:          "Total %d tasks  Up/Down:select  r:refresh",
-		MsgTUIAgentNetStatusTitle:          "AgentNet Status",
-		MsgTUIAgentNetCreditsTitle:         "Credits Info",
-		MsgTUIAgentNetStatusPeerID:         "PeerID",
-		MsgTUIAgentNetStatusPeers:          "Peers",
-		MsgTUIAgentNetStatusUnread:         "Unread",
-		MsgTUIAgentNetStatusVersion:        "Version",
-		MsgTUIAgentNetStatusUptime:         "Uptime",
-		MsgTUIAgentNetStatusBalance:        "Balance",
-		MsgTUIAgentNetStatusTier:           "Tier",
-		MsgTUIAgentNetStatusEnergy:         "Energy",
-		MsgTUIAgentNetFooterStatus:         "r:refresh  1:peers  2:tasks  3:status",
 		MsgTUIAgentLoadConfigFailed:        "Failed to load LLM config: %v",
 		MsgTUIAgentLLMCallFailed:           "LLM call failed: %v",
 		MsgTUIAgentNoValidReply:            "LLM returned no valid reply",

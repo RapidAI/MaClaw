@@ -6,7 +6,7 @@ type SlotKind int
 const (
 	SlotKindCoding    SlotKind = iota // coding task, max 1
 	SlotKindScheduled                 // scheduled task, max 1
-	SlotKindAuto                      // AgentNet auto task, max 1
+	SlotKindAuto                      // auto task, max 1
 	SlotKindSSH                       // SSH remote session, max 10
 	SlotKindBrowser                   // browser task, max 2
 	SlotKindGUI                       // GUI desktop automation task, max 1

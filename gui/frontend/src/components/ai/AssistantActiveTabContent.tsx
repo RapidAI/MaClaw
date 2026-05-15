@@ -5,12 +5,21 @@ import { VEConversationView } from "./VEConversationView";
 type AssistantActiveTabContentProps = {
     activeTab: AITab;
     isLocalTabActive: boolean;
+    isProjectTabActive: boolean;
     lang: string;
     theme: any;
 };
 
-export function AssistantActiveTabContent({ activeTab, isLocalTabActive, lang, theme }: AssistantActiveTabContentProps) {
-    if (isLocalTabActive) return null;
+/**
+ * Renders the content area for non-local, non-project tabs (VE and group).
+ *
+ * Project tabs are rendered inline in AIAssistantPanel alongside the local tab
+ * (sharing the same AssistantConversationBody + AssistantInputStack layout but
+ * with independent state). This component only handles VE and group tab types.
+ */
+export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProjectTabActive, lang, theme }: AssistantActiveTabContentProps) {
+    // Local and project tabs are rendered by AIAssistantPanel directly
+    if (isLocalTabActive || isProjectTabActive) return null;
 
     if (activeTab.type === "ve" && activeTab.veId) {
         return (

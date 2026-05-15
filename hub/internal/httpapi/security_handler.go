@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/security"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
 // SecurityGroupsRootHandler returns only the root node for lazy tree loading.
@@ -36,8 +37,9 @@ func SecurityGroupsHandler(svc *security.SecurityService) http.HandlerFunc {
 
 // CreateSecurityGroupHandler creates a child group.
 // POST /api/admin/security/groups
-func CreateSecurityGroupHandler(svc *security.SecurityService) http.HandlerFunc {
+func CreateSecurityGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			Name     string `json:"name"`
 			ParentID string `json:"parent_id"`
@@ -68,14 +70,16 @@ func CreateSecurityGroupHandler(svc *security.SecurityService) http.HandlerFunc 
 			writeError(w, http.StatusInternalServerError, "CREATE_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "security.group.create", map[string]any{"group_id": group.ID, "name": req.Name, "parent_id": req.ParentID})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group})
 	}
 }
 
 // UpdateSecurityGroupHandler renames a group.
 // PUT /api/admin/security/groups/{id}
-func UpdateSecurityGroupHandler(svc *security.SecurityService) http.HandlerFunc {
+func UpdateSecurityGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
@@ -97,14 +101,16 @@ func UpdateSecurityGroupHandler(svc *security.SecurityService) http.HandlerFunc 
 			writeError(w, http.StatusInternalServerError, "RENAME_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "security.group.rename", map[string]any{"group_id": id, "name": req.Name})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 
 // DeleteSecurityGroupHandler deletes a group.
 // DELETE /api/admin/security/groups/{id}
-func DeleteSecurityGroupHandler(svc *security.SecurityService) http.HandlerFunc {
+func DeleteSecurityGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
@@ -119,6 +125,7 @@ func DeleteSecurityGroupHandler(svc *security.SecurityService) http.HandlerFunc 
 			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "security.group.delete", map[string]any{"group_id": id})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -158,8 +165,9 @@ func ListGroupMembersHandler(svc *security.SecurityService) http.HandlerFunc {
 
 // AddGroupMemberHandler assigns a user to a group.
 // POST /api/admin/security/groups/{id}/members
-func AddGroupMemberHandler(svc *security.SecurityService) http.HandlerFunc {
+func AddGroupMemberHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
@@ -181,14 +189,16 @@ func AddGroupMemberHandler(svc *security.SecurityService) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "ASSIGN_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "security.group.member.add", map[string]any{"group_id": id, "email": req.Email})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 
 // RemoveGroupMemberHandler removes a user from a group (back to Root_Group).
 // DELETE /api/admin/security/groups/{id}/members/{email}
-func RemoveGroupMemberHandler(svc *security.SecurityService) http.HandlerFunc {
+func RemoveGroupMemberHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		email := r.PathValue("email")
 		if id == "" || email == "" {
@@ -200,6 +210,7 @@ func RemoveGroupMemberHandler(svc *security.SecurityService) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "REMOVE_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "security.group.member.remove", map[string]any{"group_id": id, "email": email})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -229,8 +240,9 @@ func GetGroupPolicyHandler(svc *security.SecurityService) http.HandlerFunc {
 
 // UpdateGroupPolicyHandler updates the sparse policy for a group.
 // PUT /api/admin/security/groups/{id}/policy
-func UpdateGroupPolicyHandler(svc *security.SecurityService) http.HandlerFunc {
+func UpdateGroupPolicyHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
@@ -252,6 +264,7 @@ func UpdateGroupPolicyHandler(svc *security.SecurityService) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "UPDATE_POLICY_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "security.group.policy.update", map[string]any{"group_id": id, "policy": req.Policy})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
@@ -266,12 +279,12 @@ func GetUserEffectivePolicyHandler(svc *security.SecurityService) http.HandlerFu
 			return
 		}
 
-		policy, err := svc.GetEffectivePolicy(r.Context(), email)
+		groupID, groupPath, policy, groupPolicy, err := svc.GetUserPolicyView(r.Context(), email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "POLICY_FAILED", err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"policy": policy})
+		writeJSON(w, http.StatusOK, map[string]any{"policy": policy, "group_id": groupID, "group_path": groupPath, "group_policy": groupPolicy})
 	}
 }
 
@@ -313,8 +326,9 @@ func UpdateSecuritySettingsHandler(svc *security.SecurityService) http.HandlerFu
 
 // SetDefaultGroupHandler sets the default group for new users.
 // PUT /api/admin/security/settings/default-group
-func SetDefaultGroupHandler(svc *security.SecurityService) http.HandlerFunc {
+func SetDefaultGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			GroupID string `json:"group_id"`
 		}
@@ -335,6 +349,7 @@ func SetDefaultGroupHandler(svc *security.SecurityService) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "SET_DEFAULT_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "security.default_group.update", map[string]any{"group_id": req.GroupID})
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }

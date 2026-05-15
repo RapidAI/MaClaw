@@ -62,28 +62,26 @@ func ExplainEntitlementDiagnosticFromRegistry(ctx context.Context, reg *Registry
 		diag.ServiceStatus = status
 		return diag, nil
 	}
+	for _, binding := range reg.UserBindings {
+		if normalizeEmail(binding.Email) != email {
+			continue
+		}
+		knownIDs := knownServiceGroupIDs(reg, binding.ServiceGroupIDs)
+		if len(knownIDs) == 0 {
+			continue
+		}
+		binding.ServiceGroupIDs = knownIDs
+		diag.DirectUserBindings = append(diag.DirectUserBindings, binding)
+	}
 	if securitySvc != nil {
 		groupIDs, err := securitySvc.ResolveUserGroupChain(ctx, email)
 		if err != nil {
 			return nil, err
 		}
 		diag.ResolvedSecurityGroupIDs = append([]string(nil), groupIDs...)
-		groupSet := map[string]struct{}{}
-		for _, id := range groupIDs {
-			groupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
+		if len(diag.DirectUserBindings) == 0 {
+			diag.MatchedGroupBindings = appliedGroupBindings(reg, groupIDs)
 		}
-		for _, binding := range reg.GroupBindings {
-			if _, ok := groupSet[strings.ToLower(strings.TrimSpace(binding.GroupID))]; !ok {
-				continue
-			}
-			diag.MatchedGroupBindings = append(diag.MatchedGroupBindings, binding)
-		}
-	}
-	for _, binding := range reg.UserBindings {
-		if normalizeEmail(binding.Email) != email {
-			continue
-		}
-		diag.DirectUserBindings = append(diag.DirectUserBindings, binding)
 	}
 	_, grants, err := effectiveServiceGroupIDs(ctx, reg, securitySvc, email, time.Now().UTC())
 	if err != nil {
@@ -97,6 +95,42 @@ func ExplainEntitlementDiagnosticFromRegistry(ctx context.Context, reg *Registry
 	diag.BillingRoutes = ExplainBillingRoutes(reg, email, status.AuthorizedModels, time.Now().UTC())
 	diag.ServiceStatus = status
 	return diag, nil
+}
+
+func knownServiceGroupIDs(reg *Registry, ids []string) []string {
+	if reg == nil {
+		return nil
+	}
+	knownIDs := make([]string, 0, len(ids))
+	for _, id := range normalizeStringSlice(ids) {
+		if reg.FindModelServiceGroup(id) != nil {
+			knownIDs = append(knownIDs, id)
+		}
+	}
+	return knownIDs
+}
+
+func appliedGroupBindings(reg *Registry, groupIDs []string) []GroupBinding {
+	if reg == nil || len(groupIDs) == 0 {
+		return nil
+	}
+	bindingsByGroup := map[string][]string{}
+	for _, binding := range reg.GroupBindings {
+		groupID := strings.ToLower(strings.TrimSpace(binding.GroupID))
+		if groupID == "" {
+			continue
+		}
+		bindingsByGroup[groupID] = append(bindingsByGroup[groupID], binding.ServiceGroupIDs...)
+	}
+	for _, groupID := range groupIDs {
+		cleanGroupID := strings.TrimSpace(groupID)
+		knownIDs := knownServiceGroupIDs(reg, bindingsByGroup[strings.ToLower(cleanGroupID)])
+		if len(knownIDs) == 0 {
+			continue
+		}
+		return []GroupBinding{{GroupID: cleanGroupID, ServiceGroupIDs: knownIDs}}
+	}
+	return nil
 }
 
 func ResolveServiceStatus(ctx context.Context, system SystemSettingsRepository, securitySvc *security.SecurityService, email string, hubBaseURL string) (*ServiceStatus, error) {
@@ -475,49 +509,68 @@ func findGrantWithSource(reg *Registry, email, serviceGroupID, source string) *G
 	return nil
 }
 
-func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc *security.SecurityService, email string, now time.Time) ([]string, []Grant, error) {
+func effectiveServiceGroupIDs(ctx context.Context, reg *Registry, securitySvc userGroupResolver, email string, now time.Time) ([]string, []Grant, error) {
 	serviceGroupIDs := make([]string, 0)
 	seen := map[string]struct{}{}
-	appendID := func(id string) {
+	appendID := func(id string) bool {
 		id = strings.TrimSpace(id)
 		if id == "" {
-			return
+			return false
 		}
 		if reg.FindModelServiceGroup(id) == nil {
-			return
+			return false
 		}
 		key := strings.ToLower(id)
 		if _, ok := seen[key]; ok {
-			return
+			return false
 		}
 		seen[key] = struct{}{}
 		serviceGroupIDs = append(serviceGroupIDs, id)
+		return true
 	}
+	appendIDs := func(ids []string) bool {
+		added := false
+		for _, id := range ids {
+			if appendID(id) {
+				added = true
+			}
+		}
+		return added
+	}
+	policyApplied := false
 	for _, ub := range reg.UserBindings {
 		if normalizeEmail(ub.Email) != email {
 			continue
 		}
-		for _, id := range ub.ServiceGroupIDs {
-			appendID(id)
+		if appendIDs(ub.ServiceGroupIDs) {
+			policyApplied = true
 		}
 	}
-	if securitySvc != nil && email != "" {
+	if !policyApplied && securitySvc != nil && email != "" {
 		groupIDs, err := securitySvc.ResolveUserGroupChain(ctx, email)
 		if err != nil {
 			return nil, nil, err
 		}
-		groupSet := map[string]struct{}{}
-		for _, id := range groupIDs {
-			groupSet[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
-		}
+		bindingsByGroup := map[string][]string{}
 		for _, binding := range reg.GroupBindings {
-			if _, ok := groupSet[strings.ToLower(strings.TrimSpace(binding.GroupID))]; !ok {
+			groupID := strings.ToLower(strings.TrimSpace(binding.GroupID))
+			if groupID == "" {
 				continue
 			}
-			for _, id := range binding.ServiceGroupIDs {
-				appendID(id)
+			bindingsByGroup[groupID] = append(bindingsByGroup[groupID], binding.ServiceGroupIDs...)
+		}
+		for _, groupID := range groupIDs {
+			if appendIDs(bindingsByGroup[strings.ToLower(strings.TrimSpace(groupID))]) {
+				policyApplied = true
+				break
 			}
 		}
+	}
+	if !policyApplied && appendIDs(reg.GlobalServiceGroupIDs) {
+		policyApplied = true
+	}
+	if !policyApplied {
+		appendIDs(reg.DefaultNewUserServiceGroups)
 	}
 	activeGrants := make([]Grant, 0)
 	for _, g := range reg.Grants {

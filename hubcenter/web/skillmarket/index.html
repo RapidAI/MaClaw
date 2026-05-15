@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaClaw SkillMarket</title>
+  <title>MaClaw Capability Market</title>
   <style>
     :root{--bg:#f5f7fb;--panel:#fff;--text:#172033;--muted:#667085;--line:#d9e2ef;--soft:#f8fbff;--primary:#2563eb;--primary-strong:#1d4ed8;--green:#16a34a;--amber:#d97706;--danger:#dc2626;--shadow:0 14px 34px rgba(15,23,42,.08);--radius:8px}
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.55}
@@ -32,7 +32,7 @@
     <div class="brand">
       <img class="brand-logo" src="/skillmarket/maclaw-logo.png" alt="MaClaw logo">
       <div>
-        <h1 id="pageTitle">MaClaw SkillMarket</h1>
+        <h1 id="pageTitle">MaClaw Capability Market</h1>
         <div class="brand-sub" id="brandSub"></div>
       </div>
     </div>
@@ -87,6 +87,11 @@
   </section>
 
   <main class="content-panel">
+    <div style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:12px">
+      <button class="cap-tab active" id="capTabSkills" onclick="switchCapTab('skills')" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#172033;border-color:#172033;color:#fff;font:inherit;font-size:15px;font-weight:800;cursor:pointer">Skills</button>
+      <button class="cap-tab" id="capTabMCP" onclick="switchCapTab('mcp')" style="height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;font-size:15px;font-weight:800;cursor:pointer">MCP</button>
+    </div>
+    <div id="capSkillsView">
     <div class="section-head">
       <div>
         <h3 id="sectionTitle"></h3>
@@ -108,6 +113,12 @@
     <div id="view-top-rating" style="display:none"><div id="ratingList" class="grid"></div><div id="ratingEmpty" class="state" style="display:none"></div></div>
     <div id="view-top-downloads" style="display:none"><div id="downloadsList" class="grid"></div><div id="downloadsEmpty" class="state" style="display:none"></div></div>
     <div id="view-top-newest" style="display:none"><div id="newestList" class="grid"></div><div id="newestEmpty" class="state" style="display:none"></div></div>
+    </div>
+    <div id="capMCPView" style="display:none">
+      <div class="section-head"><div><h3 id="mcpSectionTitle"></h3><div class="section-note" id="mcpSectionNote"></div></div></div>
+      <div id="mcpMarketList" class="grid"></div>
+      <div id="mcpMarketEmpty" class="state" style="display:none"></div>
+    </div>
   </main>
 </div>
 
@@ -138,14 +149,14 @@ let LANG=localStorage.getItem('sm_lang')||((navigator.language||'en').toLowerCas
 let currentMetricItems=[];
 document.getElementById('html-root').lang=LANG==='zh'?'zh-CN':'en';
 const I18N={
-  title:{zh:'MaClaw SkillMarket',en:'MaClaw SkillMarket'},brandSub:{zh:'\u7801\u5361\u9f99\u6280\u80fd\u5e02\u573a',en:'MacLaw Skill Catalog'},subtitle:{zh:'\u9762\u5411\u7814\u53d1\u4e0e\u4e1a\u52a1\u56e2\u961f\u7684\u6280\u80fd\u76ee\u5f55\uff0c\u96c6\u4e2d\u53d1\u73b0\u3001\u8bc4\u4f30\u5e76\u8c03\u7528\u53ef\u590d\u7528\u80fd\u529b\u3002',en:'A curated skill catalog for engineering and business teams to discover, evaluate, and reuse capabilities.'},userLink:{zh:'\u7528\u6237\u540e\u53f0',en:'User Console'},
-  heroEyebrow:{zh:'\u4f01\u4e1a\u7ea7\u6280\u80fd\u5e02\u573a',en:'Enterprise Skill Market'},heroTitle:{zh:'\u53d1\u73b0\u53ef\u590d\u7528\u6280\u80fd\uff0c\u6784\u5efa\u66f4\u9ad8\u6548\u7684\u667a\u80fd\u5de5\u4f5c\u6d41',en:'Find reusable skills for stronger intelligent workflows'},
+  title:{zh:'MaClaw \u80fd\u529b\u5e02\u573a',en:'MaClaw Capability Market'},brandSub:{zh:'\u7801\u5361\u9f99\u80fd\u529b\u5e02\u573a',en:'MacLaw Capability Market'},subtitle:{zh:'\u9762\u5411\u7814\u53d1\u4e0e\u4e1a\u52a1\u56e2\u961f\u7684\u80fd\u529b\u76ee\u5f55\uff0c\u96c6\u4e2d\u53d1\u73b0\u3001\u8bc4\u4f30\u5e76\u8c03\u7528\u53ef\u590d\u7528\u80fd\u529b\u3002',en:'A curated capability catalog for engineering and business teams to discover, evaluate, and reuse capabilities.'},userLink:{zh:'\u7528\u6237\u540e\u53f0',en:'User Console'},
+  heroEyebrow:{zh:'\u4f01\u4e1a\u7ea7\u80fd\u529b\u5e02\u573a',en:'Enterprise Capability Market'},heroTitle:{zh:'\u53d1\u73b0\u53ef\u590d\u7528\u80fd\u529b\uff0c\u6784\u5efa\u66f4\u9ad8\u6548\u7684\u667a\u80fd\u5de5\u4f5c\u6d41',en:'Find reusable capabilities for stronger intelligent workflows'},
   tabSearch:{zh:'\u641c\u7d22',en:'Search'},tabRating:{zh:'\u8bc4\u5206\u6392\u884c',en:'Top Rated'},tabDownloads:{zh:'\u4e0b\u8f7d\u6392\u884c',en:'Most Downloaded'},tabNewest:{zh:'\u6700\u65b0\u4e0a\u67b6',en:'Newest'},
-  sectionSearch:{zh:'\u6280\u80fd\u68c0\u7d22',en:'Skill Discovery'},sectionRating:{zh:'\u8bc4\u5206\u6392\u884c',en:'Top Rated Skills'},sectionDownloads:{zh:'\u4e0b\u8f7d\u6392\u884c',en:'Most Downloaded'},sectionNewest:{zh:'\u6700\u65b0\u4e0a\u67b6',en:'Recently Published'},
-  noteSearch:{zh:'\u6309\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e\u5feb\u901f\u5b9a\u4f4d\u6280\u80fd\u3002',en:'Search by name, description, or tags.'},noteRating:{zh:'\u4f18\u5148\u67e5\u770b\u56e2\u961f\u53cd\u9988\u66f4\u597d\u7684\u6280\u80fd\u3002',en:'Prioritize skills with stronger team feedback.'},noteDownloads:{zh:'\u67e5\u770b\u8fd1\u671f\u4f7f\u7528\u70ed\u5ea6\u66f4\u9ad8\u7684\u6280\u80fd\u3002',en:'See skills with higher adoption.'},noteNewest:{zh:'\u8ddf\u8fdb\u6700\u65b0\u53d1\u5e03\u7684\u80fd\u529b\u3002',en:'Track newly published capabilities.'},
-  searchPlaceholder:{zh:'\u641c\u7d22\u6280\u80fd\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e',en:'Search skill name, description, tags'},search:{zh:'\u641c\u7d22',en:'Search'},
+  sectionSearch:{zh:'\u80fd\u529b\u68c0\u7d22',en:'Capability Discovery'},sectionRating:{zh:'\u8bc4\u5206\u6392\u884c',en:'Top Rated'},sectionDownloads:{zh:'\u4e0b\u8f7d\u6392\u884c',en:'Most Downloaded'},sectionNewest:{zh:'\u6700\u65b0\u4e0a\u67b6',en:'Recently Published'},
+  noteSearch:{zh:'\u6309\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e\u5feb\u901f\u5b9a\u4f4d\u80fd\u529b\u3002',en:'Search by name, description, or tags.'},noteRating:{zh:'\u4f18\u5148\u67e5\u770b\u56e2\u961f\u53cd\u9988\u66f4\u597d\u7684\u80fd\u529b\u3002',en:'Prioritize capabilities with stronger team feedback.'},noteDownloads:{zh:'\u67e5\u770b\u8fd1\u671f\u4f7f\u7528\u70ed\u5ea6\u66f4\u9ad8\u7684\u80fd\u529b\u3002',en:'See capabilities with higher adoption.'},noteNewest:{zh:'\u8ddf\u8fdb\u6700\u65b0\u53d1\u5e03\u7684\u80fd\u529b\u3002',en:'Track newly published capabilities.'},
+  searchPlaceholder:{zh:'\u641c\u7d22\u80fd\u529b\u540d\u79f0\u3001\u63cf\u8ff0\u6216\u6807\u7b7e',en:'Search capability name, description, tags'},search:{zh:'\u641c\u7d22',en:'Search'},
   metricResults:{zh:'\u5f53\u524d\u7ed3\u679c',en:'Current Results'},metricRating:{zh:'\u5e73\u5747\u8bc4\u5206',en:'Average Rating'},metricDownloads:{zh:'\u7d2f\u8ba1\u4e0b\u8f7d',en:'Total Downloads'},
-  insightTitle:{zh:'\u5e02\u573a\u72b6\u6001',en:'Market Status'},insightStatusLabel:{zh:'\u670d\u52a1\u72b6\u6001',en:'Service'},insightStatusValue:{zh:'\u8fd0\u884c\u4e2d',en:'Online'},insightCatalogLabel:{zh:'\u76ee\u5f55\u8986\u76d6',en:'Catalog'},insightRefreshLabel:{zh:'\u66f4\u65b0\u65f6\u95f4',en:'Updated'},justNow:{zh:'\u521a\u521a',en:'Just now'},skillsUnit:{zh:'\u9879\u6280\u80fd',en:'skills'},
+  insightTitle:{zh:'\u5e02\u573a\u72b6\u6001',en:'Market Status'},insightStatusLabel:{zh:'\u670d\u52a1\u72b6\u6001',en:'Service'},insightStatusValue:{zh:'\u8fd0\u884c\u4e2d',en:'Online'},insightCatalogLabel:{zh:'\u76ee\u5f55\u8986\u76d6',en:'Catalog'},insightRefreshLabel:{zh:'\u66f4\u65b0\u65f6\u95f4',en:'Updated'},justNow:{zh:'\u521a\u521a',en:'Just now'},skillsUnit:{zh:'\u9879\u80fd\u529b',en:'capabilities'},
   emptySearch:{zh:'\u6682\u65e0\u641c\u7d22\u7ed3\u679c',en:'No results found.'},emptyTop:{zh:'\u6682\u65e0\u6570\u636e',en:'No data.'},loading:{zh:'\u52a0\u8f7d\u4e2d...',en:'Loading...'},
   priceFree:{zh:'\u514d\u8d39',en:'Free'},credits:{zh:'\u79ef\u5206',en:'Credits'},downloads:{zh:'\u4e0b\u8f7d',en:'Downloads'},rating:{zh:'\u8bc4\u5206',en:'Rating'},status:{zh:'\u72b6\u6001',en:'Status'},version:{zh:'\u7248\u672c',en:'Version'},uploaded:{zh:'\u4e0a\u4f20',en:'Uploaded'},
   rateLabel:{zh:'\u8bc4\u5206\uff08-2 \u5230 +2\uff09',en:'Rate (-2 to +2)'},rateNeedEmail:{zh:'\u8bf7\u8f93\u5165\u90ae\u7bb1\u540e\u8bc4\u5206',en:'Enter your email to rate.'},rateOk:{zh:'\u8bc4\u5206\u5df2\u63d0\u4ea4',en:'Rating submitted.'},network:{zh:'\u7f51\u7edc\u9519\u8bef\u3002',en:'Network error.'},
@@ -173,6 +184,65 @@ async function submitRating(skillID,score){var email=window.prompt(t('rateNeedEm
 Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(tab){tab.addEventListener('click',function(){Array.prototype.forEach.call(document.querySelectorAll('.tab'),function(btn){btn.classList.remove('active');});tab.classList.add('active');['search','top-rating','top-downloads','top-newest'].forEach(function(id){document.getElementById('view-'+id).style.display=id===tab.dataset.view?'':'none';});updateSectionText();if(tab.dataset.view==='top-rating')loadTop('rating');if(tab.dataset.view==='top-downloads')loadTop('downloads');if(tab.dataset.view==='top-newest')loadTop('newest');if(tab.dataset.view==='search')doSearch();});});
 searchInput.addEventListener('keydown',function(e){if(e.key==='Enter')doSearch();});
 applyI18n();doSearch();
+
+// ─── MCP Marketplace Tab ──────────────────────────────────────────────────
+Object.assign(I18N, {
+  mcpSectionTitle:{zh:'MCP \u80fd\u529b\u5305',en:'MCP Capabilities'},
+  mcpSectionNote:{zh:'\u53ef\u4f9b\u5ba2\u6237\u7aef\u5b89\u88c5\u7684 MCP \u670d\u52a1\u5668\u80fd\u529b\u5305\u3002',en:'MCP server capability packages available for client installation.'},
+  mcpMarketEmpty:{zh:'\u6682\u65e0 MCP \u80fd\u529b\u5305\u3002',en:'No MCP capabilities available.'},
+  mcpFree:{zh:'\u514d\u8d39',en:'Free'},
+  mcpInstall:{zh:'\u5b89\u88c5',en:'Install'}
+});
+
+function switchCapTab(tab) {
+  var skills = document.getElementById('capTabSkills');
+  var mcp = document.getElementById('capTabMCP');
+  var activeStyle = 'height:38px;padding:0 14px;border:1px solid #172033;border-radius:var(--radius);background:#172033;color:#fff;font:inherit;font-size:15px;font-weight:800;cursor:pointer';
+  var inactiveStyle = 'height:38px;padding:0 14px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--muted);font:inherit;font-size:15px;font-weight:800;cursor:pointer';
+  skills.style.cssText = tab === 'skills' ? activeStyle : inactiveStyle;
+  mcp.style.cssText = tab === 'mcp' ? activeStyle : inactiveStyle;
+  document.getElementById('capSkillsView').style.display = tab === 'skills' ? '' : 'none';
+  document.getElementById('capMCPView').style.display = tab === 'mcp' ? '' : 'none';
+  if (tab === 'mcp') loadMCPMarket();
+}
+
+function applyMCPi18n() {
+  var el = document.getElementById('mcpSectionTitle');
+  if (el) el.textContent = (I18N.mcpSectionTitle && I18N.mcpSectionTitle[LANG]) || 'MCP Capabilities';
+  var note = document.getElementById('mcpSectionNote');
+  if (note) note.textContent = (I18N.mcpSectionNote && I18N.mcpSectionNote[LANG]) || '';
+}
+
+var _origApplyI18n = applyI18n;
+applyI18n = function() { _origApplyI18n(); applyMCPi18n(); };
+
+async function loadMCPMarket() {
+  var list = document.getElementById('mcpMarketList');
+  var empty = document.getElementById('mcpMarketEmpty');
+  list.innerHTML = '';
+  empty.style.display = 'none';
+  try {
+    var r = await fetch('/api/capability-market/mcp');
+    if (!r.ok) throw new Error(await r.text());
+    var data = await r.json();
+    var items = data.items || [];
+    if (!items.length) { empty.style.display = ''; empty.textContent = (I18N.mcpMarketEmpty && I18N.mcpMarketEmpty[LANG]) || 'No MCP capabilities.'; return; }
+    items.forEach(function(item) {
+      var price = (item.pricing && item.pricing.mode && item.pricing.mode !== 'free') ? item.pricing.mode : ((I18N.mcpFree && I18N.mcpFree[LANG]) || 'Free');
+      var transport = (item.mcp && item.mcp.transport) || 'stdio';
+      var card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = '<div class="card-top"><div><div class="card-name">' + esc(item.display_name || item.capability_id) + '</div><div class="card-version">' + esc(item.version || '') + '</div></div><span class="price-pill">' + esc(price) + '</span></div>' +
+        '<div class="card-desc">' + esc(item.description || '') + '</div>' +
+        '<div class="card-tags"><span class="tag">MCP</span><span class="tag">' + esc(transport) + '</span></div>' +
+        '<div class="card-meta"><span>' + esc(item.publisher || '') + '</span></div>';
+      list.appendChild(card);
+    });
+  } catch(e) { empty.style.display = ''; empty.textContent = String(e.message || e); }
+}
+
+applyMCPi18n();
+
 </script>
 </body>
 </html>

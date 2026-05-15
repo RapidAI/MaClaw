@@ -403,6 +403,23 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_recommended_capabilities_enabled ON recommended_capabilities(enabled);`,
 
+		`CREATE TABLE IF NOT EXISTS user_capability_inventory (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL DEFAULT '',
+			user_email TEXT NOT NULL DEFAULT '',
+			capability_ref TEXT NOT NULL,
+			capability_version_key TEXT NOT NULL DEFAULT '',
+			capability_type TEXT NOT NULL DEFAULT '',
+			install_status TEXT NOT NULL DEFAULT 'installed',
+			installed INTEGER NOT NULL DEFAULT 1,
+			metadata_json TEXT NOT NULL DEFAULT '{}',
+			last_seen_at TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_capability_inventory_user_cap ON user_capability_inventory(user_email, capability_ref);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_capability_inventory_seen ON user_capability_inventory(user_email, last_seen_at DESC);`,
+
 		`CREATE TABLE IF NOT EXISTS mcp_secret_requirements (
 			id TEXT PRIMARY KEY,
 			capability_ref TEXT NOT NULL,

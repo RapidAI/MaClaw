@@ -318,7 +318,6 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 			}, []string{"action"}),
 	}
 
-	// ---------- AgentNet tools (dynamic — only when daemon is running) ----------
 	// ---------- MIS structured data and AgentView transaction workspace ----------
 	defs = append(defs,
 		toolDef("mis_data", "Structured MIS data tool for semantic business intents, business actions, and local AgentView transaction workspace.",
@@ -334,20 +333,6 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 				"dry_run":            map[string]string{"type": "boolean", "description": "Validate business action execution without committing."},
 			}, []string{"action"}),
 	)
-
-	if h.app != nil && h.app.agentNetClient != nil && h.app.agentNetClient.IsRunning() {
-		defs = append(defs,
-			toolDef("agentnet_search", "在智网（AgentNet P2P 知识网络）中搜索知识条目。返回匹配的知识列表，包含标题、内容、作者等。",
-				map[string]interface{}{
-					"query": map[string]string{"type": "string", "description": "搜索关键词"},
-				}, []string{"query"}),
-			toolDef("agentnet_publish", "向智网（AgentNet P2P 知识网络）发布一条知识条目。发布后其他节点可以搜索到。",
-				map[string]interface{}{
-					"title": map[string]string{"type": "string", "description": "知识标题"},
-					"body":  map[string]string{"type": "string", "description": "知识内容（Markdown 格式）"},
-				}, []string{"title", "body"}),
-		)
-	}
 
 	// ---------- Web search & fetch tools ----------
 	defs = append(defs,

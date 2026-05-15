@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"mime"
 	"os"
 	"os/exec"
@@ -33,7 +34,7 @@ func (h *IMMessageHandler) toolBash(args map[string]interface{}, onProgress core
 
 	timeout := resolveBashTimeout(args, command)
 
-	workDir := resolvePath(stringVal(args, "working_dir"))
+	workDir := h.resolveToolWorkDir(stringVal(args, "working_dir"))
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -134,6 +135,54 @@ func resolveFileToolPath(path string) (string, error) {
 		}
 		return ""
 	})
+}
+
+// projectPathFromUserID extracts the projectPath from a synthesized Project Tab
+// userID (format: "desktop-user:{projectPath}"). Returns empty string if the
+// userID is not a Project Tab userID.
+func projectPathFromUserID(userID string) string {
+	const prefix = desktopUserID + ":"
+	if strings.HasPrefix(userID, prefix) && len(userID) > len(prefix) {
+		return userID[len(prefix):]
+	}
+	return ""
+}
+
+// projectTabWorkDir returns the validated projectPath from the current session's
+// synthesized userID. If the path doesn't exist as a directory, falls back to
+// the user's home directory. Returns empty string if not in a Project Tab context.
+func (h *IMMessageHandler) projectTabWorkDir() string {
+	projectPath := projectPathFromUserID(h.lastUserID)
+	if projectPath == "" {
+		return ""
+	}
+	// Validate that the projectPath exists as a directory.
+	if info, err := os.Stat(projectPath); err == nil && info.IsDir() {
+		return projectPath
+	}
+	// Fallback to user home directory if projectPath is invalid.
+	log.Printf("[projectTabWorkDir] project path %q does not exist or is not a directory, falling back to home dir", projectPath)
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return ""
+}
+
+// resolveToolWorkDir resolves the working directory for tool execution.
+// When an explicit working_dir is provided, it is resolved normally.
+// When empty, it checks if the current session is a Project Tab and uses
+// the bound projectPath as the working directory. Falls back to the default
+// workspace directory (~/.maclaw/workspace) if not in a Project Tab context.
+func (h *IMMessageHandler) resolveToolWorkDir(workingDir string) string {
+	if workingDir != "" {
+		return resolvePath(workingDir)
+	}
+	// Project Tab: use projectPath as default working directory.
+	if dir := h.projectTabWorkDir(); dir != "" {
+		return dir
+	}
+	// Default: ~/.maclaw/workspace (same as resolvePath(""))
+	return resolvePath("")
 }
 
 func (h *IMMessageHandler) toolReadFile(args map[string]interface{}) string {

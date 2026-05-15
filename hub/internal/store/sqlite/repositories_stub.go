@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -221,6 +222,51 @@ func (r *adminAuditRepo) Create(ctx context.Context, log *store.AdminAuditLog) e
 		log.CreatedAt.Format(time.RFC3339),
 	)
 	return err
+}
+
+func (r *adminAuditRepo) List(ctx context.Context, filter store.AdminAuditLogFilter) ([]*store.AdminAuditLog, error) {
+	limit := filter.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	where := []string{"1=1"}
+	args := []any{}
+	if action := strings.TrimSpace(filter.Action); action != "" {
+		where = append(where, "action = ?")
+		args = append(args, action)
+	}
+	if query := strings.TrimSpace(filter.Query); query != "" {
+		like := "%" + query + "%"
+		where = append(where, "(admin_user_id LIKE ? OR action LIKE ? OR payload_json LIKE ?)")
+		args = append(args, like, like, like)
+	}
+	if !filter.CreatedFrom.IsZero() {
+		where = append(where, "created_at >= ?")
+		args = append(args, filter.CreatedFrom.UTC().Format(time.RFC3339))
+	}
+	if !filter.CreatedTo.IsZero() {
+		where = append(where, "created_at <= ?")
+		args = append(args, filter.CreatedTo.UTC().Format(time.RFC3339))
+	}
+	args = append(args, limit)
+	rows, err := r.readDB.QueryContext(ctx, fmt.Sprintf(`SELECT id, admin_user_id, action, payload_json, created_at FROM admin_audit_logs WHERE %s ORDER BY created_at DESC LIMIT ?`, strings.Join(where, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []*store.AdminAuditLog{}
+	for rows.Next() {
+		var item store.AdminAuditLog
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.AdminUserID, &item.Action, &item.PayloadJSON, &createdAt); err != nil {
+			return nil, err
+		}
+		if ts, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			item.CreatedAt = ts
+		}
+		items = append(items, &item)
+	}
+	return items, rows.Err()
 }
 
 func (r *userRepo) Create(ctx context.Context, user *store.User) error {

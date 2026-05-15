@@ -50,6 +50,9 @@ func (h *IMMessageHandler) toolBashBackground(command, workDir string) string {
 	mgr := h.ensureLocalBgTaskMgr()
 	if workDir != "" {
 		workDir = resolvePath(workDir)
+	} else {
+		// When no explicit working_dir, use Project Tab's projectPath if available.
+		workDir = h.projectTabWorkDir()
 	}
 
 	task, err := mgr.Submit(command, workDir)

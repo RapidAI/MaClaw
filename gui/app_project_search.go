@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -26,6 +27,7 @@ type ProjectSearchResult struct {
 	LastActivity string   `json:"last_activity"` // RFC3339 formatted timestamp
 	EntryCount   int      `json:"entry_count"`   // Number of memory entries
 	Pinned       bool     `json:"pinned"`        // Whether the task is pinned to top
+	Archived     bool     `json:"archived"`      // Whether the task is archived
 }
 
 // SearchProjects searches the project index for projects matching the query.
@@ -72,6 +74,7 @@ func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectReco
 		LastActivity: rec.LastActivity.Format(time.RFC3339),
 		EntryCount:   rec.EntryCount,
 		Pinned:       pi.IsPinned(rec.ProjectPath),
+		Archived:     pi.IsArchived(rec.ProjectPath),
 	}
 
 	// Generate a human-readable name when the index couldn't extract one.
@@ -139,6 +142,38 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 		return projectRecordToSearchResult(pi, *rec)
 	}
 	return ProjectSearchResult{ID: taskDir, Name: taskName, ProjectPath: taskDir, LastActivity: now.Format(time.RFC3339), EntryCount: 1}
+}
+
+// ForkConversationToProject copies the current local tab's conversation history
+// into a new project-scoped session. This enables the "fork current chat" feature:
+// the user's existing conversation becomes the starting context for the new project tab.
+//
+// This is a Wails binding method called from the frontend after CreateRecentTask.
+func (a *App) ForkConversationToProject(projectPath string) {
+	if projectPath == "" {
+		return
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return
+	}
+
+	// Load current local tab conversation.
+	sourceEntries := handler.memory.Load(desktopUserID)
+	if len(sourceEntries) == 0 {
+		return
+	}
+
+	// Save to the project-scoped session.
+	targetUserID := fmt.Sprintf("desktop-user:%s", projectPath)
+	handler.memory.Save(targetUserID, sourceEntries)
+	log.Printf("[project_search] ForkConversationToProject: copied %d entries from %s to %s",
+		len(sourceEntries), desktopUserID, targetUserID)
 }
 
 func normalizeRecentTaskName(name string) string {
@@ -374,6 +409,439 @@ func lastPathComponent(p string) string {
 		}
 	}
 	return p
+}
+
+// ---------------------------------------------------------------------------
+// ArchiveProject triggers the full archive flow for a project:
+//   1. Collect project entries from memory
+//   2. LLM summarize into experience
+//   3. Save experience as globally-recallable project_knowledge
+//   4. Mark project as archived in ProjectIndex
+//
+// This is a Wails binding method called from the frontend context menu.
+func (a *App) ArchiveProject(projectPath string) (*ArchiveResult, error) {
+	if projectPath == "" {
+		return nil, fmt.Errorf("project path is required")
+	}
+
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("记忆系统未初始化")
+	}
+
+	pi := a.memoryStore.ProjectIndex()
+
+	// Get the LLM caller from the IMMessageHandler (may be nil if not ready).
+	var llmCaller archiveLLMCaller
+	handler := a.ensureLocalIMHandler()
+	if handler != nil {
+		llmCaller = handler
+	}
+
+	svc := NewArchiveService(a.memoryStore, llmCaller, pi)
+	result, err := svc.Archive(context.Background(), ArchiveRequest{
+		ProjectPath: projectPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Flush memory store to persist the archived state and experience entry.
+	if flushErr := a.memoryStore.Flush(); flushErr != nil {
+		log.Printf("[ArchiveProject] flush failed: %v", flushErr)
+	}
+
+	log.Printf("[ArchiveProject] path=%q archived=%v experience=%v",
+		projectPath, result.Archived, result.ExperienceExtracted)
+
+	return result, nil
+}
+
+// GetArchivedExperience retrieves the archived experience summary for a project.
+// Returns the experience text if found, or an empty string if no archived
+// experience exists for the given project path.
+// This is a Wails binding method called from the frontend read-only panel.
+func (a *App) GetArchivedExperience(projectPath string) (string, error) {
+	if projectPath == "" {
+		return "", fmt.Errorf("project path is required")
+	}
+
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return "", fmt.Errorf("记忆系统未初始化")
+	}
+
+	// Search for the archived_experience entry matching this project path.
+	a.memoryStore.RLock()
+	defer a.memoryStore.RUnlock()
+
+	normalizedPath := strings.ToLower(strings.ReplaceAll(projectPath, "\\", "/"))
+
+	for _, e := range a.memoryStore.Entries() {
+		cat := memory.MapToCanonical(e.Category)
+		if cat != memory.CategoryProjectKnowledge {
+			continue
+		}
+		// Check for "archived_experience" tag + matching project path in tags.
+		hasArchiveTag := false
+		hasPathTag := false
+		for _, tag := range e.Tags {
+			if tag == "archived_experience" {
+				hasArchiveTag = true
+			}
+			normalizedTag := strings.ToLower(strings.ReplaceAll(tag, "\\", "/"))
+			if normalizedTag == normalizedPath {
+				hasPathTag = true
+			}
+		}
+		if hasArchiveTag && hasPathTag {
+			return e.Content, nil
+		}
+	}
+
+	return "", nil
+}
+
+// ---------------------------------------------------------------------------
+// Project Tab Session Wails Bindings
+// ---------------------------------------------------------------------------
+
+// CreateProjectTabSession creates a new project tab session entry in the index
+// and returns an initial context message summarizing the project state.
+// If a session already exists for this tabID, it loads and returns its context.
+// This is a Wails binding method called from the frontend when a Project Tab is created.
+func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
+	if tabID == "" || projectPath == "" {
+		return ""
+	}
+
+	persist := a.ensureProjectTabSessionPersist()
+
+	// Cache the tabID → projectPath mapping in memory for fast lookup.
+	a.tabProjectPaths.Store(tabID, projectPath)
+
+	// Check if session already exists on disk — if so, just return a welcome-back message.
+	existing, err := persist.LoadSession(tabID)
+	if err == nil && existing != nil {
+		return fmt.Sprintf("📂 已恢复项目会话：%s", lastPathComponent(projectPath))
+	}
+
+	// Create new session entry in the index.
+	now := time.Now()
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[CreateProjectTabSession] LoadIndex failed: %v", err)
+		index = &TabIndex{Tabs: []TabIndexEntry{}}
+	}
+
+	// Dedup: don't add if tabID already in index.
+	found := false
+	for i, entry := range index.Tabs {
+		if entry.ID == tabID {
+			index.Tabs[i].LastActiveAt = now.Unix()
+			found = true
+			break
+		}
+	}
+	if !found {
+		projectName := lastPathComponent(projectPath)
+		index.Tabs = append(index.Tabs, TabIndexEntry{
+			ID:           tabID,
+			Type:         "project",
+			Title:        projectName,
+			ProjectPath:  projectPath,
+			LastActiveAt: now.Unix(),
+			Archived:     false,
+		})
+	}
+
+	if err := persist.SaveIndex(index); err != nil {
+		log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
+	}
+
+	// Save an initial empty session file.
+	session := &TabSessionData{
+		TabID:        tabID,
+		ProjectPath:  projectPath,
+		Conversation: []interface{}{},
+		ScrollTop:    0,
+		InputText:    "",
+		CreatedAt:    now.UTC().Format(time.RFC3339),
+		LastActiveAt: now.UTC().Format(time.RFC3339),
+	}
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[CreateProjectTabSession] SaveSession failed: %v", err)
+	}
+
+	// Build initial context message from long-term memory.
+	contextMsg := a.buildProjectTabContextMessage(projectPath)
+	if contextMsg != "" {
+		return contextMsg
+	}
+
+	return fmt.Sprintf("📂 已打开项目：%s\n📁 %s\n\n请问需要我做什么？", lastPathComponent(projectPath), projectPath)
+}
+
+// buildProjectTabContextMessage recalls project-related entries from memory
+// using strict project filtering (RecallDynamicStrict) and formats them into
+// an initial context message for the project tab.
+//
+// The summary includes: project name, recent progress, key artifact paths.
+// Uses strictProject=true to ensure only entries tagged with the current
+// projectPath are returned — other projects' knowledge is excluded.
+func (a *App) buildProjectTabContextMessage(projectPath string) string {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+
+	projectName := lastPathComponent(projectPath)
+
+	// Recall task_artifact entries for this project (strict project filter).
+	artifacts := a.memoryStore.RecallDynamicStrict(
+		"task artifact progress",
+		memory.CategoryTaskArtifact,
+		projectPath,
+	)
+
+	// Recall project_knowledge entries for this project (strict project filter).
+	knowledge := a.memoryStore.RecallDynamicStrict(
+		"project knowledge",
+		memory.CategoryProjectKnowledge,
+		projectPath,
+	)
+
+	// Merge and deduplicate by ID.
+	seen := make(map[string]bool, len(artifacts)+len(knowledge))
+	var entries []memory.Entry
+	for _, e := range artifacts {
+		if !seen[e.ID] {
+			seen[e.ID] = true
+			entries = append(entries, e)
+		}
+	}
+	for _, e := range knowledge {
+		if !seen[e.ID] {
+			seen[e.ID] = true
+			entries = append(entries, e)
+		}
+	}
+
+	if len(entries) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📂 项目：%s\n📁 路径：%s\n\n", projectName, projectPath))
+
+	// --- Section: Recent Progress (from task_artifact entries) ---
+	if len(artifacts) > 0 {
+		sb.WriteString("**最近进展：**\n")
+		limit := 5
+		if len(artifacts) < limit {
+			limit = len(artifacts)
+		}
+		for i := 0; i < limit; i++ {
+			e := artifacts[i]
+			label := e.Title
+			if label == "" {
+				label = projectTabTruncateContent(e.Content, 150)
+			}
+			sb.WriteString(fmt.Sprintf("- %s\n", label))
+		}
+		sb.WriteString("\n")
+	}
+
+	// --- Section: Key Artifact Paths ---
+	artifactPaths := projectTabExtractPaths(entries)
+	if len(artifactPaths) > 0 {
+		sb.WriteString("**关键产出物：**\n")
+		limit := 8
+		if len(artifactPaths) < limit {
+			limit = len(artifactPaths)
+		}
+		for i := 0; i < limit; i++ {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", artifactPaths[i]))
+		}
+		sb.WriteString("\n")
+	}
+
+	// --- Section: Project Knowledge ---
+	if len(knowledge) > 0 {
+		sb.WriteString("**项目知识：**\n")
+		limit := 3
+		if len(knowledge) < limit {
+			limit = len(knowledge)
+		}
+		for i := 0; i < limit; i++ {
+			e := knowledge[i]
+			label := e.Title
+			if label == "" {
+				label = projectTabTruncateContent(e.Content, 150)
+			}
+			sb.WriteString(fmt.Sprintf("- %s\n", label))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("请问需要我继续做什么？")
+	return sb.String()
+}
+
+// projectTabTruncateContent truncates content to maxRunes, replacing newlines
+// with spaces and appending "..." if truncated.
+func projectTabTruncateContent(s string, maxRunes int) string {
+	// Replace newlines with spaces for single-line display.
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
+}
+
+// projectTabExtractPaths extracts file paths from entry SourceURL fields and tags.
+func projectTabExtractPaths(entries []memory.Entry) []string {
+	seen := make(map[string]bool)
+	var paths []string
+
+	for _, e := range entries {
+		// Check SourceURL first (most reliable source of artifact paths).
+		if e.SourceURL != "" && looksLikeFilePathForContext(e.SourceURL) {
+			if !seen[e.SourceURL] {
+				seen[e.SourceURL] = true
+				paths = append(paths, e.SourceURL)
+			}
+		}
+		// Check tags for file paths (excluding the project path itself).
+		for _, tag := range e.Tags {
+			if looksLikeFilePathForContext(tag) && !seen[tag] {
+				// Skip tags that are just the project root path.
+				if strings.Contains(tag, ".") || strings.Count(tag, string([]rune{filepath.Separator})) > 3 {
+					seen[tag] = true
+					paths = append(paths, tag)
+				}
+			}
+		}
+	}
+
+	return paths
+}
+
+// CloseProjectTabSession persists the current session state for a project tab
+// and updates the index. Called when the user closes a Project Tab.
+// This is a Wails binding method.
+func (a *App) CloseProjectTabSession(tabID string) {
+	if tabID == "" {
+		return
+	}
+
+	persist := a.ensureProjectTabSessionPersist()
+
+	// Update lastActiveAt in the index.
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[CloseProjectTabSession] LoadIndex failed: %v", err)
+		return
+	}
+
+	for i, entry := range index.Tabs {
+		if entry.ID == tabID {
+			index.Tabs[i].LastActiveAt = time.Now().Unix()
+			break
+		}
+	}
+
+	if err := persist.SaveIndex(index); err != nil {
+		log.Printf("[CloseProjectTabSession] SaveIndex failed: %v", err)
+	}
+
+	log.Printf("[CloseProjectTabSession] tab=%s persisted", tabID)
+}
+
+// SendMessageForTab routes a message to the project-specific session identified
+// by tabID. It delegates to the existing SendAIAssistantMessage with the
+// project_path from the tab's session, enabling per-project isolation.
+// This is a Wails binding method.
+func (a *App) SendMessageForTab(tabID, text string) (*IMAgentResponse, error) {
+	if tabID == "" {
+		return nil, fmt.Errorf("tabID is required")
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("message text is required")
+	}
+
+	// Look up the project path — first from in-memory cache, then fall back to disk.
+	var projectPath string
+	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+		projectPath = cached.(string)
+	}
+
+	if projectPath == "" {
+		persist := a.ensureProjectTabSessionPersist()
+		session, err := persist.LoadSession(tabID)
+		if err == nil && session != nil {
+			projectPath = session.ProjectPath
+		}
+
+		if projectPath == "" {
+			// Fallback: look up from index.
+			index, err := persist.LoadIndex()
+			if err == nil && index != nil {
+				for _, entry := range index.Tabs {
+					if entry.ID == tabID {
+						projectPath = entry.ProjectPath
+						break
+					}
+				}
+			}
+		}
+
+		// Populate cache for future calls.
+		if projectPath != "" {
+			a.tabProjectPaths.Store(tabID, projectPath)
+		}
+	}
+
+	if projectPath == "" {
+		return nil, fmt.Errorf("no project path found for tab %s", tabID)
+	}
+
+	// Delegate to the existing SendAIAssistantMessage with project_path set.
+	// This auto-synthesizes per-project userID (desktop-user:{projectPath})
+	// and all downstream components isolate by userID.
+	return a.SendAIAssistantMessage(AIAssistantSendRequest{
+		Text:        text,
+		ProjectPath: projectPath,
+	})
+}
+
+// LoadProjectTabIndex returns the saved tab index for frontend restoration
+// on app startup. Returns an empty slice if no index exists.
+// This is a Wails binding method.
+func (a *App) LoadProjectTabIndex() []TabIndexEntry {
+	persist := a.ensureProjectTabSessionPersist()
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[LoadProjectTabIndex] LoadIndex failed: %v", err)
+		return []TabIndexEntry{}
+	}
+	if index == nil || len(index.Tabs) == 0 {
+		return []TabIndexEntry{}
+	}
+	return index.Tabs
+}
+
+// ---------------------------------------------------------------------------
+
+// ensureProjectTabSessionPersist returns the shared ProjectTabSessionPersist
+// instance from the App struct, lazily initializing it if nil.
+func (a *App) ensureProjectTabSessionPersist() *ProjectTabSessionPersist {
+	if a.projectTabSessionPersist == nil {
+		a.projectTabSessionPersist = NewProjectTabSessionPersist()
+	}
+	return a.projectTabSessionPersist
 }
 
 // deriveTaskName generates a human-readable task name from a ProjectRecord

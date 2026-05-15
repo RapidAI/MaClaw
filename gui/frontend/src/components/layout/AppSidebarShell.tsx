@@ -1,4 +1,4 @@
-﻿import type { MouseEvent as ReactMouseEvent } from 'react';
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { SidebarAiPane } from './SidebarAiPane';
 import { SidebarNavRail } from './SidebarNavRail';
 import type { SidebarHubCredits } from '../../types/appShell';
@@ -30,7 +30,6 @@ interface AppSidebarShellProps {
     switchTool: (tool: string) => void;
     lang: string;
     maclawLLMOnline: boolean;
-    agentNetRunning: boolean;
     showLansenger?: boolean;
     remoteActivationStatus: any;
     qqBotStatus: string;
@@ -97,7 +96,6 @@ export const AppSidebarShell = ({
     switchTool,
     lang,
     maclawLLMOnline,
-    agentNetRunning,
     showLansenger = false,
     remoteActivationStatus,
     qqBotStatus,
@@ -172,7 +170,6 @@ export const AppSidebarShell = ({
                     switchTool={switchTool}
                     lang={lang}
                     maclawLLMOnline={maclawLLMOnline}
-                    agentNetRunning={agentNetRunning}
                     remoteActivationStatus={remoteActivationStatus}
                     runningTaskCount={runningTaskCount}
                     t={t}
@@ -188,8 +185,6 @@ export const AppSidebarShell = ({
                         lang={lang}
                         aiThemeMode={aiThemeMode}
                         maclawLLMOnline={maclawLLMOnline}
-                        agentNetRunning={agentNetRunning}
-                        hideAgentNet={brandInfo?.id === 'qianxin'}
                         showLansenger={showLansenger}
                         remoteActivationStatus={remoteActivationStatus}
                         qqBotStatus={qqBotStatus}

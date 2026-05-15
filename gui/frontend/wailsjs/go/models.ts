@@ -29,6 +29,25 @@ export namespace main {
 	    }
 	}
 
+	export class ProjectContextSummary {
+	    project_name: string;
+	    recent_progress: string;
+	    key_artifacts: string[];
+	    active_workflow: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ProjectContextSummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_name = source["project_name"];
+	        this.recent_progress = source["recent_progress"];
+	        this.key_artifacts = source["key_artifacts"];
+	        this.active_workflow = source["active_workflow"];
+	    }
+	}
+
 	export class ProjectConfig {
 	    id: string;
 	    name: string;
@@ -146,7 +165,6 @@ export namespace main {
 	    show_nav_skills?: boolean;
 	    show_nav_mcp?: boolean;
 	    show_nav_gossip?: boolean;
-	    show_nav_agentnet?: boolean;
 	    language: string;
 	    power_optimization: boolean;
 	    screen_dim_timeout_min: number;
@@ -200,14 +218,10 @@ export namespace main {
 	    nl_skills: any[];
 	    memory_auto_compress: boolean;
 	    memory_max_backups: number;
-	    agentnet_enabled: boolean;
 	    skill_hub_urls: any[];
 	    maclaw_debug_tool_calls: boolean;
 	    show_ai_trace_entry: boolean;
 	    log_detail_enabled: boolean;
-	    AgentNet_auto_picker_enabled: boolean;
-	    AgentNet_auto_picker_poll_min: number;
-	    AgentNet_auto_picker_min_reward: number;
 	    security_policy_mode: string;
 	    sandbox_mode: string;
 	    network_level: string;
@@ -314,7 +328,6 @@ export namespace main {
 	        this.show_nav_skills = source["show_nav_skills"];
 	        this.show_nav_mcp = source["show_nav_mcp"];
 	        this.show_nav_gossip = source["show_nav_gossip"];
-	        this.show_nav_agentnet = source["show_nav_agentnet"];
 	        this.language = source["language"];
 	        this.power_optimization = source["power_optimization"];
 	        this.screen_dim_timeout_min = source["screen_dim_timeout_min"];
@@ -368,10 +381,6 @@ export namespace main {
 	        this.nl_skills = source["nl_skills"];
 	        this.memory_auto_compress = source["memory_auto_compress"];
 	        this.memory_max_backups = source["memory_max_backups"];
-	        this.agentnet_enabled = source["agentnet_enabled"];
-	        this.AgentNet_auto_picker_enabled = source["AgentNet_auto_picker_enabled"];
-	        this.AgentNet_auto_picker_poll_min = source["AgentNet_auto_picker_poll_min"];
-	        this.AgentNet_auto_picker_min_reward = source["AgentNet_auto_picker_min_reward"];
 	        this.skill_hub_urls = source["skill_hub_urls"];
 	        this.security_policy_mode = source["security_policy_mode"];
 	        this.sandbox_mode = source["sandbox_mode"];

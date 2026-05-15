@@ -6,7 +6,7 @@ const LLM_SERVICE_I18N = {
     linkageIssuesEmpty: 'Provider and service-group linkage looks healthy.',
     groups: 'Service Groups',
     bindings: 'Security Group Bindings',
-    bindingsDesc: 'Reuse the security groups already created in Security.',
+    bindingsDesc: 'Reuse the user groups already created in Enterprise Management.',
     users: 'User Bindings',
     cards: 'Service Exchange Cards',
     grants: 'Active Grants',
@@ -181,6 +181,7 @@ const LLM_SERVICE_I18N = {
     noAuthorizedModelDetails: 'No route details yet.',
     groupIdNameRequired: 'Service group id and name are required.',
     duplicateGroupId: 'Service group id already exists: {id}',
+    groupIdImmutable: 'Service group id cannot be changed after creation. Create a new group when you need a new id.',
     builtInDefaultReadOnly: 'The built-in Default group is read-only.',
     builtInDefaultCannotRemove: 'The built-in Default group cannot be removed.',
     addNewGroup: 'Add New Group',
@@ -287,7 +288,7 @@ const LLM_SERVICE_I18N = {
     linkageIssuesEmpty: '\u670d\u52a1\u5546\u4e0e\u670d\u52a1\u7ec4\u7684\u5173\u8054\u6b63\u5e38\u3002',
     groups: '\u670d\u52a1\u7ec4',
     bindings: '\u5b89\u5168\u7ec4\u7ed1\u5b9a',
-    bindingsDesc: '\u590d\u7528\u5728\u5b89\u5168\u7ba1\u7406\u4e2d\u5df2\u521b\u5efa\u7684\u7528\u6237\u7ec4\u3002',
+    bindingsDesc: '\u590d\u7528\u5728\u4f01\u4e1a\u7ba1\u7406\u4e2d\u5df2\u521b\u5efa\u7684\u7528\u6237\u7ec4\u3002',
     users: '\u7528\u6237\u7ed1\u5b9a',
     cards: '\u670d\u52a1\u5151\u6362\u5361',
     grants: '\u751f\u6548\u6388\u6743',
@@ -462,6 +463,7 @@ const LLM_SERVICE_I18N = {
     noAuthorizedModelDetails: '\u6682\u65e0\u8def\u7531\u660e\u7ec6\u3002',
     groupIdNameRequired: '\u670d\u52a1\u7ec4 ID \u548c\u540d\u79f0\u4e3a\u5fc5\u586b\u9879\u3002',
     duplicateGroupId: '\u670d\u52a1\u7ec4 ID \u5df2\u5b58\u5728: {id}',
+    groupIdImmutable: '\u670d\u52a1\u7ec4 ID \u521b\u5efa\u540e\u4e0d\u80fd\u4fee\u6539\uff0c\u9700\u8981\u65b0 ID \u65f6\u8bf7\u65b0\u5efa\u670d\u52a1\u7ec4\u3002',
     builtInDefaultReadOnly: '\u5185\u7f6e Default \u7ec4\u4e3a\u53ea\u8bfb\u3002',
     builtInDefaultCannotRemove: '\u5185\u7f6e Default \u7ec4\u4e0d\u80fd\u5220\u9664\u3002',
     addNewGroup: '\u65b0\u5efa\u670d\u52a1\u7ec4',
@@ -1254,7 +1256,7 @@ async function llmServiceCopyIssuedCodes() {
     }
     showToast(lsx('copyCodesDone'), 'success');
   } catch (err) {
-    showToast(lsx('copyCodesFailed', { error: err && err.message || llsX('unknownError') }), 'error');
+    showToast(lsx('copyCodesFailed', { error: err && err.message || lsx('unknownError') }), 'error');
   }
 }
 async function llmServiceCopyCardCode(code) {
@@ -1272,7 +1274,7 @@ async function llmServiceCopyCardCode(code) {
     }
     showToast(lsx('copyCodesDone'), 'success');
   } catch (err) {
-    showToast(lsx('copyCodesFailed', { error: err && err.message || llsX('unknownError') }), 'error');
+    showToast(lsx('copyCodesFailed', { error: err && err.message || lsx('unknownError') }), 'error');
   }
 }
 function renderLLMServiceIssuedCodes() {
@@ -1317,6 +1319,7 @@ function llmServiceWarnUnknownServiceGroups(ids) {
 }
 function llmServiceCollectReferencedServiceGroups(cache) {
   var refs = [];
+  (cache && cache.global_service_group_ids || []).forEach(function(id) { refs.push(id); });
   (cache && cache.default_new_user_service_groups || []).forEach(function(id) { refs.push(id); });
   (cache && cache.group_bindings || []).forEach(function(binding) { (binding.service_group_ids || []).forEach(function(id) { refs.push(id); }); });
   (cache && cache.user_bindings || []).forEach(function(binding) { (binding.service_group_ids || []).forEach(function(id) { refs.push(id); }); });
@@ -1535,6 +1538,7 @@ function renderLLMServiceChainOverview(cache) {
   var grants = cache && cache.grants || [];
   var groupBindings = cache && cache.group_bindings || [];
   var userBindings = cache && cache.user_bindings || [];
+  var globalGroups = (cache && cache.global_service_group_ids || []).filter(function(id) { return !isBuiltinLLMServiceGroup(id); });
   var defaultGroups = (cache && cache.default_new_user_service_groups || []).filter(function(id) { return !isBuiltinLLMServiceGroup(id); });
   var providerIssues = cache && cache.provider_link_issues || [];
   var now = Date.now();
@@ -1554,8 +1558,9 @@ function renderLLMServiceChainOverview(cache) {
   });
   var directBindingCount = userBindings.filter(function(binding) { return (binding && binding.service_group_ids || []).length; }).length;
   var securityBindingCount = groupBindings.filter(function(binding) { return (binding && binding.service_group_ids || []).length; }).length;
+  var globalCoverageCount = globalGroups.length;
   var defaultCoverageCount = defaultGroups.length;
-  var bindingPathCount = directBindingCount + securityBindingCount + defaultCoverageCount;
+  var bindingPathCount = directBindingCount + securityBindingCount + globalCoverageCount + defaultCoverageCount;
   var activeGrants = grants.filter(function(grant) { return llmServiceGrantIsActive(grant, now); });
   activeGrants.forEach(function(grant) {
     var group = groupMap[String(grant && grant.service_group_id || '').trim()];
@@ -1635,7 +1640,7 @@ async function loadLLMServiceAdmin() {
       loadLLMServiceModelRuntime({ silent: true })
     ]);
     const data = results[0];
-    llmServiceAdminCache = data || { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
+    llmServiceAdminCache = data || { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
     if (llmServiceSelectedGroupID && !(llmServiceAdminCache.model_service_groups || []).some(function(g) { return g.id === llmServiceSelectedGroupID; })) llmServiceSelectedGroupID = '';
     renderLLMServiceAdmin();
     renderLLMServiceSystemSettings();
@@ -1972,14 +1977,16 @@ function readLLMServiceGroupDraft() {
   };
 }
 function upsertLLMServiceGroup() {
-  if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
+  if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
   const next = readLLMServiceGroupDraft();
   if (!next.id || !next.name) { showToast(lsx('groupIdNameRequired'), 'error'); return false; }
   if (isBuiltinLLMServiceGroup(next.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) { showToast(lsx('builtInDefaultReadOnly'), 'info'); return false; }
   const groups = llmServiceAdminCache.model_service_groups || [];
-  const selectedIdx = groups.findIndex(function(g) { return g.id === llmServiceSelectedGroupID; });
-  const duplicateIdx = groups.findIndex(function(g, idx) { return g.id === next.id && idx !== selectedIdx; });
+  const selectedIdx = groups.findIndex(function(g) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(llmServiceSelectedGroupID); });
+  const oldID = selectedIdx >= 0 ? groups[selectedIdx].id : '';
+  const duplicateIdx = groups.findIndex(function(g, idx) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(next.id) && idx !== selectedIdx; });
   if (duplicateIdx >= 0) { showToast(lsx('duplicateGroupId', { id: next.id }), 'error'); return false; }
+  if (selectedIdx >= 0 && llmServiceGroupIDKey(oldID) !== llmServiceGroupIDKey(next.id)) { showToast(lsx('groupIdImmutable'), 'error'); return false; }
   if (selectedIdx >= 0) groups[selectedIdx] = next; else groups.push(next);
   llmServiceAdminCache.model_service_groups = groups;
   llmServiceSelectedGroupID = next.id;
@@ -1987,12 +1994,22 @@ function upsertLLMServiceGroup() {
   renderLLMServiceAdmin();
   return true;
 }
+function llmServiceGroupIDKey(id) { return String(id || '').trim().toLowerCase(); }
+function pruneLLMServiceGroupReferences(id) {
+  var key = llmServiceGroupIDKey(id);
+  if (!llmServiceAdminCache || !key) return;
+  var keep = function(x) { return llmServiceGroupIDKey(x) !== key; };
+  llmServiceAdminCache.model_service_groups = (llmServiceAdminCache.model_service_groups || []).filter(function(g) { return keep(g && g.id); });
+  llmServiceAdminCache.global_service_group_ids = (llmServiceAdminCache.global_service_group_ids || []).filter(keep);
+  llmServiceAdminCache.default_new_user_service_groups = (llmServiceAdminCache.default_new_user_service_groups || []).filter(keep);
+  if (!(llmServiceAdminCache.default_new_user_service_groups || []).length) llmServiceAdminCache.default_new_user_service_groups = [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID];
+  llmServiceAdminCache.group_bindings = (llmServiceAdminCache.group_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
+  llmServiceAdminCache.user_bindings = (llmServiceAdminCache.user_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
+}
 function removeSelectedLLMServiceGroup() {
   if (!llmServiceAdminCache || !llmServiceSelectedGroupID) return;
   if (isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) { showToast(lsx('builtInDefaultCannotRemove'), 'info'); return; }
-  llmServiceAdminCache.model_service_groups = (llmServiceAdminCache.model_service_groups || []).filter(function(g) { return g.id !== llmServiceSelectedGroupID; });
-  llmServiceAdminCache.group_bindings = (llmServiceAdminCache.group_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(function(id) { return id !== llmServiceSelectedGroupID; }); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
-  llmServiceAdminCache.user_bindings = (llmServiceAdminCache.user_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(function(id) { return id !== llmServiceSelectedGroupID; }); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
+  pruneLLMServiceGroupReferences(llmServiceSelectedGroupID);
   llmServiceSelectedGroupID = llmServiceAdminCache.model_service_groups[0] && llmServiceAdminCache.model_service_groups[0].id || '';
   llmServiceDraftDirty = false;
   llmServiceRenderedGroupID = llmServiceSelectedGroupID || '';
@@ -2008,7 +2025,7 @@ function addLLMServiceGroupBinding() {
   if (llmServiceWarnUnknownSecurityGroups([groupID])) return;
   if (llmServiceWarnUnknownServiceGroups(serviceGroupIDs)) return;
   llmServiceAdminCache.group_bindings = llmServiceAdminCache.group_bindings || [];
-  const existingIdx = llmServiceAdminCache.group_bindings.findIndex(function(item) { return item.group_id === groupID; });
+  const existingIdx = llmServiceAdminCache.group_bindings.findIndex(function(item) { return String(item.group_id || '').trim().toLowerCase() === String(groupID || '').trim().toLowerCase(); });
   const nextBinding = { group_id: groupID, service_group_ids: serviceGroupIDs };
   if (existingIdx >= 0) llmServiceAdminCache.group_bindings[existingIdx] = nextBinding; else llmServiceAdminCache.group_bindings.push(nextBinding);
   if (groupEl) groupEl.value = '';
@@ -2038,7 +2055,13 @@ async function removeLLMServiceUserBinding(idx) { if (!llmServiceAdminCache) ret
 function llmServiceAdminSavePayload() {
   var payload = Object.assign({}, llmServiceAdminCache || {});
   delete payload.cards;
+  delete payload.grants;
   delete payload.user_diagnostic;
+  delete payload.provider_link_issues;
+  delete payload.available_models;
+  delete payload.expose_api_base_url;
+  delete payload.expose_base_url;
+  delete payload.expose_models_url;
   return payload;
 }
 function llmServiceLegacyEditorVisible() {
@@ -2078,7 +2101,7 @@ async function diagnoseLLMServiceUser() {
   }
   try {
     const data = await api('/api/admin/llm/services/diagnose?email=' + encodeURIComponent(email));
-    if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
+    if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] };
     llmServiceAdminCache.user_diagnostic = data || null;
     renderLLMServiceAdmin();
   } catch (err) {
@@ -2149,7 +2172,7 @@ function ensureLLMServiceSystemUI() {
   host.innerHTML = '' +
     '<div class="head" style="margin-bottom:8px"><div><div class="item-title" id="llmServiceSystemTitle"></div><div class="item-meta" id="llmServiceSystemDesc"></div></div><div class="actions"><button class="btn-primary" onclick="saveLLMServiceSystemSettings()" id="llmServiceSystemSaveBtn"></button></div></div>' +
     '<div class="grid2">' +
-    '<div><label id="llmServiceSystemGroupsLabel"></label><select id="llmServiceSystemGroups" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:42px"></select></div>' +
+    '<div><label id="llmServiceSystemGroupsLabel"></label><select id="llmServiceSystemGroups" multiple size="4" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:92px"></select></div>' +
     '<div><label id="llmServiceSystemDaysLabel"></label><input id="llmServiceSystemDays" type="number" min="1" value="30"></div>' +
     '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemCreditsLabel"></label><input id="llmServiceSystemCredits" type="number" min="1" step="1" value="1000"></div></div><div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
   tab.appendChild(host);
@@ -2171,7 +2194,10 @@ function renderLLMServiceSystemSettings() {
     return;
   }
   renderLLMServiceSystemGroupOptions();
-  _s('llmServiceSystemGroups', 'value', String((llmServiceAdminCache.default_new_user_service_groups || [])[0] || BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID));
+  var systemSelect = document.getElementById('llmServiceSystemGroups');
+  var selectedSystemGroups = {};
+  (llmServiceAdminCache.default_new_user_service_groups || [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID]).forEach(function(id) { selectedSystemGroups[String(id || '').trim()] = true; });
+  Array.prototype.slice.call(systemSelect && systemSelect.options || []).forEach(function(option) { option.selected = !!selectedSystemGroups[option.value]; });
   _s('llmServiceSystemDays', 'value', String(llmServiceAdminCache.default_new_user_duration_days || 30));
   _s('llmServiceSystemCredits', 'value', String(llmServiceAdminCache.default_new_user_credits || 1000));
   refreshLLMServiceGroupSelectors();
@@ -2188,8 +2214,8 @@ function ensureLLMServiceSystemSettingsLoaded() {
 async function saveLLMServiceSystemSettings() {
   ensureLLMServiceSystemUI();
   if (!llmServiceAdminCache) await loadLLMServiceAdmin();
-  var selectedSystemGroup = String(document.getElementById('llmServiceSystemGroups').value || '').trim();
-  llmServiceAdminCache.default_new_user_service_groups = selectedSystemGroup ? [selectedSystemGroup] : [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID];
+  var selectedSystemGroups = Array.prototype.slice.call(document.getElementById('llmServiceSystemGroups').options || []).filter(function(option) { return option.selected && option.value; }).map(function(option) { return option.value; });
+  llmServiceAdminCache.default_new_user_service_groups = selectedSystemGroups.length ? selectedSystemGroups : [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID];
   llmServiceAdminCache.default_new_user_duration_days = Number(document.getElementById('llmServiceSystemDays').value || 30);
   if (!(llmServiceAdminCache.default_new_user_duration_days > 0)) llmServiceAdminCache.default_new_user_duration_days = 30;
   llmServiceAdminCache.default_new_user_credits = Number(document.getElementById('llmServiceSystemCredits').value || 1000);
@@ -2759,9 +2785,9 @@ function llsSetProviderNum(i, providerID, k, v) { var m = llmServiceGroupDraft &
 function llsAddProvider(i) { var s = document.getElementById('llsProviderSel' + i); var id = normalizeLLMServiceProviderRef(s && s.value || ''); if (!id) { showToast(llsX('chooseProviderFirst'), 'info'); return; } var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; if ((m.provider_ids || []).indexOf(id) < 0) m.provider_ids.push(id); llsSyncModelProviderState(m); renderLLMServiceGroupDialog(); }
 function llsMoveProvider(i, id, delta) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; var list = m.provider_ids || []; var from = list.indexOf(id); if (from < 0) return; var to = from + Number(delta || 0); if (to < 0 || to >= list.length) return; var item = list.splice(from, 1)[0]; list.splice(to, 0, item); m.provider_ids = list; llsSyncModelProviderState(m); renderLLMServiceGroupDialog(); }
 function llsRemoveProvider(i, id) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; m.provider_ids = (m.provider_ids || []).filter(function(v) { return v !== id; }); m.provider_configs = (m.provider_configs || []).filter(function(cfg) { return normalizeLLMServiceProviderRef(cfg && cfg.provider_id || '') !== normalizeLLMServiceProviderRef(id); }); llsSyncModelProviderState(m); renderLLMServiceGroupDialog(); }
-function llsRemoveGroupById(id) { if (!llmServiceAdminCache || !id) return; if (isBuiltinLLMServiceGroup(id)) { showToast(lsx('builtInDefaultCannotRemove'), 'info'); return; } llmServiceAdminCache.model_service_groups = (llmServiceAdminCache.model_service_groups || []).filter(function(g) { return g.id !== id; }); llmServiceAdminCache.group_bindings = (llmServiceAdminCache.group_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(function(x) { return x !== id; }); return b; }).filter(function(b) { return (b.service_group_ids || []).length; }); llmServiceAdminCache.user_bindings = (llmServiceAdminCache.user_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(function(x) { return x !== id; }); return b; }).filter(function(b) { return (b.service_group_ids || []).length; }); if (llmServiceSelectedGroupID === id) llmServiceSelectedGroupID = ''; renderLLMServiceAdmin(); }
+function llsRemoveGroupById(id) { if (!llmServiceAdminCache || !id) return; if (isBuiltinLLMServiceGroup(id)) { showToast(lsx('builtInDefaultCannotRemove'), 'info'); return; } pruneLLMServiceGroupReferences(id); if (llmServiceGroupIDKey(llmServiceSelectedGroupID) === llmServiceGroupIDKey(id)) llmServiceSelectedGroupID = ''; renderLLMServiceAdmin(); }
 function llsToggleProviderFeature(i, providerID, f, on) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; var cfg = llsProviderConfig(m, providerID); if (!cfg) return; var s = new Set(cfg.capability_tags || []); if (on) s.add(f); else s.delete(f); cfg.capability_tags = Array.from(s); llsSyncModelProviderState(m); }
 function llsSetProviderExtra(i, providerID, v) { var m = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[i]; if (!m) return; var cfg = llsProviderConfig(m, providerID); if (!cfg) return; var p = (cfg.capability_tags || []).filter(function(x) { return llmServiceCapabilityOptions.indexOf(x) >= 0; }); cfg.capability_tags = Array.from(new Set(p.concat(parseCSV(v).filter(function(x) { return llmServiceCapabilityOptions.indexOf(x) < 0; })))); llsSyncModelProviderState(m); }
-async function saveLLMServiceGroupDialog() { if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], group_bindings: [], user_bindings: [], cards: [], grants: [] }; var n = llsCloneGroup(llmServiceGroupDraft || llsEmptyGroup()); if (!n.id || !n.name) { showToast(lsx('groupIdNameRequired'), 'error'); return; } n.access_policy = llsNormalizeAccessPolicy(n.access_policy); if (isBuiltinLLMServiceGroup(n.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) { showToast(lsx('builtInDefaultReadOnly'), 'info'); return; } var routeNameSeen = {}; for (var i = 0; i < (n.models || []).length; i++) { n.models[i].name = String(n.models[i].name || '').trim() || 'auto'; if (!(n.models[i].provider_ids || []).length) { showToast(llsX('routeNeedsProvider'), 'error'); return; } var routeNameKey = String(n.models[i].name || '').trim().toLowerCase(); if (routeNameSeen[routeNameKey]) { showToast(llsX('duplicateRouteAlias', { name: n.models[i].name }), 'error'); return; } routeNameSeen[routeNameKey] = true; } var gs = llmServiceAdminCache.model_service_groups || [], si = gs.findIndex(function(g) { return g.id === llmServiceSelectedGroupID; }), di = gs.findIndex(function(g, idx) { return g.id === n.id && idx !== si; }); if (di >= 0) { showToast(lsx('duplicateGroupId', { id: n.id }), 'error'); return; } if (si >= 0) gs[si] = n; else gs.push(n); llmServiceAdminCache.model_service_groups = gs; llmServiceSelectedGroupID = n.id; closeLLMServiceGroupDialog(); renderLLMServiceAdmin(); await saveLLMServiceAdmin(); }
+async function saveLLMServiceGroupDialog() { if (!llmServiceAdminCache) llmServiceAdminCache = { model_service_groups: [], global_service_group_ids: [], group_bindings: [], user_bindings: [], cards: [], grants: [] }; var n = llsCloneGroup(llmServiceGroupDraft || llsEmptyGroup()); if (!n.id || !n.name) { showToast(lsx('groupIdNameRequired'), 'error'); return; } n.access_policy = llsNormalizeAccessPolicy(n.access_policy); if (isBuiltinLLMServiceGroup(n.id) || isBuiltinLLMServiceGroup(llmServiceSelectedGroupID)) { showToast(lsx('builtInDefaultReadOnly'), 'info'); return; } var routeNameSeen = {}; for (var i = 0; i < (n.models || []).length; i++) { n.models[i].name = String(n.models[i].name || '').trim() || 'auto'; if (!(n.models[i].provider_ids || []).length) { showToast(llsX('routeNeedsProvider'), 'error'); return; } var routeNameKey = String(n.models[i].name || '').trim().toLowerCase(); if (routeNameSeen[routeNameKey]) { showToast(llsX('duplicateRouteAlias', { name: n.models[i].name }), 'error'); return; } routeNameSeen[routeNameKey] = true; } var gs = llmServiceAdminCache.model_service_groups || [], si = gs.findIndex(function(g) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(llmServiceSelectedGroupID); }), oldID = si >= 0 ? gs[si].id : '', di = gs.findIndex(function(g, idx) { return llmServiceGroupIDKey(g && g.id) === llmServiceGroupIDKey(n.id) && idx !== si; }); if (di >= 0) { showToast(lsx('duplicateGroupId', { id: n.id }), 'error'); return; } if (si >= 0 && llmServiceGroupIDKey(oldID) !== llmServiceGroupIDKey(n.id)) { showToast(lsx('groupIdImmutable'), 'error'); return; } if (si >= 0) gs[si] = n; else gs.push(n); llmServiceAdminCache.model_service_groups = gs; llmServiceSelectedGroupID = n.id; closeLLMServiceGroupDialog(); renderLLMServiceAdmin(); await saveLLMServiceAdmin(); }
 
 var _renderLLMServiceAdmin=renderLLMServiceAdmin;renderLLMServiceAdmin=function(){ensureLLMServiceGroupModalUI();ensureLLMServiceProviderModalUI();_renderLLMServiceAdmin();syncLLMServiceLegacyEditor()};

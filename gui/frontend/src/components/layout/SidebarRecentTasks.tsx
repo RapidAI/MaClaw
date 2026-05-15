@@ -123,11 +123,11 @@ export const SidebarRecentTasks = ({
                 {textForLang(lang, 'No recent tasks', '\u6682\u65e0\u6700\u8fd1\u4efb\u52a1', '\u66ab\u7121\u6700\u8fd1\u4efb\u52d9')}
             </div>
         ) : recentProjects.map(proj => (
-            <div key={proj.id || proj.project_path} onDoubleClick={() => handleTaskDoubleClick(proj.project_path)} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'grid', gridTemplateColumns: '20px minmax(0, 1fr)', gap: '7px', padding: '8px 8px', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.15s' }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                <span style={{ color: '#ff3b73', fontSize: '0.92rem', lineHeight: '1.1rem' }}>{proj.pinned ? '\uD83D\uDCCC' : '\uD83D\uDE80'}</span>
-                <span style={{ minWidth: 0 }}>
-                    {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshRecentProjects(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{proj.name || proj.project_path}</span>}
-                    <span style={{ display: 'block', marginTop: '4px', color: 'var(--theme-text-muted)', fontSize: '0.68rem', lineHeight: 1.32, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{proj.preview || proj.project_path}</span>
+            <div key={proj.id || proj.project_path} onDoubleClick={() => handleTaskDoubleClick(proj.project_path)} onContextMenu={e => { e.preventDefault(); setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: proj.name || proj.project_path, pinned: !!proj.pinned }); }} style={{ display: 'flex', flexDirection: 'row', alignItems: 'flex-start', gap: '6px', padding: '7px 8px', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.15s' }} title={`${proj.name || proj.project_path}\n${proj.project_path}${proj.preview ? '\n' + proj.preview : ''}`} onMouseEnter={e => (e.currentTarget.style.background = 'color-mix(in srgb, var(--theme-text-primary) 7%, transparent)')} onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                <span style={{ flexShrink: 0, color: '#ff3b73', fontSize: '0.82rem', lineHeight: '1.2', width: '16px', textAlign: 'center', overflow: 'hidden' }}>{proj.pinned ? '\uD83D\uDCCC' : '\uD83D\uDE80'}</span>
+                <span style={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+                    {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name) { await renameTask(proj.project_path, trimmed); refreshRecentProjects(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span style={{ display: 'block', fontWeight: 700, fontSize: '0.74rem', color: 'var(--theme-text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.name || proj.project_path}</span>}
+                    <span style={{ display: 'block', marginTop: '3px', color: 'var(--theme-text-muted)', fontSize: '0.66rem', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textAlign: 'left' }}>{proj.preview || proj.project_path}</span>
                 </span>
             </div>
         ))}
@@ -153,14 +153,14 @@ export const SidebarRecentTasks = ({
                     </div>
                     <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                         <label style={{ fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-secondary)' }} htmlFor="recent-task-name-input">
-                            {textForLang(lang, 'Task name', '任务名', '任務名')}
+                            {textForLang(lang, 'Task command', '任务命令', '任務命令')}
                         </label>
                         <input
                             id="recent-task-name-input"
                             autoFocus
                             value={newTaskName}
                             onChange={e => setNewTaskName(e.target.value)}
-                            placeholder={textForLang(lang, 'Enter a task name', '请输入任务名', '請輸入任務名')}
+                            placeholder={textForLang(lang, 'Enter a task command', '请输入新任务的命令', '請輸入新任務的命令')}
                             disabled={creatingTask}
                             style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.82rem', color: 'var(--theme-text-primary)', background: 'var(--theme-surface-muted)', border: '1px solid var(--theme-border)', borderRadius: '6px', padding: '8px 10px', outline: 'none' }}
                         />

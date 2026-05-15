@@ -417,8 +417,8 @@ func TestGroupDiscussionReviewPosition(t *testing.T) {
 func TestNormalizeGroupDiscussionEscalationDefaultsTargetAndRaisedBy(t *testing.T) {
 	t.Parallel()
 	got := normalizeGroupDiscussionEscalation(a2a.Escalation{Reason: " needs owner "}, " local-agent ")
-	if got.Target != "iworkercenter" {
-		t.Fatalf("target = %q, want default iworkercenter", got.Target)
+	if got.Target != "human_owner" {
+		t.Fatalf("target = %q, want default human_owner", got.Target)
 	}
 	if got.RaisedBy != "local-agent" {
 		t.Fatalf("raised_by = %q, want fallback", got.RaisedBy)
@@ -523,6 +523,31 @@ func TestGroupDiscussionReadinessReadyWithEnoughAnswers(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionReadinessIgnoresInitiatorAndObserverMessages(t *testing.T) {
+	t.Parallel()
+	detail := a2a.HubDiscussionDetail{
+		Discussion: a2a.HubDiscussionSummary{ID: "disc-roles", Status: string(a2a.SessionOpen), ParticipantIDs: []string{"human", "maclaw", "observer"}},
+		Session: &a2a.Session{Participants: []a2a.Participant{
+			{ID: "human", RoleCode: "initiator"},
+			{ID: "maclaw", RoleCode: "review"},
+			{ID: "observer", RoleCode: "observe"},
+		}},
+		Messages: []a2a.Message{
+			{ID: "m1", FromID: "human", Kind: a2a.MessageStatement, Content: "Here is more background."},
+			{ID: "m2", FromID: "observer", Kind: a2a.MessageStatement, Content: "I am watching."},
+		},
+	}
+	got := groupDiscussionReadiness(detail)
+	if got.AnswerCount != 0 || got.ExpectedAnswerCount != 1 || got.Ready {
+		t.Fatalf("readiness = %+v, want initiator/observer ignored", got)
+	}
+	detail.Messages = append(detail.Messages, a2a.Message{ID: "m3", FromID: "maclaw", Kind: a2a.MessageAnswer, Content: "Approve with a retention note."})
+	got = groupDiscussionReadiness(detail)
+	if got.AnswerCount != 1 || got.ExpectedAnswerCount != 1 || !got.Ready {
+		t.Fatalf("readiness = %+v, want reviewer answer counted", got)
+	}
+}
+
 func TestGroupDiscussionReadinessReadyWithExistingResult(t *testing.T) {
 	t.Parallel()
 	detail := a2a.HubDiscussionDetail{Discussion: a2a.HubDiscussionSummary{ID: "disc-1", Status: string(a2a.SessionDecided), ResultSummary: "Use staged rollout", ParticipantIDs: []string{"initiator", "expert-a"}}}
@@ -576,7 +601,7 @@ func TestGroupDiscussionWorkflowStateSuggestsDecisionForSatisfiedProposal(t *tes
 	if got.OpenProposalCount != 1 || len(got.Proposals) != 1 || !got.Proposals[0].PolicySatisfied || got.Proposals[0].ReviewSummary.Approvals != 2 {
 		t.Fatalf("proposal workflow state = %+v", got.Proposals)
 	}
-	if got.EscalationRoute == nil || got.EscalationRoute.Suggested || got.EscalationRoute.Target != "iworkercenter" {
+	if got.EscalationRoute == nil || got.EscalationRoute.Suggested || got.EscalationRoute.Target != "human_owner" {
 		t.Fatalf("workflow escalation route = %+v, want embedded non-suggested default route", got.EscalationRoute)
 	}
 	if got.RollbackReadiness != nil {
@@ -1003,7 +1028,7 @@ func TestGroupDiscussionWorkflowActionDraftReviewsExistingEscalation(t *testing.
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	if err := session.Escalate(a2a.Escalation{ID: "esc-1", RaisedBy: "owner", Reason: "needs rollout owner", Target: "iworkercenter", CreatedAt: now}); err != nil {
+	if err := session.Escalate(a2a.Escalation{ID: "esc-1", RaisedBy: "owner", Reason: "needs rollout owner", Target: "human_owner", CreatedAt: now}); err != nil {
 		t.Fatalf("Escalate: %v", err)
 	}
 	detail := a2a.HubDiscussionDetail{
@@ -1015,7 +1040,7 @@ func TestGroupDiscussionWorkflowActionDraftReviewsExistingEscalation(t *testing.
 	if draft.ActionKind != "review_escalation_handoff" || draft.RequiresConfirmation {
 		t.Fatalf("workflow action draft = %+v, want non-executing escalation handoff review", draft)
 	}
-	if !hasGroupDiscussionDraftEvidence(draft.Evidence, "escalation_target: iworkercenter") ||
+	if !hasGroupDiscussionDraftEvidence(draft.Evidence, "escalation_target: human_owner") ||
 		!hasGroupDiscussionDraftEvidence(draft.Evidence, "escalation_reason: needs rollout owner") {
 		t.Fatalf("workflow action draft evidence = %v, want escalation evidence", draft.Evidence)
 	}
@@ -1037,12 +1062,12 @@ func TestGroupDiscussionEscalationRouteDoesNotSuggestWhenDecisionExists(t *testi
 	if got.Suggested || !hasGroupDiscussionTrigger(got.Triggers, "result_available") {
 		t.Fatalf("escalation route = %+v, want no suggestion after decision", got)
 	}
-	if got.Target != "iworkercenter" || !strings.Contains(got.Reason, "decision") {
+	if got.Target != "human_owner" || !strings.Contains(got.Reason, "decision") {
 		t.Fatalf("escalation route target/reason = %+v", got)
 	}
 	if got.RecommendedFocusContext["consultation_id"] != "disc-1" ||
 		got.RecommendedFocusContext["action_kind"] != "review_escalation_route" ||
-		got.RecommendedFocusContext["escalation_target"] != "iworkercenter" {
+		got.RecommendedFocusContext["escalation_target"] != "human_owner" {
 		t.Fatalf("escalation route focus context = %#v", got.RecommendedFocusContext)
 	}
 	if got.RecommendedToolCall == nil ||

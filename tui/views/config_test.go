@@ -104,19 +104,19 @@ func TestConfigOptionChooserUsesVerticalListOnNarrowTerminal(t *testing.T) {
 }
 
 func TestConfigBooleanOptionsAreLocalized(t *testing.T) {
-	if got := configOptionDisplay("agentnet_enabled", "true", "zh"); got != "开启" {
+	if got := configOptionDisplay("check_update_on_startup", "true", "zh"); got != "开启" {
 		t.Fatalf("zh true label = %q", got)
 	}
-	if got := configOptionDisplay("agentnet_enabled", "false", "zh"); got != "关闭" {
+	if got := configOptionDisplay("check_update_on_startup", "false", "zh"); got != "关闭" {
 		t.Fatalf("zh false label = %q", got)
 	}
-	if got := configOptionDisplay("agentnet_enabled", "true", "en"); got != "On" {
+	if got := configOptionDisplay("check_update_on_startup", "true", "en"); got != "On" {
 		t.Fatalf("en true label = %q", got)
 	}
 
 	m := NewConfigModel("zh")
-	m.LoadFromAppConfig(corelib.AppConfig{AgentNetEnabled: true})
-	moveConfigCursorToKey(t, &m, "agentnet_enabled")
+	m.LoadFromAppConfig(corelib.AppConfig{CheckUpdateOnStartup: true})
+	moveConfigCursorToKey(t, &m, "check_update_on_startup")
 	view := stripANSIForTest(m.View())
 	if !strings.Contains(view, "● 开启") || strings.Contains(view, "ON") || strings.Contains(view, "true") {
 		t.Fatalf("boolean display should be localized and hide raw bools:\n%s", view)

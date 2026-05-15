@@ -8,9 +8,10 @@ export interface AITabItemProps {
     theme: Theme;
     onActivate: (tabId: string) => void;
     onClose?: (tabId: string) => void;
+    lang?: string;
 }
 
-export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItemProps) {
+export function AITabItem({ tab, active, theme, onActivate, onClose, lang }: AITabItemProps) {
     const handleClick = useCallback(() => {
         onActivate(tab.id);
     }, [onActivate, tab.id]);
@@ -36,14 +37,55 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
     }, [onClose, tab.id]);
 
     const isOnline = tab.type === "ve" || tab.type === "group";
-    const readOnlyLabel = tab.readOnly ? "\u53ea\u8bfb" : "";
+    const isLocal = tab.type === "local";
+    const isProject = tab.type === "project";
+    const isVE = tab.type === "ve";
+    const isGroup = tab.type === "group";
+    const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
+    const accessibleTitle = readOnlyLabel ? `${tab.title} - ${readOnlyLabel}` : tab.title;
+
+    // Tab icon by type — inline SVG for consistent cross-platform rendering
+    // Each tab type has a distinct silhouette for instant recognition.
+    // Color encodes state: active tab uses btnColor, online VE/group uses green, others use textMuted.
+    const iconColor = isOnline
+        ? "#22c55e"  // green for online VE/group — replaces the separate green dot
+        : (active ? theme.btnColor : theme.textMuted);
+
+    const tabIconElement = isLocal ? (
+        // Sparkle/star — AI assistant main session
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <path d="M8 1l1.5 4.5L14 7l-4.5 1.5L8 13l-1.5-4.5L2 7l4.5-1.5L8 1z" fill={iconColor} />
+        </svg>
+    ) : isProject ? (
+        // Document with lines — task/project session
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <rect x="3" y="2" width="10" height="12" rx="1.5" stroke={iconColor} strokeWidth="1.3" />
+            <line x1="5.5" y1="5.5" x2="10.5" y2="5.5" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
+            <line x1="5.5" y1="8" x2="10.5" y2="8" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
+            <line x1="5.5" y1="10.5" x2="8.5" y2="10.5" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
+        </svg>
+    ) : isVE ? (
+        // Person silhouette — digital employee (VE)
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <circle cx="8" cy="5" r="2.5" stroke={iconColor} strokeWidth="1.3" />
+            <path d="M3.5 14c0-2.5 2-4.5 4.5-4.5s4.5 2 4.5 4.5" stroke={iconColor} strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+    ) : isGroup ? (
+        // Two people — group chat
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <circle cx="6" cy="5" r="2" stroke={iconColor} strokeWidth="1.2" />
+            <path d="M2.5 13c0-2 1.5-3.5 3.5-3.5s3.5 1.5 3.5 3.5" stroke={iconColor} strokeWidth="1.2" strokeLinecap="round" />
+            <circle cx="11" cy="4.5" r="1.7" stroke={iconColor} strokeWidth="1.1" />
+            <path d="M9 12.5c0-1.5 1-2.8 2-2.8s2 1.3 2 2.8" stroke={iconColor} strokeWidth="1.1" strokeLinecap="round" />
+        </svg>
+    ) : null;
 
     return (
         <div
             data-testid={`ai-tab-${tab.id}`}
             role="tab"
             aria-selected={active}
-            aria-label={tab.title}
+            aria-label={accessibleTitle}
             tabIndex={0}
             onClick={handleClick}
             onKeyDown={handleKeyDown}
@@ -64,21 +106,9 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
                 maxWidth: 140,
                 overflow: "hidden",
             }}
-            title={tab.title}
+            title={accessibleTitle}
         >
-            {isOnline && (
-                <span
-                    data-testid={`ai-tab-indicator-${tab.id}`}
-                    aria-label={`${tab.title} online`}
-                    style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: "50%",
-                        flexShrink: 0,
-                        background: "#22c55e",
-                    }}
-                />
-            )}
+            {tabIconElement}
             <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
                 {tab.title}
             </span>
@@ -91,7 +121,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
                 <span
                     data-testid={`ai-tab-close-${tab.id}`}
                     role="button"
-                    aria-label={`Close ${tab.title}`}
+                    aria-label={`Close ${accessibleTitle}`}
                     tabIndex={0}
                     onClick={handleClose}
                     onKeyDown={handleCloseKeyDown}
@@ -106,9 +136,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose }: AITabItem
                         padding: "0 2px",
                     }}
                     title="Close"
-                >
-                    ×
-                </span>
+                >{"\u00d7"}</span>
             )}
         </div>
     );

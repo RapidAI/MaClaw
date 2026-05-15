@@ -20,6 +20,80 @@ func groupReq(method, target, body string) *http.Request {
 	return req
 }
 
+type captureGroupDiscussionSender struct {
+	messages []sentGroupDiscussionMessage
+}
+
+type sentGroupDiscussionMessage struct {
+	machineID string
+	msg       map[string]any
+}
+
+func (s *captureGroupDiscussionSender) SendToMachine(machineID string, msg any) error {
+	mapped, _ := msg.(map[string]any)
+	s.messages = append(s.messages, sentGroupDiscussionMessage{machineID: machineID, msg: mapped})
+	return nil
+}
+
+func TestGroupDiscussionMessagePushesToOtherParticipants(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	sender := &captureGroupDiscussionSender{}
+	handler := NewGroupDiscussionHandler(svc, sender)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"direct","question":"Please review."}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode consultation: %v", err)
+	}
+
+	if _, err := svc.AddInvitation("tenant-a", created.Discussion.ID, corea2a.GroupInvitation{FromID: "maclaw-a", ToID: "maclaw-b", Role: corea2a.GroupRoleSpeak}); err != nil {
+		t.Fatalf("AddInvitation: %v", err)
+	}
+	invites := svc.ListInvitations("tenant-a", "maclaw-b", "pending")
+	if len(invites) != 1 {
+		t.Fatalf("pending invites = %+v", invites)
+	}
+	if err := svc.RespondInvitation("tenant-a", invites[0].ID, corea2a.GroupInvitationResponse{FromID: "maclaw-b", Decision: corea2a.GroupInvitationAccept}); err != nil {
+		t.Fatalf("RespondInvitation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-a","content":"Please analyze this clause."}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("message status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("sent messages = %+v", sender.messages)
+	}
+	sent := sender.messages[0]
+	if sent.machineID != "maclaw-b" || sent.msg["type"] != "ve:discussion_message" {
+		t.Fatalf("unexpected sent message: %+v", sent)
+	}
+	payload, ok := sent.msg["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload type = %T", sent.msg["payload"])
+	}
+	if payload["target_role"] != "speak" {
+		t.Fatalf("target_role = %#v", payload["target_role"])
+	}
+	envelope, ok := payload["envelope"].(corea2a.GroupEnvelope)
+	if !ok {
+		t.Fatalf("envelope type = %T", payload["envelope"])
+	}
+	if envelope.Message == nil || envelope.Message.Content != "Please analyze this clause." || envelope.SessionID != created.Discussion.ID {
+		t.Fatalf("unexpected payload: %+v", envelope)
+	}
+	if envelope.Message.ID == "" || envelope.Message.SessionID != created.Discussion.ID || envelope.Message.CreatedAt.IsZero() {
+		t.Fatalf("push payload should use persisted message metadata: %+v", envelope.Message)
+	}
+}
+
 func TestGroupDiscussionHubLifecycleAndAdminSnapshot(t *testing.T) {
 	svc := NewGroupDiscussionService()
 	handler := NewGroupDiscussionHandler(svc)
@@ -117,6 +191,20 @@ func TestGroupDiscussionHubLifecycleAndAdminSnapshot(t *testing.T) {
 		t.Fatalf("mine = %+v", mine.Discussions)
 	}
 	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodGet, "/api/a2a/discussions/mine?participant_id=maclaw-b&role=all", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("mine all status = %d, body=%s", w.Code, w.Body.String())
+	}
+	mine = struct {
+		Discussions []corea2a.HubDiscussionSummary `json:"discussions"`
+	}{}
+	if err := json.Unmarshal(w.Body.Bytes(), &mine); err != nil {
+		t.Fatalf("unmarshal mine all: %v", err)
+	}
+	if len(mine.Discussions) != 1 || mine.Discussions[0].ID != created.Discussion.ID {
+		t.Fatalf("mine all = %+v", mine.Discussions)
+	}
+	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, groupReq(http.MethodGet, "/api/a2a/discussions/mine?participant_id=maclaw-c", ""))
 	if w.Code != http.StatusOK {
 		t.Fatalf("other mine status = %d, body=%s", w.Code, w.Body.String())
@@ -150,6 +238,19 @@ func TestGroupDiscussionHubLifecycleAndAdminSnapshot(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodGet, "/api/a2a/consultations/"+created.Discussion.ID+"/detail?participant_id=maclaw-b", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("participant detail status = %d, body=%s", w.Code, w.Body.String())
+	}
+	detail = corea2a.HubDiscussionDetail{}
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal participant detail: %v", err)
+	}
+	if detail.Discussion.LocalRelation != "owned_ve_invited" || !detail.Discussion.Readonly || detail.Discussion.Role != "review" {
+		t.Fatalf("participant detail relation = %+v, want invited read-only review", detail.Discussion)
+	}
+
+	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/result", `{"summary":"Use staged rollout","rationale":"Security reviewer agreed and risk is controlled.","risks":["rollback complexity"]}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("result status = %d, body=%s", w.Code, w.Body.String())
@@ -171,6 +272,290 @@ func TestGroupDiscussionHubLifecycleAndAdminSnapshot(t *testing.T) {
 	}
 }
 
+func TestGroupDiscussionConsultationContextUsesFallbackInitiator(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	handler := NewGroupDiscussionHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"topic":"context fallback","question":"What happened?","context_summary":"Initial facts"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodGet, "/api/a2a/consultations/"+created.Discussion.ID+"/detail", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var detail corea2a.HubDiscussionDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if len(detail.Messages) != 1 || detail.Messages[0].FromID != "initiator" || detail.Messages[0].Content != "Initial facts" {
+		t.Fatalf("context messages = %+v", detail.Messages)
+	}
+}
+
+func TestAuthenticatedInvitedParticipantCannotFinalizeDiscussion(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	handler := NewGroupDiscussionHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutesWithMiddleware(mux, func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if machineID := r.Header.Get("X-Machine-ID"); machineID != "" {
+				r.Header.Set("X-Authenticated-Machine-ID", machineID)
+			}
+			next(w, r)
+		}
+	})
+
+	req := groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"ownership boundary","question":"Who may finalize?"}`)
+	req.Header.Set("X-Machine-ID", "maclaw-a")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status=%d body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal consultation: %v", err)
+	}
+
+	req = groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/invites", `{"from_id":"maclaw-a","to_id":"maclaw-b","role":"review","trusted":true}`)
+	req.Header.Set("X-Machine-ID", "maclaw-a")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("invite status=%d body=%s", w.Code, w.Body.String())
+	}
+	var invite struct {
+		InviteID string `json:"invite_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &invite); err != nil {
+		t.Fatalf("unmarshal invite: %v", err)
+	}
+
+	req = groupReq(http.MethodPost, "/api/a2a/invites/"+invite.InviteID+"/accept", `{"from_id":"maclaw-b"}`)
+	req.Header.Set("X-Machine-ID", "maclaw-b")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("accept status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req = groupReq(http.MethodGet, "/api/a2a/consultations/"+created.Discussion.ID+"/detail", "")
+	req.Header.Set("X-Machine-ID", "maclaw-b")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("invited detail status=%d body=%s", w.Code, w.Body.String())
+	}
+	var detail corea2a.HubDiscussionDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	if detail.Discussion.LocalRelation != "owned_ve_invited" || !detail.Discussion.Readonly {
+		t.Fatalf("invited detail relation=%+v, want readonly owned_ve_invited", detail.Discussion)
+	}
+
+	req = groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-b","content":"I can contribute, but not finalize."}`)
+	req.Header.Set("X-Machine-ID", "maclaw-b")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("invited message status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	req = groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/result", `{"summary":"Finalize from invited participant"}`)
+	req.Header.Set("X-Machine-ID", "maclaw-b")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected invited result to be 403, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	req = groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/cancel", "")
+	req.Header.Set("X-Machine-ID", "maclaw-b")
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected invited cancel to be 403, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+func TestGroupDiscussionMessageRejectsReadOnlyOrNonParticipant(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	handler := NewGroupDiscussionHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"observer boundary","question":"Who can write?"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-x","content":"I should not be here."}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("non-participant message status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/invites", `{"from_id":"maclaw-a","to_id":"maclaw-b","role":"observe","trusted":true}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("invite status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var inviteResp struct {
+		InviteID string `json:"invite_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &inviteResp); err != nil {
+		t.Fatalf("unmarshal invite: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/invites/"+inviteResp.InviteID+"/accept", `{"from_id":"maclaw-x","reason":"spoof"}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("spoofed accept status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/invites/"+inviteResp.InviteID+"/accept", `{"from_id":"maclaw-b","reason":"watching"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("accept status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/invites", `{"from_id":"maclaw-b","to_id":"maclaw-c","role":"speak"}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("observer invite status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-b","content":"Observer tries to speak."}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("observer message status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/proposals", `{"author_id":"maclaw-b","title":"Observer proposal","content":"Should fail"}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("observer proposal status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/escalate", `{"raised_by":"maclaw-b","reason":"Should fail"}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("observer escalation status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/messages", `{"from_id":"maclaw-a","content":"Initiator can continue."}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("initiator message status = %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestGroupDiscussionInvitationRejectsClosedSession(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	handler := NewGroupDiscussionHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterHubRoutes(mux)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations", `{"from_id":"maclaw-a","topic":"closed invite","question":"Can we add later?"}`))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("consultation status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.ConsultationCreateResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal consultation: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/cancel", `{}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/invites", `{"from_id":"maclaw-a","to_id":"maclaw-b","role":"speak"}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("closed invite status = %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestGroupDiscussionAcceptInviteRejectsClosedSession(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	created, err := svc.CreateConsultation("tenant-a", corea2a.GroupConsultationRequest{FromID: "maclaw-a", Topic: "accept closed", Question: "Can accept later?"})
+	if err != nil {
+		t.Fatalf("CreateConsultation: %v", err)
+	}
+	inviteID, err := svc.AddInvitation("tenant-a", created.Discussion.ID, corea2a.GroupInvitation{FromID: "maclaw-a", ToID: "maclaw-b", Role: corea2a.GroupRoleSpeak})
+	if err != nil {
+		t.Fatalf("AddInvitation: %v", err)
+	}
+	if _, err := svc.SetDiscussionState("tenant-a", created.Discussion.ID, "cancel"); err != nil {
+		t.Fatalf("SetDiscussionState cancel: %v", err)
+	}
+	if err := svc.RespondInvitation("tenant-a", inviteID, corea2a.GroupInvitationResponse{FromID: "maclaw-b", Decision: corea2a.GroupInvitationAccept}); err == nil {
+		t.Fatal("expected accepting invite for closed session to fail")
+	}
+	if err := svc.RespondInvitation("tenant-a", inviteID, corea2a.GroupInvitationResponse{FromID: "maclaw-b", Decision: corea2a.GroupInvitationReject}); err != nil {
+		t.Fatalf("rejecting invite for closed session should still record decision: %v", err)
+	}
+}
+
+func TestGroupDiscussionSessionMessageRejectsReadOnlyOrNonParticipant(t *testing.T) {
+	svc := NewGroupDiscussionService()
+	handler := NewGroupDiscussionHandler(svc)
+	mux := http.NewServeMux()
+	handler.RegisterRuntimeRoutes(mux)
+
+	body := `{"topic":"session boundary","goal":"Who can write?","participants":[{"id":"maclaw-a","role_code":"initiator"},{"id":"maclaw-b","role_code":"observe"}]}`
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/runtime/a2a/sessions", body))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("session create status = %d, body=%s", w.Code, w.Body.String())
+	}
+	var created corea2a.Session
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal session: %v", err)
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/runtime/a2a/sessions/"+created.ID+"/messages", `{"from_id":"maclaw-x","content":"I should not be here."}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("non-participant session message status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/runtime/a2a/sessions/"+created.ID+"/messages", `{"from_id":"maclaw-b","content":"Observer tries to speak."}`))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("observer session message status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/runtime/a2a/sessions/"+created.ID+"/messages", `{"from_id":"hub","content":"System note."}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("hub system message status = %d, body=%s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/runtime/a2a/sessions/"+created.ID+"/messages", `{"from_id":"maclaw-a","content":"Initiator can continue."}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("initiator session message status = %d, body=%s", w.Code, w.Body.String())
+	}
+}
 func TestGroupDiscussionHubProposalReviewDecision(t *testing.T) {
 	svc := NewGroupDiscussionService()
 	handler := NewGroupDiscussionHandler(svc)
@@ -254,7 +639,7 @@ func TestGroupDiscussionHubEscalation(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/escalate", `{"raised_by":"maclaw-a","reason":"needs executive owner","target":"iworkercenter"}`))
+	mux.ServeHTTP(w, groupReq(http.MethodPost, "/api/a2a/consultations/"+created.Discussion.ID+"/escalate", `{"raised_by":"maclaw-a","reason":"needs executive owner","target":"human_owner"}`))
 	if w.Code != http.StatusOK {
 		t.Fatalf("escalate status = %d, body=%s", w.Code, w.Body.String())
 	}
@@ -271,9 +656,89 @@ func TestGroupDiscussionHubEscalation(t *testing.T) {
 	if detail.Session == nil || detail.Session.Escalation == nil || detail.Discussion.Status != string(corea2a.SessionEscalated) {
 		t.Fatalf("escalation detail = %+v status=%s", detail.Session, detail.Discussion.Status)
 	}
-	if detail.Session.Escalation.RaisedBy != "maclaw-a" || detail.Session.Escalation.Reason != "needs executive owner" || detail.Session.Escalation.Target != "iworkercenter" {
+	if detail.Session.Escalation.RaisedBy != "maclaw-a" || detail.Session.Escalation.Reason != "needs executive owner" || detail.Session.Escalation.Target != "human_owner" {
 		t.Fatalf("escalation = %+v", detail.Session.Escalation)
 	}
+}
+
+func TestGroupDiscussionNonOpenSessionsRejectParticipantWrites(t *testing.T) {
+	assertRejected := func(t *testing.T, status corea2a.SessionStatus, session *corea2a.Session, proposalID string, svc *GroupDiscussionService) {
+		t.Helper()
+		if _, err := svc.AddDiscussionMessage("tenant-a", session.ID, corea2a.GroupDiscussionMessage{FromID: "maclaw-a", Content: "continue"}); err == nil {
+			t.Fatalf("expected %s session message to be rejected", status)
+		}
+		if _, err := svc.AddProposal("tenant-a", session.ID, AddProposalRequest{AuthorID: "maclaw-a", Title: "late", Content: "too late"}); err == nil {
+			t.Fatalf("expected %s session proposal to be rejected", status)
+		}
+		if proposalID != "" {
+			if _, err := svc.AddReview("tenant-a", session.ID, AddReviewRequest{ProposalID: proposalID, ReviewerID: "maclaw-a", Position: corea2a.ReviewApprove}); err == nil {
+				t.Fatalf("expected %s session review to be rejected", status)
+			}
+		}
+		if _, err := svc.Escalate("tenant-a", session.ID, EscalateRequest{RaisedBy: "maclaw-a", Reason: "late escalation"}); err == nil {
+			t.Fatalf("expected %s session escalation to be rejected", status)
+		}
+		if _, err := svc.SubmitDiscussionResult("tenant-a", session.ID, corea2a.GroupDiscussionResult{Summary: "late result"}); err == nil {
+			t.Fatalf("expected %s session result submission to be rejected", status)
+		}
+	}
+
+	t.Run("closed", func(t *testing.T) {
+		svc := NewGroupDiscussionService()
+		created, err := svc.CreateConsultation("tenant-a", corea2a.GroupConsultationRequest{FromID: "maclaw-a", Topic: "closed writes", Question: "Can continue?"})
+		if err != nil {
+			t.Fatalf("CreateConsultation: %v", err)
+		}
+		withProposal, err := svc.AddProposal("tenant-a", created.Discussion.ID, AddProposalRequest{AuthorID: "maclaw-a", Title: "before close", Content: "available while open"})
+		if err != nil {
+			t.Fatalf("AddProposal: %v", err)
+		}
+		proposalID := withProposal.Proposals[0].ID
+		closed, err := svc.SetDiscussionState("tenant-a", created.Discussion.ID, "cancel")
+		if err != nil {
+			t.Fatalf("SetDiscussionState cancel: %v", err)
+		}
+		assertRejected(t, corea2a.SessionClosed, closed, proposalID, svc)
+	})
+
+	t.Run("decided", func(t *testing.T) {
+		svc := NewGroupDiscussionService()
+		created, err := svc.CreateConsultation("tenant-a", corea2a.GroupConsultationRequest{FromID: "maclaw-a", Topic: "decided writes", Question: "Can continue?"})
+		if err != nil {
+			t.Fatalf("CreateConsultation: %v", err)
+		}
+		withProposal, err := svc.AddProposal("tenant-a", created.Discussion.ID, AddProposalRequest{AuthorID: "maclaw-a", Title: "ship", Content: "ship it"})
+		if err != nil {
+			t.Fatalf("AddProposal: %v", err)
+		}
+		proposalID := withProposal.Proposals[0].ID
+		if _, err := svc.AddReview("tenant-a", created.Discussion.ID, AddReviewRequest{ProposalID: proposalID, ReviewerID: "maclaw-a", Position: corea2a.ReviewApprove}); err != nil {
+			t.Fatalf("AddReview: %v", err)
+		}
+		decided, err := svc.Decide("tenant-a", created.Discussion.ID, DecideRequest{ProposalID: proposalID, Summary: "ship"})
+		if err != nil {
+			t.Fatalf("Decide: %v", err)
+		}
+		assertRejected(t, corea2a.SessionDecided, decided, proposalID, svc)
+	})
+
+	t.Run("escalated", func(t *testing.T) {
+		svc := NewGroupDiscussionService()
+		created, err := svc.CreateConsultation("tenant-a", corea2a.GroupConsultationRequest{FromID: "maclaw-a", Topic: "escalated writes", Question: "Can continue?"})
+		if err != nil {
+			t.Fatalf("CreateConsultation: %v", err)
+		}
+		withProposal, err := svc.AddProposal("tenant-a", created.Discussion.ID, AddProposalRequest{AuthorID: "maclaw-a", Title: "before escalation", Content: "available while open"})
+		if err != nil {
+			t.Fatalf("AddProposal: %v", err)
+		}
+		proposalID := withProposal.Proposals[0].ID
+		escalated, err := svc.Escalate("tenant-a", created.Discussion.ID, EscalateRequest{RaisedBy: "maclaw-a", Reason: "needs owner"})
+		if err != nil {
+			t.Fatalf("Escalate: %v", err)
+		}
+		assertRejected(t, corea2a.SessionEscalated, escalated, proposalID, svc)
+	})
 }
 
 func TestGroupDiscussionActiveExpertWindow(t *testing.T) {
@@ -375,5 +840,35 @@ func TestGroupDiscussionServicePersistsAcrossRestart(t *testing.T) {
 	}
 	if len(mine) != 1 || mine[0].ID != created.Discussion.ID {
 		t.Fatalf("restored mine = %+v", mine)
+	}
+}
+
+func TestGroupDiscussionReadinessIgnoresInitiatorStatements(t *testing.T) {
+	now := time.Now().UTC()
+	session := &corea2a.Session{
+		ID:        "disc-readiness",
+		Topic:     "Policy review",
+		Goal:      "Check the policy",
+		Status:    corea2a.SessionOpen,
+		CreatedAt: now,
+		UpdatedAt: now,
+		Participants: []corea2a.Participant{
+			{ID: "human-1", RoleCode: "initiator"},
+			{ID: "maclaw-1", RoleCode: "review"},
+			{ID: "observer-1", RoleCode: "observe"},
+		},
+		Messages: []corea2a.Message{
+			{ID: "m1", SessionID: "disc-readiness", FromID: "human-1", Kind: corea2a.MessageStatement, Content: "Adding one more detail.", CreatedAt: now},
+			{ID: "m2", SessionID: "disc-readiness", FromID: "observer-1", Kind: corea2a.MessageStatement, Content: "Watching only.", CreatedAt: now},
+		},
+	}
+	summary := discussionSummaryFromSession(session)
+	if summary.AnswerCount != 0 || summary.ExpectedAnswerCount != 1 || summary.ReadyToSummarize {
+		t.Fatalf("summary with initiator/observer statements = %+v", summary)
+	}
+	session.Messages = append(session.Messages, corea2a.Message{ID: "m3", SessionID: "disc-readiness", FromID: "maclaw-1", Kind: corea2a.MessageStatement, Content: "The policy is acceptable with a retention note.", CreatedAt: now})
+	summary = discussionSummaryFromSession(session)
+	if summary.AnswerCount != 1 || !summary.ReadyToSummarize {
+		t.Fatalf("summary with reviewer answer = %+v", summary)
 	}
 }

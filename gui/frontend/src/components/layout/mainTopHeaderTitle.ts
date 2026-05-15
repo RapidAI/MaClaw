@@ -1,11 +1,9 @@
 const zhHans = {
     taskManagement: '\u4efb\u52a1\u76d1\u63a7',
-    agentNet: '\u667a\u7f51',
 };
 
 const zhHant = {
     taskManagement: '\u4efb\u52d9\u76e3\u63a7',
-    agentNet: '\u667a\u7db2',
 };
 
 export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) => string) => (
@@ -25,5 +23,5 @@ export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) =>
                                                         navTab === 'api-store' ? t('apiStore') :
                                                             navTab === 'mcp' ? 'MCP' :
                                                                 navTab === 'settings' ? t('globalSettings') :
-                                                                    navTab === 'agentnet' ? (lang === 'zh-Hans' ? zhHans.agentNet : lang === 'zh-Hant' ? zhHant.agentNet : 'AgentNet') : t('about')
+                                                                    t('about')
 );

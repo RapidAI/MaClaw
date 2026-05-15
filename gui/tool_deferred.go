@@ -16,9 +16,6 @@ var DeferredToolNames = []string{
 	"manage_schedule",
 	// Template management (merged into manage_template)
 	"manage_template",
-	// AgentNet P2P knowledge network
-	"agentnet_search",
-	"agentnet_publish",
 	// Audit log query
 	"query_audit_log",
 	// Session templates (legacy names, kept for backward compat dispatch only)

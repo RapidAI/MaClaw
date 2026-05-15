@@ -47,6 +47,7 @@
     .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin:0 auto 11px;max-width:1160px}.metric,.item{position:relative;padding:12px 14px;border-radius:14px;background:#fff;border:1px solid rgba(31,34,48,.06);display:flex;flex-direction:column;gap:5px;box-shadow:0 4px 14px rgba(31,34,48,.025);overflow:hidden}.metric::after,.item::after{content:"";display:none}.metric label{margin-bottom:0;font-size:10px;letter-spacing:.09em;color:#7f8596}.metric strong{display:block;font-size:21px;line-height:1;margin:0;letter-spacing:-.03em}.metric span,.item-meta,.desc,.hint{color:var(--muted);font-size:12px;line-height:1.45}
     .panel{display:none;padding:15px 18px;max-width:1160px;margin:0 auto;background:#fff;border:1px solid rgba(31,34,48,.05);border-radius:18px;box-shadow:0 8px 22px rgba(31,34,48,.03)}.panel.active{display:block}.head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid rgba(31,34,48,.06)}.head h3{margin:0;font-size:19px;letter-spacing:-.03em;line-height:1.16}
     .grid2,.grid3,.table{display:grid;gap:10px;align-items:start}.grid2{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .subtab-bar{display:flex;gap:0;border-bottom:2px solid var(--line);margin-bottom:16px}.subtab{flex:none;padding:8px 20px;font-size:14px;font-weight:700;color:var(--muted);background:none;border:none;border-bottom:2px solid transparent;border-radius:0;cursor:pointer;margin-bottom:-2px;transition:color .15s,border-color .15s}.subtab:hover{color:var(--text)}.subtab.active{color:var(--primary-strong);border-bottom-color:var(--primary)}
     .hint{padding:12px 14px;border-radius:12px;background:#fff8f7;border:1px dashed rgba(239,106,124,.14)}.item+.item{margin-top:8px}.item-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:0}.item-title{font-weight:800;font-size:15px;line-height:1.25}.item-title,.metric label{position:relative}.item-title::before{content:"";display:inline-block;width:6px;height:6px;margin-right:7px;border-radius:999px;background:#f06b7b;vertical-align:middle;box-shadow:0 0 0 3px rgba(239,106,124,.05)}
     .row{display:grid;grid-template-columns:1.2fr 1fr 1fr .9fr .8fr .9fr 1.2fr;gap:8px;padding:9px 11px;border-radius:10px;background:#fff;border:1px solid rgba(31,34,48,.06);align-items:center}.row.header{background:#faf7f7;color:var(--muted);font-size:10px;font-weight:700;text-transform:uppercase;box-shadow:none}
     .usage-stats-detail-grid{display:grid;grid-template-columns:minmax(360px,.95fr) minmax(500px,1.05fr);gap:10px;margin-top:10px;align-items:start}.usage-rank-list{display:grid;gap:8px}.usage-rank-row{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;padding:11px 12px;border-radius:12px;background:#fff;border:1px solid rgba(31,34,48,.06)}.usage-rank-row:hover{border-color:rgba(239,106,124,.16);box-shadow:0 8px 18px rgba(31,34,48,.04)}.usage-rank-main{display:grid;grid-template-columns:minmax(120px,1.3fr) minmax(92px,.7fr) minmax(72px,.55fr) minmax(72px,.5fr);gap:10px;align-items:center}.usage-rank-name{min-width:0;display:flex;align-items:center;gap:8px}.usage-rank-index{width:22px;height:22px;border-radius:999px;background:var(--primary-soft);color:var(--primary-strong);display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex:0 0 auto}.usage-rank-label{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em;text-transform:uppercase;line-height:1.2}.usage-rank-value{display:block;color:var(--text);font-size:16px;font-weight:800;line-height:1.2;white-space:nowrap}.usage-rank-value.cache{color:#10aeca}.usage-rank-value.ok{color:var(--ok)}.usage-rank-sub{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}.usage-rank-chip{min-width:0;border-radius:10px;background:#fbf9f9;border:1px solid rgba(31,34,48,.045);padding:7px 8px}.usage-rank-chip .usage-rank-label{font-size:9px}.usage-rank-chip .usage-rank-value{font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis}.usage-rank-empty{padding:16px;border-radius:12px;background:#fff8f7;border:1px dashed rgba(239,106,124,.14);color:var(--muted);font-size:12px}
@@ -70,9 +71,8 @@
     h1,h2,h3,.item-title,.metric strong,.usage-rank-value{font-weight:650;letter-spacing:0}.top h2,.head h3,.brand h1,.hero h1{letter-spacing:0}.head h3{line-height:1.25}.metric strong{line-height:1.08}.panel,.metric,.item,.card{box-shadow:0 6px 18px rgba(35,41,55,.028)}.panel{border-color:#e8ebf1}.head{border-bottom-color:#edf0f4}.page-tab-icon,.head h3::before{background:#fafbfc;border-color:#e8ebf1}.head h3::after,.page-tab-icon::before{opacity:.9}.btn-primary{box-shadow:0 8px 18px rgba(239,106,124,.14)}button{font-weight:650}.nav button .nav-copy span{font-weight:650;letter-spacing:0}.nav button .nav-copy small{font-weight:500}.metric label,label{font-weight:650;letter-spacing:.03em}.item-title::before{opacity:.72}.row{border-color:#e8ebf1}.hint{border-style:solid;background:#fbfcfd}.console{box-shadow:inset 0 1px 0 rgba(255,255,255,.72)}
     /* Softer text hierarchy */
     body{color:#59636f}.brand h1,.top h2,.head h3,.item-title,.metric strong,.usage-rank-value,.form h2,.stage-card h3,.session-modal h3{color:#5b6470}.hero h1{color:#5f6874}.brand p,.nav button .nav-copy small,.metric span,.item-meta,.desc,.hint,.subtle,.side-note,.pager-meta,.admin-chip span,.usage-rank-label,.session-label{color:#98a1ab}.hero p,.hero li{color:rgba(95,104,116,.6)}.metric label,label{color:#9aa3ad}.nav button{color:#6c7581}.nav button.active{color:#5b6470}.btn-secondary,.btn-ghost{color:#68717d}.console{color:#7f8894}.page-kicker,.mini{color:#98a1ab}.head h3::after,.page-tab-icon::before{background:#98a1ab}
-    #tab-groupdiscussion.gd-page{display:none;background:transparent;border:none;box-shadow:none;padding:0;max-width:1180px}.panel.active#tab-groupdiscussion.gd-page{display:block}.gd-page .gd-hero,.gd-page .gd-section{border-color:#e5e8ef;box-shadow:0 8px 20px rgba(35,41,55,.035);border-radius:14px;background:#fff}.gd-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;padding:22px 24px;margin-bottom:16px}.gd-hero h3{margin:4px 0 10px;font-size:28px;line-height:1.12;color:#4f5865}.gd-hero .mini{margin-bottom:0}.gd-hero-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}.gd-section{margin-top:16px;padding:22px 24px!important}.gd-section .item-title{font-size:20px;margin-bottom:14px}.gd-section .item-title::before{display:none}.gd-section .item-meta{font-size:14px;line-height:1.6}.gd-divider{height:1px;background:#e8ebf1;margin:22px 0 16px}.gd-metrics{max-width:none!important;margin:0!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:12px!important}.gd-metrics .metric{min-height:74px;padding:16px 18px;border-color:#e2e7ef}.gd-metrics .metric.ok{border-color:#bfe9dc;background:#f0faf7}.gd-metrics .metric.warn{border-color:#f1dfba;background:#fffaf0}.gd-actions{display:flex;align-items:center;gap:12px;margin-top:18px}.gd-table{margin-top:28px!important;gap:0!important}.gd-table .row{border-left:none;border-right:none;border-top:none;border-radius:0;box-shadow:none;background:#fff;padding:14px 12px}.gd-table .row.header{background:#fff;color:#8a93a0;font-weight:650;text-transform:none;border-bottom:1px solid #e8ebf1}.gd-table .hint{background:#fff;border:none;padding:18px 0;color:#8a93a0;font-size:14px}.gd-page .badge{white-space:nowrap}@media (max-width:900px){.gd-hero{flex-direction:column}.gd-hero-actions{width:100%;justify-content:flex-start}.gd-metrics{grid-template-columns:1fr!important}.gd-actions{align-items:flex-start;flex-direction:column}}
     #systemRoutingCard{padding:12px 14px!important;box-shadow:none!important;border-color:#e7eaf0!important}#systemRoutingCard .system-routing-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #eef1f5}#systemRoutingCard .system-routing-title{display:grid;gap:2px;min-width:0}#systemRoutingCard .item-title{font-size:14px;line-height:1.25}#systemRoutingCard .item-meta{font-size:11px;line-height:1.4}#systemRoutingCard .system-routing-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}#systemRoutingCard .system-routing-grid{display:grid;grid-template-columns:minmax(220px,.9fr) minmax(260px,1.1fr);gap:10px;align-items:start}#systemRoutingCard label{margin-bottom:5px;font-size:11px}#systemRoutingCard input,#systemRoutingCard select{height:34px;font-size:13px;border-radius:10px}#systemRoutingCard textarea{min-height:72px;font-size:13px;border-radius:10px;line-height:1.45;resize:vertical}#systemRoutingCard .system-routing-domains{grid-column:1 / -1}#systemRoutingCard .system-routing-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px}#systemRoutingCard .system-routing-footer .hint{flex:1;margin:0!important;padding:9px 12px;font-size:11px;line-height:1.4}#systemRoutingCard .system-routing-footer .actions{margin:0!important;padding:0;flex-shrink:0}#systemRoutingCard button{height:34px;padding:0 12px;font-size:12px;border-radius:10px}#systemRoutingSaveBtn{min-width:112px}#tab-failurelogs .failure-log-filter{padding:10px 12px!important;border-radius:12px;gap:0}#tab-failurelogs .failure-log-filter-grid{display:grid;grid-template-columns:minmax(260px,1.35fr) minmax(180px,.7fr) auto;gap:8px;align-items:end;max-width:760px}#tab-failurelogs .failure-log-filter label{margin-bottom:5px;font-size:11px}#tab-failurelogs .failure-log-filter input,#tab-failurelogs .failure-log-filter select{height:34px;border-radius:10px;font-size:13px}#tab-failurelogs .failure-log-filter-actions{display:flex;align-items:end;gap:6px;white-space:nowrap}#tab-failurelogs .failure-log-filter-actions button{height:34px;min-width:58px;padding:0 12px;border-radius:10px;font-size:12px}@media (max-width:760px){#systemRoutingCard .system-routing-head,#systemRoutingCard .system-routing-footer{align-items:stretch;flex-direction:column}#systemRoutingCard .system-routing-actions{justify-content:flex-start}#systemRoutingCard .system-routing-grid{grid-template-columns:1fr}#tab-failurelogs .failure-log-filter-grid{grid-template-columns:1fr;max-width:none}#tab-failurelogs .failure-log-filter-actions{justify-content:flex-start}}
-  </style>
+  #marketplaceCapabilitiesList .item:hover,#marketplaceSearchResults .item:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(31,34,48,.08);border-color:rgba(239,106,124,.18)}</style>
 </head>
 <body>
   <!-- Toast stack -->
@@ -119,6 +119,26 @@
     </div>
   </div>
 
+  <!-- Security members modal -->
+  <div id="secMembersModalOverlay" class="session-modal-overlay" onclick="if(event.target===this)closeSecMembersModal()">
+    <div class="session-modal" style="width:min(980px,calc(100% - 40px))">
+      <button class="close-btn" id="secMembersModalCloseBtn" onclick="closeSecMembersModal()">&times;</button>
+      <h3 id="secMembersModalTitle"></h3>
+      <div id="secMembersModalDesc" style="color:var(--muted);font-size:12px;margin-bottom:10px"></div>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:10px">
+        <input id="secMembersSearch" placeholder="" oninput="filterSecMembersModal()" style="height:36px">
+        <div style="display:flex;gap:6px;align-items:center"><button class="btn-ghost" type="button" id="secMembersModalExportBtn" onclick="exportSecMembersModalCsv()" style="height:36px;font-size:12px;padding:0 12px"></button><button class="btn-secondary" type="button" id="secMembersModalReloadBtn" onclick="openSecMembersModal()" style="height:36px;font-size:12px;padding:0 12px"></button></div>
+      </div>
+      <div id="secMembersModalList" style="display:grid;gap:6px;max-height:54vh;overflow:auto"></div>
+      <div class="pager" id="secMembersModalPager" style="margin-top:10px">
+        <div class="pager-meta" id="secMembersModalPagerMeta"></div>
+        <div class="pager-actions">
+          <button class="btn-ghost" id="secMembersModalPrevBtn" type="button" onclick="changeSecMembersModalPage(-1)"></button>
+          <button class="btn-ghost" id="secMembersModalNextBtn" type="button" onclick="changeSecMembersModalPage(1)"></button>
+        </div>
+      </div>
+    </div>
+  </div>
   <!-- Setup gate -->
   <div id="setupGate" class="hidden" style="position:fixed;top:16px;right:16px;z-index:9998;width:min(480px,calc(100% - 32px))">
     <div class="card" style="padding:16px 16px 14px;position:relative;border-radius:16px">
@@ -222,7 +242,6 @@
         <button data-tab="im" onclick="openTab('im')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14v9H9l-4 3V7Z"></path><path d="M9 11h6"></path></svg></span><div class="nav-copy"><span id="navIM"></span><small id="navIMDesc"></small></div></div></button>
         <button data-tab="machines" onclick="openTab('machines')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M8 19h8"></path><path d="M12 16v3"></path></svg></span><div class="nav-copy"><span data-i18n="navMachines"></span><small data-i18n="navMachinesDesc"></small></div></div></button>
         <button data-tab="virtualemployees" onclick="openTab('virtualemployees')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M22 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span><div class="nav-copy"><span id="navVirtualEmployees"></span><small id="navVirtualEmployeesDesc"></small></div></div></button>
-        <button data-tab="groupdiscussion" onclick="openTab('groupdiscussion')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 8h10"></path><path d="M5 12h14"></path><path d="M8 16h8"></path><circle cx="5" cy="8" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle><circle cx="6" cy="16" r="1.5"></circle></svg></span><div class="nav-copy"><span id="navGroupDiscussion"></span><small id="navGroupDiscussionDesc"></small></div></div></button>
         <button data-tab="invitationcodes" onclick="openTab('invitationcodes')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 9a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9Z"></path><path d="M12 10v8"></path><path d="M9 13h6"></path></svg></span><div class="nav-copy"><span id="navInvitationCodes"></span><small id="navInvitationCodesDesc"></small></div></div></button>
         <button data-tab="pwarequests" onclick="openTab('pwarequests')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2"></rect><path d="M10 7h4"></path><path d="M12 17h.01"></path></svg></span><div class="nav-copy"><span id="navPwaRequests"></span><small id="navPwaRequestsDesc"></small></div></div></button>
         <button data-tab="failurelogs" onclick="openTab('failurelogs')"><div class="nav-row"><span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h8l4 4v12H7z"></path><path d="M15 4v4h4"></path><path d="M10 12h4"></path><path d="M10 16h4"></path></svg></span><div class="nav-copy"><span data-i18n="navFailureLogs"></span><small data-i18n="navFailureLogsDesc"></small></div></div></button>
@@ -254,6 +273,7 @@
         <div class="metric"><label data-i18n="metricMachines"></label><strong id="machineCountHero">0</strong><span data-i18n="metricMachinesHint"></span></div>
         <div class="metric"><label data-i18n="metricBlocked"></label><strong id="blockedCountHero">0</strong><span data-i18n="metricBlockedHint"></span></div>
         <div class="metric"><label data-i18n="metricInvites"></label><strong id="inviteCountHero">0</strong><span data-i18n="metricInvitesHint"></span></div>
+        <div class="metric"><label data-i18n="metricDigitalEmployee"></label><strong id="digitalEmployeeHero">-</strong><span id="digitalEmployeeHint"></span></div>
       </div>
 
       <!-- Tab: Overview -->
@@ -318,6 +338,10 @@
             <div style="margin-top:10px"><label id="centerAcceptPublicSignupHeroLabel">Accept Public Signup</label><div class="mono" id="centerAcceptPublicSignupHero"></div></div>
             <div style="margin-top:10px"><label id="centerCorporateEmailDomainHeroLabel">Primary Corporate Email Domain</label><div class="mono" id="centerCorporateEmailDomainHero"></div></div>
             <div style="margin-top:10px"><label id="centerCorporateEmailDomainsHeroLabel">Corporate Email Domains</label><div class="mono" id="centerCorporateEmailDomainsHero"></div></div>
+            <div class="grid2" style="margin-top:10px;gap:8px">
+              <div><label id="centerDigitalEmployeeQuotaLabel">Digital Employee Quota</label><div class="mono" id="centerDigitalEmployeeQuotaHero"></div></div>
+              <div><label id="centerDigitalEmployeeExpiresLabel">Authorization Expires</label><div class="mono" id="centerDigitalEmployeeExpiresHero"></div></div>
+            </div>
           </div>
         </div>
       </section>
@@ -377,17 +401,50 @@
       <!-- Tab: Marketplace -->
       <section id="tab-marketplace" class="panel card">
         <div class="head"><div><h3 data-i18n="marketplaceTabTitle"></h3><div class="desc" data-i18n="marketplaceTabSubtitle"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div>
-        <div class="grid2">
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplacePolicyTitle"></div><div class="item-meta" data-i18n="marketplacePolicyDesc"></div></div></div><div id="marketplacePolicyBody" style="margin-top:10px"></div></div>
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceBillingTitle"></div><div class="item-meta" data-i18n="marketplaceBillingDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplaceBilling()" data-i18n="marketplaceLoadBilling"></button></div><div id="marketplaceBillingBody" style="display:grid;gap:8px;margin-top:10px"></div></div>
+        <!-- Sub-tab navigation -->
+        <div class="subtab-bar" style="display:flex;gap:0;border-bottom:2px solid var(--border,#e0e0e0);margin-bottom:16px">
+          <button class="subtab active" id="subtab-market" type="button" onclick="switchMarketplaceSubtab('market')" data-i18n="marketplaceSubtabMarket"></button>
+          <button class="subtab" id="subtab-settings" type="button" onclick="switchMarketplaceSubtab('settings')" data-i18n="marketplaceSubtabSettings"></button>
         </div>
-        <div class="grid2" style="margin-top:10px">
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceRequestsTitle"></div><div class="item-meta" data-i18n="marketplaceRequestsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceRequestsStatus"></label><select id="marketplaceRequestStatus" onchange="loadMarketplace()"><option value="pending_review">pending_review</option><option value="approved">approved</option><option value="completed">completed</option><option value="rejected">rejected</option><option value="">all</option></select></div></div><div id="marketplaceRequestsList" style="display:grid;gap:8px;margin-top:10px"></div></div>
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceCapabilityType" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option></select></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div id="marketplaceCapabilitiesList" style="display:grid;gap:8px;margin-top:10px"></div></div>
+        <!-- Sub-tab: Enterprise Capability Market -->
+        <div id="marketplace-subtab-market">
+          <!-- Search External Markets (top, full width) -->
+          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceSearchTitle"></div><div class="item-meta" data-i18n="marketplaceSearchDesc"></div></div></div><div style="display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceSource"></label><select id="marketplaceSearchSource"><option value="hubcenter">hubcenter</option><option value="clawhub">clawhub</option><option value="github">github</option></select></div><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceSearchType"><option value="skill">skill</option><option value="mcp">mcp</option></select></div><div><label data-i18n="marketplaceQuery"></label><input id="marketplaceSearchQuery"></div></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="searchMarketplaceExternal()" data-i18n="marketplaceSearch"></button><button class="btn-secondary" type="button" onclick="openMCPEditorDialog(true)" data-i18n="marketplaceMCPNew" style="white-space:nowrap">+ MCP</button></div><div id="marketplaceSearchResults" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px"></div></div>
+          <!-- Enterprise Capabilities (bottom, full width) -->
+          <div class="item" style="margin-top:10px"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceCatalogTitle"></div><div class="item-meta" data-i18n="marketplaceCatalogDesc"></div></div></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceCapabilityType" onchange="loadMarketplace()"><option value="" data-i18n="marketplaceCapabilityAll"></option><option value="skill">skill</option><option value="mcp">mcp</option></select></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div id="marketplaceCapabilitiesList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:10px"></div></div>
+          <!-- MCP Editor Dialog (modal popup) -->
+          <div id="mcpEditorOverlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9000;align-items:center;justify-content:center" onclick="if(event.target===this)closeMCPEditorDialog()">
+            <div style="background:#fff;border-radius:16px;padding:24px 28px;width:min(620px,92vw);max-height:85vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.18)">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><div><div class="item-title" data-i18n="marketplaceMCPTitle"></div><div class="item-meta" data-i18n="marketplaceMCPDesc"></div></div><button class="btn-ghost" type="button" onclick="closeMCPEditorDialog()" style="font-size:18px;padding:4px 10px">&times;</button></div>
+              <!-- Common fields -->
+              <div class="grid2" style="margin-top:10px"><div><label data-i18n="marketplaceMCPId"></label><input id="marketplaceMCPId" placeholder="example-mcp"></div><div><label data-i18n="marketplaceMCPName"></label><input id="marketplaceMCPName" placeholder="Example MCP"></div><div><label data-i18n="marketplaceMCPPublisher"></label><input id="marketplaceMCPPublisher" value="enterprise"></div><div><label data-i18n="marketplaceMCPVersion"></label><input id="marketplaceMCPVersion" value="1.0.0"></div></div>
+              <!-- Type switcher -->
+              <div style="margin-top:14px;display:flex;align-items:center;gap:12px"><label data-i18n="marketplaceMCPType" style="margin:0;font-weight:600"></label><select id="marketplaceMCPTypeSelect" onchange="switchMCPEditorType(this.value)"><option value="remote" data-i18n="marketplaceMCPTypeRemote">Remote</option><option value="local" data-i18n="marketplaceMCPTypeLocal">Local</option></select></div>
+              <!-- Remote mode fields -->
+              <div id="mcpEditorRemoteFields">
+                <div style="margin-top:10px"><label data-i18n="marketplaceMCPJson"></label><textarea id="marketplaceMCPJson" style="min-height:120px;font-family:Consolas,monospace">{"id":"example-mcp","name":"Example MCP","endpoint_url":"https://example.com/mcp","auth_type":"none","headers":{}}</textarea></div>
+              </div>
+              <!-- Local mode fields -->
+              <div id="mcpEditorLocalFields" style="display:none">
+                <div style="display:grid;gap:10px;margin-top:10px"><div><label data-i18n="marketplaceMCPCommand"></label><input id="marketplaceMCPCommand" placeholder="uvx"></div><div><label data-i18n="marketplaceMCPArgs"></label><input id="marketplaceMCPArgs" placeholder='["awslabs.aws-documentation-mcp-server@latest"]'></div><div><label data-i18n="marketplaceMCPEnv"></label><textarea id="marketplaceMCPEnv" style="min-height:72px;font-family:Consolas,monospace">{"FASTMCP_LOG_LEVEL": "ERROR"}</textarea></div></div>
+              </div>
+              <!-- Common: secrets, pricing, license -->
+              <div style="margin-top:10px"><label data-i18n="marketplaceMCPSecrets"></label><textarea id="marketplaceMCPSecrets" style="min-height:84px;font-family:Consolas,monospace">[]</textarea></div>
+              <div class="grid2" style="margin-top:10px"><div><label data-i18n="marketplaceMCPPricing"></label><textarea id="marketplaceMCPPricing" style="min-height:76px;font-family:Consolas,monospace">{"mode":"free"}</textarea></div><div><label data-i18n="marketplaceMCPLicense"></label><textarea id="marketplaceMCPLicense" style="min-height:76px;font-family:Consolas,monospace">{}</textarea></div></div>
+              <div class="actions" style="margin-top:14px"><button class="btn-primary" type="button" onclick="saveMarketplaceMCP()" data-i18n="marketplaceSaveMCP"></button><button class="btn-ghost" type="button" onclick="testMarketplaceMCP()" data-i18n="marketplaceTestMCP"></button></div>
+              <div id="marketplaceMCPTestResult" style="margin-top:10px"></div>
+            </div>
+          </div>
         </div>
-        <div class="grid2" style="margin-top:10px">
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceSearchTitle"></div><div class="item-meta" data-i18n="marketplaceSearchDesc"></div></div></div><div class="grid3" style="margin-top:10px"><div><label data-i18n="marketplaceSource"></label><select id="marketplaceSearchSource"><option value="hubcenter">hubcenter</option><option value="clawhub">clawhub</option><option value="github">github</option></select></div><div><label data-i18n="marketplaceCapabilityType"></label><select id="marketplaceSearchType"><option value="skill">skill</option><option value="mcp">mcp</option></select></div><div><label data-i18n="marketplaceQuery"></label><input id="marketplaceSearchQuery"></div></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="searchMarketplaceExternal()" data-i18n="marketplaceSearch"></button></div><div id="marketplaceSearchResults" style="display:grid;gap:8px;margin-top:10px"></div></div>
-          <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceMCPTitle"></div><div class="item-meta" data-i18n="marketplaceMCPDesc"></div></div></div><div class="grid2" style="margin-top:10px"><div><label data-i18n="marketplaceMCPId"></label><input id="marketplaceMCPId" placeholder="example-mcp"></div><div><label data-i18n="marketplaceMCPName"></label><input id="marketplaceMCPName" placeholder="Example MCP"></div><div><label data-i18n="marketplaceMCPPublisher"></label><input id="marketplaceMCPPublisher" value="enterprise"></div><div><label data-i18n="marketplaceMCPVersion"></label><input id="marketplaceMCPVersion" value="1.0.0"></div></div><div style="margin-top:10px"><label data-i18n="marketplaceMCPJson"></label><textarea id="marketplaceMCPJson" style="min-height:120px;font-family:Consolas,monospace">{"id":"example-mcp","name":"Example MCP","endpoint_url":"https://example.com/mcp","auth_type":"none","headers":{}}</textarea></div><div style="margin-top:10px"><label data-i18n="marketplaceMCPSecrets"></label><textarea id="marketplaceMCPSecrets" style="min-height:84px;font-family:Consolas,monospace">[]</textarea></div><div class="grid2" style="margin-top:10px"><div><label data-i18n="marketplaceMCPPricing"></label><textarea id="marketplaceMCPPricing" style="min-height:76px;font-family:Consolas,monospace">{"mode":"free"}</textarea></div><div><label data-i18n="marketplaceMCPLicense"></label><textarea id="marketplaceMCPLicense" style="min-height:76px;font-family:Consolas,monospace">{}</textarea></div></div><div class="actions" style="margin-top:10px"><button class="btn-primary" type="button" onclick="saveMarketplaceMCP()" data-i18n="marketplaceSaveMCP"></button></div></div>
+        <!-- Sub-tab: Marketplace Settings -->
+        <div id="marketplace-subtab-settings" style="display:none">
+          <div class="grid2">
+            <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplacePolicyTitle"></div><div class="item-meta" data-i18n="marketplacePolicyDesc"></div></div></div><div id="marketplacePolicyBody" style="margin-top:10px"></div></div>
+            <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceBillingTitle"></div><div class="item-meta" data-i18n="marketplaceBillingDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplaceBilling()" data-i18n="marketplaceLoadBilling"></button></div><div id="marketplaceBillingBody" style="display:grid;gap:8px;margin-top:10px"></div></div>
+          </div>
+          <div class="grid2" style="margin-top:10px">
+            <div class="item"><div class="item-head"><div><div class="item-title" data-i18n="marketplaceRequestsTitle"></div><div class="item-meta" data-i18n="marketplaceRequestsDesc"></div></div><button class="btn-ghost" type="button" onclick="loadMarketplace()" data-i18n="marketplaceReload"></button></div><div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-top:10px"><div><label data-i18n="marketplaceRequestsStatus"></label><select id="marketplaceRequestStatus" onchange="loadMarketplace()"><option value="pending_review">pending_review</option><option value="approved">approved</option><option value="completed">completed</option><option value="rejected">rejected</option><option value="">all</option></select></div></div><div id="marketplaceRequestsList" style="display:grid;gap:8px;margin-top:10px"></div></div>
+          </div>
         </div>
       </section>
       <section id="tab-system" class="panel card">
@@ -846,56 +903,21 @@
           </div>
         </div>
         <div class="item" style="margin-bottom:12px">
+          <div class="item-title" id="veHistoryTitle"></div>
+          <div class="item-meta" id="veHistoryDesc" style="margin-bottom:8px"></div>
+          <div class="actions" style="gap:8px;align-items:center;margin-bottom:8px">
+            <input type="text" id="veHistorySearchInput" oninput="veSearchHistory()" onkeydown="if(event.key==='Enter')veSearchHistory(true)" style="height:34px;max-width:280px">
+            <button class="btn-secondary" type="button" id="veSearchHistoryBtn" onclick="veSearchHistory(true)" style="height:34px;padding:0 12px;font-size:12px"></button>
+          </div>
+          <div id="veHistoryList"></div>
+        </div>
+        <div class="item" style="margin-bottom:12px">
           <div class="item-title" id="vePendingTitle"></div>
           <div class="table" id="vePendingList"></div>
         </div>
         <div class="item">
           <div class="item-title" id="veActiveTitle"></div>
           <div class="table" id="veActiveList"></div>
-        </div>
-      </section>
-
-      <!-- Tab: Group Discussion -->
-      <section id="tab-groupdiscussion" class="panel card gd-page">
-        <div class="gd-hero card">
-          <div class="gd-hero-copy">
-            <div class="mini" id="groupDiscussionKicker"></div>
-            <h3 id="groupDiscussionTitle"></h3>
-            <div class="desc" id="groupDiscussionSubtitle"></div>
-          </div>
-          <div class="gd-hero-actions">
-            <span class="badge ok" id="groupDiscussionConnectedBadge"></span>
-            <button class="btn-ghost" type="button" id="groupDiscussionRefreshBtn" onclick="loadGroupDiscussion()"></button>
-          </div>
-        </div>
-
-        <div class="item gd-section gd-overview-card">
-          <div class="item-title" id="groupDiscussionOverviewTitle"></div>
-          <div class="item-meta" id="groupDiscussionScopeHint"></div>
-          <div class="gd-divider"></div>
-          <div class="metrics gd-metrics" id="groupDiscussionStats"></div>
-          <div class="gd-actions">
-            <button class="btn-ghost" type="button" id="groupDiscussionOverviewRefreshBtn" onclick="loadGroupDiscussion()"></button>
-            <span class="item-meta" id="groupDiscussionSource"></span>
-          </div>
-        </div>
-
-        <div class="item gd-section">
-          <div class="item-title" id="groupDiscussionExpertsTitle"></div>
-          <div class="item-meta" id="groupDiscussionExpertsDesc"></div>
-          <div class="table gd-table" id="groupDiscussionExperts"></div>
-        </div>
-
-        <div class="item gd-section">
-          <div class="item-title" id="groupDiscussionHistoryTitle"></div>
-          <div class="item-meta" id="groupDiscussionHistoryDesc"></div>
-          <div class="table gd-table" id="groupDiscussionHistory"></div>
-        </div>
-
-        <div class="item gd-section">
-          <div class="item-title" id="groupDiscussionResultsTitle"></div>
-          <div class="item-meta" id="groupDiscussionResultsDesc"></div>
-          <div class="table gd-table" id="groupDiscussionResults"></div>
         </div>
       </section>
 
@@ -994,57 +1016,72 @@
       <!-- Tab: Security -->
       <section id="tab-security" class="panel card">
         <div class="head"><div><h3 id="secTitle" data-i18n="securityTabTitle"></h3><div class="desc" id="secDesc" data-i18n="securityTabSubtitle"></div></div><button class="btn-ghost" onclick="loadSecurityTab()" id="secReloadBtn" data-i18n="reload"></button></div>
-        <!-- Top: switches -->
-        <div id="secTopBar" style="display:grid;grid-template-columns:300px 1fr;gap:12px;align-items:start;margin-bottom:12px">
-          <div style="display:grid;gap:8px">
-            <div class="item" style="min-height:auto;padding:12px">
-              <div style="display:flex;align-items:center;justify-content:space-between">
-                <div><div class="item-title" style="font-size:14px" id="secCentralizedTitle" data-i18n="securityCentralizedPolicy"></div><div class="item-meta" id="secCentralizedHint"></div></div>
-                <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secCentralizedToggle" onchange="toggleSecCentralized(this.checked)"></label>
-              </div>
-            </div>
-            <div class="item" style="min-height:auto;padding:12px">
-              <div style="display:flex;align-items:center;justify-content:space-between">
-                <div><div class="item-title" style="font-size:14px" id="secOrgTitle" data-i18n="securityOrgStructure"></div><div class="item-meta" id="secOrgHint"></div></div>
-                <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secOrgToggle" onchange="toggleSecOrg(this.checked)"></label>
-              </div>
-            </div>
-          </div>
-          <div class="item" style="min-height:auto;padding:12px">
-            <div style="display:flex;align-items:center;justify-content:space-between">
-              <div><div class="item-title" style="font-size:14px" id="secDefaultGroupTitle" data-i18n="securityDefaultGroup"></div><div class="item-meta" id="secDefaultGroupHint" data-i18n="securityDefaultGroupHint"></div></div>
-              <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="showSetDefaultGroup()" id="secDefaultGroupSetBtn" data-i18n="securitySet"></button>
-            </div>
-          </div>
+        <div id="secSubTabs" style="display:flex;gap:8px;margin:-4px 0 12px">
+          <button class="btn-secondary" type="button" id="secManagementTabBtn" onclick="selectSecSubTab('management')"></button>
+          <button class="btn-ghost" type="button" id="secAuditTabBtn" onclick="selectSecSubTab('audit')"></button>
         </div>
-        <!-- Main: left tree + right policy -->
-        <div style="display:grid;grid-template-columns:300px 1fr;gap:12px;align-items:start">
-          <div class="item" style="min-height:360px;position:relative;padding:12px">
-            <div class="item-title" style="margin-bottom:12px" id="secGroupTreeTitle" data-i18n="securityGroupTree"></div>
-            <div id="secGroupTree" style="font-size:13px;line-height:1.8"></div>
-            <div id="secContextMenu" class="hidden" style="position:fixed;z-index:9999;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);padding:6px 0;min-width:160px">
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')" id="secCtxCreate" data-i18n="securityCreateSubDepartment"></div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')" id="secCtxRename" data-i18n="securityRenameDepartment"></div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('assign')" id="secCtxAssign" data-i18n="securityMoveUsers"></div>
-              <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')" id="secCtxDelete" data-i18n="securityDeleteDepartment"></div>
+        <div id="secManagementPane">
+          <!-- Top: switches -->
+          <div id="secTopBar" style="display:grid;grid-template-columns:300px 1fr;gap:12px;align-items:start;margin-bottom:12px">
+            <div style="display:grid;gap:8px">
+              <div class="item" style="min-height:auto;padding:12px">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div><div class="item-title" style="font-size:14px" id="secCentralizedTitle" data-i18n="securityCentralizedPolicy"></div><div class="item-meta" id="secCentralizedHint"></div></div>
+                  <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secCentralizedToggle" onchange="toggleSecCentralized(this.checked)"></label>
+                </div>
+              </div>
+              <div class="item" style="min-height:auto;padding:12px">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div><div class="item-title" style="font-size:14px" id="secOrgTitle" data-i18n="securityOrgStructure"></div><div class="item-meta" id="secOrgHint"></div></div>
+                  <label style="display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:13px;font-weight:600"><input type="checkbox" id="secOrgToggle" onchange="toggleSecOrg(this.checked)"></label>
+                </div>
+              </div>
+            </div>
+            <div class="item" style="min-height:auto;padding:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div><div class="item-title" style="font-size:14px" id="secDefaultGroupTitle" data-i18n="securityDefaultGroup"></div><div class="item-meta" id="secDefaultGroupHint" data-i18n="securityDefaultGroupHint"></div></div>
+                <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="showSetDefaultGroup()" id="secDefaultGroupSetBtn" data-i18n="securitySet"></button>
+              </div>
             </div>
           </div>
-          <div class="item" style="min-height:360px;padding:12px">
+          <!-- Main: left tree + right policy -->
+          <div style="display:grid;grid-template-columns:300px 1fr;gap:12px;align-items:start">
+            <div class="item" style="min-height:360px;position:relative;padding:12px">
+              <div class="item-title" style="margin-bottom:12px" id="secGroupTreeTitle" data-i18n="securityGroupTree"></div>
+              <button class="btn-secondary" type="button" id="secGlobalBtn" onclick="selectSecGlobal()" style="width:100%;height:34px;font-size:12px;margin-bottom:10px;text-align:left"></button>
+              <div id="secGroupTree" style="font-size:13px;line-height:1.8"></div>
+              <div id="secContextMenu" class="hidden" style="position:fixed;z-index:9999;background:#fff;border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.15);padding:6px 0;min-width:160px">
+                <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('create')" id="secCtxCreate" data-i18n="securityCreateSubDepartment"></div>
+                <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('rename')" id="secCtxRename" data-i18n="securityRenameDepartment"></div>
+                <div style="padding:8px 16px;cursor:pointer;font-size:13px" onmousedown="secCtxAction('assign')" id="secCtxAssign" data-i18n="securityMoveUsers"></div>
+                <div style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--danger)" onmousedown="secCtxAction('delete')" id="secCtxDelete" data-i18n="securityDeleteDepartment"></div>
+              </div>
+            </div>
+            <div class="item" style="min-height:360px;padding:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <div><div class="item-title" id="secPolicyTitle"></div><div class="item-meta" id="secPolicySubtitle"></div></div>
+                <div id="secPolicyActions" class="hidden" style="display:flex;gap:8px">
+                  <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecPolicy()" id="secPolicySaveBtn" data-i18n="securitySave"></button>
+                </div>
+              </div>
+              <div id="secPolicyPanel"></div>
+            </div>
+          </div>
+          <div id="secGroupMembers" class="item hidden" style="margin-top:12px;padding:12px">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-              <div><div class="item-title" id="secPolicyTitle"></div><div class="item-meta" id="secPolicySubtitle"></div></div>
-              <div id="secPolicyActions" class="hidden" style="display:flex;gap:8px">
-                <button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecPolicy()" id="secPolicySaveBtn" data-i18n="securitySave"></button>
-              </div>
+              <div class="item-title" style="font-size:14px" id="secMembersTitle" data-i18n="securityMembers"></div>
+              <button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="loadSecGroupMembers()" id="secMembersReloadBtn" data-i18n="reload"></button>
             </div>
-            <div id="secPolicyPanel"></div>
+            <div id="secMembersList"></div>
           </div>
         </div>
-        <div id="secGroupMembers" class="item hidden" style="margin-top:12px;padding:12px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-            <div class="item-title" style="font-size:14px" id="secMembersTitle" data-i18n="securityMembers"></div>
-            <button class="btn-secondary" style="height:28px;font-size:11px;padding:0 10px" onclick="loadSecGroupMembers()" id="secMembersReloadBtn" data-i18n="reload"></button>
+        <div id="secAuditPanel" class="item hidden" style="padding:12px">
+          <div class="item-head">
+            <div><div class="item-title" style="font-size:14px" id="secAuditTitle"></div><div class="item-meta" id="secAuditDesc"></div></div>
+            <button class="btn-secondary" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="reloadSecAuditLogs()" id="secAuditReloadBtn"></button>
           </div>
-          <div id="secMembersList"></div>
+          <div id="secAuditControls" class="grid3" style="grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end;margin-top:10px"></div>
+          <div id="secAuditList" style="display:grid;gap:6px;margin-top:10px"></div>
         </div>
       </section>
 
@@ -1177,7 +1214,6 @@
 <script src="/admin/security-tab.js"></script>
 <script src="/admin/machines-tab.js"></script>
 <script src="/admin/ve-tab.js"></script>
-<script src="/admin/group-discussion-tab.js"></script>
 <script src="/admin/im-tab.js"></script>
 <script src="/admin/hub-llm-tab.js"></script>
 <script src="/admin/feishu-tab.js"></script>

@@ -95,9 +95,6 @@ func TestNewIMMessageHandlerStandalone_AccessorsWork(t *testing.T) {
 	if h.getAuditLog() != nil {
 		t.Error("expected nil audit log")
 	}
-	if h.getAgentNetClient() != nil {
-		t.Error("expected nil agentnet client")
-	}
 }
 
 func TestHandleMemoryStatusCommandUsesStandaloneMemoryStore(t *testing.T) {

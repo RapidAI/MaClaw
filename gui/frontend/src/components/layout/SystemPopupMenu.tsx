@@ -84,7 +84,9 @@ export function SystemPopupMenu({ items, onSelect, onClose }: SystemPopupMenuPro
                     onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ''; }}
                 >
                     <span style={{ fontSize: '1.1rem', lineHeight: 1, position: 'relative' }}>
-                        {item.icon}
+                        <span style={{ filter: 'grayscale(1) saturate(0) brightness(0.68)', opacity: 0.96, display: 'inline-block' }}>
+                            {item.icon}
+                        </span>
                         {item.badge != null && item.badge > 0 && (
                             <span style={{
                                 position: 'absolute', top: '-4px', right: '-8px',

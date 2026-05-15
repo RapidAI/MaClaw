@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
@@ -22,10 +25,28 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
 	skillpkg "github.com/RapidAI/CodeClaw/hub/internal/skill"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/ve"
 	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
+
+func resolveHubRuntimeDataDir(hubCfg *config.Config, configPath string) string {
+	if hubCfg != nil && strings.EqualFold(strings.TrimSpace(hubCfg.Database.Driver), "sqlite") {
+		dsn := strings.TrimSpace(hubCfg.Database.DSN)
+		if idx := strings.IndexByte(dsn, '?'); idx >= 0 {
+			dsn = dsn[:idx]
+		}
+		dsn = strings.TrimPrefix(dsn, "file:")
+		if dsn != "" && dsn != ":memory:" && !strings.HasPrefix(dsn, ":memory:") {
+			dir := filepath.Dir(dsn)
+			if dir != "." && dir != "" {
+				return dir
+			}
+		}
+	}
+	return resolveHubDataDir(configPath)
+}
 
 func NewRouter(
 	admins *auth.AdminService,
@@ -88,12 +109,62 @@ func NewRouter(
 	}
 	mux := http.NewServeMux()
 	groupDiscussionSvc := NewGroupDiscussionService(hubDB)
-	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc)
+	groupDiscussionHandler := NewGroupDiscussionHandler(groupDiscussionSvc, deviceSvc)
+	fileRelay := ve.NewFileRelay(filepath.Join(resolveHubRuntimeDataDir(hubCfg, configPath), "ve-files"))
+	fileRelay.SetParticipantValidator(groupDiscussionSvc)
+	fileRelay.Start(context.Background())
 	capabilitySvc := capability.NewService(hubDB)
 	mux.HandleFunc("GET /healthz", HealthHandler("maclaw-hub"))
 	mux.HandleFunc("GET /api/admin/status", AdminStatusHandler(admins))
-	groupDiscussionHandler.RegisterHubRoutes(mux)
+	groupDiscussionAuth := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := authenticateVEMachine(w, r, identity)
+			if !ok {
+				return
+			}
+			participantID := r.URL.Query().Get("participant_id")
+			if participantID != "" && !strings.EqualFold(participantID, principal.MachineID) {
+				writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
+				return
+			}
+			r.Header.Set("X-Authenticated-Machine-ID", principal.MachineID)
+			h(w, r)
+		}
+	}
+	groupDiscussionHandler.RegisterHubRoutesWithMiddleware(mux, groupDiscussionAuth)
+	fileRelayAuth := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := authenticateVEMachine(w, r, identity)
+			if !ok {
+				return
+			}
+			participantID := r.URL.Query().Get("participant_id")
+			if participantID != "" && !strings.EqualFold(participantID, principal.MachineID) {
+				writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
+				return
+			}
+			r.Header.Set("X-Participant-ID", principal.MachineID)
+			h(w, r)
+		}
+	}
+	mux.HandleFunc("POST /api/ve/files/upload", fileRelayAuth(fileRelay.HandleUpload))
+	mux.HandleFunc("GET /api/ve/files/download/{id}", fileRelayAuth(fileRelay.HandleDownload))
+	mux.HandleFunc("GET /api/ve/history/{discussionID}/attachments/{fileID}", RequireAdmin(admins, fileRelay.HandleAdminDownload))
 	mux.HandleFunc("GET /api/admin/a2a/group-discussions", RequireAdmin(admins, groupDiscussionHandler.handleAdminGroupDiscussions))
+	mux.HandleFunc("POST /api/ve/register", VERegisterHandler(system, identity, userLookup))
+	mux.HandleFunc("PUT /api/ve/settings", VESettingsHandler(system, identity, userLookup))
+	mux.HandleFunc("GET /api/ve/status", VEStatusHandler(system, identity))
+	mux.HandleFunc("GET /api/ve/discoverable", VEDiscoverableHandler(system, identity))
+	mux.HandleFunc("POST /api/ve/{id}/initiate", VEInitiateHandler(system, groupDiscussionSvc, identity))
+	mux.HandleFunc("GET /api/ve/list", RequireAdmin(admins, VEAdminListHandler(system, userLookup)))
+	mux.HandleFunc("GET /api/ve/{id}/history", RequireAdmin(admins, VEHistoryHandler(system, groupDiscussionSvc, userLookup)))
+	mux.HandleFunc("GET /api/ve/history/search", RequireAdmin(admins, VEHistorySearchHandler(system, groupDiscussionSvc, userLookup)))
+	mux.HandleFunc("GET /api/ve/history/{id}/detail", RequireAdmin(admins, VEHistoryDetailHandler(groupDiscussionSvc)))
+	mux.HandleFunc("PUT /api/ve/config", RequireAdmin(admins, VEAdminConfigHandler(system)))
+	mux.HandleFunc("GET /api/ve/config", RequireAdmin(admins, VEAdminConfigHandler(system)))
+	mux.HandleFunc("POST /api/ve/{id}/approve", RequireAdmin(admins, VEAdminActionHandler(system, "approve", deviceSvc)))
+	mux.HandleFunc("POST /api/ve/{id}/reject", RequireAdmin(admins, VEAdminActionHandler(system, "reject", deviceSvc)))
+	mux.HandleFunc("POST /api/ve/{id}/disable", RequireAdmin(admins, VEAdminActionHandler(system, "disable", deviceSvc)))
 	mux.HandleFunc("POST /api/admin/setup", SetupAdminHandler(admins))
 	mux.HandleFunc("POST /api/admin/login", AdminLoginHandler(admins))
 	mux.HandleFunc("POST /api/admin/password", RequireAdmin(admins, AdminChangePasswordHandler(admins)))
@@ -183,7 +254,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/llm/providers/test", RequireAdmin(admins, TestLLMProviderHandler(system)))
 	mux.HandleFunc("POST /api/admin/llm/providers/test-key", RequireAdmin(admins, GenerateLLMProviderTestKeyHandler(identity)))
 	mux.HandleFunc("GET /api/admin/llm/services", RequireAdmin(admins, GetLLMServicesAdminHandler(system)))
-	mux.HandleFunc("PUT /api/admin/llm/services", RequireAdmin(admins, UpdateLLMServicesAdminHandler(system, securitySvc)))
+	mux.HandleFunc("PUT /api/admin/llm/services", RequireAdmin(admins, UpdateLLMServicesAdminHandler(system, securitySvc, adminAudit)))
 	mux.HandleFunc("POST /api/admin/llm/service-cards", RequireAdmin(admins, CreateLLMServiceCardHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/service-cards", RequireAdmin(admins, ListLLMServiceCardsHandler(system)))
 	mux.HandleFunc("GET /api/admin/llm/service-cards/export", RequireAdmin(admins, ExportLLMServiceCardsHandler(system)))
@@ -223,18 +294,18 @@ func NewRouter(
 	if securitySvc != nil {
 		mux.HandleFunc("GET /api/admin/security/groups", RequireAdmin(admins, SecurityGroupsHandler(securitySvc)))
 		mux.HandleFunc("GET /api/admin/security/groups/root", RequireAdmin(admins, SecurityGroupsRootHandler(securitySvc)))
-		mux.HandleFunc("POST /api/admin/security/groups", RequireAdmin(admins, CreateSecurityGroupHandler(securitySvc)))
-		mux.HandleFunc("PUT /api/admin/security/groups/{id}", RequireAdmin(admins, UpdateSecurityGroupHandler(securitySvc)))
-		mux.HandleFunc("DELETE /api/admin/security/groups/{id}", RequireAdmin(admins, DeleteSecurityGroupHandler(securitySvc)))
+		mux.HandleFunc("POST /api/admin/security/groups", RequireAdmin(admins, CreateSecurityGroupHandler(securitySvc, adminAudit)))
+		mux.HandleFunc("PUT /api/admin/security/groups/{id}", RequireAdmin(admins, UpdateSecurityGroupHandler(securitySvc, adminAudit)))
+		mux.HandleFunc("DELETE /api/admin/security/groups/{id}", RequireAdmin(admins, DeleteSecurityGroupHandler(securitySvc, adminAudit)))
 		mux.HandleFunc("GET /api/admin/security/groups/{id}/members", RequireAdmin(admins, ListGroupMembersHandler(securitySvc)))
-		mux.HandleFunc("POST /api/admin/security/groups/{id}/members", RequireAdmin(admins, AddGroupMemberHandler(securitySvc)))
-		mux.HandleFunc("DELETE /api/admin/security/groups/{id}/members/{email}", RequireAdmin(admins, RemoveGroupMemberHandler(securitySvc)))
+		mux.HandleFunc("POST /api/admin/security/groups/{id}/members", RequireAdmin(admins, AddGroupMemberHandler(securitySvc, adminAudit)))
+		mux.HandleFunc("DELETE /api/admin/security/groups/{id}/members/{email}", RequireAdmin(admins, RemoveGroupMemberHandler(securitySvc, adminAudit)))
 		mux.HandleFunc("GET /api/admin/security/groups/{id}/policy", RequireAdmin(admins, GetGroupPolicyHandler(securitySvc)))
-		mux.HandleFunc("PUT /api/admin/security/groups/{id}/policy", RequireAdmin(admins, UpdateGroupPolicyHandler(securitySvc)))
+		mux.HandleFunc("PUT /api/admin/security/groups/{id}/policy", RequireAdmin(admins, UpdateGroupPolicyHandler(securitySvc, adminAudit)))
 		mux.HandleFunc("GET /api/admin/security/users/{email}/effective-policy", RequireAdmin(admins, GetUserEffectivePolicyHandler(securitySvc)))
 		mux.HandleFunc("GET /api/admin/security/settings", RequireAdmin(admins, GetSecuritySettingsHandler(securitySvc)))
 		mux.HandleFunc("PUT /api/admin/security/settings", RequireAdmin(admins, UpdateSecuritySettingsHandler(securitySvc)))
-		mux.HandleFunc("PUT /api/admin/security/settings/default-group", RequireAdmin(admins, SetDefaultGroupHandler(securitySvc)))
+		mux.HandleFunc("PUT /api/admin/security/settings/default-group", RequireAdmin(admins, SetDefaultGroupHandler(securitySvc, adminAudit)))
 		// Public endpoint for enrollment group tree
 		mux.HandleFunc("GET /api/enroll/group-tree", EnrollGroupTreeHandler(securitySvc))
 	}
@@ -333,6 +404,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/capabilities/{id}/install-intent", CapabilityInstallIntentHandler(capabilitySvc, system, centerSvc))
 	mux.HandleFunc("GET /api/capabilities/managed-deployments", CapabilityManagedDeploymentsHandler(capabilitySvc))
 	mux.HandleFunc("GET /api/capabilities/recommended", CapabilityRecommendationsHandler(capabilitySvc))
+	mux.HandleFunc("GET /api/capabilities/inventory", UserCapabilityInventoryHandler(identity, capabilitySvc))
+	mux.HandleFunc("PUT /api/capabilities/inventory", UserCapabilityInventoryUpsertHandler(identity, capabilitySvc))
 	mux.HandleFunc("GET /api/capabilities/mcp-secret-bindings", MCPSecretBindingsHandler(identity, capabilitySvc))
 	mux.HandleFunc("PUT /api/capabilities/mcp-secret-bindings", MCPSecretBindingUpsertHandler(identity, capabilitySvc))
 	mux.HandleFunc("GET /api/capabilities/mcp-hub-secrets", MCPHubSecretsHandler(identity, capabilitySvc))
@@ -346,24 +419,25 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/approve", RequireAdmin(admins, AdminCapabilityApproveAcquisitionHandler(capabilitySvc, system, centerSvc)))
 	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/reject", RequireAdmin(admins, AdminCapabilityRejectAcquisitionHandler(capabilitySvc)))
 	mux.HandleFunc("POST /api/admin/capability-market/acquisition-requests/{id}/complete", RequireAdmin(admins, AdminCapabilityCompleteAcquisitionHandler(capabilitySvc)))
-	mux.HandleFunc("POST /api/admin/capability-market/managed-deployments", RequireAdmin(admins, AdminCapabilityManagedDeploymentCreateHandler(capabilitySvc)))
-	mux.HandleFunc("POST /api/admin/capability-market/recommendations", RequireAdmin(admins, AdminCapabilityRecommendationCreateHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/managed-deployments", RequireAdmin(admins, AdminCapabilityManagedDeploymentCreateHandler(capabilitySvc, adminAudit)))
+	mux.HandleFunc("DELETE /api/admin/capability-market/managed-deployments/{id}", RequireAdmin(admins, AdminCapabilityManagedDeploymentDeleteHandler(capabilitySvc, adminAudit)))
+	mux.HandleFunc("POST /api/admin/capability-market/recommendations", RequireAdmin(admins, AdminCapabilityRecommendationCreateHandler(capabilitySvc, adminAudit)))
+	mux.HandleFunc("DELETE /api/admin/capability-market/recommendations/{id}", RequireAdmin(admins, AdminCapabilityRecommendationDeleteHandler(capabilitySvc, adminAudit)))
+	mux.HandleFunc("GET /api/admin/audit-logs", RequireAdmin(admins, AdminAuditLogsHandler(adminAudit)))
+	mux.HandleFunc("GET /api/admin/capability-market/groups/{id}/effective-policies", RequireAdmin(admins, AdminGroupCapabilityEffectivePoliciesHandler(capabilitySvc, securitySvc)))
+	mux.HandleFunc("GET /api/admin/capability-market/users/{email}/inventory", RequireAdmin(admins, AdminUserCapabilityInventoryHandler(capabilitySvc)))
+	mux.HandleFunc("GET /api/admin/capability-market/users/{email}/effective-policies", RequireAdmin(admins, AdminUserCapabilityEffectivePoliciesHandler(capabilitySvc, securitySvc)))
+	mux.HandleFunc("GET /api/admin/capability-market/users/{email}/compliance", RequireAdmin(admins, AdminUserCapabilityComplianceHandler(capabilitySvc, securitySvc)))
 	mux.HandleFunc("POST /api/admin/capability-market/mcp", RequireAdmin(admins, AdminMCPMarketplaceUpsertHandler(capabilitySvc)))
 	mux.HandleFunc("PUT /api/admin/capability-market/mcp", RequireAdmin(admins, AdminMCPMarketplaceUpsertHandler(capabilitySvc)))
+	mux.HandleFunc("POST /api/admin/capability-market/mcp/test", RequireAdmin(admins, AdminMCPTestConnectionHandler()))
 	mux.HandleFunc("POST /api/admin/capability-market/mcp-secret-requirements", RequireAdmin(admins, AdminMCPSecretRequirementUpsertHandler(capabilitySvc)))
 	mux.HandleFunc("GET /api/admin/capabilities/external-search", RequireAdmin(admins, AdminCapabilityExternalSearchHandler(centerSvc)))
+	mux.HandleFunc("POST /api/admin/capabilities/mcp/validate", RequireAdmin(admins, AdminMCPValidateHandler()))
 	mux.HandleFunc("POST /api/admin/capabilities/import-intent", RequireAdmin(admins, AdminCapabilityImportIntentHandler(capabilitySvc, system, centerSvc)))
 	mux.HandleFunc("PUT /api/shortcuts", PutShortcutsHandler(identity, system))
 	// Webhook session endpoint (Bearer token auth handled internally)
 	mux.HandleFunc("POST /api/webhook/session", WebhookCreateSessionHandler(deviceSvc, sessionSvc))
-
-	// AgentNet identity key online backup/restore (no auth; protected by user password)
-	mux.HandleFunc("POST /api/AgentNet/key/backup", AgentNetKeyBackupHandler())
-	mux.HandleFunc("POST /api/AgentNet/key/restore", AgentNetKeyRestoreHandler())
-
-	// AgentNet task bulletin board; Hub-relayed P2P task discovery
-	mux.HandleFunc("POST /api/AgentNet/tasks/publish", AgentNetTaskPublishHandler())
-	mux.HandleFunc("GET /api/AgentNet/tasks/browse", AgentNetTaskBrowseHandler())
 
 	// User-facing voiceprint self-enrollment
 	if voiceprintSvc != nil {

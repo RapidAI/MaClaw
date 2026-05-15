@@ -56,6 +56,31 @@ type Recommendation struct {
 	AllowUserDismiss     bool   `json:"allow_user_dismiss"`
 }
 
+type UserCapabilityInventoryItem struct {
+	ID                   string `json:"id"`
+	UserID               string `json:"user_id,omitempty"`
+	UserEmail            string `json:"user_email"`
+	CapabilityRef        string `json:"capability_ref"`
+	CapabilityVersionKey string `json:"capability_version_key,omitempty"`
+	CapabilityType       string `json:"capability_type,omitempty"`
+	InstallStatus        string `json:"install_status"`
+	Installed            bool   `json:"installed"`
+	MetadataJSON         string `json:"metadata_json"`
+	LastSeenAt           string `json:"last_seen_at"`
+}
+
+type UserCapabilityInventoryInput struct {
+	UserID               string
+	UserEmail            string
+	CapabilityRef        string
+	CapabilityVersionKey string
+	CapabilityType       string
+	InstallStatus        string
+	Installed            bool
+	MetadataJSON         string
+	LastSeenAt           string
+}
+
 type VersionSummary struct {
 	ID                string `json:"id"`
 	CapabilityRef     string `json:"capability_ref"`
@@ -527,6 +552,20 @@ func (s *Service) CreateManagedDeployment(ctx context.Context, in ManagedDeploym
 	return id, err
 }
 
+func (s *Service) DisableManagedDeployment(ctx context.Context, id string) error {
+	if s == nil || s.db == nil {
+		return errors.New("capability service is not configured")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE managed_capability_deployments SET enabled = 0, updated_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 type RecommendationInput struct {
 	CapabilityRef        string
 	CapabilityVersionKey string
@@ -559,6 +598,125 @@ func (s *Service) CreateRecommendation(ctx context.Context, in RecommendationInp
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO recommended_capabilities (id, capability_ref, capability_version_key, scope_json, recommendation_reason, allow_user_dismiss, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, in.CapabilityRef, in.CapabilityVersionKey, in.ScopeJSON, in.Reason, allowDismiss, enabled, in.CreatedBy, now, now)
 	return id, err
+}
+
+func (s *Service) DisableRecommendation(ctx context.Context, id string) error {
+	if s == nil || s.db == nil {
+		return errors.New("capability service is not configured")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE recommended_capabilities SET enabled = 0, updated_at = ? WHERE id = ?`, time.Now().UTC().Format(time.RFC3339), strings.TrimSpace(id))
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Service) UpsertUserCapabilityInventory(ctx context.Context, in UserCapabilityInventoryInput) (*UserCapabilityInventoryItem, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("capability service is not configured")
+	}
+	in.UserEmail = strings.ToLower(strings.TrimSpace(in.UserEmail))
+	in.CapabilityRef = strings.TrimSpace(in.CapabilityRef)
+	if in.UserEmail == "" || in.CapabilityRef == "" {
+		return nil, errors.New("user_email and capability_ref are required")
+	}
+	if strings.TrimSpace(in.InstallStatus) == "" {
+		if in.Installed {
+			in.InstallStatus = "installed"
+		} else {
+			in.InstallStatus = "missing"
+		}
+	}
+	if strings.TrimSpace(in.MetadataJSON) == "" {
+		in.MetadataJSON = "{}"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if strings.TrimSpace(in.LastSeenAt) == "" {
+		in.LastSeenAt = now
+	}
+	id := newID("cap_inv")
+	installed := 0
+	if in.Installed {
+		installed = 1
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO user_capability_inventory (id, user_id, user_email, capability_ref, capability_version_key, capability_type, install_status, installed, metadata_json, last_seen_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_email, capability_ref) DO UPDATE SET user_id = excluded.user_id, capability_version_key = excluded.capability_version_key, capability_type = excluded.capability_type, install_status = excluded.install_status, installed = excluded.installed, metadata_json = excluded.metadata_json, last_seen_at = excluded.last_seen_at, updated_at = excluded.updated_at`, id, strings.TrimSpace(in.UserID), in.UserEmail, in.CapabilityRef, strings.TrimSpace(in.CapabilityVersionKey), strings.TrimSpace(in.CapabilityType), strings.TrimSpace(in.InstallStatus), installed, in.MetadataJSON, in.LastSeenAt, now, now)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetUserCapabilityInventoryItem(ctx, in.UserEmail, in.CapabilityRef)
+}
+
+func (s *Service) GetUserCapabilityInventoryItem(ctx context.Context, email, capabilityRef string) (*UserCapabilityInventoryItem, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrNotFound
+	}
+	var item UserCapabilityInventoryItem
+	var installed int
+	err := s.db.QueryRowContext(ctx, `SELECT id, user_id, user_email, capability_ref, capability_version_key, capability_type, install_status, installed, metadata_json, last_seen_at FROM user_capability_inventory WHERE user_email = ? AND capability_ref = ? LIMIT 1`, strings.ToLower(strings.TrimSpace(email)), strings.TrimSpace(capabilityRef)).Scan(&item.ID, &item.UserID, &item.UserEmail, &item.CapabilityRef, &item.CapabilityVersionKey, &item.CapabilityType, &item.InstallStatus, &installed, &item.MetadataJSON, &item.LastSeenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.Installed = installed != 0
+	return &item, nil
+}
+
+func (s *Service) ListUserCapabilityInventory(ctx context.Context, email string) ([]UserCapabilityInventoryItem, error) {
+	if s == nil || s.db == nil {
+		return []UserCapabilityInventoryItem{}, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, user_id, user_email, capability_ref, capability_version_key, capability_type, install_status, installed, metadata_json, last_seen_at FROM user_capability_inventory WHERE user_email = ? ORDER BY last_seen_at DESC`, strings.ToLower(strings.TrimSpace(email)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserCapabilityInventoryItem{}
+	for rows.Next() {
+		var item UserCapabilityInventoryItem
+		var installed int
+		if err := rows.Scan(&item.ID, &item.UserID, &item.UserEmail, &item.CapabilityRef, &item.CapabilityVersionKey, &item.CapabilityType, &item.InstallStatus, &installed, &item.MetadataJSON, &item.LastSeenAt); err != nil {
+			return nil, err
+		}
+		item.Installed = installed != 0
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Service) MarkUserCapabilityInventoryMissingExcept(ctx context.Context, email string, capabilityRefs []string) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return errors.New("user_email is required")
+	}
+	keep := map[string]bool{}
+	for _, ref := range capabilityRefs {
+		ref = strings.TrimSpace(ref)
+		if ref != "" {
+			keep[ref] = true
+		}
+	}
+	items, err := s.ListUserCapabilityInventory(ctx, email)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, item := range items {
+		if keep[item.CapabilityRef] {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE user_capability_inventory SET installed = 0, install_status = 'missing', last_seen_at = ?, updated_at = ? WHERE user_email = ? AND capability_ref = ?`, now, now, email, item.CapabilityRef); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type MCPSecretRequirementInput struct {

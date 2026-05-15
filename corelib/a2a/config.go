@@ -19,7 +19,11 @@ func NewHubClientFromConfig(cfg corelib.AppConfig, opts ...HubClientOption) (*Hu
 	if token == "" {
 		return nil, fmt.Errorf("hub token is not configured")
 	}
-	allOpts := append([]HubClientOption{WithHubBearerToken(token)}, opts...)
+	machineID := strings.TrimSpace(cfg.RemoteMachineID)
+	if machineID == "" {
+		machineID = strings.TrimSpace(cfg.RemoteClientID)
+	}
+	allOpts := append([]HubClientOption{WithHubBearerToken(token), WithHubMachineID(machineID)}, opts...)
 	return NewHubClient(cfg.RemoteHubURL, allOpts...)
 }
 

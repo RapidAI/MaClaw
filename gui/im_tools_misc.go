@@ -1,7 +1,7 @@
 package main
 
 // Miscellaneous tools: MCP, skills, memory, templates, config, nickname,
-// LLM provider switch, scheduled tasks, AgentNet, audit log, web search/fetch.
+// LLM provider switch, scheduled tasks, audit log, web search/fetch.
 
 import (
 	"context"
@@ -2212,67 +2212,6 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	return "✅ 定时任务已更新"
 }
 
-// ---------- AgentNet Knowledge Tools ----------
-
-func (h *IMMessageHandler) toolAgentNetSearch(args map[string]interface{}) string {
-	if h.getAgentNetClient() == nil || !h.getAgentNetClient().IsRunning() {
-		return "智网未连接，请先在设置中启用 AgentNet"
-	}
-	query := stringVal(args, "query")
-	if query == "" {
-		return "缺少 query 参数"
-	}
-	entries, err := h.getAgentNetClient().SearchKnowledge(query)
-	if err != nil {
-		return fmt.Sprintf("搜索失败: %s", err.Error())
-	}
-	if len(entries) == 0 {
-		return fmt.Sprintf("未找到与「%s」相关的知识条目", query)
-	}
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("🔍 智网知识搜索「%s」— 找到 %d 条:\n\n", query, len(entries)))
-	for i, e := range entries {
-		if i >= 10 {
-			b.WriteString(fmt.Sprintf("... 还有 %d 条结果\n", len(entries)-10))
-			break
-		}
-		b.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, e.Title))
-		if e.Body != "" {
-			body := e.Body
-			if len(body) > 200 {
-				body = body[:200] + "…"
-			}
-			b.WriteString(fmt.Sprintf("   %s\n", body))
-		}
-		if e.Author != "" {
-			b.WriteString(fmt.Sprintf("   — %s", e.Author))
-		}
-		if e.Domain != "" {
-			b.WriteString(fmt.Sprintf(" [%s]", e.Domain))
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-func (h *IMMessageHandler) toolAgentNetPublish(args map[string]interface{}) string {
-	if h.getAgentNetClient() == nil || !h.getAgentNetClient().IsRunning() {
-		return "智网未连接，请先在设置中启用 AgentNet"
-	}
-	title := stringVal(args, "title")
-	body := stringVal(args, "body")
-	if title == "" {
-		return "缺少 title 参数"
-	}
-	if body == "" {
-		return "缺少 body 参数"
-	}
-	entry, err := h.getAgentNetClient().PublishKnowledge(title, body)
-	if err != nil {
-		return fmt.Sprintf("发布失败: %s", err.Error())
-	}
-	return fmt.Sprintf("✅ 知识已发布到智网\nID: %s\n标题: %s", entry.ID, entry.Title)
-}
 
 func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {
 	if h.app == nil {

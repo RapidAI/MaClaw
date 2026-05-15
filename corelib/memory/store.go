@@ -65,6 +65,10 @@ type Store struct {
 	pendingDedup []pendingDedupPair
 	llmDedup     LLMChatCaller // set via SetLLMDedup; nil = async dedup disabled
 
+	// --- Storage backend + cross-instance sync ---
+	backend StorageBackend // persistence layer (JSON or SQLite)
+	sync    *syncState     // nil if sync is disabled
+
 	queryEmbMu     sync.Mutex
 	queryEmbCache  map[string]queryEmbeddingCacheEntry
 	queryEmbFlight map[string]*queryEmbeddingFlight
@@ -479,6 +483,21 @@ type CategoryStat struct {
 func (s *Store) CategoryStats() []CategoryStat {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.categoryStatsLocked()
+}
+
+// CategoryStatsForProject returns category stats filtered to entries relevant
+// to the given project path. Uses the same strict filtering as RecallDynamicStrict:
+// ScopeProject entries must have tags matching projectPath; non-ScopeProject entries
+// (global knowledge, user_fact, preference) are always included.
+func (s *Store) CategoryStatsForProject(projectPath string) []CategoryStat {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	projectLower := semanticNormalizeProjectPath(projectPath)
+	if projectLower == "" {
+		return s.categoryStatsLocked()
+	}
 
 	type info struct {
 		count int
@@ -489,7 +508,62 @@ func (s *Store) CategoryStats() []CategoryStat {
 
 	for _, e := range s.entries {
 		canonical := MapToCanonical(e.Category)
-		// Skip internal categories that aren't useful for the LLM.
+		if canonical == CategorySelfIdentity || canonical == CategorySessionCheckpoint || canonical == CategoryConversationSummary {
+			continue
+		}
+		// Strict project filter: exclude other projects' entries.
+		if !recallStrictProjectEntryAllowed(e, projectLower) {
+			continue
+		}
+		ci, exists := catMap[canonical]
+		if !exists {
+			ci = &info{}
+			catMap[canonical] = ci
+			order = append(order, canonical)
+		}
+		ci.count++
+		if len(ci.tags) < 3 {
+			for _, t := range e.Tags {
+				if len(t) > 1 && len(t) < 20 && !semanticLooksLikePath(semanticNormalizeProjectPath(t)) {
+					dup := false
+					for _, existing := range ci.tags {
+						if existing == t {
+							dup = true
+							break
+						}
+					}
+					if !dup {
+						ci.tags = append(ci.tags, t)
+						if len(ci.tags) >= 3 {
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	result := make([]CategoryStat, 0, len(order))
+	for _, cat := range order {
+		ci := catMap[cat]
+		result = append(result, CategoryStat{
+			Category: cat,
+			Count:    ci.count,
+			Tags:     ci.tags,
+		})
+	}
+	return result
+}
+
+func (s *Store) categoryStatsLocked() []CategoryStat {
+	type info struct {
+		count int
+		tags  []string
+	}
+	catMap := make(map[Category]*info)
+	var order []Category
+	for _, e := range s.entries {
+		canonical := MapToCanonical(e.Category)
 		if canonical == CategorySelfIdentity || canonical == CategorySessionCheckpoint || canonical == CategoryConversationSummary {
 			continue
 		}
@@ -520,15 +594,10 @@ func (s *Store) CategoryStats() []CategoryStat {
 			}
 		}
 	}
-
 	result := make([]CategoryStat, 0, len(order))
 	for _, cat := range order {
 		ci := catMap[cat]
-		result = append(result, CategoryStat{
-			Category: cat,
-			Count:    ci.count,
-			Tags:     ci.tags,
-		})
+		result = append(result, CategoryStat{Category: cat, Count: ci.count, Tags: ci.tags})
 	}
 	return result
 }
@@ -1424,6 +1493,14 @@ func (s *Store) supersedeEntryLocked(id string, invalidAt time.Time) bool {
 // multi-tenant isolation in maclawsrv. In GUI/TUI (single-user), omit ownerID
 // or pass empty string; all entries are returned.
 func (s *Store) RecallDynamic(query string, category Category, projectPath string, ownerID ...string) []Entry {
+	return s.recallDynamicCore(query, category, projectPath, false, ownerID...)
+}
+
+// recallDynamicCore is the shared implementation for RecallDynamic and RecallDynamicStrict.
+// When strictProject=true: ScopeProject entries must have tags matching current projectPath;
+// other projects' project_knowledge is excluded; ScopeGlobal + user_fact + preference always allowed.
+// When strictProject=false: default behavior (soft project filtering) unchanged.
+func (s *Store) recallDynamicCore(query string, category Category, projectPath string, strictProject bool, ownerID ...string) []Entry {
 	// Query Expand: extract entities for multi-query BM25 + tokens for tag matching.
 	expanded := ExpandQuery(query)
 	bm25Scores := s.multiQueryBM25(query, expanded.Entities)
@@ -1496,8 +1573,16 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 		if !e.IsActive() {
 			continue
 		}
-		if !recallDynamicEntryAllowed(e, category, projectLower, filterOwner) {
-			continue
+		if strictProject && projectLower != "" {
+			// Strict project mode: use recallStrictProjectEntryAllowed for
+			// ScopeProject entries, and allow ScopeGlobal + user_fact + preference.
+			if !recallDynamicEntryAllowedStrict(e, category, projectLower, filterOwner) {
+				continue
+			}
+		} else {
+			if !recallDynamicEntryAllowed(e, category, projectLower, filterOwner) {
+				continue
+			}
 		}
 		b := bm25Scores[e.ID]
 		v := 0.0
@@ -1557,7 +1642,11 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	// Re-apply the full dynamic visibility contract after graph expansion: graph
 	// edges can cross owner, project, or category boundaries that the seed set had
 	// already filtered out.
-	candidates = filterRecallDynamicCandidates(candidates, category, projectLower, filterOwner)
+	if strictProject && projectLower != "" {
+		candidates = filterRecallDynamicCandidatesStrict(candidates, category, projectLower, filterOwner)
+	} else {
+		candidates = filterRecallDynamicCandidates(candidates, category, projectLower, filterOwner)
+	}
 	if ClassifyComplexity(query, expanded.Entities, nil) != ComplexitySimple && s.themeManager != nil {
 		candidates = themeAwareDiversityRerank(candidates, s.themeManager.Themes(), graphExpandSeeds)
 	}
@@ -1590,6 +1679,77 @@ func (s *Store) RecallDynamic(query string, category Category, projectPath strin
 	s.lastDerivedFacts = derivedFacts
 	s.mu.Unlock()
 	return result
+}
+
+// RecallDynamicStrict performs project-isolated recall for Project Tab scenarios.
+// It delegates to RecallDynamic and then applies strict project filtering:
+//   - Include entries whose tags contain the given projectPath
+//   - Include entries with Scope != ScopeProject (universal knowledge: user_fact, preference, self_identity)
+//   - Exclude entries with Scope == ScopeProject whose tags do NOT contain the current projectPath
+//
+// This ensures that a Project Tab only sees its own project knowledge plus
+// universal/global knowledge, never another project's entries.
+//
+// To compensate for budget slots consumed by entries that will be filtered out,
+// this method calls RecallDynamic twice if the first pass yields fewer than 5
+// results after strict filtering — the second pass uses a broader query to
+// backfill the budget.
+func (s *Store) RecallDynamicStrict(query string, category Category, projectPath string, ownerID ...string) []Entry {
+	results := s.recallDynamicCore(query, category, projectPath, true, ownerID...)
+	if projectPath == "" {
+		return results
+	}
+	projectLower := semanticNormalizeProjectPath(projectPath)
+	if projectLower == "" {
+		return results
+	}
+	// If strict filtering (now applied during candidate selection in recallDynamicCore)
+	// yielded fewer than 5 results, do a second recall pass with a project-specific
+	// query to backfill. This ensures the effective budget isn't starved.
+	if len(results) < 5 {
+		backfillQuery := query + " " + projectPath
+		backfill := s.recallDynamicCore(backfillQuery, category, projectPath, true, ownerID...)
+		seen := make(map[string]bool, len(results))
+		for _, e := range results {
+			seen[e.ID] = true
+		}
+		for _, e := range backfill {
+			if seen[e.ID] {
+				continue
+			}
+			// recallDynamicCore with strictProject=true already filters, but
+			// double-check with recallStrictProjectEntryAllowed for safety.
+			if recallStrictProjectEntryAllowed(e, projectLower) {
+				results = append(results, e)
+				seen[e.ID] = true
+			}
+			if len(results) >= 12 {
+				break
+			}
+		}
+	}
+	return results
+}
+
+// recallStrictProjectEntryAllowed implements the strict project filtering rule:
+//   - Scope != ScopeProject → always allowed (global knowledge, user_fact, preference, self_identity)
+//   - Scope == ScopeProject AND tags contain projectPath → allowed (belongs to this project)
+//   - Scope == ScopeProject AND tags do NOT contain projectPath → excluded (belongs to another project)
+func recallStrictProjectEntryAllowed(e Entry, projectLower string) bool {
+	if e.Scope != ScopeProject {
+		return true
+	}
+	// ScopeProject entry: must have a tag matching the current project path.
+	for _, tag := range e.Tags {
+		tl := semanticNormalizeProjectPath(tag)
+		if !semanticLooksLikePath(tl) {
+			continue
+		}
+		if semanticProjectPathMatches(tl, projectLower) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -1633,6 +1793,80 @@ func filterRecallDynamicCandidates(candidates []recallScored, category Category,
 	filtered := candidates[:0]
 	for _, c := range candidates {
 		if recallDynamicEntryAllowed(c.entry, category, projectLower, filterOwner) {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
+}
+
+// recallDynamicEntryAllowedStrict implements strict project filtering for Project Tab:
+//   - ScopeProject + tags match current projectPath → allowed
+//   - ScopeProject + tags don't match current projectPath → excluded (other projects' knowledge)
+//   - ScopeGlobal → allowed (archived experience, universal knowledge)
+//   - user_fact / preference → allowed (user preferences always available)
+//   - Other projects' project_knowledge → excluded
+//
+// This is more restrictive than recallDynamicEntryAllowed (soft filter) which allows
+// all non-ScopeProject entries through.
+func recallDynamicEntryAllowedStrict(e Entry, category Category, projectLower, filterOwner string) bool {
+	if !e.IsActive() {
+		return false
+	}
+	// Multi-tenant owner filtering (same as non-strict).
+	if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+		return false
+	}
+	// Category filter (same as non-strict).
+	if category != "" {
+		if !recallCategoryMatches(e.Category, category) {
+			return false
+		}
+	} else {
+		// General recall: exclude internal categories (same as non-strict).
+		switch e.Category {
+		case CategoryUserFact, CategorySelfIdentity, CategorySessionCheckpoint, CategoryConversationSummary:
+			return false
+		}
+	}
+	// Strict project filtering logic:
+	// user_fact and preference are always allowed regardless of scope.
+	if e.Category == CategoryUserFact || e.Category == CategoryPreference {
+		return true
+	}
+	// ScopeGlobal entries are always allowed (archived experience, universal knowledge).
+	if e.Scope == ScopeGlobal {
+		return true
+	}
+	// ScopeProject entries must have tags matching the current project path.
+	if e.Scope == ScopeProject {
+		return recallStrictProjectEntryAllowed(e, projectLower)
+	}
+	// Non-scoped entries (empty scope): allow if they have matching project tags
+	// or no project-like tags at all (generic knowledge).
+	hasProjectTag := false
+	for _, tag := range e.Tags {
+		tl := semanticNormalizeProjectPath(tag)
+		if semanticLooksLikePath(tl) {
+			hasProjectTag = true
+			if semanticProjectPathMatches(tl, projectLower) {
+				return true
+			}
+		}
+	}
+	// If entry has project tags but none match → exclude (belongs to another project).
+	// If entry has no project tags → allow (generic knowledge).
+	return !hasProjectTag
+}
+
+// filterRecallDynamicCandidatesStrict re-applies strict project filtering after
+// graph expansion (which can pull in entries from other projects via edges).
+func filterRecallDynamicCandidatesStrict(candidates []recallScored, category Category, projectLower, filterOwner string) []recallScored {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	filtered := candidates[:0]
+	for _, c := range candidates {
+		if recallDynamicEntryAllowedStrict(c.entry, category, projectLower, filterOwner) {
 			filtered = append(filtered, c)
 		}
 	}
@@ -2086,8 +2320,30 @@ func (s *Store) Stop() {
 
 		close(s.stopCh)
 
+		// Wait briefly for syncLoop to exit (it checks s.stopCh on each tick).
+		// The syncLoop may be in the middle of syncOnce(); give it time to finish.
+		if s.sync != nil {
+			// Signal sync stop and wait a short grace period.
+			select {
+			case <-s.sync.stopCh:
+				// Already closed (shouldn't happen, but defensive).
+			default:
+				close(s.sync.stopCh)
+			}
+			// Brief sleep to let syncOnce() finish if it's mid-execution.
+			// syncOnce holds s.mu.Lock briefly; acquiring it here ensures it's done.
+			s.mu.Lock()
+			s.mu.Unlock()
+		}
+
 		if s.archive != nil {
 			s.archive.Stop()
+		}
+
+		// Close the storage backend (releases DB connections / file handles).
+		// Safe now: syncLoop has exited (stopCh closed + lock fence above).
+		if s.backend != nil {
+			_ = s.backend.Close()
 		}
 	})
 }
@@ -2207,6 +2463,17 @@ func (s *Store) Flush() error { return s.flush() }
 
 // Path returns the file path of the store.
 func (s *Store) Path() string { return s.path }
+
+// SetBackend sets the storage backend and optionally starts the sync loop.
+// Must be called before any Save/Update/Delete operations if using SQLite backend.
+// If not called, the Store uses its built-in JSON persistence (legacy behavior).
+func (s *Store) SetBackend(backend StorageBackend, syncCfg SyncConfig) {
+	s.backend = backend
+	s.startSyncLoop(syncCfg)
+}
+
+// Backend returns the current storage backend, or nil if not set.
+func (s *Store) Backend() StorageBackend { return s.backend }
 
 // UniqueOwnerIDs returns a deduplicated list of all OwnerIDs in the store.
 // Empty OwnerID (shared entries) is excluded from the result.

@@ -15,7 +15,7 @@ func TestPromoteGroupDiscussionResultToMemoryWritesProjectKnowledge(t *testing.T
 	detail.Messages = append(detail.Messages, a2a.Message{ID: "disc-1-m2", SessionID: "disc-1", FromID: "expert", Kind: a2a.MessageEvidence, Content: "Rollback immediately if gate fails."})
 	detail.Decision = &a2a.Decision{ProposalID: "prop-1", Summary: "Use staged rollout", Rationale: "Accepted because rollback gates are explicit.", RollbackOn: []string{"gate fails"}}
 	detail.ReviewSummaries = map[string]a2a.ReviewSummary{"prop-1": {Approvals: 1, ReviewedBy: []string{"expert"}}}
-	detail.Session = &a2a.Session{ID: "disc-1", Escalation: &a2a.Escalation{RaisedBy: "expert", Reason: "requires owner approval", Target: "iworkercenter"}}
+	detail.Session = &a2a.Session{ID: "disc-1", Escalation: &a2a.Escalation{RaisedBy: "expert", Reason: "requires owner approval", Target: "human_owner"}}
 	result := GroupDiscussionSummarizeResult{
 		ConsultationID: "disc-1",
 		Summary:        "Use staged rollout",
@@ -41,7 +41,7 @@ func TestPromoteGroupDiscussionResultToMemoryWritesProjectKnowledge(t *testing.T
 	if found.SourceType != groupDiscussionMemorySourceType || !strings.Contains(found.Content, "Use staged rollout") || !hasTag(found.Tags, "discussion:disc-1") {
 		t.Fatalf("unexpected A2A memory entry: %#v", *found)
 	}
-	for _, want := range []string{"Decision rationale: Accepted because rollback gates are explicit.", "Rollback on:\n- gate fails", "Review summaries:\n- prop-1: approvals=1", "Escalation:\n- Reason: requires owner approval", "- Target: iworkercenter", "- Raised by: expert"} {
+	for _, want := range []string{"Decision rationale: Accepted because rollback gates are explicit.", "Rollback on:\n- gate fails", "Review summaries:\n- prop-1: approvals=1", "Escalation:\n- Reason: requires owner approval", "- Target: human_owner", "- Raised by: expert"} {
 		if !strings.Contains(found.Content, want) {
 			t.Fatalf("memory content missing %q:\n%s", want, found.Content)
 		}
@@ -100,11 +100,11 @@ func TestGroupDiscussionOpposingDecisionSignals(t *testing.T) {
 func TestSummarizeGroupDiscussionDetailUsesEscalation(t *testing.T) {
 	detail := groupDiscussionMemoryTestDetail("disc-1", "release safety", "Which rollout path should we use?", "")
 	detail.Messages = nil
-	detail.Session = &a2a.Session{ID: "disc-1", Escalation: &a2a.Escalation{RaisedBy: "expert", Reason: "requires owner approval", Target: "iworkercenter"}}
+	detail.Session = &a2a.Session{ID: "disc-1", Escalation: &a2a.Escalation{RaisedBy: "expert", Reason: "requires owner approval", Target: "human_owner"}}
 
 	got := summarizeGroupDiscussionDetail(detail)
 
-	if got.Summary != "Escalated: requires owner approval" || !strings.Contains(got.Rationale, "iworkercenter") || !strings.Contains(got.Rationale, "expert") {
+	if got.Summary != "Escalated: requires owner approval" || !strings.Contains(got.Rationale, "human_owner") || !strings.Contains(got.Rationale, "expert") {
 		t.Fatalf("summary = %+v", got)
 	}
 }

@@ -166,6 +166,7 @@ func TestExplainFilteredServiceStatusIssues(t *testing.T) {
 func TestValidateLLMServiceGroupReferences(t *testing.T) {
 	reg := &llmservice.Registry{
 		ModelServiceGroups:          []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic"}},
+		GlobalServiceGroupIDs:       []string{"missing-global"},
 		GroupBindings:               []llmservice.GroupBinding{{GroupID: "engineering", ServiceGroupIDs: []string{"coding-basic", "missing-group"}}},
 		UserBindings:                []llmservice.UserBinding{{Email: "user@example.com", ServiceGroupIDs: []string{"missing-user-group"}}},
 		DefaultNewUserServiceGroups: []string{"coding-basic", "missing-default"},
@@ -175,6 +176,7 @@ func TestValidateLLMServiceGroupReferences(t *testing.T) {
 	reg.Normalize()
 	issues := validateLLMServiceGroupReferences(reg)
 	want := []string{
+		"global service groups references unknown service group: missing-global",
 		"security group binding \"engineering\" references unknown service group: missing-group",
 		"user binding \"user@example.com\" references unknown service group: missing-user-group",
 		"new-user default grants references unknown service group: missing-default",

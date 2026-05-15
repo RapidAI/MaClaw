@@ -15,6 +15,7 @@ import (
 type HubClient struct {
 	baseURL    string
 	token      string
+	machineID  string
 	httpClient *http.Client
 }
 
@@ -31,6 +32,12 @@ func WithHubHTTPClient(client *http.Client) HubClientOption {
 func WithHubBearerToken(token string) HubClientOption {
 	return func(c *HubClient) {
 		c.token = strings.TrimSpace(token)
+	}
+}
+
+func WithHubMachineID(machineID string) HubClientOption {
+	return func(c *HubClient) {
+		c.machineID = strings.TrimSpace(machineID)
 	}
 }
 
@@ -156,7 +163,7 @@ func (c *HubClient) listDiscussions(ctx context.Context, agentID, role string) (
 	if agentID = strings.TrimSpace(agentID); agentID != "" {
 		values.Set("participant_id", agentID)
 	}
-	if role = strings.TrimSpace(role); role != "" {
+	if role = strings.TrimSpace(role); role != "" && !strings.EqualFold(role, "all") {
 		values.Set("role", role)
 	}
 	path := "/api/a2a/discussions/mine"
@@ -209,12 +216,20 @@ func (c *HubClient) GetConsultation(ctx context.Context, id string) (HubDiscussi
 }
 
 func (c *HubClient) GetConsultationDetail(ctx context.Context, id string) (HubDiscussionDetail, error) {
+	return c.GetConsultationDetailForAgent(ctx, id, "")
+}
+
+func (c *HubClient) GetConsultationDetailForAgent(ctx context.Context, id, agentID string) (HubDiscussionDetail, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return HubDiscussionDetail{}, fmt.Errorf("consultation id is required")
 	}
+	path := "/api/a2a/consultations/" + url.PathEscape(id) + "/detail"
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		path += "?participant_id=" + url.QueryEscape(agentID)
+	}
 	var out HubDiscussionDetail
-	if err := c.doJSON(ctx, http.MethodGet, "/api/a2a/consultations/"+url.PathEscape(id)+"/detail", nil, &out); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &out); err != nil {
 		return HubDiscussionDetail{}, err
 	}
 	if strings.TrimSpace(out.Discussion.ID) == "" && out.Session != nil {
@@ -267,8 +282,8 @@ func (c *HubClient) SendDiscussionMessage(ctx context.Context, consultationID st
 	if consultationID == "" {
 		return fmt.Errorf("consultation id is required")
 	}
-	if strings.TrimSpace(msg.Content) == "" {
-		return fmt.Errorf("discussion message content is required")
+	if !groupDiscussionMessageHasPayload(msg) {
+		return fmt.Errorf("discussion message content or attachment payload is required")
 	}
 	return c.doJSON(ctx, http.MethodPost, "/api/a2a/consultations/"+url.PathEscape(consultationID)+"/messages", msg, nil)
 }
@@ -385,6 +400,9 @@ func (c *HubClient) doJSON(ctx context.Context, method, path string, in any, out
 	req.Header.Set("Accept", "application/json")
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.machineID != "" {
+		req.Header.Set("X-Machine-ID", c.machineID)
 	}
 	client := c.httpClient
 	if client == nil {

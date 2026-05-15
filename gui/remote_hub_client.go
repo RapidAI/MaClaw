@@ -68,6 +68,10 @@ type RemoteHubClient struct {
 	imHandler          *IMMessageHandler
 	configureIMHandler func(*IMMessageHandler)
 
+	// Digital employee discussion handler for pushed Hub discussion messages.
+	veHandlerMu sync.Mutex
+	veHandler   *VEMessageHandler
+
 	// IO relay for multi-device session roaming cleanup on disconnect.
 	ioRelay *SessionIORelay
 }

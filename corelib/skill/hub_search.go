@@ -41,16 +41,17 @@ const ClawHubMirrorURL = "https://cn.clawhub-mirror.com"
 // Consumers map this to their own display types (views.SkillSearchResult,
 // MixedSkillSearchResult, etc.).
 type HubSearchResult struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Version     string  `json:"version"`
-	Author      string  `json:"author"`
-	TrustLevel  string  `json:"trust_level"`
-	AvgRating   float64 `json:"avg_rating"`
-	Downloads   int     `json:"downloads"`
-	Score       float64 `json:"score"`
-	Source      string  `json:"source"` // "skillhub", "clawhub", "github"
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	Description    string  `json:"description"`
+	Version        string  `json:"version"`
+	Author         string  `json:"author"`
+	TrustLevel     string  `json:"trust_level"`
+	AvgRating      float64 `json:"avg_rating"`
+	Downloads      int     `json:"downloads"`
+	Score          float64 `json:"score"`
+	Source         string  `json:"source"`          // "skillhub", "clawhub", "github"
+	CapabilityType string  `json:"capability_type"` // "skill" or "mcp" (empty defaults to "skill")
 
 	// GitHub-specific fields (empty for other sources).
 	RepoURL    string `json:"repo_url,omitempty"`

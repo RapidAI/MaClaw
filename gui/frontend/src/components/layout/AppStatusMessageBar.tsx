@@ -12,8 +12,6 @@ type AppStatusMessageBarProps = {
     maclawLLMOnline: boolean;
     maclawLLMConfigured: boolean;
     remoteActivated: boolean;
-    agentNetRunning: boolean;
-    hideAgentNet?: boolean;
     showLansenger?: boolean;
     navTab: string;
     settingsTab: string;
@@ -36,8 +34,6 @@ export const AppStatusMessageBar = ({
     maclawLLMOnline,
     maclawLLMConfigured,
     remoteActivated,
-    agentNetRunning,
-    hideAgentNet = false,
     showLansenger = false,
     navTab,
     settingsTab,
@@ -53,10 +49,8 @@ export const AppStatusMessageBar = ({
     const imConnected = qqBotStatus === 'connected' || telegramStatus === 'connected' || weixinStatus === 'connected' || lansengerConnected;
     const anyImConfigured = !!config?.qqbot_enabled || !!config?.telegram_enabled || !!config?.weixin_enabled || lansengerConfigured;
     const showImWarning = anyImConfigured && !imConnected;
-    const agentNetRequired = !hideAgentNet && !!config?.agentnet_enabled;
-    const agentNetIssue = agentNetRequired && !agentNetRunning;
-    const showWarning = (!maclawLLMOnline || !remoteActivated || agentNetIssue || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm');
-    const isImIssue = maclawLLMOnline && remoteActivated && !agentNetIssue && showImWarning;
+    const showWarning = (!maclawLLMOnline || !remoteActivated || showImWarning) && !(navTab === 'settings' && settingsTab === 'llm');
+    const isImIssue = maclawLLMOnline && remoteActivated && showImWarning;
     const successMarker = backgroundInstallStatus.startsWith('?') || backgroundInstallStatus.startsWith('??');
 
     return (
@@ -71,15 +65,13 @@ export const AppStatusMessageBar = ({
                         onClick={() => { if (isImIssue) { onOpenIMSettings(); } else { onOpenLLMSettings(); } }}
                         title={lang?.startsWith('zh') ? 'Click to configure' : 'Click to configure'}
                     >
-                        <img src={(!maclawLLMOnline && !remoteActivated && agentNetIssue) ? lobsterOffline : lobsterHalf} alt="" style={{ width: '14px', height: '14px' }} />
+                        <img src={(!maclawLLMOnline && !remoteActivated) ? lobsterOffline : lobsterHalf} alt="" style={{ width: '14px', height: '14px' }} />
                         {!maclawLLMOnline
                             ? (maclawLLMConfigured
                                 ? (lang?.startsWith('zh') ? 'LLM unreachable, remote commands unavailable' : 'LLM unreachable, remote commands unavailable')
                                 : (lang?.startsWith('zh') ? 'LLM not configured, remote commands unavailable' : 'LLM not configured, remote commands unavailable'))
                             : !remoteActivated
                                 ? (lang?.startsWith('zh') ? 'Mobile not registered' : 'Mobile not registered')
-                                : agentNetIssue
-                                    ? (lang?.startsWith('zh') ? 'AgentNet not connected' : 'AgentNet not connected')
                                     : (lang?.startsWith('zh') ? 'IM not connected' : 'IM not connected')}
                     </span>
                 )}

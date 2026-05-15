@@ -228,11 +228,8 @@ func discussionSummaryFromSession(session *corea2a.Session) corea2a.HubDiscussio
 	if question == "" {
 		question = session.Topic
 	}
-	answerCount := discussionAnswerCount(session.Messages)
-	expectedAnswerCount := len(participants) - 1
-	if expectedAnswerCount < 1 {
-		expectedAnswerCount = 1
-	}
+	answerCount := discussionAnswerCount(session)
+	expectedAnswerCount := discussionExpectedAnswerCount(session)
 	hasResult := strings.TrimSpace(summary) != "" || session.Decision != nil
 	ready := hasResult || answerCount >= expectedAnswerCount || (session.Status != corea2a.SessionOpen && answerCount > 0)
 	reason := "waiting for expert answers"
@@ -262,11 +259,18 @@ func discussionSummaryFromSession(session *corea2a.Session) corea2a.HubDiscussio
 	}
 }
 
-func discussionAnswerCount(messages []corea2a.Message) int {
+func discussionAnswerCount(session *corea2a.Session) int {
+	if session == nil {
+		return 0
+	}
+	roles := participantRoleMap(session)
 	count := 0
-	for _, msg := range messages {
+	for _, msg := range session.Messages {
 		content := strings.TrimSpace(msg.Content)
 		if content == "" || strings.HasPrefix(strings.ToLower(content), "invitation ") {
+			continue
+		}
+		if role, ok := roles[strings.TrimSpace(msg.FromID)]; ok && !groupDiscussionRoleContributesAnswer(role) {
 			continue
 		}
 		switch msg.Kind {
@@ -275,6 +279,42 @@ func discussionAnswerCount(messages []corea2a.Message) int {
 		}
 	}
 	return count
+}
+
+func discussionExpectedAnswerCount(session *corea2a.Session) int {
+	if session == nil {
+		return 1
+	}
+	count := 0
+	for _, participant := range session.Participants {
+		if groupDiscussionRoleContributesAnswer(participant.RoleCode) {
+			count++
+		}
+	}
+	if count < 1 {
+		return 1
+	}
+	return count
+}
+
+func participantRoleMap(session *corea2a.Session) map[string]string {
+	roles := make(map[string]string, len(session.Participants))
+	for _, participant := range session.Participants {
+		id := strings.TrimSpace(participant.ID)
+		if id != "" {
+			roles[id] = strings.ToLower(strings.TrimSpace(participant.RoleCode))
+		}
+	}
+	return roles
+}
+
+func groupDiscussionRoleContributesAnswer(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "initiator", "observe", "observer", "readonly", "read_only":
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *GroupDiscussionService) CreateConsultation(tenantID string, req corea2a.GroupConsultationRequest) (corea2a.ConsultationCreateResponse, error) {
@@ -300,12 +340,16 @@ func (s *GroupDiscussionService) CreateConsultation(tenantID string, req corea2a
 	if len(participants) == 0 {
 		participants = append(participants, corea2a.Participant{ID: "initiator", RoleCode: "initiator"})
 	}
+	initiatorID := strings.TrimSpace(req.FromID)
+	if initiatorID == "" {
+		initiatorID = participants[0].ID
+	}
 	session, err := s.CreateSession(tenantID, CreateSessionRequest{Topic: topic, Goal: req.Question, Participants: participants, DecisionPolicy: corea2a.PolicyMajority})
 	if err != nil {
 		return corea2a.ConsultationCreateResponse{}, err
 	}
 	if strings.TrimSpace(req.ContextSummary) != "" {
-		_, _ = s.AddMessage(tenantID, session.ID, AddMessageRequest{FromID: req.FromID, Kind: corea2a.MessageQuestion, Content: req.ContextSummary})
+		_, _ = s.AddMessage(tenantID, session.ID, AddMessageRequest{FromID: initiatorID, Kind: corea2a.MessageQuestion, Content: req.ContextSummary})
 		session, _ = s.GetSession(tenantID, session.ID)
 	}
 	return corea2a.ConsultationCreateResponse{Discussion: discussionSummaryFromSession(session), Request: req}, nil
@@ -319,6 +363,21 @@ func (s *GroupDiscussionService) GetDiscussionSummary(tenantID, sessionID string
 	return discussionSummaryFromSession(session), nil
 }
 
+func (s *GroupDiscussionService) IsSessionParticipant(sessionID, participantID string) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	participantID = strings.TrimSpace(participantID)
+	if sessionID == "" || participantID == "" {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, tenantSessions := range s.sessions {
+		if session := tenantSessions[sessionID]; session != nil && findGroupDiscussionParticipant(session, participantID) != nil {
+			return true
+		}
+	}
+	return false
+}
 func (s *GroupDiscussionService) GetDiscussionDetail(tenantID, sessionID string) (corea2a.HubDiscussionDetail, error) {
 	session, err := s.GetSession(tenantID, sessionID)
 	if err != nil {
@@ -425,10 +484,22 @@ func (s *GroupDiscussionService) AddInvitation(tenantID, sessionID string, inv c
 	if inv.RequestID == "" {
 		inv.RequestID = sessionID
 	}
+	inviterID := strings.TrimSpace(inv.FromID)
+	if inviterID == "" {
+		return "", fmt.Errorf("invitation sender is required")
+	}
 	inviteID := newGroupDiscussionID("a2ainv")
 	s.mu.Lock()
 	session, err := s.loadSessionLocked(tenantID, sessionID)
 	if err != nil {
+		s.mu.Unlock()
+		return "", err
+	}
+	if session.Status != corea2a.SessionOpen {
+		s.mu.Unlock()
+		return "", fmt.Errorf("session %s is %s", session.ID, session.Status)
+	}
+	if err := requireGroupDiscussionWritableParticipant(session, inviterID); err != nil {
 		s.mu.Unlock()
 		return "", err
 	}
@@ -464,13 +535,22 @@ func (s *GroupDiscussionService) RespondInvitation(tenantID, inviteID string, re
 		s.mu.Unlock()
 		return err
 	}
+	inviteeID := strings.TrimSpace(record.Invite.ToID)
 	fromID := strings.TrimSpace(resp.FromID)
 	if fromID == "" {
-		fromID = strings.TrimSpace(record.Invite.ToID)
+		fromID = inviteeID
+	}
+	if !strings.EqualFold(fromID, inviteeID) {
+		s.mu.Unlock()
+		return fmt.Errorf("invite response sender %s does not match invite target %s", fromID, inviteeID)
 	}
 	decision := resp.Decision
 	if decision == "" {
 		decision = corea2a.GroupInvitationReject
+	}
+	if decision == corea2a.GroupInvitationAccept && session.Status != corea2a.SessionOpen {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s is %s", session.ID, session.Status)
 	}
 	if decision == corea2a.GroupInvitationAccept {
 		addParticipantIfMissing(session, corea2a.Participant{ID: fromID, RoleCode: string(record.Invite.Role)})
@@ -496,7 +576,64 @@ func (s *GroupDiscussionService) AddDiscussionMessage(tenantID, sessionID string
 	if kind == "" {
 		kind = corea2a.MessageStatement
 	}
-	return s.AddMessage(tenantID, sessionID, AddMessageRequest{FromID: msg.FromID, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments})
+	fromID := strings.TrimSpace(msg.FromID)
+	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
+		if err := requireGroupDiscussionWritableParticipant(session, fromID); err != nil {
+			return err
+		}
+		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: fromID, Kind: kind, Content: msg.Content, TextAttachments: msg.TextAttachments, ImageAttachments: msg.ImageAttachments, FileAttachments: msg.FileAttachments, CreatedAt: time.Now().UTC()})
+	})
+}
+
+func findGroupDiscussionParticipant(session *corea2a.Session, participantID string) *corea2a.Participant {
+	participantID = strings.TrimSpace(participantID)
+	if session == nil || participantID == "" {
+		return nil
+	}
+	for i := range session.Participants {
+		if strings.EqualFold(strings.TrimSpace(session.Participants[i].ID), participantID) {
+			return &session.Participants[i]
+		}
+	}
+	return nil
+}
+
+func groupDiscussionParticipantCanMessage(roleCode string) bool {
+	switch strings.ToLower(strings.TrimSpace(roleCode)) {
+	case "", "initiator", "review", "speak", "speaker", "participant":
+		return true
+	case "observe", "observer", "readonly", "read_only":
+		return false
+	default:
+		return false
+	}
+}
+
+func requireGroupDiscussionWritableParticipant(session *corea2a.Session, participantID string) error {
+	if session == nil {
+		return fmt.Errorf("session is nil")
+	}
+	if session.Status != corea2a.SessionOpen {
+		return fmt.Errorf("session %s is %s", session.ID, session.Status)
+	}
+	participantID = strings.TrimSpace(participantID)
+	participant := findGroupDiscussionParticipant(session, participantID)
+	if participant == nil {
+		return fmt.Errorf("participant %s is not in discussion", participantID)
+	}
+	if !groupDiscussionParticipantCanMessage(participant.RoleCode) {
+		return fmt.Errorf("participant %s is read-only in discussion", participantID)
+	}
+	return nil
+}
+
+func groupDiscussionSystemSender(participantID string) bool {
+	switch strings.ToLower(strings.TrimSpace(participantID)) {
+	case "hub", "system":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *GroupDiscussionService) SubmitDiscussionResult(tenantID, sessionID string, result corea2a.GroupDiscussionResult) (*corea2a.Session, error) {
@@ -508,6 +645,9 @@ func (s *GroupDiscussionService) SubmitDiscussionResult(tenantID, sessionID stri
 		content = result.Summary
 	}
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
+		if session.Status != corea2a.SessionOpen {
+			return fmt.Errorf("session %s is %s", session.ID, session.Status)
+		}
 		now := time.Now().UTC()
 		proposalID := newGroupDiscussionID("a2aprop")
 		if err := session.AddProposal(corea2a.Proposal{ID: proposalID, AuthorID: "hub", Title: strings.TrimSpace(result.Summary), Content: content, Risks: result.Risks, CreatedAt: now}); err != nil {
@@ -605,18 +745,29 @@ func (s *GroupDiscussionService) GetSession(tenantID, sessionID string) (*corea2
 
 func (s *GroupDiscussionService) AddMessage(tenantID, sessionID string, req AddMessageRequest) (*corea2a.Session, error) {
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
+		if !groupDiscussionSystemSender(req.FromID) {
+			if err := requireGroupDiscussionWritableParticipant(session, req.FromID); err != nil {
+				return err
+			}
+		}
 		return session.AddMessage(corea2a.Message{ID: newGroupDiscussionID("a2amsg"), FromID: req.FromID, ToIDs: req.ToIDs, Kind: req.Kind, Content: req.Content, Evidence: req.Evidence, TextAttachments: req.TextAttachments, ImageAttachments: req.ImageAttachments, FileAttachments: req.FileAttachments, CreatedAt: time.Now().UTC()})
 	})
 }
 
 func (s *GroupDiscussionService) AddProposal(tenantID, sessionID string, req AddProposalRequest) (*corea2a.Session, error) {
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
+		if err := requireGroupDiscussionWritableParticipant(session, req.AuthorID); err != nil {
+			return err
+		}
 		return session.AddProposal(corea2a.Proposal{ID: newGroupDiscussionID("a2aprop"), AuthorID: req.AuthorID, Title: req.Title, Content: req.Content, Goals: req.Goals, Constraints: req.Constraints, Risks: req.Risks, CreatedAt: time.Now().UTC()})
 	})
 }
 
 func (s *GroupDiscussionService) AddReview(tenantID, sessionID string, req AddReviewRequest) (*corea2a.Session, error) {
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
+		if err := requireGroupDiscussionWritableParticipant(session, req.ReviewerID); err != nil {
+			return err
+		}
 		return session.AddReview(corea2a.Review{ID: newGroupDiscussionID("a2arev"), ProposalID: req.ProposalID, ReviewerID: req.ReviewerID, Position: req.Position, Comment: req.Comment, CreatedAt: time.Now().UTC()})
 	})
 }
@@ -637,6 +788,9 @@ func (s *GroupDiscussionService) Decide(tenantID, sessionID string, req DecideRe
 
 func (s *GroupDiscussionService) Escalate(tenantID, sessionID string, req EscalateRequest) (*corea2a.Session, error) {
 	return s.mutate(tenantID, sessionID, func(session *corea2a.Session) error {
+		if err := requireGroupDiscussionWritableParticipant(session, req.RaisedBy); err != nil {
+			return err
+		}
 		return session.Escalate(corea2a.Escalation{ID: newGroupDiscussionID("a2aesc"), RaisedBy: req.RaisedBy, Reason: req.Reason, Target: req.Target, CreatedAt: time.Now().UTC()})
 	})
 }
@@ -742,7 +896,7 @@ func matchesListFilter(session *corea2a.Session, filter ListSessionsFilter) bool
 		if role == "" {
 			return false
 		}
-		if filter.Role != "" && role != filter.Role {
+		if filter.Role != "" && !strings.EqualFold(filter.Role, "all") && role != filter.Role {
 			return false
 		}
 	}

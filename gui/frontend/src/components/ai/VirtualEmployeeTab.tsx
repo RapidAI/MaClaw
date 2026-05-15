@@ -6,6 +6,7 @@ import type { Theme } from "./aiAssistantPanelTheme";
 
 export interface VirtualEmployeeEntry {
     id: string;
+    machine_id?: string;
     name: string;
     skill_description: string;
     access_policy: "public" | "whitelist" | "blacklist" | "per_request";
@@ -19,7 +20,7 @@ export interface VETabProps {
     onAddToGroup: (ve: VirtualEmployeeEntry) => void;
     theme: Theme;
     lang?: string;
-    /** Override for testing — if provided, used instead of the Wails binding */
+    /** Override for testing - if provided, used instead of the Wails binding */
     listVirtualEmployees?: () => Promise<VirtualEmployeeEntry[]>;
     /** IDs of currently favorited employees */
     favoriteEmployeeIds?: string[];
@@ -33,17 +34,17 @@ export interface VETabProps {
 export function truncateText(text: string, maxLen: number): string {
     if (!text) return "";
     if (text.length <= maxLen) return text;
-    return text.slice(0, maxLen) + "…";
+    return text.slice(0, maxLen) + "\u2026";
 }
 
 /** Map access_policy to a short icon/label. */
 export function policyIcon(policy: string): string {
     switch (policy) {
-        case "public": return "🌐";
-        case "whitelist": return "✅";
-        case "blacklist": return "🚫";
-        case "per_request": return "🔒";
-        default: return "❓";
+        case "public": return "\u{1F310}";
+        case "whitelist": return "\u2705";
+        case "blacklist": return "\u{1F6AB}";
+        case "per_request": return "\u{1F512}";
+        default: return "\u2753";
     }
 }
 
@@ -59,7 +60,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
     const pendingRefreshRef = useRef(false);
     const mountedRef = useRef(true);
 
-    // Resolve the list function — use injected or dynamically import Wails binding
+    // Resolve the list function - use injected or dynamically import Wails binding
     const listFnRef = useRef<(() => Promise<VirtualEmployeeEntry[]>) | null>(listVirtualEmployees || null);
 
     useEffect(() => {
@@ -157,7 +158,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
     if (loading) {
         return (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, color: theme.textMuted }}>
-                <span data-testid="ve-loading">⏳ {isZh ? "加载中..." : "Loading..."}</span>
+                <span data-testid="ve-loading">{isZh ? "加载中..." : "Loading..."}</span>
             </div>
         );
     }
@@ -271,7 +272,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        💬 {isZh ? "对话" : "Chat"}
+                        [Chat] {isZh ? "对话" : "Chat"}
                     </div>
                     <div
                         data-testid="ve-menu-add-group"
@@ -281,7 +282,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        👥 {isZh ? "添加到群聊" : "Add to group"}
+                        [Group] {isZh ? "添加到群聊" : "Add to group"}
                     </div>
                     {onSetFavorite && (
                         <div
@@ -303,7 +304,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                             onMouseEnter={(e) => { if (!favoriteEmployeeIds?.includes(contextMenu.ve.id)) (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            ⭐ {favoriteEmployeeIds?.includes(contextMenu.ve.id) ? (isZh ? "已是常用" : "Already favorite") : (isZh ? "设为常用" : "Set as favorite")}
+                            * {favoriteEmployeeIds?.includes(contextMenu.ve.id) ? (isZh ? "已是常用" : "Already favorite") : (isZh ? "设为常用" : "Set as favorite")}
                         </div>
                     )}
                 </div>

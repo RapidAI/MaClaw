@@ -35,6 +35,7 @@ type SystemSettingsRepository interface {
 
 type Registry struct {
 	ModelServiceGroups          []ModelServiceGroup `json:"model_service_groups"`
+	GlobalServiceGroupIDs       []string            `json:"global_service_group_ids,omitempty"`
 	GroupBindings               []GroupBinding      `json:"group_bindings,omitempty"`
 	UserBindings                []UserBinding       `json:"user_bindings,omitempty"`
 	Cards                       []RechargeCard      `json:"cards,omitempty"`
@@ -236,14 +237,17 @@ func (r *Registry) Normalize() {
 		}
 		g.mergeModelsByName()
 	}
+	r.GlobalServiceGroupIDs = normalizeStringSlice(r.GlobalServiceGroupIDs)
 	for i := range r.GroupBindings {
 		r.GroupBindings[i].GroupID = strings.TrimSpace(r.GroupBindings[i].GroupID)
 		r.GroupBindings[i].ServiceGroupIDs = normalizeStringSlice(r.GroupBindings[i].ServiceGroupIDs)
 	}
+	r.GroupBindings = mergeGroupBindings(r.GroupBindings)
 	for i := range r.UserBindings {
 		r.UserBindings[i].Email = normalizeEmail(r.UserBindings[i].Email)
 		r.UserBindings[i].ServiceGroupIDs = normalizeStringSlice(r.UserBindings[i].ServiceGroupIDs)
 	}
+	r.UserBindings = mergeUserBindings(r.UserBindings)
 	for i := range r.Cards {
 		r.Cards[i].ID = strings.TrimSpace(r.Cards[i].ID)
 		r.Cards[i].CodeHash = strings.TrimSpace(r.Cards[i].CodeHash)
@@ -287,6 +291,51 @@ func (r *Registry) Normalize() {
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
 	}
+}
+
+func mergeGroupBindings(items []GroupBinding) []GroupBinding {
+	indexByGroup := map[string]int{}
+	out := make([]GroupBinding, 0, len(items))
+	for _, item := range items {
+		groupID := strings.TrimSpace(item.GroupID)
+		if groupID == "" {
+			continue
+		}
+		ids := normalizeStringSlice(item.ServiceGroupIDs)
+		if len(ids) == 0 {
+			continue
+		}
+		key := strings.ToLower(groupID)
+		if idx, ok := indexByGroup[key]; ok {
+			out[idx].ServiceGroupIDs = normalizeStringSlice(append(out[idx].ServiceGroupIDs, ids...))
+			continue
+		}
+		indexByGroup[key] = len(out)
+		out = append(out, GroupBinding{GroupID: groupID, ServiceGroupIDs: ids})
+	}
+	return out
+}
+
+func mergeUserBindings(items []UserBinding) []UserBinding {
+	indexByEmail := map[string]int{}
+	out := make([]UserBinding, 0, len(items))
+	for _, item := range items {
+		email := normalizeEmail(item.Email)
+		if email == "" {
+			continue
+		}
+		ids := normalizeStringSlice(item.ServiceGroupIDs)
+		if len(ids) == 0 {
+			continue
+		}
+		if idx, ok := indexByEmail[email]; ok {
+			out[idx].ServiceGroupIDs = normalizeStringSlice(append(out[idx].ServiceGroupIDs, ids...))
+			continue
+		}
+		indexByEmail[email] = len(out)
+		out = append(out, UserBinding{Email: email, ServiceGroupIDs: ids})
+	}
+	return out
 }
 
 func normalizeCreditPeriodLimits(limits CreditPeriodLimits) CreditPeriodLimits {

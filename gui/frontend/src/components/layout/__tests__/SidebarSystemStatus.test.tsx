@@ -22,7 +22,6 @@ function renderStatus(credits: SidebarHubCredits) {
         <SidebarSystemStatus
             lang="zh-Hans"
             maclawLLMOnline={false}
-            agentNetRunning={false}
             remoteActivationStatus={{ activated: false }}
             qqBotStatus=""
             telegramStatus=""
@@ -37,34 +36,6 @@ function renderStatus(credits: SidebarHubCredits) {
             formatSidebarCredit={(value) => String(value)}
             unlimitedHubCreditText="\u65e0\u9650"
             noHubAuthorizationText="\u65e0"
-            showHubCreditAction={false}
-            openHubCreditsPage={vi.fn()}
-        />,
-    );
-}
-
-function renderStatusWithHiddenAgentNet(lansengerStatus = "", showLansenger = false) {
-    render(
-        <SidebarSystemStatus
-            lang="en"
-            maclawLLMOnline
-            agentNetRunning={false}
-            hideAgentNet
-            showLansenger={showLansenger}
-            remoteActivationStatus={{ activated: true }}
-            qqBotStatus=""
-            telegramStatus=""
-            weixinStatus=""
-            lansengerStatus={lansengerStatus}
-            sidebarCurrentProviderTokenUsage={{ provider: 'MaClaw', isHubService: true, input: 0, output: 0, total: 0 }}
-            sidebarHubCredits={baseCredits}
-            formatSidebarTokens={(value) => String(value)}
-            formatSidebarHubExpiry={() => '05/06/26'}
-            formatSidebarHubTotalCredits={(value) => String(value?.total ?? 0)}
-            formatSidebarHubUsedCredits={(value) => String(value?.used ?? 0)}
-            formatSidebarCredit={(value) => String(value)}
-            unlimitedHubCreditText="unlimited"
-            noHubAuthorizationText="none"
             showHubCreditAction={false}
             openHubCreditsPage={vi.fn()}
         />,
@@ -95,29 +66,11 @@ describe('SidebarSystemStatus Hub credits', () => {
         expect(screen.queryByText('90')).toBeNull();
     });
 
-    it('hides the AgentNet signal when requested', () => {
-        renderStatusWithHiddenAgentNet();
-
-        expect(screen.queryByText('Net')).toBeNull();
-    });
-
-    it('ignores Lansenger status when Lansenger is hidden for the brand', () => {
-        renderStatusWithHiddenAgentNet('connected', false);
-
-        expect(screen.getByTitle('● IM Offline')).toBeTruthy();
-    });
-
-    it('counts Lansenger status when Lansenger is visible for the brand', () => {
-        renderStatusWithHiddenAgentNet('connected', true);
-
-        expect(screen.getByTitle('● IM Online')).toBeTruthy();
-    });
     it('shows the active coding agent task status in the sidebar monitor', () => {
         render(
             <SidebarSystemStatus
                 lang="en"
                 maclawLLMOnline
-                agentNetRunning
                 remoteActivationStatus={{ activated: true }}
                 qqBotStatus=""
                 telegramStatus=""
@@ -154,7 +107,6 @@ describe('SidebarSystemStatus Hub credits', () => {
             <SidebarSystemStatus
                 lang="en"
                 maclawLLMOnline
-                agentNetRunning
                 remoteActivationStatus={{ activated: true }}
                 qqBotStatus=""
                 telegramStatus=""
@@ -292,7 +244,6 @@ describe('SidebarSystemStatus Hub credits', () => {
             <SidebarSystemStatus
                 lang="en"
                 maclawLLMOnline
-                agentNetRunning
                 remoteActivationStatus={{ activated: true }}
                 qqBotStatus=""
                 telegramStatus=""
@@ -346,7 +297,6 @@ describe('SidebarSystemStatus Hub credits', () => {
             <SidebarSystemStatus
                 lang="en"
                 maclawLLMOnline
-                agentNetRunning
                 remoteActivationStatus={{ activated: true }}
                 qqBotStatus=""
                 telegramStatus=""

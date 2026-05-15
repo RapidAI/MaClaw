@@ -46,6 +46,8 @@ export interface VEConversationViewProps {
     veName: string;
     theme: Theme;
     lang?: string;
+    /** Pre-existing session ID to resume (sticky session). Skips initiation if provided. */
+    existingSessionId?: string;
     /** Override for testing — Wails bindings */
     initiateConversation?: (veId: string) => Promise<{ session_id: string; ve_id: string; ve_name: string }>;
     sendMessage?: (sessionId: string, content: string) => Promise<void>;
@@ -86,18 +88,19 @@ export function VEConversationView({
     veName,
     theme,
     lang,
+    existingSessionId,
     initiateConversation,
     sendMessage,
     sendMessageWithAttachments,
     closeSession,
 }: VEConversationViewProps) {
     const [state, setState] = useState<VEConversationState>({
-        sessionId: null,
+        sessionId: existingSessionId || null,
         messages: [],
         streaming: false,
         streamContent: "",
         error: null,
-        connectionState: "connected",
+        connectionState: existingSessionId ? "connected" : "connected",
         reconnectAttempt: 0,
     });
     const [inputText, setInputText] = useState("");
@@ -198,10 +201,12 @@ export function VEConversationView({
         }
     }, [veId, initiateConversation]);
 
-    // Initialize session on mount
+    // Initialize session on mount (skip if resuming an existing sticky session)
     useEffect(() => {
         mountedRef.current = true;
-        initSession();
+        if (!existingSessionId) {
+            initSession();
+        }
         return () => {
             mountedRef.current = false;
             if (reconnectTimerRef.current) {

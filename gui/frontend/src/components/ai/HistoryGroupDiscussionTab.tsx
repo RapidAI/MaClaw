@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
 import { GroupDiscussionDownloadAttachment, GroupDiscussionGetConsultationDetail, GroupDiscussionSendHistoryMessage, OpenFileOrShowInFolder } from "../../../wailsjs/go/main/App";
+import { EventsOff, EventsOn } from "../../../wailsjs/runtime";
 import { VEGroupChatView, type GroupMessage, type GroupParticipant } from "./VEGroupChat";
+import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 type HistoryDiscussionDetail = {
     discussion?: {
@@ -9,6 +12,12 @@ type HistoryDiscussionDetail = {
         question?: string;
         status?: string;
         participant_ids?: string[];
+        local_relation?: string;
+        role?: string;
+        readonly?: boolean;
+    };
+    session?: {
+        participants?: Array<{ id?: string; name?: string; role_code?: string }>;
     };
     messages?: Array<{
         id?: string;
@@ -36,6 +45,29 @@ const textForLang = (lang: string | undefined, en: string, zhHans: string, zhHan
     lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
 );
 
+const eventDiscussionPayload = (event: any) => {
+    const payload = event?.payload || event || {};
+    const message = payload?.message || payload?.Message || {};
+    return { payload, message };
+};
+
+const eventDiscussionId = (event: any): string => {
+    const { payload, message } = eventDiscussionPayload(event);
+    return String(
+        event?.session_id ||
+        payload?.session_id ||
+        payload?.SessionID ||
+        message?.session_id ||
+        message?.SessionID ||
+        ""
+    ).trim();
+};
+
+const eventDiscussionKind = (event: any): string => {
+    const { message } = eventDiscussionPayload(event);
+    return String(message?.kind || message?.Kind || "").trim().toLowerCase();
+};
+
 export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme, lang }: HistoryGroupDiscussionTabProps) {
     const [detail, setDetail] = useState<HistoryDiscussionDetail | null>(null);
     const [loading, setLoading] = useState(false);
@@ -44,25 +76,56 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
     const [sending, setSending] = useState(false);
     const [downloadingKey, setDownloadingKey] = useState("");
     const [downloadedPaths, setDownloadedPaths] = useState<Record<string, string>>({});
+    const loadSeqRef = useRef(0);
 
-    const load = useCallback(async () => {
+    const load = useCallback(async (options?: { silent?: boolean }) => {
         if (!discussionId) return;
-        setLoading(true);
+        const seq = loadSeqRef.current + 1;
+        loadSeqRef.current = seq;
+        if (!options?.silent) setLoading(true);
         setError("");
         try {
-            setDetail(await GroupDiscussionGetConsultationDetail(discussionId));
+            const nextDetail = await GroupDiscussionGetConsultationDetail(discussionId);
+            if (loadSeqRef.current === seq) setDetail(nextDetail);
         } catch (e) {
-            setError(String(e));
+            if (loadSeqRef.current === seq) setError(String(e));
         } finally {
-            setLoading(false);
+            if (loadSeqRef.current === seq) setLoading(false);
         }
     }, [discussionId]);
 
     useEffect(() => { void load(); }, [load]);
 
+    useEffect(() => {
+        if (!discussionId) return;
+        const maybeReload = (event: any) => {
+            if (eventDiscussionId(event) === discussionId) void load({ silent: true });
+        };
+        const maybeReloadNonStream = (event: any) => {
+            const kind = eventDiscussionKind(event);
+            if (kind === "stream_chunk" || kind === "stream_end") return;
+            maybeReload(event);
+        };
+        const offDiscussion = EventsOn("ve-event", maybeReloadNonStream);
+        const offStreamEnd = EventsOn("ve:stream_end", maybeReload);
+        return () => {
+            if (typeof offDiscussion === "function") offDiscussion();
+            else EventsOff("ve-event");
+            if (typeof offStreamEnd === "function") offStreamEnd();
+            else EventsOff("ve:stream_end");
+        };
+    }, [discussionId, load]);
+
+    const detailStatus = String(detail?.discussion?.status || "").trim().toLowerCase();
+    const detailRelation = String(detail?.discussion?.local_relation || detail?.discussion?.role || "").trim();
+    const detailHasReadonly = typeof detail?.discussion?.readonly === "boolean";
+    const detailHasAccessState = !!detail?.discussion && ((detailStatus !== "" && detailStatus !== "open") || !!detailRelation || detailHasReadonly);
+    const detailAccessReadOnly = detailHasAccessState ? isHistoryDiscussionReadOnly(detail.discussion) : false;
+    const effectiveReadOnly = detailHasAccessState ? detailAccessReadOnly : readOnly;
+
     const send = useCallback(async () => {
         const content = input.trim();
-        if (!content || readOnly || sending) return;
+        if (!content || effectiveReadOnly || sending) return;
         setSending(true);
         setError("");
         try {
@@ -74,11 +137,22 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         } finally {
             setSending(false);
         }
-    }, [discussionId, input, load, readOnly, sending]);
+    }, [discussionId, effectiveReadOnly, input, load, sending]);
 
-    const participants: GroupParticipant[] = useMemo(() => (
-        (detail?.discussion?.participant_ids || []).map((id) => ({ id, name: id, online: true }))
-    ), [detail?.discussion?.participant_ids]);
+    const participants: GroupParticipant[] = useMemo(() => {
+        const sessionParticipants = detail?.session?.participants || [];
+        if (sessionParticipants.length > 0) {
+            return sessionParticipants
+                .filter((p) => String(p.id || "").trim())
+                .map((p) => {
+                    const id = String(p.id || "").trim();
+                    const name = String(p.name || "").trim() || id;
+                    const role = String(p.role_code || "").trim();
+                    return { id, name: role ? `${name} (${role})` : name, online: true };
+                });
+        }
+        return (detail?.discussion?.participant_ids || []).map((id) => ({ id, name: id, online: true }));
+    }, [detail?.discussion?.participant_ids, detail?.session?.participants]);
 
     const buildMessageAttachments = useCallback((m: NonNullable<HistoryDiscussionDetail["messages"]>[number]): NonNullable<GroupMessage["attachments"]> => {
         const attachments: NonNullable<GroupMessage["attachments"]> = [];
@@ -100,16 +174,53 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         return attachments;
     }, [downloadedPaths, lang]);
 
-    const messages: GroupMessage[] = useMemo(() => (
-        (detail?.messages || []).map((m, idx) => ({
-            id: m.id || `m-${idx}`,
-            fromId: m.from_id || "unknown",
-            fromName: m.from_name || m.from_id || textForLang(lang, "Unknown", "\u672a\u77e5", "\u672a\u77e5"),
-            content: m.content || "",
-            timestamp: m.created_at ? Date.parse(m.created_at) || Date.now() : Date.now(),
-            attachments: buildMessageAttachments(m),
-        }))
-    ), [buildMessageAttachments, detail?.messages, lang]);
+    const messages: GroupMessage[] = useMemo(() => {
+        const merged: GroupMessage[] = [];
+        let lastStreamFrom = "";
+        let lastStreamIndex = -1;
+
+        (detail?.messages || []).forEach((m, idx) => {
+            const kind = String(m.kind || "").trim().toLowerCase();
+            if (kind === "stream_end") {
+                lastStreamFrom = "";
+                lastStreamIndex = -1;
+                return;
+            }
+
+            const attachments = buildMessageAttachments(m);
+            const fromId = m.from_id || "unknown";
+            const content = m.content || "";
+            if (kind === "stream_chunk" && !content && attachments.length === 0) return;
+
+            if (kind === "stream_chunk" && lastStreamIndex >= 0 && lastStreamFrom === fromId) {
+                const existing = merged[lastStreamIndex];
+                existing.content += content;
+                if (attachments.length > 0) {
+                    existing.attachments = [...(existing.attachments || []), ...attachments];
+                }
+                return;
+            }
+
+            const message: GroupMessage = {
+                id: m.id || `m-${idx}`,
+                fromId,
+                fromName: m.from_name || m.from_id || textForLang(lang, "Unknown", "\u672a\u77e5", "\u672a\u77e5"),
+                content,
+                timestamp: m.created_at ? Date.parse(m.created_at) || Date.now() : Date.now(),
+                attachments,
+            };
+            merged.push(message);
+            if (kind === "stream_chunk") {
+                lastStreamFrom = fromId;
+                lastStreamIndex = merged.length - 1;
+            } else {
+                lastStreamFrom = "";
+                lastStreamIndex = -1;
+            }
+        });
+
+        return merged;
+    }, [buildMessageAttachments, detail?.messages, lang]);
 
     const downloadAttachment = useCallback(async (attachment: NonNullable<GroupMessage["attachments"]>[number], message: GroupMessage) => {
         if (attachment.localPath) {
@@ -137,8 +248,10 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         }
     }, [discussionId, downloadingKey]);
 
-    const subtitle = readOnly
-        ? textForLang(lang, "Read-only - invited digital employee", "\u53ea\u8bfb - \u6211\u7684\u6570\u5b57\u5458\u5de5\u53d7\u9080\u53c2\u52a0", "\u552f\u8b80 - \u6211\u7684\u6578\u5b57\u54e1\u5de5\u53d7\u9080\u53c3\u52a0")
+    const subtitle = effectiveReadOnly
+        ? (detailStatus && detailStatus !== "open"
+            ? textForLang(lang, "Ended - read-only", "\u5df2\u7ed3\u675f - \u53ea\u8bfb", "\u5df2\u7d50\u675f - \u552f\u8b80")
+            : textForLang(lang, "Read-only - invited digital employee", "\u53ea\u8bfb - \u6211\u7684\u6570\u5b57\u5458\u5de5\u53d7\u9080\u53c2\u52a0", "\u552f\u8b80 - \u6211\u7684\u6578\u5b57\u54e1\u5de5\u53d7\u9080\u53c3\u52a0"))
         : textForLang(lang, "Started by me - can continue", "\u6211\u53d1\u8d77 - \u53ef\u7ee7\u7eed\u8ba8\u8bba", "\u6211\u767c\u8d77 - \u53ef\u7e7c\u7e8c\u8a0e\u8ad6");
 
     return <div data-testid={`ai-history-group-tab-${discussionId}`} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, background: theme.bg }}>
@@ -146,23 +259,25 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
             <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                     <div style={{ color: theme.text, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{title}</div>
-                    {readOnly && <span style={{ flexShrink: 0, border: `1px solid ${theme.fieldBorder}`, borderRadius: 4, padding: "1px 5px", color: theme.textMuted, fontSize: 11 }}>{textForLang(lang, "Read-only", "\u53ea\u8bfb", "\u552f\u8b80")}</span>}
+                    {effectiveReadOnly && <span style={{ flexShrink: 0, border: `1px solid ${theme.fieldBorder}`, borderRadius: 4, padding: "1px 5px", color: theme.textMuted, fontSize: 11 }}>{textForLang(lang, "Read-only", "\u53ea\u8bfb", "\u552f\u8b80")}</span>}
                 </div>
                 <div style={{ color: theme.textMuted, fontSize: 11 }}>{subtitle}</div>
             </div>
             <button type="button" onClick={() => void load()} disabled={loading} style={{ border: `1px solid ${theme.fieldBorder}`, background: theme.fieldBg, color: theme.text, borderRadius: 6, padding: "4px 10px", cursor: loading ? "default" : "pointer", fontSize: 12 }}>{loading ? "..." : textForLang(lang, "Refresh", "\u5237\u65b0", "\u91cd\u65b0\u6574\u7406")}</button>
         </div>
+
         {participants.length > 0 && <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", padding: "6px 12px", borderBottom: `1px solid ${theme.divider}`, background: theme.bg }}>
             <span style={{ color: theme.textMuted, fontSize: 11 }}>{textForLang(lang, "Participants", "\u53c2\u4e0e\u8005", "\u53c3\u8207\u8005")}</span>
             {participants.map((p) => <span key={p.id} title={p.id} style={{ border: `1px solid ${theme.fieldBorder}`, borderRadius: 999, padding: "2px 7px", color: theme.text, background: theme.fieldBg, fontSize: 11, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>)}
         </div>}
+
         {error && <div role="alert" style={{ padding: "7px 12px", color: theme.errorText, background: theme.errorBg, borderBottom: `1px solid ${theme.errorBorder}`, fontSize: 12 }}>{error}</div>}
         {loading && !detail
             ? <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: theme.textMuted }}>{textForLang(lang, "Loading...", "\u52a0\u8f7d\u4e2d...", "\u8f09\u5165\u4e2d...")}</div>
             : <VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={false} />}
-        <div style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: readOnly ? 0.72 : 1 }}>
-            <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={readOnly || sending} placeholder={readOnly ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00") : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...")} rows={1} style={{ flex: 1, resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: readOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }} />
-            <button type="button" onClick={() => void send()} disabled={readOnly || sending || !input.trim()} style={{ border: `1px solid ${theme.sendBtnBorder}`, background: theme.sendBtnColor, color: "#fff", borderRadius: 6, padding: "6px 12px", cursor: readOnly || sending || !input.trim() ? "default" : "pointer", opacity: readOnly || sending || !input.trim() ? 0.5 : 1, fontSize: 13 }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
+        <div style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
+            <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={effectiveReadOnly || sending} placeholder={effectiveReadOnly ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00") : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...")} rows={1} style={{ flex: 1, resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }} />
+            <button type="button" onClick={() => void send()} disabled={effectiveReadOnly || sending || !input.trim()} style={{ border: `1px solid ${theme.sendBtnBorder}`, background: theme.sendBtnColor, color: "#fff", borderRadius: 6, padding: "6px 12px", cursor: effectiveReadOnly || sending || !input.trim() ? "default" : "pointer", opacity: effectiveReadOnly || sending || !input.trim() ? 0.5 : 1, fontSize: 13 }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
         </div>
     </div>;
 }

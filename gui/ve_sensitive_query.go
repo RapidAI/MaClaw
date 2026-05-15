@@ -32,9 +32,13 @@ type digitalEmployeeSensitiveApprovalStore struct {
 var veSensitiveApprovals digitalEmployeeSensitiveApprovalStore
 
 func normalizeDigitalEmployeeSensitivePolicy(policy string) string {
-	switch strings.TrimSpace(policy) {
-	case digitalEmployeeSensitivePolicyDeny, digitalEmployeeSensitivePolicyAllow, digitalEmployeeSensitivePolicyConfirm:
-		return strings.TrimSpace(policy)
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case digitalEmployeeSensitivePolicyDeny:
+		return digitalEmployeeSensitivePolicyDeny
+	case digitalEmployeeSensitivePolicyAllow:
+		return digitalEmployeeSensitivePolicyAllow
+	case digitalEmployeeSensitivePolicyConfirm:
+		return digitalEmployeeSensitivePolicyConfirm
 	default:
 		return digitalEmployeeSensitivePolicyConfirm
 	}
@@ -94,7 +98,7 @@ func (a *App) RespondDigitalEmployeeSensitiveRequest(requestID, decision string)
 	if requestID == "" {
 		return fmt.Errorf("request_id is required")
 	}
-	switch strings.TrimSpace(decision) {
+	switch strings.ToLower(strings.TrimSpace(decision)) {
 	case "allow":
 		if !veSensitiveApprovals.resolve(requestID, true) {
 			return fmt.Errorf("request is no longer pending")
@@ -110,8 +114,9 @@ func (a *App) RespondDigitalEmployeeSensitiveRequest(requestID, decision string)
 }
 
 var (
-	veSensitiveKeywordRe = regexp.MustCompile(`(?i)(密码|口令|凭证|密钥|访问令牌|令牌|api\s*key|secret|password|credential|token|private\s*key)`)
-	veSensitiveVerbRe    = regexp.MustCompile(`(?i)(查询|查看|显示|提供|发给|告诉|读取|获取|要|给我|show|get|provide|tell|reveal|send|read|lookup|query)`)
+	veSensitiveKeywordRe  = regexp.MustCompile(`(?i)(\x{5bc6}\x{7801}|\x{53e3}\x{4ee4}|\x{51ed}\x{8bc1}|\x{5bc6}\x{94a5}|\x{8bbf}\x{95ee}\x{4ee4}\x{724c}|\x{4ee4}\x{724c}|api\s*key|secret|password|credential|token|private\s*key)`)
+	veSensitiveVerbRe     = regexp.MustCompile(`(?i)(\x{67e5}\x{8be2}|\x{67e5}\x{770b}|\x{663e}\x{793a}|\x{63d0}\x{4f9b}|\x{53d1}\x{7ed9}|\x{8bfb}\x{53d6}|\x{544a}\x{8bc9}|\x{83b7}\x{53d6}|\x{8981}|\x{7ed9}\x{6211}|show|get|provide|tell|reveal|send|read|lookup|query)`)
+	veSensitiveQuestionRe = regexp.MustCompile(`(?i)(\x{591a}\x{5c11}|\x{662f}\x{4ec0}\x{4e48}|\x{662f}\x{591a}\x{5c11}|\x{67e5}\x{4e00}\x{4e0b}|\x{770b}\x{4e00}\x{4e0b}|\x{7ed9}\x{4e00}\x{4e0b}|\x{53d1}\x{4e00}\x{4e0b}|what\s*(?:is|'s))`)
 )
 
 func detectDigitalEmployeeSensitiveQuery(text string) (string, bool) {
@@ -119,7 +124,7 @@ func detectDigitalEmployeeSensitiveQuery(text string) (string, bool) {
 	if trimmed == "" || !veSensitiveKeywordRe.MatchString(trimmed) {
 		return "", false
 	}
-	if !veSensitiveVerbRe.MatchString(trimmed) && !strings.ContainsAny(trimmed, "?？") {
+	if !veSensitiveVerbRe.MatchString(trimmed) && !veSensitiveQuestionRe.MatchString(trimmed) && !strings.ContainsAny(trimmed, "\u003f\uff1f") {
 		return "", false
 	}
 	query := trimmed
@@ -129,6 +134,12 @@ func detectDigitalEmployeeSensitiveQuery(text string) (string, bool) {
 	return query, true
 }
 
+func (h *VEMessageHandler) shouldAnnounceSensitivePermissionRequest() bool {
+	if h == nil || h.app == nil {
+		return false
+	}
+	return h.app.GetDigitalEmployeeSensitiveQueryPolicy() == digitalEmployeeSensitivePolicyConfirm
+}
 func (h *VEMessageHandler) authorizeSensitiveQuery(ctx context.Context, sessionID, query string) bool {
 	if h == nil || h.app == nil {
 		return false

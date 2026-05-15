@@ -15,7 +15,7 @@ func TestLLMRuntimeCacheAvoidsRepeatedSettingsReads(t *testing.T) {
 	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", Model: "gpt-test"}}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "group-a", Name: "Group A", Models: []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}}}}}); err != nil {
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "group-a", Name: "Group A", Models: []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}}}}, GlobalServiceGroupIDs: []string{"group-a"}}); err != nil {
 		t.Fatalf("save service registry: %v", err)
 	}
 	if _, err := SaveHubLLMPromptCacheConfig(ctx, system, HubLLMPromptCacheConfig{Enabled: true, TTLSeconds: 99, MemoryMaxEntries: 8, MemoryMaxBytes: 1024, DiskMaxBytes: 2048}); err != nil {
@@ -56,7 +56,7 @@ func TestLLMRuntimeCacheReturnsClones(t *testing.T) {
 	if err := im.SaveLLMProviderRegistry(ctx, system, &im.LLMProviderRegistry{Providers: []im.LLMProvider{{ID: "provider-a", Model: "gpt-test"}}}); err != nil {
 		t.Fatalf("save provider registry: %v", err)
 	}
-	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "group-a", Name: "Group A", Models: []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}}}}}); err != nil {
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "group-a", Name: "Group A", Models: []llmservice.ModelServiceModel{{Name: "auto", ProviderIDs: []string{"provider-a"}}}}}, GlobalServiceGroupIDs: []string{"group-a"}}); err != nil {
 		t.Fatalf("save service registry: %v", err)
 	}
 
@@ -88,6 +88,7 @@ func TestLLMRuntimeCacheReturnsClones(t *testing.T) {
 		t.Fatalf("service registry missing expected model group: %#v", serviceReg1.ModelServiceGroups)
 	}
 	group1.Models[0].ProviderIDs[0] = "mutated"
+	serviceReg1.GlobalServiceGroupIDs[0] = "mutated-global"
 	serviceReg2, err := loadCachedLLMServiceRegistry(ctx, system)
 	if err != nil {
 		t.Fatalf("reload service registry: %v", err)
@@ -98,6 +99,9 @@ func TestLLMRuntimeCacheReturnsClones(t *testing.T) {
 	}
 	if group2.Models[0].ProviderIDs[0] != "provider-a" {
 		t.Fatalf("service cache returned shared mutable state: %#v", group2.Models[0].ProviderIDs)
+	}
+	if len(serviceReg2.GlobalServiceGroupIDs) != 1 || serviceReg2.GlobalServiceGroupIDs[0] != "group-a" {
+		t.Fatalf("service cache returned shared global groups: %#v", serviceReg2.GlobalServiceGroupIDs)
 	}
 	if got := system.GetCount(llmservice.RegistryKey); got != 1 {
 		t.Fatalf("service registry Get count = %d, want 1", got)

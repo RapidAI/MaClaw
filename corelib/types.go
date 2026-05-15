@@ -129,14 +129,16 @@ type SkillCapabilityRef struct {
 
 // LocalMCPServerEntry 描述一个本地 MCP 服务器配置（通过命令启动，如 npx）。
 type LocalMCPServerEntry struct {
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	Command   string            `json:"command"`
-	Args      []string          `json:"args,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	Disabled  bool              `json:"disabled,omitempty"`
-	AutoStart bool              `json:"auto_start,omitempty"` // only start on app launch when true
-	CreatedAt string            `json:"created_at"`
+	ID         string                  `json:"id"`
+	Name       string                  `json:"name"`
+	Command    string                  `json:"command"`
+	Args       []string                `json:"args,omitempty"`
+	Env        map[string]string       `json:"env,omitempty"`
+	Disabled   bool                    `json:"disabled,omitempty"`
+	AutoStart  bool                    `json:"auto_start,omitempty"` // only start on app launch when true
+	CreatedAt  string                  `json:"created_at"`
+	Source     MCPServerSource         `json:"source,omitempty"`
+	Capability *MCPServerCapabilityRef `json:"capability,omitempty"`
 }
 
 // NLSkillStep 描述自然语言技能中的单个操作步骤。

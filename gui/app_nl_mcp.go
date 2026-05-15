@@ -66,6 +66,22 @@ type MCPServerView struct {
 	FailCount    int                             `json:"fail_count"`
 	LastCheckAt  time.Time                       `json:"last_check_at"`
 	CreatedAt    time.Time                       `json:"created_at"`
+	Managed      bool                            `json:"managed"`
+}
+
+// LocalMCPServerView is the Wails-facing view of a local MCP server including managed status.
+type LocalMCPServerView struct {
+	ID        string                          `json:"id"`
+	Name      string                          `json:"name"`
+	Command   string                          `json:"command"`
+	Args      []string                        `json:"args,omitempty"`
+	Env       map[string]string               `json:"env,omitempty"`
+	Disabled  bool                            `json:"disabled,omitempty"`
+	AutoStart bool                            `json:"auto_start,omitempty"`
+	CreatedAt string                          `json:"created_at"`
+	Source    corelib.MCPServerSource         `json:"source,omitempty"`
+	Capability *corelib.MCPServerCapabilityRef `json:"capability,omitempty"`
+	Managed   bool                            `json:"managed"`
 }
 
 // MCPRegistry manages locally-registered MCP Servers on the MaClaw client.
@@ -249,6 +265,7 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 			Source:       s.Source,
 			Capability:   s.Capability,
 			HealthStatus: mcpHealthStatusUnknown,
+			Managed:      r.isManagedCapability(&s),
 		}
 		if t, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
 			v.CreatedAt = t
@@ -264,6 +281,18 @@ func (r *MCPRegistry) ListServers() []MCPServerView {
 		views = append(views, v)
 	}
 	return views
+}
+
+// isManagedCapability checks if a server entry is a managed (forced) deployment
+// that cannot be deleted by the user.
+func (r *MCPRegistry) isManagedCapability(entry *corelib.MCPServerEntry) bool {
+	if entry.Source != corelib.MCPSourceMarket || entry.Capability == nil {
+		return false
+	}
+	if r.app == nil {
+		return false
+	}
+	return r.app.isCapabilityManagedDeployment(entry.Capability.CapabilityID)
 }
 
 // findServer looks up a server by ID under RLock and returns a copy.
@@ -792,6 +821,12 @@ func (a *App) UnregisterMCPServer(serverID string) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
 	}
+	// Check managed deployment protection: forced-delivery MCP cannot be deleted.
+	if entry, err := a.mcpRegistry.findServer(serverID); err == nil && entry != nil {
+		if a.mcpRegistry.isManagedCapability(entry) {
+			return fmt.Errorf("此 MCP 为企业强制下发，不可删除")
+		}
+	}
 	return a.mcpRegistry.Unregister(serverID)
 }
 
@@ -809,6 +844,151 @@ func (a *App) CheckMCPServerHealth(serverID string) error {
 		return fmt.Errorf("MCP registry not initialized")
 	}
 	return a.mcpRegistry.HealthCheck(serverID)
+}
+
+// MCPEndpointTestResult holds the result of probing an arbitrary MCP endpoint.
+type MCPEndpointTestResult struct {
+	Success  bool          `json:"success"`
+	Message  string        `json:"message"`
+	Tools    []MCPToolView `json:"tools"`
+	Latency  int64         `json:"latency_ms"`
+}
+
+// TestMCPEndpoint probes an arbitrary MCP endpoint (without requiring registration)
+// to verify connectivity and list available tools. Used by the edit form's "Test Connection" button.
+func (a *App) TestMCPEndpoint(endpointURL string, authType string, authSecret string, headers map[string]string) MCPEndpointTestResult {
+	if a.mcpRegistry == nil {
+		return MCPEndpointTestResult{Message: "MCP registry not initialized"}
+	}
+	if endpointURL == "" {
+		return MCPEndpointTestResult{Message: "Endpoint URL is required"}
+	}
+
+	// Build a temporary MCPServerEntry for the probe.
+	tempEntry := &corelib.MCPServerEntry{
+		ID:          "__test_probe__",
+		Name:        "test-probe",
+		EndpointURL: endpointURL,
+		AuthType:    authType,
+		AuthSecret:  authSecret,
+		Headers:     headers,
+	}
+
+	return a.mcpRegistry.ProbeEndpoint(tempEntry)
+}
+
+// ProbeEndpoint tests connectivity to an arbitrary MCP server entry and returns
+// the tool list. Does not modify any registry state.
+func (r *MCPRegistry) ProbeEndpoint(target *corelib.MCPServerEntry) MCPEndpointTestResult {
+	// Use a 15-second timeout for the entire probe (initialize + tools/list).
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	endpointURL := strings.TrimRight(target.EndpointURL, "/")
+	start := time.Now()
+
+	// Step 1: Try initialize handshake (some servers require it).
+	initBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]interface{}{
+			"protocolVersion": "2025-03-26",
+			"capabilities":    map[string]interface{}{},
+			"clientInfo": map[string]interface{}{
+				"name":    "maclaw",
+				"version": "1.0.0",
+			},
+		},
+	}
+
+	initData, _ := json.Marshal(initBody)
+	initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(initData))
+	if err != nil {
+		return MCPEndpointTestResult{Message: fmt.Sprintf("Failed to create request: %v", err)}
+	}
+	initReq.Header.Set("Content-Type", "application/json")
+	initReq.Header.Set("Accept", "application/json, text/event-stream")
+	setAuthHeader(initReq, target)
+
+	var sessionID string
+	initResp, err := r.client.Do(initReq)
+	if err == nil {
+		if sid := initResp.Header.Get("Mcp-Session-Id"); sid != "" {
+			sessionID = sid
+		}
+		initResp.Body.Close()
+	}
+	// Initialize failure is non-fatal — some servers don't support it.
+
+	// Step 2: Call tools/list to verify connectivity and get tool list.
+	toolsBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/list",
+		"params":  map[string]interface{}{},
+	}
+
+	toolsData, _ := json.Marshal(toolsBody)
+	toolsReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(toolsData))
+	if err != nil {
+		return MCPEndpointTestResult{Message: fmt.Sprintf("Failed to create request: %v", err), Latency: time.Since(start).Milliseconds()}
+	}
+	toolsReq.Header.Set("Content-Type", "application/json")
+	toolsReq.Header.Set("Accept", "application/json, text/event-stream")
+	setAuthHeader(toolsReq, target)
+	if sessionID != "" {
+		toolsReq.Header.Set("Mcp-Session-Id", sessionID)
+	}
+
+	toolsResp, err := r.client.Do(toolsReq)
+	latency := time.Since(start).Milliseconds()
+
+	if err != nil {
+		msg := fmt.Sprintf("Connection failed: %v", err)
+		if ctx.Err() == context.DeadlineExceeded {
+			msg = "Connection timed out (15s)"
+		}
+		return MCPEndpointTestResult{Message: msg, Latency: latency}
+	}
+	defer toolsResp.Body.Close()
+
+	if toolsResp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(toolsResp.Body, 4*1024))
+		return MCPEndpointTestResult{
+			Message: fmt.Sprintf("HTTP %d: %s", toolsResp.StatusCode, truncateMCPBody(errBody)),
+			Latency: latency,
+		}
+	}
+
+	ct := toolsResp.Header.Get("Content-Type")
+	parsed, err := corelib.ParseMCPResponse(toolsResp.Body, ct, 256*1024)
+	if err != nil {
+		return MCPEndpointTestResult{Message: fmt.Sprintf("Failed to parse response: %v", err), Latency: latency}
+	}
+
+	// Parse tool list from response.
+	var toolsResult struct {
+		Result struct {
+			Tools []mcpWireToolView `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(parsed, &toolsResult); err != nil {
+		return MCPEndpointTestResult{
+			Success: true,
+			Message: "Connected successfully but could not parse tool list",
+			Latency: latency,
+		}
+	}
+
+	tools := mcpWireToolsToViews(toolsResult.Result.Tools)
+	msg := fmt.Sprintf("Connected successfully. %d tool(s) available.", len(tools))
+	return MCPEndpointTestResult{
+		Success: true,
+		Message: msg,
+		Tools:   tools,
+		Latency: latency,
+	}
 }
 
 // ProbeMCPServers kicks off background health probes for all remote MCP
@@ -909,14 +1089,48 @@ func (r *MCPRegistry) ListLocalServers() []corelib.LocalMCPServerEntry {
 	return r.loadLocalServers()
 }
 
+// findLocalServer looks up a local MCP server by ID under RLock and returns a pointer (nil if not found).
+func (r *MCPRegistry) findLocalServer(serverID string) *corelib.LocalMCPServerEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, s := range r.loadLocalServers() {
+		if s.ID == serverID {
+			cp := s
+			return &cp
+		}
+	}
+	return nil
+}
+
 // ─── Wails bindings for Local MCP Servers ───────────────────────────────────
 
 // ListLocalMCPServers returns all local (stdio) MCP server configs (Wails binding).
-func (a *App) ListLocalMCPServers() []corelib.LocalMCPServerEntry {
+func (a *App) ListLocalMCPServers() []LocalMCPServerView {
 	if a.mcpRegistry == nil {
 		return nil
 	}
-	return a.mcpRegistry.ListLocalServers()
+	entries := a.mcpRegistry.ListLocalServers()
+	views := make([]LocalMCPServerView, 0, len(entries))
+	for _, e := range entries {
+		managed := false
+		if e.Source == corelib.MCPSourceMarket && e.Capability != nil {
+			managed = a.isCapabilityManagedDeployment(e.Capability.CapabilityID)
+		}
+		views = append(views, LocalMCPServerView{
+			ID:         e.ID,
+			Name:       e.Name,
+			Command:    e.Command,
+			Args:       e.Args,
+			Env:        e.Env,
+			Disabled:   e.Disabled,
+			AutoStart:  e.AutoStart,
+			CreatedAt:  e.CreatedAt,
+			Source:     e.Source,
+			Capability: e.Capability,
+			Managed:    managed,
+		})
+	}
+	return views
 }
 
 // RegisterLocalMCPServer adds a new local MCP server config (Wails binding).
@@ -939,6 +1153,12 @@ func (a *App) UpdateLocalMCPServer(server corelib.LocalMCPServerEntry) error {
 func (a *App) UnregisterLocalMCPServer(serverID string) error {
 	if a.mcpRegistry == nil {
 		return fmt.Errorf("MCP registry not initialized")
+	}
+	// Check managed deployment protection for local MCP servers.
+	if entry := a.mcpRegistry.findLocalServer(serverID); entry != nil {
+		if entry.Source == corelib.MCPSourceMarket && entry.Capability != nil && a.isCapabilityManagedDeployment(entry.Capability.CapabilityID) {
+			return fmt.Errorf("此 MCP 为企业强制下发，不可删除")
+		}
 	}
 	return a.mcpRegistry.UnregisterLocal(serverID)
 }

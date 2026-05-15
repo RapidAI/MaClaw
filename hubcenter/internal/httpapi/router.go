@@ -353,6 +353,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	registerStaticRoutes(mux, "./web/skillhub", "/skillhub")
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
 	registerStaticRoutes(mux, "./web/skillmarket", "/marketplace")
+	registerStaticRoutes(mux, "./web/skillmarket", "/capabilitymarket")
 	mux.HandleFunc("GET /api/capability-market/customer-account", CapabilityMarketCustomerAccountHandler(systemSettings))
 	mux.HandleFunc("GET /api/capability-market/billing/licenses", CapabilityMarketBillingLicensesHandler(systemSettings, smHandlers))
 	mux.HandleFunc("GET /api/capability-market/mcp", CapabilityMarketMCPListHandler(systemSettings))
@@ -362,6 +363,8 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("PUT /api/admin/capability-market/mcp/{id}", RequireAdmin(adminService, AdminCapabilityMarketMCPUpsertHandler(systemSettings)))
 	mux.HandleFunc("DELETE /api/admin/capability-market/mcp/{id}", RequireAdmin(adminService, AdminCapabilityMarketMCPDeleteHandler(systemSettings)))
 	mux.HandleFunc("GET /api/admin/capabilities/external-search", RequireAdmin(adminService, AdminCapabilityMarketExternalSearchHandler()))
+	mux.HandleFunc("POST /api/admin/capability-market/mcp/validate", RequireAdmin(adminService, AdminMCPValidateHandler()))
+	mux.HandleFunc("POST /api/admin/capability-market/import", RequireAdmin(adminService, AdminCapabilityMarketImportHandler(systemSettings, skillStore)))
 	registerStaticRoutes(mux, "./web/gossip", "/gossip")
 	// News - public API for latest announcements
 	mux.HandleFunc("GET /api/news", NewsLatestHandler(newsRepo))

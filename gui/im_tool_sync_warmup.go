@@ -9,51 +9,8 @@ import (
 	"time"
 )
 
-// syncAgentNetTools dynamically registers or unregisters AgentNet tools
-// based on whether the AgentNet daemon is currently running.
-func (h *IMMessageHandler) syncAgentNetTools() {
-	if h.registry == nil {
-		return
-	}
-	running := h.getAgentNetClient() != nil && h.getAgentNetClient().IsRunning()
-	_, hasSearch := h.registry.Get("agentnet_search")
-
-	if running && !hasSearch {
-		h.registry.Register(RegisteredTool{
-			Name:        "agentnet_search",
-			Description: "Search AgentNet P2P knowledge entries and return matching items.",
-			Category:    ToolCategoryBuiltin,
-			Tags:        []string{"agentnet", "search", "knowledge", "p2p"},
-			Status:      RegToolAvailable,
-			InputSchema: map[string]interface{}{
-				"query": map[string]string{"type": "string", "description": "Search query."},
-			},
-			Required: []string{"query"},
-			Source:   "agentnet",
-			Handler:  func(args map[string]interface{}) string { return h.toolAgentNetSearch(args) },
-		})
-		h.registry.Register(RegisteredTool{
-			Name:        "agentnet_publish",
-			Description: "Publish a knowledge entry to AgentNet P2P.",
-			Category:    ToolCategoryBuiltin,
-			Tags:        []string{"agentnet", "publish", "knowledge", "p2p"},
-			Status:      RegToolAvailable,
-			InputSchema: map[string]interface{}{
-				"title": map[string]string{"type": "string", "description": "Knowledge title."},
-				"body":  map[string]string{"type": "string", "description": "Knowledge body in Markdown."},
-			},
-			Required: []string{"title", "body"},
-			Source:   "agentnet",
-			Handler:  func(args map[string]interface{}) string { return h.toolAgentNetPublish(args) },
-		})
-	} else if !running && hasSearch {
-		h.registry.Unregister("agentnet_search")
-		h.registry.Unregister("agentnet_publish")
-	}
-}
-
 // WarmupTools pre-builds and caches the tool definitions so the first user
-// message does not pay the cost of syncAgentNetTools + BuildAll.
+// message does not pay the cost of BuildAll.
 // Safe to call from a background goroutine.
 func (h *IMMessageHandler) WarmupTools() {
 	allTools := h.getTools()

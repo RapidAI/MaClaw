@@ -76,6 +76,15 @@ func runServer(ctx context.Context) error {
 		log.Printf("[knowledge] initialized successfully")
 	}
 
+	// Wire MCP tool provider — enables agent to discover and invoke MCP tools
+	// registered via the REST API. Newly installed MCP servers take effect on
+	// the next agent Execute() call without restart.
+	executor.SetMCPToolProvider(agentservice.NewMCPToolBridge(svc))
+
+	// Wire Skill tool provider — enables agent to list, search, and run Skills
+	// installed via the REST API.
+	executor.SetSkillToolProvider(agentservice.NewSkillToolBridge(svc))
+
 	server := NewHTTPServer(svc, adminSecret, knowledgeMgr, skillSourceSvc)
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 

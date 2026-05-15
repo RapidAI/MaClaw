@@ -53,6 +53,14 @@ func (m *mockAuditRepo) Create(_ context.Context, log *store.AdminAuditLog) erro
 	return nil
 }
 
+func (m *mockAuditRepo) List(_ context.Context, _ store.AdminAuditLogFilter) ([]*store.AdminAuditLog, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]*store.AdminAuditLog, len(m.logs))
+	copy(cp, m.logs)
+	return cp, nil
+}
+
 func (m *mockAuditRepo) getLogs() []*store.AdminAuditLog {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -505,6 +513,43 @@ func TestServiceGetEffectivePolicy_Inheritance(t *testing.T) {
 	// Other defaults should remain
 	if !policy.FileOutboundEnabled {
 		t.Fatal("expected file_outbound_enabled=true (default)")
+	}
+}
+
+func TestServiceGetUserPolicyViewIncludesSourceAnnotations(t *testing.T) {
+	svc, _ := newTestService(t)
+	ctx := context.Background()
+
+	root, _ := svc.store.GetRootGroup(ctx)
+	if err := svc.UpdateGroupPolicy(ctx, root.ID, map[string]interface{}{"gossip_enabled": false}); err != nil {
+		t.Fatal(err)
+	}
+	child, _ := svc.CreateGroup(ctx, "Legal", root.ID)
+	if err := svc.UpdateGroupPolicy(ctx, child.ID, map[string]interface{}{"guardrail_mode": "strict"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.AssignUser(ctx, "lawyer@test.com", child.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	groupID, groupPath, policy, view, err := svc.GetUserPolicyView(ctx, "lawyer@test.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if groupID != child.ID {
+		t.Fatalf("groupID = %q, want %q", groupID, child.ID)
+	}
+	if len(groupPath) != 2 || groupPath[0].ID != root.ID || groupPath[1].ID != child.ID || groupPath[1].Name != "Legal" {
+		t.Fatalf("unexpected group path: %#v", groupPath)
+	}
+	if policy == nil || policy.GuardrailMode != "strict" || policy.GossipEnabled {
+		t.Fatalf("unexpected policy: %#v", policy)
+	}
+	if view == nil || view.Items["guardrail_mode"].Source != "self" {
+		t.Fatalf("expected self source for guardrail_mode, got %#v", view)
+	}
+	if view.Items["gossip_enabled"].Source != "inherited" || view.Items["gossip_enabled"].SourceGroup != root.ID {
+		t.Fatalf("expected inherited root source for gossip_enabled, got %#v", view.Items["gossip_enabled"])
 	}
 }
 
@@ -1016,4 +1061,3 @@ func TestServiceGetHeartbeatPolicy_SkillSources_NoCachePollution(t *testing.T) {
 		t.Fatalf("second call: expected nil/empty (no restriction), got %v — cache pollution detected", payload2.Policy.SkillSourcesAllowed)
 	}
 }
-

@@ -23,12 +23,14 @@ const (
 	MaxImageFileSize    = 10 * 1024 * 1024 // 10MB
 	MaxDocumentFileSize = 20 * 1024 * 1024 // 20MB
 	FileTTL             = 24 * time.Hour
+	fileIndexName       = "metadata.json"
 	CleanupInterval     = 1 * time.Hour
 )
 
 // Allowed MIME type prefixes/values.
 var allowedMIMETypes = map[string]bool{
-	"application/pdf": true,
+	"application/json": true,
+	"application/pdf":  true,
 }
 
 var allowedMIMEPrefixes = []string{
@@ -37,6 +39,7 @@ var allowedMIMEPrefixes = []string{
 	"image/jpeg",
 	"image/gif",
 	"image/webp",
+	"image/bmp",
 	"application/vnd.openxmlformats",
 }
 
@@ -108,11 +111,58 @@ type FileRelay struct {
 // NewFileRelay creates a new FileRelay instance.
 func NewFileRelay(dataDir string) *FileRelay {
 	_ = os.MkdirAll(dataDir, 0o755)
-	return &FileRelay{
+	fr := &FileRelay{
 		dataDir: dataDir,
 		files:   make(map[string]*FileMetadata),
 		done:    make(chan struct{}),
 	}
+	fr.loadMetadata()
+	return fr
+}
+
+func (fr *FileRelay) indexPath() string {
+	return filepath.Join(fr.dataDir, fileIndexName)
+}
+
+func (fr *FileRelay) loadMetadata() {
+	data, err := os.ReadFile(fr.indexPath())
+	if err != nil {
+		return
+	}
+	var items []FileMetadata
+	if err := json.Unmarshal(data, &items); err != nil {
+		return
+	}
+	now := time.Now()
+	for i := range items {
+		meta := items[i]
+		if meta.ID == "" || now.After(meta.ExpiresAt) {
+			continue
+		}
+		if _, err := os.Stat(fr.FilePath(&meta)); err != nil {
+			continue
+		}
+		copy := meta
+		fr.files[copy.ID] = &copy
+	}
+}
+
+func (fr *FileRelay) persistMetadataLocked() error {
+	items := make([]FileMetadata, 0, len(fr.files))
+	for _, meta := range fr.files {
+		if meta != nil {
+			items = append(items, *meta)
+		}
+	}
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := fr.indexPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, fr.indexPath())
 }
 
 // SetParticipantValidator sets the validator used to verify participant membership
@@ -199,6 +249,7 @@ func (fr *FileRelay) cleanExpired() {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 
+	changed := false
 	for _, id := range expired {
 		meta, ok := fr.files[id]
 		if !ok {
@@ -213,6 +264,10 @@ func (fr *FileRelay) cleanExpired() {
 		diskPath := filepath.Join(fr.dataDir, id+ext)
 		_ = os.Remove(diskPath)
 		delete(fr.files, id)
+		changed = true
+	}
+	if changed {
+		_ = fr.persistMetadataLocked()
 	}
 }
 
@@ -266,6 +321,12 @@ func (fr *FileRelay) Upload(filename, mimeType, sessionID, uploaderID string, si
 
 	fr.mu.Lock()
 	fr.files[id] = meta
+	if err := fr.persistMetadataLocked(); err != nil {
+		delete(fr.files, id)
+		fr.mu.Unlock()
+		_ = os.Remove(filepath.Join(fr.dataDir, diskName))
+		return nil, fmt.Errorf("persist file metadata: %w", err)
+	}
 	fr.mu.Unlock()
 
 	return meta, nil
@@ -318,14 +379,28 @@ func (fr *FileRelay) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// Determine MIME type.
 	mimeType := detectMIMEType(header)
 
-	// Extract session_id and participant_id from form or headers.
+	// Extract session_id and participant_id from form or headers. A trusted route
+	// wrapper can set X-Participant-ID after machine authentication; when present,
+	// it must match any caller-supplied form participant.
 	sessionID := r.FormValue("session_id")
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-ID")
 	}
-	participantID := r.FormValue("participant_id")
+	formParticipantID := strings.TrimSpace(r.FormValue("participant_id"))
+	headerParticipantID := strings.TrimSpace(r.Header.Get("X-Participant-ID"))
+	if headerParticipantID != "" && formParticipantID != "" && !strings.EqualFold(headerParticipantID, formParticipantID) {
+		writeVEError(w, http.StatusForbidden, "access_denied", "participant_id must match authenticated machine")
+		return
+	}
+	participantID := headerParticipantID
 	if participantID == "" {
-		participantID = r.Header.Get("X-Participant-ID")
+		participantID = formParticipantID
+	}
+	if fr.validator != nil {
+		if sessionID == "" || participantID == "" || !fr.validator.IsSessionParticipant(sessionID, participantID) {
+			writeVEError(w, http.StatusForbidden, "access_denied", "not authorized to upload to this session")
+			return
+		}
 	}
 
 	meta, err := fr.Upload(header.Filename, mimeType, sessionID, participantID, header.Size, file)
@@ -347,7 +422,7 @@ func (fr *FileRelay) HandleUpload(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"ok":       true,
 		"file_id":  meta.ID,
-		"file_url": fmt.Sprintf("/api/ve/files/%s", meta.ID),
+		"file_url": fmt.Sprintf("/api/ve/files/download/%s", meta.ID),
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -391,30 +466,22 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 	// to all participants (B, C, D...). Each participant needs to download the file
 	// using their own participant_id but the shared session_id.
 	//
-	// Authorization paths (any one grants access):
-	// 1. Session match: requester's session_id == file's session_id (covers all
-	//    participants in the same group session).
-	// 2. Participant validator confirms membership (defense-in-depth for group sessions).
-	// 3. Uploader match: requester is the original uploader (owner access fallback).
+	// When a participant validator is configured it is the authority for membership;
+	// a bare session_id match is only a legacy fallback for deployments without one.
 	authorized := false
 
-	// Path 1: Direct session_id match: covers 1:1 and group chats where all
-	// participants share the same session_id.
-	if meta.SessionID != "" && sessionID != "" && meta.SessionID == sessionID {
-		authorized = true
-	}
-
-	// Path 2: Participant validator confirms the requester belongs to the file's
-	// session. This is the primary authorization path for group chat participants
-	// accessing files uploaded by other participants in the same group.
-	if !authorized && fr.validator != nil && meta.SessionID != "" && participantID != "" {
+	if fr.validator != nil && meta.SessionID != "" && participantID != "" {
 		if fr.validator.IsSessionParticipant(meta.SessionID, participantID) {
 			authorized = true
 		}
 	}
 
-	// Path 3: Uploader/owner access: the participant who uploaded the file can
-	// always access it regardless of session_id.
+	if !authorized && fr.validator == nil && meta.SessionID != "" && sessionID != "" && meta.SessionID == sessionID {
+		authorized = true
+	}
+
+	// Uploader/owner access: the participant who uploaded the file can always access
+	// it regardless of session_id, which keeps direct-owner recovery working.
 	if !authorized && participantID != "" && meta.UploaderID != "" && participantID == meta.UploaderID {
 		authorized = true
 	}
@@ -424,7 +491,47 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Serve the file.
+	fr.serveFile(w, meta)
+}
+
+// HandleAdminDownload handles admin-reviewed downloads for discussion history.
+func (fr *FileRelay) HandleAdminDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeVEError(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		return
+	}
+	fileID := strings.TrimSpace(r.PathValue("fileID"))
+	if fileID == "" {
+		fileID = strings.TrimSpace(r.PathValue("id"))
+	}
+	if fileID == "" {
+		fileID = extractFileID(r.URL.Path)
+	}
+	if fileID == "" {
+		writeVEError(w, http.StatusBadRequest, "invalid_request", "file ID is required")
+		return
+	}
+	sessionID := strings.TrimSpace(r.PathValue("discussionID"))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(r.URL.Query().Get("session_id"))
+	}
+	meta := fr.GetFile(fileID)
+	if meta == nil {
+		writeVEError(w, http.StatusNotFound, "not_found", "file not found or expired")
+		return
+	}
+	if sessionID == "" || meta.SessionID == "" || meta.SessionID != sessionID {
+		writeVEError(w, http.StatusForbidden, "access_denied", "file does not belong to this discussion")
+		return
+	}
+	fr.serveFile(w, meta)
+}
+
+func (fr *FileRelay) serveFile(w http.ResponseWriter, meta *FileMetadata) {
+	if meta == nil {
+		writeVEError(w, http.StatusNotFound, "not_found", "file not found or expired")
+		return
+	}
 	diskPath := fr.FilePath(meta)
 	f, err := os.Open(diskPath)
 	if err != nil {
@@ -444,7 +551,7 @@ func (fr *FileRelay) HandleDownload(w http.ResponseWriter, r *http.Request) {
 // RegisterRoutes registers the file relay HTTP routes on the given mux.
 func (fr *FileRelay) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/ve/files/upload", fr.HandleUpload)
-	mux.HandleFunc("GET /api/ve/files/{id}", fr.HandleDownload)
+	mux.HandleFunc("GET /api/ve/files/download/{id}", fr.HandleDownload)
 }
 
 // --- Helpers ---
@@ -495,16 +602,18 @@ func detectMIMEType(header *multipart.FileHeader) string {
 
 // extractFileID extracts the file ID from a URL path like /api/ve/files/{id}.
 func extractFileID(path string) string {
-	const prefix = "/api/ve/files/"
-	if !strings.HasPrefix(path, prefix) {
-		return ""
+	for _, prefix := range []string{"/api/ve/files/download/", "/api/ve/files/"} {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		id := strings.TrimPrefix(path, prefix)
+		// Remove any trailing slashes or query params that might leak in.
+		if idx := strings.IndexByte(id, '/'); idx >= 0 {
+			id = id[:idx]
+		}
+		return id
 	}
-	id := strings.TrimPrefix(path, prefix)
-	// Remove any trailing slashes or query params that might leak in.
-	if idx := strings.IndexByte(id, '/'); idx >= 0 {
-		id = id[:idx]
-	}
-	return id
+	return ""
 }
 
 // sanitizeFilename removes characters that could cause header injection or path traversal.

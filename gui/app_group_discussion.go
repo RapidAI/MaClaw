@@ -34,6 +34,10 @@ func groupDiscussionContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), groupDiscussionHubTimeout)
 }
 
+func groupDiscussionAgentID(cfg corelib.AppConfig) string {
+	return firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
+}
+
 func (a *App) GroupDiscussionPublishProfile() (a2a.GroupProfile, error) {
 	client, cfg, err := a.groupDiscussionClient()
 	if err != nil {
@@ -66,7 +70,7 @@ func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, 
 	if err != nil {
 		return nil, err
 	}
-	agentID := strings.TrimSpace(cfg.RemoteMachineID)
+	agentID := strings.TrimSpace(groupDiscussionAgentID(cfg))
 	if agentID == "" {
 		return nil, fmt.Errorf("remote machine id is required")
 	}
@@ -92,6 +96,9 @@ func (a *App) GroupDiscussionListMine(role string) ([]a2a.HubDiscussionSummary, 
 	if storeErr == nil {
 		_ = store.CacheSummaries(ctx, discussions, a.groupDiscussionAttachmentRoot)
 		discussions, _ = store.VisibleSummaries(ctx, discussions)
+		if cached, cacheErr := store.CachedSummaries(ctx, false); cacheErr == nil && len(cached) > 0 {
+			discussions = mergeGroupDiscussionSummaries(discussions, cached, role)
+		}
 	}
 	return discussions, nil
 }
@@ -123,7 +130,7 @@ func (a *App) GroupDiscussionListInvites() ([]a2a.GroupInviteSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	agentID := strings.TrimSpace(cfg.RemoteMachineID)
+	agentID := strings.TrimSpace(groupDiscussionAgentID(cfg))
 	if agentID == "" {
 		return nil, fmt.Errorf("remote machine id is required")
 	}
@@ -137,7 +144,7 @@ func (a *App) GroupDiscussionProcessPendingInvites() ([]a2a.GroupInviteSummary, 
 	if err != nil {
 		return nil, err
 	}
-	agentID := strings.TrimSpace(cfg.RemoteMachineID)
+	agentID := strings.TrimSpace(groupDiscussionAgentID(cfg))
 	if agentID == "" {
 		return nil, fmt.Errorf("remote machine id is required")
 	}
@@ -253,12 +260,12 @@ func (a *App) GroupDiscussionStartAuthorizedConsultation(start GroupDiscussionAu
 	inviteIDs := make([]string, 0, len(inviteeIDs))
 	invitedExperts := make([]a2a.GroupProfile, 0, len(inviteeIDs))
 	for _, toID := range inviteeIDs {
-		if toID == "" || toID == cfg.RemoteMachineID {
+		if toID == "" || toID == groupDiscussionAgentID(cfg) {
 			continue
 		}
 		inviteID, err := client.SendInvitation(ctx, consultation.Discussion.ID, a2a.GroupInvitation{
 			RequestID:       consultation.Request.ID,
-			FromID:          cfg.RemoteMachineID,
+			FromID:          groupDiscussionAgentID(cfg),
 			ToID:            toID,
 			Role:            role,
 			Trusted:         start.Trusted,
@@ -309,7 +316,7 @@ func (a *App) GroupDiscussionRankExperts(req a2a.GroupConsultationRequest) (Grou
 
 func createGroupDiscussionConsultation(client *a2a.HubClient, cfg corelib.AppConfig, req a2a.GroupConsultationRequest) (a2a.ConsultationCreateResponse, error) {
 	if req.FromID == "" {
-		req.FromID = cfg.RemoteMachineID
+		req.FromID = groupDiscussionAgentID(cfg)
 	}
 	if req.MaxRounds <= 0 {
 		req.MaxRounds = cfg.GroupDiscussion.MaxRounds
@@ -347,7 +354,7 @@ func rankGroupDiscussionExperts(experts []a2a.GroupProfile, cfg corelib.AppConfi
 	if limit <= 0 {
 		limit = 3
 	}
-	localID := strings.TrimSpace(cfg.RemoteMachineID)
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
 	localSecurityGroup := strings.TrimSpace(cfg.GroupDiscussion.SecurityGroupID)
 	useCrossAgentExperience := cfg.GroupDiscussion.CrossAgentExperienceEnabled()
 	wanted := lowerStringSet(req.SkillsWanted)
@@ -536,13 +543,13 @@ func (a *App) GroupDiscussionGetConsultation(consultationID string) (a2a.HubDisc
 }
 
 func (a *App) GroupDiscussionGetConsultationDetail(consultationID string) (a2a.HubDiscussionDetail, error) {
-	client, _, err := a.groupDiscussionClient()
+	client, cfg, err := a.groupDiscussionClient()
 	if err != nil {
 		return a2a.HubDiscussionDetail{}, err
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
-	detail, err := client.GetConsultationDetail(ctx, consultationID)
+	detail, err := client.GetConsultationDetailForAgent(ctx, consultationID, groupDiscussionAgentID(cfg))
 	store, storeErr := a.openGroupDiscussionHistoryStore()
 	if storeErr == nil {
 		defer store.Close()
@@ -627,7 +634,7 @@ func (a *App) GroupDiscussionSendInvitation(consultationID string, inv a2a.Group
 		return "", err
 	}
 	if inv.FromID == "" {
-		inv.FromID = cfg.RemoteMachineID
+		inv.FromID = groupDiscussionAgentID(cfg)
 	}
 	if inv.ContextPolicy == "" {
 		inv.ContextPolicy = cfg.GroupDiscussion.ContextPolicy
@@ -646,12 +653,12 @@ func (a *App) GroupDiscussionAcceptInvite(inviteID string, resp a2a.GroupInvitat
 		return err
 	}
 	if resp.FromID == "" {
-		resp.FromID = cfg.RemoteMachineID
+		resp.FromID = groupDiscussionAgentID(cfg)
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	var acceptedInvite *a2a.GroupInviteSummary
-	if invites, err := client.ListInvites(ctx, strings.TrimSpace(cfg.RemoteMachineID)); err == nil {
+	if invites, err := client.ListInvites(ctx, strings.TrimSpace(groupDiscussionAgentID(cfg))); err == nil {
 		for i := range invites {
 			if strings.TrimSpace(invites[i].ID) == strings.TrimSpace(inviteID) {
 				item := invites[i]
@@ -688,7 +695,7 @@ func (a *App) groupDiscussionContributeToInvite(invite a2a.GroupInviteSummary) {
 		return
 	}
 	_ = a.GroupDiscussionSendMessage(invite.SessionID, a2a.GroupDiscussionMessage{
-		FromID:    firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID),
+		FromID:    groupDiscussionAgentID(cfg),
 		Kind:      a2a.MessageAnswer,
 		Content:   answer,
 		CreatedAt: time.Now(),
@@ -892,15 +899,12 @@ func (a *App) groupDiscussionGenerateResultSummary(detail a2a.HubDiscussionDetai
 }
 
 func groupDiscussionReadiness(detail a2a.HubDiscussionDetail) GroupDiscussionReadiness {
-	answerCount := countGroupDiscussionAnswers(detail.Messages)
+	answerCount := countGroupDiscussionAnswersForDetail(detail)
 	participantCount := len(detail.Discussion.ParticipantIDs)
 	if participantCount == 0 && detail.Session != nil {
 		participantCount = len(detail.Session.Participants)
 	}
-	expected := participantCount - 1
-	if expected < 1 {
-		expected = 1
-	}
+	expected := expectedGroupDiscussionAnswers(detail)
 	status := strings.TrimSpace(detail.Discussion.Status)
 	if status == "" && detail.Session != nil {
 		status = string(detail.Session.Status)
@@ -1009,7 +1013,7 @@ func groupDiscussionSummaryPreviewToolCall(result GroupDiscussionSummarizeResult
 
 func summarizeGroupDiscussionDetail(detail a2a.HubDiscussionDetail) GroupDiscussionSummarizeResult {
 	if detail.Decision != nil && strings.TrimSpace(detail.Decision.Summary) != "" {
-		return GroupDiscussionSummarizeResult{Summary: strings.TrimSpace(detail.Decision.Summary), Rationale: strings.TrimSpace(detail.Decision.Rationale), AnswerCount: countGroupDiscussionAnswers(detail.Messages)}
+		return GroupDiscussionSummarizeResult{Summary: strings.TrimSpace(detail.Decision.Summary), Rationale: strings.TrimSpace(detail.Decision.Rationale), AnswerCount: countGroupDiscussionAnswersForDetail(detail)}
 	}
 	if escalation := groupDiscussionEscalation(detail); escalation != nil && strings.TrimSpace(escalation.Reason) != "" {
 		rationale := "Escalated"
@@ -1020,9 +1024,9 @@ func summarizeGroupDiscussionDetail(detail a2a.HubDiscussionDetail) GroupDiscuss
 			rationale += " by " + strings.TrimSpace(escalation.RaisedBy)
 		}
 		rationale += ": " + strings.TrimSpace(escalation.Reason)
-		return GroupDiscussionSummarizeResult{Summary: "Escalated: " + strings.TrimSpace(escalation.Reason), Rationale: rationale, AnswerCount: countGroupDiscussionAnswers(detail.Messages)}
+		return GroupDiscussionSummarizeResult{Summary: "Escalated: " + strings.TrimSpace(escalation.Reason), Rationale: rationale, AnswerCount: countGroupDiscussionAnswersForDetail(detail)}
 	}
-	answers := groupDiscussionAnswerMessages(detail.Messages)
+	answers := groupDiscussionAnswerMessagesForDetail(detail)
 	if len(answers) == 0 {
 		return GroupDiscussionSummarizeResult{}
 	}
@@ -1056,11 +1060,11 @@ func (a *App) recordLocalGroupDiscussionContribution(detail a2a.HubDiscussionDet
 	if !cfg.GroupDiscussion.CrossAgentExperienceEnabled() {
 		return
 	}
-	localID := strings.TrimSpace(cfg.RemoteMachineID)
+	localID := strings.TrimSpace(groupDiscussionAgentID(cfg))
 	if localID == "" {
 		localID = strings.TrimSpace(cfg.RemoteClientID)
 	}
-	if localID == "" || !groupDiscussionHasAnswerFrom(detail.Messages, localID) {
+	if localID == "" || !groupDiscussionHasAnswerFromDetail(detail, localID) {
 		return
 	}
 	score := groupDiscussionContributionQuality(detail, result, localID)
@@ -1083,12 +1087,12 @@ func (a *App) recordLocalGroupDiscussionContribution(detail a2a.HubDiscussionDet
 	})
 }
 
-func groupDiscussionHasAnswerFrom(messages []a2a.Message, participant string) bool {
+func groupDiscussionHasAnswerFromDetail(detail a2a.HubDiscussionDetail, participant string) bool {
 	participant = strings.TrimSpace(participant)
 	if participant == "" {
 		return false
 	}
-	for _, msg := range groupDiscussionAnswerMessages(messages) {
+	for _, msg := range groupDiscussionAnswerMessagesForDetail(detail) {
 		if strings.TrimSpace(msg.FromID) == participant {
 			return true
 		}
@@ -1103,7 +1107,7 @@ func groupDiscussionContributionQuality(detail a2a.HubDiscussionDetail, result G
 	}
 	answerCount := 0
 	kindBonus := 0.0
-	for _, msg := range groupDiscussionAnswerMessages(detail.Messages) {
+	for _, msg := range groupDiscussionAnswerMessagesForDetail(detail) {
 		if strings.TrimSpace(msg.FromID) != participant {
 			continue
 		}
@@ -1163,7 +1167,15 @@ func groupDiscussionDisagreementSnippets(messages []a2a.Message) []string {
 	}
 	return dedupeGroupDiscussionStrings(disagreements)
 }
+func groupDiscussionAnswerMessagesForDetail(detail a2a.HubDiscussionDetail) []a2a.Message {
+	return groupDiscussionAnswerMessagesWithRoles(detail.Messages, groupDiscussionParticipantRoleMap(detail))
+}
+
 func groupDiscussionAnswerMessages(messages []a2a.Message) []a2a.Message {
+	return groupDiscussionAnswerMessagesWithRoles(messages, nil)
+}
+
+func groupDiscussionAnswerMessagesWithRoles(messages []a2a.Message, roles map[string]string) []a2a.Message {
 	out := make([]a2a.Message, 0, len(messages))
 	for _, msg := range messages {
 		content := strings.TrimSpace(msg.Content)
@@ -1173,6 +1185,9 @@ func groupDiscussionAnswerMessages(messages []a2a.Message) []a2a.Message {
 		if strings.HasPrefix(strings.ToLower(content), "invitation ") {
 			continue
 		}
+		if role, ok := roles[strings.TrimSpace(msg.FromID)]; ok && !groupDiscussionRoleContributesAnswer(role) {
+			continue
+		}
 		if msg.Kind == a2a.MessageAnswer || msg.Kind == a2a.MessageStatement || msg.Kind == a2a.MessageEvidence || msg.Kind == a2a.MessageObjection {
 			out = append(out, msg)
 		}
@@ -1180,8 +1195,62 @@ func groupDiscussionAnswerMessages(messages []a2a.Message) []a2a.Message {
 	return out
 }
 
+func countGroupDiscussionAnswersForDetail(detail a2a.HubDiscussionDetail) int {
+	return len(groupDiscussionAnswerMessagesForDetail(detail))
+}
+
 func countGroupDiscussionAnswers(messages []a2a.Message) int {
 	return len(groupDiscussionAnswerMessages(messages))
+}
+
+func expectedGroupDiscussionAnswers(detail a2a.HubDiscussionDetail) int {
+	if detail.Session != nil && len(detail.Session.Participants) > 0 {
+		count := 0
+		hasRoles := false
+		for _, participant := range detail.Session.Participants {
+			if strings.TrimSpace(participant.RoleCode) != "" {
+				hasRoles = true
+			}
+			if groupDiscussionRoleContributesAnswer(participant.RoleCode) {
+				count++
+			}
+		}
+		if hasRoles && count > 0 {
+			return count
+		}
+	}
+	participantCount := len(detail.Discussion.ParticipantIDs)
+	if participantCount == 0 && detail.Session != nil {
+		participantCount = len(detail.Session.Participants)
+	}
+	expected := participantCount - 1
+	if expected < 1 {
+		return 1
+	}
+	return expected
+}
+
+func groupDiscussionParticipantRoleMap(detail a2a.HubDiscussionDetail) map[string]string {
+	if detail.Session == nil || len(detail.Session.Participants) == 0 {
+		return nil
+	}
+	roles := make(map[string]string, len(detail.Session.Participants))
+	for _, participant := range detail.Session.Participants {
+		id := strings.TrimSpace(participant.ID)
+		if id != "" {
+			roles[id] = strings.ToLower(strings.TrimSpace(participant.RoleCode))
+		}
+	}
+	return roles
+}
+
+func groupDiscussionRoleContributesAnswer(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "initiator", "observe", "observer", "readonly", "read_only":
+		return false
+	default:
+		return true
+	}
 }
 
 const (
@@ -1203,7 +1272,7 @@ type groupDiscussionShardResult struct {
 }
 
 func shouldUseLayeredGroupDiscussionSummary(detail a2a.HubDiscussionDetail) bool {
-	answers := groupDiscussionAnswerMessages(detail.Messages)
+	answers := groupDiscussionAnswerMessagesForDetail(detail)
 	if len(answers) <= 1 {
 		return false
 	}
@@ -1247,7 +1316,7 @@ func (a *App) groupDiscussionGenerateLayeredResultSummary(detail a2a.HubDiscussi
 	if err != nil {
 		return GroupDiscussionSummarizeResult{}, err
 	}
-	result.AnswerCount = countGroupDiscussionAnswers(detail.Messages)
+	result.AnswerCount = countGroupDiscussionAnswersForDetail(detail)
 	if len(result.ParticipantContributions) == 0 {
 		result.ParticipantContributions = participantContributionsFromShardResults(shardResults)
 	}
@@ -1261,7 +1330,7 @@ func buildGroupDiscussionSummaryShards(detail a2a.HubDiscussionDetail, maxMessag
 	if maxRunes <= 0 {
 		maxRunes = groupDiscussionSummaryShardMaxRunes
 	}
-	answers := groupDiscussionAnswerMessages(detail.Messages)
+	answers := groupDiscussionAnswerMessagesForDetail(detail)
 	shards := make([]groupDiscussionSummaryShard, 0)
 	currentByLabel := map[string]int{}
 	for _, msg := range answers {
@@ -1402,7 +1471,7 @@ func participantContributionsFromShardResults(shards []groupDiscussionShardResul
 	return out
 }
 func buildGroupDiscussionResultSummaryInput(detail a2a.HubDiscussionDetail) string {
-	answers := groupDiscussionAnswerMessages(detail.Messages)
+	answers := groupDiscussionAnswerMessagesForDetail(detail)
 	escalation := groupDiscussionEscalation(detail)
 	if len(answers) == 0 && detail.Decision == nil && escalation == nil {
 		return ""
@@ -1588,7 +1657,7 @@ func (a *App) GroupDiscussionRejectInvite(inviteID string, resp a2a.GroupInvitat
 		return err
 	}
 	if resp.FromID == "" {
-		resp.FromID = cfg.RemoteMachineID
+		resp.FromID = groupDiscussionAgentID(cfg)
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
@@ -1601,14 +1670,14 @@ func (a *App) GroupDiscussionSendMessage(consultationID string, msg a2a.GroupDis
 		return err
 	}
 	if msg.FromID == "" {
-		msg.FromID = cfg.RemoteMachineID
+		msg.FromID = groupDiscussionAgentID(cfg)
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	if err := client.SendDiscussionMessage(ctx, consultationID, msg); err != nil {
 		return err
 	}
-	if detail, err := client.GetConsultationDetail(ctx, consultationID); err == nil {
+	if detail, err := client.GetConsultationDetailForAgent(ctx, consultationID, groupDiscussionAgentID(cfg)); err == nil {
 		if store, storeErr := a.openGroupDiscussionHistoryStore(); storeErr == nil {
 			_ = store.CacheDetail(ctx, detail, a.groupDiscussionAttachmentRoot)
 			_ = store.Close()
@@ -1625,6 +1694,8 @@ func (a *App) GroupDiscussionSendHistoryMessage(consultationID string, msg a2a.G
 	if !isWritableHistoryDiscussionSummary(detail.Discussion) {
 		return fmt.Errorf("history discussion is read-only")
 	}
+	msg.FromID = ""
+	msg.SessionID = consultationID
 	return a.GroupDiscussionSendMessage(consultationID, msg)
 }
 
@@ -1643,7 +1714,7 @@ func (a *App) GroupDiscussionAddProposal(consultationID string, proposal a2a.Pro
 		return err
 	}
 	if strings.TrimSpace(proposal.AuthorID) == "" {
-		proposal.AuthorID = firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
+		proposal.AuthorID = groupDiscussionAgentID(cfg)
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
@@ -1656,7 +1727,7 @@ func (a *App) GroupDiscussionAddReview(consultationID string, review a2a.Review)
 		return err
 	}
 	if strings.TrimSpace(review.ReviewerID) == "" {
-		review.ReviewerID = firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID)
+		review.ReviewerID = groupDiscussionAgentID(cfg)
 	}
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
@@ -1668,7 +1739,7 @@ func (a *App) GroupDiscussionEscalate(consultationID string, escalation a2a.Esca
 	if err != nil {
 		return err
 	}
-	escalation = normalizeGroupDiscussionEscalation(escalation, firstNonEmptyGroupString(cfg.RemoteMachineID, cfg.RemoteClientID))
+	escalation = normalizeGroupDiscussionEscalation(escalation, groupDiscussionAgentID(cfg))
 	ctx, cancel := groupDiscussionContext()
 	defer cancel()
 	return client.EscalateDiscussion(ctx, consultationID, escalation)
@@ -1685,7 +1756,7 @@ func normalizeGroupDiscussionEscalation(escalation a2a.Escalation, fallbackRaise
 }
 
 func defaultGroupDiscussionEscalationTarget() string {
-	return "iworkercenter"
+	return "human_owner"
 }
 
 func (a *App) GroupDiscussionDecide(consultationID string, decision a2a.Decision) error {
@@ -1857,7 +1928,7 @@ func (a *App) GroupDiscussionStatus() GroupDiscussionStatus {
 	} else if status.Error == "" {
 		status.Error = err.Error()
 	}
-	if invites, err := client.ListInvites(ctx, cfg.RemoteMachineID); err == nil {
+	if invites, err := client.ListInvites(ctx, groupDiscussionAgentID(cfg)); err == nil {
 		status.PendingInvites = invites
 	} else if status.Error == "" {
 		status.Error = err.Error()

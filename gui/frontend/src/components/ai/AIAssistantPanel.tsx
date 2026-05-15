@@ -31,10 +31,12 @@ import { activeCodingAgentProgress, codingAgentCompactText, latestCodingAgentTur
 import { findLatestToolProgressText } from "./aiAssistantProgressUtils";
 import { AITabBar } from "./AITabBar";
 import { useAITabManager } from "./useAITabManager";
-import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
+import { useProjectContextLoader } from "./useProjectContextLoader";
 import { AssistantActiveTabContent } from "./AssistantActiveTabContent";
+import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
+export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 export function AIAssistantPanel(props: any) {
-    const { onClose, lang, chatFontSize = 14, groupDiscussion, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled } = props;
+    const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled } = props;
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
@@ -102,44 +104,151 @@ export function AIAssistantPanel(props: any) {
         activateTab,
         createVETab,
         createGroupTab,
+        createProjectTab,
         closeTab,
         saveTabState,
         getTabState,
+        getLastActiveAt,
+        hasProjectTab,
         tabLimitError,
         clearTabLimitError,
     } = useAITabManager();
     const isLocalTabActive = activeTab.id === "local";
-    // Handle starting a VE conversation from VirtualEmployeeTab
-    const handleStartVEConversation = useCallback((ve: VirtualEmployeeEntry) => {
-        createVETab(ve.id, ve.name);
-    }, [createVETab]);
-    const isHistoryDiscussionReadOnly = useCallback((discussion: any) => {
-        if (typeof discussion?.readonly === "boolean") return discussion.readonly;
-        const relation = String(discussion?.local_relation || discussion?.role || "").toLowerCase();
-        if (relation === "initiated_by_me") return false;
-        if (relation === "owned_ve_invited") return true;
-        return relation !== "initiated" && relation !== "owner" && relation !== "creator";
-    }, []);
-    const openHistoryDiscussion = useCallback((discussion: any) => {
-        const discussionId = String(discussion?.id || "").trim();
-        if (!discussionId) return;
-        const titleBase = discussion?.topic || discussion?.question || discussionId;
-        const readOnly = isHistoryDiscussionReadOnly(discussion);
-        const label = readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
-        const title = label ? `${titleBase} - ${label}` : titleBase;
-        const role = discussion?.local_relation || discussion?.role;
-        createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role });
-    }, [createGroupTab, isHistoryDiscussionReadOnly, lang]);
+    const isProjectTabActive = activeTab.type === "project";
+    const showChatUI = isLocalTabActive || isProjectTabActive;
+    // Each project tab maintains its own messages, scrollTop, and inputText.
+    // When switching tabs, we save the current tab's state and restore the target tab's state.
+    const [projectTabMessages, setProjectTabMessages] = useState<ChatMessage[]>([]);
+    const [projectTabProgressMessages, setProjectTabProgressMessages] = useState<ChatMessage[]>([]);
+    const prevActiveTabIdRef = useRef<string>(activeTab.id);
     useEffect(() => {
-        if (!pendingVEOpen) return;
-        handleStartVEConversation(pendingVEOpen);
-        onPendingVEOpenHandled?.();
-    }, [handleStartVEConversation, onPendingVEOpenHandled, pendingVEOpen]);
+        const prevTabId = prevActiveTabIdRef.current;
+        const currentTabId = activeTab.id;
+        if (prevTabId === currentTabId) return;
+        // Save state of the tab we're leaving
+        const prevTab = tabState.tabs.find(t => t.id === prevTabId);
+        if (prevTab && prevTab.type === "project") {
+            const scrollTop = outputContainerRef.current?.scrollTop || 0;
+
+            // Capture in-flight messages if streaming is active
+            let historyToSave = projectTabMessages;
+            if (sending && projectTabMsgBaselineRef.current >= 0) {
+                const inFlightMessages = messages.slice(projectTabMsgBaselineRef.current);
+                if (inFlightMessages.length > 0) {
+                    historyToSave = [...projectTabMessages, ...inFlightMessages];
+                }
+            }
+
+            saveTabState(prevTabId, {
+                history: historyToSave,
+                scrollTop,
+                inputText: localDraftInputValue,
+            });
+        }
+        // Restore state of the tab we're switching to
+        if (activeTab.type === "project") {
+            const restored = getTabState(currentTabId);
+            if (restored) {
+                setProjectTabMessages((restored.history || []) as ChatMessage[]);
+                setProjectTabProgressMessages([]);
+                setLocalDraftInputValue(restored.inputText || "");
+                // Restore scroll position after render
+                requestAnimationFrame(() => {
+                    if (outputContainerRef.current && restored.scrollTop) {
+                        outputContainerRef.current.scrollTop = restored.scrollTop;
+                    }
+                });
+            } else {
+                setProjectTabMessages([]);
+                setProjectTabProgressMessages([]);
+                setLocalDraftInputValue("");
+            }
+        } else if (activeTab.id === "local") {
+            // Switching back to local tab - restore local draft from parent state
+            setLocalDraftInputValue(draftInputValue);
+        }
+        prevActiveTabIdRef.current = currentTabId;
+    }, [activeTab.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Determine which messages to display based on active tab.
+    // When a project tab is active AND the hook is processing a request (sending=true),
+    // we need to show the project tab's existing history plus the new messages being
+    // streamed. The hook appends new messages (user + assistant placeholder) to its
+    // internal `messages` state. We track the message count before sending to extract
+    // only the newly added messages during this round.
+    const projectTabMsgBaselineRef = useRef<number>(-1);
+    const displayMessages = useMemo(() => {
+        if (!isProjectTabActive) return messages;
+        if (!sending || projectTabMsgBaselineRef.current < 0) return projectTabMessages;
+        // During streaming: show project tab history + new messages from this round
+        const newMessages = messages.slice(projectTabMsgBaselineRef.current);
+        if (newMessages.length === 0) return projectTabMessages;
+        return [...projectTabMessages, ...newMessages];
+    }, [isProjectTabActive, sending, messages, projectTabMessages]);
+    const displayProgressMessages = isProjectTabActive
+        ? (sending ? progressMessages : projectTabProgressMessages)
+        : progressMessages;
+    // Before sending from a project tab, record the current messages length as baseline.
+    // After the round completes, capture new messages into projectTabMessages.
+    const prevSendingRef = useRef(sending);
     useEffect(() => {
-        if (!pendingHistoryDiscussionOpen) return;
-        openHistoryDiscussion(pendingHistoryDiscussionOpen);
-        onPendingHistoryDiscussionOpenHandled?.();
-    }, [onPendingHistoryDiscussionOpenHandled, openHistoryDiscussion, pendingHistoryDiscussionOpen]);
+        const wasSending = prevSendingRef.current;
+        prevSendingRef.current = sending;
+        // Round started — record baseline
+        if (!wasSending && sending && isProjectTabActive) {
+            projectTabMsgBaselineRef.current = messages.length;
+        }
+        // Round completed — capture new messages into project tab state
+        if (wasSending && !sending && isProjectTabActive && projectTabMsgBaselineRef.current >= 0) {
+            const newMessages = messages.slice(projectTabMsgBaselineRef.current);
+            if (newMessages.length > 0) {
+                setProjectTabMessages(prev => [...prev, ...newMessages]);
+            }
+            setProjectTabProgressMessages([]);
+            projectTabMsgBaselineRef.current = -1;
+        }
+    }, [sending, isProjectTabActive, messages]);
+    const { loadProjectContext } = useProjectContextLoader();
+    // Wrap createProjectTab to automatically load context for new tabs
+    const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, _archived?: boolean) => {
+        const tab = createProjectTab(projectPath, taskTitle);
+        if (tab && tab.projectPath) {
+            // Load project context and inject as system message in the tab's history
+            loadProjectContext(tab.projectPath, (msg) => {
+                const existing = getTabState(tab.id);
+                const history = existing?.history || [];
+                // Replace any existing project context message, or append
+                const filtered = (history as any[]).filter(
+                    (m: any) => !m.isProjectContext
+                );
+                saveTabState(tab.id, {
+                    ...existing,
+                    history: [msg, ...filtered],
+                });
+            });
+        }
+        return tab;
+    }, [createProjectTab, loadProjectContext, getTabState, saveTabState]);
+    // Wrap sendMessage to route through SendMessageForTab when sending from a project tab
+    const sendMessageForTab = useCallback((text: string, options?: any): Promise<boolean> => {
+        if (activeTab.type === "project" && activeTab.projectPath) {
+            return sendMessage(text, { ...options, tabId: activeTab.id, project_path: activeTab.projectPath });
+        }
+        return options === undefined ? sendMessage(text) : sendMessage(text, options);
+    }, [sendMessage, activeTab]);
+    usePendingAssistantTabOpen({
+        createVETab,
+        createGroupTab,
+        createProjectTab: createProjectTabWithContext,
+        getTabState,
+        hasProjectTab,
+        sendMessage,
+        pendingVEOpen,
+        onPendingVEOpenHandled,
+        pendingHistoryDiscussionOpen,
+        onPendingHistoryDiscussionOpenHandled,
+        pendingProjectTabOpen: props.pendingProjectTabOpen,
+        onPendingProjectTabOpenHandled: props.onPendingProjectTabOpenHandled,
+    });
     // Clear tab limit error after 3 seconds
     useEffect(() => {
         if (!tabLimitError) return;
@@ -156,7 +265,7 @@ export function AIAssistantPanel(props: any) {
     const startPreviewResize = useAssistantPreviewResize(setWorkflowSplitRatio);
     const title = lang === "en" ? "AI Assistant" : "AI \u52a9\u624b";
     const thinkingText = lang === "en" ? "Thinking... (you can type ahead)" : "\u6b63\u5728\u601d\u8003...\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
-    const processingText = lang === "en" ? "Processing... (you can type ahead)" : "\u6b63\u5728\u5904\u7406\u4e2d\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
+    const processingText = lang === "en" ? "Running tools... (you can type ahead)" : "\u6b63\u5728\u6267\u884c\u5de5\u5177\u2026\uff08\u53ef\u7ee7\u7eed\u8f93\u5165\uff09";
     const idlePlaceholderText = lang === "en" ? "Type a message..." : "\u8f93\u5165\u6d88\u606f...";
     const savedFileLabel = lang === "en" ? "Saved file" : "\u6587\u4ef6\u5df2\u4fdd\u5b58";
     const isBusy = sending;
@@ -166,10 +275,10 @@ export function AIAssistantPanel(props: any) {
     const showThinkingState = streaming;
     const showProcessingState = isBusy && !streaming;
     const showBusySpinner = isBusy;
-    const codingAgentTurnSnapshot = useMemo(() => sending ? latestCodingAgentTurnSnapshot(progressMessages) : null, [progressMessages, sending]);
-    const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(progressMessages, sending), [codingAgentTurnSnapshot, progressMessages, sending]);
+    const codingAgentTurnSnapshot = useMemo(() => sending ? latestCodingAgentTurnSnapshot(displayProgressMessages) : null, [displayProgressMessages, sending]);
+    const codingAgentProgress = useMemo(() => codingAgentTurnSnapshot?.latest || activeCodingAgentProgress(displayProgressMessages, sending), [codingAgentTurnSnapshot, displayProgressMessages, sending]);
     // Use the latest tool-specific progress message if available.
-    const latestToolProgress = useMemo(() => findLatestToolProgressText(progressMessages, sending), [progressMessages, sending]);
+    const latestToolProgress = useMemo(() => findLatestToolProgressText(displayProgressMessages, sending), [displayProgressMessages, sending]);
     const activeProcessingText = codingAgentProgress
         ? codingAgentCompactText(codingAgentProgress, lang)
         : latestToolProgress
@@ -182,8 +291,38 @@ export function AIAssistantPanel(props: any) {
             if (!ok) return;
             await cancelSession();
         }
-        await sendMessage(msg);
-    }, [cancelSession, isBusy, lang, sendMessage]);
+        await sendMessageForTab(msg);
+    }, [cancelSession, isBusy, lang, sendMessageForTab]);
+    // Fork current local tab conversation into a new project tab.
+    // Creates a new task in the recent list, opens it as a project tab,
+    // and copies the current messages as initial context.
+    const handleForkCurrentChat = useCallback(async (taskName: string) => {
+        // Derive a name from the first user message if not provided.
+        let derivedName = taskName;
+        if (!derivedName) {
+            const firstUser = messages.find((m: any) => m.role === "user");
+            const text = firstUser && typeof firstUser.content === "string" ? firstUser.content : "";
+            const runes = [...text];
+            derivedName = runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || (lang === "en" ? "New task" : "\u65b0\u4efb\u52a1");
+        }
+
+        try {
+            const { CreateRecentTask, ForkConversationToProject } = await import("../../../wailsjs/go/main/App");
+            const result = await CreateRecentTask(derivedName);
+            if (!result || !result.project_path) return;
+            // Fork backend conversation history to the new project session.
+            await ForkConversationToProject(result.project_path);
+            // Create the project tab with the new task's path.
+            const tab = createProjectTab(result.project_path, result.name || derivedName);
+            if (tab) {
+                // Fork frontend messages into the new tab's state for immediate display.
+                saveTabState(tab.id, { history: [...messages], scrollTop: 0, inputText: "" });
+            }
+        } catch (err) {
+            console.error("[ForkCurrentChat] failed:", err);
+        }
+    }, [createProjectTab, lang, messages, saveTabState]);
+
     const initLabel = getAssistantInitLabel(initStatus, lang);
     const placeholderText = !ready
         ? initLabel
@@ -202,7 +341,7 @@ export function AIAssistantPanel(props: any) {
     const { pinnedNews, otherMessages } = useMemo(() => {
         const pinned: ChatMessage[] = [];
         const other: ChatMessage[] = [];
-        for (const m of messages) {
+        for (const m of displayMessages) {
             if (isPinnedNewsMessage(m)) {
                 pinned.push(m);
             } else {
@@ -210,9 +349,9 @@ export function AIAssistantPanel(props: any) {
             }
         }
         return { pinnedNews: pinned.slice(0, 2), otherMessages: other };
-    }, [messages]);
-    const hasConversation = otherMessages.length + progressMessages.length > 0;
-    const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages, ready, scrollToTopSeq });
+    }, [displayMessages]);
+    const hasConversation = otherMessages.length + displayProgressMessages.length > 0;
+    const { handleScroll, outputContainerRef, outputEndRef, scrollToBottom, userScrolledUpRef } = useAssistantOutputScroll({ hasConversation, messages: displayMessages, ready, scrollToTopSeq });
     const handleInputResizeEnd = useCallback(() => {
         scrollToBottom("auto", true, 2);
     }, [scrollToBottom]);
@@ -258,10 +397,10 @@ export function AIAssistantPanel(props: any) {
         resetHistoryBrowsing();
         setLocalDraftInputValue("");
         setDraftInputValue?.("");
-        void sendMessage(trimmed).catch((err: unknown) => {
+        void sendMessageForTab(trimmed).catch((err: unknown) => {
             console.warn("[AIAssistantPanel] Voice prompt send failed", err);
         });
-    }, [inputLocked, ready, recordSubmittedPrompt, resetHistoryBrowsing, sendMessage, setDraftInputValue]);
+    }, [inputLocked, ready, recordSubmittedPrompt, resetHistoryBrowsing, sendMessageForTab, setDraftInputValue]);
     const voiceInput = useVoiceInput(submitRecognizedVoiceText, audioInputDeviceId || '');
     const { finishVoicePointer, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave } = useAIAssistantVoiceControls({
         inputRef,
@@ -327,19 +466,19 @@ export function AIAssistantPanel(props: any) {
         clearSelectedFile?.();
         userScrolledUpRef.current = false;
         const outgoing = allFilePaths.length > 0 ? buildOutgoingMessageMulti(text, allFilePaths) : text;
-        await sendMessage(outgoing);
-    }, [inputValue, submitLocked, queueEditDraftActive, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessage, sendBtwMessage]);
+        await sendMessageForTab(outgoing);
+    }, [inputValue, submitLocked, queueEditDraftActive, pendingAttachments, selectedFilePaths, addEntry, recordSubmittedPrompt, resetHistoryBrowsing, updateInputValue, clearSelectedFile, sendMessageForTab, sendBtwMessage]);
     useEffect(() => {
         if (prevSubmitLockedRef.current && !submitLocked && queue.length > 0) {
             const result = mergeAndFire();
             if (result) {
                 const outgoing = buildOutgoingMessageMulti(result.mergedText, result.allFilePaths);
                 recordSubmittedPrompt?.(result.mergedText);
-                sendMessage(outgoing).catch(() => {});
+                sendMessageForTab(outgoing).catch(() => {});
             }
         }
         prevSubmitLockedRef.current = submitLocked;
-    }, [submitLocked, queue.length, mergeAndFire, sendMessage, recordSubmittedPrompt]);
+    }, [submitLocked, queue.length, mergeAndFire, sendMessageForTab, recordSubmittedPrompt]);
     const handleFireEntry = useCallback(async (id: string) => {
         const entry = extractEntry(id);
         if (!entry) return;
@@ -347,7 +486,7 @@ export function AIAssistantPanel(props: any) {
         try {
             const injected = injectSupplementary ? await injectSupplementary(outgoing) : false;
             if (!injected) {
-                const sent = await sendMessage(outgoing);
+                const sent = await sendMessageForTab(outgoing);
                 if (sent === false) {
                     addEntry(entry.text, entry.attachments);
                     return;
@@ -357,7 +496,7 @@ export function AIAssistantPanel(props: any) {
         } catch {
             addEntry(entry.text, entry.attachments);
         }
-    }, [addEntry, extractEntry, injectSupplementary, recordSubmittedPrompt, sendMessage]);
+    }, [addEntry, extractEntry, injectSupplementary, recordSubmittedPrompt, sendMessageForTab]);
     const handleEditEntry = useCallback((id: string) => {
         const entry = extractEntry(id);
         if (!entry) return;
@@ -405,8 +544,8 @@ export function AIAssistantPanel(props: any) {
         return otherMessages.map((msg: ChatMessage, idx: number) => renderMessage(msg, executeAction, t, idx === lastAssistantIdx, savedFileLabel, lang));
     }, [otherMessages, executeAction, t, lastAssistantIdx, savedFileLabel, lang]);
     const renderedProgressMessages = useMemo(() => {
-        return progressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang));
-    }, [progressMessages, executeAction, t, savedFileLabel, lang]);
+        return displayProgressMessages.map((msg: ChatMessage) => renderMessage(msg, executeAction, t, false, savedFileLabel, lang));
+    }, [displayProgressMessages, executeAction, t, savedFileLabel, lang]);
     const containerStyle: React.CSSProperties = inline
         ? (maximized
             ? maximizedInlineStyle
@@ -424,93 +563,18 @@ export function AIAssistantPanel(props: any) {
                 } as any} />
             )}
             <AssistantTitleBar clearHistory={clearHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onHideWindow={onHideWindow} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} />
-            <KnowledgeDialog
-                open={knowledgeDialogOpen}
-                onClose={() => setKnowledgeDialogOpen(false)}
-                lang={lang}
-                theme={t}
-            />
-            {/* Tab bar, shown when there are multiple tabs */}
-            <AITabBar
-                tabs={tabState.tabs}
-                activeTabId={tabState.activeTabId}
-                theme={t}
-                onActivate={activateTab}
-                onClose={closeTab}
-            />
-            {/* Tab limit error toast */}
-            {tabLimitError && (
-                <div
-                    data-testid="ai-tab-limit-error"
-                    style={{
-                        padding: "6px 12px",
-                        fontSize: 12,
-                        color: t.errorText,
-                        background: t.errorBg,
-                        borderBottom: `1px solid ${t.errorBorder}`,
-                        textAlign: "center",
-                    }}
-                >
-                    {tabLimitError}
+            <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
+            <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateTab} onClose={closeTab} lang={lang} getLastActiveAt={getLastActiveAt} />
+            {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
+            {showChatUI && <>
+                <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />
+                <ProjectSearchPanel search={projectSearch} lang={lang} theme={t} inline={!!inline} onProjectSwitch={handleProjectSearchSwitch} onCreateProjectTab={createProjectTabWithContext} onForkCurrentChat={handleForkCurrentChat} onTaskPrefsChanged={onTaskPrefsChanged} />
+                <div ref={outputContainerRef} data-testid="ai-output-container" style={{ flex: 1, minHeight: 0, maxHeight: "none", padding: "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5, overflowY: "auto", overflowX: "hidden", textAlign: "left", color: t.text, background: t.bg, fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace", whiteSpace: "pre-wrap", wordBreak: "break-all" }} onScroll={handleScroll}>
+                    <AssistantConversationBody initLabel={initLabel} lang={lang} messages={displayMessages} onOpenOnboarding={onOpenOnboarding} onboardingIncomplete={onboardingIncomplete} pinnedNews={pinnedNews} processingText={activeProcessingText} ready={ready} renderedOtherMessages={renderedOtherMessages} renderedProgressMessages={renderedProgressMessages} showProcessingState={showProcessingState} showThinkingState={showThinkingState} theme={t} thinkingText={thinkingText} />
+                    <div ref={outputEndRef} />
                 </div>
-            )}
-            {/* Chat area, only rendered for local tab */}
-            {isLocalTabActive && (
-            <>
-            <AssistantWorkflowMaximizeSuggestion
-                inline={!!inline}
-                lang={lang}
-                maximized={!!maximized}
-                onDismiss={dismissMaximizeSuggestion}
-                onToggleMaximize={onToggleMaximize}
-                suggestMaximize={workflowState.suggestMaximize}
-                theme={t}
-                themeMode={themeMode}
-            />
-            <ProjectSearchPanel
-                search={projectSearch}
-                lang={lang}
-                theme={t}
-                inline={!!inline}
-                onProjectSwitch={handleProjectSearchSwitch}
-                onTaskPrefsChanged={onTaskPrefsChanged}
-            />
-            <div
-                ref={outputContainerRef}
-                data-testid="ai-output-container"
-                style={{
-                    flex: 1, minHeight: 0, maxHeight: "none",
-                    padding: "8px 10px", fontSize: `${chatFontSize}px`, lineHeight: 1.5,
-                    overflowY: "auto", overflowX: "hidden", textAlign: "left",
-                    color: t.text, background: t.bg,
-                    fontFamily: "'Cascadia Code', 'Cascadia Mono', 'Consolas', 'Courier New', monospace",
-                    whiteSpace: "pre-wrap", wordBreak: "break-all",
-                }}
-                onScroll={handleScroll}
-            >
-                <AssistantConversationBody
-                    initLabel={initLabel}
-                    lang={lang}
-                    messages={messages}
-                    onOpenOnboarding={onOpenOnboarding}
-                    onboardingIncomplete={onboardingIncomplete}
-                    pinnedNews={pinnedNews}
-                    processingText={activeProcessingText}
-                    ready={ready}
-                    renderedOtherMessages={renderedOtherMessages}
-                    renderedProgressMessages={renderedProgressMessages}
-                    showProcessingState={showProcessingState}
-                    showThinkingState={showThinkingState}
-                    theme={t}
-                    thinkingText={thinkingText}
-                />
-                <div ref={outputEndRef} />
-            </div>
-            {/* Input bar */}
-            <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={!!inline} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={removeEntry} removeSelectedFile={removeSelectedFile} reorderEntry={reorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />
-            </>
-            )}
-            <AssistantActiveTabContent activeTab={activeTab} isLocalTabActive={isLocalTabActive} lang={lang} theme={t} />
+                <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={!!inline} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={removeEntry} removeSelectedFile={removeSelectedFile} reorderEntry={reorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />
+            </>}            <AssistantActiveTabContent activeTab={activeTab} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} />
             </div>
             <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} inline={!!inline} lang={lang} onToggleMaximize={onToggleMaximize} selectCodeFile={selectCodeFile} submitAgentView={submitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
         </div>

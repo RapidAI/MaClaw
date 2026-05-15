@@ -54,8 +54,8 @@ const testTheme = {
 
 // --- Test Data ---
 const mockParticipants: GroupParticipant[] = [
-    { id: "ve-1", name: "AI助手A", online: true },
-    { id: "ve-2", name: "AI助手B", online: true },
+    { id: "ve-1", name: "数字员工A", online: true },
+    { id: "ve-2", name: "数字员工B", online: true },
 ];
 
 const mockMessages: GroupMessage[] = [
@@ -65,9 +65,9 @@ const mockMessages: GroupMessage[] = [
 ];
 
 const mockAvailableVEs: VirtualEmployeeEntry[] = [
-    { id: "ve-3", name: "AI助手C", skill_description: "翻译", access_policy: "public", status: "active", online_status: "online" },
-    { id: "ve-4", name: "AI助手D", skill_description: "编程", access_policy: "public", status: "active", online_status: "online" },
-    { id: "ve-1", name: "AI助手A", skill_description: "写作", access_policy: "public", status: "active", online_status: "online" },
+    { id: "ve-3", name: "数字员工C", skill_description: "翻译", access_policy: "public", status: "active", online_status: "online" },
+    { id: "ve-4", name: "数字员工D", skill_description: "翻译", access_policy: "public", status: "active", online_status: "online" },
+    { id: "ve-1", name: "数字员工A", skill_description: "翻译", access_policy: "public", status: "active", online_status: "online" },
 ];
 
 // ─── buildGroupTabTitle ──────────────────────────────────────────────
@@ -209,7 +209,7 @@ describe("ParticipantSelector", () => {
         fireEvent.click(screen.getByTestId("group-add-participant-btn"));
 
         expect(screen.getByTestId("group-limit-error")).toBeTruthy();
-        expect(screen.getByTestId("group-limit-error").textContent).toContain("群聊人数已满");
+        expect(screen.getByTestId("group-limit-error").textContent).toContain("群聊人数已满（最多");
     });
 
     it("calls onAdd when a VE is selected", async () => {
@@ -234,7 +234,7 @@ describe("ParticipantSelector", () => {
         fireEvent.click(screen.getByTestId("group-picker-item-ve-3"));
 
         expect(onAdd).toHaveBeenCalledWith(
-            expect.objectContaining({ id: "ve-3", name: "AI助手C" })
+            expect.objectContaining({ id: "ve-3", name: "数字员工C" })
         );
     });
 
@@ -265,7 +265,7 @@ describe("GroupMessageBubble", () => {
         const msg: GroupMessage = {
             id: "msg-1",
             fromId: "ve-1",
-            fromName: "AI助手A",
+            fromName: "数字员工A",
             content: "Hello!",
             timestamp: 1000,
         };
@@ -285,7 +285,7 @@ describe("GroupMessageBubble", () => {
         const msg: GroupMessage = {
             id: "msg-2",
             fromId: "ve-2",
-            fromName: "AI助手B",
+            fromName: "数字员工B",
             content: "Test content",
             timestamp: 2000,
         };
@@ -305,7 +305,7 @@ describe("GroupMessageBubble", () => {
         const msg: GroupMessage = {
             id: "msg-3",
             fromId: "ve-1",
-            fromName: "AI助手A",
+            fromName: "数字员工A",
             content: "See attached",
             timestamp: 3000,
             attachments: [
@@ -325,6 +325,28 @@ describe("GroupMessageBubble", () => {
         expect(screen.getByTestId("group-msg-att-msg-3-0")).toBeTruthy();
         expect(screen.getByTestId("group-msg-att-msg-3-1")).toBeTruthy();
     });
+
+    it("omits the empty text bubble for attachment-only messages", () => {
+        const msg: GroupMessage = {
+            id: "msg-attachment-only",
+            fromId: "ve-1",
+            fromName: "Digital employee",
+            content: "",
+            timestamp: 3000,
+            attachments: [{ type: "file", filename: "evidence.pdf" }],
+        };
+
+        render(
+            <GroupMessageBubble
+                message={msg}
+                participantIndex={0}
+                theme={testTheme}
+            />
+        );
+
+        expect(screen.queryByTestId("group-msg-content-msg-attachment-only")).toBeNull();
+        expect(screen.getByTestId("group-msg-att-msg-attachment-only-0")).toBeTruthy();
+    });
 });
 
 // ─── ParticipantOfflineNotice ────────────────────────────────────────
@@ -333,24 +355,24 @@ describe("ParticipantOfflineNotice", () => {
     it("renders offline notice with participant name (zh)", () => {
         render(
             <ParticipantOfflineNotice
-                participantName="AI助手A"
+                participantName="数字员工A"
                 theme={testTheme}
             />
         );
 
-        expect(screen.getByTestId("group-offline-notice-AI助手A").textContent).toContain("AI助手A");
+        expect(screen.getByTestId("group-offline-notice-数字员工A").textContent).toContain("数字员工");
     });
 
     it("renders offline notice in English", () => {
         render(
             <ParticipantOfflineNotice
-                participantName="Assistant"
+                participantName="数字员工A"
                 theme={testTheme}
                 lang="en"
             />
         );
 
-        expect(screen.getByTestId("group-offline-notice-Assistant").textContent).toBe("Assistant went offline");
+        expect(screen.getByTestId("group-offline-notice-数字员工A").textContent).toBe("数字员工A went offline");
     });
 });
 
@@ -421,7 +443,7 @@ describe("VEGroupChatView", () => {
             />
         );
 
-        expect(onTitleChange).toHaveBeenCalledWith("AI助手A, AI助手B");
+        expect(onTitleChange).toHaveBeenCalledWith("数字员工A, 数字员工B");
     });
 
     it("shows offline notice when participant goes offline via event", async () => {
@@ -452,7 +474,7 @@ describe("VEGroupChatView", () => {
         });
 
         await waitFor(() => {
-            expect(screen.getByTestId("group-offline-notice-AI助手A")).toBeTruthy();
+            expect(screen.getByTestId("group-offline-notice-数字员工A")).toBeTruthy();
         });
     });
 });

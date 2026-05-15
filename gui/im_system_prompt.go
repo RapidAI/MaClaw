@@ -336,7 +336,13 @@ func (h *IMMessageHandler) appendMemorySection(b *strings.Builder, isFirstTurn b
 	if len(userMessage) > 0 {
 		msg = userMessage[0]
 	}
-	h.appendProactiveRecall(b, msg)
+	// Derive strict project mode from the synthesized userID pattern.
+	// When a Project Tab sends a message, the userID is synthesized as
+	// "desktop-user:{projectPath}" (see SendAIAssistantMessage). This
+	// signals that proactive recall should use RecallDynamicStrict to
+	// exclude other projects' entries.
+	strictProject := isProjectTabUserID(userID)
+	h.appendProactiveRecall(b, msg, strictProject)
 }
 
 // generateStaticMemorySection builds the frozen part of the memory section:
@@ -361,23 +367,47 @@ func (h *IMMessageHandler) generateStaticMemorySection(b *strings.Builder, isFir
 	}
 }
 
+// isProjectTabUserID returns true when the userID was synthesized for a
+// Project Tab (format: "desktop-user:{projectPath}"). The local Tab uses
+// the plain "desktop-user" constant without a colon suffix.
+func isProjectTabUserID(userID string) bool {
+	const prefix = desktopUserID + ":"
+	return strings.HasPrefix(userID, prefix) && len(userID) > len(prefix)
+}
+
 // appendProactiveRecall performs per-message proactive recall and appends
 // results to the system prompt. Unlike the static section, this is NOT frozen
 // — each user message triggers a fresh recall so the LLM always sees memories
 // relevant to the current query.
-func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string) {
+func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string, strictProject bool) {
 	if h.memoryStore == nil || msg == "" {
 		return
 	}
 	recallStart := time.Now()
 
 	projectPath := ""
-	if h.contextResolver != nil {
+	if strictProject {
+		// In Project Tab mode, extract the project path directly from the
+		// synthesized userID (format "desktop-user:{projectPath}"). This is
+		// the authoritative source — contextResolver.ResolveProject() returns
+		// the global current project which may differ from the Tab's project.
+		projectPath = projectPathFromUserID(h.lastUserID)
+	}
+	if projectPath == "" && h.contextResolver != nil {
 		projectPath, _ = h.contextResolver.ResolveProject()
 	}
-	recalled := h.memoryStore.RecallDynamic(msg, "", projectPath)
+
+	// When strictProject mode is active (Project Tab) and projectPath is
+	// non-empty, use RecallDynamicStrict which excludes other projects'
+	// entries. Otherwise use the standard RecallDynamic (soft filtering).
+	var recalled []corememory.Entry
+	if strictProject && projectPath != "" {
+		recalled = h.memoryStore.RecallDynamicStrict(msg, "", projectPath)
+	} else {
+		recalled = h.memoryStore.RecallDynamic(msg, "", projectPath)
+	}
 	primaryRecallElapsed := time.Since(recallStart)
-	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, recalled=%d entries (RecallDynamic) took=%v", len(msg), projectPath, len(recalled), primaryRecallElapsed)
+	log.Printf("[proactive_recall] userMsg=%d chars, projectPath=%q, strictProject=%v, recalled=%d entries took=%v", len(msg), projectPath, strictProject, len(recalled), primaryRecallElapsed)
 
 	// Supplementary recall: ExpandQuery extracts key entities (e.g. "4090服务器",
 	// "GPU", "api服务器") from the user message. When the full message is long
@@ -397,7 +427,12 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 			entities = entities[:1]
 		}
 		for _, entity := range entities {
-			extra := h.memoryStore.RecallDynamic(entity, "", projectPath)
+			var extra []corememory.Entry
+			if strictProject && projectPath != "" {
+				extra = h.memoryStore.RecallDynamicStrict(entity, "", projectPath)
+			} else {
+				extra = h.memoryStore.RecallDynamic(entity, "", projectPath)
+			}
 			for _, e := range extra {
 				if !seen[e.ID] {
 					seen[e.ID] = true
@@ -433,7 +468,7 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 	// memory(action=recall, category="..."). Without this, the LLM has
 	// no way to know that memories exist when BM25 scores are too low
 	// for the current message to trigger proactive recall.
-	index := h.buildMemoryIndex()
+	index := h.buildMemoryIndex(strictProject, projectPath)
 	if index != "" {
 		b.WriteString("\n[记忆索引] ")
 		b.WriteString(index)
@@ -488,12 +523,17 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string)
 // Example output:
 //
 //	"项目: 3条(C++游戏, SSH服务器) | 偏好: 2条 | 任务产出: 1条(需求文档)"
-func (h *IMMessageHandler) buildMemoryIndex() string {
+func (h *IMMessageHandler) buildMemoryIndex(strictProject bool, projectPath string) string {
 	if h.memoryStore == nil {
 		return ""
 	}
 
-	stats := h.memoryStore.CategoryStats()
+	var stats []corememory.CategoryStat
+	if strictProject && projectPath != "" {
+		stats = h.memoryStore.CategoryStatsForProject(projectPath)
+	} else {
+		stats = h.memoryStore.CategoryStats()
+	}
 	if len(stats) == 0 {
 		return ""
 	}

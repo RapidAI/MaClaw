@@ -33,7 +33,4 @@ type KernelOptions struct {
 
 	// ToolLauncher 工具启动器，由上层（GUI/TUI）注入。
 	ToolLauncher tool.ToolLauncher
-
-	// AgentNetEnabled 是否启用智网 (AgentNet) 自动任务拾取。
-	AgentNetEnabled bool
 }

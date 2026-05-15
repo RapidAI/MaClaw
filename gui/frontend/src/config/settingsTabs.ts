@@ -1,4 +1,4 @@
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'agentnet' | 'virtualEmployee' | 'security' | 'im' | 'system';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'display' | 'pet' | 'remote' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'security' | 'im' | 'system';
 
 export interface SettingsTabOption {
     id: SettingsTabId;
@@ -10,7 +10,7 @@ const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = 
     lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en
 );
 
-export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: boolean; hideVirtualEmployee?: boolean } = {}): SettingsTabOption[] => {
+export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmployee?: boolean } = {}): SettingsTabOption[] => {
     const tabs: SettingsTabOption[] = [
         {
             id: 'general' as const,
@@ -78,14 +78,9 @@ export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: bo
             desc: textForLang(lang, 'Vector search and embedding model management', '向量搜索与嵌入模型管理', '向量搜尋與嵌入模型管理'),
         },
         {
-            id: 'agentnet' as const,
-            label: textForLang(lang, 'AgentNet', '智网', '智網'),
-            desc: textForLang(lang, 'AgentNet decentralized P2P agent network', 'AgentNet P2P 去中心化 Agent 网络', 'AgentNet P2P 去中心化 Agent 網路'),
-        },
-        {
             id: 'virtualEmployee' as const,
-            label: textForLang(lang, 'Employees', '数字员工', '數位員工'),
-            desc: textForLang(lang, 'Manage favorite digital employees', '常用数字员工管理', '常用數位員工管理'),
+            label: textForLang(lang, 'Employees', '数字员工', '數字員工'),
+            desc: textForLang(lang, 'Manage favorite digital employees', '常用数字员工管理', '常用數字員工管理'),
         },
 
         {
@@ -105,7 +100,6 @@ export const getSettingsTabOptions = (lang: string, options: { hideAgentNet?: bo
         },
     ];
     let filtered = tabs;
-    if (options.hideAgentNet) filtered = filtered.filter(tab => tab.id !== 'agentnet');
     if (options.hideVirtualEmployee) filtered = filtered.filter(tab => tab.id !== 'virtualEmployee');
     return filtered;
 };

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
 )
@@ -63,9 +64,10 @@ func ListUserDashboardHandler(service *hubs.Service) http.HandlerFunc {
 }
 
 type UpdateDigitalEmployeeAuthorizationRequest struct {
-	Quota   int   `json:"quota"`
-	Years   int   `json:"years"`
-	Enabled *bool `json:"enabled,omitempty"`
+	Quota     int    `json:"quota"`
+	Years     int    `json:"years"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+	StartDate string `json:"start_date,omitempty"` // optional ISO date YYYY-MM-DD
 }
 
 func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.HandlerFunc {
@@ -88,7 +90,13 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 			writeError(w, http.StatusBadRequest, "INVALID_YEARS", "Years must be >= 0")
 			return
 		}
-		auth, err := service.UpdateDigitalEmployeeAuthorization(r.Context(), hubID, hubs.DigitalEmployeeAuthorizationUpdate{Quota: req.Quota, Years: req.Years, Enabled: req.Enabled})
+		if req.StartDate != "" {
+			if _, parseErr := time.Parse("2006-01-02", req.StartDate); parseErr != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_START_DATE", "start_date must be in YYYY-MM-DD format")
+				return
+			}
+		}
+		auth, err := service.UpdateDigitalEmployeeAuthorization(r.Context(), hubID, hubs.DigitalEmployeeAuthorizationUpdate{Quota: req.Quota, Years: req.Years, Enabled: req.Enabled, StartDate: req.StartDate})
 		if err != nil {
 			if errors.Is(err, hubs.ErrDigitalEmployeeQuotaDecrease) {
 				writeError(w, http.StatusBadRequest, "DIGITAL_EMPLOYEE_QUOTA_DECREASE", "Digital employee authorization count can only increase")

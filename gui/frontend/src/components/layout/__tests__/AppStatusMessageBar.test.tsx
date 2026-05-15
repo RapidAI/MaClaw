@@ -5,70 +5,13 @@ import { AppStatusMessageBar } from '../AppStatusMessageBar';
 
 const noop = vi.fn();
 
-function renderBar(config: Record<string, unknown>, hideAgentNet = false, showLansenger = false) {
-    render(
-        <AppStatusMessageBar
-            status="Ready"
-            lang="en"
-            config={config}
-            qqBotStatus=""
-            telegramStatus=""
-            weixinStatus=""
-            lansengerStatus=""
-            maclawLLMOnline
-            maclawLLMConfigured
-            remoteActivated
-            agentNetRunning={false}
-            hideAgentNet={hideAgentNet}
-            showLansenger={showLansenger}
-            navTab="ai"
-            settingsTab="llm"
-            backgroundInstallStatus=""
-            lobsterOffline="/offline.png"
-            lobsterHalf="/half.png"
-            onOpenIMSettings={noop}
-            onOpenLLMSettings={noop}
-        />,
-    );
-}
-
-describe('AppStatusMessageBar AgentNet warning', () => {
-    it('does not require AgentNet when it is disabled in config', () => {
-        renderBar({ agentnet_enabled: false });
-
-        expect(screen.queryByText('AgentNet not connected')).toBeNull();
-    });
-
-    it('warns when AgentNet is enabled but not running', () => {
-        renderBar({ agentnet_enabled: true });
-
-        expect(screen.getByText('AgentNet not connected')).toBeTruthy();
-    });
-
-    it('does not require AgentNet when the brand hides it', () => {
-        renderBar({ agentnet_enabled: true }, true);
-
-        expect(screen.queryByText('AgentNet not connected')).toBeNull();
-    });
-
-    it('ignores Lansenger config when Lansenger is hidden for the brand', () => {
-        renderBar({ agentnet_enabled: false, lansenger_enabled: true }, false, false);
-
-        expect(screen.queryByText('IM not connected')).toBeNull();
-    });
-
-    it('warns about Lansenger only when Lansenger is visible for the brand', () => {
-        renderBar({ agentnet_enabled: false, lansenger_enabled: true }, false, true);
-
-        expect(screen.getByText('IM not connected')).toBeTruthy();
-    });
-
+describe('AppStatusMessageBar', () => {
     it('shows active coding agent task status in the bottom status bar', () => {
         render(
             <AppStatusMessageBar
                 status="Ready"
                 lang="en"
-                config={{ agentnet_enabled: false }}
+                config={{}}
                 qqBotStatus=""
                 telegramStatus=""
                 weixinStatus=""
@@ -76,7 +19,6 @@ describe('AppStatusMessageBar AgentNet warning', () => {
                 maclawLLMOnline
                 maclawLLMConfigured
                 remoteActivated
-                agentNetRunning={false}
                 navTab="ai"
                 settingsTab="llm"
                 backgroundInstallStatus=""

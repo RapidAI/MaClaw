@@ -14,6 +14,36 @@ interface FavoriteEmployeeButtonsProps {
     onReorder: (newOrder: string[]) => void;
 }
 
+// Generate a stable hue from a string so each employee gets a unique avatar color.
+const AVATAR_HUES = [210, 260, 330, 160, 30, 190, 290, 50, 130, 350];
+function avatarColor(name: string): string {
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+        hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
+    }
+    const hue = AVATAR_HUES[Math.abs(hash) % AVATAR_HUES.length];
+    return `hsl(${hue}, 55%, 48%)`;
+}
+
+// Extract up to 2 display characters for the avatar.
+// For CJK names: first 2 chars. For latin: first 2 uppercase letters.
+function avatarInitials(name: string): string {
+    const trimmed = name.trim();
+    if (!trimmed) return "?";
+    // Check if first char is CJK
+    const code = trimmed.charCodeAt(0);
+    const isCJK = code >= 0x4e00 && code <= 0x9fff;
+    if (isCJK) {
+        return trimmed.slice(0, 2);
+    }
+    // Latin: take first letter of first two words, or first two chars
+    const words = trimmed.split(/\s+/);
+    if (words.length >= 2) {
+        return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return trimmed.slice(0, 2).toUpperCase();
+}
+
 export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversation, onReorder }: FavoriteEmployeeButtonsProps) {
     const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
     const dragSourceIndex = useRef<number | null>(null);
@@ -59,6 +89,8 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
         onStartConversation(veId);
     };
 
+    const isFull = slots.length >= 6;
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', width: '100%' }}>
             {slots.map((slot, index) => (
@@ -91,15 +123,16 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                             width: '28px',
                             height: '28px',
                             borderRadius: '50%',
-                            background: slot.online ? 'var(--theme-primary)' : 'var(--theme-text-muted)',
+                            background: avatarColor(slot.name),
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            fontSize: '12px',
+                            fontSize: '11px',
                             fontWeight: 700,
                             color: '#fff',
+                            letterSpacing: '-0.5px',
                         }}>
-                            {slot.name.charAt(0).toUpperCase()}
+                            {avatarInitials(slot.name)}
                         </div>
                         <span style={{
                             position: 'absolute',
@@ -128,6 +161,17 @@ export function FavoriteEmployeeButtons({ slots, veAuthorized, onStartConversati
                     </span>
                 </div>
             ))}
+            {/* Separator when at full capacity — visually separates employees from system buttons below */}
+            {isFull && (
+                <div style={{
+                    width: '24px',
+                    height: '1px',
+                    margin: '6px 0 2px',
+                    background: 'linear-gradient(90deg, transparent, var(--theme-border) 20%, var(--theme-text-muted) 50%, var(--theme-border) 80%, transparent)',
+                    opacity: 0.6,
+                    borderRadius: '1px',
+                }} />
+            )}
         </div>
     );
 }

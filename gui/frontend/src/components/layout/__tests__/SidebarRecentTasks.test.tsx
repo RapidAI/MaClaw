@@ -65,7 +65,7 @@ describe('SidebarRecentTasks', () => {
         renderRecentTasks({ createRecentTask });
 
         fireEvent.click(screen.getByTitle('Create task'));
-        fireEvent.change(screen.getByLabelText('Task name'), { target: { value: '  New   research   task  ' } });
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: '  New   research   task  ' } });
         fireEvent.click(screen.getByRole('button', { name: 'OK' }));
 
         expect(createRecentTask).toHaveBeenCalledWith('New research task');
@@ -76,7 +76,7 @@ describe('SidebarRecentTasks', () => {
 
         fireEvent.click(screen.getByTitle('Create task'));
 
-        expect(screen.getByLabelText('Task name').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
+        expect(screen.getByLabelText('Task command').closest('.modal-backdrop')?.getAttribute('data-ai-theme')).toBe('dark');
     });
 
     it('closes the create dialog with Escape from any dialog control', () => {
@@ -85,21 +85,21 @@ describe('SidebarRecentTasks', () => {
         fireEvent.click(screen.getByTitle('Create task'));
         fireEvent.keyDown(screen.getByRole('button', { name: 'Cancel' }), { key: 'Escape' });
 
-        expect(screen.queryByLabelText('Task name')).toBeNull();
+        expect(screen.queryByLabelText('Task command')).toBeNull();
     });
 
     it('does not close the create dialog when a backdrop click starts inside the dialog', () => {
         renderRecentTasks();
 
         fireEvent.click(screen.getByTitle('Create task'));
-        const input = screen.getByLabelText('Task name');
+        const input = screen.getByLabelText('Task command');
         const backdrop = input.closest('.modal-backdrop') as HTMLElement;
         const dialog = input.closest('.modal-content') as HTMLElement;
 
         fireEvent.mouseDown(dialog);
         fireEvent.click(backdrop);
 
-        expect(screen.getByLabelText('Task name')).toBeTruthy();
+        expect(screen.getByLabelText('Task command')).toBeTruthy();
     });
 
     it('limits very long task names before creating', () => {
@@ -107,7 +107,7 @@ describe('SidebarRecentTasks', () => {
         renderRecentTasks({ createRecentTask });
 
         fireEvent.click(screen.getByTitle('Create task'));
-        fireEvent.change(screen.getByLabelText('Task name'), { target: { value: 'a'.repeat(130) } });
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'a'.repeat(130) } });
         fireEvent.click(screen.getByRole('button', { name: 'OK' }));
 
         expect(createRecentTask).toHaveBeenCalledWith('a'.repeat(120));
@@ -122,7 +122,7 @@ describe('SidebarRecentTasks', () => {
 
         const createButton = screen.getByTitle('Create task');
         fireEvent.click(createButton);
-        fireEvent.change(screen.getByLabelText('Task name'), { target: { value: 'New research task' } });
+        fireEvent.change(screen.getByLabelText('Task command'), { target: { value: 'New research task' } });
         const submitButton = screen.getByRole('button', { name: 'OK' });
         fireEvent.click(submitButton);
         fireEvent.click(submitButton);

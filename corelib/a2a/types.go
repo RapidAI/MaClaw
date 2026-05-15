@@ -208,11 +208,11 @@ func (s *Session) AddMessage(msg Message) error {
 		return err
 	}
 	msg.Content = strings.TrimSpace(msg.Content)
-	if strings.TrimSpace(msg.ID) == "" || strings.TrimSpace(msg.FromID) == "" || msg.Content == "" {
-		return fmt.Errorf("message id, from_id and content are required")
-	}
 	if msg.Kind == "" {
 		msg.Kind = MessageStatement
+	}
+	if strings.TrimSpace(msg.ID) == "" || strings.TrimSpace(msg.FromID) == "" || !messageHasPayload(msg) {
+		return fmt.Errorf("message id, from_id and content or attachment payload are required")
 	}
 	if msg.CreatedAt.IsZero() {
 		msg.CreatedAt = time.Now()
@@ -221,6 +221,14 @@ func (s *Session) AddMessage(msg Message) error {
 	s.Messages = append(s.Messages, msg)
 	s.UpdatedAt = msg.CreatedAt
 	return nil
+}
+
+func messageHasPayload(msg Message) bool {
+	return strings.TrimSpace(msg.Content) != "" ||
+		msg.Kind == MessageStreamEnd ||
+		len(msg.TextAttachments) > 0 ||
+		len(msg.ImageAttachments) > 0 ||
+		len(msg.FileAttachments) > 0
 }
 
 func (s *Session) AddProposal(p Proposal) error {
@@ -302,7 +310,7 @@ func (s *Session) Escalate(e Escalation) error {
 		return fmt.Errorf("escalation id, raised_by and reason are required")
 	}
 	if e.Target == "" {
-		e.Target = "iworkercenter"
+		e.Target = "human_owner"
 	}
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()

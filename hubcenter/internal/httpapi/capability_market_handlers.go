@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/mcp"
 	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -386,10 +388,6 @@ func AdminCapabilityMarketExternalSearchHandler() http.HandlerFunc {
 		if capabilityType == "" {
 			capabilityType = corelib.CapabilityTypeSkill
 		}
-		if capabilityType != corelib.CapabilityTypeSkill {
-			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": []any{}})
-			return
-		}
 		sources := allowedSources
 		if source != "" {
 			sources = []string{source}
@@ -399,37 +397,70 @@ func AdminCapabilityMarketExternalSearchHandler() http.HandlerFunc {
 			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": []any{}})
 			return
 		}
-		results := coreskill.DefaultHubClient().SearchAllFiltered(r.Context(), "", query, sources)
-		items := make([]map[string]any, 0, len(results))
-		for _, result := range results {
-			item := map[string]any{
-				"id":              result.ID,
-				"capability_id":   result.ID,
-				"capability_type": corelib.CapabilityTypeSkill,
-				"name":            result.Name,
-				"display_name":    result.Name,
-				"description":     result.Description,
-				"version":         result.Version,
-				"author":          result.Author,
-				"trust_level":     result.TrustLevel,
-				"avg_rating":      result.AvgRating,
-				"downloads":       result.Downloads,
-				"score":           result.Score,
-				"source":          result.Source,
-				"pricing":         corelib.CapabilityPricingFree,
+
+		switch capabilityType {
+		case corelib.CapabilityTypeSkill:
+			results := coreskill.DefaultHubClient().SearchAllFiltered(r.Context(), "", query, sources)
+			items := make([]map[string]any, 0, len(results))
+			for _, result := range results {
+				item := map[string]any{
+					"id":              result.ID,
+					"capability_id":   result.ID,
+					"capability_type": corelib.CapabilityTypeSkill,
+					"name":            result.Name,
+					"display_name":    result.Name,
+					"description":     result.Description,
+					"version":         result.Version,
+					"author":          result.Author,
+					"trust_level":     result.TrustLevel,
+					"avg_rating":      result.AvgRating,
+					"downloads":       result.Downloads,
+					"score":           result.Score,
+					"source":          result.Source,
+					"pricing":         corelib.CapabilityPricingFree,
+				}
+				if result.RepoURL != "" {
+					item["repo_url"] = result.RepoURL
+				}
+				if result.FilePath != "" {
+					item["file_path"] = result.FilePath
+				}
+				if result.InstallRef != "" {
+					item["install_ref"] = result.InstallRef
+				}
+				items = append(items, item)
 			}
-			if result.RepoURL != "" {
-				item["repo_url"] = result.RepoURL
+			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": items})
+
+		case corelib.CapabilityTypeMCP:
+			results := coreskill.DefaultHubClient().SearchMCPFiltered(r.Context(), query, sources)
+			items := make([]map[string]any, 0, len(results))
+			for _, result := range results {
+				item := map[string]any{
+					"id":              result.ID,
+					"capability_id":   result.ID,
+					"capability_type": corelib.CapabilityTypeMCP,
+					"name":            result.Name,
+					"display_name":    result.Name,
+					"description":     result.Description,
+					"version":         result.Version,
+					"author":          result.Author,
+					"source":          result.Source,
+					"pricing":         corelib.CapabilityPricingFree,
+				}
+				if result.RepoURL != "" {
+					item["repo_url"] = result.RepoURL
+				}
+				if result.InstallRef != "" {
+					item["install_ref"] = result.InstallRef
+				}
+				items = append(items, item)
 			}
-			if result.FilePath != "" {
-				item["file_path"] = result.FilePath
-			}
-			if result.InstallRef != "" {
-				item["install_ref"] = result.InstallRef
-			}
-			items = append(items, item)
+			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": items})
+
+		default:
+			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": []any{}})
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": items})
 	}
 }
 
@@ -622,3 +653,177 @@ func firstCapabilityMarketNonEmpty(values ...string) string {
 	return ""
 }
 
+
+// AdminMCPValidateHandler validates an MCP Server's connectivity, tool availability,
+// schema correctness, and runtime health. Returns a combined ValidationReport.
+func AdminMCPValidateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			EndpointURL string            `json:"endpoint_url"`
+			Transport   string            `json:"transport"`
+			Headers     map[string]string `json:"headers,omitempty"`
+			APIKey      string            `json:"api_key,omitempty"`
+			Checks      []string          `json:"checks"` // ["all"] or subset of ["connectivity","tools","schema","health"]
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.EndpointURL) == "" {
+			writeError(w, http.StatusBadRequest, "MISSING_ENDPOINT", "endpoint_url is required")
+			return
+		}
+
+		config := mcp.MCPServerConfig{
+			EndpointURL: strings.TrimSpace(req.EndpointURL),
+			Transport:   req.Transport,
+			Headers:     req.Headers,
+			APIKey:      req.APIKey,
+		}
+
+		validator := mcp.NewValidator()
+		report, err := validator.Validate(r.Context(), config)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "VALIDATION_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	}
+}
+
+// AdminCapabilityMarketImportHandler imports a capability (Skill or MCP) from an
+// external source (ClawHub/GitHub) into HubCenter as a free capability package.
+func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository, skillStore *skill.SkillStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			CapabilityType string `json:"capability_type"` // "skill" | "mcp"
+			Source         string `json:"source"`          // "clawhub" | "github"
+			InstallRef     string `json:"install_ref"`     // source-specific install reference
+			RunValidation  bool   `json:"run_validation"`  // run MCP validation before import
+			DisplayName    string `json:"display_name"`
+			Description    string `json:"description"`
+			EndpointURL    string `json:"endpoint_url,omitempty"` // for MCP imports
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
+
+		capType := corelib.NormalizeCapabilityType(req.CapabilityType)
+		source := corelib.NormalizeCapabilitySource(req.Source)
+
+		if capType == "" {
+			writeError(w, http.StatusBadRequest, "MISSING_TYPE", "capability_type is required (skill or mcp)")
+			return
+		}
+		if source == "" || source == corelib.CapabilitySourceHubCenter {
+			writeError(w, http.StatusBadRequest, "INVALID_SOURCE", "source must be clawhub or github (cannot import from self)")
+			return
+		}
+		if strings.TrimSpace(req.InstallRef) == "" && strings.TrimSpace(req.EndpointURL) == "" {
+			writeError(w, http.StatusBadRequest, "MISSING_REF", "install_ref or endpoint_url is required")
+			return
+		}
+
+		result := map[string]any{
+			"capability_type": capType,
+			"source":          source,
+			"pricing":         corelib.CapabilityPricingFree,
+			"imported_at":     time.Now().UTC().Format(time.RFC3339),
+		}
+
+		switch capType {
+		case corelib.CapabilityTypeSkill:
+			// Download and register skill from external source.
+			client := coreskill.DefaultHubClient()
+			var entry *corelib.NLSkillEntry
+			var err error
+			switch source {
+			case corelib.CapabilitySourceClawHub:
+				entry, err = client.DownloadClawHub(r.Context(), req.InstallRef)
+			case corelib.CapabilitySourceGitHub:
+				entry, err = client.DownloadGitHub(r.Context(), req.InstallRef)
+			default:
+				writeError(w, http.StatusBadRequest, "UNSUPPORTED_SOURCE", "unsupported source for skill import: "+source)
+				return
+			}
+			if err != nil {
+				writeError(w, http.StatusBadGateway, "DOWNLOAD_FAILED", "failed to download skill: "+err.Error())
+				return
+			}
+			if entry != nil {
+				result["capability_id"] = entry.Name
+				result["display_name"] = entry.Name
+				result["description"] = entry.Description
+				result["version"] = entry.HubVersion
+			}
+
+		case corelib.CapabilityTypeMCP:
+			// Register MCP configuration.
+			capID := strings.TrimSpace(req.InstallRef)
+			if capID == "" {
+				capID = strings.TrimSpace(req.DisplayName)
+			}
+			result["capability_id"] = capID
+			result["display_name"] = req.DisplayName
+			result["description"] = req.Description
+
+			// Run MCP validation if requested.
+			if req.RunValidation && strings.TrimSpace(req.EndpointURL) != "" {
+				config := mcp.MCPServerConfig{
+					EndpointURL: strings.TrimSpace(req.EndpointURL),
+					Transport:   "streamable-http",
+				}
+				validator := mcp.NewValidator()
+				report, _ := validator.Validate(r.Context(), config)
+				if report != nil {
+					result["validation_report"] = report
+					if report.OverallStatus == "fail" {
+						result["validation_status"] = "failed"
+					} else {
+						result["validation_status"] = "passed"
+					}
+				}
+			}
+
+			// Store in MCP catalog (normalize entry to fill defaults).
+			if settings != nil {
+				catalog, _ := loadCapabilityMarketMCPCatalog(r.Context(), settings)
+				entry := normalizeCapabilityMarketMCPEntry(CapabilityMarketMCPEntry{
+					ID:             capID,
+					CapabilityID:   capID,
+					CapabilityType: corelib.CapabilityTypeMCP,
+					DisplayName:    req.DisplayName,
+					Description:    req.Description,
+					Source:         source,
+					Pricing:        map[string]any{"mode": corelib.CapabilityPricingFree},
+					MCP: corelib.MCPServerEntry{
+						EndpointURL: strings.TrimSpace(req.EndpointURL),
+						Name:        req.DisplayName,
+					},
+				})
+				// Override source to preserve the external origin (normalizeCapabilityMarketMCPEntry sets it to hubcenter).
+				entry.Source = source
+				// Upsert: replace if exists, append if new.
+				replaced := false
+				for i := range catalog.Items {
+					if catalog.Items[i].CapabilityID == capID {
+						catalog.Items[i] = entry
+						replaced = true
+						break
+					}
+				}
+				if !replaced {
+					catalog.Items = append(catalog.Items, entry)
+				}
+				_ = saveCapabilityMarketMCPCatalog(r.Context(), settings, catalog)
+			}
+
+		default:
+			writeError(w, http.StatusBadRequest, "UNSUPPORTED_TYPE", "unsupported capability_type: "+capType)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	}
+}

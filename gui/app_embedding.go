@@ -22,8 +22,8 @@ import (
 
 const embeddingModelFilename = "embeddinggemma-300M-Q8_0.gguf"
 
-// embeddingModelDefaultURL is the primary download source (GitHub Releases).
-const embeddingModelDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/embeddinggemma-300M-Q8_0.gguf"
+// embeddingModelDefaultURL is the primary download source (from corelib/embedding).
+var embeddingModelDefaultURL = embedding.DefaultModelDownloadURL
 
 // embeddingDownloadMu prevents concurrent model downloads.
 var embeddingDownloadMu sync.Mutex

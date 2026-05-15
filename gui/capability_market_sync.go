@@ -26,13 +26,49 @@ type CapabilitySyncStatus struct {
 }
 
 func (a *App) TriggerHubManagedCapabilitySync(reason string) {
+	// Fast path: if hub was probed and doesn't support marketplace, skip.
+	// The goroutine will re-check with the actual URL from config (which it
+	// already loads for creating the client) and invalidate if URL changed.
+	if a.hubMarketplaceUnsupported.Load() {
+		return
+	}
 	if a.capabilitySyncRunning.Swap(true) {
 		return
 	}
 	go func() {
 		defer a.capabilitySyncRunning.Store(false)
+
+		// Re-check inside goroutine: between the fast-path check above and
+		// entering the goroutine, another goroutine may have set the flag.
+		// Also handles URL-change invalidation without LoadConfig on the hot path.
+		if a.hubMarketplaceUnsupported.Load() {
+			cfg, err := a.LoadConfig()
+			if err != nil {
+				return
+			}
+			currentURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+			if cachedURL, _ := a.hubMarketplace404URL.Load().(string); cachedURL == currentURL {
+				return // same hub, still unsupported
+			}
+			// URL changed — reset discovery state, re-probe.
+			a.hubMarketplaceUnsupported.Store(false)
+		}
+
 		status := a.SyncHubManagedCapabilities()
 		if len(status.Errors) > 0 {
+			// Detect "hub doesn't support marketplace" (404 on the endpoint).
+			// Cache the result keyed by hub URL — this is a permanent condition
+			// for a given hub version at a given URL.
+			for _, e := range status.Errors {
+				if strings.Contains(e, "status=404") {
+					cfg, _ := a.LoadConfig()
+					probeURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
+					a.hubMarketplace404URL.Store(probeURL)
+					a.hubMarketplaceUnsupported.Store(true)
+					log.Printf("[capability-market] hub %s does not support marketplace API (404), disabling sync until hub URL changes", probeURL)
+					return
+				}
+			}
 			log.Printf("[capability-market] managed sync reason=%s errors=%v", reason, status.Errors)
 			return
 		}
@@ -43,6 +79,17 @@ func (a *App) SyncHubManagedCapabilities() CapabilitySyncStatus {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	return a.syncHubManagedCapabilities(ctx)
+}
+
+// isCapabilityManagedDeployment checks if a capability ID corresponds to a
+// managed (forced) deployment that should not be deletable by the user.
+// It reads from the in-memory cache populated by syncHubManagedCapabilities.
+func (a *App) isCapabilityManagedDeployment(capabilityID string) bool {
+	if capabilityID == "" {
+		return false
+	}
+	_, ok := a.managedDeploymentIDs.Load(capabilityID)
+	return ok
 }
 
 func (a *App) InstallHubCapability(capabilityRef string) CapabilitySyncStatus {
@@ -270,6 +317,18 @@ func (a *App) syncHubManagedCapabilities(ctx context.Context) CapabilitySyncStat
 		status.Errors = append(status.Errors, err.Error())
 		return status
 	}
+	// Cache managed deployment IDs for isManagedCapability lookups.
+	// Clear old entries and repopulate from the fresh list.
+	a.managedDeploymentIDs.Range(func(key, _ any) bool {
+		a.managedDeploymentIDs.Delete(key)
+		return true
+	})
+	for _, dep := range deployments {
+		ref := strings.TrimSpace(dep.CapabilityRef)
+		if ref != "" && dep.ReinstallIfRemoved {
+			a.managedDeploymentIDs.Store(ref, true)
+		}
+	}
 	recommendations, err := c.listRecommendations(ctx)
 	if err == nil {
 		status.RecommendedCount = len(recommendations)
@@ -367,6 +426,43 @@ func (a *App) syncHubInstalledCapabilityUpdates(ctx context.Context, client *cap
 		}
 		if needsConfig {
 			status.NeedsUserConfig = append(status.NeedsUserConfig, item.ID)
+		}
+	}
+	// Also check local (Stdio) MCP servers for updates.
+	for _, localServer := range cfg.LocalMCPServers {
+		if localServer.Capability == nil || strings.TrimSpace(localServer.Capability.CapabilityID) == "" {
+			continue
+		}
+		capabilityRef := strings.TrimSpace(localServer.Capability.CapabilityID)
+		if seen[capabilityRef] {
+			continue
+		}
+		seen[capabilityRef] = true
+		item, err := client.getCapability(ctx, capabilityRef)
+		if err != nil {
+			status.Errors = append(status.Errors, err.Error())
+			continue
+		}
+		if item.CapabilityType != corelib.CapabilityTypeMCP || strings.TrimSpace(item.CurrentVersionKey) == "" || strings.TrimSpace(localServer.Capability.VersionKey) == strings.TrimSpace(item.CurrentVersionKey) {
+			continue
+		}
+		pricing := capabilityPricingModeFromMetadata(capabilityMetadataMap(item.MetadataJSON))
+		decision := corelib.DecideCapabilityUpdate(corelib.CapabilityUpdateDecisionInput{
+			Policy:  cfg.CapabilityMarketPolicy,
+			Source:  normalizeCapabilityUpdateSource(firstCapabilityNonEmpty(item.Source, localServer.Capability.Source)),
+			Pricing: pricing,
+		})
+		if !decision.AutoUpdate {
+			status.Errors = append(status.Errors, fmt.Sprintf("capability %s has update %s but policy %s requires approval", item.ID, item.CurrentVersionKey, decision.Policy))
+			continue
+		}
+		installed, _, err := a.ensureHubMCPInstalled(ctx, client, *item, item.CurrentVersionKey)
+		if err != nil {
+			status.Errors = append(status.Errors, err.Error())
+			continue
+		}
+		if installed {
+			status.Updated++
 		}
 	}
 	if a.skillExecutor != nil {
@@ -731,10 +827,86 @@ func (a *App) registerOrReplaceManagedCapabilitySkill(entry corelib.NLSkillEntry
 
 func (a *App) ensureHubMCPInstalled(ctx context.Context, client *capabilityMarketClient, item HubCapabilitySummary, versionKey string) (bool, bool, error) {
 	metadata := capabilityMetadataMap(item.MetadataJSON)
+
+	// Determine transport type: if metadata has "command", install as local (Stdio) MCP;
+	// if it has "endpoint_url", install as remote (HTTP) MCP.
+	command := stringFromMap(metadata, "command")
+	endpointURL := stringFromMap(metadata, "endpoint_url")
+
+	if command != "" {
+		return a.ensureHubMCPInstalledLocal(ctx, item, metadata, versionKey, command)
+	}
+	if endpointURL == "" {
+		return false, false, fmt.Errorf("managed MCP %s has neither command nor endpoint_url metadata", item.ID)
+	}
+	return a.ensureHubMCPInstalledRemote(ctx, client, item, metadata, versionKey, endpointURL)
+}
+
+// ensureHubMCPInstalledLocal installs a Stdio-type MCP capability as a local MCP server.
+func (a *App) ensureHubMCPInstalledLocal(_ context.Context, item HubCapabilitySummary, metadata map[string]any, versionKey string, command string) (bool, bool, error) {
+	argsRaw := metadata["args"]
+	var args []string
+	if arr, ok := argsRaw.([]interface{}); ok {
+		for _, v := range arr {
+			if s, ok := v.(string); ok {
+				args = append(args, s)
+			}
+		}
+	}
+	envRaw := metadata["env"]
+	env := map[string]string{}
+	if m, ok := envRaw.(map[string]interface{}); ok {
+		for k, v := range m {
+			if s, ok := v.(string); ok {
+				env[k] = s
+			}
+		}
+	}
+	entry := corelib.LocalMCPServerEntry{
+		ID:        firstCapabilityNonEmpty(stringFromMap(metadata, "server_id"), item.ID),
+		Name:      firstCapabilityNonEmpty(stringFromMap(metadata, "name"), item.DisplayName, item.CapabilityID),
+		Command:   command,
+		Args:      args,
+		Env:       env,
+		AutoStart: true,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		Source:    corelib.MCPSourceMarket,
+		Capability: &corelib.MCPServerCapabilityRef{
+			CapabilityID: item.ID,
+			VersionKey:   firstCapabilityNonEmpty(versionKey, item.CurrentVersionKey),
+			Source:       item.Source,
+			GlobalKey:    item.GlobalKey,
+		},
+	}
+	installed := false
+	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {
+		for i := range cfg.LocalMCPServers {
+			if cfg.LocalMCPServers[i].ID == entry.ID || (cfg.LocalMCPServers[i].Capability != nil && cfg.LocalMCPServers[i].Capability.CapabilityID == item.ID) {
+				entry.CreatedAt = firstCapabilityNonEmpty(cfg.LocalMCPServers[i].CreatedAt, entry.CreatedAt)
+				entry.Disabled = cfg.LocalMCPServers[i].Disabled
+				cfg.LocalMCPServers[i] = entry
+				installed = true
+				return
+			}
+		}
+		cfg.LocalMCPServers = append(cfg.LocalMCPServers, entry)
+		installed = true
+	}); err != nil {
+		return false, false, err
+	}
+	// Trigger local MCP manager to pick up the new server.
+	if installed {
+		_ = a.SyncLocalMCPServers()
+	}
+	return installed, false, nil
+}
+
+// ensureHubMCPInstalledRemote installs an HTTP-type MCP capability as a remote MCP server.
+func (a *App) ensureHubMCPInstalledRemote(ctx context.Context, client *capabilityMarketClient, item HubCapabilitySummary, metadata map[string]any, versionKey string, endpointURL string) (bool, bool, error) {
 	server := corelib.MCPServerEntry{
 		ID:          firstCapabilityNonEmpty(stringFromMap(metadata, "server_id"), item.ID),
 		Name:        firstCapabilityNonEmpty(stringFromMap(metadata, "name"), item.DisplayName, item.CapabilityID),
-		EndpointURL: stringFromMap(metadata, "endpoint_url"),
+		EndpointURL: endpointURL,
 		AuthType:    firstCapabilityNonEmpty(stringFromMap(metadata, "auth_type"), "none"),
 		Headers:     stringMapFromMap(metadata, "headers"),
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -745,9 +917,6 @@ func (a *App) ensureHubMCPInstalled(ctx context.Context, client *capabilityMarke
 			Source:       item.Source,
 			GlobalKey:    item.GlobalKey,
 		},
-	}
-	if server.EndpointURL == "" {
-		return false, false, fmt.Errorf("managed MCP %s has no endpoint_url metadata", item.ID)
 	}
 	installed := false
 	if err := a.PatchConfig(func(cfg *corelib.AppConfig) {

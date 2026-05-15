@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendMessageForTab, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -90,6 +90,10 @@ interface SendMessageOptions {
     uiAction?: boolean;
     displayText?: string;
     markConfirmationRunning?: boolean;
+    /** Project path to include when sending from a Project Tab */
+    project_path?: string;
+    /** Tab ID for Project Tab — when set, uses SendMessageForTab binding instead of SendAIAssistantMessage */
+    tabId?: string;
 }
 
 interface AIAssistantRemoteSessionView {
@@ -532,6 +536,7 @@ function buildAIAssistantSendPayload(
     if (options?.startNewTask !== undefined) payload.start_new_task = options.startNewTask;
     if (options?.dismissSlotID) payload.dismiss_slot_id = options.dismissSlotID;
     if (options?.uiAction !== undefined) payload.ui_action = options.uiAction;
+    if (options?.project_path) payload.project_path = options.project_path;
     return payload;
 }
 
@@ -2364,9 +2369,14 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         responseTimeoutClearRef.current = resetActivityTimeout;
 
         try {
-            const rawResponse = await SendAIAssistantMessage(
-                buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, options)
-            ) as AIAssistantSendResult;
+            // When tabId is provided (Project Tab), use SendMessageForTab binding
+            // which routes through the backend's per-project session isolation.
+            // Otherwise use the standard SendAIAssistantMessage path.
+            const rawResponse = options?.tabId
+                ? await SendMessageForTab(options.tabId, outgoingText) as AIAssistantSendResult
+                : await SendAIAssistantMessage(
+                    buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, options)
+                ) as AIAssistantSendResult;
             clearResponseTimeout();
             flushStreamTokenBuffer();
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);

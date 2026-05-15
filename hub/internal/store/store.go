@@ -23,6 +23,14 @@ type AdminAuditLog struct {
 	CreatedAt   time.Time
 }
 
+type AdminAuditLogFilter struct {
+	Limit       int
+	Action      string
+	Query       string
+	CreatedFrom time.Time
+	CreatedTo   time.Time
+}
+
 type FailureEventLog struct {
 	ID          string
 	Category    string
@@ -173,6 +181,7 @@ type SystemSettingsRepository interface {
 
 type AdminAuditRepository interface {
 	Create(ctx context.Context, log *AdminAuditLog) error
+	List(ctx context.Context, filter AdminAuditLogFilter) ([]*AdminAuditLog, error)
 }
 
 type FailureEventLogRepository interface {

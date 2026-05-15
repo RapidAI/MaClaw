@@ -10,12 +10,24 @@ import (
 	corea2a "github.com/RapidAI/CodeClaw/corelib/a2a"
 )
 
-type GroupDiscussionHandler struct {
-	svc *GroupDiscussionService
+type groupDiscussionMachineSender interface {
+	SendToMachine(machineID string, msg any) error
 }
 
-func NewGroupDiscussionHandler(svc *GroupDiscussionService) *GroupDiscussionHandler {
-	return &GroupDiscussionHandler{svc: svc}
+type GroupDiscussionHandler struct {
+	svc    *GroupDiscussionService
+	sender groupDiscussionMachineSender
+}
+
+func NewGroupDiscussionHandler(svc *GroupDiscussionService, senders ...groupDiscussionMachineSender) *GroupDiscussionHandler {
+	var sender groupDiscussionMachineSender
+	for _, candidate := range senders {
+		if candidate != nil {
+			sender = candidate
+			break
+		}
+	}
+	return &GroupDiscussionHandler{svc: svc, sender: sender}
 }
 
 func (h *GroupDiscussionHandler) RegisterRuntimeRoutes(mux *http.ServeMux) {
@@ -28,13 +40,70 @@ func (h *GroupDiscussionHandler) RegisterAdminRoutes(mux *http.ServeMux) {
 }
 
 func (h *GroupDiscussionHandler) RegisterHubRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/a2a/experts", h.handleHubExperts)
-	mux.HandleFunc("/api/a2a/expert-profile", h.handleHubExpertProfile)
-	mux.HandleFunc("/api/a2a/discussions/mine", h.handleHubDiscussionsMine)
-	mux.HandleFunc("/api/a2a/invites/mine", h.handleHubInvitesMine)
-	mux.HandleFunc("/api/a2a/consultations", h.handleHubConsultations)
-	mux.HandleFunc("/api/a2a/consultations/", h.handleHubConsultationAction)
-	mux.HandleFunc("/api/a2a/invites/", h.handleHubInviteAction)
+	h.RegisterHubRoutesWithMiddleware(mux, nil)
+}
+
+func (h *GroupDiscussionHandler) RegisterHubRoutesWithMiddleware(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
+	if wrap == nil {
+		wrap = func(next http.HandlerFunc) http.HandlerFunc { return next }
+	}
+	mux.HandleFunc("/api/a2a/experts", wrap(h.handleHubExperts))
+	mux.HandleFunc("/api/a2a/expert-profile", wrap(h.handleHubExpertProfile))
+	mux.HandleFunc("/api/a2a/discussions/mine", wrap(h.handleHubDiscussionsMine))
+	mux.HandleFunc("/api/a2a/invites/mine", wrap(h.handleHubInvitesMine))
+	mux.HandleFunc("/api/a2a/consultations", wrap(h.handleHubConsultations))
+	mux.HandleFunc("/api/a2a/consultations/", wrap(h.handleHubConsultationAction))
+	mux.HandleFunc("/api/a2a/invites/", wrap(h.handleHubInviteAction))
+}
+
+func authenticatedGroupMachineID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get("X-Authenticated-Machine-ID"))
+}
+
+func enforceAuthenticatedGroupIdentity(w http.ResponseWriter, r *http.Request, value *string, field string) bool {
+	authenticatedID := authenticatedGroupMachineID(r)
+	if authenticatedID == "" || value == nil {
+		return true
+	}
+	current := strings.TrimSpace(*value)
+	if current == "" {
+		*value = authenticatedID
+		return true
+	}
+	if strings.EqualFold(current, authenticatedID) {
+		*value = authenticatedID
+		return true
+	}
+	writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", field+" must match authenticated machine")
+	return false
+}
+
+func requireAuthenticatedDiscussionParticipant(w http.ResponseWriter, r *http.Request, session *corea2a.Session) bool {
+	authenticatedID := authenticatedGroupMachineID(r)
+	if authenticatedID == "" {
+		return true
+	}
+	if findGroupDiscussionParticipant(session, authenticatedID) != nil {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "authenticated machine is not a participant in this discussion")
+	return false
+}
+
+func requireAuthenticatedDiscussionInitiator(w http.ResponseWriter, r *http.Request, session *corea2a.Session) bool {
+	authenticatedID := authenticatedGroupMachineID(r)
+	if authenticatedID == "" {
+		return true
+	}
+	participant := findGroupDiscussionParticipant(session, authenticatedID)
+	if participant != nil && strings.EqualFold(strings.TrimSpace(participant.RoleCode), "initiator") {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "only the discussion initiator can perform this action")
+	return false
 }
 
 func (h *GroupDiscussionHandler) handleAdminGroupDiscussions(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +137,9 @@ func (h *GroupDiscussionHandler) handleHubExpertProfile(w http.ResponseWriter, r
 	if !decodeJSON(w, r, &profile) {
 		return
 	}
+	if !enforceAuthenticatedGroupIdentity(w, r, &profile.AgentID, "agent_id") {
+		return
+	}
 	stored, err := h.svc.UpsertExpertProfile(requestGroupDiscussionTenantID(r), profile)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "PROFILE_REJECTED", err.Error())
@@ -81,7 +153,15 @@ func (h *GroupDiscussionHandler) handleHubDiscussionsMine(w http.ResponseWriter,
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 		return
 	}
-	items, err := h.svc.ListDiscussionSummaries(requestGroupDiscussionTenantID(r), listFilterFromRequest(r))
+	filter := listFilterFromRequest(r)
+	if authenticatedID := authenticatedGroupMachineID(r); authenticatedID != "" {
+		if filter.ParticipantID != "" && !strings.EqualFold(filter.ParticipantID, authenticatedID) {
+			writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
+			return
+		}
+		filter.ParticipantID = authenticatedID
+	}
+	items, err := h.svc.ListDiscussionSummaries(requestGroupDiscussionTenantID(r), filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 		return
@@ -96,6 +176,13 @@ func (h *GroupDiscussionHandler) handleHubInvitesMine(w http.ResponseWriter, r *
 	}
 	q := r.URL.Query()
 	filter := ListInvitationsFilter{ToID: q.Get("to_id"), Status: q.Get("status"), Limit: intQuery(q, "limit"), Offset: intQuery(q, "offset")}
+	if authenticatedID := authenticatedGroupMachineID(r); authenticatedID != "" {
+		if filter.ToID != "" && !strings.EqualFold(filter.ToID, authenticatedID) {
+			writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "to_id must match authenticated machine")
+			return
+		}
+		filter.ToID = authenticatedID
+	}
 	invites := h.svc.ListInvitations(requestGroupDiscussionTenantID(r), "", "", filter)
 	writeJSON(w, http.StatusOK, map[string]any{"invites": invites})
 }
@@ -107,6 +194,9 @@ func (h *GroupDiscussionHandler) handleHubConsultations(w http.ResponseWriter, r
 	}
 	var req corea2a.GroupConsultationRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !enforceAuthenticatedGroupIdentity(w, r, &req.FromID, "from_id") {
 		return
 	}
 	out, err := h.svc.CreateConsultation(requestGroupDiscussionTenantID(r), req)
@@ -129,10 +219,17 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 			return
 		}
-		discussion, err := h.svc.GetDiscussionSummary(tid, id)
+		session, err := h.svc.GetSession(tid, id)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "CONSULTATION_NOT_FOUND", err.Error())
 			return
+		}
+		if !requireAuthenticatedDiscussionParticipant(w, r, session) {
+			return
+		}
+		discussion := discussionSummaryFromSession(session)
+		if authenticatedID := authenticatedGroupMachineID(r); authenticatedID != "" {
+			decorateSummaryForParticipant(&discussion, session, authenticatedID)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussion})
 		return
@@ -147,6 +244,20 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 			writeError(w, http.StatusNotFound, "CONSULTATION_NOT_FOUND", err.Error())
 			return
 		}
+		if !requireAuthenticatedDiscussionParticipant(w, r, detail.Session) {
+			return
+		}
+		participantID := firstNonEmptyQuery(r.URL.Query(), "participant_id", "agent_id", "from_id")
+		if authenticatedID := authenticatedGroupMachineID(r); authenticatedID != "" {
+			if participantID != "" && !strings.EqualFold(participantID, authenticatedID) {
+				writeError(w, http.StatusForbidden, "MACHINE_FORBIDDEN", "participant_id must match authenticated machine")
+				return
+			}
+			participantID = authenticatedID
+		}
+		if participantID != "" {
+			decorateSummaryForParticipant(&detail.Discussion, detail.Session, participantID)
+		}
 		writeJSON(w, http.StatusOK, detail)
 		return
 	}
@@ -160,6 +271,9 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if !decodeJSON(w, r, &inv) {
 			return
 		}
+		if !enforceAuthenticatedGroupIdentity(w, r, &inv.FromID, "from_id") {
+			return
+		}
 		inviteID, err := h.svc.AddInvitation(tid, id, inv)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "INVITE_REJECTED", err.Error())
@@ -171,15 +285,22 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if !decodeJSON(w, r, &msg) {
 			return
 		}
+		if !enforceAuthenticatedGroupIdentity(w, r, &msg.FromID, "from_id") {
+			return
+		}
 		session, err := h.svc.AddDiscussionMessage(tid, id, msg)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "MESSAGE_REJECTED", err.Error())
 			return
 		}
+		h.notifyDiscussionMessage(session, persistedGroupDiscussionMessage(session, msg))
 		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
 	case "proposals":
 		var req AddProposalRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		if !enforceAuthenticatedGroupIdentity(w, r, &req.AuthorID, "author_id") {
 			return
 		}
 		session, err := h.svc.AddProposal(tid, id, req)
@@ -193,6 +314,9 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !enforceAuthenticatedGroupIdentity(w, r, &req.ReviewerID, "reviewer_id") {
+			return
+		}
 		session, err := h.svc.AddReview(tid, id, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "REVIEW_REJECTED", err.Error())
@@ -202,6 +326,14 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 	case "decide":
 		var req DecideRequest
 		if !decodeJSON(w, r, &req) {
+			return
+		}
+		current, err := h.svc.GetSession(tid, id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "CONSULTATION_NOT_FOUND", err.Error())
+			return
+		}
+		if !requireAuthenticatedDiscussionInitiator(w, r, current) {
 			return
 		}
 		session, err := h.svc.Decide(tid, id, req)
@@ -215,6 +347,9 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if !decodeJSON(w, r, &req) {
 			return
 		}
+		if !enforceAuthenticatedGroupIdentity(w, r, &req.RaisedBy, "raised_by") {
+			return
+		}
 		session, err := h.svc.Escalate(tid, id, req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "ESCALATION_REJECTED", err.Error())
@@ -226,6 +361,14 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		if !decodeJSON(w, r, &result) {
 			return
 		}
+		current, err := h.svc.GetSession(tid, id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "CONSULTATION_NOT_FOUND", err.Error())
+			return
+		}
+		if !requireAuthenticatedDiscussionInitiator(w, r, current) {
+			return
+		}
 		session, err := h.svc.SubmitDiscussionResult(tid, id, result)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "RESULT_REJECTED", err.Error())
@@ -233,6 +376,14 @@ func (h *GroupDiscussionHandler) handleHubConsultationAction(w http.ResponseWrit
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"discussion": discussionSummaryFromSession(session)})
 	case "pause", "resume", "cancel":
+		current, err := h.svc.GetSession(tid, id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "CONSULTATION_NOT_FOUND", err.Error())
+			return
+		}
+		if !requireAuthenticatedDiscussionInitiator(w, r, current) {
+			return
+		}
 		session, err := h.svc.SetDiscussionState(tid, id, action)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "STATE_REJECTED", err.Error())
@@ -256,6 +407,9 @@ func (h *GroupDiscussionHandler) handleHubInviteAction(w http.ResponseWriter, r 
 	}
 	var resp corea2a.GroupInvitationResponse
 	if !decodeJSON(w, r, &resp) {
+		return
+	}
+	if !enforceAuthenticatedGroupIdentity(w, r, &resp.FromID, "from_id") {
 		return
 	}
 	if action == "accept" {
@@ -461,4 +615,50 @@ func requestGroupDiscussionTenantID(r *http.Request) string {
 		}
 	}
 	return "default"
+}
+
+func persistedGroupDiscussionMessage(session *corea2a.Session, fallback corea2a.GroupDiscussionMessage) corea2a.GroupDiscussionMessage {
+	if session == nil || len(session.Messages) == 0 {
+		return fallback
+	}
+	last := session.Messages[len(session.Messages)-1]
+	return corea2a.GroupDiscussionMessage{
+		ID:               last.ID,
+		SessionID:        firstNonEmptyGroupStatus(last.SessionID, session.ID),
+		FromID:           last.FromID,
+		Kind:             last.Kind,
+		Content:          last.Content,
+		TextAttachments:  last.TextAttachments,
+		ImageAttachments: last.ImageAttachments,
+		FileAttachments:  last.FileAttachments,
+		CreatedAt:        last.CreatedAt,
+	}
+}
+
+func (h *GroupDiscussionHandler) notifyDiscussionMessage(session *corea2a.Session, msg corea2a.GroupDiscussionMessage) {
+	if h == nil || h.sender == nil || session == nil {
+		return
+	}
+	fromID := strings.TrimSpace(msg.FromID)
+	if msg.SessionID == "" {
+		msg.SessionID = session.ID
+	}
+	for _, participant := range session.Participants {
+		targetID := strings.TrimSpace(participant.ID)
+		if targetID == "" || strings.EqualFold(targetID, fromID) {
+			continue
+		}
+		envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, fromID, time.Now().UTC())
+		envelope.SessionID = session.ID
+		envelope.ToIDs = []string{targetID}
+		envelope.Message = &msg
+		_ = h.sender.SendToMachine(targetID, map[string]any{
+			"type": "ve:discussion_message",
+			"ts":   time.Now().Unix(),
+			"payload": map[string]any{
+				"envelope":    envelope,
+				"target_role": strings.TrimSpace(participant.RoleCode),
+			},
+		})
+	}
 }

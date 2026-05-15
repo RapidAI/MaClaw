@@ -792,12 +792,6 @@ var allConfigFields = []ConfigFieldDef{
 		Set: intSet(func(c *corelib.AppConfig, v int) { c.MaclawAgentMaxIterations = v }),
 	},
 	{
-		Key: "agentnet_enabled", Tab: CfgTabGeneral, Section: "general",
-		DescKey: i18n.MsgTUIConfigDescAgentNetEnabled, Options: boolOpts, Default: "false",
-		Get: boolGet(func(c *corelib.AppConfig) bool { return c.AgentNetEnabled }),
-		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.AgentNetEnabled = v }),
-	},
-	{
 		Key: "check_update_on_startup", Tab: CfgTabGeneral, Section: "general",
 		DescKey: i18n.MsgTUIConfigDescCheckUpdate, Options: boolOpts, Default: "false",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.CheckUpdateOnStartup }),

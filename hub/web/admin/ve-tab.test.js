@@ -59,7 +59,7 @@ function createMockDOM() {
     elements: elements,
     getElementById: function(id) {
       if (!elements[id]) {
-        elements[id] = { id: id, innerHTML: '', textContent: '', value: '', style: {} };
+        elements[id] = { id: id, innerHTML: '', textContent: '', value: '', style: {}, classList: { add: function() {}, remove: function() {} } };
       }
       return elements[id];
     },
@@ -79,9 +79,11 @@ function createMockGlobal() {
     confirm: function() { return true; },
     prompt: function() { return 'test reason'; },
     console: console,
+    location: { origin: 'https://hub.example' },
     Object: Object,
     JSON: JSON,
     Date: Date,
+    URL: URL,
     String: String,
     parseInt: parseInt,
     isNaN: isNaN,
@@ -252,7 +254,7 @@ async function runTests() {
 
   // Test 9: Approve refreshes list
   {
-    console.log('  Test: Approve refreshes VE list after success');
+    console.log('  Test: Approve refreshes digital employee list after success');
     var g = createMockGlobal();
     var ctx = loadVETab(g);
     g._apiCalls.length = 0;
@@ -446,6 +448,102 @@ async function runTests() {
     assertEqual(title, 'Digital Employees', 'English tab title should be correct');
   }
 
+
+  // ============================================================
+  // TEST SUITE: History Search and Preview
+  // ============================================================
+  console.log('\n--- Test Suite: History Search and Preview ---');
+
+  // Test 21: History search loads matching sessions
+  {
+    console.log('  Test: History search loads matching sessions by owner email');
+    var g = createMockGlobal();
+    g.api = async function(url) {
+      g._apiCalls.push({ url: url, opts: {} });
+      if (url === '/api/ve/list') return { employees: [], group_config: { max_group_participants: 5 }, quota: 10, active_count: 0 };
+      if (url.indexOf('/api/ve/history/search') === 0) {
+        return { matches: [{ employee: { id: 've-001', name: 'Legal Researcher', owner_email: 'owner@example.com' }, discussions: [{ id: 'disc-1', topic: 'Contract review', status: 'open', updated_at: '2026-01-01T00:00:00Z', participant_ids: ['human-a', 'machine-a'] }] }] };
+      }
+      return {};
+    };
+    var ctx = loadVETab(g);
+    g.document.elements['veHistorySearchInput'] = { value: 'owner@example.com', classList: { add: function() {}, remove: function() {} } };
+    await ctx.veLoadHistorySearch('owner@example.com');
+    var list = g.document.elements['veHistoryList'];
+    assertIncludes(list.innerHTML, 'Contract review', 'History list should contain discussion title');
+    assertIncludes(list.innerHTML, 'Legal Researcher / owner@example.com', 'History list should show selected digital employee label');
+    assertIncludes(list.innerHTML, 'vePreviewHistory', 'History list should include preview action');
+  }
+
+  // Test 21b: History search caps merged discussion list
+  {
+    console.log('  Test: History search caps merged discussion list to requested limit');
+    var g = createMockGlobal();
+    g.api = async function(url) {
+      g._apiCalls.push({ url: url, opts: {} });
+      if (url.indexOf('/api/ve/history/search') === 0) {
+        var discussionsA = [];
+        var discussionsB = [];
+        for (var i = 1; i <= 15; i++) discussionsA.push({ id: 'a-' + i, topic: 'Alpha ' + String(i).padStart(2, '0'), status: 'open', updated_at: '2026-01-' + String(i).padStart(2, '0') + 'T00:00:00Z' });
+        for (var j = 1; j <= 15; j++) discussionsB.push({ id: 'b-' + j, topic: 'Beta ' + String(j).padStart(2, '0'), status: 'open', updated_at: '2026-02-' + String(j).padStart(2, '0') + 'T00:00:00Z' });
+        return { matches: [
+          { employee: { id: 've-a', name: 'Alpha Analyst', owner_email: 'alpha@example.com' }, discussions: discussionsA },
+          { employee: { id: 've-b', name: 'Beta Analyst', owner_email: 'beta@example.com' }, discussions: discussionsB }
+        ] };
+      }
+      return {};
+    };
+    var ctx = loadVETab(g);
+    await ctx.veLoadHistorySearch('example.com');
+    var list = g.document.elements['veHistoryList'];
+    var count = (list.innerHTML.match(/vePreviewHistory/g) || []).length;
+    assertEqual(count, 20, 'History search should render at most 20 merged discussions');
+    assertIncludes(list.innerHTML, 'Beta 15', 'Newest discussions should be kept after capping');
+    assertNotIncludes(list.innerHTML, 'Alpha 01', 'Oldest overflow discussions should be omitted after capping');
+  }
+  // Test 22: Preview renders safe attachment download links
+  {
+    console.log('  Test: Preview renders only safe same-origin attachment download links');
+    var g = createMockGlobal();
+    g.location = { origin: 'https://hub.example' };
+    g.api = async function(url) {
+      g._apiCalls.push({ url: url, opts: {} });
+      if (url.indexOf('/api/ve/history/disc-1/detail') === 0) {
+        return {
+          discussion: { id: 'disc-1', topic: 'Contract review', status: 'open', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z', participant_ids: ['human-a', 'machine-a'] },
+          messages: [{ from_id: 'machine-a', content: 'See attachments.', created_at: '2026-01-02T00:00:00Z', text_attachments: [
+            { content: 'cmV2aWV3IG5vdGVz', filename: 'notes.txt', mime_type: 'text/plain' },
+            { content: 'dXJsLXNhZmU', filename: 'urlsafe.txt', mime_type: 'text/plain' }
+          ], file_attachments: [
+            { file_url: 'https://hub.example/api/ve/files/doc-1', filename: 'safe.pdf', mime_type: 'application/pdf', size_bytes: 123 },
+            { file_url: 'https://hub.example/api/ve/files/download/doc-4', filename: 'download.pdf', mime_type: 'application/pdf', size_bytes: 234 },
+            { file_url: 'https://hub.example/api/ve/files/upload/doc-3', filename: 'upload.pdf', mime_type: 'application/pdf', size_bytes: 789 },
+            { file_url: 'https://hub.example/api/ve/files/download/doc-5/extra', filename: 'nested.pdf', mime_type: 'application/pdf', size_bytes: 111 },
+            { file_url: 'https://hub.example/api/ve/files/doc%2F6', filename: 'encoded-slash.pdf', mime_type: 'application/pdf', size_bytes: 222 },
+            { file_url: 'https://evil.example/api/ve/files/doc-2', filename: 'evil.pdf', mime_type: 'application/pdf', size_bytes: 456 }
+          ] }]
+        };
+      }
+      return {};
+    };
+    var ctx = loadVETab(g);
+    await ctx.vePreviewHistory('disc-1');
+    var overlay = g.document.elements['veHistoryPreviewOverlay'];
+    assertIncludes(overlay.innerHTML, 'notes.txt', 'Preview should show inline text attachment label');
+    assertIncludes(overlay.innerHTML, 'data:text%2Fplain;base64,cmV2aWV3IG5vdGVz', 'Preview should expose inline text attachment as downloadable data URL');
+    assertIncludes(overlay.innerHTML, 'data:text%2Fplain;base64,dXJsLXNhZmU=', 'Preview should normalize URL-safe inline text attachment data URL');
+    assertIncludes(overlay.innerHTML, 'safe.pdf', 'Preview should show safe attachment label');
+    assertIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/doc-1', 'Preview should use admin attachment download URL');
+    assertIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/doc-4', 'Preview should use admin download URL for canonical download paths');
+    assertIncludes(overlay.innerHTML, 'upload.pdf', 'Preview should show upload-path attachment label for audit context');
+    assertNotIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/doc-3', 'Preview should not transform upload endpoints into admin download links');
+    assertIncludes(overlay.innerHTML, 'nested.pdf', 'Preview should show nested-path attachment label for audit context');
+    assertNotIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/extra', 'Preview should not collapse nested file paths into an attachment id');
+    assertIncludes(overlay.innerHTML, 'encoded-slash.pdf', 'Preview should show encoded-slash attachment label for audit context');
+    assertNotIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/doc%2F6', 'Preview should not link encoded slash file ids');
+    assertIncludes(overlay.innerHTML, 'evil.pdf', 'Preview should show external attachment label for audit context');
+    assertNotIncludes(overlay.innerHTML, 'https://evil.example/api/ve/files/doc-2', 'Preview should not link external attachment URLs');
+  }
   // --- Summary ---
   console.log('\n=== Results ===');
   console.log('Passed:', passed);

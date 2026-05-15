@@ -20,11 +20,27 @@ func TestGroupEnvelopeCurrentHubValidation(t *testing.T) {
 
 func TestGroupEnvelopeRejectsCrossHubScope(t *testing.T) {
 	env := NewGroupEnvelope("env-1", GroupMessageProfile, "maclaw-a", time.Now())
-	env.Scope = "agentnet"
+	env.Scope = "cross-hub"
 	env.Profile = &GroupProfile{AgentID: "maclaw-a", Discoverable: true, Available: true}
 	err := env.ValidateCurrentHub()
 	if err == nil || !strings.Contains(err.Error(), GroupScopeCurrentHub) {
 		t.Fatalf("expected current-hub scope error, got %v", err)
+	}
+}
+
+func TestGroupEnvelopeDiscussionMessageAllowsStreamEndAndAttachmentOnlyPayloads(t *testing.T) {
+	env := NewGroupEnvelope("env-stream", GroupMessageDiscussionMessage, "maclaw-a", time.Now())
+	env.Message = &GroupDiscussionMessage{Kind: MessageStreamEnd}
+	if err := env.ValidateCurrentHub(); err != nil {
+		t.Fatalf("stream_end should validate without content: %v", err)
+	}
+	env.Message = &GroupDiscussionMessage{Kind: MessageStatement, FileAttachments: []FileAttachment{{FileURL: "https://hub.local/file", Filename: "report.pdf"}}}
+	if err := env.ValidateCurrentHub(); err != nil {
+		t.Fatalf("attachment-only message should validate: %v", err)
+	}
+	env.Message = &GroupDiscussionMessage{Kind: MessageStatement}
+	if err := env.ValidateCurrentHub(); err == nil {
+		t.Fatalf("empty non-stream message should be rejected")
 	}
 }
 

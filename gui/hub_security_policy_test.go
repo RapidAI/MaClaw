@@ -2,7 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestHubSecurityCacheUpdate_ParsesPolicy(t *testing.T) {
@@ -143,10 +147,10 @@ func TestHubSecurityCache_PreservedOnDisconnect(t *testing.T) {
 	}
 }
 
-// ── Policy enforcement tests (Task 13.2) ────────────────────────────────────
+// Policy enforcement tests (Task 13.2)
 
 func TestApplyHubSecurityPolicy_GuardrailMode(t *testing.T) {
-	// Validates: Requirements 7.5 — guardrail_mode change calls PolicyEngine.SetMode
+	// Validates: Requirements 7.5 - guardrail_mode change calls PolicyEngine.SetMode
 	app := &App{}
 	app.policyEngine = NewPolicyEngine() // starts with "standard" rules
 
@@ -202,7 +206,7 @@ func TestApplyHubSecurityPolicy_CentralizedOff(t *testing.T) {
 }
 
 func TestIsYoloModeAllowed_NoCachedPolicy(t *testing.T) {
-	// Validates: Requirements 7.8 — no cached policy means YOLO is allowed
+	// Validates: Requirements 7.8 - no cached policy means YOLO is allowed
 	app := &App{}
 	if !app.isYoloModeAllowed() {
 		t.Error("expected YOLO allowed when no cached policy")
@@ -224,7 +228,7 @@ func TestIsYoloModeAllowed_CentralizedOff(t *testing.T) {
 }
 
 func TestIsYoloModeAllowed_Forbidden(t *testing.T) {
-	// Validates: Requirements 7.8 — yolo_mode_allowed=false forces YOLO off
+	// Validates: Requirements 7.8 - yolo_mode_allowed=false forces YOLO off
 	app := &App{}
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
@@ -253,7 +257,7 @@ func TestIsYoloModeAllowed_Allowed(t *testing.T) {
 }
 
 func TestEnforceYoloMode_Override(t *testing.T) {
-	// Validates: Requirements 7.8 — enforceYoloMode overrides requested=true
+	// Validates: Requirements 7.8 - enforceYoloMode overrides requested=true
 	app := &App{}
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
@@ -308,15 +312,15 @@ func TestEnforceYoloModeQuiet(t *testing.T) {
 }
 
 func TestIsHubSecurityReadOnly(t *testing.T) {
-	// Validates: Requirements 4.5 — centralized_security=true → read-only mode
+	// Validates: Requirements 4.5 - centralized_security=true -> read-only mode
 	app := &App{}
 
-	// No cached policy → not read-only.
+	// No cached policy -> not read-only.
 	if app.IsHubSecurityReadOnly() {
 		t.Error("expected not read-only when no cached policy")
 	}
 
-	// Centralized off → not read-only.
+	// Centralized off -> not read-only.
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{CentralizedSecurity: false}
 	app.hubSecurityCache.mu.Unlock()
@@ -324,7 +328,7 @@ func TestIsHubSecurityReadOnly(t *testing.T) {
 		t.Error("expected not read-only when centralized is off")
 	}
 
-	// Centralized on → read-only.
+	// Centralized on -> read-only.
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{CentralizedSecurity: true}
 	app.hubSecurityCache.mu.Unlock()
@@ -334,15 +338,15 @@ func TestIsHubSecurityReadOnly(t *testing.T) {
 }
 
 func TestGetHubSandboxMode(t *testing.T) {
-	// Validates: Requirements 7.6 — sandbox_mode accessible when centralized
+	// Validates: Requirements 7.6 - sandbox_mode accessible when centralized
 	app := &App{}
 
-	// No policy → empty.
+	// No policy -> empty.
 	if got := app.getHubSandboxMode(); got != "" {
 		t.Errorf("expected empty sandbox mode, got %q", got)
 	}
 
-	// Centralized off → empty.
+	// Centralized off -> empty.
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
 		CentralizedSecurity: false,
@@ -353,7 +357,7 @@ func TestGetHubSandboxMode(t *testing.T) {
 		t.Errorf("expected empty when centralized off, got %q", got)
 	}
 
-	// Centralized on → returns value.
+	// Centralized on -> returns value.
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
 		CentralizedSecurity: true,
@@ -366,15 +370,15 @@ func TestGetHubSandboxMode(t *testing.T) {
 }
 
 func TestGetHubNetworkLevel(t *testing.T) {
-	// Validates: Requirements 7.7 — network_level accessible when centralized
+	// Validates: Requirements 7.7 - network_level accessible when centralized
 	app := &App{}
 
-	// No policy → empty.
+	// No policy -> empty.
 	if got := app.getHubNetworkLevel(); got != "" {
 		t.Errorf("expected empty network level, got %q", got)
 	}
 
-	// Centralized on → returns value.
+	// Centralized on -> returns value.
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
 		CentralizedSecurity: true,
@@ -437,10 +441,10 @@ func TestUpdateHubSecurityPolicy_AppliesEnforcement(t *testing.T) {
 	}
 }
 
-// ── Gossip permission tests (Task 13.3) ─────────────────────────────────────
+// Gossip permission tests (Task 13.3)
 
 func TestIsGossipAllowed_NoCachedPolicy(t *testing.T) {
-	// Validates: Requirements 6.5 — no cached policy means gossip follows local config
+	// Validates: Requirements 6.5 - no cached policy means gossip follows local config
 	app := &App{}
 	if !app.isGossipAllowed() {
 		t.Error("expected gossip allowed when no cached policy")
@@ -448,7 +452,7 @@ func TestIsGossipAllowed_NoCachedPolicy(t *testing.T) {
 }
 
 func TestIsGossipAllowed_CentralizedOff(t *testing.T) {
-	// Validates: Requirements 6.5 — centralized off means gossip follows local config
+	// Validates: Requirements 6.5 - centralized off means gossip follows local config
 	app := &App{}
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
@@ -463,7 +467,7 @@ func TestIsGossipAllowed_CentralizedOff(t *testing.T) {
 }
 
 func TestIsGossipAllowed_Forbidden(t *testing.T) {
-	// Validates: Requirements 6.1, 6.3, 6.4 — gossip_enabled=false disables gossip
+	// Validates: Requirements 6.1, 6.3, 6.4 - gossip_enabled=false disables gossip
 	app := &App{}
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
@@ -492,7 +496,7 @@ func TestIsGossipAllowed_Allowed(t *testing.T) {
 }
 
 func TestIsGossipAllowed_NilEffectivePolicy(t *testing.T) {
-	// Centralized on but no effective policy → allow (fail-open)
+	// Centralized on but no effective policy -> allow (fail-open)
 	app := &App{}
 	app.hubSecurityCache.mu.Lock()
 	app.hubSecurityCache.policy = &HubSecurityPolicy{
@@ -518,5 +522,104 @@ func TestIsGossipAllowed_WailsBinding(t *testing.T) {
 
 	if app.IsGossipAllowed() != app.isGossipAllowed() {
 		t.Error("expected IsGossipAllowed() to match isGossipAllowed()")
+	}
+}
+
+func TestDigitalEmployeeFeatureStatusHidesInactiveAuthorizationReasons(t *testing.T) {
+	cases := []struct {
+		name string
+		auth corelib.DigitalEmployeeAuthorization
+		want string
+	}{
+		{name: "expired", auth: corelib.DigitalEmployeeAuthorization{Quota: 1, Enabled: true, ExpiresAt: "2000-01-01T00:00:00Z"}, want: "expired"},
+		{name: "quota zero", auth: corelib.DigitalEmployeeAuthorization{Quota: 0, Enabled: true, ExpiresAt: "2999-01-01T00:00:00Z"}, want: "quota_zero"},
+		{name: "not subscribed", auth: corelib.DigitalEmployeeAuthorization{Quota: 1, Enabled: true}, want: "not_subscribed"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &App{testHomeDir: t.TempDir()}
+			normalized := corelib.NormalizeDigitalEmployeeAuthorization(tc.auth, nowUTC())
+			app.digitalEmployeeAuthCache.update(&normalized)
+			status := app.GetDigitalEmployeeFeatureStatus()
+			if status.Visible || status.Reason != tc.want {
+				t.Fatalf("status = %+v, want hidden reason %q", status, tc.want)
+			}
+		})
+	}
+}
+func TestDigitalEmployeeFeatureStatusRechecksCachedExpiryAtReadTime(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	app.digitalEmployeeAuthCache.mu.Lock()
+	app.digitalEmployeeAuthCache.auth = &corelib.DigitalEmployeeAuthorization{Enabled: true, Active: true, Quota: 1, ExpiresAt: "2000-01-01T00:00:00Z"}
+	app.digitalEmployeeAuthCache.mu.Unlock()
+
+	status := app.GetDigitalEmployeeFeatureStatus()
+	if status.Visible || status.Reason != "expired" || status.Authorization == nil || status.Authorization.Active {
+		t.Fatalf("stale cached authorization status = %+v, want expired hidden", status)
+	}
+}
+
+func TestDigitalEmployeeFeatureStatusVisibilityRequiresActiveLocalEmployee(t *testing.T) {
+	var statusJSON string
+	var statusRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/status" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer machine-token" {
+			t.Fatalf("Authorization header = %q", got)
+		}
+		if got := r.Header.Get("X-Machine-ID"); got != "machine-local" {
+			t.Fatalf("X-Machine-ID header = %q", got)
+		}
+		statusRequests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(statusJSON))
+	}))
+	defer server.Close()
+
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveConfig(corelib.AppConfig{RemoteHubURL: server.URL, RemoteMachineToken: "machine-token", RemoteMachineID: "machine-local"}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	status := app.GetDigitalEmployeeFeatureStatus()
+	if status.Visible || status.Reason != "authorization_unknown" {
+		t.Fatalf("without authorization status = %+v, want hidden authorization_unknown", status)
+	}
+	if statusRequests != 0 {
+		t.Fatalf("inactive authorization should not query local employee status, got %d requests", statusRequests)
+	}
+
+	auth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 2, Enabled: true, ExpiresAt: "2999-01-01T00:00:00Z"}, nowUTC())
+	app.digitalEmployeeAuthCache.update(&auth)
+	statusJSON = `{"registered":false}`
+	status = app.GetDigitalEmployeeFeatureStatus()
+	if status.Visible || status.ActualCount != 0 || status.Reason != "no_digital_employees" {
+		t.Fatalf("no employees status = %+v, want hidden no_digital_employees", status)
+	}
+
+	statusJSON = `{"registered":true,"employee":{"id":"ve-1","name":"Research","status":"pending"}}`
+	status = app.GetDigitalEmployeeFeatureStatus()
+	if status.Visible || status.ActualCount != 0 || status.Reason != "no_digital_employees" {
+		t.Fatalf("pending employee status = %+v, want hidden no_digital_employees", status)
+	}
+
+	statusJSON = `{"registered":true,"employee":{"id":"ve-1","name":"Research","status":"active"}}`
+	status = app.GetDigitalEmployeeFeatureStatus()
+	if !status.Visible || status.ActualCount != 1 || status.Reason != "" {
+		t.Fatalf("authorized employee status = %+v, want visible", status)
+	}
+
+	disabled := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Quota: 2, Enabled: false, ExpiresAt: "2999-01-01T00:00:00Z"}, nowUTC())
+	app.digitalEmployeeAuthCache.update(&disabled)
+	beforeDisabled := statusRequests
+	status = app.GetDigitalEmployeeFeatureStatus()
+	if status.Visible || status.Reason != "disabled" {
+		t.Fatalf("disabled authorization status = %+v, want hidden disabled", status)
+	}
+	if statusRequests != beforeDisabled {
+		t.Fatalf("disabled authorization should not query local employee status, before=%d after=%d", beforeDisabled, statusRequests)
 	}
 }

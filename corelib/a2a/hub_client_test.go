@@ -11,11 +11,12 @@ import (
 )
 
 func TestHubClientPublishExpertProfile(t *testing.T) {
-	var gotPath, gotAuth string
+	var gotPath, gotAuth, gotMachineID string
 	var got GroupProfile
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
+		gotMachineID = r.Header.Get("X-Machine-ID")
 		if r.Method != http.MethodPut {
 			t.Fatalf("method = %s", r.Method)
 		}
@@ -26,7 +27,7 @@ func TestHubClientPublishExpertProfile(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client, err := NewHubClient(server.URL, WithHubBearerToken("tok"))
+	client, err := NewHubClient(server.URL, WithHubBearerToken("tok"), WithHubMachineID(" machine-a "))
 	if err != nil {
 		t.Fatalf("NewHubClient: %v", err)
 	}
@@ -34,8 +35,8 @@ func TestHubClientPublishExpertProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishExpertProfile: %v", err)
 	}
-	if gotPath != "/api/a2a/expert-profile" || gotAuth != "Bearer tok" {
-		t.Fatalf("path/auth = %q %q", gotPath, gotAuth)
+	if gotPath != "/api/a2a/expert-profile" || gotAuth != "Bearer tok" || gotMachineID != "machine-a" {
+		t.Fatalf("path/auth/machine = %q %q %q", gotPath, gotAuth, gotMachineID)
 	}
 	if got.AgentID != "maclaw-a" || got.ModelClass != "frontier" || profile.AgentID != "maclaw-a" {
 		t.Fatalf("profile not normalized: got=%+v returned=%+v", got, profile)
@@ -90,6 +91,31 @@ func TestHubClientListDiscussionsRoleQuery(t *testing.T) {
 	}
 }
 
+func TestHubClientListDiscussionsAllOmitsRoleQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/discussions/mine" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("participant_id"); got != "machine-1" {
+			t.Fatalf("participant_id = %q", got)
+		}
+		if got := r.URL.Query().Get("role"); got != "" {
+			t.Fatalf("role query should be omitted for all, got %q raw=%q", got, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(DiscussionListResponse{Discussions: []HubDiscussionSummary{{ID: "disc-all"}}})
+	}))
+	defer server.Close()
+
+	client, _ := NewHubClient(server.URL)
+	items, err := client.ListDiscussionsForAgent(context.Background(), "machine-1", "all")
+	if err != nil {
+		t.Fatalf("ListDiscussionsForAgent: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "disc-all" {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
 func TestHubClientGetConsultationDetail(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/a2a/consultations/disc-1/detail" || r.Method != http.MethodGet {
@@ -108,6 +134,28 @@ func TestHubClientGetConsultationDetail(t *testing.T) {
 		t.Fatalf("GetConsultationDetail: %v", err)
 	}
 	if detail.Discussion.ID != "disc-1" || len(detail.Messages) != 1 || detail.Messages[0].Content != "Prefer staged rollout" {
+		t.Fatalf("detail = %+v", detail)
+	}
+}
+
+func TestHubClientGetConsultationDetailForAgentAddsParticipantQuery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/a2a/consultations/disc-1/detail" || r.Method != http.MethodGet {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("participant_id"); got != "machine-1" {
+			t.Fatalf("participant_id = %q raw=%q", got, r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(HubDiscussionDetail{Discussion: HubDiscussionSummary{ID: "disc-1", LocalRelation: "owned_ve_invited", Readonly: true}})
+	}))
+	defer server.Close()
+
+	client, _ := NewHubClient(server.URL)
+	detail, err := client.GetConsultationDetailForAgent(context.Background(), "disc-1", "machine-1")
+	if err != nil {
+		t.Fatalf("GetConsultationDetailForAgent: %v", err)
+	}
+	if detail.Discussion.LocalRelation != "owned_ve_invited" || !detail.Discussion.Readonly {
 		t.Fatalf("detail = %+v", detail)
 	}
 }
@@ -137,6 +185,12 @@ func TestHubClientInviteAndResultEndpoints(t *testing.T) {
 	}
 	if err := client.SendDiscussionMessage(ctx, "disc-1", GroupDiscussionMessage{Content: "Prefer staged rollout", CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("SendDiscussionMessage: %v", err)
+	}
+	if err := client.SendDiscussionMessage(ctx, "disc-1", GroupDiscussionMessage{Kind: MessageStreamEnd, CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("SendDiscussionMessage stream_end: %v", err)
+	}
+	if err := client.SendDiscussionMessage(ctx, "disc-1", GroupDiscussionMessage{FileAttachments: []FileAttachment{{FileURL: "https://hub.local/files/doc", Filename: "doc.pdf"}}, CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("SendDiscussionMessage attachment-only: %v", err)
 	}
 	if err := client.AddDiscussionProposal(ctx, "disc-1", Proposal{AuthorID: "maclaw-a", Title: "Use staged rollout", Content: "Ship behind gates"}); err != nil {
 		t.Fatalf("AddDiscussionProposal: %v", err)

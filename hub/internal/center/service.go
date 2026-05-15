@@ -67,8 +67,9 @@ type RegistrationState struct {
 	HubID                 string   `json:"hub_id,omitempty"`
 	DisabledReason        string   `json:"disabled_reason,omitempty"`
 	LastError             string   `json:"last_error,omitempty"`
-	ActiveBaseURL         string   `json:"active_base_url,omitempty"`
-	LastRegisteredAt      int64    `json:"last_registered_at,omitempty"`
+	ActiveBaseURL                string                                `json:"active_base_url,omitempty"`
+	LastRegisteredAt             int64                                 `json:"last_registered_at,omitempty"`
+	DigitalEmployeeAuthorization *corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorization,omitempty"`
 }
 
 type registrationRecord struct {
@@ -273,6 +274,7 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 		LastError:             record.LastError,
 		ActiveBaseURL:         record.LastBaseURL,
 		LastRegisteredAt:      record.LastRegisteredAt,
+		DigitalEmployeeAuthorization: normalizeDeAuthForStatus(record.DigitalEmployeeAuthorization),
 	}, nil
 }
 func (s *Service) SetBaseURL(ctx context.Context, baseURL string) (*RegistrationState, error) {
@@ -896,6 +898,18 @@ func disabledDigitalEmployeeAuthorization() *corelib.DigitalEmployeeAuthorizatio
 	auth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Enabled: false, Reason: "disabled"}, time.Now().UTC())
 	return &auth
 }
+
+// normalizeDeAuthForStatus re-normalizes the stored authorization against the
+// current time so that the Active/Reason fields reflect real-time expiry state,
+// not the state at the time of the last heartbeat.
+func normalizeDeAuthForStatus(auth *corelib.DigitalEmployeeAuthorization) *corelib.DigitalEmployeeAuthorization {
+	if auth == nil {
+		return nil
+	}
+	normalized := corelib.NormalizeDigitalEmployeeAuthorization(*auth, time.Now().UTC())
+	return &normalized
+}
+
 func (s *Service) loadRegistration(ctx context.Context) (registrationRecord, error) {
 	raw, err := s.settings.Get(ctx, systemKeyCenterRegistration)
 	if err != nil {

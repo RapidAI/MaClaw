@@ -230,6 +230,37 @@ func TestGrantEmailConfirmedBenefitDoesNotExtendExpiredRegistrationWindow(t *tes
 	}
 }
 
+func TestGrantDefaultServiceForNewUserUsesNewUserDefaultsNotGlobalBinding(t *testing.T) {
+	ctx := context.Background()
+	system := newTestSystemSettings()
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "global-svc", Name: "Global", AccessPolicy: AccessPolicyFree},
+			{ID: "welcome-svc", Name: "Welcome", AccessPolicy: AccessPolicyFree},
+		},
+		GlobalServiceGroupIDs:       []string{"global-svc"},
+		DefaultNewUserServiceGroups: []string{"welcome-svc"},
+		DefaultNewUserDurationDays:  7,
+	}
+	if err := SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := GrantDefaultServiceForNewUser(ctx, system, "newuser@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants) != 1 {
+		t.Fatalf("expected 1 grant, got %d", len(saved.Grants))
+	}
+	if saved.Grants[0].ServiceGroupID != "welcome-svc" {
+		t.Fatalf("default grant service group = %q, want new-user default welcome-svc", saved.Grants[0].ServiceGroupID)
+	}
+}
+
 func TestGrantDefaultServiceForNewUserIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()
@@ -840,6 +871,7 @@ func TestEffectiveExpiryIgnoresInvalidAndSpentQueuedGrants(t *testing.T) {
 		t.Fatalf("expected invalid queued grants to be ignored, got %q want %q", status.EffectiveExpiresAt, currentExpiry.Format(time.RFC3339))
 	}
 }
+
 func TestRedeemCardRejectsInvalidCodeFormat(t *testing.T) {
 	ctx := context.Background()
 	system := newTestSystemSettings()
@@ -1383,5 +1415,248 @@ func TestBillingEligibilityReportsPeriodLimitForUnlimitedGrant(t *testing.T) {
 	}
 	if len(status.CreditGrants) != 1 || status.CreditGrants[0].Status != "period_limited" || status.CreditGrants[0].RetryAfterSeconds <= 0 {
 		t.Fatalf("expected period-limited credit grant summary, got %#v", status.CreditGrants)
+	}
+}
+
+func TestResolveStatusUsesDefaultServiceGroupsWhenNoEnterpriseBinding(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{
+			ID:           "team-default",
+			Name:         "Team Default",
+			AccessPolicy: AccessPolicyFree,
+			Models:       []ModelServiceModel{{Name: "gpt-default", ProviderIDs: []string{"provider-a"}}},
+		}},
+		DefaultNewUserServiceGroups: []string{"team-default"},
+	}
+	reg.Normalize()
+
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if len(status.ServiceGroupIDs) != 1 || status.ServiceGroupIDs[0] != "team-default" {
+		t.Fatalf("service groups = %#v, want default fallback", status.ServiceGroupIDs)
+	}
+	if !status.Active || status.DefaultModel != "gpt-default" {
+		t.Fatalf("unexpected status from default fallback: %#v", status)
+	}
+}
+
+func TestResolveStatusGlobalBindingOverridesDefaultServiceGroups(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "team-default", Name: "Team Default", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-default", ProviderIDs: []string{"provider-a"}}}},
+			{ID: "global-svc", Name: "Global", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-global", ProviderIDs: []string{"provider-a"}}}},
+		},
+		GlobalServiceGroupIDs:       []string{"global-svc"},
+		DefaultNewUserServiceGroups: []string{"team-default"},
+	}
+	reg.Normalize()
+
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if len(status.ServiceGroupIDs) != 1 || status.ServiceGroupIDs[0] != "global-svc" {
+		t.Fatalf("service groups = %#v, want global binding", status.ServiceGroupIDs)
+	}
+	if status.DefaultModel != "gpt-global" {
+		t.Fatalf("default model = %q, want gpt-global", status.DefaultModel)
+	}
+}
+func TestResolveStatusUserBindingOverridesDefaultServiceGroups(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "team-default", Name: "Team Default", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-default", ProviderIDs: []string{"provider-a"}}}},
+			{ID: "vip", Name: "VIP", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-vip", ProviderIDs: []string{"provider-a"}}}},
+		},
+		UserBindings:                []UserBinding{{Email: "user@example.com", ServiceGroupIDs: []string{"vip"}}},
+		DefaultNewUserServiceGroups: []string{"team-default"},
+	}
+	reg.Normalize()
+
+	status, _, err := ResolveStatusFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ResolveStatusFromRegistry() error = %v", err)
+	}
+	if len(status.ServiceGroupIDs) != 1 || status.ServiceGroupIDs[0] != "vip" {
+		t.Fatalf("service groups = %#v, want user binding only", status.ServiceGroupIDs)
+	}
+	if status.DefaultModel != "gpt-vip" {
+		t.Fatalf("default model = %q, want gpt-vip", status.DefaultModel)
+	}
+}
+
+type fakeLLMServiceGroupResolver struct {
+	chain []string
+	err   error
+}
+
+func (f fakeLLMServiceGroupResolver) ResolveUserGroupChain(ctx context.Context, email string) ([]string, error) {
+	return f.chain, f.err
+}
+
+func TestEffectiveServiceGroupsGroupBindingOverridesGlobalAndDefault(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "team-default", Name: "Team Default", AccessPolicy: AccessPolicyFree},
+			{ID: "global-svc", Name: "Global", AccessPolicy: AccessPolicyFree},
+			{ID: "dept-svc", Name: "Department", AccessPolicy: AccessPolicyFree},
+		},
+		GlobalServiceGroupIDs:       []string{"global-svc"},
+		GroupBindings:               []GroupBinding{{GroupID: "dept", ServiceGroupIDs: []string{"dept-svc"}}},
+		DefaultNewUserServiceGroups: []string{"team-default"},
+	}
+	reg.Normalize()
+
+	serviceGroupIDs, _, err := effectiveServiceGroupIDs(context.Background(), reg, fakeLLMServiceGroupResolver{chain: []string{"dept"}}, "user@example.com", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("effectiveServiceGroupIDs() error = %v", err)
+	}
+	if len(serviceGroupIDs) != 1 || serviceGroupIDs[0] != "dept-svc" {
+		t.Fatalf("service groups = %#v, want department binding over global/default", serviceGroupIDs)
+	}
+}
+
+func TestEffectiveServiceGroupsUserBindingOverridesGroupGlobalAndDefault(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "team-default", Name: "Team Default", AccessPolicy: AccessPolicyFree},
+			{ID: "global-svc", Name: "Global", AccessPolicy: AccessPolicyFree},
+			{ID: "dept-svc", Name: "Department", AccessPolicy: AccessPolicyFree},
+			{ID: "user-svc", Name: "User", AccessPolicy: AccessPolicyFree},
+		},
+		GlobalServiceGroupIDs:       []string{"global-svc"},
+		GroupBindings:               []GroupBinding{{GroupID: "dept", ServiceGroupIDs: []string{"dept-svc"}}},
+		UserBindings:                []UserBinding{{Email: "user@example.com", ServiceGroupIDs: []string{"user-svc"}}},
+		DefaultNewUserServiceGroups: []string{"team-default"},
+	}
+	reg.Normalize()
+
+	serviceGroupIDs, _, err := effectiveServiceGroupIDs(context.Background(), reg, fakeLLMServiceGroupResolver{chain: []string{"dept"}}, "user@example.com", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("effectiveServiceGroupIDs() error = %v", err)
+	}
+	if len(serviceGroupIDs) != 1 || serviceGroupIDs[0] != "user-svc" {
+		t.Fatalf("service groups = %#v, want user binding over group/global/default", serviceGroupIDs)
+	}
+}
+
+func TestResolveStatusClosestGroupBindingOverridesAncestorAndDefault(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "team-default", Name: "Team Default", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-default", ProviderIDs: []string{"provider-a"}}}},
+			{ID: "parent-svc", Name: "Parent", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-parent", ProviderIDs: []string{"provider-a"}}}},
+			{ID: "child-svc", Name: "Child", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-child", ProviderIDs: []string{"provider-a"}}}},
+		},
+		GroupBindings: []GroupBinding{
+			{GroupID: "parent", ServiceGroupIDs: []string{"parent-svc"}},
+			{GroupID: "child", ServiceGroupIDs: []string{"child-svc"}},
+		},
+		DefaultNewUserServiceGroups: []string{"team-default"},
+	}
+	reg.Normalize()
+
+	serviceGroupIDs, _, err := effectiveServiceGroupIDs(context.Background(), reg, fakeLLMServiceGroupResolver{chain: []string{"child", "parent"}}, "user@example.com", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("effectiveServiceGroupIDs() error = %v", err)
+	}
+	if len(serviceGroupIDs) != 1 || serviceGroupIDs[0] != "child-svc" {
+		t.Fatalf("service groups = %#v, want closest group binding", serviceGroupIDs)
+	}
+}
+
+func TestAppliedGroupBindingsReturnsClosestKnownBinding(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{
+			{ID: "parent-svc", Name: "Parent"},
+			{ID: "child-svc", Name: "Child"},
+		},
+		GroupBindings: []GroupBinding{
+			{GroupID: "parent", ServiceGroupIDs: []string{"parent-svc"}},
+			{GroupID: "child", ServiceGroupIDs: []string{"missing-svc", "child-svc"}},
+		},
+	}
+	reg.Normalize()
+
+	bindings := appliedGroupBindings(reg, []string{"child", "parent"})
+	if len(bindings) != 1 {
+		t.Fatalf("expected one applied group binding, got %#v", bindings)
+	}
+	if bindings[0].GroupID != "child" {
+		t.Fatalf("group id = %q, want child", bindings[0].GroupID)
+	}
+	if len(bindings[0].ServiceGroupIDs) != 1 || bindings[0].ServiceGroupIDs[0] != "child-svc" {
+		t.Fatalf("service group ids = %#v, want child-svc only", bindings[0].ServiceGroupIDs)
+	}
+}
+
+func TestAppliedGroupBindingsFallsBackToAncestorWhenClosestBindingInvalid(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "parent-svc", Name: "Parent"}},
+		GroupBindings: []GroupBinding{
+			{GroupID: "parent", ServiceGroupIDs: []string{"parent-svc"}},
+			{GroupID: "child", ServiceGroupIDs: []string{"missing-svc"}},
+		},
+	}
+	reg.Normalize()
+
+	bindings := appliedGroupBindings(reg, []string{"child", "parent"})
+	if len(bindings) != 1 || bindings[0].GroupID != "parent" {
+		t.Fatalf("expected parent fallback binding, got %#v", bindings)
+	}
+}
+
+func TestExplainEntitlementDiagnosticFiltersInvalidDirectUserBindingRefs(t *testing.T) {
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "vip", Name: "VIP", AccessPolicy: AccessPolicyFree, Models: []ModelServiceModel{{Name: "gpt-vip", ProviderIDs: []string{"provider-a"}}}}},
+		UserBindings:       []UserBinding{{Email: "user@example.com", ServiceGroupIDs: []string{"missing", "vip"}}},
+	}
+	reg.Normalize()
+
+	diag, err := ExplainEntitlementDiagnosticFromRegistry(context.Background(), reg, nil, "user@example.com", "https://hub.example.com/api/llm/v1")
+	if err != nil {
+		t.Fatalf("ExplainEntitlementDiagnosticFromRegistry() error = %v", err)
+	}
+	if len(diag.DirectUserBindings) != 1 {
+		t.Fatalf("direct user bindings = %#v, want one", diag.DirectUserBindings)
+	}
+	if got := diag.DirectUserBindings[0].ServiceGroupIDs; len(got) != 1 || got[0] != "vip" {
+		t.Fatalf("direct user binding service groups = %#v, want vip only", got)
+	}
+}
+
+func TestRegistryNormalizeMergesDuplicateServiceBindings(t *testing.T) {
+	reg := &Registry{
+		GroupBindings: []GroupBinding{
+			{GroupID: " Ops ", ServiceGroupIDs: []string{"svc-a"}},
+			{GroupID: "ops", ServiceGroupIDs: []string{"svc-b", "svc-a"}},
+			{GroupID: "empty", ServiceGroupIDs: []string{""}},
+		},
+		UserBindings: []UserBinding{
+			{Email: " Lead@Example.COM ", ServiceGroupIDs: []string{"svc-a"}},
+			{Email: "lead@example.com", ServiceGroupIDs: []string{"svc-c", "svc-a"}},
+			{Email: "blank@example.com", ServiceGroupIDs: nil},
+		},
+	}
+	reg.Normalize()
+
+	if len(reg.GroupBindings) != 1 {
+		t.Fatalf("group bindings = %#v, want one merged binding", reg.GroupBindings)
+	}
+	if reg.GroupBindings[0].GroupID != "Ops" {
+		t.Fatalf("group id = %q, want first normalized group id", reg.GroupBindings[0].GroupID)
+	}
+	if got := reg.GroupBindings[0].ServiceGroupIDs; len(got) != 2 || got[0] != "svc-a" || got[1] != "svc-b" {
+		t.Fatalf("group service ids = %#v, want svc-a, svc-b", got)
+	}
+	if len(reg.UserBindings) != 1 {
+		t.Fatalf("user bindings = %#v, want one merged binding", reg.UserBindings)
+	}
+	if reg.UserBindings[0].Email != "lead@example.com" {
+		t.Fatalf("email = %q, want normalized email", reg.UserBindings[0].Email)
+	}
+	if got := reg.UserBindings[0].ServiceGroupIDs; len(got) != 2 || got[0] != "svc-a" || got[1] != "svc-c" {
+		t.Fatalf("user service ids = %#v, want svc-a, svc-c", got)
 	}
 }

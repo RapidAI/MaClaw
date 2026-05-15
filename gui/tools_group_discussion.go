@@ -52,7 +52,7 @@ func registerGroupDiscussionTools(registry *ToolRegistry, app *App, handler *IMM
 			"rollback_on":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "For decide: optional rollback triggers"},
 			"raised_by":         map[string]interface{}{"type": "string", "description": "For escalate: optional raising agent; defaults to local remote machine ID"},
 			"escalation_reason": map[string]interface{}{"type": "string", "description": "For escalate: why the discussion needs escalation"},
-			"escalation_target": map[string]interface{}{"type": "string", "description": "For escalate: target owner, defaults to iworkercenter"},
+			"escalation_target": map[string]interface{}{"type": "string", "description": "For escalate: target owner, defaults to human_owner"},
 			"rollback_evidence": map[string]interface{}{"type": "string", "description": "For rollback_readiness: optional human-provided evidence text to match against decision rollback triggers"},
 			"goals":             map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "For add_proposal: optional goals"},
 			"constraints":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "For add_proposal: optional constraints"},

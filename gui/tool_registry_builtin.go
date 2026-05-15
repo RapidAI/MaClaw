@@ -262,8 +262,8 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"task_description"},
 		func(args map[string]interface{}) string { return h.toolRecommendTool(args) })
 
-	reg("discover_tool", "发现更多可用工具。当你需要以下能力但找不到对应工具时调用：配置管理、定时任务、会话模板、AgentNet 知识网络、MCP 扩展工具、Skill 市场搜索安装、审计日志查询。传入你需要的能力描述，返回匹配的工具定义。",
-		ToolCategoryBuiltin, []string{"discover", "find", "search", "tool", "config", "schedule", "template", "agentnet", "mcp", "audit"},
+	reg("discover_tool", "发现更多可用工具。当你需要以下能力但找不到对应工具时调用：配置管理、定时任务、会话模板、MCP 扩展工具、Skill 市场搜索安装、审计日志查询。传入你需要的能力描述，返回匹配的工具定义。",
+		ToolCategoryBuiltin, []string{"discover", "find", "search", "tool", "config", "schedule", "template", "mcp", "audit"},
 		map[string]interface{}{
 			"need": map[string]string{"type": "string", "description": "描述你需要的能力（如'修改配置'、'定时执行'、'搜索知识网络'、'查询审计日志'）"},
 		}, []string{"need"},

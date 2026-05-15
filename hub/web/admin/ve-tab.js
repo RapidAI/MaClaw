@@ -45,16 +45,37 @@
       saveConfig: 'Save',
       configSaved: 'Group chat configuration saved.',
       configSaveFailed: 'Save config failed: {error}',
-      approveSuccess: 'Virtual employee approved.',
+      approveSuccess: 'Digital employee approved.',
       approveFailed: 'Approve failed: {error}',
-      rejectSuccess: 'Virtual employee rejected.',
+      rejectSuccess: 'Digital employee rejected.',
       rejectFailed: 'Reject failed: {error}',
-      disableSuccess: 'Virtual employee disabled.',
+      disableSuccess: 'Digital employee disabled.',
       disableFailed: 'Disable failed: {error}',
       loadFailed: 'Load digital employees failed: {error}',
       refresh: 'Refresh',
       quotaInfo: 'Active: {active} / Quota: {quota}',
-      status: 'Status'
+      status: 'Status',
+      ownerEmail: 'Owner Email',
+      historyTitle: 'History Sessions',
+      historyDesc: 'Search by digital employee name or owner email, then preview related group discussions.',
+      historySearchPlaceholder: 'Name or owner email',
+      searchHistory: 'Search Sessions',
+      openHistory: 'History',
+      preview: 'Preview',
+      historyEmpty: 'No related history sessions.',
+      historyLoadFailed: 'Load history failed: {error}',
+      previewLoadFailed: 'Load preview failed: {error}',
+      messages: 'Messages',
+      participants: 'Participants',
+      close: 'Close',
+      loading: 'Loading...',
+      searchNoMatch: 'No matching digital employees.',
+      searchMultiple: '{count} digital employees matched. Histories are merged below.',
+      selectedEmployee: 'Selected: {name}',
+      attachments: 'Attachments',
+      resultSummary: 'Result',
+      createdAt: 'Created At',
+      updatedAt: 'Updated At'
     },
     zh: {
       tabTitle: '\u6570\u5b57\u5458\u5de5',
@@ -97,7 +118,28 @@
       loadFailed: '\u52a0\u8f7d\u6570\u5b57\u5458\u5de5\u5217\u8868\u5931\u8d25\uff1a{error}',
       refresh: '\u5237\u65b0',
       quotaInfo: '\u5df2\u6fc0\u6d3b\uff1a{active} / \u914d\u989d\uff1a{quota}',
-      status: '\u72b6\u6001'
+      status: '\u72b6\u6001',
+      ownerEmail: '\u6240\u5c5e\u90ae\u7bb1',
+      historyTitle: '\u5386\u53f2\u4f1a\u8bdd',
+      historyDesc: '\u6309\u6570\u5b57\u5458\u5de5\u540d\u79f0\u6216\u6240\u5c5e\u90ae\u7bb1\u641c\u7d22\uff0c\u5e76\u9884\u89c8\u76f8\u5173\u7fa4\u804a\u8ba8\u8bba\u3002',
+      historySearchPlaceholder: '\u540d\u79f0\u6216\u90ae\u7bb1',
+      searchHistory: '\u67e5\u8be2\u4f1a\u8bdd',
+      openHistory: '\u5386\u53f2',
+      preview: '\u9884\u89c8',
+      historyEmpty: '\u6682\u65e0\u76f8\u5173\u5386\u53f2\u4f1a\u8bdd\u3002',
+      historyLoadFailed: '\u52a0\u8f7d\u5386\u53f2\u5931\u8d25\uff1a{error}',
+      previewLoadFailed: '\u52a0\u8f7d\u9884\u89c8\u5931\u8d25\uff1a{error}',
+      messages: '\u6d88\u606f',
+      participants: '\u53c2\u4e0e\u8005',
+      close: '\u5173\u95ed',
+      loading: '\u52a0\u8f7d\u4e2d...',
+      searchNoMatch: '\u672a\u627e\u5230\u5339\u914d\u7684\u6570\u5b57\u5458\u5de5\u3002',
+      searchMultiple: '\u5df2\u5339\u914d {count} \u4e2a\u6570\u5b57\u5458\u5de5\uff0c\u4e0b\u65b9\u5408\u5e76\u663e\u793a\u4f1a\u8bdd\u3002',
+      selectedEmployee: '\u5df2\u9009\u62e9\uff1a{name}',
+      attachments: '\u9644\u4ef6',
+      resultSummary: '\u7ed3\u679c',
+      createdAt: '\u521b\u5efa\u65f6\u95f4',
+      updatedAt: '\u66f4\u65b0\u65f6\u95f4'
     }
   };
 
@@ -112,6 +154,11 @@
   var veGroupConfig = { max_group_participants: 5 };
   var veQuota = 0;
   var veActiveCount = 0;
+  var veHistoryEmployeeID = '';
+  var veHistoryEmployeeLabel = '';
+  var veHistoryDiscussions = [];
+  var veHistoryLoading = false;
+  var veHistoryHint = '';
 
   // --- Helpers ---
   function formatAccessPolicy(policy) {
@@ -146,11 +193,43 @@
     return str.substring(0, maxLen) + '...';
   }
 
+  function jsString(value) {
+    return JSON.stringify(String(value || '')).replace(/</g, '\\u003c');
+  }
+  function currentVEQuery() {
+    var input = document.getElementById('veHistorySearchInput');
+    return input ? String(input.value || '').trim().toLowerCase() : '';
+  }
+
+  function filterVEForQuery(employees) {
+    var query = currentVEQuery();
+    if (!query) return employees;
+    return employees.filter(function(ve) {
+      return String(ve.name || '').toLowerCase().indexOf(query) >= 0 ||
+        String(ve.owner_email || ve.owner_user_id || '').toLowerCase().indexOf(query) >= 0;
+    });
+  }
+
+  function discussionTitle(discussion) {
+    return discussion.topic || discussion.question || discussion.id || '';
+  }
+
+  function compactMessageText(value, maxLen) {
+    return truncate(String(value || '').replace(/\s+/g, ' ').trim(), maxLen);
+  }
+
+  function veEmployeeLabel(ve) {
+    if (!ve) return '';
+    var owner = ve.owner_email || ve.owner_user_id || '';
+    return (ve.name || ve.id || '') + (owner ? ' / ' + owner : '');
+  }
+
   // --- Rendering ---
   function renderVEListHeader() {
-    return '<div class="row header" style="grid-template-columns:1fr 1.5fr .8fr .7fr .9fr .8fr">' +
+    return '<div class="row header" style="grid-template-columns:1fr 1.2fr 1fr .7fr .7fr .9fr 1fr">' +
       '<div>' + vt('name') + '</div>' +
       '<div>' + vt('skillDesc') + '</div>' +
+      '<div>' + vt('ownerEmail') + '</div>' +
       '<div>' + vt('accessPolicy') + '</div>' +
       '<div>' + vt('onlineStatus') + '</div>' +
       '<div>' + vt('registeredAt') + '</div>' +
@@ -159,13 +238,17 @@
   }
 
   function renderVERow(ve, actionButtons) {
-    return '<div class="row" style="grid-template-columns:1fr 1.5fr .8fr .7fr .9fr .8fr">' +
+    var veIDExpr = JSON.stringify(ve.id || '');
+    var historyBtn = actionBtn(vt('openHistory'), 'btn-ghost', 'veLoadHistory(' + veIDExpr + ')');
+    var ownerText = ve.owner_email || ve.owner_user_id || '';
+    return '<div class="row" style="grid-template-columns:1fr 1.2fr 1fr .7fr .7fr .9fr 1fr">' +
       '<div><strong>' + escapeHtml(truncate(ve.name || '', 50)) + '</strong></div>' +
       '<div class="item-meta">' + escapeHtml(truncate(ve.skill_description || '', 100)) + '</div>' +
+      '<div class="item-meta" title="' + escapeHtml(ownerText) + '">' + escapeHtml(truncate(ownerText, 42)) + '</div>' +
       '<div><span class="badge info">' + escapeHtml(formatAccessPolicy(ve.access_policy)) + '</span></div>' +
       '<div>' + formatOnlineStatus(ve.online_status) + '</div>' +
       '<div class="item-meta">' + escapeHtml(formatDate(ve.registered_at)) + '</div>' +
-      '<div style="display:flex;gap:4px;flex-wrap:wrap">' + actionButtons + '</div>' +
+      '<div style="display:flex;gap:4px;flex-wrap:wrap">' + historyBtn + actionButtons + '</div>' +
       '</div>';
   }
 
@@ -174,7 +257,7 @@
   }
 
   function renderPendingList(employees) {
-    var pending = employees.filter(function(e) { return e.status === 'pending'; });
+    var pending = filterVEForQuery(employees).filter(function(e) { return e.status === 'pending'; });
     var container = document.getElementById('vePendingList');
     if (!container) return;
 
@@ -193,7 +276,7 @@
   }
 
   function renderActiveList(employees) {
-    var active = employees.filter(function(e) { return e.status === 'active'; });
+    var active = filterVEForQuery(employees).filter(function(e) { return e.status === 'active'; });
     var container = document.getElementById('veActiveList');
     if (!container) return;
 
@@ -227,6 +310,45 @@
       .replace('{quota}', String(veQuota));
   }
 
+  function renderVEHistoryList() {
+    var container = document.getElementById('veHistoryList');
+    if (!container) return;
+    if (veHistoryLoading) {
+      container.innerHTML = '<div class="hint">' + escapeHtml(vt('loading')) + '</div>';
+      return;
+    }
+    if (!veHistoryEmployeeID && !veHistoryHint) {
+      container.innerHTML = '<div class="hint">' + escapeHtml(vt('historyDesc')) + '</div>';
+      return;
+    }
+    if (veHistoryHint && !veHistoryDiscussions.length) {
+      container.innerHTML = '<div class="hint">' + escapeHtml(veHistoryHint) + '</div>';
+      return;
+    }
+    var intro = '';
+    if (veHistoryHint) intro = '<div class="hint" style="margin-bottom:8px">' + escapeHtml(veHistoryHint) + '</div>';
+    else if (veHistoryEmployeeLabel) intro = '<div class="hint" style="margin-bottom:8px">' + escapeHtml(vt('selectedEmployee').replace('{name}', veHistoryEmployeeLabel)) + '</div>';
+    if (!veHistoryDiscussions.length) {
+      container.innerHTML = intro + '<div class="hint">' + escapeHtml(vt('historyEmpty')) + '</div>';
+      return;
+    }
+    container.innerHTML = intro + veHistoryDiscussions.map(function(d) {
+      var idExpr = JSON.stringify(d.id || '');
+      var employeeMeta = d._employee_label ? ' - ' + d._employee_label : '';
+      return '<div class="item" style="margin-bottom:8px;padding:10px 12px">' +
+        '<div class="item-head"><div><div class="item-title">' + escapeHtml(truncate(discussionTitle(d), 90)) + '</div>' +
+        '<div class="item-meta">' + escapeHtml(d.status || '-') + ' - ' + escapeHtml(formatDate(d.updated_at || d.created_at)) + employeeMeta + ' - ' + escapeHtml((d.participant_ids || []).join(', ')) + '</div></div>' +
+        '<button class="btn-secondary" style="height:28px;font-size:11px;padding:0 8px" onclick="vePreviewHistory(' + idExpr + ')">' + escapeHtml(vt('preview')) + '</button></div>' +
+        (d.result_summary ? '<div class="item-meta" style="margin-top:6px">' + escapeHtml(vt('resultSummary')) + ': ' + escapeHtml(truncate(d.result_summary, 160)) + '</div>' : '') +
+        '</div>';
+    }).join('');
+  }
+
+  function renderVELists() {
+    renderPendingList(veListCache);
+    renderActiveList(veListCache);
+  }
+
   // --- API Calls ---
   global.loadVEList = async function loadVEList() {
     try {
@@ -235,16 +357,257 @@
       veGroupConfig = data.group_config || { max_group_participants: 5 };
       veQuota = data.quota || 0;
       veActiveCount = data.active_count || 0;
-      renderPendingList(veListCache);
-      renderActiveList(veListCache);
+      renderVELists();
       renderGroupConfig();
       renderQuotaInfo();
+      renderVEHistoryList();
     } catch (err) {
       var msg = vt('loadFailed').replace('{error}', err.message);
       setOutput(msg);
       showToast(msg, 'error');
     }
   };
+
+  global.veSearchHistory = function veSearchHistory(loadMatches) {
+    renderVELists();
+    if (!loadMatches) return;
+    global.veLoadHistorySearch(currentVEQuery());
+  };
+
+  function mergeVEHistoryDiscussionMatches(matches, limit) {
+    var byID = Object.create(null);
+    var merged = [];
+    (matches || []).forEach(function(match) {
+      var label = veEmployeeLabel(match.employee || {});
+      (match.discussions || []).forEach(function(item) {
+        var id = item && item.id ? String(item.id) : '';
+        if (!id) {
+          var copy = Object.assign({}, item || {});
+          copy._employee_label = label;
+          merged.push(copy);
+          return;
+        }
+        var existing = byID[id];
+        if (!existing) {
+          existing = Object.assign({}, item);
+          existing._employee_labels = [];
+          byID[id] = existing;
+          merged.push(existing);
+        }
+        if (label && existing._employee_labels.indexOf(label) === -1) existing._employee_labels.push(label);
+        existing._employee_label = existing._employee_labels.join(', ');
+      });
+    });
+    merged.sort(function(a, b) { return Date.parse(b.updated_at || b.created_at || '') - Date.parse(a.updated_at || a.created_at || ''); });
+    limit = parseInt(limit, 10);
+    if (limit > 0 && merged.length > limit) return merged.slice(0, limit);
+    return merged;
+  }
+  global.veLoadHistorySearch = async function veLoadHistorySearch(query) {
+    query = String(query || '').trim();
+    if (!query) {
+      veHistoryEmployeeID = '';
+      veHistoryEmployeeLabel = '';
+      veHistoryDiscussions = [];
+      veHistoryHint = '';
+      renderVEHistoryList();
+      return;
+    }
+    veHistoryEmployeeID = 'search';
+    veHistoryEmployeeLabel = '';
+    veHistoryDiscussions = [];
+    veHistoryHint = '';
+    veHistoryLoading = true;
+    renderVEHistoryList();
+    try {
+      var data = await api('/api/ve/history/search?q=' + encodeURIComponent(query) + '&limit=20');
+      var matches = data.matches || [];
+      var merged = mergeVEHistoryDiscussionMatches(matches, 20);
+      veHistoryDiscussions = merged;
+      if (!matches.length) veHistoryHint = vt('searchNoMatch');
+      else if (matches.length === 1) veHistoryEmployeeLabel = veEmployeeLabel(matches[0].employee || {});
+      else veHistoryHint = vt('searchMultiple').replace('{count}', String(matches.length));
+    } catch (err) {
+      var msg = vt('historyLoadFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    } finally {
+      veHistoryLoading = false;
+      renderVEHistoryList();
+    }
+  };
+
+  global.veLoadHistory = async function veLoadHistory(veID) {
+    var employee = veListCache.find(function(ve) { return ve.id === veID; }) || null;
+    return global.veLoadHistoryForEmployees(employee ? [employee] : [{ id: veID }]);
+  };
+
+  global.veLoadHistoryForEmployees = async function veLoadHistoryForEmployees(employees) {
+    employees = employees || [];
+    veHistoryEmployeeID = employees.length === 1 ? (employees[0].id || '') : 'search';
+    veHistoryEmployeeLabel = employees.length === 1 ? veEmployeeLabel(employees[0]) : '';
+    veHistoryDiscussions = [];
+    veHistoryHint = employees.length > 1 ? vt('searchMultiple').replace('{count}', String(employees.length)) : '';
+    veHistoryLoading = true;
+    renderVEHistoryList();
+    try {
+      var merged = [];
+      for (var i = 0; i < employees.length; i++) {
+        var ve = employees[i];
+        if (!ve || !ve.id) continue;
+        var data = await api('/api/ve/' + encodeURIComponent(ve.id) + '/history?limit=20');
+        var label = veEmployeeLabel(data.employee || ve);
+        (data.discussions || []).forEach(function(d) {
+          d._employee_label = label;
+          merged.push(d);
+        });
+      }
+      merged.sort(function(a, b) { return Date.parse(b.updated_at || b.created_at || '') - Date.parse(a.updated_at || a.created_at || ''); });
+      veHistoryDiscussions = merged.slice(0, 20);
+    } catch (err) {
+      var msg = vt('historyLoadFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    } finally {
+      veHistoryLoading = false;
+      renderVEHistoryList();
+    }
+  };
+
+  global.vePreviewHistory = async function vePreviewHistory(discussionID) {
+    try {
+      var detail = await api('/api/ve/history/' + encodeURIComponent(discussionID) + '/detail');
+      showVEHistoryPreview(detail);
+    } catch (err) {
+      var msg = vt('previewLoadFailed').replace('{error}', err.message);
+      setOutput(msg);
+      showToast(msg, 'error');
+    }
+  };
+
+  global.closeVEHistoryPreview = function closeVEHistoryPreview() {
+    var overlay = document.getElementById('veHistoryPreviewOverlay');
+    if (overlay) overlay.classList.remove('show');
+  };
+
+  function historyAttachmentURL(fileURL, discussionID) {
+    if (!fileURL || !discussionID) return '';
+    try {
+      var origin = (global.location && global.location.origin) || (window.location && window.location.origin) || '';
+      var URLCtor = global.URL || window.URL || URL;
+      var url = new URLCtor(fileURL, origin);
+      if (url.origin !== origin || url.pathname.indexOf('/api/ve/files/') !== 0) return '';
+      var parts = url.pathname.split('/').filter(Boolean);
+      if (parts.length < 4 || parts[0] !== 'api' || parts[1] !== 've' || parts[2] !== 'files') return '';
+      if (parts[3] === 'upload') return '';
+      var fileID = '';
+      if (parts[3] === 'download') {
+        if (parts.length !== 5) return '';
+        fileID = parts[4] || '';
+      } else {
+        if (parts.length !== 4) return '';
+        fileID = parts[3] || '';
+      }
+      try {
+        if (decodeURIComponent(fileID).indexOf('/') >= 0 || decodeURIComponent(fileID).indexOf('\\') >= 0) return '';
+      } catch (decodeErr) {
+        return '';
+      }
+      if (!fileID || fileID === 'download') return '';
+      return '/api/ve/history/' + encodeURIComponent(discussionID) + '/attachments/' + encodeURIComponent(decodeURIComponent(fileID));
+    } catch (err) {
+      return '';
+    }
+  }
+
+  global.veDownloadHistoryAttachment = async function veDownloadHistoryAttachment(url, filename) {
+    try {
+      var headers = {};
+      if (typeof token === 'function' && token()) headers.Authorization = 'Bearer ' + token();
+      var resp = await fetch(url, { headers: headers });
+      if (!resp.ok) throw new Error(resp.statusText || ('HTTP ' + resp.status));
+      var blob = await resp.blob();
+      var objectURL = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = objectURL;
+      a.download = filename || 'attachment';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function() { URL.revokeObjectURL(objectURL); }, 1000);
+    } catch (err) {
+      var msg = vt('previewLoadFailed').replace('{error}', err.message || String(err));
+      showToast(msg, 'error');
+    }
+  };
+
+  function inlineTextAttachmentURL(att) {
+    if (!att || !att.content) return '';
+    var content = String(att.content || '').replace(/\s+/g, '');
+    if (!/^[A-Za-z0-9+/=_-]+$/.test(content)) return '';
+    content = content.replace(/-/g, '+').replace(/_/g, '/');
+    while (content.length % 4 !== 0) content += '=';
+    var mime = String(att.mime_type || 'text/plain').toLowerCase();
+    if (mime.indexOf('text/') !== 0 && mime !== 'application/json' && mime !== 'application/xml') mime = 'text/plain';
+    return 'data:' + encodeURIComponent(mime) + ';base64,' + content;
+  }
+
+  function messageAttachmentItems(m, discussionID) {
+    var items = [];
+    (m.text_attachments || []).forEach(function(att) {
+      var filename = att.filename || 'text.txt';
+      items.push({ label: filename + (att.mime_type ? ' (' + att.mime_type + ')' : ''), filename: filename, url: inlineTextAttachmentURL(att) });
+    });
+    (m.image_attachments || []).forEach(function(att) {
+      items.push({ label: (att.filename || 'image') + (att.mime_type ? ' (' + att.mime_type + ')' : ''), filename: att.filename || 'image', url: historyAttachmentURL(att.file_url, discussionID) });
+    });
+    (m.file_attachments || []).forEach(function(att) {
+      items.push({ label: (att.filename || 'file') + (att.mime_type ? ' (' + att.mime_type + ')' : '') + (att.size_bytes ? ' - ' + att.size_bytes + ' bytes' : ''), filename: att.filename || 'file', url: historyAttachmentURL(att.file_url, discussionID) });
+    });
+    return items;
+  }
+
+  function renderHistoryAttachmentItems(items) {
+    return (items || []).map(function(item) {
+      var label = escapeHtml(item.label || 'file');
+      if (!item.url) return label;
+      return '<button type="button" class="btn-ghost" style="height:24px;font-size:11px;padding:0 8px" onclick="veDownloadHistoryAttachment(' + jsString(item.url) + ',' + jsString(item.filename || item.label || 'attachment') + ')">' + label + '</button>';
+    }).join(' ');
+  }
+
+  function showVEHistoryPreview(detail) {
+    var overlay = document.getElementById('veHistoryPreviewOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'veHistoryPreviewOverlay';
+      overlay.className = 'session-modal-overlay';
+      overlay.onclick = function(event) { if (event.target === overlay) global.closeVEHistoryPreview(); };
+      document.body.appendChild(overlay);
+    }
+    var discussion = detail.discussion || {};
+    var messages = detail.messages || (detail.session && detail.session.messages) || [];
+    var participants = discussion.participant_ids || (detail.session && (detail.session.participants || []).map(function(p) { return p.id || p.name || ''; })) || [];
+    var headerMeta = [
+      escapeHtml(vt('status')) + ': ' + escapeHtml(discussion.status || '-'),
+      escapeHtml(vt('createdAt')) + ': ' + escapeHtml(formatDate(discussion.created_at)),
+      escapeHtml(vt('updatedAt')) + ': ' + escapeHtml(formatDate(discussion.updated_at))
+    ].join(' &nbsp; ');
+    var resultHtml = discussion.result_summary ? '<div class="session-item"><div class="session-label">' + escapeHtml(vt('resultSummary')) + '</div><div class="session-value">' + escapeHtml(compactMessageText(discussion.result_summary, 900)) + '</div></div>' : '';
+    overlay.innerHTML = '<div class="session-modal" style="width:min(900px,calc(100% - 48px));max-height:86vh;overflow:auto">' +
+      '<button class="close-btn" onclick="closeVEHistoryPreview()" aria-label="' + escapeHtml(vt('close')) + '">&times;</button>' +
+      '<h3>' + escapeHtml(discussionTitle(discussion) || vt('historyTitle')) + '</h3>' +
+      '<div class="item-meta" style="margin-bottom:6px">' + headerMeta + '</div>' +
+      '<div class="item-meta" style="margin-bottom:10px">' + escapeHtml(vt('participants')) + ': ' + escapeHtml(participants.join(', ') || '-') + '</div>' +
+      resultHtml +
+      '<div class="item-title" style="margin-bottom:8px">' + escapeHtml(vt('messages')) + '</div>' +
+      messages.slice(-12).map(function(m) {
+        var attachments = messageAttachmentItems(m, discussion.id);
+        return '<div class="session-item"><div class="session-field"><span class="session-label">' + escapeHtml(m.from_id || '-') + '</span><span class="session-value">' + escapeHtml(formatDate(m.created_at)) + '</span></div>' +
+          '<div class="session-value">' + escapeHtml(compactMessageText(m.content, 700)) + '</div>' +
+          (attachments.length ? '<div class="item-meta" style="margin-top:6px">' + escapeHtml(vt('attachments')) + ': ' + renderHistoryAttachmentItems(attachments) + '</div>' : '') + '</div>';
+      }).join('') + '</div>';
+    overlay.classList.add('show');
+  }
 
   global.veApprove = async function veApprove(veID) {
     if (!confirm(vt('approve') + '?')) return;
@@ -339,7 +702,12 @@
     setText('veSaveConfigBtn', vt('saveConfig'));
     setText('vePendingTitle', vt('pendingTitle'));
     setText('veActiveTitle', vt('activeTitle'));
+    setText('veHistoryTitle', vt('historyTitle'));
+    setText('veHistoryDesc', vt('historyDesc'));
     setText('veRefreshBtn', vt('refresh'));
+    var search = document.getElementById('veHistorySearchInput');
+    if (search) search.placeholder = vt('historySearchPlaceholder');
+    setText('veSearchHistoryBtn', vt('searchHistory'));
   }
 
   // Apply text on load and on language change

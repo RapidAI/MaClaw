@@ -15,7 +15,17 @@
       acceptPublicSignupHint: 'Enable this only for the catch-all hub that should accept users outside configured enterprise domains.',
       defaultCorporateHub: 'Default Catch-all Hub',
       publicSignupEnabled: 'Enabled',
-      publicSignupDisabled: 'Disabled'
+      publicSignupDisabled: 'Disabled',
+      digitalEmployeeQuota: 'Digital Employee Quota',
+      digitalEmployeeExpires: 'Authorization Expires',
+      deNotEnabled: 'Not Enabled',
+      deInactive: 'Inactive',
+      deExpired: 'Expired',
+      deExpiresOn: 'Expires',
+      de_disabled: 'Disabled by admin',
+      de_expired: 'Authorization expired',
+      de_quota_zero: 'No quota allocated',
+      de_not_subscribed: 'Not subscribed'
     },
     zh: {
       corporateEmailDomain: '\u4e3b\u4f01\u4e1a\u90ae\u7bb1\u57df\u540d',
@@ -27,7 +37,17 @@
       acceptPublicSignupHint: '\u53ea\u6709\u4f5c\u4e3a\u9ed8\u8ba4\u515c\u5e95 Hub \u65f6\u624d\u5e94\u542f\u7528\u8fd9\u4e2a\u5f00\u5173\u3002',
       defaultCorporateHub: '\u9ed8\u8ba4\u515c\u5e95 Hub',
       publicSignupEnabled: '\u5df2\u542f\u7528',
-      publicSignupDisabled: '\u672a\u542f\u7528'
+      publicSignupDisabled: '\u672a\u542f\u7528',
+      digitalEmployeeQuota: '\u6570\u5b57\u5458\u5de5\u6388\u6743\u6570',
+      digitalEmployeeExpires: '\u6388\u6743\u6709\u6548\u671f',
+      deNotEnabled: '\u672a\u5f00\u901a',
+      deInactive: '\u672a\u6fc0\u6d3b',
+      deExpired: '\u5df2\u8fc7\u671f',
+      deExpiresOn: '\u6709\u6548\u671f\u81f3',
+      de_disabled: '\u5df2\u88ab\u7ba1\u7406\u5458\u7981\u7528',
+      de_expired: '\u6388\u6743\u5df2\u8fc7\u671f',
+      de_quota_zero: '\u672a\u5206\u914d\u914d\u989d',
+      de_not_subscribed: '\u672a\u8ba2\u9605'
     }
   };
 
@@ -76,7 +96,9 @@
       centerCorporateEmailDomainsHint: 'corporateEmailDomainsHint',
       centerAcceptPublicSignupLabel: 'acceptPublicSignup',
       centerAcceptPublicSignupHeroLabel: 'acceptPublicSignup',
-      centerAcceptPublicSignupHint: 'acceptPublicSignupHint'
+      centerAcceptPublicSignupHint: 'acceptPublicSignupHint',
+      centerDigitalEmployeeQuotaLabel: 'digitalEmployeeQuota',
+      centerDigitalEmployeeExpiresLabel: 'digitalEmployeeExpires'
     };
     Object.keys(mapping).forEach(function(id) {
       var el = document.getElementById(id);
@@ -137,6 +159,67 @@
     document.getElementById('centerCorporateEmailDomainsHero').textContent = domainHeroText(data);
     document.getElementById('centerAcceptPublicSignup').checked = !!data.accept_public_signup;
     document.getElementById('centerAcceptPublicSignupHero').textContent = publicSignupText(!!data.accept_public_signup);
+
+    // Digital Employee Authorization
+    var deAuth = data.digital_employee_authorization;
+    var quotaEl = document.getElementById('centerDigitalEmployeeQuotaHero');
+    var expiresEl = document.getElementById('centerDigitalEmployeeExpiresHero');
+    var deHeroEl = document.getElementById('digitalEmployeeHero');
+    var deHintEl = document.getElementById('digitalEmployeeHint');
+
+    // Top-level metric card
+    if (deHeroEl) {
+      if (!deAuth) {
+        deHeroEl.textContent = '-';
+      } else if (deAuth.active) {
+        deHeroEl.textContent = String(deAuth.quota || 0);
+      } else {
+        deHeroEl.textContent = '0';
+      }
+    }
+    if (deHintEl) {
+      if (!deAuth) {
+        deHintEl.textContent = tr('metricDigitalEmployeeHint');
+      } else if (deAuth.active && deAuth.expires_at) {
+        var hintDate = new Date(deAuth.expires_at);
+        deHintEl.textContent = !isNaN(hintDate.getTime()) ? centerTabText('deExpiresOn') + ' ' + hintDate.toLocaleDateString() : tr('metricDigitalEmployeeHint');
+      } else if (!deAuth.active && deAuth.reason) {
+        var reasonKey = 'de_' + deAuth.reason;
+        var reasonText = centerTabText(reasonKey);
+        deHintEl.textContent = (reasonText !== reasonKey) ? reasonText : deAuth.reason;
+      } else {
+        deHintEl.textContent = tr('metricDigitalEmployeeHint');
+      }
+    }
+
+    // Detail fields in registration status section
+    if (quotaEl) {
+      if (!deAuth) {
+        quotaEl.textContent = centerTabText('deNotEnabled');
+      } else if (deAuth.active) {
+        quotaEl.textContent = String(deAuth.quota || 0);
+      } else {
+        quotaEl.textContent = String(deAuth.quota || 0) + ' (' + centerTabText('deInactive') + ')';
+      }
+    }
+    if (expiresEl) {
+      expiresEl.style.color = '';
+      if (!deAuth) {
+        expiresEl.textContent = centerTabText('deNotEnabled');
+      } else if (deAuth.expires_at) {
+        var expDate = new Date(deAuth.expires_at);
+        if (!isNaN(expDate.getTime())) {
+          var now = new Date();
+          var expired = expDate < now;
+          expiresEl.textContent = expDate.toLocaleDateString() + (expired ? ' (' + centerTabText('deExpired') + ')' : '');
+          if (expired) expiresEl.style.color = '#ef4444';
+        } else {
+          expiresEl.textContent = deAuth.expires_at;
+        }
+      } else {
+        expiresEl.textContent = centerTabText('deNotEnabled');
+      }
+    }
     document.getElementById('centerConfigForm').classList.toggle('hidden', !editable);
     document.getElementById('centerRegisteredNotice').classList.toggle('hidden', !(registered || disabled || (pending && !editable)));
     document.getElementById('centerRegisteredTitle').textContent = removed ? tr('notRegistered') : disabled ? ctr('disabled') : registered ? ctr('registeredOnline') : ctr('pending');

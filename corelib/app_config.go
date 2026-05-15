@@ -35,7 +35,6 @@ type AppConfig struct {
 	ShowNavSkills        *bool  `json:"show_nav_skills,omitempty"`
 	ShowNavMCP           *bool  `json:"show_nav_mcp,omitempty"`
 	ShowNavGossip        *bool  `json:"show_nav_gossip,omitempty"`
-	ShowNavAgentNet      *bool  `json:"show_nav_agentnet,omitempty"`
 	Language             string `json:"language"`
 	PowerOptimization    bool   `json:"power_optimization"`
 	ScreenDimTimeoutMin  int    `json:"screen_dim_timeout_min"`
@@ -104,11 +103,6 @@ type AppConfig struct {
 	// Memory
 	MemoryAutoCompress bool `json:"memory_auto_compress,omitempty"`
 	MemoryMaxBackups   int  `json:"memory_max_backups,omitempty"` // 0 means use default (20)
-	// AgentNet
-	AgentNetEnabled             bool    `json:"agentnet_enabled"`
-	AgentNetAutoPickerEnabled   bool    `json:"agentnet_auto_picker_enabled,omitempty"`
-	AgentNetAutoPickerPollMin   int     `json:"agentnet_auto_picker_poll_min,omitempty"`
-	AgentNetAutoPickerMinReward float64 `json:"agentnet_auto_picker_min_reward,omitempty"`
 	// Security
 	SecurityPolicyMode     string                 `json:"security_policy_mode,omitempty"`
 	SandboxMode            string                 `json:"sandbox_mode,omitempty"`          // "none" (default), "os", "docker"
@@ -445,7 +439,7 @@ func (c MISDataConfig) WithDefaults() MISDataConfig {
 
 // GroupDiscussionConfig controls current-Hub MaClaw-to-MaClaw consultations.
 // The feature is intentionally scoped to the current Hub and does not imply
-// AgentNet, HubCenter, or public discovery participation.
+// HubCenter or public discovery participation.
 type GroupDiscussionConfig struct {
 	Enabled                          bool     `json:"enabled"`
 	Discoverable                     bool     `json:"discoverable"`
@@ -487,10 +481,6 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	type rawAppConfig struct {
 		appConfigAlias
 		ShowAssistantEntry          *bool                  `json:"show_assistant_entry"`
-		AgentNetEnabled             *bool                  `json:"agentnet_enabled"`
-		AgentNetAutoPickerEnabled   *bool                  `json:"agentnet_auto_picker_enabled,omitempty"`
-		AgentNetAutoPickerPollMin   *int                   `json:"agentnet_auto_picker_poll_min,omitempty"`
-		AgentNetAutoPickerMinReward *float64               `json:"agentnet_auto_picker_min_reward,omitempty"`
 		GroupDiscussion             *GroupDiscussionConfig `json:"group_discussion,omitempty"`
 	}
 
@@ -503,18 +493,6 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 		c.ShowAssistantEntry = true
 	} else {
 		c.ShowAssistantEntry = *raw.ShowAssistantEntry
-	}
-	if raw.AgentNetEnabled != nil {
-		c.AgentNetEnabled = *raw.AgentNetEnabled
-	}
-	if raw.AgentNetAutoPickerEnabled != nil {
-		c.AgentNetAutoPickerEnabled = *raw.AgentNetAutoPickerEnabled
-	}
-	if raw.AgentNetAutoPickerPollMin != nil {
-		c.AgentNetAutoPickerPollMin = *raw.AgentNetAutoPickerPollMin
-	}
-	if raw.AgentNetAutoPickerMinReward != nil {
-		c.AgentNetAutoPickerMinReward = *raw.AgentNetAutoPickerMinReward
 	}
 	if raw.GroupDiscussion == nil {
 		c.GroupDiscussion = defaultGroupDiscussionConfig()
@@ -573,8 +551,13 @@ func applyGroupDiscussionFieldDefaults(gd *GroupDiscussionConfig) {
 	if len(gd.Languages) == 0 {
 		gd.Languages = []string{"zh-Hans"}
 	}
-	switch gd.SensitiveQueryPolicy {
-	case "deny", "allow", "confirm":
+	switch strings.ToLower(strings.TrimSpace(gd.SensitiveQueryPolicy)) {
+	case "deny":
+		gd.SensitiveQueryPolicy = "deny"
+	case "allow":
+		gd.SensitiveQueryPolicy = "allow"
+	case "confirm":
+		gd.SensitiveQueryPolicy = "confirm"
 	default:
 		gd.SensitiveQueryPolicy = "confirm"
 	}

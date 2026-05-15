@@ -31,6 +31,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -170,6 +171,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	// Initialize workflow engine (19 templates, same as GUI).
 	app.workflowEngine = app.initWorkflowEngine()
 
+	// Initialize knowledge store (shared with GUI — same ~/.maclaw/knowledge.db).
+	app.initKnowledgeStore(dataDir)
+
 	// Initialize WeChat gateway (runs in background if configured).
 	app.weixinGateway = newTUIWeixinGateway(app)
 
@@ -188,9 +192,13 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		TaskStore:   app.taskStore,
 		SSHHandler:  sshHandler,
 		ExtraHandlers: map[string]agent.ToolHandler{
-			"manage_skill":     newManageSkillHandler(app),
-			"manage_schedule":  newManageScheduleHandler(app),
-			"tts":             newTTSHandler(app),
+			"manage_skill":           newManageSkillHandler(app),
+			"manage_schedule":        newManageScheduleHandler(app),
+			"tts":                   newTTSHandler(app),
+			"knowledge_search":       app.toolKnowledgeSearch,
+			"knowledge_context_pack": app.toolKnowledgeContextPack,
+			"knowledge_save_text":    app.toolKnowledgeSaveText,
+			"knowledge_save_url":     app.toolKnowledgeSaveURL,
 		},
 		WebSearchHandler: func(args map[string]interface{}) string {
 			// Use the first configured web search provider, or DuckDuckGo fallback.
@@ -317,6 +325,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	if memStore != nil {
 		memStore.Stop()
 	}
+	if app.knowledgeStore != nil {
+		app.knowledgeStore.Close()
+	}
 	sshMgr.Close()
 	logger.Info("%s-tui stopped", strings.ToLower(brand.Current().DisplayName))
 }
@@ -367,16 +378,17 @@ func tuiAppConfigUsesHubLLMService(cfg corelib.AppConfig) bool {
 
 // TUIApp holds the TUI's agent infrastructure.
 type TUIApp struct {
-	logger        *TUILogger
-	llmConfig     corelib.MaclawLLMConfig
-	memoryStore   *memory.Store
-	sshMgr        *remote.SSHSessionManager
-	steeringStore *steering.Store
-	appConfig     corelib.AppConfig
-	history       *agent.ConversationMemory
-	taskStore     *task.Store
-	toolRegistry  *agent.CoreToolRegistry
-	ttsManager    *tts.Manager
+	logger         *TUILogger
+	llmConfig      corelib.MaclawLLMConfig
+	memoryStore    *memory.Store
+	knowledgeStore *knowledge.SQLiteStore // cached, nil if DB doesn't exist
+	sshMgr         *remote.SSHSessionManager
+	steeringStore  *steering.Store
+	appConfig      corelib.AppConfig
+	history        *agent.ConversationMemory
+	taskStore      *task.Store
+	toolRegistry   *agent.CoreToolRegistry
+	ttsManager     *tts.Manager
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go — no fields needed here.
 
@@ -396,6 +408,21 @@ type TUIApp struct {
 	workflowMu         sync.Mutex
 	pendingPhasePrompt string // stashed phase prompt for the next agent loop
 	workflowAgentLoop  bool   // true when the agent loop runs on behalf of the workflow
+}
+
+// initKnowledgeStore opens the knowledge DB if it exists.
+// Called during runTUI startup, after dataDir is resolved.
+func (app *TUIApp) initKnowledgeStore(dataDir string) {
+	dbPath := filepath.Join(dataDir, "knowledge.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return // graceful skip — DB doesn't exist yet
+	}
+	store, err := knowledge.NewSQLiteStore(dbPath)
+	if err != nil {
+		log.Printf("[knowledge] failed to open store: %v", err)
+		return
+	}
+	app.knowledgeStore = store
 }
 
 // buildSystemPromptDeps constructs the SystemPromptDeps from TUIApp's config.
@@ -420,7 +447,15 @@ func (app *TUIApp) buildSystemPromptDeps() agent.SystemPromptDeps {
 			Nickname:          cfg.RemoteNickname,
 			HasCodingSessions: false,
 		},
-		MemoryStore: app.memoryStore,
+		MemoryStore:      app.memoryStore,
+		HasKnowledgeBase: app.knowledgeStore != nil,
+	}
+
+	// Knowledge auto-recall hook
+	if app.knowledgeStore != nil {
+		deps.KnowledgeAutoRecall = func(b *strings.Builder, userMsg string) {
+			app.appendKnowledgeAutoRecall(b, userMsg)
+		}
 	}
 
 	if len(cfg.SSHHosts) > 0 {

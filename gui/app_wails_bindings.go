@@ -1335,6 +1335,7 @@ type AIAssistantSendRequest struct {
 	ResumeSessionID             string                      `json:"resume_session_id,omitempty"`
 	DismissRecoverableSessionID string                      `json:"dismiss_recoverable_session_id,omitempty"`
 	UIAction                    bool                        `json:"ui_action,omitempty"`
+	ProjectPath                 string                      `json:"project_path,omitempty"`
 }
 
 type AIAssistantContextMessage struct {
@@ -1516,8 +1517,15 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	if hubClient == nil {
 		return nil, fmt.Errorf("AI assistant not initialized")
 	}
+	// Synthesize per-project userID for Project Tab isolation.
+	// When ProjectPath is set, ConversationMemory, WorkflowEngine, and
+	// DriftDetector automatically isolate per project because they key on userID.
+	userID := desktopUserID
+	if req.ProjectPath != "" {
+		userID = fmt.Sprintf("desktop-user:%s", req.ProjectPath)
+	}
 	msg := IMUserMessage{
-		UserID:                      desktopUserID,
+		UserID:                      userID,
 		Platform:                    desktopPlatform,
 		Text:                        text,
 		ResumeSlotID:                strings.TrimSpace(req.ResumeSlotID),

@@ -10,20 +10,22 @@
     "centers": "Centers",
     "licenses": "Licenses",
     "compute": "Compute Power",
-    "skills": "Skill Market",
+    "skills": "Capability Market",
+    "capabilitymarket": "Capability Market",
     "settings": "Settings"
   },
   "subtitle": {
-    "overview": "Manage connected iWorkerCenter instances for compute distribution, skill market, licensing, upgrades, and integration. iWorkerCloud is not an enterprise operations platform.",
+    "overview": "Manage connected iWorkerCenter instances for compute distribution, capability market, licensing, upgrades, and integration. iWorkerCloud is not an enterprise operations platform.",
     "centers": "Register, authorize, and manage connected iWorkerCenter service deployments.",
     "licenses": "Manage commercial module authorization certificates.",
     "compute": "Distribute model capacity, provider routes, quota policy, and usage billing.",
-    "skills": "Package, publish, authorize, and roll out top-level iWorker skills.",
+    "skills": "Package, publish, authorize, and roll out top-level iWorker capabilities.",
+    "capabilitymarket": "Package, publish, authorize, and roll out top-level iWorker capabilities.",
     "settings": "Change admin password."
   },
   "cloudOverview": {
     "title": "Vendor cloud control plane for iWorker",
-    "desc": "iWorkerCloud is the management center for connected iWorkerCenter instances. It manages compute distribution, skill-market supply, commercial authorization, upgrades, and integration; it does not run customer companies.",
+    "desc": "iWorkerCloud is the management center for connected iWorkerCenter instances. It manages compute distribution, capability-market supply, commercial authorization, upgrades, and integration; it does not run customer companies.",
     "positionTitle": "Cloud manages iWorkerCenter services",
     "positionDesc": "Customer company management and enterprise execution stay inside their own iWorkerCenter. iWorkerCloud only manages the system services we provide: compute, skills, authorization, upgrades, and integration.",
     "statCenters": "Connected iWorkerCenter instances managed for system services.",
@@ -36,7 +38,7 @@
     "computePoint1": "Provider pool",
     "computePoint2": "Center quota and policy",
     "computePoint3": "Usage billing",
-    "marketEyebrow": "Skill Market",
+    "marketEyebrow": "Capability Market",
     "marketTitle": "Top-level skills for many Centers",
     "marketSummary": "Our best reusable iWorker skills should be packaged once, sold or authorized through Cloud, then distributed to connected iWorkerCenters.",
     "marketDetail": "Cloud governs skill listing, version rollout, entitlement, and retirement. The iWorkerCenter receives the skill and maps it into its own local organization, roles, workflows, and policy layer.",
@@ -111,8 +113,8 @@
     }
   },
   "skills": {
-    "title": "Top-level iWorker Skill Market",
-    "desc": "Create, package, publish, disable, and retire reusable iWorker skills for connected iWorkerCenters.",
+    "title": "Top-level iWorker Capability Market",
+    "desc": "Create, package, publish, disable, and retire reusable iWorker capabilities for connected iWorkerCenters.",
     "positionTitle": "Market, not organization",
     "positionDesc": "Cloud sells and distributes skills. Each iWorkerCenter decides how a skill enters local roles, workflows, policy, and audit.",
     "stage": {
@@ -194,7 +196,7 @@
       "packaged": "Packaged",
       "unpackedHint": "without downloadable package"
     },
-    "marketEyebrow": "Skill Market",
+    "marketEyebrow": "Capability Market",
     "defaultCategory": "general",
     "status": {
       "active": "active",
@@ -218,7 +220,7 @@
     "error": "Login failed",
     "refreshCaptcha": "Refresh",
     "captchaAnswer": "Answer",
-    "description": "Sign in to the iWorkerCloud control plane for Center registration, authorization, compute, and skill-market operations.",
+    "description": "Sign in to the iWorkerCloud control plane for Center registration, authorization, compute, and capability-market operations.",
     "captchaLoading": "Loading captcha...",
     "captchaLoadFailed": "Captcha failed to load. Please refresh and try again.",
     "sessionExpired": "Session expired. Please sign in again.",
@@ -547,7 +549,7 @@
     "issuedAt": "Issued",
     "positionTitle": "Authorize Cloud services only",
     "positionDesc": "Issue, renew, and revoke Cloud service entitlements for connected iWorkerCenters with a clear operator flow that also works for small teams.",
-    "boundaryNote": "Licenses control platform services such as compute, skill market, upgrades, and support. They do not read or manage enterprise business data.",
+    "boundaryNote": "Licenses control platform services such as compute, capability market, upgrades, and support. They do not read or manage enterprise business data.",
     "selectCenter": "Select an iWorkerCenter to authorize.",
     "stats": {
       "total": "Total licenses",
@@ -564,7 +566,7 @@
     "noticeRevoked": "License revoked. The Center entitlement list has been refreshed.",
     "moduleLabels": {
       "compute": "Compute",
-      "skill_market": "Skill Market",
+      "skill_market": "Capability Market",
       "upgrade": "Upgrade",
       "support": "Support",
       "all": "All modules"
@@ -674,7 +676,7 @@
   "settings": {
     "desc": "Maintain the iWorkerCloud admin entry point and control-plane security settings. Customer organizations, employees, and business workflows are not configured here.",
     "boundaryTitle": "Cloud control-plane account",
-    "boundaryNote": "This account is for iWorkerCloud operations only: Center registration, authorization, compute distribution, and skill-market maintenance.",
+    "boundaryNote": "This account is for iWorkerCloud operations only: Center registration, authorization, compute distribution, and capability-market maintenance.",
     "oldPassword": "Old password",
     "newPassword": "New password",
     "passwordSaved": "Admin password updated.",

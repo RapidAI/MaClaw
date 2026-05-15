@@ -1,5 +1,5 @@
 /**
- * VEGroupChat — Group chat features for VE conversations.
+ * VEGroupChat - Group chat features for VE conversations.
  *
  * Implements:
  * - 14.1: "+" button with participant selector (filter by AccessPolicy, exclude already-in-group)
@@ -56,9 +56,9 @@ export interface VEGroupChatProps {
     onAddParticipant?: (veId: string) => Promise<void>;
     /** Callback to update tab title */
     onTitleChange?: (title: string) => void;
-    /** Override for testing — list available digital employees */
+    /** Override for testing - list available digital employees */
     listVirtualEmployees?: () => Promise<VirtualEmployeeEntry[]>;
-    /** Override for testing — add VE to group binding */
+    /** Override for testing - add VE to group binding */
     addVEToGroup?: (sessionId: string, veId: string) => Promise<void>;
     /** Download a persisted group-discussion attachment */
     onDownloadAttachment?: (attachment: GroupMessageAttachment, message: GroupMessage) => void;
@@ -183,9 +183,10 @@ export function ParticipantSelector({
             const all = await fn!();
             // Filter out digital employees already in the group
             const currentIds = new Set(currentParticipants.map((p) => p.id));
-            const filtered = (all || []).filter(
-                (ve) => !currentIds.has(ve.id) && ve.online_status === "online"
-            );
+            const filtered = (all || []).filter((ve) => {
+                const machineId = ve.machine_id || ve.id;
+                return !currentIds.has(ve.id) && !currentIds.has(machineId) && ve.online_status === "online";
+            });
             setAvailable(filtered);
         } catch {
             setError(isZh ? "获取列表失败" : "Failed to load");
@@ -357,6 +358,8 @@ export interface GroupMessageBubbleProps {
 
 export function GroupMessageBubble({ message, participantIndex, theme, isUser, onDownloadAttachment }: GroupMessageBubbleProps) {
     const color = isUser ? theme.text : getParticipantColor(participantIndex);
+    const hasAttachments = !!message.attachments?.length;
+    const hasContent = message.content.trim().length > 0;
 
     return (
         <div
@@ -377,7 +380,8 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                 {message.fromName}
             </div>
             {/* Message content */}
-            <div
+            {(hasContent || !hasAttachments) && <div
+                data-testid={`group-msg-content-${message.id}`}
                 style={{
                     padding: "8px 12px",
                     borderRadius: 8,
@@ -390,11 +394,11 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                 }}
             >
                 {message.content}
-            </div>
+            </div>}
             {/* Attachments */}
-            {message.attachments && message.attachments.length > 0 && (
+            {hasAttachments && (
                 <div style={{ marginTop: 4, display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: 4 }}>
-                    {message.attachments.map((att, idx) => (
+                    {message.attachments?.map((att, idx) => (
                         <div
                             key={idx}
                             data-testid={`group-msg-att-${message.id}-${idx}`}
@@ -440,9 +444,7 @@ export function ParticipantOfflineNotice({ participantName, theme, lang }: Parti
                 fontStyle: "italic",
             }}
         >
-            {isZh
-                ? `${participantName} 已离线`
-                : `${participantName} went offline`}
+            {isZh ? `${participantName} 已离线` : `${participantName} went offline`}
         </div>
     );
 }
@@ -540,19 +542,19 @@ export function VEGroupChatView({
                 }}
             >
                 <div style={{ fontSize: 12, color: theme.textMuted }}>
-                    {isZh
-                        ? `${participants.length} 位参与者`
-                        : `${participants.length} participants`}
+                    {isZh ? `${participants.length} 位参与者` : `${participants.length} participants`}
                 </div>
-                <ParticipantSelector
-                    sessionId={sessionId}
-                    currentParticipants={participants}
-                    maxGroupParticipants={maxGroupParticipants}
-                    theme={theme}
-                    lang={lang}
-                    onAdd={handleAdd}
-                    listVirtualEmployees={listVirtualEmployees}
-                />
+                {allowParticipantAdd && (
+                    <ParticipantSelector
+                        sessionId={sessionId}
+                        currentParticipants={participants}
+                        maxGroupParticipants={maxGroupParticipants}
+                        theme={theme}
+                        lang={lang}
+                        onAdd={handleAdd}
+                        listVirtualEmployees={listVirtualEmployees}
+                    />
+                )}
             </div>
 
             {/* Message list */}

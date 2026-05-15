@@ -544,19 +544,9 @@ func (s *SecurityService) GetEffectivePolicy(ctx context.Context, email string) 
 		return cached.(*EffectivePolicy), nil
 	}
 
-	// Get user's group (unassigned users default to root)
-	groupID, err := s.store.GetUserGroup(ctx, email)
+	groupID, err := s.resolveUserPolicyGroup(ctx, email)
 	if err != nil {
-		return nil, fmt.Errorf("get user group: %w", err)
-	}
-	if groupID == "" {
-		root, err := s.store.GetRootGroup(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get root group: %w", err)
-		}
-		if root != nil {
-			groupID = root.ID
-		}
+		return nil, err
 	}
 
 	policy, err := s.computeEffectiveForGroup(ctx, groupID)
@@ -566,6 +556,66 @@ func (s *SecurityService) GetEffectivePolicy(ctx context.Context, email string) 
 
 	s.cache.Store(email, policy)
 	return policy, nil
+}
+
+// GetUserPolicyView returns the effective user policy plus annotated source
+// information for the security group that supplied it.
+func (s *SecurityService) GetUserPolicyView(ctx context.Context, email string) (string, []PolicyGroupPathItem, *EffectivePolicy, *GroupPolicyView, error) {
+	groupID, err := s.resolveUserPolicyGroup(ctx, email)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	policy, err := s.GetEffectivePolicy(ctx, email)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	view, err := s.GetGroupPolicy(ctx, groupID)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	path, err := s.getGroupPathItems(ctx, groupID)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	return groupID, path, policy, view, nil
+}
+
+func (s *SecurityService) getGroupPathItems(ctx context.Context, groupID string) ([]PolicyGroupPathItem, error) {
+	ids, err := s.getPathToRoot(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]PolicyGroupPathItem, 0, len(ids))
+	for _, id := range ids {
+		group, err := s.store.GetGroupByID(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("get group %s: %w", id, err)
+		}
+		if group == nil {
+			items = append(items, PolicyGroupPathItem{ID: id})
+			continue
+		}
+		items = append(items, PolicyGroupPathItem{ID: group.ID, Name: group.Name, ParentID: group.ParentID})
+	}
+	return items, nil
+}
+
+func (s *SecurityService) resolveUserPolicyGroup(ctx context.Context, email string) (string, error) {
+	groupID, err := s.store.GetUserGroup(ctx, email)
+	if err != nil {
+		return "", fmt.Errorf("get user group: %w", err)
+	}
+	if groupID != "" {
+		return groupID, nil
+	}
+	root, err := s.store.GetRootGroup(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get root group: %w", err)
+	}
+	if root == nil {
+		return "", fmt.Errorf("root group not found")
+	}
+	return root.ID, nil
 }
 
 // GetGroupEffectivePolicy computes the effective policy for a specific group

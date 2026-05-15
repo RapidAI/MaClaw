@@ -130,7 +130,6 @@ type App struct {
 	remoteInfraOnce            sync.Once   // guards ensureRemoteInfra initialization
 	remoteInfraReady           atomic.Bool // fast-path check for ensureRemoteInfra
 	warmupDone                 atomic.Bool // true after WarmupTools + WarmupHTTPConn complete
-	agentNetClient             *AgentNetClient
 	mcpAutoDiscovery           *MCPAutoDiscovery
 	toolVersionCache           *ToolVersionCache
 	securityFirewall           *SecurityFirewall
@@ -138,11 +137,12 @@ type App struct {
 	hubSecurityCache           hubSecurityCache
 	digitalEmployeeAuthCache   digitalEmployeeAuthorizationCache
 	capabilitySyncRunning      atomic.Bool
+	hubMarketplaceUnsupported  atomic.Bool   // capability discovery: hub doesn't have marketplace API
+	hubMarketplace404URL       atomic.Value  // stores the hub URL (string) that returned 404
+	managedDeploymentIDs       sync.Map      // capability_ref (string) → true; cached from last sync
 	contextBridge              *ContextBridge
 	aiTrace                    *AITraceService
 	taskOrchestrator2          *TaskOrchestrator2
-	autoTaskPicker             *AgentNetAutoTaskPicker
-	autoPickerOnce             sync.Once
 	qqBotGateway               *qqBotGatewayManager
 	telegramGateway            *telegramGatewayManager
 	weixinGateway              *weixinGatewayManager
@@ -189,6 +189,18 @@ type App struct {
 
 	// TTS manager (lazy-loaded, auto-unloading).
 	ttsManager *tts.Manager
+
+	// Project Tab session persistence (disk-backed session read/write + cleanup).
+	projectTabSessionPersist *ProjectTabSessionPersist
+
+	// tabProjectPaths caches tabID → projectPath mappings in memory to avoid
+	// unnecessary disk reads in SendMessageForTab. Populated in CreateProjectTabSession.
+	tabProjectPaths sync.Map
+
+	// Sticky VE session caches: (veID → sessionID) and (sorted participant key → sessionID).
+	// Ensures conversations with the same VE/group always reuse the same session unless archived.
+	veSessionCache    sync.Map // string → string
+	groupSessionCache sync.Map // string → string
 }
 
 // Safe no-op defaults so callers never need nil checks before tray is ready.
@@ -1475,21 +1487,6 @@ func (a *App) startup(ctx context.Context) {
 			}
 			a.ensureCodeGenProxyIfNeeded()
 		}()
-		// Kill residual AgentNet daemon when disabled in config.
-		// The daemon is a standalone process that survives app restarts;
-		// if the user unchecked "enable AgentNet" but the app was force-killed
-		// before shutdown could stop it, the daemon lingers. Clean it up now.
-		// Use a temporary client to avoid leaving a.agentNetClient initialized
-		// (which would cause shutdown() to redundantly call StopDaemon).
-		if !config.AgentNetEnabled {
-			go func() {
-				tmp := NewAgentNetClient()
-				if tmp.IsRunning() {
-					a.log("AgentNet: stopping residual daemon (agentnet_enabled=false)")
-					tmp.StopDaemon()
-				}
-			}()
-		}
 		go a.startIWorkerGoalWatchIfConfigured(config)
 		if config.PetEnabled {
 			go func(cfg corelib.AppConfig) {
@@ -1505,6 +1502,17 @@ func (a *App) startup(ctx context.Context) {
 		go a.initSteeringStore()
 		// Initialize TTS manager if assets are already present.
 		go a.initTTSManager()
+
+		// Initialize project tab session persistence and clean up stale sessions (>30 days).
+		a.projectTabSessionPersist = NewProjectTabSessionPersist()
+		go func() {
+			removed, err := a.projectTabSessionPersist.CleanupStale(30 * 24 * time.Hour)
+			if err != nil {
+				log.Printf("[startup] project tab session cleanup error: %v", err)
+			} else if removed > 0 {
+				log.Printf("[startup] project tab session cleanup: removed %d stale sessions", removed)
+			}
+		}()
 
 		// Create shared intent classifiers synchronously. Until semantic classifiers are ready,
 		// they return conservative unknown/ambiguous results instead of local keyword decisions.
@@ -1670,12 +1678,6 @@ func (a *App) shutdown(ctx context.Context) {
 	if a.sessionSearchStore != nil {
 		_ = a.sessionSearchStore.Close()
 		a.sessionSearchStore = nil
-	}
-	if a.agentNetClient != nil {
-		a.agentNetClient.StopDaemon()
-	}
-	if a.autoTaskPicker != nil {
-		a.autoTaskPicker.Stop()
 	}
 	if a.qqBotGateway != nil {
 		a.qqBotGateway.Stop()
@@ -4255,7 +4257,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 			RemoteMachineToken:   "",
 			RemoteHeartbeatSec:   10,
 			ScreenDimTimeoutMin:  3, // Default: dim display after 3 minutes of inactivity
-			AgentNetEnabled:      false,
 			GossipAutoPublish:    true,
 			YoloModeAllowed:      true,
 			GossipEnabled:        true,
@@ -4309,10 +4310,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	if _, ok := rawConfig["power_optimization"]; ok {
 		hasPowerOptimization = true
 	}
-	hasAgentNetEnabled := false
-	if _, ok := rawConfig["agentnet_enabled"]; ok {
-		hasAgentNetEnabled = true
-	}
 	hasGossipAutoPublish := false
 	if _, ok := rawConfig["gossip_auto_publish"]; ok {
 		hasGossipAutoPublish = true
@@ -4364,9 +4361,6 @@ func (a *App) loadConfigLocked() (corelib.AppConfig, error) {
 	}
 	if !hasPowerOptimization {
 		config.PowerOptimization = true
-	}
-	if !hasAgentNetEnabled {
-		config.AgentNetEnabled = false
 	}
 	if !hasGossipAutoPublish {
 		config.GossipAutoPublish = true

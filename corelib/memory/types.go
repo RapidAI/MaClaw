@@ -294,6 +294,11 @@ type Entry struct {
 	// In GUI/TUI (single-user): always empty, all memories belong to the same user.
 	// In maclawsrv (multi-tenant): set to the IM user ID (e.g. feishu_ou_xxx).
 	OwnerID string `json:"owner_id,omitempty"`
+	// --- Sync version (SQLite backend only) ---
+	// Monotonically increasing version number assigned by the SQLite backend on
+	// each write. Used by the sync loop to detect changes from other instances.
+	// Zero in JSON backend mode (not persisted to JSON files).
+	Version int64 `json:"version,omitempty"`
 	// --- Knowledge stability tracking (OpenHuman-inspired) ---
 	// Tracks how reliable this knowledge is based on confirmation/contradiction signals.
 	// Pointer type so omitempty correctly omits when nil (unverified entries).

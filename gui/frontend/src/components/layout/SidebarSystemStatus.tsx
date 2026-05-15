@@ -5,8 +5,6 @@ import { CodingAgentSidebarStatus } from './CodingAgentSidebarStatus';
 type SidebarSystemStatusProps = {
     lang: string;
     maclawLLMOnline: boolean;
-    agentNetRunning: boolean;
-    hideAgentNet?: boolean;
     showLansenger?: boolean;
     remoteActivationStatus: any;
     qqBotStatus: string;
@@ -74,8 +72,6 @@ const formatHubCreditStateText = (status: string, retryText: string, lang: strin
 export const SidebarSystemStatus = ({
     lang,
     maclawLLMOnline,
-    agentNetRunning,
-    hideAgentNet = false,
     showLansenger = false,
     remoteActivationStatus,
     qqBotStatus,

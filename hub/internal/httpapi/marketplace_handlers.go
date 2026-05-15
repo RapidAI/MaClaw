@@ -6,10 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/mcp"
 	coreskill "github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
@@ -208,7 +211,7 @@ func AdminMCPMarketplaceUpsertHandler(svc *capability.Service) http.HandlerFunc 
 			return
 		}
 		if strings.TrimSpace(req.MCP.EndpointURL) == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_MCP_CAPABILITY", "mcp.endpoint_url is required for marketplace MCP capabilities")
+			writeError(w, http.StatusBadRequest, "INVALID_MCP_CAPABILITY", "mcp.endpoint_url is required for capability market MCP capabilities")
 			return
 		}
 		if strings.TrimSpace(req.Version) == "" {
@@ -470,6 +473,477 @@ func CapabilityRecommendationsHandler(svc *capability.Service) http.HandlerFunc 
 	}
 }
 
+func UserCapabilityInventoryHandler(identity viewerAuthenticator, svc *capability.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		items, err := svc.ListUserCapabilityInventory(r.Context(), principal.Email)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_LIST_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+func UserCapabilityInventoryUpsertHandler(identity viewerAuthenticator, svc *capability.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		type inventoryItemRequest struct {
+			CapabilityRef        string          `json:"capability_ref"`
+			CapabilityVersionKey string          `json:"capability_version_key,omitempty"`
+			CapabilityType       string          `json:"capability_type,omitempty"`
+			InstallStatus        string          `json:"install_status,omitempty"`
+			Installed            *bool           `json:"installed,omitempty"`
+			Metadata             json.RawMessage `json:"metadata,omitempty"`
+			LastSeenAt           string          `json:"last_seen_at,omitempty"`
+		}
+		var req struct {
+			CapabilityRef        string                 `json:"capability_ref"`
+			CapabilityVersionKey string                 `json:"capability_version_key,omitempty"`
+			CapabilityType       string                 `json:"capability_type,omitempty"`
+			InstallStatus        string                 `json:"install_status,omitempty"`
+			Installed            *bool                  `json:"installed,omitempty"`
+			Metadata             json.RawMessage        `json:"metadata,omitempty"`
+			LastSeenAt           string                 `json:"last_seen_at,omitempty"`
+			Items                []inventoryItemRequest `json:"items,omitempty"`
+			FullSnapshot         bool                   `json:"full_snapshot,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
+		items := req.Items
+		if len(items) == 0 && req.FullSnapshot && strings.TrimSpace(req.CapabilityRef) == "" {
+			if err := svc.MarkUserCapabilityInventoryMissingExcept(r.Context(), principal.Email, nil); err != nil {
+				writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_RECONCILE_FAILED", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+			return
+		}
+		if len(items) == 0 {
+			items = []inventoryItemRequest{{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, CapabilityType: req.CapabilityType, InstallStatus: req.InstallStatus, Installed: req.Installed, Metadata: req.Metadata, LastSeenAt: req.LastSeenAt}}
+		}
+		if len(items) > 500 {
+			writeError(w, http.StatusBadRequest, "CAPABILITY_INVENTORY_TOO_LARGE", "inventory report supports at most 500 items")
+			return
+		}
+		saved := make([]*capability.UserCapabilityInventoryItem, 0, len(items))
+		seenRefs := make([]string, 0, len(items))
+		for _, entry := range items {
+			installed := true
+			if entry.Installed != nil {
+				installed = *entry.Installed
+			}
+			item, err := svc.UpsertUserCapabilityInventory(r.Context(), capability.UserCapabilityInventoryInput{UserID: principal.UserID, UserEmail: principal.Email, CapabilityRef: entry.CapabilityRef, CapabilityVersionKey: entry.CapabilityVersionKey, CapabilityType: entry.CapabilityType, InstallStatus: entry.InstallStatus, Installed: installed, MetadataJSON: rawJSONOrDefault(entry.Metadata), LastSeenAt: entry.LastSeenAt})
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "CAPABILITY_INVENTORY_SAVE_FAILED", err.Error())
+				return
+			}
+			saved = append(saved, item)
+			seenRefs = append(seenRefs, entry.CapabilityRef)
+		}
+		if req.FullSnapshot {
+			if err := svc.MarkUserCapabilityInventoryMissingExcept(r.Context(), principal.Email, seenRefs); err != nil {
+				writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_RECONCILE_FAILED", err.Error())
+				return
+			}
+		}
+		if len(req.Items) > 0 {
+			writeJSON(w, http.StatusOK, map[string]any{"items": saved})
+			return
+		}
+		writeJSON(w, http.StatusOK, saved[0])
+	}
+}
+
+func AdminUserCapabilityInventoryHandler(svc *capability.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		items, err := svc.ListUserCapabilityInventory(r.Context(), r.PathValue("email"))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_LIST_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+type userCapabilityGroupResolver interface {
+	ResolveUserGroupChain(ctx context.Context, email string) ([]string, error)
+}
+
+type capabilityGroupChainResolver interface {
+	ResolveGroupChain(ctx context.Context, groupID string) ([]string, error)
+}
+
+type adminEffectiveCapabilityPolicy struct {
+	CapabilityRef        string                       `json:"capability_ref"`
+	CapabilityVersionKey string                       `json:"capability_version_key,omitempty"`
+	Policy               string                       `json:"policy"`
+	Kind                 string                       `json:"kind"`
+	Source               string                       `json:"source"`
+	Specificity          int                          `json:"specificity"`
+	Capability           capability.CapabilitySummary `json:"capability,omitempty"`
+	PolicyID             string                       `json:"policy_id"`
+}
+
+type adminCapabilityComplianceItem struct {
+	CapabilityRef        string                       `json:"capability_ref"`
+	CapabilityVersionKey string                       `json:"capability_version_key,omitempty"`
+	Policy               string                       `json:"policy"`
+	Source               string                       `json:"source"`
+	Status               string                       `json:"status"`
+	Installed            bool                         `json:"installed"`
+	InstalledVersion     string                       `json:"installed_version,omitempty"`
+	InstallStatus        string                       `json:"install_status,omitempty"`
+	LastSeenAt           string                       `json:"last_seen_at,omitempty"`
+	Capability           capability.CapabilitySummary `json:"capability,omitempty"`
+	PolicyID             string                       `json:"policy_id"`
+}
+
+type adminCapabilityComplianceSummary struct {
+	Total              int `json:"total"`
+	Compliant          int `json:"compliant"`
+	Missing            int `json:"missing"`
+	VersionMismatch    int `json:"version_mismatch"`
+	BlockedInstalled   int `json:"blocked_installed"`
+	Stale              int `json:"stale"`
+	UnmanagedInstalled int `json:"unmanaged_installed"`
+}
+
+func AdminUserCapabilityEffectivePoliciesHandler(svc *capability.Service, groups userCapabilityGroupResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		email := strings.ToLower(strings.TrimSpace(r.PathValue("email")))
+		if email == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_EMAIL", "email is required")
+			return
+		}
+		groupChain := []string{}
+		if groups != nil {
+			chain, err := groups.ResolveUserGroupChain(r.Context(), email)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "GROUP_CHAIN_FAILED", err.Error())
+				return
+			}
+			groupChain = chain
+		}
+		items, err := effectiveCapabilityPoliciesFor(r.Context(), svc, email, groupChain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "EFFECTIVE_CAPABILITY_POLICIES_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "group_chain": groupChain})
+	}
+}
+
+func AdminUserCapabilityComplianceHandler(svc *capability.Service, groups userCapabilityGroupResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		email := strings.ToLower(strings.TrimSpace(r.PathValue("email")))
+		if email == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_EMAIL", "email is required")
+			return
+		}
+		groupChain := []string{}
+		if groups != nil {
+			chain, err := groups.ResolveUserGroupChain(r.Context(), email)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "GROUP_CHAIN_FAILED", err.Error())
+				return
+			}
+			groupChain = chain
+		}
+		policies, err := effectiveCapabilityPoliciesFor(r.Context(), svc, email, groupChain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "EFFECTIVE_CAPABILITY_POLICIES_FAILED", err.Error())
+			return
+		}
+		inventory, err := svc.ListUserCapabilityInventory(r.Context(), email)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_LIST_FAILED", err.Error())
+			return
+		}
+		staleAfter := complianceStaleAfter(r)
+		items, summary, unmanaged := capabilityComplianceFor(policies, inventory, staleAfter)
+		items = filterCapabilityComplianceItems(items, r.URL.Query().Get("status"))
+		unmanaged = filterUnmanagedCapabilityInventory(unmanaged, r.URL.Query().Get("include_unmanaged"))
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "summary": summary, "unmanaged_items": unmanaged, "group_chain": groupChain, "generated_at": time.Now().UTC().Format(time.RFC3339), "stale_after_hours": int(staleAfter.Hours())})
+	}
+}
+
+func AdminGroupCapabilityEffectivePoliciesHandler(svc *capability.Service, groups capabilityGroupChainResolver) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		groupID := strings.TrimSpace(r.PathValue("id"))
+		if groupID == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_GROUP", "group id is required")
+			return
+		}
+		groupChain := []string{groupID}
+		if groups != nil {
+			chain, err := groups.ResolveGroupChain(r.Context(), groupID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "GROUP_CHAIN_FAILED", err.Error())
+				return
+			}
+			if len(chain) > 0 {
+				groupChain = chain
+			}
+		}
+		items, err := effectiveCapabilityPoliciesFor(r.Context(), svc, "", groupChain)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "EFFECTIVE_CAPABILITY_POLICIES_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "group_chain": groupChain})
+	}
+}
+
+func effectiveCapabilityPoliciesFor(ctx context.Context, svc *capability.Service, email string, groupChain []string) ([]adminEffectiveCapabilityPolicy, error) {
+	caps, err := svc.List(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	capByID := map[string]capability.CapabilitySummary{}
+	for _, cap := range caps {
+		capByID[cap.ID] = cap
+	}
+	deployments, err := svc.ListManagedDeployments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	recommendations, err := svc.ListRecommendations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byCapability := map[string]adminEffectiveCapabilityPolicy{}
+	for _, item := range deployments {
+		specificity, source := capabilityScopeSpecificity(item.ScopeJSON, email, groupChain)
+		if specificity < 0 {
+			continue
+		}
+		candidate := adminEffectiveCapabilityPolicy{CapabilityRef: item.CapabilityRef, CapabilityVersionKey: item.CapabilityVersionKey, Policy: firstNonEmpty(item.DeploymentPolicy, "required"), Kind: "deployment", Source: source, Specificity: specificity, Capability: capByID[item.CapabilityRef], PolicyID: item.ID}
+		mergeEffectiveCapabilityPolicy(byCapability, candidate)
+	}
+	for _, item := range recommendations {
+		specificity, source := capabilityScopeSpecificity(item.ScopeJSON, email, groupChain)
+		if specificity < 0 {
+			continue
+		}
+		candidate := adminEffectiveCapabilityPolicy{CapabilityRef: item.CapabilityRef, CapabilityVersionKey: item.CapabilityVersionKey, Policy: "recommended", Kind: "recommendation", Source: source, Specificity: specificity, Capability: capByID[item.CapabilityRef], PolicyID: item.ID}
+		mergeEffectiveCapabilityPolicy(byCapability, candidate)
+	}
+	items := make([]adminEffectiveCapabilityPolicy, 0, len(byCapability))
+	for _, item := range byCapability {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Specificity != items[j].Specificity {
+			return items[i].Specificity > items[j].Specificity
+		}
+		wi := capabilityPolicyWeight(items[i].Policy)
+		wj := capabilityPolicyWeight(items[j].Policy)
+		if wi != wj {
+			return wi > wj
+		}
+		return strings.TrimSpace(items[i].CapabilityRef) < strings.TrimSpace(items[j].CapabilityRef)
+	})
+	return items, nil
+}
+
+func capabilityComplianceFor(policies []adminEffectiveCapabilityPolicy, inventory []capability.UserCapabilityInventoryItem, staleAfter time.Duration) ([]adminCapabilityComplianceItem, adminCapabilityComplianceSummary, []capability.UserCapabilityInventoryItem) {
+	invByRef := map[string]capability.UserCapabilityInventoryItem{}
+	for _, item := range inventory {
+		invByRef[item.CapabilityRef] = item
+	}
+	managedRefs := map[string]bool{}
+	items := make([]adminCapabilityComplianceItem, 0, len(policies))
+	summary := adminCapabilityComplianceSummary{Total: len(policies)}
+	for _, policy := range policies {
+		managedRefs[policy.CapabilityRef] = true
+		inv, ok := invByRef[policy.CapabilityRef]
+		expectedVersion := strings.TrimSpace(policy.CapabilityVersionKey)
+		if expectedVersion == "" {
+			expectedVersion = strings.TrimSpace(policy.Capability.CurrentVersionKey)
+		}
+		status := "missing"
+		if strings.EqualFold(policy.Policy, "blocked") {
+			if ok && inv.Installed {
+				status = "blocked_installed"
+			} else {
+				status = "compliant"
+			}
+		} else if !ok || !inv.Installed {
+			status = "missing"
+		} else if inventoryIsStale(inv.LastSeenAt, staleAfter) {
+			status = "stale"
+		} else if expectedVersion != "" && strings.TrimSpace(inv.CapabilityVersionKey) != "" && expectedVersion != strings.TrimSpace(inv.CapabilityVersionKey) {
+			status = "version_mismatch"
+		} else {
+			status = "compliant"
+		}
+		switch status {
+		case "compliant":
+			summary.Compliant++
+		case "version_mismatch":
+			summary.VersionMismatch++
+		case "blocked_installed":
+			summary.BlockedInstalled++
+		case "stale":
+			summary.Stale++
+		default:
+			summary.Missing++
+		}
+		items = append(items, adminCapabilityComplianceItem{CapabilityRef: policy.CapabilityRef, CapabilityVersionKey: expectedVersion, Policy: policy.Policy, Source: policy.Source, Status: status, Installed: ok && inv.Installed, InstalledVersion: inv.CapabilityVersionKey, InstallStatus: inv.InstallStatus, LastSeenAt: inv.LastSeenAt, Capability: policy.Capability, PolicyID: policy.PolicyID})
+	}
+	unmanaged := []capability.UserCapabilityInventoryItem{}
+	for _, item := range inventory {
+		if item.Installed && strings.TrimSpace(item.CapabilityRef) != "" && !managedRefs[item.CapabilityRef] {
+			unmanaged = append(unmanaged, item)
+		}
+	}
+	sort.Slice(unmanaged, func(i, j int) bool {
+		return strings.TrimSpace(unmanaged[i].CapabilityRef) < strings.TrimSpace(unmanaged[j].CapabilityRef)
+	})
+	summary.UnmanagedInstalled = len(unmanaged)
+	return items, summary, unmanaged
+}
+
+func complianceStaleAfter(r *http.Request) time.Duration {
+	hours := strings.TrimSpace(r.URL.Query().Get("stale_after_hours"))
+	if hours == "" {
+		return 7 * 24 * time.Hour
+	}
+	value, err := strconv.Atoi(hours)
+	if err != nil || value <= 0 {
+		return 7 * 24 * time.Hour
+	}
+	if value > 24*365 {
+		value = 24 * 365
+	}
+	return time.Duration(value) * time.Hour
+}
+
+func filterCapabilityComplianceItems(items []adminCapabilityComplianceItem, status string) []adminCapabilityComplianceItem {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if status == "" || status == "all" {
+		return items
+	}
+	out := []adminCapabilityComplianceItem{}
+	for _, item := range items {
+		if strings.EqualFold(item.Status, status) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func filterUnmanagedCapabilityInventory(items []capability.UserCapabilityInventoryItem, include string) []capability.UserCapabilityInventoryItem {
+	include = strings.ToLower(strings.TrimSpace(include))
+	if include == "" || include == "true" || include == "1" || include == "yes" {
+		return items
+	}
+	return []capability.UserCapabilityInventoryItem{}
+}
+
+func inventoryIsStale(lastSeenAt string, staleAfter time.Duration) bool {
+	lastSeenAt = strings.TrimSpace(lastSeenAt)
+	if lastSeenAt == "" {
+		return false
+	}
+	if staleAfter <= 0 {
+		staleAfter = 7 * 24 * time.Hour
+	}
+	ts, err := time.Parse(time.RFC3339, lastSeenAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(ts) > staleAfter
+}
+
+func capabilityScopeSpecificity(scopeJSON, email string, groupChain []string) (int, string) {
+	scope := mapFromRawJSON(json.RawMessage(scopeJSON))
+	typeName := strings.ToLower(strings.TrimSpace(firstNonEmpty(stringFromAny(scope["type"]), stringFromAny(scope["scope"]))))
+	ids := []string{}
+	ids = append(ids, stringsFromAny(scope["group_ids"])...)
+	ids = append(ids, stringsFromAny(scope["user_emails"])...)
+	if v := strings.TrimSpace(stringFromAny(scope["group_id"])); v != "" {
+		ids = append(ids, v)
+	}
+	if v := strings.TrimSpace(stringFromAny(scope["user_email"])); v != "" {
+		ids = append(ids, v)
+	}
+	if typeName == "global" || (typeName == "" && len(ids) == 0) {
+		return 0, "global"
+	}
+	if typeName == "user" {
+		for _, id := range ids {
+			if strings.EqualFold(strings.TrimSpace(id), email) {
+				return 1000, "user"
+			}
+		}
+		return -1, ""
+	}
+	if typeName == "group" || typeName == "department" {
+		best := -1
+		for _, id := range ids {
+			for idx, groupID := range groupChain {
+				if strings.TrimSpace(id) == strings.TrimSpace(groupID) {
+					score := 100 + len(groupChain) - idx
+					if score > best {
+						best = score
+					}
+				}
+			}
+		}
+		if best >= 0 {
+			return best, "group"
+		}
+	}
+	return -1, ""
+}
+
+func mergeEffectiveCapabilityPolicy(items map[string]adminEffectiveCapabilityPolicy, candidate adminEffectiveCapabilityPolicy) {
+	if strings.TrimSpace(candidate.CapabilityRef) == "" {
+		return
+	}
+	current, ok := items[candidate.CapabilityRef]
+	if !ok || candidate.Specificity > current.Specificity || (candidate.Specificity == current.Specificity && capabilityPolicyWeight(candidate.Policy) > capabilityPolicyWeight(current.Policy)) {
+		items[candidate.CapabilityRef] = candidate
+	}
+}
+
+func capabilityPolicyWeight(policy string) int {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "blocked":
+		return 3
+	case "required":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func stringsFromAny(v any) []string {
+	items, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := []string{}
+	for _, item := range items {
+		if s := strings.TrimSpace(stringFromAny(item)); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func findOpenAcquisitionRequest(ctx context.Context, svc *capability.Service, req capabilityInstallIntentRequest, kind string) *capability.AcquisitionRequest {
 	kind = strings.TrimSpace(kind)
 	if svc == nil || kind == "" {
@@ -654,8 +1128,9 @@ func AdminCapabilityCompleteAcquisitionHandler(svc *capability.Service) http.Han
 	}
 }
 
-func AdminCapabilityManagedDeploymentCreateHandler(svc *capability.Service) http.HandlerFunc {
+func AdminCapabilityManagedDeploymentCreateHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			CapabilityRef        string          `json:"capability_ref"`
 			CapabilityVersionKey string          `json:"capability_version_key,omitempty"`
@@ -681,17 +1156,38 @@ func AdminCapabilityManagedDeploymentCreateHandler(svc *capability.Service) http
 		if req.Enabled != nil {
 			enabled = *req.Enabled
 		}
-		id, err := svc.CreateManagedDeployment(r.Context(), capability.ManagedDeploymentInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: rawJSONOrDefault(req.Scope), DeploymentPolicy: req.DeploymentPolicy, ReinstallIfRemoved: reinstall, RetryIntervalMinutes: req.RetryIntervalMinutes, CreatedBy: "admin", Enabled: enabled})
+		adminUserID := adminAuditUserID(r)
+		scopeJSON := rawJSONOrDefault(req.Scope)
+		id, err := svc.CreateManagedDeployment(r.Context(), capability.ManagedDeploymentInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, DeploymentPolicy: req.DeploymentPolicy, ReinstallIfRemoved: reinstall, RetryIntervalMinutes: req.RetryIntervalMinutes, CreatedBy: adminUserID, Enabled: enabled})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MANAGED_DEPLOYMENT_CREATE_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminUserID, "capability.managed_deployment.create", map[string]any{"id": id, "capability_ref": req.CapabilityRef, "capability_version_key": req.CapabilityVersionKey, "scope": json.RawMessage(scopeJSON), "deployment_policy": req.DeploymentPolicy, "enabled": enabled})
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 	}
 }
 
-func AdminCapabilityRecommendationCreateHandler(svc *capability.Service) http.HandlerFunc {
+func AdminCapabilityManagedDeploymentDeleteHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
+		id := strings.TrimSpace(r.PathValue("id"))
+		if err := svc.DisableManagedDeployment(r.Context(), id); err != nil {
+			if errors.Is(err, capability.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "MANAGED_DEPLOYMENT_NOT_FOUND", "managed deployment not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "MANAGED_DEPLOYMENT_DELETE_FAILED", err.Error())
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "capability.managed_deployment.delete", map[string]any{"id": id})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}
+}
+
+func AdminCapabilityRecommendationCreateHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			CapabilityRef        string          `json:"capability_ref"`
 			CapabilityVersionKey string          `json:"capability_version_key,omitempty"`
@@ -716,12 +1212,32 @@ func AdminCapabilityRecommendationCreateHandler(svc *capability.Service) http.Ha
 		if req.Enabled != nil {
 			enabled = *req.Enabled
 		}
-		id, err := svc.CreateRecommendation(r.Context(), capability.RecommendationInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: rawJSONOrDefault(req.Scope), Reason: req.Reason, AllowUserDismiss: allowDismiss, CreatedBy: "admin", Enabled: enabled})
+		adminUserID := adminAuditUserID(r)
+		scopeJSON := rawJSONOrDefault(req.Scope)
+		id, err := svc.CreateRecommendation(r.Context(), capability.RecommendationInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, Reason: req.Reason, AllowUserDismiss: allowDismiss, CreatedBy: adminUserID, Enabled: enabled})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "RECOMMENDATION_CREATE_FAILED", err.Error())
 			return
 		}
+		writeAdminAuditLog(r.Context(), audit, adminUserID, "capability.recommendation.create", map[string]any{"id": id, "capability_ref": req.CapabilityRef, "capability_version_key": req.CapabilityVersionKey, "scope": json.RawMessage(scopeJSON), "recommendation_reason": req.Reason, "enabled": enabled})
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	}
+}
+
+func AdminCapabilityRecommendationDeleteHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		audit := firstAdminAuditRepo(audits...)
+		id := strings.TrimSpace(r.PathValue("id"))
+		if err := svc.DisableRecommendation(r.Context(), id); err != nil {
+			if errors.Is(err, capability.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "RECOMMENDATION_NOT_FOUND", "recommendation not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "RECOMMENDATION_DELETE_FAILED", err.Error())
+			return
+		}
+		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "capability.recommendation.delete", map[string]any{"id": id})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	}
 }
 
@@ -765,7 +1281,7 @@ func fetchHubCenterCustomerAccount(ctx context.Context, centerStatus capabilityM
 		return nil, err
 	}
 	if baseURL == "" {
-		return nil, errors.New("hubcenter marketplace is not configured")
+		return nil, errors.New("hubcenter capability market is not configured")
 	}
 	values := url.Values{}
 	if strings.TrimSpace(hubID) != "" {
@@ -804,7 +1320,7 @@ func AdminBillingLicensesHandler(settings store.SystemSettingsRepository, center
 			return
 		}
 		if baseURL == "" {
-			writeError(w, http.StatusBadGateway, "HUBCENTER_NOT_CONFIGURED", "HubCenter marketplace is not configured")
+			writeError(w, http.StatusBadGateway, "HUBCENTER_NOT_CONFIGURED", "HubCenter capability market is not configured")
 			return
 		}
 		state, _ := centerStatus.Status(r.Context())
@@ -873,7 +1389,7 @@ func AdminCapabilityExternalSearchHandler(centerStatus capabilityMarketCenterSta
 		source := corelib.NormalizeCapabilitySource(r.URL.Query().Get("source"))
 		allowedSources := corelib.AdminMarketplaceSearchSources(corelib.CapabilityMarketplaceHostHub)
 		if source != "" && !corelib.AdminMarketplaceCanSearchSource(corelib.CapabilityMarketplaceHostHub, source) {
-			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for Hub marketplace admin search")
+			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for Hub capability market admin search")
 			return
 		}
 		capabilityType := corelib.NormalizeCapabilityType(r.URL.Query().Get("type"))
@@ -900,6 +1416,18 @@ func AdminCapabilityExternalSearchHandler(centerStatus capabilityMarketCenterSta
 		}
 		if (source == corelib.CapabilitySourceClawHub || source == corelib.CapabilitySourceGitHub || source == "") && capabilityType == corelib.CapabilityTypeSkill {
 			items := searchExternalSkillMarketplace(r.Context(), source, r.URL.Query().Get("q"), allowedSources)
+			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": items})
+			return
+		}
+		if (source == corelib.CapabilitySourceClawHub || source == corelib.CapabilitySourceGitHub || source == "") && capabilityType == corelib.CapabilityTypeMCP {
+			items := searchExternalMCPMarketplace(r.Context(), source, r.URL.Query().Get("q"), allowedSources)
+			// When source is empty (all sources), also include HubCenter MCP results
+			if source == "" && centerStatus != nil {
+				hubCenterItems, err := searchHubCenterMCPMarketplace(r.Context(), centerStatus, r.URL.Query().Get("q"))
+				if err == nil && len(hubCenterItems) > 0 {
+					items = append(hubCenterItems, items...)
+				}
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": items})
 			return
 		}
@@ -953,6 +1481,46 @@ func searchExternalSkillMarketplace(ctx context.Context, source, query string, a
 	}
 	return items
 }
+
+// searchExternalMCPMarketplace searches ClawHub and/or GitHub for MCP Server configurations.
+// When source is empty, it searches all allowed external sources (excluding hubcenter which is handled separately).
+func searchExternalMCPMarketplace(ctx context.Context, source, query string, allowedSources []string) []any {
+	sources := make([]string, 0, len(allowedSources))
+	if source != "" {
+		sources = append(sources, source)
+	} else {
+		for _, allowed := range allowedSources {
+			if allowed == corelib.CapabilitySourceClawHub || allowed == corelib.CapabilitySourceGitHub {
+				sources = append(sources, allowed)
+			}
+		}
+	}
+	results := coreskill.DefaultHubClient().SearchMCPFiltered(ctx, query, sources)
+	items := make([]any, 0, len(results))
+	for _, result := range results {
+		item := map[string]any{
+			"id":              result.ID,
+			"capability_id":   result.ID,
+			"capability_type": corelib.CapabilityTypeMCP,
+			"name":            result.Name,
+			"display_name":    result.Name,
+			"description":     result.Description,
+			"version":         result.Version,
+			"author":          result.Author,
+			"source":          result.Source,
+			"pricing":         corelib.CapabilityPricingFree,
+		}
+		if result.RepoURL != "" {
+			item["repo_url"] = result.RepoURL
+		}
+		if result.InstallRef != "" {
+			item["install_ref"] = result.InstallRef
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
 func hubCenterMarketplaceBaseURL(ctx context.Context, centerStatus capabilityMarketCenterStatusProvider) (string, error) {
 	if centerStatus == nil {
 		return "", nil
@@ -996,7 +1564,7 @@ func searchHubCenterSkillMarketplace(ctx context.Context, centerStatus capabilit
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("hubcenter skill marketplace returned status " + resp.Status)
+		return nil, errors.New("hubcenter skill capability market returned status " + resp.Status)
 	}
 	var payload struct {
 		Results []map[string]any `json:"results"`
@@ -1036,7 +1604,7 @@ func searchHubCenterMCPMarketplace(ctx context.Context, centerStatus capabilityM
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("hubcenter marketplace returned status " + resp.Status)
+		return nil, errors.New("hubcenter capability market returned status " + resp.Status)
 	}
 	var payload struct {
 		Items []map[string]any `json:"items"`
@@ -1090,7 +1658,7 @@ func fetchHubCenterMCPMarketplaceEntry(ctx context.Context, centerStatus capabil
 		return nil, err
 	}
 	if baseURL == "" {
-		return nil, errors.New("hubcenter marketplace is not configured")
+		return nil, errors.New("hubcenter capability market is not configured")
 	}
 	endpoint := baseURL + "/api/capability-market/mcp/" + url.PathEscape(strings.TrimSpace(capabilityID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -1104,7 +1672,7 @@ func fetchHubCenterMCPMarketplaceEntry(ctx context.Context, centerStatus capabil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("hubcenter marketplace returned status " + resp.Status)
+		return nil, errors.New("hubcenter capability market returned status " + resp.Status)
 	}
 	var item hubCenterMCPMarketplaceEntry
 	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
@@ -1142,7 +1710,7 @@ func fetchHubCenterSkillMarketplaceEntry(ctx context.Context, centerStatus capab
 		return nil, err
 	}
 	if baseURL == "" {
-		return nil, errors.New("hubcenter marketplace is not configured")
+		return nil, errors.New("hubcenter capability market is not configured")
 	}
 	endpoint := baseURL + "/api/v1/skills/" + url.PathEscape(strings.TrimSpace(skillID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -1156,7 +1724,7 @@ func fetchHubCenterSkillMarketplaceEntry(ctx context.Context, centerStatus capab
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("hubcenter skill marketplace returned status " + resp.Status)
+		return nil, errors.New("hubcenter skill capability market returned status " + resp.Status)
 	}
 	var item hubCenterSkillMarketplaceEntry
 	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
@@ -1237,7 +1805,7 @@ func purchaseAndImportHubCenterSkillMarketplaceEntry(ctx context.Context, svc *c
 		return nil, "", err
 	}
 	if baseURL == "" {
-		return nil, "", errors.New("hubcenter marketplace is not configured")
+		return nil, "", errors.New("hubcenter capability market is not configured")
 	}
 	adminEmail := hubMarketplaceAdminEmail(ctx, settings)
 	if adminEmail == "" {
@@ -1277,7 +1845,7 @@ func purchaseAndImportHubCenterMCPMarketplaceEntry(ctx context.Context, svc *cap
 		return nil, "", err
 	}
 	if baseURL == "" {
-		return nil, "", errors.New("hubcenter marketplace is not configured")
+		return nil, "", errors.New("hubcenter capability market is not configured")
 	}
 	status, _ := centerStatus.Status(ctx)
 	adminEmail := hubMarketplaceAdminEmail(ctx, settings)
@@ -1482,7 +2050,7 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 		}
 		normalizeCapabilityInstallIntentRequest(&req)
 		if !corelib.AdminMarketplaceCanSearchSource(corelib.CapabilityMarketplaceHostHub, req.Source) {
-			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for Hub marketplace admin import")
+			writeError(w, http.StatusForbidden, "SOURCE_NOT_ALLOWED", "source is not allowed for Hub capability market admin import")
 			return
 		}
 		policy := corelib.DefaultCapabilityMarketPolicy()
@@ -1847,3 +2415,163 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// AdminMCPTestConnectionHandler probes an arbitrary MCP endpoint to verify
+// connectivity and list available tools. Used by the capability market MCP
+// JSON editor's "Test Connection" button.
+func AdminMCPTestConnectionHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			EndpointURL string            `json:"endpoint_url"`
+			AuthType    string            `json:"auth_type"`
+			AuthSecret  string            `json:"auth_secret"`
+			Headers     map[string]string `json:"headers"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "invalid request body"})
+			return
+		}
+		if strings.TrimSpace(req.EndpointURL) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "message": "endpoint_url is required"})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+
+		endpoint := strings.TrimRight(strings.TrimSpace(req.EndpointURL), "/")
+
+		// Step 1: Try MCP initialize handshake (non-fatal if unsupported).
+		initBody, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize",
+			"params": map[string]any{
+				"protocolVersion": "2025-03-26",
+				"capabilities":    map[string]any{},
+				"clientInfo":      map[string]any{"name": "maclaw-hub", "version": "1.0.0"},
+			},
+		})
+		var sessionID string
+		if initReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(initBody))); err == nil {
+			initReq.Header.Set("Content-Type", "application/json")
+			initReq.Header.Set("Accept", "application/json, text/event-stream")
+			applyMCPTestAuth(initReq, req.AuthType, req.AuthSecret, req.Headers)
+			if resp, err := http.DefaultClient.Do(initReq); err == nil {
+				if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+					sessionID = sid
+				}
+				resp.Body.Close()
+			}
+		}
+
+		// Step 2: Call tools/list.
+		toolsBody, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": map[string]any{},
+		})
+		toolsReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(toolsBody)))
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "failed to create request"})
+			return
+		}
+		toolsReq.Header.Set("Content-Type", "application/json")
+		toolsReq.Header.Set("Accept", "application/json, text/event-stream")
+		applyMCPTestAuth(toolsReq, req.AuthType, req.AuthSecret, req.Headers)
+		if sessionID != "" {
+			toolsReq.Header.Set("Mcp-Session-Id", sessionID)
+		}
+
+		start := time.Now()
+		resp, err := http.DefaultClient.Do(toolsReq)
+		latency := time.Since(start).Milliseconds()
+
+		if err != nil {
+			msg := err.Error()
+			if ctx.Err() == context.DeadlineExceeded {
+				msg = "connection timed out (15s)"
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": msg, "latency_ms": latency})
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			writeJSON(w, http.StatusOK, map[string]any{"success": false, "message": "HTTP " + resp.Status, "latency_ms": latency})
+			return
+		}
+
+		var rpcResp struct {
+			Result struct {
+				Tools []struct {
+					Name        string `json:"name"`
+					Description string `json:"description"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "connected but could not parse tool list", "latency_ms": latency})
+			return
+		}
+
+		tools := make([]map[string]string, 0, len(rpcResp.Result.Tools))
+		for _, t := range rpcResp.Result.Tools {
+			tools = append(tools, map[string]string{"name": t.Name, "description": t.Description})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":    true,
+			"message":    "connected",
+			"tools":      tools,
+			"latency_ms": latency,
+		})
+	}
+}
+
+func applyMCPTestAuth(req *http.Request, authType, authSecret string, headers map[string]string) {
+	for k, v := range headers {
+		if k != "" && v != "" && strings.ToLower(k) != "content-type" && strings.ToLower(k) != "accept" {
+			req.Header.Set(k, v)
+		}
+	}
+	if authSecret == "" {
+		return
+	}
+	switch authType {
+	case "bearer":
+		req.Header.Set("Authorization", "Bearer "+authSecret)
+	case "api_key":
+		req.Header.Set("X-API-Key", authSecret)
+	}
+}
+
+// AdminMCPValidateHandler validates an MCP Server's connectivity, tool availability,
+// schema correctness, and runtime health. Returns a combined ValidationReport.
+func AdminMCPValidateHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			EndpointURL string            `json:"endpoint_url"`
+			Transport   string            `json:"transport"`
+			Headers     map[string]string `json:"headers,omitempty"`
+			APIKey      string            `json:"api_key,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
+			return
+		}
+		if strings.TrimSpace(req.EndpointURL) == "" {
+			writeError(w, http.StatusBadRequest, "MISSING_ENDPOINT", "endpoint_url is required")
+			return
+		}
+
+		config := mcp.MCPServerConfig{
+			EndpointURL: strings.TrimSpace(req.EndpointURL),
+			Transport:   req.Transport,
+			Headers:     req.Headers,
+			APIKey:      req.APIKey,
+		}
+
+		validator := mcp.NewValidator()
+		report, err := validator.Validate(r.Context(), config)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "VALIDATION_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	}
+}

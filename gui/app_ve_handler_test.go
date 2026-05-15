@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 )
 
@@ -82,15 +83,13 @@ func TestGroupDiscussionMessage_StreamChunk_InGroupEnvelope(t *testing.T) {
 }
 
 func TestGroupDiscussionMessage_StreamEnd_InGroupEnvelope(t *testing.T) {
-	// stream_end with empty content should still be valid in an envelope
-	// Note: ValidateCurrentHub requires non-empty content for discussion_message,
-	// so stream_end messages need special handling or a sentinel content.
+	// stream_end with empty content should still be valid in an envelope.
 	msg := &a2a.GroupDiscussionMessage{
 		ID:        "msg-004",
 		SessionID: "session-xyz",
 		FromID:    "ve-agent-2",
 		Kind:      a2a.MessageStreamEnd,
-		Content:   "[stream_end]", // sentinel to pass validation
+		Content:   "",
 		CreatedAt: time.Now(),
 	}
 
@@ -200,6 +199,27 @@ func TestVEMessageHandler_EmptyContentIgnored(t *testing.T) {
 
 	if handler.ActiveSessionCount() != 0 {
 		t.Errorf("expected 0 sessions for empty messages, got %d", handler.ActiveSessionCount())
+	}
+}
+
+func TestVEMessageHandler_IgnoresStreamAndSelfMessages(t *testing.T) {
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{RemoteMachineID: "machine-local"}}
+	handler := NewVEMessageHandler(app)
+
+	handler.HandleIncomingMessage("session-stream", a2a.GroupDiscussionMessage{
+		FromID:  "other",
+		Kind:    a2a.MessageStreamChunk,
+		Content: "partial response",
+	})
+	handler.HandleIncomingMessage("session-self", a2a.GroupDiscussionMessage{
+		FromID:  "machine-local",
+		Kind:    a2a.MessageStatement,
+		Content: "my own broadcast",
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if handler.ActiveSessionCount() != 0 {
+		t.Fatalf("expected stream/self messages to be ignored, got %d sessions", handler.ActiveSessionCount())
 	}
 }
 
@@ -375,6 +395,58 @@ func TestVEStreamingResponse_EmptyChunksFiltered(t *testing.T) {
 	}
 
 	_ = handler
+}
+
+func TestBuildVEConversationHistoryFromMessagesRestoresPriorTurns(t *testing.T) {
+	messages := []a2a.Message{
+		{ID: "m1", FromID: "human", Kind: a2a.MessageQuestion, Content: "analyze the contract"},
+		{ID: "m2", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "Sure, "},
+		{ID: "m3", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: "start with the clauses."},
+		{ID: "m4", FromID: "local-machine", Kind: a2a.MessageStreamEnd},
+		{ID: "m5", FromID: "human", Kind: a2a.MessageStatement, Content: "continue", CreatedAt: time.Now()},
+	}
+
+	history := buildVEConversationHistoryFromMessages(messages, "local-machine", a2a.GroupDiscussionMessage{ID: "m5"})
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2: %+v", len(history), history)
+	}
+	if history[0].Role != "user" || !strings.Contains(history[0].Content.(string), "analyze the contract") {
+		t.Fatalf("first history entry = %+v", history[0])
+	}
+	if history[1].Role != "assistant" || history[1].Content != "Sure, start with the clauses." {
+		t.Fatalf("assistant history entry = %+v", history[1])
+	}
+}
+
+func TestBuildVEConversationHistoryFromMessagesSkipsCurrentByTimestampWhenIDMissing(t *testing.T) {
+	now := time.Now()
+	messages := []a2a.Message{
+		{ID: "", FromID: "human", Kind: a2a.MessageStatement, Content: "current without id", CreatedAt: now},
+	}
+
+	history := buildVEConversationHistoryFromMessages(messages, "local-machine", a2a.GroupDiscussionMessage{FromID: "human", Kind: a2a.MessageStatement, Content: "current without id", CreatedAt: now})
+	if len(history) != 0 {
+		t.Fatalf("current message should not be restored into history: %+v", history)
+	}
+}
+
+func TestBuildVEConversationHistoryFromMessagesPrefixesOtherParticipants(t *testing.T) {
+	messages := []a2a.Message{
+		{ID: "m1", FromID: "expert-a", Kind: a2a.MessageStatement, Content: "check the facts first"},
+		{ID: "m2", FromID: "local-machine", Kind: a2a.MessageStreamChunk, Content: sensitivePermissionWaitingText + "Approved."},
+		{ID: "m3", FromID: "local-machine", Kind: a2a.MessageStreamEnd},
+	}
+
+	history := buildVEConversationHistoryFromMessages(messages, "local-machine", a2a.GroupDiscussionMessage{})
+	if len(history) != 2 {
+		t.Fatalf("history len = %d, want 2: %+v", len(history), history)
+	}
+	if got := history[0].Content; got != "[expert-a] check the facts first" {
+		t.Fatalf("prefixed participant content = %q", got)
+	}
+	if got := history[1].Content; got != "Approved." {
+		t.Fatalf("assistant content should strip waiting marker, got %q", got)
+	}
 }
 
 // --- Concurrent session safety tests ---
