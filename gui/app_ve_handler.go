@@ -265,8 +265,10 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 }
 
 // runAgentForVE runs the AI agent for a VE session.
-// The onToken callback is invoked for each generated token during streaming.
-// This reuses the IMMessageHandler's agent loop pattern via corelib/agent.RunLoop.
+// Uses a dedicated agent loop with VE-specific system prompt and a safe tool subset.
+// This is intentionally separate from the main IMMessageHandler to maintain security
+// isolation: VE sessions don't trigger workflow engines, coding gates, or other
+// main-agent middleware that could interfere with remote user requests.
 func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMessage string, onToken func(string)) (string, error) {
 	if h.app == nil {
 		return "", fmt.Errorf("app is nil")
@@ -291,7 +293,7 @@ func (h *VEMessageHandler) runAgentForVE(ctx context.Context, sessionID, userMes
 	history := h.getSessionHistory(sessionID)
 	h.mu.Unlock()
 
-	// Run the shared agent loop
+	// Run the shared agent loop with VE-specific tools and system prompt
 	result := agent.RunLoop(callbacks, userMessage, history, nil)
 
 	// Save updated history
@@ -325,18 +327,53 @@ func (c *veAgentCallbacks) GetMaxIterations() int {
 }
 
 func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
-	return "You are a digital employee AI assistant. Answer the user professionally and accurately." +
-		"\n\nSecurity guidelines:\n- Do not reveal passwords, tokens, API keys, private keys, or other sensitive credentials unless the local human employee approval gate has already allowed this request.\n- If sensitive information is unavailable or approval was not granted, say that you cannot provide it." +
-		"\n\nResponse guidelines:\n- Be concise and direct\n- Provide complete runnable examples when code is needed\n- Say clearly when you are unsure"
+	// Build a richer system prompt using the VE's registered identity
+	var veName, veSkill string
+	if c.app != nil {
+		if status, err := c.app.GetVEStatus(); err == nil && status != nil && status.Employee != nil {
+			veName = status.Employee.Name
+			veSkill = status.Employee.SkillDescription
+		}
+	}
+
+	var sb strings.Builder
+	if veName != "" {
+		sb.WriteString(fmt.Sprintf("你是「%s」，一个数字员工AI助手。", veName))
+	} else {
+		sb.WriteString("你是一个数字员工AI助手。")
+	}
+	if veSkill != "" {
+		sb.WriteString(fmt.Sprintf("你的专长领域：%s。", veSkill))
+	}
+	sb.WriteString("\n\n核心原则：\n")
+	sb.WriteString("- 用中文回复（除非用户使用其他语言）\n")
+	sb.WriteString("- 简洁、专业、准确\n")
+	sb.WriteString("- 不确定时明确说明\n")
+	sb.WriteString("- 提供完整可运行的代码示例（如果需要）\n")
+	sb.WriteString("\n能力边界（重要）：\n")
+	sb.WriteString("- 你运行在数字员工所有者的机器上，为远程用户提供服务\n")
+	sb.WriteString("- 你可以读取本地文件和浏览目录（使用 read_file 和 list_directory 工具）\n")
+	sb.WriteString("- 你不能修改文件、执行命令、访问网络或操作浏览器\n")
+	sb.WriteString("- 敏感文件（.env、私钥、credentials 等）会被自动拦截，无法读取\n")
+	sb.WriteString("- 当用户请求你无法完成的操作时，直接说明「当前数字员工模式不支持此操作」，不要编造理由（如「我是云端程序」「我没有本地系统」等）\n")
+	sb.WriteString("- 你可以回答知识性问题、提供建议、生成文本内容、分析问题、读取文件内容\n")
+	sb.WriteString("\n安全规则：\n")
+	sb.WriteString("- 不要泄露密码、token、API key、私钥等敏感凭据\n")
+	sb.WriteString("- 如果敏感信息不可用或未获批准，说明无法提供即可\n")
+
+	return sb.String()
 }
 
 func (c *veAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
-	// VE sessions use a minimal tool set: no tools for now
-	return nil
+	// VE sessions expose a safe read-only tool subset.
+	// These tools allow the VE to search the web, read files, and access memory
+	// without modifying the local filesystem or executing arbitrary commands.
+	return veRemoteToolDefinitions()
 }
 
 func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
-	return fmt.Sprintf("[tool %s is unavailable in digital employee mode]", name)
+	// Delegate to the safe tool executor for VE sessions
+	return executeVERemoteTool(c.app, name, argsJSON)
 }
 
 func (c *veAgentCallbacks) OnToken(delta string) {

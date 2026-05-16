@@ -355,8 +355,15 @@ func (a *App) updateHubHeartbeatConfig(payload json.RawMessage) bool {
 	if wrapper.HubConfig == nil {
 		return false
 	}
-	if a.digitalEmployeeAuthCache.update(wrapper.HubConfig.DigitalEmployeeAuthorization) {
-		a.emitEvent("digital-employee-authorization-changed", a.GetDigitalEmployeeFeatureStatus())
+	// Only update the digital employee authorization cache when the Hub
+	// explicitly includes the field. When the Hub hasn't yet synced
+	// authorization from HubCenter, the field is omitted (nil due to
+	// omitempty). Treating nil as "no update" prevents clearing a
+	// previously cached valid authorization during transient sync gaps.
+	if wrapper.HubConfig.DigitalEmployeeAuthorization != nil {
+		if a.digitalEmployeeAuthCache.update(wrapper.HubConfig.DigitalEmployeeAuthorization) {
+			a.emitEvent("digital-employee-authorization-changed", a.GetDigitalEmployeeFeatureStatus())
+		}
 	}
 	policy := wrapper.HubConfig.CapabilityMarketPolicy.WithDefaults()
 	if cfg, err := a.LoadConfig(); err != nil {

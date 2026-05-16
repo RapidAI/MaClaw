@@ -104,7 +104,7 @@ function createMockGlobal() {
       }
       return {};
     },
-    escapeHtml: function(str) { return String(str || ''); },
+    escapeHtml: function(str) { return String(str || '').replace(/[&<>\"']/g, function(c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' }[c]; }); },
     setOutput: function(msg) { outputs.push(msg); },
     showToast: function(msg, type) { toasts.push({ msg: msg, type: type }); },
     AdminTabRegistry: {
@@ -472,7 +472,24 @@ async function runTests() {
     var list = g.document.elements['veHistoryList'];
     assertIncludes(list.innerHTML, 'Contract review', 'History list should contain discussion title');
     assertIncludes(list.innerHTML, 'Legal Researcher / owner@example.com', 'History list should show selected digital employee label');
-    assertIncludes(list.innerHTML, 'vePreviewHistory', 'History list should include preview action');
+    assertIncludes(list.innerHTML, 'vePreviewHistory(&quot;disc-1&quot;)', 'History list should include an attribute-safe preview action');
+  }
+
+  // Test 21a: History list escapes merged employee labels
+  {
+    console.log('  Test: History list escapes merged employee labels');
+    var g = createMockGlobal();
+    g.api = async function(url) {
+      if (url.indexOf('/api/ve/history/search') === 0) {
+        return { matches: [{ employee: { id: 've-x', name: '<img src=x onerror=alert(1)>', owner_email: 'owner@example.com' }, discussions: [{ id: 'disc-x', topic: 'Safe topic', status: 'open', updated_at: '2026-01-01T00:00:00Z' }] }] };
+      }
+      return {};
+    };
+    var ctx = loadVETab(g);
+    await ctx.veLoadHistorySearch('owner@example.com');
+    var list = g.document.elements['veHistoryList'];
+    assertIncludes(list.innerHTML, '&lt;img src=x onerror=alert(1)&gt; / owner@example.com', 'History list should render escaped employee label text');
+    assertNotIncludes(list.innerHTML, '<img src=x onerror=alert(1)>', 'History list should not inject employee label HTML');
   }
 
   // Test 21b: History search caps merged discussion list
@@ -534,6 +551,7 @@ async function runTests() {
     assertIncludes(overlay.innerHTML, 'data:text%2Fplain;base64,dXJsLXNhZmU=', 'Preview should normalize URL-safe inline text attachment data URL');
     assertIncludes(overlay.innerHTML, 'safe.pdf', 'Preview should show safe attachment label');
     assertIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/doc-1', 'Preview should use admin attachment download URL');
+    assertIncludes(overlay.innerHTML, 'veDownloadHistoryAttachment(&quot;/api/ve/history/disc-1/attachments/doc-1&quot;', 'Preview attachment download action should be attribute-safe');
     assertIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/doc-4', 'Preview should use admin download URL for canonical download paths');
     assertIncludes(overlay.innerHTML, 'upload.pdf', 'Preview should show upload-path attachment label for audit context');
     assertNotIncludes(overlay.innerHTML, '/api/ve/history/disc-1/attachments/doc-3', 'Preview should not transform upload endpoints into admin download links');

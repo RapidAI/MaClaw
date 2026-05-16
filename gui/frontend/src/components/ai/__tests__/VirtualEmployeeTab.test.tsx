@@ -86,7 +86,8 @@ const sampleVEs: VirtualEmployeeEntry[] = [
 
 function renderVETab(overrides: Partial<VETabProps> = {}, listResult?: VirtualEmployeeEntry[] | Error) {
     const onStartConversation = vi.fn();
-    const onAddToGroup = vi.fn();
+    const onSetFavorite = vi.fn();
+    const onRemoveFavorite = vi.fn();
     const listFn = vi.fn().mockImplementation(() => {
         if (listResult instanceof Error) return Promise.reject(listResult);
         return Promise.resolve(listResult ?? sampleVEs);
@@ -95,7 +96,8 @@ function renderVETab(overrides: Partial<VETabProps> = {}, listResult?: VirtualEm
     const result = render(
         <VirtualEmployeeTab
             onStartConversation={onStartConversation}
-            onAddToGroup={onAddToGroup}
+            onSetFavorite={onSetFavorite}
+            onRemoveFavorite={onRemoveFavorite}
             theme={mockTheme}
             lang="zh"
             listVirtualEmployees={listFn}
@@ -103,7 +105,7 @@ function renderVETab(overrides: Partial<VETabProps> = {}, listResult?: VirtualEm
         />
     );
 
-    return { ...result, onStartConversation, onAddToGroup, listFn };
+    return { ...result, onStartConversation, onSetFavorite, onRemoveFavorite, listFn };
 }
 
 describe('VirtualEmployeeTab', () => {
@@ -226,7 +228,7 @@ describe('VirtualEmployeeTab', () => {
             fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
             expect(screen.getByTestId("ve-context-menu")).toBeTruthy();
             expect(screen.getByTestId("ve-menu-conversation")).toBeTruthy();
-            expect(screen.getByTestId("ve-menu-add-group")).toBeTruthy();
+            expect(screen.getByTestId("ve-menu-set-favorite")).toBeTruthy();
         });
 
         it('calls onStartConversation from context menu "对话"', async () => {
@@ -237,12 +239,12 @@ describe('VirtualEmployeeTab', () => {
             expect(onStartConversation).toHaveBeenCalledWith(sampleVEs[0]);
         });
 
-        it('calls onAddToGroup from context menu "添加到群聊"', async () => {
-            const { onAddToGroup } = renderVETab();
+        it('calls onSetFavorite from context menu "设为常用"', async () => {
+            const { onSetFavorite } = renderVETab();
             await act(async () => { await vi.runAllTimersAsync(); });
-            fireEvent.contextMenu(screen.getByTestId("ve-item-ve-3"));
-            fireEvent.click(screen.getByTestId("ve-menu-add-group"));
-            expect(onAddToGroup).toHaveBeenCalledWith(sampleVEs[2]);
+            fireEvent.contextMenu(screen.getByTestId("ve-item-ve-1"));
+            fireEvent.click(screen.getByTestId("ve-menu-set-favorite"));
+            expect(onSetFavorite).toHaveBeenCalledWith(sampleVEs[0]);
         });
     });
 

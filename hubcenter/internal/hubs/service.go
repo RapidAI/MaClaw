@@ -30,6 +30,8 @@ var ErrIPBlocked = errors.New("ip blocked")
 var ErrInvalidConfirmationToken = errors.New("invalid confirmation token")
 var ErrHubNotFound = errors.New("hub not found")
 var ErrDigitalEmployeeQuotaDecrease = errors.New("digital employee quota cannot decrease")
+var ErrDigitalEmployeeQuotaRequired = errors.New("digital employee quota must be greater than zero when enabled")
+var ErrDigitalEmployeeYearsRequired = errors.New("digital employee authorization years must be at least one when enabled")
 
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const systemKeyPublicBaseURL = "server_public_base_url"
@@ -1313,9 +1315,12 @@ func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID 
 	if requestedQuota < hub.DigitalEmployeeQuota {
 		return nil, ErrDigitalEmployeeQuotaDecrease
 	}
+	if enabled && requestedQuota <= 0 {
+		return nil, ErrDigitalEmployeeQuotaRequired
+	}
 	years := req.Years
-	if enabled && years <= 0 {
-		years = 1
+	if enabled && years < 1 {
+		return nil, ErrDigitalEmployeeYearsRequired
 	}
 	var expiresAt *time.Time
 	if enabled {

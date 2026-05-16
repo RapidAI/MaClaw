@@ -8,10 +8,11 @@ export interface AITabItemProps {
     theme: Theme;
     onActivate: (tabId: string) => void;
     onClose?: (tabId: string) => void;
+    onContextMenu?: (e: React.MouseEvent, tab: AITab) => void;
     lang?: string;
 }
 
-export function AITabItem({ tab, active, theme, onActivate, onClose, lang }: AITabItemProps) {
+export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMenu, lang }: AITabItemProps) {
     const handleClick = useCallback(() => {
         onActivate(tab.id);
     }, [onActivate, tab.id]);
@@ -89,6 +90,7 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, lang }: AIT
             tabIndex={0}
             onClick={handleClick}
             onKeyDown={handleKeyDown}
+            onContextMenu={(e) => { if (onContextMenu) { e.preventDefault(); onContextMenu(e, tab); } }}
             style={{
                 display: "flex",
                 alignItems: "center",

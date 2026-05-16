@@ -55,6 +55,7 @@ type IMAgentResponse struct {
 	JobID                               string                        `json:"job_id,omitempty"`
 	RunID                               string                        `json:"run_id,omitempty"`
 	RequestID                           string                        `json:"request_id,omitempty"`
+	SessionKey                          string                        `json:"session_key,omitempty"` // userID for per-tab event routing (desktop only)
 	TraceStatus                         string                        `json:"trace_status,omitempty"`
 	TraceSummary                        string                        `json:"trace_summary,omitempty"`
 	TraceEventCount                     int                           `json:"trace_event_count,omitempty"`

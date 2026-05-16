@@ -8,16 +8,14 @@ import { VirtualEmployeeTab, type VirtualEmployeeEntry } from '../ai/VirtualEmpl
 import { darkTheme, lightTheme } from '../ai/aiAssistantPanelTheme';
 import { SidebarMiddleTabs } from './SidebarMiddleTabs';
 import { SidebarHistorySessions, type HistoryDiscussionSummary } from './SidebarHistorySessions';
+import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from '../ai/digitalEmployeeFeature';
+
+export { isDigitalEmployeeAuthorizationUsable } from '../ai/digitalEmployeeFeature';
 
 type MiddleTab = 'tasks' | 'employees' | 'history';
 
-export function shouldShowDigitalEmployeeMiddleTabs(status: any): boolean {
-    if (!status?.visible) return false;
-    const auth = status?.authorization || {};
-    if (auth.active !== true) return false;
-    if (Number(auth.quota || 0) <= 0) return false;
-    if (Number(status?.actual_count || 0) <= 0) return false;
-    return true;
+export function shouldShowDigitalEmployeeMiddleTabs(status: any, nowMs = Date.now()): boolean {
+    return shouldShowDigitalEmployeeFeatureTabs(status, nowMs);
 }
 
 type SidebarAiPaneProps = {
@@ -68,6 +66,10 @@ type SidebarAiPaneProps = {
     switchTool: (tool: string) => void;
     onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
     onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
+    onSetFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
+    onRemoveFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
+    /** Authoritative favorite IDs from parent state (includes optimistic updates) */
+    favoriteEmployeeIds?: string[];
     showCodingToolEntry?: boolean;
     digitalEmployeeFeatureStatus?: any;
 };
@@ -120,6 +122,9 @@ export const SidebarAiPane = ({
     switchTool,
     onOpenVEConversation,
     onOpenHistoryDiscussion,
+    onSetFavoriteEmployee,
+    onRemoveFavoriteEmployee,
+    favoriteEmployeeIds = [],
     showCodingToolEntry = false,
     digitalEmployeeFeatureStatus = null,
 }: SidebarAiPaneProps) => {
@@ -130,9 +135,11 @@ export const SidebarAiPane = ({
     useEffect(() => {
         if (!showDigitalEmployeeTabs && middleTab !== 'tasks') setMiddleTab('tasks');
     }, [middleTab, showDigitalEmployeeTabs]);
+
+    // Favorite employees - use authoritative IDs from parent (includes optimistic updates)
     const tabLabels: Record<MiddleTab, string> = {
         tasks: lang === 'en' ? 'Tasks' : lang === 'zh-Hant' ? '最近任務' : '最近任务',
-        employees: lang === 'en' ? 'Digital' : lang === 'zh-Hant' ? '數字員工' : '数字员工',
+        employees: lang === 'en' ? 'Digital Employees' : lang === 'zh-Hant' ? '數字員工' : '数字员工',
         history: lang === 'en' ? 'History' : lang === 'zh-Hant' ? '歷史會話' : '历史会话',
     };
     return (
@@ -141,11 +148,11 @@ export const SidebarAiPane = ({
                 <SidebarToolSelector activeTool={activeTool} toolDropdownOpen={toolDropdownOpen} setToolDropdownOpen={setToolDropdownOpen} config={config} switchTool={switchTool} visible={showCodingToolEntry} />
                 {visibleTabs.length > 1 && <SidebarMiddleTabs active={middleTab} labels={tabLabels} onChange={setMiddleTab} visibleTabs={visibleTabs} />}
                 {middleTab === 'tasks' && <SidebarRecentTasks lang={lang} themeMode={aiThemeMode} recentProjects={recentProjects} renamingTaskPath={renamingTaskPath} setRenamingTaskPath={setRenamingTaskPath} renameValue={renameValue} setRenameValue={setRenameValue} resumeRecentProject={resumeRecentProject} assistantReady={assistantReady} onRecentTaskSwitchBlocked={onRecentTaskSwitchBlocked} createRecentTask={createRecentTask} refreshRecentProjects={refreshRecentProjects} taskContextMenu={taskContextMenu} setTaskContextMenu={setTaskContextMenu} renameTask={renameTask} pinTask={pinTask} hideTask={hideTask} />}
-                {middleTab === 'employees' && showDigitalEmployeeTabs && <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} onAddToGroup={(ve) => onOpenVEConversation?.(ve)} /></div>}
+                {middleTab === 'employees' && showDigitalEmployeeTabs && <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}><VirtualEmployeeTab lang={lang} theme={veTheme} onStartConversation={(ve) => onOpenVEConversation?.(ve)} favoriteEmployeeIds={favoriteEmployeeIds} onSetFavorite={onSetFavoriteEmployee} onRemoveFavorite={onRemoveFavoriteEmployee} /></div>}
                 {middleTab === 'history' && showDigitalEmployeeTabs && <SidebarHistorySessions lang={lang} enabled={(config as any)?.group_discussion?.enabled !== false} onOpenDiscussion={(discussion) => onOpenHistoryDiscussion?.(discussion)} />}
                 <SidebarSystemStatus lang={lang} maclawLLMOnline={maclawLLMOnline} showLansenger={showLansenger} remoteActivationStatus={remoteActivationStatus} qqBotStatus={qqBotStatus} telegramStatus={telegramStatus} weixinStatus={weixinStatus} lansengerStatus={lansengerStatus} sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage} sidebarHubCredits={sidebarHubCredits} formatSidebarTokens={formatSidebarTokens} formatSidebarHubExpiry={formatSidebarHubExpiry} formatSidebarHubTotalCredits={formatSidebarHubTotalCredits} formatSidebarHubUsedCredits={formatSidebarHubUsedCredits} formatSidebarCredit={formatSidebarCredit} unlimitedHubCreditText={unlimitedHubCreditText} noHubAuthorizationText={noHubAuthorizationText} showHubCreditAction={showHubCreditAction} openHubCreditsPage={openHubCreditsPage} codingAgentProgress={codingAgentProgress} codingAgentTurnSnapshot={codingAgentTurnSnapshot} />
             </div>
-            <div onMouseDown={handleRecentTasksResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
+            <div onMouseDown={handleRecentTasksResizeStart} title={lang === 'en' ? 'Drag to resize middle panel' : lang === 'zh-Hant' ? '拖動調整中間面板寬度' : '拖动调整中间面板宽度'} style={{ width: '6px', flexShrink: 0, cursor: 'col-resize', background: isRecentTasksResizing ? 'color-mix(in srgb, var(--theme-primary) 42%, transparent)' : 'transparent', borderRight: '1px solid var(--theme-border)', transition: 'background 120ms ease', ['--wails-draggable' as any]: 'no-drag' }} />
         </>
     );
 };

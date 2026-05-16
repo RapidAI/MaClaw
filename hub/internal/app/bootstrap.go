@@ -538,13 +538,15 @@ func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID 
 	if p.settings != nil {
 		raw, err := p.settings.Get(ctx, "capability_market_policy")
 		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(raw) != "" {
+			log.Printf("[hub-config] failed to read capability_market_policy: %v", err)
+			// Don't return error — capability_market_policy failure should not
+			// prevent digital_employee_authorization from being delivered.
+		} else if strings.TrimSpace(raw) != "" {
 			if err := json.Unmarshal([]byte(raw), &policy); err != nil {
-				return nil, err
+				log.Printf("[hub-config] failed to parse capability_market_policy: %v", err)
+			} else {
+				policy = policy.WithDefaults()
 			}
-			policy = policy.WithDefaults()
 		}
 	}
 	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorization(ctx, p.settings)}, nil

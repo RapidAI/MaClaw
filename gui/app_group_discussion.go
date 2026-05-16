@@ -1704,8 +1704,7 @@ func isWritableHistoryDiscussionSummary(summary a2a.HubDiscussionSummary) bool {
 		return false
 	}
 	relation := strings.ToLower(strings.TrimSpace(summary.LocalRelation))
-	role := strings.ToLower(strings.TrimSpace(summary.Role))
-	return relation == "initiated_by_me" || role == "initiator"
+	return relation == "initiated_by_me"
 }
 
 func (a *App) GroupDiscussionAddProposal(consultationID string, proposal a2a.Proposal) error {

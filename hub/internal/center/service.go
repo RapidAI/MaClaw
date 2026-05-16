@@ -47,26 +47,26 @@ type SystemSettingsRepository interface {
 }
 
 type RegistrationState struct {
-	Enabled               bool     `json:"enabled"`
-	BaseURL               string   `json:"base_url"`
-	BaseURLs              []string `json:"base_urls"`
-	PublicBaseURL         string   `json:"public_base_url"`
-	Visibility            string   `json:"visibility"`
-	EnrollmentMode        string   `json:"enrollment_mode"`
-	CorporateEmailDomain  string   `json:"corporate_email_domain"`
-	CorporateEmailDomains []string `json:"corporate_email_domains,omitempty"`
-	AcceptPublicSignup    bool     `json:"accept_public_signup"`
-	AdvertisedBaseURL     string   `json:"advertised_base_url,omitempty"`
-	Host                  string   `json:"host,omitempty"`
-	Port                  int      `json:"port,omitempty"`
-	RegisterOnStartup     bool     `json:"register_on_startup"`
-	AdminEmailPresent     bool     `json:"admin_email_present"`
-	Registered            bool     `json:"registered"`
-	PendingConfirmation   bool     `json:"pending_confirmation"`
-	Disabled              bool     `json:"disabled"`
-	HubID                 string   `json:"hub_id,omitempty"`
-	DisabledReason        string   `json:"disabled_reason,omitempty"`
-	LastError             string   `json:"last_error,omitempty"`
+	Enabled                      bool                                  `json:"enabled"`
+	BaseURL                      string                                `json:"base_url"`
+	BaseURLs                     []string                              `json:"base_urls"`
+	PublicBaseURL                string                                `json:"public_base_url"`
+	Visibility                   string                                `json:"visibility"`
+	EnrollmentMode               string                                `json:"enrollment_mode"`
+	CorporateEmailDomain         string                                `json:"corporate_email_domain"`
+	CorporateEmailDomains        []string                              `json:"corporate_email_domains,omitempty"`
+	AcceptPublicSignup           bool                                  `json:"accept_public_signup"`
+	AdvertisedBaseURL            string                                `json:"advertised_base_url,omitempty"`
+	Host                         string                                `json:"host,omitempty"`
+	Port                         int                                   `json:"port,omitempty"`
+	RegisterOnStartup            bool                                  `json:"register_on_startup"`
+	AdminEmailPresent            bool                                  `json:"admin_email_present"`
+	Registered                   bool                                  `json:"registered"`
+	PendingConfirmation          bool                                  `json:"pending_confirmation"`
+	Disabled                     bool                                  `json:"disabled"`
+	HubID                        string                                `json:"hub_id,omitempty"`
+	DisabledReason               string                                `json:"disabled_reason,omitempty"`
+	LastError                    string                                `json:"last_error,omitempty"`
 	ActiveBaseURL                string                                `json:"active_base_url,omitempty"`
 	LastRegisteredAt             int64                                 `json:"last_registered_at,omitempty"`
 	DigitalEmployeeAuthorization *corelib.DigitalEmployeeAuthorization `json:"digital_employee_authorization,omitempty"`
@@ -252,29 +252,29 @@ func (s *Service) Status(ctx context.Context) (*RegistrationState, error) {
 	}
 
 	return &RegistrationState{
-		Enabled:               s.cfg.Center.Enabled,
-		BaseURL:               baseURL,
-		BaseURLs:              baseURLs,
-		PublicBaseURL:         publicBaseURL,
-		Visibility:            visibility,
-		EnrollmentMode:        enrollmentMode,
-		CorporateEmailDomain:  corporateEmailDomain,
-		CorporateEmailDomains: corporateEmailDomains,
-		AcceptPublicSignup:    acceptPublicSignup,
-		AdvertisedBaseURL:     advertisedBaseURL,
-		Host:                  advertisedHost,
-		Port:                  advertisedPort,
-		RegisterOnStartup:     s.cfg.Center.RegisterOnStartup,
-		AdminEmailPresent:     adminEmail != "",
-		Registered:            record.Registered,
-		PendingConfirmation:   record.PendingConfirmation,
-		Disabled:              record.Disabled,
-		HubID:                 record.HubID,
-		DisabledReason:        record.DisabledReason,
-		LastError:             record.LastError,
-		ActiveBaseURL:         record.LastBaseURL,
-		LastRegisteredAt:      record.LastRegisteredAt,
-		DigitalEmployeeAuthorization: normalizeDeAuthForStatus(record.DigitalEmployeeAuthorization),
+		Enabled:                      s.cfg.Center.Enabled,
+		BaseURL:                      baseURL,
+		BaseURLs:                     baseURLs,
+		PublicBaseURL:                publicBaseURL,
+		Visibility:                   visibility,
+		EnrollmentMode:               enrollmentMode,
+		CorporateEmailDomain:         corporateEmailDomain,
+		CorporateEmailDomains:        corporateEmailDomains,
+		AcceptPublicSignup:           acceptPublicSignup,
+		AdvertisedBaseURL:            advertisedBaseURL,
+		Host:                         advertisedHost,
+		Port:                         advertisedPort,
+		RegisterOnStartup:            s.cfg.Center.RegisterOnStartup,
+		AdminEmailPresent:            adminEmail != "",
+		Registered:                   record.Registered,
+		PendingConfirmation:          record.PendingConfirmation,
+		Disabled:                     record.Disabled,
+		HubID:                        record.HubID,
+		DisabledReason:               record.DisabledReason,
+		LastError:                    record.LastError,
+		ActiveBaseURL:                record.LastBaseURL,
+		LastRegisteredAt:             record.LastRegisteredAt,
+		DigitalEmployeeAuthorization: registrationDigitalEmployeeAuthorizationForStatus(record),
 	}, nil
 }
 func (s *Service) SetBaseURL(ctx context.Context, baseURL string) (*RegistrationState, error) {
@@ -881,13 +881,17 @@ func LoadDigitalEmployeeAuthorization(ctx context.Context, settings SystemSettin
 		return nil
 	}
 	if record.Disabled {
-		if record.DigitalEmployeeAuthorization != nil {
-			auth := corelib.NormalizeDigitalEmployeeAuthorization(*record.DigitalEmployeeAuthorization, time.Now().UTC())
-			return &auth
-		}
-		return disabledDigitalEmployeeAuthorization()
+		return disabledDigitalEmployeeAuthorizationFrom(record.DigitalEmployeeAuthorization)
 	}
-	if !record.Registered || record.PendingConfirmation || record.DigitalEmployeeAuthorization == nil {
+	if !record.Registered || record.PendingConfirmation {
+		// Hub is not in a registered state — return an explicit "no authorization"
+		// object so the client can distinguish this from "Hub hasn't synced yet" (nil).
+		return &corelib.DigitalEmployeeAuthorization{Active: false, Reason: "not_registered"}
+	}
+	if record.DigitalEmployeeAuthorization == nil {
+		// Hub is registered but hasn't received authorization from HubCenter yet
+		// (first heartbeat hasn't completed). Return nil so the client preserves
+		// any previously cached authorization rather than clearing it.
 		return nil
 	}
 	auth := corelib.NormalizeDigitalEmployeeAuthorization(*record.DigitalEmployeeAuthorization, time.Now().UTC())
@@ -895,8 +899,26 @@ func LoadDigitalEmployeeAuthorization(ctx context.Context, settings SystemSettin
 }
 
 func disabledDigitalEmployeeAuthorization() *corelib.DigitalEmployeeAuthorization {
-	auth := corelib.NormalizeDigitalEmployeeAuthorization(corelib.DigitalEmployeeAuthorization{Enabled: false, Reason: "disabled"}, time.Now().UTC())
-	return &auth
+	return disabledDigitalEmployeeAuthorizationFrom(nil)
+}
+
+func disabledDigitalEmployeeAuthorizationFrom(existing *corelib.DigitalEmployeeAuthorization) *corelib.DigitalEmployeeAuthorization {
+	auth := corelib.DigitalEmployeeAuthorization{Enabled: false, Reason: "disabled"}
+	if existing != nil {
+		auth = *existing
+		auth.Enabled = false
+		auth.Active = false
+		auth.Reason = "disabled"
+	}
+	normalized := corelib.NormalizeDigitalEmployeeAuthorization(auth, time.Now().UTC())
+	return &normalized
+}
+
+func registrationDigitalEmployeeAuthorizationForStatus(record registrationRecord) *corelib.DigitalEmployeeAuthorization {
+	if record.Disabled {
+		return disabledDigitalEmployeeAuthorizationFrom(record.DigitalEmployeeAuthorization)
+	}
+	return normalizeDeAuthForStatus(record.DigitalEmployeeAuthorization)
 }
 
 // normalizeDeAuthForStatus re-normalizes the stored authorization against the
@@ -961,6 +983,13 @@ func (s *Service) startHeartbeatLoop() {
 	s.heartbeatCancel = cancel
 
 	go func() {
+		// Send an immediate heartbeat on startup so that
+		// digital_employee_authorization is available as soon as possible,
+		// rather than waiting for the first ticker interval (30s).
+		_ = s.sendHeartbeat(ctx)
+
+		// Start the ticker after the immediate heartbeat completes, so the
+		// first tick is a full interval after the initial sync attempt.
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		defer func() {

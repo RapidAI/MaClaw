@@ -194,7 +194,8 @@ func TestIsWritableHistoryDiscussionSummary(t *testing.T) {
 		{name: "initiated open", summary: a2a.HubDiscussionSummary{ID: "mine", LocalRelation: "initiated_by_me", Status: "open"}, want: true},
 		{name: "initiated closed", summary: a2a.HubDiscussionSummary{ID: "closed", LocalRelation: "initiated_by_me", Status: "closed"}, want: false},
 		{name: "invited open readonly", summary: a2a.HubDiscussionSummary{ID: "invited", LocalRelation: "owned_ve_invited", Readonly: true, Status: "open"}, want: false},
-		{name: "initiator role fallback", summary: a2a.HubDiscussionSummary{ID: "role", Role: "initiator", Status: "open"}, want: true},
+		{name: "unknown open relation", summary: a2a.HubDiscussionSummary{ID: "unknown", Status: "open"}, want: false},
+		{name: "initiator role without local relation stays read-only", summary: a2a.HubDiscussionSummary{ID: "role", Role: "initiator", Status: "open"}, want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -578,11 +579,11 @@ func TestMergeGroupDiscussionSummariesSortsByUpdatedAt(t *testing.T) {
 	if len(got) != 2 || got[0].ID != "newer-cached" || got[1].ID != "older-live" {
 		t.Fatalf("merged summaries not sorted by updated_at desc: %+v", got)
 	}
-	if got[0].LocalRelation != "initiated_by_me" || got[1].LocalRelation != "owned_ve_invited" || !got[1].Readonly {
+	if got[0].LocalRelation != "" || !got[0].Readonly || got[1].LocalRelation != "owned_ve_invited" || !got[1].Readonly {
 		t.Fatalf("merged summaries not normalized: %+v", got)
 	}
 }
-func TestGroupDiscussionHistoryStoreCacheDetailDerivesRelationFromIncomingRole(t *testing.T) {
+func TestGroupDiscussionHistoryStoreCacheDetailDoesNotTrustInitiatorRoleWithoutRelation(t *testing.T) {
 	store, err := NewGroupDiscussionHistoryStore(filepath.Join(t.TempDir(), "history.db"))
 	if err != nil {
 		t.Fatalf("NewGroupDiscussionHistoryStore: %v", err)
@@ -600,8 +601,8 @@ func TestGroupDiscussionHistoryStoreCacheDetailDerivesRelationFromIncomingRole(t
 	if err != nil || !ok {
 		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
 	}
-	if cached.Discussion.LocalRelation != "initiated_by_me" || cached.Discussion.Readonly {
-		t.Fatalf("incoming initiator role should override stale cached relation: %+v", cached.Discussion)
+	if cached.Discussion.LocalRelation != "owned_ve_invited" || !cached.Discussion.Readonly {
+		t.Fatalf("incoming initiator role without local_relation should not override cached readonly relation: %+v", cached.Discussion)
 	}
 }
 

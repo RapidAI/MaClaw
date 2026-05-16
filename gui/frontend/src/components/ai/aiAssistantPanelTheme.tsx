@@ -326,6 +326,14 @@ export const AI_PANEL_STATIC_STYLE_TEXT = `
     @keyframes blink { 50% { opacity: 0; } }
     @keyframes ai-spinner-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     @keyframes maclaw-spin { to { transform: rotate(360deg); } }
+    @keyframes maclaw-brand-breathe {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.03); opacity: 0.92; }
+    }
+    @keyframes maclaw-brand-shimmer {
+        0%, 100% { filter: drop-shadow(0 0 3px rgba(74, 158, 255, 0.5)) brightness(1); }
+        50% { filter: drop-shadow(0 0 8px rgba(74, 158, 255, 0.8)) brightness(1.15); }
+    }
     .pinned-news-card > div { margin-top: 0 !important; margin-bottom: 0 !important; }
     .ai-window-control:hover { background: var(--ai-window-control-hover-bg, rgba(148, 163, 184, 0.14)) !important; }
     .ai-window-control:active { filter: brightness(0.96); }

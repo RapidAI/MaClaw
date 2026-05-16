@@ -161,8 +161,12 @@ func TestCachePushedVEDiscussionSnapshotFallsBackToRemoteClientID(t *testing.T) 
 		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
 	}
 	defer store.Close()
-	if _, ok, err := store.CachedDetail(t.Context(), "disc-client"); err != nil || !ok {
+	cached, ok, err := store.CachedDetail(t.Context(), "disc-client")
+	if err != nil || !ok {
 		t.Fatalf("CachedDetail ok=%v err=%v", ok, err)
+	}
+	if !cached.Discussion.Readonly || cached.Discussion.LocalRelation != "" {
+		t.Fatalf("role-only initiator detail should remain read-only/unknown relation: %+v", cached.Discussion)
 	}
 }
 

@@ -22,7 +22,6 @@ export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) =>
                                                     navTab === 'remote' ? (lang === 'zh-Hans' ? zhHans.taskManagement : lang === 'zh-Hant' ? zhHant.taskManagement : 'Task Monitor') :
                                                         navTab === 'api-store' ? t('apiStore') :
                                                             navTab === 'mcp' ? 'MCP' :
-                                                                navTab === 'agentNet' ? 'AgentNet' :
-                                                                    navTab === 'settings' ? t('globalSettings') :
+                                                                navTab === 'settings' ? t('globalSettings') :
                                                                     t('about')
 );

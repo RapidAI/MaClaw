@@ -117,7 +117,7 @@ func (a *App) cachedGroupDiscussionDownloadedAttachment(ctx context.Context, dis
 			continue
 		}
 		localPath := strings.TrimSpace(record.LocalPath)
-		if localPath == "" {
+		if localPath == "" || !groupDiscussionPathWithinDir(localPath, a.groupDiscussionAttachmentRoot(discussionID)) {
 			continue
 		}
 		info, err := os.Stat(localPath)
@@ -218,6 +218,27 @@ func groupDiscussionAttachmentIDFromRelayPath(escapedPath string) (string, error
 		return "", fmt.Errorf("attachment file url must identify exactly one file")
 	}
 	return safeGroupDiscussionPathSegment(id), nil
+}
+
+func groupDiscussionPathWithinDir(pathValue, dir string) bool {
+	pathValue = strings.TrimSpace(pathValue)
+	dir = strings.TrimSpace(dir)
+	if pathValue == "" || dir == "" {
+		return false
+	}
+	cleanPath, err := filepath.Abs(filepath.Clean(pathValue))
+	if err != nil {
+		return false
+	}
+	cleanDir, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(cleanDir, cleanPath)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != "" && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func pathBaseNoQuery(path string) string {

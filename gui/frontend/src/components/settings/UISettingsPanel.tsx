@@ -2,8 +2,6 @@ import type { Dispatch, SetStateAction } from 'react';
 import { SetChatFontSize, SetUIZoomFactor } from '../../../wailsjs/go/main/App';
 import { main } from '../../../wailsjs/go/models';
 
-type SidebarVisibilityKey = 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet';
-
 type UISettingsPanelProps = {
     config: main.AppConfig | null;
     lang: string;
@@ -12,8 +10,6 @@ type UISettingsPanelProps = {
     setUiZoom: Dispatch<SetStateAction<number>>;
     chatFontSize: number;
     setChatFontSize: Dispatch<SetStateAction<number>>;
-    gossipAllowed: boolean;
-    updateSidebarNavVisibility: (key: SidebarVisibilityKey, visible: boolean) => void;
 };
 
 const textForLang = (lang: string, en: string, zhHans: string, zhHant: string = zhHans) => (
@@ -28,8 +24,6 @@ export const UISettingsPanel = ({
     setUiZoom,
     chatFontSize,
     setChatFontSize,
-    gossipAllowed,
-    updateSidebarNavVisibility,
 }: UISettingsPanelProps) => (
     <div className="settings-panel">
         <div className="form-group" style={{ marginTop: '0', borderTop: 'none', paddingTop: '0', marginBottom: '16px' }}>
@@ -96,33 +90,6 @@ export const UISettingsPanel = ({
             </div>
             <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
                 {textForLang(lang, 'Adjust the AI assistant chat area font size (12-24px) independently from UI zoom.', '\u72ec\u7acb\u8c03\u6574 AI \u52a9\u624b\u804a\u5929\u533a\u7684\u5b57\u4f53\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u54cd\u754c\u9762\u7f29\u653e\u3002', '\u7368\u7acb\u8abf\u6574 AI \u52a9\u624b\u804a\u5929\u5340\u7684\u5b57\u9ad4\u5927\u5c0f\uff0812-24px\uff09\uff0c\u4e0d\u5f71\u97ff\u4ecb\u9762\u7e2e\u653e\u3002')}
-            </p>
-        </div>
-
-        <div className="form-group" style={{ marginTop: '16px', borderTop: '1px solid var(--theme-border)', paddingTop: '16px', marginBottom: '16px' }}>
-            <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
-                {textForLang(lang, 'Sidebar Buttons', '\u5de6\u4fa7\u529f\u80fd\u6309\u94ae', '\u5de6\u5074\u529f\u80fd\u6309\u9215')}
-            </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-                {[
-                    { key: 'show_nav_mcp' as const, label: 'MCP' },
-                    { key: 'show_nav_gossip' as const, label: t("gossip"), disabled: !gossipAllowed },
-                    { key: 'show_nav_agentnet' as const, label: 'AgentNet' },
-                ].map(item => (
-                    <label key={item.key} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: item.disabled ? 'not-allowed' : 'pointer', opacity: item.disabled ? 0.5 : 1 }}>
-                        <input
-                            type="checkbox"
-                            checked={(config as any)?.[item.key] !== false}
-                            disabled={!config || item.disabled}
-                            onChange={(e) => updateSidebarNavVisibility(item.key, e.target.checked)}
-                            style={{ width: '16px', height: '16px' }}
-                        />
-                        <span style={{ fontSize: '0.8rem', color: 'var(--theme-text-primary)' }}>{item.label}</span>
-                    </label>
-                ))}
-            </div>
-            <p style={{ fontSize: '0.7rem', color: 'var(--theme-text-muted)', marginTop: '6px', marginBottom: 0 }}>
-                {textForLang(lang, 'When enabled, the button is shown directly in the left toolbar; when disabled, it is folded into More.', '\u5f00\u542f\u540e\u76f4\u63a5\u663e\u793a\u5728\u5de6\u4fa7\u5de5\u5177\u680f\uff0c\u5173\u95ed\u540e\u6536\u8fdb\u300c\u66f4\u591a\u300d\u3002', '\u958b\u555f\u5f8c\u76f4\u63a5\u986f\u793a\u5728\u5de6\u5074\u5de5\u5177\u5217\uff0c\u95dc\u9589\u5f8c\u6536\u9032\u300c\u66f4\u591a\u300d\u3002')}
             </p>
         </div>
     </div>

@@ -79,10 +79,11 @@ func (h *IMMessageHandler) triggerOnlineExtractionDeferred(userID string, histor
 	summary := extractConversationSummary(history)
 
 	go func() {
-		// Wait until no agent loop is running. If the user sends a new
-		// message before we acquire the lock, their agent loop runs first.
-		h.chatLoopMu.Lock()
-		h.chatLoopMu.Unlock()
+		// Wait until no agent loop is running for this user. If the user sends
+		// a new message before we acquire the lock, their agent loop runs first.
+		state := h.getSessionLoop(userID)
+		state.mu.Lock()
+		state.mu.Unlock()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

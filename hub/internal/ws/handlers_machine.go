@@ -842,7 +842,12 @@ func (g *Gateway) handleMachineHello(ctx *ConnContext, msg Envelope) error {
 	if g.DeviceNotifyFunc.OnConnect != nil {
 		go g.DeviceNotifyFunc.OnConnect(ctx.UserID, ctx.MachineID, payload.Name)
 	}
-	return writeAck(ctx.Conn, msg.RequestID)
+
+	// Include hub_config in hello ack so the client gets digital_employee_authorization
+	// immediately on connection, without waiting for the first heartbeat cycle.
+	ackPayload := map[string]any{"ok": true}
+	g.injectHubConfig(ackPayload, ctx.UserID, "handleMachineHello")
+	return writeAckPayload(ctx.Conn, msg.RequestID, ackPayload)
 }
 
 func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
@@ -865,14 +870,7 @@ func (g *Gateway) handleMachineHeartbeat(ctx *ConnContext, msg Envelope) error {
 			ackPayload["security_policy"] = policy
 		}
 	}
-	if g.ConfigProvider != nil {
-		cfg, err := g.ConfigProvider.GetHeartbeatConfig(context.Background(), ctx.UserID)
-		if err != nil {
-			log.Printf("[ws] handleMachineHeartbeat: hub config unavailable for user_id=%s: %v", ctx.UserID, err)
-		} else if cfg != nil {
-			ackPayload["hub_config"] = cfg
-		}
-	}
+	g.injectHubConfig(ackPayload, ctx.UserID, "handleMachineHeartbeat")
 	return writeAckPayload(ctx.Conn, msg.RequestID, ackPayload)
 }
 
@@ -1457,6 +1455,22 @@ func writeAckPayload(conn *websocket.Conn, requestID string, payload map[string]
 		payload["ok"] = true
 	}
 	return conn.WriteJSON(map[string]any{"type": "ack", "request_id": requestID, "payload": payload})
+}
+
+// injectHubConfig adds hub_config (including digital_employee_authorization) to
+// an ack payload. Used by both handleMachineHello and handleMachineHeartbeat.
+func (g *Gateway) injectHubConfig(ackPayload map[string]any, userID, caller string) {
+	if g.ConfigProvider == nil {
+		return
+	}
+	cfg, err := g.ConfigProvider.GetHeartbeatConfig(context.Background(), userID)
+	if err != nil {
+		log.Printf("[ws] %s: hub config unavailable for user_id=%s: %v", caller, userID, err)
+		return
+	}
+	if cfg != nil {
+		ackPayload["hub_config"] = cfg
+	}
 }
 
 // handleDeviceProfileUpdate processes a device.profile_update message from a

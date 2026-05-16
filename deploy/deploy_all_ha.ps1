@@ -332,57 +332,63 @@ function Build-LocalBinaries {
     $goarch = Get-EnvOrDefault 'DEPLOY_GOARCH' 'amd64'
     $cgo = Get-EnvOrDefault 'CGO_ENABLED' '0'
     $goproxyValue = Get-EnvOrDefault 'GOPROXY' 'https://goproxy.cn,direct'
+    $goBuildParallelism = Get-EnvOrDefault 'DEPLOY_GO_BUILD_P' '1'
     $tags = $BrandBuildTag.Trim()
     $binDir = Join-Path $OutputRoot 'bin'
     $binDirForGo = (New-Item -ItemType Directory -Path $binDir -Force).FullName
+    $goCacheRoot = Split-Path -Parent $OutputRoot
+    $goCacheDir = (New-Item -ItemType Directory -Path (Join-Path $goCacheRoot '.gocache') -Force).FullName
 
-    $oldGoos = $env:GOOS
-    $oldGoarch = $env:GOARCH
-    $oldCgo = $env:CGO_ENABLED
-    $oldGoproxy = $env:GOPROXY
-    try {
-        $env:GOOS = $goos
-        $env:GOARCH = $goarch
-        $env:CGO_ENABLED = $cgo
-        $env:GOPROXY = $goproxyValue
-        Push-Location -LiteralPath $SourceRoot
-
-        Write-Host ("  - target: {0}/{1}, CGO_ENABLED={2}" -f $goos, $goarch, $cgo)
-        Write-Host '  - building hubcenter locally...'
-        $hubCenterOut = Join-Path $binDirForGo $HubCenterBinaryName
-        $hubCenterArgs = @('build')
-        if (-not [string]::IsNullOrWhiteSpace($tags)) {
-            $hubCenterArgs += @('-tags', $tags)
-        }
-        $hubCenterArgs += @('-o', $hubCenterOut, './hubcenter/cmd/hubcenter')
-        & $goExe @hubCenterArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Local hubcenter build failed.'
-        }
-
-        if ($BuildHub) {
-            Write-Host '  - building hub locally...'
-            $hubOut = Join-Path $binDirForGo $HubBinaryName
-            $hubArgs = @('build')
-            if (-not [string]::IsNullOrWhiteSpace($tags)) {
-                $hubArgs += @('-tags', $tags)
-            }
-            $hubArgs += @('-o', $hubOut, './hub/cmd/hub')
-            & $goExe @hubArgs
-            if ($LASTEXITCODE -ne 0) {
-                throw 'Local hub build failed.'
-            }
-        }
+    function Quote-CmdArg {
+        param([string]$Value)
+        return '"' + ($Value -replace '"', '\"') + '"'
     }
-    finally {
-        Pop-Location
-        $env:GOOS = $oldGoos
-        $env:GOARCH = $oldGoarch
-        $env:CGO_ENABLED = $oldCgo
-        $env:GOPROXY = $oldGoproxy
+
+    function Invoke-GoBuildCmd {
+        param(
+            [string]$OutputPath,
+            [string]$PackagePath,
+            [string]$Label
+        )
+
+        $buildArgs = @('build', '-p', $goBuildParallelism)
+        if (-not [string]::IsNullOrWhiteSpace($tags)) {
+            $buildArgs += @('-tags', (Quote-CmdArg $tags))
+        }
+        $buildArgs += @('-o', (Quote-CmdArg $OutputPath), $PackagePath)
+        $commandParts = @(
+            ('set "GOOS={0}"' -f $goos),
+            ('set "GOARCH={0}"' -f $goarch),
+            ('set "CGO_ENABLED={0}"' -f $cgo),
+            ('set "GOPROXY={0}"' -f $goproxyValue),
+            ('set "GOCACHE={0}"' -f $goCacheDir),
+            ('cd /d {0}' -f (Quote-CmdArg $SourceRoot)),
+            ((Quote-CmdArg $goExe) + ' ' + ($buildArgs -join ' '))
+        )
+        $cmdText = $commandParts -join ' && '
+        $maxAttempts = [int](Get-EnvOrDefault 'DEPLOY_GO_BUILD_RETRIES' '3')
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            if ($attempt -gt 1) {
+                Write-Host ("  - retrying {0} build ({1}/{2})..." -f $Label, $attempt, $maxAttempts) -ForegroundColor Yellow
+                Start-Sleep -Seconds 3
+            }
+            & cmd.exe /d /c $cmdText
+            if ($LASTEXITCODE -eq 0) {
+                return
+            }
+        }
+        throw ("Local {0} build failed." -f $Label)
+    }
+
+    Write-Host ("  - target: {0}/{1}, CGO_ENABLED={2}" -f $goos, $goarch, $cgo)
+    Write-Host '  - building hubcenter locally...'
+    Invoke-GoBuildCmd -OutputPath (Join-Path $binDirForGo $HubCenterBinaryName) -PackagePath './hubcenter/cmd/hubcenter' -Label 'hubcenter'
+
+    if ($BuildHub) {
+        Write-Host '  - building hub locally...'
+        Invoke-GoBuildCmd -OutputPath (Join-Path $binDirForGo $HubBinaryName) -PackagePath './hub/cmd/hub' -Label 'hub'
     }
 }
-
 function Write-InventoryFile {
     param(
         [string]$Path,
@@ -1156,6 +1162,11 @@ finally {
         Remove-Item -LiteralPath $passwordFile -Force -ErrorAction SilentlyContinue
     }
 }
+
+
+
+
+
 
 
 

@@ -78,6 +78,18 @@ func (c *RemoteHubClient) digitalEmployeeMessageHandler() *VEMessageHandler {
 	return c.veHandler
 }
 
+func (c *RemoteHubClient) groupChatDispatcher() *GroupChatDispatcher {
+	if c == nil || c.app == nil {
+		return nil
+	}
+	c.veHandlerMu.Lock()
+	defer c.veHandlerMu.Unlock()
+	if c.groupDispatcher == nil {
+		c.groupDispatcher = NewGroupChatDispatcher(c.app)
+	}
+	return c.groupDispatcher
+}
+
 func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	envelope, targetRole, err := decodeVEDiscussionPayload(msg.Payload)
 	if err != nil {
@@ -102,6 +114,11 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 		if strings.EqualFold(targetRole, "initiator") {
 			runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
 			runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
+		} else if strings.EqualFold(targetRole, "executor") {
+			// Route to local maclaw executor via GroupChatDispatcher
+			if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) {
+				dispatcher.HandleGroupMessage(sessionID, *envelope.Message)
+			}
 		} else if shouldDigitalEmployeeRespondToDiscussion(targetRole, envelope.Message.Kind) {
 			if handler := c.digitalEmployeeMessageHandler(); handler != nil {
 				handler.HandleGroupEnvelope(envelope)

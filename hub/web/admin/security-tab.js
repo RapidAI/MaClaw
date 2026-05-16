@@ -53,6 +53,7 @@
         snapshotExportHistory: [],
         snapshotRegistryFilter: 'all',
         snapshotRegistryQuery: '',
+        snapshotRegistrySort: 'exported_at_desc',
         subTab: 'management'
       };
       restoreSnapshotExportRegistry(global.__securityAdminState);
@@ -272,6 +273,7 @@
     capabilityAllStatuses: { zh: '\u5168\u90e8\u72b6\u6001', en: 'All statuses' },
     capabilityShowUnmanaged: { zh: '\u663e\u793a\u989d\u5916\u5b89\u88c5', en: 'Show unmanaged installed' },
     capabilityExportJson: { zh: '\u5bfc\u51fa JSON', en: 'Export JSON' },
+    capabilityExportCsv: { zh: '\u5bfc\u51fa CSV', en: 'Export CSV' },
     capabilityExported: { zh: '\u5408\u89c4\u7ed3\u679c\u5df2\u5bfc\u51fa', en: 'Compliance result exported' },
     capabilityExportEmpty: { zh: '\u6682\u65e0\u53ef\u5bfc\u51fa\u7684\u5408\u89c4\u7ed3\u679c', en: 'No compliance result to export yet' },
     capabilityExportFailed: { zh: '\u5bfc\u51fa\u5408\u89c4\u7ed3\u679c\u5931\u8d25: ', en: 'Export compliance result failed: ' },
@@ -368,17 +370,24 @@
     lastSnapshotExport: { zh: '\u6700\u8fd1\u4e00\u6b21\u5feb\u7167\u5bfc\u51fa', en: 'Latest Snapshot Export' },
     snapshotExportHistory: { zh: '\u5feb\u7167\u5bfc\u51fa\u767b\u8bb0\u7c3f', en: 'Snapshot Export Registry' },
     exportSnapshotRegistryJson: { zh: '\u5bfc\u51fa\u767b\u8bb0\u7c3f JSON', en: 'Export registry JSON' },
+    exportSnapshotRegistryCsv: { zh: '\u5bfc\u51fa\u767b\u8bb0\u7c3f CSV', en: 'Export registry CSV' },
     clearSnapshotRegistry: { zh: '\u6e05\u7a7a\u767b\u8bb0\u7c3f', en: 'Clear registry' },
     confirmClearSnapshotRegistry: { zh: '\u786e\u5b9a\u6e05\u7a7a\u672c\u5730\u5feb\u7167\u5bfc\u51fa\u767b\u8bb0\u7c3f\u5417\uff1f', en: 'Clear the local snapshot export registry?' },
     snapshotRegistryCleared: { zh: '\u5feb\u7167\u767b\u8bb0\u7c3f\u5df2\u6e05\u7a7a', en: 'Snapshot registry cleared' },
     snapshotRegistryExported: { zh: '\u5feb\u7167\u767b\u8bb0\u7c3f\u5df2\u5bfc\u51fa', en: 'Snapshot registry exported' },
     snapshotRegistryEmpty: { zh: '\u6682\u65e0\u5feb\u7167\u5bfc\u51fa\u8bb0\u5f55', en: 'No snapshot export records yet' },
+    snapshotRegistryNoMatches: { zh: '\u5f53\u524d\u7b5b\u9009\u6682\u65e0\u5339\u914d\u7684\u5feb\u7167\u5bfc\u51fa\u8bb0\u5f55', en: 'No snapshot export records match the current filters' },
     snapshotRegistryFilterAll: { zh: '\u5168\u90e8\u8bb0\u5f55', en: 'All records' },
     snapshotRegistryFilterIssues: { zh: '\u4ec5\u770b\u4f4e\u8d28\u91cf/\u544a\u8b66', en: 'Issues only' },
     snapshotRegistryFilterCount: { zh: '\u663e\u793a {shown}/{total} \u6761', en: 'Showing {shown}/{total}' },
+    snapshotRegistrySortNewest: { zh: '\u6700\u65b0\u4f18\u5148', en: 'Newest first' },
+    snapshotRegistrySortQualityAsc: { zh: '\u8d28\u91cf\u4ece\u4f4e\u5230\u9ad8', en: 'Lowest quality first' },
+    snapshotRegistrySortWarningsDesc: { zh: '\u544a\u8b66\u4ece\u591a\u5230\u5c11', en: 'Most warnings first' },
+    snapshotRegistrySortTypeAsc: { zh: '\u7c7b\u578b A-Z', en: 'Type A-Z' },
     snapshotRegistrySearch: { zh: '\u641c\u7d22 ID/\u5bf9\u8c61/\u8def\u5f84/\u6821\u9a8c\u503c', en: 'Search ID/object/path/checksum' },
     snapshotRegistrySummary: { zh: '\u6c47\u603b: \u603b\u6570 {total} / \u98ce\u9669 {issues} / \u5e73\u5747\u8d28\u91cf {avg}/100', en: 'Summary: total {total} / issues {issues} / avg quality {avg}/100' },
     snapshotRegistryTypes: { zh: '\u7c7b\u578b\u5206\u5e03: {types}', en: 'Types: {types}' },
+    snapshotRegistrySeveritySummary: { zh: '\u544a\u8b66\u5206\u7ea7: error {error} / warn {warn} / info {info}', en: 'Severity: error {error} / warn {warn} / info {info}' },
     snapshotType: { zh: '\u7c7b\u578b', en: 'Type' },
     snapshotChecksum: { zh: '\u6821\u9a8c\u503c', en: 'Checksum' },
     snapshotRegistryObject: { zh: '\u5bf9\u8c61', en: 'Object' },
@@ -1000,6 +1009,28 @@
 
   var SNAPSHOT_EXPORT_REGISTRY_KEY = 'maclaw_enterprise_snapshot_export_registry_v1';
 
+  function snapshotRegistryNumber(value) {
+    var number = Number(value || 0);
+    return isFinite(number) ? number : 0;
+  }
+
+  function snapshotRegistryNonNegativeNumber(value) {
+    return Math.max(0, snapshotRegistryNumber(value));
+  }
+
+  function snapshotRegistryQualityScore(value) {
+    return Math.max(0, Math.min(100, snapshotRegistryNumber(value)));
+  }
+
+  function cleanSnapshotSeverityCounts(counts) {
+    counts = counts || {};
+    return {
+      info: snapshotRegistryNonNegativeNumber(counts.info),
+      warn: snapshotRegistryNonNegativeNumber(counts.warn),
+      error: snapshotRegistryNonNegativeNumber(counts.error)
+    };
+  }
+
   function cleanSnapshotExportRecord(item) {
     item = item || {};
     return {
@@ -1010,9 +1041,9 @@
       object_name: String(item.object_name || ''),
       object_group_path: String(item.object_group_path || ''),
       quality: String(item.quality || ''),
-      quality_score: Number(item.quality_score || 0),
-      warning_count: Number(item.warning_count || 0),
-      warning_severity_counts: item.warning_severity_counts || {},
+      quality_score: snapshotRegistryQualityScore(item.quality_score),
+      warning_count: snapshotRegistryNonNegativeNumber(item.warning_count),
+      warning_severity_counts: cleanSnapshotSeverityCounts(item.warning_severity_counts),
       exported_at: String(item.exported_at || ''),
       snapshot_checksum: String(item.snapshot_checksum || ''),
       snapshot_checksum_algorithm: String(item.snapshot_checksum_algorithm || '')
@@ -1075,7 +1106,7 @@
 
   function showSnapshotExportToast(labelKey, payload) {
     var id = payload && payload.snapshot_id ? String(payload.snapshot_id) : '';
-    rememberSnapshotExport(payload);
+    if (!payload || payload.snapshot_type !== 'snapshot_export_registry') rememberSnapshotExport(payload);
     showToast(st(labelKey) + (id ? ' - ' + st('snapshotIdShort', { id: id }) : ''), 'success');
   }
 
@@ -1838,7 +1869,7 @@
     var summary = compliance.summary || {};
     var metrics = '<div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('capabilityTotal')) + '</label><strong>' + String(summary.total || 0) + '</strong><span>' + escapeHtml(st('capabilityUnmanagedInstalled') + ': ' + (summary.unmanaged_installed || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityCompliant')) + '</label><strong>' + String(summary.compliant || 0) + '</strong><span>' + escapeHtml(st('capabilityMissing') + ': ' + (summary.missing || 0) + ' | ' + st('capabilityReportStale') + ': ' + (summary.stale || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityBlockedCount')) + '</label><strong>' + String(summary.blocked_installed || 0) + '</strong><span>' + escapeHtml(st('capabilityVersionMismatch') + ': ' + (summary.version_mismatch || 0)) + '</span></div></div>';
     var meta = '<div class="item-meta" style="margin-top:6px">' + escapeHtml(st('capabilityGeneratedAt') + ': ' + (compliance.generated_at || '-') + ' | ' + st('capabilityStaleAfterHours') + ': ' + (compliance.stale_after_hours || 168) + 'h') + '</div>';
-    var filters = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilityStatusFilter')) + '</label><select id="secCapabilityComplianceStatus" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"><option value="">' + escapeHtml(st('capabilityAllStatuses')) + '</option><option value="compliant"' + (sec.capabilityComplianceStatusFilter === 'compliant' ? ' selected' : '') + '>' + escapeHtml(st('capabilityCompliant')) + '</option><option value="missing"' + (sec.capabilityComplianceStatusFilter === 'missing' ? ' selected' : '') + '>' + escapeHtml(st('capabilityMissing')) + '</option><option value="version_mismatch"' + (sec.capabilityComplianceStatusFilter === 'version_mismatch' ? ' selected' : '') + '>' + escapeHtml(st('capabilityVersionMismatch')) + '</option><option value="blocked_installed"' + (sec.capabilityComplianceStatusFilter === 'blocked_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityBlockedInstalled')) + '</option><option value="stale"' + (sec.capabilityComplianceStatusFilter === 'stale' ? ' selected' : '') + '>' + escapeHtml(st('capabilityReportStale')) + '</option></select></div><div><label>' + escapeHtml(st('capabilityStaleAfterHours')) + '</label><input id="secCapabilityStaleAfterHours" type="number" min="1" max="8760" step="1" value="' + escapeHtml(String(sec.capabilityStaleAfterHours || 168)) + '" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"></div><div style="display:flex;align-items:center;gap:10px;justify-content:space-between"><label style="display:flex;align-items:center;gap:8px;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="secCapabilityIncludeUnmanaged" onchange="changeSecCapabilityComplianceFilter()"' + (sec.capabilityIncludeUnmanaged === false ? '' : ' checked') + '> ' + escapeHtml(st('capabilityShowUnmanaged')) + '</label><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityCompliance()">' + escapeHtml(st('capabilityExportJson')) + '</button></div></div>';
+    var filters = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilityStatusFilter')) + '</label><select id="secCapabilityComplianceStatus" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"><option value="">' + escapeHtml(st('capabilityAllStatuses')) + '</option><option value="compliant"' + (sec.capabilityComplianceStatusFilter === 'compliant' ? ' selected' : '') + '>' + escapeHtml(st('capabilityCompliant')) + '</option><option value="missing"' + (sec.capabilityComplianceStatusFilter === 'missing' ? ' selected' : '') + '>' + escapeHtml(st('capabilityMissing')) + '</option><option value="version_mismatch"' + (sec.capabilityComplianceStatusFilter === 'version_mismatch' ? ' selected' : '') + '>' + escapeHtml(st('capabilityVersionMismatch')) + '</option><option value="blocked_installed"' + (sec.capabilityComplianceStatusFilter === 'blocked_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityBlockedInstalled')) + '</option><option value="stale"' + (sec.capabilityComplianceStatusFilter === 'stale' ? ' selected' : '') + '>' + escapeHtml(st('capabilityReportStale')) + '</option></select></div><div><label>' + escapeHtml(st('capabilityStaleAfterHours')) + '</label><input id="secCapabilityStaleAfterHours" type="number" min="1" max="8760" step="1" value="' + escapeHtml(String(sec.capabilityStaleAfterHours || 168)) + '" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"></div><div style="display:flex;align-items:center;gap:10px;justify-content:space-between"><label style="display:flex;align-items:center;gap:8px;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="secCapabilityIncludeUnmanaged" onchange="changeSecCapabilityComplianceFilter()"' + (sec.capabilityIncludeUnmanaged === false ? '' : ' checked') + '> ' + escapeHtml(st('capabilityShowUnmanaged')) + '</label><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityCompliance()">' + escapeHtml(st('capabilityExportJson')) + '</button><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityComplianceCsv()">' + escapeHtml(st('capabilityExportCsv')) + '</button></div></div>';
     var list = (rows || []).length ? '<div style="display:grid;gap:6px;margin-top:8px">' + rows.map(function(row) {
       var cap = row.capability || {};
       var title = cap.display_name || cap.capability_id || row.item.capability_ref || '-';
@@ -2221,8 +2252,8 @@
 
   function snapshotRegistryHasIssue(item) {
     item = item || {};
-    var score = Number(item.quality_score || 0);
-    return Number(item.warning_count || 0) > 0 || (item.quality && item.quality !== 'complete') || (score > 0 && score < 100);
+    var score = snapshotRegistryQualityScore(item.quality_score);
+    return snapshotRegistryNonNegativeNumber(item.warning_count) > 0 || (item.quality && item.quality !== 'complete') || (score > 0 && score < 100);
   }
 
   function snapshotRegistrySearchText(item) {
@@ -2252,12 +2283,12 @@
     history.forEach(function(item) {
       item = item || {};
       if (snapshotRegistryHasIssue(item)) summary.issue_count += 1;
-      summary.quality_score_sum += Number(item.quality_score || 0);
+      summary.quality_score_sum += snapshotRegistryQualityScore(item.quality_score);
       var type = String(item.snapshot_type || 'unknown');
       summary.type_counts[type] = Number(summary.type_counts[type] || 0) + 1;
       var counts = item.warning_severity_counts || {};
       ['info', 'warn', 'error'].forEach(function(key) {
-        summary.warning_severity_counts[key] = Number(summary.warning_severity_counts[key] || 0) + Number(counts[key] || 0);
+        summary.warning_severity_counts[key] = snapshotRegistryNonNegativeNumber(summary.warning_severity_counts[key]) + snapshotRegistryNonNegativeNumber(counts[key]);
       });
     });
     summary.avg_quality_score = history.length ? Math.round(summary.quality_score_sum / history.length) : 0;
@@ -2267,6 +2298,34 @@
   function snapshotRegistryTypeSummary(typeCounts) {
     var entries = Object.keys(typeCounts || {}).sort().map(function(key) { return key + ':' + typeCounts[key]; });
     return entries.length ? entries.join(', ') : '-';
+  }
+
+  function snapshotRegistrySeveritySummary(counts) {
+    counts = cleanSnapshotSeverityCounts(counts);
+    return st('snapshotRegistrySeveritySummary', { error: counts.error, warn: counts.warn, info: counts.info });
+  }
+
+  function snapshotRegistrySortValue(item, sortKey) {
+    item = item || {};
+    if (sortKey === 'quality_asc') return snapshotRegistryQualityScore(item.quality_score);
+    if (sortKey === 'warnings_desc') return snapshotRegistryNonNegativeNumber(item.warning_count);
+    if (sortKey === 'type_asc') return String(item.snapshot_type || '');
+    return Date.parse(item.exported_at || '') || 0;
+  }
+
+  function sortSnapshotRegistryHistory(history, sortKey) {
+    sortKey = sortKey || 'exported_at_desc';
+    return (history || []).slice().sort(function(a, b) {
+      var av = snapshotRegistrySortValue(a, sortKey);
+      var bv = snapshotRegistrySortValue(b, sortKey);
+      if (sortKey === 'quality_asc') {
+        return (av - bv) || ((Date.parse(b.exported_at || '') || 0) - (Date.parse(a.exported_at || '') || 0));
+      }
+      if (sortKey === 'type_asc') {
+        return String(av).localeCompare(String(bv)) || ((Date.parse(b.exported_at || '') || 0) - (Date.parse(a.exported_at || '') || 0));
+      }
+      return (bv - av) || String(b.snapshot_id || '').localeCompare(String(a.snapshot_id || ''));
+    });
   }
 
   function snapshotRegistryVisibleHistory() {
@@ -2279,28 +2338,44 @@
     if (query) {
       history = history.filter(function(item) { return snapshotRegistrySearchText(item).indexOf(query) >= 0; });
     }
-    return history;
+    return sortSnapshotRegistryHistory(history, sec.snapshotRegistrySort || 'exported_at_desc');
+  }
+
+  function renderSnapshotRegistryRows() {
+    var sec = state();
+    var history = sec.snapshotExportHistory || [];
+    var visible = snapshotRegistryVisibleHistory();
+    var summary = snapshotRegistrySummary(visible);
+    var summaryText = st('snapshotRegistrySummary', { total: summary.total_count, issues: summary.issue_count, avg: summary.avg_quality_score }) + ' | ' + st('snapshotRegistryTypes', { types: snapshotRegistryTypeSummary(summary.type_counts) }) + ' | ' + snapshotRegistrySeveritySummary(summary.warning_severity_counts);
+    var rows = visible.slice(0, 5).map(function(item) {
+      var time = item.exported_at ? compactDateTime(item.exported_at) : '-';
+      var counts = cleanSnapshotSeverityCounts(item.warning_severity_counts);
+      var warningCount = snapshotRegistryNonNegativeNumber(item.warning_count);
+      var warnings = warningCount ? (' | ' + st('snapshotRegistryWarnings') + ': ' + warningCount + ' / warn ' + counts.warn + ' / info ' + counts.info + ' / error ' + counts.error) : '';
+      var quality = item.quality ? (' | ' + st('snapshotQuality', { quality: snapshotQualityLabel(item.quality) + ' ' + snapshotRegistryQualityScore(item.quality_score) + '/100' })) : '';
+      var objectText = item.object_name || item.object_id || '-';
+      var meta = (item.snapshot_type || '-') + quality + warnings + ' | ' + time + ' | ' + (item.snapshot_checksum || '-');
+      var objectMeta = st('snapshotRegistryObject') + ': ' + objectText + (item.object_group_path ? ' | ' + st('orgPath') + ': ' + item.object_group_path : '');
+      var actions = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px" onclick="copySecSnapshotHistoryField(\'' + escapeJsString(item.snapshot_id || '') + '\',&quot;snapshot_id&quot;)">' + escapeHtml(st('copySnapshotId')) + '</button><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px" onclick="copySecSnapshotHistoryField(\'' + escapeJsString(item.snapshot_id || '') + '\',&quot;snapshot_checksum&quot;)">' + escapeHtml(st('copySnapshotChecksum')) + '</button></div>';
+      return '<div class="row" style="grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 0"><div style="min-width:0"><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(item.snapshot_id || '-') + '</div><div class="item-meta" style="word-break:break-all">' + escapeHtml(objectMeta) + '</div><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(meta) + '</div></div>' + actions + '</div>';
+    }).join('');
+    return '<div class="item-meta" style="margin-top:4px">' + escapeHtml(st('snapshotRegistryCount', { count: history.length }) + ' | ' + st('snapshotRegistryFilterCount', { shown: visible.length, total: history.length })) + '</div><div class="item-meta" style="margin-top:4px">' + escapeHtml(summaryText) + '</div>' + (rows || hint(st('snapshotRegistryNoMatches')));
+  }
+
+  function updateSnapshotRegistryRows() {
+    var root = document.getElementById('secSnapshotRegistryRows');
+    if (root) root.innerHTML = renderSnapshotRegistryRows();
   }
 
   function renderSnapshotExportHistory() {
     var sec = state();
     var history = sec.snapshotExportHistory || [];
     if (!history.length) return '';
-    var visible = snapshotRegistryVisibleHistory();
-    var summary = snapshotRegistrySummary(visible);
-    var summaryText = st('snapshotRegistrySummary', { total: summary.total_count, issues: summary.issue_count, avg: summary.avg_quality_score }) + ' | ' + st('snapshotRegistryTypes', { types: snapshotRegistryTypeSummary(summary.type_counts) });
     var filter = '<select onchange="changeSecSnapshotRegistryFilter(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:160px"><option value="all"' + (sec.snapshotRegistryFilter === 'all' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterAll')) + '</option><option value="issues"' + (sec.snapshotRegistryFilter === 'issues' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterIssues')) + '</option></select>';
+    var sortValue = sec.snapshotRegistrySort || 'exported_at_desc';
+    var sort = '<select onchange="changeSecSnapshotRegistrySort(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:170px"><option value="exported_at_desc"' + (sortValue === 'exported_at_desc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortNewest')) + '</option><option value="quality_asc"' + (sortValue === 'quality_asc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortQualityAsc')) + '</option><option value="warnings_desc"' + (sortValue === 'warnings_desc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortWarningsDesc')) + '</option><option value="type_asc"' + (sortValue === 'type_asc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortTypeAsc')) + '</option></select>';
     var search = '<input value="' + escapeHtml(sec.snapshotRegistryQuery || '') + '" placeholder="' + escapeHtml(st('snapshotRegistrySearch')) + '" oninput="changeSecSnapshotRegistryQuery(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:220px">';
-    var rows = visible.slice(0, 5).map(function(item) {
-      var time = item.exported_at ? compactDateTime(item.exported_at) : '-';
-      var warnings = item.warning_count ? (' | ' + st('snapshotRegistryWarnings') + ': ' + item.warning_count + ' / warn ' + Number((item.warning_severity_counts || {}).warn || 0) + ' / info ' + Number((item.warning_severity_counts || {}).info || 0)) : '';
-      var quality = item.quality ? (' | ' + st('snapshotQuality', { quality: snapshotQualityLabel(item.quality) + ' ' + Number(item.quality_score || 0) + '/100' })) : '';
-      var objectText = item.object_name || item.object_id || '-';
-      var meta = (item.snapshot_type || '-') + quality + warnings + ' | ' + time + ' | ' + (item.snapshot_checksum || '-');
-      var objectMeta = st('snapshotRegistryObject') + ': ' + objectText + (item.object_group_path ? ' | ' + st('orgPath') + ': ' + item.object_group_path : '');
-      return '<div class="row" style="grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 0"><div style="min-width:0"><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(item.snapshot_id || '-') + '</div><div class="item-meta" style="word-break:break-all">' + escapeHtml(objectMeta) + '</div><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(meta) + '</div></div><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px" onclick="copySecSnapshotHistoryField(\'' + escapeJsString(item.snapshot_id || '') + '\',&quot;snapshot_id&quot;)">' + escapeHtml(st('copySnapshotId')) + '</button></div>';
-    }).join('');
-    return '<div style="border-top:1px solid var(--line);padding-top:8px;margin-top:4px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap"><strong>' + escapeHtml(st('snapshotExportHistory')) + '</strong><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + search + filter + '<button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="exportSecSnapshotRegistry()">' + escapeHtml(st('exportSnapshotRegistryJson')) + '</button><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger)" onclick="clearSecSnapshotRegistry()">' + escapeHtml(st('clearSnapshotRegistry')) + '</button></div></div><div class="item-meta" style="margin-top:4px">' + escapeHtml(st('snapshotRegistryCount', { count: history.length }) + ' | ' + st('snapshotRegistryFilterCount', { shown: visible.length, total: history.length })) + '</div><div class="item-meta" style="margin-top:4px">' + escapeHtml(summaryText) + '</div>' + (rows || hint(st('snapshotRegistryEmpty'))) + '</div>';
+    return '<div style="border-top:1px solid var(--line);padding-top:8px;margin-top:4px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap"><strong>' + escapeHtml(st('snapshotExportHistory')) + '</strong><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + search + filter + sort + '<button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="exportSecSnapshotRegistry()">' + escapeHtml(st('exportSnapshotRegistryJson')) + '</button><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="exportSecSnapshotRegistryCsv()">' + escapeHtml(st('exportSnapshotRegistryCsv')) + '</button><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger)" onclick="clearSecSnapshotRegistry()">' + escapeHtml(st('clearSnapshotRegistry')) + '</button></div></div><div id="secSnapshotRegistryRows">' + renderSnapshotRegistryRows() + '</div></div>';
   }
 
   function renderLastSnapshotExport() {
@@ -2329,12 +2404,18 @@
 
   global.changeSecSnapshotRegistryFilter = function changeSecSnapshotRegistryFilter(value) {
     state().snapshotRegistryFilter = value === 'issues' ? 'issues' : 'all';
-    updateLastSnapshotExportPanel();
+    updateSnapshotRegistryRows();
   };
 
   global.changeSecSnapshotRegistryQuery = function changeSecSnapshotRegistryQuery(value) {
     state().snapshotRegistryQuery = String(value || '').trim();
-    updateLastSnapshotExportPanel();
+    updateSnapshotRegistryRows();
+  };
+
+  global.changeSecSnapshotRegistrySort = function changeSecSnapshotRegistrySort(value) {
+    var allowed = { exported_at_desc: true, quality_asc: true, warnings_desc: true, type_asc: true };
+    state().snapshotRegistrySort = allowed[value] ? value : 'exported_at_desc';
+    updateSnapshotRegistryRows();
   };
 
   global.copySecSnapshotHistoryField = function copySecSnapshotHistoryField(snapshotId, field) {
@@ -2352,11 +2433,109 @@
     var sec = state();
     sec.snapshotExportHistory = [];
     sec.lastSnapshotExport = null;
+    sec.snapshotRegistryFilter = 'all';
+    sec.snapshotRegistryQuery = '';
+    sec.snapshotRegistrySort = 'exported_at_desc';
     try {
       if (global.localStorage) global.localStorage.removeItem(SNAPSHOT_EXPORT_REGISTRY_KEY);
     } catch (_) {}
     updateLastSnapshotExportPanel();
     showToast(st('snapshotRegistryCleared'), 'success');
+  };
+
+  function safeRegistryCsvCell(value) {
+    value = value === undefined || value === null ? '' : String(value);
+    return /^\s*[=+\-@]/.test(value) ? '\t' + value : value;
+  }
+
+  function snapshotRegistryCsvRows(history, context) {
+    context = context || {};
+    var header = ['registry_exported_at', 'registry_checksum', 'registry_checksum_algorithm', 'registry_filter', 'registry_query', 'registry_sort', 'registry_total_count', 'registry_count', 'registry_issue_count', 'registry_avg_quality_score', 'registry_warn_count', 'registry_info_count', 'registry_error_count', 'registry_rank', 'snapshot_id', 'snapshot_type', 'object_type', 'object_id', 'object_name', 'object_group_path', 'quality', 'quality_score', 'warning_count', 'warn_count', 'info_count', 'error_count', 'exported_at', 'snapshot_checksum', 'snapshot_checksum_algorithm'];
+    var rows = (history || []).map(function(item, index) {
+      var counts = item.warning_severity_counts || {};
+      return [
+        context.registry_exported_at || '',
+        context.registry_checksum || '',
+        context.registry_checksum_algorithm || 'fnv1a32-stable-json',
+        context.registry_filter || 'all',
+        context.registry_query || '',
+        context.registry_sort || 'exported_at_desc',
+        snapshotRegistryNonNegativeNumber(context.registry_total_count),
+        snapshotRegistryNonNegativeNumber(context.registry_count),
+        snapshotRegistryNonNegativeNumber(context.registry_issue_count),
+        snapshotRegistryQualityScore(context.registry_avg_quality_score),
+        snapshotRegistryNonNegativeNumber(context.registry_warn_count),
+        snapshotRegistryNonNegativeNumber(context.registry_info_count),
+        snapshotRegistryNonNegativeNumber(context.registry_error_count),
+        index + 1,
+        item.snapshot_id || '',
+        item.snapshot_type || '',
+        item.object_type || '',
+        item.object_id || '',
+        item.object_name || '',
+        item.object_group_path || '',
+        item.quality || '',
+        snapshotRegistryQualityScore(item.quality_score),
+        snapshotRegistryNonNegativeNumber(item.warning_count),
+        snapshotRegistryNonNegativeNumber(counts.warn),
+        snapshotRegistryNonNegativeNumber(counts.info),
+        snapshotRegistryNonNegativeNumber(counts.error),
+        item.exported_at || '',
+        item.snapshot_checksum || '',
+        item.snapshot_checksum_algorithm || ''
+      ];
+    });
+    return [header].concat(rows).map(function(row) { return row.map(function(cell) { return csvEscape(safeRegistryCsvCell(cell)); }).join(','); }).join('\r\n');
+  }
+
+  global.exportSecSnapshotRegistryCsv = function exportSecSnapshotRegistryCsv() {
+    var sec = state();
+    var history = snapshotRegistryVisibleHistory();
+    var totalHistory = sec.snapshotExportHistory || [];
+    if (!totalHistory.length) {
+      showToast(st('snapshotRegistryEmpty'), 'info');
+      return;
+    }
+    if (!history.length) {
+      showToast(st('snapshotRegistryNoMatches'), 'info');
+      return;
+    }
+    try {
+      var exportedAt = new Date().toISOString();
+      var summary = snapshotRegistrySummary(history);
+      var csvContext = {
+        registry_exported_at: exportedAt,
+        registry_checksum_algorithm: 'fnv1a32-stable-json',
+        registry_filter: sec.snapshotRegistryFilter || 'all',
+        registry_query: sec.snapshotRegistryQuery || '',
+        registry_sort: sec.snapshotRegistrySort || 'exported_at_desc',
+        registry_total_count: totalHistory.length,
+        registry_count: history.length,
+        registry_issue_count: summary.issue_count,
+        registry_avg_quality_score: summary.avg_quality_score,
+        registry_warn_count: summary.warning_severity_counts.warn,
+        registry_info_count: summary.warning_severity_counts.info,
+        registry_error_count: summary.warning_severity_counts.error
+      };
+      csvContext.registry_checksum = snapshotChecksum({
+        snapshot_type: 'snapshot_export_registry_csv',
+        registry_context: csvContext,
+        registry_items: history
+      });
+      var csv = snapshotRegistryCsvRows(history, csvContext);
+      var blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'enterprise-snapshot-registry-' + exportedAt.replace(/[:.]/g, '-').slice(0, 19) + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast(st('snapshotRegistryExported'), 'success');
+    } catch (err) {
+      showToast(st('objectSnapshotFailed') + (err && err.message || 'export failed'), 'error');
+    }
   };
 
   global.exportSecSnapshotRegistry = function exportSecSnapshotRegistry() {
@@ -2365,6 +2544,10 @@
     var totalHistory = sec.snapshotExportHistory || [];
     if (!totalHistory.length) {
       showToast(st('snapshotRegistryEmpty'), 'info');
+      return;
+    }
+    if (!history.length) {
+      showToast(st('snapshotRegistryNoMatches'), 'info');
       return;
     }
     try {
@@ -2377,6 +2560,7 @@
         exported_at: new Date().toISOString(),
         registry_filter: sec.snapshotRegistryFilter || 'all',
         registry_query: sec.snapshotRegistryQuery || '',
+        registry_sort: sec.snapshotRegistrySort || 'exported_at_desc',
         registry_total_count: totalHistory.length,
         registry_count: history.length,
         registry_summary: snapshotRegistrySummary(history),
@@ -2779,6 +2963,76 @@
     }
   };
 
+  function capabilityComplianceCsvRows(compliance, context) {
+    context = context || {};
+    compliance = compliance || {};
+    var summary = compliance.summary || {};
+    var header = ['exported_at', 'snapshot_checksum', 'snapshot_checksum_algorithm', 'user_email', 'status_filter', 'include_unmanaged', 'stale_after_hours', 'total', 'compliant', 'missing', 'version_mismatch', 'blocked_installed', 'stale', 'unmanaged_installed', 'row_type', 'status', 'policy', 'source', 'capability_ref', 'capability_version_key', 'installed_version', 'install_status', 'last_seen_at', 'policy_id', 'capability_type', 'display_name'];
+    var rows = [];
+    (compliance.items || []).forEach(function(item) {
+      var cap = item.capability || {};
+      rows.push([
+        context.exported_at || '',
+        context.snapshot_checksum || '',
+        context.snapshot_checksum_algorithm || 'fnv1a32-stable-json',
+        context.user_email || '',
+        context.status_filter || '',
+        context.include_unmanaged === false ? 'false' : 'true',
+        context.stale_after_hours || '',
+        snapshotRegistryNonNegativeNumber(summary.total),
+        snapshotRegistryNonNegativeNumber(summary.compliant),
+        snapshotRegistryNonNegativeNumber(summary.missing),
+        snapshotRegistryNonNegativeNumber(summary.version_mismatch),
+        snapshotRegistryNonNegativeNumber(summary.blocked_installed),
+        snapshotRegistryNonNegativeNumber(summary.stale),
+        snapshotRegistryNonNegativeNumber(summary.unmanaged_installed),
+        'managed',
+        item.status || '',
+        item.policy || '',
+        item.source || '',
+        item.capability_ref || '',
+        item.capability_version_key || '',
+        item.installed_version || '',
+        item.install_status || '',
+        item.last_seen_at || '',
+        item.policy_id || '',
+        cap.capability_type || item.capability_type || '',
+        cap.display_name || cap.capability_id || ''
+      ]);
+    });
+    (compliance.unmanaged_items || []).forEach(function(item) {
+      rows.push([
+        context.exported_at || '',
+        context.snapshot_checksum || '',
+        context.snapshot_checksum_algorithm || 'fnv1a32-stable-json',
+        context.user_email || '',
+        context.status_filter || '',
+        context.include_unmanaged === false ? 'false' : 'true',
+        context.stale_after_hours || '',
+        snapshotRegistryNonNegativeNumber(summary.total),
+        snapshotRegistryNonNegativeNumber(summary.compliant),
+        snapshotRegistryNonNegativeNumber(summary.missing),
+        snapshotRegistryNonNegativeNumber(summary.version_mismatch),
+        snapshotRegistryNonNegativeNumber(summary.blocked_installed),
+        snapshotRegistryNonNegativeNumber(summary.stale),
+        snapshotRegistryNonNegativeNumber(summary.unmanaged_installed),
+        'unmanaged',
+        'unmanaged_installed',
+        '',
+        '',
+        item.capability_ref || '',
+        item.capability_version_key || '',
+        item.capability_version_key || item.installed_version || '',
+        item.install_status || '',
+        item.last_seen_at || '',
+        '',
+        item.capability_type || '',
+        item.capability_ref || ''
+      ]);
+    });
+    return [header].concat(rows).map(function(row) { return row.map(function(cell) { return csvEscape(safeRegistryCsvCell(cell)); }).join(','); }).join('\r\n');
+  }
+
   global.exportSecCapabilityCompliance = function exportSecCapabilityCompliance() {
     var sec = state();
     var compliance = sec.lastCapabilityCompliance;
@@ -2814,6 +3068,51 @@
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       showSnapshotExportToast('capabilityExported', payload);
+    } catch (err) {
+      showToast(st('capabilityExportFailed') + (err && err.message || 'export failed'), 'error');
+    }
+  };
+
+  global.exportSecCapabilityComplianceCsv = function exportSecCapabilityComplianceCsv() {
+    var sec = state();
+    var compliance = sec.lastCapabilityCompliance;
+    if (!compliance || !Array.isArray(compliance.items)) {
+      showToast(st('capabilityExportEmpty'), 'info');
+      return;
+    }
+    try {
+      var exportedAt = new Date().toISOString();
+      var filters = {
+        status_filter: sec.capabilityComplianceStatusFilter || '',
+        include_unmanaged: sec.capabilityIncludeUnmanaged !== false,
+        stale_after_hours: Math.max(1, Math.min(8760, Number(sec.capabilityStaleAfterHours || 168) || 168))
+      };
+      var checksum = snapshotChecksum({
+        snapshot_type: 'capability_compliance_csv',
+        user_email: sec.selectedUserEmail || '',
+        filters: filters,
+        compliance: compliance
+      });
+      var csv = capabilityComplianceCsvRows(compliance, {
+        exported_at: exportedAt,
+        snapshot_checksum: checksum,
+        snapshot_checksum_algorithm: 'fnv1a32-stable-json',
+        user_email: sec.selectedUserEmail || '',
+        status_filter: filters.status_filter,
+        include_unmanaged: filters.include_unmanaged,
+        stale_after_hours: filters.stale_after_hours
+      });
+      var blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var safeUser = String(sec.selectedUserEmail || 'user').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'user';
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'capability-compliance-' + safeUser + '-' + exportedAt.replace(/[:.]/g, '-').slice(0, 19) + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast(st('capabilityExported'), 'success');
     } catch (err) {
       showToast(st('capabilityExportFailed') + (err && err.message || 'export failed'), 'error');
     }

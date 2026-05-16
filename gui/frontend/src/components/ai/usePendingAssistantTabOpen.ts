@@ -2,7 +2,7 @@
 import type { CreateGroupTabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
-import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
+import { isHistoryDiscussionReadOnly, getHistoryDiscussionRelation } from "./historyDiscussionUtils";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export interface PendingProjectTabOpen {
@@ -18,7 +18,9 @@ interface PendingAssistantTabOpenOptions {
     createVETab: (veId: string, veName: string, sessionId?: string) => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string) => AITab | null;
+    activateTab?: (tabId: string) => void;
     getTabState?: (tabId: string) => AITabState | undefined;
+    getTabList?: () => AITab[];
     hasProjectTab?: (projectPath: string) => boolean;
     sendMessage?: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
     pendingVEOpen?: VirtualEmployeeEntry | null;
@@ -33,7 +35,9 @@ export function usePendingAssistantTabOpen({
     createVETab,
     createGroupTab,
     createProjectTab,
+    activateTab,
     getTabState,
+    getTabList,
     hasProjectTab,
     sendMessage,
     pendingVEOpen,
@@ -46,11 +50,40 @@ export function usePendingAssistantTabOpen({
     const openHistoryDiscussion = useCallback((discussion: any) => {
         const discussionId = String(discussion?.id || "").trim();
         if (!discussionId) return;
-        const title = discussion?.topic || discussion?.question || discussionId;
+
+        const relation = getHistoryDiscussionRelation(discussion);
         const readOnly = isHistoryDiscussionReadOnly(discussion);
+
+        // If this is a discussion I initiated and it's not read-only, check if
+        // there's already an active VE tab for the same session. If so,
+        // switch to it instead of creating a new read-only history tab.
+        if (relation === "initiated_by_me" && !readOnly && activateTab && getTabList && getTabState) {
+            const tabs = getTabList();
+            // Match by session/discussion ID: VE tabs store their A2A session ID
+            // in tabState.sessionId, which equals the discussion ID from Hub.
+            const existingVETab = tabs.find(t => {
+                if (t.type !== "ve") return false;
+                const state = getTabState(t.id);
+                return state?.sessionId === discussionId;
+            });
+            if (existingVETab) {
+                activateTab(existingVETab.id);
+                return;
+            }
+            // Also check if there's already a group tab for this discussion
+            const existingGroupTab = tabs.find(t =>
+                t.type === "group" && t.discussionId === discussionId && !t.readOnly
+            );
+            if (existingGroupTab) {
+                activateTab(existingGroupTab.id);
+                return;
+            }
+        }
+
+        const title = discussion?.topic || discussion?.question || discussionId;
         const role = discussion?.local_relation || discussion?.role;
         createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role });
-    }, [createGroupTab]);
+    }, [activateTab, createGroupTab, getTabList, getTabState]);
 
     useEffect(() => {
         if (!pendingVEOpen) return;

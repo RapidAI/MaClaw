@@ -1429,8 +1429,9 @@ type AIAssistantBackgroundTaskResult struct {
 }
 
 type AIAssistantStreamEvent struct {
-	RequestID string `json:"request_id,omitempty"`
-	Text      string `json:"text,omitempty"`
+	RequestID  string `json:"request_id,omitempty"`
+	Text       string `json:"text,omitempty"`
+	SessionKey string `json:"session_key,omitempty"` // userID for per-tab event routing
 }
 
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
@@ -1551,7 +1552,7 @@ func (a *App) runAIAssistantMessageAsync(req AIAssistantSendRequest, hubClient *
 		UIAction:                    req.UIAction,
 	}
 	emitEvent := func(name, value string) {
-		payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value})
+		payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value, SessionKey: userID})
 		if err != nil {
 			log.Printf("[SendAIAssistantMessage] marshal %s event failed: %v", name, err)
 			return
@@ -1725,6 +1726,7 @@ func (a *App) runAIAssistantMessageAsync(req AIAssistantSendRequest, hubClient *
 		len(text))
 
 	// Emit the final response via event so the frontend can process it.
+	resp.SessionKey = userID
 	a.emitAIAssistantResponse(requestID, resp)
 }
 
@@ -1888,7 +1890,14 @@ func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
 		return false, fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
-	return handler.InjectSupplementary(desktopUserID, text), nil
+	// Use the currently active loop's userID (h.lastUserID) rather than
+	// hardcoding desktopUserID. This ensures injection works for project tabs
+	// whose userID is "desktop-user:{path}".
+	targetUserID := handler.lastUserID
+	if targetUserID == "" {
+		targetUserID = desktopUserID
+	}
+	return handler.InjectSupplementary(targetUserID, text), nil
 }
 
 // ResolveCriticalConfirm is called by the desktop frontend when the user

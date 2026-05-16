@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -172,6 +173,61 @@ func TestSendHeartbeatLockedDisablesDigitalEmployeeAuthorization(t *testing.T) {
 	}
 	if auth.Active || auth.Enabled || auth.Reason != "disabled" {
 		t.Fatalf("auth = %+v, want inactive disabled", *auth)
+	}
+}
+
+func TestStatusForDisabledRecordForcesDigitalEmployeeAuthorizationInactive(t *testing.T) {
+	cfg := config.Default()
+	cfg.Center.Enabled = true
+	cfg.Server.PublicBaseURL = "https://hub.example.com"
+
+	settings := newFakeSettingsRepo()
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		Disabled:   true,
+		HubID:      "hub_disabled",
+		DigitalEmployeeAuthorization: &corelib.DigitalEmployeeAuthorization{
+			Quota:     3,
+			Enabled:   true,
+			ExpiresAt: expiresAt,
+			Active:    true,
+		},
+	})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	status, err := NewService(cfg, settings).Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	auth := status.DigitalEmployeeAuthorization
+	if auth == nil || auth.Active || auth.Enabled || auth.Reason != "disabled" || auth.Quota != 3 {
+		t.Fatalf("status auth = %+v, want inactive disabled while preserving quota", auth)
+	}
+}
+
+func TestLoadDigitalEmployeeAuthorizationForDisabledRecordForcesInactive(t *testing.T) {
+	settings := newFakeSettingsRepo()
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	if err := settings.Set(context.Background(), systemKeyCenterRegistration, mustJSON(registrationRecord{
+		Registered: true,
+		Disabled:   true,
+		HubID:      "hub_disabled",
+		HubSecret:  "secret_disabled",
+		DigitalEmployeeAuthorization: &corelib.DigitalEmployeeAuthorization{
+			Quota:     3,
+			Enabled:   true,
+			ExpiresAt: expiresAt,
+			Active:    true,
+		},
+	})); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	auth := LoadDigitalEmployeeAuthorization(context.Background(), settings)
+	if auth == nil || auth.Active || auth.Enabled || auth.Reason != "disabled" || auth.Quota != 3 {
+		t.Fatalf("auth = %+v, want inactive disabled while preserving quota", auth)
 	}
 }
 
@@ -460,16 +516,23 @@ func TestInstallationIDIsGeneratedOnceAndReused(t *testing.T) {
 func TestRegisterFallsBackToStoredAdminEmail(t *testing.T) {
 	var gotOwnerEmail string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/hubs/register" {
-			t.Fatalf("unexpected path %q", r.URL.Path)
+		if r.URL.Path == "/api/hubs/register" {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			gotOwnerEmail, _ = payload["owner_email"].(string)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"hub_id":"hub_fallback","hub_secret":"secret_fallback"}`))
+			return
 		}
-		var payload map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Fatalf("Decode() error = %v", err)
+		// Accept heartbeat requests triggered by startHeartbeatLoop after registration.
+		if strings.Contains(r.URL.Path, "/heartbeat") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
 		}
-		gotOwnerEmail, _ = payload["owner_email"].(string)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"hub_id":"hub_fallback","hub_secret":"secret_fallback"}`))
+		t.Fatalf("unexpected path %q", r.URL.Path)
 	}))
 	defer server.Close()
 

@@ -196,6 +196,10 @@
   function jsString(value) {
     return JSON.stringify(String(value || '')).replace(/</g, '\\u003c');
   }
+
+  function jsAttrString(value) {
+    return escapeHtml(jsString(value));
+  }
   function currentVEQuery() {
     var input = document.getElementById('veHistorySearchInput');
     return input ? String(input.value || '').trim().toLowerCase() : '';
@@ -333,8 +337,8 @@
       return;
     }
     container.innerHTML = intro + veHistoryDiscussions.map(function(d) {
-      var idExpr = JSON.stringify(d.id || '');
-      var employeeMeta = d._employee_label ? ' - ' + d._employee_label : '';
+      var idExpr = jsAttrString(d.id || '');
+      var employeeMeta = d._employee_label ? ' - ' + escapeHtml(d._employee_label) : '';
       return '<div class="item" style="margin-bottom:8px;padding:10px 12px">' +
         '<div class="item-head"><div><div class="item-title">' + escapeHtml(truncate(discussionTitle(d), 90)) + '</div>' +
         '<div class="item-meta">' + escapeHtml(d.status || '-') + ' - ' + escapeHtml(formatDate(d.updated_at || d.created_at)) + employeeMeta + ' - ' + escapeHtml((d.participant_ids || []).join(', ')) + '</div></div>' +
@@ -571,7 +575,7 @@
     return (items || []).map(function(item) {
       var label = escapeHtml(item.label || 'file');
       if (!item.url) return label;
-      return '<button type="button" class="btn-ghost" style="height:24px;font-size:11px;padding:0 8px" onclick="veDownloadHistoryAttachment(' + jsString(item.url) + ',' + jsString(item.filename || item.label || 'attachment') + ')">' + label + '</button>';
+      return '<button type="button" class="btn-ghost" style="height:24px;font-size:11px;padding:0 8px" onclick="veDownloadHistoryAttachment(' + jsAttrString(item.url) + ',' + jsAttrString(item.filename || item.label || 'attachment') + ')">' + label + '</button>';
     }).join(' ');
   }
 

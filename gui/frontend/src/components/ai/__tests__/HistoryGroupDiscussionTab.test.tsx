@@ -189,6 +189,19 @@ describe("HistoryGroupDiscussionTab", () => {
     });
 
 
+    it("keeps initiator-role details read-only when local relation is missing", async () => {
+        getDetailMock.mockResolvedValue(detail({
+            discussion: { status: "open", role: "initiator", readonly: false, participant_ids: ["me", "ve-a"] },
+        }));
+        render(<HistoryGroupDiscussionTab discussionId="disc-1" title="Missing relation" readOnly={false} theme={theme} lang="en" />);
+
+        const input = await screen.findByPlaceholderText("Read-only session");
+        expect((input as HTMLTextAreaElement).disabled).toBe(true);
+        fireEvent.change(input, { target: { value: "should not send" } });
+        fireEvent.click(screen.getByText("Send"));
+        expect(sendHistoryMessageMock).not.toHaveBeenCalled();
+    });
+
     it("lets authoritative initiated detail override a stale read-only summary", async () => {
         getDetailMock.mockResolvedValue(detail({
             discussion: { status: "open", local_relation: "initiated_by_me", readonly: false, participant_ids: ["me", "ve-a"] },

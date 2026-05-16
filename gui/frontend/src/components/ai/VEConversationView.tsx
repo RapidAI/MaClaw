@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
 
 // --- Types ---
@@ -543,10 +544,10 @@ export function VEConversationView({
                                 borderLeft: `3px solid ${theme.responseBorderLeft}`,
                                 fontSize: 13,
                                 color: theme.text,
-                                whiteSpace: "pre-wrap",
+                                wordBreak: "break-word",
                             }}
                         >
-                            {state.streamContent}
+                            <MessageContentRenderer content={state.streamContent} theme={theme} />
                             <span className="ve-cursor-blink" style={{ opacity: 0.6 }}>▊</span>
                         </div>
                     </div>
@@ -713,11 +714,10 @@ function MessageBubble({ message, theme, isZh }: MessageBubbleProps) {
                     borderRight: isUser ? `3px solid ${theme.borderLeft}` : "none",
                     fontSize: 13,
                     color: theme.text,
-                    whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
                 }}
             >
-                {message.content}
+                <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />
                 {message.sendFailed && (
                     <span
                         data-testid={`ve-msg-failed-${message.id}`}

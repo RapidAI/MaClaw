@@ -41,11 +41,12 @@ describe('SidebarHistorySessions', () => {
         expect(await screen.findByText('Contract review')).toBeTruthy();
         expect(screen.getByText('Vendor audit')).toBeTruthy();
         expect(screen.getByText('Archived research')).toBeTruthy();
-        expect(screen.getAllByText('\u2197')).toHaveLength(3);
-        expect(screen.getAllByText('Started by me')).toHaveLength(3);
+        expect(screen.getAllByText('\u2197')).toHaveLength(2);
+        expect(screen.getAllByText('Started by me')).toHaveLength(2);
         expect(screen.getAllByText('\u2199')).toHaveLength(2);
         expect(screen.getAllByText('My digital employee invited')).toHaveLength(2);
-        expect(screen.getAllByText('Read-only')).toHaveLength(3);
+        expect(screen.getAllByText('Read-only')).toHaveLength(4);
+        expect(screen.getByText('History session')).toBeTruthy();
 
         fireEvent.doubleClick(screen.getByText('Vendor audit'));
         expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: 'disc-2', local_relation: 'owned_ve_invited' }));

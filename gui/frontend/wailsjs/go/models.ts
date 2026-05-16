@@ -161,10 +161,6 @@ export namespace main {
 	    show_iflow: boolean;
 	    show_kilo: boolean;
 	    show_cursor: boolean;
-	    show_nav_monitor?: boolean;
-	    show_nav_skills?: boolean;
-	    show_nav_mcp?: boolean;
-	    show_nav_gossip?: boolean;
 	    language: string;
 	    power_optimization: boolean;
 	    screen_dim_timeout_min: number;
@@ -324,10 +320,6 @@ export namespace main {
 	        this.show_iflow = source["show_iflow"];
 	        this.show_kilo = source["show_kilo"];
 	        this.show_cursor = source["show_cursor"];
-	        this.show_nav_monitor = source["show_nav_monitor"];
-	        this.show_nav_skills = source["show_nav_skills"];
-	        this.show_nav_mcp = source["show_nav_mcp"];
-	        this.show_nav_gossip = source["show_nav_gossip"];
 	        this.language = source["language"];
 	        this.power_optimization = source["power_optimization"];
 	        this.screen_dim_timeout_min = source["screen_dim_timeout_min"];

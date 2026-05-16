@@ -17,7 +17,6 @@ export interface VirtualEmployeeEntry {
 
 export interface VETabProps {
     onStartConversation: (ve: VirtualEmployeeEntry) => void;
-    onAddToGroup: (ve: VirtualEmployeeEntry) => void;
     theme: Theme;
     lang?: string;
     /** Override for testing - if provided, used instead of the Wails binding */
@@ -26,6 +25,8 @@ export interface VETabProps {
     favoriteEmployeeIds?: string[];
     /** Called when user clicks "Set as Favorite" in context menu */
     onSetFavorite?: (ve: VirtualEmployeeEntry) => void;
+    /** Called when user clicks "Remove from Favorite" in context menu */
+    onRemoveFavorite?: (ve: VirtualEmployeeEntry) => void;
 }
 
 // --- Helpers ---
@@ -50,7 +51,7 @@ export function policyIcon(policy: string): string {
 
 // --- Component ---
 
-export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, lang, listVirtualEmployees, favoriteEmployeeIds, onSetFavorite }: VETabProps) {
+export function VirtualEmployeeTab({ onStartConversation, theme, lang, listVirtualEmployees, favoriteEmployeeIds, onSetFavorite, onRemoveFavorite }: VETabProps) {
     const [employees, setEmployees] = useState<VirtualEmployeeEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>("");
@@ -151,6 +152,31 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
         return () => document.removeEventListener("click", handler);
     }, [contextMenu]);
 
+    // Clamp context menu position to viewport bounds
+    const menuRef = useRef<HTMLDivElement>(null);
+    const [menuPos, setMenuPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+    useEffect(() => {
+        if (!contextMenu) return;
+        // Start at click position, then adjust after menu renders
+        setMenuPos({ x: contextMenu.x, y: contextMenu.y });
+        // Use rAF to measure after paint
+        const raf = requestAnimationFrame(() => {
+            const el = menuRef.current;
+            if (!el) return;
+            const rect = el.getBoundingClientRect();
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            let x = contextMenu.x;
+            let y = contextMenu.y;
+            if (x + rect.width > vw - 4) x = vw - rect.width - 4;
+            if (y + rect.height > vh - 4) y = vh - rect.height - 4;
+            if (x < 4) x = 4;
+            if (y < 4) y = 4;
+            setMenuPos({ x, y });
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [contextMenu]);
+
     // --- Render ---
 
     const isZh = !lang || lang.startsWith("zh");
@@ -247,68 +273,63 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
             ))}
 
             {/* Context menu */}
-            {contextMenu && (
+            {contextMenu && (() => {
+                const isFav = favoriteEmployeeIds?.includes(contextMenu.ve.id);
+                const hasFavAction = !!(onSetFavorite || onRemoveFavorite);
+                return (
                 <div
+                    ref={menuRef}
                     data-testid="ve-context-menu"
                     role="menu"
                     style={{
                         position: "fixed",
-                        left: contextMenu.x,
-                        top: contextMenu.y,
+                        left: menuPos.x,
+                        top: menuPos.y,
                         background: theme.bg,
                         border: `1px solid ${theme.divider}`,
                         borderRadius: 6,
                         boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
                         zIndex: 9999,
-                        minWidth: 120,
+                        minWidth: 160,
                         padding: "4px 0",
                     }}
                 >
+                    {/* 对话 */}
                     <div
                         data-testid="ve-menu-conversation"
                         role="menuitem"
                         onClick={() => { onStartConversation(contextMenu.ve); setContextMenu(null); }}
-                        style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        [Chat] {isZh ? "\u5bf9\u8bdd" : "Chat"}
+                        <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>💬</span>
+                        <span>{isZh ? "对话" : "Chat"}</span>
                     </div>
-                    <div
-                        data-testid="ve-menu-add-group"
-                        role="menuitem"
-                        onClick={() => { onAddToGroup(contextMenu.ve); setContextMenu(null); }}
-                        style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
-                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
-                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
-                    >
-                        [Group] {isZh ? "\u6dfb\u52a0\u5230\u7fa4\u804a" : "Add to group"}
-                    </div>
-                    {onSetFavorite && (
+                    {/* 设为常用 / 取消常用 — only when callbacks are wired */}
+                    {hasFavAction && (
                         <div
                             data-testid="ve-menu-set-favorite"
                             role="menuitem"
                             onClick={() => {
-                                if (!favoriteEmployeeIds?.includes(contextMenu.ve.id)) {
+                                if (isFav && onRemoveFavorite) {
+                                    onRemoveFavorite(contextMenu.ve);
+                                } else if (!isFav && onSetFavorite) {
                                     onSetFavorite(contextMenu.ve);
                                 }
                                 setContextMenu(null);
                             }}
-                            style={{
-                                padding: "6px 14px",
-                                cursor: favoriteEmployeeIds?.includes(contextMenu.ve.id) ? "default" : "pointer",
-                                fontSize: 13,
-                                color: favoriteEmployeeIds?.includes(contextMenu.ve.id) ? theme.textMuted : theme.text,
-                                opacity: favoriteEmployeeIds?.includes(contextMenu.ve.id) ? 0.6 : 1,
-                            }}
-                            onMouseEnter={(e) => { if (!favoriteEmployeeIds?.includes(contextMenu.ve.id)) (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            * {favoriteEmployeeIds?.includes(contextMenu.ve.id) ? (isZh ? "\u5df2\u662f\u5e38\u7528" : "Already favorite") : (isZh ? "\u8bbe\u4e3a\u5e38\u7528" : "Set as favorite")}
+                            <span style={{ width: 16, textAlign: "center", fontSize: 14, flexShrink: 0 }}>{isFav ? "☆" : "★"}</span>
+                            <span>{isFav ? (isZh ? "取消常用" : "Remove from favorites") : (isZh ? "设为常用" : "Set as favorite")}</span>
                         </div>
                     )}
                 </div>
-            )}
+                );
+            })()}
         </div>
     );
 }

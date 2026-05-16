@@ -67,6 +67,10 @@ export interface UseAITabManagerResult {
     getLastActiveAt: (tabId: string) => number;
     /** Check whether a project tab with the given path already exists */
     hasProjectTab: (projectPath: string) => boolean;
+    /** Get the current tab list (reads from ref, always fresh) */
+    getTabs: () => AITab[];
+    /** Upgrade a VE tab to a group tab when participants are added */
+    upgradeVETabToGroup: (tabId: string, participants: string[], discussionId?: string) => AITab | null;
     /** Error message when max tabs exceeded (cleared after reading) */
     tabLimitError: string | null;
     /** Clear the tab limit error */
@@ -109,13 +113,32 @@ function loadPersistedProjectTabs(): AITab[] {
             .map(t => ({
                 id: t.id,
                 type: "project" as AITabType,
-                title: t.title || t.projectPath,
+                title: sanitizeProjectTabTitle(t.title || t.projectPath, t.projectPath),
                 projectPath: t.projectPath,
                 closable: true,
             }));
     } catch {
         return [];
     }
+}
+
+/**
+ * Sanitize a project tab title for display. If the title looks like a raw
+ * file path or a long internal task ID, extract a friendlier short name.
+ */
+function sanitizeProjectTabTitle(title: string, projectPath?: string): string {
+    if (!title) return projectPath ? sanitizeProjectTabTitle(projectPath) : "Task";
+    // If title looks like a task ID (task-<digits>), shorten it
+    if (/^task-\d{10,}$/.test(title)) {
+        return "Task " + title.slice(5, 13) + "\u2026";
+    }
+    // If title looks like a file path (contains \ or / with multiple segments), extract last segment
+    if ((title.includes("\\") || title.includes("/")) && title.length > 30) {
+        const segments = title.replace(/\\/g, "/").split("/").filter(Boolean);
+        const last = segments[segments.length - 1] || title;
+        return last.replace(/\/$/, "");
+    }
+    return title;
 }
 
 /**
@@ -172,7 +195,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
                     newTabs.push({
                         id: entry.id,
                         type: "project" as AITabType,
-                        title: entry.title || entry.projectPath,
+                        title: sanitizeProjectTabTitle(entry.title || entry.projectPath, entry.projectPath),
                         projectPath: entry.projectPath,
                         closable: true,
                     });
@@ -352,7 +375,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         const newTab: AITab = {
             id: tabId,
             type: "project",
-            title: taskTitle,
+            title: sanitizeProjectTabTitle(taskTitle, projectPath),
             projectPath,
             closable: true,
         };
@@ -457,6 +480,30 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return tabStateRef.current.tabs.some(t => t.type === "project" && t.projectPath === projectPath);
     }, []);
 
+    /** Get the current tab list from the ref (always fresh, no stale closure). */
+    const getTabs = useCallback((): AITab[] => {
+        return tabStateRef.current.tabs;
+    }, []);
+
+    /** Upgrade a VE tab to a group tab (when participants are added). */
+    const upgradeVETabToGroup = useCallback((tabId: string, participants: string[], discussionId?: string): AITab | null => {
+        const prev = tabStateRef.current;
+        const tab = prev.tabs.find(t => t.id === tabId);
+        if (!tab || (tab.type !== "ve" && tab.type !== "group")) return null;
+
+        const upgraded: AITab = {
+            ...tab,
+            type: "group",
+            participants: participants,
+            discussionId: discussionId || tab.discussionId,
+        };
+        updateTabState(() => ({
+            ...prev,
+            tabs: prev.tabs.map(t => t.id === tabId ? upgraded : t),
+        }));
+        return upgraded;
+    }, [updateTabState]);
+
     const clearTabLimitError = useCallback(() => {
         setTabLimitError(null);
     }, []);
@@ -472,7 +519,9 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         saveTabState,
         getTabState,
         getLastActiveAt,
+        getTabs,
         hasProjectTab,
+        upgradeVETabToGroup,
         tabLimitError,
         clearTabLimitError,
     };

@@ -9,6 +9,15 @@ import { remoteCardStyle, remoteMutedCardStyle, remoteSectionTitleStyle, remoteB
 import { MemoryHealthDialog } from './MemoryHealthDialog';
 import { SecurityEventsDialog } from './SecurityEventsDialog';
 
+// Load Monoton font for the stylized "6" in product name
+const monotonLink = document.querySelector('link[href*="Monoton"]');
+if (!monotonLink) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=Monoton&display=swap';
+    document.head.appendChild(link);
+}
+
 type BrandInfo = {
     id: string;
     displayName: string;
@@ -69,6 +78,36 @@ export function AboutPanel({
         ? '\u864e\u722a\u00b7\u7a0b\u542f TigerClaw'
         : t("aboutProductName");
 
+    // Render product name with Monoton-styled "6"
+    const renderProductName = () => {
+        if (brandInfo?.id === 'qianxin') {
+            return <>{productName}</>;
+        }
+        const raw = productName;
+        const sixIndex = raw.indexOf('6');
+        if (sixIndex === -1) {
+            return <>{raw}</>;
+        }
+        return (
+            <>
+                {raw.slice(0, sixIndex)}
+                <span style={{
+                    fontFamily: "'Monoton', cursive",
+                    fontSize: '1.15em',
+                    verticalAlign: 'baseline',
+                    letterSpacing: '-0.02em',
+                    background: 'linear-gradient(180deg, #a8d4ff 0%, #4a9eff 30%, #1a6dd4 60%, #0d3f80 100%)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                    backgroundClip: 'text',
+                    textShadow: '0 1px 2px rgba(26, 109, 212, 0.3)',
+                    filter: 'drop-shadow(0 0 1px rgba(74, 158, 255, 0.4))',
+                }}>6</span>
+                {raw.slice(sixIndex + 1)}
+            </>
+        );
+    };
+
     const [showHealthDialog, setShowHealthDialog] = useState(false);
     const [showSecurityEvents, setShowSecurityEvents] = useState(false);
     const [showErrorLog, setShowErrorLog] = useState(false);
@@ -96,7 +135,7 @@ export function AboutPanel({
                         <img src={currentIcon} alt="Logo" className="about-hero-card__icon" />
                     </div>
                     <div className="about-hero-card__body">
-                        <h2 className="about-hero-card__title">{productName}</h2>
+                        <h2 className="about-hero-card__title">{renderProductName()}</h2>
                         <p className="about-hero-card__slogan">{slogan}</p>
                         <div className="about-version-row">
                             <span className="about-version-badge">{t("version")} {appVersion}</span>

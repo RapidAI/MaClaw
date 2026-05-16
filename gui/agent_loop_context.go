@@ -38,6 +38,7 @@ type LoopContext struct {
 	JobID      string       // associated trace job
 	RunID      string       // associated trace run
 	Platform   string       // originating IM platform ("desktop", "weixin_local", etc.)
+	UserID     string       // owning user/session ID (e.g. "desktop-user", "desktop-user:{path}")
 	Lang       string       // user language ("zh", "en"); used by i18n.T for progress messages
 	StartedAt  time.Time    // when this loop was spawned
 

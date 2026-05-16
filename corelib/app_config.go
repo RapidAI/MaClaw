@@ -29,12 +29,6 @@ type AppConfig struct {
 	ShowIFlow           bool            `json:"show_iflow"`
 	ShowKilo            bool            `json:"show_kilo"`
 	ShowCursor          bool            `json:"show_cursor"`
-	// Sidebar navigation visibility (nil = visible by default).
-	// AI 助手, 设置, 关于 are always visible and not configurable.
-	ShowNavMonitor       *bool  `json:"show_nav_monitor,omitempty"`
-	ShowNavSkills        *bool  `json:"show_nav_skills,omitempty"`
-	ShowNavMCP           *bool  `json:"show_nav_mcp,omitempty"`
-	ShowNavGossip        *bool  `json:"show_nav_gossip,omitempty"`
 	Language             string `json:"language"`
 	PowerOptimization    bool   `json:"power_optimization"`
 	ScreenDimTimeoutMin  int    `json:"screen_dim_timeout_min"`

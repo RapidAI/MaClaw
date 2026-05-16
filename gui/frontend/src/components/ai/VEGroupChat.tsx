@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 import type { Theme } from "./aiAssistantPanelTheme";
 
@@ -388,11 +389,10 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                     borderLeft: isUser ? "none" : `3px solid ${color}`,
                     fontSize: 13,
                     color: theme.text,
-                    whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
                 }}
             >
-                {message.content}
+                <MessageContentRenderer content={message.content} theme={theme} isUser={isUser} />
             </div>}
             {/* Attachments */}
             {hasAttachments && (

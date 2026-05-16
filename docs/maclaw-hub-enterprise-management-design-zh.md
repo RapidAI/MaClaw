@@ -171,6 +171,7 @@ V1 先完成概览、生效策略、能力包占位、成员弹窗。审计和�
 - 模型服务组选择器提供清空覆盖操作，便于部门或用户快速回到继承链路。
 - 用户详情展示模型路由、默认模型、额度/有效期、设备与会话摘要。
 - 能力包区支持必装、推荐、禁止策略，以及合规状态筛选和导出。
+- V2 合规结果除 JSON 外新增 CSV 导出，字段包含导出时间、快照 checksum、筛选条件、汇总计数、托管/额外安装行、策略来源、期望版本、已装版本、安装状态和最后上报时间，便于审计人员直接进入表格或 SIEM 复核。
 - 能力包选择时会自动带入市场当前版本，管理员仍可手动改为固定版本或留空使用 auto。
 - 能力包下发区会显示当前下发范围，并在创建策略时附带部门名称和组织路径上下文。
 - 最近变更页支持按操作、日期、关键词过滤，并支持 JSON/CSV 导出。
@@ -184,13 +185,19 @@ V1 先完成概览、生效策略、能力包占位、成员弹窗。审计和�
 - 快照范围和 snapshot_summary 同时包含 quality，按 complete、partial、incomplete 标记快照质量。
 - 快照质量还包含 quality_score 和 warning_severity_counts，用于自动审计评分和告警分级。
 - 对象总快照导出前会执行质量预检；当快照不是 complete 时，确认框会提示缺失分区、质量分和 warning/info 摘要，避免管理员误导出半成品快照。
-- 导出成功后会在对象审计区保留最近一次快照导出的 snapshot_id、类型、时间和 checksum，并提供复制 ID/校验值按钮，方便审计留痕和跨系统沟通。
+- 导出成功后会在对象审计区保留最近一次快照导出的 snapshot_id、类型、时间和 checksum，并提供复制 ID/校验值按钮；登记簿每条记录也可复制 ID 和 checksum，方便审计留痕和跨系统沟通。
 - 浏览器会维护最近 20 条快照导出登记簿，并可导出 snapshot_export_registry JSON，用于把对象快照、策略快照、能力包快照和审计快照串成一次管理员操作留痕。
 - 快照导出登记簿会持久化到浏览器本地存储，刷新页面后仍可追溯，并支持管理员主动清空本地登记簿。
+- 清空登记簿时会同时重置本地搜索和风险筛选状态，避免下一次导出记录被旧条件隐藏。
 - 快照导出登记簿每条记录会保留对象、组织路径、quality_score 和 warning_severity_counts，登记簿列表中可直接扫描低质量或有告警的导出记录。
-- 登记簿支持“仅看低质量/告警”筛选，导出登记簿时会保留 registry_filter、registry_total_count 和 registry_count，便于单独复核有风险的快照导出。
+- 登记簿支持“仅看低质量/告警”筛选，并可按最新、低质量优先、告警数优先、类型排序；导出登记簿时会保留 registry_filter、registry_sort、registry_total_count 和 registry_count，便于单独复核有风险的快照导出。
 - 登记簿同时支持按 snapshot_id、对象、组织路径和 checksum 搜索，导出登记簿时会保留 registry_query，方便将一次专项复核的搜索条件一起留档。
-- 登记簿列表和导出 JSON 会计算 registry_summary 和 registry_total_summary，包含总数、风险数、平均质量分、类型分布和告警分级汇总，便于管理员快速判断导出健康度。
+- 登记簿列表和导出 JSON 会计算 registry_summary 和 registry_total_summary，包含总数、风险数、平均质量分、类型分布和告警分级汇总；列表顶部会直接展示 error/warn/info 分级汇总，便于管理员快速判断导出健康度。
+- 登记簿除 JSON 外还支持导出 CSV，字段覆盖 registry_exported_at、registry_checksum、registry_checksum_algorithm、registry_filter、registry_query、registry_sort、registry_total_count、registry_count、registry_issue_count、registry_avg_quality_score、registry_warn_count、registry_info_count、registry_error_count、registry_rank、snapshot_id、对象、组织路径、质量分、告警分级和 checksum，并带 UTF-8 BOM、批次 checksum 和 checksum 算法，方便进入表格或 SIEM 流程复核并还原筛选排序上下文。
+- 登记簿从本地存储恢复时会规范化数值和告警分级计数，CSV 公式防护会覆盖前导空白的 =/+/-/@ 字段。
+- 登记簿质量分会被限制在 0-100，告警计数会被限制为非负值，避免异常本地数据影响健康度汇总。
+- 登记簿导出会在当前搜索/筛选无匹配时提示而不生成空文件，CSV 字段会避免被表格软件误解为公式。
+- 登记簿自身的 JSON/CSV 导出不会反写到登记簿，避免因复核导出操作产生递归噪声。
 - 对象总快照包含 snapshot_warnings、snapshot_warning_details 和 warning_count，用于提示缺失分区、未加载审计或当前对象没有审计命中，并给出 severity、section 和说明。
 
 ## 10. 快照与审计导出契约

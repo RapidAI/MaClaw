@@ -25,6 +25,7 @@ import { IMAuditPanel } from './components/remote/IMAuditPanel';
 import { OnboardingWizard } from './components/remote/OnboardingWizard';
 import { AIAssistantPanel } from './components/ai/AIAssistantPanel';
 import type { VirtualEmployeeEntry } from './components/ai/VirtualEmployeeTab';
+import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureTabs } from './components/ai/digitalEmployeeFeature';
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
@@ -61,7 +62,7 @@ import { RemoteSessionsPage } from './components/pages/RemoteSessionsPage';
 import { SkillsPage } from './components/pages/SkillsPage';
 import { MCPPage } from './components/pages/MCPPage';
 import { GossipPage } from './components/pages/GossipPage';
-import { AgentNetTabContainer } from './components/pages/AgentNetTabContainer';
+
 import { StartupPopup } from './components/modals/StartupPopup';
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
@@ -276,11 +277,17 @@ function App() {
     }, [digitalEmployeeFeatureStatus?.authorization?.expires_at, refreshDigitalEmployeeFeatureStatus]);
 
     // Middle panel tabs require active HubCenter authorization and an active local digital employee.
-    const veAuthorized = !!digitalEmployeeFeatureStatus?.visible;
-    const veSettingsAuthorized = !!digitalEmployeeFeatureStatus?.authorization?.active && Number(digitalEmployeeFeatureStatus?.authorization?.quota || 0) > 0;
+    const digitalEmployeeAuthorizationUsable = isDigitalEmployeeAuthorizationUsable(digitalEmployeeFeatureStatus?.authorization);
+    const veAuthorized = shouldShowDigitalEmployeeFeatureTabs(digitalEmployeeFeatureStatus);
+    const veSettingsAuthorized = digitalEmployeeAuthorizationUsable;
     useEffect(() => {
         if (!veSettingsAuthorized && settingsTab === 'virtualEmployee') setSettingsTab('general');
     }, [veSettingsAuthorized, settingsTab]);
+    useEffect(() => {
+        if (veAuthorized) return;
+        setPendingVEOpen(null);
+        setPendingHistoryDiscussionOpen(null);
+    }, [veAuthorized]);
     // Resolve favorite IDs to display slots
     const favoriteEmployeeSlots = useMemo(() => {
         return favoriteEmployeeIds.map(id => {
@@ -329,17 +336,10 @@ function App() {
         if (ve) {
             setPendingVEOpen(ve);
         } else {
-            // VE not in list yet (still loading or removed) — create a minimal entry to open the tab
+            // VE not in list yet (still loading or removed): create a minimal entry to open the tab
             setPendingVEOpen({ id: veId, name: veId.slice(0, 8), skill_description: '', access_policy: 'public', status: 'active', online_status: 'offline' });
         }
     }, [veList]);
-
-    const updateSidebarNavVisibility = useCallback((key: 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet', visible: boolean) => {
-        if (!config) return;
-        const newConfig = new main.AppConfig({ ...config, [key]: visible } as any);
-        setConfig(newConfig);
-        SaveConfig(newConfig);
-    }, [config]);
 
     const imAuditBtnStyle: React.CSSProperties = {
         fontSize: '0.68rem',
@@ -473,6 +473,8 @@ function App() {
     const [toastMessage, setToastMessage] = useState<string>("");
     const [showToast, setShowToast] = useState(false);
     const [sensitivePermissionRequest, setSensitivePermissionRequest] = useState<SensitivePermissionRequest | null>(null);
+    const sensitivePermissionRequestRef = useRef<SensitivePermissionRequest | null>(null);
+    const [sensitivePermissionQueue, setSensitivePermissionQueue] = useState<SensitivePermissionRequest[]>([]);
     const [skills, setSkills] = useState<main.Skill[]>([]);
 
     const [showAddSkillModal, setShowAddSkillModal] = useState(false);
@@ -521,11 +523,29 @@ function App() {
 
 
     useEffect(() => {
+        sensitivePermissionRequestRef.current = sensitivePermissionRequest;
+    }, [sensitivePermissionRequest]);
+
+    useEffect(() => {
         const unsubscribe = EventsOn('digital-employee-sensitive-request', (payload: SensitivePermissionRequest) => {
-            setSensitivePermissionRequest(payload);
+            const requestId = String(payload?.request_id || '').trim();
+            if (!requestId) return;
+            const request = { ...payload, request_id: requestId };
+            const current = sensitivePermissionRequestRef.current;
+            if (!current) {
+                sensitivePermissionRequestRef.current = request;
+                setSensitivePermissionRequest(request);
+            } else if (current.request_id !== requestId) {
+                setSensitivePermissionQueue(queue => queue.some(item => item.request_id === requestId) ? queue : [...queue, request]);
+            }
             const timeoutMs = Math.max(1, Number(payload?.timeout_seconds || 60)) * 1000;
             window.setTimeout(() => {
-                setSensitivePermissionRequest(current => current?.request_id === payload.request_id ? null : current);
+                setSensitivePermissionRequest(current => {
+                    if (current?.request_id !== requestId) return current;
+                    sensitivePermissionRequestRef.current = null;
+                    return null;
+                });
+                setSensitivePermissionQueue(queue => queue.filter(item => item.request_id !== requestId));
             }, timeoutMs);
         });
         return () => {
@@ -534,10 +554,19 @@ function App() {
         };
     }, []);
 
+    useEffect(() => {
+        if (sensitivePermissionRequest || sensitivePermissionQueue.length === 0) return;
+        sensitivePermissionRequestRef.current = sensitivePermissionQueue[0];
+        setSensitivePermissionRequest(sensitivePermissionQueue[0]);
+        setSensitivePermissionQueue(queue => queue.slice(1));
+    }, [sensitivePermissionQueue, sensitivePermissionRequest]);
+
     const respondSensitivePermission = useCallback(async (decision: 'allow' | 'deny') => {
         const request = sensitivePermissionRequest;
         if (!request) return;
+        sensitivePermissionRequestRef.current = null;
         setSensitivePermissionRequest(null);
+        setSensitivePermissionQueue(queue => queue.filter(item => item.request_id !== request.request_id));
         try {
             await RespondDigitalEmployeeSensitiveRequest(request.request_id, decision);
         } catch (err: any) {
@@ -921,7 +950,7 @@ function App() {
                     setChatFontSize(s);
                 }
             }).catch(() => {});
-            // Sync with tray menu changes 鈥?but don't yank the user away from
+            // Sync with tray menu changes, but don't yank the user away from
             // the AI assistant panel.  'ai' is never persisted as active_tool,
             // so a config-changed event would always overwrite it.
             if (navTabRef.current !== 'ai') {
@@ -1131,7 +1160,7 @@ function App() {
         }
 
         if (tool === 'message') {
-            // message tab removed 鈥?redirect to AI assistant
+            // message tab removed: redirect to AI assistant
             switchTool('ai');
             return;
         }
@@ -1147,7 +1176,7 @@ function App() {
         }
 
         if (config) {
-            // Don't persist 'ai' as active_tool 鈥?it's a UI nav state, not a coding tool
+            // Don't persist 'ai' as active_tool; it's a UI nav state, not a coding tool
             if (tool !== 'ai') {
                 const newConfig = new main.AppConfig({ ...config, active_tool: tool });
                 setConfig(newConfig);
@@ -2419,6 +2448,9 @@ ${instruction}`;
                 digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
                 onStartVEConversation={handleStartFavoriteVEConversation}
                 onReorderFavorites={handleReorderFavorites}
+                onSetFavoriteEmployee={handleSetFavoriteEmployee}
+                onRemoveFavoriteEmployee={(ve) => handleRemoveFavoriteEmployee(ve.id)}
+                favoriteEmployeeIds={favoriteEmployeeIds}
                 showCodingToolEntry={!!(config as any)?.show_coding_tool_entry}
             />
             <div className="main-container" data-ai-theme={aiThemeMode}>
@@ -2490,9 +2522,6 @@ ${instruction}`;
                     )}
                     {navTab === 'gossip' && gossipAllowed && (
                         <GossipPage lang={lang} />
-                    )}
-                    {navTab === 'agentnet' && (
-                        <AgentNetTabContainer lang={lang} />
                     )}
                     {navTab === 'remote' && (
                         <RemoteSessionsPage
@@ -2724,8 +2753,6 @@ ${instruction}`;
                                     setUiZoom={setUiZoom}
                                     chatFontSize={chatFontSize}
                                     setChatFontSize={setChatFontSize}
-                                    gossipAllowed={gossipAllowed}
-                                    updateSidebarNavVisibility={updateSidebarNavVisibility}
                                 />
                             </div>
 
@@ -3781,6 +3808,7 @@ ${instruction}`;
                         </div>
                         <p style={{ color: 'var(--theme-text-muted)', fontSize: '12px', marginTop: '10px' }}>
                             {localizeText('No response within 1 minute will be treated as denied.', '1 \u5206\u949f\u5185\u672a\u54cd\u5e94\u5c06\u9ed8\u8ba4\u62d2\u7edd\u3002', '1 \u5206\u9418\u5167\u672a\u56de\u61c9\u5c07\u9810\u8a2d\u62d2\u7d55\u3002')}
+                            {sensitivePermissionQueue.length > 0 ? ' ' + localizeText('{count} pending request(s).', '\u8fd8\u6709 {count} \u4e2a\u5f85\u786e\u8ba4\u8bf7\u6c42\u3002', '\u9084\u6709 {count} \u500b\u5f85\u78ba\u8a8d\u8acb\u6c42\u3002').replace('{count}', String(sensitivePermissionQueue.length)) : ''}
                         </p>
                         <div className="modal-actions" style={{ justifyContent: 'flex-end' }}>
                             <button className="btn-secondary" onClick={() => respondSensitivePermission('deny')}>{localizeText('Deny', '\u62d2\u7edd', '\u62d2\u7d55')}</button>

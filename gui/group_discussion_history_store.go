@@ -517,8 +517,6 @@ func (s *GroupDiscussionHistoryStore) mergeCachedSummaryRelation(ctx context.Con
 func localRelationFromHistoryRole(role string) string {
 	role = strings.ToLower(strings.TrimSpace(role))
 	switch role {
-	case "initiator":
-		return "initiated_by_me"
 	case "review", "speak", "speaker", "observe", "observer", "participant":
 		return "owned_ve_invited"
 	default:
@@ -537,7 +535,7 @@ func normalizeHistorySummaryReadonly(summary a2a.HubDiscussionSummary) a2a.HubDi
 		summary.Readonly = true
 		return summary
 	}
-	if strings.EqualFold(strings.TrimSpace(summary.LocalRelation), "owned_ve_invited") {
+	if !strings.EqualFold(strings.TrimSpace(summary.LocalRelation), "initiated_by_me") {
 		summary.Readonly = true
 	}
 	return summary
@@ -716,12 +714,19 @@ func (s *GroupDiscussionHistoryStore) SetHidden(ctx context.Context, discussionI
 	return err
 }
 
+func relationForHistoryRoleFilter(role string) string {
+	if strings.EqualFold(strings.TrimSpace(role), "initiator") {
+		return "initiated_by_me"
+	}
+	return localRelationFromHistoryRole(role)
+}
+
 func filterGroupDiscussionSummariesByRole(summaries []a2a.HubDiscussionSummary, role string) []a2a.HubDiscussionSummary {
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" || role == "all" {
 		return summaries
 	}
-	targetRelation := localRelationFromHistoryRole(role)
+	targetRelation := relationForHistoryRoleFilter(role)
 	out := summaries[:0]
 	for _, summary := range summaries {
 		summaryRole := strings.ToLower(strings.TrimSpace(summary.Role))

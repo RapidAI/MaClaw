@@ -12,11 +12,13 @@ import (
 // a subsequent SendAIAssistantMessage call won't overlap with the old loop.
 // Returns the cancelled task's user text (if any) for display purposes.
 func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
+	h.globalLoopMu.RLock()
 	ctx := h.currentLoopCtx
+	taskText := h.lastUserText
+	h.globalLoopMu.RUnlock()
 	if ctx == nil {
 		return "", fmt.Errorf("no active session to cancel")
 	}
-	taskText := h.lastUserText
 	ctx.Cancel()
 	// Wait for the loop goroutine to finish so the chatLoopMu is released
 	// before the caller sends a new message.
@@ -40,10 +42,10 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 // Multiple rapid injections are accumulated (newline-separated) rather than
 // overwriting each other, so consecutive fire clicks don't lose messages.
 func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
-	if !h.hasActiveInterruptableLoop() {
+	if !h.hasActiveLoopForUser(userID) {
 		return false
 	}
-	h.accumulateInjection(userID, "[鐢ㄦ埛琛ュ厖] "+text)
+	h.accumulateInjection(userID, "[用户补充] "+text)
 	log.Printf("[inject-supplementary] user=%s text=%s", userID, truncateForLog(text, 60))
 	return true
 }
@@ -128,19 +130,41 @@ func (h *IMMessageHandler) prepareIMLoopContext(provided *LoopContext, msg IMUse
 }
 
 func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userText, platform string) func() {
+	// Write to per-session state (primary, race-free).
+	state := h.getSessionLoop(userID)
+	state.loopCtx = ctx
+	state.userText = userText
+
+	// Write to legacy global fields (deprecated, kept for tool functions that
+	// don't have access to userID). Under concurrency these may be overwritten
+	// by another session — tools should migrate to LoopContext parameter passing.
+	h.globalLoopMu.Lock()
 	h.currentLoopCtx = ctx
 	h.lastUserText = userText
 	h.lastUserID = userID
+	h.globalLoopMu.Unlock()
+
 	ctx.Platform = platform
+	ctx.UserID = userID
 	if h.traceService != nil && ctx.RunID != "" {
 		h.traceService.SetRunLoopID(ctx.RunID, ctx.ID)
 		h.appendTraceEvent(ctx, "loop.started", "info", "Agent loop started", truncateTraceText(userText, 180), "", "")
 	}
 	return func() {
 		h.pendingInjection.Delete(userID)
-		h.currentLoopCtx = nil
-		h.lastUserText = ""
-		h.lastUserID = ""
+		// Clear per-session state.
+		state.loopCtx = nil
+		state.userText = ""
+		// Clear legacy global fields only if they still point to THIS loop.
+		// Under concurrency another loop may have overwritten them — don't
+		// clobber the other loop's state.
+		h.globalLoopMu.Lock()
+		if h.currentLoopCtx == ctx {
+			h.currentLoopCtx = nil
+			h.lastUserText = ""
+			h.lastUserID = ""
+		}
+		h.globalLoopMu.Unlock()
 		ctx.Done()
 	}
 }

@@ -94,20 +94,27 @@ type IMMessageHandler struct {
 	// Configuration manager (lazily initialized via setter).
 	configManager *ConfigManager
 
-	// Dynamic loop limit 鈥?set by the "set_max_iterations" tool during an
-	// active agent loop. Reset to 0 at the start of each runAgentLoop call.
-	// A positive value overrides the configured maxIter for the current loop.
-	// NOTE: This field is kept as a legacy bridge alongside currentLoopCtx.
-	// Both are kept in sync by toolSetMaxIterations. Will be fully replaced
-	// by per-loop LoopContext.MaxIterations once Task 5 routes background
-	// loops through bgManager (eliminating shared handler state).
+	// --- Per-session loop state ---
+	// Each userID (desktop-user, desktop-user:{path}, IM users) gets its own
+	// mutex and loop context. This allows project tabs to run agent loops
+	// concurrently with the local tab without data races.
+	sessionLoops sync.Map // map[string]*sessionLoopState
+
+	// loopMaxOverride is a legacy bridge — set by "set_max_iterations" tool.
+	// Kept for backward compat; new code should use LoopContext.MaxIterations.
 	loopMaxOverride int
 
-	// currentLoopCtx points to the LoopContext of the currently executing
-	// runAgentLoop. Used by tools (e.g. set_max_iterations) to interact
-	// with the active loop. Set at the start of runAgentLoop, cleared at end.
+	// currentLoopCtx is DEPRECATED — kept only for code paths that don't have
+	// access to the userID (will be removed incrementally). When sessionLoops
+	// is used, this points to the LAST started loop (non-deterministic under
+	// concurrency). Prefer getSessionLoopCtx(userID) instead.
+	//
+	// Protected by globalLoopMu to prevent data races under concurrent loops.
+	globalLoopMu   sync.RWMutex
 	currentLoopCtx *LoopContext
-	chatLoopMu     sync.Mutex // serializes chat loop execution; prevents overlapping loops
+	lastUserText   string
+	lastUserID     string
+	chatLoopMu     sync.Mutex // DEPRECATED global fallback; per-session mutex in sessionLoops takes precedence
 
 	// Background loop manager and session monitor (lazily initialized via setters).
 	bgManager      *BackgroundLoopManager
@@ -120,16 +127,6 @@ type IMMessageHandler struct {
 	// Local background task manager for long-running local processes.
 	// Mirrors the SSH BackgroundTaskManager pattern: Submit/Check/Wait/Kill.
 	localBgTaskMgr *tool.LocalBackgroundTaskManager
-
-	// lastUserText stores the most recent user message text for the current
-	// agent loop. Used by toolCreateSession to detect non-coding tasks and
-	// prevent unnecessary session creation.
-	lastUserText string
-
-	// lastUserID stores the user ID for the current agent loop. Used by
-	// context-aware guards (e.g. conversationHasCodingContext) to load the
-	// correct conversation history shard.
-	lastUserID string
 
 	// imFileSender is an optional callback that forwards a file to the user's
 	// IM channels (Feishu/WeChat/etc.) via the Hub WebSocket. Set by the

@@ -1,5 +1,5 @@
 /**
- * Property tests for useAITabManager 鈥?tab creation (Properties 1-7)
+ * Property tests for useAITabManager - tab creation (Properties 1-7)
  *
  * **Validates: Requirements 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.4**
  *
@@ -15,7 +15,7 @@ import { useAITabManager } from "../useAITabManager";
 const projectPathArb = fc.string({ minLength: 1, maxLength: 200 }).filter(s => s.trim().length > 0);
 const taskTitleArb = fc.string({ minLength: 1, maxLength: 100 }).filter(s => s.trim().length > 0);
 
-describe("useAITabManager 鈥?Property Tests for Tab Creation", () => {
+describe("useAITabManager - Property Tests for Tab Creation", () => {
     // Clear localStorage between tests to prevent cross-test pollution
     // (loadPersistedProjectTabs reads from localStorage on hook mount)
     beforeEach(() => {

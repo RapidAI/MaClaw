@@ -90,6 +90,10 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 			writeError(w, http.StatusBadRequest, "INVALID_YEARS", "Years must be >= 0")
 			return
 		}
+		if (req.Enabled == nil || *req.Enabled) && req.Years < 1 {
+			writeError(w, http.StatusBadRequest, "INVALID_YEARS", "Years must be >= 1 when enabling digital employee authorization")
+			return
+		}
 		if req.StartDate != "" {
 			if _, parseErr := time.Parse("2006-01-02", req.StartDate); parseErr != nil {
 				writeError(w, http.StatusBadRequest, "INVALID_START_DATE", "start_date must be in YYYY-MM-DD format")
@@ -100,6 +104,14 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 		if err != nil {
 			if errors.Is(err, hubs.ErrDigitalEmployeeQuotaDecrease) {
 				writeError(w, http.StatusBadRequest, "DIGITAL_EMPLOYEE_QUOTA_DECREASE", "Digital employee authorization count can only increase")
+				return
+			}
+			if errors.Is(err, hubs.ErrDigitalEmployeeQuotaRequired) {
+				writeError(w, http.StatusBadRequest, "DIGITAL_EMPLOYEE_QUOTA_REQUIRED", "Digital employee authorization count must be greater than zero when enabling authorization")
+				return
+			}
+			if errors.Is(err, hubs.ErrDigitalEmployeeYearsRequired) {
+				writeError(w, http.StatusBadRequest, "INVALID_YEARS", "Years must be >= 1 when enabling digital employee authorization")
 				return
 			}
 			if errors.Is(err, hubs.ErrHubNotFound) {

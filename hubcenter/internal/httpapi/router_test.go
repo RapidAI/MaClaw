@@ -550,6 +550,22 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	hubID := registered["hub_id"].(string)
 	hubSecret := registered["hub_secret"].(string)
 
+	zeroQuotaResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"quota":   0,
+		"years":   1,
+		"enabled": true,
+	}, token)
+	if zeroQuotaResp.Code != http.StatusBadRequest || !bytes.Contains(zeroQuotaResp.Body.Bytes(), []byte("DIGITAL_EMPLOYEE_QUOTA_REQUIRED")) {
+		t.Fatalf("expected enabled zero quota rejection, status=%d body=%s", zeroQuotaResp.Code, zeroQuotaResp.Body.String())
+	}
+
+	missingYearsResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"quota": 4,
+	}, token)
+	if missingYearsResp.Code != http.StatusBadRequest || !bytes.Contains(missingYearsResp.Body.Bytes(), []byte("INVALID_YEARS")) {
+		t.Fatalf("expected implicit enabled yearly authorization rejection, status=%d body=%s", missingYearsResp.Code, missingYearsResp.Body.String())
+	}
+
 	resp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
 		"quota":   4,
 		"years":   1,
@@ -569,6 +585,15 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 	}, token)
 	if decreaseResp.Code != http.StatusBadRequest || !bytes.Contains(decreaseResp.Body.Bytes(), []byte("DIGITAL_EMPLOYEE_QUOTA_DECREASE")) {
 		t.Fatalf("expected quota decrease rejection, status=%d body=%s", decreaseResp.Code, decreaseResp.Body.String())
+	}
+
+	invalidYearsResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"quota":   4,
+		"years":   0,
+		"enabled": true,
+	}, token)
+	if invalidYearsResp.Code != http.StatusBadRequest || !bytes.Contains(invalidYearsResp.Body.Bytes(), []byte("INVALID_YEARS")) {
+		t.Fatalf("expected enabled yearly authorization rejection, status=%d body=%s", invalidYearsResp.Code, invalidYearsResp.Body.String())
 	}
 
 	renewResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{

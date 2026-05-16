@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { ChatMessage } from "./useAIAssistant";
-import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti } from "./useAIAssistant";
+import { findLastIndex, isPinnedNewsMessage, isImageFilePath, buildOutgoingMessageMulti, setActiveSessionKey, getActiveSessionKey } from "./useAIAssistant";
 import { useVoiceInput, type VoiceInputSource } from "./useVoiceInput";
 import { useWorkflowState } from "./useWorkflowState";
 import { useCodePreviewState } from "./useCodePreviewState";
@@ -109,13 +109,29 @@ export function AIAssistantPanel(props: any) {
         saveTabState,
         getTabState,
         getLastActiveAt,
+        getTabs,
         hasProjectTab,
+        upgradeVETabToGroup,
         tabLimitError,
         clearTabLimitError,
     } = useAITabManager();
     const isLocalTabActive = activeTab.id === "local";
     const isProjectTabActive = activeTab.type === "project";
     const showChatUI = isLocalTabActive || isProjectTabActive;
+
+    // Update the module-level session key so useAIAssistant's event handlers
+    // know which session's events to accept. This is the bridge between the
+    // tab system (AIAssistantPanel) and the event routing (useAIAssistant).
+    const activeSessionKey = isProjectTabActive && activeTab.projectPath
+        ? `desktop-user:${activeTab.projectPath}`
+        : '';
+    useEffect(() => {
+        setActiveSessionKey(activeSessionKey);
+        return () => {
+            if (getActiveSessionKey() === activeSessionKey) setActiveSessionKey('');
+        };
+    }, [activeSessionKey]);
+
     // Each project tab maintains its own messages, scrollTop, and inputText.
     // When switching tabs, we save the current tab's state and restore the target tab's state.
     const [projectTabMessages, setProjectTabMessages] = useState<ChatMessage[]>([]);
@@ -176,8 +192,22 @@ export function AIAssistantPanel(props: any) {
     // internal `messages` state. We track the message count before sending to extract
     // only the newly added messages during this round.
     const projectTabMsgBaselineRef = useRef<number>(-1);
+    // Track message IDs that belong to project tab rounds. These are filtered
+    // out when displaying the local tab, preventing cross-tab message leakage.
+    const projectTabMsgIdsRef = useRef<Set<string>>(new Set());
     const displayMessages = useMemo(() => {
-        if (!isProjectTabActive) return messages;
+        if (!isProjectTabActive) {
+            // Local tab: hide messages that belong to project tab rounds.
+            // During an active round, use baseline index for O(1) slicing.
+            // After round completion, use the ID set for precise filtering.
+            if (projectTabMsgBaselineRef.current >= 0) {
+                return messages.slice(0, projectTabMsgBaselineRef.current);
+            }
+            if (projectTabMsgIdsRef.current.size > 0) {
+                return messages.filter((m: ChatMessage) => !projectTabMsgIdsRef.current.has(m.id));
+            }
+            return messages;
+        }
         if (!sending || projectTabMsgBaselineRef.current < 0) return projectTabMessages;
         // During streaming: show project tab history + new messages from this round
         const newMessages = messages.slice(projectTabMsgBaselineRef.current);
@@ -193,15 +223,23 @@ export function AIAssistantPanel(props: any) {
     useEffect(() => {
         const wasSending = prevSendingRef.current;
         prevSendingRef.current = sending;
-        // Round started — record baseline
-        if (!wasSending && sending && isProjectTabActive) {
+        // Round started — baseline is now set eagerly in sendMessageForTab
+        // (before sendMessage is called) so it's available in the same render.
+        // The useEffect path is kept as a safety net for edge cases where
+        // sendMessageForTab wasn't the entry point (e.g. usePendingAssistantTabOpen).
+        if (!wasSending && sending && isProjectTabActive && projectTabMsgBaselineRef.current < 0) {
             projectTabMsgBaselineRef.current = messages.length;
         }
-        // Round completed — capture new messages into project tab state
+        // Round completed — capture new messages into project tab state and
+        // record their IDs so the local tab can filter them out.
         if (wasSending && !sending && isProjectTabActive && projectTabMsgBaselineRef.current >= 0) {
             const newMessages = messages.slice(projectTabMsgBaselineRef.current);
             if (newMessages.length > 0) {
                 setProjectTabMessages(prev => [...prev, ...newMessages]);
+                // Record IDs for local tab filtering
+                for (const m of newMessages) {
+                    projectTabMsgIdsRef.current.add(m.id);
+                }
             }
             setProjectTabProgressMessages([]);
             projectTabMsgBaselineRef.current = -1;
@@ -228,10 +266,26 @@ export function AIAssistantPanel(props: any) {
         }
         return tab;
     }, [createProjectTab, loadProjectContext, getTabState, saveTabState]);
-    // Wrap sendMessage to include project_path when sending from a project tab
+    // Wrap sendMessage to include project_path when sending from a project tab.
+    // Sets the baseline BEFORE calling sendMessage so that displayMessages can
+    // immediately filter project-tab messages from the local tab's view — even
+    // in the same render cycle where sendMessageNow appends user+placeholder.
+    const messagesLengthRef = useRef(messages.length);
+    messagesLengthRef.current = messages.length;
     const sendMessageForTab = useCallback((text: string, options?: any): Promise<boolean> => {
-        if (activeTab.type === "project" && activeTab.projectPath) {
-            return sendMessage(text, { ...options, tabId: activeTab.id, project_path: activeTab.projectPath });
+        // Determine if this is a project-tab message. Two sources of truth:
+        // 1. activeTab is a project tab (normal user input from active tab)
+        // 2. options already contain project_path (programmatic send, e.g. usePendingAssistantTabOpen)
+        const isProjectSend = (activeTab.type === "project" && activeTab.projectPath) || !!options?.project_path;
+        if (isProjectSend) {
+            projectTabMsgBaselineRef.current = messagesLengthRef.current;
+            // Merge activeTab info into options if not already present
+            const mergedOptions = {
+                ...options,
+                tabId: options?.tabId || activeTab.id,
+                project_path: options?.project_path || activeTab.projectPath,
+            };
+            return sendMessage(text, mergedOptions);
         }
         return options === undefined ? sendMessage(text) : sendMessage(text, options);
     }, [sendMessage, activeTab]);
@@ -239,9 +293,11 @@ export function AIAssistantPanel(props: any) {
         createVETab,
         createGroupTab,
         createProjectTab: createProjectTabWithContext,
+        activateTab,
         getTabState,
+        getTabList: getTabs,
         hasProjectTab,
-        sendMessage,
+        sendMessage: sendMessageForTab,
         pendingVEOpen,
         onPendingVEOpenHandled,
         pendingHistoryDiscussionOpen,
@@ -562,7 +618,40 @@ export function AIAssistantPanel(props: any) {
             )}
             <AssistantTitleBar clearHistory={clearHistory} codingAgentProgress={codingAgentProgress} inline={!!inline} lang={lang} maximized={!!maximized} onClose={onClose} onHideWindow={onHideWindow} onOpenKnowledge={() => setKnowledgeDialogOpen(true)} onOpenTutorial={onOpenTutorial} onToggleMaximize={onToggleMaximize} projectSearchOpen={projectSearch.open} refreshNews={refreshNews} setThemeMode={setThemeMode} setTtsEnabled={setTtsEnabled} showMaximizeToggle={showMaximizeToggle} theme={t} themeMode={themeMode} title={title} trialReflectEnabled={trialReflectEnabled} ttsEnabled={ttsEnabled} ttsPlaying={ttsPlaying} toggleProjectSearch={projectSearch.toggle} />
             <KnowledgeDialog open={knowledgeDialogOpen} onClose={() => setKnowledgeDialogOpen(false)} lang={lang} theme={t} />
-            <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateTab} onClose={closeTab} lang={lang} getLastActiveAt={getLastActiveAt} />
+            <AITabBar tabs={tabState.tabs} activeTabId={tabState.activeTabId} theme={t} onActivate={activateTab} onClose={closeTab} onInviteToTab={(tab) => {
+                // If tab is still VE type, upgrade to group first so ParticipantSelector becomes available
+                if (tab.type === "ve") {
+                    const tabSt = getTabState(tab.id);
+                    const sessionId = tabSt?.sessionId || tab.discussionId;
+                    if (sessionId) {
+                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
+                        upgradeVETabToGroup(tab.id, currentParticipants, sessionId);
+                    }
+                }
+                activateTab(tab.id);
+            }} onAddLocalMaclawToTab={(tab) => {
+                // Add local maclaw as executor to this session
+                // Prevent duplicate registration
+                if (tab.participants?.includes("local-maclaw")) return;
+                const tabSt = getTabState(tab.id);
+                const sessionId = tabSt?.sessionId || tab.discussionId;
+                if (!sessionId) return;
+                // Register with Hub and start GroupChatDispatcher (backend)
+                import("../../../wailsjs/go/main/App").then((mod) => {
+                    const registerFn = (mod as any).RegisterLocalExecutorInGroup;
+                    if (!registerFn) {
+                        console.error("[AddLocalMaclaw] RegisterLocalExecutorInGroup binding not available");
+                        return;
+                    }
+                    registerFn(sessionId).then(() => {
+                        // Upgrade tab to group type with local maclaw as participant
+                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
+                        upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
+                    }).catch((err: unknown) => {
+                        console.error("[AddLocalMaclaw] failed:", err);
+                    });
+                }).catch(() => {});
+            }} lang={lang} getLastActiveAt={getLastActiveAt} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {showChatUI && <>
                 <AssistantWorkflowMaximizeSuggestion inline={!!inline} lang={lang} maximized={!!maximized} onDismiss={dismissMaximizeSuggestion} onToggleMaximize={onToggleMaximize} suggestMaximize={workflowState.suggestMaximize} theme={t} themeMode={themeMode} />

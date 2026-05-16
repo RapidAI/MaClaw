@@ -143,6 +143,56 @@ func TestGroupDiscussionDownloadAttachmentSavesUnderDiscussionDir(t *testing.T) 
 	}
 }
 
+func TestGroupDiscussionDownloadAttachmentIgnoresCachedPathOutsideDiscussionDir(t *testing.T) {
+	hitCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount++
+		_, _ = w.Write([]byte("safe attachment"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:       server.URL,
+			RemoteMachineID:    "machine-1",
+			RemoteMachineToken: "token-1",
+		},
+	}
+	outsidePath := filepath.Join(t.TempDir(), "outside.pdf")
+	if err := os.WriteFile(outsidePath, []byte("poisoned"), 0o644); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+	store, err := app.openGroupDiscussionHistoryStore()
+	if err != nil {
+		t.Fatalf("openGroupDiscussionHistoryStore: %v", err)
+	}
+	if err := store.UpsertDownloadedAttachment(context.Background(), GroupDiscussionAttachmentRecord{AttachmentID: "file-100", DiscussionID: "disc-safe", Filename: "safe.pdf", HubURL: "/api/ve/files/file-100", LocalPath: outsidePath, DownloadState: "downloaded"}); err != nil {
+		_ = store.Close()
+		t.Fatalf("UpsertDownloadedAttachment: %v", err)
+	}
+	_ = store.Close()
+
+	result, err := app.GroupDiscussionDownloadAttachment("disc-safe", "/api/ve/files/file-100", "safe.pdf")
+	if err != nil {
+		t.Fatalf("GroupDiscussionDownloadAttachment: %v", err)
+	}
+	if hitCount != 1 {
+		t.Fatalf("expected outside cached path to be ignored and refetched, hits=%d", hitCount)
+	}
+	if result.LocalPath == outsidePath {
+		t.Fatalf("outside cached path was reused: %q", result.LocalPath)
+	}
+	if filepath.Dir(result.LocalPath) != app.groupDiscussionAttachmentRoot("disc-safe") {
+		t.Fatalf("local dir = %q, want %q", filepath.Dir(result.LocalPath), app.groupDiscussionAttachmentRoot("disc-safe"))
+	}
+}
+
 func TestGroupDiscussionDownloadAttachmentRefetchesWhenCachedFileMissing(t *testing.T) {
 	hitCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,7 +7,6 @@ export type HistoryDiscussionLike = {
 
 export function historyRelationFromRole(role: unknown): string {
     const normalized = String(role || '').trim().toLowerCase();
-    if (['initiator', 'initiated', 'owner', 'creator'].includes(normalized)) return 'initiated_by_me';
     if (['review', 'speak', 'speaker', 'observe', 'observer', 'participant'].includes(normalized)) return 'owned_ve_invited';
     return '';
 }
@@ -24,9 +23,5 @@ export function isHistoryDiscussionReadOnly(discussion: HistoryDiscussionLike | 
     if (discussion?.readonly === true) return true;
 
     const relation = getHistoryDiscussionRelation(discussion);
-    if (relation === 'owned_ve_invited') return true;
-    if (relation === 'initiated_by_me') return false;
-
-    if (discussion?.readonly === false) return false;
-    return true;
+    return relation !== 'initiated_by_me';
 }

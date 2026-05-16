@@ -9,6 +9,10 @@ export interface AITabBarProps {
     theme: Theme;
     onActivate: (tabId: string) => void;
     onClose: (tabId: string) => void;
+    /** Called when user wants to invite a VE to a tab's session (upgrade to group) */
+    onInviteToTab?: (tab: AITab) => void;
+    /** Called when user wants to add local maclaw to a tab's session */
+    onAddLocalMaclawToTab?: (tab: AITab) => void;
     lang?: string;
     /** Returns the lastActiveAt timestamp for a tab (used for overflow sorting). */
     getLastActiveAt?: (tabId: string) => number;
@@ -24,10 +28,11 @@ const OVERFLOW_BUTTON_WIDTH = 50;
  * Shows as many tabs as fit in the available width; overflow tabs are
  * accessible via a more-tabs dropdown.
  */
-export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, lang, getLastActiveAt }: AITabBarProps) {
+export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, lang, getLastActiveAt }: AITabBarProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [visibleCount, setVisibleCount] = useState(tabs.length);
     const [dropdownOpen, setDropdownOpen] = useState(false);
+    const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tab: AITab } | null>(null);
 
     // Recalculate visible tab count when container width or tab count changes.
     useEffect(() => {
@@ -56,15 +61,16 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, lang, 
     }, [tabs.length]);
     // Close dropdown on outside click.
     useEffect(() => {
-        if (!dropdownOpen) return;
+        if (!dropdownOpen && !tabContextMenu) return;
         const handler = (e: MouseEvent) => {
             if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
                 setDropdownOpen(false);
+                setTabContextMenu(null);
             }
         };
         document.addEventListener("mousedown", handler);
         return () => document.removeEventListener("mousedown", handler);
-    }, [dropdownOpen]);
+    }, [dropdownOpen, tabContextMenu]);
 
     const handleOverflowActivate = useCallback((tabId: string) => {
         setDropdownOpen(false);
@@ -74,6 +80,15 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, lang, 
     const handleOverflowClose = useCallback((tabId: string) => {
         onClose(tabId);
     }, [onClose]);
+
+    const handleTabContextMenu = useCallback((e: React.MouseEvent, tab: AITab) => {
+        // Only show context menu for VE and group tabs (not local or project)
+        if (tab.type !== "ve" && tab.type !== "group") return;
+        if (tab.readOnly) return;
+        setTabContextMenu({ x: e.clientX, y: e.clientY, tab });
+    }, []);
+
+    const isZh = !lang || lang?.startsWith("zh");
 
     // Only the local tab: no need to show the tab bar.
     if (tabs.length <= 1) {
@@ -119,6 +134,7 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, lang, 
                     theme={theme}
                     onActivate={onActivate}
                     onClose={tab.closable ? onClose : undefined}
+                    onContextMenu={handleTabContextMenu}
                     lang={lang}
                 />
             ))}
@@ -201,6 +217,62 @@ export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, lang, 
                             )}
                         </div>
                     ))}
+                </div>
+            )}
+            {/* Tab right-click context menu */}
+            {tabContextMenu && (
+                <div
+                    data-testid="ai-tab-context-menu"
+                    role="menu"
+                    style={{
+                        position: "fixed",
+                        left: tabContextMenu.x,
+                        top: tabContextMenu.y,
+                        background: theme.bg,
+                        border: `1px solid ${theme.divider}`,
+                        borderRadius: 6,
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        zIndex: 9999,
+                        minWidth: 160,
+                        padding: "4px 0",
+                    }}
+                >
+                    {onInviteToTab && (
+                        <div
+                            data-testid="tab-menu-invite-ve"
+                            role="menuitem"
+                            onClick={() => { onInviteToTab(tabContextMenu.tab); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u2795 \u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "\u2795 Invite digital employee"}
+                        </div>
+                    )}
+                    {onAddLocalMaclawToTab && !tabContextMenu.tab.participants?.includes("local-maclaw") && (
+                        <div
+                            data-testid="tab-menu-add-local"
+                            role="menuitem"
+                            onClick={() => { onAddLocalMaclawToTab(tabContextMenu.tab); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u{1F4BB} \u6dfb\u52a0\u672c\u673a AI \u52a9\u624b" : "\u{1F4BB} Add local AI assistant"}
+                        </div>
+                    )}
+                    {tabContextMenu.tab.closable && (
+                        <div
+                            data-testid="tab-menu-close"
+                            role="menuitem"
+                            onClick={() => { onClose(tabContextMenu.tab.id); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text, borderTop: `1px solid ${theme.divider}`, marginTop: 2 }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u2716 \u5173\u95ed" : "\u2716 Close"}
+                        </div>
+                    )}
                 </div>
             )}
         </div>

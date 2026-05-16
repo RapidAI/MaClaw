@@ -317,6 +317,52 @@ func (a *App) AddVEToGroup(sessionID, veID string) error {
 	return err
 }
 
+// RegisterLocalExecutorInGroup adds the local maclaw as an executor participant
+// in an existing group discussion session. This enables the local AI assistant
+// to receive and respond to messages in the group with full tool access.
+func (a *App) RegisterLocalExecutorInGroup(sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("sessionID is required")
+	}
+
+	// Register with Hub as executor participant
+	hubURL, token, err := a.getHubCredentials()
+	if err != nil {
+		return err
+	}
+	cfg, cfgErr := a.LoadConfig()
+	if cfgErr != nil {
+		return fmt.Errorf("load config: %w", cfgErr)
+	}
+	machineID := strings.TrimSpace(cfg.RemoteMachineID)
+	if machineID == "" {
+		return fmt.Errorf("machine not registered")
+	}
+
+	// Add self as executor participant via Hub invite API
+	body := map[string]any{
+		"from_id": machineID,
+		"to_id":   machineID,
+		"role":    "executor",
+	}
+	_, err = a.postHubJSON(hubURL, token, "/api/a2a/consultations/"+sessionID+"/invites", body)
+	if err != nil {
+		return fmt.Errorf("register executor with Hub: %w", err)
+	}
+
+	// Start the GroupChatDispatcher for this session
+	hubClient := a.hubClient()
+	if hubClient != nil {
+		dispatcher := hubClient.groupChatDispatcher()
+		if dispatcher != nil {
+			dispatcher.RegisterSession(sessionID)
+		}
+	}
+
+	return nil
+}
+
 // resolveVEInviteMachineID maps a frontend VE id to the discussion participant machine id.
 func (a *App) resolveVEInviteMachineID(hubURL, token, veID string) string {
 	veID = strings.TrimSpace(veID)

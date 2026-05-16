@@ -1416,6 +1416,13 @@ func AdminCapabilityExternalSearchHandler(centerStatus capabilityMarketCenterSta
 		}
 		if (source == corelib.CapabilitySourceClawHub || source == corelib.CapabilitySourceGitHub || source == "") && capabilityType == corelib.CapabilityTypeSkill {
 			items := searchExternalSkillMarketplace(r.Context(), source, r.URL.Query().Get("q"), allowedSources)
+			// When source is empty (all sources), also include HubCenter skill results
+			if source == "" && centerStatus != nil {
+				hubCenterItems, err := searchHubCenterSkillMarketplace(r.Context(), centerStatus, r.URL.Query().Get("q"))
+				if err == nil && len(hubCenterItems) > 0 {
+					items = append(hubCenterItems, items...)
+				}
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"allowed_sources": allowedSources, "items": items})
 			return
 		}
@@ -1544,39 +1551,28 @@ func searchHubCenterSkillMarketplace(ctx context.Context, centerStatus capabilit
 	if baseURL == "" {
 		return []any{}, nil
 	}
-	endpoint := baseURL + "/api/capability-market/search"
-	values := url.Values{}
-	if strings.TrimSpace(query) != "" {
-		values.Set("q", strings.TrimSpace(query))
+	// Use the same corelib HubClient as maclaw GUI — calls /api/v1/skills/search
+	results := coreskill.DefaultHubClient().SearchSkillHub(ctx, baseURL, strings.TrimSpace(query))
+	if len(results) == 0 {
+		return []any{}, nil
 	}
-	values.Set("top_n", "20")
-	if encoded := values.Encode(); encoded != "" {
-		endpoint += "?" + encoded
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, errors.New("hubcenter skill capability market returned status " + resp.Status)
-	}
-	var payload struct {
-		Results []map[string]any `json:"results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return nil, err
-	}
-	items := make([]any, 0, len(payload.Results))
-	for _, item := range payload.Results {
-		item["source"] = corelib.CapabilitySourceHubCenter
-		item["capability_type"] = corelib.CapabilityTypeSkill
-		items = append(items, item)
+	items := make([]any, 0, len(results))
+	for _, r := range results {
+		items = append(items, map[string]any{
+			"id":              r.ID,
+			"capability_id":   r.ID,
+			"capability_type": corelib.CapabilityTypeSkill,
+			"name":            r.Name,
+			"display_name":    r.Name,
+			"description":     r.Description,
+			"version":         r.Version,
+			"author":          r.Author,
+			"trust_level":     r.TrustLevel,
+			"avg_rating":      r.AvgRating,
+			"downloads":       r.Downloads,
+			"source":          corelib.CapabilitySourceHubCenter,
+			"pricing":         corelib.CapabilityPricingFree,
+		})
 	}
 	return items, nil
 }

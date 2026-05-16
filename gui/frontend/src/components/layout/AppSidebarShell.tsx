@@ -82,6 +82,9 @@ interface AppSidebarShellProps {
     onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
     onStartVEConversation?: (veId: string) => void;
     onReorderFavorites?: (newOrder: string[]) => void;
+    onSetFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
+    onRemoveFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
+    favoriteEmployeeIds?: string[];
     showCodingToolEntry?: boolean;
 }
 
@@ -148,6 +151,9 @@ export const AppSidebarShell = ({
     onOpenHistoryDiscussion,
     onStartVEConversation,
     onReorderFavorites,
+    onSetFavoriteEmployee,
+    onRemoveFavoriteEmployee,
+    favoriteEmployeeIds = [],
     showCodingToolEntry = false,
 }: AppSidebarShellProps) => (
 <>
@@ -227,6 +233,9 @@ export const AppSidebarShell = ({
                         isRecentTasksResizing={isRecentTasksResizing}
                         switchTool={switchTool}
                         onOpenVEConversation={onOpenVEConversation}
+                        onSetFavoriteEmployee={onSetFavoriteEmployee}
+                        onRemoveFavoriteEmployee={onRemoveFavoriteEmployee}
+                        favoriteEmployeeIds={favoriteEmployeeIds}
                         showCodingToolEntry={showCodingToolEntry}
                         digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
                         onOpenHistoryDiscussion={onOpenHistoryDiscussion}

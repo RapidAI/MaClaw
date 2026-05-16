@@ -54,3 +54,4 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		BrowserPinned:    browserSessionPinned,
 	}
 }
+

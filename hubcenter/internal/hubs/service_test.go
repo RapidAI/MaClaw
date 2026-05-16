@@ -136,6 +136,16 @@ func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) 
 	}
 
 	enabled := true
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 0, Years: 1, Enabled: &enabled}); err != ErrDigitalEmployeeQuotaRequired {
+		t.Fatalf("zero enabled quota error = %v, want ErrDigitalEmployeeQuotaRequired", err)
+	}
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 3, Enabled: &enabled}); err != ErrDigitalEmployeeYearsRequired {
+		t.Fatalf("missing years enabled error = %v, want ErrDigitalEmployeeYearsRequired", err)
+	}
+	if _, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 3}); err != ErrDigitalEmployeeYearsRequired {
+		t.Fatalf("missing years implicit enabled error = %v, want ErrDigitalEmployeeYearsRequired", err)
+	}
+
 	auth, err := svc.UpdateDigitalEmployeeAuthorization(ctx, hub.ID, DigitalEmployeeAuthorizationUpdate{Quota: 3, Years: 1, Enabled: &enabled})
 	if err != nil {
 		t.Fatalf("initial update: %v", err)

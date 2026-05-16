@@ -114,6 +114,7 @@ interface AIAssistantPendingTask {
 interface AIAssistantStreamEvent {
     request_id?: string;
     text?: string;
+    session_key?: string;
 }
 
 const AGENT_VIEW_EVENT = "agent-view";
@@ -256,7 +257,7 @@ export interface ChatMessage {
     timestamp: number;
     /** Workflow document link — phase ID for opening doc preview. */
     workflowPhaseID?: string;
-    /** Workflow document link label (e.g. "📄 需求文档"). */
+    /** Workflow document link label. */
     workflowDocLabel?: string;
 }
 
@@ -272,6 +273,13 @@ const STREAM_DONE_EVENT = "ai-assistant-stream-done";
 const INIT_PROGRESS_EVENT = "ai-assistant-init-progress";
 const PROGRESS_EVENT = "ai-assistant-progress";
 const RESPONSE_EVENT = "ai-assistant-response";
+
+// Module-level active session key. Updated by AIAssistantPanel when the active
+// tab changes. The useAIAssistant hook reads this to filter events by session.
+// This avoids prop-drilling through App.tsx → AIAssistantPanel → useAIAssistant.
+let _activeSessionKey = '';
+export function setActiveSessionKey(key: string) { _activeSessionKey = key; }
+export function getActiveSessionKey(): string { return _activeSessionKey; }
 
 // ---------------------------------------------------------------------------
 // localStorage persistence for chat history across app restarts
@@ -1560,21 +1568,41 @@ function normalizeStreamEvent(raw: unknown): AIAssistantStreamEvent {
         return {
             request_id: typeof event.request_id === 'string' ? event.request_id : '',
             text: typeof event.text === 'string' ? event.text : '',
+            session_key: typeof event.session_key === 'string' ? event.session_key : '',
         };
     }
     if (typeof raw === 'string') {
         const trimmed = raw.trim();
-        if (!trimmed) return { request_id: '', text: '' };
+        if (!trimmed) return { request_id: '', text: '', session_key: '' };
         if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
             try {
                 return normalizeStreamEvent(JSON.parse(trimmed));
             } catch {
-                return { request_id: '', text: raw };
+                return { request_id: '', text: raw, session_key: '' };
             }
         }
-        return { request_id: '', text: raw };
+        return { request_id: '', text: raw, session_key: '' };
     }
-    return { request_id: '', text: '' };
+    return { request_id: '', text: '', session_key: '' };
+}
+
+/** Returns true if the event belongs to the local (main) session.
+ * Local session events have session_key="" or "desktop-user" (no project path suffix). */
+function isLocalSessionEvent(event: AIAssistantStreamEvent): boolean {
+    const key = event.session_key || '';
+    if (!key) return true;
+    if (key === 'desktop-user') return true;
+    return false;
+}
+
+/** Returns true if the event belongs to the given active session key.
+ * Used when the hook is serving a project tab; accepts events matching that session. */
+function isMatchingSessionEvent(event: AIAssistantStreamEvent, activeSessionKey: string): boolean {
+    const eventKey = event.session_key || '';
+    if (!activeSessionKey || activeSessionKey === 'desktop-user') {
+        return isLocalSessionEvent(event);
+    }
+    return eventKey === activeSessionKey;
 }
 
 function matchesActiveRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
@@ -1807,7 +1835,8 @@ function samePinnedNews(left: ChatMessage, right: ChatMessage): boolean {
         && leftNews.icon === rightNews.icon;
 }
 
-export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void> }) {
+export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<void>; activeSessionKey?: string }) {
+    const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
     const [submittedPrompts, setSubmittedPrompts] = useState<string[]>(loadPersistedPrompts);
     const [draftInputValue, setDraftInputValue] = useState("");
@@ -2049,8 +2078,6 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     const finalizeRound = useCallback((generation: number) => {
         if (activeRoundRef.current.generation !== generation) return;
         resetActiveRound();
-        progressTailRef.current = null;
-        setProgressMessages([]);
         emitPetStateForAssistant('idle', 'ai:round-done');
     }, [emitPetStateForAssistant, resetActiveRound]);
 
@@ -2221,6 +2248,10 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
                 });
                 if (!stillActive && pendingTaskRef.current?.requestId === currentTask.requestId) {
                     setPendingTaskState(null);
+                    const currentRound = activeRoundRef.current;
+                    if (currentRound.requestId === currentTask.requestId) {
+                        resetActiveRound(currentRound.generation);
+                    }
                 }
             } catch {
             }
@@ -2243,12 +2274,16 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offRemoteStateChanged();
             offRemoteSessionChanged();
         };
-    }, [pendingTask, setPendingTaskState]);
+    }, [pendingTask, resetActiveRound, setPendingTaskState]);
 
     useEffect(() => {
         const tokenHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
+            if (responseTimeoutClearRef.current && event.request_id && matchesActiveRequest(currentRound, event)) {
+                responseTimeoutClearRef.current();
+            }
+            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
             const isActiveRequest = matchesActiveRequest(currentRound, event);
             logRolePrefixDiagnostic('stream-event-received', event.text || '', undefined, {
                 requestId: event.request_id,
@@ -2258,7 +2293,6 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             });
             if (!isActiveRequest) return;
             if (!currentRound.assistantMessageId || !event.text) return;
-            // Reset the sliding-window activity timeout — backend is alive.
             if (responseTimeoutClearRef.current) {
                 responseTimeoutClearRef.current();
             }
@@ -2269,8 +2303,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const newRoundHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
+            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
             if (!matchesActiveRequest(currentRound, event)) return;
-            // Reset the sliding-window activity timeout — backend is alive.
             if (responseTimeoutClearRef.current) {
                 responseTimeoutClearRef.current();
             }
@@ -2281,6 +2315,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const streamDoneHandler = (payload: unknown) => {
             const currentRound = activeRoundRef.current;
             const event = normalizeStreamEvent(payload);
+            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
             if (!matchesActiveRequest(currentRound, event)) return;
             emitPetStateForAssistant('thinking', 'ai:stream-done', 2500);
             flushStreamTokenBuffer();
@@ -2299,9 +2334,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             offStreamDone();
             resetStreamTokenBuffer();
         };
-    }, [emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetStreamTokenBuffer, transitionRound]);
+    }, [activeSessionKeyForEvents, emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetStreamTokenBuffer, transitionRound]);
 
-    // Listen for the async response event. When SendAIAssistantMessage returns
+        // Listen for the async response event. When SendAIAssistantMessage returns
     // {deferred: true} (non-blocking mode), the actual response arrives here.
     // This is the single source of truth for final response processing —
     // all messages (including /new, /reset, normal chat) are handled here.
@@ -2313,6 +2348,11 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             } catch {
                 return;
             }
+            // Response events are NOT filtered by session_key. The requestId
+            // match (matchesActiveRequest below) is sufficient to ensure we only
+            // process our own response. Filtering by session_key here would cause
+            // the round to never finalize if the user switches tabs mid-stream,
+            // permanently locking the input box.
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(normalized) || '';
             const currentRound = activeRoundRef.current;
@@ -2388,6 +2428,8 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const recentMessages = buildClientContextMessages(latestMessagesRef.current, contextStartIndex);
 
         resetStreamTokenBuffer();
+        progressTailRef.current = null;
+        setProgressMessages([]);
         setRoundState({
             generation,
             phase: 'requesting',
@@ -2458,12 +2500,22 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             }
             if (response.deferred) {
                 // Async mode: response will arrive via event. If there's a
-                // run_id/job_id, it's a remote coding session (old path).
+                // live run_id/job_id, track that remote coding session. When
+                // the backend reports deferred but the session already ended,
+                // finalize this foreground round instead of leaving the input locked.
                 if (response.run_id || response.job_id) {
                     const effectiveRequestId = responseRequestId || requestId;
-                    setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
+                    const pending = await resolvePendingAITask(effectiveRequestId, response);
+                    if (pending) {
+                        setPendingTaskState(pending);
+                        deferredAsync = true;
+                    } else {
+                        setPendingTaskState(null);
+                        deferredAsync = false;
+                    }
+                } else {
+                    deferredAsync = true;
                 }
-                deferredAsync = true;
             } else {
                 // Synchronous response (e.g. handleAgentViewControlMessage,
                 // TryHandlePassthroughSlashCommand). Process immediately.
@@ -2619,8 +2671,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         const progressHandler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
             if (event?.request_id !== requestId) return;
-            // Progress is informational — could show in a status bar, but for
-            // simplicity we skip it. The streaming tokens provide real-time feedback.
+            // Progress is informational; the streaming tokens provide real-time feedback.
         };
 
         const offBtwToken = subscribeEvent("ai-btw-token", tokenHandler);
@@ -2766,6 +2817,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
     useEffect(() => {
         const handler = (payload: unknown) => {
             const event = normalizeStreamEvent(payload);
+            if (!isMatchingSessionEvent(event, activeSessionKeyForEvents())) return;
             const progressText = event.text || (typeof payload === 'string' ? payload : '');
             if (!progressText) return;
             if (!matchesActiveProgressRequest(activeRoundRef.current, event)) {
@@ -2788,7 +2840,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         return () => {
             offProgress();
         };
-    }, []);
+    }, [activeSessionKeyForEvents]);
 
     useEffect(() => {
         // agent-view:lifecycle is the single source of truth for view state.

@@ -314,8 +314,8 @@ func AdminCapabilityMarketMCPUpsertHandler(settings store.SystemSettingsReposito
 			return
 		}
 		item := normalizeCapabilityMarketMCPEntry(req)
-		if item.CapabilityID == "" || item.DisplayName == "" || strings.TrimSpace(item.MCP.EndpointURL) == "" {
-			writeError(w, http.StatusBadRequest, "INVALID_MCP_CAPABILITY", "capability_id/display_name and mcp.endpoint_url are required")
+		if item.CapabilityID == "" || item.DisplayName == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_MCP_CAPABILITY", "capability_id and display_name are required")
 			return
 		}
 		catalog, err := loadCapabilityMarketMCPCatalog(r.Context(), settings)

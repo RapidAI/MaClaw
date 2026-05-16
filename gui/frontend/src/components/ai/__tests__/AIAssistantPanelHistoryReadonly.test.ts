@@ -29,6 +29,10 @@ describe('isHistoryDiscussionReadOnly', () => {
     it('honors explicit read-only even when the initiator role is present', () => {
         expect(isHistoryDiscussionReadOnly({ status: 'open', role: 'initiator', readonly: true })).toBe(true);
     });
+
+    it('keeps unknown relation sessions read-only even when readonly is false', () => {
+        expect(isHistoryDiscussionReadOnly({ status: 'open', readonly: false })).toBe(true);
+    });
     it('localizes read-only markers on history tabs', () => {
         render(createElement(AITabBar, {
             tabs: [

@@ -151,8 +151,22 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
                     return { id, name: role ? `${name} (${role})` : name, online: true };
                 });
         }
-        return (detail?.discussion?.participant_ids || []).map((id) => ({ id, name: id, online: true }));
-    }, [detail?.discussion?.participant_ids, detail?.session?.participants]);
+        // Fallback: build name map from message from_name fields, then use
+        // participant_ids with resolved names. This avoids showing raw machine IDs.
+        const nameMap = new Map<string, string>();
+        for (const m of detail?.messages || []) {
+            const fromId = String(m.from_id || "").trim();
+            const fromName = String(m.from_name || "").trim();
+            if (fromId && fromName && fromName !== fromId) {
+                nameMap.set(fromId, fromName);
+            }
+        }
+        return (detail?.discussion?.participant_ids || []).map((id) => {
+            const resolved = nameMap.get(id);
+            const displayName = resolved || id;
+            return { id, name: displayName, online: true };
+        });
+    }, [detail?.discussion?.participant_ids, detail?.messages, detail?.session?.participants]);
 
     const buildMessageAttachments = useCallback((m: NonNullable<HistoryDiscussionDetail["messages"]>[number]): NonNullable<GroupMessage["attachments"]> => {
         const attachments: NonNullable<GroupMessage["attachments"]> = [];
@@ -274,7 +288,7 @@ export function HistoryGroupDiscussionTab({ discussionId, title, readOnly, theme
         {error && <div role="alert" style={{ padding: "7px 12px", color: theme.errorText, background: theme.errorBg, borderBottom: `1px solid ${theme.errorBorder}`, fontSize: 12 }}>{error}</div>}
         {loading && !detail
             ? <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: theme.textMuted }}>{textForLang(lang, "Loading...", "\u52a0\u8f7d\u4e2d...", "\u8f09\u5165\u4e2d...")}</div>
-            : <VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={false} />}
+            : <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}><VEGroupChatView sessionId={discussionId} participants={participants} messages={messages} theme={theme} lang={lang} onDownloadAttachment={downloadAttachment} allowParticipantAdd={!effectiveReadOnly} /></div>}
         <div style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: `1px solid ${theme.divider}`, background: theme.inputBarBg, opacity: effectiveReadOnly ? 0.72 : 1 }}>
             <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(); } }} disabled={effectiveReadOnly || sending} placeholder={effectiveReadOnly ? textForLang(lang, "Read-only session", "\u53ea\u8bfb\u4f1a\u8bdd\uff0c\u4e0d\u80fd\u7ee7\u7eed\u53d1\u8a00", "\u552f\u8b80\u6703\u8a71\uff0c\u4e0d\u80fd\u7e7c\u7e8c\u767c\u8a00") : textForLang(lang, "Continue discussion...", "\u7ee7\u7eed\u8ba8\u8bba...", "\u7e7c\u7e8c\u8a0e\u8ad6...")} rows={1} style={{ flex: 1, resize: "none", border: `1px solid ${theme.fieldBorder}`, borderRadius: 6, padding: "6px 10px", color: theme.inputText, background: effectiveReadOnly ? theme.fieldBg : theme.bg, outline: "none", fontSize: 13 }} />
             <button type="button" onClick={() => void send()} disabled={effectiveReadOnly || sending || !input.trim()} style={{ border: `1px solid ${theme.sendBtnBorder}`, background: theme.sendBtnColor, color: "#fff", borderRadius: 6, padding: "6px 12px", cursor: effectiveReadOnly || sending || !input.trim() ? "default" : "pointer", opacity: effectiveReadOnly || sending || !input.trim() ? 0.5 : 1, fontSize: 13 }}>{sending ? "..." : textForLang(lang, "Send", "\u53d1\u9001", "\u50b3\u9001")}</button>
