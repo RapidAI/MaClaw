@@ -62,11 +62,11 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
             <h4 style={{ fontSize: '0.8rem', color: 'var(--theme-primary)', marginBottom: '12px', marginTop: 0, textTransform: 'uppercase', letterSpacing: '0.025em' }}>
                 {textForLang(lang, 'Data Directory', '数据目录', '資料目錄')}
             </h4>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', maxWidth: '600px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <input
                     className="form-input"
                     type="text"
-                    style={{ flex: 1 }}
+                    style={{ flex: 1, minWidth: 0 }}
                     placeholder={textForLang(lang, 'Default: ~/.maclaw', '默认: ~/.maclaw', '預設: ~/.maclaw')}
                     value={dataDirInput}
                     onChange={(e) => setDataDirInput(e.target.value)}
@@ -75,7 +75,7 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
                     type="button"
                     onClick={handleBrowseDataDir}
                     disabled={dataDirSaving}
-                    style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-bg-secondary, #2a2a3e)', color: 'var(--theme-text)', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', opacity: dataDirSaving ? 0.6 : 1 }}
+                    style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-surface-muted, #f0f0f5)', color: 'var(--theme-text-secondary, #333)', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', flexShrink: 0, opacity: dataDirSaving ? 0.6 : 1 }}
                 >
                     {textForLang(lang, 'Browse', '浏览', '瀏覽')}
                 </button>
@@ -83,7 +83,7 @@ export const DataDirectorySection = ({ config, setConfig, lang, showToastMessage
                     type="button"
                     onClick={handleSaveDataDir}
                     disabled={dataDirSaving}
-                    style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-primary)', color: '#fff', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', opacity: dataDirSaving ? 0.6 : 1 }}
+                    style={{ border: '1px solid var(--theme-border)', background: 'var(--theme-primary)', color: '#fff', borderRadius: '4px', padding: '4px 12px', cursor: dataDirSaving ? 'not-allowed' : 'pointer', fontSize: '0.75rem', whiteSpace: 'nowrap', flexShrink: 0, opacity: dataDirSaving ? 0.6 : 1 }}
                 >
                     {dataDirSaving ? '...' : textForLang(lang, 'Save', '保存', '儲存')}
                 </button>

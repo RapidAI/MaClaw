@@ -1,9 +1,14 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 func TestClassifyFileType(t *testing.T) {
@@ -156,5 +161,50 @@ func TestMimeTypeForFile(t *testing.T) {
 				t.Errorf("mimeTypeForFile(%q) = %q, want %q", tt.path, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestUploadToFileRelayUsesRemoteClientIDFallback(t *testing.T) {
+	var gotParticipantID string
+	var gotMachineID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/ve/files/upload" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		gotMachineID = r.Header.Get("X-Machine-ID")
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("ParseMultipartForm: %v", err)
+		}
+		gotParticipantID = r.FormValue("participant_id")
+		_, _, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("missing uploaded file: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "file_id": "file-1", "file_url": "/api/ve/files/file-1"})
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "image.png")
+	if err := os.WriteFile(filePath, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{configCacheValid: true, configCache: corelib.AppConfig{RemoteClientID: "client-fallback"}}
+	fileURL, err := app.uploadToFileRelay(server.URL, "token-1", filePath, "session-1")
+	if err != nil {
+		t.Fatalf("uploadToFileRelay: %v", err)
+	}
+	if fileURL != server.URL+"/api/ve/files/file-1" {
+		t.Fatalf("fileURL = %q", fileURL)
+	}
+	if gotParticipantID != "client-fallback" {
+		t.Fatalf("participant_id = %q, want client-fallback", gotParticipantID)
+	}
+	if gotMachineID != "client-fallback" {
+		t.Fatalf("X-Machine-ID = %q, want client-fallback", gotMachineID)
 	}
 }

@@ -228,7 +228,7 @@ export function AIAssistantPanel(props: any) {
         }
         return tab;
     }, [createProjectTab, loadProjectContext, getTabState, saveTabState]);
-    // Wrap sendMessage to route through SendMessageForTab when sending from a project tab
+    // Wrap sendMessage to include project_path when sending from a project tab
     const sendMessageForTab = useCallback((text: string, options?: any): Promise<boolean> => {
         if (activeTab.type === "project" && activeTab.projectPath) {
             return sendMessage(text, { ...options, tabId: activeTab.id, project_path: activeTab.projectPath });
@@ -305,7 +305,6 @@ export function AIAssistantPanel(props: any) {
             const runes = [...text];
             derivedName = runes.length > 30 ? runes.slice(0, 30).join("") + "..." : text || (lang === "en" ? "New task" : "\u65b0\u4efb\u52a1");
         }
-
         try {
             const { CreateRecentTask, ForkConversationToProject } = await import("../../../wailsjs/go/main/App");
             const result = await CreateRecentTask(derivedName);
@@ -322,7 +321,6 @@ export function AIAssistantPanel(props: any) {
             console.error("[ForkCurrentChat] failed:", err);
         }
     }, [createProjectTab, lang, messages, saveTabState]);
-
     const initLabel = getAssistantInitLabel(initStatus, lang);
     const placeholderText = !ready
         ? initLabel
@@ -555,7 +553,7 @@ export function AIAssistantPanel(props: any) {
         <div data-testid="ai-panel-root" style={{ ...containerStyle, flexDirection: "row" }}>
             <div data-testid="ai-panel-body" style={{ display: "flex", flexDirection: "column", flex: splitRatio, minWidth: 0, minHeight: 0, height: "100%", boxSizing: "border-box", overflow: "hidden", position: "relative" }}>
             {/* Drag overlay (inline mode), scoped to ai-panel-body only */}
-            {inline && !maximized && (
+            {inline && (
                 <div style={{
                     height: "30px", width: "100%",
                     position: "absolute", top: 0, left: 0, zIndex: 999,

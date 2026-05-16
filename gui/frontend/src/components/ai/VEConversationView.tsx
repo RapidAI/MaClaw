@@ -25,6 +25,17 @@ export interface VEMessageAttachment {
     sizeBytes?: number;
 }
 
+type PendingVEAttachment = {
+    name: string;
+    size: number;
+    path?: string;
+};
+
+type QueuedVEMessage = {
+    content: string;
+    filePaths?: string[];
+};
+
 export interface VEConversationState {
     sessionId: string | null;
     messages: VEMessage[];
@@ -48,7 +59,7 @@ export interface VEConversationViewProps {
     lang?: string;
     /** Pre-existing session ID to resume (sticky session). Skips initiation if provided. */
     existingSessionId?: string;
-    /** Override for testing — Wails bindings */
+    /** Override for testing Wails bindings. */
     initiateConversation?: (veId: string) => Promise<{ session_id: string; ve_id: string; ve_name: string }>;
     sendMessage?: (sessionId: string, content: string) => Promise<void>;
     sendMessageWithAttachments?: (sessionId: string, content: string, filePaths: string[]) => Promise<void>;
@@ -105,12 +116,12 @@ export function VEConversationView({
     });
     const [inputText, setInputText] = useState("");
     const [sending, setSending] = useState(false);
-    const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
+    const [pendingAttachments, setPendingAttachments] = useState<PendingVEAttachment[]>([]);
 
     const mountedRef = useRef(true);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const queuedMessagesRef = useRef<string[]>([]);
+    const queuedMessagesRef = useRef<QueuedVEMessage[]>([]);
     const sessionIdRef = useRef<string | null>(null);
     const reconnectAttemptRef = useRef(0);
 
@@ -228,7 +239,7 @@ export function VEConversationView({
                 error: {
                     type: "hub_disconnected",
                     message: isZh
-                        ? "重连失败，已达最大重试次数"
+                        ? "\u91cd\u8fde\u5931\u8d25\uff0c\u5df2\u8fbe\u6700\u5927\u91cd\u8bd5\u6b21\u6570"
                         : "Reconnection failed after max retries",
                 },
             }));
@@ -253,7 +264,7 @@ export function VEConversationView({
                     const queued = [...queuedMessagesRef.current];
                     queuedMessagesRef.current = [];
                     for (const msg of queued) {
-                        await doSendMessage(msg);
+                        await doSendMessage(msg.content, msg.filePaths);
                     }
                 }
             } catch {
@@ -374,10 +385,15 @@ export function VEConversationView({
         if (!content && pendingAttachments.length === 0) return;
         if (sending) return;
 
-        // If disconnected, queue the message
-        if (state.connectionState === "disconnected" || !state.sessionId) {
-            queuedMessagesRef.current.push(content);
+        const filePaths = pendingAttachments.length > 0
+            ? pendingAttachments.map((f) => f.path || "").filter(Boolean)
+            : undefined;
+
+        // If disconnected, queue the message with any native attachment paths.
+        if (state.connectionState !== "connected" || !state.sessionId) {
+            queuedMessagesRef.current.push({ content, filePaths });
             setInputText("");
+            setPendingAttachments([]);
             return;
         }
 
@@ -401,11 +417,6 @@ export function VEConversationView({
         }));
         setInputText("");
 
-        // For file attachments, we'd need file paths (Wails uses native paths)
-        // In the browser context, we pass file names; actual path resolution happens via Wails dialog
-        const filePaths = pendingAttachments.length > 0
-            ? pendingAttachments.map((f) => (f as any).path || f.name)
-            : undefined;
         setPendingAttachments([]);
 
         await doSendMessage(content, filePaths);
@@ -424,14 +435,39 @@ export function VEConversationView({
 
     // --- Attachment Handling ---
 
-    const handleAttachmentSelect = useCallback(() => {
+    const handleAttachmentSelect = useCallback(async () => {
+        try {
+            const mod = await import("../../../wailsjs/go/main/App");
+            const selected = await (mod as any).SelectAIAssistantFiles?.();
+            if (Array.isArray(selected) && selected.length > 0) {
+                setPendingAttachments((prev) => [
+                    ...prev,
+                    ...selected.map((filePath: string) => ({
+                        name: fileNameFromPath(filePath),
+                        size: 0,
+                        path: filePath,
+                    })),
+                ]);
+                return;
+            }
+        } catch {
+            // Fall through to browser file input for unit tests and non-Wails previews.
+        }
+
         const input = document.createElement("input");
         input.type = "file";
         input.multiple = true;
-        input.accept = ".txt,.md,.csv,.json,.xml,.yaml,.log,.go,.py,.js,.ts,.html,.css,.png,.jpg,.jpeg,.gif,.webp,.bmp,.pdf,.docx";
+        input.accept = ".txt,.md,.csv,.json,.xml,.yaml,.yml,.log,.go,.py,.js,.ts,.html,.css,.png,.jpg,.jpeg,.gif,.webp,.bmp,.pdf,.docx";
         input.onchange = () => {
             if (input.files) {
-                setPendingAttachments((prev) => [...prev, ...Array.from(input.files!)]);
+                setPendingAttachments((prev) => [
+                    ...prev,
+                    ...Array.from(input.files!).map((file) => ({
+                        name: file.name,
+                        size: file.size,
+                        path: (file as any).path,
+                    })),
+                ]);
             }
         };
         input.click();
@@ -468,11 +504,11 @@ export function VEConversationView({
                         gap: 6,
                     }}
                 >
-                    <span>⚠️</span>
+                    <span>!</span>
                     <span>{formatError(state.error, isZh)}</span>
                     {state.connectionState === "reconnecting" && (
                         <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>
-                            {isZh ? `重连中 (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...` : `Reconnecting (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...`}
+                            {isZh ? `\u91cd\u8fde\u4e2d (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...` : `Reconnecting (${state.reconnectAttempt}/${MAX_RECONNECT_RETRIES})...`}
                         </span>
                     )}
                 </div>
@@ -565,7 +601,7 @@ export function VEConversationView({
                                     padding: "0 2px",
                                 }}
                             >
-                                ×
+                                x
                             </button>
                         </div>
                     ))}
@@ -596,18 +632,18 @@ export function VEConversationView({
                         padding: "4px",
                         color: theme.textMuted,
                     }}
-                    title={isZh ? "添加附件" : "Add attachment"}
+                    title={isZh ? "\u6dfb\u52a0\u9644\u4ef6" : "Add attachment"}
                 >
-                    📎
+                    +
                 </button>
 
                 <textarea
                     data-testid="ve-input-textarea"
-                    aria-label={isZh ? `发送消息给 ${veName}` : `Message ${veName}`}
+                    aria-label={isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${veName}` : `Message ${veName}`}
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder={isZh ? `发送消息给 ${veName}...` : `Message ${veName}...`}
+                    placeholder={isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${veName}...` : `Message ${veName}...`}
                     rows={1}
                     style={{
                         flex: 1,
@@ -639,7 +675,7 @@ export function VEConversationView({
                         opacity: sending || (!inputText.trim() && pendingAttachments.length === 0) ? 0.5 : 1,
                     }}
                 >
-                    {sending ? "..." : isZh ? "发送" : "Send"}
+                    {sending ? "..." : isZh ? "\u53d1\u9001" : "Send"}
                 </button>
             </div>
         </div>
@@ -687,7 +723,7 @@ function MessageBubble({ message, theme, isZh }: MessageBubbleProps) {
                         data-testid={`ve-msg-failed-${message.id}`}
                         style={{ color: theme.errorText || "#dc2626", fontSize: 11, marginLeft: 6 }}
                     >
-                        {isZh ? "⚠️ 发送失败" : "⚠️ Failed"}
+                        {isZh ? "\u53d1\u9001\u5931\u8d25" : "Failed"}
                     </span>
                 )}
             </div>
@@ -762,13 +798,13 @@ function AttachmentDisplay({ attachment, theme }: AttachmentDisplayProps) {
             }}
             onClick={handleClick}
         >
-            <span>📄</span>
+            <span>{attachment.type === "image" ? "IMG" : attachment.type === "text" ? "TXT" : "FILE"}</span>
             <span style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {attachment.filename}
             </span>
-            {attachment.sizeBytes != null && (
+            {formatFileSize(attachment.sizeBytes ?? 0) && (
                 <span style={{ color: theme.textMuted }}>
-                    ({formatFileSize(attachment.sizeBytes)})
+                    ({formatFileSize(attachment.sizeBytes ?? 0)})
                 </span>
             )}
         </div>
@@ -804,16 +840,22 @@ function classifyAttachmentType(filename: string): "text" | "image" | "file" {
 function getAttachmentIcon(filename: string): string {
     const type = classifyAttachmentType(filename);
     switch (type) {
-        case "image": return "🖼️";
-        case "text": return "📝";
-        default: return "📄";
+        case "image": return "IMG";
+        case "text": return "TXT";
+        default: return "FILE";
     }
 }
 
+function fileNameFromPath(filePath: string): string {
+    const normalized = String(filePath || "").replace(/\\/g, "/");
+    return normalized.split("/").filter(Boolean).pop() || String(filePath || "attachment");
+}
+
 function formatFileSize(bytes: number): string {
+    if (!Number.isFinite(bytes) || bytes <= 0) return "";
     if (bytes < 1024) return `${bytes}B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export { formatError, classifyAttachmentType, formatFileSize, createSessionWithTimeout };
+export { formatError, classifyAttachmentType, fileNameFromPath, formatFileSize, createSessionWithTimeout };

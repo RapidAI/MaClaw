@@ -1901,12 +1901,28 @@ export function InitiateVEConversation(arg1) {
   return window['go']['main']['App']['InitiateVEConversation'](arg1);
 }
 
+export function InitiateGroupConversation(arg1) {
+  return window['go']['main']['App']['InitiateGroupConversation'](arg1);
+}
+
 export function SendVEMessage(arg1, arg2) {
   return window['go']['main']['App']['SendVEMessage'](arg1, arg2);
 }
 
+export function SendVEMessageWithAttachments(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendVEMessageWithAttachments'](arg1, arg2, arg3);
+}
+
 export function CloseVESession(arg1) {
   return window['go']['main']['App']['CloseVESession'](arg1);
+}
+
+export function ArchiveVESession(arg1) {
+  return window['go']['main']['App']['ArchiveVESession'](arg1);
+}
+
+export function ArchiveGroupSession(arg1) {
+  return window['go']['main']['App']['ArchiveGroupSession'](arg1);
 }
 
 export function AddVEToGroup(arg1, arg2) {
@@ -1933,6 +1949,6 @@ export function CloseProjectTabSession(arg1) {
   return window['go']['main']['App']['CloseProjectTabSession'](arg1);
 }
 
-export function SendMessageForTab(arg1, arg2) {
-  return window['go']['main']['App']['SendMessageForTab'](arg1, arg2);
+export function SendMessageForTab(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendMessageForTab'](arg1, arg2, arg3);
 }

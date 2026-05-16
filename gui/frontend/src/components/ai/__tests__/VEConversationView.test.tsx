@@ -5,10 +5,12 @@ import {
     formatError,
     classifyAttachmentType,
     formatFileSize,
+    fileNameFromPath,
     createSessionWithTimeout,
 } from "../VEConversationView";
 import type { VEConversationViewProps, VEConversationError } from "../VEConversationView";
 import type { Theme } from "../aiAssistantPanelTheme";
+import { SelectAIAssistantFiles } from "../../../../wailsjs/go/main/App";
 
 // Mock Wails runtime
 const eventHandlers = new Map<string, (...args: any[]) => void>();
@@ -18,6 +20,10 @@ vi.mock("../../../../wailsjs/runtime", () => ({
         return () => eventHandlers.delete(eventName);
     }),
     EventsOff: vi.fn((eventName: string) => eventHandlers.delete(eventName)),
+}));
+
+vi.mock("../../../../wailsjs/go/main/App", () => ({
+    SelectAIAssistantFiles: vi.fn(async () => []),
 }));
 
 const mockTheme: Theme = {
@@ -97,6 +103,8 @@ describe("VEConversationView", () => {
     });
 
     afterEach(() => {
+        (SelectAIAssistantFiles as any).mockReset();
+        (SelectAIAssistantFiles as any).mockImplementation(async () => []);
         vi.useRealTimers();
     });
 
@@ -144,6 +152,13 @@ describe("VEConversationView", () => {
 
         it("classifies unknown extensions as file", () => {
             expect(classifyAttachmentType("data.xyz")).toBe("file");
+        });
+    });
+
+    describe("fileNameFromPath", () => {
+        it("extracts file names from native paths", () => {
+            expect(fileNameFromPath("D:\\cases\\evidence.pdf")).toBe("evidence.pdf");
+            expect(fileNameFromPath("/tmp/report.md")).toBe("report.md");
         });
     });
 
@@ -252,6 +267,48 @@ describe("VEConversationView", () => {
 
             await act(async () => { await vi.runAllTimersAsync(); });
             expect(send).not.toHaveBeenCalled();
+        });
+
+        it("sends selected native file paths with attachment messages", async () => {
+            (SelectAIAssistantFiles as any).mockResolvedValueOnce(["D:\\cases\\evidence.pdf"]);
+            const { sendWithAttachments } = renderConversation();
+            await act(async () => { await vi.runAllTimersAsync(); });
+
+            fireEvent.click(screen.getByTestId("ve-attach-button"));
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(screen.getByTestId("ve-attachment-preview-bar").textContent).toContain("evidence.pdf");
+
+            const textarea = screen.getByTestId("ve-input-textarea");
+            fireEvent.change(textarea, { target: { value: "See attachment" } });
+            fireEvent.keyDown(textarea, { key: "Enter" });
+
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(sendWithAttachments).toHaveBeenCalledWith("test-session-1", "See attachment", ["D:\\cases\\evidence.pdf"]);
+        });
+
+        it("preserves selected attachment paths when sending after reconnect", async () => {
+            (SelectAIAssistantFiles as any).mockResolvedValueOnce(["D:\\cases\\queued.pdf"]);
+            const { initiate, sendWithAttachments } = renderConversation({ existingSessionId: "test-session-1" });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            fireEvent.click(screen.getByTestId("ve-attach-button"));
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            await act(async () => {
+                eventHandlers.get("ve:disconnected")?.({ session_id: "test-session-1" });
+            });
+            const textarea = screen.getByTestId("ve-input-textarea");
+            await act(async () => {
+                fireEvent.change(textarea, { target: { value: "Queued attachment" } });
+                fireEvent.keyDown(textarea, { key: "Enter" });
+            });
+
+            expect(sendWithAttachments).not.toHaveBeenCalled();
+            await act(async () => { vi.advanceTimersByTime(2000); });
+            await act(async () => { await vi.runOnlyPendingTimersAsync(); });
+
+            expect(initiate).toHaveBeenCalledWith("ve-1");
+            expect(sendWithAttachments).toHaveBeenCalledWith("test-session-1", "Queued attachment", ["D:\\cases\\queued.pdf"]);
         });
 
         it("marks message as failed on send error", async () => {

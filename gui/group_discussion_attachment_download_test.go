@@ -190,3 +190,38 @@ func TestGroupDiscussionDownloadAttachmentRefetchesWhenCachedFileMissing(t *test
 		t.Fatalf("refetched body = %q", string(data))
 	}
 }
+
+func TestGroupDiscussionDownloadAttachmentUsesRemoteClientIDFallback(t *testing.T) {
+	var gotParticipantID string
+	var gotMachineID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotParticipantID = r.URL.Query().Get("participant_id")
+		gotMachineID = r.Header.Get("X-Machine-ID")
+		_, _ = w.Write([]byte("attachment"))
+	}))
+	defer server.Close()
+
+	oldClient := veFileRelayHTTPClient
+	veFileRelayHTTPClient = server.Client()
+	defer func() { veFileRelayHTTPClient = oldClient }()
+
+	app := &App{
+		testHomeDir:      t.TempDir(),
+		configCacheValid: true,
+		configCache: corelib.AppConfig{
+			RemoteHubURL:       server.URL,
+			RemoteClientID:     "client-fallback",
+			RemoteMachineToken: "token-1",
+		},
+	}
+
+	if _, err := app.GroupDiscussionDownloadAttachment("disc-1", "/api/ve/files/file-1", "report.txt"); err != nil {
+		t.Fatalf("GroupDiscussionDownloadAttachment: %v", err)
+	}
+	if gotParticipantID != "client-fallback" {
+		t.Fatalf("participant_id = %q, want client-fallback", gotParticipantID)
+	}
+	if gotMachineID != "client-fallback" {
+		t.Fatalf("X-Machine-ID = %q, want client-fallback", gotMachineID)
+	}
+}

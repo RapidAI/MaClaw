@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { AITab, AITabType, AITabState, AIAssistantPanelTabState } from "./AITabTypes";
 import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
-import { LoadProjectTabIndex, CloseProjectTabSession } from "../../../wailsjs/go/main/App";
+import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession } from "../../../wailsjs/go/main/App";
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -365,6 +365,13 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             projectPath,
             lastActiveAt: Date.now(),
         });
+
+        // Register the tab session with the backend. This is the SINGLE place
+        // where tab→projectPath mapping is established. All code paths that
+        // create a project tab (recent task click, fork, pending open) go
+        // through this function, so the backend always knows about the tab.
+        // Fire-and-forget: session may already exist (idempotent on backend).
+        CreateProjectTabSession(tabId, projectPath).catch(() => {});
 
         // Add tab and auto-activate
         updateTabState(() => ({

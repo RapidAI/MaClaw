@@ -76,7 +76,7 @@ const TAB_TITLE_MAX_LENGTH = 30;
 
 /** Build a group tab title from participant names, truncated if too long. */
 export function buildGroupTabTitle(participants: GroupParticipant[]): string {
-    if (participants.length === 0) return "群聊";
+    if (participants.length === 0) return "\u7fa4\u804a";
     const names = participants.map((p) => p.name);
     const joined = names.join(", ");
     if (joined.length <= TAB_TITLE_MAX_LENGTH) return joined;
@@ -189,7 +189,7 @@ export function ParticipantSelector({
             });
             setAvailable(filtered);
         } catch {
-            setError(isZh ? "获取列表失败" : "Failed to load");
+            setError(isZh ? "\u83b7\u53d6\u5217\u8868\u5931\u8d25" : "Failed to load");
             setAvailable([]);
         } finally {
             setLoading(false);
@@ -200,7 +200,7 @@ export function ParticipantSelector({
         if (limitReached) {
             setError(
                 isZh
-                    ? `群聊人数已满（最多 ${maxGroupParticipants} 人）`
+                    ? `\u7fa4\u804a\u4eba\u6570\u5df2\u6ee1\uff08\u6700\u591a ${maxGroupParticipants} \u4eba\uff09`
                     : `Group is full (max ${maxGroupParticipants})`
             );
             // Show error briefly then clear
@@ -244,11 +244,10 @@ export function ParticipantSelector({
                     alignItems: "center",
                     justifyContent: "center",
                 }}
-                title={isZh ? "添加参与者" : "Add participant"}
+                title={isZh ? "\u6dfb\u52a0\u53c2\u4e0e\u8005" : "Add participant"}
             >
                 +
             </button>
-
             {/* Error toast */}
             {error && (
                 <div
@@ -292,7 +291,7 @@ export function ParticipantSelector({
                 >
                     {loading && (
                         <div style={{ padding: "8px 12px", color: theme.textMuted, fontSize: 12 }}>
-                            {isZh ? "加载中..." : "Loading..."}
+                            {isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}
                         </div>
                     )}
                     {!loading && available.length === 0 && (
@@ -300,7 +299,7 @@ export function ParticipantSelector({
                             data-testid="group-picker-empty"
                             style={{ padding: "8px 12px", color: theme.textMuted, fontSize: 12 }}
                         >
-                            {isZh ? "没有可添加的数字员工" : "No available digital employees"}
+                            {isZh ? "\u6ca1\u6709\u53ef\u6dfb\u52a0\u7684\u6570\u5b57\u5458\u5de5" : "No available digital employees"}
                         </div>
                     )}
                     {!loading &&
@@ -444,11 +443,10 @@ export function ParticipantOfflineNotice({ participantName, theme, lang }: Parti
                 fontStyle: "italic",
             }}
         >
-            {isZh ? `${participantName} 已离线` : `${participantName} went offline`}
+            {isZh ? `${participantName} \u5df2\u79bb\u7ebf` : `${participantName} went offline`}
         </div>
     );
 }
-
 // --- Main Component: VEGroupChatView ---
 
 export function VEGroupChatView({
@@ -542,7 +540,7 @@ export function VEGroupChatView({
                 }}
             >
                 <div style={{ fontSize: 12, color: theme.textMuted }}>
-                    {isZh ? `${participants.length} 位参与者` : `${participants.length} participants`}
+                    {isZh ? `${participants.length} \u4f4d\u53c2\u4e0e\u8005` : `${participants.length} participants`}
                 </div>
                 {allowParticipantAdd && (
                     <ParticipantSelector

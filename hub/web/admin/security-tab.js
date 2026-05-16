@@ -48,8 +48,14 @@
         auditAction: '',
         auditFrom: '',
         auditTo: '',
+        auditLoadedAt: '',
+        lastSnapshotExport: null,
+        snapshotExportHistory: [],
+        snapshotRegistryFilter: 'all',
+        snapshotRegistryQuery: '',
         subTab: 'management'
       };
+      restoreSnapshotExportRegistry(global.__securityAdminState);
     }
     return global.__securityAdminState;
   }
@@ -227,6 +233,7 @@
     sourceUserBinding: { zh: '\u6765\u81ea\u7528\u6237\u76f4\u63a5\u7ed1\u5b9a', en: 'From direct user binding' },
     modelServiceEffective: { zh: '\u751f\u6548\u6a21\u578b\u670d\u52a1\u7ec4', en: 'Effective Model Service Groups' },
     modelServiceDirectOverride: { zh: '\u76f4\u63a5\u8986\u76d6', en: 'Direct Override' },
+    clearModelServiceBinding: { zh: '\u6e05\u7a7a\u8986\u76d6', en: 'Clear Override' },
     modelServiceInheritHint: { zh: '\u7559\u7a7a\u8868\u793a\u7ee7\u627f\u90e8\u95e8\u3001\u5168\u5c40\u6216\u65b0\u7528\u6237\u9ed8\u8ba4\u7ec4', en: 'Leave empty to inherit department, global, or new-user defaults' },
     resolvedSecurityGroups: { zh: '\u547d\u4e2d\u90e8\u95e8', en: 'Matched Departments' },
     matchedBindings: { zh: '\u547d\u4e2d\u7ed1\u5b9a', en: 'Matched Bindings' },
@@ -270,6 +277,7 @@
     capabilityExportFailed: { zh: '\u5bfc\u51fa\u5408\u89c4\u7ed3\u679c\u5931\u8d25: ', en: 'Export compliance result failed: ' },
     noCapabilityPackages: { zh: '\u5f53\u524d\u5bf9\u8c61\u6ca1\u6709\u5339\u914d\u7684 Skill/MCP \u4e0b\u53d1\u7b56\u7565\u3002', en: 'No Skill/MCP rollout policies match this object yet.' },
     capabilitySelect: { zh: '\u9009\u62e9\u80fd\u529b\u5305', en: 'Choose package' },
+    capabilityScopePreview: { zh: '\u4e0b\u53d1\u8303\u56f4: {scope}', en: 'Rollout scope: {scope}' },
     addRequiredCapability: { zh: '\u8bbe\u4e3a\u5fc5\u88c5', en: 'Set Required' },
     addRecommendedCapability: { zh: '\u8bbe\u4e3a\u63a8\u8350', en: 'Recommend' },
     addBlockedCapability: { zh: '\u8bbe\u4e3a\u7981\u6b62', en: 'Block' },
@@ -308,6 +316,8 @@
     auditTo: { zh: '\u7ed3\u675f\u65e5\u671f', en: 'To' },
     auditClearFilters: { zh: '\u6e05\u7a7a\u7b5b\u9009', en: 'Clear Filters' },
     auditCurrentObject: { zh: '\u5f53\u524d\u5bf9\u8c61', en: 'Current Object' },
+    auditLoadedForObject: { zh: '\u5df2\u52a0\u8f7d\u5f53\u524d\u5bf9\u8c61\u53d8\u66f4: {count}', en: 'Loaded current-object changes: {count}' },
+    auditLoadedAt: { zh: '\u5ba1\u8ba1\u52a0\u8f7d\u65f6\u95f4: {time}', en: 'Audit loaded at: {time}' },
     auditCurrentObjectEmpty: { zh: '\u8bf7\u5148\u9009\u62e9\u90e8\u95e8\u6216\u7528\u6237', en: 'Select a department or user first' },
     auditExportJson: { zh: '\u5bfc\u51fa JSON', en: 'Export JSON' },
     auditExportCsv: { zh: '\u5bfc\u51fa CSV', en: 'Export CSV' },
@@ -342,6 +352,42 @@
     auditActionCentralizedOff: { zh: '\u7981\u7528\u96c6\u4e2d\u7b56\u7565', en: 'Disabled centralized policy' },
     auditActionOrgOn: { zh: '\u542f\u7528\u7ec4\u7ec7\u67b6\u6784', en: 'Enabled organization structure' },
     auditActionOrgOff: { zh: '\u7981\u7528\u7ec4\u7ec7\u67b6\u6784', en: 'Disabled organization structure' },
+    snapshotCoverage: { zh: '\u5feb\u7167\u8303\u56f4', en: 'Snapshot coverage' },
+    snapshotCompleteness: { zh: '\u5b8c\u6574\u5ea6: {ready}/{total}', en: 'Completeness: {ready}/{total}' },
+    snapshotQuality: { zh: '\u8d28\u91cf: {quality}', en: 'Quality: {quality}' },
+    snapshotQualityComplete: { zh: '\u5b8c\u6574', en: 'Complete' },
+    snapshotQualityPartial: { zh: '\u90e8\u5206', en: 'Partial' },
+    snapshotQualityIncomplete: { zh: '\u4e0d\u5b8c\u6574', en: 'Incomplete' },
+    snapshotReady: { zh: '\u5df2\u5305\u542b', en: 'Included' },
+    snapshotMissing: { zh: '\u672a\u52a0\u8f7d', en: 'Not loaded' },
+    snapshotNotApplicable: { zh: '\u4e0d\u9002\u7528', en: 'N/A' },
+    snapshotMissingSections: { zh: '\u672a\u5305\u542b\u5206\u533a: {sections}', en: 'Missing sections: {sections}' },
+    snapshotWarnings: { zh: '\u8d28\u91cf\u63d0\u793a: {count}', en: 'Quality warnings: {count}' },
+    snapshotNone: { zh: '\u65e0', en: 'none' },
+    snapshotExportPreflightConfirm: { zh: '\u5feb\u7167\u8d28\u91cf\u4e3a {quality} {score}/100\uff0c\u7f3a\u5931\u5206\u533a: {missing}\uff0c\u8d28\u91cf\u63d0\u793a: {warnings}\u3002\u662f\u5426\u7ee7\u7eed\u5bfc\u51fa\uff1f', en: 'Snapshot quality is {quality} {score}/100. Missing sections: {missing}. Quality warnings: {warnings}. Continue export?' },
+    lastSnapshotExport: { zh: '\u6700\u8fd1\u4e00\u6b21\u5feb\u7167\u5bfc\u51fa', en: 'Latest Snapshot Export' },
+    snapshotExportHistory: { zh: '\u5feb\u7167\u5bfc\u51fa\u767b\u8bb0\u7c3f', en: 'Snapshot Export Registry' },
+    exportSnapshotRegistryJson: { zh: '\u5bfc\u51fa\u767b\u8bb0\u7c3f JSON', en: 'Export registry JSON' },
+    clearSnapshotRegistry: { zh: '\u6e05\u7a7a\u767b\u8bb0\u7c3f', en: 'Clear registry' },
+    confirmClearSnapshotRegistry: { zh: '\u786e\u5b9a\u6e05\u7a7a\u672c\u5730\u5feb\u7167\u5bfc\u51fa\u767b\u8bb0\u7c3f\u5417\uff1f', en: 'Clear the local snapshot export registry?' },
+    snapshotRegistryCleared: { zh: '\u5feb\u7167\u767b\u8bb0\u7c3f\u5df2\u6e05\u7a7a', en: 'Snapshot registry cleared' },
+    snapshotRegistryExported: { zh: '\u5feb\u7167\u767b\u8bb0\u7c3f\u5df2\u5bfc\u51fa', en: 'Snapshot registry exported' },
+    snapshotRegistryEmpty: { zh: '\u6682\u65e0\u5feb\u7167\u5bfc\u51fa\u8bb0\u5f55', en: 'No snapshot export records yet' },
+    snapshotRegistryFilterAll: { zh: '\u5168\u90e8\u8bb0\u5f55', en: 'All records' },
+    snapshotRegistryFilterIssues: { zh: '\u4ec5\u770b\u4f4e\u8d28\u91cf/\u544a\u8b66', en: 'Issues only' },
+    snapshotRegistryFilterCount: { zh: '\u663e\u793a {shown}/{total} \u6761', en: 'Showing {shown}/{total}' },
+    snapshotRegistrySearch: { zh: '\u641c\u7d22 ID/\u5bf9\u8c61/\u8def\u5f84/\u6821\u9a8c\u503c', en: 'Search ID/object/path/checksum' },
+    snapshotRegistrySummary: { zh: '\u6c47\u603b: \u603b\u6570 {total} / \u98ce\u9669 {issues} / \u5e73\u5747\u8d28\u91cf {avg}/100', en: 'Summary: total {total} / issues {issues} / avg quality {avg}/100' },
+    snapshotRegistryTypes: { zh: '\u7c7b\u578b\u5206\u5e03: {types}', en: 'Types: {types}' },
+    snapshotType: { zh: '\u7c7b\u578b', en: 'Type' },
+    snapshotChecksum: { zh: '\u6821\u9a8c\u503c', en: 'Checksum' },
+    snapshotRegistryObject: { zh: '\u5bf9\u8c61', en: 'Object' },
+    snapshotRegistryWarnings: { zh: '\u544a\u8b66', en: 'Warnings' },
+    copySnapshotId: { zh: '\u590d\u5236 ID', en: 'Copy ID' },
+    copySnapshotChecksum: { zh: '\u590d\u5236\u6821\u9a8c\u503c', en: 'Copy checksum' },
+    snapshotCopied: { zh: '\u5df2\u590d\u5236\u5feb\u7167\u5b57\u6bb5', en: 'Snapshot field copied' },
+    snapshotCopyFailed: { zh: '\u590d\u5236\u5931\u8d25: ', en: 'Copy failed: ' },
+    snapshotRegistryCount: { zh: '\u5171 {count} \u6761\u5bfc\u51fa\u8bb0\u5f55', en: '{count} export records' },
     snapshotIdShort: { zh: '\u5feb\u7167 ID: {id}', en: 'Snapshot ID: {id}' }
   };
 
@@ -556,6 +602,7 @@
     _s('assignUsersSearch', 'placeholder', st('searchEmailOrSn'));
     _s('secMembersModalReloadBtn', 'textContent', st('reload'));
     _s('secMembersModalExportBtn', 'textContent', st('exportMembersCsv'));
+    _s('secMembersModalExportJsonBtn', 'textContent', st('exportMembersJson'));
     _s('secMembersSearch', 'placeholder', st('searchMembers'));
     _s('secMembersModalPrevBtn', 'textContent', st('previous'));
     _s('secMembersModalNextBtn', 'textContent', st('next'));
@@ -888,6 +935,31 @@
     }
   }
 
+  function currentSnapshotContext() {
+    var loc = global.location || {};
+    var sec = state();
+    var selected = {};
+    try {
+      selected = selectedObjectSnapshotMeta();
+    } catch (_) {
+      selected = { object_type: sec.selectedObjectType || '', object_id: '', object_name: '' };
+    }
+    var groupId = sec.selectedGroupId || (selected.object_type === 'group' ? selected.object_id : '');
+    return {
+      language: isZh() ? 'zh' : 'en',
+      route: String((loc.pathname || '') + (loc.search || '') + (loc.hash || '')),
+      timezone_offset_minutes: new Date().getTimezoneOffset(),
+      enterprise_sub_tab: sec.subTab || 'management',
+      selected_object: selected,
+      selected_group_id: groupId || '',
+      selected_group_name: sec.selectedGroupName || (groupId ? groupDisplayName(groupId) : ''),
+      selected_group_path: groupId ? groupPathLabel(groupId) : '',
+      selected_group_path_ids: groupId ? selectedGroupChainIds(groupId) : [],
+      selected_user_email: sec.selectedUserEmail || '',
+      audit_loaded_at: sec.auditLoadedAt || ''
+    };
+  }
+
   function stableSnapshotStringify(value) {
     if (value === null || typeof value !== 'object') return JSON.stringify(value);
     if (Array.isArray(value)) return '[' + value.map(stableSnapshotStringify).join(',') + ']';
@@ -914,6 +986,7 @@
     payload.snapshot_type = payload.snapshot_type || type || 'enterprise_snapshot';
     payload.exported_from = payload.exported_from || 'maclaw_hub_enterprise_management';
     payload.exported_by = payload.exported_by || currentAdminSnapshot();
+    payload.snapshot_context = payload.snapshot_context || currentSnapshotContext();
     payload.exported_at = payload.exported_at || new Date().toISOString();
     payload.snapshot_id = payload.snapshot_id || [payload.snapshot_type, safeExportName(payload.object_type, 'object'), snapshotObjectKey(payload), payload.exported_at.replace(/[:.]/g, '-').slice(0, 19)].join(':');
     payload.snapshot_checksum_algorithm = payload.snapshot_checksum_algorithm || 'fnv1a32-stable-json';
@@ -925,9 +998,109 @@
     return String(payload && payload.exported_at || new Date().toISOString()).replace(/[:.]/g, '-').slice(0, 19);
   }
 
+  var SNAPSHOT_EXPORT_REGISTRY_KEY = 'maclaw_enterprise_snapshot_export_registry_v1';
+
+  function cleanSnapshotExportRecord(item) {
+    item = item || {};
+    return {
+      snapshot_id: String(item.snapshot_id || ''),
+      snapshot_type: String(item.snapshot_type || ''),
+      object_type: String(item.object_type || ''),
+      object_id: String(item.object_id || ''),
+      object_name: String(item.object_name || ''),
+      object_group_path: String(item.object_group_path || ''),
+      quality: String(item.quality || ''),
+      quality_score: Number(item.quality_score || 0),
+      warning_count: Number(item.warning_count || 0),
+      warning_severity_counts: item.warning_severity_counts || {},
+      exported_at: String(item.exported_at || ''),
+      snapshot_checksum: String(item.snapshot_checksum || ''),
+      snapshot_checksum_algorithm: String(item.snapshot_checksum_algorithm || '')
+    };
+  }
+
+  function persistSnapshotExportRegistry(sec) {
+    sec = sec || state();
+    try {
+      if (!global.localStorage) return;
+      global.localStorage.setItem(SNAPSHOT_EXPORT_REGISTRY_KEY, JSON.stringify(sec.snapshotExportHistory || []));
+    } catch (_) {}
+  }
+
+  function restoreSnapshotExportRegistry(sec) {
+    sec = sec || {};
+    try {
+      if (!global.localStorage) return;
+      var raw = global.localStorage.getItem(SNAPSHOT_EXPORT_REGISTRY_KEY);
+      if (!raw) return;
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      sec.snapshotExportHistory = parsed.map(cleanSnapshotExportRecord).filter(function(item) { return item.snapshot_id; }).slice(0, 20);
+      sec.lastSnapshotExport = sec.snapshotExportHistory[0] || null;
+    } catch (_) {}
+  }
+
+  function snapshotExportRecord(payload) {
+    payload = payload || {};
+    var summary = payload.snapshot_summary || {};
+    var sections = payload.snapshot_sections || {};
+    return cleanSnapshotExportRecord({
+      snapshot_id: String(payload.snapshot_id || ''),
+      snapshot_type: String(payload.snapshot_type || ''),
+      object_type: String(payload.object_type || ''),
+      object_id: String(payload.object_id || payload.user_email || payload.group_id || ''),
+      object_name: String(payload.object_name || payload.user_email || payload.group_name || ''),
+      object_group_path: String(payload.object_group_path || (payload.snapshot_context && payload.snapshot_context.selected_group_path) || ''),
+      quality: String(summary.quality || sections.quality || ''),
+      quality_score: Number(summary.quality_score || sections.quality_score || 0),
+      warning_count: Number(summary.warning_count || (payload.snapshot_warnings || []).length || 0),
+      warning_severity_counts: summary.warning_severity_counts || sections.warning_severity_counts || {},
+      exported_at: String(payload.exported_at || ''),
+      snapshot_checksum: String(payload.snapshot_checksum || ''),
+      snapshot_checksum_algorithm: String(payload.snapshot_checksum_algorithm || '')
+    });
+  }
+
+  function rememberSnapshotExport(payload) {
+    if (!payload || !payload.snapshot_id) return;
+    var sec = state();
+    var record = snapshotExportRecord(payload);
+    sec.lastSnapshotExport = record;
+    var history = (sec.snapshotExportHistory || []).filter(function(item) { return item && item.snapshot_id !== record.snapshot_id; });
+    history.unshift(record);
+    sec.snapshotExportHistory = history.slice(0, 20);
+    persistSnapshotExportRegistry(sec);
+    updateLastSnapshotExportPanel();
+  }
+
   function showSnapshotExportToast(labelKey, payload) {
     var id = payload && payload.snapshot_id ? String(payload.snapshot_id) : '';
+    rememberSnapshotExport(payload);
     showToast(st(labelKey) + (id ? ' - ' + st('snapshotIdShort', { id: id }) : ''), 'success');
+  }
+
+  function copyTextToClipboard(value) {
+    value = String(value || '');
+    if (!value) return Promise.reject(new Error('empty'));
+    if (global.navigator && global.navigator.clipboard && global.navigator.clipboard.writeText) {
+      return global.navigator.clipboard.writeText(value);
+    }
+    return new Promise(function(resolve, reject) {
+      try {
+        var textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        ok ? resolve() : reject(new Error('copy command failed'));
+      } catch (err) {
+        reject(err);
+      }
+    });
   }
 
   function renderPolicyExportButton() {
@@ -940,6 +1113,10 @@
 
   function renderModelServiceExportButton() {
     return '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="exportSecCurrentModelService()">' + escapeHtml(st('exportModelServiceJson')) + '</button>';
+  }
+
+  function renderClearModelServiceButton(selectId) {
+    return '<button type="button" class="btn-ghost" style="height:28px;font-size:12px;padding:0 10px" onclick="clearSecModelServiceSelect(\'' + escapeHtml(selectId) + '\')">' + escapeHtml(st('clearModelServiceBinding')) + '</button>';
   }
 
   function renderPolicySourceSummary(items) {
@@ -1199,6 +1376,12 @@
     return Array.prototype.slice.call(select.options || []).filter(function(option) { return option.selected && option.value; }).map(function(option) { return option.value; });
   }
 
+  global.clearSecModelServiceSelect = function clearSecModelServiceSelect(selectId) {
+    var select = document.getElementById(selectId);
+    if (!select) return;
+    Array.prototype.slice.call(select.options || []).forEach(function(option) { option.selected = false; });
+  };
+
   function llmServiceSavePayload(cache) {
     var payload = Object.assign({}, cache || {});
     delete payload.cards;
@@ -1280,7 +1463,7 @@
     var source = selected.length ? st('sourceCurrentGroupBinding') : (inherited.length ? st('sourceInheritedGroupBinding') : (globalIds.length ? st('sourceGlobalBinding') : st('sourceGlobalFallback')));
     var inheritedHint = inherited.length ? ('<div class="item-meta" style="margin-top:6px">' + escapeHtml(st('inheritedFrom') + groupDisplayName(effectiveBinding.group_id || '')) + '</div>') : '';
     setCurrentModelServiceExport({ object_type: 'group', group_id: groupID, group_name: groupDisplayName(groupID), source: source, effective_service_group_ids: ids, effective_service_groups: serviceGroupDetails(ids, cache), direct_service_group_ids: selected, inherited_group_id: inherited.length && effectiveBinding ? effectiveBinding.group_id : '', inherited_service_group_ids: inherited, global_service_group_ids: globalIds, default_new_user_service_group_ids: defaultIds, exported_at: new Date().toISOString() });
-    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecGroupModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px">' + serviceGroupChips(ids, cache) + '</div>' + inheritedHint + '<div style="margin-top:10px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label><select id="secGroupModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div></div>';
+    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecGroupModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px">' + serviceGroupChips(ids, cache) + '</div>' + inheritedHint + '<div style="margin-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label>' + renderClearModelServiceButton('secGroupModelServiceSelect') + '</div><select id="secGroupModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div></div>';
   }
 
   function renderModelServiceForGlobal(cache) {
@@ -1289,7 +1472,7 @@
     var shown = selected.length ? selected : fallback;
     var source = selected.length ? st('sourceGlobalBinding') : st('sourceGlobalFallback');
     setCurrentModelServiceExport({ object_type: 'global', source: source, effective_service_group_ids: shown, effective_service_groups: serviceGroupDetails(shown, cache), global_service_group_ids: selected, default_new_user_service_group_ids: fallback, exported_at: new Date().toISOString() });
-    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecGlobalModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px">' + serviceGroupChips(shown, cache) + '</div><div style="margin-top:10px"><label>' + escapeHtml(st('modelServiceGroups')) + '</label><select id="secGlobalModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('sourceGlobalFallback') + ': ' + ((fallback || []).join(', ') || '-')) + '</div></div></div>';
+    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecGlobalModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px">' + serviceGroupChips(shown, cache) + '</div><div style="margin-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label>' + escapeHtml(st('modelServiceGroups')) + '</label>' + renderClearModelServiceButton('secGlobalModelServiceSelect') + '</div><select id="secGlobalModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('sourceGlobalFallback') + ': ' + ((fallback || []).join(', ') || '-')) + '</div></div></div>';
   }
 
   function formatSecNumber(value) {
@@ -1338,7 +1521,7 @@
     var models = (status.available_models || []).join(', ') || '-';
     var inactive = (status.inactive_reasons || []).join(', ');
     setCurrentModelServiceExport({ object_type: 'user', user_email: email, source: source, effective_service_group_ids: ids, effective_service_groups: serviceGroupDetails(ids, cache), direct_service_group_ids: selected, global_service_group_ids: globalIds, default_new_user_service_group_ids: defaultIds, diagnostic: diag || null, service_status: status, exported_at: new Date().toISOString() });
-    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecUserModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px"><label>' + escapeHtml(st('modelServiceEffective')) + '</label><div style="margin-top:4px">' + serviceGroupChips(ids, cache) + '</div></div><div style="margin-top:10px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label><select id="secUserModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div><div class="grid2" style="margin-top:10px"><div><label>' + escapeHtml(st('modelRoutes')) + '</label><div class="item-meta">' + escapeHtml(models) + '</div></div><div><label>' + escapeHtml(st('defaultModel')) + '</label><div class="item-meta mono">' + escapeHtml(status.default_model || 'auto') + '</div></div></div>' + renderUserModelServiceUsage(status) + renderUserModelServiceEvidence(diag, cache) + (inactive ? '<div class="hint" style="margin-top:8px">' + escapeHtml(st('inactiveReasons') + ': ' + inactive) + '</div>' : '') + '</div>';
+    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecUserModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px"><label>' + escapeHtml(st('modelServiceEffective')) + '</label><div style="margin-top:4px">' + serviceGroupChips(ids, cache) + '</div></div><div style="margin-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label>' + renderClearModelServiceButton('secUserModelServiceSelect') + '</div><select id="secUserModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div><div class="grid2" style="margin-top:10px"><div><label>' + escapeHtml(st('modelRoutes')) + '</label><div class="item-meta">' + escapeHtml(models) + '</div></div><div><label>' + escapeHtml(st('defaultModel')) + '</label><div class="item-meta mono">' + escapeHtml(status.default_model || 'auto') + '</div></div></div>' + renderUserModelServiceUsage(status) + renderUserModelServiceEvidence(diag, cache) + (inactive ? '<div class="hint" style="margin-top:8px">' + escapeHtml(st('inactiveReasons') + ': ' + inactive) + '</div>' : '') + '</div>';
   }
 
   function machineDisplayName(item) {
@@ -1459,6 +1642,13 @@
     }).join('');
   }
 
+  function capabilityScopePreviewLabel(objectType) {
+    var sec = state();
+    if (objectType === 'user') return st('selectedUser') + ': ' + (sec.selectedUserEmail || '-');
+    if (objectType === 'group') return st('selectedDepartment') + ': ' + (sec.selectedGroupName || groupDisplayName(sec.selectedGroupId) || sec.selectedGroupId || '-');
+    return st('globalObject');
+  }
+
   function setCurrentCapabilityExport(payload) {
     state().currentCapabilityExport = payload || null;
   }
@@ -1540,7 +1730,8 @@
   }
 
   function renderCapabilityPackageRows(objectType, cache, rows) {
-    var addControls = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilitySelect')) + '</label><select id="secCapabilitySelect" style="height:36px">' + capabilityOptions(cache) + '</select></div><div><label>' + escapeHtml(st('version')) + '</label><input id="secCapabilityVersion" style="height:36px" placeholder="auto"></div><div class="actions" style="gap:6px;padding:0;flex-wrap:wrap"><button class="btn-secondary" style="height:32px;font-size:12px;padding:0 10px" onclick="saveSecCapabilityPolicy(\'required\')">' + escapeHtml(st('addRequiredCapability')) + '</button><button class="btn-ghost" style="height:32px;font-size:12px;padding:0 10px" onclick="saveSecCapabilityPolicy(\'recommended\')">' + escapeHtml(st('addRecommendedCapability')) + '</button><button class="btn-ghost" style="height:32px;font-size:12px;padding:0 10px;color:var(--danger)" onclick="saveSecCapabilityPolicy(\'blocked\')">' + escapeHtml(st('addBlockedCapability')) + '</button></div></div>';
+    var scopePreview = '<div class="item-meta" style="margin-top:8px">' + escapeHtml(st('capabilityScopePreview', { scope: capabilityScopePreviewLabel(objectType) })) + '</div>';
+    var addControls = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilitySelect')) + '</label><select id="secCapabilitySelect" onchange="syncSecCapabilityVersionFromSelect()" style="height:36px">' + capabilityOptions(cache) + '</select></div><div><label>' + escapeHtml(st('version')) + '</label><input id="secCapabilityVersion" style="height:36px" placeholder="auto"></div><div class="actions" style="gap:6px;padding:0;flex-wrap:wrap"><button class="btn-secondary" style="height:32px;font-size:12px;padding:0 10px" onclick="saveSecCapabilityPolicy(\'required\')">' + escapeHtml(st('addRequiredCapability')) + '</button><button class="btn-ghost" style="height:32px;font-size:12px;padding:0 10px" onclick="saveSecCapabilityPolicy(\'recommended\')">' + escapeHtml(st('addRecommendedCapability')) + '</button><button class="btn-ghost" style="height:32px;font-size:12px;padding:0 10px;color:var(--danger)" onclick="saveSecCapabilityPolicy(\'blocked\')">' + escapeHtml(st('addBlockedCapability')) + '</button></div></div>' + scopePreview;
     var body = rows.length ? rows.map(function(row) {
       var cap = row.capability || {};
       var title = cap.display_name || cap.capability_id || row.item.capability_ref || '-';
@@ -1868,10 +2059,24 @@
   function selectedObjectSnapshotMeta() {
     var sec = state();
     if (sec.selectedObjectType === 'user') {
-      return { object_type: 'user', object_id: sec.selectedUserEmail || '', object_name: sec.selectedUserEmail || '' };
+      return {
+        object_type: 'user',
+        object_id: sec.selectedUserEmail || '',
+        object_name: sec.selectedUserEmail || '',
+        group_id: sec.selectedGroupId || '',
+        group_name: sec.selectedGroupName || groupDisplayName(sec.selectedGroupId) || '',
+        group_path: sec.selectedGroupId ? groupPathLabel(sec.selectedGroupId) : '',
+        group_path_ids: sec.selectedGroupId ? selectedGroupChainIds(sec.selectedGroupId) : []
+      };
     }
     if (sec.selectedObjectType === 'group') {
-      return { object_type: 'group', object_id: sec.selectedGroupId || '', object_name: sec.selectedGroupName || groupDisplayName(sec.selectedGroupId) || '' };
+      return {
+        object_type: 'group',
+        object_id: sec.selectedGroupId || '',
+        object_name: sec.selectedGroupName || groupDisplayName(sec.selectedGroupId) || '',
+        group_path: sec.selectedGroupId ? groupPathLabel(sec.selectedGroupId) : '',
+        group_path_ids: sec.selectedGroupId ? selectedGroupChainIds(sec.selectedGroupId) : []
+      };
     }
     return { object_type: 'global', object_id: rootGroupId() || 'global', object_name: st('globalObject') };
   }
@@ -1884,13 +2089,365 @@
     return '';
   }
 
+  function auditLogSearchText(item) {
+    item = item || {};
+    var payload = item.payload || {};
+    return [
+      item.action || '',
+      item.admin_user_id || '',
+      item.payload_json || '',
+      auditPayloadSummary(payload),
+      JSON.stringify(payload || {})
+    ].join(' ').toLowerCase();
+  }
+
+  function currentObjectAuditLogs() {
+    var query = String(objectAuditQuery() || '').trim().toLowerCase();
+    if (!query) return [];
+    return (state().auditLogs || []).filter(function(item) {
+      return auditLogSearchText(item).indexOf(query) >= 0;
+    });
+  }
+
+  function snapshotCoverageItems() {
+    var sec = state();
+    return [
+      { key: 'overview', label: st('objectOverview'), ready: !!sec.currentOverviewSnapshot, applicable: true },
+      { key: 'policy', label: st('effectivePolicy'), ready: !!sec.currentPolicyExport, applicable: true },
+      { key: 'model_service', label: st('modelServiceGroups'), ready: !!sec.currentModelServiceExport, applicable: true },
+      { key: 'capability', label: st('capabilityPackages'), ready: !!sec.currentCapabilityExport, applicable: true },
+      { key: 'members', label: st('members'), ready: !!sec.currentMemberSnapshot, applicable: sec.selectedObjectType === 'group' },
+      { key: 'audit', label: st('recentChanges'), ready: !!sec.auditLoadedAt, applicable: true }
+    ];
+  }
+
+  function snapshotCoverageSummary() {
+    var items = snapshotCoverageItems();
+    var included = items.filter(function(item) { return item.applicable && item.ready; }).map(function(item) { return item.key; });
+    var missing = items.filter(function(item) { return item.applicable && !item.ready; }).map(function(item) { return item.key; });
+    var notApplicable = items.filter(function(item) { return !item.applicable; }).map(function(item) { return item.key; });
+    var applicableCount = included.length + missing.length;
+    return {
+      included: included,
+      missing: missing,
+      not_applicable: notApplicable,
+      applicable_count: applicableCount,
+      included_count: included.length,
+      completeness_ratio: applicableCount ? Math.round((included.length / applicableCount) * 10000) / 10000 : 1,
+      complete: missing.length === 0
+    };
+  }
+
+  function snapshotWarningDetails(meta, coverage, objectLogs) {
+    var warnings = [];
+    var missing = coverage && coverage.missing || [];
+    if (missing.length) warnings.push({ code: 'missing_sections', severity: 'warn', section: missing.join(','), message: 'Snapshot is missing applicable sections.' });
+    if (missing.indexOf('audit') >= 0) warnings.push({ code: 'audit_not_loaded', severity: 'warn', section: 'audit', message: 'Recent changes were not loaded before export.' });
+    if (meta && meta.object_type === 'group' && missing.indexOf('members') >= 0) warnings.push({ code: 'members_not_loaded', severity: 'warn', section: 'members', message: 'Department member snapshot was not loaded before export.' });
+    if (coverage && coverage.included && coverage.included.indexOf('audit') >= 0 && !(objectLogs || []).length) warnings.push({ code: 'no_current_object_audit_matches', severity: 'info', section: 'audit', message: 'Audit logs are loaded but no current-object matches were found.' });
+    return warnings;
+  }
+
+  function snapshotWarningCodes(meta, coverage, objectLogs) {
+    return snapshotWarningDetails(meta, coverage, objectLogs).map(function(item) { return item.code; });
+  }
+
+  function snapshotQuality(coverage, warningDetails) {
+    coverage = coverage || {};
+    warningDetails = warningDetails || [];
+    var hasWarn = warningDetails.some(function(item) { return item && item.severity === 'warn'; });
+    if (coverage.complete && !hasWarn) return 'complete';
+    if ((coverage.included_count || 0) > 0) return 'partial';
+    return 'incomplete';
+  }
+
+  function snapshotQualityLabel(quality) {
+    if (quality === 'complete') return st('snapshotQualityComplete');
+    if (quality === 'partial') return st('snapshotQualityPartial');
+    return st('snapshotQualityIncomplete');
+  }
+
+  function snapshotWarningSeverityCounts(warningDetails) {
+    var counts = { info: 0, warn: 0, error: 0 };
+    (warningDetails || []).forEach(function(item) {
+      var severity = String(item && item.severity || 'info').toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(counts, severity)) counts[severity] = 0;
+      counts[severity] += 1;
+    });
+    return counts;
+  }
+
+  function snapshotQualityScore(coverage, warningDetails) {
+    coverage = coverage || {};
+    var score = Math.round(Number(coverage.completeness_ratio || 0) * 100);
+    var counts = snapshotWarningSeverityCounts(warningDetails);
+    score -= Number(counts.warn || 0) * 15;
+    score -= Number(counts.error || 0) * 40;
+    score -= Number(counts.info || 0) * 5;
+    return Math.max(0, Math.min(100, score));
+  }
+
+  function snapshotExportPreflightMessage(quality, qualityScore, coverage, warningDetails) {
+    coverage = coverage || {};
+    warningDetails = warningDetails || [];
+    return st('snapshotExportPreflightConfirm', {
+      quality: snapshotQualityLabel(quality),
+      score: qualityScore,
+      missing: coverage.missing && coverage.missing.length ? coverage.missing.join(', ') : st('snapshotNone'),
+      warnings: warningDetails.length ? warningDetails.map(function(item) { return item.code; }).join(', ') : st('snapshotNone')
+    });
+  }
+
+  function renderSnapshotCoverageChips() {
+    var items = snapshotCoverageItems();
+    var summary = snapshotCoverageSummary();
+    var warningDetails = snapshotWarningDetails(selectedObjectSnapshotMeta(), summary, currentObjectAuditLogs());
+    var quality = snapshotQuality(summary, warningDetails);
+    var qualityScore = snapshotQualityScore(summary, warningDetails);
+    var warningSeverityCounts = snapshotWarningSeverityCounts(warningDetails);
+    var warnings = warningDetails.map(function(item) { return item.code; });
+    var chips = items.map(function(item) {
+      var status = item.applicable ? (item.ready ? st('snapshotReady') : st('snapshotMissing')) : st('snapshotNotApplicable');
+      var color = item.applicable ? (item.ready ? 'var(--accent)' : 'var(--muted)') : 'var(--muted)';
+      var border = item.applicable && item.ready ? 'rgba(34,197,94,.35)' : 'var(--line)';
+      return '<span title="' + escapeHtml(status) + '" style="display:inline-flex;align-items:center;gap:4px;border:1px solid ' + border + ';border-radius:999px;padding:3px 8px;font-size:11px;color:' + color + '">' + escapeHtml(item.label) + '</span>';
+    }).join('');
+    var completeness = '<span style="color:var(--muted)">' + escapeHtml(st('snapshotCompleteness', { ready: summary.included_count, total: summary.applicable_count })) + '</span>';
+    var qualityText = '<span style="color:var(--muted)">' + escapeHtml(st('snapshotQuality', { quality: snapshotQualityLabel(quality) + ' ' + qualityScore + '/100' })) + '</span>';
+    var missing = summary.missing.length ? '<span style="color:var(--muted)">' + escapeHtml(st('snapshotMissingSections', { sections: summary.missing.join(', ') })) + '</span>' : '';
+    var warning = warnings.length ? '<span title="' + escapeHtml(warnings.join(', ')) + '" style="color:var(--warn,#b45309)">' + escapeHtml(st('snapshotWarnings', { count: warnings.length + ' / warn ' + (warningSeverityCounts.warn || 0) + ' / info ' + (warningSeverityCounts.info || 0) })) + '</span>' : '';
+    return '<div class="item-meta" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"><span style="font-weight:650;color:var(--text)">' + escapeHtml(st('snapshotCoverage')) + '</span>' + chips + completeness + qualityText + missing + warning + '</div>';
+  }
+
+  function snapshotRegistryHasIssue(item) {
+    item = item || {};
+    var score = Number(item.quality_score || 0);
+    return Number(item.warning_count || 0) > 0 || (item.quality && item.quality !== 'complete') || (score > 0 && score < 100);
+  }
+
+  function snapshotRegistrySearchText(item) {
+    item = item || {};
+    return [
+      item.snapshot_id || '',
+      item.snapshot_type || '',
+      item.object_type || '',
+      item.object_id || '',
+      item.object_name || '',
+      item.object_group_path || '',
+      item.quality || '',
+      item.snapshot_checksum || ''
+    ].join(' ').toLowerCase();
+  }
+
+  function snapshotRegistrySummary(history) {
+    history = history || [];
+    var summary = {
+      total_count: history.length,
+      issue_count: 0,
+      avg_quality_score: 0,
+      quality_score_sum: 0,
+      type_counts: {},
+      warning_severity_counts: { info: 0, warn: 0, error: 0 }
+    };
+    history.forEach(function(item) {
+      item = item || {};
+      if (snapshotRegistryHasIssue(item)) summary.issue_count += 1;
+      summary.quality_score_sum += Number(item.quality_score || 0);
+      var type = String(item.snapshot_type || 'unknown');
+      summary.type_counts[type] = Number(summary.type_counts[type] || 0) + 1;
+      var counts = item.warning_severity_counts || {};
+      ['info', 'warn', 'error'].forEach(function(key) {
+        summary.warning_severity_counts[key] = Number(summary.warning_severity_counts[key] || 0) + Number(counts[key] || 0);
+      });
+    });
+    summary.avg_quality_score = history.length ? Math.round(summary.quality_score_sum / history.length) : 0;
+    return summary;
+  }
+
+  function snapshotRegistryTypeSummary(typeCounts) {
+    var entries = Object.keys(typeCounts || {}).sort().map(function(key) { return key + ':' + typeCounts[key]; });
+    return entries.length ? entries.join(', ') : '-';
+  }
+
+  function snapshotRegistryVisibleHistory() {
+    var sec = state();
+    var history = sec.snapshotExportHistory || [];
+    if (sec.snapshotRegistryFilter === 'issues') {
+      history = history.filter(snapshotRegistryHasIssue);
+    }
+    var query = String(sec.snapshotRegistryQuery || '').trim().toLowerCase();
+    if (query) {
+      history = history.filter(function(item) { return snapshotRegistrySearchText(item).indexOf(query) >= 0; });
+    }
+    return history;
+  }
+
+  function renderSnapshotExportHistory() {
+    var sec = state();
+    var history = sec.snapshotExportHistory || [];
+    if (!history.length) return '';
+    var visible = snapshotRegistryVisibleHistory();
+    var summary = snapshotRegistrySummary(visible);
+    var summaryText = st('snapshotRegistrySummary', { total: summary.total_count, issues: summary.issue_count, avg: summary.avg_quality_score }) + ' | ' + st('snapshotRegistryTypes', { types: snapshotRegistryTypeSummary(summary.type_counts) });
+    var filter = '<select onchange="changeSecSnapshotRegistryFilter(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:160px"><option value="all"' + (sec.snapshotRegistryFilter === 'all' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterAll')) + '</option><option value="issues"' + (sec.snapshotRegistryFilter === 'issues' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterIssues')) + '</option></select>';
+    var search = '<input value="' + escapeHtml(sec.snapshotRegistryQuery || '') + '" placeholder="' + escapeHtml(st('snapshotRegistrySearch')) + '" oninput="changeSecSnapshotRegistryQuery(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:220px">';
+    var rows = visible.slice(0, 5).map(function(item) {
+      var time = item.exported_at ? compactDateTime(item.exported_at) : '-';
+      var warnings = item.warning_count ? (' | ' + st('snapshotRegistryWarnings') + ': ' + item.warning_count + ' / warn ' + Number((item.warning_severity_counts || {}).warn || 0) + ' / info ' + Number((item.warning_severity_counts || {}).info || 0)) : '';
+      var quality = item.quality ? (' | ' + st('snapshotQuality', { quality: snapshotQualityLabel(item.quality) + ' ' + Number(item.quality_score || 0) + '/100' })) : '';
+      var objectText = item.object_name || item.object_id || '-';
+      var meta = (item.snapshot_type || '-') + quality + warnings + ' | ' + time + ' | ' + (item.snapshot_checksum || '-');
+      var objectMeta = st('snapshotRegistryObject') + ': ' + objectText + (item.object_group_path ? ' | ' + st('orgPath') + ': ' + item.object_group_path : '');
+      return '<div class="row" style="grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 0"><div style="min-width:0"><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(item.snapshot_id || '-') + '</div><div class="item-meta" style="word-break:break-all">' + escapeHtml(objectMeta) + '</div><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(meta) + '</div></div><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px" onclick="copySecSnapshotHistoryField(\'' + escapeJsString(item.snapshot_id || '') + '\',&quot;snapshot_id&quot;)">' + escapeHtml(st('copySnapshotId')) + '</button></div>';
+    }).join('');
+    return '<div style="border-top:1px solid var(--line);padding-top:8px;margin-top:4px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap"><strong>' + escapeHtml(st('snapshotExportHistory')) + '</strong><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + search + filter + '<button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="exportSecSnapshotRegistry()">' + escapeHtml(st('exportSnapshotRegistryJson')) + '</button><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger)" onclick="clearSecSnapshotRegistry()">' + escapeHtml(st('clearSnapshotRegistry')) + '</button></div></div><div class="item-meta" style="margin-top:4px">' + escapeHtml(st('snapshotRegistryCount', { count: history.length }) + ' | ' + st('snapshotRegistryFilterCount', { shown: visible.length, total: history.length })) + '</div><div class="item-meta" style="margin-top:4px">' + escapeHtml(summaryText) + '</div>' + (rows || hint(st('snapshotRegistryEmpty'))) + '</div>';
+  }
+
+  function renderLastSnapshotExport() {
+    var item = state().lastSnapshotExport;
+    if (!item || !item.snapshot_id) return '';
+    var checksum = item.snapshot_checksum || '-';
+    var time = item.exported_at ? compactDateTime(item.exported_at) : '-';
+    var meta = st('snapshotType') + ': ' + (item.snapshot_type || '-') + ' | ' + st('auditTime') + ': ' + time + ' | ' + st('snapshotChecksum') + ': ' + checksum;
+    return '<div id="secLastSnapshotExport" class="hint" style="margin-top:8px;display:grid;gap:6px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap"><div><strong>' + escapeHtml(st('lastSnapshotExport')) + '</strong><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(item.snapshot_id) + '</div></div><div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="copySecSnapshotField(&quot;snapshot_id&quot;)">' + escapeHtml(st('copySnapshotId')) + '</button><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="copySecSnapshotField(&quot;snapshot_checksum&quot;)">' + escapeHtml(st('copySnapshotChecksum')) + '</button></div></div><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(meta) + '</div>' + renderSnapshotExportHistory() + '</div>';
+  }
+
+  function updateLastSnapshotExportPanel() {
+    var root = document.getElementById('secLastSnapshotExportMount');
+    if (root) root.innerHTML = renderLastSnapshotExport();
+  }
+
+  global.copySecSnapshotField = function copySecSnapshotField(field) {
+    var item = state().lastSnapshotExport || {};
+    var value = item[field] || '';
+    copyTextToClipboard(value).then(function() {
+      showToast(st('snapshotCopied'), 'success');
+    }).catch(function(err) {
+      showToast(st('snapshotCopyFailed') + (err && err.message || 'copy failed'), 'error');
+    });
+  };
+
+  global.changeSecSnapshotRegistryFilter = function changeSecSnapshotRegistryFilter(value) {
+    state().snapshotRegistryFilter = value === 'issues' ? 'issues' : 'all';
+    updateLastSnapshotExportPanel();
+  };
+
+  global.changeSecSnapshotRegistryQuery = function changeSecSnapshotRegistryQuery(value) {
+    state().snapshotRegistryQuery = String(value || '').trim();
+    updateLastSnapshotExportPanel();
+  };
+
+  global.copySecSnapshotHistoryField = function copySecSnapshotHistoryField(snapshotId, field) {
+    var history = state().snapshotExportHistory || [];
+    var item = history.find(function(row) { return row && row.snapshot_id === snapshotId; }) || {};
+    copyTextToClipboard(item[field] || '').then(function() {
+      showToast(st('snapshotCopied'), 'success');
+    }).catch(function(err) {
+      showToast(st('snapshotCopyFailed') + (err && err.message || 'copy failed'), 'error');
+    });
+  };
+
+  global.clearSecSnapshotRegistry = function clearSecSnapshotRegistry() {
+    if (!confirm(st('confirmClearSnapshotRegistry'))) return;
+    var sec = state();
+    sec.snapshotExportHistory = [];
+    sec.lastSnapshotExport = null;
+    try {
+      if (global.localStorage) global.localStorage.removeItem(SNAPSHOT_EXPORT_REGISTRY_KEY);
+    } catch (_) {}
+    updateLastSnapshotExportPanel();
+    showToast(st('snapshotRegistryCleared'), 'success');
+  };
+
+  global.exportSecSnapshotRegistry = function exportSecSnapshotRegistry() {
+    var sec = state();
+    var history = snapshotRegistryVisibleHistory();
+    var totalHistory = sec.snapshotExportHistory || [];
+    if (!totalHistory.length) {
+      showToast(st('snapshotRegistryEmpty'), 'info');
+      return;
+    }
+    try {
+      var payload = normalizeSnapshotPayload({
+        snapshot_schema_version: 1,
+        snapshot_type: 'snapshot_export_registry',
+        object_type: 'registry',
+        object_id: 'enterprise_snapshot_exports',
+        object_name: st('snapshotExportHistory'),
+        exported_at: new Date().toISOString(),
+        registry_filter: sec.snapshotRegistryFilter || 'all',
+        registry_query: sec.snapshotRegistryQuery || '',
+        registry_total_count: totalHistory.length,
+        registry_count: history.length,
+        registry_summary: snapshotRegistrySummary(history),
+        registry_total_summary: snapshotRegistrySummary(totalHistory),
+        registry_items: history
+      }, 'snapshot_export_registry');
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'enterprise-snapshot-registry-' + snapshotExportStamp(payload) + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showSnapshotExportToast('snapshotRegistryExported', payload);
+    } catch (err) {
+      showToast(st('objectSnapshotFailed') + (err && err.message || 'export failed'), 'error');
+    }
+  };
+
+  function objectSnapshotSummary(meta, coverage, objectLogs) {
+    var sec = state();
+    var policy = sec.currentPolicyExport || {};
+    var model = sec.currentModelServiceExport || {};
+    var capability = sec.currentCapabilityExport || {};
+    var member = sec.currentMemberSnapshot || {};
+    var warningDetails = snapshotWarningDetails(meta, coverage, objectLogs);
+    var quality = snapshotQuality(coverage, warningDetails);
+    var qualityScore = snapshotQualityScore(coverage, warningDetails);
+    var warningSeverityCounts = snapshotWarningSeverityCounts(warningDetails);
+    var warnings = warningDetails.map(function(item) { return item.code; });
+    return {
+      object_type: meta && meta.object_type || '',
+      object_id: meta && meta.object_id || '',
+      object_name: meta && meta.object_name || '',
+      included_section_count: (coverage.included || []).length,
+      missing_section_count: (coverage.missing || []).length,
+      not_applicable_section_count: (coverage.not_applicable || []).length,
+      applicable_section_count: Number(coverage.applicable_count || 0),
+      completeness_ratio: Number(coverage.completeness_ratio || 0),
+      complete: !!coverage.complete,
+      quality: quality,
+      quality_score: qualityScore,
+      missing_sections: coverage.missing || [],
+      warning_count: warnings.length,
+      warning_severity_counts: warningSeverityCounts,
+      warnings: warnings,
+      warning_details: warningDetails,
+      policy_item_count: policy.items ? Object.keys(policy.items).length : (policy.policy ? Object.keys(policy.policy).length : 0),
+      model_service_group_count: (model.effective_service_group_ids || []).length,
+      capability_policy_count: (capability.policy_rows || []).length,
+      member_count: Number(member.member_count || 0),
+      child_group_count: Number(member.child_group_count || 0),
+      audit_loaded_count: (sec.auditLogs || []).length,
+      current_object_audit_count: (objectLogs || []).length
+    };
+  }
+
   function renderObjectAuditSection() {
     var query = objectAuditQuery();
     var title = st('auditCurrentObject');
     var filterButton = query ? '<button class="btn-ghost" type="button" style="height:30px;font-size:12px;padding:0 10px" onclick="filterSecAuditByCurrentObject()">' + escapeHtml(query) + '</button>' : '';
     var empty = query ? '' : '<span class="item-meta">' + escapeHtml(st('auditCurrentObjectEmpty')) + '</span>';
     var actions = '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + empty + filterButton + '<button class="btn-secondary" type="button" style="height:30px;font-size:12px;padding:0 10px" onclick="exportSecObjectSnapshot()">' + escapeHtml(st('exportObjectSnapshotJson')) + '</button></div>';
-    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(title) + '</div><div class="item-meta">' + escapeHtml(st('recentChangesDesc')) + '</div></div>' + actions + '</div></div>';
+    var objectLogs = currentObjectAuditLogs();
+    var auditParts = [];
+    if (query) auditParts.push(st('auditLoadedForObject', { count: objectLogs.length }));
+    if (state().auditLoadedAt) auditParts.push(st('auditLoadedAt', { time: compactDateTime(state().auditLoadedAt) }));
+    var auditMeta = auditParts.length ? '<div class="item-meta" style="margin-top:6px">' + escapeHtml(auditParts.join(' | ')) + '</div>' : '';
+    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(title) + '</div><div class="item-meta">' + escapeHtml(st('recentChangesDesc')) + '</div>' + auditMeta + renderSnapshotCoverageChips() + '</div>' + actions + '</div><div id="secLastSnapshotExportMount">' + renderLastSnapshotExport() + '</div></div>';
   }
 
   async function loadSecAuditLogs() {
@@ -1903,6 +2460,7 @@
     var limit = Math.max(1, Math.min(200, Number(sec.auditLimit || 20) || 20));
     var data = await api('/api/admin/audit-logs?limit=' + limit + (query ? '&q=' + query : '') + (action ? '&action=' + action : '') + (from ? '&from=' + from : '') + (to ? '&to=' + to : ''));
     sec.auditLogs = data.items || [];
+    sec.auditLoadedAt = new Date().toISOString();
     renderAuditLogs();
   }
 
@@ -1936,6 +2494,30 @@
       var serviceStatus = entry && entry.service_status || {};
       var textValue = [email, entry && entry.sn, entry && entry.status, entry && entry.enrollment_status, serviceStatus.default_model, (serviceStatus.service_group_ids || []).join(' ')].join(' ').toLowerCase();
       return !query || textValue.indexOf(query) >= 0;
+    });
+  }
+
+  function membersExportRows(rows) {
+    return (rows || []).map(function(email) {
+      var entry = findUserDirectoryEntry(email) || {};
+      var serviceStatus = entry.service_status || {};
+      return {
+        email: email,
+        sn: entry.sn || '',
+        status: entry.status || '',
+        enrollment_status: entry.enrollment_status || '',
+        smart_route: !!entry.smart_route,
+        has_service_access: !!entry.has_service_access,
+        service_status: {
+          active: !!serviceStatus.active,
+          service_group_ids: serviceStatus.service_group_ids || [],
+          default_model: serviceStatus.default_model || '',
+          credits_available: serviceStatus.credits_available || 0,
+          credits_remaining: serviceStatus.credits_remaining || 0,
+          effective_expires_at: serviceStatus.effective_expires_at || serviceStatus.nearest_expires_at || '',
+          inactive_reasons: serviceStatus.inactive_reasons || []
+        }
+      };
     });
   }
 
@@ -2012,6 +2594,15 @@
     }
   };
 
+  global.syncSecCapabilityVersionFromSelect = function syncSecCapabilityVersionFromSelect() {
+    var select = document.getElementById('secCapabilitySelect');
+    var input = document.getElementById('secCapabilityVersion');
+    if (!select || !input) return;
+    var option = select.options && select.selectedIndex >= 0 ? select.options[select.selectedIndex] : null;
+    var version = option ? String(option.getAttribute('data-version') || '').trim() : '';
+    if (!String(input.value || '').trim()) input.value = version;
+  };
+
   global.saveSecCapabilityPolicy = async function saveSecCapabilityPolicy(policy) {
     var sec = state();
     var select = document.getElementById('secCapabilitySelect');
@@ -2020,8 +2611,17 @@
     var versionInput = document.getElementById('secCapabilityVersion');
     var version = String(versionInput && versionInput.value || '').trim();
     var scope = { type: sec.selectedObjectType || 'global' };
-    if (scope.type === 'group') scope.group_id = sec.selectedGroupId;
-    if (scope.type === 'user') scope.user_email = sec.selectedUserEmail;
+    if (scope.type === 'group') {
+      scope.group_id = sec.selectedGroupId;
+      scope.group_name = sec.selectedGroupName || groupDisplayName(sec.selectedGroupId) || '';
+      scope.group_path = groupPathLabel(sec.selectedGroupId);
+    }
+    if (scope.type === 'user') {
+      scope.user_email = sec.selectedUserEmail;
+      scope.group_id = sec.selectedGroupId || '';
+      scope.group_name = sec.selectedGroupName || groupDisplayName(sec.selectedGroupId) || '';
+      scope.group_path = groupPathLabel(sec.selectedGroupId);
+    }
     try {
       if (policy === 'recommended') {
         await api('/api/admin/capability-market/recommendations', { method: 'POST', body: JSON.stringify({ capability_ref: capabilityRef, capability_version_key: version, scope: scope, recommendation_reason: 'enterprise_management', allow_user_dismiss: true, enabled: true }) });
@@ -2075,13 +2675,29 @@
       var sec = state();
       var meta = selectedObjectSnapshotMeta();
       var query = objectAuditQuery();
+      var objectLogs = currentObjectAuditLogs();
+      var coverage = snapshotCoverageSummary();
+      var warningDetails = snapshotWarningDetails(meta, coverage, objectLogs);
+      var quality = snapshotQuality(coverage, warningDetails);
+      var qualityScore = snapshotQualityScore(coverage, warningDetails);
+      var warningSeverityCounts = snapshotWarningSeverityCounts(warningDetails);
+      var warnings = warningDetails.map(function(item) { return item.code; });
+      if (quality !== 'complete' && !confirm(snapshotExportPreflightMessage(quality, qualityScore, coverage, warningDetails))) return;
+      var summary = objectSnapshotSummary(meta, coverage, objectLogs);
       var payload = {
         snapshot_schema_version: 1,
         snapshot_type: 'enterprise_object',
         object_type: meta.object_type,
         object_id: meta.object_id,
         object_name: meta.object_name,
+        object_group_id: meta.group_id || '',
+        object_group_name: meta.group_name || '',
+        object_group_path: meta.group_path || '',
+        object_group_path_ids: meta.group_path_ids || [],
         exported_at: new Date().toISOString(),
+        snapshot_summary: summary,
+        snapshot_warnings: warnings,
+        snapshot_warning_details: warningDetails,
         overview_snapshot: sec.currentOverviewSnapshot || null,
         policy_snapshot: sec.currentPolicyExport || null,
         model_service_snapshot: sec.currentModelServiceExport || null,
@@ -2093,7 +2709,18 @@
           model_service: !!sec.currentModelServiceExport,
           capability: !!sec.currentCapabilityExport,
           members: !!sec.currentMemberSnapshot,
-          audit: true
+          members_applicable: meta.object_type === 'group',
+          audit: !!sec.auditLoadedAt,
+          included: coverage.included,
+          missing: coverage.missing,
+          not_applicable: coverage.not_applicable,
+          applicable_count: coverage.applicable_count,
+          included_count: coverage.included_count,
+          completeness_ratio: coverage.completeness_ratio,
+          complete: coverage.complete,
+          quality: quality,
+          quality_score: qualityScore,
+          warning_severity_counts: warningSeverityCounts
         },
         audit_context: {
           query: query,
@@ -2104,6 +2731,10 @@
             to: sec.auditTo || '',
             limit: sec.auditLimit || 20
           },
+          loaded_at: sec.auditLoadedAt || '',
+          loaded_count: (sec.auditLogs || []).length,
+          current_object_loaded_count: objectLogs.length,
+          current_object_loaded_logs: objectLogs,
           loaded_logs: sec.auditLogs || []
         }
       };
@@ -2587,6 +3218,7 @@
     _s('secMembersSearch', 'placeholder', st('searchMembers'));
     _s('secMembersModalReloadBtn', 'textContent', st('reload'));
     _s('secMembersModalExportBtn', 'textContent', st('exportMembersCsv'));
+    _s('secMembersModalExportJsonBtn', 'textContent', st('exportMembersJson'));
     _s('secMembersSearch', 'value', sec.membersSearch || '');
     try { await loadUserDirectoryCache(); } catch (_) {}
     var overlay = document.getElementById('secMembersModalOverlay');
@@ -2619,22 +3251,20 @@
     }
     try {
       var header = ['email', 'sn', 'status', 'enrollment_status', 'smart_route', 'has_service_access', 'service_active', 'service_group_ids', 'default_model', 'credits_available', 'credits_remaining', 'effective_expires_at'];
-      var lines = [header].concat(rows.map(function(email) {
-        var entry = findUserDirectoryEntry(email) || {};
-        var serviceStatus = entry.service_status || {};
+      var lines = [header].concat(membersExportRows(rows).map(function(row) {
         return [
-          email,
-          entry.sn || '',
-          entry.status || '',
-          entry.enrollment_status || '',
-          entry.smart_route ? 'true' : 'false',
-          entry.has_service_access ? 'true' : 'false',
-          serviceStatus.active ? 'true' : 'false',
-          (serviceStatus.service_group_ids || []).join('|'),
-          serviceStatus.default_model || '',
-          formatSecNumber(serviceStatus.credits_available || 0),
-          formatSecNumber(serviceStatus.credits_remaining || 0),
-          serviceStatus.effective_expires_at || serviceStatus.nearest_expires_at || ''
+          row.email,
+          row.sn,
+          row.status,
+          row.enrollment_status,
+          row.smart_route ? 'true' : 'false',
+          row.has_service_access ? 'true' : 'false',
+          row.service_status.active ? 'true' : 'false',
+          (row.service_status.service_group_ids || []).join('|'),
+          row.service_status.default_model || '',
+          formatSecNumber(row.service_status.credits_available || 0),
+          formatSecNumber(row.service_status.credits_remaining || 0),
+          row.service_status.effective_expires_at || ''
         ];
       })).map(function(row) { return row.map(csvEscape).join(','); }).join('\r\n');
       var blob = new Blob([lines], { type: 'text/csv;charset=utf-8' });
@@ -2648,6 +3278,48 @@
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       showToast(st('membersExported'), 'success');
+    } catch (err) {
+      showToast(st('membersExportFailed') + (err && err.message || 'export failed'), 'error');
+    }
+  };
+
+  global.exportSecMembersModalJson = function exportSecMembersModalJson() {
+    var sec = state();
+    var rows = membersModalFilteredRows();
+    if (!rows.length) {
+      showToast(st('membersExportEmpty'), 'info');
+      return;
+    }
+    try {
+      var payload = {
+        snapshot_schema_version: 1,
+        snapshot_type: 'members',
+        object_type: 'group',
+        group_id: sec.selectedGroupId || '',
+        group_name: sec.selectedGroupName || groupDisplayName(sec.selectedGroupId) || '',
+        group_path: groupPathLabel(sec.selectedGroupId),
+        group_path_ids: selectedGroupChainIds(sec.selectedGroupId),
+        filters: {
+          q: sec.membersSearch || ''
+        },
+        total_member_count: (sec.membersCache || []).length,
+        exported_member_count: rows.length,
+        child_group_count: (sec.membersChildrenCache || []).length,
+        children: sec.membersChildrenCache || [],
+        members: membersExportRows(rows)
+      };
+      payload = normalizeSnapshotPayload(payload, 'members');
+      var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      var group = safeExportName(sec.selectedGroupName || sec.selectedGroupId || 'members', 'members');
+      a.href = url;
+      a.download = 'enterprise-members-' + group + '-' + snapshotExportStamp(payload) + '.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showSnapshotExportToast('membersExported', payload);
     } catch (err) {
       showToast(st('membersExportFailed') + (err && err.message || 'export failed'), 'error');
     }

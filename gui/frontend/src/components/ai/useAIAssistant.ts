@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendMessageForTab, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -92,7 +92,7 @@ interface SendMessageOptions {
     markConfirmationRunning?: boolean;
     /** Project path to include when sending from a Project Tab */
     project_path?: string;
-    /** Tab ID for Project Tab — when set, uses SendMessageForTab binding instead of SendAIAssistantMessage */
+    /** Tab ID (informational, not used for routing) */
     tabId?: string;
 }
 
@@ -271,6 +271,7 @@ const NEW_ROUND_EVENT = "ai-assistant-new-round";
 const STREAM_DONE_EVENT = "ai-assistant-stream-done";
 const INIT_PROGRESS_EVENT = "ai-assistant-init-progress";
 const PROGRESS_EVENT = "ai-assistant-progress";
+const RESPONSE_EVENT = "ai-assistant-response";
 
 // ---------------------------------------------------------------------------
 // localStorage persistence for chat history across app restarts
@@ -581,6 +582,8 @@ interface ActiveRound {
     phase: 'idle' | 'requesting' | 'streaming';
     assistantMessageId: string | null;
     requestId: string;
+    /** Original user text, used by the response event handler for clear_ui decisions. */
+    userText?: string;
 }
 
 interface StreamTokenBuffer {
@@ -2298,6 +2301,65 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
     }, [emitPetStateForAssistant, ensureRoundPlaceholder, flushStreamTokenBuffer, queueStreamToken, resetStreamTokenBuffer, transitionRound]);
 
+    // Listen for the async response event. When SendAIAssistantMessage returns
+    // {deferred: true} (non-blocking mode), the actual response arrives here.
+    // This is the single source of truth for final response processing —
+    // all messages (including /new, /reset, normal chat) are handled here.
+    useEffect(() => {
+        const handler = (payload: any) => {
+            let resp: AIAssistantSendResult;
+            try {
+                resp = typeof payload === 'string' ? JSON.parse(payload) : payload;
+            } catch {
+                return;
+            }
+            const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
+            const responseRequestId = resolveSendRequestID(normalized) || '';
+            const currentRound = activeRoundRef.current;
+            // Only process if this response matches the active round's request.
+            if (!matchesActiveRequest(currentRound, { request_id: responseRequestId })) return;
+            flushStreamTokenBuffer();
+            const assistantMessageId = currentRound.assistantMessageId || '';
+            const effectiveRequestId = responseRequestId || currentRound.requestId;
+            const userText = currentRound.userText || '';
+
+            // Handle explicit history reset (/new, /reset, /clear)
+            const explicitReset = normalized.clear_ui && isExplicitHistoryResetCommand(userText);
+            if (explicitReset) {
+                const resetMessages = buildResetConfirmationMessages(normalized);
+                const nextBoundary = resetMessages[0]
+                    ? `${AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX}${resetMessages[0].id}`
+                    : AI_ASSISTANT_CONTEXT_BOUNDARY_END;
+                if (persistTimerRef.current) {
+                    clearTimeout(persistTimerRef.current);
+                    persistTimerRef.current = null;
+                }
+                latestMessagesRef.current = resetMessages;
+                lastPersistedPayloadRef.current = null;
+                contextBoundaryMessageIDRef.current = nextBoundary;
+                persistContextBoundaryMessageID(nextBoundary);
+                localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
+                progressTailRef.current = null;
+                setProgressMessages([]);
+                setMessages(resetMessages);
+            } else {
+                setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, normalized, preferences));
+                if (normalized.clear_ui) {
+                    contextBoundaryMessageIDRef.current = '';
+                    persistContextBoundaryMessageID('');
+                    progressTailRef.current = null;
+                    setProgressMessages([]);
+                }
+            }
+            setPendingTaskState(null);
+            responseTimeoutClearRef.current?.();
+            resetStreamTokenBuffer();
+            finalizeRound(currentRound.generation);
+        };
+        const off = subscribeEvent(RESPONSE_EVENT, handler);
+        return () => { off(); };
+    }, [finalizeRound, flushStreamTokenBuffer, preferences, resetStreamTokenBuffer]);
+
     const sendMessageNow = useCallback(async (text: string, options?: SendMessageOptions): Promise<boolean> => {
         // Callers (e.g. handleSend in AIAssistantPanel) are responsible for
         // embedding file paths into `text` via buildOutgoingMessageMulti before calling here.
@@ -2331,6 +2393,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
             phase: 'requesting',
             assistantMessageId,
             requestId,
+            userText: outgoingText,
         });
         emitPetStateForAssistant('thinking', 'ai:send', 15000);
         setMessages(prev => {
@@ -2368,64 +2431,72 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         };
         responseTimeoutClearRef.current = resetActivityTimeout;
 
+        let deferredAsync = false;
         try {
-            // When tabId is provided (Project Tab), use SendMessageForTab binding
-            // which routes through the backend's per-project session isolation.
-            // Otherwise use the standard SendAIAssistantMessage path.
-            const rawResponse = options?.tabId
-                ? await SendMessageForTab(options.tabId, outgoingText) as AIAssistantSendResult
-                : await SendAIAssistantMessage(
-                    buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, options)
-                ) as AIAssistantSendResult;
-            clearResponseTimeout();
-            flushStreamTokenBuffer();
+            // All messages go through the async path — the binding returns
+            // immediately with {deferred: true}. The actual response arrives
+            // via the "ai-assistant-response" event and is processed by the
+            // event handler above.
+            const rawResponse = await SendAIAssistantMessage(
+                buildAIAssistantSendPayload(outgoingText, requestId, recentMessages, options)
+            ) as AIAssistantSendResult;
             const response = normalizeSendResponse(rawResponse, preferences.showTraceEntry);
             const responseRequestId = resolveSendRequestID(response);
-            const effectiveRequestId = responseRequestId || requestId;
             const currentRound = activeRoundRef.current;
             if (currentRound.generation !== generation || currentRound.phase === 'idle') {
                 return true;
             }
+            // Update requestId if the backend assigned a different one.
             if (responseRequestId && responseRequestId !== requestId) {
                 setRoundState({
                     generation,
                     phase: activeRoundRef.current.phase,
                     assistantMessageId,
                     requestId: responseRequestId,
+                    userText: outgoingText,
                 });
             }
-            const explicitReset = response.clear_ui && isExplicitHistoryResetCommand(outgoingText);
-            if (explicitReset) {
-                const resetMessages = buildResetConfirmationMessages(response);
-                const nextBoundary = resetMessages[0]
-                    ? `${AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX}${resetMessages[0].id}`
-                    : AI_ASSISTANT_CONTEXT_BOUNDARY_END;
-                if (persistTimerRef.current) {
-                    clearTimeout(persistTimerRef.current);
-                    persistTimerRef.current = null;
+            if (response.deferred) {
+                // Async mode: response will arrive via event. If there's a
+                // run_id/job_id, it's a remote coding session (old path).
+                if (response.run_id || response.job_id) {
+                    const effectiveRequestId = responseRequestId || requestId;
+                    setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
                 }
-                latestMessagesRef.current = resetMessages;
-                lastPersistedPayloadRef.current = null;
-                contextBoundaryMessageIDRef.current = nextBoundary;
-                persistContextBoundaryMessageID(nextBoundary);
-                localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
-                progressTailRef.current = null;
-                setProgressMessages([]);
-                setMessages(resetMessages);
+                deferredAsync = true;
             } else {
-                setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
-                if (response.clear_ui) {
-                    // Backend reset its working context. Keep the visible chat intact,
-                    // but start future client-side context from this turn.
-                    contextBoundaryMessageIDRef.current = userMsg.id;
-                    persistContextBoundaryMessageID(userMsg.id);
+                // Synchronous response (e.g. handleAgentViewControlMessage,
+                // TryHandlePassthroughSlashCommand). Process immediately.
+                clearResponseTimeout();
+                flushStreamTokenBuffer();
+                const effectiveRequestId = responseRequestId || requestId;
+                const explicitReset = response.clear_ui && isExplicitHistoryResetCommand(outgoingText);
+                if (explicitReset) {
+                    const resetMessages = buildResetConfirmationMessages(response);
+                    const nextBoundary = resetMessages[0]
+                        ? `${AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX}${resetMessages[0].id}`
+                        : AI_ASSISTANT_CONTEXT_BOUNDARY_END;
+                    if (persistTimerRef.current) {
+                        clearTimeout(persistTimerRef.current);
+                        persistTimerRef.current = null;
+                    }
+                    latestMessagesRef.current = resetMessages;
+                    lastPersistedPayloadRef.current = null;
+                    contextBoundaryMessageIDRef.current = nextBoundary;
+                    persistContextBoundaryMessageID(nextBoundary);
+                    localStorage.removeItem(AI_ASSISTANT_HISTORY_STORAGE_KEY);
                     progressTailRef.current = null;
                     setProgressMessages([]);
+                    setMessages(resetMessages);
+                } else {
+                    setMessages(prev => resolveSendResult(prev, assistantMessageId, effectiveRequestId, response, preferences));
+                    if (response.clear_ui) {
+                        contextBoundaryMessageIDRef.current = userMsg.id;
+                        persistContextBoundaryMessageID(userMsg.id);
+                        progressTailRef.current = null;
+                        setProgressMessages([]);
+                    }
                 }
-            }
-            if (response.deferred) {
-                setPendingTaskState(await resolvePendingAITask(effectiveRequestId, response) ?? { requestId: effectiveRequestId, jobID: response.job_id || undefined, runID: response.run_id || undefined });
-            } else {
                 setPendingTaskState(null);
             }
         } catch (err: any) {
@@ -2440,7 +2511,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         } finally {
             clearResponseTimeout();
             resetStreamTokenBuffer();
-            finalizeRound(generation);
+            if (!deferredAsync) {
+                finalizeRound(generation);
+            }
         }
         return true;
     }, [emitPetStateForAssistant, finalizeRound, flushStreamTokenBuffer, preferences, resetActiveRound, resetStreamTokenBuffer, setRoundState, waitForForegroundIdle]);

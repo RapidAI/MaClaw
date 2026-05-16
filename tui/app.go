@@ -684,13 +684,19 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ChatSendMsg:
 		// Handle slash commands locally.
 		if strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
-			// /btw requires an async agent loop — route through handleChatSend.
+			// /btw and /loop require an async agent loop — route through handleChatSend.
 			trimmedCmd := strings.TrimSpace(msg.Text)
 			if trimmedCmd == "/btw" || strings.HasPrefix(trimmedCmd, "/btw ") {
 				if m.llmMissing() {
 					return m, m.routeMissingLLMFromChat()
 				}
 				return m, m.handleChatSend(msg.Text)
+			}
+			if trimmedCmd == "/loop" || strings.HasPrefix(trimmedCmd, "/loop ") {
+				if m.llmMissing() {
+					return m, m.routeMissingLLMFromChat()
+				}
+				return m, m.handleLoopCommand(msg.Text)
 			}
 			return m, m.handleSlashCommand(msg.Text)
 		}

@@ -521,3 +521,8 @@ func generateImportID() string {
 	_, _ = rand.Read(buf[:])
 	return fmt.Sprintf("imp-%d-%s", time.Now().UnixMilli(), hex.EncodeToString(buf[:]))
 }
+
+// GenerateImportID is the exported version of generateImportID for use by other packages.
+func GenerateImportID() string {
+	return generateImportID()
+}

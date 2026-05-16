@@ -763,8 +763,14 @@ func (a *App) CloseProjectTabSession(tabID string) {
 // SendMessageForTab routes a message to the project-specific session identified
 // by tabID. It delegates to the existing SendAIAssistantMessage with the
 // project_path from the tab's session, enabling per-project isolation.
+//
+// projectPathHint is an optional fallback: if the tab session hasn't been
+// registered yet (race between CreateProjectTabSession and this call), the
+// hint allows self-healing — the mapping is established on-the-fly and cached
+// for future calls.
+//
 // This is a Wails binding method.
-func (a *App) SendMessageForTab(tabID, text string) (*IMAgentResponse, error) {
+func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentResponse, error) {
 	if tabID == "" {
 		return nil, fmt.Errorf("tabID is required")
 	}
@@ -802,6 +808,14 @@ func (a *App) SendMessageForTab(tabID, text string) (*IMAgentResponse, error) {
 		if projectPath != "" {
 			a.tabProjectPaths.Store(tabID, projectPath)
 		}
+	}
+
+	// Self-healing: if all lookups failed but the frontend provided a hint,
+	// use it and register the mapping so future calls succeed without the hint.
+	if projectPath == "" && strings.TrimSpace(projectPathHint) != "" {
+		projectPath = strings.TrimSpace(projectPathHint)
+		a.tabProjectPaths.Store(tabID, projectPath)
+		log.Printf("[SendMessageForTab] self-healed tab %s → %s (from hint)", tabID, projectPath)
 	}
 
 	if projectPath == "" {

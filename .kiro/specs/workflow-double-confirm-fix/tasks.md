@@ -1,0 +1,107 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - First Execution Substantive Preamble Triggers Incorrect Force-Return
+  - **CRITICAL**: This test MUST FAIL on unfixed code — failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior — it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the NeedsConfirm gate incorrectly force-returns during first execution
+  - **Scoped PBT Approach**: Generate `AgentLoopIteration` inputs where:
+    - `NeedsConfirmFromEngine = true` (phase has `NeedsConfirm: true`)
+    - `HasPhaseOutput(userID) = false` (first execution — no prior output in `ws.PhaseOutputs[ws.CurrentPhase]`)
+    - `trimmed != ""` and `!looksLikeNoToolStallReply(msgContent)`
+    - `isSubstantivePhaseDocument(trimmed) = true` (≥200 rune or contains numbered lists/Markdown headings)
+  - Test that the NeedsConfirm gate evaluation for these inputs results in `forceReturn = false` (gate should NOT fire on first execution)
+  - Concrete test cases to include:
+    - PPT workflow `audience_goal` phase: "收到，马上为您启动PPT制作工作流！\n1. 受众目标定义\n2. 内容大纲\n3. 视觉设计\n让我们开始吧！"
+    - Coding workflow `requirements` phase: "好的，我来为您生成需求文档。\n\n# 贪吃蛇游戏需求文档\n\n## 1. 功能需求\n..."
+    - Any NeedsConfirm=true phase with substantive text containing `# Heading` (even < 200 rune)
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (gate currently force-returns for all these inputs — this proves the bug exists)
+  - Document counterexamples: all substantive LLM outputs during first execution trigger force-return because `needsConfirmFromEngine` does not check `hasOutput` state
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 1.1, 1.4, 1.5_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Post-Output Confirmation and Non-NeedsConfirm Phases Unchanged
+  - **IMPORTANT**: Follow observation-first methodology
+  - **Observe on UNFIXED code** the following non-bug-condition behaviors:
+    - Post-output confirmation (`needsConfirmFromEngine=true`, `HasPhaseOutput=true`, substantive text) → gate force-returns ✅
+    - NeedsConfirm=false phases (`IsPhaseNeedsConfirm=false`) → gate never activates regardless of hasOutput ✅
+    - Steering-based path (`needsConfirmFromSteering=true`, no WorkflowEngine workflow) → gate behavior unchanged ✅
+    - Short preamble (< 200 rune, no Markdown structure) with any hasOutput state → `isSubstantivePhaseDocument=false`, loop continues ✅
+  - Write property-based tests capturing these observed behaviors:
+    - **Sub-property 2a**: For all inputs where `needsConfirmFromEngine=true` AND `HasPhaseOutput=true` AND `isSubstantivePhaseDocument=true` AND `!looksLikeNoToolStallReply` → gate force-returns (from Preservation Requirements in design: "已有产出物的 NeedsConfirm 阶段仍 force-return")
+    - **Sub-property 2b**: For all inputs where `IsPhaseNeedsConfirm=false` → gate does NOT activate regardless of hasOutput state (from Preservation Requirements: "NeedsConfirm=false 阶段的 agent loop 正常执行")
+    - **Sub-property 2c**: For all inputs where `needsConfirmFromSteering=true` (no engine workflow) → steering gate behavior unchanged (from Preservation Requirements: "steering-based 编码工作流的 NeedsConfirm gate 不变")
+    - **Sub-property 2d**: For all inputs with short non-substantive text (< 200 rune, no structure) → `isSubstantivePhaseDocument=false`, loop continues regardless of hasOutput (from Preservation Requirements: "短前言仍走 isSubstantivePhaseDocument=false 路径")
+  - Generate random workflow states varying: phase indices, output maps, template types (all 19 templates), text lengths, Markdown structure presence
+  - Verify all tests PASS on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4_
+
+- [x] 3. Implement the double-confirm fix
+
+  - [x] 3.1 Add `HasPhaseOutput(userID string) bool` method to `corelib/workflow/engine.go`
+    - Add exported method with `e.mu.RLock()` / `defer e.mu.RUnlock()` for thread safety
+    - Return `false` when `ws == nil` or `ws.Status != WorkflowActive`
+    - Return `true` iff `ws.PhaseOutputs[ws.CurrentPhase]` exists and is non-empty
+    - Write unit tests for `HasPhaseOutput`:
+      - No active workflow → returns false
+      - Active workflow, no output for current phase → returns false
+      - Active workflow, empty string output for current phase → returns false
+      - Active workflow, non-empty output for current phase → returns true
+      - Active workflow, output exists for different phase (not current) → returns false
+    - _Bug_Condition: isBugCondition(input) where HasPhaseOutput(userID) = false AND NeedsConfirmFromEngine = true_
+    - _Expected_Behavior: HasPhaseOutput returns true iff PhaseOutputs[CurrentPhase] exists and is non-empty (Property 4 from design)_
+    - _Preservation: No existing methods modified; HandleInput's internal hasOutput logic unchanged_
+    - _Requirements: 2.5, 1.5_
+
+  - [x] 3.2 Add `hasOutput` check to no-tool branch NeedsConfirm gate in `gui/im_message_handler.go` (~line 4763)
+    - When `needsConfirmFromEngine=true`, additionally call `h.app.workflowEngine.HasPhaseOutput(userID)`
+    - If `hasOutput=false` (first execution): set `engineGateActive=false`, log at info level "NeedsConfirm gate: first execution (hasOutput=false), allowing loop to continue"
+    - If `hasOutput=true` (post-output): existing behavior unchanged (gate remains active)
+    - Change the gate condition from `if needsConfirmFromEngine || needsConfirmFromSteering` to `if engineGateActive || needsConfirmFromSteering`
+    - `needsConfirmFromSteering` computation is NOT modified
+    - _Bug_Condition: needsConfirmFromEngine=true AND hasOutput=false → gate incorrectly force-returns_
+    - _Expected_Behavior: engineGateActive=false when hasOutput=false, gate skipped for engine path (Property 1 from design)_
+    - _Preservation: needsConfirmFromSteering path unchanged; hasOutput=true path unchanged (Property 2); NeedsConfirm=false path unchanged (Property 3)_
+    - _Requirements: 2.1, 2.4, 2.5, 3.1, 3.4_
+
+  - [x] 3.3 Add `hasOutput` check to tool branch NeedsConfirm gate in `gui/im_message_handler.go` (~line 5412)
+    - In the `needsConfirmToolBranch` computation, when the engine path is taken (`IsPhaseNeedsConfirm=true`), additionally check `HasPhaseOutput(userID)`
+    - Only set `needsConfirmToolBranch=true` from engine path when `hasOutput=true`
+    - When `hasOutput=false`: do not set `needsConfirmToolBranch=true` from engine path, log skip
+    - Steering-driven path (`gateConfig.active && iteration > 0` without engine workflow) unchanged
+    - _Bug_Condition: tool branch needsConfirmToolBranch=true AND hasOutput=false → gate incorrectly force-returns_
+    - _Expected_Behavior: needsConfirmToolBranch=false when engine hasOutput=false (Property 1 from design)_
+    - _Preservation: steering path unchanged; hasOutput=true path unchanged; NeedsConfirm=false path unchanged_
+    - _Requirements: 2.1, 2.2, 2.4, 2.5, 3.1, 3.2, 3.4_
+
+  - [x] 3.4 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - First Execution Does Not Trigger NeedsConfirm Gate
+    - **IMPORTANT**: Re-run the SAME test from task 1 — do NOT write a new test
+    - The test from task 1 encodes the expected behavior: for all inputs where `isBugCondition=true`, the gate SHALL NOT force-return
+    - When this test passes, it confirms: `engineGateActive=false` when `hasOutput=false`, agent loop continues
+    - Run bug condition exploration test from step 1
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed — Property 1 satisfied)
+    - _Requirements: 2.1, 2.4, 2.5_
+
+  - [x] 3.5 Verify preservation tests still pass
+    - **Property 2: Preservation** - Post-Output Confirmation and Non-NeedsConfirm Phases Unchanged
+    - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions — Properties 2, 3 satisfied)
+    - Confirm all preservation sub-properties still hold:
+      - 2a: Post-output substantive text still force-returns
+      - 2b: NeedsConfirm=false phases still unaffected
+      - 2c: Steering path still unchanged
+      - 2d: Short preamble still continues loop
+
+- [x] 4. Checkpoint — Ensure all tests pass
+  - Run full test suite: `go test ./corelib/workflow/... ./gui/...` (or relevant subset)
+  - Ensure all property-based tests pass (exploration test + preservation tests)
+  - Ensure all unit tests pass (HasPhaseOutput + gate integration)
+  - Ensure no regressions in existing workflow tests
+  - Ask the user if questions arise

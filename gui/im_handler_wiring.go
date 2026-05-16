@@ -349,6 +349,11 @@ type IMMessageHandler struct {
 	// Used by /cancel to cancel a running side query. Stored/cleared
 	// atomically by handleBtwCommand.
 	activeBtwSubAgent atomic.Pointer[BtwSubAgent]
+
+	// activeLoopCallbacks holds the currently running /loop callbacks (if any).
+	// Used by /cancel to cancel a running loop command. Stored/cleared
+	// atomically by handleLoopCommand.
+	activeLoopCallbacks atomic.Pointer[guiLoopCommandCallbacks]
 }
 
 // NewIMMessageHandler creates a new handler.

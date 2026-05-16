@@ -1,0 +1,107 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - 截屏关键词被误分类为 document_delivery 且 craft_tool 被条件激活
+  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the bug exists in both `classifyByKeywords` and `conditionalKeepRules`
+  - **Scoped PBT Approach**: Scope the property to concrete failing cases — messages containing screenshot keywords ("截屏"/"截图") combined with document delivery keywords ("发给我"/"导出")
+  - **Bug Condition from design**: `isBugCondition(input)` = `contains(text, "截屏") OR contains(text, "截图")` AND `uicResult.Primary == LabelDocumentDelivery` AND `"craft_tool" IN toolList`
+  - **Test file**: `corelib/intent/layer1_screenshot_bug_test.go` (classifyByKeywords tests) + `corelib/tool/router_screenshot_bug_test.go` (conditionalKeepRules tests)
+  - **Test cases for classifyByKeywords** (Property 1a):
+    - `classifyByKeywords("帮我截屏桌面发给我图片")` → assert `result.Primary != LabelDocumentDelivery` (will FAIL: "截屏" not in registry, "发给我" Strong wins)
+    - `classifyByKeywords("截图桌面发给我")` → assert `result.Primary != LabelDocumentDelivery` (will FAIL: "截图" Browser Weak gets deleted, "发给我" Strong wins)
+    - `classifyByKeywords("帮我截屏")` → assert `result.Primary != LabelUnknown` (will FAIL: "截屏" not in registry)
+    - `classifyByKeywords("截图发给我")` → assert `result.Primary != LabelDocumentDelivery` (will FAIL)
+  - **Test cases for conditionalKeepRules** (Property 1b):
+    - `matchConditionalKeepRules("帮我截屏桌面发给我图片")` → assert `craft_tool` NOT in keep set (will FAIL: "发给我" matches documentDeliveryKeywords)
+    - `matchConditionalKeepRules("截图发给我")` → assert `craft_tool` NOT in keep set (will FAIL)
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests FAIL (this is correct - it proves the bug exists)
+  - Document counterexamples found:
+    - `classifyByKeywords("帮我截屏桌面发给我图片")` returns `{Primary: LabelDocumentDelivery, Confidence: 0.92}`
+    - `matchConditionalKeepRules("截图发给我")` returns keep containing `craft_tool`
+  - Mark task complete when tests are written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 1.4_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - 非截屏消息的分类和条件规则行为不变
+  - **IMPORTANT**: Follow observation-first methodology
+  - **Test file**: `corelib/intent/layer1_screenshot_preservation_test.go` (classifyByKeywords preservation) + `corelib/tool/router_screenshot_preservation_test.go` (conditionalKeepRules preservation)
+  - **Observation phase** (run on UNFIXED code first):
+    - Observe: `classifyByKeywords("把报告发给我")` returns `LabelDocumentDelivery` with confidence 0.92
+    - Observe: `classifyByKeywords("导出 PDF")` returns `LabelDocumentDelivery`
+    - Observe: `classifyByKeywords("登录服务器")` returns `LabelSSH`
+    - Observe: `classifyByKeywords("打开浏览器帮我截图")` returns `LabelBrowser` (browser Strong "浏览器" wins)
+    - Observe: `classifyByKeywords("你好吗")` returns `LabelUnknown`
+    - Observe: `matchConditionalKeepRules("把报告发给我")` returns keep containing `craft_tool`, `send_file`, `open`
+    - Observe: `matchConditionalKeepRules("登录服务器")` returns keep containing `ssh`
+  - **Property-based tests for classifyByKeywords preservation** (Property 2a):
+    - For all messages containing document delivery keywords ("发给我"/"导出"/"pdf"/"附件") but NOT containing screenshot keywords ("截屏"/"截图"), assert `result.Primary == LabelDocumentDelivery`
+    - For all messages containing SSH keywords ("服务器"/"ssh"/"docker") but NOT containing screenshot keywords, assert classification unchanged
+    - For all messages containing browser Strong keywords ("浏览器") + screenshot keywords, assert `result.Primary == LabelBrowser` (browser Strong priority wins)
+    - For all messages without any keyword matches, assert `result.Primary == LabelUnknown`
+  - **Property-based tests for conditionalKeepRules preservation** (Property 2b):
+    - For all messages containing document delivery keywords but NOT containing screenshot keywords, assert `craft_tool` IN keep set
+    - For all messages containing SSH keywords but NOT containing screenshot keywords, assert `ssh` IN keep set
+    - For all messages without any conditional keywords, assert keep set is empty
+  - Verify tests pass on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
+
+- [x] 3. Fix for 微信截屏工具误路由
+
+  - [x] 3.1 Add "截屏" to keyword registry as LabelNonCoding Strong
+    - In `corelib/intent/keyword_registry.go`, add `{Keyword: "截屏", Label: LabelNonCoding, Strength: Strong}` to `defaultKeywords`
+    - This ensures "截屏" is recognized by Layer 1 and competes with "发给我" (LabelDocumentDelivery Strong)
+    - NonCoding priority (3) < DocumentDelivery priority (6), so NonCoding wins via `labelPriority`
+    - _Bug_Condition: isBugCondition(input) where contains(text, "截屏") AND classifiedAsDocDelivery_
+    - _Expected_Behavior: classifyByKeywords("帮我截屏桌面发给我图片").Primary != LabelDocumentDelivery_
+    - _Preservation: Messages without screenshot keywords unchanged_
+    - _Requirements: 2.1, 2.4_
+
+  - [x] 3.2 Move "截图" from LabelBrowser Weak to LabelNonCoding Strong
+    - In `corelib/intent/keyword_registry.go`, remove `{Keyword: "截图", Label: LabelBrowser, Strength: Weak}` from browser section
+    - Add `{Keyword: "截图", Label: LabelNonCoding, Strength: Strong}` to non-coding section
+    - Reason: 截图 is a generic desktop operation, not browser-specific; as Strong it competes with "发给我"
+    - _Bug_Condition: isBugCondition(input) where contains(text, "截图") AND classifiedAsDocDelivery_
+    - _Expected_Behavior: classifyByKeywords("截图桌面发给我").Primary != LabelDocumentDelivery_
+    - _Preservation: "打开浏览器帮我截图" still classifies as LabelBrowser (browser Strong "浏览器" wins by priority)_
+    - _Requirements: 2.1, 2.4, 3.2_
+
+  - [x] 3.3 Add screenshot keyword exclusion to conditionalKeepRules document delivery rule
+    - In `corelib/tool/router.go`, define `screenshotExcludeKeywords = []string{"截屏", "截图", "screenshot"}`
+    - Modify the document delivery `conditionalKeepRule`'s `matches` function: when `containsAnyKeyword(msg, screenshotExcludeKeywords)` returns true, return false (do not activate craft_tool)
+    - Update `documentDeliveryKeywords` comment to document the screenshot exclusion logic
+    - This is a defensive measure — even if UIC classifies correctly (NonCoding), the conditional rule layer won't activate craft_tool for screenshot messages
+    - _Bug_Condition: isBugCondition(input) where "craft_tool" IN toolList for screenshot messages_
+    - _Expected_Behavior: matchConditionalKeepRules("截屏发给我") does NOT include craft_tool_
+    - _Preservation: matchConditionalKeepRules("把报告发给我") still includes craft_tool, send_file, open_
+    - _Requirements: 2.2, 3.1, 3.5_
+
+  - [x] 3.4 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - 截屏关键词不再被分类为 document_delivery 且 craft_tool 不被条件激活
+    - **IMPORTANT**: Re-run the SAME tests from task 1 - do NOT write new tests
+    - The tests from task 1 encode the expected behavior
+    - When these tests pass, it confirms the expected behavior is satisfied
+    - Run bug condition exploration tests from step 1
+    - **EXPECTED OUTCOME**: Tests PASS (confirms bug is fixed)
+    - _Requirements: 2.1, 2.2, 2.4_
+
+  - [x] 3.5 Verify preservation tests still pass
+    - **Property 2: Preservation** - 非截屏消息的分类和条件规则行为不变
+    - **IMPORTANT**: Re-run the SAME tests from task 2 - do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all preservation tests still pass after fix (no regressions)
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5_
+
+- [x] 4. Checkpoint - Ensure all tests pass
+  - Run full test suite for `corelib/intent/` package: `go test ./corelib/intent/...`
+  - Run full test suite for `corelib/tool/` package: `go test ./corelib/tool/...`
+  - Run full test suite for `gui/` package (tool_router_test.go): `go test ./gui/...`
+  - Verify no regressions in existing tests
+  - Ensure all new tests (bug condition + preservation) pass
+  - Ask the user if questions arise

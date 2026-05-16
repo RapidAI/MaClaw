@@ -756,6 +756,58 @@ func AdminCapabilityMarketImportHandler(settings store.SystemSettingsRepository,
 				result["display_name"] = entry.Name
 				result["description"] = entry.Description
 				result["version"] = entry.HubVersion
+
+				// Persist to SkillStore so it appears in the Capability Catalog.
+				if skillStore != nil {
+					now := time.Now().UTC().Format(time.RFC3339)
+					// Ensure SourceProject is always set for dedup.
+					sourceURL := entry.SourceProject
+					if sourceURL == "" {
+						sourceURL = source + ":" + req.InstallRef
+					}
+					hubSkill := skill.HubSkillFull{
+						HubSkillMeta: skill.HubSkillMeta{
+							ID:          skill.GenerateImportID(),
+							Name:        entry.Name,
+							Description: entry.Description,
+							Version:     entry.HubVersion,
+							TrustLevel:  entry.TrustLevel,
+							CreatedAt:   now,
+							UpdatedAt:   now,
+							Visible:     true,
+							Status:      "published",
+							SourceURL:   sourceURL,
+						},
+						Triggers: entry.Triggers,
+					}
+					if hubSkill.TrustLevel == "" {
+						hubSkill.TrustLevel = "community"
+					}
+					// Convert NLSkillStep → HubSkillStep
+					for _, step := range entry.Steps {
+						hubSkill.Steps = append(hubSkill.Steps, skill.HubSkillStep{
+							Action:  step.Action,
+							Params:  step.Params,
+							OnError: step.OnError,
+						})
+					}
+					// Check for duplicate by source URL + name
+					if existing := skillStore.FindBySourceURL(sourceURL, entry.Name); existing != nil {
+						hubSkill.ID = existing.ID
+						hubSkill.CreatedAt = existing.CreatedAt
+						hubSkill.Downloads = existing.Downloads
+						hubSkill.DownloadCount = existing.DownloadCount
+						hubSkill.RatingSum = existing.RatingSum
+						hubSkill.RatingCount = existing.RatingCount
+						hubSkill.AvgRating = existing.AvgRating
+					}
+					if err := skillStore.Publish(hubSkill); err != nil {
+						result["publish_warning"] = "downloaded but failed to publish to catalog: " + err.Error()
+					} else {
+						result["published"] = true
+						result["skill_id"] = hubSkill.ID
+					}
+				}
 			}
 
 		case corelib.CapabilityTypeMCP:

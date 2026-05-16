@@ -1,0 +1,166 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - Self-Confirmed NeedsConfirm Responses Are Not Truncated
+  - **CRITICAL**: This test MUST FAIL on unfixed code — failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior — it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the NeedsConfirm gate returns full self-confirmed text without truncation
+  - **Scoped PBT Approach**: Generate inputs where:
+    - `NeedsConfirm = true` (engine-based or steering-based)
+    - `trimmed != ""` and `!looksLikeNoToolStallReply(msgContent)`
+    - `isSubstantivePhaseDocument(trimmed) = true` (≥200 rune or contains Markdown structure)
+    - `containsSelfConfirmationPattern(trimmed) = true` — text contains a confirmation request followed by a self-answer or phase transition
+  - Test that for these inputs, the system truncates the response at the confirmation request boundary:
+    - Result text does NOT contain self-confirmation content (已确认/confirmed/现在进入/let me proceed)
+    - Result text ends at or near the confirmation request
+    - `isSubstantivePhaseDocument(result.text) = true` (truncated text still valid for gate)
+    - `forceReturn = true` (gate still fires)
+  - Concrete test cases to include:
+    - **PPT slide_scripting**: "...以上是全部20页的逐页脚本。\n\n请确认以上全部20页的逐页脚本，或提出修改意见。\n\n好的，逐页脚本已确认！现在进入最终阶段——PPT生成..."
+    - **Coding requirements**: "# 需求文档\n\n## 功能需求\n...\n\n请确认以上需求，或提出修改意见。\n\n好的，需求已确认！现在开始技术设计..."
+    - **English workflow**: "...Please confirm the above requirements, or suggest changes.\n\nConfirmed! Let me proceed to the design phase..."
+    - **Phase transition without explicit confirm**: "...请确认以上内容。\n\n现在进入下一阶段..." (no explicit "已确认" but has phase transition)
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS — gate currently returns full text including self-confirmation (no truncation mechanism exists). This proves the bug exists.
+  - Document counterexamples: all self-confirmed responses are returned in full, including the self-answer and next-phase content. Root cause confirmed: gate has no self-confirmation detection mechanism.
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 1.1, 1.3, 1.4, 1.5, 1.6_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Non-Self-Confirmed Responses Unchanged
+  - **IMPORTANT**: Follow observation-first methodology
+  - **Observe on UNFIXED code** the following non-bug-condition behaviors:
+    - Normal NeedsConfirm response (deliverable + confirmation prompt, no self-answer) → gate force-returns full text unchanged ✅
+    - Substantive document without any confirmation request → full text returned unchanged ✅
+    - NeedsConfirm=false phase → gate never activates, self-confirmation detection never runs ✅
+    - First execution (hasOutput=false) → gate skips regardless of content (workflow-double-confirm-fix preserved) ✅
+    - Short non-substantive preamble → `isSubstantivePhaseDocument=false`, loop continues ✅
+    - Text containing "确认" in non-confirmation-request context (e.g., "用户确认功能需求", "确认按钮样式") → `containsSelfConfirmationPattern=false`, no false positives ✅
+  - Write property-based tests capturing these observed behaviors:
+    - **Sub-property 2a**: For all inputs where `NeedsConfirm=true` AND `isSubstantivePhaseDocument=true` AND NOT `containsSelfConfirmationPattern` → full text returned unchanged, gate force-returns (from Preservation Requirements: normal NeedsConfirm flow unchanged)
+    - **Sub-property 2b**: For all inputs with substantive documents WITHOUT any confirmation request → `containsSelfConfirmationPattern=false`, full text returned unchanged
+    - **Sub-property 2c**: For all inputs where `NeedsConfirm=false` → gate does NOT activate, self-confirmation detection never runs (from Preservation Requirements: execution phases unaffected)
+    - **Sub-property 2d**: For all inputs with short non-substantive text → `isSubstantivePhaseDocument=false`, loop continues regardless of self-confirmation content
+    - **Sub-property 2e**: For all inputs containing "确认" in non-confirmation-request contexts → `containsSelfConfirmationPattern=false` (no false positives)
+  - Generate random substantive documents varying: document lengths, languages (Chinese/English), confirmation prompt styles, Markdown structure, "确认" in requirement text contexts
+  - Verify all tests PASS on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 2.5, 3.1, 3.2, 3.3, 3.5, 3.8, 3.9_
+
+
+- [x] 3. Implement the self-confirmation detection and truncation fix
+
+  - [x] 3.1 Add `findConfirmationRequestPos(text string) int` function to `gui/im_message_handler.go`
+    - Helper function used by both `containsSelfConfirmationPattern` and `truncateAtConfirmationBoundary`
+    - Search for the LAST occurrence of a confirmation request pattern in the text
+    - Chinese patterns: `请确认`, `请输入：确认`, `请输入: 确认`, `请查看并确认`, `确认后我将`
+    - English patterns: `please confirm`, `please review and confirm`, `confirm or suggest`
+    - Use a compiled regex at package level combining Chinese and English patterns
+    - Return the byte position of the match start, or -1 if not found
+    - Write unit tests:
+      - Various Chinese confirmation request patterns → returns correct position
+      - Various English confirmation request patterns → returns correct position
+      - No confirmation request → returns -1
+      - Multiple confirmation requests → returns position of the LAST one
+      - "确认" in non-request context (e.g., "用户确认功能") → returns -1
+    - _Bug_Condition: isBugCondition(input) where containsSelfConfirmationPattern(trimmed) = true_
+    - _Expected_Behavior: findConfirmationRequestPos returns byte position of last confirmation request pattern_
+    - _Preservation: Returns -1 for texts without confirmation requests; no false positives on "确认" in requirement text_
+    - _Requirements: 2.1, 2.3, 2.4_
+
+  - [x] 3.2 Add `containsSelfConfirmationPattern(text string) bool` function to `gui/im_message_handler.go`
+    - Accept already-trimmed text (post `stripThinkingTags` + `TrimSpace`)
+    - Step 1: Call `findConfirmationRequestPos(text)` — if -1, return false
+    - Step 2: Extract text after the confirmation request position
+    - Step 3: Check if text after request contains a self-answer:
+      - Chinese self-answer: `已确认`, `确认完毕`, `确认！`, `好的，.*确认`, `收到确认`, `确认后.*现在`, `现在进入`, `开始生成`, `进入下一`, `进入最终`
+      - English self-answer: `confirmed`, `proceeding to`, `moving on to`, `let me start`, `let me proceed`, `now entering`
+    - Return true if self-answer or phase transition found, false otherwise
+    - Use compiled regexes at package level for performance
+    - Write unit tests:
+      - Chinese self-confirm patterns (请确认 + 已确认) → returns true
+      - English self-confirm patterns (please confirm + confirmed) → returns true
+      - Phase transition without explicit confirm (请确认 + 现在进入下一阶段) → returns true
+      - Normal confirmation prompt (请确认 + 请输入：确认) → returns false
+      - No confirmation request at all → returns false
+      - "确认" in requirement text (not as confirmation request) → returns false
+    - _Bug_Condition: containsSelfConfirmationPattern detects the "request + self-answer" pattern_
+    - _Expected_Behavior: Returns true iff text contains confirmation request followed by self-answer or phase transition_
+    - _Preservation: Returns false for normal confirmation prompts and texts without confirmation requests_
+    - _Requirements: 2.1, 2.3, 2.4, 2.5_
+
+  - [x] 3.3 Add `truncateAtConfirmationBoundary(text string) string` function to `gui/im_message_handler.go`
+    - Call `findConfirmationRequestPos(text)` to find the confirmation request
+    - Scan forward from the confirmation request to find the end of the confirmation prompt paragraph (next `\n\n` or end of line after the request)
+    - Truncate at that boundary, preserving the confirmation request text itself
+    - Trim trailing whitespace
+    - Safety fallback: if truncated text is empty or too short (< 50 runes), return original text unchanged
+    - Write unit tests:
+      - Chinese self-confirm → truncates correctly, preserves deliverable + confirmation prompt
+      - English self-confirm → truncates correctly
+      - Very short deliverable before confirmation → returns original (safety fallback)
+      - Truncated result passes `isSubstantivePhaseDocument` for typical documents
+      - Confirmation request at end of text (no self-answer) → returns text unchanged or near-unchanged
+    - _Bug_Condition: isBugCondition(input) where response contains self-confirmation after deliverable_
+    - _Expected_Behavior: truncateAtConfirmationBoundary returns text ending at confirmation request boundary, self-answer discarded_
+    - _Preservation: Safety fallback returns original text when truncation would produce too-short result_
+    - _Requirements: 2.1, 2.2, 2.6_
+
+  - [x] 3.4 Add self-confirmation detection to no-tool branch NeedsConfirm gate (~line 4763) in `gui/im_message_handler.go`
+    - After computing `trimmedForGate` and before the `isSubstantivePhaseDocument` check
+    - When `containsSelfConfirmationPattern(trimmedForGate)` returns true:
+      - Call `truncateAtConfirmationBoundary(trimmedForGate)` to get clean text
+      - Replace `trimmedForGate` with the truncated text
+      - Update `msgContent` to the truncated version (so `SavePhaseOutput` receives clean content)
+      - Log at info level: `"NeedsConfirm gate: detected self-confirmation pattern, truncated at confirmation boundary (originalLen=%d truncatedLen=%d)"`
+      - Emit trace event: `"gate.self_confirm_truncated"` with original length, truncated length
+    - Existing `isSubstantivePhaseDocument(trimmedForGate)` check then evaluates the truncated text
+    - If truncated text still passes `isSubstantivePhaseDocument`, gate force-returns clean content
+    - If truncated text does NOT pass (edge case: very short deliverable), fall through to let loop continue
+    - _Bug_Condition: no-tool branch NeedsConfirm gate evaluates full self-confirmed text without truncation_
+    - _Expected_Behavior: Gate detects self-confirmation, truncates before evaluation, force-returns clean content_
+    - _Preservation: Non-self-confirmed responses pass through unchanged; gate logic for other conditions unchanged_
+    - _Requirements: 2.1, 2.2, 2.3, 2.6, 3.1, 3.7, 3.8_
+
+  - [x] 3.5 Add self-confirmation detection to tool branch NeedsConfirm gate (~line 5610) in `gui/im_message_handler.go`
+    - After computing `trimmedAfterTools` and before the `isSubstantivePhaseDocument` check
+    - Same logic as no-tool branch: detect → truncate → update `msgContent` → log → trace → proceed with gate evaluation
+    - _Bug_Condition: tool branch NeedsConfirm gate evaluates full self-confirmed trimmedAfterTools without truncation_
+    - _Expected_Behavior: Tool branch gate detects self-confirmation, truncates before evaluation, force-returns clean content_
+    - _Preservation: Non-self-confirmed tool branch responses pass through unchanged_
+    - _Requirements: 2.1, 2.2, 2.3, 2.6, 3.9_
+
+  - [x] 3.6 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - Self-Confirmed Responses Are Truncated at Confirmation Boundary
+    - **IMPORTANT**: Re-run the SAME test from task 1 — do NOT write a new test
+    - The test from task 1 encodes the expected behavior: for all inputs where `isBugCondition=true`, the response SHALL be truncated
+    - When this test passes, it confirms:
+      - `containsSelfConfirmationPattern` correctly detects self-confirmation
+      - `truncateAtConfirmationBoundary` correctly truncates at the boundary
+      - Truncated text still passes `isSubstantivePhaseDocument`
+      - Gate force-returns clean content without self-confirmation
+    - Run bug condition exploration test from step 1
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed)
+    - _Requirements: 2.1, 2.2, 2.6_
+
+  - [x] 3.7 Verify preservation tests still pass
+    - **Property 2: Preservation** - Non-Self-Confirmed Responses Unchanged
+    - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all preservation sub-properties still hold:
+      - 2a: Normal NeedsConfirm responses (no self-confirmation) still force-return full text
+      - 2b: Documents without confirmation requests still returned unchanged
+      - 2c: NeedsConfirm=false phases still unaffected
+      - 2d: Short preambles still continue loop
+      - 2e: "确认" in non-request contexts still no false positives
+
+- [x] 4. Checkpoint — Ensure all tests pass
+  - Run full test suite: `go test ./gui/...` (or relevant subset covering im_message_handler)
+  - Ensure all property-based tests pass (exploration test + preservation tests)
+  - Ensure all unit tests pass (findConfirmationRequestPos + containsSelfConfirmationPattern + truncateAtConfirmationBoundary + gate integration)
+  - Ensure no regressions in existing workflow tests (workflow-double-confirm-fix, workflow-continuation-needsconfirm-fix, workflow-start-premature-exit)
+  - Verify both no-tool and tool branches apply self-confirmation detection consistently
+  - Ask the user if questions arise

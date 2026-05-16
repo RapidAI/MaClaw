@@ -61,6 +61,9 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		return &IMAgentResponse{Text: "Available commands:\n" +
 			"/new /reset /clear - reset conversation\n" +
 			"/btw <query> - side query\n" +
+			"/loop <verify_cmd> <goal> - goal-driven verification loop\n" +
+			"    e.g. /loop \"go test ./...\" 让所有测试通过\n" +
+			"    options: --max N (iterations), --timeout N (seconds), --dir path\n" +
 			"/compress - compress conversation history\n" +
 			"/memory - show memory status\n" +
 			"/cancel - cancel current task\n" +
@@ -81,6 +84,11 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 			return &IMAgentResponse{Error: "LLM is not configured, so /btw cannot run."}, true
 		}
 		return h.handleBtwCommand(msg, btwQuery, onProgress, onToken), true
+	case imCommandLoop:
+		if !h.isMaclawLLMConfigured() {
+			return &IMAgentResponse{Error: "LLM is not configured. Cannot run /loop."}, true
+		}
+		return h.handleLoopCommand(msg, trimmed, onProgress, onToken), true
 	}
 	if commandKind == imCommandCancel {
 		h.cancelWorkflowForUser(msg.UserID)
@@ -93,6 +101,10 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 		if btw := h.activeBtwSubAgent.Load(); btw != nil {
 			btw.Cancel()
 			return &IMAgentResponse{Text: "/btw side query canceled."}, true
+		}
+		if loop := h.activeLoopCallbacks.Load(); loop != nil {
+			loop.Cancel()
+			return &IMAgentResponse{Text: "/loop command canceled."}, true
 		}
 		ctx := h.currentLoopCtx
 		if ctx == nil {

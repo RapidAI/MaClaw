@@ -961,9 +961,17 @@ export function RespondDigitalEmployeeSensitiveRequest(arg1:string,arg2:string):
 
 export function InitiateVEConversation(arg1:string):Promise<any>;
 
+export function InitiateGroupConversation(arg1:Array<string>):Promise<any>;
+
 export function SendVEMessage(arg1:string,arg2:string):Promise<void>;
 
+export function SendVEMessageWithAttachments(arg1:string,arg2:string,arg3:Array<string>):Promise<void>;
+
 export function CloseVESession(arg1:string):Promise<void>;
+
+export function ArchiveVESession(arg1:string):Promise<void>;
+
+export function ArchiveGroupSession(arg1:Array<string>):Promise<void>;
 
 export function AddVEToGroup(arg1:string,arg2:string):Promise<void>;
 
@@ -980,4 +988,4 @@ export function CreateProjectTabSession(arg1:string, arg2:string):Promise<string
 
 export function CloseProjectTabSession(arg1:string):Promise<void>;
 
-export function SendMessageForTab(arg1:string, arg2:string):Promise<any>;
+export function SendMessageForTab(arg1:string, arg2:string, arg3:string):Promise<any>;

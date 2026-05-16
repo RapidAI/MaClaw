@@ -1435,6 +1435,51 @@ type AIAssistantStreamEvent struct {
 
 // SendAIAssistantMessage handles a desktop AI assistant message (Wails binding).
 func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentResponse, error) {
+	a.ensureInteractionInfra()
+	text := strings.TrimSpace(req.Text)
+	if text == "" {
+		return nil, fmt.Errorf("message text is required")
+	}
+	if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
+		normalizeArtifactResponseSource(resp)
+		return resp, err
+	}
+	if resp, handled := a.TryHandlePassthroughSlashCommandWithSource(text, "desktop:ai-assistant"); handled {
+		if resp != nil {
+			requestID := strings.TrimSpace(req.RequestID)
+			if requestID == "" {
+				requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
+			}
+			resp.RequestID = requestID
+			normalizeArtifactResponseSource(resp)
+		}
+		return resp, nil
+	}
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return nil, fmt.Errorf("AI assistant not initialized")
+	}
+
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
+	}
+
+	// All messages run in a background goroutine so the Wails IPC channel is
+	// freed immediately. The final response is pushed via the
+	// "ai-assistant-response" event. This prevents the WebView2 message loop
+	// from being blocked during long-running agent loops.
+	go a.runAIAssistantMessageAsync(req, hubClient, requestID, text)
+
+	return &IMAgentResponse{
+		RequestID: requestID,
+		Deferred:  true,
+	}, nil
+}
+
+// runAIAssistantMessageAsync executes the agent loop in a background goroutine
+// and emits the final response via the "ai-assistant-response" Wails event.
+func (a *App) runAIAssistantMessageAsync(req AIAssistantSendRequest, hubClient *RemoteHubClient, requestID string, text string) {
 	sendStartedAt := time.Now()
 	readyAt, firstChatLogPending := a.beginFirstAIAssistantChatTelemetry()
 	var ensureInteractionInfraElapsed time.Duration
@@ -1487,36 +1532,6 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		}
 		log.Printf("[AI assistant] first desktop chat after ready: since_ready=%v total=%v ensure_interaction_infra=%v ensure_im_handler=%v agent_loop=%v first_token=%v pre_llm_prep=%v pre_llm_config=%v pre_llm_tools=%v pre_llm_conversation=%v pre_llm_iteration_prep=%v first_token_wait=%v llm_request_build=%v llm_http_do=%v llm_first_sse_wait=%v llm_retry_wait=%v llm_stream_max_token_gap=%v llm_retry_count=%d llm_idle_timeout_count=%d llm_idle_timeout_after_token=%v stream_visible=%v stream_tail=%v handler_tail=%v handler_blackhole_after_usage=%v handler_blackhole_before_return=%v handler_post_stream_usage=%v handler_post_stream_response=%v handler_post_stream_tool_exec=%v handler_post_stream_choice=%v handler_post_stream_assistant_msg=%v handler_post_stream_history_append=%v handler_post_stream_no_tool_branch=%v memory_save=%v capability_gap=%v file_materialize=%v finalize_trace=%v post_response=%v interaction_infra_ready=%v warmup_done=%v (trace_enrich+gossip_setup=async)", readyElapsed, time.Since(sendStartedAt), ensureInteractionInfraElapsed, ensureIMHandlerElapsed, agentLoopElapsed, firstTokenElapsed, preLLMPrepElapsed, preLLMConfigElapsed, preLLMToolsElapsed, preLLMConversationElapsed, preLLMIterationPrepElapsed, firstTokenWaitElapsed, llmRequestBuildElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, llmRetryWaitElapsed, llmStreamMaxTokenGapElapsed, llmRetryCount, llmIdleTimeoutCount, llmIdleTimeoutAfterToken, streamVisibleElapsed, streamTailElapsed, handlerTailElapsed, handlerBlackholeAfterUsageElapsed, handlerBlackholeBeforeReturnElapsed, handlerPostStreamUsageElapsed, handlerPostStreamResponseElapsed, handlerPostStreamToolExecElapsed, handlerPostStreamChoiceElapsed, handlerPostStreamAssistantMsgElapsed, handlerPostStreamHistoryAppendElapsed, handlerPostStreamNoToolBranchElapsed, memorySaveElapsed, capabilityGapElapsed, fileMaterializeElapsed, finalizeTraceElapsed, postResponseElapsed, a.interactionInfraReady(), a.warmupDone.Load())
 	}()
-
-	t0 := time.Now()
-	a.ensureInteractionInfra()
-	ensureInteractionInfraElapsed = time.Since(t0)
-	if ensureInteractionInfraElapsed > 100*time.Millisecond {
-		log.Printf("[SendAIAssistantMessage] ensureInteractionInfra took %v", ensureInteractionInfraElapsed)
-	}
-	text := strings.TrimSpace(req.Text)
-	if text == "" {
-		return nil, fmt.Errorf("message text is required")
-	}
-	if resp, handled, err := a.handleAgentViewControlMessage(text); handled {
-		normalizeArtifactResponseSource(resp)
-		return resp, err
-	}
-	if resp, handled := a.TryHandlePassthroughSlashCommandWithSource(text, "desktop:ai-assistant"); handled {
-		if resp != nil {
-			requestID := strings.TrimSpace(req.RequestID)
-			if requestID == "" {
-				requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
-			}
-			resp.RequestID = requestID
-			normalizeArtifactResponseSource(resp)
-		}
-		return resp, nil
-	}
-	hubClient := a.hubClient()
-	if hubClient == nil {
-		return nil, fmt.Errorf("AI assistant not initialized")
-	}
 	// Synthesize per-project userID for Project Tab isolation.
 	// When ProjectPath is set, ConversationMemory, WorkflowEngine, and
 	// DriftDetector automatically isolate per project because they key on userID.
@@ -1534,10 +1549,6 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		ResumeRecoverableSessionID:  strings.TrimSpace(req.ResumeSessionID),
 		DismissRecoverableSessionID: strings.TrimSpace(req.DismissRecoverableSessionID),
 		UIAction:                    req.UIAction,
-	}
-	requestID := strings.TrimSpace(req.RequestID)
-	if requestID == "" {
-		requestID = fmt.Sprintf("desktop-ai-%d", time.Now().UnixNano())
 	}
 	emitEvent := func(name, value string) {
 		payload, err := json.Marshal(AIAssistantStreamEvent{RequestID: requestID, Text: value})
@@ -1587,23 +1598,6 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 	a.reconcileAIAssistantClientHistory(handler, msg.UserID, req.RecentMessages)
 	agentLoopStartedAt := time.Now()
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
-	if resp != nil {
-		resp.RequestID = requestID
-		normalizeArtifactResponseSource(resp)
-		if canonicalIMResponseSourceKind(resp.ResponseSource).IsArtifactDelivery() || strings.TrimSpace(resp.LocalFilePath) != "" || hasNonEmptyString(resp.LocalFilePaths) {
-			paths := resp.LocalFilePaths
-			if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
-				paths = append([]string{resp.LocalFilePath}, paths...)
-			}
-			fileNames := make([]string, 0, len(paths))
-			for _, p := range paths {
-				if strings.TrimSpace(p) != "" {
-					fileNames = append(fileNames, filepath.Base(p))
-				}
-			}
-			BrowserDiagFileDelivery("wails-return", resp.Text, fileNames, paths, resp.ResponseSource)
-		}
-	}
 	agentLoopElapsed = time.Since(agentLoopStartedAt)
 	if !streamDoneAt.IsZero() {
 		if resp != nil && resp.HandlerTailNanos > 0 {
@@ -1729,7 +1723,44 @@ func (a *App) SendAIAssistantMessage(req AIAssistantSendRequest) (*IMAgentRespon
 		agentLoopElapsed, firstTokenElapsed, ensureInteractionInfraElapsed, ensureIMHandlerElapsed,
 		preLLMPrepElapsed, llmHTTPDoElapsed, llmFirstSSEWaitElapsed, streamTailElapsed,
 		len(text))
-	return resp, nil
+
+	// Emit the final response via event so the frontend can process it.
+	a.emitAIAssistantResponse(requestID, resp)
+}
+
+// emitAIAssistantResponse pushes the final agent loop response to the frontend
+// via the "ai-assistant-response" Wails event. This is the async counterpart
+// to the old synchronous return from SendAIAssistantMessage.
+func (a *App) emitAIAssistantResponse(requestID string, resp *IMAgentResponse) {
+	if resp == nil {
+		resp = &IMAgentResponse{}
+	}
+	resp.RequestID = requestID
+	normalizeArtifactResponseSource(resp)
+	if canonicalIMResponseSourceKind(resp.ResponseSource).IsArtifactDelivery() || strings.TrimSpace(resp.LocalFilePath) != "" || hasNonEmptyString(resp.LocalFilePaths) {
+		paths := resp.LocalFilePaths
+		if resp.LocalFilePath != "" && !containsString(paths, resp.LocalFilePath) {
+			paths = append([]string{resp.LocalFilePath}, paths...)
+		}
+		fileNames := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if strings.TrimSpace(p) != "" {
+				fileNames = append(fileNames, filepath.Base(p))
+			}
+		}
+		BrowserDiagFileDelivery("wails-event", resp.Text, fileNames, paths, resp.ResponseSource)
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		log.Printf("[emitAIAssistantResponse] marshal failed: %v", err)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[emitAIAssistantResponse] EventsEmit panic: %v", r)
+		}
+	}()
+	runtime.EventsEmit(a.ctx, "ai-assistant-response", string(payload))
 }
 
 // SendBtwQuery handles a /btw side query from the desktop AI assistant panel.

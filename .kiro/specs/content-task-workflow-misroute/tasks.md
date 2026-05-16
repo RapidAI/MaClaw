@@ -1,0 +1,100 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration tests
+  - **Property 1: Bug Condition** - Content Task Misroute & category="none"+ready=true Crash
+  - **CRITICAL**: These tests MUST FAIL on unfixed code — failure confirms the bug exists
+  - **DO NOT attempt to fix the tests or the code when they fail**
+  - **NOTE**: These tests encode the expected behavior — they will validate the fix when they pass after implementation
+  - **GOAL**: Surface counterexamples that demonstrate both bug scenarios exist
+  - **Scoped PBT Approach**: Two concrete property checks:
+    - Property 1a: `buildSystemPrompt()` output contains a dedicated "内容处理任务 vs 工作流任务" section that teaches the LLM the semantic distinction between one-shot content processing and multi-phase workflow creation
+    - Property 1b: When `HandleInput` returns `ready=true` with `intent.Category="none"`, `handleActiveUnderstanding()` does NOT call `engine.StartWorkflow()` — instead it returns `nil` (falls through to normal agent loop)
+  - Test file: `corelib/workflow/intent_understanding_content_misroute_test.go` for Property 1a (system prompt check)
+  - Test file: `gui/im_message_handler_workflow_test.go` for Property 1b (category="none"+ready=true guard)
+  - For Property 1a: call `buildSystemPrompt()` on unfixed code, assert output contains "内容处理任务 vs 工作流任务" section — expect FAILURE (section doesn't exist yet)
+  - For Property 1a: also assert prompt contains confusable examples like "看HF论文做摘要" → `category="none"` — expect FAILURE
+  - For Property 1b: mock `HandleInput` to return `ready=true` with `category="none"`, verify `StartWorkflow` is NOT called — expect FAILURE (current code calls `StartWorkflow` unconditionally)
+  - For Property 1b: also test `category=""` + `ready=true` — expect FAILURE
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests FAIL (this is correct — it proves the bug exists)
+  - Document counterexamples found to understand root cause
+  - Mark task complete when tests are written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Valid Workflow Routing & Existing Prompt Sections Unchanged
+  - **IMPORTANT**: Follow observation-first methodology
+  - **Two preservation properties to verify on UNFIXED code:**
+  - Property 2a (Preservation - Valid Workflow Categories): For all valid registered workflow types (coding, literature_review, product_design, etc.) with `ready=true`, `handleActiveUnderstanding()` calls `StartWorkflow` and returns the workflow startup message. Observe on unfixed code: `handleActiveUnderstanding` with `category="coding"` + `ready=true` calls `StartWorkflow` and returns "🚀 工作流已启动" message
+  - Property 2b (Preservation - Existing Prompt Sections): `buildSystemPrompt()` output contains all existing sections: "核心判断：是否需要工作流", "可用的工作流类型", "你的职责", "输出格式", "category 判断规则", "易混淆示例", "ready 判断规则" — observe these all exist on unfixed code
+  - Test file: `corelib/workflow/intent_understanding_content_misroute_test.go` for Property 2b (prompt sections)
+  - Test file: `gui/im_message_handler_workflow_test.go` for Property 2a (valid category routing)
+  - For Property 2a: use `testing/quick` to generate random valid workflow types from registered templates, verify `StartWorkflow` is called for each
+  - For Property 2b: call `buildSystemPrompt()`, assert all existing section headers are present
+  - Verify tests PASS on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8_
+
+- [x] 3. Fix for content task workflow misroute
+
+  - [x] 3.1 Enhance `buildSystemPrompt()` with content processing vs workflow task distinction
+    - File: `corelib/workflow/intent_understanding.go`, function `buildSystemPrompt()`
+    - Add a new "内容处理任务 vs 工作流任务" section after "核心判断：是否需要工作流" that teaches the LLM:
+      - Content processing (内容处理) = one-shot tasks that read, process, or transform existing content (翻译、摘要、解读、整理、格式转换、字幕处理、文档梳理、资料收集). These are `category="none"`
+      - Workflow tasks (工作流任务) = multi-phase projects that create new structured documents through iterative refinement (写文献综述、开发系统、做商业计划书)
+      - Key semantic test: "Is the user asking to process existing content or create a new structured artifact?"
+    - Add confusable examples to the "易混淆示例" section addressing content processing vs workflow ambiguity:
+      - "看HF论文做摘要" → `category="none"` (reading existing papers and summarizing = content processing)
+      - "帮我写一篇文献综述" → `category="literature_review"` (creating a new academic document = workflow)
+      - "把这份报告翻译成英文" → `category="none"` (translating existing content)
+      - "帮我写一份研究报告" → `category="research_report"` (creating a new report)
+      - "整理这些会议纪要" → `category="none"` (reformatting existing content)
+      - "解读这篇论文的核心观点" → `category="none"` (analyzing existing content)
+      - "做一份竞品分析报告" → `category="competitive_analysis"` (creating a new analysis)
+      - "帮我写一篇论文" → `category="paper_writing"` (creating a new paper)
+    - NO keyword-based filtering — purely LLM prompt enhancement
+    - All existing sections must remain unchanged (核心判断, 可用的工作流类型, 你的职责, 输出格式, category 判断规则, 易混淆示例, ready 判断规则)
+    - _Bug_Condition: isBugCondition(input) where isContentProcessingTask(input) AND routedToUnderstandingSession(input) — LLM prompt lacks semantic distinction_
+    - _Expected_Behavior: buildSystemPrompt() output contains "内容处理任务 vs 工作流任务" section with generalizable semantic pattern and confusable examples_
+    - _Preservation: All existing prompt sections remain present and unchanged; genuine workflow tasks continue to be correctly classified_
+    - _Requirements: 1.2, 2.1, 2.2, 3.1, 3.2, 3.3, 3.4_
+
+  - [x] 3.2 Add guard in `handleActiveUnderstanding()` for category="none" + ready=true
+    - File: `gui/im_message_handler_workflow.go`, function `handleActiveUnderstanding()`
+    - After `HandleInput` returns `ready=true` and `intent != nil`, add check: if `intent.Category == "none"` or `intent.Category == ""`, do NOT call `StartWorkflow`
+    - Instead: log the event (`log.Printf("[WorkflowInterception] understanding returned ready=true with category=%q for user %s, falling through to agent loop", intent.Category, userID)`) and return `nil` (fall through to normal agent loop)
+    - The understanding session has already been cleaned up by `HandleInput` when `isReady=true`, so no additional cleanup is needed
+    - Preserve existing behavior for all valid workflow categories — the guard only triggers for "none" or empty category
+    - _Bug_Condition: isBugCondition(input) where activeSession(userID) AND llmReturns(category="none", ready=true) — StartWorkflow("none") crashes_
+    - _Expected_Behavior: handleActiveUnderstanding() returns nil for category="none"+ready=true, no StartWorkflow call_
+    - _Preservation: All valid workflow types (coding, literature_review, product_design, etc.) with ready=true still call StartWorkflow normally_
+    - _Requirements: 1.3, 1.4, 1.5, 2.3, 2.4, 2.5, 3.7_
+
+  - [x] 3.3 Verify bug condition exploration tests now pass
+    - **Property 1: Expected Behavior** - Content Task Misroute & category="none"+ready=true Crash
+    - **IMPORTANT**: Re-run the SAME tests from task 1 — do NOT write new tests
+    - The tests from task 1 encode the expected behavior
+    - When these tests pass, it confirms the expected behavior is satisfied:
+      - Property 1a: `buildSystemPrompt()` now contains "内容处理任务 vs 工作流任务" section
+      - Property 1b: `handleActiveUnderstanding()` with category="none"+ready=true returns nil without calling StartWorkflow
+    - Run bug condition exploration tests from step 1
+    - **EXPECTED OUTCOME**: Tests PASS (confirms bug is fixed)
+    - _Requirements: 2.1, 2.2, 2.3, 2.4_
+
+  - [x] 3.4 Verify preservation tests still pass
+    - **Property 2: Preservation** - Valid Workflow Routing & Existing Prompt Sections Unchanged
+    - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all tests still pass after fix:
+      - Property 2a: Valid workflow categories still call StartWorkflow
+      - Property 2b: All existing prompt sections remain present
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8_
+
+- [x] 4. Checkpoint - Ensure all tests pass
+  - Run full test suite for both modified packages: `go test ./corelib/workflow/... ./gui/...`
+  - Ensure all 4 property tests pass (1a, 1b, 2a, 2b)
+  - Ensure all existing tests in `corelib/workflow/intent_understanding_test.go` still pass
+  - Ensure no regressions in other workflow tests
+  - Ask the user if questions arise

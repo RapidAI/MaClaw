@@ -61,6 +61,7 @@ import { RemoteSessionsPage } from './components/pages/RemoteSessionsPage';
 import { SkillsPage } from './components/pages/SkillsPage';
 import { MCPPage } from './components/pages/MCPPage';
 import { GossipPage } from './components/pages/GossipPage';
+import { AgentNetTabContainer } from './components/pages/AgentNetTabContainer';
 import { StartupPopup } from './components/modals/StartupPopup';
 import { ThanksModal } from './components/modals/ThanksModal';
 import { AboutPanel } from './components/AboutPanel';
@@ -333,7 +334,7 @@ function App() {
         }
     }, [veList]);
 
-    const updateSidebarNavVisibility = useCallback((key: 'show_nav_mcp' | 'show_nav_gossip', visible: boolean) => {
+    const updateSidebarNavVisibility = useCallback((key: 'show_nav_mcp' | 'show_nav_gossip' | 'show_nav_agentnet', visible: boolean) => {
         if (!config) return;
         const newConfig = new main.AppConfig({ ...config, [key]: visible } as any);
         setConfig(newConfig);
@@ -2489,6 +2490,9 @@ ${instruction}`;
                     )}
                     {navTab === 'gossip' && gossipAllowed && (
                         <GossipPage lang={lang} />
+                    )}
+                    {navTab === 'agentnet' && (
+                        <AgentNetTabContainer lang={lang} />
                     )}
                     {navTab === 'remote' && (
                         <RemoteSessionsPage

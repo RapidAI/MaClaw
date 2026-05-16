@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "name": "任务完成后询问 Review",
+  "description": "每个 spec 任务完成后，自动提醒询问用户是否需要进行 review/fix/optimize 来提升代码质量",
+  "version": "1",
+  "when": {
+    "type": "postTaskExecution"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "任务刚刚完成。请按照 coding-workflow.md steering 规则，询问用户是否需要对刚完成的代码进行 review/fix/optimize。提供三个选项让用户选择：1) Review（审查代码质量）2) Fix（修复潜在问题）3) Optimize（性能优化）4) 跳过，继续下一个任务。提醒用户 review/fix/optimize 会消耗较多 tokens。"
+  }
+}

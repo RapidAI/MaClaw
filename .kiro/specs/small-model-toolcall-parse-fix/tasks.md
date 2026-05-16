@@ -1,0 +1,131 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** — XML Tool Call Tags Leak as Raw Text and Are Not Parsed
+  - **CRITICAL**: This test MUST FAIL on unfixed code — failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior — it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the bug exists
+  - **Scoped PBT Approach**: Scope the property to concrete failing cases: content containing `<tool_call>{"name":"...","arguments":{...}}</tool_call>` XML blocks with no structured `delta.tool_calls`
+  - **Test file**: `gui/llm_stream_test.go` for `toolCallFilter` tests, `corelib/freeproxy/filter_funccall_test.go` for `ParseXMLToolCalls` tests
+  - **Bug Condition from design**: `isBugCondition(input)` where `input.contentField CONTAINS "<tool_call>"` AND `input.contentField CONTAINS "</tool_call>"` AND `input.deltaToolCalls IS EMPTY` AND `contentBetweenTags IS valid JSON with "name" field`
+  - Test cases to write (all expected to FAIL on unfixed code):
+    - `TestToolCallFilter_FullBlock`: Feed `<tool_call>{"name":"read_file","arguments":{"path":"x"}}</tool_call>` — assert tags are suppressed from output (will fail: no `toolCallFilter` exists)
+    - `TestToolCallFilter_TextAroundBlock`: Feed `Hello<tool_call>{"name":"x","arguments":{}}</tool_call>World` — assert only "HelloWorld" emitted
+    - `TestToolCallFilter_SplitAcrossChunks`: Feed `<tool_` then `call>{"name":"x","arguments":{}}` then `</tool_call>` — assert buffering and suppression
+    - `TestToolCallFilter_CharByChar`: Feed XML tag char-by-char — assert suppression under extreme fragmentation
+    - `TestToolCallFilter_MultipleBlocks`: Feed two `<tool_call>` blocks — assert both suppressed
+    - `TestToolCallFilter_NoMarkers`: Feed plain text — assert passthrough (sanity check)
+    - `TestToolCallFilter_MalformedJSON`: Feed `<tool_call>not json</tool_call>` — assert block suppressed even with bad JSON
+    - `TestStripXMLToolCalls`: Test `stripXMLToolCalls` regex strips blocks from complete strings
+    - `TestParseXMLToolCalls_Single`: Feed single `<tool_call>` block to `ParseXMLToolCalls` — assert one `ToolCall` returned
+    - `TestParseXMLToolCalls_Multiple`: Feed two blocks — assert two `ToolCall` entries
+    - `TestParseXMLToolCalls_MalformedJSON`: Feed malformed block — assert silently skipped (nil returned)
+    - `TestParseXMLToolCalls_Empty`: Feed string with no blocks — assert nil returned
+    - `TestRemoveXMLToolCallBlocks`: Feed content with blocks — assert blocks stripped
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests FAIL (toolCallFilter, stripXMLToolCalls, ParseXMLToolCalls, RemoveXMLToolCallBlocks do not exist yet — compilation errors confirm the bug)
+  - Document counterexamples: "No toolCallFilter struct exists; no ParseXMLToolCalls function exists; XML tags pass through unfiltered as raw text"
+  - Mark task complete when tests are written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 2.1, 2.2, 2.4, 2.5, 2.6_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** — Non-XML-Tool-Call Behavior Unchanged
+  - **IMPORTANT**: Follow observation-first methodology
+  - **Test file**: `gui/llm_stream_test.go`
+  - Observe behavior on UNFIXED code for non-buggy inputs (cases where content does NOT contain `<tool_call>` XML blocks):
+    - Observe: `thinkFilter` suppresses `<think>reasoning</think>` and emits surrounding text — existing `TestThinkFilter_*` tests confirm this
+    - Observe: `funcCallFilter` suppresses `<|FunctionCallBegin|>...<|FunctionCallEnd|>` and emits surrounding text — existing `TestFuncCallFilter_*` tests confirm this
+    - Observe: Plain text with no markers passes through unchanged
+    - Observe: Chained `thinkFilter → funcCallFilter` correctly handles mixed `<think>` and `<|FunctionCallBegin|>` content
+  - Write property-based preservation tests:
+    - `TestPreservation_ThinkFilterUnchanged`: For random strings without `<tool_call>` tags but with `<think>` blocks, verify thinkFilter output is identical before and after fix
+    - `TestPreservation_FuncCallFilterUnchanged`: For random strings without `<tool_call>` tags but with `<|FunctionCallBegin|>` blocks, verify funcCallFilter output is identical
+    - `TestPreservation_PlainTextPassthrough`: For random strings containing none of `<tool_call>`, `<think>`, `<|FunctionCallBegin|>`, verify all three filters pass text through unchanged
+    - `TestPreservation_ChainedFiltersUnchanged`: For mixed content with `<think>` and `<|FunctionCallBegin|>` but no `<tool_call>`, verify chained filter output is identical
+    - `TestPreservation_StripFunctionCallsUnchanged`: Verify `stripFunctionCalls` still strips `<|FunctionCallBegin|>...<|FunctionCallEnd|>` blocks correctly
+    - `TestPreservation_StripThinkTagsUnchanged`: Verify `stripThinkTags` still strips `<think>...</think>` blocks correctly
+    - `TestPreservation_ParseToolCallsCodeBlock`: Verify existing `` ```tool_call ``` `` parsing via `ParseToolCalls()` in `tool_parser.go` still works
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
+
+- [x] 3. Fix for XML tool call tags leaking as raw text and not being parsed
+
+  - [x] 3.1 Add `ParseXMLToolCalls()` and `RemoveXMLToolCallBlocks()` to `corelib/freeproxy/tool_parser.go`
+    - Add `var xmlToolCallBlockRe = regexp.MustCompile("(?s)<tool_call>\\s*(.*?)\\s*</tool_call>")`
+    - Add `ParseXMLToolCalls(content string) []ToolCall` — extract all `<tool_call>JSON</tool_call>` matches, parse inner JSON as `{"name":"...","arguments":{...}}`, return `[]ToolCall` with generated IDs, silently skip malformed JSON
+    - Add `RemoveXMLToolCallBlocks(content string) string` — strip `<tool_call>...</tool_call>` blocks using `xmlToolCallBlockRe`
+    - _Bug_Condition: isBugCondition(input) where input.contentField CONTAINS `<tool_call>` AND `</tool_call>` AND deltaToolCalls IS EMPTY_
+    - _Expected_Behavior: ParseXMLToolCalls returns []ToolCall for valid JSON blocks, RemoveXMLToolCallBlocks strips all blocks_
+    - _Preservation: Existing ParseToolCalls(), RemoveToolCallBlocks(), HasToolCalls() must remain unchanged_
+    - _Requirements: 2.2, 2.4, 2.6_
+
+  - [x] 3.2 Add `toolCallFilter` streaming filter to `gui/llm_stream.go`
+    - New struct `toolCallFilter` with `downstream TokenCallback`, `inside bool`, `pending strings.Builder`
+    - Constants `toolCallOpen = "<tool_call>"` and `toolCallClose = "</tool_call>"`
+    - State machine following `funcCallFilter` pattern: outside mode forwards text and watches for `<tool_call>`; inside mode swallows text and watches for `</tool_call>`
+    - Partial tag buffering via existing `partialTagTail` / `hasPartialTagSuffix` / `safeEmitLen` helpers
+    - `Write(delta string)` and `Flush()` methods identical in structure to `funcCallFilter`
+    - _Bug_Condition: XML `<tool_call>` tags in streaming content are not filtered_
+    - _Expected_Behavior: Tags suppressed from user-facing token stream during SSE_
+    - _Preservation: thinkFilter and funcCallFilter behavior must remain unchanged_
+    - _Requirements: 2.1, 2.5_
+
+  - [x] 3.3 Insert `toolCallFilter` into the filter chain in `doOpenAILLMRequestStream`
+    - Current chain: `onToken → funcCallFilter → thinkFilter`
+    - New chain: `onToken → toolCallFilter → funcCallFilter → thinkFilter`
+    - i.e., `tcf := newToolCallFilter(onToken)`, then `fcf := newFuncCallFilter(func(s string) { tcf.Write(s) })`, then `tf := newThinkFilter(func(s string) { fcf.Write(s) })`
+    - Update flush order: `tf.Flush()` → `fcf.Flush()` → `tcf.Flush()`
+    - _Bug_Condition: No filter in chain recognizes `<tool_call>` tags_
+    - _Expected_Behavior: toolCallFilter intercepts and suppresses XML tool call tags before they reach onToken_
+    - _Preservation: thinkFilter and funcCallFilter continue to work in the chain_
+    - _Requirements: 2.1, 2.5_
+
+  - [x] 3.4 Add `stripXMLToolCalls` regex and apply in post-stream content assembly
+    - Add `var reXMLToolCallBlock = regexp.MustCompile("(?s)<tool_call>.*?</tool_call>")`
+    - Add `func stripXMLToolCalls(s string) string` — analogous to `stripFunctionCalls`
+    - Update content assembly line: `content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(contentBuf.String())))`
+    - _Bug_Condition: XML tool call blocks remain in final content string_
+    - _Expected_Behavior: XML blocks stripped from content, analogous to FunctionCall blocks_
+    - _Preservation: stripFunctionCalls and stripThinkTags behavior unchanged_
+    - _Requirements: 2.1_
+
+  - [x] 3.5 Add post-stream XML tool call extraction with deduplication
+    - After assembling `msg.ToolCalls` from `toolAccums`, check: if `len(msg.ToolCalls) == 0`, call `freeproxy.ParseXMLToolCalls(contentBuf.String())` on the raw content buffer
+    - Convert each returned `freeproxy.ToolCall` to `llmToolCall` and append to `msg.ToolCalls`
+    - If XML tool calls were found, set `finishReason = "tool_calls"`
+    - Deduplication: only parse XML when no structured `delta.tool_calls` were received (i.e., `len(toolAccums) == 0`)
+    - _Bug_Condition: XML tool calls in content are never parsed into llmToolCall objects_
+    - _Expected_Behavior: XML blocks parsed into msg.ToolCalls when no structured tool_calls present; structured tool_calls take priority_
+    - _Preservation: Standard delta.tool_calls accumulation via toolAccums unchanged_
+    - _Requirements: 2.2, 2.3, 2.4, 2.7_
+
+  - [x] 3.6 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** — XML Tool Calls Are Parsed and Executed
+    - **IMPORTANT**: Re-run the SAME tests from task 1 — do NOT write new tests
+    - The tests from task 1 encode the expected behavior
+    - When these tests pass, it confirms the expected behavior is satisfied:
+      - `toolCallFilter` suppresses `<tool_call>` tags from streaming output
+      - `ParseXMLToolCalls` extracts valid tool calls from XML blocks
+      - `RemoveXMLToolCallBlocks` strips XML blocks from content
+      - `stripXMLToolCalls` strips blocks from assembled content
+    - Run bug condition exploration tests from step 1
+    - **EXPECTED OUTCOME**: Tests PASS (confirms bug is fixed)
+    - _Requirements: 2.1, 2.2, 2.4, 2.5, 2.6_
+
+  - [x] 3.7 Verify preservation tests still pass
+    - **Property 2: Preservation** — Non-XML-Tool-Call Behavior Unchanged
+    - **IMPORTANT**: Re-run the SAME tests from task 2 — do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all existing thinkFilter, funcCallFilter, stripFunctionCalls, stripThinkTags, ParseToolCalls tests still pass
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
+
+- [x] 4. Checkpoint — Ensure all tests pass
+  - Run full test suite for both packages: `go test ./gui/... ./corelib/freeproxy/...`
+  - Ensure all bug condition tests (task 1) pass
+  - Ensure all preservation tests (task 2) pass
+  - Ensure all existing tests pass (no regressions)
+  - Ask the user if questions arise

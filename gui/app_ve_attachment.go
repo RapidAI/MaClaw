@@ -132,8 +132,9 @@ func (a *App) uploadToFileRelay(hubURL, token, filePath, sessionID string) (stri
 
 	// Add participant_id from config.
 	cfg, _ := a.LoadConfig()
-	if cfg.RemoteMachineID != "" {
-		_ = writer.WriteField("participant_id", cfg.RemoteMachineID)
+	participantID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	if participantID != "" {
+		_ = writer.WriteField("participant_id", participantID)
 	}
 
 	if err := writer.Close(); err != nil {
@@ -149,8 +150,8 @@ func (a *App) uploadToFileRelay(hubURL, token, filePath, sessionID string) (stri
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	if cfg.RemoteMachineID != "" {
-		req.Header.Set("X-Machine-ID", cfg.RemoteMachineID)
+	if participantID != "" {
+		req.Header.Set("X-Machine-ID", participantID)
 	}
 
 	// Execute with the shared HTTP client (connection pooling).

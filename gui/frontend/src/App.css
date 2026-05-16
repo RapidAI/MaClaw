@@ -668,8 +668,8 @@ body {
 .sidebar-system-status__usage {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
-    gap: 8px;
+    justify-content: center;
+    gap: 10px;
     min-width: 0;
     padding-top: 8px;
     border-top: 1px solid var(--theme-border-subtle);
@@ -677,7 +677,7 @@ body {
 
 .sidebar-system-status__provider {
     min-width: 0;
-    flex: 1;
+    max-width: 60%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;

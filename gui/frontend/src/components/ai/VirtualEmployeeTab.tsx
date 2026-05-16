@@ -157,24 +157,24 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
 
     if (loading) {
         return (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, color: theme.textMuted }}>
-                <span data-testid="ve-loading">{isZh ? "加载中..." : "Loading..."}</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 12, color: theme.textMuted, fontSize: 12 }}>
+                <span data-testid="ve-loading">{isZh ? "\u52a0\u8f7d\u4e2d..." : "Loading..."}</span>
             </div>
         );
     }
 
     if (error === "hub_unavailable") {
         return (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, color: theme.textMuted }} data-testid="ve-empty-hub">
-                <span>{isZh ? "Hub 不可用，无法获取数字员工列表" : "Hub unavailable"}</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 12, color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-hub">
+                <span>{isZh ? "Hub \u4e0d\u53ef\u7528\uff0c\u65e0\u6cd5\u83b7\u53d6\u6570\u5b57\u5458\u5de5\u5217\u8868" : "Hub unavailable"}</span>
             </div>
         );
     }
 
     if (employees.length === 0) {
         return (
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, color: theme.textMuted }} data-testid="ve-empty-list">
-                <span>{isZh ? "暂无可用的数字员工" : "No digital employees available"}</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 12, color: theme.textMuted, fontSize: 12 }} data-testid="ve-empty-list">
+                <span>{isZh ? "\u6682\u65e0\u53ef\u7528\u7684\u6570\u5b57\u5458\u5de5" : "No digital employees available"}</span>
             </div>
         );
     }
@@ -235,7 +235,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                                         whiteSpace: "nowrap",
                                     }}
                                 >
-                                    {isZh ? "需授权" : "Auth"}
+                                    {isZh ? "\u9700\u6388\u6743" : "Auth"}
                                 </span>
                             )}
                         </div>
@@ -272,7 +272,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        [Chat] {isZh ? "对话" : "Chat"}
+                        [Chat] {isZh ? "\u5bf9\u8bdd" : "Chat"}
                     </div>
                     <div
                         data-testid="ve-menu-add-group"
@@ -282,7 +282,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                         onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                         onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                     >
-                        [Group] {isZh ? "添加到群聊" : "Add to group"}
+                        [Group] {isZh ? "\u6dfb\u52a0\u5230\u7fa4\u804a" : "Add to group"}
                     </div>
                     {onSetFavorite && (
                         <div
@@ -304,7 +304,7 @@ export function VirtualEmployeeTab({ onStartConversation, onAddToGroup, theme, l
                             onMouseEnter={(e) => { if (!favoriteEmployeeIds?.includes(contextMenu.ve.id)) (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
                             onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
                         >
-                            * {favoriteEmployeeIds?.includes(contextMenu.ve.id) ? (isZh ? "已是常用" : "Already favorite") : (isZh ? "设为常用" : "Set as favorite")}
+                            * {favoriteEmployeeIds?.includes(contextMenu.ve.id) ? (isZh ? "\u5df2\u662f\u5e38\u7528" : "Already favorite") : (isZh ? "\u8bbe\u4e3a\u5e38\u7528" : "Set as favorite")}
                         </div>
                     )}
                 </div>

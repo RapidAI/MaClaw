@@ -17,3 +17,16 @@ func Name(def map[string]interface{}) string {
 	}
 	return ""
 }
+
+// BuildToolDef constructs an OpenAI-compatible tool definition map from the
+// given name, description, and JSON Schema parameters object.
+func BuildToolDef(name, description string, parameters map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        name,
+			"description": description,
+			"parameters":  parameters,
+		},
+	}
+}

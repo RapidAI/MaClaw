@@ -39,7 +39,8 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 		return GroupDiscussionAttachmentDownloadResult{}, fmt.Errorf("Hub credentials unavailable: %w", err)
 	}
 	cfg, _ := a.LoadConfig()
-	downloadURL, attachmentID, err := groupDiscussionAttachmentDownloadURL(hubURL, fileURL, discussionID, cfg.RemoteMachineID)
+	participantID := strings.TrimSpace(groupDiscussionAgentID(cfg))
+	downloadURL, attachmentID, err := groupDiscussionAttachmentDownloadURL(hubURL, fileURL, discussionID, participantID)
 	if err != nil {
 		return GroupDiscussionAttachmentDownloadResult{}, err
 	}
@@ -56,8 +57,8 @@ func (a *App) GroupDiscussionDownloadAttachment(discussionID, fileURL, filename 
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	if cfg.RemoteMachineID != "" {
-		req.Header.Set("X-Machine-ID", cfg.RemoteMachineID)
+	if participantID != "" {
+		req.Header.Set("X-Machine-ID", participantID)
 	}
 	resp, err := veFileRelayHTTPClient.Do(req)
 	if err != nil {

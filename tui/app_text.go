@@ -112,6 +112,9 @@ func tuiText(lang, key string) string {
 Chat:
   /new /clear    Clear chat history and start fresh
   /btw <query>   Side query without interrupting the current task context
+  /loop <cmd> <goal>  Goal-driven verification loop (like Claude Code /loop)
+                      e.g. /loop "go test ./..." make all tests pass
+                      Options: --max N, --timeout N, --dir path
 Navigation:
   /setup [email] Open first-run Setup, optionally prefilled
   /redeem [code] Open Service Redeem, optionally prefilled

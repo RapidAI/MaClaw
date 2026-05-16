@@ -78,6 +78,7 @@ export const SidebarNavRail = ({
         { id: 'skills', icon: <span>{icon.skills}</span>, label: t('skills'), visible: true },
         { id: 'mcp', icon: <span>{icon.mcp}</span>, label: 'MCP', visible: true },
         { id: 'gossip', icon: <span>{icon.gossip}</span>, label: t('gossip'), visible: gossipAllowed },
+        { id: 'agentnet', icon: <span>{icon.mcp}</span>, label: 'AgentNet', visible: config?.show_nav_agentnet !== false },
     ];
 
     return (
