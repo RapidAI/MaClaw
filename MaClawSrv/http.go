@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -188,11 +187,26 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPI)
+	s.mux.HandleFunc("GET /api/v1/admin/bootstrap/status", s.handleAdminBootstrapStatus)
+	s.mux.HandleFunc("POST /api/v1/admin/bootstrap/initialize", s.handleAdminBootstrapInitialize)
+	s.mux.HandleFunc("POST /api/v1/admin/auth/login", s.handleAdminAuthLogin)
+	s.mux.HandleFunc("POST /api/v1/admin/auth/logout", s.withAdmin(s.handleAdminAuthLogout))
+	s.mux.HandleFunc("GET /api/v1/admin/auth/me", s.withAdmin(s.handleAdminAuthMe))
 	s.mux.HandleFunc("GET /api/v1/admin/system/readiness", s.withAdmin(s.handleGetAdminReadiness))
 	s.mux.HandleFunc("GET /api/v1/admin/overview", s.withAdmin(s.handleGetAdminOverview))
 	s.mux.HandleFunc("GET /api/v1/admin/dashboard", s.withAdmin(s.handleGetAdminDashboard))
 	s.mux.HandleFunc("GET /api/v1/admin/insights", s.withAdmin(s.handleGetAdminInsights))
 	s.mux.HandleFunc("GET /api/v1/admin/alerts", s.withAdmin(s.handleGetAdminAlerts))
+	s.mux.HandleFunc("GET /api/v1/admin/service-config/effective", s.withAdmin(s.handleGetAdminServiceConfigEffective))
+	s.mux.HandleFunc("GET /api/v1/admin/i18n/locales", s.withAdmin(s.handleAdminI18NLocales))
+	s.mux.HandleFunc("GET /api/v1/admin/i18n/messages", s.withAdmin(s.handleAdminI18NMessages))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/status", s.withAdmin(s.handleAdminSandboxStatus))
+	s.mux.HandleFunc("POST /api/v1/admin/sandbox/detect", s.withAdmin(s.handleAdminSandboxDetect))
+	s.mux.HandleFunc("POST /api/v1/admin/sandbox/smoke-test", s.withAdmin(s.handleAdminSandboxSmokeTest))
+	s.mux.HandleFunc("POST /api/v1/admin/sandbox/diagnose", s.withAdmin(s.handleAdminSandboxDiagnose))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/reports", s.withAdmin(s.handleAdminSandboxReports))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/reports/{reportId}", s.withAdmin(s.handleAdminSandboxReport))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/install-plan", s.withAdmin(s.handleAdminSandboxInstallPlan))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants", s.withAdmin(s.handleListTenants))
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
 	s.mux.HandleFunc("GET /api/v1/admin/export", s.withAdmin(s.handleExportServiceState))
@@ -307,10 +321,17 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/enable", s.withPrincipal(s.handleKnowledgeEnableSource))
 	s.mux.HandleFunc("POST /api/v1/knowledge/sources/{sourceId}/refresh", s.withPrincipal(s.handleKnowledgeRefreshSource))
 	s.mux.HandleFunc("GET /api/v1/knowledge/stats", s.withPrincipal(s.handleKnowledgeStats))
+	s.mux.HandleFunc("GET /api/v1/knowledge/access", s.withPrincipal(s.handleKnowledgeAccessGetMe))
 	s.mux.HandleFunc("DELETE /api/v1/knowledge", s.withPrincipal(s.handleKnowledgeClearAll))
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge/stats", s.withAdmin(s.handleAdminKnowledgeStats))
 	s.mux.HandleFunc("GET /api/v1/admin/knowledge/sources", s.withAdmin(s.handleAdminKnowledgeListSources))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/knowledge", s.withAdmin(s.handleAdminKnowledgeClearTenant))
+	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/cross-tenant", s.withAdmin(s.handleAdminKnowledgeAccessGetCrossTenant))
+	s.mux.HandleFunc("PUT /api/v1/admin/knowledge-access/cross-tenant", s.withAdmin(s.handleAdminKnowledgeAccessSetCrossTenant))
+	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessGetUser))
+	s.mux.HandleFunc("PUT /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessSetUser))
+	s.mux.HandleFunc("DELETE /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleAdminKnowledgeAccessDeleteUser))
+	s.mux.HandleFunc("GET /api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}/resolve", s.withAdmin(s.handleAdminKnowledgeAccessResolveUser))
 
 	// Skill source control admin API (global / tenant / user).
 	s.mux.HandleFunc("GET /api/v1/admin/skill-sources/available", s.withAdmin(s.handleSkillSourcesAvailable))
@@ -2188,7 +2209,7 @@ func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p a
 func (s *HTTPServer) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provided := r.Header.Get("X-MaClaw-Admin-Secret")
-		if s.adminSecret == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(s.adminSecret)) != 1 {
+		if !s.adminSecretAuthorized(provided) && !s.adminSessionAuthorized(provided) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin secret"})
 			return
 		}

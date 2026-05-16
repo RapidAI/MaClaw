@@ -1282,6 +1282,12 @@ func (s *Service) HubDigitalEmployeeAuthorization(ctx context.Context, hubID str
 	if hub == nil {
 		return nil, ErrHubNotFound
 	}
+	// If authorization was never configured on this node (all fields at default),
+	// return nil so the Hub preserves any previously received valid authorization.
+	// This prevents HA replication lag from overwriting a correct quota with zero.
+	if hub.DigitalEmployeeQuota == 0 && !hub.DigitalEmployeeAuthorizationEnabled && hub.DigitalEmployeeAuthorizationExpiresAt == nil {
+		return nil, nil
+	}
 	auth := corelib.DigitalEmployeeAuthorization{
 		Quota:   hub.DigitalEmployeeQuota,
 		Enabled: hub.DigitalEmployeeAuthorizationEnabled,
@@ -1348,6 +1354,11 @@ func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID 
 		quota = 0
 	}
 	if err := s.hubs.UpdateDigitalEmployeeAuthorization(ctx, hubID, quota, enabled, expiresAt, time.Now()); err != nil {
+		return nil, err
+	}
+	// Propagate the change to all HA nodes so that Hub heartbeats hitting
+	// any node will receive the updated quota.
+	if err := s.recordHubByID(ctx, hubID); err != nil {
 		return nil, err
 	}
 	return s.HubDigitalEmployeeAuthorization(ctx, hubID)

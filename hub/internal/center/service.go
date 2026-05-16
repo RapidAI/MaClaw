@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -1190,7 +1191,12 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 			_ = json.Unmarshal(body, &okResp)
 			if okResp.DigitalEmployeeAuthorization != nil {
 				auth := corelib.NormalizeDigitalEmployeeAuthorization(*okResp.DigitalEmployeeAuthorization, time.Now().UTC())
-				record.DigitalEmployeeAuthorization = &auth
+				if shouldAcceptAuthorizationUpdate(record.DigitalEmployeeAuthorization, &auth) {
+					record.DigitalEmployeeAuthorization = &auth
+				} else {
+					log.Printf("[center] heartbeat: rejected ve authorization downgrade from %s (incoming quota=%d active=%v, local quota=%d active=%v)",
+						baseURL, auth.Quota, auth.Active, record.DigitalEmployeeAuthorization.Quota, record.DigitalEmployeeAuthorization.Active)
+				}
 			}
 			record.Registered = true
 			record.PendingConfirmation = false
@@ -1271,6 +1277,27 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 }
 func normalizeEmail(email string) string {
 	return strings.TrimSpace(strings.ToLower(email))
+}
+
+// shouldAcceptAuthorizationUpdate decides whether a new authorization from
+// HubCenter should replace the locally persisted one.
+//
+// The guard prevents HA replication lag or HubCenter redeployment from
+// overwriting a known-good authorization with a "not configured" default.
+func shouldAcceptAuthorizationUpdate(local, incoming *corelib.DigitalEmployeeAuthorization) bool {
+	if incoming == nil {
+		return false
+	}
+	if incoming.Active {
+		return true
+	}
+	if local == nil || !local.Active || local.Quota <= 0 {
+		return true
+	}
+	// Local is active with quota>0. Incoming is inactive.
+	// Accept only if incoming has a real quota (explicit admin disable/expiry).
+	// Reject quota=0 responses that indicate "never configured on this node".
+	return incoming.Quota > 0
 }
 
 func normalizeBaseURL(baseURL string) string {

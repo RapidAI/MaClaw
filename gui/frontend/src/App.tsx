@@ -9,6 +9,7 @@ import { CheckToolsStatus, CheckUpdate, InstallToolOnDemand, IsToolBeingInstalle
 
 import { EventsOn, EventsOff, BrowserOpenURL, Quit, WindowHide, WindowFullscreen, WindowUnfullscreen, WindowIsFullscreen, WindowToggleMaximise, WindowIsMaximised } from "../wailsjs/runtime";
 import { main } from "../wailsjs/go/models";
+import { EVENT_PROJECT_INDEX_CHANGED, EVENT_TASKS_CHANGED } from './constants/events';
 import { RemoteSettingsPanel } from './components/remote/RemoteSettingsPanel';
 import { WebSearchConfigPanel } from './components/remote/WebSearchConfigPanel';
 import { SecurityPolicyPanel } from './components/remote/SecurityPolicyPanel';
@@ -1455,11 +1456,11 @@ function App() {
         const refresh = () => {
             if (navTabRef.current === 'ai') refreshRecentProjects();
         };
-        EventsOn("project-index:changed", refresh);
-        EventsOn("tasks:changed", refresh);
+        EventsOn(EVENT_PROJECT_INDEX_CHANGED, refresh);
+        EventsOn(EVENT_TASKS_CHANGED, refresh);
         return () => {
-            EventsOff("project-index:changed");
-            EventsOff("tasks:changed");
+            EventsOff(EVENT_PROJECT_INDEX_CHANGED);
+            EventsOff(EVENT_TASKS_CHANGED);
         };
     }, [refreshRecentProjects]);
 

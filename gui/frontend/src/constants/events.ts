@@ -1,0 +1,21 @@
+/**
+ * Wails event name constants.
+ *
+ * These constants define the event names used for communication between
+ * the Go backend and the TypeScript frontend via Wails EventsEmit/EventsOn.
+ *
+ * IMPORTANT: When adding or renaming events, update the corresponding
+ * backend constants in:
+ *   gui/events.go
+ *
+ * This file exists to prevent event name mismatches (the root cause of #98:
+ * backend emitted "task-list-changed" but frontend listened for
+ * "project-index:changed"). Using constants makes mismatches visible in
+ * code review rather than silent runtime bugs.
+ */
+
+/** Emitted when ProjectIndex is updated (new project or activity change). */
+export const EVENT_PROJECT_INDEX_CHANGED = "project-index:changed";
+
+/** Companion event emitted together with EVENT_PROJECT_INDEX_CHANGED. */
+export const EVENT_TASKS_CHANGED = "tasks:changed";

@@ -24,12 +24,14 @@ var embeddingModelDefaultURL = embedding.DefaultModelDownloadURL
 // Shared by all HTTP handlers and the agent executor.
 type knowledgeStoreManager struct {
 	store    *knowledge.SQLiteStore
+	access   *knowledgeAccessService
+	agent    *multiKnowledgeStore
 	embedder embedding.Embedder
 	mu       sync.RWMutex
 	dbPath   string
 	dataRoot string
 	closed   bool
-	done     chan struct{}   // closed on Close(), signals background goroutines to stop
+	done     chan struct{}  // closed on Close(), signals background goroutines to stop
 	wg       sync.WaitGroup // tracks background goroutines (download, backfill)
 }
 
@@ -45,8 +47,11 @@ func newKnowledgeStoreManager(dataRoot string) (*knowledgeStoreManager, error) {
 		return nil, err
 	}
 
+	access := newKnowledgeAccessService(newFileKVStore(filepath.Join(dataRoot, "knowledge_access.json")))
 	mgr := &knowledgeStoreManager{
 		store:    store,
+		access:   access,
+		agent:    newMultiKnowledgeStore(store, access),
 		dbPath:   dbPath,
 		dataRoot: dataRoot,
 		done:     make(chan struct{}),
@@ -351,6 +356,16 @@ func (m *knowledgeStoreManager) Store() *knowledge.SQLiteStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.store
+}
+
+// AgentStore returns the authorization-aware knowledge store used by agents and read APIs.
+func (m *knowledgeStoreManager) AgentStore() *multiKnowledgeStore {
+	return m.agent
+}
+
+// Access returns the service that controls cross-user readable knowledge scopes.
+func (m *knowledgeStoreManager) Access() *knowledgeAccessService {
+	return m.access
 }
 
 // Close releases the knowledge store and embedding model resources.

@@ -72,7 +72,7 @@ func runServer(ctx context.Context) error {
 		log.Printf("[knowledge] initialization failed (non-fatal, knowledge features disabled): %v", kmErr)
 	} else {
 		knowledgeMgr = km
-		executor.SetKnowledgeStore(km.Store())
+		executor.SetKnowledgeStore(km.AgentStore())
 		log.Printf("[knowledge] initialized successfully")
 	}
 

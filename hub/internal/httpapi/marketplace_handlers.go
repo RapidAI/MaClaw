@@ -1551,30 +1551,61 @@ func searchHubCenterSkillMarketplace(ctx context.Context, centerStatus capabilit
 	if baseURL == "" {
 		return []any{}, nil
 	}
-	// Use the same corelib HubClient as maclaw GUI — calls /api/v1/skills/search
-	results := coreskill.DefaultHubClient().SearchSkillHub(ctx, baseURL, strings.TrimSpace(query))
+	// Call the HubCenter capability market API directly so admin search uses the same contract as MCP search.
+	endpoint := baseURL + "/api/capability-market/search"
+	if strings.TrimSpace(query) != "" {
+		endpoint += "?q=" + url.QueryEscape(strings.TrimSpace(query))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, errors.New("hubcenter capability market returned status " + resp.Status)
+	}
+	var payload struct {
+		Results []map[string]any `json:"results"`
+		Items   []map[string]any `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	results := payload.Results
 	if len(results) == 0 {
-		return []any{}, nil
+		results = payload.Items
 	}
 	items := make([]any, 0, len(results))
-	for _, r := range results {
-		items = append(items, map[string]any{
-			"id":              r.ID,
-			"capability_id":   r.ID,
-			"capability_type": corelib.CapabilityTypeSkill,
-			"name":            r.Name,
-			"display_name":    r.Name,
-			"description":     r.Description,
-			"version":         r.Version,
-			"author":          r.Author,
-			"trust_level":     r.TrustLevel,
-			"avg_rating":      r.AvgRating,
-			"downloads":       r.Downloads,
-			"source":          corelib.CapabilitySourceHubCenter,
-			"pricing":         corelib.CapabilityPricingFree,
-		})
+	for _, item := range results {
+		id := firstNonEmpty(stringFromMap(item, "capability_id"), stringFromMap(item, "id"), stringFromMap(item, "slug"))
+		name := firstNonEmpty(stringFromMap(item, "name"), stringFromMap(item, "display_name"), id)
+		item["id"] = id
+		item["capability_id"] = id
+		item["name"] = name
+		item["display_name"] = firstNonEmpty(stringFromMap(item, "display_name"), name)
+		item["capability_type"] = corelib.CapabilityTypeSkill
+		item["source"] = corelib.CapabilitySourceHubCenter
+		if stringFromMap(item, "pricing") == "" {
+			item["pricing"] = corelib.CapabilityPricingFree
+		}
+		items = append(items, item)
 	}
 	return items, nil
+}
+
+func stringFromMap(values map[string]any, key string) string {
+	if values == nil {
+		return ""
+	}
+	if value, ok := values[key].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func searchHubCenterMCPMarketplace(ctx context.Context, centerStatus capabilityMarketCenterStatusProvider, query string) ([]any, error) {

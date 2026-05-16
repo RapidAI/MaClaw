@@ -920,6 +920,43 @@ func TestAdminCapabilityExternalSearchHubCenterSkill(t *testing.T) {
 	}
 }
 
+func TestAdminCapabilityExternalSearchHubCenterSkillItemsFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/capability-market/search" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("q") != "sheet" {
+			t.Fatalf("q=%q", r.URL.Query().Get("q"))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": []any{map[string]any{"capability_id": "sheet-review", "display_name": "Sheet Review"}}})
+	}))
+	defer server.Close()
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capabilities/external-search?source=hub_center&type=skill&q=sheet", nil)
+	rec := httptest.NewRecorder()
+
+	AdminCapabilityExternalSearchHandler(fakeCapabilityMarketCenterStatus{state: &center.RegistrationState{ActiveBaseURL: server.URL}})(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Items) != 1 {
+		t.Fatalf("unexpected items: %+v", resp.Items)
+	}
+	item := resp.Items[0]
+	if item["id"] != "sheet-review" || item["capability_id"] != "sheet-review" || item["name"] != "Sheet Review" || item["display_name"] != "Sheet Review" {
+		t.Fatalf("unexpected normalized identity: %+v", item)
+	}
+	if item["source"] != corelib.CapabilitySourceHubCenter || item["capability_type"] != corelib.CapabilityTypeSkill || item["pricing"] != corelib.CapabilityPricingFree {
+		t.Fatalf("unexpected normalized metadata: %+v", item)
+	}
+}
+
 func TestAdminCapabilityImportIntentIgnoresClientEnterpriseOnlySearch(t *testing.T) {
 	db := openCapabilityTestDB(t)
 	svc := capability.NewService(db)

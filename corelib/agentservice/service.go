@@ -3804,6 +3804,27 @@ func (s *Service) recordAudit(in auditRecord) error {
 	})
 }
 
+// RecordAuditEvent stores an externally assembled audit event after applying
+// the same defaults used by internal service audit records.
+func (s *Service) RecordAuditEvent(ctx context.Context, event AuditEvent) error {
+	_ = ctx
+	if strings.TrimSpace(event.ID) == "" {
+		event.ID = NewID("audit")
+	}
+	event.TenantID = strings.TrimSpace(event.TenantID)
+	event.UserID = strings.TrimSpace(event.UserID)
+	event.ActorType = defaultString(strings.TrimSpace(event.ActorType), "system")
+	event.ActorTenant = strings.TrimSpace(event.ActorTenant)
+	event.ActorUser = strings.TrimSpace(event.ActorUser)
+	event.Action = strings.TrimSpace(event.Action)
+	event.ResourceType = strings.TrimSpace(event.ResourceType)
+	event.ResourceID = strings.TrimSpace(event.ResourceID)
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = s.now()
+	}
+	return s.store.SaveAuditEvent(event)
+}
+
 func laterTime(current *time.Time, candidate time.Time) *time.Time {
 	if candidate.IsZero() {
 		return current

@@ -350,11 +350,6 @@ func GetCenterStatusHandler(centerSvc *center.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "CENTER_STATUS_FAILED", err.Error())
 			return
 		}
-		status, err = centerSvc.RefreshStatus(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "CENTER_CONFIG_FAILED", err.Error())
-			return
-		}
 		writeJSON(w, http.StatusOK, status)
 	}
 }

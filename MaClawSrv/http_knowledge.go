@@ -281,7 +281,7 @@ func (s *HTTPServer) handleKnowledgeSearch(w http.ResponseWriter, r *http.Reques
 		req.Limit = 50
 	}
 
-	store := s.knowledgeMgr.Store()
+	store := s.knowledgeMgr.AgentStore()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -312,7 +312,7 @@ func (s *HTTPServer) handleKnowledgeContextPack(w http.ResponseWriter, r *http.R
 	req.OwnerID = p.UserID
 	req.TenantID = p.TenantID
 
-	store := s.knowledgeMgr.Store()
+	store := s.knowledgeMgr.AgentStore()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -330,14 +330,10 @@ func (s *HTTPServer) handleKnowledgeListSources(w http.ResponseWriter, r *http.R
 	if !s.requireKnowledge(w) {
 		return
 	}
-	store := s.knowledgeMgr.Store()
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{
-		OwnerID:  p.UserID,
-		TenantID: p.TenantID,
-	})
+	sources, err := s.listReadableKnowledgeSources(ctx, p)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("list sources failed: %v", err)})
 		return
@@ -366,7 +362,7 @@ func (s *HTTPServer) handleKnowledgeGetSource(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
 		return
 	}
-	if !s.canAccessSource(source, p) {
+	if !s.canReadSource(source, p) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
 		return
 	}
@@ -536,6 +532,38 @@ func (s *HTTPServer) handleKnowledgeRefreshSource(w http.ResponseWriter, r *http
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
+}
+
+func (s *HTTPServer) canReadSource(source knowledge.Source, p agentservice.Principal) bool {
+	if s.canAccessSource(source, p) {
+		return true
+	}
+	for _, scope := range s.knowledgeMgr.Access().ResolveForUser(context.Background(), p.TenantID, p.UserID) {
+		if source.TenantID == scope.TenantID && source.OwnerID == scope.OwnerID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *HTTPServer) listReadableKnowledgeSources(ctx context.Context, p agentservice.Principal) ([]knowledge.Source, error) {
+	store := s.knowledgeMgr.Store()
+	var merged []knowledge.Source
+	seen := map[string]struct{}{}
+	for _, scope := range s.knowledgeMgr.Access().ResolveForUser(ctx, p.TenantID, p.UserID) {
+		sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{OwnerID: scope.OwnerID, TenantID: scope.TenantID})
+		if err != nil {
+			return nil, err
+		}
+		for _, source := range sources {
+			if _, ok := seen[source.ID]; ok {
+				continue
+			}
+			seen[source.ID] = struct{}{}
+			merged = append(merged, source)
+		}
+	}
+	return merged, nil
 }
 
 // canAccessSource checks if the principal can access the given source.

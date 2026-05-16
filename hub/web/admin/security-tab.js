@@ -2967,12 +2967,13 @@
     context = context || {};
     compliance = compliance || {};
     var summary = compliance.summary || {};
-    var header = ['exported_at', 'snapshot_checksum', 'snapshot_checksum_algorithm', 'user_email', 'status_filter', 'include_unmanaged', 'stale_after_hours', 'total', 'compliant', 'missing', 'version_mismatch', 'blocked_installed', 'stale', 'unmanaged_installed', 'row_type', 'status', 'policy', 'source', 'capability_ref', 'capability_version_key', 'installed_version', 'install_status', 'last_seen_at', 'policy_id', 'capability_type', 'display_name'];
+    var header = ['exported_at', 'snapshot_id', 'snapshot_checksum', 'snapshot_checksum_algorithm', 'user_email', 'status_filter', 'include_unmanaged', 'stale_after_hours', 'total', 'compliant', 'missing', 'version_mismatch', 'blocked_installed', 'stale', 'unmanaged_installed', 'row_type', 'status', 'policy', 'source', 'capability_ref', 'capability_version_key', 'installed_version', 'install_status', 'last_seen_at', 'policy_id', 'capability_type', 'display_name'];
     var rows = [];
     (compliance.items || []).forEach(function(item) {
       var cap = item.capability || {};
       rows.push([
         context.exported_at || '',
+        context.snapshot_id || '',
         context.snapshot_checksum || '',
         context.snapshot_checksum_algorithm || 'fnv1a32-stable-json',
         context.user_email || '',
@@ -3003,6 +3004,7 @@
     (compliance.unmanaged_items || []).forEach(function(item) {
       rows.push([
         context.exported_at || '',
+        context.snapshot_id || '',
         context.snapshot_checksum || '',
         context.snapshot_checksum_algorithm || 'fnv1a32-stable-json',
         context.user_email || '',
@@ -3082,6 +3084,8 @@
     }
     try {
       var exportedAt = new Date().toISOString();
+      var safeUser = String(sec.selectedUserEmail || 'user').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'user';
+      var snapshotId = ['capability_compliance_csv', safeUser, exportedAt.replace(/[:.]/g, '-').slice(0, 19)].join(':');
       var filters = {
         status_filter: sec.capabilityComplianceStatusFilter || '',
         include_unmanaged: sec.capabilityIncludeUnmanaged !== false,
@@ -3095,6 +3099,7 @@
       });
       var csv = capabilityComplianceCsvRows(compliance, {
         exported_at: exportedAt,
+        snapshot_id: snapshotId,
         snapshot_checksum: checksum,
         snapshot_checksum_algorithm: 'fnv1a32-stable-json',
         user_email: sec.selectedUserEmail || '',
@@ -3104,7 +3109,6 @@
       });
       var blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' });
       var url = URL.createObjectURL(blob);
-      var safeUser = String(sec.selectedUserEmail || 'user').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'user';
       var a = document.createElement('a');
       a.href = url;
       a.download = 'capability-compliance-' + safeUser + '-' + exportedAt.replace(/[:.]/g, '-').slice(0, 19) + '.csv';
@@ -3112,7 +3116,7 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast(st('capabilityExported'), 'success');
+      showToast(st('capabilityExported') + ' - ' + st('snapshotIdShort', { id: snapshotId }), 'success');
     } catch (err) {
       showToast(st('capabilityExportFailed') + (err && err.message || 'export failed'), 'error');
     }
