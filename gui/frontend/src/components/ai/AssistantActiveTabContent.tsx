@@ -29,6 +29,7 @@ export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProje
                 veName={activeTab.title}
                 theme={theme}
                 lang={lang}
+                initialOnlineStatus={activeTab.onlineStatus}
             />
         );
     }

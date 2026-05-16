@@ -15,7 +15,7 @@ export interface PendingProjectTabOpen {
 }
 
 interface PendingAssistantTabOpenOptions {
-    createVETab: (veId: string, veName: string, sessionId?: string) => AITab | null;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline") => AITab | null;
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     createProjectTab: (projectPath: string, taskTitle: string) => AITab | null;
     activateTab?: (tabId: string) => void;
@@ -87,7 +87,7 @@ export function usePendingAssistantTabOpen({
 
     useEffect(() => {
         if (!pendingVEOpen) return;
-        createVETab(pendingVEOpen.id, pendingVEOpen.name);
+        createVETab(pendingVEOpen.id, pendingVEOpen.name, undefined, pendingVEOpen.online_status);
         onPendingVEOpenHandled?.();
     }, [createVETab, onPendingVEOpenHandled, pendingVEOpen]);
 
@@ -103,12 +103,14 @@ export function usePendingAssistantTabOpen({
     // always uses the latest values without causing effect re-runs.
     const createProjectTabRef = useRef(createProjectTab);
     createProjectTabRef.current = createProjectTab;
-    const hasProjectTabRef = useRef(hasProjectTab);
-    hasProjectTabRef.current = hasProjectTab;
     const sendMessageRef = useRef(sendMessage);
     sendMessageRef.current = sendMessage;
     const onProjectTabHandledRef = useRef(onPendingProjectTabOpenHandled);
     onProjectTabHandledRef.current = onPendingProjectTabOpenHandled;
+    const getTabStateRef = useRef(getTabState);
+    getTabStateRef.current = getTabState;
+    const hasProjectTabRef = useRef(hasProjectTab);
+    hasProjectTabRef.current = hasProjectTab;
 
     useEffect(() => {
         if (!pendingProjectTabOpen) return;
@@ -118,10 +120,13 @@ export function usePendingAssistantTabOpen({
         const { projectPath, taskTitle, initialMessage, autoSend } = pendingProjectTabOpen;
         onProjectTabHandledRef.current?.();
 
-        // Determine whether the tab already exists BEFORE creating it.
-        // This is the definitive signal for "reused tab vs new tab" — it cannot
-        // be polluted by async context injection or any other concurrent operation.
-        const tabExistedBefore = hasProjectTabRef.current?.(projectPath) ?? false;
+        // Check if the tab already exists in the tab list BEFORE creating it.
+        // This is a synchronous read of tabStateRef — reliable for tabs that were
+        // restored from localStorage (synchronous on mount) or from the backend
+        // index merge (async, but completes before user interaction in practice).
+        // Combined with the post-creation history check, this provides two-layer
+        // protection against duplicate autoSend.
+        const tabExistedInList = hasProjectTabRef.current?.(projectPath) ?? false;
 
         const tab = createProjectTabRef.current(projectPath, taskTitle);
         if (!tab) return;
@@ -132,10 +137,23 @@ export function usePendingAssistantTabOpen({
             const send = sendMessageRef.current;
             if (!send) return;
 
-            // Skip autoSend for reused tabs — they already have conversation.
-            // For new tabs, always send regardless of what's in history (context
-            // injection may have added a system message, but that's not conversation).
-            if (tabExistedBefore) return;
+            // Determine whether this is a reused tab by two complementary signals:
+            //
+            // Signal 1: The tab already has conversation history in tabStatesRef.
+            // This catches tabs that were actively used in this session.
+            //
+            // Signal 2: The tab existed in the tab list BEFORE createProjectTab was
+            // called (hasProjectTab check done synchronously before createProjectTab).
+            // This catches tabs restored from localStorage/backend that don't have
+            // state in tabStatesRef yet (restoration only adds to tabs array, not
+            // to the state map).
+            //
+            // Either signal being true means this is a reused tab → skip autoSend.
+            const existingState = getTabStateRef.current?.(tab.id);
+            const hasExistingConversation = existingState?.history &&
+                Array.isArray(existingState.history) &&
+                existingState.history.some((m: any) => m.role === "user" || m.role === "assistant");
+            if (hasExistingConversation || tabExistedInList) return;
 
             const msg = initialMessage || taskTitle;
             await send(msg, { tabId: tab.id, project_path: tab.projectPath }).catch(() => {});

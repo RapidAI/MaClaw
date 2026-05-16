@@ -42,6 +42,7 @@ const theme = {
     errorBorder: "#fecaca",
     sendBtnColor: "#2563eb",
     sendBtnBorder: "#1d4ed8",
+    sendBtnBg: "#1d4ed8",
 };
 
 function detail(overrides: any = {}) {

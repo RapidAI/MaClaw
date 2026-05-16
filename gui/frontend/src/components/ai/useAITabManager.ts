@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import type { AITab, AITabType, AITabState, AIAssistantPanelTabState } from "./AITabTypes";
 import { createInitialTabState, DEFAULT_MAX_VE_TABS } from "./AITabTypes";
 import { LoadProjectTabIndex, CloseProjectTabSession, CreateProjectTabSession } from "../../../wailsjs/go/main/App";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 
 /**
  * Generate a deterministic hex hash from a string using a simple
@@ -52,7 +53,7 @@ export interface UseAITabManagerResult {
     /** Switch to a tab by ID */
     activateTab: (tabId: string) => void;
     /** Create a new VE conversation tab. Returns the tab or null if limit reached. */
-    createVETab: (veId: string, veName: string, sessionId?: string) => AITab | null;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline") => AITab | null;
     /** Create a new group chat tab */
     createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
     /** Create a new project tab. Returns the tab or null if limit reached. */
@@ -158,10 +159,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     const [tabState, setTabState] = useState<AIAssistantPanelTabState>(() => {
         // Restore persisted project tabs from localStorage on mount (synchronous).
         // Backend tabs will be merged asynchronously via useEffect below.
+        // Limit to 5 tabs to prevent tab bar overflow on startup.
         const initial = createInitialTabState(maxVETabs);
         const restored = loadPersistedProjectTabs();
         if (restored.length > 0) {
-            initial.tabs = [...initial.tabs, ...restored.slice(0, maxVETabs)];
+            initial.tabs = [...initial.tabs, ...restored.slice(0, 5)];
         }
         tabStateRef.current = initial;
         return initial;
@@ -203,9 +205,10 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
 
                 if (newTabs.length === 0) return prev;
 
-                // Respect max tab limit
+                // Respect max tab limit: at most 5 project tabs total on startup.
+                const MAX_RESTORED_PROJECT_TABS = 5;
                 const projectCount = prev.tabs.filter(t => t.type === "project").length;
-                const available = prev.maxVETabs - projectCount;
+                const available = MAX_RESTORED_PROJECT_TABS - projectCount;
                 const toAdd = newTabs.slice(0, Math.max(0, available));
                 if (toAdd.length === 0) return prev;
 
@@ -236,6 +239,32 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         });
     }, []);
 
+    // Listen for VE online status changes and update tab onlineStatus accordingly.
+    useEffect(() => {
+        const unsub = EventsOn("ve:status_change", (data: any) => {
+            // data may be { ve_id: string, online_status: "online"|"offline" } or a full list refresh signal
+            if (!data) return;
+            const veId = data.ve_id || data.id;
+            const status = data.online_status;
+            if (!veId || !status) return;
+
+            updateTabState(prev => {
+                const hasMatch = prev.tabs.some(t => t.type === "ve" && t.veId === veId && t.onlineStatus !== status);
+                if (!hasMatch) return prev;
+                return {
+                    ...prev,
+                    tabs: prev.tabs.map(t =>
+                        t.type === "ve" && t.veId === veId ? { ...t, onlineStatus: status } : t
+                    ),
+                };
+            });
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("ve:status_change");
+        };
+    }, [updateTabState]);
+
     // Store tab states (history, scroll, input) keyed by tab ID
     const tabStatesRef = useRef<Map<string, AITabState>>(new Map());
 
@@ -256,7 +285,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         }
     }, [updateTabState]);
 
-    const createVETab = useCallback((veId: string, veName: string, sessionId?: string): AITab | null => {
+    const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline"): AITab | null => {
         const prev = tabStateRef.current;
 
         // Check for duplicate: if a tab with same veId exists, activate it
@@ -279,6 +308,7 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             type: "ve",
             title: veName,
             veId,
+            onlineStatus: onlineStatus || "online",
             closable: true,
         };
 

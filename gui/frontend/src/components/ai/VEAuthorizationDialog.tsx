@@ -196,11 +196,12 @@ export function VEAuthorizationDialog({
                                 style={{
                                     padding: "5px 14px",
                                     borderRadius: 5,
-                                    border: `1px solid ${theme.sendBtnBorder}`,
-                                    background: theme.sendBtnColor,
-                                    color: "#fff",
+                                    border: "none",
+                                    background: theme.sendBtnBg,
+                                    color: theme.sendBtnColor,
                                     cursor: responding === req.id ? "not-allowed" : "pointer",
                                     fontSize: 12,
+                                    fontWeight: 500,
                                     opacity: responding === req.id ? 0.5 : 1,
                                 }}
                             >

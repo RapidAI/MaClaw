@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -534,11 +535,12 @@ func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
 		index = &TabIndex{Tabs: []TabIndexEntry{}}
 	}
 
-	// Dedup: don't add if tabID already in index.
+	// Dedup: don't add if tabID already in index. Un-archive if previously closed.
 	found := false
 	for i, entry := range index.Tabs {
 		if entry.ID == tabID {
 			index.Tabs[i].LastActiveAt = now.Unix()
+			index.Tabs[i].Archived = false // Un-archive: tab is being re-opened
 			found = true
 			break
 		}
@@ -731,6 +733,7 @@ func projectTabExtractPaths(entries []memory.Entry) []string {
 
 // CloseProjectTabSession persists the current session state for a project tab
 // and updates the index. Called when the user closes a Project Tab.
+// Marks the tab as archived so it won't be restored on next startup.
 // This is a Wails binding method.
 func (a *App) CloseProjectTabSession(tabID string) {
 	if tabID == "" {
@@ -739,7 +742,7 @@ func (a *App) CloseProjectTabSession(tabID string) {
 
 	persist := a.ensureProjectTabSessionPersist()
 
-	// Update lastActiveAt in the index.
+	// Mark the tab as archived in the index so it won't be restored on startup.
 	index, err := persist.LoadIndex()
 	if err != nil {
 		log.Printf("[CloseProjectTabSession] LoadIndex failed: %v", err)
@@ -749,6 +752,7 @@ func (a *App) CloseProjectTabSession(tabID string) {
 	for i, entry := range index.Tabs {
 		if entry.ID == tabID {
 			index.Tabs[i].LastActiveAt = time.Now().Unix()
+			index.Tabs[i].Archived = true
 			break
 		}
 	}
@@ -757,7 +761,7 @@ func (a *App) CloseProjectTabSession(tabID string) {
 		log.Printf("[CloseProjectTabSession] SaveIndex failed: %v", err)
 	}
 
-	log.Printf("[CloseProjectTabSession] tab=%s persisted", tabID)
+	log.Printf("[CloseProjectTabSession] tab=%s archived", tabID)
 }
 
 // SendMessageForTab routes a message to the project-specific session identified
@@ -831,8 +835,13 @@ func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentRe
 	})
 }
 
+// maxRestoredTabs is the maximum number of project tabs restored on startup.
+// Only the most recently active tabs are returned to prevent tab bar overflow.
+const maxRestoredTabs = 5
+
 // LoadProjectTabIndex returns the saved tab index for frontend restoration
-// on app startup. Returns an empty slice if no index exists.
+// on app startup. Returns at most maxRestoredTabs non-archived entries,
+// sorted by LastActiveAt descending (most recent first).
 // This is a Wails binding method.
 func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 	persist := a.ensureProjectTabSessionPersist()
@@ -844,7 +853,28 @@ func (a *App) LoadProjectTabIndex() []TabIndexEntry {
 	if index == nil || len(index.Tabs) == 0 {
 		return []TabIndexEntry{}
 	}
-	return index.Tabs
+
+	// Filter non-archived entries and sort by LastActiveAt descending.
+	var active []TabIndexEntry
+	for _, entry := range index.Tabs {
+		if !entry.Archived {
+			active = append(active, entry)
+		}
+	}
+	if len(active) == 0 {
+		return []TabIndexEntry{}
+	}
+
+	// Sort: most recently active first (standard library sort).
+	sort.Slice(active, func(i, j int) bool {
+		return active[i].LastActiveAt > active[j].LastActiveAt
+	})
+
+	// Return at most maxRestoredTabs.
+	if len(active) > maxRestoredTabs {
+		active = active[:maxRestoredTabs]
+	}
+	return active
 }
 
 // ---------------------------------------------------------------------------

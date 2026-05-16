@@ -67,6 +67,7 @@ const mockTheme: Theme = {
     closeBtnColor: "#dc2626",
     sendBtnColor: "#6366f1",
     sendBtnBorder: "#6366f1",
+    sendBtnBg: "#6366f1",
 };
 
 function renderConversation(overrides: Partial<VEConversationViewProps> = {}) {

@@ -58,6 +58,8 @@ export interface VEConversationViewProps {
     veName: string;
     theme: Theme;
     lang?: string;
+    /** Initial online status of the VE. Defaults to true (optimistic). Updated via ve:status_change events. */
+    initialOnlineStatus?: "online" | "offline";
     /** Pre-existing session ID to resume (sticky session). Skips initiation if provided. */
     existingSessionId?: string;
     /** Override for testing Wails bindings. */
@@ -100,6 +102,7 @@ export function VEConversationView({
     veName,
     theme,
     lang,
+    initialOnlineStatus,
     existingSessionId,
     initiateConversation,
     sendMessage,
@@ -118,6 +121,8 @@ export function VEConversationView({
     const [inputText, setInputText] = useState("");
     const [sending, setSending] = useState(false);
     const [pendingAttachments, setPendingAttachments] = useState<PendingVEAttachment[]>([]);
+    // Track VE online status — input is disabled when offline.
+    const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
 
     const mountedRef = useRef(true);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -142,6 +147,22 @@ export function VEConversationView({
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [state.messages, state.streamContent]);
+
+    // Track VE online/offline status via events
+    useEffect(() => {
+        const unsub = EventsOn("ve:status_change", (data: any) => {
+            if (!data) return;
+            const id = data.ve_id || data.id;
+            if (id !== veId) return;
+            const status = data.online_status;
+            if (status === "online") setVeOnline(true);
+            else if (status === "offline") setVeOnline(false);
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("ve:status_change");
+        };
+    }, [veId]);
 
     // --- Session Management ---
 
@@ -213,10 +234,10 @@ export function VEConversationView({
         }
     }, [veId, initiateConversation]);
 
-    // Initialize session on mount (skip if resuming an existing sticky session)
+    // Initialize session on mount (skip if resuming an existing sticky session or VE is offline)
     useEffect(() => {
         mountedRef.current = true;
-        if (!existingSessionId) {
+        if (!existingSessionId && initialOnlineStatus !== "offline") {
             initSession();
         }
         return () => {
@@ -227,6 +248,19 @@ export function VEConversationView({
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // When VE comes online and we don't have a session yet, initiate one automatically.
+    // Skip the initial render — mount effect handles the online-at-mount case.
+    const didMountForAutoConnect = useRef(false);
+    useEffect(() => {
+        if (!didMountForAutoConnect.current) {
+            didMountForAutoConnect.current = true;
+            return;
+        }
+        if (veOnline && !sessionIdRef.current) {
+            initSession();
+        }
+    }, [veOnline, initSession]);
 
     // --- Reconnection Logic ---
 
@@ -619,16 +653,18 @@ export function VEConversationView({
                     padding: "8px 12px",
                     borderTop: `1px solid ${theme.divider}`,
                     background: theme.inputBarBg,
+                    opacity: veOnline ? 1 : 0.55,
                 }}
             >
                 {/* Attachment Button */}
                 <button
                     data-testid="ve-attach-button"
                     onClick={handleAttachmentSelect}
+                    disabled={!veOnline}
                     style={{
                         border: "none",
                         background: "none",
-                        cursor: "pointer",
+                        cursor: veOnline ? "pointer" : "default",
                         fontSize: 18,
                         padding: "4px",
                         color: theme.textMuted,
@@ -644,7 +680,10 @@ export function VEConversationView({
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder={isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${veName}...` : `Message ${veName}...`}
+                    disabled={!veOnline}
+                    placeholder={!veOnline
+                        ? (isZh ? `${veName} \u5f53\u524d\u79bb\u7ebf\uff0c\u4e0a\u7ebf\u540e\u53ef\u7ee7\u7eed\u5bf9\u8bdd` : `${veName} is offline`)
+                        : (isZh ? `\u53d1\u9001\u6d88\u606f\u7ed9 ${veName}...` : `Message ${veName}...`)}
                     rows={1}
                     style={{
                         flex: 1,
@@ -654,7 +693,7 @@ export function VEConversationView({
                         padding: "6px 10px",
                         fontSize: 13,
                         color: theme.inputText,
-                        background: theme.bg,
+                        background: veOnline ? theme.bg : theme.fieldBg,
                         outline: "none",
                         minHeight: 32,
                         maxHeight: 120,
@@ -664,17 +703,20 @@ export function VEConversationView({
                 <button
                     data-testid="ve-send-button"
                     onClick={handleSend}
-                    disabled={sending || (!inputText.trim() && pendingAttachments.length === 0)}
+                    disabled={!veOnline || sending || (!inputText.trim() && pendingAttachments.length === 0)}
                     style={{
-                        border: `1px solid ${theme.sendBtnBorder}`,
-                        background: theme.sendBtnColor,
-                        color: "#fff",
+                        border: "none",
+                        background: theme.sendBtnBg,
+                        color: theme.sendBtnColor,
                         borderRadius: 6,
-                        padding: "6px 12px",
-                        cursor: sending ? "not-allowed" : "pointer",
+                        padding: "6px 14px",
+                        cursor: (!veOnline || sending || (!inputText.trim() && pendingAttachments.length === 0)) ? "default" : "pointer",
                         fontSize: 13,
-                        opacity: sending || (!inputText.trim() && pendingAttachments.length === 0) ? 0.5 : 1,
+                        fontWeight: 500,
+                        opacity: (!veOnline || sending || (!inputText.trim() && pendingAttachments.length === 0)) ? 0.4 : 1,
+                        transition: "opacity 0.15s",
                     }}
+                    aria-label={isZh ? "\u53d1\u9001" : "Send"}
                 >
                     {sending ? "..." : isZh ? "\u53d1\u9001" : "Send"}
                 </button>
@@ -709,7 +751,7 @@ function MessageBubble({ message, theme, isZh }: MessageBubbleProps) {
                     maxWidth: "80%",
                     padding: "8px 12px",
                     borderRadius: 8,
-                    background: isUser ? theme.sendBtnColor + "15" : theme.fieldBg,
+                    background: isUser ? theme.sendBtnBg + "15" : theme.fieldBg,
                     borderLeft: isUser ? "none" : `3px solid ${theme.responseBorderLeft}`,
                     borderRight: isUser ? `3px solid ${theme.borderLeft}` : "none",
                     fontSize: 13,

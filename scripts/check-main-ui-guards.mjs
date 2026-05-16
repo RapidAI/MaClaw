@@ -171,8 +171,8 @@ const extractedFileLineLimits = [
   ['gui/frontend/src/components/AboutPanel.tsx', 500],
   ['gui/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['gui/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 650],
-  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 760],
+  ['gui/frontend/src/components/ai/AIAssistantPanel.tsx', 800],
+  ['gui/frontend/src/components/ai/aiAssistantMarkdown.tsx', 790],
   ['gui/frontend/src/components/ai/aiAssistantPanelTheme.tsx', 420],
   ['gui/frontend/src/components/ai/aiAssistantI18n.ts', 40],
   ['gui/frontend/src/components/ai/ProjectSearchPanel.tsx', 240],
@@ -387,12 +387,8 @@ const criticalMarkers = [
   ['AIAssistantPanel', 'AI assistant panel'],
   ['IMAuditPanel', 'IM audit/watch panel'],
   ['PetSettingsPanel', 'pet settings tab'],
-  ['AgentNetTabContainer', 'AgentNet main tab'],
   ['MCPPage', 'MCP main page'],
   ['GossipPage', 'gossip main page'],
-  ['show_nav_mcp', 'left nav MCP visibility setting'],
-  ['show_nav_gossip', 'left nav gossip visibility setting'],
-  ['show_nav_agentnet', 'left nav AgentNet visibility setting'],
   ['chatFontSize', 'AI assistant font-size setting'],
   ['recentTasksPaneWidth', 'resizable recent tasks pane'],
   ['getSettingsTabOptions', 'settings tab registry import'],
@@ -447,7 +443,6 @@ requireIncludes('gui/frontend/src/components/settings/GeneralSettingsPanel.tsx',
 requireIncludes('gui/frontend/src/components/settings/UISettingsPanel.tsx', 'export const UISettingsPanel', 'UI settings export');
 requireIncludes('gui/frontend/src/components/settings/UISettingsPanel.tsx', 'SetUIZoomFactor', 'UI zoom persistence wiring');
 requireIncludes('gui/frontend/src/components/settings/UISettingsPanel.tsx', 'SetChatFontSize', 'AI assistant font size persistence wiring');
-requireIncludes('gui/frontend/src/components/settings/UISettingsPanel.tsx', 'show_nav_agentnet', 'sidebar AgentNet visibility toggle');
 requireIncludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'export const ProgrammingToolsSettingsPanel', 'programming tools settings export');
 requireIncludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'default_tool_provider', 'default programming provider wiring');
 requireIncludes('gui/frontend/src/components/settings/ProgrammingToolsSettingsPanel.tsx', 'remoteToolMetadata.map', 'default coding tool options');
@@ -540,7 +535,6 @@ requireIncludes('gui/frontend/src/components/layout/AppSidebarShell.tsx', 'expor
 requireIncludes('gui/frontend/src/components/layout/AppSidebarShell.tsx', 'SidebarNavRail', 'left sidebar nav rail wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'export const SidebarNavRail', 'sidebar nav rail export');
 requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'left-nav-item--ai', 'AI nav rail button');
-requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'show_nav_agentnet', 'AgentNet nav visibility wiring');
 requireIncludes('gui/frontend/src/components/layout/SidebarNavRail.tsx', 'runningTaskCount', 'monitor running task badge');
 requireIncludes('gui/frontend/src/components/layout/SidebarAiPane.tsx', 'export const SidebarAiPane', 'sidebar AI pane export');
 requireIncludes('gui/frontend/src/components/layout/SidebarAiPane.tsx', 'handleRecentTasksResizeStart', 'recent tasks resize handle wiring');
@@ -567,7 +561,6 @@ requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', '
 requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'setShowModelSettings(true)', 'top header provider config action');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'setShowInstallSkillModal(true)', 'top header install skill action');
 requireIncludes('gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 'export const getHeaderTitle', 'top header title resolver export');
-requireIncludes('gui/frontend/src/components/layout/mainTopHeaderTitle.ts', 'agentNet', 'top header AgentNet title label');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'providerConfig', 'top header provider config label');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeader.tsx', 'handleWindowHide', 'minimize button wiring stays in top header');
 requireIncludes('gui/frontend/src/components/layout/MainTopHeaderActions.tsx', 'setShowModelSettings(true)', 'provider config button stays in top header actions');

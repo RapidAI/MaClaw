@@ -44,6 +44,7 @@ const testTheme = {
     inputBarBg: "#f9fafb",
     sendBtnColor: "#3b82f6",
     sendBtnBorder: "#2563eb",
+    sendBtnBg: "#2563eb",
     borderLeft: "#3b82f6",
     responseBorderLeft: "#10b981",
     errorBg: "#fef2f2",

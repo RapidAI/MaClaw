@@ -43,6 +43,9 @@ export interface Theme {
     closeBtnColor: string;
     sendBtnColor: string;
     sendBtnBorder: string;
+    /** Send button background color — use this for button backgrounds, not sendBtnColor.
+     *  sendBtnColor is the button text/foreground color. */
+    sendBtnBg: string;
 }
 
 export const overlayTheme: Theme = {
@@ -86,6 +89,7 @@ export const overlayTheme: Theme = {
     closeBtnColor: "#888",
     sendBtnColor: "#fff",
     sendBtnBorder: "#5558d6",
+    sendBtnBg: "#5558d6",
 };
 
 export const lightTheme: Theme = {
@@ -129,6 +133,7 @@ export const lightTheme: Theme = {
     closeBtnColor: "#999",
     sendBtnColor: "#6366f1",
     sendBtnBorder: "#6366f1",
+    sendBtnBg: "#6366f1",
 };
 
 
@@ -174,6 +179,7 @@ export const darkTheme: Theme = {
     btnBorder: "#818cf8",
     sendBtnColor: "#ffffff",
     sendBtnBorder: "#818cf8",
+    sendBtnBg: "#818cf8",
 };
 
 export const AI_THEME_MODE_STORAGE_KEY = "ai_assistant_theme_mode";

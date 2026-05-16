@@ -385,7 +385,7 @@ export function GroupMessageBubble({ message, participantIndex, theme, isUser, o
                 style={{
                     padding: "8px 12px",
                     borderRadius: 8,
-                    background: isUser ? `${theme.sendBtnColor}15` : theme.fieldBg,
+                    background: isUser ? `${theme.sendBtnBg}15` : theme.fieldBg,
                     borderLeft: isUser ? "none" : `3px solid ${color}`,
                     fontSize: 13,
                     color: theme.text,

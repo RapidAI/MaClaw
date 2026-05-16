@@ -37,11 +37,13 @@ export function AITabItem({ tab, active, theme, onActivate, onClose, onContextMe
         }
     }, [onClose, tab.id]);
 
-    const isOnline = tab.type === "ve" || tab.type === "group";
     const isLocal = tab.type === "local";
     const isProject = tab.type === "project";
     const isVE = tab.type === "ve";
     const isGroup = tab.type === "group";
+    // VE tabs reflect actual online status (undefined defaults to online for optimistic UX);
+    // group tabs are always considered "online".
+    const isOnline = isGroup || (isVE && tab.onlineStatus !== "offline");
     const readOnlyLabel = tab.readOnly ? (lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb") : "";
     const accessibleTitle = readOnlyLabel ? `${tab.title} - ${readOnlyLabel}` : tab.title;
 

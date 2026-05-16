@@ -64,6 +64,15 @@ function looksLikeFilePath(s: string): boolean {
     return false;
 }
 
+/**
+ * Extract a file path from a string that may contain a path with surrounding noise.
+ * Uses the same patterns as the inline regex path groups to find the path substring.
+ */
+function extractPathFromContent(s: string): string | null {
+    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/);
+    return m ? m[0] : null;
+}
+
 function renderPathLink(filePath: string, key: number, t: Theme, trimTrailing = false): React.ReactNode {
     const display = trimTrailing
         ? filePath.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "")
@@ -107,7 +116,16 @@ function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
 function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     const parts: React.ReactNode[] = [];
-    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
+    // Priority order matters:
+    // 1. Backtick-wrapped content containing a file path (detected via path pattern inside backticks)
+    // 2. Generic backtick inline code
+    // 3. Bold, italic, links
+    // 4. Bare file paths
+    //
+    // Mechanism: Instead of matching all backtick content with one group then guessing if it's a path,
+    // we match "backtick containing a path" as a SEPARATE higher-priority group. The regex engine
+    // guarantees alternation order = priority. This eliminates the need for post-match heuristics.
+    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let idx = 0;
     while (true) {
@@ -115,15 +133,34 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
         if (!match) break;
         if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
         const m = match[0];
-        if (match[1]) {
+        if (match[1] || match[2]) {
+            // Backtick-wrapped content that contains a file path pattern.
+            // Distinguish "content IS a path" from "content CONTAINS a path as a substring".
+            // If the extracted path covers ≥70% of the inner content, the content's primary
+            // purpose is to denote a file path. Otherwise it's code that happens to mention a path.
             const inner = m.slice(1, -1);
-            parts.push(looksLikeFilePath(inner) ? renderPathLink(inner, idx++, t) : <code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
-        } else if (match[2]) {
-            const inner = m.slice(2, -2);
-            parts.push(looksLikeFilePath(inner) ? renderPathLink(inner, idx++, t) : <strong key={idx++} style={{ color: t.boldColor, fontWeight: 700 }}>{inner}</strong>);
+            const path = extractPathFromContent(inner);
+            if (path && path.length >= inner.trimStart().length * 0.7) {
+                parts.push(renderPathLink(path, idx++, t));
+            } else {
+                // Path is a minor substring — render as inline code
+                parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
+            }
         } else if (match[3]) {
-            parts.push(<em key={idx++} style={{ color: t.italicColor }}>{m.slice(1, -1)}</em>);
+            // Generic inline code (no path inside)
+            const inner = m.slice(1, -1);
+            parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
         } else if (match[4]) {
+            // Bold
+            const inner = m.slice(2, -2);
+            if (looksLikeFilePath(inner)) {
+                parts.push(renderPathLink(inner, idx++, t));
+            } else {
+                parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700 }}>{inner}</strong>);
+            }
+        } else if (match[5]) {
+            parts.push(<em key={idx++} style={{ color: t.italicColor }}>{m.slice(1, -1)}</em>);
+        } else if (match[6]) {
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {
                 const href = lm[2];
@@ -137,7 +174,7 @@ function renderInlineMarkdownRestored(text: string, t: Theme): React.ReactNode[]
             } else {
                 parts.push(m);
             }
-        } else if (match[5] || match[6] || match[7] || match[9]) {
+        } else if (match[7] || match[8] || match[9] || match[11]) {
             const filePath = m.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
             if (filePath.length !== m.length) re.lastIndex -= (m.length - filePath.length);
             parts.push(renderPathLink(filePath, idx++, t));
@@ -155,10 +192,9 @@ export function renderInlineMarkdown(text: string, t: Theme): React.ReactNode[] 
 function renderInlineMarkdownLegacyUnused(text: string, t: Theme): React.ReactNode[] {
     if (!text) return ["\u00A0"];
     const parts: React.ReactNode[] = [];
-    // Path matching: two strategies per platform
-    // 1. Broad match for paths with CJK/spaces - requires .ext ending as boundary anchor
-    // 2. Original ASCII-only match - works without .ext
-    const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
+    // Same mechanism as renderInlineMarkdownRestored: backtick-wrapped paths have higher priority
+    // than generic inline code, resolved at the regex alternation level.
+    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|:]+\.\w+)|([A-Za-z]:\\[\w\\.\-]+\\?)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:]+\.\w+)|((~\/|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-]+)/g;
     let lastIndex = 0;
     let match: RegExpExecArray | null;
     let idx = 0;
@@ -167,23 +203,30 @@ function renderInlineMarkdownLegacyUnused(text: string, t: Theme): React.ReactNo
             parts.push(text.slice(lastIndex, match.index));
         }
         const m = match[0];
-        if (match[1]) {
+        if (match[1] || match[2]) {
+            // Backtick-wrapped content containing a file path pattern.
+            // Same ratio check as renderInlineMarkdownRestored — path must be the primary content.
             const inner = m.slice(1, -1);
-            if (looksLikeFilePath(inner)) {
-                parts.push(renderPathLink(inner, idx++, t));
+            const path = extractPathFromContent(inner);
+            if (path && path.length >= inner.trimStart().length * 0.7) {
+                parts.push(renderPathLink(path, idx++, t));
             } else {
                 parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
             }
-        } else if (match[2]) {
+        } else if (match[3]) {
+            // Generic inline code (no path inside)
+            const inner = m.slice(1, -1);
+            parts.push(<code key={idx++} style={{ background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em" }}>{inner}</code>);
+        } else if (match[4]) {
             const inner = m.slice(2, -2);
             if (looksLikeFilePath(inner)) {
                 parts.push(renderPathLink(inner, idx++, t));
             } else {
                 parts.push(<strong key={idx++} style={{ color: t.boldColor, fontWeight: 700 }}>{inner}</strong>);
             }
-        } else if (match[3]) {
+        } else if (match[5]) {
             parts.push(<em key={idx++} style={{ color: t.italicColor }}>{m.slice(1, -1)}</em>);
-        } else if (match[4]) {
+        } else if (match[6]) {
             const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
             if (lm) {
                 const href = lm[2];
@@ -197,7 +240,7 @@ function renderInlineMarkdownLegacyUnused(text: string, t: Theme): React.ReactNo
             } else {
                 parts.push(m);
             }
-        } else if (match[5] || match[6] || match[7] || match[9]) {
+        } else if (match[7] || match[8] || match[9] || match[11]) {
             // Trim trailing punctuation/whitespace that isn't part of the path
             const filePath = m.replace(/[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/, "");
             if (filePath.length !== m.length) {
