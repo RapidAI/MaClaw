@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 // VEMessageHandler processes incoming A2A messages when this maclaw instance
@@ -226,7 +230,7 @@ func (h *VEMessageHandler) runAgentWithStreaming(ctx context.Context, sessionID,
 		if ctx.Err() != nil {
 			return
 		}
-		if strings.TrimSpace(chunk) == "" {
+		if chunk == "" {
 			return
 		}
 		h.SendStreamChunk(sessionID, chunk)
@@ -316,6 +320,12 @@ type veAgentCallbacks struct {
 	sessionID string
 	llmCfg    corelib.MaclawLLMConfig
 	onToken   func(string)
+
+	// Cached knowledge base availability — computed once per agent loop invocation
+	// to avoid repeated SQLite open/close and ensure BuildSystemPrompt and BuildTools
+	// see a consistent value.
+	knowledgeChecked bool
+	hasKnowledge     bool
 }
 
 func (c *veAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
@@ -324,6 +334,17 @@ func (c *veAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 
 func (c *veAgentCallbacks) GetMaxIterations() int {
 	return config.EffectiveMaxIterations(0) // use default
+}
+
+// veKnowledgeAvailable returns whether the knowledge base has content.
+// Result is cached for the lifetime of this callbacks instance (one agent loop invocation).
+func (c *veAgentCallbacks) veKnowledgeAvailable() bool {
+	if c.knowledgeChecked {
+		return c.hasKnowledge
+	}
+	c.knowledgeChecked = true
+	c.hasKnowledge = veHasKnowledgeSources(c.app)
+	return c.hasKnowledge
 }
 
 func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
@@ -353,26 +374,457 @@ func (c *veAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) 
 	sb.WriteString("\n能力边界（重要）：\n")
 	sb.WriteString("- 你运行在数字员工所有者的机器上，为远程用户提供服务\n")
 	sb.WriteString("- 你可以读取本地文件和浏览目录（使用 read_file 和 list_directory 工具）\n")
+
+	// Knowledge base capability declaration
+	hasKnowledge := c.veKnowledgeAvailable()
+	if hasKnowledge {
+		sb.WriteString("- 你可以搜索本地知识库（使用 knowledge_search 和 knowledge_context_pack 工具）\n")
+		sb.WriteString("- 知识库包含所有者保存的网页、文档、笔记等结构化知识，是你回答问题的首要信息来源\n")
+	}
+
 	sb.WriteString("- 你不能修改文件、执行命令、访问网络或操作浏览器\n")
 	sb.WriteString("- 敏感文件（.env、私钥、credentials 等）会被自动拦截，无法读取\n")
 	sb.WriteString("- 当用户请求你无法完成的操作时，直接说明「当前数字员工模式不支持此操作」，不要编造理由（如「我是云端程序」「我没有本地系统」等）\n")
 	sb.WriteString("- 你可以回答知识性问题、提供建议、生成文本内容、分析问题、读取文件内容\n")
+	sb.WriteString("- 你可以检索所有者的记忆库（使用 memory 工具的 recall 操作），获取所有者积累的事实、偏好和项目知识\n")
 	sb.WriteString("\n安全规则：\n")
 	sb.WriteString("- 不要泄露密码、token、API key、私钥等敏感凭据\n")
 	sb.WriteString("- 如果敏感信息不可用或未获批准，说明无法提供即可\n")
 
+	// Knowledge base rules — instruct the LLM to use knowledge tools
+	if hasKnowledge {
+		sb.WriteString("\n## 知识库使用规则（重要）\n")
+		sb.WriteString("- 回答优先级：当用户提问时，**必须优先使用知识库内容回答**。先查看下方「知识库参考」中是否有答案，有则直接引用并标注来源。\n")
+		sb.WriteString("- 主动检索：如果自动检索的内容不够详细，主动调用 knowledge_search 或 knowledge_context_pack 工具深入检索。\n")
+		sb.WriteString("- 来源透明：回答中明确区分哪些信息来自知识库、哪些来自你的训练数据。\n")
+		sb.WriteString("- 绝不要在有知识库可查的情况下直接用训练数据回答——用户信任的是所有者积累的知识。\n")
+		sb.WriteString("- 如果知识库中确实没有相关信息，明确告知用户「知识库中未找到相关信息」，然后用训练数据补充回答并标注。\n")
+
+		// Auto-recall: inject relevant knowledge snippets into the system prompt
+		c.appendVEKnowledgeAutoRecall(&sb, userText)
+	}
+
+	// File-sending capability declaration (Requirements 4.5):
+	// When VEAllowedDirectories is non-empty, declare the file-sending capability
+	// so the LLM knows it can browse, inspect, and send files from those directories.
+	allowedDirs := c.getVEAllowedDirectories()
+	if len(allowedDirs) > 0 {
+		sb.WriteString("\n## 文件发送能力\n")
+		sb.WriteString("- 你可以发送文件给用户（使用 send_file 工具）\n")
+		sb.WriteString("- 允许访问的目录：\n")
+		for _, dir := range allowedDirs {
+			sb.WriteString(fmt.Sprintf("  - %s\n", dir))
+		}
+		sb.WriteString("- 发送文件前，先用 list_directory 浏览目录内容，用 read_file 确认文件内容\n")
+		sb.WriteString("- 文件大小限制：50 MB\n")
+		sb.WriteString("- 敏感文件（.env、私钥等）即使在允许目录中也无法发送\n")
+	}
+
+	// Memory recall: inject relevant memories from the machine owner's memory store.
+	// This gives the VE access to facts, project knowledge, and other information
+	// that the owner's maclaw has accumulated (e.g. "安妮18岁" stored as user_fact).
+	c.appendVEMemoryRecall(&sb, userText)
+
 	return sb.String()
 }
 
+// appendVEKnowledgeAutoRecall searches the knowledge base using the user message
+// and injects top results into the system prompt for VE sessions.
+// Reuses the global knowledgeAutoRecallStore singleton (same as main AI assistant)
+// to avoid repeated SQLite open/close overhead.
+func (c *veAgentCallbacks) appendVEKnowledgeAutoRecall(b *strings.Builder, msg string) {
+	if msg == "" || c.app == nil {
+		return
+	}
+
+	// Truncate long messages to first 200 chars for FTS query
+	query := msg
+	runes := []rune(query)
+	if len(runes) > 200 {
+		query = string(runes[:200])
+	}
+
+	// Reuse the global auto-recall store singleton — same instance used by the main
+	// AI assistant. This avoids repeated open/close and benefits from FTS index caching.
+	knowledgeAutoRecallStoreMu.Lock()
+	store := knowledgeAutoRecallStore
+	knowledgeAutoRecallStoreMu.Unlock()
+
+	if store == nil {
+		// Lazily initialize if not yet opened (VE message may arrive before main AI assistant)
+		var err error
+		store, err = c.app.openKnowledgeStore()
+		if err != nil {
+			return
+		}
+		knowledgeAutoRecallStoreMu.Lock()
+		if knowledgeAutoRecallStore == nil {
+			knowledgeAutoRecallStore = store
+		} else {
+			// Another goroutine initialized it — close our duplicate and use theirs
+			store.Close()
+			store = knowledgeAutoRecallStore
+		}
+		knowledgeAutoRecallStoreMu.Unlock()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	results, err := store.Search(ctx, knowledge.SearchOptions{
+		Query: query,
+		Limit: 5,
+	})
+	if err != nil || len(results) == 0 {
+		return
+	}
+
+	// Dynamic threshold + injection count based on top score (same logic as main AI assistant)
+	topScore := results[0].Score
+	var maxInject int
+	switch {
+	case topScore >= 3.0:
+		maxInject = 3
+	case topScore >= 1.0:
+		maxInject = 2
+	case topScore >= 0.3:
+		maxInject = 1
+	default:
+		return
+	}
+
+	b.WriteString("\n## 知识库参考（自动检索）\n")
+	b.WriteString("以下内容来自知识库，与当前问题可能相关。请优先引用相关内容回答；不相关则忽略。\n")
+	b.WriteString("如需更多信息，可调用 knowledge_search 或 knowledge_context_pack 深入检索。\n\n")
+
+	injected := 0
+	for _, r := range results {
+		if injected >= maxInject {
+			break
+		}
+		if r.Score < 0.3 {
+			break
+		}
+		source := r.Source.Title
+		if source == "" {
+			source = r.Source.RelativePath
+		}
+		if source == "" {
+			source = r.Source.URI
+		}
+		text := knowledgeAutoRecallSnippet(r)
+		if text == "" {
+			continue
+		}
+		if len([]rune(text)) > 200 {
+			text = string([]rune(text)[:200]) + "..."
+		}
+		b.WriteString(fmt.Sprintf("- [%s] %s\n", source, text))
+		injected++
+	}
+}
+
+// appendVEMemoryRecall performs proactive recall from the machine owner's memory
+// store and injects relevant entries into the VE system prompt. This bridges the
+// gap between the knowledge base (structured documents) and the memory system
+// (accumulated facts, project knowledge, user preferences, task artifacts).
+//
+// Without this, the VE can only access knowledge base content but not memories
+// like "安妮18岁" or SSH server credentials that the owner's maclaw has learned.
+func (c *veAgentCallbacks) appendVEMemoryRecall(b *strings.Builder, msg string) {
+	if c.app == nil {
+		return
+	}
+	// Ensure memory store is initialized (it's lazily created; VE messages may
+	// arrive before the main AI assistant triggers ensureMemoryStore).
+	if c.app.memoryStore == nil {
+		c.app.ensureMemoryStore()
+	}
+	memStore := c.app.memoryStore
+	if memStore == nil {
+		return
+	}
+
+	// --- User Facts: always inject the owner's user_fact summary ---
+	// user_fact entries (e.g. "安妮18岁", "马勇的妹妹叫安妮") are excluded from
+	// RecallDynamic (they're injected separately in the main AI assistant via
+	// UserFactSummary). VE must also inject them to answer personal questions.
+	if summary := memStore.UserFactSummary(400); summary != "" {
+		b.WriteString("\n## 所有者信息\n")
+		b.WriteString(summary)
+		b.WriteString("\n")
+	}
+
+	// --- Memory Index: tell the LLM what categories of knowledge exist ---
+	stats := memStore.CategoryStats()
+	if len(stats) > 0 {
+		var parts []string
+		for _, st := range stats {
+			part := fmt.Sprintf("%s: %d条", st.Category.DisplayName(), st.Count)
+			if len(st.Tags) > 0 {
+				part += "(" + strings.Join(st.Tags, ", ") + ")"
+			}
+			parts = append(parts, part)
+		}
+		b.WriteString("\n[记忆索引] ")
+		b.WriteString(strings.Join(parts, " | "))
+		b.WriteString("\n")
+	}
+
+	// --- Proactive Recall: find memories relevant to the user's question ---
+	if msg == "" {
+		return
+	}
+	recalled := memStore.RecallDynamic(msg, "", "")
+
+	// Supplementary entity-based recall for short/noisy messages
+	if len(recalled) < 8 {
+		expanded := corememory.ExpandQuery(msg)
+		if len(expanded.Entities) > 0 {
+			seen := make(map[string]bool, len(recalled))
+			for _, e := range recalled {
+				seen[e.ID] = true
+			}
+			entities := expanded.Entities
+			if len(entities) > 1 {
+				entities = entities[:1]
+			}
+			for _, entity := range entities {
+				extra := memStore.RecallDynamic(entity, "", "")
+				for _, e := range extra {
+					if !seen[e.ID] {
+						seen[e.ID] = true
+						recalled = append(recalled, e)
+						if len(recalled) >= 10 {
+							break
+						}
+					}
+				}
+				if len(recalled) >= 10 {
+					break
+				}
+			}
+		}
+	}
+
+	// Cap at 10 entries to control prompt size (VE has simpler prompts, less budget)
+	const maxVERecall = 10
+	if len(recalled) > maxVERecall {
+		recalled = recalled[:maxVERecall]
+	}
+
+	if len(recalled) > 0 {
+		b.WriteString("\n## 所有者记忆（自动召回）\n")
+		b.WriteString("以下信息来自所有者的记忆库，与当前问题可能相关。请结合知识库和记忆内容回答。\n")
+		for _, e := range recalled {
+			text := e.CompactForm
+			if text == "" {
+				text = e.Content
+			}
+			runes := []rune(text)
+			if len(runes) > 200 {
+				text = string(runes[:200]) + "…"
+			}
+			b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
+		}
+		b.WriteString("如需更多记忆，可调用 memory(action: recall, query: \"关键词\") 深入检索。\n")
+	}
+}
+
 func (c *veAgentCallbacks) BuildTools(userText string) []map[string]interface{} {
-	// VE sessions expose a safe read-only tool subset.
-	// These tools allow the VE to search the web, read files, and access memory
-	// without modifying the local filesystem or executing arbitrary commands.
-	return veRemoteToolDefinitions()
+	// VE sessions use the same ToolRegistry as the main agent, filtered by VE policy.
+	// This ensures VE automatically inherits new read-only tools (knowledge, search, etc.)
+	// without manual maintenance. Blocked tools (write, execute, modify) are removed.
+	//
+	// When VEAllowedDirectories is configured, filterToolsForVEWithConfig conditionally
+	// unblocks send_file, list_directory, and read_file (Requirements 4.1, 4.2, 6.1).
+	if c.app != nil {
+		handler := c.app.ensureLocalIMHandler()
+		if handler != nil && handler.registry != nil {
+			allTools := NewDynamicToolBuilder(handler.registry).BuildAll()
+			allowedDirs := c.getVEAllowedDirectories()
+			return filterToolsForVEWithConfig(allTools, allowedDirs)
+		}
+	}
+	// Fallback: if registry is unavailable, return minimal safe tools
+	return veRemoteToolDefinitions(c.veKnowledgeAvailable())
+}
+
+// getVEAllowedDirectories reads the VEAllowedDirectories list from AppConfig.
+// Returns an empty slice if config is unavailable or the field is not set.
+func (c *veAgentCallbacks) getVEAllowedDirectories() []string {
+	if c.app == nil {
+		return nil
+	}
+	cfg, err := c.app.LoadConfig()
+	if err != nil {
+		return nil
+	}
+	return cfg.VEAllowedDirectories
 }
 
 func (c *veAgentCallbacks) ExecuteTool(name, argsJSON string) string {
-	// Delegate to the safe tool executor for VE sessions
+	// Load allowedDirs once per tool invocation — used by both the blocked-tool
+	// conditional unblock and the file-operation path validation below.
+	allowedDirs := c.getVEAllowedDirectories()
+
+	// Defense in depth: even if a blocked tool's definition leaked into the tool list,
+	// the execution layer rejects it.
+	//
+	// Exception: tools in veConfigUnblockedTools are conditionally allowed when
+	// VEAllowedDirectories is configured. The definition layer (filterToolsForVEWithConfig)
+	// and execution layer must agree — both check allowedDirs.
+	if isVEToolBlocked(name) {
+		// Conditional unblock: when allowedDirs is configured, tools in
+		// veConfigUnblockedTools are allowed through (execution-layer path
+		// validation enforces directory scoping below).
+		if !(len(allowedDirs) > 0 && veConfigUnblockedTools[name]) {
+			return fmt.Sprintf("[error] 工具 %s 在数字员工模式下不可用（安全策略限制）", name)
+		}
+	}
+
+	// Parse args once — reused for action check and handler invocation.
+	var args map[string]interface{}
+	if argsJSON != "" {
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return fmt.Sprintf("[error] 参数解析失败: %v", err)
+		}
+	}
+
+	// Check per-tool action restrictions (e.g., memory save is blocked)
+	if action, _ := args["action"].(string); action != "" {
+		if isVEToolActionBlocked(name, action) {
+			return fmt.Sprintf("[error] 工具 %s 的 %s 操作在数字员工模式下不可用", name, action)
+		}
+	}
+
+	// VE MCP-only skill execution guard: run_skill is allowed only for
+	// skills whose steps are all call_mcp_tool.
+	if name == "run_skill" {
+		skillName, _ := args["name"].(string)
+		if skillName == "" {
+			return "[error] 缺少 name 参数"
+		}
+		allowed, reason := isVERunSkillAllowed(skillName, c.app)
+		if !allowed {
+			return fmt.Sprintf("[error] 数字员工无法执行此 Skill: %s", reason)
+		}
+		// Allowed — fall through to registry execution below
+	}
+
+	// ---------------------------------------------------------------------------
+	// Defense-in-depth path validation for VE file operations.
+	// Validation chain (first failure stops execution):
+	//   1. Tool blocked check (isVEToolBlocked) — handled above
+	//   2. Path parameter check (empty/missing) → "[error] path 参数不能为空"
+	//   3. Directory containment check (ValidateVEFilePath / IsWithinAllowedDirs)
+	//   4. Sensitive file check (CheckVEPathSensitive) → "[error] 该文件包含敏感信息，无法发送"
+	//   5. File size check (> 50 MB, send_file only) → "[error] 文件过大"
+	//   6. Actual file read + send → success or OS error
+	//
+	// Requirements: 4.3, 4.6, 6.3, 6.4, 6.5
+	// ---------------------------------------------------------------------------
+
+	switch name {
+	case "send_file":
+		// Step 2: Path parameter check
+		path, _ := args["path"].(string)
+		if strings.TrimSpace(path) == "" {
+			return "[error] path 参数不能为空"
+		}
+		// Step 3: Directory containment check
+		canonicalPath, err := ValidateVEFilePath(path, allowedDirs)
+		if err != nil {
+			return err.Error()
+		}
+		// Step 4: Sensitive file check
+		if sensitiveErr := CheckVEPathSensitive(canonicalPath); sensitiveErr != nil {
+			return sensitiveErr.Error()
+		}
+		// Step 5: File size check (50 MB limit for VE mode)
+		const veMaxFileSize = 50 * 1024 * 1024 // 50 MB
+		info, statErr := os.Stat(canonicalPath)
+		if statErr != nil {
+			return fmt.Sprintf("[error] 无法读取文件: %v", statErr)
+		}
+		if info.Size() > veMaxFileSize {
+			return fmt.Sprintf("[error] 文件过大（%d bytes），VE 模式最大支持 50 MB", info.Size())
+		}
+		// Step 6: Delegate to registry handler for actual send
+		if c.app != nil {
+			handler := c.app.ensureLocalIMHandler()
+			if handler != nil && handler.registry != nil {
+				tool, ok := handler.registry.Get(name)
+				if ok && tool.Handler != nil {
+					return tool.Handler(args)
+				}
+				if ok && tool.HandlerProg != nil {
+					return tool.HandlerProg(args, nil)
+				}
+			}
+		}
+		return "[error] send_file 处理器不可用"
+
+	case "read_file":
+		// When allowedDirs is configured, enforce directory containment.
+		// When allowedDirs is empty, fall through to the original VE read_file
+		// handler (veToolReadFile) which only does sensitive file check + size limit.
+		// This preserves backward compatibility: VE can always read non-sensitive files.
+		if len(allowedDirs) > 0 {
+			// Step 2: Path parameter check
+			path, _ := args["path"].(string)
+			if strings.TrimSpace(path) == "" {
+				return "[error] path 参数不能为空"
+			}
+			// Step 3: Directory containment check
+			canonicalPath, err := ValidateVEFilePath(path, allowedDirs)
+			if err != nil {
+				return err.Error()
+			}
+			// Step 4: Sensitive file check
+			if sensitiveErr := CheckVEPathSensitive(canonicalPath); sensitiveErr != nil {
+				return sensitiveErr.Error()
+			}
+		}
+		// Delegate to handler (applies its own sensitive check + size limit when no allowedDirs)
+		return executeVERemoteTool(c.app, name, argsJSON)
+
+	case "list_directory":
+		// When allowedDirs is configured, enforce directory containment.
+		// When allowedDirs is empty, fall through to the original VE list_directory
+		// handler (veToolListDirectory) which only blocks sensitive directories.
+		if len(allowedDirs) > 0 {
+			// Step 2: Path parameter check
+			path, _ := args["path"].(string)
+			if strings.TrimSpace(path) == "" {
+				return "[error] path 参数不能为空"
+			}
+			// Step 3: Directory containment check
+			if _, err := IsWithinAllowedDirs(path, allowedDirs); err != nil {
+				return err.Error()
+			}
+		}
+		// Delegate to handler (applies its own sensitive dir check when no allowedDirs)
+		return executeVERemoteTool(c.app, name, argsJSON)
+	}
+
+	// Execute via the main ToolRegistry — uses same handlers as main agent.
+	// This gives VE access to knowledge_search, knowledge_context_pack, memory(recall),
+	// web_search, web_fetch, discover_tool, and any future read-only tools automatically.
+	if c.app != nil {
+		handler := c.app.ensureLocalIMHandler()
+		if handler != nil && handler.registry != nil {
+			tool, ok := handler.registry.Get(name)
+			if ok && tool.Handler != nil {
+				return tool.Handler(args)
+			}
+			if ok && tool.HandlerProg != nil {
+				return tool.HandlerProg(args, nil)
+			}
+		}
+	}
+
+	// Final fallback for tools not in registry (shouldn't happen in normal operation)
 	return executeVERemoteTool(c.app, name, argsJSON)
 }
 

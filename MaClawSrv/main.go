@@ -36,6 +36,9 @@ func runServer(ctx context.Context) error {
 	if err := validateStartupSecrets(adminSecret, tokenSecret); err != nil {
 		return fmt.Errorf("invalid security configuration: %w", err)
 	}
+	if err := configureServiceLogging(dataRoot); err != nil {
+		return fmt.Errorf("configure logging: %w", err)
+	}
 
 	executor, err := buildCoreAgentExecutorFromEnv()
 	if err != nil {
@@ -160,6 +163,23 @@ func validateStartupSecrets(adminSecret, tokenSecret string) error {
 	if adminSecret == "maclaw-admin-dev" || tokenSecret == "maclaw-token-dev" {
 		return errors.New("default development secrets are not allowed")
 	}
+	return nil
+}
+
+func configureServiceLogging(dataRoot string) error {
+	logPath := defaultServiceLogPath(dataRoot)
+	if strings.TrimSpace(logPath) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	log.SetOutput(f)
+	log.Printf("MaClawSrv logging initialized path=%s", logPath)
 	return nil
 }
 

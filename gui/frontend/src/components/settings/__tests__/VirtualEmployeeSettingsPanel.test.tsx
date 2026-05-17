@@ -15,6 +15,9 @@ const UpdateVESettingsMock = vi.fn();
 const GetVEStatusMock = vi.fn();
 const GetDigitalEmployeeSensitiveQueryPolicyMock = vi.fn();
 const SaveDigitalEmployeeSensitiveQueryPolicyMock = vi.fn();
+const SelectVEAllowedDirectoryMock = vi.fn();
+const GetVEAllowedDirectoriesMock = vi.fn();
+const SetVEAllowedDirectoriesMock = vi.fn();
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
   RegisterVirtualEmployee: (...args: unknown[]) =>
@@ -25,6 +28,12 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     GetDigitalEmployeeSensitiveQueryPolicyMock(...args),
   SaveDigitalEmployeeSensitiveQueryPolicy: (...args: unknown[]) =>
     SaveDigitalEmployeeSensitiveQueryPolicyMock(...args),
+  SelectVEAllowedDirectory: (...args: unknown[]) =>
+    SelectVEAllowedDirectoryMock(...args),
+  GetVEAllowedDirectories: (...args: unknown[]) =>
+    GetVEAllowedDirectoriesMock(...args),
+  SetVEAllowedDirectories: (...args: unknown[]) =>
+    SetVEAllowedDirectoriesMock(...args),
 }));
 
 vi.mock("../../../../wailsjs/runtime", () => ({
@@ -39,6 +48,9 @@ beforeEach(() => {
   GetVEStatusMock.mockResolvedValue({ registered: false });
   GetDigitalEmployeeSensitiveQueryPolicyMock.mockResolvedValue("confirm");
   SaveDigitalEmployeeSensitiveQueryPolicyMock.mockResolvedValue(undefined);
+  GetVEAllowedDirectoriesMock.mockResolvedValue([]);
+  SelectVEAllowedDirectoryMock.mockResolvedValue("");
+  SetVEAllowedDirectoriesMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -316,5 +328,115 @@ describe("VirtualEmployeeSettingsPanel", () => {
       "\u5bc6\u7801\u6216\u654f\u611f\u4fe1\u606f\u67e5\u8be2",
     )) as HTMLSelectElement;
     await waitFor(() => expect(select.value).toBe("allow"));
+  });
+});
+
+describe("VirtualEmployeeSettingsPanel - Directory Configuration UI", () => {
+  it("renders empty state when no directories configured", async () => {
+    GetVEAllowedDirectoriesMock.mockResolvedValue([]);
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-dirs-empty-hint")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("ve-dirs-empty-hint").textContent).toContain(
+      "未配置目录",
+    );
+    expect(screen.queryByTestId("ve-allowed-dirs-list")).toBeNull();
+  });
+
+  it("loads and displays directories on mount", async () => {
+    GetVEAllowedDirectoriesMock.mockResolvedValue([
+      "D:\\Documents\\Templates",
+      "C:\\Users\\Owner\\Downloads",
+    ]);
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-allowed-dirs-list")).toBeTruthy(),
+    );
+    expect(screen.getByText("D:\\Documents\\Templates")).toBeTruthy();
+    expect(screen.getByText("C:\\Users\\Owner\\Downloads")).toBeTruthy();
+    expect(screen.queryByTestId("ve-dirs-empty-hint")).toBeNull();
+  });
+
+  it("adds a directory when SelectVEAllowedDirectory returns a path", async () => {
+    GetVEAllowedDirectoriesMock.mockResolvedValue([]);
+    SelectVEAllowedDirectoryMock.mockResolvedValue("D:\\NewFolder\\Shared");
+    SetVEAllowedDirectoriesMock.mockResolvedValue(undefined);
+
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-add-dir-btn")).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByTestId("ve-add-dir-btn"));
+
+    await waitFor(() =>
+      expect(SetVEAllowedDirectoriesMock).toHaveBeenCalledWith([
+        "D:\\NewFolder\\Shared",
+      ]),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("D:\\NewFolder\\Shared")).toBeTruthy(),
+    );
+  });
+
+  it("removes a directory and calls SetVEAllowedDirectories with updated list", async () => {
+    GetVEAllowedDirectoriesMock.mockResolvedValue([
+      "D:\\Dir1",
+      "D:\\Dir2",
+      "D:\\Dir3",
+    ]);
+    SetVEAllowedDirectoriesMock.mockResolvedValue(undefined);
+
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() => expect(screen.getByText("D:\\Dir2")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("ve-remove-dir-D:\\Dir2"));
+
+    await waitFor(() =>
+      expect(SetVEAllowedDirectoriesMock).toHaveBeenCalledWith([
+        "D:\\Dir1",
+        "D:\\Dir3",
+      ]),
+    );
+    await waitFor(() => expect(screen.queryByText("D:\\Dir2")).toBeNull());
+  });
+
+  it("does not change list when user cancels directory picker (empty string returned)", async () => {
+    GetVEAllowedDirectoriesMock.mockResolvedValue(["D:\\Existing"]);
+    SelectVEAllowedDirectoryMock.mockResolvedValue("");
+
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() => expect(screen.getByText("D:\\Existing")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("ve-add-dir-btn"));
+
+    // Wait a tick to ensure async handler completes
+    await waitFor(() =>
+      expect(SelectVEAllowedDirectoryMock).toHaveBeenCalled(),
+    );
+    expect(SetVEAllowedDirectoriesMock).not.toHaveBeenCalled();
+    expect(screen.getByText("D:\\Existing")).toBeTruthy();
+    expect(screen.queryByTestId("ve-dir-duplicate-warning")).toBeNull();
+  });
+
+  it("shows duplicate warning when adding same directory with different casing", async () => {
+    GetVEAllowedDirectoriesMock.mockResolvedValue(["D:\\Documents\\Templates"]);
+    SelectVEAllowedDirectoryMock.mockResolvedValue("d:\\documents\\templates");
+
+    render(<VirtualEmployeeSettingsPanel remoteMachineId="m1" />);
+    await waitFor(() =>
+      expect(screen.getByText("D:\\Documents\\Templates")).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByTestId("ve-add-dir-btn"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("ve-dir-duplicate-warning")).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("ve-dir-duplicate-warning").textContent,
+    ).toContain("已在列表中");
+    expect(SetVEAllowedDirectoriesMock).not.toHaveBeenCalled();
   });
 });

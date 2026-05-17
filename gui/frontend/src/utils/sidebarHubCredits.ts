@@ -27,6 +27,14 @@ export function normalizeSidebarHubCredits(status?: SidebarHubServiceStatus | nu
     let used = 0;
     let remaining = 0;
     for (const grant of grants) {
+        // Use backend's "effective" flag as single source of truth.
+        // Fall back to status string check for old hub versions without the field.
+        const eff = grant.effective ?? grant.Effective;
+        const isEffective = typeof eff === 'boolean'
+            ? eff
+            : String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'queued'
+              && String(grant.status ?? grant.Status ?? '').toLowerCase() !== 'expired';
+        if (!isEffective) continue;
         total += Number(grant.credits_total ?? grant.CreditsTotal ?? 0);
         used += Number(grant.credits_used ?? grant.CreditsUsed ?? 0);
         remaining += Number(grant.credits_remaining ?? grant.CreditsRemaining ?? 0);

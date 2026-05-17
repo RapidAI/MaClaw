@@ -538,28 +538,9 @@ func (h *IMMessageHandler) buildMemoryIndex(strictProject bool, projectPath stri
 		return ""
 	}
 
-	categoryLabel := func(cat corememory.Category) string {
-		switch cat {
-		case corememory.CategoryProjectKnowledge:
-			return "项目"
-		case corememory.CategoryPreference:
-			return "偏好"
-		case corememory.CategoryInstruction:
-			return "指令"
-		case corememory.CategoryTaskArtifact:
-			return "任务产出"
-		case corememory.CategoryProfile:
-			return "档案"
-		case corememory.CategoryUserFact:
-			return "用户信息"
-		default:
-			return string(cat)
-		}
-	}
-
 	var parts []string
 	for _, st := range stats {
-		part := fmt.Sprintf("%s: %d条", categoryLabel(st.Category), st.Count)
+		part := fmt.Sprintf("%s: %d条", st.Category.DisplayName(), st.Count)
 		if len(st.Tags) > 0 {
 			part += "(" + strings.Join(st.Tags, ", ") + ")"
 		}

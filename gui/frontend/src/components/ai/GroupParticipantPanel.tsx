@@ -9,7 +9,7 @@
  * Designed to be rendered alongside the group chat message area in a flex row.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { Theme } from "./aiAssistantPanelTheme";
 
@@ -30,6 +30,8 @@ export interface GroupParticipantPanelProps {
     onInvite?: () => void;
     /** Session ID for listening to status changes */
     sessionId?: string;
+    /** Callback when user right-clicks "Talk to" on a participant */
+    onTalkTo?: (participant: Participant) => void;
 }
 
 export function GroupParticipantPanel({
@@ -38,12 +40,54 @@ export function GroupParticipantPanel({
     lang,
     maxParticipants = 5,
     onInvite,
+    onTalkTo,
 }: GroupParticipantPanelProps) {
     const isZh = !lang || lang.startsWith("zh");
 
     // Online status overlay: tracks status changes from events without
     // duplicating the participants array in state. Key = participant ID, value = online.
     const [statusOverlay, setStatusOverlay] = useState<Record<string, boolean>>({});
+
+    // Context menu state
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number; participant: Participant } | null>(null);
+    const contextMenuRef = useRef<HTMLDivElement>(null);
+
+    // Close context menu on click outside or Esc
+    useEffect(() => {
+        if (!contextMenu) return;
+        const handleClick = (e: MouseEvent) => {
+            if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+                setContextMenu(null);
+            }
+        };
+        const handleEsc = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setContextMenu(null);
+        };
+        document.addEventListener("mousedown", handleClick);
+        document.addEventListener("keydown", handleEsc);
+        return () => {
+            document.removeEventListener("mousedown", handleClick);
+            document.removeEventListener("keydown", handleEsc);
+        };
+    }, [contextMenu]);
+
+    const handleContextMenu = useCallback((e: React.MouseEvent, participant: Participant) => {
+        e.preventDefault();
+        if (!onTalkTo) return;
+        // Clamp position to keep menu within viewport
+        const menuHeight = 32; // approximate single-item menu height
+        const menuWidth = 100;
+        const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8);
+        const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8);
+        setContextMenu({ x, y, participant });
+    }, [onTalkTo]);
+
+    const handleTalkTo = useCallback(() => {
+        if (contextMenu && onTalkTo) {
+            onTalkTo(contextMenu.participant);
+        }
+        setContextMenu(null);
+    }, [contextMenu, onTalkTo]);
 
     // Listen for VE status changes
     useEffect(() => {
@@ -104,6 +148,7 @@ export function GroupParticipantPanel({
                 {resolvedParticipants.map(p => (
                     <div
                         key={p.id}
+                        onContextMenu={(e) => handleContextMenu(e, p)}
                         style={{
                             display: "flex",
                             alignItems: "center",
@@ -111,6 +156,7 @@ export function GroupParticipantPanel({
                             padding: "5px 10px",
                             fontSize: 12,
                             color: theme.text,
+                            cursor: onTalkTo ? "context-menu" : "default",
                         }}
                         title={p.id}
                     >
@@ -174,6 +220,41 @@ export function GroupParticipantPanel({
                     >
                         {isZh ? "＋ 邀请" : "+ Invite"}
                     </button>
+                </div>
+            )}
+
+            {/* Context Menu */}
+            {contextMenu && (
+                <div
+                    ref={contextMenuRef}
+                    data-testid="participant-context-menu"
+                    style={{
+                        position: "fixed",
+                        left: contextMenu.x,
+                        top: contextMenu.y,
+                        zIndex: 9999,
+                        background: theme.fieldBg || "#1e1e2e",
+                        border: `1px solid ${theme.divider || "#333"}`,
+                        borderRadius: 4,
+                        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+                        padding: "2px 0",
+                        minWidth: 100,
+                    }}
+                >
+                    <div
+                        data-testid="context-menu-talk-to"
+                        onClick={handleTalkTo}
+                        style={{
+                            padding: "6px 12px",
+                            fontSize: 12,
+                            color: theme.text,
+                            cursor: "pointer",
+                        }}
+                        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = (theme.sendBtnBg || "#3b82f6") + "20"; }}
+                        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                    >
+                        {isZh ? "找它交谈" : "Talk to"}
+                    </div>
                 </div>
             )}
         </div>

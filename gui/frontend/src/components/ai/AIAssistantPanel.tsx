@@ -35,6 +35,19 @@ import { useProjectContextLoader } from "./useProjectContextLoader";
 import { AssistantActiveTabContent } from "./AssistantActiveTabContent";
 import { usePendingAssistantTabOpen } from "./usePendingAssistantTabOpen";
 export { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
+
+const PROJECT_TAB_MSG_IDS_KEY = 'ai-assistant-project-tab-msg-ids';
+const _loadedProjectTabMsgIds = (() => {
+    try {
+        const raw = localStorage.getItem(PROJECT_TAB_MSG_IDS_KEY);
+        if (raw) {
+            const arr = JSON.parse(raw);
+            if (Array.isArray(arr)) return new Set(arr as string[]);
+        }
+    } catch { /* ignore */ }
+    return new Set<string>();
+})();
+
 export function AIAssistantPanel(props: any) {
     const { onClose, lang, chatFontSize = 14, themeMode: controlledThemeMode, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled } = props;
     const state = props.state || props;
@@ -151,7 +164,13 @@ export function AIAssistantPanel(props: any) {
             if (sending && projectTabMsgBaselineRef.current >= 0) {
                 const inFlightMessages = messages.slice(projectTabMsgBaselineRef.current);
                 if (inFlightMessages.length > 0) {
-                    historyToSave = [...projectTabMessages, ...inFlightMessages];
+                    // Deduplicate: in-flight messages might already be in projectTabMessages
+                    // if the round completion capture fired in the same batch.
+                    const existingIds = new Set(projectTabMessages.map((m: ChatMessage) => m.id));
+                    const unique = inFlightMessages.filter((m: ChatMessage) => !existingIds.has(m.id));
+                    if (unique.length > 0) {
+                        historyToSave = [...projectTabMessages, ...unique];
+                    }
                 }
             }
 
@@ -164,6 +183,12 @@ export function AIAssistantPanel(props: any) {
         // Restore state of the tab we're switching to
         if (activeTab.type === "project") {
             const restored = getTabState(currentTabId);
+            // Reset stale baseline from a previous round that may have completed
+            // while on another tab. Without this, the stale baseline could cause
+            // displayMessages to incorrectly slice from messages[] on the next send.
+            if (!sending) {
+                projectTabMsgBaselineRef.current = -1;
+            }
             if (restored) {
                 setProjectTabMessages((restored.history || []) as ChatMessage[]);
                 setProjectTabProgressMessages([]);
@@ -194,7 +219,27 @@ export function AIAssistantPanel(props: any) {
     const projectTabMsgBaselineRef = useRef<number>(-1);
     // Track message IDs that belong to project tab rounds. These are filtered
     // out when displaying the local tab, preventing cross-tab message leakage.
-    const projectTabMsgIdsRef = useRef<Set<string>>(new Set());
+    // Persisted to localStorage so filtering survives app restart.
+    const projectTabMsgIdsRef = useRef<Set<string>>(_loadedProjectTabMsgIds);
+    // Persist project tab message IDs (debounced to avoid thrashing localStorage).
+    const projectTabIdsPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const persistProjectTabMsgIds = useCallback(() => {
+        if (projectTabIdsPersistTimerRef.current) clearTimeout(projectTabIdsPersistTimerRef.current);
+        projectTabIdsPersistTimerRef.current = setTimeout(() => {
+            projectTabIdsPersistTimerRef.current = null;
+            try {
+                const ids = projectTabMsgIdsRef.current;
+                if (ids.size === 0) {
+                    localStorage.removeItem(PROJECT_TAB_MSG_IDS_KEY);
+                } else {
+                    // Only persist the most recent 200 IDs to bound storage size.
+                    const arr = [...ids];
+                    const toStore = arr.length > 200 ? arr.slice(-200) : arr;
+                    localStorage.setItem(PROJECT_TAB_MSG_IDS_KEY, JSON.stringify(toStore));
+                }
+            } catch { /* ignore */ }
+        }, 500);
+    }, []);
     const displayMessages = useMemo(() => {
         if (!isProjectTabActive) {
             // Local tab: hide messages that belong to project tab rounds.
@@ -209,10 +254,16 @@ export function AIAssistantPanel(props: any) {
             return messages;
         }
         if (!sending || projectTabMsgBaselineRef.current < 0) return projectTabMessages;
-        // During streaming: show project tab history + new messages from this round
+        // During streaming: show project tab history + new messages from this round.
+        // Deduplicate by ID to handle the case where round completion capture
+        // already moved some messages into projectTabMessages while streaming
+        // is still technically active (React state batching edge case).
         const newMessages = messages.slice(projectTabMsgBaselineRef.current);
         if (newMessages.length === 0) return projectTabMessages;
-        return [...projectTabMessages, ...newMessages];
+        const existingIds = new Set(projectTabMessages.map((m: ChatMessage) => m.id));
+        const unique = newMessages.filter((m: ChatMessage) => !existingIds.has(m.id));
+        if (unique.length === 0) return projectTabMessages;
+        return [...projectTabMessages, ...unique];
     }, [isProjectTabActive, sending, messages, projectTabMessages]);
     const displayProgressMessages = isProjectTabActive
         ? (sending ? progressMessages : projectTabProgressMessages)
@@ -232,19 +283,41 @@ export function AIAssistantPanel(props: any) {
         }
         // Round completed — capture new messages into project tab state and
         // record their IDs so the local tab can filter them out.
-        if (wasSending && !sending && isProjectTabActive && projectTabMsgBaselineRef.current >= 0) {
-            const newMessages = messages.slice(projectTabMsgBaselineRef.current);
-            if (newMessages.length > 0) {
-                setProjectTabMessages(prev => [...prev, ...newMessages]);
-                // Record IDs for local tab filtering
+        if (wasSending && !sending && projectTabMsgBaselineRef.current >= 0) {
+            if (isProjectTabActive) {
+                const newMessages = messages.slice(projectTabMsgBaselineRef.current);
+                if (newMessages.length > 0) {
+                    setProjectTabMessages(prev => {
+                        // Deduplicate by message ID to prevent double-capture.
+                        // This can happen when the user switches back to the project tab
+                        // in the same render cycle as the round completing — the tab switch
+                        // restore already loaded these messages from saved state, and the
+                        // capture effect fires again with the same messages.
+                        const existingIds = new Set(prev.map((m: ChatMessage) => m.id));
+                        const unique = newMessages.filter((m: ChatMessage) => !existingIds.has(m.id));
+                        if (unique.length === 0) return prev;
+                        return [...prev, ...unique];
+                    });
+                    // Record IDs for local tab filtering
+                    for (const m of newMessages) {
+                        projectTabMsgIdsRef.current.add(m.id);
+                    }
+                }
+                setProjectTabProgressMessages([]);
+            } else {
+                // Round completed while on a different tab. The in-flight messages
+                // were already saved to tabState by the tab-switch-away effect.
+                // We still need to record their IDs so the local tab can filter them,
+                // and reset the baseline to unblock local tab's displayMessages.
+                const newMessages = messages.slice(projectTabMsgBaselineRef.current);
                 for (const m of newMessages) {
                     projectTabMsgIdsRef.current.add(m.id);
                 }
             }
-            setProjectTabProgressMessages([]);
             projectTabMsgBaselineRef.current = -1;
+            persistProjectTabMsgIds();
         }
-    }, [sending, isProjectTabActive, messages]);
+    }, [sending, isProjectTabActive, messages, persistProjectTabMsgIds]);
     const { loadProjectContext } = useProjectContextLoader();
     // Wrap createProjectTab to automatically load context for new tabs
     const createProjectTabWithContext = useCallback((projectPath: string, taskTitle: string, _archived?: boolean) => {
@@ -623,10 +696,10 @@ export function AIAssistantPanel(props: any) {
                 if (tab.type === "ve") {
                     const tabSt = getTabState(tab.id);
                     const sessionId = tabSt?.sessionId || tab.discussionId;
-                    if (sessionId) {
-                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
-                        upgradeVETabToGroup(tab.id, currentParticipants, sessionId);
-                    }
+                    const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
+                    // Upgrade regardless of sessionId — participant panel should be visible immediately.
+                    // VEConversationView will establish the session on mount if needed.
+                    upgradeVETabToGroup(tab.id, currentParticipants, sessionId);
                 }
                 activateTab(tab.id);
             }} onAddLocalMaclawToTab={(tab) => {
@@ -635,12 +708,22 @@ export function AIAssistantPanel(props: any) {
                 if (tab.participants?.includes("local-maclaw")) return;
                 const tabSt = getTabState(tab.id);
                 const sessionId = tabSt?.sessionId || tab.discussionId;
-                if (!sessionId) return;
+                if (!sessionId) {
+                    // No session yet — upgrade tab immediately with local-maclaw as participant.
+                    // The VEConversationView will establish the session on mount, and the
+                    // participant panel will be visible right away.
+                    const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
+                    upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"]);
+                    return;
+                }
                 // Register with Hub and start GroupChatDispatcher (backend)
                 import("../../../wailsjs/go/main/App").then((mod) => {
                     const registerFn = (mod as any).RegisterLocalExecutorInGroup;
                     if (!registerFn) {
-                        console.error("[AddLocalMaclaw] RegisterLocalExecutorInGroup binding not available");
+                        // Binding not available — still upgrade the tab UI so user sees the group view.
+                        // Backend registration will be retried when messages are sent.
+                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
+                        upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
                         return;
                     }
                     registerFn(sessionId).then(() => {
@@ -648,9 +731,17 @@ export function AIAssistantPanel(props: any) {
                         const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
                         upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
                     }).catch((err: unknown) => {
-                        console.error("[AddLocalMaclaw] failed:", err);
+                        console.error("[AddLocalMaclaw] Hub registration failed, upgrading tab UI anyway:", err);
+                        // Still upgrade the tab UI — the participant panel should be visible.
+                        // Hub registration failure is non-fatal for the UI experience.
+                        const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
+                        upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
                     });
-                }).catch(() => {});
+                }).catch(() => {
+                    // Dynamic import failed — still upgrade the tab UI
+                    const currentParticipants = tab.participants || (tab.veId ? [tab.veId] : []);
+                    upgradeVETabToGroup(tab.id, [...currentParticipants, "local-maclaw"], sessionId);
+                });
             }} lang={lang} getLastActiveAt={getLastActiveAt} />
             {tabLimitError && <div data-testid="ai-tab-limit-error" style={{ padding: "6px 12px", fontSize: 12, color: t.errorText, background: t.errorBg, borderBottom: `1px solid ${t.errorBorder}`, textAlign: "center" }}>{tabLimitError}</div>}
             {showChatUI && <>
@@ -661,7 +752,7 @@ export function AIAssistantPanel(props: any) {
                     <div ref={outputEndRef} />
                 </div>
                 <AssistantInputStack browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} inputRef={inputRef} inputValue={inputValue} inline={!!inline} isBusy={isBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} pendingAttachments={pendingAttachments} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={removeEntry} removeSelectedFile={removeSelectedFile} reorderEntry={reorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} theme={t} themeMode={themeMode} updateInputValue={updateInputValue} voiceInput={voiceInput} />
-            </>}            <AssistantActiveTabContent activeTab={activeTab} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} />
+            </>}            <AssistantActiveTabContent activeTab={activeTab} isLocalTabActive={isLocalTabActive} isProjectTabActive={isProjectTabActive} lang={lang} theme={t} getTabState={getTabState} saveTabState={saveTabState} />
             </div>
             <AssistantPreviewPane agentView={agentView} codePreviewState={codePreviewState} closeCodePreview={closeCodePreview} closeDocPreview={closeDocPreview} dismissAgentView={dismissAgentView} inline={!!inline} lang={lang} onToggleMaximize={onToggleMaximize} selectCodeFile={selectCodeFile} submitAgentView={submitAgentView} showCodePreview={showCodePreview} showAgentView={showAgentView} showWorkflowPreview={showWorkflowPreview} splitRatio={splitRatio} startPreviewResize={startPreviewResize} theme={t} themeMode={themeMode} workflowState={workflowState} />
         </div>

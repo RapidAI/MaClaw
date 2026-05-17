@@ -1,0 +1,44 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MaClawSrv Admin</title>
+  <link rel="stylesheet" href="/admin/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div>
+          <strong>MaClawSrv</strong>
+          <span data-i18n="adminConsole">Admin Console</span>
+        </div>
+      </div>
+      <nav id="nav" class="nav"></nav>
+      <div class="sidebar-footer">
+        <select id="localeSelect" aria-label="Language">
+          <option value="zh-CN">中文</option>
+          <option value="en-US">English</option>
+        </select>
+        <button id="logoutBtn" class="ghost" data-i18n="logout">Logout</button>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">MaClawSrv</h1>
+          <p id="pageHint"></p>
+        </div>
+        <div id="authBadge" class="badge">...</div>
+      </header>
+      <section id="bootstrapPanel" class="panel hidden"></section>
+      <section id="loginPanel" class="panel hidden"></section>
+      <section id="content" class="content"></section>
+    </main>
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="/admin/app.js"></script>
+</body>
+</html>

@@ -60,7 +60,7 @@ LangString AlreadyInstalled ${LANG_SIMPCHINESE} "${INFO_PRODUCTNAME} is already 
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\dist\maclaw-data-srv-Setup.exe"
-InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\${INFO_PRODUCTNAME}"
+InstallDir "$PROGRAMFILES64\${INFO_COMPANYNAME}\maclawdatasrv"
 ShowInstDetails show
 RequestExecutionLevel admin
 
@@ -117,7 +117,7 @@ Section
     Sleep 2000
     ExecWait 'sc.exe delete "${SERVICE_NAME}"'
     Sleep 1000
-    ExecWait 'sc.exe create "${SERVICE_NAME}" binPath= "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\"" start= auto DisplayName= "${INFO_PRODUCTNAME}"' $R1
+    ExecWait 'sc.exe create ${SERVICE_NAME} binPath= "$INSTDIR\${PRODUCT_EXECUTABLE}" start= auto DisplayName= "${INFO_PRODUCTNAME}"' $R1
     ${If} $R1 != 0
         MessageBox MB_OK|MB_ICONSTOP "Failed to create ${SERVICE_NAME} Windows service. sc.exe exited with code $R1."
         Abort

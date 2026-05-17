@@ -14,6 +14,7 @@ export interface HubLLMActiveGrant {
     starts_at?: string;
     expires_at?: string;
     active?: boolean;
+    effective?: boolean;
     status?: string;
     status_reason?: string;
     credits_total?: number;

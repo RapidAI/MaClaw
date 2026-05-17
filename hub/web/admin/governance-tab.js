@@ -143,6 +143,8 @@
     var total = 0;
     var used = 0;
     grants.forEach(function(grant) {
+      var isEffective = typeof grant.effective === 'boolean' ? grant.effective : (function() { var s = String(grant.status || '').toLowerCase(); return s !== 'queued' && s !== 'expired'; })();
+      if (!isEffective) return;
       total += Number(grant.credits_total || 0);
       used += Number(grant.credits_used || 0);
     });

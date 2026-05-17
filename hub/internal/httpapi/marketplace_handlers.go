@@ -672,9 +672,15 @@ func AdminUserCapabilityComplianceHandler(svc *capability.Service, groups userCa
 		}
 		staleAfter := complianceStaleAfter(r)
 		items, summary, unmanaged := capabilityComplianceFor(policies, inventory, staleAfter)
-		items = filterCapabilityComplianceItems(items, r.URL.Query().Get("status"))
-		unmanaged = filterUnmanagedCapabilityInventory(unmanaged, r.URL.Query().Get("include_unmanaged"))
-		writeJSON(w, http.StatusOK, map[string]any{"items": items, "summary": summary, "unmanaged_items": unmanaged, "group_chain": groupChain, "generated_at": time.Now().UTC().Format(time.RFC3339), "stale_after_hours": int(staleAfter.Hours())})
+		statusFilter := normalizeCapabilityComplianceStatusFilter(r.URL.Query().Get("status"))
+		includeUnmanaged := r.URL.Query().Get("include_unmanaged")
+		filteredItems := filterCapabilityComplianceItems(items, statusFilter)
+		filteredUnmanaged := filterUnmanagedCapabilityInventory(unmanaged, includeUnmanaged, statusFilter)
+		response := map[string]any{"items": filteredItems, "summary": summary, "unmanaged_items": filteredUnmanaged, "group_chain": groupChain, "generated_at": time.Now().UTC().Format(time.RFC3339), "stale_after_hours": int(staleAfter.Hours())}
+		if capabilityComplianceFilterActive(statusFilter, includeUnmanaged) {
+			response["filtered_summary"] = capabilityComplianceSummaryFor(filteredItems, filteredUnmanaged)
+		}
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -728,7 +734,7 @@ func effectiveCapabilityPoliciesFor(ctx context.Context, svc *capability.Service
 		if specificity < 0 {
 			continue
 		}
-		candidate := adminEffectiveCapabilityPolicy{CapabilityRef: item.CapabilityRef, CapabilityVersionKey: item.CapabilityVersionKey, Policy: firstNonEmpty(item.DeploymentPolicy, "required"), Kind: "deployment", Source: source, Specificity: specificity, Capability: capByID[item.CapabilityRef], PolicyID: item.ID}
+		candidate := adminEffectiveCapabilityPolicy{CapabilityRef: item.CapabilityRef, CapabilityVersionKey: item.CapabilityVersionKey, Policy: capability.NormalizeManagedDeploymentPolicy(item.DeploymentPolicy), Kind: "deployment", Source: source, Specificity: specificity, Capability: capByID[item.CapabilityRef], PolicyID: item.ID}
 		mergeEffectiveCapabilityPolicy(byCapability, candidate)
 	}
 	for _, item := range recommendations {
@@ -815,6 +821,53 @@ func capabilityComplianceFor(policies []adminEffectiveCapabilityPolicy, inventor
 	return items, summary, unmanaged
 }
 
+func normalizeCapabilityComplianceStatusFilter(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "", "all", "issues", "risks", "compliant", "missing", "version_mismatch", "blocked_installed", "stale", "unmanaged_installed":
+		return status
+	default:
+		return ""
+	}
+}
+
+func capabilityComplianceIncludeUnmanaged(include string) bool {
+	include = strings.ToLower(strings.TrimSpace(include))
+	switch include {
+	case "false", "0", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func capabilityComplianceFilterActive(status string, includeUnmanaged string) bool {
+	status = normalizeCapabilityComplianceStatusFilter(status)
+	if status != "" && status != "all" {
+		return true
+	}
+	return !capabilityComplianceIncludeUnmanaged(includeUnmanaged)
+}
+
+func capabilityComplianceSummaryFor(items []adminCapabilityComplianceItem, unmanaged []capability.UserCapabilityInventoryItem) adminCapabilityComplianceSummary {
+	summary := adminCapabilityComplianceSummary{Total: len(items), UnmanagedInstalled: len(unmanaged)}
+	for _, item := range items {
+		switch strings.ToLower(strings.TrimSpace(item.Status)) {
+		case "compliant":
+			summary.Compliant++
+		case "version_mismatch":
+			summary.VersionMismatch++
+		case "blocked_installed":
+			summary.BlockedInstalled++
+		case "stale":
+			summary.Stale++
+		default:
+			summary.Missing++
+		}
+	}
+	return summary
+}
+
 func complianceStaleAfter(r *http.Request) time.Duration {
 	hours := strings.TrimSpace(r.URL.Query().Get("stale_after_hours"))
 	if hours == "" {
@@ -831,12 +884,18 @@ func complianceStaleAfter(r *http.Request) time.Duration {
 }
 
 func filterCapabilityComplianceItems(items []adminCapabilityComplianceItem, status string) []adminCapabilityComplianceItem {
-	status = strings.ToLower(strings.TrimSpace(status))
+	status = normalizeCapabilityComplianceStatusFilter(status)
 	if status == "" || status == "all" {
 		return items
 	}
 	out := []adminCapabilityComplianceItem{}
 	for _, item := range items {
+		if status == "issues" || status == "risks" {
+			if !strings.EqualFold(item.Status, "compliant") {
+				out = append(out, item)
+			}
+			continue
+		}
 		if strings.EqualFold(item.Status, status) {
 			out = append(out, item)
 		}
@@ -844,12 +903,15 @@ func filterCapabilityComplianceItems(items []adminCapabilityComplianceItem, stat
 	return out
 }
 
-func filterUnmanagedCapabilityInventory(items []capability.UserCapabilityInventoryItem, include string) []capability.UserCapabilityInventoryItem {
-	include = strings.ToLower(strings.TrimSpace(include))
-	if include == "" || include == "true" || include == "1" || include == "yes" {
-		return items
+func filterUnmanagedCapabilityInventory(items []capability.UserCapabilityInventoryItem, include string, status string) []capability.UserCapabilityInventoryItem {
+	if !capabilityComplianceIncludeUnmanaged(include) {
+		return []capability.UserCapabilityInventoryItem{}
 	}
-	return []capability.UserCapabilityInventoryItem{}
+	status = normalizeCapabilityComplianceStatusFilter(status)
+	if status != "" && status != "all" && status != "unmanaged_installed" && status != "issues" && status != "risks" {
+		return []capability.UserCapabilityInventoryItem{}
+	}
+	return items
 }
 
 func inventoryIsStale(lastSeenAt string, staleAfter time.Duration) bool {
@@ -1158,12 +1220,13 @@ func AdminCapabilityManagedDeploymentCreateHandler(svc *capability.Service, audi
 		}
 		adminUserID := adminAuditUserID(r)
 		scopeJSON := rawJSONOrDefault(req.Scope)
-		id, err := svc.CreateManagedDeployment(r.Context(), capability.ManagedDeploymentInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, DeploymentPolicy: req.DeploymentPolicy, ReinstallIfRemoved: reinstall, RetryIntervalMinutes: req.RetryIntervalMinutes, CreatedBy: adminUserID, Enabled: enabled})
+		deploymentPolicy := capability.NormalizeManagedDeploymentPolicy(req.DeploymentPolicy)
+		id, err := svc.CreateManagedDeployment(r.Context(), capability.ManagedDeploymentInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, DeploymentPolicy: deploymentPolicy, ReinstallIfRemoved: reinstall, RetryIntervalMinutes: req.RetryIntervalMinutes, CreatedBy: adminUserID, Enabled: enabled})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MANAGED_DEPLOYMENT_CREATE_FAILED", err.Error())
 			return
 		}
-		writeAdminAuditLog(r.Context(), audit, adminUserID, "capability.managed_deployment.create", map[string]any{"id": id, "capability_ref": req.CapabilityRef, "capability_version_key": req.CapabilityVersionKey, "scope": json.RawMessage(scopeJSON), "deployment_policy": req.DeploymentPolicy, "enabled": enabled})
+		writeAdminAuditLog(r.Context(), audit, adminUserID, "capability.managed_deployment.create", map[string]any{"id": id, "capability_ref": req.CapabilityRef, "capability_version_key": req.CapabilityVersionKey, "scope": json.RawMessage(scopeJSON), "deployment_policy": deploymentPolicy, "enabled": enabled})
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 	}
 }

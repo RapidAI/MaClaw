@@ -183,6 +183,13 @@ func ResolveStatusFromRegistry(ctx context.Context, reg *Registry, securitySvc *
 	}
 	status.CreditGrants = creditGrantSummaries(reg, email, now)
 	for _, g := range status.CreditGrants {
+		// Only accumulate credits from currently effective grants.
+		// Exclude "queued" (not yet started) and "expired" grants from totals
+		// so users see accurate available credits.
+		grantStatus := strings.ToLower(strings.TrimSpace(g.Status))
+		if grantStatus == "queued" || grantStatus == "expired" {
+			continue
+		}
 		status.CreditsTotal += g.CreditsTotal
 		status.CreditsUsed += g.CreditsUsed
 		status.CreditsRemaining += g.CreditsRemaining
@@ -329,12 +336,17 @@ func grantStateInactiveReasons(grants []ActiveGrant) []string {
 func grantSummary(g Grant, now time.Time) ActiveGrant {
 	status, reason, active, retryAt := grantStatus(g, now)
 	available := availableGrantCredits(g, now)
+	// A grant is "effective" (counts toward credit totals) when it is currently
+	// within its validity period. Queued (not yet started) and expired grants
+	// are not effective.
+	effective := status != "queued" && status != "expired"
 	summary := ActiveGrant{
 		ServiceGroupID:   g.ServiceGroupID,
 		Source:           g.Source,
 		StartsAt:         g.StartsAt,
 		ExpiresAt:        g.ExpiresAt,
 		Active:           active,
+		Effective:        effective,
 		Status:           status,
 		StatusReason:     reason,
 		CreditsTotal:     roundCredits(g.CreditsTotal),

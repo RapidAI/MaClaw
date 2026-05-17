@@ -17,6 +17,7 @@ interface HubLLMActiveGrant {
     starts_at?: string;
     expires_at: string;
     active?: boolean;
+    effective?: boolean;
     status?: string;
     status_reason?: string;
     credits_total?: number;
@@ -239,9 +240,17 @@ function creditGrants(status: HubLLMServiceStatus | null): HubLLMActiveGrant[] {
 
 function creditTotals(status: HubLLMServiceStatus | null) {
     const grants = creditGrants(status);
-    const grantTotal = grants.reduce((sum, grant) => sum + Number(grant.credits_total || 0), 0);
-    const grantUsed = grants.reduce((sum, grant) => sum + Number(grant.credits_used || 0), 0);
-    const grantRemaining = grants.reduce((sum, grant) => sum + Number(grant.credits_remaining || 0), 0);
+    // Use the backend's "effective" flag as single source of truth for which
+    // grants count toward totals. Falls back to status string check for
+    // backward compatibility with older hub versions that don't send "effective".
+    const effectiveGrants = grants.filter((grant) => {
+        if (typeof grant.effective === "boolean") return grant.effective;
+        const s = String(grant.status || "").toLowerCase();
+        return s !== "queued" && s !== "expired";
+    });
+    const grantTotal = effectiveGrants.reduce((sum, grant) => sum + Number(grant.credits_total || 0), 0);
+    const grantUsed = effectiveGrants.reduce((sum, grant) => sum + Number(grant.credits_used || 0), 0);
+    const grantRemaining = effectiveGrants.reduce((sum, grant) => sum + Number(grant.credits_remaining || 0), 0);
     const total = Number(status?.credits_total ?? grantTotal);
     const used = Number(status?.credits_used ?? grantUsed);
     const remainingRaw = Number(status?.credits_remaining ?? grantRemaining);
@@ -475,7 +484,11 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     }, [status]);
 
     const totals = useMemo(() => creditTotals(status), [status]);
-    const grantsForDetails = useMemo(() => creditGrants(status), [status]);
+    const grantsForDetails = useMemo(() => {
+        // Filter out expired grants from the details table
+        const all = creditGrants(status);
+        return all.filter((grant) => String(grant.status || "").toLowerCase() !== "expired");
+    }, [status]);
     const statusSummary = useMemo(() => serviceStatusSummary(status, lang, t), [status, lang, t]);
 
     const openHubCreditsPage = useCallback(async () => {

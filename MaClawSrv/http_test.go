@@ -156,6 +156,30 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if !foundCredentialStatus || !foundExpiredBool || !foundExpiringBool {
 		t.Fatalf("expected credential filters in OpenAPI: %#v", credentialParams)
 	}
+	summaryPath, ok := doc.Paths["/api/v1/admin/security/summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected security summary path object")
+	}
+	summaryGet, ok := summaryPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET security summary operation")
+	}
+	summaryDescription, _ := summaryGet["description"].(string)
+	if !strings.Contains(summaryDescription, "generated_at") || !strings.Contains(summaryDescription, "applied filters") {
+		t.Fatalf("expected security summary description to mention generated_at and filters: %#v", summaryGet)
+	}
+	supportBundlePath, ok := doc.Paths["/api/v1/admin/sandbox/support-bundle"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sandbox support-bundle path object")
+	}
+	supportBundleGet, ok := supportBundlePath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET sandbox support-bundle operation")
+	}
+	supportBundleDescription, _ := supportBundleGet["description"].(string)
+	if !strings.Contains(supportBundleDescription, "security_risks") || !strings.Contains(supportBundleDescription, "generated_at") || !strings.Contains(supportBundleDescription, "filters") || !strings.Contains(supportBundleDescription, "redacted data root") || !strings.Contains(supportBundleDescription, "redactions") {
+		t.Fatalf("expected support bundle description to mention security risks generated_at and filters: %#v", supportBundleGet)
+	}
 	auditPath, ok := doc.Paths["/api/v1/admin/audit-events"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected audit-events path object")
@@ -197,6 +221,52 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if !foundResourceID || !foundActorType || !foundAuditSince || !foundAuditUntil {
 		t.Fatalf("expected audit resource/time filters in OpenAPI: %#v", auditParams)
 	}
+	riskPath, ok := doc.Paths["/api/v1/admin/security/risk-events"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected risk-events path object")
+	}
+	getRiskEvents, ok := riskPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET risk-events operation")
+	}
+	riskDescription, _ := getRiskEvents["description"].(string)
+	if !strings.Contains(riskDescription, "generated_at") || !strings.Contains(riskDescription, "applied filters") {
+		t.Fatalf("expected risk-events description to mention generated_at and filters: %#v", getRiskEvents)
+	}
+	riskParams, ok := getRiskEvents["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected risk-events parameters")
+	}
+	foundRiskSeverity := false
+	foundRiskKindDescription := false
+	foundRiskTimeDescription := false
+	for _, item := range riskParams {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := param["name"].(string)
+		description, _ := param["description"].(string)
+		schema, _ := param["schema"].(map[string]any)
+		switch name {
+		case "severity":
+			enumValues, _ := schema["enum"].([]any)
+			if len(enumValues) == 3 {
+				foundRiskSeverity = true
+			}
+		case "kind":
+			if strings.Contains(description, "Stable risk kind") && strings.Contains(description, "sandbox_failed") && strings.Contains(description, "case-insensitive") {
+				foundRiskKindDescription = true
+			}
+		case "since":
+			if strings.Contains(description, "before or equal") {
+				foundRiskTimeDescription = true
+			}
+		}
+	}
+	if !foundRiskSeverity || !foundRiskKindDescription || !foundRiskTimeDescription {
+		t.Fatalf("expected risk severity/kind/time filters in OpenAPI: %#v", riskParams)
+	}
 	recordsPath, ok := doc.Paths["/api/v1/records/{collection}"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected records collection path object")
@@ -227,6 +297,45 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 	if !foundTag || !foundQ {
 		t.Fatalf("expected record tag and q filters in OpenAPI: %#v", recordParams)
+	}
+	for _, path := range []string{
+		"/api/v1/admin/knowledge/stats",
+		"/api/v1/admin/knowledge/sources",
+		"/api/v1/admin/tenants/{tenantId}/knowledge",
+		"/api/v1/admin/skill-sources/available",
+		"/api/v1/admin/skill-sources/global",
+		"/api/v1/admin/skill-sources/tenant/{id}",
+		"/api/v1/admin/skill-sources/user/{email...}",
+		"/api/v1/admin/skill-sources/resolve/{email...}",
+	} {
+		if _, ok := doc.Paths[path]; !ok {
+			t.Fatalf("expected admin knowledge/skill path %s in openapi doc", path)
+		}
+	}
+	skillResolvePath, ok := doc.Paths["/api/v1/admin/skill-sources/resolve/{email...}"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected skill source resolve path object")
+	}
+	skillResolveGet, ok := skillResolvePath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET skill source resolve operation")
+	}
+	skillResolveParams, ok := skillResolveGet["parameters"].([]any)
+	if !ok {
+		t.Fatalf("expected skill source resolve parameters")
+	}
+	foundTenantID := false
+	for _, item := range skillResolveParams {
+		param, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if param["name"] == "tenant_id" {
+			foundTenantID = true
+		}
+	}
+	if !foundTenantID {
+		t.Fatalf("expected tenant_id query parameter in skill source resolve OpenAPI: %#v", skillResolveParams)
 	}
 }
 
@@ -1571,9 +1680,15 @@ func TestMetricsEndpoint(t *testing.T) {
 	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_run_failed_metric", TenantID: tenant.ID, UserID: user.ID, Action: "run.failed", ResourceType: "run", ResourceID: "run_failed_metric", CreatedAt: now.Add(3 * time.Second)}); err != nil {
 		t.Fatalf("SaveAuditEvent run.failed: %v", err)
 	}
-	server.jobs.createUserJob("skill.import", principal, func(ctx context.Context) (any, error) {
+	metricJob := server.jobs.createUserJob("skill.import", principal, func(ctx context.Context) (any, error) {
 		return map[string]string{"status": "ok"}, nil
 	})
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		job, ok := server.jobs.getUserJob(metricJob.ID, principal)
+		if ok && job.Status == asyncJobStatusSucceeded {
+			break
+		}
+	}
 	if err := svc.RecordTokenAuthFailure(context.Background(), "metric-key", "203.0.113.10", "unauthorized"); err != nil {
 		t.Fatalf("RecordTokenAuthFailure: %v", err)
 	}

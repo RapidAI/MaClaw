@@ -132,7 +132,7 @@ func (s *knowledgeAccessService) SetUser(ctx context.Context, tenantID, userID s
 	if err := normalizeKnowledgeAccessConfig(tenantID, cfg); err != nil {
 		return err
 	}
-	if !s.crossTenantEnabled(ctx) {
+	if cfg.Enabled && !s.crossTenantEnabled(ctx) {
 		for i, scope := range cfg.ReadScopes {
 			if scope.TenantID != strings.TrimSpace(tenantID) {
 				return fmt.Errorf("read_scopes[%d] targets tenant %q; enable cross-tenant knowledge access first", i, scope.TenantID)
@@ -168,7 +168,11 @@ func (s *knowledgeAccessService) DeleteUser(ctx context.Context, tenantID, userI
 
 func (s *knowledgeAccessService) ResolveForUser(ctx context.Context, tenantID, userID string) []knowledgeScope {
 	tenantID = strings.TrimSpace(tenantID)
-	self := knowledgeScope{TenantID: tenantID, OwnerID: strings.TrimSpace(userID), Name: "self"}
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || userID == "" {
+		return nil
+	}
+	self := knowledgeScope{TenantID: tenantID, OwnerID: userID, Name: "self"}
 	scopes := []knowledgeScope{self}
 	if cfg, err := s.GetUser(ctx, tenantID, userID); err == nil && cfg != nil && cfg.Enabled {
 		scopes = append(scopes, cfg.ReadScopes...)
@@ -235,7 +239,7 @@ func uniqueKnowledgeScopes(scopes []knowledgeScope) []knowledgeScope {
 		scope.TenantID = strings.TrimSpace(scope.TenantID)
 		scope.OwnerID = strings.TrimSpace(scope.OwnerID)
 		scope.Name = strings.TrimSpace(scope.Name)
-		if scope.TenantID == "" {
+		if scope.TenantID == "" || scope.OwnerID == "" {
 			continue
 		}
 		key := scope.TenantID + "\x00" + scope.OwnerID
@@ -257,6 +261,19 @@ func cloneKnowledgeAccessConfig(cfg *knowledgeAccessConfig) *knowledgeAccessConf
 	return &clone
 }
 
+func knowledgeAccessConfigHasCrossTenantScope(tenantID string, cfg *knowledgeAccessConfig) bool {
+	tenantID = strings.TrimSpace(tenantID)
+	if cfg == nil {
+		return false
+	}
+	for _, scope := range cfg.ReadScopes {
+		if strings.TrimSpace(scope.TenantID) != "" && strings.TrimSpace(scope.TenantID) != tenantID {
+			return true
+		}
+	}
+	return false
+}
+
 type multiKnowledgeStore struct {
 	store  *knowledge.SQLiteStore
 	access *knowledgeAccessService
@@ -274,7 +291,9 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 	if limit > 50 {
 		limit = 50
 	}
-	scopes := s.access.ResolveForUser(ctx, opts.TenantID, opts.OwnerID)
+	requestTenantID := strings.TrimSpace(opts.TenantID)
+	requestOwnerID := strings.TrimSpace(opts.OwnerID)
+	scopes := s.access.ResolveForUser(ctx, requestTenantID, requestOwnerID)
 	merged := make([]knowledge.SearchResult, 0, limit)
 	seen := make(map[string]struct{})
 	for _, scope := range scopes {
@@ -282,6 +301,9 @@ func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchO
 		queryOpts.TenantID = scope.TenantID
 		queryOpts.OwnerID = scope.OwnerID
 		queryOpts.Limit = limit
+		if scope.TenantID != requestTenantID || scope.OwnerID != requestOwnerID {
+			queryOpts.IncludeDisabled = false
+		}
 		results, err := s.store.Search(ctx, queryOpts)
 		if err != nil {
 			return nil, err
@@ -322,14 +344,22 @@ func (s *multiKnowledgeStore) ContextPack(ctx context.Context, opts knowledge.Co
 		maxChars = 20000
 	}
 	searchOpts := opts.SearchOptions
+	searchOpts.Query = query
+	searchOpts.TenantID = strings.TrimSpace(searchOpts.TenantID)
+	searchOpts.OwnerID = strings.TrimSpace(searchOpts.OwnerID)
 	if searchOpts.Limit <= 0 || searchOpts.Limit < maxItems {
 		searchOpts.Limit = maxItems * 2
+	}
+	if searchOpts.Limit > 50 {
+		searchOpts.Limit = 50
 	}
 	results, err := s.Search(ctx, searchOpts)
 	if err != nil {
 		return knowledge.ContextPackResult{}, err
 	}
-	pack := knowledge.ContextPackResult{Query: query, Items: make([]knowledge.ContextPackItem, 0, maxItems), Citations: make([]knowledge.Citation, 0, maxItems), Notes: []string{"local_context_pack_no_llm", "cross_user_authorized", "card_fact_node_ranked", "budgeted_context"}}
+	notes := []string{"local_context_pack_no_llm", "card_fact_node_ranked", "budgeted_context"}
+	pack := knowledge.ContextPackResult{Query: query, Items: make([]knowledge.ContextPackItem, 0, maxItems), Citations: make([]knowledge.Citation, 0, maxItems), Notes: notes}
+	crossUserContextUsed := false
 	seenCitations := make(map[string]struct{})
 	for _, result := range results {
 		if len(pack.Items) >= maxItems || pack.CharacterCount >= maxChars {
@@ -347,6 +377,9 @@ func (s *multiKnowledgeStore) ContextPack(ctx context.Context, opts knowledge.Co
 			pack.Notes = append(pack.Notes, "truncated_to_budget")
 		}
 		label := fmt.Sprintf("K%d", len(pack.Items)+1)
+		if result.Source.TenantID != searchOpts.TenantID || result.Source.OwnerID != searchOpts.OwnerID {
+			crossUserContextUsed = true
+		}
 		pack.Items = append(pack.Items, knowledge.ContextPackItem{Label: label, ResultType: result.ResultType, Title: multiContextPackTitle(result), Text: text, SourceID: result.Source.ID, Citation: result.Citation, Score: result.Score})
 		pack.CharacterCount += len([]rune(text))
 		citation := multiCitationFromResult(result)
@@ -356,6 +389,9 @@ func (s *multiKnowledgeStore) ContextPack(ctx context.Context, opts knowledge.Co
 			citation.Label = label
 			pack.Citations = append(pack.Citations, citation)
 		}
+	}
+	if crossUserContextUsed && !hasKnowledgeNote(pack.Notes, "cross_user_authorized") {
+		pack.Notes = append(pack.Notes, "cross_user_authorized")
 	}
 	pack.Count = len(pack.Items)
 	return pack, nil

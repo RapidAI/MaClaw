@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -8,6 +12,8 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"pgregory.net/rapid"
 )
 
 // --- stream_chunk / stream_end message construction and parsing tests ---
@@ -474,4 +480,375 @@ func TestVEMessageHandler_ConcurrentAccess(t *testing.T) {
 	if count != 10 {
 		t.Errorf("expected 10 sessions from concurrent access, got %d", count)
 	}
+}
+
+
+// ===========================================================================
+// Feature: ve-file-sharing-directories, Property 5: Execution-layer path validation for all VE file operations
+//
+// For any VE file operation (send_file, read_file, list_directory) with a path
+// argument that resolves outside all allowed directories after canonicalization,
+// the execution layer (ExecuteTool) SHALL return an error and SHALL NOT execute
+// the underlying file operation handler.
+//
+// For any VE file operation with a path argument that resolves inside an allowed
+// directory after canonicalization, the execution layer SHALL allow the operation
+// (subject to other checks like sensitive file detection and size limits).
+//
+// **Validates: Requirements 4.1, 4.2, 6.3, 6.4**
+// ===========================================================================
+
+func TestProperty5_ExecutionLayerPathValidation(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// --- Setup: create directory structure ---
+		baseDir := createTempDirForRapid(t)
+		defer os.RemoveAll(baseDir)
+
+		// Create 1-3 allowed directories
+		numAllowed := rapid.IntRange(1, 3).Draw(t, "numAllowedDirs")
+		allowedDirs := make([]string, numAllowed)
+		for i := 0; i < numAllowed; i++ {
+			dirName := rapid.StringMatching(`[a-z]{3,8}`).Draw(t, fmt.Sprintf("allowedDir_%d", i))
+			dir := filepath.Join(baseDir, "allowed", dirName)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatalf("failed to create allowed dir: %v", err)
+			}
+			allowedDirs[i] = dir
+		}
+
+		// Create an outside directory
+		outsideDir := filepath.Join(baseDir, "outside")
+		os.MkdirAll(outsideDir, 0755)
+
+		// Create files inside allowed dirs
+		chosenIdx := rapid.IntRange(0, len(allowedDirs)-1).Draw(t, "chosenIdx")
+		chosenDir := allowedDirs[chosenIdx]
+
+		insideFileName := rapid.StringMatching(`[a-z]{3,8}\.(txt|pdf|md|docx)`).Draw(t, "insideFile")
+		insideFilePath := filepath.Join(chosenDir, insideFileName)
+		os.WriteFile(insideFilePath, []byte("inside content"), 0644)
+
+		// Create files outside allowed dirs
+		outsideFileName := rapid.StringMatching(`[a-z]{3,8}\.(txt|pdf|md)`).Draw(t, "outsideFile")
+		outsideFilePath := filepath.Join(outsideDir, outsideFileName)
+		os.WriteFile(outsideFilePath, []byte("outside content"), 0644)
+
+		// Create a subdirectory inside allowed dir for list_directory tests
+		subDirName := rapid.StringMatching(`[a-z]{3,6}`).Draw(t, "subDir")
+		insideSubDir := filepath.Join(chosenDir, subDirName)
+		os.MkdirAll(insideSubDir, 0755)
+
+		// Build the veAgentCallbacks with our test configuration
+		callbacks := &veAgentCallbacks{
+			app: &App{
+				configCacheValid: true,
+				configCache:      corelib.AppConfig{VEAllowedDirectories: allowedDirs},
+			},
+		}
+
+		// Pick which tool to test
+		toolName := rapid.SampledFrom([]string{"send_file", "read_file", "list_directory"}).Draw(t, "toolName")
+
+		// --- Property A: Paths OUTSIDE allowed dirs are REJECTED ---
+		var outsideArgs string
+		switch toolName {
+		case "send_file", "read_file":
+			outsideArgs = fmt.Sprintf(`{"path": %q}`, outsideFilePath)
+		case "list_directory":
+			outsideArgs = fmt.Sprintf(`{"path": %q}`, outsideDir)
+		}
+
+		result := callbacks.ExecuteTool(toolName, outsideArgs)
+		if !strings.Contains(result, "[error]") {
+			t.Fatalf("ExecuteTool(%s) with path outside allowed dirs should return error, got: %s (path=%s, allowedDirs=%v)",
+				toolName, result, outsideFilePath, allowedDirs)
+		}
+		if !strings.Contains(result, "文件不在允许访问的目录中") {
+			t.Fatalf("ExecuteTool(%s) should return containment error, got: %s", toolName, result)
+		}
+
+		// --- Property B: Paths INSIDE allowed dirs are ALLOWED (no containment error) ---
+		var insideArgs string
+		switch toolName {
+		case "send_file", "read_file":
+			insideArgs = fmt.Sprintf(`{"path": %q}`, insideFilePath)
+		case "list_directory":
+			insideArgs = fmt.Sprintf(`{"path": %q}`, insideSubDir)
+		}
+
+		result = callbacks.ExecuteTool(toolName, insideArgs)
+		// The result should NOT contain the containment error.
+		// It may contain other errors (e.g., "send_file 处理器不可用" because
+		// we don't have a full App with registry), but it should NOT be a
+		// path containment rejection.
+		if strings.Contains(result, "文件不在允许访问的目录中") {
+			t.Fatalf("ExecuteTool(%s) with path inside allowed dirs should NOT return containment error, got: %s (path=%s, allowedDirs=%v)",
+				toolName, result, insideFilePath, allowedDirs)
+		}
+
+		// --- Property C: .. traversal paths that resolve OUTSIDE are REJECTED ---
+		var traversalPath string
+		switch toolName {
+		case "send_file", "read_file":
+			traversalPath = filepath.Join(chosenDir, "..", "..", "outside", outsideFileName)
+		case "list_directory":
+			traversalPath = filepath.Join(chosenDir, "..", "..", "outside")
+		}
+
+		traversalArgs := fmt.Sprintf(`{"path": %q}`, traversalPath)
+		result = callbacks.ExecuteTool(toolName, traversalArgs)
+		if !strings.Contains(result, "[error]") {
+			t.Fatalf("ExecuteTool(%s) with .. traversal outside should return error, got: %s (path=%s)",
+				toolName, result, traversalPath)
+		}
+		// Should be either containment error or file-not-found (if path doesn't resolve)
+		if !strings.Contains(result, "文件不在允许访问的目录中") && !strings.Contains(result, "文件不存在") && !strings.Contains(result, "无法解析文件路径") {
+			t.Fatalf("ExecuteTool(%s) with traversal should return containment or not-found error, got: %s",
+				toolName, result)
+		}
+
+		// --- Property D: Empty path is REJECTED ---
+		emptyArgs := `{"path": ""}`
+		result = callbacks.ExecuteTool(toolName, emptyArgs)
+		if !strings.Contains(result, "[error]") {
+			t.Fatalf("ExecuteTool(%s) with empty path should return error, got: %s", toolName, result)
+		}
+		if !strings.Contains(result, "path 参数不能为空") {
+			t.Fatalf("ExecuteTool(%s) with empty path should return empty-path error, got: %s", toolName, result)
+		}
+	})
+}
+
+// TestProperty5_ExecutionLayerBlocksWithoutAllowedDirs verifies that when
+// VEAllowedDirectories is empty, send_file is blocked at the execution layer.
+//
+// **Validates: Requirements 4.1, 6.3**
+func TestProperty5_ExecutionLayerBlocksWithoutAllowedDirs(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Create a file that exists on disk
+		baseDir := createTempDirForRapid(t)
+		defer os.RemoveAll(baseDir)
+		fileName := rapid.StringMatching(`[a-z]{3,8}\.txt`).Draw(t, "fileName")
+		filePath := filepath.Join(baseDir, fileName)
+		os.WriteFile(filePath, []byte("content"), 0644)
+
+		// Build callbacks with EMPTY allowed dirs
+		callbacks := &veAgentCallbacks{
+			app: &App{
+				configCacheValid: true,
+				configCache:      corelib.AppConfig{VEAllowedDirectories: []string{}},
+			},
+		}
+
+		// send_file should be blocked (tool is in veBlockedTools and no allowedDirs to unblock)
+		args := fmt.Sprintf(`{"path": %q}`, filePath)
+		result := callbacks.ExecuteTool("send_file", args)
+		if !strings.Contains(result, "[error]") {
+			t.Fatalf("send_file should be blocked when allowedDirs is empty, got: %s", result)
+		}
+		if !strings.Contains(result, "在数字员工模式下不可用") {
+			t.Fatalf("send_file should return tool-blocked error, got: %s", result)
+		}
+	})
+}
+
+// TestProperty5_ExecutionLayerRejectsAllToolsConsistently verifies that the
+// execution layer consistently rejects paths outside allowed dirs for ALL
+// three VE file operations (send_file, read_file, list_directory).
+//
+// **Validates: Requirements 6.3, 6.4**
+func TestProperty5_ExecutionLayerRejectsAllToolsConsistently(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		baseDir := createTempDirForRapid(t)
+		defer os.RemoveAll(baseDir)
+
+		// Create allowed and outside directories
+		allowedDir := filepath.Join(baseDir, "allowed")
+		outsideDir := filepath.Join(baseDir, "outside")
+		os.MkdirAll(allowedDir, 0755)
+		os.MkdirAll(outsideDir, 0755)
+
+		// Create a file outside
+		outsideFile := filepath.Join(outsideDir, "secret.txt")
+		os.WriteFile(outsideFile, []byte("secret"), 0644)
+
+		allowedDirs := []string{allowedDir}
+
+		callbacks := &veAgentCallbacks{
+			app: &App{
+				configCacheValid: true,
+				configCache:      corelib.AppConfig{VEAllowedDirectories: allowedDirs},
+			},
+		}
+
+		// All three tools should reject paths outside allowed dirs
+		tools := []struct {
+			name string
+			args string
+		}{
+			{"send_file", fmt.Sprintf(`{"path": %q}`, outsideFile)},
+			{"read_file", fmt.Sprintf(`{"path": %q}`, outsideFile)},
+			{"list_directory", fmt.Sprintf(`{"path": %q}`, outsideDir)},
+		}
+
+		for _, tool := range tools {
+			result := callbacks.ExecuteTool(tool.name, tool.args)
+			if !strings.Contains(result, "文件不在允许访问的目录中") {
+				t.Fatalf("ExecuteTool(%s) should reject path outside allowed dirs, got: %s", tool.name, result)
+			}
+		}
+	})
+}
+
+
+// ---------------------------------------------------------------------------
+// Property-Based Test: System prompt capability declaration
+// Feature: ve-file-sharing-directories, Property 8: System prompt capability declaration
+//
+// **Validates: Requirements 4.5**
+//
+// For any non-empty list of allowed directories, the VE system prompt SHALL
+// contain the file-sending capability declaration and SHALL list each
+// configured directory path.
+// ---------------------------------------------------------------------------
+
+// genDirPathForPrompt generates a random absolute directory path string for prompt testing.
+func genDirPathForPrompt(t *rapid.T, label string) string {
+	driveLetters := []string{"C", "D", "E", "F", "G", "H"}
+	drive := driveLetters[rapid.IntRange(0, len(driveLetters)-1).Draw(t, label+"_drive")]
+
+	numSegments := rapid.IntRange(1, 5).Draw(t, label+"_segments")
+	path := drive + ":\\"
+	for i := 0; i < numSegments; i++ {
+		seg := rapid.StringMatching(`[A-Za-z0-9_\-]{1,25}`).Draw(t, fmt.Sprintf("%s_seg%d", label, i))
+		path += seg
+		if i < numSegments-1 {
+			path += "\\"
+		}
+	}
+	return path
+}
+
+// genNonEmptyDirListForPrompt generates a non-empty list of directory paths (1-10 entries).
+func genNonEmptyDirListForPrompt(t *rapid.T, label string) []string {
+	n := rapid.IntRange(1, 10).Draw(t, label+"_count")
+	dirs := make([]string, n)
+	for i := 0; i < n; i++ {
+		dirs[i] = genDirPathForPrompt(t, fmt.Sprintf("%s_%d", label, i))
+	}
+	return dirs
+}
+
+// TestProperty8_SystemPromptCapabilityDeclaration verifies that for any non-empty
+// list of allowed directories, the VE system prompt contains the file-sending
+// capability declaration and lists each configured directory path.
+func TestProperty8_SystemPromptCapabilityDeclaration(t *testing.T) {
+	// Pre-create a lightweight memory store in a temp dir to avoid slow
+	// initialization on each rapid iteration.
+	tmpDir := t.TempDir()
+	memStore, err := memory.NewStore(filepath.Join(tmpDir, "mem"))
+	if err != nil {
+		t.Fatalf("failed to create temp memory store: %v", err)
+	}
+	defer memStore.Stop()
+
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate random non-empty directory list
+		dirs := genNonEmptyDirListForPrompt(t, "dirs")
+
+		// Set up App with the generated directories in config (using cache to avoid disk I/O)
+		app := &App{
+			configCacheValid: true,
+			configCache:      corelib.AppConfig{VEAllowedDirectories: dirs},
+			memoryStore:      memStore,
+		}
+
+		// Create veAgentCallbacks with the configured app
+		callbacks := &veAgentCallbacks{
+			app:              app,
+			ctx:              context.Background(),
+			sessionID:        "test-session",
+			llmCfg:           corelib.MaclawLLMConfig{},
+			knowledgeChecked: true,  // skip knowledge store initialization
+			hasKnowledge:     false, // no knowledge base for this test
+		}
+
+		// Call BuildSystemPrompt
+		prompt := callbacks.BuildSystemPrompt("请发送文件给我", true)
+
+		// Property 1: Prompt MUST contain file-sending capability declaration
+		if !strings.Contains(prompt, "文件发送能力") {
+			t.Fatalf("system prompt must contain '文件发送能力' section header when dirs are non-empty.\ndirs=%v\nprompt=%s", dirs, prompt)
+		}
+
+		// Property 2: Prompt MUST contain send_file tool mention
+		if !strings.Contains(prompt, "send_file") {
+			t.Fatalf("system prompt must mention 'send_file' tool when dirs are non-empty.\ndirs=%v", dirs)
+		}
+
+		// Property 3: Prompt MUST list each configured directory path
+		for _, dir := range dirs {
+			if !strings.Contains(prompt, dir) {
+				t.Fatalf("system prompt must contain directory path %q.\ndirs=%v\nprompt=%s", dir, dirs, prompt)
+			}
+		}
+
+		// Property 4: Prompt MUST contain file size limit notice (50 MB)
+		if !strings.Contains(prompt, "50 MB") {
+			t.Fatalf("system prompt must contain '50 MB' size limit notice when dirs are non-empty.\ndirs=%v", dirs)
+		}
+
+		// Property 5: Prompt MUST contain sensitive file restriction notice
+		if !strings.Contains(prompt, "敏感文件") {
+			t.Fatalf("system prompt must contain sensitive file restriction notice when dirs are non-empty.\ndirs=%v", dirs)
+		}
+	})
+}
+
+// TestProperty8_SystemPromptCapabilityDeclaration_EmptyDirs verifies that when
+// the allowed directories list is empty, the system prompt does NOT contain
+// the file-sending capability declaration.
+func TestProperty8_SystemPromptCapabilityDeclaration_EmptyDirs(t *testing.T) {
+	// Pre-create a lightweight memory store in a temp dir to avoid slow
+	// initialization on each rapid iteration.
+	tmpDir := t.TempDir()
+	memStore, err := memory.NewStore(filepath.Join(tmpDir, "mem"))
+	if err != nil {
+		t.Fatalf("failed to create temp memory store: %v", err)
+	}
+	defer memStore.Stop()
+
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate empty directory list (randomly choose nil or empty slice)
+		var dirs []string
+		useNil := rapid.Bool().Draw(t, "useNil")
+		if !useNil {
+			dirs = []string{}
+		}
+
+		// Set up App with empty directories in config (using cache to avoid disk I/O)
+		app := &App{
+			configCacheValid: true,
+			configCache:      corelib.AppConfig{VEAllowedDirectories: dirs},
+			memoryStore:      memStore,
+		}
+
+		// Create veAgentCallbacks with the configured app
+		callbacks := &veAgentCallbacks{
+			app:              app,
+			ctx:              context.Background(),
+			sessionID:        "test-session",
+			llmCfg:           corelib.MaclawLLMConfig{},
+			knowledgeChecked: true,  // skip knowledge store initialization
+			hasKnowledge:     false, // no knowledge base for this test
+		}
+
+		// Call BuildSystemPrompt
+		prompt := callbacks.BuildSystemPrompt("请发送文件给我", true)
+
+		// Property: Prompt MUST NOT contain file-sending capability section
+		if strings.Contains(prompt, "文件发送能力") {
+			t.Fatalf("system prompt must NOT contain '文件发送能力' section when dirs are empty.\ndirs=%v\nprompt=%s", dirs, prompt)
+		}
+	})
 }

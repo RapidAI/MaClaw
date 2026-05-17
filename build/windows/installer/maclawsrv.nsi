@@ -118,7 +118,7 @@ Section
     DetailPrint "Registering ${SERVICE_NAME} Windows service"
     ExecWait 'sc.exe stop "${SERVICE_NAME}"'
     ExecWait 'sc.exe delete "${SERVICE_NAME}"'
-    ExecWait 'sc.exe create "${SERVICE_NAME}" binPath= "$\"$INSTDIR\${PRODUCT_EXECUTABLE}$\"" start= auto DisplayName= "${INFO_PRODUCTNAME}"'
+    ExecWait 'sc.exe create "${SERVICE_NAME}" binPath= "$INSTDIR\${PRODUCT_EXECUTABLE}" start= auto DisplayName= "${INFO_PRODUCTNAME}"'
     ExecWait 'sc.exe description "${SERVICE_NAME}" "${SERVICE_DESCRIPTION}"'
     ExecWait 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\maclawsrv_service_env.ps1" -ServiceName "${SERVICE_NAME}" -DataRoot "$APPDATA\${INFO_COMPANYNAME}\MaClawSrv"'
     ExecWait 'sc.exe start "${SERVICE_NAME}"'

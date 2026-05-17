@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +96,11 @@ type adminBootstrapInitializeRequest struct {
 type adminLoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+type adminChangePasswordRequest struct {
+	OldPassword string `json:"old_password"`
+	NewPassword string `json:"new_password"`
 }
 
 func (s *HTTPServer) handleAdminBootstrapStatus(w http.ResponseWriter, r *http.Request) {
@@ -249,6 +255,69 @@ func (s *HTTPServer) handleAdminAuthMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"auth_type": "admin_session", "admin": publicAdminUser(*user), "session": publicAdminSession(*session)})
 }
 
+func (s *HTTPServer) handleAdminAuthChangePassword(w http.ResponseWriter, r *http.Request) {
+	token := r.Header.Get("X-MaClaw-Admin-Secret")
+	session, user, err := getAdminSessionUser(s.svc.DataRoot(), token, time.Now().UTC())
+	if err != nil || session == nil || user == nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin session is required"})
+		return
+	}
+	var in adminChangePasswordRequest
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(in.OldPassword)) != nil {
+		_ = s.recordAdminAudit(r.Context(), "admin.password_change_failed", "admin_user", user.ID, map[string]string{"username": user.Username, "reason": "invalid_old_password", "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid old password"})
+		return
+	}
+	if err := validateAdminPassword(in.NewPassword); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if in.OldPassword == in.NewPassword {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "new password must be different"})
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+		return
+	}
+	users, err := loadAdminUsers(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	updated := false
+	now := time.Now().UTC()
+	for i := range users {
+		if users[i].ID == user.ID {
+			users[i].PasswordHash = string(hash)
+			users[i].UpdatedAt = now
+			*user = users[i]
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "admin user not found"})
+		return
+	}
+	if err := saveAdminUsers(s.svc.DataRoot(), users); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	passwordChanged := true
+	revoked, err := revokeAdminUserSessionsExcept(s.svc.DataRoot(), user.ID, session.ID, now)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.password_changed", "admin_user", user.ID, map[string]string{"username": user.Username, "revoked_sessions": strconv.Itoa(revoked), "password_changed": strconv.FormatBool(passwordChanged), "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "admin": publicAdminUser(*user), "revoked_sessions": revoked})
+}
+
 func (s *HTTPServer) adminSecretAuthorized(provided string) bool {
 	return s.adminSecret != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.adminSecret)) == 1
 }
@@ -379,6 +448,25 @@ func revokeAdminSession(dataRoot, token string, now time.Time) (*adminSessionRec
 	return nil, os.ErrNotExist
 }
 
+func revokeAdminUserSessionsExcept(dataRoot, userID, keepSessionID string, now time.Time) (int, error) {
+	sessions, err := loadAdminSessions(dataRoot)
+	if err != nil {
+		return 0, err
+	}
+	revoked := 0
+	for i := range sessions {
+		if sessions[i].UserID != userID || sessions[i].ID == keepSessionID || !sessions[i].RevokedAt.IsZero() || !sessions[i].ExpiresAt.After(now) {
+			continue
+		}
+		sessions[i].RevokedAt = now
+		revoked++
+	}
+	if revoked == 0 {
+		return 0, nil
+	}
+	return revoked, saveAdminSessions(dataRoot, sessions)
+}
+
 func newAdminSession(user adminUserRecord, remoteIP, userAgent string, now time.Time) (string, adminSessionRecord, error) {
 	token, err := randomAdminToken()
 	if err != nil {
@@ -470,10 +558,22 @@ func normalizeAdminUsername(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }
 
+func normalizeAdminRole(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "operator":
+		return "operator"
+	case "owner":
+		return "owner"
+	default:
+		return ""
+	}
+}
 func normalizeAdminLocale(v string) string {
-	switch strings.TrimSpace(v) {
-	case "en-US":
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(v), "_", "-")) {
+	case "en", "en-us":
 		return "en-US"
+	case "zh", "zh-cn", "zh-hans", "zh-hans-cn":
+		return "zh-CN"
 	default:
 		return "zh-CN"
 	}
@@ -527,4 +627,258 @@ func writeAdminRateLimitError(w http.ResponseWriter, retryAfter time.Duration) {
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many admin attempts", "retry_after_seconds": seconds})
+}
+
+type adminCreateUserRequest struct {
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	DisplayName string `json:"display_name,omitempty"`
+	Role        string `json:"role,omitempty"`
+	Locale      string `json:"locale,omitempty"`
+}
+type adminUpdateUserRequest struct {
+	Status        *string `json:"status,omitempty"`
+	DisplayName   *string `json:"display_name,omitempty"`
+	Locale        *string `json:"locale,omitempty"`
+	NewPassword   *string `json:"new_password,omitempty"`
+	ConfirmUnsafe bool    `json:"confirm_unsafe,omitempty"`
+}
+
+type adminSessionAdminView struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	Username  string    `json:"username"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	RevokedAt time.Time `json:"revoked_at,omitempty"`
+	RemoteIP  string    `json:"remote_ip,omitempty"`
+	UserAgent string    `json:"user_agent,omitempty"`
+	Active    bool      `json:"active"`
+}
+
+func (s *HTTPServer) handleAdminAuthCreateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	var in adminCreateUserRequest
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	username := normalizeAdminUsername(in.Username)
+	if err := validateAdminUsername(username); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateAdminPassword(in.Password); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	role := normalizeAdminRole(in.Role)
+	if role == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role must be owner or operator"})
+		return
+	}
+	users, err := loadAdminUsers(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for _, user := range users {
+		if user.Username == username {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "admin username already exists"})
+			return
+		}
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+		return
+	}
+	now := time.Now().UTC()
+	user := adminUserRecord{ID: newAdminID("admin_user"), Username: username, DisplayName: trimMax(in.DisplayName, 120), Role: role, Status: "active", Locale: normalizeAdminLocale(in.Locale), PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}
+	users = append(users, user)
+	if err := saveAdminUsers(s.svc.DataRoot(), users); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.user_created", "admin_user", user.ID, map[string]string{"username": user.Username, "role": user.Role, "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusCreated, map[string]any{"admin": publicAdminUser(user)})
+}
+func (s *HTTPServer) handleAdminAuthUsers(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	users, err := loadAdminUsers(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	items := make([]adminUserPublic, 0, len(users))
+	for _, user := range users {
+		items = append(items, publicAdminUser(user))
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Username < items[j].Username })
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *HTTPServer) handleAdminAuthUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	var in adminUpdateUserRequest
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	userID := r.PathValue("adminUserId")
+	users, err := loadAdminUsers(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	idx := -1
+	for i := range users {
+		if users[i].ID == userID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "admin user not found"})
+		return
+	}
+	oldStatus := users[idx].Status
+	if in.Status != nil {
+		status := strings.ToLower(strings.TrimSpace(*in.Status))
+		if status != "active" && status != "suspended" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be active or suspended"})
+			return
+		}
+		if users[idx].Role == "owner" && status != "active" && activeOwnerCount(users) <= 1 && !in.ConfirmUnsafe {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm_unsafe is required when suspending the last active owner"})
+			return
+		}
+		users[idx].Status = status
+	}
+	if in.DisplayName != nil {
+		users[idx].DisplayName = trimMax(*in.DisplayName, 120)
+	}
+	if in.Locale != nil {
+		users[idx].Locale = normalizeAdminLocale(*in.Locale)
+	}
+	passwordChanged := false
+	if in.NewPassword != nil {
+		if err := validateAdminPassword(*in.NewPassword); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(*in.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to hash password"})
+			return
+		}
+		users[idx].PasswordHash = string(hash)
+		passwordChanged = true
+	}
+	users[idx].UpdatedAt = time.Now().UTC()
+	if err := saveAdminUsers(s.svc.DataRoot(), users); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	revoked := 0
+	if (oldStatus == "active" && users[idx].Status != "active") || passwordChanged {
+		revoked, err = revokeAdminUserSessionsExcept(s.svc.DataRoot(), users[idx].ID, "", time.Now().UTC())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.user_updated", "admin_user", users[idx].ID, map[string]string{"username": users[idx].Username, "old_status": oldStatus, "new_status": users[idx].Status, "revoked_sessions": strconv.Itoa(revoked), "password_changed": strconv.FormatBool(passwordChanged), "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"admin": publicAdminUser(users[idx]), "revoked_sessions": revoked})
+}
+
+func (s *HTTPServer) handleAdminAuthSessions(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	sessions, err := loadAdminSessions(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	now := time.Now().UTC()
+	items := make([]adminSessionAdminView, 0, len(sessions))
+	for _, session := range sessions {
+		if userID != "" && session.UserID != userID {
+			continue
+		}
+		items = append(items, adminSessionAdminView{ID: session.ID, UserID: session.UserID, Username: session.Username, Role: session.Role, CreatedAt: session.CreatedAt, ExpiresAt: session.ExpiresAt, RevokedAt: session.RevokedAt, RemoteIP: session.RemoteIP, UserAgent: session.UserAgent, Active: session.RevokedAt.IsZero() && session.ExpiresAt.After(now)})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *HTTPServer) handleAdminAuthRevokeSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	confirm, err := parseOptionalBoolQuery(r, "confirm")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if confirm == nil || !*confirm {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm=true is required"})
+		return
+	}
+	session, err := revokeAdminSessionByID(s.svc.DataRoot(), r.PathValue("sessionId"), time.Now().UTC())
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "admin session not found"})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.session_revoked", "admin_session", session.ID, map[string]string{"username": session.Username, "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked", "session": publicAdminSession(*session)})
+}
+
+func (s *HTTPServer) requireAdminOwner(w http.ResponseWriter, r *http.Request) bool {
+	token := r.Header.Get("X-MaClaw-Admin-Secret")
+	if s.adminSecretAuthorized(token) {
+		return true
+	}
+	_, user, err := getAdminSessionUser(s.svc.DataRoot(), token, time.Now().UTC())
+	if err == nil && user != nil && user.Role == "owner" && user.Status == "active" {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin owner is required"})
+	return false
+}
+
+func activeOwnerCount(users []adminUserRecord) int {
+	count := 0
+	for _, user := range users {
+		if user.Role == "owner" && user.Status == "active" {
+			count++
+		}
+	}
+	return count
+}
+
+func revokeAdminSessionByID(dataRoot, sessionID string, now time.Time) (*adminSessionRecord, error) {
+	sessions, err := loadAdminSessions(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	for i := range sessions {
+		if sessions[i].ID == sessionID {
+			if sessions[i].RevokedAt.IsZero() {
+				sessions[i].RevokedAt = now
+				if err := saveAdminSessions(dataRoot, sessions); err != nil {
+					return nil, err
+				}
+			}
+			return &sessions[i], nil
+		}
+	}
+	return nil, os.ErrNotExist
 }

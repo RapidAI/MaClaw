@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
@@ -38,8 +39,13 @@ func (s *HTTPServer) handleAdminKnowledgeAccessSetCrossTenant(w http.ResponseWri
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_access_cross_tenant_updated", "knowledge_access", "cross_tenant", map[string]string{
+		"enabled":   strconv.FormatBool(cfg.Enabled),
+		"remote_ip": requestClientIP(r),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
 func (s *HTTPServer) handleAdminKnowledgeAccessGetUser(w http.ResponseWriter, r *http.Request) {
 	if !s.requireKnowledge(w) {
 		return
@@ -61,15 +67,25 @@ func (s *HTTPServer) handleAdminKnowledgeAccessSetUser(w http.ResponseWriter, r 
 	if !s.requireKnowledge(w) {
 		return
 	}
+	tenantID := r.PathValue("tenantId")
+	userID := r.PathValue("userId")
 	var cfg knowledgeAccessConfig
 	if err := readJSONBody(r, &cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := s.knowledgeMgr.Access().SetUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), &cfg); err != nil {
+	if err := s.knowledgeMgr.Access().SetUser(r.Context(), tenantID, userID, &cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_access_user_updated", "knowledge_access", tenantID+"/"+userID, map[string]string{
+		"tenant_id":    tenantID,
+		"user_id":      userID,
+		"enabled":      strconv.FormatBool(cfg.Enabled),
+		"scope_count":  strconv.Itoa(len(cfg.ReadScopes)),
+		"remote_ip":    requestClientIP(r),
+		"cross_tenant": strconv.FormatBool(knowledgeAccessConfigHasCrossTenantScope(tenantID, &cfg)),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -77,10 +93,17 @@ func (s *HTTPServer) handleAdminKnowledgeAccessDeleteUser(w http.ResponseWriter,
 	if !s.requireKnowledge(w) {
 		return
 	}
-	if err := s.knowledgeMgr.Access().DeleteUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId")); err != nil {
+	tenantID := r.PathValue("tenantId")
+	userID := r.PathValue("userId")
+	if err := s.knowledgeMgr.Access().DeleteUser(r.Context(), tenantID, userID); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_access_user_deleted", "knowledge_access", tenantID+"/"+userID, map[string]string{
+		"tenant_id": tenantID,
+		"user_id":   userID,
+		"remote_ip": requestClientIP(r),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -1,41 +1,41 @@
-﻿# MaClawSrv Admin Web 管理面设计
+# MaClawSrv Admin Web 绠＄悊闈㈣璁?
 
-## 1. 背景
+## 1. 鑳屾櫙
 
-`MaClawSrv` 已经具备面向用户实例的 REST 能力，包括 tenant、user、credential、instance、session、run、MCP、skill、knowledge 等资源管理。随着本地 bash、本地 MCP server、skill 执行、scheduler、sandbox、日志和备份能力增多，服务还需要一个只面向运维管理员的管理面。
+`MaClawSrv` 宸茬粡鍏峰闈㈠悜鐢ㄦ埛瀹炰緥鐨?REST 鑳藉姏锛屽寘鎷?tenant銆乽ser銆乧redential銆乮nstance銆乻ession銆乺un銆丮CP銆乻kill銆乲nowledge 绛夎祫婧愮鐞嗐€傞殢鐫€鏈湴 bash銆佹湰鍦?MCP server銆乻kill 鎵ц銆乻cheduler銆乻andbox銆佹棩蹇楀拰澶囦唤鑳藉姏澧炲锛屾湇鍔¤繕闇€瑕佷竴涓彧闈㈠悜杩愮淮绠＄悊鍛樼殑绠＄悊闈€?
 
-本文设计的 `Admin Web` 不是 Maclaw 用户工作台，也不是某个用户实例的配置页，而是 `maclawsrv` 进程自身的控制台。它用于安装部署、运行诊断、安全策略、全局能力开关、日志查看、备份恢复、sandbox 管理和服务级告警。
+鏈枃璁捐鐨?`Admin Web` 涓嶆槸 Maclaw 鐢ㄦ埛宸ヤ綔鍙帮紝涔熶笉鏄煇涓敤鎴峰疄渚嬬殑閰嶇疆椤碉紝鑰屾槸 `maclawsrv` 杩涚▼鑷韩鐨勬帶鍒跺彴銆傚畠鐢ㄤ簬瀹夎閮ㄧ讲銆佽繍琛岃瘖鏂€佸畨鍏ㄧ瓥鐣ャ€佸叏灞€鑳藉姏寮€鍏炽€佹棩蹇楁煡鐪嬨€佸浠芥仮澶嶃€乻andbox 绠＄悊鍜屾湇鍔＄骇鍛婅銆?
 
-## 2. 目标
+## 2. 鐩爣
 
-- 给管理员提供统一入口，管理 `MaClawSrv` 服务级配置。
-- 把用户实例配置和服务进程自身配置分离，避免高危运维能力暴露给普通 bearer token 用户。
-- 把 sandbox 的检测、安装建议、配置、启停验证和执行审计纳入 admin 能力。
-- 提供部署、升级、故障排查能力，包括错误日志、运行日志、审计事件、指标、ready 检查和 async job 状态。
-- 保持低侵入：优先复用已有 admin API、readiness、metrics、audit、snapshot、skill-source、knowledge admin 接口。
-- 支持无 Web UI 的自动化场景：Admin Web 所有能力都应有对应 `/api/v1/admin/...` JSON API。
+- 缁欑鐞嗗憳鎻愪緵缁熶竴鍏ュ彛锛岀鐞?`MaClawSrv` 鏈嶅姟绾ч厤缃€?
+- 鎶婄敤鎴峰疄渚嬮厤缃拰鏈嶅姟杩涚▼鑷韩閰嶇疆鍒嗙锛岄伩鍏嶉珮鍗辫繍缁磋兘鍔涙毚闇茬粰鏅€?bearer token 鐢ㄦ埛銆?
+- 鎶?sandbox 鐨勬娴嬨€佸畨瑁呭缓璁€侀厤缃€佸惎鍋滈獙璇佸拰鎵ц瀹¤绾冲叆 admin 鑳藉姏銆?
+- 鎻愪緵閮ㄧ讲銆佸崌绾с€佹晠闅滄帓鏌ヨ兘鍔涳紝鍖呮嫭閿欒鏃ュ織銆佽繍琛屾棩蹇椼€佸璁′簨浠躲€佹寚鏍囥€乺eady 妫€鏌ュ拰 async job 鐘舵€併€?
+- 淇濇寔浣庝镜鍏ワ細浼樺厛澶嶇敤宸叉湁 admin API銆乺eadiness銆乵etrics銆乤udit銆乻napshot銆乻kill-source銆乲nowledge admin 鎺ュ彛銆?
+- 鏀寔鏃?Web UI 鐨勮嚜鍔ㄥ寲鍦烘櫙锛欰dmin Web 鎵€鏈夎兘鍔涢兘搴旀湁瀵瑰簲 `/api/v1/admin/...` JSON API銆?
 
-## 3. 非目标
+## 3. 闈炵洰鏍?
 
-- 不把普通用户的 agent 聊天、session 浏览、run 交互搬进 admin web。
-- 不让 admin web 直接保存用户 LLM API Key，除非进入明确的 tenant/user provisioning 流程。
-- 不默认自动执行 `sudo apt install` 等系统级安装动作。安装可以被显式触发，但默认应以检测和建议为主。
-- 不要求 sandbox 支持 Windows/macOS。第一阶段 sandbox 管理能力可以限定 Linux。
-- 不把传统容器运行时作为默认方案；Docker/Podman 只作为未来扩展后端。
+- 涓嶆妸鏅€氱敤鎴风殑 agent 鑱婂ぉ銆乻ession 娴忚銆乺un 浜や簰鎼繘 admin web銆?
+- 涓嶈 admin web 鐩存帴淇濆瓨鐢ㄦ埛 LLM API Key锛岄櫎闈炶繘鍏ユ槑纭殑 tenant/user provisioning 娴佺▼銆?
+- 涓嶉粯璁よ嚜鍔ㄦ墽琛?`sudo apt install` 绛夌郴缁熺骇瀹夎鍔ㄤ綔銆傚畨瑁呭彲浠ヨ鏄惧紡瑙﹀彂锛屼絾榛樿搴斾互妫€娴嬪拰寤鸿涓轰富銆?
+- 涓嶈姹?sandbox 鏀寔 Windows/macOS銆傜涓€闃舵 sandbox 绠＄悊鑳藉姏鍙互闄愬畾 Linux銆?
+- 涓嶆妸浼犵粺瀹瑰櫒杩愯鏃朵綔涓洪粯璁ゆ柟妗堬紱Docker/Podman 鍙綔涓烘湭鏉ユ墿灞曞悗绔€?
 
-## 4. 权限模型
+## 4. 鏉冮檺妯″瀷
 
-Admin Web 需要支持第一次登录初始化，模式参考 `hub` / `hubcenter` 的首启 setup 流程。安全防护沿用现有 MaClawSrv 安全模型：admin API 继续使用 `X-MaClaw-Admin-Secret`、启动期强制校验 `MACLAW_ADMIN_SECRET` / `MACLAW_TOKEN_SECRET`、auth limiter、loopback/TLS 传输约束、敏感字段脱敏和 audit 记录。Admin UI 本身只是 Admin API client，不引入绕过现有模型的新权限通道。
+Admin Web 闇€瑕佹敮鎸佺涓€娆＄櫥褰曞垵濮嬪寲锛屾ā寮忓弬鑰?`hub` / `hubcenter` 鐨勯鍚?setup 娴佺▼銆傚畨鍏ㄩ槻鎶ゆ部鐢ㄧ幇鏈?MaClawSrv 瀹夊叏妯″瀷锛歛dmin API 缁х画浣跨敤 `X-MaClaw-Admin-Secret`銆佸惎鍔ㄦ湡寮哄埗鏍￠獙 `MACLAW_ADMIN_SECRET` / `MACLAW_TOKEN_SECRET`銆乤uth limiter銆乴oopback/TLS 浼犺緭绾︽潫銆佹晱鎰熷瓧娈佃劚鏁忓拰 audit 璁板綍銆侫dmin UI 鏈韩鍙槸 Admin API client锛屼笉寮曞叆缁曡繃鐜版湁妯″瀷鐨勬柊鏉冮檺閫氶亾銆?
 
-### 4.1 Bootstrap 状态
+### 4.1 Bootstrap 鐘舵€?
 
-服务启动后先判断是否已经初始化 admin 身份：
+鏈嶅姟鍚姩鍚庡厛鍒ゆ柇鏄惁宸茬粡鍒濆鍖?admin 韬唤锛?
 
 ```text
-initialized = 存在 admin user/session 配置，且至少一个 owner 账号可用
+initialized = 瀛樺湪 admin user/session 閰嶇疆锛屼笖鑷冲皯涓€涓?owner 璐﹀彿鍙敤
 ```
 
-建议新增 bootstrap state：
+寤鸿鏂板 bootstrap state锛?
 
 ```text
 MACLAW_DATA_ROOT/
@@ -45,18 +45,18 @@ MACLAW_DATA_ROOT/
     admin_sessions.json
 ```
 
-`admin_bootstrap.json` 只保存初始化状态、时间、初始化版本、setup token hash，不保存明文密码或明文 token。
+`admin_bootstrap.json` 鍙繚瀛樺垵濮嬪寲鐘舵€併€佹椂闂淬€佸垵濮嬪寲鐗堟湰銆乻etup token hash锛屼笉淇濆瓨鏄庢枃瀵嗙爜鎴栨槑鏂?token銆?
 
-### 4.2 首次初始化入口
+### 4.2 棣栨鍒濆鍖栧叆鍙?
 
-未初始化时：
+鏈垵濮嬪寲鏃讹細
 
-- Admin Web 只开放 setup 页面、health/livez/readyz、bootstrap status 和 bootstrap initialize API。
-- 所有普通 `/api/v1/admin/...` 写能力返回 `423 Locked` 或 `403 setup_required`。
-- UI 显示“初始化 MaClawSrv Admin”，要求创建第一个 owner 账号。
-- 初始化完成后立即禁用 bootstrap initialize API。
+- Admin Web 鍙紑鏀?setup 椤甸潰銆乭ealth/livez/readyz銆乥ootstrap status 鍜?bootstrap initialize API銆?
+- 鎵€鏈夋櫘閫?`/api/v1/admin/...` 鍐欒兘鍔涜繑鍥?`423 Locked` 鎴?`403 setup_required`銆?
+- UI 鏄剧ず鈥滃垵濮嬪寲 MaClawSrv Admin鈥濓紝瑕佹眰鍒涘缓绗竴涓?owner 璐﹀彿銆?
+- 鍒濆鍖栧畬鎴愬悗绔嬪嵆绂佺敤 bootstrap initialize API銆?
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/bootstrap/status
@@ -67,7 +67,7 @@ GET  /api/v1/admin/auth/me
 POST /api/v1/admin/auth/change-password
 ```
 
-`GET /api/v1/admin/bootstrap/status` 在未登录时也可访问，但只能返回非敏感状态：
+`GET /api/v1/admin/bootstrap/status` 鍦ㄦ湭鐧诲綍鏃朵篃鍙闂紝浣嗗彧鑳借繑鍥為潪鏁忔劅鐘舵€侊細
 
 ```json
 {
@@ -81,7 +81,7 @@ POST /api/v1/admin/auth/change-password
 }
 ```
 
-`POST /api/v1/admin/bootstrap/initialize`：
+`POST /api/v1/admin/bootstrap/initialize`锛?
 
 ```json
 {
@@ -100,7 +100,7 @@ POST /api/v1/admin/auth/change-password
 }
 ```
 
-响应：
+鍝嶅簲锛?
 
 ```json
 {
@@ -115,79 +115,68 @@ POST /api/v1/admin/auth/change-password
 
 ### 4.3 Setup Token
 
-为了避免未初始化窗口被远程抢占，bootstrap initialize 必须要求一次性 setup token。推荐来源优先级：
+涓轰簡閬垮厤鏈垵濮嬪寲绐楀彛琚繙绋嬫姠鍗狅紝bootstrap initialize 蹇呴』瑕佹眰涓€娆℃€?setup token銆傛帹鑽愭潵婧愪紭鍏堢骇锛?
 
 ```text
-MACLAW_ADMIN_SETUP_TOKEN -> 首次启动自动生成并打印到 console/log -> installer 写入本机 only-readable 文件
+MACLAW_ADMIN_SETUP_TOKEN -> 棣栨鍚姩鑷姩鐢熸垚骞舵墦鍗板埌 console/log -> installer 鍐欏叆鏈満 only-readable 鏂囦欢
 ```
 
-自动生成时：
+鑷姩鐢熸垚鏃讹細
 
-- token 只在 loopback 监听时允许使用。
-- token 明文只打印一次。
-- 文件权限必须 owner-only。
-- 初始化成功后删除 token 文件并清空 bootstrap pending 状态。
-- 如果服务监听非 loopback 且未启用 TLS，禁止通过 Web 完成首次初始化。
+- token 鍙湪 loopback 鐩戝惉鏃跺厑璁镐娇鐢ㄣ€?
+- token 鏄庢枃鍙墦鍗颁竴娆°€?
+- 鏂囦欢鏉冮檺蹇呴』 owner-only銆?
+- 鍒濆鍖栨垚鍔熷悗鍒犻櫎 token 鏂囦欢骞舵竻绌?bootstrap pending 鐘舵€併€?
+- 濡傛灉鏈嶅姟鐩戝惉闈?loopback 涓旀湭鍚敤 TLS锛岀姝㈤€氳繃 Web 瀹屾垚棣栨鍒濆鍖栥€?
 
-建议 token 文件：
+寤鸿 token 鏂囦欢锛?
 
 ```text
 MACLAW_DATA_ROOT/state/admin_setup_token
 ```
 
-### 4.4 Admin API 安全模型
+### 4.4 Admin API 瀹夊叏妯″瀷
 
-Admin UI 通过现有 Admin API 完成所有操作。第一阶段不新增独立浏览器权限模型，不要求替换 `X-MaClaw-Admin-Secret`。如果需要登录页体验，可以由 UI 收集 admin secret 并换取短期 admin UI session，但该 session 仍应由后端映射到现有 admin 权限模型，不扩大权限范围。
-
-必须保持：
-
-- `MACLAW_ADMIN_SECRET` 仍是 admin 控制面的根 secret，启动时必须强校验。
-- `MACLAW_TOKEN_SECRET` 仍用于用户 bearer token 签发和校验。
-- Admin API 继续接受 `X-MaClaw-Admin-Secret`，用于 CLI、安装器、自动化脚本和 Admin UI 后端调用。
-- 登录失败、admin secret 错误、bootstrap token 错误都进入现有 auth limiter。
-- 远程访问继续遵守 TLS/loopback 规则：非 loopback 明文 HTTP 默认拒绝。
-- 所有高危 admin 写操作必须写 audit，并记录 actor、source IP、request id、reason、before/after 摘要。
-- Admin UI 不直接读写文件、不直接执行命令、不绕过 `/api/v1/admin/...`。
-
-可选 Admin UI session：
-
+Admin UI 閫氳繃鐜版湁 Admin API 瀹屾垚鎵€鏈夋搷浣溿€傜涓€闃舵涓嶆柊澧炵嫭绔嬫祻瑙堝櫒鏉冮檺妯″瀷锛屼笉瑕佹眰鏇挎崲 `X-MaClaw-Admin-Secret`銆傚鏋滈渶瑕佺櫥褰曢〉浣撻獙锛屽彲浠ョ敱 UI 鏀堕泦 admin secret 骞舵崲鍙栫煭鏈?admin UI session锛屼絾璇?session 浠嶅簲鐢卞悗绔槧灏勫埌鐜版湁 admin 鏉冮檺妯″瀷锛屼笉鎵╁ぇ鏉冮檺鑼冨洿銆?
+蹇呴』淇濇寔锛?
+- `MACLAW_ADMIN_SECRET` 浠嶆槸 admin 鎺у埗闈㈢殑鏍?secret锛屽惎鍔ㄦ椂蹇呴』寮烘牎楠屻€?- `MACLAW_TOKEN_SECRET` 浠嶇敤浜庣敤鎴?bearer token 绛惧彂鍜屾牎楠屻€?- Admin API 缁х画鎺ュ彈 `X-MaClaw-Admin-Secret`锛岀敤浜?CLI銆佸畨瑁呭櫒銆佽嚜鍔ㄥ寲鑴氭湰鍜?Admin UI 鍚庣璋冪敤銆?- 鐧诲綍澶辫触銆乤dmin secret 閿欒銆乥ootstrap token 閿欒閮借繘鍏ョ幇鏈?auth limiter銆?- 杩滅▼璁块棶缁х画閬靛畧 TLS/loopback 瑙勫垯锛氶潪 loopback 鏄庢枃 HTTP 榛樿鎷掔粷銆?- 鎵€鏈夐珮鍗?admin 鍐欐搷浣滃繀椤诲啓 audit锛屽苟璁板綍 actor銆乻ource IP銆乺equest id銆乺eason銆乥efore/after 鎽樿銆?- Admin UI 涓嶇洿鎺ヨ鍐欐枃浠躲€佷笉鐩存帴鎵ц鍛戒护銆佷笉缁曡繃 `/api/v1/admin/...`銆?
+鍙€?Admin UI session锛?
 ```text
 POST /api/v1/admin/auth/login
 POST /api/v1/admin/auth/logout
 GET  /api/v1/admin/auth/me
 ```
 
-该 session 只是一层 UI 便利封装，cookie 必须使用 `HttpOnly`、`SameSite=Lax`，TLS 下启用 `Secure`。API client 仍可直接使用 `X-MaClaw-Admin-Secret`。
+璇?session 鍙槸涓€灞?UI 渚垮埄灏佽锛宑ookie 蹇呴』浣跨敤 `HttpOnly`銆乣SameSite=Lax`锛孴LS 涓嬪惎鐢?`Secure`銆侫PI client 浠嶅彲鐩存帴浣跨敤 `X-MaClaw-Admin-Secret`銆?
+### 4.5 鏉冮檺灞傜骇
 
-### 4.5 权限层级
+寤鸿鏉冮檺灞傜骇锛?
 
-建议权限层级：
+- `viewer`锛氬彧璇绘煡鐪嬬姸鎬併€佹棩蹇椼€侀厤缃€佸憡璀︺€乻andbox 妫€娴嬬粨鏋溿€?
+- `operator`锛氬彲鎵ц readiness refresh銆乴og rotate銆乻andbox smoke test銆丮CP stop/start銆乻napshot create/prune銆?
+- `admin`锛氬彲淇敼鏈嶅姟绾ч厤缃€乻andbox 绛栫暐銆佸叏灞€ skill source銆乻cheduler銆乀LS銆乴ocal bash 绛栫暐銆?
+- `owner`锛氬彲杞崲 admin secret銆佹仮澶?snapshot銆佹墽琛屽畨瑁呭懡浠ゃ€佷慨鏀瑰嵄闄╁紑鍏炽€佺鐞?admin 鐢ㄦ埛銆?
 
-- `viewer`：只读查看状态、日志、配置、告警、sandbox 检测结果。
-- `operator`：可执行 readiness refresh、log rotate、sandbox smoke test、MCP stop/start、snapshot create/prune。
-- `admin`：可修改服务级配置、sandbox 策略、全局 skill source、scheduler、TLS、local bash 策略。
-- `owner`：可轮换 admin secret、恢复 snapshot、执行安装命令、修改危险开关、管理 admin 用户。
+绗竴闃舵濡傛灉浠嶄繚鐣?`adminSecret`锛孉PI 璁捐涔熷簲棰勭暀 `required_role` 瀛楁锛屼究浜庡悗缁紨杩涖€?
 
-第一阶段如果仍保留 `adminSecret`，API 设计也应预留 `required_role` 字段，便于后续演进。
+### 4.6 棣栨璁剧疆鍚戝
 
-### 4.6 首次设置向导
+棣栨 owner 鍒涘缓鍚庤繘鍏?setup wizard锛?
 
-首次 owner 创建后进入 setup wizard：
+1. 妫€鏌?data root銆乴og root銆乻napshot root 鏉冮檺銆?
+2. 璁剧疆鏈嶅姟鍚嶇О銆乸ublic base URL銆乀LS/insecure HTTP 绛栫暐銆?
+3. 閰嶇疆 sandbox锛氭墽琛?detect锛岄€夋嫨 `auto|landlock|bwrap|nsjail|none`锛岀敓鎴?install plan銆?
+4. 閰嶇疆 local execution policy锛歭ocal bash銆乴ocal MCP銆乻kill step 鏄惁鍏佽锛屼互鍙?strict fallback銆?
+5. 閰嶇疆 snapshot retention 鍜?async job retention銆?
+6. 灞曠ず security posture锛岃姹傜‘璁ら珮椋庨櫓椤广€?
 
-1. 检查 data root、log root、snapshot root 权限。
-2. 设置服务名称、public base URL、TLS/insecure HTTP 策略。
-3. 配置 sandbox：执行 detect，选择 `auto|landlock|bwrap|nsjail|none`，生成 install plan。
-4. 配置 local execution policy：local bash、local MCP、skill step 是否允许，以及 strict fallback。
-5. 配置 snapshot retention 和 async job retention。
-6. 展示 security posture，要求确认高风险项。
+wizard 鐨勬瘡涓€姝ラ兘搴斿彲璺宠繃锛屼絾璺宠繃浼氬湪 Overview 鍜?Security 涓繚鐣?warning銆?
 
-wizard 的每一步都应可跳过，但跳过会在 Overview 和 Security 中保留 warning。
+## 5. 閰嶇疆杈圭晫
 
-## 5. 配置边界
+### 5.1 鐢ㄦ埛绾ч厤缃?
 
-### 5.1 用户级配置
-
-用户级配置继续通过现有接口管理：
+鐢ㄦ埛绾ч厤缃户缁€氳繃鐜版湁鎺ュ彛绠＄悊锛?
 
 - `GET /api/v1/config/schema`
 - `GET /api/v1/config`
@@ -195,11 +184,11 @@ wizard 的每一步都应可跳过，但跳过会在 Overview 和 Security 中�
 - `POST /api/v1/config/validate`
 - `POST /api/v1/config/test`
 
-这些配置属于 tenant/user，例如 LLM provider、SSH host label、MCP server、skill 和用户工作流偏好。
+杩欎簺閰嶇疆灞炰簬 tenant/user锛屼緥濡?LLM provider銆丼SH host label銆丮CP server銆乻kill 鍜岀敤鎴峰伐浣滄祦鍋忓ソ銆?
 
-### 5.2 服务级配置
+### 5.2 鏈嶅姟绾ч厤缃?
 
-服务级配置属于 `maclawsrv` 进程，不绑定单个用户。建议新增 `service_config.json`，存放在：
+鏈嶅姟绾ч厤缃睘浜?`maclawsrv` 杩涚▼锛屼笉缁戝畾鍗曚釜鐢ㄦ埛銆傚缓璁柊澧?`service_config.json`锛屽瓨鏀惧湪锛?
 
 ```text
 MACLAW_DATA_ROOT/
@@ -207,66 +196,71 @@ MACLAW_DATA_ROOT/
     service_config.json
 ```
 
-环境变量继续作为启动期 override。推荐规则：
+鐜鍙橀噺缁х画浣滀负鍚姩鏈?override銆傛帹鑽愯鍒欙細
 
 ```text
 effective = defaults < service_config.json < environment overrides
 ```
 
-对必须启动前生效的配置，例如 listen addr、TLS 证书、admin/token secret，Admin Web 可以展示和校验，但修改后标记为 `restart_required=true`。
+瀵瑰繀椤诲惎鍔ㄥ墠鐢熸晥鐨勯厤缃紝渚嬪 listen addr銆乀LS 璇佷功銆乤dmin/token secret锛孉dmin Web 鍙互灞曠ず鍜屾牎楠岋紝浣嗕慨鏀瑰悗鏍囪涓?`restart_required=true`銆?
 
-## 6. Admin Web 信息架构
+## 6. Admin Web 淇℃伅鏋舵瀯
 
 ### 6.1 Internationalization
 
-Admin Web 需要支持中文和英文双语言，并允许管理员随时切换。语言切换是 Admin Web 的基础能力，不应影响 API 字段名和存储结构。
+Admin Web 闇€瑕佹敮鎸佷腑鏂囧拰鑻辨枃鍙岃瑷€锛屽苟鍏佽绠＄悊鍛橀殢鏃跺垏鎹€傝瑷€鍒囨崲鏄?Admin Web 鐨勫熀纭€鑳藉姏锛屼笉搴斿奖鍝?API 瀛楁鍚嶅拰瀛樺偍缁撴瀯銆?
 
-#### 6.1.1 语言范围
+#### 6.1.1 璇█鑼冨洿
 
-第一阶段支持：
+绗竴闃舵鏀寔锛?
 
 ```text
 zh-CN | en-US
 ```
 
-UI 中所有可见文本都必须走 i18n key，包括：
+UI 涓墍鏈夊彲瑙佹枃鏈兘蹇呴』璧?i18n key锛屽寘鎷細
 
-- 导航、页面标题、按钮、表单 label、placeholder。
-- 错误提示、确认弹窗、Danger Zone 警告。
-- sandbox backend 状态说明、install plan 提示、smoke test 结果文案。
-- logs、security posture、readiness、delete-check、retire-plan 的用户可读说明。
-- setup wizard 的步骤标题和帮助说明。
+- 瀵艰埅銆侀〉闈㈡爣棰樸€佹寜閽€佽〃鍗?label銆乸laceholder銆?
+- 閿欒鎻愮ず銆佺‘璁ゅ脊绐椼€丏anger Zone 璀﹀憡銆?
+- sandbox backend 鐘舵€佽鏄庛€乮nstall plan 鎻愮ず銆乻moke test 缁撴灉鏂囨銆?
+- logs銆乻ecurity posture銆乺eadiness銆乨elete-check銆乺etire-plan 鐨勭敤鎴峰彲璇昏鏄庛€?
+- setup wizard 鐨勬楠ゆ爣棰樺拰甯姪璇存槑銆?
 
-API 返回的机器字段保持英文 snake_case，不做本地化；面向 UI 展示的 `message`、`title`、`suggested_action` 可以支持本地化。
+API 杩斿洖鐨勬満鍣ㄥ瓧娈典繚鎸佽嫳鏂?snake_case锛屼笉鍋氭湰鍦板寲锛涢潰鍚?UI 灞曠ず鐨?`message`銆乣title`銆乣suggested_action` 鍙互鏀寔鏈湴鍖栥€?
 
-#### 6.1.2 切换和持久化
+#### 6.1.2 鍒囨崲鍜屾寔涔呭寲
 
-语言优先级：
+璇█浼樺厛绾э細
 
 ```text
-用户手动选择 -> admin user preference -> cookie/localStorage -> Accept-Language -> service default -> zh-CN
+鐢ㄦ埛鎵嬪姩閫夋嫨 -> admin user preference -> cookie/localStorage -> Accept-Language -> service default -> zh-CN
 ```
 
-建议配置字段：
+寤鸿閰嶇疆瀛楁锛?
 
 ```json
 {
   "admin_web": {
     "default_locale": "zh-CN",
-    "enabled_locales": ["zh-CN", "en-US"]
+    "enabled_locales": ["zh-CN", "en-US"],
+    "locales": [
+      {"locale": "zh-CN", "label": "简体中文"},
+      {"locale": "en-US", "label": "English"}
+    ]
   }
 }
 ```
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/i18n/locales
 GET  /api/v1/admin/i18n/messages?locale=zh-CN
+# locale 接受 zh-CN/zh_CN/zh/zh-Hans/en-US/en_US/en 等别名；不支持的 locale 返回 400 和 enabled_locales。
 PUT  /api/v1/admin/auth/preferences
 ```
 
-`PUT /api/v1/admin/auth/preferences` 示例：
+`PUT /api/v1/admin/auth/preferences` 绀轰緥锛?
 
 ```json
 {
@@ -275,11 +269,11 @@ PUT  /api/v1/admin/auth/preferences
 }
 ```
 
-未登录的 bootstrap/setup 页面也必须允许语言切换，此时语言选择保存在 cookie/localStorage，初始化 owner 后可以写入 admin user preference。
+鏈櫥褰曠殑 bootstrap/setup 椤甸潰涔熷繀椤诲厑璁歌瑷€鍒囨崲锛屾鏃惰瑷€閫夋嫨淇濆瓨鍦?cookie/localStorage锛屽垵濮嬪寲 owner 鍚庡彲浠ュ啓鍏?admin user preference銆?
 
-#### 6.1.3 文案组织
+#### 6.1.3 鏂囨缁勭粐
 
-前端建议使用 namespace 管理文案：
+鍓嶇寤鸿浣跨敤 namespace 绠＄悊鏂囨锛?
 
 ```text
 common
@@ -298,7 +292,7 @@ diagnostics
 errors
 ```
 
-示例：
+绀轰緥锛?
 
 ```json
 {
@@ -308,19 +302,19 @@ errors
 }
 ```
 
-中文：
+涓枃锛?
 
 ```json
 {
-  "sandbox.switch.title": "切换沙箱模式",
-  "sandbox.switch.none_warning": "新的本地执行将不再受沙箱保护。",
-  "tenants.delete.confirmation": "请输入 DELETE {id} 确认永久删除。"
+  "sandbox.switch.title": "鍒囨崲娌欑妯″紡",
+  "sandbox.switch.none_warning": "鏂扮殑鏈湴鎵ц灏嗕笉鍐嶅彈娌欑淇濇姢銆?,
+  "tenants.delete.confirmation": "璇疯緭鍏?DELETE {id} 纭姘镐箙鍒犻櫎銆?
 }
 ```
 
-#### 6.1.4 后端本地化
+#### 6.1.4 鍚庣鏈湴鍖?
 
-后端错误响应建议同时返回稳定错误码和默认英文 message：
+鍚庣閿欒鍝嶅簲寤鸿鍚屾椂杩斿洖绋冲畾閿欒鐮佸拰榛樿鑻辨枃 message锛?
 
 ```json
 {
@@ -331,30 +325,30 @@ errors
 }
 ```
 
-前端优先根据 `message_key` 渲染本地化文案；没有对应 key 时回退到 `error`。
+鍓嶇浼樺厛鏍规嵁 `message_key` 娓叉煋鏈湴鍖栨枃妗堬紱娌℃湁瀵瑰簲 key 鏃跺洖閫€鍒?`error`銆?
 
-对于 audit event、log event、sandbox event，存储层保留稳定 action/code，例如 `sandbox.backend.switched`；UI 再根据 action/code 本地化显示。
+瀵逛簬 audit event銆乴og event銆乻andbox event锛屽瓨鍌ㄥ眰淇濈暀绋冲畾 action/code锛屼緥濡?`sandbox.backend.switched`锛沀I 鍐嶆牴鎹?action/code 鏈湴鍖栨樉绀恒€?
 
-#### 6.1.5 测试要求
+#### 6.1.5 娴嬭瘯瑕佹眰
 
-- 首启 setup 页面在未登录状态可以切换中英文。
-- 登录后语言偏好跨 session 保留。
-- Danger Zone、删除确认、sandbox `none` 警告必须有中英文文案。
-- 页面布局要验证中英文长度差异，避免按钮、表格列、弹窗文字溢出。
+- 棣栧惎 setup 椤甸潰鍦ㄦ湭鐧诲綍鐘舵€佸彲浠ュ垏鎹腑鑻辨枃銆?
+- 鐧诲綍鍚庤瑷€鍋忓ソ璺?session 淇濈暀銆?
+- Danger Zone銆佸垹闄ょ‘璁ゃ€乻andbox `none` 璀﹀憡蹇呴』鏈変腑鑻辨枃鏂囨銆?
+- 椤甸潰甯冨眬瑕侀獙璇佷腑鑻辨枃闀垮害宸紓锛岄伩鍏嶆寜閽€佽〃鏍煎垪銆佸脊绐楁枃瀛楁孩鍑恒€?
 
 ### 6.2 Overview
 
-首页展示服务总览：
+棣栭〉灞曠ず鏈嶅姟鎬昏锛?
 
-- service version、build commit、启动时间、进程 PID、运行用户。
-- data root、state path、log path、snapshot path。
-- readiness 状态。
-- sandbox 当前模式和健康状态。
-- tenant/user/instance/session/run 计数。
-- 最近错误日志、最近高危 audit、最近 failed run。
-- scheduler 状态。
+- service version銆乥uild commit銆佸惎鍔ㄦ椂闂淬€佽繘绋?PID銆佽繍琛岀敤鎴枫€?
+- data root銆乻tate path銆乴og path銆乻napshot path銆?
+- readiness 鐘舵€併€?
+- sandbox 褰撳墠妯″紡鍜屽仴搴风姸鎬併€?
+- tenant/user/instance/session/run 璁℃暟銆?
+- 鏈€杩戦敊璇棩蹇椼€佹渶杩戦珮鍗?audit銆佹渶杩?failed run銆?
+- scheduler 鐘舵€併€?
 
-复用现有接口：
+澶嶇敤鐜版湁鎺ュ彛锛?
 
 - `GET /health`
 - `GET /livez`
@@ -368,18 +362,18 @@ errors
 
 ### 6.3 Service Config
 
-管理 `MaClawSrv` 进程级设置：
+绠＄悊 `MaClawSrv` 杩涚▼绾ц缃細
 
-- HTTP listen addr、TLS 状态、insecure HTTP 策略。
-- data root、snapshot retention、async job retention。
-- local bash 总开关和 scoped tenant/user。
-- direct SSH 总开关和 file transfer 总开关。
-- scheduler 开关、并发、超时、job 保留。
-- web search、knowledge、skill source 全局策略。
-- debug flags，例如 tool call debug、trace retention。
-- secret 状态展示，例如已配置、长度合规、最后轮换时间，但不显示明文。
+- HTTP listen addr銆乀LS 鐘舵€併€乮nsecure HTTP 绛栫暐銆?
+- data root銆乻napshot retention銆乤sync job retention銆?
+- local bash 鎬诲紑鍏冲拰 scoped tenant/user銆?
+- direct SSH 鎬诲紑鍏冲拰 file transfer 鎬诲紑鍏炽€?
+- scheduler 寮€鍏炽€佸苟鍙戙€佽秴鏃躲€乯ob 淇濈暀銆?
+- web search銆乲nowledge銆乻kill source 鍏ㄥ眬绛栫暐銆?
+- debug flags锛屼緥濡?tool call debug銆乼race retention銆?
+- secret 鐘舵€佸睍绀猴紝渚嬪宸查厤缃€侀暱搴﹀悎瑙勩€佹渶鍚庤疆鎹㈡椂闂达紝浣嗕笉鏄剧ず鏄庢枃銆?
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/service-config/schema
@@ -398,7 +392,7 @@ GET  /api/v1/admin/tenants/{tenantId}/users/{userId}/retire-plan
 GET  /api/v1/admin/service-config/effective
 ```
 
-响应中每个字段建议带上：
+鍝嶅簲涓瘡涓瓧娈靛缓璁甫涓婏細
 
 ```json
 {
@@ -412,29 +406,29 @@ GET  /api/v1/admin/service-config/effective
 
 ### 6.4 Sandbox
 
-Sandbox 是 Admin Web 的一等能力，用于管理 `bash`、本地 MCP server、skill step 等本地执行入口。
+Sandbox 鏄?Admin Web 鐨勪竴绛夎兘鍔涳紝鐢ㄤ簬绠＄悊 `bash`銆佹湰鍦?MCP server銆乻kill step 绛夋湰鍦版墽琛屽叆鍙ｃ€?
 
-#### 6.4.1 后端模型
+#### 6.4.1 鍚庣妯″瀷
 
-推荐支持：
+鎺ㄨ崘鏀寔锛?
 
-- `none`：不启用 sandbox。
-- `auto`：自动检测并选择可用后端。
-- `landlock`：使用 `sandlock`、`landrun`、`rstrict`、`sandboxec` 等 Landlock wrapper。
-- `bwrap`：使用 bubblewrap 做用户级 namespace sandbox。
-- `nsjail`：高隔离模式，适合高风险执行。
+- `none`锛氫笉鍚敤 sandbox銆?
+- `auto`锛氳嚜鍔ㄦ娴嬪苟閫夋嫨鍙敤鍚庣銆?
+- `landlock`锛氫娇鐢?`sandlock`銆乣landrun`銆乣rstrict`銆乣sandboxec` 绛?Landlock wrapper銆?
+- `bwrap`锛氫娇鐢?bubblewrap 鍋氱敤鎴风骇 namespace sandbox銆?
+- `nsjail`锛氶珮闅旂妯″紡锛岄€傚悎楂橀闄╂墽琛屻€?
 
-推荐默认优先级：
+鎺ㄨ崘榛樿浼樺厛绾э細
 
 ```text
 landlock wrapper -> bwrap -> nsjail -> none
 ```
 
-如果目标更偏“轻容器视图”，可把 `bwrap` 放在 `landlock` 前面。该优先级应可配置。
+濡傛灉鐩爣鏇村亸鈥滆交瀹瑰櫒瑙嗗浘鈥濓紝鍙妸 `bwrap` 鏀惧湪 `landlock` 鍓嶉潰銆傝浼樺厛绾у簲鍙厤缃€?
 
-#### 6.4.2 配置字段
+#### 6.4.2 閰嶇疆瀛楁
 
-管理员可以在 Admin Web 中统一切换当前 sandbox 模型，方便调试、兼容性验证或排除 sandbox 相关故障。切换应是服务级配置，影响后续新的 `local_bash`、`local_mcp`、`skill_step` 执行；已经启动的本地 MCP 进程不应被静默替换，需要提示管理员重启对应 MCP server 或执行 `restart_affected=true`。
+绠＄悊鍛樺彲浠ュ湪 Admin Web 涓粺涓€鍒囨崲褰撳墠 sandbox 妯″瀷锛屾柟渚胯皟璇曘€佸吋瀹规€ч獙璇佹垨鎺掗櫎 sandbox 鐩稿叧鏁呴殰銆傚垏鎹㈠簲鏄湇鍔＄骇閰嶇疆锛屽奖鍝嶅悗缁柊鐨?`local_bash`銆乣local_mcp`銆乣skill_step` 鎵ц锛涘凡缁忓惎鍔ㄧ殑鏈湴 MCP 杩涚▼涓嶅簲琚潤榛樻浛鎹紝闇€瑕佹彁绀虹鐞嗗憳閲嶅惎瀵瑰簲 MCP server 鎴栨墽琛?`restart_affected=true`銆?
 
 ```json
 {
@@ -477,19 +471,19 @@ landlock wrapper -> bwrap -> nsjail -> none
 }
 ```
 
-#### 6.4.3 检测能力
+#### 6.4.3 妫€娴嬭兘鍔?
 
-Admin Web 应展示：
+Admin Web 搴斿睍绀猴細
 
-- OS、kernel version、architecture。
-- user namespace 是否可用。
-- Landlock ABI 是否可用。
-- `bwrap`、`nsjail`、`sandlock`、`landrun`、`rstrict`、`sandboxec` 是否存在。
-- 每个后端的 smoke test 是否通过。
-- 当前 `effective_backend` 和 fallback 原因。
-- 哪些执行入口已受保护。
+- OS銆乲ernel version銆乤rchitecture銆?
+- user namespace 鏄惁鍙敤銆?
+- Landlock ABI 鏄惁鍙敤銆?
+- `bwrap`銆乣nsjail`銆乣sandlock`銆乣landrun`銆乣rstrict`銆乣sandboxec` 鏄惁瀛樺湪銆?
+- 姣忎釜鍚庣鐨?smoke test 鏄惁閫氳繃銆?
+- 褰撳墠 `effective_backend` 鍜?fallback 鍘熷洜銆?
+- 鍝簺鎵ц鍏ュ彛宸插彈淇濇姢銆?
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/sandbox/status
@@ -508,7 +502,7 @@ POST /api/v1/admin/sandbox/install
 GET  /api/v1/admin/sandbox/events
 ```
 
-`install-plan` 只生成建议命令，例如：
+`install-plan` 鍙敓鎴愬缓璁懡浠わ紝渚嬪锛?
 
 ```json
 {
@@ -522,7 +516,7 @@ GET  /api/v1/admin/sandbox/events
 }
 ```
 
-`install` 必须要求显式确认：
+`install` 蹇呴』瑕佹眰鏄惧紡纭锛?
 
 ```json
 {
@@ -532,13 +526,13 @@ GET  /api/v1/admin/sandbox/events
 }
 ```
 
-默认 `install_policy=suggest` 时，Admin Web 只展示命令，不执行。
+榛樿 `install_policy=suggest` 鏃讹紝Admin Web 鍙睍绀哄懡浠わ紝涓嶆墽琛屻€?
 
-#### 6.4.4 沙箱健康检测报告
+#### 6.4.4 娌欑鍋ュ悍妫€娴嬫姤鍛?
 
-沙箱启用后，Admin Web 必须提供一键检测功能，用于确认当前 sandbox 是否真正生效，并输出管理员可读报告。该检测不仅检查 binary 是否存在，还要验证隔离策略是否按预期工作。
+娌欑鍚敤鍚庯紝Admin Web 蹇呴』鎻愪緵涓€閿娴嬪姛鑳斤紝鐢ㄤ簬纭褰撳墠 sandbox 鏄惁鐪熸鐢熸晥锛屽苟杈撳嚭绠＄悊鍛樺彲璇绘姤鍛娿€傝妫€娴嬩笉浠呮鏌?binary 鏄惁瀛樺湪锛岃繕瑕侀獙璇侀殧绂荤瓥鐣ユ槸鍚︽寜棰勬湡宸ヤ綔銆?
 
-建议入口：
+寤鸿鍏ュ彛锛?
 
 ```text
 POST /api/v1/admin/sandbox/diagnose
@@ -546,22 +540,22 @@ GET  /api/v1/admin/sandbox/reports
 GET  /api/v1/admin/sandbox/reports/{reportId}
 ```
 
-检测应覆盖：
+妫€娴嬪簲瑕嗙洊锛?
 
-- 当前模式、effective backend、profile、strict/fallback 状态。
-- 后端 binary 路径和版本。
-- OS、kernel、user namespace、Landlock ABI、seccomp、cgroup 能力。
-- smoke test：执行 `/bin/true` 或等价命令。
-- workspace 读写：允许写入 workspace 的临时测试文件，并清理。
-- forbidden path：尝试读取未授权路径，例如 `/etc/shadow`，期望失败。
-- tmp 写入：按 profile 验证 `/tmp` 或私有 tmpfs。
-- network：按 `allow_network` 验证断网或允许访问；如果配置了 allowed hosts，验证允许和拒绝各一个样例。
-- process isolation：验证可见 `/proc` 范围、pid namespace 行为，bwrap/nsjail 模式下必须检查。
-- env sanitization：验证敏感环境变量是否被清理或按策略传递。
-- MCP stdio compatibility：可选启动一个 echo MCP probe，确认 stdin/stdout 没被 wrapper 破坏。
-- resource limits：可选验证 timeout、输出截断、进程数限制。
+- 褰撳墠妯″紡銆乪ffective backend銆乸rofile銆乻trict/fallback 鐘舵€併€?
+- 鍚庣 binary 璺緞鍜岀増鏈€?
+- OS銆乲ernel銆乽ser namespace銆丩andlock ABI銆乻eccomp銆乧group 鑳藉姏銆?
+- smoke test锛氭墽琛?`/bin/true` 鎴栫瓑浠峰懡浠ゃ€?
+- workspace 璇诲啓锛氬厑璁稿啓鍏?workspace 鐨勪复鏃舵祴璇曟枃浠讹紝骞舵竻鐞嗐€?
+- forbidden path锛氬皾璇曡鍙栨湭鎺堟潈璺緞锛屼緥濡?`/etc/shadow`锛屾湡鏈涘け璐ャ€?
+- tmp 鍐欏叆锛氭寜 profile 楠岃瘉 `/tmp` 鎴栫鏈?tmpfs銆?
+- network锛氭寜 `allow_network` 楠岃瘉鏂綉鎴栧厑璁歌闂紱濡傛灉閰嶇疆浜?allowed hosts锛岄獙璇佸厑璁稿拰鎷掔粷鍚勪竴涓牱渚嬨€?
+- process isolation锛氶獙璇佸彲瑙?`/proc` 鑼冨洿銆乸id namespace 琛屼负锛宐wrap/nsjail 妯″紡涓嬪繀椤绘鏌ャ€?
+- env sanitization锛氶獙璇佹晱鎰熺幆澧冨彉閲忔槸鍚﹁娓呯悊鎴栨寜绛栫暐浼犻€掋€?
+- MCP stdio compatibility锛氬彲閫夊惎鍔ㄤ竴涓?echo MCP probe锛岀‘璁?stdin/stdout 娌¤ wrapper 鐮村潖銆?
+- resource limits锛氬彲閫夐獙璇?timeout銆佽緭鍑烘埅鏂€佽繘绋嬫暟闄愬埗銆?
 
-请求示例：
+璇锋眰绀轰緥锛?
 
 ```json
 {
@@ -573,7 +567,7 @@ GET  /api/v1/admin/sandbox/reports/{reportId}
 }
 ```
 
-报告结构：
+鎶ュ憡缁撴瀯锛?
 
 ```json
 {
@@ -609,45 +603,45 @@ GET  /api/v1/admin/sandbox/reports/{reportId}
 }
 ```
 
-状态判定：
+鐘舵€佸垽瀹氾細
 
-- `pass`：核心隔离测试通过，当前配置可用于受保护执行。
-- `warn`：沙箱可运行，但存在弱隔离、跳过测试、fallback、网络未隔离等风险。
-- `fail`：后端不可用、smoke test 失败、禁止路径可读、profile 无法加载、stdio 被破坏等。
+- `pass`锛氭牳蹇冮殧绂绘祴璇曢€氳繃锛屽綋鍓嶉厤缃彲鐢ㄤ簬鍙椾繚鎶ゆ墽琛屻€?
+- `warn`锛氭矙绠卞彲杩愯锛屼絾瀛樺湪寮遍殧绂汇€佽烦杩囨祴璇曘€乫allback銆佺綉缁滄湭闅旂绛夐闄┿€?
+- `fail`锛氬悗绔笉鍙敤銆乻moke test 澶辫触銆佺姝㈣矾寰勫彲璇汇€乸rofile 鏃犳硶鍔犺浇銆乻tdio 琚牬鍧忕瓑銆?
 
-Admin Web 展示要求：
+Admin Web 灞曠ず瑕佹眰锛?
 
-- Overview 和 Sandbox 页面显示最近一次检测状态、时间和报告链接。
-- 每个 check 用 `pass/warn/fail/skipped` 展示，并给出“期望/实际/建议”。
-- `fail` 时提供直接操作：切换模式、rollback、查看日志、生成 install plan。
-- 报告可下载 JSON，但默认脱敏 stdout/stderr、路径和环境变量。
-- 检测报告写入 audit：`sandbox.diagnose.started`、`sandbox.diagnose.completed`、`sandbox.diagnose.failed`。
+- Overview 鍜?Sandbox 椤甸潰鏄剧ず鏈€杩戜竴娆℃娴嬬姸鎬併€佹椂闂村拰鎶ュ憡閾炬帴銆?
+- 姣忎釜 check 鐢?`pass/warn/fail/skipped` 灞曠ず锛屽苟缁欏嚭鈥滄湡鏈?瀹為檯/寤鸿鈥濄€?
+- `fail` 鏃舵彁渚涚洿鎺ユ搷浣滐細鍒囨崲妯″紡銆乺ollback銆佹煡鐪嬫棩蹇椼€佺敓鎴?install plan銆?
+- 鎶ュ憡鍙笅杞?JSON锛屼絾榛樿鑴辨晱 stdout/stderr銆佽矾寰勫拰鐜鍙橀噺銆?
+- 妫€娴嬫姤鍛婂啓鍏?audit锛歚sandbox.diagnose.started`銆乣sandbox.diagnose.completed`銆乣sandbox.diagnose.failed`銆?
 
-检测频率建议：
+妫€娴嬮鐜囧缓璁細
 
-- 手动切换 sandbox 后自动跑一次轻量 diagnose。
-- 服务启动后如果 sandbox enabled，可异步跑一次轻量 diagnose 并缓存结果。
-- 管理员可手动运行完整 diagnose。
-- 报告保留最近 20 份，或按 `service_config.sandbox.report_retention` 控制。
+- 鎵嬪姩鍒囨崲 sandbox 鍚庤嚜鍔ㄨ窇涓€娆¤交閲?diagnose銆?
+- 鏈嶅姟鍚姩鍚庡鏋?sandbox enabled锛屽彲寮傛璺戜竴娆¤交閲?diagnose 骞剁紦瀛樼粨鏋溿€?
+- 绠＄悊鍛樺彲鎵嬪姩杩愯瀹屾暣 diagnose銆?
+- 鎶ュ憡淇濈暀鏈€杩?20 浠斤紝鎴栨寜 `service_config.sandbox.report_retention` 鎺у埗銆?
 
-#### 6.4.5 统一切换和故障排除
+#### 6.4.5 缁熶竴鍒囨崲鍜屾晠闅滄帓闄?
 
-Sandbox 页面需要提供全局模式切换器：
+Sandbox 椤甸潰闇€瑕佹彁渚涘叏灞€妯″紡鍒囨崲鍣細
 
 ```text
 Auto | Landlock | bwrap | nsjail | None
 ```
 
-切换流程：
+鍒囨崲娴佺▼锛?
 
-1. 管理员选择目标模式。
-2. 服务执行目标后端 detect 和 smoke test。
-3. 展示影响范围：local bash、local MCP、skill step，以及需要重启的本地 MCP server 数量。
-4. 管理员确认后写入 `service_config.json`。
-5. 新执行请求立即使用新模式；已运行的本地 MCP server 维持旧模式直到重启。
-6. 写入 audit 和 sandbox event。
+1. 绠＄悊鍛橀€夋嫨鐩爣妯″紡銆?
+2. 鏈嶅姟鎵ц鐩爣鍚庣 detect 鍜?smoke test銆?
+3. 灞曠ず褰卞搷鑼冨洿锛歭ocal bash銆乴ocal MCP銆乻kill step锛屼互鍙婇渶瑕侀噸鍚殑鏈湴 MCP server 鏁伴噺銆?
+4. 绠＄悊鍛樼‘璁ゅ悗鍐欏叆 `service_config.json`銆?
+5. 鏂版墽琛岃姹傜珛鍗充娇鐢ㄦ柊妯″紡锛涘凡杩愯鐨勬湰鍦?MCP server 缁存寔鏃фā寮忕洿鍒伴噸鍚€?
+6. 鍐欏叆 audit 鍜?sandbox event銆?
 
-建议请求：
+寤鸿璇锋眰锛?
 
 ```json
 {
@@ -661,7 +655,7 @@ Auto | Landlock | bwrap | nsjail | None
 }
 ```
 
-响应：
+鍝嶅簲锛?
 
 ```json
 {
@@ -681,24 +675,24 @@ Auto | Landlock | bwrap | nsjail | None
 }
 ```
 
-`none` 模式是危险调试模式：
+`none` 妯″紡鏄嵄闄╄皟璇曟ā寮忥細
 
-- UI 必须显示红色警告，说明本地执行将不再被 sandbox 保护。
-- 需要 `admin` 或更高权限；如果 `strict=true`，需要 `owner` 权限或先关闭 strict。
-- 可以要求填写 `reason`。
-- 可以支持 `expires_at` 或 `ttl_minutes`，到期自动恢复上一模式。
+- UI 蹇呴』鏄剧ず绾㈣壊璀﹀憡锛岃鏄庢湰鍦版墽琛屽皢涓嶅啀琚?sandbox 淇濇姢銆?
+- 闇€瑕?`admin` 鎴栨洿楂樻潈闄愶紱濡傛灉 `strict=true`锛岄渶瑕?`owner` 鏉冮檺鎴栧厛鍏抽棴 strict銆?
+- 鍙互瑕佹眰濉啓 `reason`銆?
+- 鍙互鏀寔 `expires_at` 鎴?`ttl_minutes`锛屽埌鏈熻嚜鍔ㄦ仮澶嶄笂涓€妯″紡銆?
 
-建议 rollback 行为：
+寤鸿 rollback 琛屼负锛?
 
 ```text
 POST /api/v1/admin/sandbox/rollback
 ```
 
-用于快速恢复上一可用模式。每次 switch 应保存 `previous_backend`、`previous_profile`、切换人和切换时间。
+鐢ㄤ簬蹇€熸仮澶嶄笂涓€鍙敤妯″紡銆傛瘡娆?switch 搴斾繚瀛?`previous_backend`銆乣previous_profile`銆佸垏鎹汉鍜屽垏鎹㈡椂闂淬€?
 
-#### 6.4.6 Sandbox 事件和审计
+#### 6.4.6 Sandbox 浜嬩欢鍜屽璁?
 
-所有 sandbox 相关动作都应写入 audit：
+鎵€鏈?sandbox 鐩稿叧鍔ㄤ綔閮藉簲鍐欏叆 audit锛?
 
 - `sandbox.detected`
 - `sandbox.config.updated`
@@ -715,7 +709,7 @@ POST /api/v1/admin/sandbox/rollback
 - `sandbox.backend.rollback`
 - `sandbox.execution.blocked`
 
-执行时还应记录轻量事件，不保存完整命令敏感参数：
+鎵ц鏃惰繕搴旇褰曡交閲忎簨浠讹紝涓嶄繚瀛樺畬鏁村懡浠ゆ晱鎰熷弬鏁帮細
 
 ```json
 {
@@ -731,20 +725,22 @@ POST /api/v1/admin/sandbox/rollback
 
 ### 6.5 Logs
 
-日志查看是 Admin Web 的核心运维能力。
+鏃ュ織鏌ョ湅鏄?Admin Web 鐨勬牳蹇冭繍缁磋兘鍔涖€?
 
-建议日志分类：
+寤鸿鏃ュ織鍒嗙被锛?
 
-- `service`：maclawsrv 标准运行日志。
-- `error`：stderr 或 error-level 日志。
-- `access`：HTTP access 日志，第一阶段可选。
-- `audit`：admin/user 资源操作审计，复用现有 audit events。
-- `sandbox`：sandbox 检测、选择、执行和阻断事件。
-- `scheduler`：定时任务日志。
-- `mcp`：本地 MCP server 启停、health check、tools/list 错误。
-- `agent`：run 级错误摘要，不包含用户敏感内容。
+- `service`锛歮aclawsrv 鏍囧噯杩愯鏃ュ織銆?
+- `error`锛歴tderr 鎴?error-level 鏃ュ織銆?
+- `access`锛欻TTP access 鏃ュ織锛岀涓€闃舵鍙€夈€?
+- `audit`锛歛dmin/user 璧勬簮鎿嶄綔瀹¤锛屽鐢ㄧ幇鏈?audit events銆?
+- `sandbox`锛歴andbox 妫€娴嬨€侀€夋嫨銆佹墽琛屽拰闃绘柇浜嬩欢銆?
+- `security_risks`锛氭敮鎸佸寘鍐呭簲鍖呭惈椋庨櫓鎽樿銆乣generated_at`銆佹爣鍑嗗寲 `filters`銆乻everity/kind counts 鍜屾渶杩戦闄╀簨浠讹紱`filters.source` 鍥哄畾涓?`sandbox_support_bundle`锛屾柟渚跨鐞嗗憳鎶婃矙绠辨晠闅滃拰瀹夊叏濮挎€佷竴璧峰彂閫佺粰鏀寔鏂广€?
+- 鏀寔鍖呭繀椤婚伩鍏嶆毚闇插畬鏁存湰鏈鸿矾寰勶紱渚嬪 data root 鍙繑鍥?`data_root_name`銆乣data_root_redacted=true` 鍜?`redactions` 鍒楄〃锛屼笉杩斿洖瀹屾暣 `data_root`銆?
+- `scheduler`锛氬畾鏃朵换鍔℃棩蹇椼€?
+- `mcp`锛氭湰鍦?MCP server 鍚仠銆乭ealth check銆乼ools/list 閿欒銆?
+- `agent`锛歳un 绾ч敊璇憳瑕侊紝涓嶅寘鍚敤鎴锋晱鎰熷唴瀹广€?
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/logs/sources
@@ -755,7 +751,7 @@ POST /api/v1/admin/logs/search
 GET  /api/v1/admin/logs/errors/recent
 ```
 
-查询参数：
+鏌ヨ鍙傛暟锛?
 
 ```text
 level=debug|info|warn|error
@@ -767,25 +763,25 @@ q=...
 follow=true
 ```
 
-安全要求：
+瀹夊叏瑕佹眰锛?
 
-- 日志读取必须限制在受信任 log root 下，禁止任意路径读取。
-- 默认对 secrets、bearer token、API key、Authorization header 做脱敏。
-- UI 默认展示最近 200 行，下载完整日志需要更高权限。
-- tail/follow 应有连接数和时间限制。
+- 鏃ュ織璇诲彇蹇呴』闄愬埗鍦ㄥ彈淇′换 log root 涓嬶紝绂佹浠绘剰璺緞璇诲彇銆?
+- 榛樿瀵?secrets銆乥earer token銆丄PI key銆丄uthorization header 鍋氳劚鏁忋€?
+- UI 榛樿灞曠ず鏈€杩?200 琛岋紝涓嬭浇瀹屾暣鏃ュ織闇€瑕佹洿楂樻潈闄愩€?
+- tail/follow 搴旀湁杩炴帴鏁板拰鏃堕棿闄愬埗銆?
 
 ### 6.6 Runtime Controls
 
-服务运行控制包括：
+鏈嶅姟杩愯鎺у埗鍖呮嫭锛?
 
-- 查看进程状态、goroutine 数、内存、磁盘、打开文件数。
-- graceful shutdown 或 restart 请求。
-- reload runtime config。
-- 清理过期 async jobs。
-- 清理临时文件。
-- 执行 readiness refresh。
+- 鏌ョ湅杩涚▼鐘舵€併€乬oroutine 鏁般€佸唴瀛樸€佺鐩樸€佹墦寮€鏂囦欢鏁般€?
+- graceful shutdown 鎴?restart 璇锋眰銆?
+- reload runtime config銆?
+- 娓呯悊杩囨湡 async jobs銆?
+- 娓呯悊涓存椂鏂囦欢銆?
+- 鎵ц readiness refresh銆?
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/runtime/status
@@ -795,23 +791,23 @@ POST /api/v1/admin/runtime/restart
 POST /api/v1/admin/runtime/cleanup
 ```
 
-`shutdown` 和 `restart` 默认可先只设计，不实现；如果实现，应要求二次确认和 owner 权限。
+`shutdown` 鍜?`restart` 榛樿鍙厛鍙璁★紝涓嶅疄鐜帮紱濡傛灉瀹炵幇锛屽簲瑕佹眰浜屾纭鍜?owner 鏉冮檺銆?
 
 ### 6.7 Security
 
-安全页展示和管理：
+瀹夊叏椤靛睍绀哄拰绠＄悊锛?
 
-- admin secret 状态和轮换提醒。
-- token secret 状态和轮换提醒。
-- TLS 状态、证书有效期、证书链检查。
-- insecure HTTP 风险提示。
-- local bash 是否启用、绑定 tenant/user 是否完整。
-- direct SSH 是否启用、file transfer 是否启用。
-- sandbox 是否启用。
-- 最近高危审计事件。
-- auth limiter 状态。
+- admin secret 鐘舵€佸拰杞崲鎻愰啋銆?
+- token secret 鐘舵€佸拰杞崲鎻愰啋銆?
+- TLS 鐘舵€併€佽瘉涔︽湁鏁堟湡銆佽瘉涔﹂摼妫€鏌ャ€?
+- insecure HTTP 椋庨櫓鎻愮ず銆?
+- local bash 鏄惁鍚敤銆佺粦瀹?tenant/user 鏄惁瀹屾暣銆?
+- direct SSH 鏄惁鍚敤銆乫ile transfer 鏄惁鍚敤銆?
+- sandbox 鏄惁鍚敤銆?
+- 鏈€杩戦珮鍗卞璁′簨浠躲€?
+- auth limiter 鐘舵€併€?
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/security/posture
@@ -821,20 +817,39 @@ POST /api/v1/admin/security/check-tls
 GET  /api/v1/admin/security/risk-events
 ```
 
-secret 轮换可以第一阶段仅输出操作计划，因为环境变量或 service manager 往往是实际 secret 来源。
+secret 杞崲鍙互绗竴闃舵浠呰緭鍑烘搷浣滆鍒掞紝鍥犱负鐜鍙橀噺鎴?service manager 寰€寰€鏄疄闄?secret 鏉ユ簮銆?
 
+#### 6.7.1 椋庨櫓浜嬩欢绛涢€変笌鎶ュ憡
+
+椋庨櫓浜嬩欢椤电敤浜庢妸 sandbox銆佸畨鍏ㄥЭ鎬佸拰楂樺嵄 admin 鎿嶄綔涓叉垚鍙帓鏌ユ椂闂寸嚎銆俇I 蹇呴』鍙€氳繃 Admin API 鏌ヨ锛屼笉鐩存帴璇?audit 鏂囦欢銆傚缓璁涓€闃舵钀藉湴浠ヤ笅鑳藉姏锛?
+```text
+GET /api/v1/admin/security/summary?since=...&until=...
+GET /api/v1/admin/security/risk-events?severity=high&kind=auth_failed&since=...&until=...&limit=50
+```
+
+绛涢€夎鍒欙細
+
+- `severity` 鍙帴鍙?`high|medium|low`銆?- `kind` 浣跨敤绋冲畾椋庨櫓绫诲瀷锛屼緥濡?`sandbox_disabled`銆乣sandbox_failed`銆乣auth_failed`銆乣insecure_http`銆?- `since` 鍜?`until` 閮芥槸 RFC3339锛涗袱鑰呭悓鏃舵彁渚涙椂蹇呴』婊¤冻 `since <= until`銆?- UI 鎻愪緵 `1h`銆乣24h`銆乣7d` 鍜?`All` 蹇嵎鏃堕棿鑼冨洿锛屾柟渚夸簨鏁呭洖鏀俱€?- API 鍝嶅簲蹇呴』鍥炴樉 `generated_at` 鍜屾爣鍑嗗寲鍚庣殑 `filters`锛屼究浜?UI銆佹敮鎸佸寘鍜屽璁″鐩樺鐜板悓涓€浠芥姤鍛娿€?
+- UI 灞曠ず `generated_at`銆乻everity counts銆乲ind counts銆佸綋鍓嶇瓫閫夋潯浠跺拰 total锛涚偣鍑?count chip 鍙弽鍚戝～鍏呯瓫閫夋潯浠躲€?
+椋庨櫓鏉ユ簮鑷冲皯鍖呮嫭锛?
+- 褰撳墠 posture锛歴andbox disabled銆乻andbox 闈?strict銆乮nsecure HTTP銆?- auth limiter锛歛dmin secret 閿欒銆佺櫥褰曞け璐ャ€乺ate limit銆?- sandbox锛歞etect/install/diagnose/switch/rollback 澶辫触鎴栭檷绾с€?- 澶囦唤鎭㈠锛氬鍑?secrets銆侀潪 dry-run import銆侀潪 dry-run restore銆佸惈 secrets snapshot銆?
+#### 6.7.2 楂橀闄╂搷浣滅‘璁?
+Admin Web 蹇呴』瀵圭牬鍧忔€ф垨鏁忔劅鎿嶄綔鍋氭樉寮忕‘璁わ紝涓旂‘璁ょ姸鎬佸繀椤讳紶缁?Admin API锛岀敱鍚庣鍐嶆鏍￠獙锛屼笉鑳藉彧渚濊禆鍓嶇寮圭獥銆?
+绗竴闃舵寤鸿鍥哄畾纭鐭锛?
+- 瀵煎嚭 secrets锛歚EXPORT SECRETS`锛孉PI 闇€瑕?`confirm=true`銆?- 闈?dry-run import锛歚IMPORT STATE`锛孉PI 闇€瑕?`confirm=true`銆?- 闈?dry-run restore锛歚RESTORE SNAPSHOT`锛孉PI 闇€瑕?`confirm=true`銆?- 鍒涘缓鍚?secrets snapshot锛歚SNAPSHOT SECRETS`锛孉PI 闇€瑕?`confirm=true`銆?- 鎵ц sandbox install锛歚INSTALL SANDBOX`锛孉PI 闇€瑕?`confirm=true`銆?- 鍒囨崲鍒?`none` sandbox锛歚DISABLE SANDBOX`锛孉PI 闇€瑕?`confirm=true`銆?
+杩欎簺鎿嶄綔閮藉繀椤诲啓 audit锛屽苟杩涘叆 security risk event 瑙嗗浘锛屾柟渚夸簨鍚庡璁°€?
 ### 6.8 Backup and Migration
 
-复用现有 export/import/snapshot 能力，并在 Admin Web 做成操作向导：
+澶嶇敤鐜版湁 export/import/snapshot 鑳藉姏锛屽苟鍦?Admin Web 鍋氭垚鎿嶄綔鍚戝锛?
 
-- 创建全量 snapshot。
-- 创建 tenant/user scoped snapshot。
-- 列表、下载、删除、恢复。
-- prune retention。
-- import precheck。
-- restore dry-run。
+- 鍒涘缓鍏ㄩ噺 snapshot銆?
+- 鍒涘缓 tenant/user scoped snapshot銆?
+- 鍒楄〃銆佷笅杞姐€佸垹闄ゃ€佹仮澶嶃€?
+- prune retention銆?
+- import precheck銆?
+- restore dry-run銆?
 
-复用接口：
+澶嶇敤鎺ュ彛锛?
 
 - `GET /api/v1/admin/export`
 - `POST /api/v1/admin/import`
@@ -847,19 +862,19 @@ secret 轮换可以第一阶段仅输出操作计划，因为环境变量或 ser
 
 ### 6.9 Tenants & Users
 
-Admin Web 必须提供多租户管理视图。管理员可以查看全部租户、查看每个租户下的用户，并对租户或用户执行新增、暂停、恢复、删除等生命周期操作。
+Admin Web 蹇呴』鎻愪緵澶氱鎴风鐞嗚鍥俱€傜鐞嗗憳鍙互鏌ョ湅鍏ㄩ儴绉熸埛銆佹煡鐪嬫瘡涓鎴蜂笅鐨勭敤鎴凤紝骞跺绉熸埛鎴栫敤鎴锋墽琛屾柊澧炪€佹殏鍋溿€佹仮澶嶃€佸垹闄ょ瓑鐢熷懡鍛ㄦ湡鎿嶄綔銆?
 
-#### 6.9.1 租户列表和详情
+#### 6.9.1 绉熸埛鍒楄〃鍜岃鎯?
 
-租户列表展示：
+绉熸埛鍒楄〃灞曠ず锛?
 
-- tenant id、name、status、created_at、updated_at。
-- 用户数、credential 数、instance 数、session/run/message 统计。
-- 数据占用估算：config、memory、skills、MCP、knowledge、records、snapshots。
-- 最近活动时间、最近失败 run、最近高危 audit。
-- delete protection / managed 标记。
+- tenant id銆乶ame銆乻tatus銆乧reated_at銆乽pdated_at銆?
+- 鐢ㄦ埛鏁般€乧redential 鏁般€乮nstance 鏁般€乻ession/run/message 缁熻銆?
+- 鏁版嵁鍗犵敤浼扮畻锛歝onfig銆乵emory銆乻kills銆丮CP銆乲nowledge銆乺ecords銆乻napshots銆?
+- 鏈€杩戞椿鍔ㄦ椂闂淬€佹渶杩戝け璐?run銆佹渶杩戦珮鍗?audit銆?
+- delete protection / managed 鏍囪銆?
 
-复用或扩展现有 API：
+澶嶇敤鎴栨墿灞曠幇鏈?API锛?
 
 ```text
 GET  /api/v1/admin/tenants
@@ -873,7 +888,7 @@ GET  /api/v1/admin/tenants/{tenantId}/retire-plan
 DELETE /api/v1/admin/tenants/{tenantId}
 ```
 
-建议新增显式状态动作，避免仅靠 PATCH 表达高风险生命周期：
+寤鸿鏂板鏄惧紡鐘舵€佸姩浣滐紝閬垮厤浠呴潬 PATCH 琛ㄨ揪楂橀闄╃敓鍛藉懆鏈燂細
 
 ```text
 POST /api/v1/admin/tenants/{tenantId}/pause
@@ -882,19 +897,19 @@ POST /api/v1/admin/tenants/{tenantId}/archive
 POST /api/v1/admin/tenants/{tenantId}/restore
 ```
 
-#### 6.9.2 用户列表和详情
+#### 6.9.2 鐢ㄦ埛鍒楄〃鍜岃鎯?
 
-在租户详情下展示用户列表。也保留跨租户用户搜索。
+鍦ㄧ鎴疯鎯呬笅灞曠ず鐢ㄦ埛鍒楄〃銆備篃淇濈暀璺ㄧ鎴风敤鎴锋悳绱€?
 
-用户列表展示：
+鐢ㄦ埛鍒楄〃灞曠ず锛?
 
-- user id、email、display name、status、created_at、updated_at。
-- credential 数、instance 数、session/run/message 统计。
-- config 是否完整、LLM provider 是否可用、最后一次 ready 状态。
-- skill/MCP/knowledge/record 数据大小估算。
-- 最近活动时间、最近 failed run、最近 audit。
+- user id銆乪mail銆乨isplay name銆乻tatus銆乧reated_at銆乽pdated_at銆?
+- credential 鏁般€乮nstance 鏁般€乻ession/run/message 缁熻銆?
+- config 鏄惁瀹屾暣銆丩LM provider 鏄惁鍙敤銆佹渶鍚庝竴娆?ready 鐘舵€併€?
+- skill/MCP/knowledge/record 鏁版嵁澶у皬浼扮畻銆?
+- 鏈€杩戞椿鍔ㄦ椂闂淬€佹渶杩?failed run銆佹渶杩?audit銆?
 
-复用或扩展现有 API：
+澶嶇敤鎴栨墿灞曠幇鏈?API锛?
 
 ```text
 GET  /api/v1/admin/users
@@ -907,7 +922,7 @@ GET  /api/v1/admin/tenants/{tenantId}/users/{userId}/retire-plan
 DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}
 ```
 
-建议新增显式状态动作：
+寤鸿鏂板鏄惧紡鐘舵€佸姩浣滐細
 
 ```text
 POST /api/v1/admin/tenants/{tenantId}/users/{userId}/pause
@@ -916,22 +931,22 @@ POST /api/v1/admin/tenants/{tenantId}/users/{userId}/archive
 POST /api/v1/admin/tenants/{tenantId}/users/{userId}/restore
 ```
 
-#### 6.9.3 暂停语义
+#### 6.9.3 鏆傚仠璇箟
 
-暂停租户：
+鏆傚仠绉熸埛锛?
 
-- 该租户下所有用户无法签发新 bearer token。
-- 已有 token 可以立即失效，或按配置进入宽限期。
-- 新 run 不允许创建，已有 run 可选择 cancel 或 allow-to-finish。
-- Admin 仍可查看和导出该租户数据。
+- 璇ョ鎴蜂笅鎵€鏈夌敤鎴锋棤娉曠鍙戞柊 bearer token銆?
+- 宸叉湁 token 鍙互绔嬪嵆澶辨晥锛屾垨鎸夐厤缃繘鍏ュ闄愭湡銆?
+- 鏂?run 涓嶅厑璁稿垱寤猴紝宸叉湁 run 鍙€夋嫨 cancel 鎴?allow-to-finish銆?
+- Admin 浠嶅彲鏌ョ湅鍜屽鍑鸿绉熸埛鏁版嵁銆?
 
-暂停用户：
+鏆傚仠鐢ㄦ埛锛?
 
-- 该用户无法签发新 bearer token。
-- 新 instance/session/run 写操作被拒绝。
-- Admin 仍可查看、导出、恢复或删除该用户数据。
+- 璇ョ敤鎴锋棤娉曠鍙戞柊 bearer token銆?
+- 鏂?instance/session/run 鍐欐搷浣滆鎷掔粷銆?
+- Admin 浠嶅彲鏌ョ湅銆佸鍑恒€佹仮澶嶆垨鍒犻櫎璇ョ敤鎴锋暟鎹€?
 
-建议暂停请求体：
+寤鸿鏆傚仠璇锋眰浣擄細
 
 ```json
 {
@@ -941,28 +956,28 @@ POST /api/v1/admin/tenants/{tenantId}/users/{userId}/restore
 }
 ```
 
-#### 6.9.4 删除和数据清理
+#### 6.9.4 鍒犻櫎鍜屾暟鎹竻鐞?
 
-删除租户或用户必须是强提示、可预检、可 dry-run 的危险操作。删除后需要清理对应数据目录和索引记录。
+鍒犻櫎绉熸埛鎴栫敤鎴峰繀椤绘槸寮烘彁绀恒€佸彲棰勬銆佸彲 dry-run 鐨勫嵄闄╂搷浣溿€傚垹闄ゅ悗闇€瑕佹竻鐞嗗搴旀暟鎹洰褰曞拰绱㈠紩璁板綍銆?
 
-删除用户应清理：
+鍒犻櫎鐢ㄦ埛搴旀竻鐞嗭細
 
-- user metadata、credentials、config。
-- instances、sessions、messages、runs、run events。
-- memory、skills、MCP config/runtime state、knowledge sources/index、structured records。
-- async jobs、uploads、temporary files。
-- user scoped snapshots，默认保留或删除应由请求参数决定。
-- audit events 默认保留脱敏摘要，不建议物理删除；可通过 `purge_audit=true` 显式清理。
+- user metadata銆乧redentials銆乧onfig銆?
+- instances銆乻essions銆乵essages銆乺uns銆乺un events銆?
+- memory銆乻kills銆丮CP config/runtime state銆乲nowledge sources/index銆乻tructured records銆?
+- async jobs銆乽ploads銆乼emporary files銆?
+- user scoped snapshots锛岄粯璁や繚鐣欐垨鍒犻櫎搴旂敱璇锋眰鍙傛暟鍐冲畾銆?
+- audit events 榛樿淇濈暀鑴辨晱鎽樿锛屼笉寤鸿鐗╃悊鍒犻櫎锛涘彲閫氳繃 `purge_audit=true` 鏄惧紡娓呯悊銆?
 
-删除租户应清理：
+鍒犻櫎绉熸埛搴旀竻鐞嗭細
 
-- tenant metadata。
-- 该租户下所有 users 及其上述全部数据。
-- tenant scoped knowledge、skill-source override、policy override、snapshots。
-- async jobs、uploads、temporary files。
-- audit events 默认保留脱敏摘要。
+- tenant metadata銆?
+- 璇ョ鎴蜂笅鎵€鏈?users 鍙婂叾涓婅堪鍏ㄩ儴鏁版嵁銆?
+- tenant scoped knowledge銆乻kill-source override銆乸olicy override銆乻napshots銆?
+- async jobs銆乽ploads銆乼emporary files銆?
+- audit events 榛樿淇濈暀鑴辨晱鎽樿銆?
 
-删除请求必须先调用 `delete-check` 或 `retire-plan`，UI 显示影响范围：
+鍒犻櫎璇锋眰蹇呴』鍏堣皟鐢?`delete-check` 鎴?`retire-plan`锛孶I 鏄剧ず褰卞搷鑼冨洿锛?
 
 ```json
 {
@@ -985,7 +1000,7 @@ POST /api/v1/admin/tenants/{tenantId}/users/{userId}/restore
 }
 ```
 
-删除请求体建议：
+鍒犻櫎璇锋眰浣撳缓璁細
 
 ```json
 {
@@ -1000,53 +1015,53 @@ POST /api/v1/admin/tenants/{tenantId}/users/{userId}/restore
 }
 ```
 
-安全要求：
+瀹夊叏瑕佹眰锛?
 
-- UI 必须显示红色危险区域、影响数量、数据不可恢复提示。
-- 必须输入确认短语，例如 `DELETE tenant_xxx` 或 `DELETE user_xxx`。
-- 默认建议先创建 snapshot。
-- 删除应进入 async job，避免 HTTP 请求长时间阻塞。
-- 删除过程中应分阶段记录进度，可恢复地标记 `deleting` 状态。
-- 删除完成后写入 audit：`tenant.deleted`、`user.deleted`、`tenant.data_purged`、`user.data_purged`。
-- 如果部分清理失败，资源进入 `delete_failed` 状态，并展示剩余路径和补救动作。
+- UI 蹇呴』鏄剧ず绾㈣壊鍗遍櫓鍖哄煙銆佸奖鍝嶆暟閲忋€佹暟鎹笉鍙仮澶嶆彁绀恒€?
+- 蹇呴』杈撳叆纭鐭锛屼緥濡?`DELETE tenant_xxx` 鎴?`DELETE user_xxx`銆?
+- 榛樿寤鸿鍏堝垱寤?snapshot銆?
+- 鍒犻櫎搴旇繘鍏?async job锛岄伩鍏?HTTP 璇锋眰闀挎椂闂撮樆濉炪€?
+- 鍒犻櫎杩囩▼涓簲鍒嗛樁娈佃褰曡繘搴︼紝鍙仮澶嶅湴鏍囪 `deleting` 鐘舵€併€?
+- 鍒犻櫎瀹屾垚鍚庡啓鍏?audit锛歚tenant.deleted`銆乣user.deleted`銆乣tenant.data_purged`銆乣user.data_purged`銆?
+- 濡傛灉閮ㄥ垎娓呯悊澶辫触锛岃祫婧愯繘鍏?`delete_failed` 鐘舵€侊紝骞跺睍绀哄墿浣欒矾寰勫拰琛ユ晳鍔ㄤ綔銆?
 
-#### 6.9.5 UI 交互
+#### 6.9.5 UI 浜や簰
 
-`Tenants & Users` 页面建议结构：
+`Tenants & Users` 椤甸潰寤鸿缁撴瀯锛?
 
 ```text
 Tenants list -> Tenant detail -> Users tab -> User detail
 ```
 
-租户详情 tabs：
+绉熸埛璇︽儏 tabs锛?
 
 ```text
 Overview | Users | Credentials | Instances | Usage | Data | Audit | Danger Zone
 ```
 
-用户详情 tabs：
+鐢ㄦ埛璇︽儏 tabs锛?
 
 ```text
 Overview | Credentials | Instances | Config Status | Skills & MCP | Knowledge | Data | Audit | Danger Zone
 ```
 
-`Danger Zone` 包含暂停、恢复、归档、删除。删除按钮默认禁用，必须先完成 delete-check 并展开影响清单。
+`Danger Zone` 鍖呭惈鏆傚仠銆佹仮澶嶃€佸綊妗ｃ€佸垹闄ゃ€傚垹闄ゆ寜閽粯璁ょ鐢紝蹇呴』鍏堝畬鎴?delete-check 骞跺睍寮€褰卞搷娓呭崟銆?
 
 ### 6.10 Global Skill and MCP Governance
 
-Admin Web 应能管理非用户实例私有的 skill/MCP 策略：
+Admin Web 搴旇兘绠＄悊闈炵敤鎴峰疄渚嬬鏈夌殑 skill/MCP 绛栫暐锛?
 
-- 全局 skill source。
-- tenant/user skill source override。
-- capability market policy。
-- 禁用高危 skill action。
-- 本地 MCP server 默认是否允许。
-- MCP 启动是否必须走 sandbox。
-- MCP server 全局 allowlist/denylist。
+- 鍏ㄥ眬 skill source銆?
+- tenant/user skill source override銆?
+- capability market policy銆?
+- 绂佺敤楂樺嵄 skill action銆?
+- 鏈湴 MCP server 榛樿鏄惁鍏佽銆?
+- MCP 鍚姩鏄惁蹇呴』璧?sandbox銆?
+- MCP server 鍏ㄥ眬 allowlist/denylist銆?
 
-现有 skill source admin API 可直接复用。
+鐜版湁 skill source admin API 鍙洿鎺ュ鐢ㄣ€?
 
-建议新增策略 API：
+寤鸿鏂板绛栫暐 API锛?
 
 ```text
 GET  /api/v1/admin/execution-policy
@@ -1056,14 +1071,14 @@ POST /api/v1/admin/execution-policy/validate
 
 ### 6.11 Scheduler and Jobs
 
-管理 scheduler 与 async jobs：
+绠＄悊 scheduler 涓?async jobs锛?
 
-- scheduler enabled、tick interval、worker 数。
-- 当前 scheduled tasks。
-- 上次执行时间、下次执行时间、失败次数。
-- async jobs 列表、取消、删除、清理。
+- scheduler enabled銆乼ick interval銆亀orker 鏁般€?
+- 褰撳墠 scheduled tasks銆?
+- 涓婃鎵ц鏃堕棿銆佷笅娆℃墽琛屾椂闂淬€佸け璐ユ鏁般€?
+- async jobs 鍒楄〃銆佸彇娑堛€佸垹闄ゃ€佹竻鐞嗐€?
 
-建议 API：
+寤鸿 API锛?
 
 ```text
 GET  /api/v1/admin/scheduler/status
@@ -1075,11 +1090,11 @@ GET  /api/v1/admin/jobs
 POST /api/v1/admin/jobs/cleanup
 ```
 
-用户 bearer token 的 `/api/v1/jobs` 继续只看当前用户 jobs；admin jobs 可以跨 tenant/user 查看。
+鐢ㄦ埛 bearer token 鐨?`/api/v1/jobs` 缁х画鍙湅褰撳墠鐢ㄦ埛 jobs锛沘dmin jobs 鍙互璺?tenant/user 鏌ョ湅銆?
 
-## 7. 页面结构
+## 7. 椤甸潰缁撴瀯
 
-建议 Admin Web 左侧导航：
+寤鸿 Admin Web 宸︿晶瀵艰埅锛?
 
 ```text
 Overview
@@ -1098,26 +1113,26 @@ Metrics
 Diagnostics
 ```
 
-关键页面说明：
+鍏抽敭椤甸潰璇存槑锛?
 
-- `Overview`：只读为主，展示健康状态、告警、最近错误。
-- `Service Config`：表单 + effective source + restart required 标记。
-- `Sandbox`：检测结果、当前后端、profile 编辑、install plan、smoke test。
-- `Logs`：source selector、level filter、tail、search、download、rotate。
-- `Security`：风险姿态和 secret/TLS/local execution 检查。
-- `Language`：中英文切换，未登录 setup 页面和登录后管理页面均可使用。
-- `Execution Policy`：local bash、MCP、skill、SSH、network 策略总览。
-- `Diagnostics`：ready report、dependency check、filesystem check、sandbox smoke test、LLM provider quick check。
+- `Overview`锛氬彧璇讳负涓伙紝灞曠ず鍋ュ悍鐘舵€併€佸憡璀︺€佹渶杩戦敊璇€?
+- `Service Config`锛氳〃鍗?+ effective source + restart required 鏍囪銆?
+- `Sandbox`锛氭娴嬬粨鏋溿€佸綋鍓嶅悗绔€乸rofile 缂栬緫銆乮nstall plan銆乻moke test銆?
+- `Logs`锛歴ource selector銆乴evel filter銆乼ail銆乻earch銆乨ownload銆乺otate銆?
+- `Security`锛氶闄╁Э鎬佸拰 secret/TLS/local execution 妫€鏌ャ€?
+- `Language`锛氫腑鑻辨枃鍒囨崲锛屾湭鐧诲綍 setup 椤甸潰鍜岀櫥褰曞悗绠＄悊椤甸潰鍧囧彲浣跨敤銆?
+- `Execution Policy`锛歭ocal bash銆丮CP銆乻kill銆丼SH銆乶etwork 绛栫暐鎬昏銆?
+- `Diagnostics`锛歳eady report銆乨ependency check銆乫ilesystem check銆乻andbox smoke test銆丩LM provider quick check銆?
 
-## 8. Admin API 命名规范
+## 8. Admin API 鍛藉悕瑙勮寖
 
-- 所有服务级能力放在 `/api/v1/admin/...`。
-- 资源名使用复数，例如 `/logs`、`/snapshots`、`/sandbox/profiles`。
-- 动作用子路径，例如 `/reload`、`/rotate`、`/smoke-test`、`/validate`。
-- 高风险写操作必须支持 `dry_run` 或 `print_only`。
-- 高风险写操作必须返回 `audit_event_id`。
+- 鎵€鏈夋湇鍔＄骇鑳藉姏鏀惧湪 `/api/v1/admin/...`銆?
+- 璧勬簮鍚嶄娇鐢ㄥ鏁帮紝渚嬪 `/logs`銆乣/snapshots`銆乣/sandbox/profiles`銆?
+- 鍔ㄤ綔鐢ㄥ瓙璺緞锛屼緥濡?`/reload`銆乣/rotate`銆乣/smoke-test`銆乣/validate`銆?
+- 楂橀闄╁啓鎿嶄綔蹇呴』鏀寔 `dry_run` 鎴?`print_only`銆?
+- 楂橀闄╁啓鎿嶄綔蹇呴』杩斿洖 `audit_event_id`銆?
 
-统一错误响应：
+缁熶竴閿欒鍝嶅簲锛?
 
 ```json
 {
@@ -1130,9 +1145,9 @@ Diagnostics
 }
 ```
 
-## 9. 存储设计
+## 9. 瀛樺偍璁捐
 
-建议新增：
+寤鸿鏂板锛?
 
 ```text
 MACLAW_DATA_ROOT/
@@ -1148,19 +1163,19 @@ MACLAW_DATA_ROOT/
     access.log
 ```
 
-如果在 macOS pkg 或 Linux systemd 部署中日志写入 `/Library/Logs/MaClawSrv` 或 `/var/log/maclawsrv`，Admin Web 应通过 service config 暴露实际 log root。
+濡傛灉鍦?macOS pkg 鎴?Linux systemd 閮ㄧ讲涓棩蹇楀啓鍏?`/Library/Logs/MaClawSrv` 鎴?`/var/log/maclawsrv`锛孉dmin Web 搴旈€氳繃 service config 鏆撮湶瀹為檯 log root銆?
 
-## 10. Sandbox Runner 集成点
+## 10. Sandbox Runner 闆嗘垚鐐?
 
-代码层面建议只抽一层 runner，不改变上层 tool 协议。
+浠ｇ爜灞傞潰寤鸿鍙娊涓€灞?runner锛屼笉鏀瑰彉涓婂眰 tool 鍗忚銆?
 
-需要接入的现有执行点：
+闇€瑕佹帴鍏ョ殑鐜版湁鎵ц鐐癸細
 
-- 本地 bash：`corelib/agent/tools_local.go` 的 `ToolBash`。
-- 本地 MCP server：`corelib/agentservice/mcp.go` 的 `localMCPClient.Start`。
-- Skill bash step：`corelib/agentservice/skill_integration.go` 的 `executeBashCommand`。
+- 鏈湴 bash锛歚corelib/agent/tools_local.go` 鐨?`ToolBash`銆?
+- 鏈湴 MCP server锛歚corelib/agentservice/mcp.go` 鐨?`localMCPClient.Start`銆?
+- Skill bash step锛歚corelib/agentservice/skill_integration.go` 鐨?`executeBashCommand`銆?
 
-推荐接口：
+鎺ㄨ崘鎺ュ彛锛?
 
 ```go
 type CommandRunner interface {
@@ -1178,55 +1193,55 @@ type CommandSpec struct {
 }
 ```
 
-`DirectRunner` 保持现状，`SandboxRunner` 只改变最终 argv，例如把真实命令包成 `bwrap ... -- real-command` 或 `sandlock run ... -- real-command`。
+`DirectRunner` 淇濇寔鐜扮姸锛宍SandboxRunner` 鍙敼鍙樻渶缁?argv锛屼緥濡傛妸鐪熷疄鍛戒护鍖呮垚 `bwrap ... -- real-command` 鎴?`sandlock run ... -- real-command`銆?
 
-## 11. 安全原则
+## 11. 瀹夊叏鍘熷垯
 
-- Admin Web 默认只监听 loopback；远程访问必须启用 TLS 或反向代理认证。
-- 所有 admin 写操作写 audit。
-- 所有 shell/install 类能力默认 `print_only`，必须显式确认才执行。
-- 日志和错误输出统一脱敏。
-- Sandbox strict 模式下，如果检测不到可用后端，本地 bash、本地 MCP、skill step 应 fail closed。
-- 非 strict 模式下，可以 fallback 到 direct，但 UI 必须显示红色风险状态。
-- 服务级配置更新要返回 diff、source、restart_required。
+- Admin Web 榛樿鍙洃鍚?loopback锛涜繙绋嬭闂繀椤诲惎鐢?TLS 鎴栧弽鍚戜唬鐞嗚璇併€?
+- 鎵€鏈?admin 鍐欐搷浣滃啓 audit銆?
+- 鎵€鏈?shell/install 绫昏兘鍔涢粯璁?`print_only`锛屽繀椤绘樉寮忕‘璁ゆ墠鎵ц銆?
+- 鏃ュ織鍜岄敊璇緭鍑虹粺涓€鑴辨晱銆?
+- Sandbox strict 妯″紡涓嬶紝濡傛灉妫€娴嬩笉鍒板彲鐢ㄥ悗绔紝鏈湴 bash銆佹湰鍦?MCP銆乻kill step 搴?fail closed銆?
+- 闈?strict 妯″紡涓嬶紝鍙互 fallback 鍒?direct锛屼絾 UI 蹇呴』鏄剧ず绾㈣壊椋庨櫓鐘舵€併€?
+- 鏈嶅姟绾ч厤缃洿鏂拌杩斿洖 diff銆乻ource銆乺estart_required銆?
 
-## 12. 分阶段计划
+## 12. 鍒嗛樁娈佃鍒?
 
-### Phase 1: 只读 Admin Web + Sandbox Doctor
+### Phase 1: 鍙 Admin Web + Sandbox Doctor
 
-- Overview、Readiness、Metrics、Alerts。
-- Service Config effective view。
-- Sandbox detect/status/smoke-test。
-- Logs sources + recent errors + tail。
-- 复用现有 tenants/users/credentials/audit/snapshots 页面。
+- Overview銆丷eadiness銆丮etrics銆丄lerts銆?
+- Service Config effective view銆?
+- Sandbox detect/status/smoke-test銆?
+- Logs sources + recent errors + tail銆?
+- 澶嶇敤鐜版湁 tenants/users/credentials/audit/snapshots 椤甸潰銆?
 
-### Phase 2: 可写服务级配置
+### Phase 2: 鍙啓鏈嶅姟绾ч厤缃?
 
-- `service_config.json`。
-- service-config schema/get/put/validate/effective。
-- sandbox profiles get/put/validate。
-- execution policy get/put/validate。
-- 所有写操作 audit。
+- `service_config.json`銆?
+- service-config schema/get/put/validate/effective銆?
+- sandbox profiles get/put/validate銆?
+- execution policy get/put/validate銆?
+- 鎵€鏈夊啓鎿嶄綔 audit銆?
 
-### Phase 3: Sandbox Runner 生效
+### Phase 3: Sandbox Runner 鐢熸晥
 
-- 接入 local bash。
-- 接入 skill step。
-- 接入 local MCP server。
-- 增加 sandbox execution events。
-- strict/fallback 策略生效。
+- 鎺ュ叆 local bash銆?
+- 鎺ュ叆 skill step銆?
+- 鎺ュ叆 local MCP server銆?
+- 澧炲姞 sandbox execution events銆?
+- strict/fallback 绛栫暐鐢熸晥銆?
 
-### Phase 4: 运维增强
+### Phase 4: 杩愮淮澧炲己
 
-- log rotate/download/search。
-- scheduler admin。
-- admin jobs 跨用户视图。
-- runtime reload/cleanup。
-- secret rotation plan。
+- log rotate/download/search銆?
+- scheduler admin銆?
+- admin jobs 璺ㄧ敤鎴疯鍥俱€?
+- runtime reload/cleanup銆?
+- secret rotation plan銆?
 
-## 13. 最小 API 清单
+## 13. 鏈€灏?API 娓呭崟
 
-第一阶段建议至少实现：
+绗竴闃舵寤鸿鑷冲皯瀹炵幇锛?
 
 ```text
 GET  /api/v1/admin/bootstrap/status
@@ -1254,17 +1269,18 @@ GET  /api/v1/admin/logs/{source}/tail
 GET  /api/v1/admin/security/posture
 ```
 
-这些接口足以支撑一个有价值的 Admin Web 首版，同时不会立刻改变 `MaClawSrv` 的执行路径。
+杩欎簺鎺ュ彛瓒充互鏀拺涓€涓湁浠峰€肩殑 Admin Web 棣栫増锛屽悓鏃朵笉浼氱珛鍒绘敼鍙?`MaClawSrv` 鐨勬墽琛岃矾寰勩€?
 
-## 14. 决策建议
+## 14. 鍐崇瓥寤鸿
 
-Admin Web 应先做“观察和诊断”，再做“写配置”，最后做“执行路径接管”。Sandbox 也应按这个顺序落地：
+Admin Web 搴斿厛鍋氣€滆瀵熷拰璇婃柇鈥濓紝鍐嶅仛鈥滃啓閰嶇疆鈥濓紝鏈€鍚庡仛鈥滄墽琛岃矾寰勬帴绠♀€濄€係andbox 涔熷簲鎸夎繖涓『搴忚惤鍦帮細
 
 ```text
 detect/status -> install-plan -> profile validate -> smoke-test -> runner integration -> strict mode
 ```
 
-这样可以把风险控制在可回滚范围内，并且让管理员在启用 sandbox 前看到当前机器到底支持什么。
+杩欐牱鍙互鎶婇闄╂帶鍒跺湪鍙洖婊氳寖鍥村唴锛屽苟涓旇绠＄悊鍛樺湪鍚敤 sandbox 鍓嶇湅鍒板綋鍓嶆満鍣ㄥ埌搴曟敮鎸佷粈涔堛€?
+
 
 
 

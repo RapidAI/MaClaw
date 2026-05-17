@@ -69,6 +69,33 @@ func (c Category) IsProtected() bool {
 	return c == CategorySelfIdentity
 }
 
+// DisplayName returns a human-readable Chinese label for the category.
+// Used by memory index injection in system prompts (main AI assistant and VE).
+func (c Category) DisplayName() string {
+	switch MapToCanonical(c) {
+	case CategoryProjectKnowledge:
+		return "项目"
+	case CategoryPreference:
+		return "偏好"
+	case CategoryInstruction:
+		return "指令"
+	case CategoryTaskArtifact:
+		return "任务产出"
+	case CategoryProfile:
+		return "档案"
+	case CategoryUserFact:
+		return "用户信息"
+	case CategorySelfIdentity:
+		return "自我认知"
+	case CategoryConversationSummary:
+		return "对话摘要"
+	case CategorySessionCheckpoint:
+		return "会话快照"
+	default:
+		return string(c)
+	}
+}
+
 // Scope controls cross-project visibility of a memory entry.
 type Scope string
 

@@ -159,6 +159,80 @@ function assertLLMProviderPricingHooks() {
   });
 }
 
+function assertSecurityCapabilityComplianceExportHooks() {
+  const content = read('security-tab.js');
+  [
+    'capabilityComplianceExportSummary',
+    'capabilityComplianceExportSummary(compliance)',
+    'capabilityComplianceHasFilteredSummary',
+    'normalizeCapabilityComplianceStatusFilter',
+    'normalizeCapabilityStaleAfterHours',
+    'risks: true',
+    'snapshotRegistryFirstDefined',
+    'hasFilteredSummary ? compliance.filtered_summary',
+    'capabilityComplianceCsvRows',
+    'capability_compliance_csv',
+    'export_summary: exportSummary',
+    'warning_severity_counts: exportSummary.warning_severity_counts',
+    'snapshot_summary: capabilityComplianceExportSummary(compliance)',
+    'total: totalCount',
+    'qualityDenominator = totalCount + snapshotRegistryNonNegativeNumber(summary.unmanaged_installed)',
+    'normalizeCapabilityDeploymentPolicy',
+    "String(policy || 'required').trim().toLowerCase()",
+    'itemPolicy = normalizeCapabilityDeploymentPolicy',
+    'itemSource = String(item.source ||',
+    'effectivePolicy = normalizeCapabilityDeploymentPolicy',
+    'effectiveKind = String(policy.kind ||',
+    'effectiveSource = String(policy.source ||',
+    'kind = String(kind ||',
+    'policy = normalizeCapabilityDeploymentPolicy(policy)',
+    'policy: normalizeCapabilityDeploymentPolicy(row.policy)',
+    "policy !== 'recommended' && policy !== 'blocked'",
+    'unmanaged_installed',
+    'value="unmanaged_installed"',
+    'capabilityRiskStatuses',
+    "qualityText = st('snapshotQuality'",
+    'snapshotRegistrySeveritySummary(severity)',
+    'filtered_summary',
+    "'summary_scope'",
+    "'filtered_total'",
+    "'full_total'",
+    'summary_scope: summaryScope',
+    'filtered_total: filteredTotal',
+    'full_total: fullTotal',
+    'filteredMeta',
+    'capabilityFilteredMeta',
+    'filteredSummary.unmanaged_installed',
+    'item.summary_scope',
+    "'summary_scope', 'filtered_total', 'full_total'",
+    "capabilityComplianceStatusFilter === 'issues'",
+    "quality: blockedInstalledCount ? 'incomplete'",
+    "'quality_score'",
+    "'warn_count'",
+    "'error_count'",
+    'blocked-installed',
+    'Search ID/object/path/checksum/risk',
+    'snapshotRegistryFilterErrors',
+    'snapshotRegistryFilterWarnings',
+    'snapshotRegistryFilterFiltered',
+    'snapshotRegistryScopes',
+    'snapshotRegistryScopeSummary',
+    'scope_counts',
+    'registry_scope_counts',
+    'registry_filtered_count',
+    'registry_all_scope_count',
+    'scope_asc',
+    'snapshotRegistrySortScopeAsc',
+    'visible.map(function(item)',
+    'filtered: true',
+    'errors: true, warnings: true'
+  ].forEach(function(marker) {
+    if (!content.includes(marker)) {
+      fail('security-tab.js is missing enterprise compliance export marker: ' + marker);
+    }
+  });
+}
+
 expectedScripts.concat(['MODULES.md', 'check-admin.ps1']).forEach(assertExists);
 expectedScripts.forEach(assertJavaScriptSyntax);
 expectedScripts.forEach(assertModuleExports);
@@ -168,6 +242,7 @@ assertScriptOrder();
 assertHealthHook();
 assertLegacyMirrorRemoved();
 assertLLMProviderPricingHooks();
+assertSecurityCapabilityComplianceExportHooks();
 
 if (!process.exitCode) {
   console.log('Admin module validation passed.');

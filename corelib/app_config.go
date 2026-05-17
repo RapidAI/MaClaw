@@ -254,6 +254,10 @@ type AppConfig struct {
 	// ShowCodingToolEntry controls whether the coding tool selector (Claude Code,
 	// Gemini CLI, etc.) is visible in the sidebar. Default: false (hidden).
 	ShowCodingToolEntry bool `json:"show_coding_tool_entry,omitempty"`
+	// VEAllowedDirectories is the list of local filesystem directories
+	// that the VE is authorized to access for file operations (list, read, send).
+	// Machine-specific, not synced to Hub.
+	VEAllowedDirectories []string `json:"ve_allowed_directories,omitempty"`
 }
 
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.

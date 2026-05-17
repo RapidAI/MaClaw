@@ -158,6 +158,7 @@ type ActiveGrant struct {
 	StartsAt          time.Time `json:"starts_at"`
 	ExpiresAt         time.Time `json:"expires_at"`
 	Active            bool      `json:"active"`
+	Effective         bool      `json:"effective"`
 	Status            string    `json:"status,omitempty"`
 	StatusReason      string    `json:"status_reason,omitempty"`
 	CreditsTotal      float64   `json:"credits_total,omitempty"`
@@ -183,10 +184,10 @@ type ServiceStatus struct {
 	EffectiveExpiresAt string            `json:"effective_expires_at,omitempty"`
 	DefaultModel       string            `json:"default_model,omitempty"`
 	HubLLMBaseURL      string            `json:"hub_llm_base_url,omitempty"`
-	CreditsTotal       float64           `json:"credits_total,omitempty"`
-	CreditsUsed        float64           `json:"credits_used,omitempty"`
-	CreditsRemaining   float64           `json:"credits_remaining,omitempty"`
-	CreditsAvailable   float64           `json:"credits_available,omitempty"`
+	CreditsTotal       float64           `json:"credits_total"`
+	CreditsUsed        float64           `json:"credits_used"`
+	CreditsRemaining   float64           `json:"credits_remaining"`
+	CreditsAvailable   float64           `json:"credits_available"`
 	TokensPerCredit    int               `json:"tokens_per_credit,omitempty"`
 }
 

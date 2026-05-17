@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // GroupChatDispatcher routes group chat messages to the local maclaw agent
@@ -90,12 +91,14 @@ func (d *GroupChatDispatcher) IsRegistered(sessionID string) bool {
 // HandleGroupMessage processes an incoming group discussion message for a session
 // where local maclaw is the executor. It routes the message through the main
 // IMMessageHandler with full tool access.
-func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.GroupDiscussionMessage) {
+// localDispatch indicates the message was dispatched directly from tryLocalExecutorDispatch
+// (bypassing Hub), so responses should be emitted directly to the frontend.
+func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.GroupDiscussionMessage, localDispatch bool) {
 	if d.app == nil {
 		return
 	}
 
-	// Skip own messages
+	// Skip own messages (only relevant for Hub-routed messages)
 	machineID := d.getLocalMachineID()
 	if machineID != "" && msg.FromID == machineID {
 		return
@@ -119,10 +122,10 @@ func (d *GroupChatDispatcher) HandleGroupMessage(sessionID string, msg a2a.Group
 	}
 
 	// Route to main agent in a goroutine (non-blocking)
-	go d.routeToMainAgent(sess, msg)
+	go d.routeToMainAgent(sess, msg, localDispatch)
 }
 
-func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a2a.GroupDiscussionMessage) {
+func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a2a.GroupDiscussionMessage, localDispatch bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[group-dispatcher] panic in routeToMainAgent for session %s: %v", sess.SessionID, r)
@@ -153,22 +156,92 @@ func (d *GroupChatDispatcher) routeToMainAgent(sess *groupExecutorSession, msg a
 		Lang:     "zh",
 	}
 
-	// Stream response back to group
+	// For locally-dispatched messages (from tryLocalExecutorDispatch), emit stream
+	// events directly to frontend for zero-latency display, and async sync response
+	// chunks to Hub for other participants via a single ordered goroutine.
+
+	// hubSyncCh serializes Hub sync messages to avoid goroutine explosion and
+	// preserve chunk ordering. Buffered to avoid blocking the onToken callback.
+	var hubSyncCh chan a2a.GroupDiscussionMessage
+	var hubSyncDone chan struct{}
+	if localDispatch {
+		hubSyncCh = make(chan a2a.GroupDiscussionMessage, 64)
+		hubSyncDone = make(chan struct{})
+		go func() {
+			defer close(hubSyncDone)
+			for m := range hubSyncCh {
+				d.sendToGroup(sess.SessionID, m)
+			}
+		}()
+	}
+
+	// Stream response
 	resp := handler.HandleIMMessageWithProgressAndStream(imMsg, nil, func(chunk string) {
 		if strings.TrimSpace(chunk) == "" {
 			return
 		}
-		d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
-			Kind:    a2a.MessageStreamChunk,
-			Content: chunk,
-		})
+		if localDispatch {
+			// Emit directly to frontend — zero network latency
+			d.emitStreamToFrontend(sess.SessionID, chunk)
+			// Queue for ordered Hub sync (single goroutine, preserves order)
+			select {
+			case hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamChunk, Content: chunk}:
+			default:
+				// Channel full — drop chunk for Hub sync (frontend already has it)
+				log.Printf("[group-dispatcher] hub sync channel full, dropping chunk for session %s", sess.SessionID)
+			}
+		} else {
+			// Hub-routed message: send response through Hub (original behavior)
+			d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
+				Kind:    a2a.MessageStreamChunk,
+				Content: chunk,
+			})
+		}
 	}, nil, nil)
 
 	// Send stream end
 	if resp != nil {
-		d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
-			Kind:    a2a.MessageStreamEnd,
-			Content: "",
+		if localDispatch {
+			d.emitStreamToFrontend(sess.SessionID, "")
+			// Queue stream_end and close channel to signal completion
+			select {
+			case hubSyncCh <- a2a.GroupDiscussionMessage{Kind: a2a.MessageStreamEnd, Content: ""}:
+			default:
+			}
+			close(hubSyncCh)
+			<-hubSyncDone // Wait for all Hub syncs to complete
+		} else {
+			d.sendToGroup(sess.SessionID, a2a.GroupDiscussionMessage{
+				Kind:    a2a.MessageStreamEnd,
+				Content: "",
+			})
+		}
+	} else if localDispatch {
+		// No response — still need to close the sync channel
+		close(hubSyncCh)
+		<-hubSyncDone
+	}
+}
+
+// emitStreamToFrontend sends stream events directly to the frontend via Wails runtime,
+// bypassing Hub network round-trip. Used for local executor dispatch.
+func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
+	if d.app == nil || d.app.ctx == nil {
+		return
+	}
+	if chunk == "" {
+		// Stream end
+		runtime.EventsEmit(d.app.ctx, "ve:stream_end", map[string]any{
+			"session_id": sessionID,
+			"content":    "",
+			"chunk":      "",
+		})
+	} else {
+		// Stream chunk
+		runtime.EventsEmit(d.app.ctx, "ve:stream_chunk", map[string]any{
+			"session_id": sessionID,
+			"content":    chunk,
+			"chunk":      chunk,
 		})
 	}
 }

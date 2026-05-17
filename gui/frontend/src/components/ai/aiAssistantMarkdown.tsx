@@ -366,9 +366,31 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     );
 }
 
+/**
+ * Insert newline before list markers that appear mid-line, but only outside
+ * fenced code blocks. Prevents corrupting code content (e.g., YAML lists).
+ */
+function normalizeInlineListMarkers(content: string): string {
+    // Split by code fence boundaries, process only non-code segments.
+    const parts = content.split(/(```[\s\S]*?```|```[\s\S]*$)/);
+    for (let i = 0; i < parts.length; i++) {
+        // Odd indices are code blocks (matched by the capture group) — skip them.
+        if (i % 2 === 1) continue;
+        parts[i] = parts[i]
+            .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
+            .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2");
+    }
+    return parts.join("");
+}
+
 export function renderContentWithCodeBlocks(content: string, t: Theme): React.ReactNode[] {
     const elements: React.ReactNode[] = [];
-    const lines = content.split("\n");
+    // Normalize: insert newline before list markers that appear mid-line (outside code blocks).
+    // Handles LLM outputs that omit newlines before list items, e.g.:
+    //   "文件等- 📖 阅读本地文件" → "文件等\n- 📖 阅读本地文件"
+    // Only applies outside fenced code blocks to avoid corrupting code content.
+    const normalized = normalizeInlineListMarkers(content);
+    const lines = normalized.split("\n");
     let inCodeBlock = false;
     let codeBlockLines: string[] = [];
     let codeBlockLang = "";

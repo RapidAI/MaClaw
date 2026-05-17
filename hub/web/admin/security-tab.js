@@ -271,7 +271,9 @@
     capabilityStaleAfterHours: { zh: '\u8fc7\u671f\u9608\u503c', en: 'Stale after' },
     capabilityStatusFilter: { zh: '\u72b6\u6001\u7b5b\u9009', en: 'Status filter' },
     capabilityAllStatuses: { zh: '\u5168\u90e8\u72b6\u6001', en: 'All statuses' },
+    capabilityRiskStatuses: { zh: '\u4ec5\u770b\u98ce\u9669', en: 'Risks only' },
     capabilityShowUnmanaged: { zh: '\u663e\u793a\u989d\u5916\u5b89\u88c5', en: 'Show unmanaged installed' },
+    capabilityFilteredMeta: { zh: '\u6258\u7ba1 {shown}/{total} | \u989d\u5916\u5b89\u88c5 {unmanagedShown}/{unmanagedTotal}', en: 'Managed {shown}/{total} | Unmanaged {unmanagedShown}/{unmanagedTotal}' },
     capabilityExportJson: { zh: '\u5bfc\u51fa JSON', en: 'Export JSON' },
     capabilityExportCsv: { zh: '\u5bfc\u51fa CSV', en: 'Export CSV' },
     capabilityExported: { zh: '\u5408\u89c4\u7ed3\u679c\u5df2\u5bfc\u51fa', en: 'Compliance result exported' },
@@ -379,14 +381,19 @@
     snapshotRegistryNoMatches: { zh: '\u5f53\u524d\u7b5b\u9009\u6682\u65e0\u5339\u914d\u7684\u5feb\u7167\u5bfc\u51fa\u8bb0\u5f55', en: 'No snapshot export records match the current filters' },
     snapshotRegistryFilterAll: { zh: '\u5168\u90e8\u8bb0\u5f55', en: 'All records' },
     snapshotRegistryFilterIssues: { zh: '\u4ec5\u770b\u4f4e\u8d28\u91cf/\u544a\u8b66', en: 'Issues only' },
+    snapshotRegistryFilterErrors: { zh: '\u4ec5\u770b error', en: 'Errors only' },
+    snapshotRegistryFilterWarnings: { zh: '\u4ec5\u770b warn', en: 'Warnings only' },
+    snapshotRegistryFilterFiltered: { zh: '\u4ec5\u770b\u7b5b\u9009\u5bfc\u51fa', en: 'Filtered exports only' },
     snapshotRegistryFilterCount: { zh: '\u663e\u793a {shown}/{total} \u6761', en: 'Showing {shown}/{total}' },
     snapshotRegistrySortNewest: { zh: '\u6700\u65b0\u4f18\u5148', en: 'Newest first' },
     snapshotRegistrySortQualityAsc: { zh: '\u8d28\u91cf\u4ece\u4f4e\u5230\u9ad8', en: 'Lowest quality first' },
     snapshotRegistrySortWarningsDesc: { zh: '\u544a\u8b66\u4ece\u591a\u5230\u5c11', en: 'Most warnings first' },
     snapshotRegistrySortTypeAsc: { zh: '\u7c7b\u578b A-Z', en: 'Type A-Z' },
-    snapshotRegistrySearch: { zh: '\u641c\u7d22 ID/\u5bf9\u8c61/\u8def\u5f84/\u6821\u9a8c\u503c', en: 'Search ID/object/path/checksum' },
+    snapshotRegistrySortScopeAsc: { zh: '\u53e3\u5f84 A-Z', en: 'Scope A-Z' },
+    snapshotRegistrySearch: { zh: '\u641c\u7d22 ID/\u5bf9\u8c61/\u8def\u5f84/\u6821\u9a8c\u503c/\u98ce\u9669', en: 'Search ID/object/path/checksum/risk' },
     snapshotRegistrySummary: { zh: '\u6c47\u603b: \u603b\u6570 {total} / \u98ce\u9669 {issues} / \u5e73\u5747\u8d28\u91cf {avg}/100', en: 'Summary: total {total} / issues {issues} / avg quality {avg}/100' },
     snapshotRegistryTypes: { zh: '\u7c7b\u578b\u5206\u5e03: {types}', en: 'Types: {types}' },
+    snapshotRegistryScopes: { zh: '\u5bfc\u51fa\u53e3\u5f84: {scopes}', en: 'Scopes: {scopes}' },
     snapshotRegistrySeveritySummary: { zh: '\u544a\u8b66\u5206\u7ea7: error {error} / warn {warn} / info {info}', en: 'Severity: error {error} / warn {warn} / info {info}' },
     snapshotType: { zh: '\u7c7b\u578b', en: 'Type' },
     snapshotChecksum: { zh: '\u6821\u9a8c\u503c', en: 'Checksum' },
@@ -1022,6 +1029,13 @@
     return Math.max(0, Math.min(100, snapshotRegistryNumber(value)));
   }
 
+  function snapshotRegistryFirstDefined() {
+    for (var i = 0; i < arguments.length; i += 1) {
+      if (arguments[i] !== undefined && arguments[i] !== null && arguments[i] !== '') return arguments[i];
+    }
+    return '';
+  }
+
   function cleanSnapshotSeverityCounts(counts) {
     counts = counts || {};
     return {
@@ -1043,6 +1057,9 @@
       quality: String(item.quality || ''),
       quality_score: snapshotRegistryQualityScore(item.quality_score),
       warning_count: snapshotRegistryNonNegativeNumber(item.warning_count),
+      summary_scope: String(item.summary_scope || ''),
+      filtered_total: snapshotRegistryNonNegativeNumber(item.filtered_total),
+      full_total: snapshotRegistryNonNegativeNumber(item.full_total),
       warning_severity_counts: cleanSnapshotSeverityCounts(item.warning_severity_counts),
       exported_at: String(item.exported_at || ''),
       snapshot_checksum: String(item.snapshot_checksum || ''),
@@ -1083,8 +1100,11 @@
       object_name: String(payload.object_name || payload.user_email || payload.group_name || ''),
       object_group_path: String(payload.object_group_path || (payload.snapshot_context && payload.snapshot_context.selected_group_path) || ''),
       quality: String(summary.quality || sections.quality || ''),
-      quality_score: Number(summary.quality_score || sections.quality_score || 0),
-      warning_count: Number(summary.warning_count || (payload.snapshot_warnings || []).length || 0),
+      quality_score: Number(snapshotRegistryFirstDefined(summary.quality_score, sections.quality_score, 0)),
+      warning_count: Number(snapshotRegistryFirstDefined(summary.warning_count, sections.warning_count, (payload.snapshot_warnings || []).length, 0)),
+      summary_scope: String(summary.summary_scope || sections.summary_scope || ''),
+      filtered_total: Number(snapshotRegistryFirstDefined(summary.filtered_total, sections.filtered_total, 0)),
+      full_total: Number(snapshotRegistryFirstDefined(summary.full_total, sections.full_total, 0)),
       warning_severity_counts: summary.warning_severity_counts || sections.warning_severity_counts || {},
       exported_at: String(payload.exported_at || ''),
       snapshot_checksum: String(payload.snapshot_checksum || ''),
@@ -1331,13 +1351,27 @@
     }
   }
 
+  function normalizeCapabilityComplianceStatusFilter(status) {
+    status = String(status || '').trim().toLowerCase();
+    var allowed = { all: true, issues: true, risks: true, compliant: true, missing: true, version_mismatch: true, blocked_installed: true, stale: true, unmanaged_installed: true };
+    return allowed[status] && status !== 'all' ? status : '';
+  }
+
+  function normalizeCapabilityStaleAfterHours(value) {
+    return Math.max(1, Math.min(8760, Math.round(Number(value || 168) || 168)));
+  }
+
   async function loadUserCapabilityCompliance(email) {
     try {
       var sec = state();
+      var statusFilter = normalizeCapabilityComplianceStatusFilter(sec.capabilityComplianceStatusFilter);
+      sec.capabilityComplianceStatusFilter = statusFilter;
       var params = [];
-      if (sec.capabilityComplianceStatusFilter) params.push('status=' + encodeURIComponent(sec.capabilityComplianceStatusFilter));
+      if (statusFilter) params.push('status=' + encodeURIComponent(statusFilter));
       if (sec.capabilityIncludeUnmanaged === false) params.push('include_unmanaged=false');
-      if (Number(sec.capabilityStaleAfterHours || 0) > 0) params.push('stale_after_hours=' + encodeURIComponent(String(Number(sec.capabilityStaleAfterHours || 168))));
+      var staleHours = normalizeCapabilityStaleAfterHours(sec.capabilityStaleAfterHours);
+      sec.capabilityStaleAfterHours = staleHours;
+      params.push('stale_after_hours=' + encodeURIComponent(String(staleHours)));
       var data = await api('/api/admin/capability-market/users/' + encodeURIComponent(email) + '/compliance' + (params.length ? '?' + params.join('&') : ''));
       return data || { items: [], summary: {} };
     } catch (_) {
@@ -1631,8 +1665,14 @@
     return -1;
   }
 
+  function normalizeCapabilityDeploymentPolicy(policy) {
+    policy = String(policy || 'required').trim().toLowerCase();
+    if (policy !== 'recommended' && policy !== 'blocked') return 'required';
+    return policy;
+  }
+
   function capabilityPolicyWeight(policy) {
-    policy = String(policy || '').toLowerCase();
+    policy = normalizeCapabilityDeploymentPolicy(policy);
     if (policy === 'blocked') return 3;
     if (policy === 'required') return 2;
     return 1;
@@ -1696,7 +1736,7 @@
         capability_ref: row.item && row.item.capability_ref || '',
         capability_version_key: row.item && row.item.capability_version_key || '',
         kind: row.kind || '',
-        policy: row.policy || '',
+        policy: normalizeCapabilityDeploymentPolicy(row.policy),
         source: row.source || '',
         specificity: Number(row.specificity || 0),
         capability: cap && Object.keys(cap).length ? cap : null,
@@ -1709,11 +1749,13 @@
     cache = cache || { capabilities: [], deployments: [], recommendations: [] };
     if (objectType === 'user' && cache.compliance && Array.isArray(cache.compliance.items)) {
       return renderCapabilityPackageRows('user', cache, cache.compliance.items.map(function(item) {
+        var itemPolicy = normalizeCapabilityDeploymentPolicy(item.policy);
+        var itemSource = String(item.source || '').toLowerCase();
         return {
           item: { id: item.policy_id || '', capability_ref: item.capability_ref || '', capability_version_key: item.capability_version_key || '' },
-          kind: item.policy === 'recommended' ? 'recommendation' : 'deployment',
-          policy: item.policy || 'required',
-          source: item.source === 'user' ? st('capabilitySourceUser') : (item.source === 'group' ? st('capabilitySourceGroup') : st('capabilitySourceGlobal')),
+          kind: itemPolicy === 'recommended' ? 'recommendation' : 'deployment',
+          policy: itemPolicy,
+          source: itemSource === 'user' ? st('capabilitySourceUser') : (itemSource === 'group' ? st('capabilitySourceGroup') : st('capabilitySourceGlobal')),
           capability: item.capability || null,
           specificity: item.specificity || 0,
           compliance: item
@@ -1722,11 +1764,14 @@
     }
     if ((objectType === 'user' || objectType === 'group') && Array.isArray(cache.effectivePolicies)) {
       return renderCapabilityPackageRows(objectType, cache, cache.effectivePolicies.map(function(policy) {
+        var effectivePolicy = normalizeCapabilityDeploymentPolicy(policy.policy);
+        var effectiveKind = String(policy.kind || (effectivePolicy === 'recommended' ? 'recommendation' : 'deployment')).toLowerCase();
+        var effectiveSource = String(policy.source || '').toLowerCase();
         return {
           item: { id: policy.policy_id || '', capability_ref: policy.capability_ref || '', capability_version_key: policy.capability_version_key || '' },
-          kind: policy.kind || 'deployment',
-          policy: policy.policy || 'required',
-          source: policy.source === 'user' ? st('capabilitySourceUser') : (policy.source === 'group' ? st('capabilitySourceGroup') : st('capabilitySourceGlobal')),
+          kind: effectiveKind,
+          policy: effectivePolicy,
+          source: effectiveSource === 'user' ? st('capabilitySourceUser') : (effectiveSource === 'group' ? st('capabilitySourceGroup') : st('capabilitySourceGlobal')),
           capability: policy.capability || null,
           specificity: policy.specificity || 0
         };
@@ -1738,7 +1783,7 @@
       var scope = parseScope(item.scope_json);
       var specificity = scopeSpecificity(scope, objectType, objectId);
       if (specificity < 0) return;
-      rows.push({ item: item, kind: 'deployment', policy: item.deployment_policy || 'required', source: scopeLabel(scope, objectType), capability: capMap[item.capability_ref] || null, specificity: specificity });
+      rows.push({ item: item, kind: 'deployment', policy: normalizeCapabilityDeploymentPolicy(item.deployment_policy), source: scopeLabel(scope, objectType), capability: capMap[item.capability_ref] || null, specificity: specificity });
     });
     (cache.recommendations || []).forEach(function(item) {
       var scope = parseScope(item.scope_json);
@@ -1752,7 +1797,7 @@
   function renderCapabilityPolicySummary(rows) {
     var counts = { required: 0, recommended: 0, blocked: 0 };
     (rows || []).forEach(function(row) {
-      var policy = String(row && row.policy || 'recommended').toLowerCase();
+      var policy = normalizeCapabilityDeploymentPolicy(row && row.policy);
       if (policy === 'blocked') counts.blocked += 1;
       else if (policy === 'required') counts.required += 1;
       else counts.recommended += 1;
@@ -1768,7 +1813,8 @@
       var title = cap.display_name || cap.capability_id || row.item.capability_ref || '-';
       var type = cap.capability_type || '-';
       var version = row.item.capability_version_key || cap.current_version_key || 'auto';
-      var badge = row.policy === 'required' ? st('capabilityRequired') : (row.policy === 'blocked' ? st('capabilityBlocked') : st('capabilityRecommended'));
+      var rowPolicy = normalizeCapabilityDeploymentPolicy(row.policy);
+      var badge = rowPolicy === 'required' ? st('capabilityRequired') : (rowPolicy === 'blocked' ? st('capabilityBlocked') : st('capabilityRecommended'));
       var meta = [
         row.item.capability_ref || '-',
         type,
@@ -1798,12 +1844,14 @@
     if (row && row.compliance && row.compliance.status) return row.compliance.status;
     var inv = inventory && inventory[String(row.item.capability_ref || '')] || null;
     var requiredVersion = row.item.capability_version_key || (row.capability && row.capability.current_version_key) || '';
+    var policy = normalizeCapabilityDeploymentPolicy(row.policy);
+    if (policy === 'blocked') return inv && inv.installed ? 'blocked_installed' : 'compliant';
+    if (!inv || !inv.installed) return 'missing';
     if (inv && inv.last_seen_at) {
       var ts = Date.parse(inv.last_seen_at);
-      if (ts && Date.now() - ts > 7 * 24 * 60 * 60 * 1000) return 'stale';
+      var staleAfterHours = normalizeCapabilityStaleAfterHours(state().capabilityStaleAfterHours);
+      if (ts && Date.now() - ts > staleAfterHours * 60 * 60 * 1000) return 'stale';
     }
-    if (row.policy === 'blocked') return inv && inv.installed ? 'blocked_installed' : 'compliant';
-    if (!inv || !inv.installed) return 'missing';
     if (requiredVersion && inv.capability_version_key && requiredVersion !== inv.capability_version_key) return 'version_mismatch';
     return 'compliant';
   }
@@ -1831,8 +1879,9 @@
     var blockedInstalled = 0;
     var stale = 0;
     (rows || []).forEach(function(row) {
-      if (row.policy === 'required') required += 1;
-      else if (row.policy === 'blocked') blocked += 1;
+      var policy = normalizeCapabilityDeploymentPolicy(row.policy);
+      if (policy === 'required') required += 1;
+      else if (policy === 'blocked') blocked += 1;
       else recommended += 1;
       var status = capabilityComplianceStatus(row, invMap);
       if (status === 'compliant') compliant += 1;
@@ -1867,9 +1916,17 @@
   function renderServerCapabilityCompliance(rows, inventoryItems, compliance) {
     var sec = state();
     var summary = compliance.summary || {};
+    var hasFilteredSummary = capabilityComplianceHasFilteredSummary(compliance);
+    var filteredSummary = hasFilteredSummary ? compliance.filtered_summary : summary;
+    var exportSummary = capabilityComplianceExportSummary(compliance);
+    var severity = cleanSnapshotSeverityCounts(exportSummary.warning_severity_counts);
+    var qualityText = st('snapshotQuality', { quality: snapshotQualityLabel(exportSummary.quality) + ' ' + snapshotRegistryQualityScore(exportSummary.quality_score) + '/100' });
+    var severityText = snapshotRegistrySeveritySummary(severity);
     var metrics = '<div class="grid3" style="margin-top:10px"><div class="metric"><label>' + escapeHtml(st('capabilityTotal')) + '</label><strong>' + String(summary.total || 0) + '</strong><span>' + escapeHtml(st('capabilityUnmanagedInstalled') + ': ' + (summary.unmanaged_installed || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityCompliant')) + '</label><strong>' + String(summary.compliant || 0) + '</strong><span>' + escapeHtml(st('capabilityMissing') + ': ' + (summary.missing || 0) + ' | ' + st('capabilityReportStale') + ': ' + (summary.stale || 0)) + '</span></div><div class="metric"><label>' + escapeHtml(st('capabilityBlockedCount')) + '</label><strong>' + String(summary.blocked_installed || 0) + '</strong><span>' + escapeHtml(st('capabilityVersionMismatch') + ': ' + (summary.version_mismatch || 0)) + '</span></div></div>';
-    var meta = '<div class="item-meta" style="margin-top:6px">' + escapeHtml(st('capabilityGeneratedAt') + ': ' + (compliance.generated_at || '-') + ' | ' + st('capabilityStaleAfterHours') + ': ' + (compliance.stale_after_hours || 168) + 'h') + '</div>';
-    var filters = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilityStatusFilter')) + '</label><select id="secCapabilityComplianceStatus" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"><option value="">' + escapeHtml(st('capabilityAllStatuses')) + '</option><option value="compliant"' + (sec.capabilityComplianceStatusFilter === 'compliant' ? ' selected' : '') + '>' + escapeHtml(st('capabilityCompliant')) + '</option><option value="missing"' + (sec.capabilityComplianceStatusFilter === 'missing' ? ' selected' : '') + '>' + escapeHtml(st('capabilityMissing')) + '</option><option value="version_mismatch"' + (sec.capabilityComplianceStatusFilter === 'version_mismatch' ? ' selected' : '') + '>' + escapeHtml(st('capabilityVersionMismatch')) + '</option><option value="blocked_installed"' + (sec.capabilityComplianceStatusFilter === 'blocked_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityBlockedInstalled')) + '</option><option value="stale"' + (sec.capabilityComplianceStatusFilter === 'stale' ? ' selected' : '') + '>' + escapeHtml(st('capabilityReportStale')) + '</option></select></div><div><label>' + escapeHtml(st('capabilityStaleAfterHours')) + '</label><input id="secCapabilityStaleAfterHours" type="number" min="1" max="8760" step="1" value="' + escapeHtml(String(sec.capabilityStaleAfterHours || 168)) + '" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"></div><div style="display:flex;align-items:center;gap:10px;justify-content:space-between"><label style="display:flex;align-items:center;gap:8px;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="secCapabilityIncludeUnmanaged" onchange="changeSecCapabilityComplianceFilter()"' + (sec.capabilityIncludeUnmanaged === false ? '' : ' checked') + '> ' + escapeHtml(st('capabilityShowUnmanaged')) + '</label><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityCompliance()">' + escapeHtml(st('capabilityExportJson')) + '</button><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityComplianceCsv()">' + escapeHtml(st('capabilityExportCsv')) + '</button></div></div>';
+    var filteredMeta = hasFilteredSummary ? (' | ' + st('capabilityFilteredMeta', { shown: snapshotRegistryNonNegativeNumber(filteredSummary.total), total: snapshotRegistryNonNegativeNumber(summary.total), unmanagedShown: snapshotRegistryNonNegativeNumber(filteredSummary.unmanaged_installed), unmanagedTotal: snapshotRegistryNonNegativeNumber(summary.unmanaged_installed) })) : '';
+    var meta = '<div class="item-meta" style="margin-top:6px">' + escapeHtml(st('capabilityGeneratedAt') + ': ' + (compliance.generated_at || '-') + ' | ' + st('capabilityStaleAfterHours') + ': ' + (compliance.stale_after_hours || 168) + 'h' + filteredMeta) + '</div>';
+    var quality = '<div class="item-meta" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px"><span style="font-weight:650;color:var(--text)">' + escapeHtml(qualityText) + '</span><span style="color:var(--muted)">' + escapeHtml(st('snapshotWarnings', { count: exportSummary.warning_count + ' / warn ' + severity.warn + ' / error ' + severity.error })) + '</span><span style="color:var(--muted)">' + escapeHtml(severityText) + '</span></div>';
+    var filters = '<div class="grid3" style="margin-top:10px;align-items:end"><div><label>' + escapeHtml(st('capabilityStatusFilter')) + '</label><select id="secCapabilityComplianceStatus" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"><option value="">' + escapeHtml(st('capabilityAllStatuses')) + '</option><option value="issues"' + (sec.capabilityComplianceStatusFilter === 'issues' ? ' selected' : '') + '>' + escapeHtml(st('capabilityRiskStatuses')) + '</option><option value="compliant"' + (sec.capabilityComplianceStatusFilter === 'compliant' ? ' selected' : '') + '>' + escapeHtml(st('capabilityCompliant')) + '</option><option value="missing"' + (sec.capabilityComplianceStatusFilter === 'missing' ? ' selected' : '') + '>' + escapeHtml(st('capabilityMissing')) + '</option><option value="version_mismatch"' + (sec.capabilityComplianceStatusFilter === 'version_mismatch' ? ' selected' : '') + '>' + escapeHtml(st('capabilityVersionMismatch')) + '</option><option value="blocked_installed"' + (sec.capabilityComplianceStatusFilter === 'blocked_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityBlockedInstalled')) + '</option><option value="stale"' + (sec.capabilityComplianceStatusFilter === 'stale' ? ' selected' : '') + '>' + escapeHtml(st('capabilityReportStale')) + '</option><option value="unmanaged_installed"' + (sec.capabilityComplianceStatusFilter === 'unmanaged_installed' ? ' selected' : '') + '>' + escapeHtml(st('capabilityUnmanagedInstalled')) + '</option></select></div><div><label>' + escapeHtml(st('capabilityStaleAfterHours')) + '</label><input id="secCapabilityStaleAfterHours" type="number" min="1" max="8760" step="1" value="' + escapeHtml(String(sec.capabilityStaleAfterHours || 168)) + '" onchange="changeSecCapabilityComplianceFilter()" style="height:34px"></div><div style="display:flex;align-items:center;gap:10px;justify-content:space-between"><label style="display:flex;align-items:center;gap:8px;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="secCapabilityIncludeUnmanaged" onchange="changeSecCapabilityComplianceFilter()"' + (sec.capabilityIncludeUnmanaged === false ? '' : ' checked') + '> ' + escapeHtml(st('capabilityShowUnmanaged')) + '</label><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityCompliance()">' + escapeHtml(st('capabilityExportJson')) + '</button><button class="btn-ghost" type="button" style="height:32px;font-size:12px;padding:0 10px" onclick="exportSecCapabilityComplianceCsv()">' + escapeHtml(st('capabilityExportCsv')) + '</button></div></div>';
     var list = (rows || []).length ? '<div style="display:grid;gap:6px;margin-top:8px">' + rows.map(function(row) {
       var cap = row.capability || {};
       var title = cap.display_name || cap.capability_id || row.item.capability_ref || '-';
@@ -1884,7 +1941,7 @@
       return '<div class="row" style="grid-template-columns:minmax(0,1fr) auto;gap:10px"><div style="min-width:0"><div style="font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(title) + '</div><div class="item-meta mono">' + escapeHtml(row.item.capability_ref || '-') + '</div><div class="item-meta">' + escapeHtml(detail) + '</div></div>' + complianceBadge(cmp.status || 'missing') + '</div>';
     }).join('') + '</div>' : '';
     var unmanaged = renderUnmanagedInventory(rows, inventoryItems || []);
-    return '<div style="margin-top:10px"><div class="item-meta" style="font-weight:650">' + escapeHtml(st('capabilityCompliance')) + '</div>' + metrics + meta + filters + list + unmanaged + '</div>';
+    return '<div style="margin-top:10px"><div class="item-meta" style="font-weight:650">' + escapeHtml(st('capabilityCompliance')) + '</div>' + metrics + meta + quality + filters + list + unmanaged + '</div>';
   }
 
   function renderUnmanagedInventory(rows, inventoryItems) {
@@ -2258,6 +2315,8 @@
 
   function snapshotRegistrySearchText(item) {
     item = item || {};
+    var counts = cleanSnapshotSeverityCounts(item.warning_severity_counts);
+    var warningCount = snapshotRegistryNonNegativeNumber(item.warning_count);
     return [
       item.snapshot_id || '',
       item.snapshot_type || '',
@@ -2266,6 +2325,15 @@
       item.object_name || '',
       item.object_group_path || '',
       item.quality || '',
+      'quality ' + snapshotRegistryQualityScore(item.quality_score),
+      item.summary_scope || '',
+      item.summary_scope ? ('scope ' + item.summary_scope) : '',
+      item.summary_scope ? ('filtered total ' + snapshotRegistryNonNegativeNumber(item.filtered_total)) : '',
+      item.summary_scope ? ('full total ' + snapshotRegistryNonNegativeNumber(item.full_total)) : '',
+      warningCount ? 'warning warnings risk issue issues' : '',
+      counts.error ? 'error errors high-risk blocked-installed' : '',
+      counts.warn ? 'warn warning warnings' : '',
+      counts.info ? 'info' : '',
       item.snapshot_checksum || ''
     ].join(' ').toLowerCase();
   }
@@ -2278,6 +2346,7 @@
       avg_quality_score: 0,
       quality_score_sum: 0,
       type_counts: {},
+      scope_counts: {},
       warning_severity_counts: { info: 0, warn: 0, error: 0 }
     };
     history.forEach(function(item) {
@@ -2285,7 +2354,9 @@
       if (snapshotRegistryHasIssue(item)) summary.issue_count += 1;
       summary.quality_score_sum += snapshotRegistryQualityScore(item.quality_score);
       var type = String(item.snapshot_type || 'unknown');
+      var scope = String(item.summary_scope || 'all');
       summary.type_counts[type] = Number(summary.type_counts[type] || 0) + 1;
+      summary.scope_counts[scope] = Number(summary.scope_counts[scope] || 0) + 1;
       var counts = item.warning_severity_counts || {};
       ['info', 'warn', 'error'].forEach(function(key) {
         summary.warning_severity_counts[key] = snapshotRegistryNonNegativeNumber(summary.warning_severity_counts[key]) + snapshotRegistryNonNegativeNumber(counts[key]);
@@ -2300,6 +2371,11 @@
     return entries.length ? entries.join(', ') : '-';
   }
 
+  function snapshotRegistryScopeSummary(scopeCounts) {
+    var entries = Object.keys(scopeCounts || {}).sort().map(function(key) { return key + ':' + scopeCounts[key]; });
+    return entries.length ? entries.join(', ') : '-';
+  }
+
   function snapshotRegistrySeveritySummary(counts) {
     counts = cleanSnapshotSeverityCounts(counts);
     return st('snapshotRegistrySeveritySummary', { error: counts.error, warn: counts.warn, info: counts.info });
@@ -2310,6 +2386,7 @@
     if (sortKey === 'quality_asc') return snapshotRegistryQualityScore(item.quality_score);
     if (sortKey === 'warnings_desc') return snapshotRegistryNonNegativeNumber(item.warning_count);
     if (sortKey === 'type_asc') return String(item.snapshot_type || '');
+    if (sortKey === 'scope_asc') return String(item.summary_scope || 'all');
     return Date.parse(item.exported_at || '') || 0;
   }
 
@@ -2321,7 +2398,7 @@
       if (sortKey === 'quality_asc') {
         return (av - bv) || ((Date.parse(b.exported_at || '') || 0) - (Date.parse(a.exported_at || '') || 0));
       }
-      if (sortKey === 'type_asc') {
+      if (sortKey === 'type_asc' || sortKey === 'scope_asc') {
         return String(av).localeCompare(String(bv)) || ((Date.parse(b.exported_at || '') || 0) - (Date.parse(a.exported_at || '') || 0));
       }
       return (bv - av) || String(b.snapshot_id || '').localeCompare(String(a.snapshot_id || ''));
@@ -2333,6 +2410,12 @@
     var history = sec.snapshotExportHistory || [];
     if (sec.snapshotRegistryFilter === 'issues') {
       history = history.filter(snapshotRegistryHasIssue);
+    } else if (sec.snapshotRegistryFilter === 'errors') {
+      history = history.filter(function(item) { return cleanSnapshotSeverityCounts(item && item.warning_severity_counts).error > 0; });
+    } else if (sec.snapshotRegistryFilter === 'warnings') {
+      history = history.filter(function(item) { return cleanSnapshotSeverityCounts(item && item.warning_severity_counts).warn > 0; });
+    } else if (sec.snapshotRegistryFilter === 'filtered') {
+      history = history.filter(function(item) { return String(item && item.summary_scope || '') === 'filtered'; });
     }
     var query = String(sec.snapshotRegistryQuery || '').trim().toLowerCase();
     if (query) {
@@ -2346,15 +2429,16 @@
     var history = sec.snapshotExportHistory || [];
     var visible = snapshotRegistryVisibleHistory();
     var summary = snapshotRegistrySummary(visible);
-    var summaryText = st('snapshotRegistrySummary', { total: summary.total_count, issues: summary.issue_count, avg: summary.avg_quality_score }) + ' | ' + st('snapshotRegistryTypes', { types: snapshotRegistryTypeSummary(summary.type_counts) }) + ' | ' + snapshotRegistrySeveritySummary(summary.warning_severity_counts);
-    var rows = visible.slice(0, 5).map(function(item) {
+    var summaryText = st('snapshotRegistrySummary', { total: summary.total_count, issues: summary.issue_count, avg: summary.avg_quality_score }) + ' | ' + st('snapshotRegistryTypes', { types: snapshotRegistryTypeSummary(summary.type_counts) }) + ' | ' + st('snapshotRegistryScopes', { scopes: snapshotRegistryScopeSummary(summary.scope_counts) }) + ' | ' + snapshotRegistrySeveritySummary(summary.warning_severity_counts);
+    var rows = visible.map(function(item) {
       var time = item.exported_at ? compactDateTime(item.exported_at) : '-';
       var counts = cleanSnapshotSeverityCounts(item.warning_severity_counts);
       var warningCount = snapshotRegistryNonNegativeNumber(item.warning_count);
       var warnings = warningCount ? (' | ' + st('snapshotRegistryWarnings') + ': ' + warningCount + ' / warn ' + counts.warn + ' / info ' + counts.info + ' / error ' + counts.error) : '';
       var quality = item.quality ? (' | ' + st('snapshotQuality', { quality: snapshotQualityLabel(item.quality) + ' ' + snapshotRegistryQualityScore(item.quality_score) + '/100' })) : '';
+      var scope = item.summary_scope ? (' | scope: ' + item.summary_scope + ' ' + snapshotRegistryNonNegativeNumber(item.filtered_total) + '/' + snapshotRegistryNonNegativeNumber(item.full_total)) : '';
       var objectText = item.object_name || item.object_id || '-';
-      var meta = (item.snapshot_type || '-') + quality + warnings + ' | ' + time + ' | ' + (item.snapshot_checksum || '-');
+      var meta = (item.snapshot_type || '-') + quality + scope + warnings + ' | ' + time + ' | ' + (item.snapshot_checksum || '-');
       var objectMeta = st('snapshotRegistryObject') + ': ' + objectText + (item.object_group_path ? ' | ' + st('orgPath') + ': ' + item.object_group_path : '');
       var actions = '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px" onclick="copySecSnapshotHistoryField(\'' + escapeJsString(item.snapshot_id || '') + '\',&quot;snapshot_id&quot;)">' + escapeHtml(st('copySnapshotId')) + '</button><button class="btn-ghost" type="button" style="height:26px;font-size:11px;padding:0 10px" onclick="copySecSnapshotHistoryField(\'' + escapeJsString(item.snapshot_id || '') + '\',&quot;snapshot_checksum&quot;)">' + escapeHtml(st('copySnapshotChecksum')) + '</button></div>';
       return '<div class="row" style="grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:6px 0"><div style="min-width:0"><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(item.snapshot_id || '-') + '</div><div class="item-meta" style="word-break:break-all">' + escapeHtml(objectMeta) + '</div><div class="item-meta mono" style="word-break:break-all">' + escapeHtml(meta) + '</div></div>' + actions + '</div>';
@@ -2371,9 +2455,9 @@
     var sec = state();
     var history = sec.snapshotExportHistory || [];
     if (!history.length) return '';
-    var filter = '<select onchange="changeSecSnapshotRegistryFilter(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:160px"><option value="all"' + (sec.snapshotRegistryFilter === 'all' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterAll')) + '</option><option value="issues"' + (sec.snapshotRegistryFilter === 'issues' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterIssues')) + '</option></select>';
+    var filter = '<select onchange="changeSecSnapshotRegistryFilter(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:170px"><option value="all"' + (sec.snapshotRegistryFilter === 'all' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterAll')) + '</option><option value="issues"' + (sec.snapshotRegistryFilter === 'issues' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterIssues')) + '</option><option value="errors"' + (sec.snapshotRegistryFilter === 'errors' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterErrors')) + '</option><option value="warnings"' + (sec.snapshotRegistryFilter === 'warnings' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterWarnings')) + '</option><option value="filtered"' + (sec.snapshotRegistryFilter === 'filtered' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistryFilterFiltered')) + '</option></select>';
     var sortValue = sec.snapshotRegistrySort || 'exported_at_desc';
-    var sort = '<select onchange="changeSecSnapshotRegistrySort(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:170px"><option value="exported_at_desc"' + (sortValue === 'exported_at_desc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortNewest')) + '</option><option value="quality_asc"' + (sortValue === 'quality_asc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortQualityAsc')) + '</option><option value="warnings_desc"' + (sortValue === 'warnings_desc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortWarningsDesc')) + '</option><option value="type_asc"' + (sortValue === 'type_asc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortTypeAsc')) + '</option></select>';
+    var sort = '<select onchange="changeSecSnapshotRegistrySort(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:170px"><option value="exported_at_desc"' + (sortValue === 'exported_at_desc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortNewest')) + '</option><option value="quality_asc"' + (sortValue === 'quality_asc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortQualityAsc')) + '</option><option value="warnings_desc"' + (sortValue === 'warnings_desc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortWarningsDesc')) + '</option><option value="type_asc"' + (sortValue === 'type_asc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortTypeAsc')) + '</option><option value="scope_asc"' + (sortValue === 'scope_asc' ? ' selected' : '') + '>' + escapeHtml(st('snapshotRegistrySortScopeAsc')) + '</option></select>';
     var search = '<input value="' + escapeHtml(sec.snapshotRegistryQuery || '') + '" placeholder="' + escapeHtml(st('snapshotRegistrySearch')) + '" oninput="changeSecSnapshotRegistryQuery(this.value)" style="height:28px;font-size:11px;padding:0 8px;max-width:220px">';
     return '<div style="border-top:1px solid var(--line);padding-top:8px;margin-top:4px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap"><strong>' + escapeHtml(st('snapshotExportHistory')) + '</strong><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">' + search + filter + sort + '<button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="exportSecSnapshotRegistry()">' + escapeHtml(st('exportSnapshotRegistryJson')) + '</button><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px" onclick="exportSecSnapshotRegistryCsv()">' + escapeHtml(st('exportSnapshotRegistryCsv')) + '</button><button class="btn-ghost" type="button" style="height:28px;font-size:11px;padding:0 10px;color:var(--danger)" onclick="clearSecSnapshotRegistry()">' + escapeHtml(st('clearSnapshotRegistry')) + '</button></div></div><div id="secSnapshotRegistryRows">' + renderSnapshotRegistryRows() + '</div></div>';
   }
@@ -2403,7 +2487,8 @@
   };
 
   global.changeSecSnapshotRegistryFilter = function changeSecSnapshotRegistryFilter(value) {
-    state().snapshotRegistryFilter = value === 'issues' ? 'issues' : 'all';
+    var allowed = { all: true, issues: true, errors: true, warnings: true, filtered: true };
+    state().snapshotRegistryFilter = allowed[value] ? value : 'all';
     updateSnapshotRegistryRows();
   };
 
@@ -2413,7 +2498,7 @@
   };
 
   global.changeSecSnapshotRegistrySort = function changeSecSnapshotRegistrySort(value) {
-    var allowed = { exported_at_desc: true, quality_asc: true, warnings_desc: true, type_asc: true };
+    var allowed = { exported_at_desc: true, quality_asc: true, warnings_desc: true, type_asc: true, scope_asc: true };
     state().snapshotRegistrySort = allowed[value] ? value : 'exported_at_desc';
     updateSnapshotRegistryRows();
   };
@@ -2450,7 +2535,7 @@
 
   function snapshotRegistryCsvRows(history, context) {
     context = context || {};
-    var header = ['registry_exported_at', 'registry_checksum', 'registry_checksum_algorithm', 'registry_filter', 'registry_query', 'registry_sort', 'registry_total_count', 'registry_count', 'registry_issue_count', 'registry_avg_quality_score', 'registry_warn_count', 'registry_info_count', 'registry_error_count', 'registry_rank', 'snapshot_id', 'snapshot_type', 'object_type', 'object_id', 'object_name', 'object_group_path', 'quality', 'quality_score', 'warning_count', 'warn_count', 'info_count', 'error_count', 'exported_at', 'snapshot_checksum', 'snapshot_checksum_algorithm'];
+    var header = ['registry_exported_at', 'registry_checksum', 'registry_checksum_algorithm', 'registry_filter', 'registry_query', 'registry_sort', 'registry_total_count', 'registry_count', 'registry_issue_count', 'registry_avg_quality_score', 'registry_scope_counts', 'registry_filtered_count', 'registry_all_scope_count', 'registry_warn_count', 'registry_info_count', 'registry_error_count', 'registry_rank', 'snapshot_id', 'snapshot_type', 'object_type', 'object_id', 'object_name', 'object_group_path', 'quality', 'quality_score', 'warning_count', 'summary_scope', 'filtered_total', 'full_total', 'warn_count', 'info_count', 'error_count', 'exported_at', 'snapshot_checksum', 'snapshot_checksum_algorithm'];
     var rows = (history || []).map(function(item, index) {
       var counts = item.warning_severity_counts || {};
       return [
@@ -2464,6 +2549,9 @@
         snapshotRegistryNonNegativeNumber(context.registry_count),
         snapshotRegistryNonNegativeNumber(context.registry_issue_count),
         snapshotRegistryQualityScore(context.registry_avg_quality_score),
+        context.registry_scope_counts || '',
+        snapshotRegistryNonNegativeNumber(context.registry_filtered_count),
+        snapshotRegistryNonNegativeNumber(context.registry_all_scope_count),
         snapshotRegistryNonNegativeNumber(context.registry_warn_count),
         snapshotRegistryNonNegativeNumber(context.registry_info_count),
         snapshotRegistryNonNegativeNumber(context.registry_error_count),
@@ -2477,6 +2565,9 @@
         item.quality || '',
         snapshotRegistryQualityScore(item.quality_score),
         snapshotRegistryNonNegativeNumber(item.warning_count),
+        item.summary_scope || '',
+        snapshotRegistryNonNegativeNumber(item.filtered_total),
+        snapshotRegistryNonNegativeNumber(item.full_total),
         snapshotRegistryNonNegativeNumber(counts.warn),
         snapshotRegistryNonNegativeNumber(counts.info),
         snapshotRegistryNonNegativeNumber(counts.error),
@@ -2513,6 +2604,9 @@
         registry_count: history.length,
         registry_issue_count: summary.issue_count,
         registry_avg_quality_score: summary.avg_quality_score,
+        registry_scope_counts: snapshotRegistryScopeSummary(summary.scope_counts),
+        registry_filtered_count: snapshotRegistryNonNegativeNumber(summary.scope_counts && summary.scope_counts.filtered),
+        registry_all_scope_count: snapshotRegistryNonNegativeNumber(summary.scope_counts && summary.scope_counts.all),
         registry_warn_count: summary.warning_severity_counts.warn,
         registry_info_count: summary.warning_severity_counts.info,
         registry_error_count: summary.warning_severity_counts.error
@@ -2788,6 +2882,7 @@
   };
 
   global.saveSecCapabilityPolicy = async function saveSecCapabilityPolicy(policy) {
+    policy = normalizeCapabilityDeploymentPolicy(policy);
     var sec = state();
     var select = document.getElementById('secCapabilitySelect');
     var capabilityRef = String(select && select.value || '').trim();
@@ -2827,6 +2922,7 @@
     var sec = state();
     id = String(id || '').trim();
     if (!id || !confirm(st('confirmRemoveCapabilityPolicy'))) return;
+    kind = String(kind || '').toLowerCase();
     var url = kind === 'recommendation'
       ? '/api/admin/capability-market/recommendations/' + encodeURIComponent(id)
       : '/api/admin/capability-market/managed-deployments/' + encodeURIComponent(id);
@@ -2848,9 +2944,9 @@
     var status = document.getElementById('secCapabilityComplianceStatus');
     var unmanaged = document.getElementById('secCapabilityIncludeUnmanaged');
     var stale = document.getElementById('secCapabilityStaleAfterHours');
-    sec.capabilityComplianceStatusFilter = String(status && status.value || '').trim();
+    sec.capabilityComplianceStatusFilter = normalizeCapabilityComplianceStatusFilter(status && status.value);
     sec.capabilityIncludeUnmanaged = unmanaged ? !!unmanaged.checked : true;
-    sec.capabilityStaleAfterHours = Math.max(1, Math.min(8760, Number(stale && stale.value || 168) || 168));
+    sec.capabilityStaleAfterHours = normalizeCapabilityStaleAfterHours(stale && stale.value);
     if (sec.selectedUserEmail) global.selectSecUser(sec.selectedUserEmail);
   };
 
@@ -2963,11 +3059,53 @@
     }
   };
 
+  function capabilityComplianceHasFilteredSummary(compliance) {
+    return !!(compliance && Object.prototype.hasOwnProperty.call(compliance, 'filtered_summary') && compliance.filtered_summary);
+  }
+
+  function capabilityComplianceExportSummary(compliance) {
+    compliance = compliance || {};
+    var hasFilteredSummary = capabilityComplianceHasFilteredSummary(compliance);
+    var summary = hasFilteredSummary ? compliance.filtered_summary : (compliance.summary || {});
+    var fullSummary = compliance.summary || summary;
+    var summaryScope = hasFilteredSummary ? 'filtered' : 'all';
+    var filteredTotal = snapshotRegistryNonNegativeNumber(summary.total);
+    var fullTotal = snapshotRegistryNonNegativeNumber(fullSummary.total);
+    var blockedInstalledCount = snapshotRegistryNonNegativeNumber(summary.blocked_installed);
+    var warnCount = snapshotRegistryNonNegativeNumber(summary.missing) + snapshotRegistryNonNegativeNumber(summary.version_mismatch) + snapshotRegistryNonNegativeNumber(summary.stale) + snapshotRegistryNonNegativeNumber(summary.unmanaged_installed);
+    var riskCount = warnCount + blockedInstalledCount;
+    var totalCount = snapshotRegistryNonNegativeNumber(summary.total);
+    var compliantCount = snapshotRegistryNonNegativeNumber(summary.compliant);
+    var qualityDenominator = totalCount + snapshotRegistryNonNegativeNumber(summary.unmanaged_installed);
+    var qualityScore = qualityDenominator ? Math.max(0, Math.min(100, Math.round((compliantCount / qualityDenominator) * 100))) : (riskCount ? 0 : 100);
+    return {
+      quality: blockedInstalledCount ? 'incomplete' : (riskCount ? 'partial' : 'complete'),
+      quality_score: qualityScore,
+      warning_count: riskCount,
+      warn_count: warnCount,
+      error_count: blockedInstalledCount,
+      summary_scope: summaryScope,
+      filtered_total: filteredTotal,
+      full_total: fullTotal,
+      total: totalCount,
+      compliant: compliantCount,
+      missing: snapshotRegistryNonNegativeNumber(summary.missing),
+      version_mismatch: snapshotRegistryNonNegativeNumber(summary.version_mismatch),
+      blocked_installed: blockedInstalledCount,
+      stale: snapshotRegistryNonNegativeNumber(summary.stale),
+      unmanaged_installed: snapshotRegistryNonNegativeNumber(summary.unmanaged_installed),
+      warning_severity_counts: { info: 0, warn: warnCount, error: blockedInstalledCount }
+    };
+  }
+
   function capabilityComplianceCsvRows(compliance, context) {
     context = context || {};
     compliance = compliance || {};
-    var summary = compliance.summary || {};
-    var header = ['exported_at', 'snapshot_id', 'snapshot_checksum', 'snapshot_checksum_algorithm', 'user_email', 'status_filter', 'include_unmanaged', 'stale_after_hours', 'total', 'compliant', 'missing', 'version_mismatch', 'blocked_installed', 'stale', 'unmanaged_installed', 'row_type', 'status', 'policy', 'source', 'capability_ref', 'capability_version_key', 'installed_version', 'install_status', 'last_seen_at', 'policy_id', 'capability_type', 'display_name'];
+    var hasFilteredSummary = capabilityComplianceHasFilteredSummary(compliance);
+    var summary = hasFilteredSummary ? compliance.filtered_summary : (compliance.summary || {});
+    var fullSummary = compliance.summary || summary;
+    var summaryScope = hasFilteredSummary ? 'filtered' : 'all';
+    var header = ['exported_at', 'snapshot_id', 'snapshot_checksum', 'snapshot_checksum_algorithm', 'user_email', 'status_filter', 'include_unmanaged', 'stale_after_hours', 'summary_scope', 'filtered_total', 'full_total', 'total', 'compliant', 'missing', 'version_mismatch', 'blocked_installed', 'stale', 'unmanaged_installed', 'quality', 'quality_score', 'warning_count', 'warn_count', 'error_count', 'row_type', 'status', 'policy', 'source', 'capability_ref', 'capability_version_key', 'installed_version', 'install_status', 'last_seen_at', 'policy_id', 'capability_type', 'display_name'];
     var rows = [];
     (compliance.items || []).forEach(function(item) {
       var cap = item.capability || {};
@@ -2980,6 +3118,9 @@
         context.status_filter || '',
         context.include_unmanaged === false ? 'false' : 'true',
         context.stale_after_hours || '',
+        summaryScope,
+        snapshotRegistryNonNegativeNumber(summary.total),
+        snapshotRegistryNonNegativeNumber(fullSummary.total),
         snapshotRegistryNonNegativeNumber(summary.total),
         snapshotRegistryNonNegativeNumber(summary.compliant),
         snapshotRegistryNonNegativeNumber(summary.missing),
@@ -2987,6 +3128,11 @@
         snapshotRegistryNonNegativeNumber(summary.blocked_installed),
         snapshotRegistryNonNegativeNumber(summary.stale),
         snapshotRegistryNonNegativeNumber(summary.unmanaged_installed),
+        context.quality || '',
+        snapshotRegistryQualityScore(context.quality_score),
+        snapshotRegistryNonNegativeNumber(context.warning_count),
+        snapshotRegistryNonNegativeNumber(context.warn_count),
+        snapshotRegistryNonNegativeNumber(context.error_count),
         'managed',
         item.status || '',
         item.policy || '',
@@ -3011,6 +3157,9 @@
         context.status_filter || '',
         context.include_unmanaged === false ? 'false' : 'true',
         context.stale_after_hours || '',
+        summaryScope,
+        snapshotRegistryNonNegativeNumber(summary.total),
+        snapshotRegistryNonNegativeNumber(fullSummary.total),
         snapshotRegistryNonNegativeNumber(summary.total),
         snapshotRegistryNonNegativeNumber(summary.compliant),
         snapshotRegistryNonNegativeNumber(summary.missing),
@@ -3018,6 +3167,11 @@
         snapshotRegistryNonNegativeNumber(summary.blocked_installed),
         snapshotRegistryNonNegativeNumber(summary.stale),
         snapshotRegistryNonNegativeNumber(summary.unmanaged_installed),
+        context.quality || '',
+        snapshotRegistryQualityScore(context.quality_score),
+        snapshotRegistryNonNegativeNumber(context.warning_count),
+        snapshotRegistryNonNegativeNumber(context.warn_count),
+        snapshotRegistryNonNegativeNumber(context.error_count),
         'unmanaged',
         'unmanaged_installed',
         '',
@@ -3051,11 +3205,12 @@
         group_id: sec.selectedGroupId || '',
         group_name: sec.selectedGroupName || '',
         filters: {
-          status: sec.capabilityComplianceStatusFilter || '',
+          status: normalizeCapabilityComplianceStatusFilter(sec.capabilityComplianceStatusFilter),
           include_unmanaged: sec.capabilityIncludeUnmanaged !== false,
-          stale_after_hours: Math.max(1, Math.min(8760, Number(sec.capabilityStaleAfterHours || 168) || 168))
+          stale_after_hours: normalizeCapabilityStaleAfterHours(sec.capabilityStaleAfterHours)
         },
         exported_at: new Date().toISOString(),
+        snapshot_summary: capabilityComplianceExportSummary(compliance),
         compliance: compliance
       };
       payload = normalizeSnapshotPayload(payload, 'capability_compliance');
@@ -3087,14 +3242,18 @@
       var safeUser = String(sec.selectedUserEmail || 'user').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'user';
       var snapshotId = ['capability_compliance_csv', safeUser, exportedAt.replace(/[:.]/g, '-').slice(0, 19)].join(':');
       var filters = {
-        status_filter: sec.capabilityComplianceStatusFilter || '',
+        status_filter: normalizeCapabilityComplianceStatusFilter(sec.capabilityComplianceStatusFilter),
         include_unmanaged: sec.capabilityIncludeUnmanaged !== false,
-        stale_after_hours: Math.max(1, Math.min(8760, Number(sec.capabilityStaleAfterHours || 168) || 168))
+        stale_after_hours: normalizeCapabilityStaleAfterHours(sec.capabilityStaleAfterHours)
       };
+      var exportSummary = capabilityComplianceExportSummary(compliance);
       var checksum = snapshotChecksum({
         snapshot_type: 'capability_compliance_csv',
+        snapshot_id: snapshotId,
+        exported_at: exportedAt,
         user_email: sec.selectedUserEmail || '',
         filters: filters,
+        export_summary: exportSummary,
         compliance: compliance
       });
       var csv = capabilityComplianceCsvRows(compliance, {
@@ -3105,7 +3264,12 @@
         user_email: sec.selectedUserEmail || '',
         status_filter: filters.status_filter,
         include_unmanaged: filters.include_unmanaged,
-        stale_after_hours: filters.stale_after_hours
+        stale_after_hours: filters.stale_after_hours,
+        quality: exportSummary.quality,
+        quality_score: exportSummary.quality_score,
+        warning_count: exportSummary.warning_count,
+        warn_count: exportSummary.warn_count,
+        error_count: exportSummary.error_count
       });
       var blob = new Blob(['\ufeff', csv], { type: 'text/csv;charset=utf-8' });
       var url = URL.createObjectURL(blob);
@@ -3116,6 +3280,27 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      var overview = sec.currentOverviewSnapshot || {};
+      rememberSnapshotExport({
+        snapshot_id: snapshotId,
+        snapshot_type: 'capability_compliance_csv',
+        object_type: sec.selectedObjectType || 'user',
+        object_id: sec.selectedUserEmail || '',
+        object_name: sec.selectedUserEmail || '',
+        object_group_path: overview.group_path || '',
+        exported_at: exportedAt,
+        snapshot_checksum: checksum,
+        snapshot_checksum_algorithm: 'fnv1a32-stable-json',
+        snapshot_summary: {
+          quality: exportSummary.quality,
+          quality_score: exportSummary.quality_score,
+          warning_count: exportSummary.warning_count,
+          summary_scope: exportSummary.summary_scope,
+          filtered_total: exportSummary.filtered_total,
+          full_total: exportSummary.full_total,
+          warning_severity_counts: exportSummary.warning_severity_counts
+        }
+      });
       showToast(st('capabilityExported') + ' - ' + st('snapshotIdShort', { id: snapshotId }), 'success');
     } catch (err) {
       showToast(st('capabilityExportFailed') + (err && err.message || 'export failed'), 'error');

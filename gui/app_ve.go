@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/a2a"
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // VirtualEmployeeEntry is the frontend-facing VE data structure.
@@ -241,6 +242,9 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 }
 
 // SendVEMessage sends a message in a VE conversation.
+// When local maclaw is the executor for this session, the message is dispatched
+// directly to the local agent (zero network latency) while asynchronously syncing
+// to Hub for history consistency. Otherwise, the message goes through Hub normally.
 func (a *App) SendVEMessage(sessionID, content string) error {
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("message content is empty")
@@ -249,12 +253,41 @@ func (a *App) SendVEMessage(sessionID, content string) error {
 		return fmt.Errorf("message exceeds 32,000 character limit")
 	}
 
-	// Use existing A2A infrastructure to send the message
-	return a.GroupDiscussionSendMessage(sessionID, a2a.GroupDiscussionMessage{
+	msg := a2a.GroupDiscussionMessage{
 		Kind:      a2a.MessageStatement,
 		Content:   content,
 		CreatedAt: time.Now(),
-	})
+	}
+
+	// Local dispatch shortcut: when local maclaw is the executor for this session,
+	// dispatch directly to the local agent without waiting for Hub round-trip.
+	if a.tryLocalExecutorDispatch(sessionID, msg) {
+		// Async sync to Hub for history consistency (non-blocking)
+		go func() {
+			_ = a.GroupDiscussionSendMessage(sessionID, msg)
+		}()
+		return nil
+	}
+
+	// Default path: send through Hub (for remote digital employees)
+	return a.GroupDiscussionSendMessage(sessionID, msg)
+}
+
+// tryLocalExecutorDispatch checks if local maclaw is the executor for this session
+// and dispatches the message directly to the local agent if so.
+// Returns true if local dispatch was performed, false otherwise.
+func (a *App) tryLocalExecutorDispatch(sessionID string, msg a2a.GroupDiscussionMessage) bool {
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return false
+	}
+	dispatcher := hubClient.groupChatDispatcher()
+	if dispatcher == nil || !dispatcher.IsRegistered(sessionID) {
+		return false
+	}
+	// Dispatch directly to local agent — bypasses Hub network round-trip
+	dispatcher.HandleGroupMessage(sessionID, msg, true)
+	return true
 }
 
 // CloseVESession ends a VE conversation session and removes it from the sticky cache.
@@ -420,6 +453,50 @@ func (a *App) RespondAuthRequest(requestID, decision string) error {
 	}
 	_, err = a.postHubJSON(hubURL, token, "/api/ve/auth/respond", body)
 	return err
+}
+
+// --- VE Allowed Directories ---
+
+// SelectVEAllowedDirectory opens the native OS directory picker dialog.
+// Returns the selected directory path, or empty string if cancelled.
+func (a *App) SelectVEAllowedDirectory() (string, error) {
+	selection, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择允许访问的目录 / Select Allowed Directory",
+	})
+	if err != nil {
+		return "", fmt.Errorf("open directory picker: %w", err)
+	}
+	return selection, nil
+}
+
+// GetVEAllowedDirectories returns the current allowed directories list from AppConfig.
+// If the config is missing or invalid, returns an empty list (Requirement 2.5).
+func (a *App) GetVEAllowedDirectories() ([]string, error) {
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		// Treat config load failure as empty list — do not crash (Requirement 2.5).
+		return []string{}, nil
+	}
+	if cfg.VEAllowedDirectories == nil {
+		return []string{}, nil
+	}
+	return cfg.VEAllowedDirectories, nil
+}
+
+// SetVEAllowedDirectories persists the updated allowed directories list to the
+// local config file. Paths that do not exist on the filesystem are still accepted
+// (the owner may add directories for drives not currently connected — Requirement 2.6).
+func (a *App) SetVEAllowedDirectories(dirs []string) error {
+	// Reload the latest config to avoid overwriting concurrent changes.
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cfg.VEAllowedDirectories = dirs
+	if err := a.SaveConfig(cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	return nil
 }
 
 // --- Hub HTTP helpers ---

@@ -196,13 +196,21 @@ function App() {
     useEffect(() => {
         if (!config?.remote_hub_url || !config?.remote_machine_id) return;
         let cancelled = false;
+        let retryTimer: ReturnType<typeof setTimeout> | undefined;
         const fetchVeList = () => {
             import("../wailsjs/go/main/App").then((mod) => {
                 if (cancelled) return;
                 if ((mod as any).ListVirtualEmployees) {
                     (mod as any).ListVirtualEmployees().then((list: VirtualEmployeeEntry[]) => {
-                        if (!cancelled) setVeList(list || []);
-                    }).catch(() => {});
+                        if (!cancelled && list && list.length > 0) {
+                            setVeList(list);
+                        }
+                    }).catch(() => {
+                        // Retry once after 5s on failure to handle transient Hub unavailability
+                        if (!cancelled && !retryTimer) {
+                            retryTimer = setTimeout(() => { retryTimer = undefined; fetchVeList(); }, 5000);
+                        }
+                    });
                 }
             }).catch(() => {});
         };
@@ -212,6 +220,7 @@ function App() {
         const unsub2 = EventsOn("ve:status_change", fetchVeList);
         return () => {
             cancelled = true;
+            if (retryTimer) clearTimeout(retryTimer);
             if (typeof unsub1 === "function") unsub1(); else EventsOff("ve:list_update");
             if (typeof unsub2 === "function") unsub2(); else EventsOff("ve:status_change");
         };
@@ -309,6 +318,10 @@ function App() {
 
     const handleSetFavoriteEmployee = useCallback((ve: VirtualEmployeeEntry) => {
         if (favoriteEmployeeIds.includes(ve.id)) return;
+        // Ensure the VE is in veList so favoriteEmployeeSlots can resolve it immediately.
+        // Without this, if veList hasn't loaded yet or the fetch failed, the slot would
+        // show a fallback name (id.slice(0,6)) instead of the actual VE name.
+        setVeList(prev => prev.some(v => v.id === ve.id) ? prev : [...prev, ve]);
         if (favoriteEmployeeIds.length < 6) {
             updateFavoriteEmployees([...favoriteEmployeeIds, ve.id]);
         } else {
@@ -318,8 +331,11 @@ function App() {
 
     const handleReplaceFavorite = useCallback((index: number) => {
         if (!showFavReplacePicker) return;
+        const ve = showFavReplacePicker.ve;
+        // Ensure the VE is in veList for immediate resolution (same as handleSetFavoriteEmployee)
+        setVeList(prev => prev.some(v => v.id === ve.id) ? prev : [...prev, ve]);
         const newList = [...favoriteEmployeeIds];
-        newList[index] = showFavReplacePicker.ve.id;
+        newList[index] = ve.id;
         updateFavoriteEmployees(newList);
         setShowFavReplacePicker(null);
     }, [favoriteEmployeeIds, showFavReplacePicker, updateFavoriteEmployees]);

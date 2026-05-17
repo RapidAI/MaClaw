@@ -359,3 +359,56 @@ func stringsTrim(v string) string {
 	}
 	return v
 }
+
+// adminJobListFilter scopes admin-wide async job listing.
+type adminJobListFilter struct {
+	Kind     string
+	Status   asyncJobStatus
+	TenantID string
+	UserID   string
+	Limit    int
+}
+
+func (m *asyncJobManager) listAllJobs(filter adminJobListFilter) []asyncJobRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked(time.Now().UTC())
+	kind := stringsTrim(filter.Kind)
+	tenantID := stringsTrim(filter.TenantID)
+	userID := stringsTrim(filter.UserID)
+	items := make([]asyncJobRecord, 0, len(m.jobs))
+	for _, job := range m.jobs {
+		if kind != "" && job.Kind != kind {
+			continue
+		}
+		if filter.Status != "" && job.Status != filter.Status {
+			continue
+		}
+		if tenantID != "" && job.TenantID != tenantID {
+			continue
+		}
+		if userID != "" && job.UserID != userID {
+			continue
+		}
+		items = append(items, *m.snapshot(job))
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	if filter.Limit > 0 && len(items) > filter.Limit {
+		items = items[:filter.Limit]
+	}
+	return items
+}
+
+func (m *asyncJobManager) cancelAnyJob(jobID string) (*asyncJobRecord, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pruneLocked(time.Now().UTC())
+	job, ok := m.jobs[jobID]
+	if !ok {
+		return nil, false
+	}
+	if (job.Status == asyncJobStatusPending || job.Status == asyncJobStatusRunning) && job.cancel != nil {
+		job.cancel()
+	}
+	return m.snapshot(job), true
+}

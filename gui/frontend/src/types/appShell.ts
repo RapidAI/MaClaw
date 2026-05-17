@@ -19,6 +19,7 @@ export interface SidebarTokenUsageStat {
 
 export interface SidebarHubCreditGrant {
     active?: boolean;
+    effective?: boolean;
     status?: string;
     status_reason?: string;
     credits_total?: number;
@@ -30,6 +31,7 @@ export interface SidebarHubCreditGrant {
     starts_at?: string;
     expires_at?: string;
     Active?: boolean;
+    Effective?: boolean;
     Status?: string;
     StatusReason?: string;
     CreditsTotal?: number;

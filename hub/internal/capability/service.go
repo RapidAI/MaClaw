@@ -350,6 +350,7 @@ func (s *Service) ListManagedDeployments(ctx context.Context) ([]Deployment, err
 		if err := rows.Scan(&item.ID, &item.CapabilityRef, &item.CapabilityVersionKey, &item.ScopeJSON, &item.DeploymentPolicy, &reinstall, &item.RetryIntervalMinutes); err != nil {
 			return nil, err
 		}
+		item.DeploymentPolicy = NormalizeManagedDeploymentPolicy(item.DeploymentPolicy)
 		item.ReinstallIfRemoved = reinstall != 0
 		items = append(items, item)
 	}
@@ -522,6 +523,16 @@ type ManagedDeploymentInput struct {
 	Enabled              bool
 }
 
+// NormalizeManagedDeploymentPolicy maps unknown or empty deployment policies to required.
+func NormalizeManagedDeploymentPolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "blocked", "recommended":
+		return strings.ToLower(strings.TrimSpace(policy))
+	default:
+		return "required"
+	}
+}
+
 func (s *Service) CreateManagedDeployment(ctx context.Context, in ManagedDeploymentInput) (string, error) {
 	if s == nil || s.db == nil {
 		return "", errors.New("capability service is not configured")
@@ -531,9 +542,7 @@ func (s *Service) CreateManagedDeployment(ctx context.Context, in ManagedDeploym
 	if strings.TrimSpace(in.ScopeJSON) == "" {
 		in.ScopeJSON = "{}"
 	}
-	if strings.TrimSpace(in.DeploymentPolicy) == "" {
-		in.DeploymentPolicy = "required"
-	}
+	in.DeploymentPolicy = NormalizeManagedDeploymentPolicy(in.DeploymentPolicy)
 	if in.RetryIntervalMinutes <= 0 {
 		in.RetryIntervalMinutes = 60
 	}

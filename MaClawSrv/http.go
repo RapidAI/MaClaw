@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,18 @@ type readinessReport struct {
 	Checks      []readinessCheck `json:"checks"`
 }
 
+type adminRiskEvent struct {
+	ID           string            `json:"id"`
+	Severity     string            `json:"severity"`
+	Kind         string            `json:"kind"`
+	Summary      string            `json:"summary"`
+	Action       string            `json:"action,omitempty"`
+	ResourceType string            `json:"resource_type,omitempty"`
+	ResourceID   string            `json:"resource_id,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+}
+
 type HTTPServer struct {
 	svc            *agentservice.Service
 	adminSecret    string
@@ -60,8 +73,12 @@ func NewHTTPServer(svc *agentservice.Service, adminSecret string, knowledgeMgr *
 	if len(skillSourceSvc) > 0 {
 		sourceSvc = skillSourceSvc[0]
 	}
+	if sourceSvc == nil {
+		sourceSvc = cskill.NewSourceControlService(newFileKVStore(filepath.Join(svc.DataRoot(), "skill_source_control.json")))
+	}
 	s := &HTTPServer{svc: svc, adminSecret: adminSecret, mux: http.NewServeMux(), authLimiter: newAuthLimiter(20, time.Minute), jobs: newAsyncJobManager(svc.DataRoot()), knowledgeMgr: knowledgeMgr, skillSourceSvc: sourceSvc}
 	s.routes()
+	s.startSandboxStartupDiagnoseIfEnabled()
 	return s
 }
 
@@ -187,26 +204,69 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /metrics", s.handleMetrics)
 	s.mux.HandleFunc("GET /openapi.json", s.handleOpenAPI)
 	s.mux.HandleFunc("GET /api/v1/openapi.json", s.handleOpenAPI)
-	s.mux.HandleFunc("GET /api/v1/admin/bootstrap/status", s.handleAdminBootstrapStatus)
-	s.mux.HandleFunc("POST /api/v1/admin/bootstrap/initialize", s.handleAdminBootstrapInitialize)
-	s.mux.HandleFunc("POST /api/v1/admin/auth/login", s.handleAdminAuthLogin)
+	s.mux.HandleFunc("GET /admin", s.handleAdminWeb)
+	s.mux.HandleFunc("GET /admin/", s.handleAdminWeb)
+	s.mux.HandleFunc("GET /api/v1/admin/bootstrap/status", s.withAdminSecurityHeaders(s.handleAdminBootstrapStatus))
+	s.mux.HandleFunc("POST /api/v1/admin/bootstrap/initialize", s.withAdminSecurityHeaders(s.handleAdminBootstrapInitialize))
+	s.mux.HandleFunc("POST /api/v1/admin/auth/login", s.withAdminSecurityHeaders(s.handleAdminAuthLogin))
 	s.mux.HandleFunc("POST /api/v1/admin/auth/logout", s.withAdmin(s.handleAdminAuthLogout))
 	s.mux.HandleFunc("GET /api/v1/admin/auth/me", s.withAdmin(s.handleAdminAuthMe))
+	s.mux.HandleFunc("POST /api/v1/admin/auth/change-password", s.withAdmin(s.handleAdminAuthChangePassword))
+	s.mux.HandleFunc("GET /api/v1/admin/auth/users", s.withAdmin(s.handleAdminAuthUsers))
+	s.mux.HandleFunc("POST /api/v1/admin/auth/users", s.withAdmin(s.handleAdminAuthCreateUser))
+	s.mux.HandleFunc("PATCH /api/v1/admin/auth/users/{adminUserId}", s.withAdmin(s.handleAdminAuthUpdateUser))
+	s.mux.HandleFunc("GET /api/v1/admin/auth/sessions", s.withAdmin(s.handleAdminAuthSessions))
+	s.mux.HandleFunc("DELETE /api/v1/admin/auth/sessions/{sessionId}", s.withAdmin(s.handleAdminAuthRevokeSession))
 	s.mux.HandleFunc("GET /api/v1/admin/system/readiness", s.withAdmin(s.handleGetAdminReadiness))
 	s.mux.HandleFunc("GET /api/v1/admin/overview", s.withAdmin(s.handleGetAdminOverview))
 	s.mux.HandleFunc("GET /api/v1/admin/dashboard", s.withAdmin(s.handleGetAdminDashboard))
 	s.mux.HandleFunc("GET /api/v1/admin/insights", s.withAdmin(s.handleGetAdminInsights))
 	s.mux.HandleFunc("GET /api/v1/admin/alerts", s.withAdmin(s.handleGetAdminAlerts))
+	s.mux.HandleFunc("GET /api/v1/admin/security/summary", s.withAdmin(s.handleAdminSecuritySummary))
+	s.mux.HandleFunc("GET /api/v1/admin/security/risk-events", s.withAdmin(s.handleAdminSecurityRiskEvents))
+	s.mux.HandleFunc("GET /api/v1/admin/runtime/status", s.withAdmin(s.handleAdminRuntimeStatus))
+	s.mux.HandleFunc("POST /api/v1/admin/runtime/gc", s.withAdmin(s.handleAdminRuntimeGC))
+	s.mux.HandleFunc("GET /api/v1/admin/runtime/goroutines", s.withAdmin(s.handleAdminRuntimeGoroutines))
+	s.mux.HandleFunc("GET /api/v1/admin/runtime/profiles/{profileName}", s.withAdmin(s.handleAdminRuntimeProfile))
+	s.mux.HandleFunc("GET /api/v1/admin/scheduler/status", s.withAdmin(s.handleAdminSchedulerStatus))
+	s.mux.HandleFunc("GET /api/v1/admin/jobs", s.withAdmin(s.handleAdminJobs))
+	s.mux.HandleFunc("POST /api/v1/admin/jobs/{jobId}/cancel", s.withAdmin(s.handleAdminCancelJob))
+	s.mux.HandleFunc("GET /api/v1/admin/logs/sources", s.withAdmin(s.handleAdminLogSources))
+	s.mux.HandleFunc("GET /api/v1/admin/logs/errors/recent", s.withAdmin(s.handleAdminRecentLogErrors))
+	s.mux.HandleFunc("POST /api/v1/admin/logs/search", s.withAdmin(s.handleAdminLogSearch))
+	s.mux.HandleFunc("GET /api/v1/admin/logs/{sourceId}/download", s.withAdmin(s.handleAdminLogDownload))
+	s.mux.HandleFunc("POST /api/v1/admin/logs/{sourceId}/rotate", s.withAdmin(s.handleAdminLogRotate))
+	s.mux.HandleFunc("GET /api/v1/admin/logs/{sourceId}/tail", s.withAdmin(s.handleAdminLogRead))
+	s.mux.HandleFunc("GET /api/v1/admin/logs/{sourceId}", s.withAdmin(s.handleAdminLogRead))
 	s.mux.HandleFunc("GET /api/v1/admin/service-config/effective", s.withAdmin(s.handleGetAdminServiceConfigEffective))
+	s.mux.HandleFunc("GET /api/v1/admin/service-config/schema", s.withAdmin(s.handleAdminServiceConfigSchema))
+	s.mux.HandleFunc("GET /api/v1/admin/service-config/environment", s.withAdmin(s.handleAdminServiceConfigEnvironment))
+	s.mux.HandleFunc("GET /api/v1/admin/service-config/draft", s.withAdmin(s.handleAdminServiceConfigDraft))
+	s.mux.HandleFunc("PATCH /api/v1/admin/service-config/draft", s.withAdmin(s.handleUpdateAdminServiceConfigDraft))
+	s.mux.HandleFunc("POST /api/v1/admin/service-config/validate", s.withAdmin(s.handleValidateAdminServiceConfig))
+	s.mux.HandleFunc("POST /api/v1/admin/service-config/export-plan", s.withAdmin(s.handleExportAdminServiceConfigPlan))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/locales", s.withAdmin(s.handleAdminI18NLocales))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/messages", s.withAdmin(s.handleAdminI18NMessages))
 	s.mux.HandleFunc("GET /api/v1/admin/sandbox/status", s.withAdmin(s.handleAdminSandboxStatus))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/config", s.withAdmin(s.handleAdminSandboxConfig))
+	s.mux.HandleFunc("PUT /api/v1/admin/sandbox/config", s.withAdmin(s.handleUpdateAdminSandboxConfig))
+	s.mux.HandleFunc("POST /api/v1/admin/sandbox/rollback", s.withAdmin(s.handleRollbackAdminSandboxConfig))
+	s.mux.HandleFunc("POST /api/v1/admin/sandbox/switch", s.withAdmin(s.handleSwitchAdminSandbox))
 	s.mux.HandleFunc("POST /api/v1/admin/sandbox/detect", s.withAdmin(s.handleAdminSandboxDetect))
 	s.mux.HandleFunc("POST /api/v1/admin/sandbox/smoke-test", s.withAdmin(s.handleAdminSandboxSmokeTest))
 	s.mux.HandleFunc("POST /api/v1/admin/sandbox/diagnose", s.withAdmin(s.handleAdminSandboxDiagnose))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/events", s.withAdmin(s.handleAdminSandboxEvents))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/support-bundle", s.withAdmin(s.handleAdminSandboxSupportBundle))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/profiles", s.withAdmin(s.handleAdminSandboxProfiles))
+	s.mux.HandleFunc("GET /api/v1/admin/sandbox/profiles/{profileName}", s.withAdmin(s.handleAdminSandboxProfile))
+	s.mux.HandleFunc("PUT /api/v1/admin/sandbox/profiles/{profileName}", s.withAdmin(s.handleUpdateAdminSandboxProfile))
+	s.mux.HandleFunc("DELETE /api/v1/admin/sandbox/profiles/{profileName}", s.withAdmin(s.handleDeleteAdminSandboxProfile))
+	s.mux.HandleFunc("POST /api/v1/admin/sandbox/profiles/{profileName}/validate", s.withAdmin(s.handleValidateAdminSandboxProfile))
 	s.mux.HandleFunc("GET /api/v1/admin/sandbox/reports", s.withAdmin(s.handleAdminSandboxReports))
 	s.mux.HandleFunc("GET /api/v1/admin/sandbox/reports/{reportId}", s.withAdmin(s.handleAdminSandboxReport))
+	s.mux.HandleFunc("DELETE /api/v1/admin/sandbox/reports/{reportId}", s.withAdmin(s.handleDeleteAdminSandboxReport))
 	s.mux.HandleFunc("GET /api/v1/admin/sandbox/install-plan", s.withAdmin(s.handleAdminSandboxInstallPlan))
+	s.mux.HandleFunc("POST /api/v1/admin/sandbox/install", s.withAdmin(s.handleAdminSandboxInstall))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants", s.withAdmin(s.handleListTenants))
 	s.mux.HandleFunc("GET /api/v1/admin/audit-events", s.withAdmin(s.handleListAuditEvents))
 	s.mux.HandleFunc("GET /api/v1/admin/export", s.withAdmin(s.handleExportServiceState))
@@ -699,6 +759,222 @@ func (s *HTTPServer) handleGetAdminAlerts(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func (s *HTTPServer) handleAdminSecuritySummary(w http.ResponseWriter, r *http.Request) {
+	since, err := parseOptionalTimeQuery(r, "since")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	until, err := parseOptionalTimeQuery(r, "until")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateOptionalTimeRange(since, until); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, err := s.loadAdminRiskEvents(r.Context(), since, until)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	counts := countRiskEventsBySeverity(items)
+	kindCounts := countRiskEventsByKind(items)
+	status := "ok"
+	if counts["high"] > 0 {
+		status = "critical"
+	} else if counts["medium"] > 0 {
+		status = "warn"
+	}
+	recent := items
+	if len(recent) > 10 {
+		recent = recent[:10]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"generated_at": time.Now().UTC(),
+		"filters":      map[string]any{"since": since, "until": until},
+		"status":       status,
+		"total":        len(items),
+		"counts":       counts,
+		"kind_counts":  kindCounts,
+		"recent":       recent,
+	})
+}
+
+func (s *HTTPServer) handleAdminSecurityRiskEvents(w http.ResponseWriter, r *http.Request) {
+	since, err := parseOptionalTimeQuery(r, "since")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	until, err := parseOptionalTimeQuery(r, "until")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateOptionalTimeRange(since, until); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	severity := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("severity")))
+	if severity != "" && !isValidRiskSeverity(severity) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid severity"})
+		return
+	}
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid limit"})
+			return
+		}
+		limit = parsed
+	}
+	if limit > maxPageLimit {
+		limit = maxPageLimit
+	}
+	items, err := s.loadAdminRiskEvents(r.Context(), since, until)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if severity != "" {
+		items = filterRiskEventsBySeverity(items, severity)
+	}
+	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
+	if kind != "" {
+		items = filterRiskEventsByKind(items, kind)
+	}
+	total := len(items)
+	counts := countRiskEventsBySeverity(items)
+	kindCounts := countRiskEventsByKind(items)
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"generated_at": time.Now().UTC(), "filters": map[string]any{"severity": severity, "kind": kind, "since": since, "until": until, "limit": limit}, "items": items, "total": total, "counts": counts, "kind_counts": kindCounts})
+}
+
+func (s *HTTPServer) loadAdminRiskEvents(ctx context.Context, since, until *time.Time) ([]adminRiskEvent, error) {
+	audit, err := s.svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Since: since, Until: until})
+	if err != nil {
+		return nil, err
+	}
+	items := buildAdminRiskEvents(s.svc.DataRoot(), audit)
+	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
+	return items, nil
+}
+
+func filterRiskEventsBySeverity(items []adminRiskEvent, severity string) []adminRiskEvent {
+	filtered := items[:0]
+	for _, item := range items {
+		if item.Severity == severity {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func filterRiskEventsByKind(items []adminRiskEvent, kind string) []adminRiskEvent {
+	filtered := items[:0]
+	for _, item := range items {
+		if item.Kind == kind {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func isValidRiskSeverity(severity string) bool {
+	switch severity {
+	case "high", "medium", "low":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildAdminRiskEvents(dataRoot string, audit []agentservice.AuditEvent) []adminRiskEvent {
+	items := []adminRiskEvent{}
+	now := time.Now().UTC()
+	mode, _ := effectiveSandboxMode(dataRoot)
+	strict, _ := effectiveSandboxStrict(dataRoot)
+	if mode == "none" {
+		items = append(items, adminRiskEvent{ID: "config:sandbox:none", Severity: "high", Kind: "sandbox_disabled", Summary: "Sandbox mode is none; local execution is not protected.", ResourceType: "sandbox", ResourceID: "runtime", CreatedAt: now})
+	} else if !strict {
+		items = append(items, adminRiskEvent{ID: "config:sandbox:not_strict", Severity: "medium", Kind: "sandbox_not_strict", Summary: "Sandbox strict mode is disabled; execution may fall back when sandbox is unavailable.", ResourceType: "sandbox", ResourceID: "runtime", CreatedAt: now})
+	}
+	if adminEnvBool("MACLAW_ALLOW_INSECURE_HTTP", false) {
+		items = append(items, adminRiskEvent{ID: "config:http:insecure", Severity: "high", Kind: "insecure_http", Summary: "Non-loopback plaintext HTTP is allowed by service config.", ResourceType: "service_config", ResourceID: "allow_insecure_http", CreatedAt: now})
+	}
+	for _, event := range audit {
+		if risk, ok := riskEventFromAudit(event); ok {
+			items = append(items, risk)
+		}
+	}
+	return items
+}
+
+func riskEventFromAudit(event agentservice.AuditEvent) (adminRiskEvent, bool) {
+	severity := ""
+	kind := ""
+	summary := ""
+	switch event.Action {
+	case "auth.token_rate_limited", "admin.login_rate_limited":
+		severity, kind, summary = "high", "auth_rate_limited", "Authentication rate limit was triggered."
+	case "auth.token_failed", "admin.login_failed", "admin.bootstrap_failed", "admin.password_change_failed":
+		severity, kind, summary = "medium", "auth_failed", "Authentication or admin credential validation failed."
+	case "admin.sandbox_diagnose_failed", "admin.sandbox_startup_diagnose_failed", "admin.sandbox_smoke_test_failed":
+		severity, kind, summary = "high", "sandbox_failed", "Sandbox verification failed."
+	case "admin.sandbox_install_failed":
+		severity, kind, summary = "high", "sandbox_install_failed", "Sandbox installation failed."
+	case "admin.service_state_exported":
+		if event.Metadata["include_secrets"] == "true" {
+			severity, kind, summary = "high", "service_state_secrets_exported", "Service state was exported with secrets included."
+		} else {
+			severity, kind, summary = "medium", "service_state_exported", "Service state was exported."
+		}
+	case "admin.service_state_imported":
+		if event.Metadata["dry_run"] == "true" {
+			severity, kind, summary = "medium", "service_state_import_planned", "Service state import dry-run was performed."
+		} else {
+			severity, kind, summary = "high", "service_state_imported", "Service state was imported into this server."
+		}
+	case "admin.snapshot_created":
+		if event.Metadata["include_secrets"] == "true" {
+			severity, kind, summary = "high", "snapshot_secrets_created", "A service snapshot was created with secrets included."
+		} else {
+			severity, kind, summary = "medium", "snapshot_created", "A service snapshot was created."
+		}
+	case "admin.snapshot_restored", "snapshot.restored":
+		if event.Metadata["dry_run"] == "true" {
+			severity, kind, summary = "medium", "snapshot_restore_planned", "Snapshot restore dry-run was performed."
+		} else {
+			severity, kind, summary = "high", "snapshot_restored", "A service snapshot was restored."
+		}
+	}
+	if severity == "" {
+		return adminRiskEvent{}, false
+	}
+	return adminRiskEvent{ID: event.ID, Severity: severity, Kind: kind, Summary: summary, Action: event.Action, ResourceType: event.ResourceType, ResourceID: event.ResourceID, Metadata: event.Metadata, CreatedAt: event.CreatedAt}, true
+}
+
+func countRiskEventsBySeverity(items []adminRiskEvent) map[string]int {
+	out := map[string]int{}
+	for _, item := range items {
+		out[item.Severity]++
+	}
+	return out
+}
+
+func countRiskEventsByKind(items []adminRiskEvent) map[string]int {
+	out := map[string]int{}
+	for _, item := range items {
+		out[item.Kind]++
+	}
+	return out
+}
+
 func (s *HTTPServer) handleListTenants(w http.ResponseWriter, r *http.Request) {
 	status, ok := parseTenantStatus(r.URL.Query().Get("status"))
 	if !ok {
@@ -775,6 +1051,12 @@ func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if includeSecrets != nil && *includeSecrets {
+		if err := requireAdminConfirmation(r, "secret export operations"); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	out, err := s.svc.ExportServiceState(r.Context(), agentservice.ExportServiceStateInput{
 		TenantID:        strings.TrimSpace(r.URL.Query().Get("tenant_id")),
 		UserID:          strings.TrimSpace(r.URL.Query().Get("user_id")),
@@ -787,6 +1069,7 @@ func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Req
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.service_state_exported", "service_state", out.Scope, map[string]string{"tenant_id": out.TenantID, "user_id": out.UserID, "include_secrets": strconv.FormatBool(out.IncludeSecrets), "include_messages": strconv.FormatBool(out.IncludeMessages), "include_runs": strconv.FormatBool(out.IncludeRuns), "include_audit": strconv.FormatBool(out.IncludeAudit), "users": strconv.Itoa(len(out.Users)), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Request) {
@@ -806,11 +1089,18 @@ func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Req
 	} else if dryRun != nil {
 		in.DryRun = *dryRun
 	}
+	if !in.DryRun {
+		if err := requireAdminConfirmation(r, "import operations"); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	out, err := s.svc.ImportServiceState(r.Context(), *in)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.service_state_imported", "service_state", out.Scope, map[string]string{"tenant_id": out.TenantID, "user_id": out.UserID, "dry_run": strconv.FormatBool(out.DryRun), "overwrite": strconv.FormatBool(out.Overwrite), "tenants": strconv.Itoa(out.Tenants), "users": strconv.Itoa(out.Users), "credentials": strconv.Itoa(out.Credentials), "instances": strconv.Itoa(out.Instances), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -851,11 +1141,18 @@ func (s *HTTPServer) handleCreateServiceSnapshot(w http.ResponseWriter, r *http.
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	if in.IncludeSecrets != nil && *in.IncludeSecrets {
+		if err := requireAdminConfirmation(r, "secret snapshot operations"); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	out, err := s.svc.CreateServiceSnapshot(r.Context(), in)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_created", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "include_secrets": strconv.FormatBool(out.Snapshot.IncludeSecrets), "include_messages": strconv.FormatBool(out.Snapshot.IncludeMessages), "include_runs": strconv.FormatBool(out.Snapshot.IncludeRuns), "include_audit": strconv.FormatBool(out.Snapshot.IncludeAudit), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -923,11 +1220,18 @@ func (s *HTTPServer) handleRestoreServiceSnapshot(w http.ResponseWriter, r *http
 	} else if dryRun != nil {
 		in.DryRun = *dryRun
 	}
+	if !in.DryRun {
+		if err := requireAdminConfirmation(r, "restore operations"); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	out, err := s.svc.RestoreServiceSnapshot(r.Context(), r.PathValue("snapshotId"), in)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_restored", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "dry_run": strconv.FormatBool(in.DryRun), "overwrite": strconv.FormatBool(in.Overwrite), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleDeleteServiceSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -1620,7 +1924,7 @@ func (s *HTTPServer) handleListAsyncJobs(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
 	status, ok := parseAsyncJobStatus(r.URL.Query().Get("status"), false)
 	if !ok {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid status"})
@@ -1632,7 +1936,7 @@ func (s *HTTPServer) handleListAsyncJobs(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *HTTPServer) handleDeleteAsyncJobs(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
-	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	kind := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("kind")))
 	statusRaw := strings.TrimSpace(r.URL.Query().Get("status"))
 	status, ok := parseAsyncJobStatus(statusRaw, true)
 	if !ok {
@@ -2208,6 +2512,7 @@ func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p a
 
 func (s *HTTPServer) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setAdminSecurityHeaders(w)
 		provided := r.Header.Get("X-MaClaw-Admin-Secret")
 		if !s.adminSecretAuthorized(provided) && !s.adminSessionAuthorized(provided) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin secret"})
@@ -2385,20 +2690,23 @@ func parseRequiredBoolLikeQuery(r *http.Request, key string) (bool, error) {
 }
 
 func requireDeleteConfirmation(r *http.Request) error {
+	return requireAdminConfirmation(r, "delete operations")
+}
+
+func requireAdminConfirmation(r *http.Request, operation string) error {
 	raw := strings.TrimSpace(r.URL.Query().Get("confirm"))
 	if raw == "" {
-		return errors.New("confirm=true is required for delete operations")
+		return errors.New("confirm=true is required for " + operation)
 	}
 	v, err := strconv.ParseBool(raw)
 	if err != nil {
 		return errors.New("confirm must be a boolean")
 	}
 	if !v {
-		return errors.New("confirm=true is required for delete operations")
+		return errors.New("confirm=true is required for " + operation)
 	}
 	return nil
 }
-
 func parseOptionalBoolQuery(r *http.Request, key string) (*bool, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get(key))
 	if raw == "" {
@@ -2421,6 +2729,13 @@ func parseOptionalTimeQuery(r *http.Request, key string) (*time.Time, error) {
 		return nil, errors.New(key + " must be an RFC3339 timestamp")
 	}
 	return &v, nil
+}
+
+func validateOptionalTimeRange(since, until *time.Time) error {
+	if since != nil && until != nil && since.After(*until) {
+		return errors.New("since must be before or equal to until")
+	}
+	return nil
 }
 func filterCredentialsByQuery(items []agentservice.Credential, r *http.Request) ([]agentservice.Credential, error) {
 	statusRaw := strings.TrimSpace(r.URL.Query().Get("status"))

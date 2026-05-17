@@ -3,6 +3,8 @@ package corelib
 import (
 	"encoding/json"
 	"testing"
+
+	"pgregory.net/rapid"
 )
 
 // TestAppConfig_UnmarshalIgnoresUnknownExtraToolKeys verifies that when a
@@ -279,4 +281,82 @@ func TestCapabilityMarketPolicyExplicitEnterpriseSearchSurvivesUnmarshal(t *test
 	if policy.UpdatePolicy.EnterpriseHub.Default != "auto_update_approved" {
 		t.Fatalf("enterprise hub update default should be filled, got %q", policy.UpdatePolicy.EnterpriseHub.Default)
 	}
+}
+
+
+// TestProperty7_ConfigSerializationRoundTrip verifies that for any list of
+// valid absolute directory path strings, serializing to JSON via AppConfig
+// marshal and deserializing back produces an identical list.
+//
+// Feature: ve-file-sharing-directories, Property 7: Configuration serialization round-trip
+// **Validates: Requirements 2.3**
+func TestProperty7_ConfigSerializationRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate a random list of valid absolute directory path strings.
+		numDirs := rapid.IntRange(0, 20).Draw(t, "numDirs")
+		dirs := make([]string, numDirs)
+		for i := 0; i < numDirs; i++ {
+			dirs[i] = genAbsolutePath(t, i)
+		}
+
+		// Create AppConfig with the generated directories.
+		cfg := AppConfig{
+			VEAllowedDirectories: dirs,
+		}
+
+		// Marshal to JSON.
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %v", err)
+		}
+
+		// Unmarshal back.
+		var cfg2 AppConfig
+		if err := json.Unmarshal(data, &cfg2); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+
+		// Verify identical list.
+		if len(cfg2.VEAllowedDirectories) != len(dirs) {
+			t.Fatalf("length mismatch: got %d, want %d", len(cfg2.VEAllowedDirectories), len(dirs))
+		}
+		for i, want := range dirs {
+			got := cfg2.VEAllowedDirectories[i]
+			if got != want {
+				t.Fatalf("dirs[%d] mismatch: got %q, want %q", i, got, want)
+			}
+		}
+	})
+}
+
+// genAbsolutePath generates a random valid absolute directory path string.
+// It produces both Windows-style (D:\path\to\dir) and Unix-style (/path/to/dir) paths.
+func genAbsolutePath(t *rapid.T, idx int) string {
+	isWindows := rapid.Bool().Draw(t, "isWindows")
+	numSegments := rapid.IntRange(1, 6).Draw(t, "numSegments")
+
+	var path string
+	if isWindows {
+		// Windows drive letter + backslash-separated segments.
+		driveLetter := rapid.SampledFrom([]string{"C", "D", "E", "F", "G", "H"}).Draw(t, "drive")
+		path = driveLetter + ":\\"
+		for i := 0; i < numSegments; i++ {
+			segment := rapid.StringMatching(`[A-Za-z0-9_\-\.]{1,20}`).Draw(t, "segment")
+			if i > 0 {
+				path += "\\"
+			}
+			path += segment
+		}
+	} else {
+		// Unix absolute path with forward slashes.
+		path = "/"
+		for i := 0; i < numSegments; i++ {
+			segment := rapid.StringMatching(`[a-z0-9_\-\.]{1,20}`).Draw(t, "segment")
+			if i > 0 {
+				path += "/"
+			}
+			path += segment
+		}
+	}
+	return path
 }

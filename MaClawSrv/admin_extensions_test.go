@@ -265,6 +265,14 @@ func TestAdminExportServiceState(t *testing.T) {
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("export with secrets without confirm status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true&confirm=true&include_messages=false&include_runs=false&include_audit=false", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("export with secrets status = %d body = %s", w.Code, w.Body.String())
 	}
@@ -280,6 +288,19 @@ func TestAdminExportServiceState(t *testing.T) {
 	}
 	if len(out.Users[0].Instances[0].Sessions[0].Messages) != 0 || len(out.Users[0].Instances[0].Runs) != 0 || len(out.AuditEvents) != 0 {
 		t.Fatalf("expected include flags to omit nested data: %#v %#v", out.Users[0].Instances[0], out.AuditEvents)
+	}
+	exportEvents, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.service_state_exported"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents export: %v", err)
+	}
+	foundSecretExportAudit := false
+	for _, event := range exportEvents {
+		if event.Metadata["include_secrets"] == "true" {
+			foundSecretExportAudit = true
+		}
+	}
+	if !foundSecretExportAudit {
+		t.Fatalf("expected export audit event, got %#v", exportEvents)
 	}
 }
 
@@ -332,7 +353,7 @@ func TestAdminImportServiceStateRoundTrip(t *testing.T) {
 		t.Fatalf("PostMessage: %v", err)
 	}
 
-	exportReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true", nil)
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true&confirm=true", nil)
 	exportReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	exportRec := httptest.NewRecorder()
 	sourceServer.Handler().ServeHTTP(exportRec, exportReq)
@@ -355,7 +376,16 @@ func TestAdminImportServiceStateRoundTrip(t *testing.T) {
 		t.Fatalf("NewService target: %v", err)
 	}
 	targetServer := NewHTTPServer(targetSvc, "admin-secret", nil)
-	importReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/import", bytes.NewReader(exportBody))
+	missingConfirmReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/import", bytes.NewReader(exportBody))
+	missingConfirmReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	missingConfirmReq.Header.Set("Content-Type", "application/json")
+	missingConfirmRec := httptest.NewRecorder()
+	targetServer.Handler().ServeHTTP(missingConfirmRec, missingConfirmReq)
+	if missingConfirmRec.Code != http.StatusBadRequest {
+		t.Fatalf("import without confirm status = %d body = %s", missingConfirmRec.Code, missingConfirmRec.Body.String())
+	}
+
+	importReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/import?confirm=true", bytes.NewReader(exportBody))
 	importReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	importReq.Header.Set("Content-Type", "application/json")
 	importRec := httptest.NewRecorder()
@@ -369,6 +399,13 @@ func TestAdminImportServiceStateRoundTrip(t *testing.T) {
 	}
 	if imported.Users != 1 || imported.Credentials != 1 || imported.Instances != 1 || imported.Sessions != 1 || imported.Messages == 0 || imported.Runs == 0 {
 		t.Fatalf("unexpected import counts: %#v", imported)
+	}
+	importEvents, err := targetSvc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.service_state_imported"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents import: %v", err)
+	}
+	if len(importEvents) == 0 || importEvents[0].Metadata["dry_run"] != "false" {
+		t.Fatalf("expected import audit event, got %#v", importEvents)
 	}
 	cfg, err := targetStore.GetUserConfig(tenant.ID, user.ID)
 	if err != nil {
@@ -413,7 +450,7 @@ func TestAdminImportServiceStateConflictAndOverwrite(t *testing.T) {
 	if _, err := sourceSvc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "overwrite-key", APISecret: "overwrite-secret"}); err != nil {
 		t.Fatalf("CreateCredential: %v", err)
 	}
-	exportReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true", nil)
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true&confirm=true", nil)
 	exportReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	exportRec := httptest.NewRecorder()
 	sourceServer.Handler().ServeHTTP(exportRec, exportReq)
@@ -428,7 +465,7 @@ func TestAdminImportServiceStateConflictAndOverwrite(t *testing.T) {
 		t.Fatalf("NewService target: %v", err)
 	}
 	targetServer := NewHTTPServer(targetSvc, "admin-secret", nil)
-	for i, path := range []string{"/api/v1/admin/import", "/api/v1/admin/import", "/api/v1/admin/import?overwrite=true"} {
+	for i, path := range []string{"/api/v1/admin/import?confirm=true", "/api/v1/admin/import?confirm=true", "/api/v1/admin/import?overwrite=true&confirm=true"} {
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(payload))
 		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 		req.Header.Set("Content-Type", "application/json")
@@ -465,7 +502,7 @@ func TestAdminImportServiceStateDryRun(t *testing.T) {
 	if _, err := sourceSvc.CreateCredential(ctx, agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "dryrun-key", APISecret: "dryrun-secret"}); err != nil {
 		t.Fatalf("CreateCredential: %v", err)
 	}
-	exportReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true", nil)
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true&confirm=true", nil)
 	exportReq.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	exportRec := httptest.NewRecorder()
 	sourceServer.Handler().ServeHTTP(exportRec, exportReq)
@@ -542,6 +579,16 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create secret snapshot without confirm status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	body = bytes.NewBufferString(`{"name":"tenant backup","tenant_id":"` + tenant.ID + `","include_messages":true,"include_runs":true,"include_audit":true,"include_secrets":true}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots?confirm=true", body)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create snapshot status = %d body = %s", w.Code, w.Body.String())
 	}
@@ -554,6 +601,13 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	}
 	if len(created.Data.Tenants) != 1 || len(created.Data.Users) != 1 {
 		t.Fatalf("unexpected snapshot export payload: %#v", created.Data)
+	}
+	createdEvents, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: "admin.snapshot_created"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents snapshot created: %v", err)
+	}
+	if len(createdEvents) == 0 || createdEvents[0].Metadata["include_secrets"] != "true" {
+		t.Fatalf("expected snapshot create audit event, got %#v", createdEvents)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots?tenant_id="+tenant.ID, nil)
@@ -653,6 +707,14 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("restore snapshot without confirm status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/"+created.Snapshot.ID+"/restore?overwrite=true&confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("restore snapshot status = %d body = %s", w.Code, w.Body.String())
 	}
@@ -662,6 +724,19 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	}
 	if restored.Snapshot.ID != created.Snapshot.ID || restored.Import.Users != 1 || restored.Import.Credentials != 1 {
 		t.Fatalf("unexpected restore output: %#v", restored)
+	}
+	restoreEvents, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: "admin.snapshot_restored"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents restore: %v", err)
+	}
+	foundRestoreAudit := false
+	for _, event := range restoreEvents {
+		if event.Metadata["dry_run"] == "false" {
+			foundRestoreAudit = true
+		}
+	}
+	if !foundRestoreAudit {
+		t.Fatalf("expected restore audit event, got %#v", restoreEvents)
 	}
 	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "snapshot-key", APISecret: "snapshot-secret"}); err != nil {
 		t.Fatalf("restored credential should authenticate: %v", err)

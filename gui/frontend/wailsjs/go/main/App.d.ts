@@ -969,6 +969,12 @@ export function SendVEMessageWithAttachments(arg1:string,arg2:string,arg3:Array<
 
 export function CloseVESession(arg1:string):Promise<void>;
 
+export function SelectVEAllowedDirectory():Promise<string>;
+
+export function GetVEAllowedDirectories():Promise<Array<string>>;
+
+export function SetVEAllowedDirectories(arg1:Array<string>):Promise<void>;
+
 export function ArchiveVESession(arg1:string):Promise<void>;
 
 export function ArchiveGroupSession(arg1:Array<string>):Promise<void>;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -62,11 +62,23 @@ export interface VEConversationViewProps {
     initialOnlineStatus?: "online" | "offline";
     /** Pre-existing session ID to resume (sticky session). Skips initiation if provided. */
     existingSessionId?: string;
+    /** Pre-existing messages to restore on remount (tab switch). */
+    initialMessages?: VEMessage[];
+    /** Pre-existing input text to restore on remount (tab switch). */
+    initialInputText?: string;
     /** Override for testing Wails bindings. */
     initiateConversation?: (veId: string) => Promise<{ session_id: string; ve_id: string; ve_name: string }>;
     sendMessage?: (sessionId: string, content: string) => Promise<void>;
     sendMessageWithAttachments?: (sessionId: string, content: string, filePaths: string[]) => Promise<void>;
     closeSession?: (sessionId: string) => Promise<void>;
+}
+
+/**
+ * Imperative handle exposed by VEConversationView via useImperativeHandle.
+ * Used by the parent to snapshot conversation state on tab switch (unmount).
+ */
+export interface VEConversationHandle {
+    getState: () => { messages: VEMessage[]; sessionId: string | null; inputText: string };
 }
 
 // --- Constants ---
@@ -97,32 +109,49 @@ function createSessionWithTimeout<T>(
 
 // --- Component ---
 
-export function VEConversationView({
+export const VEConversationView = forwardRef<VEConversationHandle, VEConversationViewProps>(function VEConversationView({
     veId,
     veName,
     theme,
     lang,
     initialOnlineStatus,
     existingSessionId,
+    initialMessages,
+    initialInputText,
     initiateConversation,
     sendMessage,
     sendMessageWithAttachments,
     closeSession,
-}: VEConversationViewProps) {
+}, ref) {
     const [state, setState] = useState<VEConversationState>({
         sessionId: existingSessionId || null,
-        messages: [],
+        messages: initialMessages || [],
         streaming: false,
         streamContent: "",
         error: null,
         connectionState: existingSessionId ? "connected" : "connected",
         reconnectAttempt: 0,
     });
-    const [inputText, setInputText] = useState("");
+    const [inputText, setInputText] = useState(initialInputText || "");
     const [sending, setSending] = useState(false);
     const [pendingAttachments, setPendingAttachments] = useState<PendingVEAttachment[]>([]);
     // Track VE online status — input is disabled when offline.
     const [veOnline, setVeOnline] = useState(initialOnlineStatus !== "offline");
+
+    // Refs for imperative state access (avoids stale closure in useImperativeHandle)
+    const stateRef = useRef(state);
+    stateRef.current = state;
+    const inputTextRef = useRef(inputText);
+    inputTextRef.current = inputText;
+
+    // Expose getState() to parent via ref — parent calls this before unmount to snapshot state
+    useImperativeHandle(ref, () => ({
+        getState: () => ({
+            messages: stateRef.current.messages,
+            sessionId: stateRef.current.sessionId,
+            inputText: inputTextRef.current,
+        }),
+    }), []);
 
     const mountedRef = useRef(true);
     const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -137,6 +166,7 @@ export function VEConversationView({
     useEffect(() => {
         sessionIdRef.current = state.sessionId;
     }, [state.sessionId]);
+
 
     // Keep reconnectAttemptRef in sync with state resets (e.g. successful session init)
     useEffect(() => {
@@ -723,7 +753,7 @@ export function VEConversationView({
             </div>
         </div>
     );
-}
+});
 
 // --- Sub-components ---
 

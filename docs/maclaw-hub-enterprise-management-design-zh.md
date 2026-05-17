@@ -170,9 +170,18 @@ V1 先完成概览、生效策略、能力包占位、成员弹窗。审计和�
 - 模型服务组继承优先级为用户绑定、最近部门绑定、全局绑定、新用户默认模型服务组。
 - 模型服务组选择器提供清空覆盖操作，便于部门或用户快速回到继承链路。
 - 用户详情展示模型路由、默认模型、额度/有效期、设备与会话摘要。
-- 能力包区支持必装、推荐、禁止策略，以及合规状态筛选和导出。
+- 能力包区支持必装、推荐、禁止策略，以及合规状态筛选和导出；状态筛选覆盖风险汇总和额外安装，便于单独复核未被策略覆盖的客户端能力包。
 - V2 合规结果除 JSON 外新增 CSV 导出，字段包含导出时间、快照 checksum、筛选条件、汇总计数、托管/额外安装行、策略来源、期望版本、已装版本、安装状态和最后上报时间，便于审计人员直接进入表格或 SIEM 复核。
 - V2 合规 CSV 导出补充 snapshot_id，并在导出成功提示里展示该 ID，便于审计沟通时把浏览器下载文件、JSON 快照和外部工单串联起来。
+- V2 合规 JSON/CSV 导出会同步写入 snapshot_summary、quality_score、warn_count、error_count、warning_severity_counts 和 checksum 上下文；页面合规面板也直接展示质量分与 error/warn 分级，并沿用同一个 summary_scope/full_total 口径；后端会在启用筛选时返回 filtered_summary；未筛选时保持全量口径，避免全量快照被误标为 filtered。筛选后的可见结果、质量分、CSV 行内汇总计数、JSON snapshot_summary、summary_scope、filtered_total/full_total 和导出快照保持一致，便于审计评分和分级复核。
+- 合规质量分会把额外安装纳入风险分母；当托管策略全部合规但存在未被策略覆盖的客户端能力包时，quality 仍为 partial，quality_score 也会下降，避免出现 partial 但 100/100 的误导性快照。
+- 当管理员只关闭“显示额外安装”但不选择状态筛选时，后端同样返回 filtered_summary，用 filtered_summary.total 保持托管策略行总数，用 filtered_summary.unmanaged_installed=0 明确表示额外安装已被排除。
+- 合规接口会把未知 status 筛选值规范化为全量视图，避免拼写错误让审计导出变成空结果。
+- 合规接口只有在 include_unmanaged 明确为 false、0、no 或 off 时才排除额外安装；其它未知值按全量视图处理，避免拼写错误导致额外安装被意外隐藏。
+- 前端会将合规状态筛选和 stale_after_hours 过期阈值规范化后再请求和导出，确保页面、后端计算和审计文件使用同一个整数小时口径。
+- 前端下发策略展示、合规 fallback 计算、保存请求和导出也会统一 trim 并规范化 policy，避免历史异常值或带空白的旧值在浏览器侧被误判为推荐策略。
+- 合规面板的筛选摘要会同时展示托管策略行已显示/总数与额外安装已显示/总数，并使用中英文文案，避免只看托管行数量时误判额外安装是否已被纳入当前视图。
+- 能力包下发策略在创建、读取和生效策略计算时都会规范化为 required/recommended/blocked；历史异常值会按 required 处理，避免旧数据影响合规口径。
 - 能力包选择时会自动带入市场当前版本，管理员仍可手动改为固定版本或留空使用 auto。
 - 能力包下发区会显示当前下发范围，并在创建策略时附带部门名称和组织路径上下文。
 - 最近变更页支持按操作、日期、关键词过滤，并支持 JSON/CSV 导出。
@@ -189,12 +198,14 @@ V1 先完成概览、生效策略、能力包占位、成员弹窗。审计和�
 - 导出成功后会在对象审计区保留最近一次快照导出的 snapshot_id、类型、时间和 checksum，并提供复制 ID/校验值按钮；登记簿每条记录也可复制 ID 和 checksum，方便审计留痕和跨系统沟通。
 - 浏览器会维护最近 20 条快照导出登记簿，并可导出 snapshot_export_registry JSON，用于把对象快照、策略快照、能力包快照和审计快照串成一次管理员操作留痕。
 - 快照导出登记簿会持久化到浏览器本地存储，刷新页面后仍可追溯，并支持管理员主动清空本地登记簿。
+- 登记簿页面会展示本地保留的全部最近 20 条记录，避免页面只显示前几条而导出包含更多记录导致审计复核口径不一致。
 - 清空登记簿时会同时重置本地搜索和风险筛选状态，避免下一次导出记录被旧条件隐藏。
-- 快照导出登记簿每条记录会保留对象、组织路径、quality_score 和 warning_severity_counts，登记簿列表中可直接扫描低质量或有告警的导出记录。
+- 快照导出登记簿每条记录会保留对象、组织路径、quality_score、summary_scope、filtered_total/full_total 和 warning_severity_counts，登记簿列表中可直接扫描低质量、有告警或来自筛选视图的导出记录。
+- 快照导出登记簿支持按全部、低质量/告警、error、warn、筛选导出过滤，导出登记簿 JSON/CSV 时会保留 registry_filter，便于按风险等级或导出口径复核。
 - 登记簿支持“仅看低质量/告警”筛选，并可按最新、低质量优先、告警数优先、类型排序；导出登记簿时会保留 registry_filter、registry_sort、registry_total_count 和 registry_count，便于单独复核有风险的快照导出。
-- 登记簿同时支持按 snapshot_id、对象、组织路径和 checksum 搜索，导出登记簿时会保留 registry_query，方便将一次专项复核的搜索条件一起留档。
-- 登记簿列表和导出 JSON 会计算 registry_summary 和 registry_total_summary，包含总数、风险数、平均质量分、类型分布和告警分级汇总；列表顶部会直接展示 error/warn/info 分级汇总，便于管理员快速判断导出健康度。
-- 登记簿除 JSON 外还支持导出 CSV，字段覆盖 registry_exported_at、registry_checksum、registry_checksum_algorithm、registry_filter、registry_query、registry_sort、registry_total_count、registry_count、registry_issue_count、registry_avg_quality_score、registry_warn_count、registry_info_count、registry_error_count、registry_rank、snapshot_id、对象、组织路径、质量分、告警分级和 checksum，并带 UTF-8 BOM、批次 checksum 和 checksum 算法，方便进入表格或 SIEM 流程复核并还原筛选排序上下文。
+- 登记簿同时支持按 snapshot_id、对象、组织路径、checksum 和风险关键词搜索，导出登记簿时会保留 registry_query，方便将一次专项复核的搜索条件一起留档。
+- 登记簿列表和导出 JSON 会计算 registry_summary 和 registry_total_summary，包含总数、风险数、平均质量分、类型分布、导出口径分布和告警分级汇总；列表顶部会直接展示 scope 与 error/warn/info 分级汇总，并支持按导出口径排序，便于管理员快速判断导出健康度。
+- 登记簿除 JSON 外还支持导出 CSV，字段覆盖 registry_exported_at、registry_checksum、registry_checksum_algorithm、registry_filter、registry_query、registry_sort、registry_total_count、registry_count、registry_issue_count、registry_avg_quality_score、registry_scope_counts、registry_filtered_count、registry_all_scope_count、registry_warn_count、registry_info_count、registry_error_count、registry_rank、snapshot_id、对象、组织路径、质量分、summary_scope、filtered_total/full_total、告警分级和 checksum，并带 UTF-8 BOM、批次 checksum 和 checksum 算法，方便进入表格或 SIEM 流程复核并还原筛选排序上下文。
 - 登记簿从本地存储恢复时会规范化数值和告警分级计数，CSV 公式防护会覆盖前导空白的 =/+/-/@ 字段。
 - 登记簿质量分会被限制在 0-100，告警计数会被限制为非负值，避免异常本地数据影响健康度汇总。
 - 登记簿导出会在当前搜索/筛选无匹配时提示而不生成空文件，CSV 字段会避免被表格软件误解为公式。

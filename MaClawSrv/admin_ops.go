@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -14,8 +15,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
 type adminConfigField struct {
@@ -49,11 +53,40 @@ type sandboxStatus struct {
 	Arch             string                    `json:"arch"`
 	Kernel           string                    `json:"kernel,omitempty"`
 	Mode             string                    `json:"mode"`
+	ModeSource       string                    `json:"mode_source"`
 	Strict           bool                      `json:"strict"`
+	StrictSource     string                    `json:"strict_source"`
 	EffectiveBackend string                    `json:"effective_backend"`
 	FallbackReason   string                    `json:"fallback_reason,omitempty"`
 	Capabilities     []sandboxCapabilityStatus `json:"capabilities"`
 	Backends         []sandboxBackendStatus    `json:"backends"`
+}
+
+type adminRuntimeConfig struct {
+	SandboxMode   string    `json:"sandbox_mode,omitempty"`
+	SandboxStrict *bool     `json:"sandbox_strict,omitempty"`
+	UpdatedAt     time.Time `json:"updated_at,omitempty"`
+	UpdatedBy     string    `json:"updated_by,omitempty"`
+	Reason        string    `json:"reason,omitempty"`
+}
+
+type adminSandboxConfigResponse struct {
+	Mode      adminConfigField `json:"mode"`
+	Strict    adminConfigField `json:"strict"`
+	UpdatedAt time.Time        `json:"updated_at,omitempty"`
+	UpdatedBy string           `json:"updated_by,omitempty"`
+	Reason    string           `json:"reason,omitempty"`
+}
+
+type updateAdminSandboxConfigRequest struct {
+	Mode          *string `json:"mode,omitempty"`
+	Strict        *bool   `json:"strict,omitempty"`
+	Reason        string  `json:"reason,omitempty"`
+	ConfirmUnsafe bool    `json:"confirm_unsafe,omitempty"`
+}
+
+type rollbackAdminSandboxConfigRequest struct {
+	Reason string `json:"reason,omitempty"`
 }
 
 type sandboxDiagnoseRequest struct {
@@ -62,6 +95,22 @@ type sandboxDiagnoseRequest struct {
 	IncludeMCPStdioTest       bool   `json:"include_mcp_stdio_test,omitempty"`
 	IncludeResourceLimitTests bool   `json:"include_resource_limit_tests,omitempty"`
 	WriteReport               *bool  `json:"write_report,omitempty"`
+}
+
+type sandboxProfile struct {
+	Name          string         `json:"name"`
+	Backend       string         `json:"backend,omitempty"`
+	Network       string         `json:"network,omitempty"`
+	ReadOnlyPaths []string       `json:"readonly_paths,omitempty"`
+	WritablePaths []string       `json:"writable_paths,omitempty"`
+	EnvAllowlist  []string       `json:"env_allowlist,omitempty"`
+	Limits        map[string]any `json:"limits,omitempty"`
+	UpdatedAt     time.Time      `json:"updated_at,omitempty"`
+	UpdatedBy     string         `json:"updated_by,omitempty"`
+}
+
+type sandboxProfilesFile struct {
+	Profiles map[string]sandboxProfile `json:"profiles"`
 }
 
 type sandboxCheckResult struct {
@@ -99,6 +148,32 @@ type sandboxInstallPlan struct {
 	Notes             []string `json:"notes,omitempty"`
 }
 
+type sandboxInstallRequest struct {
+	Backend string `json:"backend,omitempty"`
+	Confirm bool   `json:"confirm,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+}
+
+type sandboxInstallCommandResult struct {
+	Command    string `json:"command"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
+type sandboxInstallResponse struct {
+	Platform    string                        `json:"platform"`
+	Backend     string                        `json:"backend"`
+	Mode        string                        `json:"mode"`
+	Policy      string                        `json:"policy"`
+	Confirmed   bool                          `json:"confirmed"`
+	Executed    bool                          `json:"executed"`
+	Plan        sandboxInstallPlan            `json:"plan"`
+	Results     []sandboxInstallCommandResult `json:"results,omitempty"`
+	GeneratedAt time.Time                     `json:"generated_at"`
+}
+
 func (s *HTTPServer) handleGetAdminServiceConfigEffective(w http.ResponseWriter, r *http.Request) {
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -116,6 +191,9 @@ func (s *HTTPServer) handleGetAdminServiceConfigEffective(w http.ResponseWriter,
 			"local_bash_user_id":             adminField(os.Getenv("MACLAW_LOCAL_BASH_USER_ID"), envSource("MACLAW_LOCAL_BASH_USER_ID"), true, false, false),
 			"sandbox_mode":                   adminField(adminSandboxMode(), envSource("MACLAW_SANDBOX_MODE"), false, false, true),
 			"sandbox_strict":                 adminField(adminEnvBool("MACLAW_SANDBOX_STRICT", false), envSource("MACLAW_SANDBOX_STRICT"), false, false, true),
+			"sandbox_install_policy":         adminField(sandboxInstallPolicy(), envSource("MACLAW_SANDBOX_INSTALL_POLICY"), true, false, false),
+			"sandbox_report_retention":       adminField(sandboxReportRetention(), envSource("MACLAW_SANDBOX_REPORT_RETENTION"), false, false, true),
+			"sandbox_startup_diagnose":       adminField(adminEnvBool("MACLAW_SANDBOX_STARTUP_DIAGNOSE", false), envSource("MACLAW_SANDBOX_STARTUP_DIAGNOSE"), false, false, true),
 			"admin_web_default_locale":       adminField(getenv("MACLAW_ADMIN_WEB_DEFAULT_LOCALE", "zh-CN"), envSource("MACLAW_ADMIN_WEB_DEFAULT_LOCALE"), false, false, true),
 		},
 	})
@@ -123,34 +201,173 @@ func (s *HTTPServer) handleGetAdminServiceConfigEffective(w http.ResponseWriter,
 
 func (s *HTTPServer) handleAdminI18NLocales(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"default_locale":  getenv("MACLAW_ADMIN_WEB_DEFAULT_LOCALE", "zh-CN"),
-		"enabled_locales": []string{"zh-CN", "en-US"},
+		"default_locale":  defaultAdminLocale(),
+		"enabled_locales": adminEnabledLocales(),
+		"locales":         adminLocaleMetadata(),
 	})
 }
 
 func (s *HTTPServer) handleAdminI18NMessages(w http.ResponseWriter, r *http.Request) {
 	locale := strings.TrimSpace(r.URL.Query().Get("locale"))
 	if locale == "" {
-		locale = getenv("MACLAW_ADMIN_WEB_DEFAULT_LOCALE", "zh-CN")
+		locale = defaultAdminLocale()
 	}
-	messages, ok := adminI18NMessages()[locale]
-	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported locale"})
+	if !isAdminLocaleSupported(locale) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported locale", "enabled_locales": adminEnabledLocales()})
 		return
 	}
+	locale = normalizeAdminLocale(locale)
+	messages := adminI18NMessages()[locale]
 	writeJSON(w, http.StatusOK, map[string]any{"locale": locale, "messages": messages})
 }
 
+func (s *HTTPServer) startSandboxStartupDiagnoseIfEnabled() {
+	if !adminEnvBool("MACLAW_SANDBOX_STARTUP_DIAGNOSE", false) {
+		return
+	}
+	mode, _ := effectiveSandboxMode(s.svc.DataRoot())
+	if mode == "none" {
+		return
+	}
+	go func() {
+		report := buildSandboxDiagnoseReport(context.Background(), sandboxDiagnoseRequest{WriteReport: boolPtr(false)}, s.svc.DataRoot())
+		if err := saveSandboxReport(s.svc.DataRoot(), report); err != nil {
+			report.Warnings = append(report.Warnings, "failed to save startup report: "+err.Error())
+		}
+		action := "admin.sandbox_startup_diagnose_completed"
+		if report.Status == "fail" {
+			action = "admin.sandbox_startup_diagnose_failed"
+		}
+		_ = s.recordAdminAudit(context.Background(), action, "sandbox_report", report.ReportID, map[string]string{
+			"status":            report.Status,
+			"mode":              report.Mode,
+			"effective_backend": report.EffectiveBackend,
+			"profile":           report.Profile,
+			"report_id":         report.ReportID,
+			"trigger":           "startup",
+		})
+	}()
+}
+
 func (s *HTTPServer) handleAdminSandboxStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, buildSandboxStatus(false))
+	writeJSON(w, http.StatusOK, buildSandboxStatus(s.svc.DataRoot(), false))
 }
 
 func (s *HTTPServer) handleAdminSandboxDetect(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, buildSandboxStatus(true))
+	status := buildSandboxStatus(s.svc.DataRoot(), true)
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_detected", "sandbox", status.EffectiveBackend, map[string]string{"mode": status.Mode, "fallback_reason": status.FallbackReason, "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *HTTPServer) handleAdminSandboxConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := loadAdminRuntimeConfig(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, buildAdminSandboxConfigResponse(cfg))
+}
+
+func (s *HTTPServer) handleUpdateAdminSandboxConfig(w http.ResponseWriter, r *http.Request) {
+	s.updateAdminSandboxConfig(w, r, false)
+}
+
+func (s *HTTPServer) handleSwitchAdminSandbox(w http.ResponseWriter, r *http.Request) {
+	s.updateAdminSandboxConfig(w, r, true)
+}
+
+func (s *HTTPServer) updateAdminSandboxConfig(w http.ResponseWriter, r *http.Request, switchMode bool) {
+	var in updateAdminSandboxConfigRequest
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	cfg, err := loadAdminRuntimeConfig(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	oldMode, _ := effectiveSandboxMode(s.svc.DataRoot())
+	oldStrict, _ := effectiveSandboxStrict(s.svc.DataRoot())
+	if switchMode && in.Mode == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode is required"})
+		return
+	}
+	if in.Mode != nil {
+		mode, err := normalizeSandboxMode(*in.Mode)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if mode == "none" && !in.ConfirmUnsafe {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm_unsafe is required when switching sandbox mode to none"})
+			return
+		}
+		cfg.SandboxMode = mode
+	}
+	if in.Strict != nil {
+		cfg.SandboxStrict = in.Strict
+	}
+	cfg.UpdatedAt = time.Now().UTC()
+	cfg.UpdatedBy = adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret"))
+	cfg.Reason = trimMax(in.Reason, 500)
+	if err := saveAdminRuntimeConfig(s.svc.DataRoot(), cfg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	newMode, _ := effectiveSandboxMode(s.svc.DataRoot())
+	newStrict, _ := effectiveSandboxStrict(s.svc.DataRoot())
+	action := "admin.sandbox_config_updated"
+	if switchMode {
+		action = "admin.sandbox_backend_switched"
+	}
+	_ = s.recordAdminAudit(r.Context(), action, "sandbox", "runtime", map[string]string{
+		"old_mode":   oldMode,
+		"new_mode":   newMode,
+		"old_strict": fmt.Sprintf("%t", oldStrict),
+		"new_strict": fmt.Sprintf("%t", newStrict),
+		"reason":     cfg.Reason,
+		"remote_ip":  requestClientIP(r),
+	})
+	resp := map[string]any{"config": buildAdminSandboxConfigResponse(cfg), "status": buildSandboxStatus(s.svc.DataRoot(), false)}
+	if switchMode {
+		report := buildSandboxDiagnoseReport(r.Context(), sandboxDiagnoseRequest{WriteReport: boolPtr(false)}, s.svc.DataRoot())
+		resp["diagnose"] = report
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *HTTPServer) handleRollbackAdminSandboxConfig(w http.ResponseWriter, r *http.Request) {
+	var in rollbackAdminSandboxConfigRequest
+	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	oldMode, _ := effectiveSandboxMode(s.svc.DataRoot())
+	oldStrict, _ := effectiveSandboxStrict(s.svc.DataRoot())
+	cfg := adminRuntimeConfig{UpdatedAt: time.Now().UTC(), UpdatedBy: adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret")), Reason: trimMax(in.Reason, 500)}
+	if err := saveAdminRuntimeConfig(s.svc.DataRoot(), cfg); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	newMode, _ := effectiveSandboxMode(s.svc.DataRoot())
+	newStrict, _ := effectiveSandboxStrict(s.svc.DataRoot())
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_config_rollback", "sandbox", "runtime", map[string]string{
+		"old_mode":   oldMode,
+		"new_mode":   newMode,
+		"old_strict": fmt.Sprintf("%t", oldStrict),
+		"new_strict": fmt.Sprintf("%t", newStrict),
+		"reason":     cfg.Reason,
+		"remote_ip":  requestClientIP(r),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"config": buildAdminSandboxConfigResponse(cfg), "status": buildSandboxStatus(s.svc.DataRoot(), false)})
 }
 
 func (s *HTTPServer) handleAdminSandboxSmokeTest(w http.ResponseWriter, r *http.Request) {
 	report := buildSandboxDiagnoseReport(r.Context(), sandboxDiagnoseRequest{WriteReport: boolPtr(false)}, s.svc.DataRoot())
+	action := "admin.sandbox_smoke_test_succeeded"
+	if report.Status == "fail" {
+		action = "admin.sandbox_smoke_test_failed"
+	}
+	_ = s.recordAdminAudit(r.Context(), action, "sandbox", report.EffectiveBackend, sandboxReportAuditMetadata(r, report))
 	writeJSON(w, statusForDiagnose(report.Status), report)
 }
 
@@ -159,6 +376,7 @@ func (s *HTTPServer) handleAdminSandboxDiagnose(w http.ResponseWriter, r *http.R
 	if !decodeOptionalJSON(w, r, &in) {
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_diagnose_started", "sandbox", strings.TrimSpace(in.Profile), map[string]string{"profile": strings.TrimSpace(in.Profile), "remote_ip": requestClientIP(r)})
 	report := buildSandboxDiagnoseReport(r.Context(), in, s.svc.DataRoot())
 	if in.WriteReport == nil || *in.WriteReport {
 		if err := saveSandboxReport(s.svc.DataRoot(), report); err != nil {
@@ -168,6 +386,11 @@ func (s *HTTPServer) handleAdminSandboxDiagnose(w http.ResponseWriter, r *http.R
 			}
 		}
 	}
+	action := "admin.sandbox_diagnose_completed"
+	if report.Status == "fail" {
+		action = "admin.sandbox_diagnose_failed"
+	}
+	_ = s.recordAdminAudit(r.Context(), action, "sandbox_report", report.ReportID, sandboxReportAuditMetadata(r, report))
 	writeJSON(w, statusForDiagnose(report.Status), report)
 }
 
@@ -180,6 +403,250 @@ func (s *HTTPServer) handleAdminSandboxReports(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, map[string]any{"items": reports})
 }
 
+func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *http.Request) {
+	status := buildSandboxStatus(s.svc.DataRoot(), false)
+	cfg, err := loadAdminRuntimeConfig(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	reports, err := listSandboxReports(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if len(reports) > 5 {
+		reports = reports[:5]
+	}
+	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	profileItems := make([]sandboxProfile, 0, len(profiles.Profiles))
+	for _, profile := range profiles.Profiles {
+		profileItems = append(profileItems, profile)
+	}
+	sort.Slice(profileItems, func(i, j int) bool { return profileItems[i].Name < profileItems[j].Name })
+	events, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{ActorType: "admin"})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	sandboxEvents := make([]agentservice.AuditEvent, 0, 20)
+	for _, event := range events {
+		if isSandboxAuditEvent(event.Action, event.ResourceType) {
+			sandboxEvents = append(sandboxEvents, event)
+			if len(sandboxEvents) >= 20 {
+				break
+			}
+		}
+	}
+	riskItems := buildAdminRiskEvents(s.svc.DataRoot(), events)
+	sort.Slice(riskItems, func(i, j int) bool { return riskItems[i].CreatedAt.After(riskItems[j].CreatedAt) })
+	riskRecent := riskItems
+	if len(riskRecent) > 10 {
+		riskRecent = riskRecent[:10]
+	}
+	backend := status.EffectiveBackend
+	if backend == "" || backend == "none" {
+		backend = status.Mode
+	}
+	if backend == "" || backend == "none" || backend == "auto" {
+		backend = "bwrap"
+	}
+	generatedAt := time.Now().UTC()
+	bundle := map[string]any{
+		"generated_at":      generatedAt,
+		"status":            status,
+		"config":            buildAdminSandboxConfigResponse(cfg),
+		"reports":           reports,
+		"events":            sandboxEvents,
+		"profiles":          profileItems,
+		"install_plan":      buildSandboxInstallPlan(backend),
+		"log_sources":       adminLogSources(s.svc.DataRoot()),
+		"recent_log_errors": recentAdminLogErrors(s.svc.DataRoot(), 20, true),
+		"security_risks": map[string]any{
+			"generated_at": generatedAt,
+			"filters":      map[string]any{"source": "sandbox_support_bundle", "limit": 10},
+			"total":        len(riskItems),
+			"counts":       countRiskEventsBySeverity(riskItems),
+			"kind_counts":  countRiskEventsByKind(riskItems),
+			"recent":       riskRecent,
+		},
+		"data_root_name":     filepath.Base(s.svc.DataRoot()),
+		"data_root_redacted": true,
+		"redactions":         []string{"data_root"},
+		"report_count":       len(reports),
+		"event_count":        len(sandboxEvents),
+		"profile_count":      len(profileItems),
+	}
+	download := false
+	if raw := strings.TrimSpace(r.URL.Query().Get("download")); raw != "" {
+		parsed, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid download"})
+			return
+		}
+		download = parsed
+	}
+	action := "admin.sandbox_support_bundle_generated"
+	if download {
+		action = "admin.sandbox_support_bundle_downloaded"
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"maclawsrv-sandbox-support-bundle-%s.json\"", generatedAt.Format("20060102T150405Z")))
+	}
+	_ = s.recordAdminAudit(r.Context(), action, "sandbox", status.EffectiveBackend, map[string]string{"mode": status.Mode, "effective_backend": status.EffectiveBackend, "download": strconv.FormatBool(download), "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, bundle)
+}
+
+func (s *HTTPServer) handleAdminSandboxEvents(w http.ResponseWriter, r *http.Request) {
+	since, err := parseOptionalTimeQuery(r, "since")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	until, err := parseOptionalTimeQuery(r, "until")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	events, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{ActorType: "admin", Since: since, Until: until})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	backend := strings.TrimSpace(r.URL.Query().Get("backend"))
+	filtered := events[:0]
+	for _, event := range events {
+		if !isSandboxAuditEvent(event.Action, event.ResourceType) {
+			continue
+		}
+		if status != "" && event.Metadata["status"] != status {
+			continue
+		}
+		if backend != "" && event.Metadata["effective_backend"] != backend && event.ResourceID != backend {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	page, err := parsePageQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	items, meta := paginateAuditEvents(filtered, page)
+	writeJSON(w, http.StatusOK, listResponse(items, meta))
+}
+
+func (s *HTTPServer) handleAdminSandboxProfiles(w http.ResponseWriter, r *http.Request) {
+	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	items := make([]sandboxProfile, 0, len(profiles.Profiles))
+	for _, profile := range profiles.Profiles {
+		items = append(items, profile)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (s *HTTPServer) handleAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("profileName"))
+	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	profile, ok := profiles.Profiles[name]
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "sandbox profile not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"profile": profile, "validation": validateSandboxProfile(profile)})
+}
+
+func (s *HTTPServer) handleUpdateAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("profileName"))
+	if !isSafeID(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid profile name"})
+		return
+	}
+	var profile sandboxProfile
+	if !decodeJSON(w, r, &profile) {
+		return
+	}
+	profile.Name = name
+	profile.UpdatedAt = time.Now().UTC()
+	profile.UpdatedBy = adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret"))
+	validation := validateSandboxProfile(profile)
+	if !validation.Valid {
+		writeJSON(w, http.StatusBadRequest, validation)
+		return
+	}
+	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	profiles.Profiles[name] = profile
+	if err := saveSandboxProfiles(s.svc.DataRoot(), profiles); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_profile_updated", "sandbox_profile", name, map[string]string{"backend": profile.Backend, "network": profile.Network, "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"profile": profile, "validation": validation})
+}
+
+func (s *HTTPServer) handleValidateAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("profileName"))
+	if !isSafeID(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid profile name"})
+		return
+	}
+	var profile sandboxProfile
+	if !decodeJSON(w, r, &profile) {
+		return
+	}
+	profile.Name = name
+	writeJSON(w, http.StatusOK, validateSandboxProfile(profile))
+}
+
+func (s *HTTPServer) handleDeleteAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
+	confirm, err := parseOptionalBoolQuery(r, "confirm")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if confirm == nil || !*confirm {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm=true is required"})
+		return
+	}
+	name := strings.TrimSpace(r.PathValue("profileName"))
+	if !isSafeID(name) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid profile name"})
+		return
+	}
+	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, ok := profiles.Profiles[name]; !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "sandbox profile not found"})
+		return
+	}
+	delete(profiles.Profiles, name)
+	if err := saveSandboxProfiles(s.svc.DataRoot(), profiles); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_profile_deleted", "sandbox_profile", name, map[string]string{"remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "profile": name})
+}
+
 func (s *HTTPServer) handleAdminSandboxReport(w http.ResponseWriter, r *http.Request) {
 	reportID := r.PathValue("reportId")
 	report, err := readSandboxReport(s.svc.DataRoot(), reportID)
@@ -190,16 +657,102 @@ func (s *HTTPServer) handleAdminSandboxReport(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, report)
 }
 
+func (s *HTTPServer) handleDeleteAdminSandboxReport(w http.ResponseWriter, r *http.Request) {
+	confirm, err := parseOptionalBoolQuery(r, "confirm")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if confirm == nil || !*confirm {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm=true is required"})
+		return
+	}
+	reportID := r.PathValue("reportId")
+	if err := deleteSandboxReport(s.svc.DataRoot(), reportID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "report not found"})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_report_deleted", "sandbox_report", reportID, map[string]string{"remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted", "report_id": reportID})
+}
+
 func (s *HTTPServer) handleAdminSandboxInstallPlan(w http.ResponseWriter, r *http.Request) {
 	backend := strings.TrimSpace(r.URL.Query().Get("backend"))
 	if backend == "" {
-		status := buildSandboxStatus(false)
+		status := buildSandboxStatus(s.svc.DataRoot(), false)
 		backend = status.EffectiveBackend
 		if backend == "none" || backend == "" {
 			backend = "bwrap"
 		}
 	}
-	writeJSON(w, http.StatusOK, buildSandboxInstallPlan(backend))
+	plan := buildSandboxInstallPlan(backend)
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_install_plan_generated", "sandbox", plan.Backend, map[string]string{"platform": plan.Platform, "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *HTTPServer) handleAdminSandboxInstall(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	var in sandboxInstallRequest
+	if !decodeOptionalJSON(w, r, &in) {
+		return
+	}
+	backend := strings.TrimSpace(in.Backend)
+	if backend == "" {
+		backend = strings.TrimSpace(r.URL.Query().Get("backend"))
+	}
+	if backend == "" {
+		status := buildSandboxStatus(s.svc.DataRoot(), false)
+		backend = status.EffectiveBackend
+		if backend == "none" || backend == "" {
+			backend = "bwrap"
+		}
+	}
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
+	if mode == "" {
+		mode = "print_only"
+	}
+	if mode != "print_only" && mode != "run" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be print_only or run"})
+		return
+	}
+	policy := sandboxInstallPolicy()
+	plan := buildSandboxInstallPlan(backend)
+	resp := sandboxInstallResponse{Platform: plan.Platform, Backend: plan.Backend, Mode: mode, Policy: policy, Confirmed: in.Confirm, Plan: plan, GeneratedAt: time.Now().UTC()}
+	if mode == "print_only" {
+		_ = s.recordAdminAudit(r.Context(), "admin.sandbox_install_plan_generated", "sandbox", plan.Backend, map[string]string{"platform": plan.Platform, "mode": mode, "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	if !in.Confirm {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm=true is required when mode is run"})
+		return
+	}
+	if policy != "run" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "sandbox install policy does not allow command execution"})
+		return
+	}
+	if runtime.GOOS != "linux" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sandbox install execution is Linux-only"})
+		return
+	}
+	if !sandboxInstallPlanRunnable(plan) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sandbox install plan is not executable on this platform/backend"})
+		return
+	}
+	resp.Plan.WillExecute = true
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_install_started", "sandbox", plan.Backend, map[string]string{"platform": plan.Platform, "remote_ip": requestClientIP(r)})
+	results, err := runSandboxInstallCommands(r.Context(), plan.Commands)
+	resp.Results = results
+	resp.Executed = true
+	if err != nil {
+		_ = s.recordAdminAudit(r.Context(), "admin.sandbox_install_failed", "sandbox", plan.Backend, map[string]string{"platform": plan.Platform, "error": redactShort(err.Error()), "remote_ip": requestClientIP(r)})
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_install_completed", "sandbox", plan.Backend, map[string]string{"platform": plan.Platform, "remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func adminField(value any, source string, restartRequired, sensitive, mutable bool) adminConfigField {
@@ -218,14 +771,19 @@ func maskConfigured(v string) any {
 }
 
 func adminSandboxMode() string {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("MACLAW_SANDBOX_MODE")))
+	mode, _ := normalizeSandboxMode(os.Getenv("MACLAW_SANDBOX_MODE"))
+	return mode
+}
+
+func normalizeSandboxMode(value string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(value))
 	switch mode {
 	case "", "auto":
-		return "auto"
+		return "auto", nil
 	case "none", "landlock", "bwrap", "nsjail":
-		return mode
+		return mode, nil
 	default:
-		return "auto"
+		return "", fmt.Errorf("unsupported sandbox mode %q", value)
 	}
 }
 
@@ -240,14 +798,108 @@ func adminEnvBool(key string, fallback bool) bool {
 	}
 }
 
-func buildSandboxStatus(runSmoke bool) sandboxStatus {
+func effectiveSandboxMode(dataRoot string) (string, string) {
+	cfg, err := loadAdminRuntimeConfig(dataRoot)
+	if err == nil && strings.TrimSpace(cfg.SandboxMode) != "" {
+		if mode, err := normalizeSandboxMode(cfg.SandboxMode); err == nil {
+			return mode, "runtime_config"
+		}
+	}
+	env := strings.TrimSpace(os.Getenv("MACLAW_SANDBOX_MODE"))
+	mode, err := normalizeSandboxMode(env)
+	if err != nil {
+		return "auto", "default"
+	}
+	if env != "" {
+		return mode, "env"
+	}
+	return mode, "default"
+}
+
+func effectiveSandboxStrict(dataRoot string) (bool, string) {
+	cfg, err := loadAdminRuntimeConfig(dataRoot)
+	if err == nil && cfg.SandboxStrict != nil {
+		return *cfg.SandboxStrict, "runtime_config"
+	}
+	if strings.TrimSpace(os.Getenv("MACLAW_SANDBOX_STRICT")) != "" {
+		return adminEnvBool("MACLAW_SANDBOX_STRICT", false), "env"
+	}
+	return false, "default"
+}
+
+func buildAdminSandboxConfigResponse(cfg adminRuntimeConfig) adminSandboxConfigResponse {
+	mode, modeSource := effectiveSandboxModeFromConfig(cfg)
+	strict, strictSource := effectiveSandboxStrictFromConfig(cfg)
+	return adminSandboxConfigResponse{
+		Mode:      adminField(mode, modeSource, false, false, true),
+		Strict:    adminField(strict, strictSource, false, false, true),
+		UpdatedAt: cfg.UpdatedAt,
+		UpdatedBy: cfg.UpdatedBy,
+		Reason:    cfg.Reason,
+	}
+}
+
+func effectiveSandboxModeFromConfig(cfg adminRuntimeConfig) (string, string) {
+	if strings.TrimSpace(cfg.SandboxMode) != "" {
+		if mode, err := normalizeSandboxMode(cfg.SandboxMode); err == nil {
+			return mode, "runtime_config"
+		}
+	}
+	env := strings.TrimSpace(os.Getenv("MACLAW_SANDBOX_MODE"))
+	mode, err := normalizeSandboxMode(env)
+	if err != nil {
+		return "auto", "default"
+	}
+	if env != "" {
+		return mode, "env"
+	}
+	return mode, "default"
+}
+
+func effectiveSandboxStrictFromConfig(cfg adminRuntimeConfig) (bool, string) {
+	if cfg.SandboxStrict != nil {
+		return *cfg.SandboxStrict, "runtime_config"
+	}
+	if strings.TrimSpace(os.Getenv("MACLAW_SANDBOX_STRICT")) != "" {
+		return adminEnvBool("MACLAW_SANDBOX_STRICT", false), "env"
+	}
+	return false, "default"
+}
+
+func loadAdminRuntimeConfig(dataRoot string) (adminRuntimeConfig, error) {
+	var cfg adminRuntimeConfig
+	if err := readAdminJSON(dataRoot, "admin_runtime_config.json", &cfg); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return adminRuntimeConfig{}, nil
+		}
+		return adminRuntimeConfig{}, err
+	}
+	return cfg, nil
+}
+
+func saveAdminRuntimeConfig(dataRoot string, cfg adminRuntimeConfig) error {
+	return writeAdminJSON(dataRoot, "admin_runtime_config.json", cfg)
+}
+
+func adminActorLabel(dataRoot, token string) string {
+	if session, user, err := getAdminSessionUser(dataRoot, token, time.Now().UTC()); err == nil && session != nil && user != nil {
+		return user.Username
+	}
+	return "admin_secret"
+}
+
+func buildSandboxStatus(dataRoot string, runSmoke bool) sandboxStatus {
+	mode, modeSource := effectiveSandboxMode(dataRoot)
+	strict, strictSource := effectiveSandboxStrict(dataRoot)
 	status := sandboxStatus{
 		GeneratedAt:  time.Now().UTC(),
 		OS:           runtime.GOOS,
 		Arch:         runtime.GOARCH,
 		Kernel:       kernelVersion(),
-		Mode:         adminSandboxMode(),
-		Strict:       adminEnvBool("MACLAW_SANDBOX_STRICT", false),
+		Mode:         mode,
+		ModeSource:   modeSource,
+		Strict:       strict,
+		StrictSource: strictSource,
 		Capabilities: sandboxCapabilities(),
 		Backends:     sandboxBackends(runSmoke),
 	}
@@ -403,7 +1055,7 @@ func smokeSandboxBackend(name, path string) (string, string) {
 }
 
 func buildSandboxDiagnoseReport(ctx context.Context, in sandboxDiagnoseRequest, dataRoot string) sandboxDiagnoseReport {
-	status := buildSandboxStatus(true)
+	status := buildSandboxStatus(dataRoot, true)
 	profile := strings.TrimSpace(in.Profile)
 	if profile == "" {
 		profile = "default"
@@ -420,6 +1072,11 @@ func buildSandboxDiagnoseReport(ctx context.Context, in sandboxDiagnoseRequest, 
 		Raw:              map[string]interface{}{"os": status.OS, "arch": status.Arch, "kernel": status.Kernel},
 	}
 	checks := []sandboxCheckResult{}
+	profileCheck, profileWarnings := checkSandboxProfile(dataRoot, profile)
+	checks = append(checks, profileCheck)
+	for _, warning := range profileWarnings {
+		report.Warnings = append(report.Warnings, warning)
+	}
 	checks = append(checks, checkFromBool("linux_platform", "Linux platform", runtime.GOOS == "linux", "linux", runtime.GOOS, "critical"))
 	checks = append(checks, checkFromBool("backend_selected", "Sandbox backend selected", status.EffectiveBackend != "none", "non-none backend", status.EffectiveBackend, "critical"))
 	checks = append(checks, checkWorkspaceWritable(dataRoot))
@@ -451,6 +1108,9 @@ func buildSandboxDiagnoseReport(ctx context.Context, in sandboxDiagnoseRequest, 
 			report.Status = "warn"
 		}
 	}
+	if len(report.Warnings) > 0 && report.Status == "pass" {
+		report.Status = "warn"
+	}
 	if report.Status == "fail" {
 		report.Summary = "Sandbox diagnose failed. Review failed checks before enabling protected local execution."
 		report.Recommendations = append(report.Recommendations, "Use install-plan or switch to another sandbox backend, then rerun diagnose.")
@@ -460,6 +1120,100 @@ func buildSandboxDiagnoseReport(ctx context.Context, in sandboxDiagnoseRequest, 
 		report.Recommendations = append(report.Recommendations, "Run MCP stdio test before enabling sandbox for all local MCP servers.")
 	}
 	return report
+}
+
+func isSandboxAuditEvent(action, resourceType string) bool {
+	return strings.HasPrefix(action, "admin.sandbox_") || resourceType == "sandbox" || resourceType == "sandbox_report"
+}
+
+type sandboxProfileValidation struct {
+	Valid    bool     `json:"valid"`
+	Errors   []string `json:"errors,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+func validateSandboxProfile(profile sandboxProfile) sandboxProfileValidation {
+	out := sandboxProfileValidation{Valid: true}
+	if !isSafeID(profile.Name) {
+		out.Valid = false
+		out.Errors = append(out.Errors, "profile name must be a safe id")
+	}
+	backend := strings.ToLower(strings.TrimSpace(profile.Backend))
+	if backend != "" {
+		if _, err := normalizeSandboxMode(backend); err != nil || backend == "auto" || backend == "none" {
+			out.Valid = false
+			out.Errors = append(out.Errors, "backend must be landlock, bwrap, or nsjail")
+		}
+	}
+	network := strings.ToLower(strings.TrimSpace(profile.Network))
+	switch network {
+	case "", "default", "disabled", "host":
+	default:
+		out.Valid = false
+		out.Errors = append(out.Errors, "network must be default, disabled, or host")
+	}
+	for _, path := range append(append([]string{}, profile.ReadOnlyPaths...), profile.WritablePaths...) {
+		if strings.TrimSpace(path) == "" {
+			out.Valid = false
+			out.Errors = append(out.Errors, "paths must not be empty")
+		}
+	}
+	if network == "host" {
+		out.Warnings = append(out.Warnings, "host network weakens sandbox isolation")
+	}
+	return out
+}
+
+func loadSandboxProfiles(dataRoot string) (sandboxProfilesFile, error) {
+	var profiles sandboxProfilesFile
+	if err := readAdminJSON(dataRoot, "sandbox_profiles.json", &profiles); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return sandboxProfilesFile{Profiles: map[string]sandboxProfile{}}, nil
+		}
+		return sandboxProfilesFile{}, err
+	}
+	if profiles.Profiles == nil {
+		profiles.Profiles = map[string]sandboxProfile{}
+	}
+	return profiles, nil
+}
+
+func saveSandboxProfiles(dataRoot string, profiles sandboxProfilesFile) error {
+	if profiles.Profiles == nil {
+		profiles.Profiles = map[string]sandboxProfile{}
+	}
+	return writeAdminJSON(dataRoot, "sandbox_profiles.json", profiles)
+}
+
+func sandboxReportAuditMetadata(r *http.Request, report sandboxDiagnoseReport) map[string]string {
+	return map[string]string{
+		"status":            report.Status,
+		"mode":              report.Mode,
+		"effective_backend": report.EffectiveBackend,
+		"profile":           report.Profile,
+		"report_id":         report.ReportID,
+		"remote_ip":         requestClientIP(r),
+	}
+}
+
+func checkSandboxProfile(dataRoot, profileName string) (sandboxCheckResult, []string) {
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" || profileName == "default" {
+		return sandboxCheckResult{ID: "profile_load", Title: "Sandbox profile load", Status: "pass", Expected: "default profile", Actual: "default", Severity: "high"}, nil
+	}
+	profiles, err := loadSandboxProfiles(dataRoot)
+	if err != nil {
+		return sandboxCheckResult{ID: "profile_load", Title: "Sandbox profile load", Status: "fail", Expected: "load profile", Actual: err.Error(), Severity: "high"}, nil
+	}
+	profile, ok := profiles.Profiles[profileName]
+	if !ok {
+		return sandboxCheckResult{ID: "profile_load", Title: "Sandbox profile load", Status: "fail", Expected: "existing profile", Actual: "profile not found: " + profileName, Severity: "high"}, nil
+	}
+	validation := validateSandboxProfile(profile)
+	if !validation.Valid {
+		return sandboxCheckResult{ID: "profile_load", Title: "Sandbox profile load", Status: "fail", Expected: "valid profile", Actual: strings.Join(validation.Errors, "; "), Severity: "high"}, validation.Warnings
+	}
+	return sandboxCheckResult{ID: "profile_load", Title: "Sandbox profile load", Status: "pass", Expected: "valid profile", Actual: profileName, Severity: "high"}, validation.Warnings
 }
 
 func checkFromBool(id, title string, ok bool, expected, actual, severity string) sandboxCheckResult {
@@ -540,10 +1294,33 @@ func saveSandboxReport(dataRoot string, report sandboxDiagnoseReport) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, report.ReportID+".json"), data, 0o600)
+	if err := os.WriteFile(filepath.Join(dir, report.ReportID+".json"), data, 0o600); err != nil {
+		return err
+	}
+	return pruneSandboxReports(dataRoot)
+}
+
+func latestSandboxReport(dataRoot string) (*sandboxDiagnoseReport, error) {
+	reports, err := listSandboxReports(dataRoot)
+	if err != nil || len(reports) == 0 {
+		return nil, err
+	}
+	return &reports[0], nil
 }
 
 func listSandboxReports(dataRoot string) ([]sandboxDiagnoseReport, error) {
+	reports, err := readSandboxReports(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	retention := sandboxReportRetention()
+	if len(reports) > retention {
+		reports = reports[:retention]
+	}
+	return reports, nil
+}
+
+func readSandboxReports(dataRoot string) ([]sandboxDiagnoseReport, error) {
 	dir := sandboxReportDir(dataRoot)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -563,12 +1340,8 @@ func listSandboxReports(dataRoot string) ([]sandboxDiagnoseReport, error) {
 		}
 	}
 	sort.Slice(reports, func(i, j int) bool { return reports[i].GeneratedAt.After(reports[j].GeneratedAt) })
-	if len(reports) > 20 {
-		reports = reports[:20]
-	}
 	return reports, nil
 }
-
 func readSandboxReport(dataRoot, reportID string) (*sandboxDiagnoseReport, error) {
 	if !isSafeID(reportID) {
 		return nil, fs.ErrNotExist
@@ -582,6 +1355,28 @@ func readSandboxReport(dataRoot, reportID string) (*sandboxDiagnoseReport, error
 		return nil, err
 	}
 	return &report, nil
+}
+
+func deleteSandboxReport(dataRoot, reportID string) error {
+	if !isSafeID(reportID) {
+		return fs.ErrNotExist
+	}
+	return os.Remove(filepath.Join(sandboxReportDir(dataRoot), reportID+".json"))
+}
+
+func pruneSandboxReports(dataRoot string) error {
+	reports, err := readSandboxReports(dataRoot)
+	if err != nil {
+		return err
+	}
+	retention := sandboxReportRetention()
+	if len(reports) <= retention {
+		return nil
+	}
+	for _, report := range reports[retention:] {
+		_ = deleteSandboxReport(dataRoot, report.ReportID)
+	}
+	return nil
 }
 
 func sandboxReportDir(dataRoot string) string {
@@ -601,6 +1396,84 @@ func statusForDiagnose(status string) int {
 		return http.StatusServiceUnavailable
 	}
 	return http.StatusOK
+}
+
+func sandboxReportRetention() int {
+	return adminEnvInt("MACLAW_SANDBOX_REPORT_RETENTION", 20, 1, 200)
+}
+
+func adminEnvInt(key string, fallback, min, max int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	var out int
+	if _, err := fmt.Sscanf(value, "%d", &out); err != nil {
+		return fallback
+	}
+	if out < min {
+		return min
+	}
+	if out > max {
+		return max
+	}
+	return out
+}
+
+func sandboxInstallPolicy() string {
+	policy := strings.ToLower(strings.TrimSpace(getenv("MACLAW_SANDBOX_INSTALL_POLICY", "suggest")))
+	if policy == "" {
+		return "suggest"
+	}
+	return policy
+}
+
+func sandboxInstallPlanRunnable(plan sandboxInstallPlan) bool {
+	if runtime.GOOS != "linux" || len(plan.Commands) == 0 {
+		return false
+	}
+	if plan.Backend != "bwrap" && plan.Backend != "nsjail" {
+		return false
+	}
+	for _, command := range plan.Commands {
+		if strings.HasPrefix(command, "install ") || strings.Contains(command, "unsupported backend") {
+			return false
+		}
+	}
+	return true
+}
+
+func runSandboxInstallCommands(ctx context.Context, commands []string) ([]sandboxInstallCommandResult, error) {
+	results := make([]sandboxInstallCommandResult, 0, len(commands))
+	for _, command := range commands {
+		start := time.Now()
+		cmdText := sandboxInstallCommandForRun(command)
+		cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		cmd := exec.CommandContext(cmdCtx, "sh", "-c", cmdText)
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		out, err := cmd.CombinedOutput()
+		cancel()
+		result := sandboxInstallCommandResult{Command: command, Output: trimMax(redactLogLine(string(out)), 8192), ExitCode: 0, DurationMS: time.Since(start).Milliseconds()}
+		if err != nil {
+			result.Error = redactShort(err.Error())
+			result.ExitCode = 1
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				result.ExitCode = exitErr.ExitCode()
+			}
+			results = append(results, result)
+			return results, err
+		}
+		results = append(results, result)
+	}
+	return results, nil
+}
+
+func sandboxInstallCommandForRun(command string) string {
+	command = strings.TrimSpace(command)
+	if strings.HasPrefix(command, "sudo ") {
+		return "sudo -n " + strings.TrimSpace(strings.TrimPrefix(command, "sudo "))
+	}
+	return command
 }
 
 func buildSandboxInstallPlan(backend string) sandboxInstallPlan {
@@ -683,6 +1556,35 @@ func isSafeID(id string) bool {
 		return false
 	}
 	return true
+}
+
+func defaultAdminLocale() string {
+	locale := getenv("MACLAW_ADMIN_WEB_DEFAULT_LOCALE", "zh-CN")
+	if !isAdminLocaleSupported(locale) {
+		return "zh-CN"
+	}
+	return normalizeAdminLocale(locale)
+}
+
+func adminEnabledLocales() []string {
+	return []string{"zh-CN", "en-US"}
+}
+
+func adminLocaleMetadata() []map[string]string {
+	return []map[string]string{
+		{"locale": "zh-CN", "label": "\u7b80\u4f53\u4e2d\u6587"},
+		{"locale": "en-US", "label": "English"},
+	}
+}
+
+func isAdminLocaleSupported(locale string) bool {
+	key := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(locale), "_", "-"))
+	switch key {
+	case "zh", "zh-cn", "zh-hans", "zh-hans-cn", "en", "en-us":
+		return true
+	default:
+		return false
+	}
 }
 
 func redactShort(s string) string {

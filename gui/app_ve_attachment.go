@@ -332,5 +332,15 @@ func (a *App) SendVEMessageWithAttachments(sessionID string, content string, fil
 		CreatedAt:        time.Now(),
 	}
 
+	// Local dispatch shortcut: when local maclaw is the executor for this session,
+	// dispatch directly to the local agent without waiting for Hub round-trip.
+	if a.tryLocalExecutorDispatch(sessionID, msg) {
+		// Async sync to Hub for history consistency (non-blocking)
+		go func() {
+			_ = a.GroupDiscussionSendMessage(sessionID, msg)
+		}()
+		return nil
+	}
+
 	return a.GroupDiscussionSendMessage(sessionID, msg)
 }

@@ -6,6 +6,9 @@ import {
   GetVEStatus,
   GetDigitalEmployeeSensitiveQueryPolicy,
   SaveDigitalEmployeeSensitiveQueryPolicy,
+  SelectVEAllowedDirectory,
+  GetVEAllowedDirectories,
+  SetVEAllowedDirectories,
 } from "../../../wailsjs/go/main/App";
 
 type VEStatusResponse = {
@@ -324,6 +327,10 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const mountedRef = useRef(true);
 
+  // --- Allowed Directories state ---
+  const [allowedDirs, setAllowedDirs] = useState<string[]>([]);
+  const [dirDuplicateWarning, setDirDuplicateWarning] = useState("");
+
   async function loadStatus() {
     try {
       const resp = (await GetVEStatus()) as VEStatusResponse;
@@ -391,6 +398,65 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
       cancelled = true;
     };
   }, []);
+
+  // Load allowed directories on mount (Requirement 2.2)
+  useEffect(() => {
+    let cancelled = false;
+    GetVEAllowedDirectories()
+      .then((dirs) => {
+        if (!cancelled) setAllowedDirs(Array.isArray(dirs) ? dirs : []);
+      })
+      .catch(() => {
+        if (!cancelled) setAllowedDirs([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Check if a path is a duplicate (case-insensitive on Windows)
+  function isDuplicateDir(newPath: string, existingDirs: string[]): boolean {
+    const normalized = newPath.toLowerCase().replace(/\//g, "\\");
+    return existingDirs.some(
+      (d) => d.toLowerCase().replace(/\//g, "\\") === normalized,
+    );
+  }
+
+  async function handleAddDirectory() {
+    setDirDuplicateWarning("");
+    try {
+      const selected = await SelectVEAllowedDirectory();
+      if (!selected) return; // User cancelled (Requirement 1.4)
+      if (isDuplicateDir(selected, allowedDirs)) {
+        // Requirement 1.6: duplicate detection with warning
+        setDirDuplicateWarning(
+          textForLang(
+            lang,
+            `Directory "${selected}" is already in the list.`,
+            `目录 "${selected}" 已在列表中。`,
+            `目錄 "${selected}" 已在列表中。`,
+          ),
+        );
+        return;
+      }
+      const updated = [...allowedDirs, selected];
+      await SetVEAllowedDirectories(updated);
+      setAllowedDirs(updated);
+    } catch {
+      // Directory picker failed to open (Requirement 7.4)
+    }
+  }
+
+  async function handleRemoveDirectory(dir: string) {
+    const updated = allowedDirs.filter((d) => d !== dir);
+    try {
+      await SetVEAllowedDirectories(updated);
+      setAllowedDirs(updated);
+      setDirDuplicateWarning("");
+    } catch {
+      // Persist failed — keep UI unchanged
+    }
+  }
 
   async function handleSensitiveQueryPolicyChange(value: SensitiveQueryPolicy) {
     const previous = sensitiveQueryPolicy;
@@ -645,6 +711,60 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
         </div>
 
         <p className="ve-form-hint ve-sensitive-hint">{c.sensitiveHint}</p>
+
+        {/* 允许访问目录 section (Requirements 1.1-1.8, 2.2) */}
+        <div data-testid="ve-allowed-dirs-section" className="ve-form-group">
+          <div className="ve-form-row">
+            <label className="ve-form-label">
+              {textForLang(lang, "Allowed Access Directories", "允许访问目录", "允許存取目錄")}
+            </label>
+            <div className="ve-form-field">
+              <button
+                className="ve-btn ve-btn--secondary"
+                onClick={handleAddDirectory}
+                data-testid="ve-add-dir-btn"
+              >
+                {textForLang(lang, "Add Directory", "添加目录", "新增目錄")}
+              </button>
+            </div>
+          </div>
+          {dirDuplicateWarning && (
+            <div
+              className="ve-notice ve-notice--warning"
+              role="alert"
+              data-testid="ve-dir-duplicate-warning"
+              style={{ marginTop: 4, marginBottom: 4 }}
+            >
+              {dirDuplicateWarning}
+            </div>
+          )}
+          {allowedDirs.length > 0 && (
+            <ul data-testid="ve-allowed-dirs-list" className="ve-list-items">
+              {allowedDirs.map((dir) => (
+                <li key={dir} className="ve-list-item">
+                  <span className="ve-list-item-text" title={dir}>{dir}</span>
+                  <button
+                    className="ve-btn ve-btn--ghost"
+                    onClick={() => handleRemoveDirectory(dir)}
+                    data-testid={`ve-remove-dir-${dir}`}
+                  >
+                    {textForLang(lang, "Remove", "移除", "移除")}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {allowedDirs.length === 0 && (
+            <p className="ve-form-hint" data-testid="ve-dirs-empty-hint">
+              {textForLang(
+                lang,
+                "No directories configured. The VE cannot send files until at least one directory is added.",
+                "未配置目录。数字员工在添加至少一个目录前无法发送文件。",
+                "未設定目錄。數字員工在新增至少一個目錄前無法傳送檔案。",
+              )}
+            </p>
+          )}
+        </div>
 
         {showListEditor && !formDisabled && (
           <div data-testid="list-editor" className="ve-form-group">

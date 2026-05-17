@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
@@ -41,6 +43,7 @@ func (s *HTTPServer) handleSkillSourcesSetGlobal(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_global_updated", "skill_source_policy", "global", skillSourceAuditMetadata(r, &cfg, ""))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -68,6 +71,7 @@ func (s *HTTPServer) handleSkillSourcesSetTenant(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_tenant_updated", "skill_source_policy", id, skillSourceAuditMetadata(r, &cfg, id))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -77,6 +81,7 @@ func (s *HTTPServer) handleSkillSourcesDeleteTenant(w http.ResponseWriter, r *ht
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_tenant_deleted", "skill_source_policy", id, map[string]string{"tenant_id": id, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -104,6 +109,7 @@ func (s *HTTPServer) handleSkillSourcesSetUser(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_user_updated", "skill_source_policy", email, skillSourceAuditMetadata(r, &cfg, email))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -113,6 +119,7 @@ func (s *HTTPServer) handleSkillSourcesDeleteUser(w http.ResponseWriter, r *http
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_user_deleted", "skill_source_policy", email, map[string]string{"email": email, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -128,6 +135,18 @@ func (s *HTTPServer) handleSkillSourcesResolve(w http.ResponseWriter, r *http.Re
 		"tenant_id":       tenantID,
 		"allowed_sources": resolved,
 	})
+}
+
+func skillSourceAuditMetadata(r *http.Request, cfg *cskill.SourceControlConfig, subject string) map[string]string {
+	metadata := map[string]string{
+		"enabled":         strconv.FormatBool(cfg.Enabled),
+		"allowed_sources": strings.Join(cfg.AllowedSources, ","),
+		"remote_ip":       requestClientIP(r),
+	}
+	if subject != "" {
+		metadata["subject"] = subject
+	}
+	return metadata
 }
 
 func decodeEmail(r *http.Request) string {

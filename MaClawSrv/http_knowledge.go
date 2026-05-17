@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +19,7 @@ import (
 )
 
 const defaultMaxFileSize int64 = 50 << 20 // 50MB
+const maxReadableKnowledgeSourcesPerScope = 5000
 
 // resolveKnowledgeMaxFileSize parses the file size limit from env at startup.
 func resolveKnowledgeMaxFileSize() int64 {
@@ -362,7 +364,7 @@ func (s *HTTPServer) handleKnowledgeGetSource(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
 		return
 	}
-	if !s.canReadSource(source, p) {
+	if !s.canReadSource(ctx, source, p) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
 		return
 	}
@@ -534,11 +536,14 @@ func (s *HTTPServer) handleKnowledgeRefreshSource(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
 }
 
-func (s *HTTPServer) canReadSource(source knowledge.Source, p agentservice.Principal) bool {
+func (s *HTTPServer) canReadSource(ctx context.Context, source knowledge.Source, p agentservice.Principal) bool {
 	if s.canAccessSource(source, p) {
 		return true
 	}
-	for _, scope := range s.knowledgeMgr.Access().ResolveForUser(context.Background(), p.TenantID, p.UserID) {
+	if source.Status == knowledge.StatusDisabled {
+		return false
+	}
+	for _, scope := range s.knowledgeMgr.Access().ResolveForUser(ctx, p.TenantID, p.UserID) {
 		if source.TenantID == scope.TenantID && source.OwnerID == scope.OwnerID {
 			return true
 		}
@@ -551,7 +556,11 @@ func (s *HTTPServer) listReadableKnowledgeSources(ctx context.Context, p agentse
 	var merged []knowledge.Source
 	seen := map[string]struct{}{}
 	for _, scope := range s.knowledgeMgr.Access().ResolveForUser(ctx, p.TenantID, p.UserID) {
-		sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{OwnerID: scope.OwnerID, TenantID: scope.TenantID})
+		opts := knowledge.ListSourcesOptions{OwnerID: scope.OwnerID, TenantID: scope.TenantID, Limit: maxReadableKnowledgeSourcesPerScope}
+		if scope.TenantID != p.TenantID || scope.OwnerID != p.UserID {
+			opts.Status = "active"
+		}
+		sources, err := store.ListSources(ctx, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -563,42 +572,33 @@ func (s *HTTPServer) listReadableKnowledgeSources(ctx context.Context, p agentse
 			merged = append(merged, source)
 		}
 	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		return merged[i].UpdatedAt.After(merged[j].UpdatedAt)
+	})
 	return merged, nil
 }
 
-// canAccessSource checks if the principal can access the given source.
-// A user can access a source if:
-// - The source belongs to the same tenant AND is either owned by the user or shared (owner_id empty).
-// - Global sources (tenant_id empty, owner_id empty) are admin-only — regular users cannot access them.
+// canAccessSource checks if the principal owns the given source.
+// User-side management endpoints are intentionally stricter than read access:
+// cross-user readable scopes can be searched and opened, but only the owner can
+// update, disable, refresh, or delete a source.
 func (s *HTTPServer) canAccessSource(source knowledge.Source, p agentservice.Principal) bool {
-	// Global shared sources (no tenant, no owner) are admin-only.
-	if source.TenantID == "" && source.OwnerID == "" {
-		return false
-	}
-	// Source must belong to the same tenant.
-	if source.TenantID != "" && source.TenantID != p.TenantID {
-		return false
-	}
-	// Within the same tenant: user can access their own sources or shared (owner_id empty) sources.
-	if source.OwnerID != "" && source.OwnerID != p.UserID {
-		return false
-	}
-	return true
+	return source.TenantID == p.TenantID && source.OwnerID == p.UserID
 }
 
-func (s *HTTPServer) handleKnowledgeStats(w http.ResponseWriter, r *http.Request, _ agentservice.Principal) {
+func (s *HTTPServer) handleKnowledgeStats(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if !s.requireKnowledge(w) {
 		return
 	}
-	store := s.knowledgeMgr.Store()
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	stats, err := store.Stats(ctx)
+	sources, err := s.listReadableKnowledgeSources(ctx, p)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("stats failed: %v", err)})
 		return
 	}
+	stats := knowledgeStatsFromSources(sources)
 
 	// Augment stats with embedding/vector search status for observability.
 	s.knowledgeMgr.mu.RLock()
@@ -610,6 +610,66 @@ func (s *HTTPServer) handleKnowledgeStats(w http.ResponseWriter, r *http.Request
 		"vector_search_active": vectorSearchActive,
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func knowledgeStatsFromSources(sources []knowledge.Source) knowledge.Stats {
+	stats := knowledge.Stats{
+		SourcesByKind:   make(map[string]int),
+		SourcesByStatus: make(map[string]int),
+		SourcesByDomain: make(map[string]int),
+		SourcesByLabel:  make(map[string]int),
+	}
+	for _, source := range sources {
+		stats.Sources++
+		stats.DocumentNodes += source.NodeCount
+		stats.Cards += source.CardCount
+		stats.Facts += source.FactCount
+		stats.SourcesByKind[knowledgeStatKey(source.Kind)]++
+		stats.SourcesByStatus[knowledgeStatKey(source.Status)]++
+		if domain := strings.ToLower(strings.TrimSpace(source.SiteName)); domain != "" {
+			stats.SourcesByDomain[domain]++
+		}
+		seenLabels := make(map[string]struct{}, len(source.Labels))
+		for _, label := range source.Labels {
+			label = strings.TrimSpace(label)
+			if label == "" {
+				continue
+			}
+			if _, ok := seenLabels[label]; ok {
+				continue
+			}
+			seenLabels[label] = struct{}{}
+			stats.SourcesByLabel[label]++
+		}
+		if source.Status == knowledge.StatusParsed || source.Status == knowledge.StatusDistilled || source.Status == knowledge.StatusStale {
+			if source.NodeCount == 0 {
+				stats.SourcesWithoutNodes++
+			}
+			if source.CardCount == 0 {
+				stats.SourcesWithoutCards++
+			}
+			if source.NodeCount > 0 && source.CardCount == 0 {
+				stats.SourcesRebuildCards++
+			}
+			if source.Status == knowledge.StatusDistilled || source.Status == knowledge.StatusStale {
+				if source.FactCount == 0 {
+					stats.SourcesWithoutFacts++
+				}
+				if source.NodeCount > 0 && source.FactCount == 0 {
+					stats.SourcesRebuildFacts++
+				}
+			}
+		}
+	}
+	return stats
+}
+
+func knowledgeStatKey(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func (s *HTTPServer) handleKnowledgeClearAll(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -673,6 +733,10 @@ func (s *HTTPServer) handleAdminKnowledgeClearTenant(w http.ResponseWriter, r *h
 	if !s.requireKnowledge(w) {
 		return
 	}
+	if err := requireDeleteConfirmation(r); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	tenantID := r.PathValue("tenantId")
 	if tenantID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tenantId is required"})
@@ -689,6 +753,7 @@ func (s *HTTPServer) handleAdminKnowledgeClearTenant(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("clear tenant failed: %v", err)})
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_tenant_cleared", "knowledge", tenantID, map[string]string{"tenant_id": tenantID, "deleted": fmt.Sprint(deleted), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "cleared", "deleted": deleted})
 }
 

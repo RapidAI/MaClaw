@@ -1917,6 +1917,18 @@ export function CloseVESession(arg1) {
   return window['go']['main']['App']['CloseVESession'](arg1);
 }
 
+export function SelectVEAllowedDirectory() {
+  return window['go']['main']['App']['SelectVEAllowedDirectory']();
+}
+
+export function GetVEAllowedDirectories() {
+  return window['go']['main']['App']['GetVEAllowedDirectories']();
+}
+
+export function SetVEAllowedDirectories(arg1) {
+  return window['go']['main']['App']['SetVEAllowedDirectories'](arg1);
+}
+
 export function ArchiveVESession(arg1) {
   return window['go']['main']['App']['ArchiveVESession'](arg1);
 }

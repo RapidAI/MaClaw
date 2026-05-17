@@ -103,21 +103,43 @@ func (c *RemoteHubClient) handleVEDiscussionMessage(msg inboundHubEnvelope) {
 	sessionID := firstNonEmptyGroupString(envelope.SessionID, envelope.Message.SessionID, msg.SessionID)
 	content := envelope.Message.Content
 	eventPayload := map[string]any{"session_id": sessionID, "content": content, "chunk": content}
+
+	// Dedup: if this session has a local executor that emits stream events directly
+	// to the frontend, skip re-emitting stream chunks/ends that originated from
+	// our own local agent (already displayed via emitStreamToFrontend).
+	// Messages from OTHER participants must still be emitted to the frontend.
+	isOwnMessage := false
+	if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) {
+		// Check if this message originated from our own local agent
+		localMachineID := dispatcher.getLocalMachineID()
+		if localMachineID != "" && envelope.Message.FromID == localMachineID {
+			isOwnMessage = true
+		}
+	}
+
 	switch envelope.Message.Kind {
 	case a2a.MessageStreamChunk:
-		runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
+		if !isOwnMessage {
+			runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
+		}
 	case a2a.MessageStreamEnd:
-		runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
+		if !isOwnMessage {
+			runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
+		}
 		c.cachePushedVEDiscussionMessage(envelope)
 	default:
 		c.cachePushedVEDiscussionMessage(envelope)
 		if strings.EqualFold(targetRole, "initiator") {
-			runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
-			runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
+			// For initiator-targeted messages: skip if it's our own message echoed back
+			// (user already sees it via optimistic update in frontend)
+			if !isOwnMessage {
+				runtime.EventsEmit(c.app.ctx, "ve:stream_chunk", eventPayload)
+				runtime.EventsEmit(c.app.ctx, "ve:stream_end", eventPayload)
+			}
 		} else if strings.EqualFold(targetRole, "executor") {
 			// Route to local maclaw executor via GroupChatDispatcher
 			if dispatcher := c.groupChatDispatcher(); dispatcher != nil && dispatcher.IsRegistered(sessionID) {
-				dispatcher.HandleGroupMessage(sessionID, *envelope.Message)
+				dispatcher.HandleGroupMessage(sessionID, *envelope.Message, false)
 			}
 		} else if shouldDigitalEmployeeRespondToDiscussion(targetRole, envelope.Message.Kind) {
 			if handler := c.digitalEmployeeMessageHandler(); handler != nil {

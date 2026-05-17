@@ -104,7 +104,7 @@ func TestAdminCapabilityUpsertAndManagementFlow(t *testing.T) {
 		t.Fatalf("current version key should be set")
 	}
 
-	depReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/managed-deployments", bytes.NewReader([]byte(`{"capability_ref":"`+created.ID+`","scope":{"all_users":true}}`)))
+	depReq := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/managed-deployments", bytes.NewReader([]byte(`{"capability_ref":"`+created.ID+`","deployment_policy":"INVALID","scope":{"all_users":true}}`)))
 	depRec := httptest.NewRecorder()
 	AdminCapabilityManagedDeploymentCreateHandler(svc)(depRec, depReq)
 	if depRec.Code != http.StatusCreated {
@@ -128,6 +128,19 @@ func TestAdminCapabilityUpsertAndManagementFlow(t *testing.T) {
 	items, err := svc.ListManagedDeployments(req.Context())
 	if err != nil || len(items) != 1 {
 		t.Fatalf("deployments len=%d err=%v", len(items), err)
+	}
+	if items[0].DeploymentPolicy != "required" {
+		t.Fatalf("deployment policy should normalize to required, got %q", items[0].DeploymentPolicy)
+	}
+	if _, err := db.ExecContext(req.Context(), `UPDATE managed_capability_deployments SET deployment_policy = ? WHERE id = ?`, "LEGACY_UNKNOWN", items[0].ID); err != nil {
+		t.Fatalf("write legacy deployment policy: %v", err)
+	}
+	items, err = svc.ListManagedDeployments(req.Context())
+	if err != nil || len(items) != 1 {
+		t.Fatalf("deployments after legacy policy len=%d err=%v", len(items), err)
+	}
+	if items[0].DeploymentPolicy != "required" {
+		t.Fatalf("legacy deployment policy should normalize to required, got %q", items[0].DeploymentPolicy)
 	}
 	recommendations, err := svc.ListRecommendations(req.Context())
 	if err != nil || len(recommendations) != 1 {
@@ -181,7 +194,7 @@ func TestAdminCapabilityDeploymentCreateWritesAudit(t *testing.T) {
 	svc := capability.NewService(db)
 	created := createTestCapability(t, svc, "mcp", "audit-mcp", "Audit MCP", "1.0.0")
 	audit := &testAdminAuditRepo{}
-	req := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/managed-deployments", bytes.NewReader([]byte(`{"capability_ref":"`+created.ID+`","deployment_policy":"required","scope":{"type":"group","group_id":"dept-a"}}`)))
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/capability-market/managed-deployments", bytes.NewReader([]byte(`{"capability_ref":"`+created.ID+`","deployment_policy":"INVALID","scope":{"type":"group","group_id":"dept-a"}}`)))
 	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-audit"}))
 	rec := httptest.NewRecorder()
 
@@ -198,6 +211,13 @@ func TestAdminCapabilityDeploymentCreateWritesAudit(t *testing.T) {
 	}
 	if audit.logs[0].AdminUserID != "adm-audit" {
 		t.Fatalf("unexpected admin id: %s", audit.logs[0].AdminUserID)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(audit.logs[0].PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode audit payload: %v", err)
+	}
+	if payload["deployment_policy"] != "required" {
+		t.Fatalf("audit deployment_policy should be normalized to required, got %#v", payload["deployment_policy"])
 	}
 }
 
@@ -527,24 +547,227 @@ func TestAdminUserCapabilityComplianceFilters(t *testing.T) {
 		t.Fatalf("upsert unmanaged inventory: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=missing&include_unmanaged=false", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance", nil)
 	req.SetPathValue("email", "filter@example.com")
 	rec := httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unfiltered compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var unfilteredResp struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary *adminCapabilityComplianceSummary        `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &unfilteredResp); err != nil {
+		t.Fatalf("decode unfiltered compliance: %v", err)
+	}
+	if len(unfilteredResp.Items) != 2 || unfilteredResp.Summary.Total != 2 || unfilteredResp.Summary.UnmanagedInstalled != 1 || unfilteredResp.FilteredSummary != nil || len(unfilteredResp.UnmanagedItems) != 1 {
+		t.Fatalf("unexpected unfiltered compliance: items=%+v summary=%+v filtered=%+v unmanaged=%+v", unfilteredResp.Items, unfilteredResp.Summary, unfilteredResp.FilteredSummary, unfilteredResp.UnmanagedItems)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=typo", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invalid filter compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var invalidFilterResp struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary *adminCapabilityComplianceSummary        `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &invalidFilterResp); err != nil {
+		t.Fatalf("decode invalid filter compliance: %v", err)
+	}
+	if len(invalidFilterResp.Items) != 2 || invalidFilterResp.Summary.Total != 2 || invalidFilterResp.FilteredSummary != nil || len(invalidFilterResp.UnmanagedItems) != 1 {
+		t.Fatalf("unexpected invalid filter compliance: items=%+v summary=%+v filtered=%+v unmanaged=%+v", invalidFilterResp.Items, invalidFilterResp.Summary, invalidFilterResp.FilteredSummary, invalidFilterResp.UnmanagedItems)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?include_unmanaged=maybe", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("invalid include compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var invalidIncludeResp struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary *adminCapabilityComplianceSummary        `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &invalidIncludeResp); err != nil {
+		t.Fatalf("decode invalid include compliance: %v", err)
+	}
+	if len(invalidIncludeResp.Items) != 2 || invalidIncludeResp.Summary.Total != 2 || invalidIncludeResp.FilteredSummary != nil || len(invalidIncludeResp.UnmanagedItems) != 1 {
+		t.Fatalf("unexpected invalid include compliance: items=%+v summary=%+v filtered=%+v unmanaged=%+v", invalidIncludeResp.Items, invalidIncludeResp.Summary, invalidIncludeResp.FilteredSummary, invalidIncludeResp.UnmanagedItems)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?include_unmanaged=false", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("include false compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var includeFalseResp struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary adminCapabilityComplianceSummary         `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &includeFalseResp); err != nil {
+		t.Fatalf("decode include false compliance: %v", err)
+	}
+	if len(includeFalseResp.Items) != 2 || includeFalseResp.Summary.UnmanagedInstalled != 1 || includeFalseResp.FilteredSummary.Total != 2 || includeFalseResp.FilteredSummary.UnmanagedInstalled != 0 || len(includeFalseResp.UnmanagedItems) != 0 {
+		t.Fatalf("unexpected include false compliance: items=%+v summary=%+v filtered=%+v unmanaged=%+v", includeFalseResp.Items, includeFalseResp.Summary, includeFalseResp.FilteredSummary, includeFalseResp.UnmanagedItems)
+	}
+
+	for _, includeValue := range []string{"0", "no", "off"} {
+		req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?include_unmanaged="+includeValue, nil)
+		req.SetPathValue("email", "filter@example.com")
+		rec = httptest.NewRecorder()
+		AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("include %s compliance status=%d body=%s", includeValue, rec.Code, rec.Body.String())
+		}
+		var aliasResp struct {
+			Items           []adminCapabilityComplianceItem          `json:"items"`
+			FilteredSummary adminCapabilityComplianceSummary         `json:"filtered_summary"`
+			UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &aliasResp); err != nil {
+			t.Fatalf("decode include %s compliance: %v", includeValue, err)
+		}
+		if len(aliasResp.Items) != 2 || aliasResp.FilteredSummary.Total != 2 || aliasResp.FilteredSummary.UnmanagedInstalled != 0 || len(aliasResp.UnmanagedItems) != 0 {
+			t.Fatalf("unexpected include %s compliance: items=%+v filtered=%+v unmanaged=%+v", includeValue, aliasResp.Items, aliasResp.FilteredSummary, aliasResp.UnmanagedItems)
+		}
+	}
+
+	for _, includeValue := range []string{"true", "1", "yes", "on"} {
+		req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?include_unmanaged="+includeValue, nil)
+		req.SetPathValue("email", "filter@example.com")
+		rec = httptest.NewRecorder()
+		AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("include %s compliance status=%d body=%s", includeValue, rec.Code, rec.Body.String())
+		}
+		var aliasResp struct {
+			Items           []adminCapabilityComplianceItem          `json:"items"`
+			FilteredSummary *adminCapabilityComplianceSummary        `json:"filtered_summary"`
+			UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &aliasResp); err != nil {
+			t.Fatalf("decode include %s compliance: %v", includeValue, err)
+		}
+		if len(aliasResp.Items) != 2 || aliasResp.FilteredSummary != nil || len(aliasResp.UnmanagedItems) != 1 {
+			t.Fatalf("unexpected include %s compliance: items=%+v filtered=%+v unmanaged=%+v", includeValue, aliasResp.Items, aliasResp.FilteredSummary, aliasResp.UnmanagedItems)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=missing&include_unmanaged=false", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
 	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("compliance status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
-		Items          []adminCapabilityComplianceItem          `json:"items"`
-		Summary        adminCapabilityComplianceSummary         `json:"summary"`
-		UnmanagedItems []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary adminCapabilityComplianceSummary         `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode compliance: %v", err)
 	}
-	if len(resp.Items) != 1 || resp.Items[0].CapabilityRef != missing.ID || resp.Summary.Total != 2 || len(resp.UnmanagedItems) != 0 {
+	if len(resp.Items) != 1 || resp.Items[0].CapabilityRef != missing.ID || resp.Summary.Total != 2 || resp.FilteredSummary.Total != 1 || resp.FilteredSummary.Missing != 1 || len(resp.UnmanagedItems) != 0 {
 		t.Fatalf("unexpected filtered compliance: items=%+v summary=%+v unmanaged=%+v", resp.Items, resp.Summary, resp.UnmanagedItems)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=unmanaged_installed", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unmanaged compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp = struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary adminCapabilityComplianceSummary         `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode unmanaged compliance: %v", err)
+	}
+	if len(resp.Items) != 0 || resp.FilteredSummary.Total != 0 || resp.FilteredSummary.UnmanagedInstalled != 1 || len(resp.UnmanagedItems) != 1 || resp.UnmanagedItems[0].CapabilityRef != "extra-filter" {
+		t.Fatalf("unexpected unmanaged filtered compliance: items=%+v unmanaged=%+v", resp.Items, resp.UnmanagedItems)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=unmanaged_installed&include_unmanaged=false", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hidden unmanaged compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp = struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary adminCapabilityComplianceSummary         `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode hidden unmanaged compliance: %v", err)
+	}
+	if len(resp.Items) != 0 || resp.FilteredSummary.Total != 0 || resp.FilteredSummary.UnmanagedInstalled != 0 || len(resp.UnmanagedItems) != 0 {
+		t.Fatalf("unexpected hidden unmanaged filtered compliance: items=%+v filtered=%+v unmanaged=%+v", resp.Items, resp.FilteredSummary, resp.UnmanagedItems)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=issues", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("risk compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp = struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary adminCapabilityComplianceSummary         `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode risk compliance: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].CapabilityRef != missing.ID || resp.FilteredSummary.Total != 1 || resp.FilteredSummary.Missing != 1 || resp.FilteredSummary.UnmanagedInstalled != 1 || len(resp.UnmanagedItems) != 1 || resp.UnmanagedItems[0].CapabilityRef != "extra-filter" {
+		t.Fatalf("unexpected risk filtered compliance: items=%+v unmanaged=%+v", resp.Items, resp.UnmanagedItems)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/capability-market/users/filter@example.com/compliance?status=risks", nil)
+	req.SetPathValue("email", "filter@example.com")
+	rec = httptest.NewRecorder()
+	AdminUserCapabilityComplianceHandler(svc, fakeCapabilityGroupResolver{chain: []string{"dept-a", "root"}})(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("risks alias compliance status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	resp = struct {
+		Items           []adminCapabilityComplianceItem          `json:"items"`
+		Summary         adminCapabilityComplianceSummary         `json:"summary"`
+		FilteredSummary adminCapabilityComplianceSummary         `json:"filtered_summary"`
+		UnmanagedItems  []capability.UserCapabilityInventoryItem `json:"unmanaged_items"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode risks alias compliance: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].CapabilityRef != missing.ID || resp.FilteredSummary.Total != 1 || resp.FilteredSummary.Missing != 1 || resp.FilteredSummary.UnmanagedInstalled != 1 || len(resp.UnmanagedItems) != 1 || resp.UnmanagedItems[0].CapabilityRef != "extra-filter" {
+		t.Fatalf("unexpected risks alias filtered compliance: items=%+v unmanaged=%+v", resp.Items, resp.UnmanagedItems)
 	}
 }
 
