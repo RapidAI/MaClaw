@@ -12,7 +12,7 @@ if (!document.querySelector('link[href*="Monoton"]')) {
     document.head.appendChild(link);
 }
 
-/** Synthesize a phone-boot-style startup sound — majestic arpeggio with metallic touch */
+/** Synthesize a phone-boot-style startup sound: majestic arpeggio with metallic touch. */
 function playStartupChime() {
     try {
         const ctx = new AudioContext();
@@ -80,7 +80,7 @@ function playStartupChime() {
             noise.stop(now + start + 0.015);
         }
 
-        // Final resolve chord (C6-E6-G6) — clean
+        // Final resolve chord (C6-E6-G6), clean
         const resolveStart = 1.9;
         for (const freq of [1047, 1319, 1568]) {
             const osc = ctx.createOscillator();
@@ -98,7 +98,7 @@ function playStartupChime() {
         // Cleanup
         setTimeout(() => ctx.close(), 4500);
     } catch {
-        // Audio not available — silent fallback
+        // Audio not available; silent fallback
     }
 }
 
@@ -165,7 +165,7 @@ export function AssistantConversationBody({
             ) : !ready ? (
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "18px" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: "4px", animation: "maclaw-brand-breathe 2.4s ease-in-out infinite" }}>
-                        <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "-0.5px" }}>码卡龙</span>
+                        <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>码卡龙</span>
                         <span style={{
                             fontFamily: "'Monoton', cursive",
                             fontSize: '38px',

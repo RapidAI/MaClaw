@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -17,6 +18,14 @@ const (
 	GroupMessageInvitationResponse  GroupMessageType = "invitation_response"
 	GroupMessageDiscussionMessage   GroupMessageType = "discussion_message"
 	GroupMessageDiscussionResult    GroupMessageType = "discussion_result"
+	GroupMessageApprovalRequest     GroupMessageType = "approval_request"
+	GroupMessageApprovalResponse    GroupMessageType = "approval_response"
+)
+
+// Envelope type aliases for approval workflow messages.
+const (
+	EnvelopeTypeApprovalRequest  = "approval_request"
+	EnvelopeTypeApprovalResponse = "approval_response"
 )
 
 type GroupRole string
@@ -115,6 +124,11 @@ type GroupEnvelope struct {
 	InvitationResponse *GroupInvitationResponse  `json:"invitation_response,omitempty"`
 	Message            *GroupDiscussionMessage   `json:"message,omitempty"`
 	Result             *GroupDiscussionResult    `json:"result,omitempty"`
+
+	// Payload carries serialized approval workflow messages.
+	// For Type=approval_request: JSON-serialized ApprovalRequest (from hub/internal/workflow).
+	// For Type=approval_response: JSON-serialized ApprovalResponse (from hub/internal/workflow).
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 func NewGroupEnvelope(id string, typ GroupMessageType, fromID string, now time.Time) GroupEnvelope {
@@ -167,6 +181,14 @@ func (e GroupEnvelope) ValidateCurrentHub() error {
 	case GroupMessageDiscussionResult:
 		if e.Result == nil || strings.TrimSpace(e.Result.Summary) == "" {
 			return fmt.Errorf("discussion result summary is required")
+		}
+	case GroupMessageApprovalRequest:
+		if len(e.Payload) == 0 {
+			return fmt.Errorf("approval request payload is required")
+		}
+	case GroupMessageApprovalResponse:
+		if len(e.Payload) == 0 {
+			return fmt.Errorf("approval response payload is required")
 		}
 	default:
 		return fmt.Errorf("unknown group message type %q", e.Type)

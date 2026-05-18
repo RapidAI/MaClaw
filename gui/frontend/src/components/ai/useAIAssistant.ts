@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
+import { SendAIAssistantMessage, SendBtwQuery, ClearAIAssistantHistory, FetchNews, IsAIAssistantReady, GetAIAssistantInitStatus, CancelAIAssistantSession, CancelAIAssistantTask, SelectAIAssistantFiles, StartAIAssistantBackgroundTask, GetTrialReflectEnabled, GetAIAssistantTrace, LoadConfig, ListRemoteSessions, ResolveCriticalConfirm, InjectAIAssistantSupplementary, InjectAIAssistantGuideReference, InjectAIAssistantGuideReferenceForSession, SubmitAgentView, DismissAgentView } from "../../../wailsjs/go/main/App";
 import { main } from "../../../wailsjs/go/models";
 import { EventsOn, EventsOff, EventsEmit } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
@@ -168,6 +168,16 @@ export interface ChatConfirmation {
     riskFlags?: string[];
     revisionHints?: string[];
     status?: string;
+    labels?: ChatConfirmationLabels;
+}
+
+export interface ChatConfirmationLabels {
+    title?: string;
+    status?: string;
+    target_paths?: string;
+    planned_actions?: string;
+    risk_flags?: string;
+    revision_hints?: string;
 }
 
 export interface ChatUnfinishedSlot {
@@ -297,12 +307,12 @@ const IMAGE_FILE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".bmp", 
 const MAX_LIVE_PROGRESS_MESSAGES = 100;
 const HIDDEN_PROGRESS_PATTERNS = [
     /^__heartbeat__$/,
-    /^[⏳]\s*命令仍在执行中（已\s*\d+s）:/,
 ];
 
 function shouldHideProgressText(progressText: string): boolean {
     const trimmed = progressText.trim();
     if (!trimmed) return true;
+    if (trimmed.includes("命令仍在执行中")) return true;
     return HIDDEN_PROGRESS_PATTERNS.some(pattern => pattern.test(trimmed));
 }
 
@@ -876,6 +886,8 @@ function normalizeConfirmation(raw: AIAssistantResponseConfirmation | null | und
     if (!summary) return undefined;
     const taskType = typeof raw.task_type === 'string' ? raw.task_type.trim() : (typeof raw.TaskType === 'string' ? raw.TaskType.trim() : '');
     const status = typeof raw.status === 'string' ? raw.status.trim() : (typeof raw.Status === 'string' ? raw.Status.trim() : '');
+    const rawLabels = (raw as Record<string, unknown>).labels ?? (raw as Record<string, unknown>).Labels;
+    const labels = (rawLabels && typeof rawLabels === 'object') ? rawLabels as ChatConfirmationLabels : undefined;
     return {
         id,
         summary,
@@ -885,6 +897,7 @@ function normalizeConfirmation(raw: AIAssistantResponseConfirmation | null | und
         riskFlags: normalizeStringArray(raw.risk_flags ?? raw.RiskFlags),
         revisionHints: normalizeStringArray(raw.revision_hints ?? raw.RevisionHints),
         status: status || undefined,
+        labels,
     };
 }
 
@@ -3000,6 +3013,21 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         }
     }, []);
 
+    const guideLaunchReference = useCallback(async (text: string, sessionKey?: string): Promise<boolean> => {
+        try {
+            const normalizedSessionKey = sessionKey?.trim() || '';
+            const accepted = normalizedSessionKey
+                ? await InjectAIAssistantGuideReferenceForSession(text, normalizedSessionKey)
+                : await InjectAIAssistantGuideReference(text);
+            if (accepted && (!normalizedSessionKey || normalizedSessionKey === 'desktop-user')) {
+                setMessages(prev => [...prev, createSystemMessage("Guide reference injected:\n" + text)]);
+            }
+            return accepted;
+        } catch {
+            return false;
+        }
+    }, []);
+
     const submitAgentView = useCallback(async (viewId: string | undefined, data: Record<string, unknown>) => {
         setAgentView(null);
         const payload = JSON.stringify({ view_id: viewId || "", data });
@@ -3060,6 +3088,7 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         sendBtwMessage,
         sendMessageInBackground,
         injectSupplementary,
+        guideLaunchReference,
         clearHistory,
         recordSubmittedPrompt,
         setDraftInputValue,
@@ -3068,9 +3097,9 @@ export function useAIAssistant(options?: { refreshSessionsOnly?: () => Promise<v
         cancelSession,
         submitAgentView,
         dismissAgentView,
-    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView]);
+    }), [browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView]);
 
-    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, submitAgentView, dismissAgentView, panelState, panelActions };
+    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, streaming, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

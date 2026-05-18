@@ -34,7 +34,10 @@ var ErrDigitalEmployeeQuotaRequired = errors.New("digital employee quota must be
 var ErrDigitalEmployeeYearsRequired = errors.New("digital employee authorization years must be at least one when enabled")
 
 const hubConfirmationPrefix = "hub_registration_confirm:"
-const systemKeyPublicBaseURL = "server_public_base_url"
+const (
+	systemKeyPublicBaseURL                       = "server_public_base_url"
+	systemKeyTenantDigitalEmployeeAuthorizations = "tenant_digital_employee_authorizations"
+)
 const adminDomainRoutePrefix = "hdr_admin_"
 const adminUserLinkPrefix = "hul_admin_"
 
@@ -153,12 +156,14 @@ type MigrationResult struct {
 
 type remoteUserMigrationRequest struct {
 	HubSecretHash string            `json:"hub_secret_hash"`
+	TenantID      string            `json:"tenant_id,omitempty"`
 	Emails        []string          `json:"emails,omitempty"`
 	Users         []json.RawMessage `json:"users,omitempty"`
 }
 
 type remoteUserMigrationExportResponse struct {
-	Users []json.RawMessage `json:"users"`
+	TenantID string            `json:"tenant_id,omitempty"`
+	Users    []json.RawMessage `json:"users"`
 }
 
 type remoteUserDataPackage struct {
@@ -348,7 +353,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 			if err := s.syncDomainRoutes(ctx, existing, corporateEmailDomains, now); err != nil {
 				return nil, err
 			}
-			if err := s.syncHubUserEmailInventory(ctx, existing.ID, capabilityStringList(req.Capabilities["user_emails"]), now); err != nil {
+			if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, existing.ID, req.Capabilities, now); err != nil {
 				return nil, err
 			}
 			s.refreshRoutes(ctx)
@@ -396,7 +401,7 @@ func (s *Service) RegisterHubFromIP(ctx context.Context, req RegisterHubRequest,
 	if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
 		return nil, err
 	}
-	if err := s.syncHubUserEmailInventory(ctx, hub.ID, capabilityStringList(req.Capabilities["user_emails"]), now); err != nil {
+	if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, req.Capabilities, now); err != nil {
 		return nil, err
 	}
 	s.refreshRoutes(ctx)
@@ -473,7 +478,7 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 			return err
 		}
 		if update.Capabilities != nil {
-			if err := s.syncHubUserEmailInventory(ctx, hub.ID, capabilityStringList(update.Capabilities["user_emails"]), now); err != nil {
+			if err := s.syncHubUserEmailInventoryFromCapabilities(ctx, hub.ID, update.Capabilities, now); err != nil {
 				return err
 			}
 		}
@@ -1268,6 +1273,7 @@ func (s *Service) ensureTargetHub(ctx context.Context, hubID string) error {
 }
 
 type DigitalEmployeeAuthorizationUpdate struct {
+	TenantID  string
 	Quota     int
 	Years     int
 	Enabled   *bool
@@ -1275,6 +1281,17 @@ type DigitalEmployeeAuthorizationUpdate struct {
 }
 
 func (s *Service) HubDigitalEmployeeAuthorization(ctx context.Context, hubID string) (*corelib.DigitalEmployeeAuthorization, error) {
+	auths, err := s.HubDigitalEmployeeAuthorizations(ctx, hubID)
+	if err != nil {
+		return nil, err
+	}
+	if auth := auths[""]; auth != nil {
+		return auth, nil
+	}
+	return nil, nil
+}
+
+func (s *Service) HubDigitalEmployeeAuthorizations(ctx context.Context, hubID string) (map[string]*corelib.DigitalEmployeeAuthorization, error) {
 	hub, err := s.hubs.GetByID(ctx, strings.TrimSpace(hubID))
 	if err != nil {
 		return nil, err
@@ -1282,24 +1299,37 @@ func (s *Service) HubDigitalEmployeeAuthorization(ctx context.Context, hubID str
 	if hub == nil {
 		return nil, ErrHubNotFound
 	}
+	out := map[string]*corelib.DigitalEmployeeAuthorization{}
 	// If authorization was never configured on this node (all fields at default),
 	// return nil so the Hub preserves any previously received valid authorization.
 	// This prevents HA replication lag from overwriting a correct quota with zero.
-	if hub.DigitalEmployeeQuota == 0 && !hub.DigitalEmployeeAuthorizationEnabled && hub.DigitalEmployeeAuthorizationExpiresAt == nil {
-		return nil, nil
+	if hub.DigitalEmployeeQuota != 0 || hub.DigitalEmployeeAuthorizationEnabled || hub.DigitalEmployeeAuthorizationExpiresAt != nil {
+		auth := corelib.DigitalEmployeeAuthorization{
+			Quota:   hub.DigitalEmployeeQuota,
+			Enabled: hub.DigitalEmployeeAuthorizationEnabled,
+		}
+		if hub.DigitalEmployeeAuthorizationExpiresAt != nil {
+			auth.ExpiresAt = hub.DigitalEmployeeAuthorizationExpiresAt.UTC().Format(time.RFC3339)
+		}
+		out[""] = ptrDigitalEmployeeAuthorization(corelib.NormalizeDigitalEmployeeAuthorization(auth, time.Now().UTC()))
 	}
-	auth := corelib.DigitalEmployeeAuthorization{
-		Quota:   hub.DigitalEmployeeQuota,
-		Enabled: hub.DigitalEmployeeAuthorizationEnabled,
+	tenantAuths, err := s.loadTenantDigitalEmployeeAuthorizations(ctx, hubID)
+	if err != nil {
+		return nil, err
 	}
-	if hub.DigitalEmployeeAuthorizationExpiresAt != nil {
-		auth.ExpiresAt = hub.DigitalEmployeeAuthorizationExpiresAt.UTC().Format(time.RFC3339)
+	for tenantID, auth := range tenantAuths {
+		if strings.TrimSpace(tenantID) == "" || auth == nil {
+			continue
+		}
+		normalized := corelib.NormalizeDigitalEmployeeAuthorization(*auth, time.Now().UTC())
+		out[strings.TrimSpace(tenantID)] = &normalized
 	}
-	return ptrDigitalEmployeeAuthorization(corelib.NormalizeDigitalEmployeeAuthorization(auth, time.Now().UTC())), nil
+	return out, nil
 }
 
 func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID string, req DigitalEmployeeAuthorizationUpdate) (*corelib.DigitalEmployeeAuthorization, error) {
 	hubID = strings.TrimSpace(hubID)
+	tenantID := strings.TrimSpace(req.TenantID)
 	if hubID == "" {
 		return nil, errors.New("hub id is required")
 	}
@@ -1309,6 +1339,9 @@ func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID 
 	}
 	if hub == nil {
 		return nil, ErrHubNotFound
+	}
+	if tenantID != "" {
+		return s.updateTenantDigitalEmployeeAuthorization(ctx, hubID, tenantID, req)
 	}
 	enabled := true
 	if req.Enabled != nil {
@@ -1367,6 +1400,106 @@ func (s *Service) UpdateDigitalEmployeeAuthorization(ctx context.Context, hubID 
 func ptrDigitalEmployeeAuthorization(auth corelib.DigitalEmployeeAuthorization) *corelib.DigitalEmployeeAuthorization {
 	return &auth
 }
+
+func (s *Service) updateTenantDigitalEmployeeAuthorization(ctx context.Context, hubID, tenantID string, req DigitalEmployeeAuthorizationUpdate) (*corelib.DigitalEmployeeAuthorization, error) {
+	items, err := s.loadTenantDigitalEmployeeAuthorizations(ctx, hubID)
+	if err != nil {
+		return nil, err
+	}
+	current := items[tenantID]
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	currentQuota := 0
+	var currentExpiresAt *time.Time
+	if current != nil {
+		currentQuota = current.Quota
+		if strings.TrimSpace(current.ExpiresAt) != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(current.ExpiresAt)); parseErr == nil {
+				currentExpiresAt = &parsed
+			}
+		}
+	}
+	requestedQuota := req.Quota
+	if requestedQuota == 0 && currentQuota > 0 {
+		requestedQuota = currentQuota
+	}
+	if requestedQuota < currentQuota {
+		return nil, ErrDigitalEmployeeQuotaDecrease
+	}
+	if enabled && requestedQuota <= 0 {
+		return nil, ErrDigitalEmployeeQuotaRequired
+	}
+	years := req.Years
+	if enabled && years < 1 {
+		return nil, ErrDigitalEmployeeYearsRequired
+	}
+	var expiresAt *time.Time
+	if enabled {
+		base := time.Now().UTC()
+		if req.StartDate != "" {
+			parsed, parseErr := time.Parse("2006-01-02", req.StartDate)
+			if parseErr != nil {
+				return nil, fmt.Errorf("invalid start_date format (expected YYYY-MM-DD): %w", parseErr)
+			}
+			base = parsed.UTC()
+		} else if currentExpiresAt != nil && currentExpiresAt.After(base) {
+			base = currentExpiresAt.UTC()
+		}
+		next := base.AddDate(years, 0, 0)
+		if currentExpiresAt != nil && currentExpiresAt.After(next) {
+			next = currentExpiresAt.UTC()
+		}
+		expiresAt = &next
+	} else {
+		expiresAt = currentExpiresAt
+	}
+	auth := corelib.DigitalEmployeeAuthorization{Quota: requestedQuota, Enabled: enabled}
+	if expiresAt != nil {
+		auth.ExpiresAt = expiresAt.UTC().Format(time.RFC3339)
+	}
+	normalized := corelib.NormalizeDigitalEmployeeAuthorization(auth, time.Now().UTC())
+	items[tenantID] = &normalized
+	if err := s.saveTenantDigitalEmployeeAuthorizations(ctx, hubID, items); err != nil {
+		return nil, err
+	}
+	if err := s.recordHubByID(ctx, hubID); err != nil {
+		return nil, err
+	}
+	return &normalized, nil
+}
+
+func (s *Service) loadTenantDigitalEmployeeAuthorizations(ctx context.Context, hubID string) (map[string]*corelib.DigitalEmployeeAuthorization, error) {
+	items := map[string]*corelib.DigitalEmployeeAuthorization{}
+	if s.settings == nil {
+		return items, nil
+	}
+	raw, err := s.settings.Get(ctx, tenantDigitalEmployeeAuthorizationsKey(hubID))
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return items, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Service) saveTenantDigitalEmployeeAuthorizations(ctx context.Context, hubID string, items map[string]*corelib.DigitalEmployeeAuthorization) error {
+	if s.settings == nil {
+		return nil
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return err
+	}
+	return s.settings.Set(ctx, tenantDigitalEmployeeAuthorizationsKey(hubID), string(data))
+}
+
+func tenantDigitalEmployeeAuthorizationsKey(hubID string) string {
+	return systemKeyTenantDigitalEmployeeAuthorizations + ":" + strings.TrimSpace(hubID)
+}
+
 func (s *Service) UpdateVisibility(ctx context.Context, hubID, visibility string) error {
 	if strings.TrimSpace(hubID) == "" {
 		return errors.New("hub id is required")
@@ -1621,9 +1754,13 @@ func (s *Service) syncOwnerLink(ctx context.Context, hubID, ownerEmail string, n
 	return nil
 }
 
-func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email string, isDefault bool) error {
+func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email string, isDefault bool, tenantIDOpt ...string) error {
 	hubID = strings.TrimSpace(hubID)
 	email = normalizeEmail(email)
+	tenantID := ""
+	if len(tenantIDOpt) > 0 {
+		tenantID = strings.TrimSpace(tenantIDOpt[0])
+	}
 	if hubID == "" || email == "" {
 		return errors.New("hub id and email are required")
 	}
@@ -1659,6 +1796,9 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 		if item == nil || isOwnerLink(item) {
 			continue
 		}
+		if strings.TrimSpace(item.TenantID) != tenantID {
+			continue
+		}
 		if err := s.links.DeleteByID(ctx, item.ID); err != nil {
 			return err
 		}
@@ -1667,7 +1807,7 @@ func (s *Service) SyncHubUserLink(ctx context.Context, hubID, rawSecret, email s
 		}
 	}
 	now := time.Now()
-	link := &store.HubUserLink{ID: primaryUserLinkID(hubID, email), HubID: hubID, Email: email, IsDefault: isDefault, CreatedAt: now, UpdatedAt: now}
+	link := &store.HubUserLink{ID: primaryUserLinkIDForTenant(hubID, tenantID, email), HubID: hubID, TenantID: tenantID, Email: email, IsDefault: isDefault && tenantID == "", CreatedAt: now, UpdatedAt: now}
 	if err := s.links.Upsert(ctx, link); err != nil {
 		return err
 	}
@@ -1715,44 +1855,107 @@ func (s *Service) rebuildHubUserEmailInventory(ctx context.Context, hubID string
 }
 
 func (s *Service) syncHubUserEmailInventory(ctx context.Context, hubID string, emails []string, now time.Time) error {
-	if s.links == nil || strings.TrimSpace(hubID) == "" || len(emails) == 0 {
+	return s.syncHubTenantUserEmailInventory(ctx, hubID, map[string][]string{"": emails}, now)
+}
+
+func (s *Service) syncHubUserEmailInventoryFromCapabilities(ctx context.Context, hubID string, caps map[string]any, now time.Time) error {
+	return s.syncHubTenantUserEmailInventory(ctx, hubID, tenantUserEmailCapabilityMap(caps), now)
+}
+
+func (s *Service) syncHubTenantUserEmailInventory(ctx context.Context, hubID string, tenantEmails map[string][]string, now time.Time) error {
+	if s.links == nil || strings.TrimSpace(hubID) == "" || len(tenantEmails) == 0 {
 		return nil
 	}
 	seen := map[string]struct{}{}
-	for _, rawEmail := range emails {
-		email := normalizeEmail(rawEmail)
-		if email == "" {
-			continue
-		}
-		if _, ok := seen[email]; ok {
-			continue
-		}
-		seen[email] = struct{}{}
+	seenByTenant := map[string]map[string]struct{}{}
+	for tenantID, emails := range tenantEmails {
+		tenantID = strings.TrimSpace(tenantID)
+		for _, rawEmail := range emails {
+			email := normalizeEmail(rawEmail)
+			if email == "" {
+				continue
+			}
+			seenKey := tenantID + "\x00" + email
+			if _, ok := seen[seenKey]; ok {
+				continue
+			}
+			seen[seenKey] = struct{}{}
+			if seenByTenant[tenantID] == nil {
+				seenByTenant[tenantID] = map[string]struct{}{}
+			}
+			seenByTenant[tenantID][email] = struct{}{}
 
-		items, err := s.links.ListByEmail(ctx, email)
-		if err != nil {
-			return err
-		}
-		adminManaged := false
-		for _, item := range items {
-			if isAdminUserLink(item) {
-				adminManaged = true
-				break
+			items, err := s.links.ListByEmail(ctx, email)
+			if err != nil {
+				return err
+			}
+			adminManaged := false
+			for _, item := range items {
+				if isAdminUserLink(item) {
+					adminManaged = true
+					break
+				}
+			}
+			if adminManaged {
+				continue
+			}
+
+			link := &store.HubUserLink{ID: primaryUserLinkIDForTenant(hubID, tenantID, email), HubID: hubID, TenantID: tenantID, Email: email, IsDefault: false, CreatedAt: now, UpdatedAt: now}
+			if err := s.links.Upsert(ctx, link); err != nil {
+				return err
+			}
+			if s.sync != nil {
+				s.sync.AppendHubUserLink(ctx, link)
 			}
 		}
-		if adminManaged {
+	}
+
+	items, err := s.links.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item == nil || strings.TrimSpace(item.HubID) != strings.TrimSpace(hubID) || isOwnerLink(item) || isAdminUserLink(item) {
 			continue
 		}
-
-		link := &store.HubUserLink{ID: primaryUserLinkID(hubID, email), HubID: hubID, Email: email, IsDefault: false, CreatedAt: now, UpdatedAt: now}
-		if err := s.links.Upsert(ctx, link); err != nil {
+		if !strings.HasPrefix(strings.TrimSpace(item.ID), "hul_user_"+strings.TrimSpace(hubID)+"_") {
+			continue
+		}
+		tenantID := strings.TrimSpace(item.TenantID)
+		seenEmails, ok := seenByTenant[tenantID]
+		if !ok {
+			continue
+		}
+		if _, ok := seenEmails[normalizeEmail(item.Email)]; ok {
+			continue
+		}
+		if err := s.links.DeleteByID(ctx, item.ID); err != nil {
 			return err
 		}
 		if s.sync != nil {
-			s.sync.AppendHubUserLink(ctx, link)
+			s.sync.DeleteHubUserLink(ctx, item.ID)
 		}
 	}
 	return nil
+}
+
+func tenantUserEmailCapabilityMap(caps map[string]any) map[string][]string {
+	byTenant := map[string][]string{}
+	if caps != nil {
+		if raw, ok := caps["tenant_user_emails"].(map[string]any); ok {
+			for tenantID, value := range raw {
+				if emails := capabilityStringList(value); len(emails) > 0 {
+					byTenant[strings.TrimSpace(tenantID)] = emails
+				}
+			}
+		}
+	}
+	if len(byTenant) == 0 {
+		if caps != nil {
+			byTenant[""] = capabilityStringList(caps["user_emails"])
+		}
+	}
+	return byTenant
 }
 func (s *Service) syncDomainRoutes(ctx context.Context, hub *store.HubInstance, domains []string, now time.Time) error {
 	if s.routes == nil || hub == nil {
@@ -2111,7 +2314,15 @@ func isAdminUserLink(link *store.HubUserLink) bool {
 }
 
 func primaryUserLinkID(hubID, email string) string {
-	return fmt.Sprintf("hul_user_%s_%s", strings.TrimSpace(hubID), hashToken(normalizeEmail(email))[:16])
+	return primaryUserLinkIDForTenant(hubID, "", email)
+}
+
+func primaryUserLinkIDForTenant(hubID, tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return fmt.Sprintf("hul_user_%s_%s", strings.TrimSpace(hubID), hashToken(normalizeEmail(email))[:16])
+	}
+	return fmt.Sprintf("hul_user_%s_%s_%s", strings.TrimSpace(hubID), hashToken(tenantID)[:8], hashToken(normalizeEmail(email))[:16])
 }
 
 func adminUserLinkID(email string) string {

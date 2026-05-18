@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 // PolicyEngine evaluates tool invocations against a set of ordered policy rules.
@@ -16,44 +17,70 @@ type PolicyEngine struct {
 	mu            sync.RWMutex
 	rules         []security.PolicyRule
 	reCache       map[string]*regexp.Regexp // compiled regex cache
-	developerMode bool                      // true when mode == "developer"
+	mode          string
+	developerMode bool // true when mode == "developer"
 }
 
 // NewPolicyEngine creates a PolicyEngine initialised with the default policy rules.
 func NewPolicyEngine() *PolicyEngine {
 	return &PolicyEngine{
+		mode:    "standard",
 		rules:   DefaultPolicyRules(),
 		reCache: make(map[string]*regexp.Regexp),
 	}
 }
 
 // NewPolicyEngineWithMode creates a PolicyEngine using rules for the given mode.
-// Supported modes: "developer", "relaxed", "standard" (default), "strict".
+// Supported modes: "developer", "relaxed"/"permissive", "standard" (default), "strict".
 func NewPolicyEngineWithMode(mode string) *PolicyEngine {
+	mode = normalizePolicyEngineMode(mode)
 	return &PolicyEngine{
 		rules:         PolicyRulesForMode(mode),
 		reCache:       make(map[string]*regexp.Regexp),
+		mode:          mode,
 		developerMode: mode == "developer",
 	}
 }
 
 // SetMode replaces the current rule set with rules for the given mode.
 func (e *PolicyEngine) SetMode(mode string) {
+	mode = normalizePolicyEngineMode(mode)
 	rules := PolicyRulesForMode(mode)
 	e.mu.Lock()
 	e.rules = rules
 	e.reCache = make(map[string]*regexp.Regexp)
+	e.mode = mode
 	e.developerMode = mode == "developer"
 	e.mu.Unlock()
 }
 
+func normalizePolicyEngineMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "developer", "relaxed", "standard", "strict":
+		return strings.ToLower(strings.TrimSpace(mode))
+	case "permissive":
+		return "relaxed"
+	default:
+		return "standard"
+	}
+}
+
 // IsDeveloperMode returns true when the engine is in "developer" mode.
-// Developer mode disables all security guardrails — intended for security
+// Developer mode disables all security guardrails - intended for security
 // researchers who need to observe raw tool behaviour without interception.
 func (e *PolicyEngine) IsDeveloperMode() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.developerMode
+}
+
+func (e *PolicyEngine) Mode() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if strings.TrimSpace(e.mode) == "" {
+		return "standard"
+	}
+	return e.mode
 }
 
 // Evaluate determines the PolicyAction for a tool invocation by walking the
@@ -89,7 +116,7 @@ func (e *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, ri
 		}
 	}
 
-	// No rule matched — default to asking the user.
+	// No rule matched - default to asking the user.
 	return security.PolicyAsk
 }
 
@@ -131,7 +158,8 @@ func (e *PolicyEngine) Rules() []security.PolicyRule {
 }
 
 // DefaultPolicyRules returns the built-in policy rule set (standard mode).
-// Standard: critical → deny (dangerous keywords) or ask, high → ask, medium → audit, low → allow.
+// Standard: critical/high ask, medium audit, low allow. Dangerous command
+// patterns are recorded through risk/audit paths instead of being denied here.
 func DefaultPolicyRules() []security.PolicyRule {
 	return PolicyRulesForMode("standard")
 }
@@ -140,13 +168,14 @@ func DefaultPolicyRules() []security.PolicyRule {
 //
 // Supported modes:
 //
-//	developer: all operations allowed unconditionally (no deny, no ask, no audit).
-//	           Intended for security researchers. Use with caution.
-//	relaxed:   low/medium/high → allow, critical → ask (dangerous keywords → deny)
-//	standard:  low → allow, medium → audit, high → ask, critical → ask (dangerous keywords → deny)
-//	strict:    low → allow, medium/high → ask, critical → deny (dangerous keywords → deny)
+//	developer: all operations allowed; callers may still audit observations.
+//	relaxed:   low/medium/high/critical allow so skills can install and run.
+//	standard:  low allow, medium audit, high/critical ask when a UI is available.
+//	strict:    low allow, medium/high ask, critical deny; dangerous critical args deny.
 func PolicyRulesForMode(mode string) []security.PolicyRule {
-	// Dangerous-keyword deny rule is shared across all non-developer modes.
+	// Strict mode is the only built-in mode that hard-blocks dangerous command
+	// patterns. Softer modes rely on risk assessment, confirmation, and audit so
+	// skills remain usable when installers or scripts contain powerful commands.
 	// NOTE: \bsudo\b uses word boundaries to avoid matching "pseudo", "sudoku", etc.
 	denyDangerous := security.PolicyRule{
 		Name:        "deny-dangerous-keywords",
@@ -161,9 +190,6 @@ func PolicyRulesForMode(mode string) []security.PolicyRule {
 
 	switch mode {
 	case "developer":
-		// Developer mode: allow everything unconditionally.
-		// No deny rules, no ask rules, no audit rules.
-		// Risk assessment still runs (for logging), but policy never blocks.
 		rules = []security.PolicyRule{
 			{Name: "allow-critical", Priority: 10, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAllow},
 			{Name: "allow-high", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAllow},
@@ -172,8 +198,7 @@ func PolicyRulesForMode(mode string) []security.PolicyRule {
 		}
 	case "relaxed":
 		rules = []security.PolicyRule{
-			denyDangerous,
-			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAsk},
+			{Name: "allow-critical", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAllow},
 			{Name: "allow-high", Priority: 30, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAllow},
 			{Name: "allow-medium", Priority: 40, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskMedium}, Action: security.PolicyAllow},
 			{Name: "allow-low", Priority: 100, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskLow}, Action: security.PolicyAllow},
@@ -188,7 +213,6 @@ func PolicyRulesForMode(mode string) []security.PolicyRule {
 		}
 	default: // "standard"
 		rules = []security.PolicyRule{
-			denyDangerous,
 			{Name: "ask-critical", Priority: 20, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskCritical}, Action: security.PolicyAsk},
 			{Name: "ask-high", Priority: 30, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskHigh}, Action: security.PolicyAsk},
 			{Name: "audit-medium", Priority: 40, ToolPattern: "*", RiskLevels: []security.RiskLevel{security.RiskMedium}, Action: security.PolicyAudit},
@@ -266,7 +290,7 @@ func (e *PolicyEngine) matchesRuleLocked(rule security.PolicyRule, toolName, arg
 			if err != nil {
 				return false
 			}
-			// Cache miss under RLock — skip caching to avoid data race.
+			// Cache miss under RLock - skip caching to avoid data race.
 			// The regex will be recompiled on next call, which is acceptable
 			// since rule sets are small and this path is rare.
 		}

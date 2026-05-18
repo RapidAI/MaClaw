@@ -74,7 +74,8 @@ type contextCompressionRequest struct {
 // split a tool-call group (landing between an assistant(tool_calls) and
 // its tool results), it is adjusted backward to include the full group.
 // This prevents orphaned tool messages that cause DeepSeek HTTP 400:
-//   "Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
+//
+//	"Messages with role 'tool' must be a response to a preceding message with 'tool_calls'"
 func applyHistoryCompression(history []agent.ConversationEntry, req *contextCompressionRequest) []agent.ConversationEntry {
 	if req == nil || len(history) < 6 {
 		return history
@@ -143,15 +144,30 @@ func applyHistoryCompression(history []agent.ConversationEntry, req *contextComp
 
 // persistLastCompressionSummary saves the most recent compress_context
 // summary as a task_artifact memory entry. Called once at agent loop exit.
-func persistLastCompressionSummary(store interface{ Save(corememory.Entry) error }, summary string) {
+func persistLastCompressionSummary(store interface {
+	Save(corememory.Entry) error
+	Path() string
+}, userID, summary string) {
 	if store == nil || strings.TrimSpace(summary) == "" {
 		return
 	}
+	preview := memoryRefPreview(summary)
+	refPath, err := writeMemoryRefFile(store.Path(), userID, "context_checkpoint", summary, time.Now())
+	if err != nil {
+		log.Printf("[compress_context] failed to write memory ref for user=%s: %v", userID, err)
+	}
+	tags := []string{"context_checkpoint", "working_state"}
+	if refPath != "" {
+		tags = append(tags, "source_ref")
+	}
 	entry := corememory.Entry{
-		Content:  summary,
-		Title:    "工作状态快照",
-		Category: corememory.CategoryTaskArtifact,
-		Tags:     []string{"context_checkpoint", "working_state"},
+		Content:    preview,
+		Title:      "工作状态快照",
+		Category:   corememory.CategoryTaskArtifact,
+		Tags:       tags,
+		OwnerID:    userID,
+		SourceType: "context_checkpoint_ref",
+		SourceURL:  refPath,
 	}
 	if err := store.Save(entry); err != nil {
 		log.Printf("[compress_context] failed to persist final summary: %v", err)

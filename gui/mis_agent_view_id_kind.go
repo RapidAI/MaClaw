@@ -15,6 +15,7 @@ const (
 	misAgentViewIDResumeTransaction
 	misAgentViewIDIntent
 	misAgentViewIDCommit
+	misAgentViewIDWorkflowForm
 )
 
 type misAgentViewID struct {
@@ -47,6 +48,9 @@ func classifyMISAgentViewID(viewID string) misAgentViewID {
 	}
 	if arg, ok := strings.CutPrefix(trimmed, "mis:commit:"); ok {
 		return misAgentViewID{Kind: misAgentViewIDCommit, Arg: strings.TrimSpace(arg)}
+	}
+	if arg, ok := strings.CutPrefix(trimmed, "workflow:form:"); ok {
+		return misAgentViewID{Kind: misAgentViewIDWorkflowForm, Arg: strings.TrimSpace(arg)}
 	}
 	return misAgentViewID{Kind: misAgentViewIDUnknown}
 }

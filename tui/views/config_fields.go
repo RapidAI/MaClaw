@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -71,6 +72,34 @@ func intSet(ptr func(cfg *corelib.AppConfig, v int)) func(cfg *corelib.AppConfig
 	return func(cfg *corelib.AppConfig, val string) {
 		var v int
 		fmt.Sscanf(val, "%d", &v)
+		ptr(cfg, v)
+	}
+}
+
+// floatGet / floatSet are helpers for optional normalized numeric fields.
+func floatGet(ptr func(cfg *corelib.AppConfig) float64) func(cfg *corelib.AppConfig) string {
+	return func(cfg *corelib.AppConfig) string {
+		v := ptr(cfg)
+		if v == 0 {
+			return ""
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	}
+}
+
+func floatSet(ptr func(cfg *corelib.AppConfig, v float64)) func(cfg *corelib.AppConfig, val string) {
+	return func(cfg *corelib.AppConfig, val string) {
+		v, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		if err != nil {
+			ptr(cfg, 0)
+			return
+		}
+		if v < 0 {
+			v = 0
+		}
+		if v > 1 {
+			v = 1
+		}
 		ptr(cfg, v)
 	}
 }
@@ -1021,9 +1050,14 @@ var allConfigFields = []ConfigFieldDef{
 	},
 	{
 		Key: "security_policy_mode", Tab: CfgTabSecurity, Section: "security",
-		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"standard", "strict", "permissive", "developer"}, Default: "standard",
+		DescKey: i18n.MsgTUIConfigDescSecurityMode, Options: []string{"standard", "relaxed", "strict", "developer"}, Default: "standard",
 		Get: func(c *corelib.AppConfig) string { return c.SecurityPolicyMode },
-		Set: func(c *corelib.AppConfig, v string) { c.SecurityPolicyMode = v },
+		Set: func(c *corelib.AppConfig, v string) {
+			if v == "permissive" {
+				v = "relaxed"
+			}
+			c.SecurityPolicyMode = v
+		},
 	},
 	{
 		Key: "sandbox_mode", Tab: CfgTabSecurity, Section: "security",
@@ -1104,6 +1138,36 @@ var allConfigFields = []ConfigFieldDef{
 		DescKey: i18n.MsgTUIConfigDescTrialReflect, Options: boolOpts, Default: "false",
 		Get: boolGet(func(c *corelib.AppConfig) bool { return c.TrialReflectEnabled }),
 		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.TrialReflectEnabled = v }),
+	},
+	{
+		Key: "local_needle_enabled", Tab: CfgTabAdvanced, Section: "needle",
+		DescKey: i18n.MsgTUIConfigDescLocalNeedleEnabled, Options: boolOpts, Default: "false",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LocalNeedleEnabled }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LocalNeedleEnabled = v }),
+	},
+	{
+		Key: "local_needle_log_enabled", Tab: CfgTabAdvanced, Section: "needle",
+		DescKey: i18n.MsgTUIConfigDescLocalNeedleLog, Options: boolOpts, Default: "false",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LocalNeedleLogEnabled }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LocalNeedleLogEnabled = v }),
+	},
+	{
+		Key: "local_needle_training_export_enabled", Tab: CfgTabAdvanced, Section: "needle",
+		DescKey: i18n.MsgTUIConfigDescLocalNeedleExport, Options: boolOpts, Default: "false",
+		Get: boolGet(func(c *corelib.AppConfig) bool { return c.LocalNeedleTrainingExportEnabled }),
+		Set: boolSet(func(c *corelib.AppConfig, v bool) { c.LocalNeedleTrainingExportEnabled = v }),
+	},
+	{
+		Key: "local_needle_model_path", Tab: CfgTabAdvanced, Section: "needle",
+		DescKey: i18n.MsgTUIConfigDescLocalNeedleModel,
+		Get:     func(c *corelib.AppConfig) string { return c.LocalNeedleModelPath },
+		Set:     func(c *corelib.AppConfig, v string) { c.LocalNeedleModelPath = strings.TrimSpace(v) },
+	},
+	{
+		Key: "local_needle_min_confidence", Tab: CfgTabAdvanced, Section: "needle",
+		DescKey: i18n.MsgTUIConfigDescLocalNeedleMinConfidence, Options: []string{"0.78", "0.85", "0.9", "0.95"}, Default: "0.78",
+		Get: floatGet(func(c *corelib.AppConfig) float64 { return c.LocalNeedleMinConfidence }),
+		Set: floatSet(func(c *corelib.AppConfig, v float64) { c.LocalNeedleMinConfidence = v }),
 	},
 }
 

@@ -176,14 +176,17 @@ type sandboxInstallResponse struct {
 
 func (s *HTTPServer) handleGetAdminServiceConfigEffective(w http.ResponseWriter, r *http.Request) {
 	addr := getenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
+	dataRoot := s.svc.DataRoot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"generated_at": time.Now().UTC(),
 		"fields": map[string]adminConfigField{
-			"data_root":                      adminField(s.svc.DataRoot(), envSource("MACLAW_DATA_ROOT"), true, false, false),
+			"data_root":                      adminField(redactSupportBundleValue(dataRoot, dataRoot), envSource("MACLAW_DATA_ROOT"), true, false, false),
 			"http_addr":                      adminField(addr, envSource("MACLAW_HTTP_ADDR"), true, false, false),
-			"tls_cert_file":                  adminField(os.Getenv("MACLAW_TLS_CERT_FILE"), envSource("MACLAW_TLS_CERT_FILE"), true, false, false),
+			"tls_cert_file":                  adminField(redactSupportBundleValue(dataRoot, os.Getenv("MACLAW_TLS_CERT_FILE")), envSource("MACLAW_TLS_CERT_FILE"), true, false, false),
 			"tls_key_file":                   adminField(maskConfigured(os.Getenv("MACLAW_TLS_KEY_FILE")), envSource("MACLAW_TLS_KEY_FILE"), true, true, false),
 			"allow_insecure_http":            adminField(os.Getenv("MACLAW_ALLOW_INSECURE_HTTP"), envSource("MACLAW_ALLOW_INSECURE_HTTP"), true, false, false),
+			"enable_scheduler":               adminField(os.Getenv("MACLAW_ENABLE_SCHEDULER"), envSource("MACLAW_ENABLE_SCHEDULER"), true, false, false),
+			"log_file":                       adminField(redactSupportBundleValue(dataRoot, os.Getenv("MACLAW_LOG_FILE")), envSource("MACLAW_LOG_FILE"), true, false, false),
 			"admin_secret_configured":        adminField(s.adminSecret != "", envSource("MACLAW_ADMIN_SECRET"), true, true, false),
 			"local_bash_enabled":             adminField(os.Getenv("MACLAW_ENABLE_LOCAL_BASH"), envSource("MACLAW_ENABLE_LOCAL_BASH"), true, false, false),
 			"local_bash_trusted_single_user": adminField(os.Getenv("MACLAW_LOCAL_BASH_TRUSTED_SINGLE_USER"), envSource("MACLAW_LOCAL_BASH_TRUSTED_SINGLE_USER"), true, false, false),
@@ -232,7 +235,7 @@ func (s *HTTPServer) startSandboxStartupDiagnoseIfEnabled() {
 	go func() {
 		report := buildSandboxDiagnoseReport(context.Background(), sandboxDiagnoseRequest{WriteReport: boolPtr(false)}, s.svc.DataRoot())
 		if err := saveSandboxReport(s.svc.DataRoot(), report); err != nil {
-			report.Warnings = append(report.Warnings, "failed to save startup report: "+err.Error())
+			report.Warnings = append(report.Warnings, "failed to save startup report: "+redactSupportBundleText(s.svc.DataRoot(), err.Error()))
 		}
 		action := "admin.sandbox_startup_diagnose_completed"
 		if report.Status == "fail" {
@@ -250,22 +253,22 @@ func (s *HTTPServer) startSandboxStartupDiagnoseIfEnabled() {
 }
 
 func (s *HTTPServer) handleAdminSandboxStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, buildSandboxStatus(s.svc.DataRoot(), false))
+	writeJSON(w, http.StatusOK, redactSandboxStatusForSupportBundle(s.svc.DataRoot(), buildSandboxStatus(s.svc.DataRoot(), false)))
 }
 
 func (s *HTTPServer) handleAdminSandboxDetect(w http.ResponseWriter, r *http.Request) {
 	status := buildSandboxStatus(s.svc.DataRoot(), true)
 	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_detected", "sandbox", status.EffectiveBackend, map[string]string{"mode": status.Mode, "fallback_reason": status.FallbackReason, "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, status)
+	writeJSON(w, http.StatusOK, redactSandboxStatusForSupportBundle(s.svc.DataRoot(), status))
 }
 
 func (s *HTTPServer) handleAdminSandboxConfig(w http.ResponseWriter, r *http.Request) {
 	cfg, err := loadAdminRuntimeConfig(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
-	writeJSON(w, http.StatusOK, buildAdminSandboxConfigResponse(cfg))
+	writeJSON(w, http.StatusOK, redactAdminSandboxConfigForSupportBundle(s.svc.DataRoot(), buildAdminSandboxConfigResponse(cfg)))
 }
 
 func (s *HTTPServer) handleUpdateAdminSandboxConfig(w http.ResponseWriter, r *http.Request) {
@@ -286,7 +289,7 @@ func (s *HTTPServer) updateAdminSandboxConfig(w http.ResponseWriter, r *http.Req
 	}
 	cfg, err := loadAdminRuntimeConfig(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	oldMode, _ := effectiveSandboxMode(s.svc.DataRoot())
@@ -298,7 +301,7 @@ func (s *HTTPServer) updateAdminSandboxConfig(w http.ResponseWriter, r *http.Req
 	if in.Mode != nil {
 		mode, err := normalizeSandboxMode(*in.Mode)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 			return
 		}
 		if mode == "none" && !in.ConfirmUnsafe {
@@ -312,9 +315,9 @@ func (s *HTTPServer) updateAdminSandboxConfig(w http.ResponseWriter, r *http.Req
 	}
 	cfg.UpdatedAt = time.Now().UTC()
 	cfg.UpdatedBy = adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret"))
-	cfg.Reason = trimMax(in.Reason, 500)
+	cfg.Reason = redactSupportBundleText(s.svc.DataRoot(), trimMax(in.Reason, 500))
 	if err := saveAdminRuntimeConfig(s.svc.DataRoot(), cfg); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	newMode, _ := effectiveSandboxMode(s.svc.DataRoot())
@@ -331,10 +334,10 @@ func (s *HTTPServer) updateAdminSandboxConfig(w http.ResponseWriter, r *http.Req
 		"reason":     cfg.Reason,
 		"remote_ip":  requestClientIP(r),
 	})
-	resp := map[string]any{"config": buildAdminSandboxConfigResponse(cfg), "status": buildSandboxStatus(s.svc.DataRoot(), false)}
+	resp := map[string]any{"config": redactAdminSandboxConfigForSupportBundle(s.svc.DataRoot(), buildAdminSandboxConfigResponse(cfg)), "status": redactSandboxStatusForSupportBundle(s.svc.DataRoot(), buildSandboxStatus(s.svc.DataRoot(), false))}
 	if switchMode {
 		report := buildSandboxDiagnoseReport(r.Context(), sandboxDiagnoseRequest{WriteReport: boolPtr(false)}, s.svc.DataRoot())
-		resp["diagnose"] = report
+		resp["diagnose"] = redactSandboxReportsForAdminAPI(s.svc.DataRoot(), []sandboxDiagnoseReport{report})[0]
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -349,9 +352,9 @@ func (s *HTTPServer) handleRollbackAdminSandboxConfig(w http.ResponseWriter, r *
 	}
 	oldMode, _ := effectiveSandboxMode(s.svc.DataRoot())
 	oldStrict, _ := effectiveSandboxStrict(s.svc.DataRoot())
-	cfg := adminRuntimeConfig{UpdatedAt: time.Now().UTC(), UpdatedBy: adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret")), Reason: trimMax(in.Reason, 500)}
+	cfg := adminRuntimeConfig{UpdatedAt: time.Now().UTC(), UpdatedBy: adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret")), Reason: redactSupportBundleText(s.svc.DataRoot(), trimMax(in.Reason, 500))}
 	if err := saveAdminRuntimeConfig(s.svc.DataRoot(), cfg); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	newMode, _ := effectiveSandboxMode(s.svc.DataRoot())
@@ -364,7 +367,7 @@ func (s *HTTPServer) handleRollbackAdminSandboxConfig(w http.ResponseWriter, r *
 		"reason":     cfg.Reason,
 		"remote_ip":  requestClientIP(r),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"config": buildAdminSandboxConfigResponse(cfg), "status": buildSandboxStatus(s.svc.DataRoot(), false)})
+	writeJSON(w, http.StatusOK, map[string]any{"config": redactAdminSandboxConfigForSupportBundle(s.svc.DataRoot(), buildAdminSandboxConfigResponse(cfg)), "status": redactSandboxStatusForSupportBundle(s.svc.DataRoot(), buildSandboxStatus(s.svc.DataRoot(), false))})
 }
 
 func (s *HTTPServer) handleAdminSandboxSmokeTest(w http.ResponseWriter, r *http.Request) {
@@ -374,7 +377,7 @@ func (s *HTTPServer) handleAdminSandboxSmokeTest(w http.ResponseWriter, r *http.
 		action = "admin.sandbox_smoke_test_failed"
 	}
 	_ = s.recordAdminAudit(r.Context(), action, "sandbox", report.EffectiveBackend, sandboxReportAuditMetadata(r, report))
-	writeJSON(w, statusForDiagnose(report.Status), report)
+	writeJSON(w, statusForDiagnose(report.Status), redactSandboxReportsForAdminAPI(s.svc.DataRoot(), []sandboxDiagnoseReport{report})[0])
 }
 
 func (s *HTTPServer) handleAdminSandboxDiagnose(w http.ResponseWriter, r *http.Request) {
@@ -386,7 +389,7 @@ func (s *HTTPServer) handleAdminSandboxDiagnose(w http.ResponseWriter, r *http.R
 	report := buildSandboxDiagnoseReport(r.Context(), in, s.svc.DataRoot())
 	if in.WriteReport == nil || *in.WriteReport {
 		if err := saveSandboxReport(s.svc.DataRoot(), report); err != nil {
-			report.Warnings = append(report.Warnings, "failed to save report: "+err.Error())
+			report.Warnings = append(report.Warnings, "failed to save report: "+redactSupportBundleText(s.svc.DataRoot(), err.Error()))
 			if report.Status == "pass" {
 				report.Status = "warn"
 			}
@@ -397,28 +400,28 @@ func (s *HTTPServer) handleAdminSandboxDiagnose(w http.ResponseWriter, r *http.R
 		action = "admin.sandbox_diagnose_failed"
 	}
 	_ = s.recordAdminAudit(r.Context(), action, "sandbox_report", report.ReportID, sandboxReportAuditMetadata(r, report))
-	writeJSON(w, statusForDiagnose(report.Status), report)
+	writeJSON(w, statusForDiagnose(report.Status), redactSandboxReportsForAdminAPI(s.svc.DataRoot(), []sandboxDiagnoseReport{report})[0])
 }
 
 func (s *HTTPServer) handleAdminSandboxReports(w http.ResponseWriter, r *http.Request) {
 	reports, err := listSandboxReports(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": reports})
+	writeJSON(w, http.StatusOK, map[string]any{"items": redactSandboxReportsForAdminAPI(s.svc.DataRoot(), reports)})
 }
 
 func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *http.Request) {
 	status := buildSandboxStatus(s.svc.DataRoot(), false)
 	cfg, err := loadAdminRuntimeConfig(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	reports, err := listSandboxReports(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if len(reports) > 5 {
@@ -426,7 +429,7 @@ func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *h
 	}
 	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	profileItems := make([]sandboxProfile, 0, len(profiles.Profiles))
@@ -436,7 +439,7 @@ func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *h
 	sort.Slice(profileItems, func(i, j int) bool { return profileItems[i].Name < profileItems[j].Name })
 	events, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{ActorType: "admin"})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	sortAuditEventsDesc(events)
@@ -506,17 +509,17 @@ func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *h
 func (s *HTTPServer) handleAdminSandboxEvents(w http.ResponseWriter, r *http.Request) {
 	since, err := parseOptionalTimeQuery(r, "since")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	until, err := parseOptionalTimeQuery(r, "until")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	events, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{ActorType: "admin", Since: since, Until: until})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
@@ -536,17 +539,17 @@ func (s *HTTPServer) handleAdminSandboxEvents(w http.ResponseWriter, r *http.Req
 	}
 	page, err := parsePageQuery(r)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	items, meta := paginateAuditEvents(filtered, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
+	writeJSON(w, http.StatusOK, listResponse(redactAuditEventsForAdminAPI(s.svc.DataRoot(), items), meta))
 }
 
 func (s *HTTPServer) handleAdminSandboxProfiles(w http.ResponseWriter, r *http.Request) {
 	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	items := make([]sandboxProfile, 0, len(profiles.Profiles))
@@ -554,14 +557,14 @@ func (s *HTTPServer) handleAdminSandboxProfiles(w http.ResponseWriter, r *http.R
 		items = append(items, profile)
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": redactSandboxProfilesForSupportBundle(s.svc.DataRoot(), items)})
 }
 
 func (s *HTTPServer) handleAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PathValue("profileName"))
 	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	profile, ok := profiles.Profiles[name]
@@ -569,7 +572,7 @@ func (s *HTTPServer) handleAdminSandboxProfile(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "sandbox profile not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"profile": profile, "validation": validateSandboxProfile(profile)})
+	writeJSON(w, http.StatusOK, map[string]any{"profile": redactSandboxProfilesForSupportBundle(s.svc.DataRoot(), []sandboxProfile{profile})[0], "validation": validateSandboxProfile(profile)})
 }
 
 func (s *HTTPServer) handleUpdateAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
@@ -595,16 +598,16 @@ func (s *HTTPServer) handleUpdateAdminSandboxProfile(w http.ResponseWriter, r *h
 	}
 	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	profiles.Profiles[name] = profile
 	if err := saveSandboxProfiles(s.svc.DataRoot(), profiles); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_profile_updated", "sandbox_profile", name, map[string]string{"backend": profile.Backend, "network": profile.Network, "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, map[string]any{"profile": profile, "validation": validation})
+	writeJSON(w, http.StatusOK, map[string]any{"profile": redactSandboxProfilesForSupportBundle(s.svc.DataRoot(), []sandboxProfile{profile})[0], "validation": validation})
 }
 
 func (s *HTTPServer) handleValidateAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
@@ -627,7 +630,7 @@ func (s *HTTPServer) handleDeleteAdminSandboxProfile(w http.ResponseWriter, r *h
 	}
 	confirm, err := parseOptionalBoolQuery(r, "confirm")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if confirm == nil || !*confirm {
@@ -641,7 +644,7 @@ func (s *HTTPServer) handleDeleteAdminSandboxProfile(w http.ResponseWriter, r *h
 	}
 	profiles, err := loadSandboxProfiles(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if _, ok := profiles.Profiles[name]; !ok {
@@ -650,7 +653,7 @@ func (s *HTTPServer) handleDeleteAdminSandboxProfile(w http.ResponseWriter, r *h
 	}
 	delete(profiles.Profiles, name)
 	if err := saveSandboxProfiles(s.svc.DataRoot(), profiles); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.sandbox_profile_deleted", "sandbox_profile", name, map[string]string{"remote_ip": requestClientIP(r)})
@@ -664,7 +667,7 @@ func (s *HTTPServer) handleAdminSandboxReport(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "report not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, report)
+	writeJSON(w, http.StatusOK, redactSandboxReportsForAdminAPI(s.svc.DataRoot(), []sandboxDiagnoseReport{*report})[0])
 }
 
 func (s *HTTPServer) handleDeleteAdminSandboxReport(w http.ResponseWriter, r *http.Request) {
@@ -673,7 +676,7 @@ func (s *HTTPServer) handleDeleteAdminSandboxReport(w http.ResponseWriter, r *ht
 	}
 	confirm, err := parseOptionalBoolQuery(r, "confirm")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if confirm == nil || !*confirm {
@@ -1602,6 +1605,7 @@ func isAdminLocaleSupported(locale string) bool {
 
 func redactShort(s string) string {
 	s = strings.TrimSpace(s)
+	s = redactSupportBundleText("", s)
 	if len(s) > 512 {
 		s = s[:512] + "..."
 	}

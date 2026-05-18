@@ -216,6 +216,7 @@ func (m HelpModel) renderContent() string {
 			{"Up/Down", i18n.T(i18n.MsgTUIHelpDescScrollMessages, m.lang)},
 		}},
 		{helpLocalText(m.lang, "slashSection"), []struct{ key, desc string }{
+			{helpLocalText(m.lang, "slashLoopKey"), helpLocalText(m.lang, "slashLoop")},
 			{"/setup", helpLocalText(m.lang, "slashSetup")},
 			{"/redeem", helpLocalText(m.lang, "slashRedeem")},
 			{"/chat", helpLocalText(m.lang, "slashChat")},
@@ -232,11 +233,12 @@ func (m HelpModel) renderContent() string {
 	}
 
 	for _, sec := range sections {
+		keyWidth := helpKeyColumnWidth(sec.keys)
 		b.WriteString(sectionStyle.Render("  " + sec.name))
 		b.WriteString("\n")
 		for _, kv := range sec.keys {
 			b.WriteString("    ")
-			b.WriteString(keyStyle.Render(fmt.Sprintf("%-16s", kv.key)))
+			b.WriteString(keyStyle.Render(padDisplay(kv.key, keyWidth)))
 			b.WriteString(descStyle.Render(kv.desc))
 			b.WriteString("\n")
 		}
@@ -245,6 +247,14 @@ func (m HelpModel) renderContent() string {
 
 	b.WriteString(dimStyle.Render("  " + i18n.T(i18n.MsgTUIHelpClose, m.lang)))
 	return b.String()
+}
+
+func helpKeyColumnWidth(keys []struct{ key, desc string }) int {
+	width := 16
+	for _, kv := range keys {
+		width = max(width, displayWidth(kv.key)+2)
+	}
+	return width
 }
 
 func helpLocalText(lang, key string) string {
@@ -263,6 +273,8 @@ func helpLocalText(lang, key string) string {
 			"configSpace":       "cycle and save choices/suggestions",
 			"configEnter":       "select from choices/actions; manual input appears only when needed",
 			"slashSection":      "Slash commands",
+			"slashLoopKey":      "/loop <cmd> <goal>",
+			"slashLoop":         "run a goal-driven verification loop; options: --max N, --timeout N, --dir path",
 			"slashSetup":        "open first-run Setup; /setup EMAIL prefills it",
 			"slashRedeem":       "open Service Redeem; /redeem CODE prefills it",
 			"slashChat":         "open Chat",
@@ -299,6 +311,8 @@ func helpLocalText(lang, key string) string {
 		"configSpace":       "切换并保存选项/建议值",
 		"configEnter":       "选择选项/执行动作；必要时才打开手动输入",
 		"slashSection":      "斜杠命令",
+		"slashLoopKey":      "/loop <验证命令> <目标>",
+		"slashLoop":         "运行目标驱动验证循环；可用选项: --max 轮数, --timeout 秒, --dir 路径",
 		"slashSetup":        "打开首次设置；/setup 邮箱 可预填",
 		"slashRedeem":       "打开服务兑换；/redeem 兑换码 可预填",
 		"slashChat":         "打开聊天",

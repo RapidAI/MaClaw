@@ -44,9 +44,9 @@ type verifyEntry struct {
 }
 
 var (
-	verifyCodes      = map[string]*verifyEntry{}
-	verifyMu         sync.Mutex
-	verifyLastClean  = time.Now()
+	verifyCodes     = map[string]*verifyEntry{}
+	verifyMu        sync.Mutex
+	verifyLastClean = time.Now()
 )
 
 func generateVerifyCode() (string, error) {
@@ -57,18 +57,27 @@ func generateVerifyCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
+func verifyCodeKey(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = DefaultTenantID
+	}
+	return tenantID + "\x00" + strings.TrimSpace(strings.ToLower(email))
+}
+
 // storeVerifyCode stores a code and returns false if cooldown hasn't elapsed.
-func storeVerifyCode(email, code string) bool {
+func storeVerifyCode(tenantID, email, code string) bool {
 	verifyMu.Lock()
 	defer verifyMu.Unlock()
 	cleanupExpiredLocked()
-	if entry, ok := verifyCodes[email]; ok {
+	key := verifyCodeKey(tenantID, email)
+	if entry, ok := verifyCodes[key]; ok {
 		if time.Since(entry.SentAt) < verifyCooldown {
 			return false // rate limited
 		}
 	}
 	now := time.Now()
-	verifyCodes[email] = &verifyEntry{
+	verifyCodes[key] = &verifyEntry{
 		Code:      code,
 		ExpiresAt: now.Add(verifyCodeTTL),
 		SentAt:    now,
@@ -76,23 +85,24 @@ func storeVerifyCode(email, code string) bool {
 	return true
 }
 
-func consumeVerifyCode(email, code string) (ok bool, locked bool) {
+func consumeVerifyCode(tenantID, email, code string) (ok bool, locked bool) {
 	verifyMu.Lock()
 	defer verifyMu.Unlock()
-	entry, exists := verifyCodes[email]
+	key := verifyCodeKey(tenantID, email)
+	entry, exists := verifyCodes[key]
 	if !exists || time.Now().After(entry.ExpiresAt) {
-		delete(verifyCodes, email)
+		delete(verifyCodes, key)
 		return false, false
 	}
 	if entry.Attempts >= verifyMaxAttempts {
-		delete(verifyCodes, email) // force re-send
+		delete(verifyCodes, key) // force re-send
 		return false, true
 	}
 	if subtle.ConstantTimeCompare([]byte(entry.Code), []byte(code)) != 1 {
 		entry.Attempts++
 		return false, entry.Attempts >= verifyMaxAttempts
 	}
-	delete(verifyCodes, email)
+	delete(verifyCodes, key)
 	return true, false
 }
 
@@ -130,7 +140,9 @@ func BindQueryHandler(identity *auth.IdentityService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
-		user, err := identity.LookupUserByEmail(r.Context(), email)
+		tenantID := tenantIDFromClientHint(r)
+		ctx := auth.WithTenant(r.Context(), tenantID)
+		user, err := identity.LookupUserByEmail(ctx, email)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "LOOKUP_FAILED", err.Error())
 			return
@@ -176,7 +188,9 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 		}
 
 		// Must be a bound user
-		user, err := identity.LookupUserByEmail(r.Context(), email)
+		tenantID := tenantIDFromClientHint(r)
+		ctx := auth.WithTenant(r.Context(), tenantID)
+		user, err := identity.LookupUserByEmail(ctx, email)
 		if err != nil || user == nil {
 			writeError(w, http.StatusBadRequest, "NOT_BOUND", "This email is not bound")
 			return
@@ -188,7 +202,7 @@ func BindSendCodeHandler(identity *auth.IdentityService, mailer *mail.Service, f
 			return
 		}
 
-		if !storeVerifyCode(email, code) {
+		if !storeVerifyCode(tenantID, email, code) {
 			writeError(w, http.StatusTooManyRequests, "RATE_LIMITED", "Please wait 60 seconds before requesting a new code")
 			return
 		}
@@ -248,7 +262,8 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			return
 		}
 
-		ok, locked := consumeVerifyCode(email, code)
+		tenantID := tenantIDFromClientHint(r)
+		ok, locked := consumeVerifyCode(tenantID, email, code)
 		if locked {
 			writeError(w, http.StatusTooManyRequests, "TOO_MANY_ATTEMPTS", "Too many wrong attempts, please request a new code")
 			return
@@ -258,7 +273,8 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 			return
 		}
 
-		user, err := identity.LookupUserByEmail(r.Context(), email)
+		ctx := auth.WithTenant(r.Context(), tenantID)
+		user, err := identity.LookupUserByEmail(ctx, email)
 		if err != nil || user == nil {
 			writeError(w, http.StatusBadRequest, "NOT_BOUND", "This email is not bound")
 			return
@@ -273,7 +289,7 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 		// Delete the invitation code bound to this email so it cannot be reused.
 		var codesDeleted int64
 		if invitationSvc != nil {
-			codesDeleted, err = invitationSvc.DeleteCodeByEmail(r.Context(), email)
+			codesDeleted, err = invitationSvc.DeleteCodeByTenantEmail(ctx, tenantID, email)
 			if err != nil {
 				log.Printf("[bind] delete invitation code for %s failed: %v", email, err)
 			}
@@ -294,7 +310,7 @@ func BindUnbindHandler(identity *auth.IdentityService, deviceSvc *device.Service
 
 		// Delete the user record so query returns unbound.
 		if repo := identity.UsersRepo(); repo != nil {
-			if err := repo.DeleteByEmail(r.Context(), email); err != nil {
+			if err := repo.DeleteByTenantEmail(ctx, tenantID, email); err != nil {
 				log.Printf("[bind] delete user record for %s failed: %v", email, err)
 			}
 		}

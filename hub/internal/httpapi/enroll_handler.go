@@ -56,9 +56,11 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
+		tenantID := tenantIDFromClientHint(r)
+		ctx := auth.WithTenant(r.Context(), tenantID)
 
 		enrollStart := time.Now()
-		resp, err := identity.StartEnrollment(r.Context(), req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode)
+		resp, err := identity.StartEnrollment(ctx, req.Email, req.MachineName, req.Platform, req.ClientID, req.InvitationCode)
 		log.Printf("[onboarding] EnrollStartHandler start_enrollment=%s email=%s status=%s err=%v", time.Since(enrollStart), req.Email, func() string {
 			if resp == nil {
 				return ""
@@ -128,7 +130,7 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			go func() {
 				defer enrichWG.Done()
 				vipLookupStart := time.Now()
-				if ic, err := invSvc.GetCodeByEmail(r.Context(), req.Email); err == nil && ic != nil {
+				if ic, err := invSvc.GetCodeByTenantEmail(ctx, tenantID, req.Email); err == nil && ic != nil {
 					enrichMu.Lock()
 					respMap["vip_flag"] = ic.VIP
 					enrichMu.Unlock()
@@ -143,7 +145,7 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 				defer enrichWG.Done()
 				securityReadStart := time.Now()
 				settingsStart := time.Now()
-				if settings, err := securitySvc.GetSettings(r.Context()); err == nil {
+				if settings, err := securitySvc.GetSettings(security.WithTenant(ctx, tenantID)); err == nil {
 					log.Printf("[onboarding] EnrollStartHandler security_get_settings=%s", time.Since(settingsStart))
 					enrichMu.Lock()
 					respMap["org_structure_enabled"] = settings.OrgStructureEnabled
@@ -169,10 +171,11 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 			return
 		}
 
-		go func(req EnrollStartRequest, resp *auth.EnrollmentResult) {
+		go func(req EnrollStartRequest, resp *auth.EnrollmentResult, tenantID string) {
 			bgStart := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+			ctx = auth.WithTenant(ctx, tenantID)
 
 			if resp.MachineID != "" {
 				metadataStart := time.Now()
@@ -195,7 +198,7 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 
 			if securitySvc != nil && req.Email != "" {
 				assignStart := time.Now()
-				if err := securitySvc.AssignNewUser(ctx, req.Email, req.GroupID); err != nil {
+				if err := securitySvc.AssignNewUser(security.WithTenant(ctx, tenantID), req.Email, req.GroupID); err != nil {
 					log.Printf("[enroll] security group assignment failed for %s: %v", req.Email, err)
 				}
 				log.Printf("[onboarding] EnrollStartHandler background_assign_user=%s", time.Since(assignStart))
@@ -203,13 +206,13 @@ func EnrollStartHandler(identity *auth.IdentityService, invSvc *invitation.Servi
 
 			if invSvc != nil && req.Email != "" {
 				vipLookupStart := time.Now()
-				if _, err := invSvc.GetCodeByEmail(ctx, req.Email); err != nil {
+				if _, err := invSvc.GetCodeByTenantEmail(ctx, tenantID, req.Email); err != nil {
 					log.Printf("[enroll] vip lookup skipped for %s: %v", req.Email, err)
 				}
 				log.Printf("[onboarding] EnrollStartHandler background_vip_lookup=%s", time.Since(vipLookupStart))
 			}
 			log.Printf("[onboarding] EnrollStartHandler background_total=%s", time.Since(bgStart))
-		}(req, resp)
+		}(req, resp, tenantID)
 	}
 }
 
@@ -226,7 +229,8 @@ func EmailRequestLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
-		resp, err := identity.RequestEmailLogin(r.Context(), req.Email)
+		ctx := auth.WithTenant(r.Context(), tenantIDFromClientHint(r))
+		resp, err := identity.RequestEmailLogin(ctx, req.Email)
 		if err != nil {
 			switch {
 			case errors.Is(err, auth.ErrEmailBlocked):
@@ -294,4 +298,17 @@ func EmailPollLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, result)
 	}
+}
+
+func tenantIDFromClientHint(r *http.Request) string {
+	if r == nil {
+		return DefaultTenantID
+	}
+	if tenantID := r.Header.Get("X-Tenant-ID"); tenantID != "" {
+		return tenantID
+	}
+	if tenantID := r.URL.Query().Get("tenant_id"); tenantID != "" {
+		return tenantID
+	}
+	return DefaultTenantID
 }

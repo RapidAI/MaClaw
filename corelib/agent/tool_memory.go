@@ -43,6 +43,40 @@ func ToolMemory(store *memory.Store, args map[string]interface{}) string {
 		}
 		return formatMemoryThemesWithHealth(store.ThemeManager().TopThemes(limit), store.ThemeHealth(), boolArg(args, "stats", false))
 
+	case "scenes", "scene_index":
+		limit := intArg(args, "limit", 10)
+		scenes := store.SceneIndex(limit)
+		if len(scenes) == 0 {
+			return "No project scenes found."
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "Scene index: %d project(s)\n", len(scenes))
+		for i, scene := range scenes {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, firstNonEmpty(scene.Name, scene.ProjectPath))
+			fmt.Fprintf(&b, "   project: %s entries=%d\n", scene.ProjectPath, scene.EntryCount)
+			if len(scene.WorkflowTypes) > 0 {
+				fmt.Fprintf(&b, "   workflows: %s\n", strings.Join(scene.WorkflowTypes, ", "))
+			}
+			if scene.Preview != "" {
+				fmt.Fprintf(&b, "   latest: %s\n", scene.Preview)
+			}
+			for _, artifact := range scene.RecentArtifacts {
+				fmt.Fprintf(&b, "   artifact: %s [%s]", firstNonEmpty(artifact.Title, artifact.Preview), artifact.SourceType)
+				if artifact.SourceURL != "" {
+					fmt.Fprintf(&b, " source=%s", artifact.SourceURL)
+				}
+				b.WriteByte('\n')
+			}
+		}
+		return b.String()
+
+	case "trace", "recall_trace":
+		formatted := memory.FormatRecallTraceForTool(store.LastRecallTrace())
+		if formatted == "" {
+			return "No recall trace available."
+		}
+		return formatted
+
 	case "recall":
 		query := StringArg(args, "query")
 		if query == "" {
@@ -81,6 +115,11 @@ func ToolMemory(store *memory.Store, args map[string]interface{}) string {
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "召回 %d 条相关记忆:\n", len(entries))
+		if debug {
+			if trace := store.LastRecallTrace(); trace.Query == query {
+				b.WriteString(memory.FormatRecallTraceForTool(trace))
+			}
+		}
 		if debug && plan != nil {
 			fmt.Fprintf(&b, "Adaptive plan: complexity=%s fallback=%v themes=%d expanded=%d\n",
 				plan.Complexity, plan.Fallback, len(plan.SelectedThemes), len(plan.ExpandedEntryIDs))
@@ -114,7 +153,8 @@ func ToolMemory(store *memory.Store, args map[string]interface{}) string {
 			}
 		}
 		for _, e := range entries {
-			fmt.Fprintf(&b, "- [%s] %s\n", string(e.Category), e.Content)
+			b.WriteString(memory.FormatRecallEntryForTool(e))
+			b.WriteString("\n")
 		}
 		ids := make([]string, len(entries))
 		for i, e := range entries {
@@ -204,8 +244,17 @@ func ToolMemory(store *memory.Store, args map[string]interface{}) string {
 		return fmt.Sprintf("已删除记忆: %s", id)
 
 	default:
-		return fmt.Sprintf("未知 memory action: %s（支持 save/recall/themes/delete/list）", action)
+		return fmt.Sprintf("未知 memory action: %s（支持 save/recall/themes/scenes/trace/delete/list）", action)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func rebuildAgentMemoryThemes(store *memory.Store) {

@@ -73,7 +73,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func TestInstallManagedHubSkillBlocksHighRiskWithoutUserPrompt(t *testing.T) {
+func TestInstallManagedHubSkillAllowsHighRiskWithAuditOnly(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -109,17 +109,14 @@ func TestInstallManagedHubSkillBlocksHighRiskWithoutUserPrompt(t *testing.T) {
 	app.skillHubClient = NewSkillHubClient(app)
 
 	installed, err := app.installManagedHubSkill(context.Background(), "managed-risky", server.URL, "cap-risky")
-	if err == nil {
-		t.Fatalf("installManagedHubSkill() error = nil, want security block")
+	if err != nil {
+		t.Fatalf("installManagedHubSkill() error = %v", err)
 	}
-	if installed {
-		t.Fatal("installManagedHubSkill() installed risky skill")
+	if !installed {
+		t.Fatal("installManagedHubSkill() installed = false, want true")
 	}
-	if !strings.Contains(err.Error(), "blocked by security scan") {
-		t.Fatalf("installManagedHubSkill() error = %v, want security block", err)
-	}
-	if got := app.skillExecutor.loadSkills(); len(got) != 0 {
-		t.Fatalf("installed skills = %#v, want none", got)
+	if got := app.skillExecutor.loadSkills(); len(got) != 1 {
+		t.Fatalf("installed skills = %#v, want one risky skill", got)
 	}
 }
 

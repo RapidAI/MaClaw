@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -77,6 +78,9 @@ func (h *IMMessageHandler) retryAgentLoopLLMRequestAdaptive(
 	category := adaptiveRetry.Classify("llm_request", result.Err)
 	for retryAttempt := 0; result.Err != nil && !ctx.IsCancelled(); retryAttempt++ {
 		decision := adaptiveRetry.Decide("llm_request", category, retryAttempt)
+		decision.ProviderName = strings.TrimSpace(cfg.ProviderName)
+		decision.Model = strings.TrimSpace(cfg.Model)
+		decision.WireAPI = strings.TrimSpace(cfg.WireAPI)
 		h.appendTraceEvent(ctx, "trial.retry_decided", "warn", "Adaptive retry decision", truncateTraceText(fmt.Sprintf("llm_request category=%s action=%s attempt=%d", category, decision.Action, decision.Attempt), 220), "", "")
 		h.appendTraceEvidence(ctx, traceSourceKindAdaptiveRetry.String(), category.String(), "retry decision", truncateTraceText(firstNonEmptyTraceText(decision.ErrorContext, result.Err.Error()), 400), "", "llm_request")
 		if decision.Action != RetryActionRetry {

@@ -8,6 +8,44 @@ import (
 
 func RunMigrations(db *sql.DB) error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS tenants (
+			id TEXT PRIMARY KEY,
+			slug TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			primary_domain TEXT NOT NULL DEFAULT '',
+			settings_json TEXT NOT NULL DEFAULT '{}',
+			created_by_admin_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			deleted_at TEXT
+		);`,
+		`INSERT OR IGNORE INTO tenants (id, slug, name, status, settings_json, created_by_admin_id, created_at, updated_at)
+		 VALUES ('tenant_default', 'default', 'Default Tenant', 'active', '{}', 'migration', datetime('now'), datetime('now'));`,
+		`CREATE TABLE IF NOT EXISTS tenant_settings (
+			tenant_id TEXT NOT NULL,
+			key TEXT NOT NULL,
+			value_json TEXT NOT NULL,
+			updated_by_admin_id TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (tenant_id, key)
+		);`,
+		`CREATE TABLE IF NOT EXISTS tenant_digital_employee_authorizations (
+			tenant_id TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL DEFAULT 0,
+			quota INTEGER NOT NULL DEFAULT 0,
+			used INTEGER NOT NULL DEFAULT 0,
+			valid_from TEXT,
+			valid_until TEXT,
+			status TEXT NOT NULL DEFAULT 'inactive',
+			source TEXT NOT NULL DEFAULT 'manual',
+			metadata_json TEXT NOT NULL DEFAULT '{}',
+			updated_by_admin_id TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);`,
+		`INSERT OR IGNORE INTO tenant_digital_employee_authorizations (tenant_id, enabled, quota, used, status, source, metadata_json, updated_by_admin_id, updated_at, created_at)
+		 VALUES ('tenant_default', 0, 0, 0, 'inactive', 'migration', '{}', 'migration', datetime('now'), datetime('now'));`,
 		`CREATE TABLE IF NOT EXISTS admin_users (
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,
@@ -26,12 +64,15 @@ func RunMigrations(db *sql.DB) error {
 
 		`CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
-			email TEXT NOT NULL UNIQUE,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			email TEXT NOT NULL,
 			sn TEXT NOT NULL UNIQUE,
 			status TEXT NOT NULL DEFAULT 'active',
 			enrollment_status TEXT NOT NULL DEFAULT 'approved',
+			smart_route INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			UNIQUE(tenant_id, email)
 		);`,
 
 		`CREATE TABLE IF NOT EXISTS user_enrollments (
@@ -45,11 +86,14 @@ func RunMigrations(db *sql.DB) error {
 
 		`CREATE TABLE IF NOT EXISTS email_blocklist (
 			id TEXT PRIMARY KEY,
-			email TEXT NOT NULL UNIQUE,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			email TEXT NOT NULL,
 			reason TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
+			updated_at TEXT NOT NULL,
+			UNIQUE(tenant_id, email)
 		);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_blocklist_tenant_email ON email_blocklist(tenant_id, email);`,
 
 		`CREATE TABLE IF NOT EXISTS machines (
 			id TEXT PRIMARY KEY,
@@ -172,6 +216,7 @@ func RunMigrations(db *sql.DB) error {
 
 		`CREATE TABLE IF NOT EXISTS voiceprints (
 			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			user_id TEXT NOT NULL,
 			email TEXT NOT NULL,
 			label TEXT NOT NULL DEFAULT '',
@@ -180,6 +225,7 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 
 		`CREATE INDEX IF NOT EXISTS idx_voiceprints_user_id ON voiceprints(user_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_voiceprints_tenant_user_id ON voiceprints(tenant_id, user_id);`,
 
 		`CREATE TABLE IF NOT EXISTS content_audit_logs (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -292,6 +338,7 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_a2a_group_invites_session ON a2a_group_invites(tenant_id, session_id);`,
 
 		`CREATE TABLE IF NOT EXISTS capabilities (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			capability_type TEXT NOT NULL,
 			publisher TEXT NOT NULL,
@@ -311,11 +358,12 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_capabilities_global_key ON capabilities(global_key);`,
-		`CREATE INDEX IF NOT EXISTS idx_capabilities_type_status ON capabilities(capability_type, status);`,
-		`CREATE INDEX IF NOT EXISTS idx_capabilities_origin_key ON capabilities(origin_key);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_capabilities_global_key ON capabilities(tenant_id, global_key);`,
+		`CREATE INDEX IF NOT EXISTS idx_capabilities_type_status ON capabilities(tenant_id, capability_type, status);`,
+		`CREATE INDEX IF NOT EXISTS idx_capabilities_origin_key ON capabilities(tenant_id, origin_key);`,
 
 		`CREATE TABLE IF NOT EXISTS capability_versions (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			capability_ref TEXT NOT NULL,
 			version TEXT NOT NULL,
@@ -333,10 +381,11 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_versions_key ON capability_versions(version_key);`,
-		`CREATE INDEX IF NOT EXISTS idx_capability_versions_capability_ref ON capability_versions(capability_ref);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_versions_key ON capability_versions(tenant_id, version_key);`,
+		`CREATE INDEX IF NOT EXISTS idx_capability_versions_capability_ref ON capability_versions(tenant_id, capability_ref);`,
 
 		`CREATE TABLE IF NOT EXISTS capability_acquisition_requests (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			requester_user_id TEXT NOT NULL,
 			capability_type TEXT NOT NULL,
@@ -355,9 +404,10 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_acquisition_status ON capability_acquisition_requests(status);`,
+		`CREATE INDEX IF NOT EXISTS idx_acquisition_status ON capability_acquisition_requests(tenant_id, status);`,
 
 		`CREATE TABLE IF NOT EXISTS capability_licenses (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			capability_ref TEXT NOT NULL,
 			source TEXT NOT NULL,
@@ -375,6 +425,7 @@ func RunMigrations(db *sql.DB) error {
 		);`,
 
 		`CREATE TABLE IF NOT EXISTS managed_capability_deployments (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			capability_ref TEXT NOT NULL,
 			capability_version_key TEXT NOT NULL DEFAULT '',
@@ -387,9 +438,10 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_managed_capability_deployments_enabled ON managed_capability_deployments(enabled);`,
+		`CREATE INDEX IF NOT EXISTS idx_managed_capability_deployments_enabled ON managed_capability_deployments(tenant_id, enabled);`,
 
 		`CREATE TABLE IF NOT EXISTS recommended_capabilities (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			capability_ref TEXT NOT NULL,
 			capability_version_key TEXT NOT NULL DEFAULT '',
@@ -401,9 +453,10 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_recommended_capabilities_enabled ON recommended_capabilities(enabled);`,
+		`CREATE INDEX IF NOT EXISTS idx_recommended_capabilities_enabled ON recommended_capabilities(tenant_id, enabled);`,
 
 		`CREATE TABLE IF NOT EXISTS user_capability_inventory (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL DEFAULT '',
 			user_email TEXT NOT NULL DEFAULT '',
@@ -417,10 +470,11 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_capability_inventory_user_cap ON user_capability_inventory(user_email, capability_ref);`,
-		`CREATE INDEX IF NOT EXISTS idx_user_capability_inventory_seen ON user_capability_inventory(user_email, last_seen_at DESC);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_capability_inventory_user_cap ON user_capability_inventory(tenant_id, user_email, capability_ref);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_capability_inventory_seen ON user_capability_inventory(tenant_id, user_email, last_seen_at DESC);`,
 
 		`CREATE TABLE IF NOT EXISTS mcp_secret_requirements (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			capability_ref TEXT NOT NULL,
 			version_key TEXT NOT NULL,
@@ -434,10 +488,11 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`DELETE FROM mcp_secret_requirements WHERE rowid NOT IN (SELECT MIN(rowid) FROM mcp_secret_requirements GROUP BY capability_ref, version_key, name);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_secret_requirement_key ON mcp_secret_requirements(capability_ref, version_key, name);`,
+		`DELETE FROM mcp_secret_requirements WHERE rowid NOT IN (SELECT MIN(rowid) FROM mcp_secret_requirements GROUP BY tenant_id, capability_ref, version_key, name);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_secret_requirement_key ON mcp_secret_requirements(tenant_id, capability_ref, version_key, name);`,
 
 		`CREATE TABLE IF NOT EXISTS mcp_secret_bindings (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
 			mcp_server_id TEXT NOT NULL,
@@ -450,9 +505,10 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_secret_binding ON mcp_secret_bindings(user_id, mcp_server_id, requirement_name);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_secret_binding ON mcp_secret_bindings(tenant_id, user_id, mcp_server_id, requirement_name);`,
 
 		`CREATE TABLE IF NOT EXISTS mcp_hub_secrets (
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL,
 			mcp_server_id TEXT NOT NULL,
@@ -463,7 +519,146 @@ func RunMigrations(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		);`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_hub_secret_key ON mcp_hub_secrets(user_id, mcp_server_id, requirement_name);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_hub_secret_key ON mcp_hub_secrets(tenant_id, user_id, mcp_server_id, requirement_name);`,
+
+		`CREATE TABLE IF NOT EXISTS security_groups (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			parent_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_security_groups_parent ON security_groups(parent_id);`,
+		`CREATE TABLE IF NOT EXISTS security_group_members (
+			email TEXT PRIMARY KEY,
+			group_id TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_sgm_group ON security_group_members(group_id);`,
+		`CREATE TABLE IF NOT EXISTS security_policies (
+			group_id TEXT PRIMARY KEY,
+			policy_json TEXT NOT NULL DEFAULT '{}',
+			updated_at TEXT NOT NULL
+		);`,
+
+		// ---------------------------------------------------------------
+		// Approval Workflow Tables (VE Approval Workflow feature)
+		// ---------------------------------------------------------------
+
+		// Workflow definitions (owned by users)
+		`CREATE TABLE IF NOT EXISTS workflow_definitions (
+			id TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_def_owner ON workflow_definitions(owner_id);`,
+
+		// Workflow versions (revisions of a definition)
+		`CREATE TABLE IF NOT EXISTS workflow_versions (
+			id TEXT PRIMARY KEY,
+			workflow_id TEXT NOT NULL REFERENCES workflow_definitions(id),
+			version_number TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'draft',
+			graph_json TEXT NOT NULL DEFAULT '{}',
+			submitted_at TEXT,
+			published_at TEXT,
+			rejection_reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_wf_ver_workflow ON workflow_versions(workflow_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_wf_ver_status ON workflow_versions(status);`,
+		// Enforce at most one published version per workflow.
+		// SQLite supports partial indexes with WHERE clause.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_wf_ver_published ON workflow_versions(workflow_id) WHERE status = 'published';`,
+
+		// Workflow instances (running executions)
+		`CREATE TABLE IF NOT EXISTS workflow_instances (
+			id TEXT PRIMARY KEY,
+			workflow_id TEXT NOT NULL,
+			version_id TEXT NOT NULL REFERENCES workflow_versions(id),
+			status TEXT NOT NULL DEFAULT 'running',
+			current_node_id TEXT NOT NULL DEFAULT '',
+			instance_data TEXT NOT NULL DEFAULT '{}',
+			trigger_data TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			completed_at TEXT
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_wf_inst_status ON workflow_instances(status);`,
+		`CREATE INDEX IF NOT EXISTS idx_wf_inst_workflow ON workflow_instances(workflow_id);`,
+
+		// Node executions within an instance
+		`CREATE TABLE IF NOT EXISTS node_executions (
+			id TEXT PRIMARY KEY,
+			instance_id TEXT NOT NULL REFERENCES workflow_instances(id),
+			node_id TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			started_at TEXT NOT NULL DEFAULT (datetime('now')),
+			completed_at TEXT,
+			result_json TEXT,
+			fail_reason TEXT NOT NULL DEFAULT ''
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_exec_instance ON node_executions(instance_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_node_exec_status ON node_executions(status);`,
+
+		// Audit trail (append-only, immutable)
+		`CREATE TABLE IF NOT EXISTS approval_audit_trail (
+			id TEXT PRIMARY KEY,
+			instance_id TEXT NOT NULL,
+			node_id TEXT NOT NULL DEFAULT '',
+			event_type TEXT NOT NULL,
+			actor_id TEXT NOT NULL DEFAULT '',
+			decision TEXT NOT NULL DEFAULT '',
+			matched_rule TEXT NOT NULL DEFAULT '',
+			rationale TEXT NOT NULL DEFAULT '',
+			details_json TEXT NOT NULL DEFAULT '{}',
+			timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_instance ON approval_audit_trail(instance_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_actor ON approval_audit_trail(actor_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON approval_audit_trail(timestamp);`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_decision ON approval_audit_trail(decision);`,
+
+		// Trigger to prevent UPDATE on approval_audit_trail (immutability enforcement)
+		`CREATE TRIGGER IF NOT EXISTS trg_audit_trail_no_update
+		 BEFORE UPDATE ON approval_audit_trail
+		 BEGIN
+		   SELECT RAISE(ABORT, 'approval_audit_trail is immutable: UPDATE not allowed');
+		 END;`,
+
+		// Trigger to prevent DELETE on approval_audit_trail (immutability enforcement)
+		`CREATE TRIGGER IF NOT EXISTS trg_audit_trail_no_delete
+		 BEFORE DELETE ON approval_audit_trail
+		 BEGIN
+		   SELECT RAISE(ABORT, 'approval_audit_trail is immutable: DELETE not allowed');
+		 END;`,
+
+		// ---------------------------------------------------------------
+		// Confirmation tracking table (post-completion executor/notifier confirmations)
+		`CREATE TABLE IF NOT EXISTS confirmations (
+			id                      TEXT PRIMARY KEY,
+			instance_id             TEXT NOT NULL REFERENCES workflow_instances(id),
+			recipient_id            TEXT NOT NULL,
+			type                    TEXT NOT NULL,
+			status                  TEXT NOT NULL DEFAULT 'pending',
+			notes                   TEXT DEFAULT '',
+			timeout_hours           INTEGER NOT NULL DEFAULT 48,
+			max_reminders           INTEGER NOT NULL DEFAULT 3,
+			reminders_sent          INTEGER NOT NULL DEFAULT 0,
+			reminder_interval_hours INTEGER NOT NULL DEFAULT 24,
+			last_reminder_at        TEXT,
+			confirmed_at            TEXT,
+			auto_closed_at          TEXT,
+			auto_close_reason       TEXT DEFAULT '',
+			created_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_confirm_instance ON confirmations(instance_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_confirm_recipient ON confirmations(recipient_id);`,
+		`CREATE INDEX IF NOT EXISTS idx_confirm_status ON confirmations(status);`,
+		`CREATE INDEX IF NOT EXISTS idx_confirm_pending ON confirmations(status, recipient_id) WHERE status = 'pending';`,
 	}
 
 	for _, stmt := range stmts {
@@ -473,6 +668,36 @@ func RunMigrations(db *sql.DB) error {
 	}
 
 	alterStmts := []string{
+		`ALTER TABLE admin_users ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'`,
+		`ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'global_owner'`,
+		`ALTER TABLE admin_users ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE admin_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE user_enrollments ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE email_blocklist ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE invitation_codes ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE email_invites ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE machines ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE viewer_tokens ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE login_tokens ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE sessions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE admin_audit_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE failure_event_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE voiceprints ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE content_audit_logs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE capabilities ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE capability_versions ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE capability_acquisition_requests ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE capability_licenses ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE managed_capability_deployments ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE recommended_capabilities ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE user_capability_inventory ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE mcp_secret_requirements ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE mcp_secret_bindings ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE mcp_hub_secrets ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE security_groups ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE security_group_members ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
+		`ALTER TABLE security_policies ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'tenant_default'`,
 		`ALTER TABLE machines ADD COLUMN hostname TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE machines ADD COLUMN arch TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE machines ADD COLUMN app_version TEXT NOT NULL DEFAULT ''`,
@@ -486,6 +711,7 @@ func RunMigrations(db *sql.DB) error {
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN exported INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE users ADD COLUMN smart_route INTEGER NOT NULL DEFAULT 0`)
 	alterStmts = append(alterStmts, `ALTER TABLE invitation_codes ADD COLUMN vip INTEGER NOT NULL DEFAULT 0`)
+	alterStmts = append(alterStmts, `ALTER TABLE node_executions ADD COLUMN node_type TEXT NOT NULL DEFAULT ''`)
 
 	for _, stmt := range alterStmts {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
@@ -493,5 +719,197 @@ func RunMigrations(db *sql.DB) error {
 		}
 	}
 
+	if err := migrateTenantScopedUserTable(db); err != nil {
+		return err
+	}
+	if err := migrateTenantScopedEmailBlocklistTable(db); err != nil {
+		return err
+	}
+	if err := migrateTenantScopedCapabilityIndexes(db); err != nil {
+		return err
+	}
+	if err := migrateTenantScopedEmailBlocklistIndexes(db); err != nil {
+		return err
+	}
+	if err := migrateTenantScopedUserIndexes(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_voiceprints_tenant_user_id ON voiceprints(tenant_id, user_id)`); err != nil {
+		return fmt.Errorf("create voiceprint tenant index: %w", err)
+	}
+
+	return nil
+}
+
+func migrateTenantScopedUserTable(db *sql.DB) error {
+	needs, err := tableSQLContains(db, "users", "email text not null unique")
+	if err != nil || !needs {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin users tenant rebuild: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`CREATE TABLE users_new (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			email TEXT NOT NULL,
+			sn TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL DEFAULT 'active',
+			enrollment_status TEXT NOT NULL DEFAULT 'approved',
+			smart_route INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(tenant_id, email)
+		);`,
+		`INSERT INTO users_new (id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at)
+		 SELECT id, COALESCE(NULLIF(tenant_id, ''), 'tenant_default'), email, sn, status, enrollment_status, smart_route, created_at, updated_at
+		 FROM users;`,
+		`DROP TABLE users;`,
+		`ALTER TABLE users_new RENAME TO users;`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("rebuild users tenant table: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit users tenant rebuild: %w", err)
+	}
+	return nil
+}
+
+func migrateTenantScopedUserIndexes(db *sql.DB) error {
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_tenant_email ON users(tenant_id, email)`); err != nil {
+		return fmt.Errorf("create users tenant email index: %w", err)
+	}
+	return nil
+}
+
+func migrateTenantScopedEmailBlocklistTable(db *sql.DB) error {
+	needs, err := tableSQLContains(db, "email_blocklist", "email text not null unique")
+	if err != nil || !needs {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin email blocklist tenant rebuild: %w", err)
+	}
+	defer tx.Rollback()
+
+	stmts := []string{
+		`CREATE TABLE email_blocklist_new (
+			id TEXT PRIMARY KEY,
+			tenant_id TEXT NOT NULL DEFAULT 'tenant_default',
+			email TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(tenant_id, email)
+		);`,
+		`INSERT INTO email_blocklist_new (id, tenant_id, email, reason, created_at, updated_at)
+		 SELECT id, COALESCE(NULLIF(tenant_id, ''), 'tenant_default'), email, reason, created_at, updated_at
+		 FROM email_blocklist;`,
+		`DROP TABLE email_blocklist;`,
+		`ALTER TABLE email_blocklist_new RENAME TO email_blocklist;`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("rebuild email blocklist tenant table: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit email blocklist tenant rebuild: %w", err)
+	}
+	return nil
+}
+
+func migrateTenantScopedEmailBlocklistIndexes(db *sql.DB) error {
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_email_blocklist_tenant_email`); err != nil {
+		return fmt.Errorf("drop email blocklist tenant index: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM email_blocklist WHERE rowid NOT IN (SELECT MIN(rowid) FROM email_blocklist GROUP BY tenant_id, email)`); err != nil {
+		return fmt.Errorf("dedupe email blocklist: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_blocklist_tenant_email ON email_blocklist(tenant_id, email)`); err != nil {
+		return fmt.Errorf("create email blocklist tenant index: %w", err)
+	}
+	return nil
+}
+
+func tableSQLContains(db *sql.DB, tableName, needle string) (bool, error) {
+	var tableSQL string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, tableName).Scan(&tableSQL)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("read table schema %s: %w", tableName, err)
+	}
+	normalized := strings.Join(strings.Fields(strings.ToLower(tableSQL)), " ")
+	return strings.Contains(normalized, needle), nil
+}
+
+func migrateTenantScopedCapabilityIndexes(db *sql.DB) error {
+	dropStmts := []string{
+		`DROP INDEX IF EXISTS idx_capabilities_global_key`,
+		`DROP INDEX IF EXISTS idx_capabilities_type_status`,
+		`DROP INDEX IF EXISTS idx_capabilities_origin_key`,
+		`DROP INDEX IF EXISTS idx_capability_versions_key`,
+		`DROP INDEX IF EXISTS idx_capability_versions_capability_ref`,
+		`DROP INDEX IF EXISTS idx_acquisition_status`,
+		`DROP INDEX IF EXISTS idx_managed_capability_deployments_enabled`,
+		`DROP INDEX IF EXISTS idx_recommended_capabilities_enabled`,
+		`DROP INDEX IF EXISTS idx_user_capability_inventory_user_cap`,
+		`DROP INDEX IF EXISTS idx_user_capability_inventory_seen`,
+		`DROP INDEX IF EXISTS idx_mcp_secret_requirement_key`,
+		`DROP INDEX IF EXISTS idx_mcp_secret_binding`,
+		`DROP INDEX IF EXISTS idx_mcp_hub_secret_key`,
+	}
+	for _, stmt := range dropStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("drop legacy capability index: %w", err)
+		}
+	}
+
+	dedupeStmts := []string{
+		`DELETE FROM capabilities WHERE rowid NOT IN (SELECT MIN(rowid) FROM capabilities GROUP BY tenant_id, global_key)`,
+		`DELETE FROM capability_versions WHERE rowid NOT IN (SELECT MIN(rowid) FROM capability_versions GROUP BY tenant_id, version_key)`,
+		`DELETE FROM user_capability_inventory WHERE rowid NOT IN (SELECT MIN(rowid) FROM user_capability_inventory GROUP BY tenant_id, user_email, capability_ref)`,
+		`DELETE FROM mcp_secret_requirements WHERE rowid NOT IN (SELECT MIN(rowid) FROM mcp_secret_requirements GROUP BY tenant_id, capability_ref, version_key, name)`,
+		`DELETE FROM mcp_secret_bindings WHERE rowid NOT IN (SELECT MIN(rowid) FROM mcp_secret_bindings GROUP BY tenant_id, user_id, mcp_server_id, requirement_name)`,
+		`DELETE FROM mcp_hub_secrets WHERE rowid NOT IN (SELECT MIN(rowid) FROM mcp_hub_secrets GROUP BY tenant_id, user_id, mcp_server_id, requirement_name)`,
+	}
+	for _, stmt := range dedupeStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("dedupe tenant capability data: %w", err)
+		}
+	}
+
+	createStmts := []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_capabilities_global_key ON capabilities(tenant_id, global_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_capabilities_type_status ON capabilities(tenant_id, capability_type, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_capabilities_origin_key ON capabilities(tenant_id, origin_key)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_versions_key ON capability_versions(tenant_id, version_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_capability_versions_capability_ref ON capability_versions(tenant_id, capability_ref)`,
+		`CREATE INDEX IF NOT EXISTS idx_acquisition_status ON capability_acquisition_requests(tenant_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_managed_capability_deployments_enabled ON managed_capability_deployments(tenant_id, enabled)`,
+		`CREATE INDEX IF NOT EXISTS idx_recommended_capabilities_enabled ON recommended_capabilities(tenant_id, enabled)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_capability_inventory_user_cap ON user_capability_inventory(tenant_id, user_email, capability_ref)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_capability_inventory_seen ON user_capability_inventory(tenant_id, user_email, last_seen_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_secret_requirement_key ON mcp_secret_requirements(tenant_id, capability_ref, version_key, name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_secret_binding ON mcp_secret_bindings(tenant_id, user_id, mcp_server_id, requirement_name)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_hub_secret_key ON mcp_hub_secrets(tenant_id, user_id, mcp_server_id, requirement_name)`,
+	}
+	for _, stmt := range createStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("create tenant capability index: %w", err)
+		}
+	}
 	return nil
 }

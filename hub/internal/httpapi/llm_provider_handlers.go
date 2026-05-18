@@ -99,6 +99,7 @@ type llmProviderTestKeyRequest struct {
 
 func GetLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		reg, err := im.LoadLLMProviderRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
@@ -115,6 +116,7 @@ func GetLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerF
 
 func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var req im.LLMProviderRegistry
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -221,6 +223,7 @@ func UpdateLLMProvidersHandler(system store.SystemSettingsRepository) http.Handl
 
 func TestLLMProviderHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var req im.LLMProvider
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -306,6 +309,7 @@ func GenerateLLMProviderTestKeyHandler(identity *auth.IdentityService) http.Hand
 }
 func GetLLMServicesAdminHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		reg, err := llmservice.LoadRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
@@ -322,6 +326,7 @@ func GetLLMServicesAdminHandler(system store.SystemSettingsRepository) http.Hand
 
 func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securitySvc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		audit := firstAdminAuditRepo(audits...)
 		body, err := io.ReadAll(io.LimitReader(r.Body, 10<<20))
 		if err != nil {
@@ -456,6 +461,7 @@ func buildLLMServiceBindingAuditSnapshot(reg *llmservice.Registry) llmServiceBin
 
 func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var req createLLMServiceCardRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -582,6 +588,7 @@ func CreateLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 
 func ListLLMServiceCardsHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		reg, err := llmservice.LoadRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
@@ -649,6 +656,7 @@ func ListLLMServiceCardsHandler(system store.SystemSettingsRepository) http.Hand
 
 func ExportSelectedLLMServiceCardsHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var req struct {
 			IDs    []string `json:"ids"`
 			Format string   `json:"format"`
@@ -694,6 +702,7 @@ func ExportSelectedLLMServiceCardsHandler(system store.SystemSettingsRepository)
 
 func ExportLLMServiceCardsHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		reg, err := llmservice.LoadRegistry(r.Context(), system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_LOAD_FAILED", err.Error())
@@ -719,6 +728,7 @@ func ExportLLMServiceCardsHandler(system store.SystemSettingsRepository) http.Ha
 
 func DeleteLLMServiceCardHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		id := strings.TrimSpace(r.PathValue("id"))
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_CARD_ID_REQUIRED", "id is required")
@@ -748,6 +758,7 @@ func DeleteLLMServiceCardHandler(system store.SystemSettingsRepository, audit st
 
 func DeleteLLMServiceCardsBatchHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var req struct {
 			IDs []string `json:"ids"`
 		}
@@ -803,6 +814,7 @@ func DeleteLLMServiceCardsBatchHandler(system store.SystemSettingsRepository, au
 
 func DeleteLLMServiceGrantHandler(system store.SystemSettingsRepository, audit store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		id := strings.TrimSpace(r.PathValue("id"))
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_GRANT_ID_REQUIRED", "id is required")
@@ -880,12 +892,14 @@ func GetLLMServiceStatusHandler(identity *auth.IdentityService, system store.Sys
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		status, err := llmservice.ResolveServiceStatus(r.Context(), system, securitySvc, principal.Email, externalLLMBaseURL(r))
+		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		status, err := llmservice.ResolveServiceStatus(ctx, system, securitySvc, principal.Email, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
@@ -905,12 +919,14 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		status, err := llmservice.ResolveServiceStatus(r.Context(), system, securitySvc, principal.Email, externalLLMBaseURL(r))
+		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		status, err := llmservice.ResolveServiceStatus(ctx, system, securitySvc, principal.Email, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
 		}
-		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
@@ -919,7 +935,7 @@ func GetLLMServiceAccountHandler(identity *auth.IdentityService, system store.Sy
 		if status != nil {
 			status.InactiveReasons = explainFilteredServiceStatusIssues(status, filtered, providerReg)
 		}
-		usage, err := llmUsageTotalsForUser(r.Context(), system, principal.Email)
+		usage, err := llmUsageTotalsForUser(ctx, system, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_USAGE_REPORT_LOAD_FAILED", err.Error())
 			return
@@ -956,12 +972,14 @@ func RedeemLLMServiceCardHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		status, err := llmservice.RedeemCard(r.Context(), system, securitySvc, principal.Email, req.Code, externalLLMBaseURL(r))
+		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		status, err := llmservice.RedeemCard(ctx, system, securitySvc, principal.Email, req.Code, externalLLMBaseURL(r))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "LLM_SERVICE_REDEEM_FAILED", err.Error())
 			return
 		}
-		providerReg, err := im.LoadLLMProviderRegistry(r.Context(), system)
+		providerReg, err := im.LoadLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
@@ -981,7 +999,9 @@ func LLMV1ModelsHandler(identity *auth.IdentityService, system store.SystemSetti
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		status, models, _, _, err := resolveAuthorizedModels(r.Context(), r, system, securitySvc, principal.Email)
+		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		status, models, _, _, err := resolveAuthorizedModels(ctx, r, system, securitySvc, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1015,7 +1035,9 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Method not allowed")
 			return
 		}
-		providerReg, err := loadCachedLLMProviderRegistry(r.Context(), system)
+		system = scopedSystemSettingsForTenant(principal.TenantID, system)
+		ctx := security.WithTenant(r.Context(), principal.TenantID)
+		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LLM_PROVIDER_LOAD_FAILED", err.Error())
 			return
@@ -1099,7 +1121,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			models     []llmservice.AuthorizedModel
 			serviceReg *llmservice.Registry
 		)
-		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(r.Context(), r, system, securitySvc, principal.Email, providerReg)
+		_, models, serviceReg, err = resolveAuthorizedModelsWithProviderRegistry(ctx, r, system, securitySvc, principal.Email, providerReg)
 		if err != nil {
 			writeLoggedError(http.StatusInternalServerError, "LLM_SERVICE_STATUS_FAILED", err.Error())
 			return
@@ -1123,7 +1145,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			writeLoggedError(http.StatusForbidden, "LLM_MODEL_FORBIDDEN", err.Error())
 			return
 		}
-		cacheCfg := loadCachedHubLLMPromptCacheConfig(r.Context(), system)
+		cacheCfg := loadCachedHubLLMPromptCacheConfig(ctx, system)
 		applyHubLLMPromptCacheRuntimeConfig(firstPromptCacheSource(promptCacheSources), cacheCfg)
 		if llmEndpointStreamRequested(body) {
 			statusCode, usedProviderID, chargedServiceGroupIDs, usageStat, wroteStream, err := streamAuthorizedModelRequest(w, r, providerReg, authorizedModel, body, requestedModel, selectedModelDebug)
@@ -1163,7 +1185,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 				)
 				userGroupIDs := []string(nil)
 				if securitySvc != nil {
-					if resolved, resolveErr := securitySvc.ResolveUserGroupChain(r.Context(), principal.Email); resolveErr == nil {
+					if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
 						userGroupIDs = resolved
 					}
 				}
@@ -1209,7 +1231,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 			)
 			userGroupIDs := []string(nil)
 			if securitySvc != nil {
-				if resolved, resolveErr := securitySvc.ResolveUserGroupChain(r.Context(), principal.Email); resolveErr == nil {
+				if resolved, resolveErr := securitySvc.ResolveUserGroupChain(ctx, principal.Email); resolveErr == nil {
 					userGroupIDs = resolved
 				}
 			}

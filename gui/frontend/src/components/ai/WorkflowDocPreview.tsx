@@ -298,6 +298,18 @@ const phaseLabels: Record<string, string> = {
     infringement_assessment: "侵权评估",
     // strategy_recommendation already defined in competitive analysis (same label)
     patent_report: "分析报告",
+    // Changjiang Scholar application workflow
+    cj_personal_profile: "个人资质",
+    cj_academic_achievements: "学术成就",
+    cj_research_plan: "研究计划",
+    cj_talent_cultivation: "人才培养",
+    cj_recommendation_summary: "推荐整合",
+    // Changjiang Scholar review workflow
+    cj_completeness_check: "完整性检测",
+    cj_achievement_evaluation: "成果评估",
+    cj_plan_feasibility: "计划评估",
+    cj_narrative_quality: "撰写质量",
+    cj_improvement_report: "修改建议",
     // Legacy aliases
     design: "设计",
     tasks: "任务",

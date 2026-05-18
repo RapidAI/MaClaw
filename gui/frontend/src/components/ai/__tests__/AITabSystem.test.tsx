@@ -1,8 +1,23 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { useAITabManager } from '../useAITabManager';
+import { usePendingAssistantTabOpen } from '../usePendingAssistantTabOpen';
+import type { PendingHistoryDiscussionOpen } from '../usePendingAssistantTabOpen';
 import { createInitialTabState, DEFAULT_MAX_VE_TABS, LOCAL_TAB } from '../AITabTypes';
 import type { AITab } from '../AITabTypes';
+
+type PendingHistoryDiscussion = PendingHistoryDiscussionOpen | null;
+
+vi.mock('../../../../wailsjs/runtime', () => ({
+    EventsOn: vi.fn(() => () => {}),
+    EventsOff: vi.fn(),
+}));
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    LoadProjectTabIndex: vi.fn().mockResolvedValue([]),
+    CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe('AITabTypes', () => {
     it('createInitialTabState returns correct default state', () => {
@@ -98,6 +113,43 @@ describe('useAITabManager', () => {
             expect(result.current.tabState.tabs).toHaveLength(3); // local + 2 digital employee tabs
         });
 
+        it('updates saved session id when reopening an existing VE tab', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tab: AITab | null = null;
+            act(() => {
+                tab = result.current.createVETab("ve-1", "Agent A");
+            });
+            act(() => {
+                result.current.createVETab("ve-1", "Agent A", "session-next", "offline");
+            });
+
+            expect(result.current.tabState.tabs).toHaveLength(2);
+            expect(result.current.activeTab.id).toBe(tab!.id);
+            expect(result.current.getTabState(tab!.id)?.sessionId).toBe("session-next");
+            expect(result.current.tabState.tabs.find(t => t.id === tab!.id)?.onlineStatus).toBe("offline");
+        });
+
+        it('activates upgraded live group tab when reopening the same VE', () => {
+            const { result } = renderHook(() => useAITabManager());
+
+            let tabId = "";
+            act(() => {
+                const tab = result.current.createVETab("ve-1", "Agent A");
+                tabId = tab!.id;
+                result.current.upgradeVETabToGroup(tabId, ["ve-1", "local-maclaw"]);
+                result.current.activateTab("local");
+            });
+            act(() => {
+                result.current.createVETab("ve-1", "Agent A", "session-group");
+            });
+
+            expect(result.current.tabState.tabs).toHaveLength(2);
+            expect(result.current.activeTab.id).toBe(tabId);
+            expect(result.current.activeTab.type).toBe("group");
+            expect(result.current.getTabState(tabId)?.sessionId).toBe("session-group");
+        });
+
         it('refreshes metadata when reopening an existing group tab', () => {
             const { result } = renderHook(() => useAITabManager());
 
@@ -113,6 +165,217 @@ describe('useAITabManager', () => {
             expect(tab.title).toBe("Closed case");
             expect(tab.readOnly).toBe(true);
             expect(tab.participants).toEqual(["me", "ve-1"]);
+        });
+
+        it('activates an existing VE session tab when opening the same history discussion', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabState: manager.getTabState,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            let veTab: AITab | null = null;
+            act(() => {
+                veTab = result.current.createVETab("ve-a", "Agent A", "disc-1");
+                result.current.activateTab("local");
+            });
+
+            rerender({
+                pending: {
+                    id: "disc-1",
+                    topic: "Vendor audit",
+                    local_relation: "owned_ve_invited",
+                    readonly: true,
+                    status: "open",
+                    participant_ids: ["ve-a"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.id).toBe(veTab!.id);
+            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-1")).toHaveLength(0);
+            expect(result.current.tabState.tabs).toHaveLength(2);
+        });
+
+        it('activates an existing live group tab by saved session id', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabState: manager.getTabState,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            let liveGroupTabId = "";
+            act(() => {
+                const veTab = result.current.createVETab("ve-a", "Agent A");
+                liveGroupTabId = veTab!.id;
+                result.current.upgradeVETabToGroup(liveGroupTabId, ["ve-a", "local-maclaw"]);
+                result.current.saveTabState(liveGroupTabId, { sessionId: "disc-live" });
+                result.current.activateTab("local");
+            });
+
+            rerender({
+                pending: {
+                    id: "disc-live",
+                    topic: "Live group",
+                    local_relation: "owned_ve_invited",
+                    readonly: false,
+                    status: "open",
+                    participant_ids: ["ve-a", "local-maclaw"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.id).toBe(liveGroupTabId);
+            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-live")).toHaveLength(0);
+        });
+
+        it('activates an existing group tab by saved discussion id state', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabState: manager.getTabState,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            act(() => {
+                result.current.createGroupTab("group-custom", "Custom group", ["ve-a"], { readOnly: true });
+                result.current.saveTabState("group-custom", { discussionId: "disc-state" });
+                result.current.activateTab("local");
+            });
+
+            rerender({
+                pending: {
+                    id: "disc-state",
+                    topic: "State-backed discussion",
+                    local_relation: "owned_ve_invited",
+                    readonly: true,
+                    status: "open",
+                    participant_ids: ["ve-a"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.id).toBe("group-custom");
+            expect(result.current.tabState.tabs.filter(t => t.id === "history-disc-state")).toHaveLength(0);
+        });
+
+        it('activates an existing group history tab when opening the same discussion again', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabState: manager.getTabState,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            act(() => {
+                result.current.createGroupTab("history-disc-2", "Earlier title", ["ve-a"], { discussionId: "disc-2", readOnly: true, role: "owned_ve_invited" });
+                result.current.activateTab("local");
+            });
+
+            rerender({
+                pending: {
+                    id: "disc-2",
+                    topic: "Vendor audit",
+                    local_relation: "owned_ve_invited",
+                    readonly: true,
+                    status: "open",
+                    participant_ids: ["ve-a"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.id).toBe("history-disc-2");
+            expect(result.current.tabState.tabs.filter(t => t.discussionId === "disc-2")).toHaveLength(1);
+        });
+
+        it('dedupes group history tabs even when tab state lookup is unavailable', async () => {
+            const onHandled = vi.fn();
+            const { result, rerender } = renderHook<ReturnType<typeof useAITabManager>, { pending: PendingHistoryDiscussion }>(
+                ({ pending }: { pending: PendingHistoryDiscussion }) => {
+                    const manager = useAITabManager();
+                    usePendingAssistantTabOpen({
+                        createVETab: manager.createVETab,
+                        createGroupTab: manager.createGroupTab,
+                        createProjectTab: manager.createProjectTab,
+                        activateTab: manager.activateTab,
+                        getTabList: manager.getTabs,
+                        pendingHistoryDiscussionOpen: pending,
+                        onPendingHistoryDiscussionOpenHandled: onHandled,
+                    });
+                    return manager;
+                },
+                { initialProps: { pending: null } }
+            );
+
+            act(() => {
+                result.current.createGroupTab("history-disc-3", "Earlier title", ["ve-a"], { discussionId: "disc-3", readOnly: true, role: "owned_ve_invited" });
+                result.current.activateTab("local");
+            });
+
+            rerender({
+                pending: {
+                    id: "disc-3",
+                    topic: "Vendor audit",
+                    local_relation: "owned_ve_invited",
+                    readonly: true,
+                    status: "open",
+                    participant_ids: ["ve-a"],
+                },
+            });
+
+            await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+            expect(result.current.activeTab.id).toBe("history-disc-3");
+            expect(result.current.tabState.tabs.filter(t => t.discussionId === "disc-3")).toHaveLength(1);
         });
     });
 

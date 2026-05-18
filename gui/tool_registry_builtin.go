@@ -453,6 +453,33 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 		}, []string{"action"},
 		func(args map[string]interface{}) string { return h.toolMemory(args) })
 
+	// --- Experience learning governance ---
+	reg("experience_learning", "Inspect and record experience-learning governance without executing changes. Actions include snapshot pointing to governance_summary, governance_summary.memory carrying the memory maintenance, governance_summary.routing_self_evolution carrying the routing_signals and tool_recovery_governance, tool_recovery provider/model/wire_api filters, governance_summary.a2a_discussion carrying read-only A2A trace inspection handoffs, next_actions, queues, follow_up_actions, routing_signals, tool_recovery/inspect_tool_recovery_governance/recovery_governance/tool_recovery_governance handoffs, memory_candidates, trace_details exposing read-only non_executing_boundary, build_*_draft helpers, record_followup, record_review, and record_draft_review. Responses expose recommended_focus_context, recommended_tool_call, governance_focus_context, and non_executing=true boundaries. This tool must never approve reviews, rewrite memory, change routing, retry execution, change credentials, write files, execute tools, notify users, or install skills by itself.",
+		ToolCategoryBuiltin, []string{"experience", "learning", "governance", "memory", "routing", "review", "recovery"},
+		map[string]interface{}{
+			"action":                  map[string]string{"type": "string", "description": "Action: snapshot/governance_summary/next_actions/queues/follow_up_actions/routing_signals/tool_recovery/recovery_governance/tool_recovery_governance/inspect_tool_recovery_governance/build_routing_adjustment_draft/memory_candidates/build_memory_maintenance_draft/trace_details/build_followup/build_skill_draft/build_rollback_draft/build_escalation_brief/build_conflict_draft/record_followup/record_review/record_draft_review"},
+			"query":                   map[string]string{"type": "string", "description": "Search or filter query for governance queues, memory candidates, routing signals, or trace details."},
+			"q":                       map[string]string{"type": "string", "description": "Alias for query."},
+			"trace_id":                map[string]string{"type": "string", "description": "Trace id for exact trace_details filtering, review, or draft-review attachment."},
+			"source_trace_id":         map[string]string{"type": "string", "description": "Source trace id that a generated draft or follow-up action is based on."},
+			"draft_kind":              map[string]string{"type": "string", "description": "Draft kind: skill_draft, rollback_workflow_draft, escalation_brief, conflict_reconciliation_draft, routing_adjustment_draft, memory_maintenance_draft."},
+			"draft_markdown":          map[string]string{"type": "string", "description": "Markdown body for a non-executing draft review record."},
+			"non_executing_boundary":  map[string]string{"type": "string", "description": "Caller-supplied boundary text confirming the record is audit-only and non-executing."},
+			"status":                  map[string]string{"type": "string", "description": "Review or draft review status, such as approved/rejected/recorded/blocked."},
+			"note":                    map[string]string{"type": "string", "description": "Reviewer note or audit note."},
+			"actor":                   map[string]string{"type": "string", "description": "Human or system actor recording the review evidence."},
+			"follow_up_action_kind":   map[string]string{"type": "string", "description": "Filter or record follow-up actions by kind, such as routing_adjustment_draft, skill_draft, rollback_workflow_draft, escalation_brief, conflict_reconciliation_draft, or memory_maintenance_draft."},
+			"triggered_rollback_only": map[string]string{"type": "boolean", "description": "When true, only include follow-up actions that triggered rollback-only handling."},
+			"tool":                    map[string]string{"type": "string", "description": "Tool name filter for routing_signals or tool_recovery governance."},
+			"category":                map[string]string{"type": "string", "description": "Failure category filter for tool_recovery governance."},
+			"provider":                map[string]string{"type": "string", "description": "Provider filter for tool_recovery governance."},
+			"model":                   map[string]string{"type": "string", "description": "Model filter for tool_recovery governance."},
+			"wire_api":                map[string]string{"type": "string", "description": "Wire API filter for tool_recovery governance."},
+			"review_only":             map[string]string{"type": "boolean", "description": "When true, only return tool recovery summaries that require review."},
+			"limit":                   map[string]string{"type": "integer", "description": "Maximum number of rows or summaries to return."},
+		}, []string{"action"},
+		func(args map[string]interface{}) string { return h.toolExperienceLearning(args) })
+
 	// --- Active context compression (inspired by GenericAgent's working checkpoint) ---
 	reg("compress_context", "主动压缩当前对话上下文。完成子任务后调用，将详细工具调用历史替换为摘要，释放 context 空间。",
 		ToolCategoryBuiltin, []string{"context", "compress", "checkpoint", "summary"},

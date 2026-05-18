@@ -51,6 +51,10 @@ func NewService(repo store.InvitationCodeRepository, settings store.SystemSettin
 // GenerateCodes generates count invitation codes (1-50) and stores them.
 // validityDays specifies the validity period in days; values < 0 are treated as 0 (永久有效).
 func (s *Service) GenerateCodes(ctx context.Context, count int, validityDays int, vip bool) ([]*store.InvitationCode, error) {
+	return s.GenerateCodesForTenant(ctx, store.DefaultTenantID, count, validityDays, vip)
+}
+
+func (s *Service) GenerateCodesForTenant(ctx context.Context, tenantID string, count int, validityDays int, vip bool) ([]*store.InvitationCode, error) {
 	if count < 1 || count > maxCount {
 		return nil, ErrInvalidCount
 	}
@@ -69,7 +73,7 @@ func (s *Service) GenerateCodes(ctx context.Context, count int, validityDays int
 			}
 
 			// Check for conflict
-			existing, _ := s.repo.GetByCode(ctx, code)
+			existing, _ := s.repo.GetByTenantCode(ctx, tenantID, code)
 			if existing != nil {
 				continue // conflict, retry
 			}
@@ -77,6 +81,7 @@ func (s *Service) GenerateCodes(ctx context.Context, count int, validityDays int
 			now := time.Now()
 			item := &store.InvitationCode{
 				ID:           fmt.Sprintf("ic_%s", randomShortID()),
+				TenantID:     tenantID,
 				Code:         code,
 				Status:       "unused",
 				ValidityDays: validityDays,
@@ -107,12 +112,16 @@ func (s *Service) GenerateCodes(ctx context.Context, count int, validityDays int
 
 // ValidateAndConsume validates that the code exists and is unused, then marks it used.
 func (s *Service) ValidateAndConsume(ctx context.Context, code string, email string) error {
+	return s.ValidateAndConsumeForTenant(ctx, store.DefaultTenantID, code, email)
+}
+
+func (s *Service) ValidateAndConsumeForTenant(ctx context.Context, tenantID string, code string, email string) error {
 	code = strings.TrimSpace(code)
 	if code == "" {
 		return ErrInvalidInvitationCode
 	}
 
-	item, err := s.repo.GetByCode(ctx, code)
+	item, err := s.repo.GetByTenantCode(ctx, tenantID, code)
 	if err != nil {
 		return ErrInvalidInvitationCode
 	}
@@ -157,15 +166,23 @@ func (s *Service) DeleteCode(ctx context.Context, id string) error {
 // DeleteCodeByEmail permanently deletes all invitation codes bound to the given email.
 // Returns the number of deleted codes.
 func (s *Service) DeleteCodeByEmail(ctx context.Context, email string) (int64, error) {
+	return s.DeleteCodeByTenantEmail(ctx, store.DefaultTenantID, email)
+}
+
+func (s *Service) DeleteCodeByTenantEmail(ctx context.Context, tenantID, email string) (int64, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" {
 		return 0, nil
 	}
-	return s.repo.DeleteByEmail(ctx, email)
+	return s.repo.DeleteByTenantEmail(ctx, tenantID, email)
 }
 
 // GetCodeByEmail returns the invitation code bound to the given email.
 func (s *Service) GetCodeByEmail(ctx context.Context, email string) (*store.InvitationCode, error) {
+	return s.GetCodeByTenantEmail(ctx, store.DefaultTenantID, email)
+}
+
+func (s *Service) GetCodeByTenantEmail(ctx context.Context, tenantID, email string) (*store.InvitationCode, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" {
 		return nil, nil
@@ -180,7 +197,7 @@ func (s *Service) GetCodeByEmail(ctx context.Context, email string) (*store.Invi
 	}
 	s.vipLookupMu.RUnlock()
 
-	item, err := s.repo.GetByEmail(ctx, email)
+	item, err := s.repo.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +230,11 @@ func cloneInvitationCode(item *store.InvitationCode) *store.InvitationCode {
 // Returns (expired, expiresAt, error).
 // If no code is found or validity_days == 0, returns (false, nil, nil).
 func (s *Service) CheckExpiry(ctx context.Context, email string) (bool, *time.Time, error) {
-	item, err := s.repo.GetByEmail(ctx, email)
+	return s.CheckExpiryForTenant(ctx, store.DefaultTenantID, email)
+}
+
+func (s *Service) CheckExpiryForTenant(ctx context.Context, tenantID, email string) (bool, *time.Time, error) {
+	item, err := s.repo.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return false, nil, fmt.Errorf("checking expiry: %w", err)
 	}
@@ -272,13 +293,17 @@ func (s *Service) ListCodes(ctx context.Context, status string, search string) (
 // and marks the returned codes as exported.
 // exportedFilter: "unexported" (default), "exported", or "all".
 func (s *Service) ExportUnusedCodes(ctx context.Context, exportedFilter string, vipOnly bool) ([]*store.InvitationCode, error) {
+	return s.ExportUnusedCodesForTenant(ctx, store.DefaultTenantID, exportedFilter, vipOnly)
+}
+
+func (s *Service) ExportUnusedCodesForTenant(ctx context.Context, tenantID string, exportedFilter string, vipOnly bool) ([]*store.InvitationCode, error) {
 	switch exportedFilter {
 	case "exported", "all":
 		// valid
 	default:
 		exportedFilter = "unexported"
 	}
-	codes, err := s.repo.ListUnused(ctx, exportedFilter, vipOnly)
+	codes, err := s.repo.ListUnusedByTenant(ctx, tenantID, exportedFilter, vipOnly)
 	if err != nil {
 		return nil, fmt.Errorf("listing unused codes: %w", err)
 	}
@@ -299,6 +324,10 @@ func (s *Service) ExportUnusedCodes(ctx context.Context, exportedFilter string, 
 
 // ListCodesPaged returns a page of invitation codes and the total count.
 func (s *Service) ListCodesPaged(ctx context.Context, status string, search string, page, pageSize int) ([]*store.InvitationCode, int, error) {
+	return s.ListCodesPagedForTenant(ctx, store.DefaultTenantID, status, search, page, pageSize)
+}
+
+func (s *Service) ListCodesPagedForTenant(ctx context.Context, tenantID string, status string, search string, page, pageSize int) ([]*store.InvitationCode, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -306,7 +335,7 @@ func (s *Service) ListCodesPaged(ctx context.Context, status string, search stri
 		pageSize = 20
 	}
 	offset := (page - 1) * pageSize
-	return s.repo.ListPaged(ctx, status, search, offset, pageSize)
+	return s.repo.ListPagedByTenant(ctx, tenantID, status, search, offset, pageSize)
 }
 
 // generateCode generates a random 10-character code from A-Z0-9 using crypto/rand.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -261,6 +262,9 @@ func TestAdminExportServiceState(t *testing.T) {
 	if len(out.Users[0].Instances) != 1 || len(out.Users[0].Instances[0].Sessions) != 1 || len(out.Users[0].Instances[0].Sessions[0].Messages) == 0 || len(out.Users[0].Instances[0].Runs) == 0 {
 		t.Fatalf("expected nested instance/session/message/run export: %#v", out.Users[0].Instances)
 	}
+	if out.Users[0].Instances[0].Instance.DataDir != "" || out.Users[0].Instances[0].Instance.RuntimeDir != "" || out.Users[0].Instances[0].Instance.Workspace != "" {
+		t.Fatalf("expected admin export to redact instance paths: %#v", out.Users[0].Instances[0].Instance)
+	}
 	if len(out.AuditEvents) == 0 {
 		t.Fatalf("expected audit events in export")
 	}
@@ -297,8 +301,33 @@ func TestAdminExportServiceState(t *testing.T) {
 	if len(out.Users[0].Credentials) != 1 || out.Users[0].Credentials[0].APIKeyHash == "" || out.Users[0].Credentials[0].APIKeyPrefix == "" {
 		t.Fatalf("expected internal credential state when include_secrets=true: %#v", out.Users[0].Credentials)
 	}
+	if out.Users[0].Instances[0].Instance.DataDir != "" || out.Users[0].Instances[0].Instance.RuntimeDir != "" || out.Users[0].Instances[0].Instance.Workspace != "" {
+		t.Fatalf("expected secret admin export to still redact local instance paths: %#v", out.Users[0].Instances[0].Instance)
+	}
 	if len(out.Users[0].Instances[0].Sessions[0].Messages) != 0 || len(out.Users[0].Instances[0].Runs) != 0 || len(out.AuditEvents) != 0 {
 		t.Fatalf("expected include flags to omit nested data: %#v %#v", out.Users[0].Instances[0], out.AuditEvents)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true&confirm=true&include_messages=false&include_runs=false&include_audit=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("export with secrets and audit status = %d body = %s", w.Code, w.Body.String())
+	}
+	out = agentservice.ExportServiceStateOutput{}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode export with secrets and audit: %v", err)
+	}
+	if len(out.AuditEvents) == 0 || out.Users[0].Credentials[0].APIKeyHash == "" {
+		t.Fatalf("expected secret export to preserve credentials and include audit: %#v", out)
+	}
+	secretAuditJSON, err := json.Marshal(out.AuditEvents)
+	if err != nil {
+		t.Fatalf("marshal secret export audits: %v", err)
+	}
+	if strings.Contains(string(secretAuditJSON), "export-audit-token") || strings.Contains(string(secretAuditJSON), "export-audit-api-key") || strings.Contains(string(secretAuditJSON), svc.DataRoot()) {
+		t.Fatalf("expected secret export audit events to still be redacted, got %s", secretAuditJSON)
 	}
 	exportEvents, err := svc.ListAuditEvents(ctx, agentservice.ListAuditEventsInput{Action: "admin.service_state_exported"})
 	if err != nil {
@@ -528,6 +557,16 @@ func TestAdminImportServiceStateDryRun(t *testing.T) {
 		t.Fatalf("NewService target: %v", err)
 	}
 	targetServer := NewHTTPServer(targetSvc, "admin-secret", nil)
+	var dryRunPayload agentservice.ExportServiceStateOutput
+	if err := json.Unmarshal(payload, &dryRunPayload); err != nil {
+		t.Fatalf("unmarshal dry run payload: %v", err)
+	}
+	dryRunPayload.IncludeAudit = true
+	dryRunPayload.AuditEvents = append(dryRunPayload.AuditEvents, agentservice.AuditEvent{ID: targetSvc.DataRoot(), ResourceID: targetSvc.DataRoot(), Metadata: map[string]string{"path": targetSvc.DataRoot(), "token": "dry-run-import-token"}})
+	payload, err = json.Marshal(dryRunPayload)
+	if err != nil {
+		t.Fatalf("marshal dry run payload: %v", err)
+	}
 	if err := targetStore.SaveTenant(*tenant); err != nil {
 		t.Fatalf("SaveTenant target: %v", err)
 	}
@@ -542,6 +581,9 @@ func TestAdminImportServiceStateDryRun(t *testing.T) {
 	targetServer.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("dry run import status = %d body = %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), targetSvc.DataRoot()) || strings.Contains(w.Body.String(), filepath.ToSlash(targetSvc.DataRoot())) || strings.Contains(w.Body.String(), "dry-run-import-token") {
+		t.Fatalf("dry run import response leaked local path or secret: %s", w.Body.String())
 	}
 	var out agentservice.ImportServiceStateOutput
 	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
@@ -700,6 +742,14 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	if got.Snapshot.Path != "" {
 		t.Fatalf("admin snapshot get response should redact local path: %#v", got.Snapshot)
 	}
+	if len(got.Data.Users) == 0 {
+		t.Fatalf("expected snapshot data users: %#v", got.Data)
+	}
+	got.Data.Users[0].Instances = append(got.Data.Users[0].Instances, agentservice.ExportedInstance{Instance: agentservice.Instance{DataDir: dataRoot, RuntimeDir: filepath.Join(dataRoot, "runtime"), Workspace: filepath.Join(dataRoot, "workspace")}})
+	sanitizedSnapshot := sanitizeServiceSnapshotEnvelopeForAdminAPI(dataRoot, &got)
+	if sanitizedSnapshot.Data.Users[0].Instances[0].Instance.DataDir != "" || sanitizedSnapshot.Data.Users[0].Instances[0].Instance.RuntimeDir != "" || sanitizedSnapshot.Data.Users[0].Instances[0].Instance.Workspace != "" {
+		t.Fatalf("admin snapshot data should redact instance paths: %#v", got.Data.Users[0].Instances[0].Instance)
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/"+created.Snapshot.ID+"/restore", bytes.NewBufferString(`{"dry_run":true}`))
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -747,6 +797,17 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	}
 	if restored.Snapshot.Path != "" {
 		t.Fatalf("admin snapshot restore response should redact local path: %#v", restored.Snapshot)
+	}
+	restored.Import.Plan = []agentservice.ImportPlanItem{{ResourceID: dataRoot, Message: "restored from " + dataRoot}}
+	restored.Import.Conflicts = []string{"conflict at " + dataRoot}
+	restored.Import.Warnings = []string{"warning at " + dataRoot}
+	sanitizedRestore := sanitizeRestoreServiceSnapshotOutputForAdminAPI(dataRoot, &restored)
+	restoreJSON, err := json.Marshal(sanitizedRestore.Import)
+	if err != nil {
+		t.Fatalf("marshal sanitized restore: %v", err)
+	}
+	if strings.Contains(string(restoreJSON), dataRoot) || strings.Contains(string(restoreJSON), filepath.ToSlash(dataRoot)) {
+		t.Fatalf("admin snapshot restore diagnostics should redact local paths: %s", restoreJSON)
 	}
 	restoreEvents, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: "admin.snapshot_restored"})
 	if err != nil {

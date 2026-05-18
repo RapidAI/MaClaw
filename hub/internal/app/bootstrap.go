@@ -465,6 +465,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		cfg.PWA.StaticDir,
 		cfg.PWA.RoutePrefix,
 		cfg.Bridge.Dir,
+		st.Tenants,
 	)
 	return &App{
 		Config:          cfg,

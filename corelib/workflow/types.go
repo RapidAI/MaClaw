@@ -9,26 +9,28 @@ const (
 	// WorkflowNone indicates the task is NOT a workflow (e.g., content processing).
 	WorkflowNone WorkflowType = "none"
 
-	WorkflowCoding              WorkflowType = "coding"
-	WorkflowProductDesign       WorkflowType = "product_design"
-	WorkflowInnovation          WorkflowType = "innovation"
-	WorkflowBusinessPlan        WorkflowType = "business_plan"
-	WorkflowTesting             WorkflowType = "testing"
-	WorkflowLiteratureReview    WorkflowType = "literature_review"
-	WorkflowResearchReport      WorkflowType = "research_report"
-	WorkflowExperimentDesign    WorkflowType = "experiment_design"
-	WorkflowGrantProposal       WorkflowType = "grant_proposal"
-	WorkflowPaperWriting        WorkflowType = "paper_writing"
-	WorkflowProjectProposal     WorkflowType = "project_proposal"
-	WorkflowEventPlanning       WorkflowType = "event_planning"
-	WorkflowCompetitiveAnalysis WorkflowType = "competitive_analysis"
-	WorkflowPresentationDesign  WorkflowType = "presentation_design"
-	WorkflowBidResponse         WorkflowType = "bid_response"
-	WorkflowContractReview      WorkflowType = "contract_review"
-	WorkflowDueDiligence        WorkflowType = "due_diligence"
-	WorkflowComplianceAudit     WorkflowType = "compliance_audit"
-	WorkflowPatentAnalysis      WorkflowType = "patent_analysis"
-	WorkflowOpsMaintenance      WorkflowType = "ops_maintenance"
+	WorkflowCoding                  WorkflowType = "coding"
+	WorkflowProductDesign           WorkflowType = "product_design"
+	WorkflowInnovation              WorkflowType = "innovation"
+	WorkflowBusinessPlan            WorkflowType = "business_plan"
+	WorkflowTesting                 WorkflowType = "testing"
+	WorkflowLiteratureReview        WorkflowType = "literature_review"
+	WorkflowResearchReport          WorkflowType = "research_report"
+	WorkflowExperimentDesign        WorkflowType = "experiment_design"
+	WorkflowGrantProposal           WorkflowType = "grant_proposal"
+	WorkflowPaperWriting            WorkflowType = "paper_writing"
+	WorkflowProjectProposal         WorkflowType = "project_proposal"
+	WorkflowEventPlanning           WorkflowType = "event_planning"
+	WorkflowCompetitiveAnalysis     WorkflowType = "competitive_analysis"
+	WorkflowPresentationDesign      WorkflowType = "presentation_design"
+	WorkflowBidResponse             WorkflowType = "bid_response"
+	WorkflowContractReview          WorkflowType = "contract_review"
+	WorkflowDueDiligence            WorkflowType = "due_diligence"
+	WorkflowComplianceAudit         WorkflowType = "compliance_audit"
+	WorkflowPatentAnalysis          WorkflowType = "patent_analysis"
+	WorkflowOpsMaintenance          WorkflowType = "ops_maintenance"
+	WorkflowChangjiangScholar       WorkflowType = "changjiang_scholar"
+	WorkflowChangjiangScholarReview WorkflowType = "changjiang_scholar_review"
 )
 
 // Phase IDs for the coding workflow. These are the canonical identifiers
@@ -141,6 +143,109 @@ type InputRequirement struct {
 	AnalysisHint string `json:"analysis_hint,omitempty"`
 }
 
+func (r *InputRequirement) Clone() *InputRequirement {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	cp.FileTypes = append([]string(nil), r.FileTypes...)
+	return &cp
+}
+
+// WorkflowInputAttachment records a user-provided file/image/audio attachment
+// that satisfies a template-level input requirement. The engine stores metadata
+// instead of raw bytes so workflow state remains small and serializable; the
+// agent loop still receives the original attachment payload for analysis.
+type WorkflowInputAttachment struct {
+	Type     string `json:"type,omitempty"`
+	FileName string `json:"file_name,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	Size     int64  `json:"size,omitempty"`
+}
+
+// WorkflowInputPayload is the durable input contract for document-driven
+// workflows. It makes "input received" an explicit state transition with
+// inspectable evidence, rather than a boolean inferred from a non-empty chat
+// message.
+type WorkflowInputPayload struct {
+	Text        string                    `json:"text,omitempty"`
+	Attachments []WorkflowInputAttachment `json:"attachments,omitempty"`
+	ReceivedAt  time.Time                 `json:"received_at,omitempty"`
+}
+
+func (p *WorkflowInputPayload) Clone() *WorkflowInputPayload {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.Attachments = append([]WorkflowInputAttachment(nil), p.Attachments...)
+	return &cp
+}
+
+// PhaseInputOption defines a selectable option for select/multiselect fields.
+type PhaseInputOption struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// PhaseInputField defines a single form field for structured information collection.
+// It maps directly to AgentViewField on the frontend — same field names, same semantics.
+type PhaseInputField struct {
+	Name        string             `json:"name"`
+	Label       string             `json:"label"`
+	Type        string             `json:"type"` // text|textarea|number|date|select|multiselect|boolean|file
+	Required    bool               `json:"required,omitempty"`
+	Description string             `json:"description,omitempty"`
+	Placeholder string             `json:"placeholder,omitempty"`
+	Options     []PhaseInputOption `json:"options,omitempty"`
+	Default     interface{}        `json:"default,omitempty"`
+	Min         *float64           `json:"min,omitempty"`
+	Max         *float64           `json:"max,omitempty"`
+	MinLength   *int               `json:"min_length,omitempty"`
+	MaxLength   *int               `json:"max_length,omitempty"`
+	Pattern     string             `json:"pattern,omitempty"`
+}
+
+// PhaseInputSchema declares a structured form for a phase's information collection.
+// When non-nil, the engine emits an AG UI form instead of running the agent loop
+// directly. The user's form submission is injected into the PhasePrompt as
+// structured context before the LLM generates the phase deliverable.
+type PhaseInputSchema struct {
+	Title       string            `json:"title"`
+	Description string            `json:"description,omitempty"`
+	Fields      []PhaseInputField `json:"fields"`
+}
+
+func (s *PhaseInputSchema) Clone() *PhaseInputSchema {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.Fields = make([]PhaseInputField, len(s.Fields))
+	for i, field := range s.Fields {
+		cp.Fields[i] = field
+		cp.Fields[i].Options = append([]PhaseInputOption(nil), field.Options...)
+		cp.Fields[i].Default = cloneWorkflowValue(field.Default)
+		if field.Min != nil {
+			v := *field.Min
+			cp.Fields[i].Min = &v
+		}
+		if field.Max != nil {
+			v := *field.Max
+			cp.Fields[i].Max = &v
+		}
+		if field.MinLength != nil {
+			v := *field.MinLength
+			cp.Fields[i].MinLength = &v
+		}
+		if field.MaxLength != nil {
+			v := *field.MaxLength
+			cp.Fields[i].MaxLength = &v
+		}
+	}
+	return &cp
+}
+
 // PhaseTemplate defines a single phase within a workflow template.
 type PhaseTemplate struct {
 	ID           string           `json:"id"`
@@ -152,6 +257,14 @@ type PhaseTemplate struct {
 	NeedsConfirm bool             `json:"needs_confirm"`
 	CanSkip      bool             `json:"can_skip"`
 	ToolPolicy   ToolFilterPolicy `json:"tool_policy"`
+
+	// InputSchema declares a structured form for this phase's information
+	// collection. When set, the engine signals ShowForm=true on first entry
+	// (before PhaseFormData is populated). The GUI emits an AG UI form; the
+	// user fills it and submits. The form data is then injected into the
+	// PhasePrompt as structured context. Nil means the phase uses natural
+	// language interaction (current behavior).
+	InputSchema *PhaseInputSchema `json:"input_schema,omitempty"`
 
 	// DisableOrchestrator prevents the generic task orchestrator from trying
 	// to parse the previous phase output as a coding task list when this phase
@@ -186,6 +299,16 @@ type WorkflowResponse struct {
 	Complete     bool               // whether the workflow is complete
 	DocContent   string             // document content for frontend preview
 	GateResult   *QualityGateResult // quality gate check result, if any
+
+	// ShowForm is true when the engine wants the caller to emit an AG UI form
+	// for structured information collection. The caller should build the form
+	// from FormSchema and emit it via emitAgentView. The engine will not run
+	// the agent loop until the form is submitted via SubmitPhaseForm.
+	ShowForm bool
+
+	// FormSchema is the phase's InputSchema, provided when ShowForm=true.
+	// The caller converts this to an AgentView map and emits it.
+	FormSchema *PhaseInputSchema
 
 	// DefaultInput is true when the engine's HandleInput fell through to
 	// the default branch (no confirm/skip/modify match). This is a
@@ -255,11 +378,31 @@ type WorkflowState struct {
 	CreatedAt    time.Time                     `json:"created_at"`
 	UpdatedAt    time.Time                     `json:"updated_at"`
 
+	// PhaseFormData stores the user's structured form submission for the
+	// current phase. Populated when the user submits a PhaseInputSchema form
+	// via SubmitPhaseForm. Cleared when the phase advances.
+	PhaseFormData map[string]interface{} `json:"phase_form_data,omitempty"`
+
+	// PhaseFormSubmitted records that the current phase's form gate has been
+	// satisfied even when the submitted form payload is empty because all fields
+	// are optional. Without this bit, an empty but valid form submission is
+	// indistinguishable from no submission after persistence/restore.
+	PhaseFormSubmitted bool `json:"phase_form_submitted,omitempty"`
+
+	// PhaseFormSkipped records that the user dismissed the structured form for
+	// the current phase, allowing natural-language input without re-showing it.
+	PhaseFormSkipped bool `json:"phase_form_skipped,omitempty"`
+
 	// InputReceived is true when the user has provided the required input
 	// document (for workflows with RequiresInput). The engine sets this
 	// when it detects a document upload or substantial text input during
 	// the waiting-for-input state.
 	InputReceived bool `json:"input_received,omitempty"`
+
+	// InputPayload records the evidence that satisfied RequiresInput. It is
+	// injected into phase prompts so the input remains available after the
+	// original chat turn and across process restarts.
+	InputPayload *WorkflowInputPayload `json:"input_payload,omitempty"`
 
 	// ProjectPath is the working directory associated with this workflow
 	// (e.g., the project root for coding workflows). Used for artifact
@@ -271,6 +414,77 @@ type WorkflowState struct {
 	// cancels the review. This makes the confirmation/supplement step an engine
 	// state instead of an agent-loop heuristic.
 	PendingReviewPhaseID string `json:"pending_review_phase_id,omitempty"`
+
+	// PendingReviewRevisionRequested is true only after a classified supplement
+	// intent asks the agent loop to regenerate the pending review deliverable.
+	// It prevents stray agent-loop output from overwriting a phase document while
+	// the workflow is simply waiting for user review.
+	PendingReviewRevisionRequested bool `json:"pending_review_revision_requested,omitempty"`
+}
+
+func cloneWorkflowMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	cp := make(map[string]interface{}, len(src))
+	for k, v := range src {
+		cp[k] = cloneWorkflowValue(v)
+	}
+	return cp
+}
+
+func cloneWorkflowValue(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		return cloneWorkflowMap(x)
+	case []interface{}:
+		cp := make([]interface{}, len(x))
+		for i, item := range x {
+			cp[i] = cloneWorkflowValue(item)
+		}
+		return cp
+	case []string:
+		return append([]string(nil), x...)
+	case []float64:
+		return append([]float64(nil), x...)
+	case []int:
+		return append([]int(nil), x...)
+	case []bool:
+		return append([]bool(nil), x...)
+	default:
+		return x
+	}
+}
+
+func (ws *WorkflowState) Clone() *WorkflowState {
+	if ws == nil {
+		return nil
+	}
+	cp := *ws
+	cp.Intent.Goals = append([]string(nil), ws.Intent.Goals...)
+	cp.Intent.Constraints = append([]string(nil), ws.Intent.Constraints...)
+	cp.Intent.OpenQuestions = append([]string(nil), ws.Intent.OpenQuestions...)
+	if ws.PhaseOutputs != nil {
+		cp.PhaseOutputs = make(map[string]string, len(ws.PhaseOutputs))
+		for k, v := range ws.PhaseOutputs {
+			cp.PhaseOutputs[k] = v
+		}
+	}
+	if ws.GateResults != nil {
+		cp.GateResults = make(map[string]*QualityGateResult, len(ws.GateResults))
+		for k, v := range ws.GateResults {
+			if v == nil {
+				cp.GateResults[k] = nil
+				continue
+			}
+			gate := *v
+			gate.Items = append([]GateCheckItem(nil), v.Items...)
+			cp.GateResults[k] = &gate
+		}
+	}
+	cp.PhaseFormData = cloneWorkflowMap(ws.PhaseFormData)
+	cp.InputPayload = ws.InputPayload.Clone()
+	return &cp
 }
 
 // QualityGateResult records the outcome of a phase quality gate check.
@@ -357,6 +571,13 @@ type ArtifactSaver interface {
 	// title is a short human-readable label for the task list display.
 	// tags should include phaseID and workflowType.
 	SaveArtifact(title, content string, tags []string, sourceURL string) error
+}
+
+// FullArtifactSaver is implemented by artifact savers that can keep a compact
+// memory preview while storing the full phase output as separately addressable evidence.
+type FullArtifactSaver interface {
+	ArtifactSaver
+	SaveArtifactFull(title, summary, fullContent string, tags []string, sourceURL string) error
 }
 
 // PersistenceStore abstracts workflow state persistence.

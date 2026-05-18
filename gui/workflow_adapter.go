@@ -17,6 +17,13 @@ type GUIWorkflowAdapter struct {
 	mu         sync.RWMutex
 	workingDir string // locked working directory for the current workflow session
 
+	// activeWorkflowID is the ID of the currently active workflow instance.
+	// Used to namespace persisted documents under {workingDir}/.maclaw/workflow/{id}/
+	// so that different workflow instances (even of the same type) never share files.
+	// Set by EmitPhaseUpdate when a new active workflow is detected; cleared on
+	// workflow completion/cancellation.
+	activeWorkflowID string
+
 	// suggestMaximizeSent tracks whether the fullscreen suggestion banner
 	// has already been emitted for each user in the current app session.
 	// Key: userID, Value: true. This prevents the banner from firing on
@@ -51,6 +58,16 @@ func (a *GUIWorkflowAdapter) GetLang() string {
 
 // EmitPhaseUpdate notifies the frontend of a phase change.
 func (a *GUIWorkflowAdapter) EmitPhaseUpdate(userID string, state *workflow.WorkflowState) error {
+	if state != nil {
+		a.mu.Lock()
+		if state.Status == workflow.WorkflowActive && state.ID != "" {
+			a.activeWorkflowID = state.ID
+		} else {
+			// Workflow completed or cancelled — clear the instance namespace.
+			a.activeWorkflowID = ""
+		}
+		a.mu.Unlock()
+	}
 	if a.app.ctx != nil {
 		var registry *workflow.WorkflowRegistry
 		if a.engine != nil {
@@ -95,6 +112,11 @@ func (a *GUIWorkflowAdapter) SetWorkingDir(userID, dir string) {
 	a.mu.Lock()
 	a.workingDir = trimmed
 	a.mu.Unlock()
+	if a.engine != nil {
+		if err := a.engine.SetProjectPath(userID, trimmed); err != nil {
+			log.Printf("[WorkflowAdapter] failed to persist workflow project path: %v", err)
+		}
+	}
 	if trimmed != "" && a.app.ctx != nil {
 		runtime.EventsEmit(a.app.ctx, "workflow:workdir_set", map[string]string{
 			"user_id": userID,

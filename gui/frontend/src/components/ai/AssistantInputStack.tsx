@@ -18,6 +18,7 @@ interface AssistantInputStackProps {
     handlePaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
     handleSaveEdit: (id: string, text: string, attachments: any[]) => void;
     handleFireEntry: (id: string) => void;
+    isEntryInFlight?: (id: string) => boolean;
     handleSend: () => void;
     handleVoiceClick: () => void;
     handleVoicePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
@@ -55,6 +56,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         browseFile, canSend, cancelPending, cancelSession, clearSelectedFile, editingEntryId,
         exitHistoryBrowsing, finishVoicePointer, handleCancel, handleEditEntry, handleCancelEdit, handlePaste,
         handleSaveEdit, handleFireEntry, handleSend, handleVoiceClick, handleVoicePointerDown, handleVoicePointerLeave, inputAreaHeight,
+        isEntryInFlight,
         inputLocked, inputRef, inputValue, inline, isBusy, isSelectionCollapsedAtBoundary, lang, pendingAttachments,
         placeholderText, queue, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, startInputResize, theme: t,
@@ -108,6 +110,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     onDelete={removeEntry}
                     onReorder={reorderEntry}
                     onFireEntry={handleFireEntry}
+                    isEntryInFlight={isEntryInFlight}
                 />
                 <AssistantInputComposer
                     browseFile={browseFile}

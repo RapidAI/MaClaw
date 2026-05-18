@@ -54,10 +54,13 @@ func TestHelpSetupSpaceMentionsLanguage(t *testing.T) {
 func TestHelpListsSlashNavigationCommands(t *testing.T) {
 	help := NewHelpModel("en")
 	view := stripANSIForTest(help.View())
-	for _, want := range []string{"/setup", "/redeem", "/chat", "/tools", "/mcp", "/skill", "/tasks", "/schedule", "/config", "/llm", "/security", "/help"} {
+	for _, want := range []string{"/loop", "/setup", "/redeem", "/chat", "/tools", "/mcp", "/skill", "/tasks", "/schedule", "/config", "/llm", "/security", "/help"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("help should include slash command %s:\n%s", want, view)
 		}
+	}
+	if !strings.Contains(view, "goal-driven verification loop") || !strings.Contains(view, "--max N") || !strings.Contains(view, "--timeout N") || !strings.Contains(view, "--dir path") {
+		t.Fatalf("help should explain /loop usage and options:\n%s", view)
 	}
 	if strings.Contains(view, "/memory") {
 		t.Fatalf("simplified help should not advertise memory browsing:\n%s", view)
@@ -67,6 +70,23 @@ func TestHelpListsSlashNavigationCommands(t *testing.T) {
 	}
 	if !strings.Contains(view, "mcp shows the MCP list") {
 		t.Fatalf("help should explain /tools mcp shows the MCP list when configured:\n%s", view)
+	}
+}
+
+func TestHelpLongSlashCommandsKeepDescriptionColumn(t *testing.T) {
+	help := NewHelpModel("zh")
+	view := stripANSIForTest(help.View())
+	found := false
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "/loop <验证命令> <目标>") {
+			found = true
+			if !strings.Contains(line, "  运行目标驱动验证循环") || !strings.Contains(line, "--max 轮数") || !strings.Contains(line, "--dir 路径") {
+				t.Fatalf("long /loop key should be padded before the description:\n%s", line)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("help should include localized /loop usage:\n%s", view)
 	}
 }
 

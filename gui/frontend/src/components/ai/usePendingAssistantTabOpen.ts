@@ -2,7 +2,7 @@
 import type { CreateGroupTabOptions } from "./useAITabManager";
 import type { AITab, AITabState } from "./AITabTypes";
 import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
-import { isHistoryDiscussionReadOnly, getHistoryDiscussionRelation } from "./historyDiscussionUtils";
+import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
 
 /** Pending project tab open request from external (e.g. sidebar "create task") */
 export interface PendingProjectTabOpen {
@@ -12,6 +12,21 @@ export interface PendingProjectTabOpen {
     initialMessage?: string;
     /** If true, send initialMessage (or taskTitle) as the first message after tab creation */
     autoSend?: boolean;
+}
+
+export interface PendingHistoryDiscussionOpen {
+    id?: string;
+    topic?: string;
+    question?: string;
+    local_relation?: string;
+    role?: string;
+    readonly?: boolean;
+    status?: string;
+    participant_ids?: string[];
+}
+
+function isConversationMessage(value: unknown): value is { role?: unknown } {
+    return !!value && typeof value === "object";
 }
 
 interface PendingAssistantTabOpenOptions {
@@ -25,7 +40,7 @@ interface PendingAssistantTabOpenOptions {
     sendMessage?: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
     pendingVEOpen?: VirtualEmployeeEntry | null;
     onPendingVEOpenHandled?: () => void;
-    pendingHistoryDiscussionOpen?: any;
+    pendingHistoryDiscussionOpen?: PendingHistoryDiscussionOpen | null;
     onPendingHistoryDiscussionOpenHandled?: () => void;
     pendingProjectTabOpen?: PendingProjectTabOpen | null;
     onPendingProjectTabOpenHandled?: () => void;
@@ -47,33 +62,30 @@ export function usePendingAssistantTabOpen({
     pendingProjectTabOpen,
     onPendingProjectTabOpenHandled,
 }: PendingAssistantTabOpenOptions) {
-    const openHistoryDiscussion = useCallback((discussion: any) => {
+    const openHistoryDiscussion = useCallback((discussion: PendingHistoryDiscussionOpen) => {
         const discussionId = String(discussion?.id || "").trim();
         if (!discussionId) return;
 
-        const relation = getHistoryDiscussionRelation(discussion);
         const readOnly = isHistoryDiscussionReadOnly(discussion);
 
-        // If this is a discussion I initiated and it's not read-only, check if
-        // there's already an active VE tab for the same session. If so,
-        // switch to it instead of creating a new read-only history tab.
-        if (relation === "initiated_by_me" && !readOnly && activateTab && getTabList && getTabState) {
+        // First prefer any already-open tab for this discussion/session. History
+        // rows can represent active, read-only, or invited conversations, but a
+        // double-click should focus the live tab when it is already present.
+        if (activateTab && getTabList) {
             const tabs = getTabList();
             // Match by session/discussion ID: VE tabs store their A2A session ID
             // in tabState.sessionId, which equals the discussion ID from Hub.
-            const existingVETab = tabs.find(t => {
-                if (t.type !== "ve") return false;
+            const existingSessionTab = getTabState ? tabs.find(t => {
+                if (t.type !== "ve" && t.type !== "group") return false;
                 const state = getTabState(t.id);
-                return state?.sessionId === discussionId;
-            });
-            if (existingVETab) {
-                activateTab(existingVETab.id);
+                return String(state?.sessionId || state?.discussionId || "").trim() === discussionId;
+            }) : undefined;
+            if (existingSessionTab) {
+                activateTab(existingSessionTab.id);
                 return;
             }
-            // Also check if there's already a group tab for this discussion
-            const existingGroupTab = tabs.find(t =>
-                t.type === "group" && t.discussionId === discussionId && !t.readOnly
-            );
+            // Also check if there's already a group tab for this discussion.
+            const existingGroupTab = tabs.find(t => t.type === "group" && t.discussionId === discussionId);
             if (existingGroupTab) {
                 activateTab(existingGroupTab.id);
                 return;
@@ -152,7 +164,7 @@ export function usePendingAssistantTabOpen({
             const existingState = getTabStateRef.current?.(tab.id);
             const hasExistingConversation = existingState?.history &&
                 Array.isArray(existingState.history) &&
-                existingState.history.some((m: any) => m.role === "user" || m.role === "assistant");
+                existingState.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
             if (hasExistingConversation || tabExistedInList) return;
 
             const msg = initialMessage || taskTitle;

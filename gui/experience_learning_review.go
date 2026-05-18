@@ -124,6 +124,8 @@ func findExperienceReviewMemoryEntry(store *memory.Store, traceID string) (memor
 			return entry, experienceReviewKindRollback.String(), nil
 		case hasTag(entry.Tags, experienceTraceKindSkillNudgeCandidate.String()):
 			return entry, experienceReviewKindSkillNudge.String(), nil
+		case hasTag(entry.Tags, experienceTraceKindToolRecoveryPattern.String()):
+			return entry, experienceReviewKindToolRecovery.String(), nil
 		default:
 			return memory.Entry{}, "", fmt.Errorf("experience trace %q is not a reviewable learning signal", traceID)
 		}
@@ -191,6 +193,14 @@ func applyExperienceReviewTags(tags []string, reviewKind, outcome string, now ti
 				result = append(result, experienceReviewLifecycleTagSkillNudgeReviewed.String())
 			}
 		}
+		if kind == experienceReviewKindToolRecovery {
+			result = append(result, adaptiveRetryReviewedFailureCountPrefix+fmt.Sprintf("%d", adaptiveRetryCurrentFailureCount(tags)))
+			if outcome == experienceReviewOutcomeRejected {
+				result = append(result, experienceReviewLifecycleTagToolRecoveryRejected.String())
+			} else {
+				result = append(result, experienceReviewLifecycleTagToolRecoveryReviewed.String())
+			}
+		}
 	}
 	return normalizeUsageMemoryTags(result)
 }
@@ -206,7 +216,20 @@ func resetExperienceReviewTagsForChangedContent(existing, incoming []string) []s
 }
 
 func experienceReviewableTags(tags []string) bool {
-	return hasTag(tags, groupDiscussionConflictTag) || hasTag(tags, groupDiscussionRollbackTag) || hasTag(tags, experienceTraceKindSkillNudgeCandidate.String())
+	return hasTag(tags, groupDiscussionConflictTag) || hasTag(tags, groupDiscussionRollbackTag) || hasTag(tags, experienceTraceKindSkillNudgeCandidate.String()) || hasTag(tags, experienceTraceKindToolRecoveryPattern.String())
+}
+
+func adaptiveRetryCurrentFailureCount(tags []string) int {
+	for _, tag := range tags {
+		if !strings.HasPrefix(tag, "failure_count:") {
+			continue
+		}
+		var count int
+		if _, err := fmt.Sscanf(strings.TrimPrefix(tag, "failure_count:"), "%d", &count); err == nil && count > 0 {
+			return count
+		}
+	}
+	return 0
 }
 
 func withoutExperienceReviewStateTags(tags []string) []string {

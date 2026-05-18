@@ -111,6 +111,27 @@ type ExperienceFollowUpActionSummary struct {
 	LatestUpdatedAt    string         `json:"latest_updated_at,omitempty"`
 }
 
+// ExperienceToolRecoverySummary groups adaptive retry failure evidence by tool/category.
+type ExperienceToolRecoverySummary struct {
+	ToolName             string   `json:"tool_name"`
+	Category             string   `json:"category"`
+	TraceID              string   `json:"trace_id"`
+	Title                string   `json:"title"`
+	Action               string   `json:"action,omitempty"`
+	ProviderName         string   `json:"provider_name,omitempty"`
+	Model                string   `json:"model,omitempty"`
+	WireAPI              string   `json:"wire_api,omitempty"`
+	FailureCount         int      `json:"failure_count,omitempty"`
+	ReviewedFailureCount int      `json:"reviewed_failure_count,omitempty"`
+	ReviewRequired       bool     `json:"review_required,omitempty"`
+	ReviewStatus         string   `json:"review_status,omitempty"`
+	Disabled             bool     `json:"disabled,omitempty"`
+	FirstObservedAt      string   `json:"first_observed_at,omitempty"`
+	LastObservedAt       string   `json:"last_observed_at,omitempty"`
+	UpdatedAt            string   `json:"updated_at,omitempty"`
+	Tags                 []string `json:"tags,omitempty"`
+}
+
 // ExperienceLearningSnapshot is a read-only view of the conservative signals
 // MaClaw has distilled from memory maintenance and tool usage traces.
 type ExperienceLearningSnapshot struct {
@@ -130,6 +151,7 @@ type ExperienceLearningSnapshot struct {
 	NextActionSummaries             []ExperienceNextActionSummary      `json:"next_action_summaries"`
 	FollowUpSummaries               []ExperienceFollowUpSummary        `json:"follow_up_summaries"`
 	FollowUpActionSummaries         []ExperienceFollowUpActionSummary  `json:"follow_up_action_summaries"`
+	ToolRecoverySummaries           []ExperienceToolRecoverySummary    `json:"tool_recovery_summaries"`
 	TraceDetailCount                int                                `json:"trace_detail_count"`
 	RoutingHintCount                int                                `json:"routing_hint_count"`
 	SkillNudgeCount                 int                                `json:"skill_nudge_count"`
@@ -194,6 +216,7 @@ func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracke
 		NextActionSummaries:      []ExperienceNextActionSummary{},
 		FollowUpSummaries:        []ExperienceFollowUpSummary{},
 		FollowUpActionSummaries:  []ExperienceFollowUpActionSummary{},
+		ToolRecoverySummaries:    []ExperienceToolRecoverySummary{},
 	}
 
 	if tracker != nil {
@@ -246,6 +269,7 @@ func buildExperienceLearningSnapshotWithTraceLimit(tracker *coretool.UsageTracke
 	snapshot.NextActionSummaries = buildExperienceNextActionSummaries(traceDetails)
 	snapshot.FollowUpSummaries = buildExperienceFollowUpSummaries(traceDetails)
 	snapshot.FollowUpActionSummaries = buildExperienceFollowUpActionSummaries(traceDetails)
+	snapshot.ToolRecoverySummaries = buildExperienceToolRecoverySummariesFromMemory(mem, traceDetails)
 	snapshot.ReviewRequiredTraceCount = countReviewRequiredExperienceTraces(traceDetails)
 	snapshot.NextActionTraceCount = countNextActionExperienceTraces(traceDetails)
 	snapshot.FollowUpTraceCount = countFollowUpExperienceTraces(traceDetails)
@@ -489,6 +513,102 @@ func buildExperienceFollowUpSummaries(details []ExperienceTraceDetail) []Experie
 	return summaries
 }
 
+func buildExperienceToolRecoverySummariesFromMemory(mem *memory.Store, details []ExperienceTraceDetail) []ExperienceToolRecoverySummary {
+	summaries := make([]ExperienceToolRecoverySummary, 0)
+	seen := map[string]bool{}
+	if mem != nil {
+		for _, entry := range mem.List("", "") {
+			if !hasTag(entry.Tags, experienceTraceKindToolRecoveryPattern.String()) {
+				continue
+			}
+			summary := experienceToolRecoverySummaryFromMemoryEntry(entry)
+			if summary.TraceID == "" {
+				continue
+			}
+			seen[summary.TraceID] = true
+			summaries = append(summaries, summary)
+		}
+	}
+	for _, detail := range details {
+		if normalizeExperienceTraceKind(detail.Kind) != experienceTraceKindToolRecoveryPattern || seen[detail.ID] {
+			continue
+		}
+		summaries = append(summaries, experienceToolRecoverySummaryFromTraceDetail(detail))
+	}
+	sort.SliceStable(summaries, func(i, j int) bool {
+		if summaries[i].ReviewRequired != summaries[j].ReviewRequired {
+			return summaries[i].ReviewRequired
+		}
+		if summaries[i].Disabled != summaries[j].Disabled {
+			return summaries[i].Disabled
+		}
+		if summaries[i].FailureCount != summaries[j].FailureCount {
+			return summaries[i].FailureCount > summaries[j].FailureCount
+		}
+		if summaries[i].LastObservedAt != summaries[j].LastObservedAt {
+			return summaries[i].LastObservedAt > summaries[j].LastObservedAt
+		}
+		if summaries[i].ToolName != summaries[j].ToolName {
+			return summaries[i].ToolName < summaries[j].ToolName
+		}
+		return summaries[i].Category < summaries[j].Category
+	})
+	return summaries
+}
+
+func experienceToolRecoverySummaryFromMemoryEntry(entry memory.Entry) ExperienceToolRecoverySummary {
+	reviewRequired := hasTag(entry.Tags, experienceReviewRequiredTag) && !experienceTraceReviewResolved(entry.Tags)
+	summary := ExperienceToolRecoverySummary{
+		TraceID:              "memory:" + firstNonEmptyExperienceString(entry.ID, shortGroupDiscussionHash(entry.Content)),
+		Title:                firstNonEmptyExperienceString(entry.Title, memoryTraceTitle(entry), "Tool recovery evidence"),
+		ToolName:             experienceTagValue(entry.Tags, "tool:"),
+		Category:             experienceTagValue(entry.Tags, "category:"),
+		Action:               experienceTagValue(entry.Tags, "action:"),
+		ProviderName:         firstNonEmptyExperienceString(experienceContentField(entry.Content, "Provider"), experienceTagValue(entry.Tags, "provider:")),
+		Model:                firstNonEmptyExperienceString(experienceContentField(entry.Content, "Model"), experienceTagValue(entry.Tags, "model:")),
+		WireAPI:              firstNonEmptyExperienceString(experienceContentField(entry.Content, "Wire API"), experienceTagValue(entry.Tags, "wire_api:")),
+		FailureCount:         experienceTagIntValue(entry.Tags, "failure_count:"),
+		ReviewedFailureCount: experienceTagIntValue(entry.Tags, adaptiveRetryReviewedFailureCountPrefix),
+		ReviewRequired:       reviewRequired,
+		ReviewStatus:         experienceReviewStatusFromTags(entry.Tags, reviewRequired),
+		Disabled:             hasTag(entry.Tags, "disabled"),
+		FirstObservedAt:      experienceContentField(entry.Content, "First observed at"),
+		LastObservedAt:       experienceContentField(entry.Content, "Last observed at"),
+		UpdatedAt:            formatExperienceTime(entry.UpdatedAt),
+		Tags:                 append([]string(nil), entry.Tags...),
+	}
+	if summary.ToolName == "" {
+		summary.ToolName = strings.TrimSpace(entry.Title)
+	}
+	return summary
+}
+
+func experienceToolRecoverySummaryFromTraceDetail(detail ExperienceTraceDetail) ExperienceToolRecoverySummary {
+	summary := ExperienceToolRecoverySummary{
+		TraceID:              detail.ID,
+		Title:                detail.Title,
+		ToolName:             experienceTagValue(detail.Tags, "tool:"),
+		Category:             experienceTagValue(detail.Tags, "category:"),
+		Action:               experienceTagValue(detail.Tags, "action:"),
+		ProviderName:         firstNonEmptyExperienceString(experienceContentField(detail.Detail, "Provider"), experienceTagValue(detail.Tags, "provider:")),
+		Model:                firstNonEmptyExperienceString(experienceContentField(detail.Detail, "Model"), experienceTagValue(detail.Tags, "model:")),
+		WireAPI:              firstNonEmptyExperienceString(experienceContentField(detail.Detail, "Wire API"), experienceTagValue(detail.Tags, "wire_api:")),
+		FailureCount:         experienceTagIntValue(detail.Tags, "failure_count:"),
+		ReviewedFailureCount: experienceTagIntValue(detail.Tags, adaptiveRetryReviewedFailureCountPrefix),
+		ReviewRequired:       detail.ReviewRequired,
+		ReviewStatus:         detail.ReviewStatus,
+		Disabled:             hasTag(detail.Tags, "disabled"),
+		FirstObservedAt:      experienceContentField(detail.Detail, "First observed at"),
+		LastObservedAt:       experienceContentField(detail.Detail, "Last observed at"),
+		UpdatedAt:            detail.UpdatedAt,
+		Tags:                 append([]string(nil), detail.Tags...),
+	}
+	if summary.ToolName == "" {
+		summary.ToolName = strings.TrimSpace(detail.Title)
+	}
+	return summary
+}
+
 func buildExperienceFollowUpActionSummaries(details []ExperienceTraceDetail) []ExperienceFollowUpActionSummary {
 	byKind := map[string]*ExperienceFollowUpActionSummary{}
 	for _, detail := range details {
@@ -554,6 +674,35 @@ func newerExperienceTrace(candidate, current string) bool {
 		return false
 	}
 	return candidate > current
+}
+
+func experienceTagValue(tags []string, prefix string) string {
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if strings.HasPrefix(tag, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(tag, prefix))
+		}
+	}
+	return ""
+}
+
+func experienceTagIntValue(tags []string, prefix string) int {
+	var value int
+	if _, err := fmt.Sscanf(experienceTagValue(tags, prefix), "%d", &value); err == nil && value > 0 {
+		return value
+	}
+	return 0
+}
+
+func experienceContentField(content, name string) string {
+	prefix := "- " + strings.TrimSpace(name) + ":"
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
 }
 
 func limitRoutingHints(values []coretool.ToolRoutingHint, limit int) []coretool.ToolRoutingHint {
@@ -785,6 +934,13 @@ func traceDetailFromMemoryEntry(entry memory.Entry) (ExperienceTraceDetail, bool
 		if reviewResolved {
 			impact = "Reviewed tool self-evolution candidate; it remains source evidence and no skill was created automatically."
 		}
+	case hasTag(entry.Tags, experienceTraceKindToolRecoveryPattern.String()) && (hasTag(entry.Tags, experienceReviewRequiredTag) || reviewResolved):
+		kind = string(experienceTraceKindToolRecoveryPattern)
+		impact = "Repeated failed tool recovery evidence needs review before being treated as reusable operating guidance."
+		reviewRequired = !reviewResolved && hasTag(entry.Tags, experienceReviewRequiredTag)
+		if reviewResolved {
+			impact = "Reviewed failed tool recovery evidence; it remains context only and does not authorize automatic execution."
+		}
 	case hasTag(entry.Tags, "has_escalation"):
 		kind = string(experienceTraceKindA2AEscalationEvidence)
 		impact = "A2A escalation evidence was captured for manual handoff; it does not route or resolve the escalation automatically."
@@ -883,6 +1039,8 @@ func reviewActionForExperienceTrace(kind string, reviewRequired bool) string {
 		return "Validate each rollback trigger and convert it into a human-approved rollback workflow before any execution path uses it."
 	case experienceTraceKindSkillNudgeReview:
 		return "Inspect the repeated tool sequence and create or update a skill only after confirming it is safe and reusable."
+	case experienceTraceKindToolRecoveryPattern:
+		return "Inspect repeated tool failure recovery evidence before turning it into operating guidance or routing preference."
 	default:
 		return ""
 	}

@@ -215,9 +215,9 @@ func CollectScanContent(dir string, manifest []StagedFile, maxTotalBytes int) ma
 // ── Scan report types ───────────────────────────────────────────────────
 
 // ScanReport is the structured output of a security scan.
-// PatternAssessment is the hard floor — agent can only upgrade risk.
+// PatternAssessment is the deterministic risk floor; policy decides whether that risk blocks.
 type ScanReport struct {
-	// PatternAssessment is the regex/keyword-based result. Hard floor.
+	// PatternAssessment is the regex/keyword-based risk floor.
 	PatternAssessment security.RiskAssessment `json:"pattern_assessment"`
 
 	// AgentScore is the LLM-assigned risk score (0-10), or -1 if not performed.
@@ -248,7 +248,7 @@ type ScanFinding struct {
 }
 
 // NeedsUserReview returns true if finalLevel >= high.
-// Missing or unknown levels fail closed and require review.
+// Callers must combine this signal with the active security policy before blocking.
 func (r *ScanReport) NeedsUserReview() bool {
 	if r == nil {
 		return true
@@ -261,7 +261,7 @@ func (r *ScanReport) NeedsUserReview() bool {
 }
 
 // IsDangerous returns true if finalLevel == critical.
-// A nil report is treated as dangerous so policy callers fail closed.
+// A nil report is treated as dangerous so policy callers can make an explicit decision.
 func (r *ScanReport) IsDangerous() bool {
 	return r == nil || r.FinalLevel == security.RiskCritical
 }

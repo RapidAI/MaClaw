@@ -160,7 +160,19 @@ func runPrompt(promptText string) {
 			return agent.ToolWebSearch(provider, args)
 		},
 		WebFetchHandler: func(args map[string]interface{}) string {
-			return agent.ToolWebFetch(args)
+			var provider corelib.WebSearchProvider
+			if len(app.appConfig.WebSearchProviders) > 0 {
+				for _, p := range app.appConfig.WebSearchProviders {
+					if p.Name == app.appConfig.WebSearchCurrentProvider {
+						provider = p
+						break
+					}
+				}
+				if provider.Name == "" {
+					provider = app.appConfig.WebSearchProviders[0]
+				}
+			}
+			return agent.ToolWebFetchWithProvider(args, provider)
 		},
 	})
 

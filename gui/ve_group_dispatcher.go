@@ -232,16 +232,20 @@ func (d *GroupChatDispatcher) emitStreamToFrontend(sessionID, chunk string) {
 	if chunk == "" {
 		// Stream end
 		runtime.EventsEmit(d.app.ctx, "ve:stream_end", map[string]any{
-			"session_id": sessionID,
-			"content":    "",
-			"chunk":      "",
+			"session_id":  sessionID,
+			"content":     "",
+			"chunk":       "",
+			"sender_name": "本机AI",
+			"sender_id":   "local-maclaw",
 		})
 	} else {
 		// Stream chunk
 		runtime.EventsEmit(d.app.ctx, "ve:stream_chunk", map[string]any{
-			"session_id": sessionID,
-			"content":    chunk,
-			"chunk":      chunk,
+			"session_id":  sessionID,
+			"content":     chunk,
+			"chunk":       chunk,
+			"sender_name": "本机AI",
+			"sender_id":   "local-maclaw",
 		})
 	}
 }

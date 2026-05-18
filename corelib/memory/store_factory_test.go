@@ -174,3 +174,44 @@ func TestNewStoreWithMode_SQLite_CrossInstanceSync(t *testing.T) {
 		t.Error("BM25 search on store2 should find synced entry")
 	}
 }
+
+func TestNewStoreWithMode_SQLite_SaveUpdateDeletePersist(t *testing.T) {
+	dir := t.TempDir()
+
+	store, err := NewStoreWithMode(dir, StoreModeSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(Entry{ID: "sqlite-store-1", Content: "SQLite store saves normal memory writes", Category: CategoryProjectKnowledge, Tags: []string{"sqlite"}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := store.Update("sqlite-store-1", "SQLite store persists updates", CategoryProjectKnowledge, []string{"sqlite", "updated"}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	store.Stop()
+
+	reloaded, err := NewStoreWithMode(dir, StoreModeSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reloaded.Stop()
+
+	entries := reloaded.List(CategoryProjectKnowledge, "updates")
+	if len(entries) != 1 || entries[0].Content != "SQLite store persists updates" {
+		t.Fatalf("expected updated entry after reload, got %#v", entries)
+	}
+
+	if err := reloaded.Delete("sqlite-store-1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	reloaded.Stop()
+
+	afterDelete, err := NewStoreWithMode(dir, StoreModeSQLite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer afterDelete.Stop()
+	if got := afterDelete.List(CategoryProjectKnowledge, "SQLite store"); len(got) != 0 {
+		t.Fatalf("expected deleted entry to stay deleted after reload, got %#v", got)
+	}
+}

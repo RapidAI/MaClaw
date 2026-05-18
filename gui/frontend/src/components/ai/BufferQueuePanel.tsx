@@ -106,6 +106,7 @@ export interface BufferQueuePanelProps {
     onReorder: (fromIndex: number, toIndex: number) => void;
     /** Fire (send) a single queued entry as supplementary info to the running task. */
     onFireEntry?: (id: string) => void;
+    isEntryInFlight?: (id: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
     onDelete,
     onReorder,
     onFireEntry,
+    isEntryInFlight,
 }) => {
     const [dragState, setDragState] = useState<DragState | null>(null);
 
@@ -321,6 +323,7 @@ export const BufferQueuePanel: React.FC<BufferQueuePanelProps> = ({
                             onPointerDown={handlePointerDown}
                             setRowRef={setRowRef}
                             onFireEntry={onFireEntry}
+                            inFlight={!!isEntryInFlight?.(entry.id)}
                         />
                         {showInsertionAfter && (
                             <div
@@ -360,6 +363,7 @@ interface BufferEntryRowProps {
     onPointerDown: (e: React.PointerEvent<HTMLSpanElement>, entryId: string, index: number) => void;
     setRowRef: (id: string, el: HTMLDivElement | null) => void;
     onFireEntry?: (id: string) => void;
+    inFlight?: boolean;
 }
 
 const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
@@ -377,6 +381,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
     onPointerDown,
     setRowRef,
     onFireEntry,
+    inFlight = false,
 }) => {
     const [editText, setEditText] = useState(entry.text);
     const [editAttachments, setEditAttachments] = useState<AttachmentInfo[]>(
@@ -385,10 +390,11 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
 
     // Reset edit state when entering edit mode
     const handleStartEdit = useCallback(() => {
+        if (inFlight) return;
         setEditText(entry.text);
         setEditAttachments([...entry.attachments]);
         onEdit(entry.id);
-    }, [entry, onEdit]);
+    }, [entry, inFlight, onEdit]);
 
     const handleSave = useCallback(() => {
         const trimmed = editText.trim();
@@ -589,6 +595,7 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
                 borderBottom: `1px solid ${t.divider}`,
                 fontSize: "12px",
                 color: t.text,
+                opacity: inFlight ? 0.55 : 1,
                 ...(isDragging
                     ? {
                           opacity: 0.5,
@@ -603,9 +610,9 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
             {/* Drag handle */}
             <span
                 data-testid={`drag-handle-${entry.id}`}
-                onPointerDown={(e) => onPointerDown(e, entry.id, index)}
+                onPointerDown={(e) => { if (!inFlight) onPointerDown(e, entry.id, index); }}
                 style={{
-                    cursor: isDragging ? "grabbing" : "grab",
+                    cursor: inFlight ? "default" : isDragging ? "grabbing" : "grab",
                     color: t.textMuted,
                     fontSize: "12px",
                     userSelect: "none",
@@ -680,17 +687,19 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
             {onFireEntry && (
                 <button
                     data-testid={`fire-btn-${entry.id}`}
-                    onClick={() => onFireEntry(entry.id)}
+                    onClick={() => { if (!inFlight) onFireEntry(entry.id); }}
+                    disabled={inFlight}
                     style={{
                         background: "none",
                         border: `1px solid ${t.headingColor}`,
                         borderRadius: "3px",
-                        cursor: "pointer",
+                        cursor: inFlight ? "default" : "pointer",
                         color: t.headingColor,
                         fontSize: "12px",
                         padding: "1px 4px",
                         flexShrink: 0,
                         lineHeight: 1.2,
+                        opacity: inFlight ? 0.45 : 1,
                     }}
                     aria-label={localizeText(lang, "Guide into next agent loop", "引导进入下一次 agent loop", "引導進入下一次 agent loop")}
                     title={localizeText(lang, "Guide into next agent loop", "引导发射", "引導發射")}
@@ -701,15 +710,17 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
             <button
                 data-testid={`edit-btn-${entry.id}`}
                 onClick={handleStartEdit}
+                disabled={inFlight}
                 style={{
                     background: "none",
                     border: "none",
-                    cursor: "pointer",
+                    cursor: inFlight ? "default" : "pointer",
                     color: t.textMuted,
                     fontSize: "12px",
                     padding: "1px 3px",
                     flexShrink: 0,
                     lineHeight: 1,
+                    opacity: inFlight ? 0.45 : 1,
                 }}
                 aria-label={localizeText(lang, "Edit entry", "编辑条目", "編輯條目")}
                 title={localizeText(lang, "Edit", "编辑", "編輯")}
@@ -718,16 +729,18 @@ const BufferEntryRow: React.FC<BufferEntryRowProps> = ({
             </button>
             <button
                 data-testid={`delete-btn-${entry.id}`}
-                onClick={() => onDelete(entry.id)}
+                onClick={() => { if (!inFlight) onDelete(entry.id); }}
+                disabled={inFlight}
                 style={{
                     background: "none",
                     border: "none",
-                    cursor: "pointer",
+                    cursor: inFlight ? "default" : "pointer",
                     color: t.textMuted,
                     fontSize: "12px",
                     padding: "1px 3px",
                     flexShrink: 0,
                     lineHeight: 1,
+                    opacity: inFlight ? 0.45 : 1,
                 }}
                 aria-label={localizeText(lang, "Delete entry", "删除条目", "刪除條目")}
                 title={localizeText(lang, "Delete", "删除", "刪除")}

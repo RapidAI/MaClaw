@@ -369,6 +369,7 @@ func (h *IMMessageHandler) runAgentLoopIteration(opts agentLoopIterationDispatch
 		RecordToolCall:             opts.RecordToolCall,
 		RecordToolResult:           opts.RecordToolResult,
 		RecordSystemMessages:       opts.RecordSystemMessages,
+		AdaptiveRetry:              opts.AdaptiveRetry,
 		Debug:                      opts.RuntimeState.IsDebug(),
 		StreamDone:                 opts.Telemetry.StreamDone(),
 		LastCompressionSummary:     &opts.RunState.LastCompressionSummary,

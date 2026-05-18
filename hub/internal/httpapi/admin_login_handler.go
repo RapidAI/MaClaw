@@ -10,6 +10,7 @@ import (
 type AdminLoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+	Tenant   string `json:"tenant,omitempty"`
 }
 
 type AdminChangePasswordRequest struct {
@@ -42,10 +43,7 @@ func AdminLoginHandler(admins *auth.AdminService) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"access_token": token,
 			"expires_in":   7200,
-			"admin": map[string]any{
-				"username": admin.Username,
-				"email":    admin.Email,
-			},
+			"admin":        adminDTO(admin),
 		})
 	}
 }
@@ -81,10 +79,7 @@ func AdminChangePasswordHandler(admins *auth.AdminService) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":           true,
 			"access_token": token,
-			"admin": map[string]any{
-				"username": updatedAdmin.Username,
-				"email":    updatedAdmin.Email,
-			},
+			"admin":        adminDTO(updatedAdmin),
 		})
 	}
 }
@@ -116,10 +111,7 @@ func AdminUpdateProfileHandler(admins *auth.AdminService) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":           true,
 			"access_token": token,
-			"admin": map[string]any{
-				"username": updatedAdmin.Username,
-				"email":    updatedAdmin.Email,
-			},
+			"admin":        adminDTO(updatedAdmin),
 		})
 	}
 }

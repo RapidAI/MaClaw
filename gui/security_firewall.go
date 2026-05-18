@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +16,7 @@ type SecurityFirewall struct {
 	audit    *AuditLog
 	onAsk    func(toolName string, risk security.RiskAssessment) (bool, error)
 
-	// Session-level approvals: sessionID → set of approved tool patterns.
+	// Session-level approvals: sessionID -> set of approved tool patterns.
 	sessionApprovals map[string]map[string]bool
 	mu               sync.RWMutex
 }
@@ -43,14 +43,16 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 		return true, ""
 	}
 
-	// Developer mode: bypass all security checks unconditionally.
-	// Risk assessment is skipped entirely — no deny, no ask, no audit.
-	if f.policy != nil && f.policy.IsDeveloperMode() {
-		return true, ""
-	}
-
 	// 1. Risk assessment.
 	risk := f.analyzer.Assess(toolName, args, ctx)
+	mode := "standard"
+	if f.policy != nil {
+		mode = f.policy.Mode()
+	}
+	if mode == "developer" {
+		f.recordAudit(toolName, args, risk, security.PolicyAllow, "developer_mode_allowed", sessionIDFromSecurityContext(ctx))
+		return true, ""
+	}
 
 	// 2. Check session-level approvals.
 	sessionID := ""
@@ -58,7 +60,7 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 		sessionID = ctx.SessionID
 	}
 	if sessionID != "" && f.isSessionApproved(sessionID, toolName) {
-		// Already approved for this session — allow but audit.
+		// Already approved for this session - allow but audit.
 		f.recordAudit(toolName, args, risk, security.PolicyAudit, "session_approved", sessionID)
 		return true, ""
 	}
@@ -79,32 +81,46 @@ func (f *SecurityFirewall) Check(toolName string, args map[string]interface{}, c
 	case security.PolicyAudit:
 		return true, ""
 	case security.PolicyDeny:
-		return false, fmt.Sprintf("⛔ 安全策略拒绝: %s (风险等级: %s, 原因: %s)", toolName, risk.Level, risk.Reason)
+		if mode == "developer" || mode == "relaxed" {
+			return true, ""
+		}
+		if mode == "standard" {
+			return f.confirmOrAllowWithoutChannel(toolName, risk, sessionID)
+		}
+		return false, fmt.Sprintf("鐎瑰鍙忕粵鏍殣閹锋帞绮? %s (妞嬪酣娅撶粵澶岄獓: %s, 閸樼喎娲? %s)", toolName, risk.Level, risk.Reason)
 	case security.PolicyAsk:
-		if f.onAsk != nil {
-			approved, err := f.onAsk(toolName, risk)
-			if err != nil {
-				return false, fmt.Sprintf("⛔ 用户确认失败: %v", err)
-			}
-			if approved {
-				// Record approval for this session.
-				if sessionID != "" {
-					f.approveForSession(sessionID, toolName)
-				}
-				return true, ""
-			}
-			return false, fmt.Sprintf("⛔ 用户拒绝执行: %s", toolName)
+		if mode == "developer" || mode == "relaxed" {
+			return true, ""
 		}
-		// No onAsk callback — default to allow with warning for medium, deny for high/critical.
-		if risk.Level == security.RiskHigh || risk.Level == security.RiskCritical {
-			return false, fmt.Sprintf("⚠️ 高风险操作需要确认但无确认通道: %s (风险: %s, 原因: %s)", toolName, risk.Level, risk.Reason)
-		}
-		return true, ""
+		return f.confirmOrAllowWithoutChannel(toolName, risk, sessionID)
 	default:
 		return true, ""
 	}
 }
 
+func (f *SecurityFirewall) confirmOrAllowWithoutChannel(toolName string, risk security.RiskAssessment, sessionID string) (bool, string) {
+	if f.onAsk != nil {
+		approved, err := f.onAsk(toolName, risk)
+		if err != nil {
+			return false, fmt.Sprintf("閻劍鍩涚涵顔款吇婢惰精瑙? %v", err)
+		}
+		if approved {
+			if sessionID != "" {
+				f.approveForSession(sessionID, toolName)
+			}
+			return true, ""
+		}
+		return false, fmt.Sprintf("閻劍鍩涢幏鎺旂卜閹笛嗩攽: %s", toolName)
+	}
+	return true, ""
+}
+
+func sessionIDFromSecurityContext(ctx *SecurityCallContext) string {
+	if ctx == nil {
+		return ""
+	}
+	return ctx.SessionID
+}
 func (f *SecurityFirewall) recordAudit(toolName string, args map[string]interface{}, risk security.RiskAssessment, action security.PolicyAction, result, sessionID string) {
 	if f.audit == nil {
 		return
@@ -134,7 +150,7 @@ func (f *SecurityFirewall) isSessionApproved(sessionID, toolName string) bool {
 	if approvals[toolName] || approvals["*"] {
 		return true
 	}
-	// Check prefix match — skip empty patterns to avoid matching everything.
+	// Check prefix match - skip empty patterns to avoid matching everything.
 	for pattern := range approvals {
 		if pattern != "" && pattern != toolName && strings.Contains(toolName, pattern) {
 			return true

@@ -617,6 +617,25 @@ func TestDigitalEmployeeAuthorizationAdminRouteAndHeartbeat(t *testing.T) {
 		t.Fatalf("heartbeat should push digital employee authorization, body=%s", heartbeatResp.Body.String())
 	}
 
+	tenantResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
+		"tenant_id": "tenant_a",
+		"quota":     2,
+		"years":     1,
+		"enabled":   true,
+	}, token)
+	if tenantResp.Code != http.StatusOK {
+		t.Fatalf("tenant authorization update status=%d body=%s", tenantResp.Code, tenantResp.Body.String())
+	}
+	tenantHeartbeat := doJSONRequest(t, svc.handler, http.MethodPost, "/api/hubs/"+hubID+"/heartbeat", map[string]any{
+		"hub_secret": hubSecret,
+	}, "")
+	if tenantHeartbeat.Code != http.StatusOK {
+		t.Fatalf("tenant heartbeat status=%d body=%s", tenantHeartbeat.Code, tenantHeartbeat.Body.String())
+	}
+	if !bytes.Contains(tenantHeartbeat.Body.Bytes(), []byte("\"digital_employee_authorizations\"")) || !bytes.Contains(tenantHeartbeat.Body.Bytes(), []byte("\"tenant_a\"")) || !bytes.Contains(tenantHeartbeat.Body.Bytes(), []byte("\"quota\":2")) {
+		t.Fatalf("heartbeat should push tenant digital employee authorizations, body=%s", tenantHeartbeat.Body.String())
+	}
+
 	disableResp := doJSONRequest(t, svc.handler, http.MethodPost, "/api/admin/hubs/"+hubID+"/digital-employee-authorization", map[string]any{
 		"enabled": false,
 	}, token)

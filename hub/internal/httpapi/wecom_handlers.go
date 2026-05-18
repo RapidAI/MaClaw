@@ -20,6 +20,7 @@ type WeComConfigState struct {
 
 func GetWeComConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		raw, err := system.Get(r.Context(), wecomConfigKey)
 		if err != nil || raw == "" {
 			writeJSON(w, http.StatusOK, WeComConfigState{})
@@ -39,6 +40,7 @@ func GetWeComConfigHandler(system store.SystemSettingsRepository) http.HandlerFu
 
 func UpdateWeComConfigHandler(system store.SystemSettingsRepository, plugin *wecom.Plugin) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var cfg WeComConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")

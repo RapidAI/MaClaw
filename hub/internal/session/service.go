@@ -186,6 +186,7 @@ func (s *Service) OnSessionCreated(ctx context.Context, machineID, userID, sessi
 	status, _ := payload["status"].(string)
 	executionMode, _ := payload["execution_mode"].(string)
 	source, _ := payload["source"].(string)
+	tenantID, _ := payload["tenant_id"].(string)
 
 	entry := &SessionCacheEntry{
 		SessionID:     sessionID,
@@ -211,6 +212,7 @@ func (s *Service) OnSessionCreated(ctx context.Context, machineID, userID, sessi
 	if s.sessions != nil {
 		if err := s.sessions.Create(ctx, &store.Session{
 			ID:          sessionID,
+			TenantID:    strings.TrimSpace(tenantID),
 			MachineID:   machineID,
 			UserID:      userID,
 			Tool:        tool,
@@ -433,7 +435,6 @@ func (s *Service) OnSessionImage(ctx context.Context, machineID, userID, session
 		ImageData: &img,
 	})
 }
-
 
 func (s *Service) MarkMachineOffline(ctx context.Context, machineID string) error {
 	// Collect session IDs belonging to this machine.

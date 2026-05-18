@@ -13,6 +13,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
@@ -20,9 +21,9 @@ import (
 
 // Config holds RapidSpeech server connection settings.
 type Config struct {
-	Enabled    bool   `json:"enabled"`
-	ServerURL  string `json:"server_url"`  // e.g. "http://localhost:8080"
-	Threshold  float64 `json:"threshold"`  // cosine similarity threshold, default 0.6
+	Enabled   bool    `json:"enabled"`
+	ServerURL string  `json:"server_url"` // e.g. "http://localhost:8080"
+	Threshold float64 `json:"threshold"`  // cosine similarity threshold, default 0.6
 }
 
 // MatchResult represents a voiceprint match candidate.
@@ -48,6 +49,25 @@ func NewService(repo store.VoiceprintRepository, system store.SystemSettingsRepo
 }
 
 const configKey = "voiceprint_config"
+
+type tenantContextKey struct{}
+
+func WithTenant(ctx context.Context, tenantID string) context.Context {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		tenantID = store.DefaultTenantID
+	}
+	return context.WithValue(ctx, tenantContextKey{}, tenantID)
+}
+
+func tenantIDFromContext(ctx context.Context) string {
+	if ctx != nil {
+		if tenantID, _ := ctx.Value(tenantContextKey{}).(string); strings.TrimSpace(tenantID) != "" {
+			return strings.TrimSpace(tenantID)
+		}
+	}
+	return store.DefaultTenantID
+}
 
 func (s *Service) LoadConfig(ctx context.Context) Config {
 	raw, err := s.system.Get(ctx, configKey)
@@ -139,6 +159,7 @@ func (s *Service) Enroll(ctx context.Context, userID, email, label string, wavDa
 
 	vp := &store.Voiceprint{
 		ID:        generateID(),
+		TenantID:  tenantIDFromContext(ctx),
 		UserID:    userID,
 		Email:     email,
 		Label:     label,
@@ -165,7 +186,7 @@ func (s *Service) Identify(ctx context.Context, wavData []byte) ([]MatchResult, 
 		return nil, err
 	}
 
-	all, err := s.repo.ListAll(ctx)
+	all, err := s.repo.ListByTenant(ctx, tenantIDFromContext(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -197,12 +218,12 @@ func (s *Service) ListByUser(ctx context.Context, userID string) ([]*store.Voice
 
 // ListAll returns all voiceprints.
 func (s *Service) ListAll(ctx context.Context) ([]*store.Voiceprint, error) {
-	return s.repo.ListAll(ctx)
+	return s.repo.ListByTenant(ctx, tenantIDFromContext(ctx))
 }
 
 // Delete removes a single voiceprint by ID.
 func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.Delete(ctx, id)
+	return s.repo.DeleteByTenantID(ctx, tenantIDFromContext(ctx), id)
 }
 
 // DeleteByUser removes all voiceprints for a user.

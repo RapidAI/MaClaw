@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
@@ -28,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/ve"
 	"github.com/RapidAI/CodeClaw/hub/internal/voiceprint"
 	"github.com/RapidAI/CodeClaw/hub/internal/wecom"
+	"github.com/RapidAI/CodeClaw/hub/internal/workflow"
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
@@ -87,7 +89,12 @@ func NewRouter(
 	staticDir string,
 	routePrefix string,
 	bridgeDir string,
+	tenantRepoOpt ...store.TenantRepository,
 ) http.Handler {
+	var tenantRepo store.TenantRepository
+	if len(tenantRepoOpt) > 0 {
+		tenantRepo = tenantRepoOpt[0]
+	}
 	var invChecker entry.InvitationCodeChecker
 	if invitationSvc != nil {
 		invChecker = invitationSvc
@@ -169,6 +176,12 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/login", AdminLoginHandler(admins))
 	mux.HandleFunc("POST /api/admin/password", RequireAdmin(admins, AdminChangePasswordHandler(admins)))
 	mux.HandleFunc("POST /api/admin/profile", RequireAdmin(admins, AdminUpdateProfileHandler(admins)))
+	if tenantRepo != nil {
+		mux.HandleFunc("GET /api/admin/tenants", RequireAdmin(admins, AdminTenantsListHandler(tenantRepo)))
+		mux.HandleFunc("POST /api/admin/tenants", RequireAdmin(admins, AdminTenantCreateHandler(tenantRepo, admins, adminAudit)))
+		mux.HandleFunc("GET /api/admin/tenants/{tenantId}", RequireAdmin(admins, AdminTenantDetailHandler(tenantRepo)))
+		mux.HandleFunc("POST /api/admin/tenants/{tenantId}/admins", RequireAdmin(admins, AdminTenantAdminCreateHandler(tenantRepo, admins, adminAudit)))
+	}
 	mux.HandleFunc("GET /api/admin/debug/machines", RequireAdmin(admins, DebugListMachinesHandler(deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/debug/machine-events", RequireAdmin(admins, DebugListMachineEventsHandler(deviceSvc)))
 	mux.HandleFunc("DELETE /api/admin/machines", RequireAdmin(admins, DeleteMachineHandler(deviceSvc)))
@@ -179,7 +192,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/debug/sessions", RequireAdmin(admins, DebugListSessionsHandler(sessionSvc)))
 	mux.HandleFunc("GET /api/admin/debug/session", RequireAdmin(admins, DebugGetSessionHandler(sessionSvc)))
 	mux.HandleFunc("GET /api/admin/failure-logs", RequireAdmin(admins, ListFailureLogsHandler(failureLogs)))
-	mux.HandleFunc("GET /api/admin/sessions/all", RequireAdmin(admins, AdminListAllSessionsHandler(sessionSvc)))
+	mux.HandleFunc("GET /api/admin/sessions/all", RequireAdmin(admins, AdminListAllSessionsHandler(sessionSvc, userLookup)))
 	mux.HandleFunc("POST /api/admin/users/manual-bind", RequireAdmin(admins, ManualBindHandler(identity)))
 	mux.HandleFunc("GET /api/admin/users", RequireAdmin(admins, ListUsersHandler(identity, system, securitySvc)))
 	mux.HandleFunc("DELETE /api/admin/users", RequireAdmin(admins, DeleteBoundUserHandler(identity, deviceSvc, invitationSvc, feishuNotifier, imCleaners)))
@@ -317,7 +330,9 @@ func NewRouter(
 		adminWrap := func(h http.HandlerFunc) http.HandlerFunc {
 			return RequireAdmin(admins, h)
 		}
-		skillpkg.RegisterRoutes(mux, skillSourceSvc, adminWrap)
+		skillpkg.RegisterRoutes(mux, skillSourceSvc, adminWrap, func(r *http.Request) (string, bool) {
+			return RequestTenantID(r), IsGlobalAdmin(r.Context())
+		})
 		// Wire into SecurityService so GetHeartbeatPolicy merges the result.
 		if securitySvc != nil {
 			securitySvc.SetSkillSourcesProvider(skillSourceSvc)
@@ -435,6 +450,95 @@ func NewRouter(
 	mux.HandleFunc("GET /api/admin/capabilities/external-search", RequireAdmin(admins, AdminCapabilityExternalSearchHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/capabilities/mcp/validate", RequireAdmin(admins, AdminMCPValidateHandler()))
 	mux.HandleFunc("POST /api/admin/capabilities/import-intent", RequireAdmin(admins, AdminCapabilityImportIntentHandler(capabilitySvc, system, centerSvc)))
+
+	// Workflow admin review API
+	{
+		workflowReviewSvc := workflow.NewAdminReviewService(workflow.NewPGWorkflowStore(hubDB), capabilitySvc)
+		mux.HandleFunc("GET /api/v1/admin/reviews", RequireAdmin(admins, WorkflowAdminReviewListHandler(workflowReviewSvc)))
+		mux.HandleFunc("GET /api/v1/admin/reviews/{id}", RequireAdmin(admins, WorkflowAdminReviewDetailHandler(workflowReviewSvc)))
+		mux.HandleFunc("POST /api/v1/admin/reviews/{id}/approve", RequireAdmin(admins, WorkflowAdminReviewApproveHandler(workflowReviewSvc)))
+		mux.HandleFunc("POST /api/v1/admin/reviews/{id}/reject", RequireAdmin(admins, WorkflowAdminReviewRejectHandler(workflowReviewSvc)))
+		mux.HandleFunc("POST /api/v1/admin/reviews/{id}/unpublish", RequireAdmin(admins, WorkflowAdminReviewUnpublishHandler(workflowReviewSvc)))
+	}
+
+	// Workflow user-facing auth middleware: authenticates VE machine and sets X-Owner-ID.
+	workflowUserAuth := func(h http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := authenticateVEMachine(w, r, identity)
+			if !ok {
+				return
+			}
+			r.Header.Set("X-Owner-ID", principal.MachineID)
+			h(w, r)
+		}
+	}
+
+	// Workflow CRUD API (user-facing)
+	{
+		wfStore := workflow.NewPGWorkflowStore(hubDB)
+		vm := workflow.NewVersionManager(wfStore)
+		wfAPI := workflow.NewWorkflowAPI(wfStore, vm)
+		wfAPI.RegisterRoutes(mux, workflowUserAuth)
+	}
+
+	// Workflow Instance API
+	{
+		wfStore := workflow.NewPGWorkflowStore(hubDB)
+		instStore := workflow.NewPgInstanceStore(hubDB)
+		auditStore := workflow.NewPgAuditStore(hubDB)
+		dispatcher := &noopApprovalDispatcher{} // placeholder until A2A dispatch is wired
+		executor := workflow.NewWorkflowExecutor(wfStore, instStore, auditStore, dispatcher)
+		instanceAPI := workflow.NewInstanceAPI(executor, instStore, auditStore)
+		instanceAPI.RegisterRoutes(mux, workflowUserAuth)
+
+		// Start background services for approval workflow
+		escalationMgr := workflow.NewEscalationManager(dispatcher, auditStore, &noopAvailabilityChecker{})
+		escalationMgr.Start()
+
+		timeoutTicker := workflow.NewTimeoutTicker(executor, instStore)
+		timeoutTicker.Start()
+	}
+
+	// Workflow audit trail query API
+	{
+		auditStore := workflow.NewPgAuditStore(hubDB)
+		auditAPI := workflow.NewAuditAPI(auditStore)
+		auditAPI.RegisterRoutes(mux, workflowUserAuth)
+	}
+
+	// Review notification background service
+	{
+		wfStore := workflow.NewPGWorkflowStore(hubDB)
+		// Use Hub's notification sender if available, otherwise graceful degradation (log only).
+		notifier := workflow.NewHubReviewNotifier(nil)
+		reviewNotifSvc := workflow.NewReviewNotificationService(notifier, wfStore, workflow.ReviewNotificationConfig{
+			ReminderInterval: 7 * 24 * time.Hour,
+			CheckInterval:    1 * time.Hour,
+		})
+		reviewNotifSvc.Start()
+	}
+
+	// Workflow market listing API
+	{
+		marketSvc := workflow.NewMarketService(capabilitySvc)
+		mux.HandleFunc("GET /api/v1/market/workflows", func(w http.ResponseWriter, r *http.Request) {
+			filter := workflow.MarketListingFilter{
+				SubCategory: workflow.WorkflowSubCategory(r.URL.Query().Get("sub_category")),
+				Author:      r.URL.Query().Get("author"),
+				Keyword:     r.URL.Query().Get("keyword"),
+			}
+			if cat := r.URL.Query().Get("category"); cat != "" {
+				filter.Category = workflow.MarketCategory(cat)
+			}
+			page, err := marketSvc.ListWorkflows(r.Context(), filter)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusOK, page)
+		})
+	}
+
 	mux.HandleFunc("PUT /api/shortcuts", PutShortcutsHandler(identity, system))
 	// Webhook session endpoint (Bearer token auth handled internally)
 	mux.HandleFunc("POST /api/webhook/session", WebhookCreateSessionHandler(deviceSvc, sessionSvc))
@@ -474,5 +578,6 @@ func NewRouter(
 	registerBindStaticRoutes(mux, "./web/bind", "/bind")
 	registerGetCreditsStaticRoutes(mux, "./web/get-credits", "/get-credits")
 	registerStaticRoutes(mux, "./web/connector", "/connector")
+	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	return mux
 }

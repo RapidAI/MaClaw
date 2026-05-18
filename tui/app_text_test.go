@@ -275,6 +275,19 @@ func TestSlashHelpDoesNotAdvertiseMemoryDump(t *testing.T) {
 			t.Fatalf("slash help should advertise %s navigation:\n%s", want, help)
 		}
 	}
+	if !strings.Contains(help, "/loop <cmd> <goal>") || !strings.Contains(help, "--max N") {
+		t.Fatalf("slash help should advertise /loop usage:\n%s", help)
+	}
+}
+
+func TestSlashHelpTextLocalizesLoopUsage(t *testing.T) {
+	help := tuiText("zh", "slashHelp")
+	if !strings.Contains(help, "/loop <命令> <目标>") || !strings.Contains(help, "目标驱动验证循环") || !strings.Contains(help, "--max 轮数") || !strings.Contains(help, "--dir 路径") {
+		t.Fatalf("Chinese slash help should localize /loop usage:\n%s", help)
+	}
+	if strings.Contains(help, "/loop <cmd> <goal>") || strings.Contains(help, "Goal-driven verification loop") || strings.Contains(help, "--dir path") {
+		t.Fatalf("Chinese slash help should not keep English /loop copy:\n%s", help)
+	}
 }
 
 func TestPrintUsageStartsWithTUIQuickStart(t *testing.T) {
@@ -1297,6 +1310,29 @@ func TestSlashHelpOpensHelpOverlay(t *testing.T) {
 		if strings.Contains(msg.Content, "Available commands:") {
 			t.Fatalf("/help should not append long help text into chat: %#v", messages)
 		}
+	}
+}
+
+func TestSlashHelpUsesCurrentUILanguage(t *testing.T) {
+	root := views.NewRootModel("en")
+	root, _ = root.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m := &tuiModel{
+		app:  &TUIApp{appConfig: corelib.AppConfig{Language: "en"}},
+		root: root,
+	}
+
+	m.root.SetLang("zh")
+	m.handleSlashCommand("/help")
+
+	view := stripANSIForTest(m.root.Help.View())
+	if !strings.Contains(view, "斜杠命令") || !strings.Contains(view, "/loop <验证命令> <目标>") || !strings.Contains(view, "运行目标驱动验证循环") || !strings.Contains(view, "--timeout 秒") {
+		t.Fatalf("/help overlay should use current UI language:\n%s", view)
+	}
+	if strings.Contains(view, "Slash commands") || strings.Contains(view, "goal-driven verification loop") || strings.Contains(view, "--dir path") {
+		t.Fatalf("/help overlay should not keep English after UI language changes:\n%s", view)
+	}
+	if !strings.Contains(m.root.StatusBar.View(100), "已打开帮助") {
+		t.Fatalf("/help status should use current UI language: %s", m.root.StatusBar.View(100))
 	}
 }
 

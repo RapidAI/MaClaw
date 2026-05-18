@@ -17,6 +17,137 @@ func TestRemoteSDKBusyIdleTimeoutIsConservative(t *testing.T) {
 	}
 }
 
+func TestBuildGuideLaunchInjectionMarksReferenceOnly(t *testing.T) {
+	got := buildGuideLaunchInjection(" saved context ")
+	if !strings.Contains(got, "saved context") || !strings.Contains(got, "Guide launch reference") {
+		t.Fatalf("reference injection missing marker or content: %q", got)
+	}
+	if !strings.Contains(got, "Do not treat it as a new user turn") {
+		t.Fatalf("reference injection should prevent treating context as user input: %q", got)
+	}
+	if buildGuideLaunchInjection("   ") != "" {
+		t.Fatalf("empty guide launch text should not create an injection")
+	}
+}
+
+func TestNormalizeAIAssistantSessionUserID(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty falls back", input: " ", want: ""},
+		{name: "local", input: desktopUserID, want: desktopUserID},
+		{name: "project", input: desktopUserID + ":D:/work/project", want: desktopUserID + ":D:/work/project"},
+		{name: "project path is trimmed", input: desktopUserID + ":  D:/work/project  ", want: desktopUserID + ":D:/work/project"},
+		{name: "empty project rejected", input: desktopUserID + ":", wantErr: true},
+		{name: "foreign user rejected", input: "weixin:user", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeAIAssistantSessionUserID(tc.input)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("normalizeAIAssistantSessionUserID() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestActiveAIAssistantLoopUserIDIgnoresNonDesktopUsers(t *testing.T) {
+	h := &IMMessageHandler{lastUserID: "weixin:user"}
+	if got := activeAIAssistantLoopUserID(h); got != desktopUserID {
+		t.Fatalf("activeAIAssistantLoopUserID() = %q, want %q", got, desktopUserID)
+	}
+
+	h.lastUserID = desktopUserID + ":D:/work/project"
+	if got := activeAIAssistantLoopUserID(h); got != h.lastUserID {
+		t.Fatalf("activeAIAssistantLoopUserID() = %q, want project userID", got)
+	}
+}
+
+func TestInjectGuideReferenceTargetsOnlyExplicitActiveSession(t *testing.T) {
+	h := &IMMessageHandler{}
+	projectUserID := desktopUserID + ":D:/work/project"
+
+	if h.InjectGuideReference(projectUserID, "project guide") {
+		t.Fatalf("inactive project session should reject guide reference")
+	}
+	h.setSessionLoopCtx(desktopUserID, NewLoopContext("local", 1, nil))
+	if !h.InjectGuideReference(desktopUserID, "local guide") {
+		t.Fatalf("active local session should accept guide reference")
+	}
+	if h.InjectGuideReference(projectUserID, "project guide") {
+		t.Fatalf("inactive project session should still reject guide reference")
+	}
+
+	h.setSessionLoopCtx(projectUserID, NewLoopContext("project", 1, nil))
+	if !h.InjectGuideReference(projectUserID, "project guide") {
+		t.Fatalf("active project session should accept guide reference")
+	}
+
+	localRaw, ok := h.pendingInjection.Load(desktopUserID)
+	if !ok || !strings.Contains(localRaw.(string), "local guide") || strings.Contains(localRaw.(string), "project guide") {
+		t.Fatalf("local pending injection not isolated: %#v", localRaw)
+	}
+	projectRaw, ok := h.pendingInjection.Load(projectUserID)
+	if !ok || !strings.Contains(projectRaw.(string), "project guide") || strings.Contains(projectRaw.(string), "local guide") {
+		t.Fatalf("project pending injection not isolated: %#v", projectRaw)
+	}
+}
+
+func TestStripInjectionPrefixKeepsOnlyGuideLaunchUserText(t *testing.T) {
+	injected := buildGuideLaunchInjection("use ssh next")
+	if got := stripInjectionPrefix(injected); got != "use ssh next" {
+		t.Fatalf("stripInjectionPrefix() = %q, want fired text only", got)
+	}
+
+	combined := buildGuideLaunchInjection("use ssh next") + "\n" + buildGuideLaunchInjection("then inspect logs")
+	if got := stripInjectionPrefix(combined); got != "use ssh next\nthen inspect logs" {
+		t.Fatalf("stripInjectionPrefix() = %q, want both fired texts only", got)
+	}
+
+	literalMarker := guideLaunchReferenceMarker + "\nkeep this user text"
+	if got := stripInjectionPrefix(literalMarker); got != literalMarker {
+		t.Fatalf("stripInjectionPrefix() = %q, want literal user marker preserved", got)
+	}
+}
+
+func TestGuideLaunchPendingReferenceExtendsFinalizationBoundary(t *testing.T) {
+	if got := extendEffectiveMaxForPendingGuideReference(3, 3, true); got != 4 {
+		t.Fatalf("extendEffectiveMaxForPendingGuideReference() = %d, want 4", got)
+	}
+	if got := extendEffectiveMaxForPendingGuideReference(2, 3, true); got != 3 {
+		t.Fatalf("early guide reference should not change effective max, got %d", got)
+	}
+	if got := extendEffectiveMaxForPendingGuideReference(3, 3, false); got != 3 {
+		t.Fatalf("without guide reference effective max changed to %d", got)
+	}
+}
+
+func TestPendingGuideReferenceDetectionRequiresInstructionWrapper(t *testing.T) {
+	h := &IMMessageHandler{}
+	h.accumulateInjection(desktopUserID, buildGuideLaunchInjection("steer next round"))
+	if !h.hasPendingGuideReferenceInjection(desktopUserID) {
+		t.Fatal("expected pending guide reference to be detected")
+	}
+
+	h.pendingInjection.Delete(desktopUserID)
+	h.accumulateInjection(desktopUserID, guideLaunchReferenceMarker+"\nliteral user text")
+	if h.hasPendingGuideReferenceInjection(desktopUserID) {
+		t.Fatal("literal marker without instruction wrapper should not be treated as guide reference")
+	}
+}
+
 type fakeProviderAdapter struct {
 	cmd      CommandSpec
 	buildErr error

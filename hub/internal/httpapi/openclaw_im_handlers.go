@@ -32,6 +32,7 @@ type OpenclawIMConfigState struct {
 
 func GetOpenclawIMConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		raw, err := system.Get(r.Context(), openclawIMConfigKey)
 		if err != nil || raw == "" {
 			// Return default config with localhost bridge address for same-machine deployment.
@@ -57,6 +58,7 @@ func GetOpenclawIMConfigHandler(system store.SystemSettingsRepository) http.Hand
 
 func UpdateOpenclawIMConfigHandler(system store.SystemSettingsRepository, bridgeDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var cfg OpenclawIMConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -111,6 +113,7 @@ func loadOpenclawIMConfig(r *http.Request, system store.SystemSettingsRepository
 // to verify connectivity and HMAC signature compatibility.
 func TestOpenclawIMWebhookHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		cfg := loadOpenclawIMConfig(r, system)
 		if cfg.WebhookURL == "" {
 			writeError(w, http.StatusBadRequest, "NO_WEBHOOK_URL", "Webhook URL is not configured")

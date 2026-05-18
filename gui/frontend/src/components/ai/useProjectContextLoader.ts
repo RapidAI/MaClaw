@@ -1,5 +1,5 @@
 /**
- * useProjectContextLoader — loads project context when a project tab is first opened.
+ * useProjectContextLoader - loads project context when a project tab is first opened.
  *
  * Calls the LoadProjectContext Wails binding and formats the result as a system
  * message to inject into the tab's initial conversation. Handles timeout (>2s)
@@ -29,6 +29,17 @@ export interface ProjectContextMessage {
 /**
  * Format a ProjectContextSummary into a human-readable system message.
  */
+function looksLikeLocalPath(value?: string): boolean {
+    return !!value && (/^[A-Za-z]:[\\/]/.test(value) || value.startsWith("/") || value.startsWith("~/"));
+}
+
+function formatSourceRef(sourceURL?: string, sourceHint?: string): string {
+    if (!sourceURL) return "";
+    const hintText = sourceHint || (looksLikeLocalPath(sourceURL) ? "full: read_file" : "");
+    const hint = hintText ? `; ${hintText}` : "";
+    return ` - \`${sourceURL}\`${hint}`;
+}
+
 function formatProjectContextMessage(summary: main.ProjectContextSummary): string {
     const parts: string[] = [];
 
@@ -45,6 +56,16 @@ function formatProjectContextMessage(summary: main.ProjectContextSummary): strin
         parts.push("**关键产出物:**");
         for (const artifact of summary.key_artifacts) {
             parts.push(`- \`${artifact}\``);
+        }
+    }
+
+    if (summary.recent_artifacts && summary.recent_artifacts.length > 0) {
+        parts.push("");
+        parts.push("**最近产物来源:**");
+        for (const artifact of summary.recent_artifacts) {
+            const label = artifact.title || artifact.preview || artifact.source_url || "artifact";
+            const source = formatSourceRef(artifact.source_url, artifact.source_hint);
+            parts.push(`- ${label}${source}`);
         }
     }
 
@@ -177,12 +198,12 @@ export function useProjectContextLoader(): UseProjectContextLoaderResult {
             if (!mountedRef.current) return;
 
             if (summary) {
-                // Success within timeout — inject the context message
+                // Success within timeout - inject the context message
                 onMessage(createContextMessage(summary));
                 return;
             }
 
-            // Timeout or error — show placeholder and retry
+            // Timeout or error - show placeholder and retry
             onMessage(createPlaceholderMessage(projectName));
 
             // Retry loop
@@ -201,7 +222,7 @@ export function useProjectContextLoader(): UseProjectContextLoaderResult {
                 }
             }
 
-            // All retries exhausted — show failure message
+            // All retries exhausted - show failure message
             if (mountedRef.current) {
                 onMessage(createFailedMessage(projectName));
             }

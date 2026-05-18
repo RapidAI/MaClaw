@@ -206,6 +206,11 @@ func TestInferProjectPath(t *testing.T) {
 			expected: "D:\\workprj\\myapp",
 		},
 		{
+			name:     "memory_refs SourceURL prefers project tag",
+			entry:    Entry{SourceURL: "/home/user/.maclaw/memory_refs/workflow_output/u/2026-05/out.md", Tags: []string{"/home/user/project"}},
+			expected: "/home/user/project",
+		},
+		{
 			name:     "No path info",
 			entry:    Entry{Tags: []string{"snake", "game"}},
 			expected: "",

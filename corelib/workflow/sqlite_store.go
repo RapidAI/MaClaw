@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -142,11 +143,15 @@ func (s *SQLiteStore) SaveWorkflowState(state *WorkflowState) error {
 	if err != nil {
 		return fmt.Errorf("marshal gates: %w", err)
 	}
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("marshal workflow state: %w", err)
+	}
 
 	const q = `INSERT OR REPLACE INTO workflow_states
 		(id, user_id, type, intent_json, current_phase, phase_index,
-		 outputs_json, gates_json, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 outputs_json, gates_json, status, created_at, updated_at, state_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = s.db.Exec(q,
 		state.ID,
@@ -160,13 +165,14 @@ func (s *SQLiteStore) SaveWorkflowState(state *WorkflowState) error {
 		string(state.Status),
 		state.CreatedAt.UTC(),
 		state.UpdatedAt.UTC(),
+		string(stateJSON),
 	)
 	return err
 }
 
 func (s *SQLiteStore) LoadWorkflowState(userID string) (*WorkflowState, error) {
 	const q = `SELECT id, user_id, type, intent_json, current_phase, phase_index,
-		outputs_json, gates_json, status, created_at, updated_at
+		outputs_json, gates_json, status, created_at, updated_at, state_json
 		FROM workflow_states WHERE user_id = ?`
 
 	row := s.db.QueryRow(q, userID)
@@ -178,6 +184,7 @@ func (s *SQLiteStore) LoadWorkflowState(userID string) (*WorkflowState, error) {
 		gatesJSON  string
 		typeStr    string
 		statusStr  string
+		stateJSON  sql.NullString
 	)
 	err := row.Scan(
 		&ws.ID,
@@ -191,12 +198,28 @@ func (s *SQLiteStore) LoadWorkflowState(userID string) (*WorkflowState, error) {
 		&statusStr,
 		&ws.CreatedAt,
 		&ws.UpdatedAt,
+		&stateJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	if stateJSON.Valid && strings.TrimSpace(stateJSON.String) != "" {
+		var full WorkflowState
+		if err := json.Unmarshal([]byte(stateJSON.String), &full); err != nil {
+			return nil, fmt.Errorf("unmarshal workflow state: %w", err)
+		}
+		full.ID = ws.ID
+		full.UserID = ws.UserID
+		full.Type = WorkflowType(typeStr)
+		full.CurrentPhase = ws.CurrentPhase
+		full.PhaseIndex = ws.PhaseIndex
+		full.Status = WorkflowStatus(statusStr)
+		full.CreatedAt = ws.CreatedAt
+		full.UpdatedAt = ws.UpdatedAt
+		return &full, nil
 	}
 
 	ws.Type = WorkflowType(typeStr)
@@ -221,7 +244,7 @@ func (s *SQLiteStore) DeleteWorkflowState(id string) error {
 
 func (s *SQLiteStore) ListActiveWorkflows() ([]*WorkflowState, error) {
 	const q = `SELECT id, user_id, type, intent_json, current_phase, phase_index,
-		outputs_json, gates_json, status, created_at, updated_at
+		outputs_json, gates_json, status, created_at, updated_at, state_json
 		FROM workflow_states WHERE status = 'active'`
 
 	rows, err := s.db.Query(q)
@@ -239,6 +262,7 @@ func (s *SQLiteStore) ListActiveWorkflows() ([]*WorkflowState, error) {
 			gatesJSON  string
 			typeStr    string
 			statusStr  string
+			stateJSON  sql.NullString
 		)
 		if err := rows.Scan(
 			&ws.ID,
@@ -252,8 +276,25 @@ func (s *SQLiteStore) ListActiveWorkflows() ([]*WorkflowState, error) {
 			&statusStr,
 			&ws.CreatedAt,
 			&ws.UpdatedAt,
+			&stateJSON,
 		); err != nil {
 			return nil, err
+		}
+		if stateJSON.Valid && strings.TrimSpace(stateJSON.String) != "" {
+			var full WorkflowState
+			if err := json.Unmarshal([]byte(stateJSON.String), &full); err != nil {
+				return nil, fmt.Errorf("unmarshal workflow state: %w", err)
+			}
+			full.ID = ws.ID
+			full.UserID = ws.UserID
+			full.Type = WorkflowType(typeStr)
+			full.CurrentPhase = ws.CurrentPhase
+			full.PhaseIndex = ws.PhaseIndex
+			full.Status = WorkflowStatus(statusStr)
+			full.CreatedAt = ws.CreatedAt
+			full.UpdatedAt = ws.UpdatedAt
+			result = append(result, &full)
+			continue
 		}
 
 		ws.Type = WorkflowType(typeStr)
@@ -354,7 +395,8 @@ func createWorkflowTables(db *sql.DB) error {
 			gates_json    TEXT NOT NULL DEFAULT '{}',
 			status        TEXT NOT NULL DEFAULT 'active',
 			created_at    DATETIME NOT NULL,
-			updated_at    DATETIME NOT NULL
+			updated_at    DATETIME NOT NULL,
+			state_json    TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_ws_user_status ON workflow_states(user_id, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_us_user_state ON understanding_sessions(user_id, state)`,
@@ -363,6 +405,34 @@ func createWorkflowTables(db *sql.DB) error {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("create table: %w", err)
 		}
+	}
+	return ensureWorkflowStateJSONColumn(db)
+}
+
+func ensureWorkflowStateJSONColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(workflow_states)`)
+	if err != nil {
+		return fmt.Errorf("inspect workflow_states columns: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue interface{}
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan workflow_states column: %w", err)
+		}
+		if name == "state_json" {
+			return rows.Err()
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE workflow_states ADD COLUMN state_json TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add workflow state_json column: %w", err)
 	}
 	return nil
 }

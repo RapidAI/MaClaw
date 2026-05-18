@@ -647,11 +647,6 @@ func trimHistoryWithSummary(entries []agent.ConversationEntry, summarizer func(s
 			if !ok || len([]rune(text)) < 500 {
 				continue
 			}
-			// Truncate to 800 runes for the memory entry.
-			runes := []rune(text)
-			if len(runes) > 800 {
-				text = string(runes[:800])
-			}
 			memorySink(text, []string{"trimmed", "auto_salvaged"})
 		}
 	}

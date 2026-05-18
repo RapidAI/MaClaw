@@ -9,6 +9,7 @@ func defaultWebSearchProviders() []corelib.WebSearchProvider {
 	return []corelib.WebSearchProvider{
 		{Name: "Brave", Type: "brave", BaseURL: "https://api.search.brave.com/res/v1/web/search"},
 		{Name: "Serper", Type: "serper", BaseURL: "https://google.serper.dev/search"},
+		{Name: "TinyFish", Type: "tinyfish", BaseURL: "https://api.search.tinyfish.ai"},
 		{Name: "DuckDuckGo", Type: "duckduckgo"},
 	}
 }

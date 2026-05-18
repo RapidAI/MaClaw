@@ -16,11 +16,13 @@ import (
 
 type centerMigrationRequest struct {
 	HubSecretHash string                  `json:"hub_secret_hash"`
+	TenantID      string                  `json:"tenant_id,omitempty"`
 	Emails        []string                `json:"emails,omitempty"`
 	Users         []centerUserDataPackage `json:"users,omitempty"`
 }
 
 type centerUserDataPackage struct {
+	TenantID string           `json:"tenant_id,omitempty"`
 	User     *store.User      `json:"user,omitempty"`
 	Machines []*store.Machine `json:"machines,omitempty"`
 }
@@ -40,9 +42,10 @@ func CenterUserMigrationExportHandler(centerSvc *center.Service, identity *auth.
 			writeError(w, http.StatusInternalServerError, "USER_EXPORT_UNAVAILABLE", "User repository is unavailable")
 			return
 		}
+		tenantID := centerMigrationTenantID(req.TenantID)
 		emails := req.Emails
 		if len(emails) == 0 {
-			items, err := identity.ListUsers(r.Context())
+			items, err := identity.ListUsersForTenant(r.Context(), tenantID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "USER_EXPORT_LIST_FAILED", err.Error())
 				return
@@ -60,7 +63,7 @@ func CenterUserMigrationExportHandler(centerSvc *center.Service, identity *auth.
 			if email == "" {
 				continue
 			}
-			user, err := identity.UsersRepo().GetByEmail(r.Context(), email)
+			user, err := identity.UsersRepo().GetByTenantEmail(r.Context(), tenantID, email)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "USER_EXPORT_FAILED", err.Error())
 				return
@@ -76,9 +79,9 @@ func CenterUserMigrationExportHandler(centerSvc *center.Service, identity *auth.
 					return
 				}
 			}
-			out = append(out, centerUserDataPackage{User: user, Machines: machines})
+			out = append(out, centerUserDataPackage{TenantID: tenantID, User: user, Machines: machines})
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"users": out})
+		writeJSON(w, http.StatusOK, map[string]any{"tenant_id": tenantID, "users": out})
 	}
 }
 
@@ -103,7 +106,8 @@ func CenterUserMigrationImportHandler(centerSvc *center.Service, identity *auth.
 				continue
 			}
 			email := strings.TrimSpace(strings.ToLower(pkg.User.Email))
-			existing, err := identity.UsersRepo().GetByEmail(r.Context(), email)
+			tenantID := centerMigrationPackageTenantID(req.TenantID, pkg)
+			existing, err := identity.UsersRepo().GetByTenantEmail(r.Context(), tenantID, email)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "USER_IMPORT_LOOKUP_FAILED", err.Error())
 				return
@@ -111,6 +115,7 @@ func CenterUserMigrationImportHandler(centerSvc *center.Service, identity *auth.
 			userID := pkg.User.ID
 			if existing == nil {
 				copy := *pkg.User
+				copy.TenantID = tenantID
 				copy.Email = email
 				if err := identity.UsersRepo().Create(r.Context(), &copy); err != nil {
 					writeError(w, http.StatusInternalServerError, "USER_IMPORT_FAILED", err.Error())
@@ -121,6 +126,11 @@ func CenterUserMigrationImportHandler(centerSvc *center.Service, identity *auth.
 				userID = existing.ID
 			}
 			if devices != nil {
+				for _, machine := range pkg.Machines {
+					if machine != nil {
+						machine.TenantID = tenantID
+					}
+				}
 				if err := devices.ImportMachines(r.Context(), userID, pkg.Machines); err != nil {
 					writeError(w, http.StatusInternalServerError, "MACHINE_IMPORT_FAILED", err.Error())
 					return
@@ -147,12 +157,13 @@ func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.
 			return
 		}
 		deleted := 0
+		tenantID := centerMigrationTenantID(req.TenantID)
 		for _, rawEmail := range req.Emails {
 			email := strings.TrimSpace(strings.ToLower(rawEmail))
 			if email == "" {
 				continue
 			}
-			user, err := identity.UsersRepo().GetByEmail(r.Context(), email)
+			user, err := identity.UsersRepo().GetByTenantEmail(r.Context(), tenantID, email)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "USER_DELETE_LOOKUP_FAILED", err.Error())
 				return
@@ -167,10 +178,10 @@ func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.
 				}
 			}
 			if voiceprintSvc != nil {
-				_, _ = voiceprintSvc.DeleteByUser(r.Context(), user.ID)
+				_, _ = voiceprintSvc.DeleteByUser(voiceprint.WithTenant(r.Context(), tenantID), user.ID)
 			}
 			if invitationSvc != nil {
-				if _, err := invitationSvc.DeleteCodeByEmail(r.Context(), user.Email); err != nil {
+				if _, err := invitationSvc.DeleteCodeByTenantEmail(r.Context(), tenantID, user.Email); err != nil {
 					writeError(w, http.StatusInternalServerError, "DELETE_USER_INVITES_FAILED", err.Error())
 					return
 				}
@@ -183,7 +194,7 @@ func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.
 					cleaner.RemoveBindingByEmail(user.Email)
 				}
 			}
-			if err := identity.UsersRepo().DeleteByEmail(r.Context(), user.Email); err != nil {
+			if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), tenantID, user.Email); err != nil {
 				writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
 				return
 			}
@@ -191,4 +202,25 @@ func CenterUserMigrationDeleteHandler(centerSvc *center.Service, identity *auth.
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": deleted})
 	}
+}
+
+func centerMigrationTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return store.DefaultTenantID
+	}
+	return tenantID
+}
+
+func centerMigrationPackageTenantID(requestTenantID string, pkg centerUserDataPackage) string {
+	if tenantID := strings.TrimSpace(requestTenantID); tenantID != "" {
+		return tenantID
+	}
+	if tenantID := strings.TrimSpace(pkg.TenantID); tenantID != "" {
+		return tenantID
+	}
+	if pkg.User != nil && strings.TrimSpace(pkg.User.TenantID) != "" {
+		return strings.TrimSpace(pkg.User.TenantID)
+	}
+	return store.DefaultTenantID
 }

@@ -9,8 +9,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	corebm25 "github.com/RapidAI/CodeClaw/corelib/bm25"
 	_ "modernc.org/sqlite"
 )
 
@@ -110,6 +112,14 @@ CREATE INDEX IF NOT EXISTS idx_memories_version ON memories(version);
 CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(owner_id) WHERE owner_id != '';
 CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
 CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash) WHERE content_hash != '';
+CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_memories_source_url ON memories(source_url) WHERE source_url != '';
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    id UNINDEXED,
+    text,
+    tokenize='trigram'
+);
 
 CREATE TABLE IF NOT EXISTS memory_meta (
     key   TEXT PRIMARY KEY,
@@ -238,6 +248,218 @@ func (b *sqliteBackend) Since(version int64) ([]Entry, []string, error) {
 	}
 
 	return modified, deletedIDs, delRows.Err()
+}
+
+// SearchTextIDs returns IDs matching the SQLite FTS index. It is intentionally
+// a prefilter helper; the Store still owns final ranking and prompt selection.
+type sqliteTextFilter struct {
+	OwnerID     string
+	Category    Category
+	ProjectPath string
+	Since       time.Time
+	Until       time.Time
+}
+
+func (b *sqliteBackend) SearchTextIDs(query string, limit int) ([]string, error) {
+	ftsQuery := sqliteFTSQuery(query)
+	if ftsQuery == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := b.db.Query(`SELECT id FROM memories_fts WHERE memories_fts MATCH ? LIMIT ?`, ftsQuery, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite_backend: fts search: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil || len(ids) > 0 {
+		return ids, err
+	}
+	return b.searchTextIDsLikeFallback(query, limit)
+}
+
+func (b *sqliteBackend) SearchTextIDsFiltered(query string, filter sqliteTextFilter, limit int) ([]string, error) {
+	ftsQuery := sqliteFTSQuery(query)
+	if ftsQuery == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	where, args := sqliteTextFilterWhere(filter)
+	args = append([]any{ftsQuery}, args...)
+	args = append(args, limit)
+	rows, err := b.db.Query("SELECT f.id FROM memories_fts f JOIN memories m ON m.id = f.id WHERE f.text MATCH ?"+where+" LIMIT ?", args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite_backend: filtered fts search: %w", err)
+	}
+	defer rows.Close()
+
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil || len(ids) > 0 {
+		return ids, err
+	}
+	return b.searchTextIDsLikeFallbackFiltered(query, filter, limit)
+}
+
+func (b *sqliteBackend) searchTextIDsLikeFallback(query string, limit int) ([]string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	pattern := "%" + query + "%"
+	rows, err := b.db.Query(`SELECT id FROM memories
+		WHERE deleted_at IS NULL AND (content LIKE ? OR compact_form LIKE ? OR title LIKE ? OR tags LIKE ? OR entities LIKE ?)
+		LIMIT ?`, pattern, pattern, pattern, pattern, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite_backend: text fallback search: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (b *sqliteBackend) searchTextIDsLikeFallbackFiltered(query string, filter sqliteTextFilter, limit int) ([]string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	where, args := sqliteTextFilterWhere(filter)
+	pattern := "%" + strings.ToLower(query) + "%"
+	args = append([]any{pattern, pattern, pattern, pattern, pattern}, args...)
+	args = append(args, limit)
+	rows, err := b.db.Query("SELECT id FROM memories m WHERE deleted_at IS NULL AND (LOWER(content) LIKE ? OR LOWER(compact_form) LIKE ? OR LOWER(title) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(entities) LIKE ?)"+where+" LIMIT ?", args...)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite_backend: filtered text fallback search: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func sqliteTextFilterWhere(filter sqliteTextFilter) (string, []any) {
+	var where strings.Builder
+	args := make([]any, 0, 8)
+	where.WriteString(" AND m.deleted_at IS NULL")
+	if filter.OwnerID != "" {
+		where.WriteString(" AND (m.owner_id = '' OR m.owner_id = ?)")
+		args = append(args, filter.OwnerID)
+	}
+	if filter.Category != "" {
+		where.WriteString(" AND m.category = ?")
+		args = append(args, string(filter.Category))
+	}
+	if !filter.Since.IsZero() {
+		where.WriteString(" AND m.created_at >= ?")
+		args = append(args, filter.Since.UTC().Format(time.RFC3339Nano))
+	}
+	if !filter.Until.IsZero() {
+		where.WriteString(" AND m.created_at <= ?")
+		args = append(args, filter.Until.UTC().Format(time.RFC3339Nano))
+	}
+	if project := strings.ToLower(strings.TrimSpace(filter.ProjectPath)); project != "" {
+		like := "%" + project + "%"
+		where.WriteString(" AND (LOWER(m.source_url) LIKE ? OR LOWER(m.tags) LIKE ?)")
+		args = append(args, like, like)
+	}
+	return where.String(), args
+}
+
+func (b *sqliteBackend) upsertFTS(entry *Entry) error {
+	if entry == nil || strings.TrimSpace(entry.ID) == "" {
+		return nil
+	}
+	if err := b.deleteFTS(entry.ID); err != nil {
+		return err
+	}
+	if !entry.IsActive() {
+		return nil
+	}
+	_, err := b.db.Exec(`INSERT INTO memories_fts(id, text) VALUES (?, ?)`, entry.ID, sqliteFTSText(*entry))
+	if err != nil {
+		return fmt.Errorf("sqlite_backend: fts upsert: %w", err)
+	}
+	return nil
+}
+
+func (b *sqliteBackend) deleteFTS(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	_, err := b.db.Exec(`DELETE FROM memories_fts WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlite_backend: fts delete: %w", err)
+	}
+	return nil
+}
+
+func sqliteFTSText(entry Entry) string {
+	text := entryToDoc(entry).Text
+	if entry.Title != "" {
+		text += " " + entry.Title
+	}
+	// Add the same lexical fallback tokens used by the in-memory BM25 layer so
+	// CJK phrase queries can hit even when SQLite's tokenizer keeps long runs.
+	if tokens := corebm25.Tokenize(text); len(tokens) > 0 {
+		text += " " + strings.Join(tokens, " ")
+	}
+	return text
+}
+
+func sqliteFTSQuery(query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return ""
+	}
+	tokens := append([]string{query}, corebm25.Tokenize(query)...)
+	seen := make(map[string]struct{}, len(tokens))
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		token = strings.TrimSpace(token)
+		if len([]rune(token)) < 3 {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		parts = append(parts, "\""+strings.ReplaceAll(token, "\"", "\"\"")+"\"")
+		if len(parts) >= 12 {
+			break
+		}
+	}
+	return strings.Join(parts, " OR ")
 }
 
 func (b *sqliteBackend) MaxVersion() (int64, error) {

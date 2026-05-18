@@ -50,6 +50,10 @@ func (b *bm25Index) score(query string) map[string]float64 {
 	return b.idx.Score(query)
 }
 
+func (b *bm25Index) scoreSubset(query string, allowed map[string]struct{}) map[string]float64 {
+	return b.idx.ScoreSubset(query, allowed)
+}
+
 func entryToDoc(e Entry) bm25.Doc {
 	text := e.Content
 	// Include CompactForm in the index; it may contain refined keywords

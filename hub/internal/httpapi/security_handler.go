@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -9,11 +10,16 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+func securityRequestContext(r *http.Request) context.Context {
+	return security.WithTenant(r.Context(), RequestTenantID(r))
+}
+
 // SecurityGroupsRootHandler returns only the root node for lazy tree loading.
 // GET /api/admin/security/groups/root
 func SecurityGroupsRootHandler(svc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		node, err := svc.GetRootGroupNode(r.Context())
+		ctx := securityRequestContext(r)
+		node, err := svc.GetRootGroupNode(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "TREE_FAILED", err.Error())
 			return
@@ -26,7 +32,8 @@ func SecurityGroupsRootHandler(svc *security.SecurityService) http.HandlerFunc {
 // GET /api/admin/security/groups
 func SecurityGroupsHandler(svc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tree, err := svc.GetGroupTree(r.Context())
+		ctx := securityRequestContext(r)
+		tree, err := svc.GetGroupTree(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "TREE_FAILED", err.Error())
 			return
@@ -39,6 +46,7 @@ func SecurityGroupsHandler(svc *security.SecurityService) http.HandlerFunc {
 // POST /api/admin/security/groups
 func CreateSecurityGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			Name     string `json:"name"`
@@ -57,7 +65,7 @@ func CreateSecurityGroupHandler(svc *security.SecurityService, audits ...store.A
 			return
 		}
 
-		group, err := svc.CreateGroup(r.Context(), req.Name, req.ParentID)
+		group, err := svc.CreateGroup(ctx, req.Name, req.ParentID)
 		if err != nil {
 			if strings.Contains(err.Error(), "parent group not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", "parent group not found")
@@ -79,6 +87,7 @@ func CreateSecurityGroupHandler(svc *security.SecurityService, audits ...store.A
 // PUT /api/admin/security/groups/{id}
 func UpdateSecurityGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
@@ -97,7 +106,7 @@ func UpdateSecurityGroupHandler(svc *security.SecurityService, audits ...store.A
 			return
 		}
 
-		if err := svc.RenameGroup(r.Context(), id, req.Name); err != nil {
+		if err := svc.RenameGroup(ctx, id, req.Name); err != nil {
 			writeError(w, http.StatusInternalServerError, "RENAME_FAILED", err.Error())
 			return
 		}
@@ -110,6 +119,7 @@ func UpdateSecurityGroupHandler(svc *security.SecurityService, audits ...store.A
 // DELETE /api/admin/security/groups/{id}
 func DeleteSecurityGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
@@ -117,7 +127,7 @@ func DeleteSecurityGroupHandler(svc *security.SecurityService, audits ...store.A
 			return
 		}
 
-		if err := svc.DeleteGroup(r.Context(), id); err != nil {
+		if err := svc.DeleteGroup(ctx, id); err != nil {
 			if strings.Contains(err.Error(), "cannot delete root group") {
 				writeError(w, http.StatusForbidden, "FORBIDDEN", "cannot delete root group")
 				return
@@ -134,18 +144,19 @@ func DeleteSecurityGroupHandler(svc *security.SecurityService, audits ...store.A
 // GET /api/admin/security/groups/{id}/members
 func ListGroupMembersHandler(svc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
 			return
 		}
 
-		members, err := svc.ListGroupMembers(r.Context(), id)
+		members, err := svc.ListGroupMembers(ctx, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_MEMBERS_FAILED", err.Error())
 			return
 		}
-		children, err := svc.GetGroupChildren(r.Context(), id)
+		children, err := svc.GetGroupChildren(ctx, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_CHILDREN_FAILED", err.Error())
 			return
@@ -167,6 +178,7 @@ func ListGroupMembersHandler(svc *security.SecurityService) http.HandlerFunc {
 // POST /api/admin/security/groups/{id}/members
 func AddGroupMemberHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
@@ -185,7 +197,7 @@ func AddGroupMemberHandler(svc *security.SecurityService, audits ...store.AdminA
 			return
 		}
 
-		if err := svc.AssignUser(r.Context(), req.Email, id); err != nil {
+		if err := svc.AssignUser(ctx, req.Email, id); err != nil {
 			writeError(w, http.StatusInternalServerError, "ASSIGN_FAILED", err.Error())
 			return
 		}
@@ -198,6 +210,7 @@ func AddGroupMemberHandler(svc *security.SecurityService, audits ...store.AdminA
 // DELETE /api/admin/security/groups/{id}/members/{email}
 func RemoveGroupMemberHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		email := r.PathValue("email")
@@ -206,7 +219,7 @@ func RemoveGroupMemberHandler(svc *security.SecurityService, audits ...store.Adm
 			return
 		}
 
-		if err := svc.RemoveUser(r.Context(), id, email); err != nil {
+		if err := svc.RemoveUser(ctx, id, email); err != nil {
 			writeError(w, http.StatusInternalServerError, "REMOVE_FAILED", err.Error())
 			return
 		}
@@ -219,13 +232,14 @@ func RemoveGroupMemberHandler(svc *security.SecurityService, audits ...store.Adm
 // GET /api/admin/security/groups/{id}/policy
 func GetGroupPolicyHandler(svc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
 			return
 		}
 
-		view, err := svc.GetGroupPolicy(r.Context(), id)
+		view, err := svc.GetGroupPolicy(ctx, id)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "NOT_FOUND", "group not found")
@@ -242,6 +256,7 @@ func GetGroupPolicyHandler(svc *security.SecurityService) http.HandlerFunc {
 // PUT /api/admin/security/groups/{id}/policy
 func UpdateGroupPolicyHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		id := r.PathValue("id")
 		if id == "" {
@@ -260,7 +275,7 @@ func UpdateGroupPolicyHandler(svc *security.SecurityService, audits ...store.Adm
 			return
 		}
 
-		if err := svc.UpdateGroupPolicy(r.Context(), id, req.Policy); err != nil {
+		if err := svc.UpdateGroupPolicy(ctx, id, req.Policy); err != nil {
 			writeError(w, http.StatusInternalServerError, "UPDATE_POLICY_FAILED", err.Error())
 			return
 		}
@@ -273,13 +288,14 @@ func UpdateGroupPolicyHandler(svc *security.SecurityService, audits ...store.Adm
 // GET /api/admin/security/users/{email}/effective-policy
 func GetUserEffectivePolicyHandler(svc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		email := r.PathValue("email")
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return
 		}
 
-		groupID, groupPath, policy, groupPolicy, err := svc.GetUserPolicyView(r.Context(), email)
+		groupID, groupPath, policy, groupPolicy, err := svc.GetUserPolicyView(ctx, email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "POLICY_FAILED", err.Error())
 			return
@@ -292,7 +308,8 @@ func GetUserEffectivePolicyHandler(svc *security.SecurityService) http.HandlerFu
 // GET /api/admin/security/settings
 func GetSecuritySettingsHandler(svc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		settings, err := svc.GetSettings(r.Context())
+		ctx := securityRequestContext(r)
+		settings, err := svc.GetSettings(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "SETTINGS_FAILED", err.Error())
 			return
@@ -305,6 +322,7 @@ func GetSecuritySettingsHandler(svc *security.SecurityService) http.HandlerFunc 
 // PUT /api/admin/security/settings
 func UpdateSecuritySettingsHandler(svc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		var req security.SecuritySettings
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -316,7 +334,7 @@ func UpdateSecuritySettingsHandler(svc *security.SecurityService) http.HandlerFu
 			adminUserID = admin.ID
 		}
 
-		if err := svc.UpdateSettings(r.Context(), &req, adminUserID); err != nil {
+		if err := svc.UpdateSettings(ctx, &req, adminUserID); err != nil {
 			writeError(w, http.StatusInternalServerError, "UPDATE_SETTINGS_FAILED", err.Error())
 			return
 		}
@@ -328,6 +346,7 @@ func UpdateSecuritySettingsHandler(svc *security.SecurityService) http.HandlerFu
 // PUT /api/admin/security/settings/default-group
 func SetDefaultGroupHandler(svc *security.SecurityService, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := securityRequestContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			GroupID string `json:"group_id"`
@@ -341,7 +360,7 @@ func SetDefaultGroupHandler(svc *security.SecurityService, audits ...store.Admin
 			return
 		}
 
-		if err := svc.SetDefaultGroup(r.Context(), req.GroupID); err != nil {
+		if err := svc.SetDefaultGroup(ctx, req.GroupID); err != nil {
 			if strings.Contains(err.Error(), "default group not found") {
 				writeError(w, http.StatusBadRequest, "NOT_FOUND", "default group not found")
 				return

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/auth"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/entry"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
@@ -42,6 +43,7 @@ type HubHeartbeatRequest struct {
 
 type HubUserLinkSyncRequest struct {
 	HubSecret string `json:"hub_secret"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	Email     string `json:"email"`
 	IsDefault bool   `json:"is_default"`
 }
@@ -134,12 +136,27 @@ func HubHeartbeatHandler(service *hubs.Service, haSvcs ...*ha.Service) http.Hand
 			writeError(w, http.StatusInternalServerError, "HEARTBEAT_FAILED", err.Error())
 			return
 		}
-		auth, authErr := service.HubDigitalEmployeeAuthorization(r.Context(), hubID)
+		auths, authErr := service.HubDigitalEmployeeAuthorizations(r.Context(), hubID)
 		if authErr != nil {
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online"})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": "online", "digital_employee_authorization": auth})
+		resp := map[string]any{"ok": true, "status": "online"}
+		if auth := auths[""]; auth != nil {
+			resp["digital_employee_authorization"] = auth
+		}
+		if len(auths) > 0 {
+			tenantAuths := map[string]*corelib.DigitalEmployeeAuthorization{}
+			for tenantID, auth := range auths {
+				if strings.TrimSpace(tenantID) != "" && auth != nil {
+					tenantAuths[tenantID] = auth
+				}
+			}
+			if len(tenantAuths) > 0 {
+				resp["digital_employee_authorizations"] = tenantAuths
+			}
+		}
+		writeJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -167,7 +184,7 @@ func HubUserLinkSyncHandler(service *hubs.Service) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if err := service.SyncHubUserLink(r.Context(), hubID, req.HubSecret, req.Email, req.IsDefault); err != nil {
+		if err := service.SyncHubUserLink(r.Context(), hubID, req.HubSecret, req.Email, req.IsDefault, req.TenantID); err != nil {
 			if errors.Is(err, hubs.ErrHubUnauthorized) {
 				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
 				return

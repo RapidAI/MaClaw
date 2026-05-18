@@ -42,6 +42,7 @@ type Store struct {
 	partMgr          *partitionManager            // category-based partitioned persistence
 	lastSemanticHits map[string]SemanticSearchHit // debug: last semantic recall explanation by entry ID
 	lastDerivedFacts []DerivedFact                // debug: last inference engine results
+	lastRecallTrace  RecallTrace                  // debug: last RecallDynamic retrieval signals
 
 	// --- Project index ---
 	projIndex     *ProjectIndex  // aggregated project metadata for search
@@ -111,8 +112,8 @@ func NewStore(path string) (*Store, error) {
 		partMgr:        newPartitionManager(filepath.Dir(absPath)),
 		projIndex:      NewProjectIndex(filepath.Dir(absPath)),
 		semanticGraph:  NewSemanticGraph(),
-		entityIndex:  NewEntityIndex(),
-		themeManager: NewThemeManager(),
+		entityIndex:    NewEntityIndex(),
+		themeManager:   NewThemeManager(),
 		queryEmbCache:  make(map[string]queryEmbeddingCacheEntry),
 		queryEmbFlight: make(map[string]*queryEmbeddingFlight),
 	}
@@ -245,8 +246,9 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 				s.semanticGraph.IndexEntry(&s.entries[i])
 			}
 			s.rebuildThemeLayerLocked()
-			s.dirty = true
-			s.signalSave()
+			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
+				return fmt.Errorf("memory_store: persist updated entry: %w", err)
+			}
 			return nil
 		}
 	}
@@ -290,8 +292,9 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 			s.semanticGraph.IndexEntry(&s.entries[substringDupIdx])
 		}
 		s.rebuildThemeLayerLocked()
-		s.dirty = true
-		s.signalSave()
+		if err := s.persistUpdatedEntryLocked(&s.entries[substringDupIdx]); err != nil {
+			return fmt.Errorf("memory_store: persist merged duplicate: %w", err)
+		}
 		log.Printf("[memory_store] merged substring duplicate into entry %s (kept longer: %v)", s.entries[substringDupIdx].ID, newLen > existingLen)
 		return nil
 	}
@@ -326,6 +329,10 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 		entry.Scope = InferScope(entry.Category)
 	}
 
+	if err := s.persistInsertedEntryLocked(&entry); err != nil {
+		return fmt.Errorf("memory_store: persist new entry: %w", err)
+	}
+
 	s.entries = append(s.entries, entry)
 	s.bm25.addEntry(entry)
 	s.vecIndex.add(entry.ID, entry.Embedding)
@@ -334,8 +341,7 @@ func (s *Store) SaveWithContext(entry Entry, contextHint string) error {
 	s.autoLink(entry)
 
 	s.evictLRU()
-	s.dirty = true
-	s.signalSave()
+	s.markDirtyLocked()
 
 	// Update project index. Called under s.mu.Lock; ProjectIndex has its own
 	// mutex so this is a nested lock (Store.mu -> ProjectIndex.mu). The lock
@@ -409,8 +415,9 @@ func (s *Store) Update(id string, content string, category Category, tags []stri
 				s.semanticGraph.IndexEntry(&s.entries[i])
 			}
 			s.rebuildThemeLayerLocked()
-			s.dirty = true
-			s.signalSave()
+			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
+				return fmt.Errorf("memory_store: persist updated entry: %w", err)
+			}
 			return nil
 		}
 	}
@@ -424,6 +431,9 @@ func (s *Store) Delete(id string) error {
 
 	for i, e := range s.entries {
 		if e.ID == id {
+			if err := s.persistDeletedEntryLocked(id); err != nil {
+				return fmt.Errorf("memory_store: delete backend entry: %w", err)
+			}
 			s.entries = append(s.entries[:i], s.entries[i+1:]...)
 			s.bm25.removeEntry(id)
 			s.vecIndex.remove(id)
@@ -436,8 +446,6 @@ func (s *Store) Delete(id string) error {
 				s.semanticGraph.RemoveEntry(id)
 			}
 			s.rebuildThemeLayerLocked()
-			s.dirty = true
-			s.signalSave()
 			return nil
 		}
 	}
@@ -873,8 +881,10 @@ func (s *Store) TouchAccess(ids []string) {
 	}
 
 	if touched {
-		s.dirty = true
-		s.signalSave()
+		// Access touches can happen after every recall, so keep them batched even
+		// in SQLite mode. The backend-aware flush path writes the updated entries
+		// after the normal debounce or on Stop().
+		s.markDirtyLocked()
 	}
 }
 
@@ -1677,6 +1687,7 @@ func (s *Store) recallDynamicCore(query string, category Category, projectPath s
 	s.mu.Lock()
 	s.lastSemanticHits = finalSemanticHits
 	s.lastDerivedFacts = derivedFacts
+	s.lastRecallTrace = newRecallTrace(query, category, projectPath, expanded, bm25Scores, vecScores, semanticScores, candidates, result)
 	s.mu.Unlock()
 	return result
 }
@@ -2449,6 +2460,35 @@ func normalizeEntryTimestamp(e *Entry, fallback time.Time) {
 	}
 }
 
+func (s *Store) markDirtyLocked() {
+	s.dirty = true
+	s.signalSave()
+}
+
+func (s *Store) persistInsertedEntryLocked(entry *Entry) error {
+	if s.backend != nil {
+		return s.backend.SaveEntry(entry)
+	}
+	s.markDirtyLocked()
+	return nil
+}
+
+func (s *Store) persistUpdatedEntryLocked(entry *Entry) error {
+	if s.backend != nil {
+		return s.backend.UpdateEntry(entry)
+	}
+	s.markDirtyLocked()
+	return nil
+}
+
+func (s *Store) persistDeletedEntryLocked(id string) error {
+	if s.backend != nil {
+		return s.backend.DeleteEntry(id)
+	}
+	s.markDirtyLocked()
+	return nil
+}
+
 // MarkDirty marks the store as needing a flush.
 // Caller MUST hold the write lock.
 func (s *Store) MarkDirty() {
@@ -3083,8 +3123,9 @@ func (s *Store) PinEntry(id string) error {
 			if s.projIndex != nil {
 				s.projIndex.Rebuild(s.entries)
 			}
-			s.dirty = true
-			s.signalSave()
+			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
+				return fmt.Errorf("memory_store: persist updated entry: %w", err)
+			}
 			return nil
 		}
 	}
@@ -3106,8 +3147,9 @@ func (s *Store) UnpinEntry(id string) error {
 			if s.projIndex != nil {
 				s.projIndex.Rebuild(s.entries)
 			}
-			s.dirty = true
-			s.signalSave()
+			if err := s.persistUpdatedEntryLocked(&s.entries[i]); err != nil {
+				return fmt.Errorf("memory_store: persist updated entry: %w", err)
+			}
 			return nil
 		}
 	}
@@ -3278,6 +3320,14 @@ func (s *Store) evictLRU() {
 	s.entries = kept
 	s.rebuildDerivedIndexesLocked(false)
 
+	if s.backend != nil && len(evicted) > 0 {
+		for _, e := range evicted {
+			if err := s.backend.DeleteEntry(e.ID); err != nil {
+				log.Printf("[memory_store] WARNING: failed to delete evicted entry %s from backend: %v", e.ID, err)
+			}
+		}
+	}
+
 	// Archive evicted entries instead of discarding them.
 	if s.archive != nil && len(evicted) > 0 {
 		_ = s.archive.Add(evicted...)
@@ -3363,6 +3413,28 @@ func (s *Store) load() error {
 func (s *Store) flush() error {
 	s.mu.RLock()
 	flushGen := atomic.LoadUint64(&s.dirtyGen)
+
+	if s.backend != nil {
+		if !s.dirty {
+			s.mu.RUnlock()
+			return nil
+		}
+		entries := make([]Entry, len(s.entries))
+		copy(entries, s.entries)
+		s.mu.RUnlock()
+
+		for i := range entries {
+			if err := s.backend.UpdateEntry(&entries[i]); err != nil {
+				return fmt.Errorf("memory_store: backend flush entry %s: %w", entries[i].ID, err)
+			}
+		}
+		s.mu.Lock()
+		if atomic.LoadUint64(&s.dirtyGen) == flushGen {
+			s.dirty = false
+		}
+		s.mu.Unlock()
+		return nil
+	}
 
 	// Partitioned flush: write all partitions when dirty.
 	if s.partMgr != nil && s.partMgr.isEnabled() && s.dirty {

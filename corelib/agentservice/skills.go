@@ -382,9 +382,18 @@ func (s *Service) ExportSkill(ctx context.Context, p Principal, name string) (*S
 }
 
 func (s *Service) scanSkillForOutbound(ctx context.Context, p Principal, entry corelib.NLSkillEntry, dir, phase string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	scanEntry := entry
 	scanEntry.SkillDir = dir
 	report := skill.NewSecurityScanner(nil).ScanInstallStaged(ctx, &scanEntry, dir, nil)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if report != nil && !report.NeedsUserReview() {
 		return nil
 	}
@@ -594,6 +603,9 @@ func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillE
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(entry.TrustLevel) == "" {
 		entry.TrustLevel = "community"
 	}
@@ -601,6 +613,9 @@ func scanImportedSkillBeforeInstall(ctx context.Context, entry *corelib.NLSkillE
 		entry.SkillDir = skillDir
 	}
 	report := skill.NewSecurityScanner(nil).ScanInstallStaged(ctx, entry, skillDir, nil)
+	if err := ctx.Err(); err != nil {
+		return report, err
+	}
 	if report == nil {
 		return nil, fmt.Errorf("skill security scan produced no report")
 	}

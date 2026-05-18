@@ -32,7 +32,7 @@ func (s *HTTPServer) handleAdminWeb(w http.ResponseWriter, r *http.Request) {
 	}
 	assets, err := fs.Sub(adminWebFS, "admin_web")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	http.StripPrefix("/admin/", http.FileServer(http.FS(assets))).ServeHTTP(w, r)

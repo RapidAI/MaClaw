@@ -19,16 +19,62 @@ import (
 // ProjectSearchResult is the frontend-facing search result type.
 // Exported as a Wails binding return type.
 type ProjectSearchResult struct {
-	ID           string   `json:"id"`            // ProjectPath as stable ID
-	Name         string   `json:"name"`          // Human-readable project name
-	ProjectPath  string   `json:"project_path"`  // Canonical absolute path
-	WorkflowType string   `json:"workflow_type"` // e.g. "coding", "product_design"
-	Preview      string   `json:"preview"`       // Short content preview (~150 chars)
-	Tags         []string `json:"tags"`          // Union of all entry tags
-	LastActivity string   `json:"last_activity"` // RFC3339 formatted timestamp
-	EntryCount   int      `json:"entry_count"`   // Number of memory entries
-	Pinned       bool     `json:"pinned"`        // Whether the task is pinned to top
-	Archived     bool     `json:"archived"`      // Whether the task is archived
+	ID              string                  `json:"id"`            // ProjectPath as stable ID
+	Name            string                  `json:"name"`          // Human-readable project name
+	ProjectPath     string                  `json:"project_path"`  // Canonical absolute path
+	WorkflowType    string                  `json:"workflow_type"` // e.g. "coding", "product_design"
+	Preview         string                  `json:"preview"`       // Short content preview (~150 chars)
+	Tags            []string                `json:"tags"`          // Union of all entry tags
+	LastActivity    string                  `json:"last_activity"` // RFC3339 formatted timestamp
+	EntryCount      int                     `json:"entry_count"`   // Number of memory entries
+	Pinned          bool                    `json:"pinned"`        // Whether the task is pinned to top
+	Archived        bool                    `json:"archived"`      // Whether the task is archived
+	SourceURLs      []string                `json:"source_urls,omitempty"`
+	RecentArtifacts []ProjectSearchArtifact `json:"recent_artifacts,omitempty"`
+}
+
+// ProjectSearchArtifact is the small source-backed artifact summary attached
+// to task search results. Full content stays in SourceURL-backed refs.
+type ProjectSearchArtifact struct {
+	Title      string `json:"title,omitempty"`
+	SourceType string `json:"source_type,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	SourceHint string `json:"source_hint,omitempty"`
+	Preview    string `json:"preview,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
+// ProjectSceneDetail exposes the scene/task navigation data for one project.
+// It is intentionally compact: sources are pointers for drill-down, not bodies.
+type ProjectSceneDetail struct {
+	ProjectPath     string                  `json:"project_path"`
+	Name            string                  `json:"name,omitempty"`
+	WorkflowTypes   []string                `json:"workflow_types,omitempty"`
+	Tags            []string                `json:"tags,omitempty"`
+	SourceURLs      []string                `json:"source_urls,omitempty"`
+	RecentArtifacts []ProjectSearchArtifact `json:"recent_artifacts,omitempty"`
+	EntryCount      int                     `json:"entry_count"`
+	LastActivity    string                  `json:"last_activity,omitempty"`
+	Preview         string                  `json:"preview,omitempty"`
+}
+
+// GetProjectScene returns source-backed navigation details for one project.
+// This is a Wails binding for task detail and evidence drill-down UIs.
+func (a *App) GetProjectScene(projectPath string) (*ProjectSceneDetail, error) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return nil, fmt.Errorf("projectPath is required")
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("memory store not initialized")
+	}
+
+	scene, ok := projectSceneMap(a.memoryStore.SceneIndex(100))[projectPath]
+	if !ok {
+		return &ProjectSceneDetail{ProjectPath: projectPath, Name: lastPathComponent(projectPath)}, nil
+	}
+	return projectSceneDetailFromRecord(scene), nil
 }
 
 // SearchProjects searches the project index for projects matching the query.
@@ -56,9 +102,13 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 		records = pi.Search(query, limit)
 	}
 
+	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(limit * 2))
+
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
-		results = append(results, projectRecordToSearchResult(pi, rec))
+		result := projectRecordToSearchResult(pi, rec)
+		enrichProjectSearchResultWithScene(&result, scenesByPath[rec.ProjectPath])
+		results = append(results, result)
 	}
 
 	return results
@@ -86,6 +136,69 @@ func projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectReco
 		r.Name = deriveTaskName(rec)
 	}
 	return r
+}
+
+func projectSceneMap(scenes []memory.SceneRecord) map[string]memory.SceneRecord {
+	if len(scenes) == 0 {
+		return nil
+	}
+	byPath := make(map[string]memory.SceneRecord, len(scenes))
+	for _, scene := range scenes {
+		if scene.ProjectPath == "" {
+			continue
+		}
+		byPath[scene.ProjectPath] = scene
+	}
+	return byPath
+}
+
+func projectSceneDetailFromRecord(scene memory.SceneRecord) *ProjectSceneDetail {
+	detail := &ProjectSceneDetail{
+		ProjectPath:   scene.ProjectPath,
+		Name:          scene.Name,
+		WorkflowTypes: append([]string(nil), scene.WorkflowTypes...),
+		Tags:          append([]string(nil), scene.Tags...),
+		SourceURLs:    append([]string(nil), scene.SourceURLs...),
+		EntryCount:    scene.EntryCount,
+		Preview:       scene.Preview,
+	}
+	if !scene.LastActivity.IsZero() {
+		detail.LastActivity = scene.LastActivity.Format(time.RFC3339)
+	}
+	for _, artifact := range scene.RecentArtifacts {
+		item := ProjectSearchArtifact{
+			Title:      artifact.Title,
+			SourceType: artifact.SourceType,
+			SourceURL:  artifact.SourceURL,
+			SourceHint: projectTabSourceHint(artifact.SourceURL),
+			Preview:    artifact.Preview,
+		}
+		if !artifact.UpdatedAt.IsZero() {
+			item.UpdatedAt = artifact.UpdatedAt.Format(time.RFC3339)
+		}
+		detail.RecentArtifacts = append(detail.RecentArtifacts, item)
+	}
+	return detail
+}
+
+func enrichProjectSearchResultWithScene(result *ProjectSearchResult, scene memory.SceneRecord) {
+	if result == nil || scene.ProjectPath == "" {
+		return
+	}
+	result.SourceURLs = append([]string(nil), scene.SourceURLs...)
+	for _, artifact := range scene.RecentArtifacts {
+		item := ProjectSearchArtifact{
+			Title:      artifact.Title,
+			SourceType: artifact.SourceType,
+			SourceURL:  artifact.SourceURL,
+			SourceHint: projectTabSourceHint(artifact.SourceURL),
+			Preview:    artifact.Preview,
+		}
+		if !artifact.UpdatedAt.IsZero() {
+			item.UpdatedAt = artifact.UpdatedAt.Format(time.RFC3339)
+		}
+		result.RecentArtifacts = append(result.RecentArtifacts, item)
+	}
 }
 
 // CreateRecentTask creates a lightweight standalone task record so it appears
@@ -127,6 +240,7 @@ func (a *App) CreateRecentTask(name string) ProjectSearchResult {
 		log.Printf("[project_search] CreateRecentTask save failed: %v", err)
 		return ProjectSearchResult{}
 	}
+	a.triggerMemoryPipelineSoon(45 * time.Second)
 	if err := a.memoryStore.Flush(); err != nil {
 		log.Printf("[project_search] CreateRecentTask flush failed: %v", err)
 	}
@@ -414,10 +528,10 @@ func lastPathComponent(p string) string {
 
 // ---------------------------------------------------------------------------
 // ArchiveProject triggers the full archive flow for a project:
-//   1. Collect project entries from memory
-//   2. LLM summarize into experience
-//   3. Save experience as globally-recallable project_knowledge
-//   4. Mark project as archived in ProjectIndex
+//  1. Collect project entries from memory
+//  2. LLM summarize into experience
+//  3. Save experience as globally-recallable project_knowledge
+//  4. Mark project as archived in ProjectIndex
 //
 // This is a Wails binding method called from the frontend context menu.
 func (a *App) ArchiveProject(projectPath string) (*ArchiveResult, error) {
@@ -633,6 +747,8 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 		return ""
 	}
 
+	scene := projectSceneMap(a.memoryStore.SceneIndex(20))[projectPath]
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📂 项目：%s\n📁 路径：%s\n\n", projectName, projectPath))
 
@@ -656,6 +772,7 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 
 	// --- Section: Key Artifact Paths ---
 	artifactPaths := projectTabExtractPaths(entries)
+	artifactPaths = projectTabAppendUniquePaths(artifactPaths, scene.SourceURLs)
 	if len(artifactPaths) > 0 {
 		sb.WriteString("**关键产出物：**\n")
 		limit := 8
@@ -664,6 +781,31 @@ func (a *App) buildProjectTabContextMessage(projectPath string) string {
 		}
 		for i := 0; i < limit; i++ {
 			sb.WriteString(fmt.Sprintf("- `%s`\n", artifactPaths[i]))
+		}
+		sb.WriteString("\n")
+	}
+
+	// --- Section: Recent Artifact Sources ---
+	if len(scene.RecentArtifacts) > 0 {
+		sb.WriteString("**最近产物来源：**\n")
+		limit := 5
+		if len(scene.RecentArtifacts) < limit {
+			limit = len(scene.RecentArtifacts)
+		}
+		for i := 0; i < limit; i++ {
+			artifact := scene.RecentArtifacts[i]
+			label := artifact.Title
+			if label == "" {
+				label = artifact.Preview
+			}
+			if label == "" {
+				label = artifact.SourceURL
+			}
+			if artifact.SourceURL != "" {
+				sb.WriteString(fmt.Sprintf("- %s (%s)\n", label, projectTabSourceRefHint(artifact.SourceURL)))
+			} else {
+				sb.WriteString(fmt.Sprintf("- %s\n", label))
+			}
 		}
 		sb.WriteString("\n")
 	}
@@ -728,6 +870,39 @@ func projectTabExtractPaths(entries []memory.Entry) []string {
 		}
 	}
 
+	return paths
+}
+
+func projectTabSourceHint(sourceURL string) string {
+	if sourceURL != "" && memory.LooksLikeFilePath(sourceURL) {
+		return "full: read_file"
+	}
+	return ""
+}
+
+func projectTabSourceRefHint(sourceURL string) string {
+	if sourceURL == "" {
+		return ""
+	}
+	hint := projectTabSourceHint(sourceURL)
+	if hint != "" {
+		return fmt.Sprintf("`%s`; %s", sourceURL, hint)
+	}
+	return fmt.Sprintf("`%s`", sourceURL)
+}
+
+func projectTabAppendUniquePaths(paths []string, candidates []string) []string {
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		seen[path] = true
+	}
+	for _, candidate := range candidates {
+		if candidate == "" || !looksLikeFilePathForContext(candidate) || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		paths = append(paths, candidate)
+	}
 	return paths
 }
 

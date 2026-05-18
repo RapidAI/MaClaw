@@ -24,6 +24,8 @@ func TestBuiltinTemplates_Count(t *testing.T) {
 		WorkflowCompetitiveAnalysis: 5,
 		WorkflowPresentationDesign:  5,
 		WorkflowOpsMaintenance:      5,
+		WorkflowChangjiangScholar:       5,
+		WorkflowChangjiangScholarReview: 5,
 	}
 
 	for wt, wantPhases := range expected {
@@ -60,6 +62,8 @@ func TestBuiltinTemplates_PhaseIDsAndOrder(t *testing.T) {
 		{WorkflowCompetitiveAnalysis, []string{"target_definition", "competitor_identification", "dimension_comparison", "gap_analysis", "strategy_recommendation"}},
 		{WorkflowPresentationDesign, []string{"audience_goal", "content_outline", "style_specification", "slide_scripting", "ppt_generation"}},
 		{WorkflowOpsMaintenance, []string{"ops_intake", "readonly_collection", "artifact_plan", "risk_policy", "controlled_execution"}},
+		{WorkflowChangjiangScholar, []string{"cj_personal_profile", "cj_academic_achievements", "cj_research_plan", "cj_talent_cultivation", "cj_recommendation_summary"}},
+		{WorkflowChangjiangScholarReview, []string{"cj_completeness_check", "cj_achievement_evaluation", "cj_plan_feasibility", "cj_narrative_quality", "cj_improvement_report"}},
 	}
 
 	for _, tc := range cases {
@@ -90,6 +94,7 @@ func TestBuiltinTemplates_RequiredFieldsNonEmpty(t *testing.T) {
 		WorkflowExperimentDesign, WorkflowGrantProposal, WorkflowPaperWriting,
 		WorkflowProjectProposal, WorkflowEventPlanning, WorkflowCompetitiveAnalysis,
 		WorkflowPresentationDesign, WorkflowOpsMaintenance,
+		WorkflowChangjiangScholar, WorkflowChangjiangScholarReview,
 	} {
 		tmpl := r.Match(wt)
 		if tmpl == nil {

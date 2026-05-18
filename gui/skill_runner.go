@@ -1691,14 +1691,21 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 	}
 
 	repairReport := r.scanRepairedSkill(entry)
-	if repairReport == nil || repairReport.NeedsUserReview() {
+	app := (*App)(nil)
+	if r.executor != nil {
+		app = r.executor.app
+	}
+	missingScanBlocked := repairReport == nil && (app == nil || app.skillInstallMissingScanShouldBlock())
+	riskyScanBlocked := repairReport != nil && app != nil && app.skillInstallScanShouldBlock(repairReport)
+	legacyRiskyScanBlocked := repairReport != nil && app == nil && repairReport.NeedsUserReview()
+	if missingScanBlocked || riskyScanBlocked || legacyRiskyScanBlocked {
 		markRepairBlockedBySecurity(entry, originalSteps, repairReport)
 		log.Printf("[skill-repair-gui] blocked repaired skill %q by security scan: %s", entry.Name, entry.LastError)
 		if err := r.persistRepairResult(entry); err != nil {
 			log.Printf("[skill-repair-gui] persist blocked repair result for %q failed: %v", entry.Name, err)
 		}
-		if r.executor != nil && r.executor.app != nil {
-			r.executor.app.logSkillInstallSecurityEvent(
+		if app != nil {
+			app.logSkillInstallSecurityEvent(
 				security.AuditActionHubSkillReject,
 				"skill_auto_repair",
 				repairScanRiskLevel(repairReport),
@@ -1707,6 +1714,15 @@ func (r *SkillRunner) maybeRepairSkill(entry *corelib.NLSkillEntry) {
 			)
 		}
 		return
+	}
+	if app != nil && repairReport != nil && repairReport.NeedsUserReview() {
+		app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillUpdate,
+			"skill_auto_repair",
+			repairReport.FinalLevel,
+			security.PolicyAudit,
+			fmt.Sprintf("auto-repair allowed for skill %s by current policy: %s", entry.Name, repairReport.Summary),
+		)
 	}
 
 	// Persist the repaired steps back to config.

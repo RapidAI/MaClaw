@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -66,6 +66,21 @@ func (a *App) SubmitAgentView(payload AgentViewSubmitPayload) (*IMAgentResponse,
 
 func (a *App) DismissAgentView(payload AgentViewDismissPayload) (*IMAgentResponse, error) {
 	a.clearAgentView(payload.ViewID)
+
+	// When a workflow form is dismissed, mark the form as skipped so the
+	// engine doesn't re-show it on the next HandleInput call.
+	if strings.HasPrefix(strings.TrimSpace(payload.ViewID), "workflow:form:") {
+		hubClient := a.ensureHubClient()
+		if hubClient != nil {
+			handler := hubClient.ensureIMHandler()
+			if engine := handler.getWorkflowEngine(); engine != nil {
+				if err := engine.SkipPhaseForm(handler.lastUserID); err != nil {
+					return nil, fmt.Errorf("skip workflow form: %w", err)
+				}
+			}
+		}
+	}
+
 	resp := &IMAgentResponse{Text: "Task panel closed.", ResponseSource: imResponseSourceAgentViewDismiss.String()}
 	normalizeArtifactResponseSource(resp)
 	return resp, nil
@@ -145,6 +160,8 @@ func (a *App) handleAgentViewSubmitPayload(payload AgentViewSubmitPayload) (resp
 		return a.handleMISCommitAgentViewSubmit(viewID.Arg, payload.Data)
 	case misAgentViewIDIntent:
 		return a.handleMISIntentAgentViewSubmit(viewID.Arg, payload.Data)
+	case misAgentViewIDWorkflowForm:
+		return a.handleWorkflowFormAgentViewSubmit(viewID.Arg, payload.Data)
 	default:
 		return &IMAgentResponse{Text: "Task panel submission received.", ResponseSource: imResponseSourceAgentViewSubmit.String()}
 	}

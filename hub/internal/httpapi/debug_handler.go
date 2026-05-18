@@ -13,6 +13,7 @@ import (
 
 type machineUserLookup interface {
 	GetByID(ctx context.Context, id string) (*store.User, error)
+	GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.User, error)
 }
 
 type machineListItem struct {
@@ -26,22 +27,27 @@ func DebugListMachinesHandler(devices *device.Service, users machineUserLookup) 
 		email := strings.TrimSpace(r.URL.Query().Get("email"))
 		all := strings.TrimSpace(r.URL.Query().Get("all"))
 
+		tenantID := RequestTenantID(r)
+
 		// resolve email to user_id if provided
 		if email != "" && userID == "" && users != nil {
-			items, err := devices.ListAllMachines(r.Context())
+			user, err := users.GetByTenantEmail(r.Context(), tenantID, email)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+				return
+			}
+			if user == nil {
+				writeJSON(w, http.StatusOK, map[string]any{"machines": []machineListItem{}})
+				return
+			}
+			items, err := devices.ListMachines(r.Context(), user.ID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 				return
 			}
 			enriched := enrichMachineList(r.Context(), items, users)
-			filtered := make([]machineListItem, 0)
-			for _, item := range enriched {
-				if strings.EqualFold(item.UserEmail, email) {
-					filtered = append(filtered, item)
-				}
-			}
 			writeJSON(w, http.StatusOK, map[string]any{
-				"machines": filtered,
+				"machines": enriched,
 			})
 			return
 		}
@@ -59,8 +65,14 @@ func DebugListMachinesHandler(devices *device.Service, users machineUserLookup) 
 			return
 		}
 
-		if all == "1" || all == "true" {
-			items, err := devices.ListAllMachines(r.Context())
+		if all == "1" || all == "true" || isTenantScopedAdminRequest(r) {
+			var items []device.MachineRuntimeInfo
+			var err error
+			if isTenantScopedAdminRequest(r) {
+				items, err = devices.ListMachinesByTenant(r.Context(), tenantID)
+			} else {
+				items, err = devices.ListAllMachines(r.Context())
+			}
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 				return
@@ -130,23 +142,36 @@ func DebugListSessionsHandler(svc *session.Service) http.HandlerFunc {
 // AdminListAllSessionsHandler returns all cached sessions across all machines.
 // Each entry includes a "source" field ("ai", "desktop", "mobile", "handoff")
 // so the admin UI can split them into AI vs Human tabs.
-func AdminListAllSessionsHandler(svc *session.Service) http.HandlerFunc {
+func AdminListAllSessionsHandler(svc *session.Service, users machineUserLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items := svc.ListAll()
+		tenantID := RequestTenantID(r)
+		tenantScoped := isTenantScopedAdminRequest(r)
+		userTenantCache := map[string]string{}
 		type sessionItem struct {
-			SessionID     string                  `json:"session_id"`
-			MachineID     string                  `json:"machine_id"`
-			UserID        string                  `json:"user_id"`
-			Source        string                  `json:"source"`
-			ExecutionMode string                  `json:"execution_mode"`
-			Summary       session.SessionSummary  `json:"summary"`
-			Preview       session.SessionPreview  `json:"preview"`
+			SessionID     string                   `json:"session_id"`
+			MachineID     string                   `json:"machine_id"`
+			UserID        string                   `json:"user_id"`
+			Source        string                   `json:"source"`
+			ExecutionMode string                   `json:"execution_mode"`
+			Summary       session.SessionSummary   `json:"summary"`
+			Preview       session.SessionPreview   `json:"preview"`
 			RecentEvents  []session.ImportantEvent `json:"recent_events"`
-			HostOnline    bool                    `json:"host_online"`
-			UpdatedAt     int64                   `json:"updated_at"`
+			HostOnline    bool                     `json:"host_online"`
+			UpdatedAt     int64                    `json:"updated_at"`
 		}
 		out := make([]sessionItem, 0, len(items))
 		for _, item := range items {
+			if tenantScoped {
+				itemTenantID, ok, err := lookupUserTenantID(r.Context(), users, item.UserID, userTenantCache)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+					return
+				}
+				if !ok || itemTenantID != tenantID {
+					continue
+				}
+			}
 			out = append(out, sessionItem{
 				SessionID:     item.SessionID,
 				MachineID:     item.MachineID,
@@ -164,6 +189,27 @@ func AdminListAllSessionsHandler(svc *session.Service) http.HandlerFunc {
 			"sessions": out,
 		})
 	}
+}
+
+func lookupUserTenantID(ctx context.Context, users machineUserLookup, userID string, cache map[string]string) (string, bool, error) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" || users == nil {
+		return "", false, nil
+	}
+	if tenantID, ok := cache[userID]; ok {
+		return tenantID, tenantID != "", nil
+	}
+	user, err := users.GetByID(ctx, userID)
+	if err != nil {
+		return "", false, err
+	}
+	if user == nil || strings.TrimSpace(user.TenantID) == "" {
+		cache[userID] = ""
+		return "", false, nil
+	}
+	tenantID := strings.TrimSpace(user.TenantID)
+	cache[userID] = tenantID
+	return tenantID, true, nil
 }
 
 func DebugGetSessionHandler(svc *session.Service) http.HandlerFunc {
@@ -203,6 +249,10 @@ func DeleteMachineHandler(devices *device.Service) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "machine_id is required")
 			return
 		}
+		if !canManageMachine(r.Context(), r, devices, machineID) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "machine is outside current tenant")
+			return
+		}
 		if err := devices.DeleteMachine(r.Context(), machineID); err != nil {
 			writeError(w, http.StatusBadRequest, "DELETE_FAILED", err.Error())
 			return
@@ -227,6 +277,10 @@ func RenameMachineHandler(devices *device.Service) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "machine_id is required")
 			return
 		}
+		if !canManageMachine(r.Context(), r, devices, body.MachineID) {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "machine is outside current tenant")
+			return
+		}
 		if err := devices.RenameMachine(r.Context(), body.MachineID, body.Alias); err != nil {
 			writeError(w, http.StatusInternalServerError, "RENAME_FAILED", err.Error())
 			return
@@ -237,7 +291,13 @@ func RenameMachineHandler(devices *device.Service) http.HandlerFunc {
 
 func ClearOfflineMachinesHandler(devices *device.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		count, err := devices.ClearOfflineMachines(r.Context())
+		var count int64
+		var err error
+		if !isTenantScopedAdminRequest(r) {
+			count, err = devices.ClearOfflineMachines(r.Context())
+		} else {
+			count, err = devices.ClearOfflineMachinesByTenant(r.Context(), RequestTenantID(r))
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CLEAR_FAILED", err.Error())
 			return
@@ -257,33 +317,21 @@ func DeleteMachinesByEmailHandler(devices *device.Service, users machineUserLook
 			writeError(w, http.StatusInternalServerError, "NO_USER_LOOKUP", "user lookup not available")
 			return
 		}
-		// find all machines, enrich with email, then collect matching user IDs
-		items, err := devices.ListAllMachines(r.Context())
+		user, err := users.GetByTenantEmail(r.Context(), RequestTenantID(r), email)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+			writeError(w, http.StatusInternalServerError, "LOOKUP_FAILED", err.Error())
 			return
 		}
-		enriched := enrichMachineList(r.Context(), items, users)
-		userIDs := map[string]bool{}
-		for _, item := range enriched {
-			if strings.EqualFold(item.UserEmail, email) {
-				userIDs[item.UserID] = true
-			}
-		}
-		if len(userIDs) == 0 {
+		if user == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"deleted": int64(0)})
 			return
 		}
-		var total int64
-		for uid := range userIDs {
-			count, err := devices.DeleteMachinesByUser(r.Context(), uid)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
-				return
-			}
-			total += count
+		count, err := devices.DeleteMachinesByUser(r.Context(), user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"deleted": total})
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": count})
 	}
 }
 
@@ -298,31 +346,38 @@ func ForceDeleteMachinesByEmailHandler(devices *device.Service, users machineUse
 			writeError(w, http.StatusInternalServerError, "NO_USER_LOOKUP", "user lookup not available")
 			return
 		}
-		items, err := devices.ListAllMachines(r.Context())
+		user, err := users.GetByTenantEmail(r.Context(), RequestTenantID(r), email)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
+			writeError(w, http.StatusInternalServerError, "LOOKUP_FAILED", err.Error())
 			return
 		}
-		enriched := enrichMachineList(r.Context(), items, users)
-		userIDs := map[string]bool{}
-		for _, item := range enriched {
-			if strings.EqualFold(item.UserEmail, email) {
-				userIDs[item.UserID] = true
-			}
-		}
-		if len(userIDs) == 0 {
+		if user == nil {
 			writeJSON(w, http.StatusOK, map[string]any{"deleted": int64(0)})
 			return
 		}
-		var total int64
-		for uid := range userIDs {
-			count, err := devices.ForceDeleteMachinesByUser(r.Context(), uid)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
-				return
-			}
-			total += count
+		count, err := devices.ForceDeleteMachinesByUser(r.Context(), user.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
+			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"deleted": total})
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": count})
 	}
+}
+
+func canManageMachine(ctx context.Context, r *http.Request, devices *device.Service, machineID string) bool {
+	if !isTenantScopedAdminRequest(r) {
+		return true
+	}
+	info, err := devices.GetMachineInfo(ctx, machineID)
+	if err != nil || info == nil {
+		return false
+	}
+	return strings.TrimSpace(info.TenantID) == RequestTenantID(r)
+}
+
+func isTenantScopedAdminRequest(r *http.Request) bool {
+	if r == nil || AdminFromContext(r.Context()) == nil {
+		return false
+	}
+	return !IsGlobalAdmin(r.Context()) || strings.TrimSpace(r.URL.Query().Get("tenant_id")) != ""
 }

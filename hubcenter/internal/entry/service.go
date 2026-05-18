@@ -17,6 +17,7 @@ var ErrIPBlocked = errors.New("ip blocked")
 
 type HubAccessView struct {
 	HubID                  string `json:"hub_id"`
+	TenantID               string `json:"tenant_id,omitempty"`
 	Name                   string `json:"name"`
 	BaseURL                string `json:"base_url"`
 	PWAURL                 string `json:"pwa_url"`
@@ -239,25 +240,30 @@ func (s *Service) ResolveByDomain(ctx context.Context, domain string) (*ResolveR
 	return snap.resolveDomain(domain), nil
 }
 
-func BuildPWAURL(baseURL, email string) string {
-	return fmt.Sprintf(
-		"%s/app?email=%s&entry=app&autologin=1",
-		strings.TrimRight(baseURL, "/"),
-		url.QueryEscape(email),
-	)
+func BuildPWAURL(baseURL, email string, tenantIDOpt ...string) string {
+	query := fmt.Sprintf("email=%s&entry=app&autologin=1", url.QueryEscape(email))
+	if len(tenantIDOpt) > 0 && strings.TrimSpace(tenantIDOpt[0]) != "" {
+		query += "&tenant_id=" + url.QueryEscape(strings.TrimSpace(tenantIDOpt[0]))
+	}
+	return fmt.Sprintf("%s/app?%s", strings.TrimRight(baseURL, "/"), query)
 }
 
-func hubToAccessView(hub *store.HubInstance, email, routeDomain string) HubAccessView {
+func hubToAccessView(hub *store.HubInstance, email, routeDomain string, tenantIDOpt ...string) HubAccessView {
 	corporateDomain := normalizeCorporateEmailDomain(routeDomain)
 	if corporateDomain == "" {
 		corporateDomain = normalizeCorporateEmailDomain(hub.CorporateEmailDomain)
 	}
+	tenantID := ""
+	if len(tenantIDOpt) > 0 {
+		tenantID = strings.TrimSpace(tenantIDOpt[0])
+	}
 	pwaURL := ""
 	if strings.TrimSpace(email) != "" {
-		pwaURL = BuildPWAURL(hub.BaseURL, email)
+		pwaURL = BuildPWAURL(hub.BaseURL, email, tenantID)
 	}
 	return HubAccessView{
 		HubID:                  hub.ID,
+		TenantID:               tenantID,
 		Name:                   hub.Name,
 		BaseURL:                hub.BaseURL,
 		PWAURL:                 pwaURL,

@@ -30,7 +30,9 @@ var (
 type InvitationCodeValidator interface {
 	IsRequired(ctx context.Context) (bool, error)
 	ValidateAndConsume(ctx context.Context, code string, email string) error
+	ValidateAndConsumeForTenant(ctx context.Context, tenantID string, code string, email string) error
 	CheckExpiry(ctx context.Context, email string) (bool, *time.Time, error)
+	CheckExpiryForTenant(ctx context.Context, tenantID string, email string) (bool, *time.Time, error)
 }
 
 // LoginNotifier sends login confirmation links to bound IM channels.
@@ -40,7 +42,7 @@ type LoginNotifier interface {
 
 // UserRouteSyncer pushes confirmed user-to-hub bindings to Hub Center when available.
 type UserRouteSyncer interface {
-	SyncUserRoute(ctx context.Context, email string) error
+	SyncUserRoute(ctx context.Context, email string, tenantIDOpt ...string) error
 }
 
 const (
@@ -80,7 +82,32 @@ type SystemSettingsRepository interface {
 	Get(ctx context.Context, key string) (string, error)
 }
 
+type tenantContextKey struct{}
+
+func WithTenant(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, tenantContextKey{}, normalizeTenantIDValue(tenantID))
+}
+
+func tenantIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return store.DefaultTenantID
+	}
+	if tenantID, ok := ctx.Value(tenantContextKey{}).(string); ok {
+		return normalizeTenantIDValue(tenantID)
+	}
+	return store.DefaultTenantID
+}
+
+func normalizeTenantIDValue(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return store.DefaultTenantID
+	}
+	return tenantID
+}
+
 type MachinePrincipal struct {
+	TenantID  string
 	UserID    string
 	MachineID string
 }
@@ -95,8 +122,9 @@ type MachineMetadata struct {
 }
 
 type ViewerPrincipal struct {
-	UserID string
-	Email  string
+	TenantID string
+	UserID   string
+	Email    string
 }
 
 type IdentityService struct {
@@ -181,11 +209,12 @@ func (s *IdentityService) syncUserRoute(ctx context.Context, email string) {
 	if s == nil || s.userRouteSyncer == nil || strings.TrimSpace(email) == "" {
 		return
 	}
-	_ = s.userRouteSyncer.SyncUserRoute(ctx, email)
+	_ = s.userRouteSyncer.SyncUserRoute(ctx, email, tenantIDFromContext(ctx))
 }
 
 func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineName, platform, clientID, invitationCode string) (*EnrollmentResult, error) {
 	email = normalizeEmail(email)
+	tenantID := tenantIDFromContext(ctx)
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
@@ -193,18 +222,18 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 		return nil, err
 	}
 
-	user, err := s.users.GetByEmail(ctx, email)
+	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
 
 	// Expiry check for existing users
 	if user != nil && s.invitationSvc != nil {
-		expired, expiresAt, _ := s.invitationSvc.CheckExpiry(ctx, email)
+		expired, expiresAt, _ := s.invitationSvc.CheckExpiryForTenant(ctx, tenantID, email)
 		if expired {
 			if strings.TrimSpace(invitationCode) != "" {
 				// Expired user provided a new invitation code - rebind
-				if err := s.invitationSvc.ValidateAndConsume(ctx, invitationCode, email); err != nil {
+				if err := s.invitationSvc.ValidateAndConsumeForTenant(ctx, tenantID, invitationCode, email); err != nil {
 					return nil, ErrInvalidInvitationCode
 				}
 				// Continue normal enrollment flow
@@ -233,7 +262,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 			if strings.TrimSpace(invitationCode) == "" {
 				return nil, ErrInvitationCodeRequired
 			}
-			if err := s.invitationSvc.ValidateAndConsume(ctx, invitationCode, email); err != nil {
+			if err := s.invitationSvc.ValidateAndConsumeForTenant(ctx, tenantID, invitationCode, email); err != nil {
 				return nil, ErrInvalidInvitationCode
 			}
 		}
@@ -252,7 +281,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 				Email:   email,
 			}, nil
 		case "approval":
-			return s.ensurePendingApproval(ctx, email, "Awaiting administrator approval before machine enrollment")
+			return s.ensurePendingApprovalForTenant(ctx, tenantID, email, "Awaiting administrator approval before machine enrollment")
 		default:
 			if !s.allowSelfEnroll {
 				return &EnrollmentResult{
@@ -261,7 +290,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 					Email:   email,
 				}, nil
 			}
-			user, err = s.createApprovedUser(ctx, email)
+			user, err = s.createApprovedUserForTenant(ctx, tenantID, email)
 			if err != nil {
 				return nil, err
 			}
@@ -274,6 +303,7 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 
 func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (*EmailLoginRequestResult, error) {
 	email = normalizeEmail(email)
+	tenantID := tenantIDFromContext(ctx)
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
@@ -281,7 +311,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 		return nil, err
 	}
 
-	user, err := s.users.GetByEmail(ctx, email)
+	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +327,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 				Message: "This hub requires manual binding before email sign-in can be used",
 			}, nil
 		case "approval":
-			result, err := s.ensurePendingApproval(ctx, email, "Awaiting administrator approval before email sign-in")
+			result, err := s.ensurePendingApprovalForTenant(ctx, tenantID, email, "Awaiting administrator approval before email sign-in")
 			if err != nil {
 				return nil, err
 			}
@@ -320,7 +350,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 					Message: "Self enrollment is disabled. Ask an administrator to generate an SN binding first",
 				}, nil
 			}
-			user, err = s.createApprovedUser(ctx, email)
+			user, err = s.createApprovedUserForTenant(ctx, tenantID, email)
 			if err != nil {
 				return nil, err
 			}
@@ -353,6 +383,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 // email, sends the confirmation email if a mailer is configured, and returns
 // the result with a poll_id so the client can poll for confirmation.
 func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email string) (*EmailLoginRequestResult, error) {
+	tenantID := tenantIDFromContext(ctx)
 	rawToken, err := randomToken(32)
 	if err != nil {
 		return nil, err
@@ -363,7 +394,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 	}
 
 	// Reuse existing pending login token if one exists (avoid creating duplicates).
-	existing, err := s.loginTok.GetPendingByEmail(ctx, email)
+	existing, err := s.loginTok.GetPendingByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -376,6 +407,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 		now := time.Now()
 		if err := s.loginTok.Create(ctx, &store.LoginToken{
 			ID:            newID("lt"),
+			TenantID:      tenantID,
 			Email:         email,
 			TokenHash:     hashToken(rawToken),
 			PollTokenHash: hashToken(rawPollToken),
@@ -436,6 +468,7 @@ func (s *IdentityService) createLoginTokenAndNotify(ctx context.Context, email s
 // used for approval-mode enrollments where the PWA needs to poll until the
 // admin approves.
 func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email string, expiry time.Duration) (*EmailLoginRequestResult, error) {
+	tenantID := tenantIDFromContext(ctx)
 	rawPollToken, err := randomToken(32)
 	if err != nil {
 		return nil, err
@@ -445,7 +478,7 @@ func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email str
 		return nil, err
 	}
 
-	existing, err := s.loginTok.GetPendingByEmail(ctx, email)
+	existing, err := s.loginTok.GetPendingByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -457,6 +490,7 @@ func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email str
 		now := time.Now()
 		if err := s.loginTok.Create(ctx, &store.LoginToken{
 			ID:            newID("lt"),
+			TenantID:      tenantID,
 			Email:         email,
 			TokenHash:     hashToken(rawToken),
 			PollTokenHash: hashToken(rawPollToken),
@@ -483,7 +517,8 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 		return "", nil, ErrInvalidUserCredentials
 	}
 
-	user, err := s.users.GetByEmail(ctx, loginToken.Email)
+	ctx = WithTenant(ctx, loginToken.TenantID)
+	user, err := s.users.GetByTenantEmail(ctx, loginToken.TenantID, loginToken.Email)
 	if err != nil {
 		return "", nil, err
 	}
@@ -498,6 +533,7 @@ func (s *IdentityService) ConfirmEmailLogin(ctx context.Context, rawToken string
 	now := time.Now()
 	if err := s.viewerTok.Create(ctx, &store.ViewerToken{
 		ID:        newID("vt"),
+		TenantID:  user.TenantID,
 		UserID:    user.ID,
 		TokenHash: hashToken(rawViewerToken),
 		ExpiresAt: now.Add(30 * 24 * time.Hour),
@@ -536,7 +572,8 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 
 	// Token was consumed - the user confirmed via email link.
 	// Issue a viewer token for this polling client too.
-	user, err := s.users.GetByEmail(ctx, loginToken.Email)
+	ctx = WithTenant(ctx, loginToken.TenantID)
+	user, err := s.users.GetByTenantEmail(ctx, loginToken.TenantID, loginToken.Email)
 	if err != nil {
 		return nil, err
 	}
@@ -551,6 +588,7 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 	now := time.Now()
 	if err := s.viewerTok.Create(ctx, &store.ViewerToken{
 		ID:        newID("vt"),
+		TenantID:  user.TenantID,
 		UserID:    user.ID,
 		TokenHash: hashToken(rawViewerToken),
 		ExpiresAt: now.Add(30 * 24 * time.Hour),
@@ -569,6 +607,10 @@ func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken strin
 }
 
 func (s *IdentityService) ManualBind(ctx context.Context, email string) (*store.User, error) {
+	return s.ManualBindForTenant(ctx, store.DefaultTenantID, email)
+}
+
+func (s *IdentityService) ManualBindForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
 	email = normalizeEmail(email)
 	if email == "" {
 		return nil, ErrInvalidEmail
@@ -576,14 +618,14 @@ func (s *IdentityService) ManualBind(ctx context.Context, email string) (*store.
 	if err := s.ensureEmailAllowed(ctx, email); err != nil {
 		return nil, err
 	}
-	user, err := s.users.GetByEmail(ctx, email)
+	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
 	if user != nil {
 		return user, nil
 	}
-	return s.createApprovedUser(ctx, email)
+	return s.createApprovedUserForTenant(ctx, tenantID, email)
 }
 
 func (s *IdentityService) LookupUserByEmail(ctx context.Context, email string) (*store.User, error) {
@@ -591,7 +633,7 @@ func (s *IdentityService) LookupUserByEmail(ctx context.Context, email string) (
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
-	return s.users.GetByEmail(ctx, email)
+	return s.users.GetByTenantEmail(ctx, tenantIDFromContext(ctx), email)
 }
 
 // LookupUserByMobile finds a user by mobile number. It first looks up the
@@ -629,7 +671,7 @@ func (s *IdentityService) LookupUserByMobile(ctx context.Context, mobile string)
 	if enrollment == nil {
 		return nil, nil
 	}
-	return s.users.GetByEmail(ctx, enrollment.Email)
+	return s.users.GetByTenantEmail(ctx, enrollment.TenantID, enrollment.Email)
 }
 
 func (s *IdentityService) IsEmailBlocked(ctx context.Context, email string) (bool, error) {
@@ -640,7 +682,7 @@ func (s *IdentityService) IsEmailBlocked(ctx context.Context, email string) (boo
 	if s.blocks == nil {
 		return false, nil
 	}
-	item, err := s.blocks.GetByEmail(ctx, email)
+	item, err := s.blocks.GetByTenantEmail(ctx, tenantIDFromContext(ctx), email)
 	if err != nil {
 		return false, err
 	}
@@ -661,6 +703,10 @@ func (s *IdentityService) BuildPWAEntryURL(email string) string {
 
 func (s *IdentityService) ListUsers(ctx context.Context) ([]*store.User, error) {
 	return s.users.List(ctx)
+}
+
+func (s *IdentityService) ListUsersForTenant(ctx context.Context, tenantID string) ([]*store.User, error) {
+	return s.users.ListByTenant(ctx, tenantID)
 }
 
 func (s *IdentityService) EnrollmentMode(ctx context.Context) (string, error) {
@@ -691,6 +737,7 @@ func (s *IdentityService) AddBlockedEmail(ctx context.Context, email, reason str
 	now := time.Now()
 	return s.blocks.Create(ctx, &store.EmailBlockItem{
 		ID:        newID("blk"),
+		TenantID:  tenantIDFromContext(ctx),
 		Email:     email,
 		Reason:    strings.TrimSpace(reason),
 		CreatedAt: now,
@@ -702,7 +749,7 @@ func (s *IdentityService) ListBlockedEmails(ctx context.Context) ([]*store.Email
 	if s.blocks == nil {
 		return []*store.EmailBlockItem{}, nil
 	}
-	return s.blocks.List(ctx)
+	return s.blocks.ListByTenant(ctx, tenantIDFromContext(ctx))
 }
 
 func (s *IdentityService) RemoveBlockedEmail(ctx context.Context, email string) error {
@@ -713,7 +760,7 @@ func (s *IdentityService) RemoveBlockedEmail(ctx context.Context, email string) 
 	if s.blocks == nil {
 		return nil
 	}
-	return s.blocks.DeleteByEmail(ctx, email)
+	return s.blocks.DeleteByTenantEmail(ctx, tenantIDFromContext(ctx), email)
 }
 
 func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, rawToken string) (*MachinePrincipal, error) {
@@ -727,7 +774,7 @@ func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, ra
 	if machine.MachineTokenHash != hashToken(rawToken) {
 		return nil, ErrMachineUnauthorized
 	}
-	return &MachinePrincipal{UserID: machine.UserID, MachineID: machine.ID}, nil
+	return &MachinePrincipal{TenantID: machine.TenantID, UserID: machine.UserID, MachineID: machine.ID}, nil
 }
 
 // IssueViewerTokenForUser creates a new viewer token for the given user.
@@ -735,6 +782,14 @@ func (s *IdentityService) AuthenticateMachine(ctx context.Context, machineID, ra
 // (which only have a machine_token) can obtain a viewer_token without
 // re-enrolling.
 func (s *IdentityService) IssueViewerTokenForUser(ctx context.Context, userID string) (string, error) {
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	tenantID := store.DefaultTenantID
+	if user != nil && strings.TrimSpace(user.TenantID) != "" {
+		tenantID = user.TenantID
+	}
 	raw, err := randomToken(32)
 	if err != nil {
 		return "", err
@@ -742,6 +797,7 @@ func (s *IdentityService) IssueViewerTokenForUser(ctx context.Context, userID st
 	now := time.Now()
 	if err := s.viewerTok.Create(ctx, &store.ViewerToken{
 		ID:        newID("vt"),
+		TenantID:  tenantID,
 		UserID:    userID,
 		TokenHash: hashToken(raw),
 		ExpiresAt: now.Add(30 * 24 * time.Hour),
@@ -779,13 +835,18 @@ func (s *IdentityService) AuthenticateViewer(ctx context.Context, rawToken strin
 		_ = s.viewerTok.ExtendExpiry(ctx, viewerToken.ID, time.Now().Add(30*24*time.Hour))
 	}
 
-	return &ViewerPrincipal{UserID: user.ID, Email: user.Email}, nil
+	return &ViewerPrincipal{TenantID: user.TenantID, UserID: user.ID, Email: user.Email}, nil
 }
 
 func (s *IdentityService) createApprovedUser(ctx context.Context, email string) (*store.User, error) {
+	return s.createApprovedUserForTenant(ctx, tenantIDFromContext(ctx), email)
+}
+
+func (s *IdentityService) createApprovedUserForTenant(ctx context.Context, tenantID, email string) (*store.User, error) {
 	now := time.Now()
 	user := &store.User{
 		ID:               newID("u"),
+		TenantID:         tenantID,
 		Email:            email,
 		SN:               generateSN(),
 		Status:           "active",
@@ -796,6 +857,7 @@ func (s *IdentityService) createApprovedUser(ctx context.Context, email string) 
 	if err := s.users.Create(ctx, user); err != nil {
 		return nil, err
 	}
+	ctx = WithTenant(ctx, tenantID)
 	if err := s.ensureDefaultLLMServiceForUser(ctx, email); err != nil {
 		return nil, err
 	}
@@ -819,18 +881,19 @@ func (s *IdentityService) grantEmailConfirmedBenefitForUser(ctx context.Context,
 
 // ListPendingEnrollments returns all enrollment requests with status "pending".
 func (s *IdentityService) ListPendingEnrollments(ctx context.Context) ([]*store.UserEnrollment, error) {
-	return s.enrollments.ListPending(ctx)
+	return s.enrollments.ListPendingByTenant(ctx, tenantIDFromContext(ctx))
 }
 
 // ListAllEnrollments returns all enrollment requests regardless of status.
 func (s *IdentityService) ListAllEnrollments(ctx context.Context) ([]*store.UserEnrollment, error) {
-	return s.enrollments.ListAll(ctx)
+	return s.enrollments.ListAllByTenant(ctx, tenantIDFromContext(ctx))
 }
 
 // ApproveEnrollment approves a pending enrollment and creates an active user.
 func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*store.User, *store.UserEnrollment, error) {
 	// We need to find the enrollment to get the email - list all pending and find by ID
-	pending, err := s.enrollments.ListPending(ctx)
+	tenantID := tenantIDFromContext(ctx)
+	pending, err := s.enrollments.ListPendingByTenant(ctx, tenantID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -844,11 +907,15 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 	if target == nil {
 		return nil, nil, fmt.Errorf("enrollment not found or not pending: %s", id)
 	}
+	if strings.TrimSpace(target.TenantID) != "" {
+		tenantID = target.TenantID
+		ctx = WithTenant(ctx, tenantID)
+	}
 	if err := s.enrollments.Approve(ctx, id, time.Now()); err != nil {
 		return nil, nil, err
 	}
 	// Check if user already exists (e.g. re-approval)
-	existing, _ := s.users.GetByEmail(ctx, target.Email)
+	existing, _ := s.users.GetByTenantEmail(ctx, tenantID, target.Email)
 	if existing != nil {
 		existing.EnrollmentStatus = "approved"
 		existing.Status = "active"
@@ -860,7 +927,7 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 		s.syncUserRoute(ctx, target.Email)
 		return existing, target, nil
 	}
-	user, err := s.createApprovedUser(ctx, target.Email)
+	user, err := s.createApprovedUserForTenant(ctx, tenantID, target.Email)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -877,7 +944,7 @@ func (s *IdentityService) RejectEnrollment(ctx context.Context, id string) error
 
 // ListPendingLoginTokens returns all unconsumed, non-expired login tokens.
 func (s *IdentityService) ListPendingLoginTokens(ctx context.Context) ([]*store.LoginToken, error) {
-	return s.loginTok.ListPending(ctx)
+	return s.loginTok.ListPendingByTenant(ctx, tenantIDFromContext(ctx))
 }
 
 // AdminConfirmLoginByEmail consumes the pending login token for the given email
@@ -890,7 +957,8 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 	}
 
 	// Ensure the user exists (create if needed).
-	user, err := s.users.GetByEmail(ctx, email)
+	tenantID := tenantIDFromContext(ctx)
+	user, err := s.users.GetByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -902,7 +970,7 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 	}
 
 	// Also approve any pending enrollment for this email.
-	if pendingEnr, _ := s.enrollments.GetPendingByEmail(ctx, email); pendingEnr != nil {
+	if pendingEnr, _ := s.enrollments.GetPendingByTenantEmail(ctx, tenantID, email); pendingEnr != nil {
 		_ = s.enrollments.Approve(ctx, pendingEnr.ID, time.Now())
 	}
 
@@ -917,7 +985,7 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 // (best-effort, errors are ignored). This allows the PWA poll to see the token
 // as consumed and return "confirmed" with an access token.
 func (s *IdentityService) consumePendingLoginToken(ctx context.Context, email string) {
-	pending, err := s.loginTok.GetPendingByEmail(ctx, email)
+	pending, err := s.loginTok.GetPendingByTenantEmail(ctx, tenantIDFromContext(ctx), email)
 	if err != nil || pending == nil {
 		return
 	}
@@ -925,7 +993,11 @@ func (s *IdentityService) consumePendingLoginToken(ctx context.Context, email st
 }
 
 func (s *IdentityService) ensurePendingApproval(ctx context.Context, email, message string) (*EnrollmentResult, error) {
-	pending, err := s.enrollments.GetPendingByEmail(ctx, email)
+	return s.ensurePendingApprovalForTenant(ctx, tenantIDFromContext(ctx), email, message)
+}
+
+func (s *IdentityService) ensurePendingApprovalForTenant(ctx context.Context, tenantID, email, message string) (*EnrollmentResult, error) {
+	pending, err := s.enrollments.GetPendingByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return nil, err
 	}
@@ -933,6 +1005,7 @@ func (s *IdentityService) ensurePendingApproval(ctx context.Context, email, mess
 	if pending == nil {
 		if err := s.enrollments.Create(ctx, &store.UserEnrollment{
 			ID:        newID("enr"),
+			TenantID:  tenantID,
 			Email:     email,
 			Status:    "pending",
 			Note:      message,
@@ -973,6 +1046,7 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 	} else {
 		machine := &store.Machine{
 			ID:               machineID,
+			TenantID:         user.TenantID,
 			UserID:           user.ID,
 			ClientID:         clientID,
 			Name:             defaultIfEmpty(machineName, "MaClaw Desktop"),
@@ -995,6 +1069,7 @@ func (s *IdentityService) issueMachineForUser(ctx context.Context, user *store.U
 	}
 	if err := s.viewerTok.Create(ctx, &store.ViewerToken{
 		ID:        newID("vt"),
+		TenantID:  user.TenantID,
 		UserID:    user.ID,
 		TokenHash: hashToken(rawViewerToken),
 		ExpiresAt: now.Add(30 * 24 * time.Hour),
@@ -1027,7 +1102,7 @@ func (s *IdentityService) ensureEmailAllowed(ctx context.Context, email string) 
 	if s.blocks == nil {
 		return nil
 	}
-	item, err := s.blocks.GetByEmail(ctx, email)
+	item, err := s.blocks.GetByTenantEmail(ctx, tenantIDFromContext(ctx), email)
 	if err != nil {
 		return err
 	}

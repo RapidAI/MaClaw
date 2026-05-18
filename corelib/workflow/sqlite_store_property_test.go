@@ -18,7 +18,7 @@ func newMemoryStore(t *testing.T) *SQLiteStore {
 	return store
 }
 
-// Feature: maclaw-agent-workflow, Property 13: 持久化往返一致性
+// Feature: maclaw-agent-workflow, Property 13: persistence round-trip consistency
 // For any valid WorkflowState and UnderstandingSession, Save then Load
 // returns equivalent data.
 // **Validates: Requirements 7.1, 7.2, 7.3, 7.4**
@@ -157,7 +157,7 @@ func TestProperty13_PersistenceRoundTrip(t *testing.T) {
 	}
 }
 
-// Feature: maclaw-agent-workflow, Property 14: 过期记录清理正确性
+// Feature: maclaw-agent-workflow, Property 14: expired record cleanup correctness
 // For any set of WorkflowStates, CleanupExpired correctly removes old
 // completed/cancelled records and preserves active records.
 // **Validates: Requirements 7.5**
@@ -165,20 +165,20 @@ func TestProperty14_CleanupExpiredCorrectness(t *testing.T) {
 	store := newMemoryStore(t)
 
 	now := time.Now().Truncate(time.Second)
-	oldTime := now.Add(-8 * 24 * time.Hour) // 8 days ago
+	oldTime := now.Add(-8 * 24 * time.Hour)    // 8 days ago
 	recentTime := now.Add(-1 * 24 * time.Hour) // 1 day ago
 
 	// Insert records with various statuses and ages
 	records := []struct {
-		id        string
-		userID    string
-		status    WorkflowStatus
-		updatedAt time.Time
+		id            string
+		userID        string
+		status        WorkflowStatus
+		updatedAt     time.Time
 		shouldSurvive bool
 	}{
 		{"wf-old-completed", "u1", WorkflowCompleted, oldTime, false},
 		{"wf-old-cancelled", "u2", WorkflowCancelled, oldTime, false},
-		{"wf-old-active", "u3", WorkflowActive, oldTime, true},          // active always preserved
+		{"wf-old-active", "u3", WorkflowActive, oldTime, true},             // active always preserved
 		{"wf-recent-completed", "u4", WorkflowCompleted, recentTime, true}, // recent preserved
 		{"wf-recent-active", "u5", WorkflowActive, recentTime, true},
 	}
@@ -223,6 +223,131 @@ func TestProperty14_CleanupExpiredCorrectness(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_PersistsExtendedWorkflowStateFields(t *testing.T) {
+	store := newMemoryStore(t)
+	now := time.Now().Truncate(time.Second)
+	state := &WorkflowState{
+		ID:           "wf-extended",
+		UserID:       "u-extended",
+		Type:         WorkflowCoding,
+		Intent:       StructuredIntent{Category: WorkflowCoding, Summary: "review contract", Goals: []string{"find risk"}},
+		CurrentPhase: "analysis",
+		PhaseIndex:   1,
+		PhaseOutputs: map[string]string{"intake": "captured"},
+		GateResults:  map[string]*QualityGateResult{},
+		Status:       WorkflowActive,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		PhaseFormData: map[string]interface{}{
+			"jurisdiction": "CA",
+			"urgent":       true,
+		},
+		PhaseFormSubmitted: true,
+		InputReceived:      true,
+		InputPayload: &WorkflowInputPayload{
+			Text:       "source document text",
+			ReceivedAt: now,
+			Attachments: []WorkflowInputAttachment{{
+				Type:     "file",
+				FileName: "contract.pdf",
+				MimeType: "application/pdf",
+				Size:     42,
+			}},
+		},
+		ProjectPath:          "D:/workprj/aicoder/sample",
+		PendingReviewPhaseID: "analysis",
+	}
+
+	if err := store.SaveWorkflowState(state); err != nil {
+		t.Fatalf("SaveWorkflowState failed: %v", err)
+	}
+
+	loaded, err := store.LoadWorkflowState(state.UserID)
+	if err != nil {
+		t.Fatalf("LoadWorkflowState failed: %v", err)
+	}
+	assertExtendedWorkflowState(t, loaded, now)
+
+	active, err := store.ListActiveWorkflows()
+	if err != nil {
+		t.Fatalf("ListActiveWorkflows failed: %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("expected 1 active workflow, got %d", len(active))
+	}
+	assertExtendedWorkflowState(t, active[0], now)
+}
+
+func assertExtendedWorkflowState(t *testing.T, state *WorkflowState, receivedAt time.Time) {
+	t.Helper()
+	if state == nil {
+		t.Fatal("workflow state is nil")
+	}
+	if !state.InputReceived {
+		t.Fatal("InputReceived was not persisted")
+	}
+	if state.InputPayload == nil {
+		t.Fatal("InputPayload was not persisted")
+	}
+	if state.InputPayload.Text != "source document text" || !state.InputPayload.ReceivedAt.Equal(receivedAt) {
+		t.Fatalf("unexpected input payload: %#v", state.InputPayload)
+	}
+	if len(state.InputPayload.Attachments) != 1 || state.InputPayload.Attachments[0].FileName != "contract.pdf" {
+		t.Fatalf("unexpected attachments: %#v", state.InputPayload.Attachments)
+	}
+	if state.PhaseFormData["jurisdiction"] != "CA" || state.PhaseFormData["urgent"] != true {
+		t.Fatalf("phase form data was not persisted: %#v", state.PhaseFormData)
+	}
+	if !state.PhaseFormSubmitted {
+		t.Fatal("PhaseFormSubmitted was not persisted")
+	}
+	if state.ProjectPath != "D:/workprj/aicoder/sample" {
+		t.Fatalf("ProjectPath was not persisted: %q", state.ProjectPath)
+	}
+	if state.PendingReviewPhaseID != "analysis" {
+		t.Fatalf("PendingReviewPhaseID was not persisted: %q", state.PendingReviewPhaseID)
+	}
+}
+
+func TestSQLiteStore_PersistsSkippedPhaseFormGate(t *testing.T) {
+	store := newMemoryStore(t)
+	now := time.Now().Truncate(time.Second)
+	state := &WorkflowState{
+		ID:                 "wf-skipped-form",
+		UserID:             "u-skipped-form",
+		Type:               WorkflowCoding,
+		Intent:             StructuredIntent{Category: WorkflowCoding, Summary: "skip optional form"},
+		CurrentPhase:       "requirements",
+		PhaseOutputs:       map[string]string{},
+		GateResults:        map[string]*QualityGateResult{},
+		Status:             WorkflowActive,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		PhaseFormSkipped:   true,
+		PhaseFormSubmitted: false,
+	}
+
+	if err := store.SaveWorkflowState(state); err != nil {
+		t.Fatalf("SaveWorkflowState failed: %v", err)
+	}
+
+	loaded, err := store.LoadWorkflowState(state.UserID)
+	if err != nil {
+		t.Fatalf("LoadWorkflowState failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("LoadWorkflowState returned nil")
+	}
+	if !loaded.PhaseFormSkipped {
+		t.Fatal("PhaseFormSkipped was not persisted")
+	}
+	if loaded.PhaseFormSubmitted {
+		t.Fatal("PhaseFormSubmitted should remain false for a skipped form")
+	}
+	if len(loaded.PhaseFormData) != 0 {
+		t.Fatalf("skipped form should not persist synthetic form data: %#v", loaded.PhaseFormData)
+	}
+}
 func min(a, b int) int {
 	if a < b {
 		return a

@@ -254,14 +254,27 @@ type IMResponseAction struct {
 }
 
 type IMResponseConfirmation struct {
-	ID             string   `json:"id"`
-	Summary        string   `json:"summary"`
-	TaskType       string   `json:"task_type,omitempty"`
-	TargetPaths    []string `json:"target_paths,omitempty"`
-	PlannedActions []string `json:"planned_actions,omitempty"`
-	RiskFlags      []string `json:"risk_flags,omitempty"`
-	RevisionHints  []string `json:"revision_hints,omitempty"`
-	Status         string   `json:"status,omitempty"`
+	ID             string                      `json:"id"`
+	Summary        string                      `json:"summary"`
+	TaskType       string                      `json:"task_type,omitempty"`
+	TargetPaths    []string                    `json:"target_paths,omitempty"`
+	PlannedActions []string                    `json:"planned_actions,omitempty"`
+	RiskFlags      []string                    `json:"risk_flags,omitempty"`
+	RevisionHints  []string                    `json:"revision_hints,omitempty"`
+	Status         string                      `json:"status,omitempty"`
+	Labels         *IMResponseConfirmLabels    `json:"labels,omitempty"`
+}
+
+// IMResponseConfirmLabels carries localized section titles for the
+// confirmation card. The frontend renders these directly instead of
+// hardcoding language-specific strings.
+type IMResponseConfirmLabels struct {
+	Title          string `json:"title"`
+	Status         string `json:"status"`
+	TargetPaths    string `json:"target_paths"`
+	PlannedActions string `json:"planned_actions"`
+	RiskFlags      string `json:"risk_flags"`
+	RevisionHints  string `json:"revision_hints"`
 }
 
 type IMResponseUnfinishedTask struct {

@@ -10,12 +10,13 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func TestCapabilityGapDetector_AutoPublishBlocksRiskySkillBeforePublish(t *testing.T) {
+func TestCapabilityGapDetector_AutoPublishBlocksRiskySkillInStrictMode(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
 	app := &App{testHomeDir: tempHome}
+	app.policyEngine = NewPolicyEngineWithMode("strict")
 	d := NewCapabilityGapDetector(app, NewSkillHubClient(app), NewSkillExecutor(app, nil, nil), nil, nil, corelib.MaclawLLMConfig{})
 
 	err := d.AutoPublishSkill(context.Background(), corelib.NLSkillEntry{

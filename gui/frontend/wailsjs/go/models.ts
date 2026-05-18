@@ -1,5 +1,47 @@
 export namespace main {
 
+	export class VEApprovalCapabilityStatus {
+	    ve_id: string;
+	    has_capability: boolean;
+	    enabled: boolean;
+	    error?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new VEApprovalCapabilityStatus(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ve_id = source["ve_id"];
+	        this.has_capability = source["has_capability"];
+	        this.enabled = source["enabled"];
+	        this.error = source["error"];
+	    }
+	}
+
+	export class ProjectSearchArtifact {
+	    title?: string;
+	    source_type?: string;
+	    source_url?: string;
+	    source_hint?: string;
+	    preview?: string;
+	    updated_at?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ProjectSearchArtifact(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.source_type = source["source_type"];
+	        this.source_url = source["source_url"];
+	        this.source_hint = source["source_hint"];
+	        this.preview = source["preview"];
+	        this.updated_at = source["updated_at"];
+	    }
+	}
+
 	export class ProjectSearchResult {
 	    id: string;
 	    name: string;
@@ -10,6 +52,9 @@ export namespace main {
 	    last_activity: string;
 	    entry_count: number;
 	    pinned: boolean;
+	    archived: boolean;
+	    source_urls?: string[];
+	    recent_artifacts?: ProjectSearchArtifact[];
 
 	    static createFrom(source: any = {}) {
 	        return new ProjectSearchResult(source);
@@ -26,6 +71,97 @@ export namespace main {
 	        this.last_activity = source["last_activity"];
 	        this.entry_count = source["entry_count"];
 	        this.pinned = source["pinned"];
+	        this.archived = source["archived"];
+	        this.source_urls = source["source_urls"];
+	        this.recent_artifacts = this.convertValues(source["recent_artifacts"], ProjectSearchArtifact);
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class ProjectSceneDetail {
+	    project_path: string;
+	    name?: string;
+	    workflow_types?: string[];
+	    tags?: string[];
+	    source_urls?: string[];
+	    recent_artifacts?: ProjectSearchArtifact[];
+	    entry_count: number;
+	    last_activity?: string;
+	    preview?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ProjectSceneDetail(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.project_path = source["project_path"];
+	        this.name = source["name"];
+	        this.workflow_types = source["workflow_types"];
+	        this.tags = source["tags"];
+	        this.source_urls = source["source_urls"];
+	        this.recent_artifacts = this.convertValues(source["recent_artifacts"], ProjectSearchArtifact);
+	        this.entry_count = source["entry_count"];
+	        this.last_activity = source["last_activity"];
+	        this.preview = source["preview"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+
+	export class ProjectContextArtifact {
+	    title?: string;
+	    source_type?: string;
+	    source_url?: string;
+	    source_hint?: string;
+	    preview?: string;
+	    updated_at?: string;
+
+	    static createFrom(source: any = {}) {
+	        return new ProjectContextArtifact(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.title = source["title"];
+	        this.source_type = source["source_type"];
+	        this.source_url = source["source_url"];
+	        this.source_hint = source["source_hint"];
+	        this.preview = source["preview"];
+	        this.updated_at = source["updated_at"];
 	    }
 	}
 
@@ -33,6 +169,7 @@ export namespace main {
 	    project_name: string;
 	    recent_progress: string;
 	    key_artifacts: string[];
+	    recent_artifacts?: ProjectContextArtifact[];
 	    active_workflow: string;
 
 	    static createFrom(source: any = {}) {
@@ -44,8 +181,27 @@ export namespace main {
 	        this.project_name = source["project_name"];
 	        this.recent_progress = source["recent_progress"];
 	        this.key_artifacts = source["key_artifacts"];
+	        this.recent_artifacts = this.convertValues(source["recent_artifacts"], ProjectContextArtifact);
 	        this.active_workflow = source["active_workflow"];
 	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 	export class ProjectConfig {

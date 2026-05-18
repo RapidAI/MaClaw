@@ -396,18 +396,17 @@ func appendMemoryRecall(b *strings.Builder, store *memory.Store, userMessage str
 		relevant = relevant[:maxProactiveRecall]
 	}
 
+	if sceneNav := memory.FormatSceneIndexForPrompt(store.SceneIndex(3), 3, 2); sceneNav != "" {
+		b.WriteString("\n[Scene Index]\n")
+		b.WriteString(sceneNav)
+		b.WriteString("\n")
+	}
+
 	if len(relevant) > 0 {
 		b.WriteString("\n相关记忆（自动召回）:\n")
 		for _, e := range relevant {
-			text := e.CompactForm
-			if text == "" {
-				text = e.Content
-			}
-			runes := []rune(text)
-			if len(runes) > 200 {
-				text = string(runes[:200]) + "…"
-			}
-			fmt.Fprintf(b, "- [%s] %s\n", e.Category, text)
+			b.WriteString(memory.FormatRecallEntryForPrompt(e, 200))
+			b.WriteString("\n")
 		}
 		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。请直接使用以上信息。）\n")
 	}

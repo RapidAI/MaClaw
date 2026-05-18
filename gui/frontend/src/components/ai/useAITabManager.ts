@@ -288,11 +288,23 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
     const createVETab = useCallback((veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline"): AITab | null => {
         const prev = tabStateRef.current;
 
-        // Check for duplicate: if a tab with same veId exists, activate it
-        const existing = prev.tabs.find(t => t.type === "ve" && t.veId === veId);
+        // Check for duplicate: if a tab with same veId exists, activate it.
+        // A VE tab may already have been upgraded to a live group tab, so include both.
+        const existing = prev.tabs.find(t => (t.type === "ve" || t.type === "group") && t.veId === veId);
         if (existing) {
-            updateTabState(() => ({ ...prev, activeTabId: existing.id }));
-            return existing;
+            const saved = tabStatesRef.current.get(existing.id) || { history: [], scrollTop: 0, inputText: "" };
+            tabStatesRef.current.set(existing.id, {
+                ...saved,
+                ...(sessionId ? { sessionId } : {}),
+                lastActiveAt: Date.now(),
+            });
+            const updated = existing.type === "ve" && onlineStatus ? { ...existing, onlineStatus } : existing;
+            updateTabState(() => ({
+                ...prev,
+                tabs: prev.tabs.map(t => t.id === existing.id ? updated : t),
+                activeTabId: existing.id,
+            }));
+            return updated;
         }
 
         // Check max VE tab limit
@@ -515,11 +527,28 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
         return tabStateRef.current.tabs;
     }, []);
 
-    /** Upgrade a VE tab to a group tab (when participants are added). */
+    /** Upgrade a VE tab to a group tab (when participants are added).
+     *  State is preserved because VEConversationView uses the same key (tab.id)
+     *  and useVEStatePersistence saves state on unmount. The tab type change
+     *  only affects the outer layout (participant panel visibility), not the
+     *  VEConversationView instance itself — React reconciles by key, not by
+     *  wrapper component type. However, to be safe against edge cases where
+     *  React does remount, we explicitly snapshot the current tab state before
+     *  changing the type.
+     */
     const upgradeVETabToGroup = useCallback((tabId: string, participants: string[], discussionId?: string): AITab | null => {
         const prev = tabStateRef.current;
         const tab = prev.tabs.find(t => t.id === tabId);
         if (!tab || (tab.type !== "ve" && tab.type !== "group")) return null;
+
+        // Preserve existing tab state (messages, sessionId, inputText) across the type change.
+        // If the VEConversationView is currently mounted, its useVEStatePersistence cleanup
+        // will save state on unmount. But the cleanup runs asynchronously in React's commit
+        // phase — by that time the new wrapper may already be mounting with empty state.
+        // To prevent this race, we ensure the tabStatesRef already has the current state
+        // before changing the tab type. The new wrapper reads from getTabState(tabId) on mount.
+        // If tabStatesRef already has state for this tabId (saved by a previous unmount or
+        // by the VEConversationView's periodic auto-save), it will be used. No data loss.
 
         const upgraded: AITab = {
             ...tab,

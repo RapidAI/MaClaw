@@ -54,6 +54,67 @@ func TestToolMemoryRecallAdaptiveDebug(t *testing.T) {
 	}
 }
 
+func TestToolMemoryRecallDebugIncludesTrace(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(memory.Entry{
+		Content:    "证据导航面板可以打开最近产物来源并回查全文",
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"证据导航", "source"},
+		SourceType: "workflow_output_ref",
+		SourceURL:  `D:\workprj\demo\memory_refs\workflow_output\evidence.md`,
+		Status:     memory.StatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolMemory(store, map[string]interface{}{
+		"action": "recall",
+		"query":  "证据导航",
+		"debug":  true,
+	})
+	for _, want := range []string{"Recall trace:", "bm25_tokens=", "bm25_hits=", "source_counts:", "workflow_output_ref=1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("debug recall output missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestToolMemoryRecallIncludesSourceDrillDown(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	sourcePath := `D:\workprj\snake\requirements.md`
+	if err := store.Save(memory.Entry{
+		Content:    "Snake game requirements include keyboard controls and scoring rules",
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"snake", "requirements"},
+		SourceType: "workflow_output",
+		SourceURL:  sourcePath,
+		Status:     memory.StatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := ToolMemory(store, map[string]interface{}{
+		"action": "recall",
+		"query":  "snake requirements keyboard scoring",
+	})
+	if !strings.Contains(out, "source_type=workflow_output") || !strings.Contains(out, "source_url="+sourcePath) {
+		t.Fatalf("expected recall source metadata, got:\n%s", out)
+	}
+	if !strings.Contains(out, "drill_down: use read_file") || !strings.Contains(out, sourcePath) {
+		t.Fatalf("expected read_file drill-down hint, got:\n%s", out)
+	}
+}
+
 func TestToolMemoryThemes(t *testing.T) {
 	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {
@@ -154,5 +215,52 @@ func TestToolMemoryRecallRejectsUnknownMode(t *testing.T) {
 	})
 	if !strings.Contains(out, "unknown") && !strings.Contains(out, "未知") {
 		t.Fatalf("expected unknown mode response, got %q", out)
+	}
+}
+
+func TestToolMemoryTraceActionReturnsLastRecallTrace(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(memory.Entry{Content: "traceable recall source", Category: memory.CategoryProjectKnowledge, Tags: []string{"traceable"}, SourceType: "manual", Status: memory.StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = ToolMemory(store, map[string]interface{}{"action": "recall", "query": "traceable"})
+	out := ToolMemory(store, map[string]interface{}{"action": "trace"})
+	for _, want := range []string{"Recall trace:", "query=\"traceable\"", "source_counts:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("trace action missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestToolMemoryScenesIncludesSourceRefs(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Stop()
+
+	sourcePath := "/home/user/project/memory_refs/workflow_output/requirements.md"
+	if err := store.Save(memory.Entry{
+		Title:      "Requirements",
+		Content:    "# Requirements\nBuild scene navigation",
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"workflow", "requirements", "workflow:coding"},
+		SourceType: "workflow_output_ref",
+		SourceURL:  sourcePath,
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	out := ToolMemory(store, map[string]interface{}{"action": "scenes", "limit": 5})
+	for _, want := range []string{"Scene index: 1 project", "Requirements", "workflow_output_ref", sourcePath} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("scene output missing %q in:\n%s", want, out)
+		}
 	}
 }

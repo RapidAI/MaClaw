@@ -12,6 +12,7 @@ import (
 
 type enrollmentResponse struct {
 	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
 	Email     string `json:"email"`
 	Status    string `json:"status"`
 	Note      string `json:"note"`
@@ -29,7 +30,7 @@ type rejectEnrollmentRequest struct {
 
 func ListAllEnrollmentsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := identity.ListAllEnrollments(r.Context())
+		items, err := identity.ListAllEnrollments(auth.WithTenant(r.Context(), RequestTenantID(r)))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -38,6 +39,7 @@ func ListAllEnrollmentsHandler(identity *auth.IdentityService) http.HandlerFunc 
 		for i, item := range items {
 			resp[i] = enrollmentResponse{
 				ID:        item.ID,
+				TenantID:  item.TenantID,
 				Email:     item.Email,
 				Status:    item.Status,
 				Note:      item.Note,
@@ -51,7 +53,7 @@ func ListAllEnrollmentsHandler(identity *auth.IdentityService) http.HandlerFunc 
 
 func ListPendingEnrollmentsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := identity.ListPendingEnrollments(r.Context())
+		items, err := identity.ListPendingEnrollments(auth.WithTenant(r.Context(), RequestTenantID(r)))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -60,6 +62,7 @@ func ListPendingEnrollmentsHandler(identity *auth.IdentityService) http.HandlerF
 		for i, item := range items {
 			resp[i] = enrollmentResponse{
 				ID:        item.ID,
+				TenantID:  item.TenantID,
 				Email:     item.Email,
 				Status:    item.Status,
 				Note:      item.Note,
@@ -82,7 +85,8 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, securitySvc *secur
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Enrollment ID is required")
 			return
 		}
-		user, _, err := identity.ApproveEnrollment(r.Context(), req.ID)
+		ctx := auth.WithTenant(r.Context(), RequestTenantID(r))
+		user, _, err := identity.ApproveEnrollment(ctx, req.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "APPROVE_FAILED", err.Error())
 			return
@@ -92,7 +96,7 @@ func ApproveEnrollmentHandler(identity *auth.IdentityService, securitySvc *secur
 		// Admin approval doesn't include a group selection, so selectedGroupID is empty.
 		// The user will be assigned based on org_structure_enabled and default_group_id.
 		if securitySvc != nil && user != nil {
-			if err := securitySvc.AssignNewUser(r.Context(), user.Email, ""); err != nil {
+			if err := securitySvc.AssignNewUser(ctx, user.Email, ""); err != nil {
 				log.Printf("[enroll/approve] security group assignment failed for %s: %v", user.Email, err)
 			}
 		}
@@ -125,6 +129,7 @@ func RejectEnrollmentHandler(identity *auth.IdentityService) http.HandlerFunc {
 
 type pendingLoginResponse struct {
 	ID        string `json:"id"`
+	TenantID  string `json:"tenant_id"`
 	Email     string `json:"email"`
 	Purpose   string `json:"purpose"`
 	ExpiresAt string `json:"expires_at"`
@@ -135,7 +140,7 @@ type pendingLoginResponse struct {
 // the admin can see which PWA users are waiting for email confirmation.
 func ListPendingLoginsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := identity.ListPendingLoginTokens(r.Context())
+		items, err := identity.ListPendingLoginTokens(auth.WithTenant(r.Context(), RequestTenantID(r)))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -144,6 +149,7 @@ func ListPendingLoginsHandler(identity *auth.IdentityService) http.HandlerFunc {
 		for i, item := range items {
 			resp[i] = pendingLoginResponse{
 				ID:        item.ID,
+				TenantID:  item.TenantID,
 				Email:     item.Email,
 				Purpose:   item.Purpose,
 				ExpiresAt: item.ExpiresAt.Format(time.RFC3339),
@@ -171,7 +177,7 @@ func AdminConfirmLoginHandler(identity *auth.IdentityService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email is required")
 			return
 		}
-		user, err := identity.AdminConfirmLoginByEmail(r.Context(), req.Email)
+		user, err := identity.AdminConfirmLoginByEmail(auth.WithTenant(r.Context(), RequestTenantID(r)), req.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CONFIRM_FAILED", err.Error())
 			return

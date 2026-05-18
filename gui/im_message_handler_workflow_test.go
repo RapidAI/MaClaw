@@ -163,17 +163,17 @@ func TestWorkflowConfirmation_ApproveStartsWorkflow(t *testing.T) {
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
-	}, "")
+	}, "", "zh")
 	handler.confirmationStore.set(item)
 
 	msg := &IMUserMessage{UserID: userID, Platform: "desktop", Text: buildConfirmationActionCommand("confirm", item.ID), UIAction: true}
 	trimmed := strings.TrimSpace(msg.Text)
 	result := handler.handlePendingExecutionConfirmation(msg, &trimmed)
-	if result.Handled {
-		t.Fatalf("non-input workflow should continue into agent loop after startup, got handled response %#v", result.Response)
+	if !result.Handled || result.Response == nil || !strings.Contains(result.Response.Text, "right-side panel") {
+		t.Fatalf("confirmed workflow should show the structured phase form, got %#v", result)
 	}
-	if !result.ConfirmedResume || !result.WorkflowAgentLoop {
-		t.Fatalf("expected confirmed workflow agent loop marker, got %#v", result)
+	if result.WorkflowAgentLoop {
+		t.Fatalf("form-first workflow should not start the agent loop before form submission, got %#v", result)
 	}
 	if !engine.HasActiveWorkflow(userID) {
 		t.Fatal("confirmed workflow should create an active workflow")
@@ -191,7 +191,7 @@ func TestWorkflowConfirmation_DirectExecutionSkipsWorkflowOnce(t *testing.T) {
 		Summary:    "build a project",
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
-	}, "")
+	}, "", "zh")
 	handler.confirmationStore.set(item)
 	msg := &IMUserMessage{UserID: userID, Platform: "desktop", Text: buildConfirmationActionCommand("cancel", item.ID), UIAction: true}
 	trimmed := strings.TrimSpace(msg.Text)
@@ -221,7 +221,7 @@ func TestWorkflowConfirmation_DirectExecutionUsesSummaryWhenGoalsMissing(t *test
 		Category:   workflow.WorkflowCoding,
 		Summary:    "Build the login flow and tests",
 		Confidence: 0.9,
-	}, "")
+	}, "", "zh")
 	handler.confirmationStore.set(item)
 	msg := &IMUserMessage{UserID: userID, Platform: "desktop", Text: buildConfirmationActionCommand("cancel", item.ID), UIAction: true}
 	trimmed := strings.TrimSpace(msg.Text)
@@ -242,7 +242,7 @@ func TestWorkflowConfirmation_FreeformRevisionReentersRouting(t *testing.T) {
 		Category:   workflow.WorkflowCoding,
 		Goals:      []string{"build a project"},
 		Confidence: 0.9,
-	}, "")
+	}, "", "zh")
 	handler.confirmationStore.set(item)
 	msg := &IMUserMessage{UserID: userID, Platform: "desktop", Text: "Actually make it a presentation workflow"}
 	trimmed := strings.TrimSpace(msg.Text)
@@ -265,7 +265,7 @@ func TestWorkflowConfirmation_ExplicitGoalTakesPrecedenceOverSummary(t *testing.
 		Summary:    "Internal routing metadata",
 		Goals:      []string{"build a project"},
 		Confidence: 0.92,
-	}, "")
+	}, "", "zh")
 	if strings.Contains(item.Summary, "Internal routing metadata") {
 		t.Fatalf("workflow confirmation should ignore summary when explicit goal exists: %q", item.Summary)
 	}
@@ -280,7 +280,7 @@ func TestWorkflowConfirmation_NormalizesEmptyGoals(t *testing.T) {
 		Summary:    "summary text",
 		Goals:      []string{"", "  real task  "},
 		Confidence: 0.92,
-	}, "")
+	}, "", "zh")
 	if item.OriginalText != "real task" {
 		t.Fatalf("expected first non-empty goal as original text, got %q", item.OriginalText)
 	}
@@ -643,5 +643,310 @@ func TestWorkflowToolExecutionGuardHonorsSkipNeedsConfirmGate(t *testing.T) {
 
 	if result.FailureKind == toolFailurePolicyRejected {
 		t.Fatalf("skip gate should bypass workflow policy rejection, got %q", result.Text)
+	}
+}
+
+func TestWorkflowAttachmentBypass_AllowsRequiredWorkflowInput(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-input-attachment"
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowContractReview,
+		Summary:  "review uploaded contract",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	bypass := workflowAttachmentBypass(engine, userID, []MessageAttachment{{
+		Type:     "image",
+		FileName: "contract.png",
+		MimeType: "image/png",
+		Size:     64,
+	}}, "")
+	if bypass {
+		t.Fatal("attachment must be routed into a workflow that is waiting for required input")
+	}
+}
+
+func TestRouteWorkflowIMMessageSubmitsWaitingInputAfterInterception(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-route-input-attachment"
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowContractReview,
+		Summary:  "review uploaded contract",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	result := handler.routeWorkflowIMMessage(IMUserMessage{
+		UserID: userID,
+		Text:   "",
+		Attachments: []MessageAttachment{{
+			Type:     "file",
+			FileName: "contract.pdf",
+			MimeType: "application/pdf",
+			Size:     4096,
+		}},
+	}, "", false, false)
+	if result.Response != nil || !result.WorkflowAgentLoop {
+		t.Fatalf("attachment input should start workflow agent loop without immediate response: %#v", result)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || !ws.InputReceived || ws.InputPayload == nil || len(ws.InputPayload.Attachments) != 1 {
+		t.Fatalf("workflow attachment input was not persisted: %#v", ws)
+	}
+	if ws.InputPayload.Attachments[0].FileName != "contract.pdf" {
+		t.Fatalf("unexpected attachment payload: %#v", ws.InputPayload.Attachments)
+	}
+}
+func TestSubmitWorkflowInputIfWaitingPersistsPayloadAndStartsLoop(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-submit-input"
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowContractReview,
+		Summary:  "review uploaded contract",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp, handled := handler.submitWorkflowInputIfWaiting(engine, userID, "contract body", []MessageAttachment{{
+		Type:     "file",
+		FileName: "contract.docx",
+		MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		Size:     2048,
+	}}, "")
+	if !handled || resp != nil {
+		t.Fatalf("expected workflow input to be consumed and agent loop to continue, handled=%v resp=%#v", handled, resp)
+	}
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || !ws.InputReceived || ws.InputPayload == nil {
+		t.Fatalf("workflow input payload was not persisted: %#v", ws)
+	}
+	if ws.InputPayload.Text != "contract body" || len(ws.InputPayload.Attachments) != 1 {
+		t.Fatalf("unexpected workflow input payload: %#v", ws.InputPayload)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+		t.Fatal("workflow agent loop marker was not set after input submission")
+	}
+	prompt, ok := handler.stashedPhasePrompt.Load(userID)
+	if !ok || !strings.Contains(prompt.(string), "contract.docx") {
+		t.Fatalf("stashed phase prompt should contain submitted input evidence, got %#v", prompt)
+	}
+}
+
+func TestSubmitWorkflowInputIfWaitingStopsAtFirstPhaseFormGate(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-submit-input-form-gate"
+	workflowType := workflow.WorkflowType("gui_input_form_gate_test")
+	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:          workflowType,
+		Name:          "gui input form gate test",
+		Description:   "test template",
+		RequiresInput: &workflow.InputRequirement{Description: "source document", AcceptText: true},
+		Phases: []workflow.PhaseTemplate{{
+			ID:          "collect_context",
+			Name:        "Collect Context",
+			Prompt:      "collect context",
+			Deliverable: "context document",
+			InputSchema: &workflow.PhaseInputSchema{Title: "Context", Fields: []workflow.PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			ToolPolicy:  workflow.ToolFilterDocOnly,
+		}},
+	})
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "review source"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp, handled := handler.submitWorkflowInputIfWaiting(engine, userID, "source text", nil, "")
+	if !handled || resp == nil || !strings.Contains(resp.Text, "right-side panel") {
+		t.Fatalf("input should return form guidance instead of starting loop, handled=%v resp=%#v", handled, resp)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
+		t.Fatal("form-gated input must not set workflow agent loop marker")
+	}
+	if _, ok := handler.stashedPhasePrompt.Load(userID); ok {
+		t.Fatal("form-gated input must not stash a phase prompt before form submission")
+	}
+}
+
+func TestSubmitWorkflowInputIfWaitingIMUsesTextFormGate(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-submit-input-form-gate-im"
+	workflowType := workflow.WorkflowType("gui_input_form_gate_im_test")
+	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:          workflowType,
+		Name:          "gui input form gate im test",
+		Description:   "test template",
+		RequiresInput: &workflow.InputRequirement{Description: "source document", AcceptText: true},
+		Phases: []workflow.PhaseTemplate{{
+			ID:          "collect_context",
+			Name:        "Collect Context",
+			Prompt:      "collect context",
+			Deliverable: "context document",
+			InputSchema: &workflow.PhaseInputSchema{Title: "Context", Fields: []workflow.PhaseInputField{{Name: "goal", Label: "Goal", Type: "text", Required: true}}},
+			ToolPolicy:  workflow.ToolFilterDocOnly,
+		}},
+	})
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "review source"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+
+	resp, handled := handler.submitWorkflowInputIfWaiting(engine, userID, "source text", nil, "weixin")
+	if !handled || resp == nil {
+		t.Fatalf("IM input should return text form guidance, handled=%v resp=%#v", handled, resp)
+	}
+	if strings.Contains(resp.Text, "right-side panel") {
+		t.Fatalf("IM input form guidance must not mention desktop side panel: %q", resp.Text)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
+		t.Fatal("IM form-gated input must not set workflow agent loop marker")
+	}
+}
+
+func TestCaptureWorkflowDocAfterAgentLoopAutoAdvancesNonConfirmPhase(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-auto-advance-capture"
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build a desktop app",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := engine.AdvancePhase(userID); err != nil {
+			t.Fatalf("AdvancePhase %d failed: %v", i, err)
+		}
+	}
+	engineState := engine.GetActiveWorkflow(userID)
+	if engineState == nil || engineState.CurrentPhase != workflow.PhaseCodingImplementation {
+		t.Fatalf("expected implementation phase before capture, got %#v", engineState)
+	}
+
+	handler.captureWorkflowDocAfterAgentLoop(IMUserMessage{UserID: userID}, &IMAgentResponse{Text: reviewStateValidContentGUI()}, true)
+
+	ws := engine.GetActiveWorkflow(userID)
+	if ws == nil || ws.CurrentPhase != workflow.PhaseCodingReview {
+		t.Fatalf("non-confirm phase should auto-advance to review, got %#v", ws)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+		t.Fatal("next phase agent loop marker was not set")
+	}
+	if prompt, ok := handler.stashedPhasePrompt.Load(userID); !ok || strings.TrimSpace(prompt.(string)) == "" {
+		t.Fatalf("next phase prompt was not stashed, got %#v", prompt)
+	}
+}
+
+func reviewStateValidContentGUI() string {
+	return "# Phase Output\n\n- Functional item A\n- Functional item B\n- Functional item C\n\nThis document is long enough to pass the minimum quality gate and exercise GUI capture auto-advance behavior."
+}
+
+func TestWorkflowReviewAdvanceIMUsesTextFormGate(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-review-advance-im-form"
+	workflowType := workflow.WorkflowType("gui_review_form_gate_im_test")
+	engine.GetRegistry().Register(&workflow.WorkflowTemplate{
+		Type:        workflowType,
+		Name:        "gui review form gate im test",
+		Description: "test template",
+		Phases: []workflow.PhaseTemplate{
+			{ID: "reviewed", Name: "Reviewed", Prompt: "make reviewed output", Deliverable: "reviewed output", NeedsConfirm: true, ToolPolicy: workflow.ToolFilterDocOnly},
+			{
+				ID:          "collect_more",
+				Name:        "Collect More",
+				Prompt:      "collect more",
+				Deliverable: "more context",
+				InputSchema: &workflow.PhaseInputSchema{Title: "More", Fields: []workflow.PhaseInputField{{Name: "scope", Label: "Scope", Type: "text", Required: true}}},
+				ToolPolicy:  workflow.ToolFilterDocOnly,
+			},
+		},
+	})
+	_, err := engine.StartWorkflow(userID, workflow.StructuredIntent{Category: workflowType, Summary: "test"})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	if phaseID, err := engine.SavePhaseOutput(userID, reviewStateValidContentGUI()); err != nil || phaseID != "reviewed" {
+		t.Fatalf("saved phase=%q err=%v", phaseID, err)
+	}
+
+	resp := handler.applyWorkflowReviewIntent(engine, userID, workflow.ReviewIntentConfirm, "确认", "weixin")
+	if resp == nil || strings.Contains(resp.Text, "right-side panel") || !strings.Contains(resp.Text, "1.") {
+		t.Fatalf("IM review advance should return numbered text form guidance, got %#v", resp)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); ok {
+		t.Fatal("review advance into form phase must not start agent loop before form details")
+	}
+}
+
+func TestWorkflowConfirmation_IMChannelUsesTextFormGuidance(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	engine := handler.app.workflowEngine
+	userID := "test-confirm-start-im"
+	item := buildPendingWorkflowConfirmation(userID, "build a project", workflow.StructuredIntent{
+		Category:   workflow.WorkflowCoding,
+		Summary:    "build a project",
+		Goals:      []string{"build a project"},
+		Confidence: 0.9,
+	}, "", "zh")
+	handler.confirmationStore.set(item)
+
+	msg := &IMUserMessage{UserID: userID, Platform: "weixin", Text: buildConfirmationActionCommand("confirm", item.ID), UIAction: true}
+	trimmed := strings.TrimSpace(msg.Text)
+	result := handler.handlePendingExecutionConfirmation(msg, &trimmed)
+	if !result.Handled || result.Response == nil {
+		t.Fatalf("confirmed IM workflow should return text guidance, got %#v", result)
+	}
+	if strings.Contains(result.Response.Text, "right-side panel") {
+		t.Fatalf("IM workflow must not ask for a desktop-only side panel, got %q", result.Response.Text)
+	}
+	if !strings.Contains(result.Response.Text, "1.") {
+		t.Fatalf("IM workflow should provide numbered text guidance, got %q", result.Response.Text)
+	}
+	if result.WorkflowAgentLoop {
+		t.Fatalf("form guidance should wait for user-provided fields before agent loop, got %#v", result)
+	}
+	if !engine.HasActiveWorkflow(userID) {
+		t.Fatal("confirmed workflow should create an active workflow")
+	}
+}
+
+func TestWorkflowConfirmation_IMChannelGuidanceThenTextStartsPhaseLoop(t *testing.T) {
+	handler, _ := setupWorkflowTestHandler(&mockLLMCallerGUI{})
+	userID := "test-confirm-start-im-next"
+	item := buildPendingWorkflowConfirmation(userID, "build a project", workflow.StructuredIntent{
+		Category:   workflow.WorkflowCoding,
+		Summary:    "build a project",
+		Goals:      []string{"build a project"},
+		Confidence: 0.9,
+	}, "", "zh")
+	handler.confirmationStore.set(item)
+
+	msg := &IMUserMessage{UserID: userID, Platform: "weixin", Text: buildConfirmationActionCommand("confirm", item.ID), UIAction: true}
+	trimmed := strings.TrimSpace(msg.Text)
+	result := handler.handlePendingExecutionConfirmation(msg, &trimmed)
+	if !result.Handled || result.Response == nil || result.WorkflowAgentLoop {
+		t.Fatalf("expected IM text guidance before agent loop, got %#v", result)
+	}
+
+	resp := handler.handleWorkflowInterception(userID, "1. Build a Go service\n2. Use SQLite\n3. Add tests", "weixin")
+	if resp != nil {
+		t.Fatalf("IM form reply should fall through to agent loop, got %#v", resp)
+	}
+	if _, ok := handler.workflowAgentLoopMarker.Load(userID); !ok {
+		t.Fatal("IM form reply should set workflow agent loop marker")
+	}
+	prompt, ok := handler.stashedPhasePrompt.Load(userID)
+	if !ok || strings.TrimSpace(prompt.(string)) == "" {
+		t.Fatalf("IM form reply should stash phase prompt, got %#v", prompt)
 	}
 }

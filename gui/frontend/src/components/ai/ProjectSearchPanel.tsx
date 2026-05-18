@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArchiveProject, GetArchivedExperience, HideTask, PinTask, RenameTask, ResumeProject, SearchProjects } from "../../../wailsjs/go/main/App";
+import { ArchiveProject, GetArchivedExperience, GetProjectScene, HideTask, OpenFileOrShowInFolder, PinTask, RenameTask, ResumeProject, SearchProjects } from "../../../wailsjs/go/main/App";
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { ProjectSearchArchivedPanel } from "./ProjectSearchArchivedPanel";
+import { ProjectSearchIcon } from "./ProjectSearchIcon";
+import { ProjectSceneDetailPanel, type ProjectSceneDetail, type ProjectSearchArtifact } from "./ProjectSceneDetailPanel";
 
 interface ProjectSearchItem {
     id: string;
@@ -15,6 +17,18 @@ interface ProjectSearchItem {
     entry_count?: number;
     pinned?: boolean;
     archived?: boolean;
+    source_urls?: string[];
+    recent_artifacts?: ProjectSearchArtifact[];
+}
+
+function formatArtifactSummary(item: ProjectSearchItem, lang: string, includeSource = false): string {
+    const artifact = item.recent_artifacts?.find(a => a.title || a.preview || a.source_url);
+    if (!artifact) return "";
+    const label = artifact.title || artifact.preview || artifact.source_url || "";
+    const prefix = localizeText(lang, "Latest artifact", "最近产物");
+    const hint = artifact.source_hint ? "; " + artifact.source_hint : "";
+    const source = includeSource && artifact.source_url ? " | " + artifact.source_url + hint : "";
+    return prefix + ": " + label + source;
 }
 
 function formatWorkflowType(type: string | undefined, lang: string): string {
@@ -92,6 +106,8 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
     const [renameVal, setRenameVal] = useState("");
     const [archivedExperience, setArchivedExperience] = useState<{ name: string; content: string } | null>(null);
     const [archivedLoading, setArchivedLoading] = useState(false);
+    const [sceneDetail, setSceneDetail] = useState<ProjectSceneDetail | null>(null);
+    const [sceneLoadingPath, setSceneLoadingPath] = useState<string | null>(null);
 
     useEffect(() => { if (search.open) inputRef.current?.focus(); }, [search.open]);
     useEffect(() => {
@@ -101,6 +117,7 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
                 search.close();
                 setCtxMenu(null);
                 setArchivedExperience(null);
+                setSceneDetail(null);
             }
         };
         document.addEventListener("mousedown", handler);
@@ -108,6 +125,18 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
     }, [search.open, search.close, archivedExperience]);
 
     const refreshResults = useCallback(() => { search.refresh(); onTaskPrefsChanged?.(); }, [search, onTaskPrefsChanged]);
+    const openSceneDetail = useCallback(async (item: ProjectSearchItem) => {
+        setSceneLoadingPath(item.project_path);
+        try {
+            const detail = await GetProjectScene(item.project_path);
+            setSceneDetail((detail || null) as ProjectSceneDetail | null);
+        } catch (error) {
+            console.error("[ProjectSearch] GetProjectScene failed:", error);
+            setSceneDetail({ project_path: item.project_path, name: item.name, recent_artifacts: item.recent_artifacts || [], source_urls: item.source_urls || [], entry_count: item.entry_count });
+        } finally {
+            setSceneLoadingPath(null);
+        }
+    }, []);
     const openArchived = useCallback(async (item: ProjectSearchItem) => {
         const name = item.name || item.project_path;
         search.close();
@@ -162,29 +191,36 @@ export function ProjectSearchPanel({ search, lang, theme: t, inline, onProjectSw
             <div style={{ maxHeight: "320px", overflowY: "auto", padding: "0 4px 4px" }}>
                 {search.loading && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{localizeText(lang, "Searching...", "\u641c\u7d22\u4e2d...")}</div>}
                 {!search.loading && search.results.length === 0 && <div style={{ padding: "16px", textAlign: "center", color: t.text, opacity: 0.45, fontSize: "12px" }}>{search.query ? localizeText(lang, "No tasks found", "\u672a\u627e\u5230\u4efb\u52a1") : localizeText(lang, "No recent tasks", "\u6682\u65e0\u6700\u8fd1\u4efb\u52a1")}</div>}
-                {!search.loading && search.results.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
+                {!search.loading && search.results.map(item => <ProjectSearchRow key={item.id || item.project_path} item={item} lang={lang} theme={t} search={search} renamingPath={renamingPath} renameVal={renameVal} setRenameVal={setRenameVal} setRenamingPath={setRenamingPath} onSelect={onSelect} onShowSceneDetail={openSceneDetail} sceneLoading={sceneLoadingPath === item.project_path} refreshResults={refreshResults} setCtxMenu={setCtxMenu} />)}
             </div>
+            {(sceneLoadingPath || sceneDetail) && <ProjectSceneDetailPanel detail={sceneDetail} loading={!!sceneLoadingPath} lang={lang} theme={t} formatTime={search.formatTime} onClose={() => setSceneDetail(null)} />}
             {ctxMenu && <ProjectSearchContextMenu ctxMenu={ctxMenu} lang={lang} theme={t} refreshResults={refreshResults} setCtxMenu={setCtxMenu} setRenamingPath={setRenamingPath} setRenameVal={setRenameVal} />}
         </div>
     );
 }
 
-function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVal, setRenameVal, setRenamingPath, onSelect, refreshResults, setCtxMenu }: {
-    item: ProjectSearchItem; lang: string; theme: Theme; search: ReturnType<typeof useProjectSearch>; renamingPath: string | null; renameVal: string; setRenameVal: (value: string) => void; setRenamingPath: (path: string | null) => void; onSelect: (item: ProjectSearchItem) => void | Promise<void>; refreshResults: () => void; setCtxMenu: (menu: { x: number; y: number; item: ProjectSearchItem } | null) => void;
+function ProjectSearchRow({ item, lang, theme: t, search, renamingPath, renameVal, setRenameVal, setRenamingPath, onSelect, onShowSceneDetail, sceneLoading, refreshResults, setCtxMenu }: {
+    item: ProjectSearchItem; lang: string; theme: Theme; search: ReturnType<typeof useProjectSearch>; renamingPath: string | null; renameVal: string; setRenameVal: (value: string) => void; setRenamingPath: (path: string | null) => void; onSelect: (item: ProjectSearchItem) => void | Promise<void>; onShowSceneDetail: (item: ProjectSearchItem) => void | Promise<void>; sceneLoading: boolean; refreshResults: () => void; setCtxMenu: (menu: { x: number; y: number; item: ProjectSearchItem } | null) => void;
 }) {
+    const artifact = item.recent_artifacts?.find(a => a.title || a.preview || a.source_url);
+    const artifactSummary = formatArtifactSummary(item, lang);
+    const artifactTooltip = formatArtifactSummary(item, lang, true);
     return <div onClick={() => void onSelect(item)} onContextMenu={event => { event.preventDefault(); setCtxMenu({ x: event.clientX, y: event.clientY, item }); }} style={{ padding: "8px 10px", cursor: "pointer", borderRadius: "6px", transition: "background 0.15s" }} onMouseEnter={event => (event.currentTarget.style.background = t.codeBlockBg)} onMouseLeave={event => (event.currentTarget.style.background = "transparent")}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
             <span style={{ fontSize: "13px", flexShrink: 0 }}>{item.archived ? "\u{1F4E6}" : item.pinned ? "\u{1F4CC}" : "\u{1F516}"}</span>
             {renamingPath === item.project_path ? <input autoFocus value={renameVal} onChange={event => setRenameVal(event.target.value)} onBlur={async () => { const trimmed = renameVal.trim(); if (trimmed && trimmed !== item.name) { await RenameTask(item.project_path, trimmed); refreshResults(); } setRenamingPath(null); }} onKeyDown={event => { if (event.key === "Enter") (event.target as HTMLInputElement).blur(); if (event.key === "Escape") setRenamingPath(null); }} onClick={event => event.stopPropagation()} style={{ flex: 1, fontSize: "13px", fontWeight: 600, color: t.text, background: t.codeBlockBg, border: `1px solid ${t.headingColor}`, borderRadius: "3px", padding: "2px 6px", outline: "none", minWidth: 0, fontFamily: "inherit" }} /> : <span style={{ fontSize: "13px", fontWeight: 600, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{item.name || item.project_path}</span>}
             {item.workflow_type && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(99,102,241,0.12)", color: t.headingColor, border: `1px solid ${t.titleBarBorder}`, flexShrink: 0 }}>{formatWorkflowType(item.workflow_type, lang)}</span>}
             {item.archived && <span style={{ fontSize: "10px", padding: "1px 6px", borderRadius: "999px", background: "rgba(245,158,11,0.12)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.25)", flexShrink: 0 }}>{localizeText(lang, "Archived", "\u5df2\u5f52\u6863")}</span>}
-            <button type="button" onClick={event => { event.stopPropagation(); void onSelect(item); }} style={{ border: "none", background: item.archived ? "rgba(245,158,11,0.12)" : "rgba(99,102,241,0.12)", color: item.archived ? "#f59e0b" : t.headingColor, borderRadius: "999px", width: "22px", height: "22px", cursor: "pointer", flexShrink: 0 }} title={item.archived ? localizeText(lang, "View experience", "\u67e5\u770b\u7ecf\u9a8c") : localizeText(lang, "Resume task", "\u7ee7\u7eed\u4efb\u52a1")}>{item.archived ? "\u{1F4D6}" : ">"}</button>
+            <button type="button" onClick={event => { event.stopPropagation(); void onShowSceneDetail(item); }} style={{ border: "none", background: "transparent", color: t.headingColor, opacity: sceneLoading ? 0.35 : 0.7, width: "20px", height: "20px", cursor: sceneLoading ? "default" : "pointer", flexShrink: 0, fontSize: "12px" }} disabled={sceneLoading} title={localizeText(lang, "Scene details", "任务证据详情")}>{sceneLoading ? "..." : <ProjectSearchIcon name="info" />}</button>
+            <button type="button" onClick={event => { event.stopPropagation(); void onSelect(item); }} style={{ border: "none", background: item.archived ? "rgba(245,158,11,0.12)" : "rgba(99,102,241,0.12)", color: item.archived ? "#f59e0b" : t.headingColor, borderRadius: "999px", width: "22px", height: "22px", cursor: "pointer", flexShrink: 0 }} title={item.archived ? localizeText(lang, "View experience", "\u67e5\u770b\u7ecf\u9a8c") : localizeText(lang, "Resume task", "\u7ee7\u7eed\u4efb\u52a1")}>{item.archived ? "\u{1F4D6}" : <ProjectSearchIcon name="arrowRight" />}</button>
         </div>
         <div style={{ fontSize: "11px", color: t.text, opacity: 0.45, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingLeft: "21px" }}>{item.project_path}</div>
         {item.preview && <div style={{ fontSize: "11px", color: t.text, opacity: 0.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingLeft: "21px", marginTop: "1px" }}>{item.preview}</div>}
+        {artifactSummary && <div title={artifactTooltip} style={{ display: "flex", alignItems: "center", gap: "6px", paddingLeft: "21px", marginTop: "1px", minWidth: 0 }}><span style={{ fontSize: "10px", color: t.headingColor, opacity: 0.58, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{artifactSummary}</span>{artifact?.source_url && <button type="button" onClick={event => { event.stopPropagation(); void OpenFileOrShowInFolder(artifact.source_url || ""); }} style={{ border: "none", background: "transparent", color: t.headingColor, opacity: 0.7, cursor: "pointer", fontSize: "11px", lineHeight: 1, padding: "1px 2px", flexShrink: 0 }} title={localizeText(lang, "Open artifact source", "打开产物来源")}><ProjectSearchIcon name="externalLink" /></button>}</div>}
         {item.last_activity && <div style={{ fontSize: "10px", color: t.text, opacity: 0.32, paddingLeft: "21px", marginTop: "1px" }}>{search.formatTime(item.last_activity)}</div>}
     </div>;
 }
+
 
 function ProjectSearchContextMenu({ ctxMenu, lang, theme: t, refreshResults, setCtxMenu, setRenamingPath, setRenameVal }: {
     ctxMenu: { x: number; y: number; item: ProjectSearchItem }; lang: string; theme: Theme; refreshResults: () => void; setCtxMenu: (menu: null) => void; setRenamingPath: (path: string | null) => void; setRenameVal: (value: string) => void;

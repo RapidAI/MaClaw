@@ -2,12 +2,183 @@ package main
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+func TestExperienceLearningToolRecoveryGovernanceSummarizesAdaptiveRetry(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	retry := NewAdaptiveRetry(nil)
+	retry.SetMemoryStore(store)
+	for i := 0; i < adaptiveRetryReviewThreshold; i++ {
+		retry.RecordFailure("write_file", FailureArgs, RetryDecision{Action: RetryActionFix, Attempt: i})
+	}
+	retry.RecordFailure("browser_open", FailureNetwork, RetryDecision{Action: RetryActionRetry, Attempt: 0, ProviderName: "ChatFire", Model: "gpt-5.1-codex-mini", WireAPI: "responses"})
+
+	app := &App{memoryStore: store}
+	direct := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{ReviewOnly: true, Limit: 5})
+	if direct.Count != 1 || direct.ReviewRequiredCount != 1 || direct.Returned != 1 {
+		t.Fatalf("expected one review-required recovery summary: %#v", direct)
+	}
+	if direct.Summaries[0].ToolName != "write_file" || direct.Summaries[0].Category != "args" || direct.Summaries[0].FailureCount != 3 || direct.Summaries[0].FirstObservedAt == "" || direct.Summaries[0].LastObservedAt == "" {
+		t.Fatalf("unexpected recovery summary row: %#v", direct.Summaries[0])
+	}
+	if direct.ToolCounts["write_file"] != 1 || direct.CategoryCounts["args"] != 1 || !strings.Contains(direct.NonExecutingBoundary, "read-only tool recovery") {
+		t.Fatalf("unexpected recovery governance counts/boundary: %#v", direct)
+	}
+	directToolCounts, directToolCountsOK := direct.RecommendedFocusContext["tool_counts"].(map[string]int)
+	directCategoryCounts, directCategoryCountsOK := direct.RecommendedFocusContext["category_counts"].(map[string]int)
+	if !directToolCountsOK || !directCategoryCountsOK || directToolCounts["write_file"] != 1 || directCategoryCounts["args"] != 1 || direct.RecommendedFocusContext["recommended_tool"] != "write_file" || direct.RecommendedFocusContext["recommended_category"] != "args" {
+		t.Fatalf("recovery focus context should expose count maps and recommended row dimensions: %#v", direct.RecommendedFocusContext)
+	}
+	providerDirect := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{Provider: "chatfire", Model: "GPT-5.1-CODEX-MINI", Limit: 5})
+	if providerDirect.Count != 1 || providerDirect.Summaries[0].ToolName != "browser_open" || providerDirect.ProviderCounts["ChatFire"] != 1 || providerDirect.ModelCounts["gpt-5.1-codex-mini"] != 1 || providerDirect.WireAPICounts["responses"] != 1 {
+		t.Fatalf("expected provider/model/wire_api filtered recovery summary: %#v", providerDirect)
+	}
+	tagModelDirect := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{Provider: "chatfire", Model: "gpt-5-1-codex-mini", Limit: 5})
+	if tagModelDirect.Count != 1 || tagModelDirect.Summaries[0].ToolName != "browser_open" {
+		t.Fatalf("expected safe-tag model filter to match provider recovery summary: %#v", tagModelDirect)
+	}
+	providerArgs, ok := providerDirect.RecommendedToolCall["args"].(map[string]interface{})
+	if !ok || providerArgs["provider"] != "chatfire" || providerArgs["model"] != "GPT-5.1-CODEX-MINI" {
+		t.Fatalf("provider/model filters should survive recommended call: %#v", providerDirect.RecommendedToolCall)
+	}
+	if providerDirect.RecommendedFocusContext["recommended_provider"] != "ChatFire" || providerDirect.RecommendedFocusContext["recommended_model"] != "gpt-5.1-codex-mini" || providerDirect.RecommendedFocusContext["recommended_wire_api"] != "responses" {
+		t.Fatalf("provider focus context should expose recommended provider/model/wire dimensions: %#v", providerDirect.RecommendedFocusContext)
+	}
+	wireDirect := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{WireAPI: "RESPONSES", Limit: 5})
+	if wireDirect.Count != 1 || wireDirect.Summaries[0].ToolName != "browser_open" || wireDirect.WireAPICounts["responses"] != 1 {
+		t.Fatalf("expected wire_api filtered recovery summary: %#v", wireDirect)
+	}
+	wireArgs, ok := wireDirect.RecommendedToolCall["args"].(map[string]interface{})
+	if !ok || wireArgs["wire_api"] != "RESPONSES" {
+		t.Fatalf("wire_api filter should survive recommended call: %#v", wireDirect.RecommendedToolCall)
+	}
+	args, ok := direct.RecommendedToolCall["args"].(map[string]interface{})
+	if !ok || direct.RecommendedToolCall["tool"] != "experience_learning" || direct.RecommendedToolCall["non_executing"] != true || args["action"] != "tool_recovery" || args["review_only"] != true {
+		t.Fatalf("expected safe tool_recovery recommended call: %#v", direct.RecommendedToolCall)
+	}
+	emptyReviewOnly := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{Provider: "chatfire", ReviewOnly: true, Limit: 5})
+	emptyArgs, ok := emptyReviewOnly.RecommendedToolCall["args"].(map[string]interface{})
+	if !ok || emptyReviewOnly.Count != 0 || emptyArgs["provider"] != "chatfire" || emptyArgs["review_only"] != true {
+		t.Fatalf("review_only filter should survive empty recommended calls: %#v", emptyReviewOnly)
+	}
+
+	governance := app.GetExperienceGovernanceSummary(ExperienceRoutingSignalQuery{})
+	routing, ok := governance["routing_self_evolution"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("routing_self_evolution missing: %#v", governance)
+	}
+	recoveryGov, ok := routing["tool_recovery_governance"].(map[string]interface{})
+	providerCounts, _ := recoveryGov["provider_counts"].(map[string]int)
+	modelCounts, _ := recoveryGov["model_counts"].(map[string]int)
+	wireAPICounts, _ := recoveryGov["wire_api_counts"].(map[string]int)
+	if !ok || recoveryGov["count"] != 2 || recoveryGov["review_required_count"] != 1 || providerCounts["ChatFire"] != 1 || modelCounts["gpt-5.1-codex-mini"] != 1 || wireAPICounts["responses"] != 1 {
+		t.Fatalf("expected embedded recovery governance: %#v", routing["tool_recovery_governance"])
+	}
+
+	handler := &IMMessageHandler{app: app}
+	payload := parseExperienceToolRecoveryToolResult(t, handler.toolExperienceLearning(map[string]interface{}{
+		"action":      "tool_recovery",
+		"review_only": true,
+		"limit":       5,
+	}))
+	if !payload.OK || payload.Count != 1 || payload.ReviewRequiredCount != 1 || len(payload.Summaries) != 1 || payload.Summaries[0].ToolName != "write_file" {
+		t.Fatalf("unexpected tool recovery payload: %#v", payload)
+	}
+
+	providerPayload := parseExperienceToolRecoveryToolResult(t, handler.toolExperienceLearning(map[string]interface{}{
+		"action":   "tool_recovery",
+		"provider": "chatfire",
+		"model":    "GPT-5.1-CODEX-MINI",
+		"wire_api": "RESPONSES",
+		"limit":    5,
+	}))
+	if !providerPayload.OK || providerPayload.Count != 1 || len(providerPayload.Summaries) != 1 || providerPayload.Summaries[0].ToolName != "browser_open" {
+		t.Fatalf("unexpected provider/model tool recovery payload: %#v", providerPayload)
+	}
+	if providerPayload.Query.Provider != "chatfire" || providerPayload.Query.Model != "GPT-5.1-CODEX-MINI" || providerPayload.Query.WireAPI != "RESPONSES" || providerPayload.ProviderCounts["ChatFire"] != 1 || providerPayload.ModelCounts["gpt-5.1-codex-mini"] != 1 || providerPayload.WireAPICounts["responses"] != 1 {
+		t.Fatalf("provider/model/wire_api filters and counts should survive tool path: %#v", providerPayload)
+	}
+
+	aliasPayload := parseExperienceToolRecoveryToolResult(t, handler.toolExperienceLearning(map[string]interface{}{
+		"action": "tool_recovery_governance",
+		"model":  "gpt-5-1-codex-mini",
+		"limit":  5,
+	}))
+	if !aliasPayload.OK || aliasPayload.Count != 1 || aliasPayload.Summaries[0].ToolName != "browser_open" || aliasPayload.Query.Model != "gpt-5-1-codex-mini" {
+		t.Fatalf("tool recovery governance alias should preserve query and safe-tag model matching: %#v", aliasPayload)
+	}
+
+	shortAliasPayload := parseExperienceToolRecoveryToolResult(t, handler.toolExperienceLearning(map[string]interface{}{
+		"action":   "recovery_governance",
+		"provider": "chatfire",
+		"limit":    5,
+	}))
+	if !shortAliasPayload.OK || shortAliasPayload.Count != 1 || shortAliasPayload.Summaries[0].ToolName != "browser_open" || shortAliasPayload.Query.Provider != "chatfire" {
+		t.Fatalf("recovery_governance alias should preserve provider query: %#v", shortAliasPayload)
+	}
+
+	inspectAliasPayload := parseExperienceToolRecoveryToolResult(t, handler.toolExperienceLearning(map[string]interface{}{
+		"action":   "inspect_tool_recovery_governance",
+		"provider": "chatfire",
+		"limit":    5,
+	}))
+	if !inspectAliasPayload.OK || inspectAliasPayload.Count != 1 || inspectAliasPayload.Summaries[0].ToolName != "browser_open" || inspectAliasPayload.Query.Provider != "chatfire" {
+		t.Fatalf("inspect_tool_recovery_governance alias should preserve provider query: %#v", inspectAliasPayload)
+	}
+}
+
+func TestExperienceGovernanceSummaryRecommendsToolRecoveryInspection(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	retry := NewAdaptiveRetry(nil)
+	retry.SetMemoryStore(store)
+	retry.RecordFailure("browser_open", FailureNetwork, RetryDecision{Action: RetryActionRetry, Attempt: 0, ProviderName: "ChatFire", Model: "gpt-5.1-codex-mini", WireAPI: "responses"})
+
+	app := &App{memoryStore: store}
+	summary := app.GetExperienceGovernanceSummary(ExperienceRoutingSignalQuery{})
+	if summary["recommended_next_action"] != experienceGovernanceActionInspectToolRecoveryGovernance.String() {
+		t.Fatalf("expected tool recovery inspection recommendation: %#v", summary)
+	}
+	call, ok := summary["recommended_tool_call"].(map[string]interface{})
+	args, argsOK := call["args"].(map[string]interface{})
+	if !ok || !argsOK || call["tool"] != "experience_learning" || call["non_executing"] != true || args["action"] != "tool_recovery" || args["limit"] != 20 {
+		t.Fatalf("expected safe tool_recovery recommended call: %#v", summary["recommended_tool_call"])
+	}
+	if boundary, _ := call["non_executing_boundary"].(string); !strings.Contains(boundary, "retry execution") || !strings.Contains(boundary, "credential change") {
+		t.Fatalf("tool recovery recommendation should use strict recovery boundary: %#v", call)
+	}
+	callFocus, ok := call["recommended_focus_context"].(map[string]interface{})
+	providerCounts, providerOK := callFocus["provider_counts"].(map[string]int)
+	modelCounts, modelOK := callFocus["model_counts"].(map[string]int)
+	wireAPICounts, wireOK := callFocus["wire_api_counts"].(map[string]int)
+	if !ok || callFocus["action_kind"] != experienceGovernanceActionInspectToolRecoveryGovernance.String() || callFocus["count"] != 1 || callFocus["recommended_provider"] != "ChatFire" || !providerOK || providerCounts["ChatFire"] != 1 || !modelOK || modelCounts["gpt-5.1-codex-mini"] != 1 || !wireOK || wireAPICounts["responses"] != 1 {
+		t.Fatalf("tool recovery recommendation should expose provider/model/wire focus context: %#v", call)
+	}
+	focus, ok := summary["recommended_focus"].(map[string]interface{})
+	if !ok || focus["trace_filter"] != "tools" || focus["non_executing"] != true {
+		t.Fatalf("expected tools focus for recovery governance: %#v", summary["recommended_focus"])
+	}
+	toolPayload := parseExperienceGovernanceSummaryToolResult(t, (&IMMessageHandler{app: app}).toolExperienceLearning(map[string]interface{}{"action": "governance_summary"}))
+	if !toolPayload.OK || toolPayload.GovernanceSummary["recommended_next_action"] != experienceGovernanceActionInspectToolRecoveryGovernance.String() {
+		t.Fatalf("expected tool governance summary recovery recommendation: %#v", toolPayload)
+	}
+}
 
 func TestExperienceLearningToolRoutingSignalsFiltersToolEvidence(t *testing.T) {
 	tracker, err := coretool.NewUsageTracker("")
@@ -281,6 +452,22 @@ func TestExperienceGovernanceSummaryKeepsGlobalReviewPriorityForUnscopedRouting(
 	}
 }
 
+type experienceToolRecoveryToolPayload struct {
+	OK                   bool                            `json:"ok"`
+	Query                ExperienceToolRecoveryQuery     `json:"query"`
+	Count                int                             `json:"count"`
+	Returned             int                             `json:"returned"`
+	ReviewRequiredCount  int                             `json:"review_required_count"`
+	DisabledCount        int                             `json:"disabled_count"`
+	ToolCounts           map[string]int                  `json:"tool_counts"`
+	ProviderCounts       map[string]int                  `json:"provider_counts"`
+	ModelCounts          map[string]int                  `json:"model_counts"`
+	WireAPICounts        map[string]int                  `json:"wire_api_counts"`
+	CategoryCounts       map[string]int                  `json:"category_counts"`
+	Summaries            []ExperienceToolRecoverySummary `json:"summaries"`
+	NonExecutingBoundary string                          `json:"non_executing_boundary"`
+}
+
 type experienceRoutingSignalsToolPayload struct {
 	OK                      bool                                        `json:"ok"`
 	Query                   ExperienceRoutingSignalQuery                `json:"query"`
@@ -306,6 +493,15 @@ type experienceGovernanceSummaryToolPayload struct {
 type experienceRoutingAdjustmentDraftToolPayload struct {
 	OK                     bool                             `json:"ok"`
 	RoutingAdjustmentDraft ExperienceRoutingAdjustmentDraft `json:"routing_adjustment_draft"`
+}
+
+func parseExperienceToolRecoveryToolResult(t *testing.T, raw string) experienceToolRecoveryToolPayload {
+	t.Helper()
+	var payload experienceToolRecoveryToolPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("unmarshal tool recovery result: %v\n%s", err, raw)
+	}
+	return payload
 }
 
 func parseExperienceRoutingSignalsToolResult(t *testing.T, raw string) experienceRoutingSignalsToolPayload {

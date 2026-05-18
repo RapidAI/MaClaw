@@ -135,6 +135,33 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"recommended_tool_call":     result.RecommendedToolCall,
 			"non_executing_boundary":    result.NonExecutingBoundary,
 		}, nil)
+	case experienceLearningToolActionToolRecovery:
+		result := h.app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{
+			Tool:       strings.TrimSpace(stringVal(args, "tool")),
+			Category:   strings.TrimSpace(stringVal(args, "category")),
+			ReviewOnly: boolArg(args, "review_only", false),
+			Provider:   strings.TrimSpace(stringVal(args, "provider")),
+			Model:      strings.TrimSpace(stringVal(args, "model")),
+			WireAPI:    strings.TrimSpace(stringVal(args, "wire_api")),
+			Limit:      intArg(args, "limit", 20),
+		})
+		return experienceLearningToolResult(map[string]interface{}{
+			"tool_recovery":             result,
+			"query":                     result.Query,
+			"count":                     result.Count,
+			"returned":                  result.Returned,
+			"summaries":                 result.Summaries,
+			"tool_counts":               result.ToolCounts,
+			"provider_counts":           result.ProviderCounts,
+			"model_counts":              result.ModelCounts,
+			"wire_api_counts":           result.WireAPICounts,
+			"category_counts":           result.CategoryCounts,
+			"review_required_count":     result.ReviewRequiredCount,
+			"disabled_count":            result.DisabledCount,
+			"recommended_focus_context": result.RecommendedFocusContext,
+			"recommended_tool_call":     result.RecommendedToolCall,
+			"non_executing_boundary":    result.NonExecutingBoundary,
+		}, nil)
 	case experienceLearningToolActionBuildRoutingAdjustmentDraft:
 		query := ExperienceRoutingSignalQuery{
 			TaskType: strings.TrimSpace(stringVal(args, "task_type")),
@@ -360,7 +387,7 @@ func (h *IMMessageHandler) toolExperienceLearning(args map[string]interface{}) s
 			"non_executing_boundary":    record.NonExecutingBoundary,
 		}, err)
 	default:
-		return experienceLearningToolResult(nil, fmt.Errorf("unsupported experience_learning action; use snapshot, governance_summary, next_actions, queues, follow_up_actions, routing_signals, build_routing_adjustment_draft, memory_candidates, build_memory_maintenance_draft, trace_details, build_followup, build_skill_draft, build_rollback_draft, build_escalation_brief, build_conflict_draft, record_followup, record_review, or record_draft_review"))
+		return experienceLearningToolResult(nil, fmt.Errorf("unsupported experience_learning action; use snapshot, governance_summary, next_actions, queues, follow_up_actions, routing_signals, tool_recovery/inspect_tool_recovery_governance/recovery_governance/tool_recovery_governance, build_routing_adjustment_draft, memory_candidates, build_memory_maintenance_draft, trace_details, build_followup, build_skill_draft, build_rollback_draft, build_escalation_brief, build_conflict_draft, record_followup, record_review, or record_draft_review"))
 	}
 }
 
@@ -454,13 +481,15 @@ func experienceGovernanceSummary(snapshot ExperienceLearningSnapshot, routingSig
 		memorySummary["non_executing_boundary"] = firstNonEmptyExperienceString(snapshot.MemoryMaintenanceBoundary, "read-only memory governance handoff; no compression, promotion, deletion, rewrite, routing change, file write, tool execution, notification, or skill install was performed")
 	}
 	routingSummary := map[string]interface{}{
-		"routing_hint_count":     snapshot.RoutingHintCount,
-		"skill_nudge_count":      snapshot.SkillNudgeCount,
-		"recovery_pattern_count": snapshot.RecoveryPatternCount,
-		"usage_pattern_count":    snapshot.UsagePatternCount,
-		"routing_hint_samples":   snapshot.RoutingHints,
-		"skill_nudge_samples":    snapshot.SkillNudgeCandidates,
-		"recovery_samples":       snapshot.RecoveryPatterns,
+		"routing_hint_count":       snapshot.RoutingHintCount,
+		"skill_nudge_count":        snapshot.SkillNudgeCount,
+		"recovery_pattern_count":   snapshot.RecoveryPatternCount,
+		"usage_pattern_count":      snapshot.UsagePatternCount,
+		"routing_hint_samples":     snapshot.RoutingHints,
+		"skill_nudge_samples":      snapshot.SkillNudgeCandidates,
+		"recovery_samples":         snapshot.RecoveryPatterns,
+		"tool_recovery_summaries":  snapshot.ToolRecoverySummaries,
+		"tool_recovery_governance": experienceToolRecoveryGovernanceFromSummaries(snapshot.ToolRecoverySummaries),
 	}
 	if routingSignals != nil {
 		routingSummary["query"] = routingSignals.Query
@@ -583,6 +612,9 @@ func experienceGovernanceRecommendedNextAction(snapshot ExperienceLearningSnapsh
 	if snapshot.SkillNudgeCount > 0 {
 		return experienceGovernanceActionInspectSkillNudgeCandidates.String(), "repeated tool sequences have self-evolution candidates that remain review-gated"
 	}
+	if len(snapshot.ToolRecoverySummaries) > 0 {
+		return experienceGovernanceActionInspectToolRecoveryGovernance.String(), "tool recovery evidence exists and can be inspected without changing routing or retry policy"
+	}
 	if snapshot.RoutingHintCount > 0 || snapshot.RecoveryPatternCount > 0 || snapshot.UsagePatternCount > 0 {
 		return experienceGovernanceActionInspectRoutingSignals.String(), "routing and recovery evidence exists, but no query-specific candidate was requested"
 	}
@@ -616,7 +648,7 @@ func experienceGovernanceRecommendedFocus(action string) map[string]interface{} 
 		focus["triggered_rollback_only"] = true
 	case experienceGovernanceActionInspectFollowUpActions:
 		focus["trace_filter"] = "followups"
-	case experienceGovernanceActionReviewRoutingCandidates, experienceGovernanceActionInspectRoutingSignals, experienceGovernanceActionInspectSkillNudgeCandidates:
+	case experienceGovernanceActionReviewRoutingCandidates, experienceGovernanceActionInspectRoutingSignals, experienceGovernanceActionInspectSkillNudgeCandidates, experienceGovernanceActionInspectToolRecoveryGovernance:
 		focus["trace_filter"] = "tools"
 	case experienceGovernanceActionBuildMemoryMaintenanceDraft, experienceGovernanceActionInspectMemoryCandidates, experienceGovernanceActionNormalOperation, experienceGovernanceActionUnknown:
 		focus["trace_filter"] = "all"
@@ -685,6 +717,9 @@ func experienceGovernanceRecommendedToolCall(action string, snapshot ExperienceL
 	case experienceGovernanceActionInspectRoutingSignals:
 		args["action"] = "routing_signals"
 		args["limit"] = 20
+	case experienceGovernanceActionInspectToolRecoveryGovernance:
+		args["action"] = "tool_recovery"
+		args["limit"] = 20
 	case experienceGovernanceActionInspectSkillNudgeCandidates:
 		args["action"] = "trace_details"
 		args["filter"] = "tools"
@@ -731,11 +766,15 @@ func experienceGovernanceRecommendedToolCall(action string, snapshot ExperienceL
 			args["limit"] = 20
 		}
 	}
+	boundary := "recommended inspection or draft-building call only; it must not approve reviews, execute rollback, rewrite memory, change routing, write files, send notifications, run tools, or install skills"
+	if actionKind == experienceGovernanceActionInspectToolRecoveryGovernance {
+		boundary = experienceToolRecoveryNonExecutingBoundary
+	}
 	call := map[string]interface{}{
 		"tool":                   "experience_learning",
 		"args":                   args,
 		"non_executing":          true,
-		"non_executing_boundary": "recommended inspection or draft-building call only; it must not approve reviews, execute rollback, rewrite memory, change routing, write files, send notifications, run tools, or install skills",
+		"non_executing_boundary": boundary,
 	}
 	if context := experienceGovernanceRecommendedToolCallFocusContext(action, snapshot, reason); len(context) > 0 {
 		call["governance_focus_context"] = context
@@ -753,6 +792,8 @@ func experienceGovernanceRecommendedToolCallFocusContext(action string, snapshot
 		traceID, title = experienceGovernanceLatestNextActionTraceTarget(snapshot, action)
 	case actionKind == experienceGovernanceActionInspectTriggeredRollbackFollowups:
 		traceID, title, reason = experienceGovernanceTriggeredRollbackFollowUpTraceTarget(snapshot, reason)
+	case actionKind == experienceGovernanceActionInspectToolRecoveryGovernance:
+		return experienceGovernanceToolRecoveryFocusContext(snapshot, reason)
 	case actionKind.NeedsPriorityTraceTarget():
 		traceID, title = experienceGovernanceLatestNextActionTraceTarget(snapshot, action)
 	}
@@ -767,6 +808,40 @@ func experienceGovernanceRecommendedToolCallFocusContext(action string, snapshot
 		"priority_trace_title": title,
 		"reason":               reason,
 	}
+}
+
+func experienceGovernanceToolRecoveryFocusContext(snapshot ExperienceLearningSnapshot, reason string) map[string]interface{} {
+	governance := experienceToolRecoveryGovernanceFromSummaries(snapshot.ToolRecoverySummaries)
+	ctx := map[string]interface{}{
+		"action_kind":           experienceGovernanceActionInspectToolRecoveryGovernance.String(),
+		"reason":                firstNonEmptyExperienceString(reason, "inspect repeated tool failure recovery windows before treating them as guidance or routing preference"),
+		"count":                 governance["count"],
+		"review_required_count": governance["review_required_count"],
+		"disabled_count":        governance["disabled_count"],
+		"non_executing":         true,
+	}
+	for _, key := range []string{"tool_counts", "provider_counts", "model_counts", "wire_api_counts", "category_counts"} {
+		if counts, ok := governance[key].(map[string]int); ok && len(counts) > 0 {
+			ctx[key] = counts
+		}
+	}
+	if len(snapshot.ToolRecoverySummaries) > 0 {
+		first := snapshot.ToolRecoverySummaries[0]
+		ctx["recommended_trace_id"] = first.TraceID
+		ctx["recommended_title"] = first.Title
+		ctx["recommended_tool"] = first.ToolName
+		ctx["recommended_category"] = first.Category
+		if first.ProviderName != "" {
+			ctx["recommended_provider"] = first.ProviderName
+		}
+		if first.Model != "" {
+			ctx["recommended_model"] = first.Model
+		}
+		if first.WireAPI != "" {
+			ctx["recommended_wire_api"] = first.WireAPI
+		}
+	}
+	return ctx
 }
 
 func experienceFocusContextFromTraceTarget(traceID, title, reason string) map[string]interface{} {
@@ -1196,6 +1271,261 @@ func experienceMemoryCandidateLess(a, b corememory.ProtectedExperienceCandidate)
 
 func experienceMemoryCandidateReasonRank(reason string) int {
 	return normalizeExperienceMemoryReasonKind(reason).Rank()
+}
+
+const experienceToolRecoveryNonExecutingBoundary = "read-only tool recovery governance inspection; no review approval, memory rewrite, routing change, retry execution, credential change, file write, tool execution, notification, or skill install was performed"
+
+type ExperienceToolRecoveryQuery struct {
+	Tool       string `json:"tool,omitempty"`
+	Category   string `json:"category,omitempty"`
+	ReviewOnly bool   `json:"review_only,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Model      string `json:"model,omitempty"`
+	WireAPI    string `json:"wire_api,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type ExperienceToolRecoveryQueryResult struct {
+	Query                   ExperienceToolRecoveryQuery     `json:"query"`
+	Count                   int                             `json:"count"`
+	Returned                int                             `json:"returned"`
+	ReviewRequiredCount     int                             `json:"review_required_count"`
+	DisabledCount           int                             `json:"disabled_count"`
+	ToolCounts              map[string]int                  `json:"tool_counts"`
+	ProviderCounts          map[string]int                  `json:"provider_counts,omitempty"`
+	ModelCounts             map[string]int                  `json:"model_counts,omitempty"`
+	WireAPICounts           map[string]int                  `json:"wire_api_counts,omitempty"`
+	CategoryCounts          map[string]int                  `json:"category_counts"`
+	Summaries               []ExperienceToolRecoverySummary `json:"summaries"`
+	RecommendedFocusContext map[string]interface{}          `json:"recommended_focus_context,omitempty"`
+	RecommendedToolCall     map[string]interface{}          `json:"recommended_tool_call,omitempty"`
+	NonExecutingBoundary    string                          `json:"non_executing_boundary"`
+}
+
+func (a *App) QueryExperienceToolRecoverySummaries(req ExperienceToolRecoveryQuery) ExperienceToolRecoveryQueryResult {
+	req.Tool = strings.TrimSpace(req.Tool)
+	req.Category = strings.TrimSpace(req.Category)
+	req.Provider = strings.TrimSpace(req.Provider)
+	req.Model = strings.TrimSpace(req.Model)
+	req.WireAPI = strings.TrimSpace(req.WireAPI)
+	if req.Limit <= 0 {
+		req.Limit = 20
+	}
+	snapshot := ExperienceLearningSnapshot{ToolRecoverySummaries: []ExperienceToolRecoverySummary{}}
+	if a != nil {
+		snapshot = a.GetExperienceLearningSnapshot()
+	}
+	filtered := make([]ExperienceToolRecoverySummary, 0, len(snapshot.ToolRecoverySummaries))
+	toolCounts := map[string]int{}
+	providerCounts := map[string]int{}
+	modelCounts := map[string]int{}
+	wireAPICounts := map[string]int{}
+	categoryCounts := map[string]int{}
+	reviewRequiredCount := 0
+	disabledCount := 0
+	for _, summary := range snapshot.ToolRecoverySummaries {
+		if !experienceToolRecoveryFilterMatches(summary.ToolName, req.Tool) {
+			continue
+		}
+		if !experienceToolRecoveryFilterMatches(summary.Category, req.Category) {
+			continue
+		}
+		if !experienceToolRecoveryFilterMatches(summary.ProviderName, req.Provider) {
+			continue
+		}
+		if !experienceToolRecoveryFilterMatches(summary.Model, req.Model) {
+			continue
+		}
+		if !experienceToolRecoveryFilterMatches(summary.WireAPI, req.WireAPI) {
+			continue
+		}
+		if req.ReviewOnly && !summary.ReviewRequired {
+			continue
+		}
+		filtered = append(filtered, summary)
+		toolCounts[firstNonEmptyExperienceString(summary.ToolName, "unknown_tool")]++
+		if summary.ProviderName != "" {
+			providerCounts[summary.ProviderName]++
+		}
+		if summary.Model != "" {
+			modelCounts[summary.Model]++
+		}
+		if summary.WireAPI != "" {
+			wireAPICounts[summary.WireAPI]++
+		}
+		categoryCounts[firstNonEmptyExperienceString(summary.Category, "unknown")]++
+		if summary.ReviewRequired {
+			reviewRequiredCount++
+		}
+		if summary.Disabled {
+			disabledCount++
+		}
+	}
+	returned := append([]ExperienceToolRecoverySummary(nil), filtered...)
+	if req.Limit > 0 && len(returned) > req.Limit {
+		returned = returned[:req.Limit]
+	}
+	result := ExperienceToolRecoveryQueryResult{
+		Query:                req,
+		Count:                len(filtered),
+		Returned:             len(returned),
+		ReviewRequiredCount:  reviewRequiredCount,
+		DisabledCount:        disabledCount,
+		ToolCounts:           toolCounts,
+		ProviderCounts:       providerCounts,
+		ModelCounts:          modelCounts,
+		WireAPICounts:        wireAPICounts,
+		CategoryCounts:       categoryCounts,
+		Summaries:            returned,
+		NonExecutingBoundary: experienceToolRecoveryNonExecutingBoundary,
+	}
+	result.RecommendedFocusContext = experienceToolRecoveryFocusContext(result)
+	result.RecommendedToolCall = experienceToolRecoveryRecommendedToolCall(result)
+	return result
+}
+
+func experienceToolRecoveryFilterMatches(value, query string) bool {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return true
+	}
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, query) {
+		return true
+	}
+	return adaptiveRetrySafeTagValue(value) != "" && adaptiveRetrySafeTagValue(value) == adaptiveRetrySafeTagValue(query)
+}
+
+func experienceToolRecoveryGovernanceFromSummaries(summaries []ExperienceToolRecoverySummary) map[string]interface{} {
+	result := map[string]interface{}{
+		"count":                 len(summaries),
+		"review_required_count": 0,
+		"disabled_count":        0,
+		"tool_counts":           map[string]int{},
+		"provider_counts":       map[string]int{},
+		"model_counts":          map[string]int{},
+		"wire_api_counts":       map[string]int{},
+		"category_counts":       map[string]int{},
+	}
+	toolCounts := result["tool_counts"].(map[string]int)
+	providerCounts := result["provider_counts"].(map[string]int)
+	modelCounts := result["model_counts"].(map[string]int)
+	wireAPICounts := result["wire_api_counts"].(map[string]int)
+	categoryCounts := result["category_counts"].(map[string]int)
+	for _, summary := range summaries {
+		toolCounts[firstNonEmptyExperienceString(summary.ToolName, "unknown_tool")]++
+		if summary.ProviderName != "" {
+			providerCounts[summary.ProviderName]++
+		}
+		if summary.Model != "" {
+			modelCounts[summary.Model]++
+		}
+		if summary.WireAPI != "" {
+			wireAPICounts[summary.WireAPI]++
+		}
+		categoryCounts[firstNonEmptyExperienceString(summary.Category, "unknown")]++
+		if summary.ReviewRequired {
+			result["review_required_count"] = result["review_required_count"].(int) + 1
+		}
+		if summary.Disabled {
+			result["disabled_count"] = result["disabled_count"].(int) + 1
+		}
+	}
+	return result
+}
+
+func experienceToolRecoveryFocusContext(result ExperienceToolRecoveryQueryResult) map[string]interface{} {
+	ctx := map[string]interface{}{
+		"action_kind":           "inspect_tool_recovery_governance",
+		"reason":                "inspect repeated tool failure recovery windows before treating them as guidance or routing preference",
+		"count":                 result.Count,
+		"review_required_count": result.ReviewRequiredCount,
+		"disabled_count":        result.DisabledCount,
+		"non_executing":         true,
+	}
+	if result.Query.Tool != "" {
+		ctx["tool"] = result.Query.Tool
+	}
+	if len(result.ToolCounts) > 0 {
+		ctx["tool_counts"] = result.ToolCounts
+	}
+	if len(result.ProviderCounts) > 0 {
+		ctx["provider_counts"] = result.ProviderCounts
+	}
+	if len(result.ModelCounts) > 0 {
+		ctx["model_counts"] = result.ModelCounts
+	}
+	if len(result.WireAPICounts) > 0 {
+		ctx["wire_api_counts"] = result.WireAPICounts
+	}
+	if result.Query.Category != "" {
+		ctx["category"] = result.Query.Category
+	}
+	if len(result.CategoryCounts) > 0 {
+		ctx["category_counts"] = result.CategoryCounts
+	}
+	if result.Query.Provider != "" {
+		ctx["provider"] = result.Query.Provider
+	}
+	if result.Query.Model != "" {
+		ctx["model"] = result.Query.Model
+	}
+	if result.Query.WireAPI != "" {
+		ctx["wire_api"] = result.Query.WireAPI
+	}
+	if result.Query.ReviewOnly {
+		ctx["review_only"] = true
+	}
+	if len(result.Summaries) > 0 {
+		first := result.Summaries[0]
+		ctx["recommended_trace_id"] = first.TraceID
+		ctx["recommended_title"] = first.Title
+		ctx["recommended_tool"] = first.ToolName
+		ctx["recommended_category"] = first.Category
+		if first.ProviderName != "" {
+			ctx["recommended_provider"] = first.ProviderName
+		}
+		if first.Model != "" {
+			ctx["recommended_model"] = first.Model
+		}
+		if first.WireAPI != "" {
+			ctx["recommended_wire_api"] = first.WireAPI
+		}
+	}
+	return ctx
+}
+
+func experienceToolRecoveryRecommendedToolCall(result ExperienceToolRecoveryQueryResult) map[string]interface{} {
+	args := map[string]interface{}{
+		"action": "tool_recovery",
+		"limit":  result.Query.Limit,
+	}
+	if result.Query.Tool != "" {
+		args["tool"] = result.Query.Tool
+	}
+	if result.Query.Category != "" {
+		args["category"] = result.Query.Category
+	}
+	if result.Query.Provider != "" {
+		args["provider"] = result.Query.Provider
+	}
+	if result.Query.Model != "" {
+		args["model"] = result.Query.Model
+	}
+	if result.Query.WireAPI != "" {
+		args["wire_api"] = result.Query.WireAPI
+	}
+	if result.Query.ReviewOnly || result.ReviewRequiredCount > 0 {
+		args["review_only"] = true
+	}
+	focus := experienceToolRecoveryFocusContext(result)
+	return normalizeExperienceLearningRecommendedToolCall(map[string]interface{}{
+		"tool":                      "experience_learning",
+		"args":                      args,
+		"recommended_focus_context": focus,
+		"non_executing":             true,
+		"non_executing_boundary":    result.NonExecutingBoundary,
+	}, focus, result.NonExecutingBoundary)
 }
 
 type ExperienceRoutingSignalQuery struct {

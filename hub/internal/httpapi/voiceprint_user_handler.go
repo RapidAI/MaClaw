@@ -45,7 +45,8 @@ func UserVoiceprintEnrollHandler(identity *auth.IdentityService, svc *voiceprint
 			return
 		}
 
-		vp, err := svc.Enroll(r.Context(), principal.UserID, principal.Email, label, wavData)
+		ctx := voiceprint.WithTenant(r.Context(), principal.TenantID)
+		vp, err := svc.Enroll(ctx, principal.UserID, principal.Email, label, wavData)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -71,7 +72,7 @@ func UserVoiceprintListHandler(identity *auth.IdentityService, svc *voiceprint.S
 			return
 		}
 
-		items, err := svc.ListByUser(r.Context(), principal.UserID)
+		items, err := svc.ListByUser(voiceprint.WithTenant(r.Context(), principal.TenantID), principal.UserID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -112,7 +113,8 @@ func UserVoiceprintDeleteHandler(identity *auth.IdentityService, svc *voiceprint
 		}
 
 		// Verify ownership: list user's voiceprints and check the ID belongs to them.
-		items, err := svc.ListByUser(r.Context(), principal.UserID)
+		ctx := voiceprint.WithTenant(r.Context(), principal.TenantID)
+		items, err := svc.ListByUser(ctx, principal.UserID)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -129,7 +131,7 @@ func UserVoiceprintDeleteHandler(identity *auth.IdentityService, svc *voiceprint
 			return
 		}
 
-		if err := svc.Delete(r.Context(), id); err != nil {
+		if err := svc.Delete(ctx, id); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}

@@ -40,7 +40,7 @@ func (e *SkillExecutor) BackupSkills(outputPath string) error {
 	skills := e.loadSkills()
 	e.mu.RUnlock()
 	for _, skill := range skills {
-		if err := scanSkillBeforeArchiveExport(skill); err != nil {
+		if err := e.scanSkillBeforeArchiveExport(skill); err != nil {
 			return err
 		}
 	}
@@ -78,7 +78,7 @@ func (e *SkillExecutor) ExportLearnedSkillsZip(names []string, outputPath string
 		return fmt.Errorf("no matching learned/crafted skills found")
 	}
 	for _, skill := range selected {
-		if err := scanSkillBeforeArchiveExport(skill); err != nil {
+		if err := e.scanSkillBeforeArchiveExport(skill); err != nil {
 			return err
 		}
 	}
@@ -215,13 +215,19 @@ func writeSkillsZipContents(zw *zip.Writer, skills []corelib.NLSkillEntry, dedup
 	return nil
 }
 
-func scanSkillBeforeArchiveExport(entry corelib.NLSkillEntry) error {
+func (e *SkillExecutor) scanSkillBeforeArchiveExport(entry corelib.NLSkillEntry) error {
 	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &entry, entry.SkillDir, nil)
 	if report == nil {
+		if e != nil && e.app != nil && !e.app.skillInstallMissingScanShouldBlock() {
+			return nil
+		}
 		return fmt.Errorf("skill export security scan produced no report")
 	}
-	if report.NeedsUserReview() {
-		return fmt.Errorf("skill export blocked by security scan: %s level=%s summary=%s", entry.Name, report.FinalLevel, report.Summary)
+	if e != nil && e.app != nil {
+		if e.app.skillInstallScanShouldBlock(report) {
+			return fmt.Errorf("skill export blocked by security scan: %s level=%s summary=%s", entry.Name, report.FinalLevel, report.Summary)
+		}
+		return nil
 	}
 	return nil
 }
@@ -316,7 +322,10 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 		}
 
 		scanReport := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &skill, skill.SkillDir, nil)
-		if scanReport == nil || scanReport.NeedsUserReview() {
+		missingScanBlocked := scanReport == nil && (e.app == nil || e.app.skillInstallMissingScanShouldBlock())
+		riskyScanBlocked := scanReport != nil && e.app != nil && e.app.skillInstallScanShouldBlock(scanReport)
+		legacyRiskyScanBlocked := false
+		if missingScanBlocked || riskyScanBlocked || legacyRiskyScanBlocked {
 			report.Failed++
 			level := security.RiskCritical
 			summary := "security scan unavailable"
@@ -326,6 +335,11 @@ func (e *SkillExecutor) RestoreSkills(zipPath string) (*RestoreReport, error) {
 			}
 			report.Details = append(report.Details, fmt.Sprintf("%s: blocked by security scan (level=%s): %s", skill.Name, level, summary))
 			continue
+		}
+		if scanReport == nil {
+			report.Details = append(report.Details, fmt.Sprintf("%s: security scan unavailable; restored by current policy", skill.Name))
+		} else if scanReport.NeedsUserReview() {
+			report.Details = append(report.Details, fmt.Sprintf("%s: security scan recorded risk (level=%s); restored by current policy", skill.Name, scanReport.FinalLevel))
 		}
 
 		existingSkills = append(existingSkills, skill)

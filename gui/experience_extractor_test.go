@@ -2,12 +2,14 @@ package main
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	experience "github.com/RapidAI/CodeClaw/corelib/experience"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 func TestExperienceAuditRecordsRedactedExtractionError(t *testing.T) {
@@ -88,6 +90,40 @@ func TestExperienceAuditStatusNoCandidates(t *testing.T) {
 	}
 }
 
+func TestExperienceAuditPersistsMemoryTrace(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	extractor := &ExperienceExtractor{memoryStore: store}
+	session := &RemoteSession{ID: "sess-learn"}
+	extractor.recordAudit(session, experience.SessionSnapshot{Tool: "codex", Title: "fix flaky test", ProjectPath: "D:/workprj/aicoder"}, experience.Result{
+		Upserted:  []corelib.NLSkillEntry{{Name: "run-focused-tests"}},
+		Decisions: []experience.Decision{{PatternName: "run-focused-tests", Action: experience.DecisionRegistered}},
+	}, 15*time.Millisecond)
+
+	entries := store.List(corememory.CategoryProjectKnowledge, "Experience extraction audit")
+	if len(entries) != 1 {
+		t.Fatalf("expected one persisted extraction audit memory, got %d: %#v", len(entries), entries)
+	}
+	entry := entries[0]
+	if entry.ID != "experience-audit-sess-learn" || entry.SourceType != string(experienceTraceSourceToolUsage) || entry.SourceURL != "experience://extraction/sess-learn" {
+		t.Fatalf("unexpected extraction audit metadata: %#v", entry)
+	}
+	for _, want := range []string{experienceTraceKindToolMemory.String(), "experience_extraction", "status:completed", "tool:codex"} {
+		if !hasTag(entry.Tags, want) {
+			t.Fatalf("persisted audit memory missing tag %q: %#v", want, entry.Tags)
+		}
+	}
+	if !strings.Contains(entry.Content, "run-focused-tests") || !strings.Contains(entry.Content, "Safety: audit evidence only") {
+		t.Fatalf("persisted audit content missing learning detail or boundary: %s", entry.Content)
+	}
+	snapshot := buildExperienceLearningSnapshot(nil, store)
+	if snapshot.TraceKindCounts[experienceTraceKindToolMemory.String()] != 1 || snapshot.TraceSourceCounts[string(experienceTraceSourceToolUsage)] != 1 {
+		t.Fatalf("persisted audit should surface as tool memory trace: %#v/%#v", snapshot.TraceKindCounts, snapshot.TraceSourceCounts)
+	}
+}
 func TestExperienceAuditStatusCompleted(t *testing.T) {
 	extractor := &ExperienceExtractor{}
 	session := &RemoteSession{ID: "sess-complete"}
@@ -145,7 +181,7 @@ func TestExperienceSkillStoreAllowsSafeAgentCreatedSkill(t *testing.T) {
 }
 
 func TestExperienceSkillStoreBlocksRiskySkillBeforePersist(t *testing.T) {
-	app := &App{testHomeDir: t.TempDir()}
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("strict")}
 	executor := NewSkillExecutor(app, nil, nil)
 	store := experienceSkillStore{executor: executor}
 
@@ -176,7 +212,7 @@ func TestExperienceSkillStoreBlocksRiskySkillBeforePersist(t *testing.T) {
 }
 
 func TestExperienceSkillStoreBlocksRiskyUpdateAndKeepsExistingSkill(t *testing.T) {
-	app := &App{testHomeDir: t.TempDir()}
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("strict")}
 	executor := NewSkillExecutor(app, nil, nil)
 	store := experienceSkillStore{executor: executor}
 

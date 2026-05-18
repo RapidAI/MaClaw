@@ -1063,9 +1063,35 @@ func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, scrip
 		}
 	})
 	if report == nil {
+		if app != nil && !app.skillInstallMissingScanShouldBlock() {
+			app.emitSkillInstallProgress(skillName, "scan-complete", "Generated script security scan did not produce a report; current policy allows execution.", nil)
+			app.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillInstall,
+				"craft_tool_prescan",
+				security.RiskCritical,
+				security.PolicyAudit,
+				fmt.Sprintf("current policy allowed crafted script before execution for skill %s even though scan report was missing", skillName),
+			)
+			return nil, nil
+		}
 		return nil, fmt.Errorf("crafted script security scan failed")
 	}
-	if report.IsDangerous() || report.NeedsUserReview() {
+	if app != nil && app.isSecurityDeveloperMode() {
+		app.emitSkillInstallProgress(skillName, "approved", "Developer mode enabled; generated script scan will not block execution.", report)
+		level := report.FinalLevel
+		if report.IsDangerous() {
+			level = security.RiskCritical
+		}
+		app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"craft_tool_prescan",
+			level,
+			security.PolicyAllow,
+			fmt.Sprintf("developer mode allowed crafted script before execution for skill %s: %s", skillName, report.Summary),
+		)
+		return report, nil
+	}
+	if app != nil && app.skillInstallScanShouldBlock(report) {
 		if app != nil {
 			level := report.FinalLevel
 			if report.IsDangerous() {
@@ -1081,8 +1107,21 @@ func scanCraftedScriptBeforeExecution(ctx context.Context, app *App, task, scrip
 		}
 		return report, fmt.Errorf("crafted script security scan blocked execution: level=%s summary=%s", report.FinalLevel, report.Summary)
 	}
+	if app != nil && app.skillInstallReviewNeedsConfirmation(report) {
+		app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"craft_tool_prescan",
+			report.FinalLevel,
+			security.PolicyAudit,
+			fmt.Sprintf("crafted script scan recorded risk for skill %s and allowed execution by current policy: %s", skillName, report.Summary),
+		)
+	}
 	if app != nil {
-		app.emitSkillInstallProgress(skillName, "scan-complete", "Generated script security scan passed.", report)
+		status := "Generated script security scan passed."
+		if report.NeedsUserReview() {
+			status = "Generated script security scan recorded risk and allowed execution by current policy."
+		}
+		app.emitSkillInstallProgress(skillName, "scan-complete", status, report)
 	}
 	return report, nil
 }

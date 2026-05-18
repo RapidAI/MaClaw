@@ -45,6 +45,10 @@ func (m *memInvitationCodeRepo) GetByCode(_ context.Context, code string) (*stor
 	return nil, errors.New("not found")
 }
 
+func (m *memInvitationCodeRepo) GetByTenantCode(ctx context.Context, tenantID, code string) (*store.InvitationCode, error) {
+	return m.GetByCode(ctx, code)
+}
+
 func (m *memInvitationCodeRepo) List(_ context.Context, status string, search string) ([]*store.InvitationCode, error) {
 	var result []*store.InvitationCode
 	for _, c := range m.codes {
@@ -82,6 +86,10 @@ func (m *memInvitationCodeRepo) ListPaged(_ context.Context, status string, sear
 		end = total
 	}
 	return all[offset:end], total, nil
+}
+
+func (m *memInvitationCodeRepo) ListPagedByTenant(ctx context.Context, tenantID string, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
+	return m.ListPaged(ctx, status, search, offset, limit)
 }
 
 func (m *memInvitationCodeRepo) MarkUsed(_ context.Context, id string, email string, usedAt time.Time) error {
@@ -133,6 +141,10 @@ func (m *memInvitationCodeRepo) DeleteByEmail(_ context.Context, email string) (
 	return count, nil
 }
 
+func (m *memInvitationCodeRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) (int64, error) {
+	return m.DeleteByEmail(ctx, email)
+}
+
 func (m *memInvitationCodeRepo) GetByEmail(_ context.Context, email string) (*store.InvitationCode, error) {
 	var latest *store.InvitationCode
 	for _, c := range m.codes {
@@ -143,6 +155,10 @@ func (m *memInvitationCodeRepo) GetByEmail(_ context.Context, email string) (*st
 		}
 	}
 	return latest, nil
+}
+
+func (m *memInvitationCodeRepo) GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.InvitationCode, error) {
+	return m.GetByEmail(ctx, email)
 }
 
 func (m *memInvitationCodeRepo) ListUnused(_ context.Context, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
@@ -171,6 +187,10 @@ func (m *memInvitationCodeRepo) ListUnused(_ context.Context, exportedFilter str
 		result = append(result, c)
 	}
 	return result, nil
+}
+
+func (m *memInvitationCodeRepo) ListUnusedByTenant(ctx context.Context, tenantID, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
+	return m.ListUnused(ctx, exportedFilter, vipOnly...)
 }
 
 func (m *memInvitationCodeRepo) MarkExported(_ context.Context, ids []string) error {

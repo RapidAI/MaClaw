@@ -3,10 +3,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectSearchPanel } from "../ProjectSearchPanel";
 import { lightTheme } from "../aiAssistantPanelTheme";
-import { GetArchivedExperience, ResumeProject } from "../../../../wailsjs/go/main/App";
+import { GetArchivedExperience, GetProjectScene, OpenFileOrShowInFolder, ResumeProject } from "../../../../wailsjs/go/main/App";
 
-const { getArchivedExperienceMock, resumeProjectMock, renameTaskMock, pinTaskMock, hideTaskMock, archiveProjectMock } = vi.hoisted(() => ({
+const { getArchivedExperienceMock, getProjectSceneMock, openFileOrShowInFolderMock, resumeProjectMock, renameTaskMock, pinTaskMock, hideTaskMock, archiveProjectMock } = vi.hoisted(() => ({
     getArchivedExperienceMock: vi.fn(),
+    getProjectSceneMock: vi.fn(),
+    openFileOrShowInFolderMock: vi.fn(),
     resumeProjectMock: vi.fn(),
     renameTaskMock: vi.fn(),
     pinTaskMock: vi.fn(),
@@ -17,6 +19,8 @@ const { getArchivedExperienceMock, resumeProjectMock, renameTaskMock, pinTaskMoc
 vi.mock("../../../../wailsjs/go/main/App", () => ({
     SearchProjects: vi.fn().mockResolvedValue([]),
     GetArchivedExperience: getArchivedExperienceMock,
+    GetProjectScene: getProjectSceneMock,
+    OpenFileOrShowInFolder: openFileOrShowInFolderMock,
     ResumeProject: resumeProjectMock,
     RenameTask: renameTaskMock,
     PinTask: pinTaskMock,
@@ -82,6 +86,25 @@ describe("ProjectSearchPanel", () => {
         expect(search.close).toHaveBeenCalled();
         expect(onCreateProjectTab).toHaveBeenCalledWith("D:/p/live", "Active task");
         expect(ResumeProject).not.toHaveBeenCalled();
+    });
+
+    it("loads scene evidence and opens artifact sources", async () => {
+        const search = makeSearch([{ id: "p3", name: "Evidence task", project_path: "D:/p/evidence" }]);
+        getProjectSceneMock.mockResolvedValue({
+            project_path: "D:/p/evidence",
+            name: "Evidence task",
+            entry_count: 2,
+            recent_artifacts: [{ title: "Decision note", source_url: "D:/refs/decision.md", source_hint: "full: read_file" }],
+        });
+
+        renderPanel(search);
+        fireEvent.click(screen.getByTitle("Scene details"));
+
+        expect(await screen.findByText("Decision note")).toBeTruthy();
+        expect(GetProjectScene).toHaveBeenCalledWith("D:/p/evidence");
+
+        fireEvent.click(screen.getByLabelText("Open artifact source"));
+        expect(OpenFileOrShowInFolder).toHaveBeenCalledWith("D:/refs/decision.md");
     });
 
     it("falls back to ResumeProject when project tabs are unavailable", async () => {

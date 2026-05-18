@@ -206,10 +206,10 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 				"items":       map[string]string{"type": "string"},
 				"description": "3-5 specific entity names for search recall (e.g. hostnames, tool names, project names). Must be proper nouns or identifiers, NOT generic words like 'server' or 'config'.",
 			},
-			"query":    map[string]string{"type": "string", "description": "Search query for recall"},
-			"mode":     map[string]string{"type": "string", "description": "Recall mode: dynamic, hybrid, adaptive, or auto"},
-			"debug":    map[string]string{"type": "boolean", "description": "Include adaptive recall debug plan when adaptive recall is used"},
-			"stats":    map[string]string{"type": "boolean", "description": "Include theme health diagnostics for action=themes"},
+			"query": map[string]string{"type": "string", "description": "Search query for recall"},
+			"mode":  map[string]string{"type": "string", "description": "Recall mode: dynamic, hybrid, adaptive, or auto"},
+			"debug": map[string]string{"type": "boolean", "description": "Include adaptive recall debug plan when adaptive recall is used"},
+			"stats": map[string]string{"type": "boolean", "description": "Include theme health diagnostics for action=themes"},
 			"project_path": map[string]string{
 				"type":        "string",
 				"description": "Optional project path for scoped recall",
@@ -259,7 +259,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 				return deps.SSHHandler
 			}
 			return func(args map[string]interface{}) string {
-				return "SSH handler is not initialized (????). Please configure SSH support first."
+				return "SSH handler is not initialized. Please configure SSH support first."
 			}
 		}(),
 	})

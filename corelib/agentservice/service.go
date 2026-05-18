@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -584,22 +585,26 @@ func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput
 	}
 	now := s.now()
 	apiKey := strings.TrimSpace(in.APIKey)
+	generatedKey := false
 	if apiKey == "" {
 		var err error
 		apiKey, err = s.generateUniqueCredentialAPIKey()
 		if err != nil {
 			return nil, err
 		}
+		generatedKey = true
 	} else if err := s.ensureCredentialAPIKeyAvailable(apiKey, ""); err != nil {
 		return nil, err
 	}
 	apiSecret := strings.TrimSpace(in.APISecret)
+	generatedSecret := false
 	if apiSecret == "" {
 		var err error
 		apiSecret, err = generateCredentialAPISecret()
 		if err != nil {
 			return nil, fmt.Errorf("generate credential secret: %w", err)
 		}
+		generatedSecret = true
 	}
 	digest := HashSecretWithPepper(apiSecret, s.credentialPepper)
 	if digest == "" {
@@ -626,11 +631,13 @@ func (s *Service) CreateCredential(ctx context.Context, in CreateCredentialInput
 		return nil, err
 	}
 	_ = s.recordAudit(auditRecord{TenantID: stored.TenantID, UserID: stored.UserID, Action: "credential.created", ResourceType: "credential", ResourceID: stored.ID, ActorType: "admin"})
-	response := stored
-	response.APIKey = apiKey
-	response.APISecret = apiSecret
-	response.APIKeyHash = ""
-	response.SecretDigest = ""
+	response := sanitizeCredential(stored)
+	if generatedKey {
+		response.APIKey = apiKey
+	}
+	if generatedSecret {
+		response.APISecret = apiSecret
+	}
 	return &response, nil
 }
 
@@ -1730,7 +1737,9 @@ func (s *Service) ListAuditEvents(ctx context.Context, in ListAuditEventsInput) 
 	resourceType := strings.TrimSpace(in.ResourceType)
 	resourceID := strings.TrimSpace(in.ResourceID)
 	actorType := strings.TrimSpace(in.ActorType)
-	if action == "" && resourceType == "" && resourceID == "" && actorType == "" && in.Since == nil && in.Until == nil {
+	actorTenant := strings.TrimSpace(in.ActorTenant)
+	actorUser := strings.TrimSpace(in.ActorUser)
+	if action == "" && resourceType == "" && resourceID == "" && actorType == "" && actorTenant == "" && actorUser == "" && in.Since == nil && in.Until == nil {
 		return items, nil
 	}
 	filtered := make([]AuditEvent, 0, len(items))
@@ -1745,6 +1754,12 @@ func (s *Service) ListAuditEvents(ctx context.Context, in ListAuditEventsInput) 
 			continue
 		}
 		if actorType != "" && item.ActorType != actorType {
+			continue
+		}
+		if actorTenant != "" && item.ActorTenant != actorTenant {
+			continue
+		}
+		if actorUser != "" && item.ActorUser != actorUser {
 			continue
 		}
 		if in.Since != nil && item.CreatedAt.Before(*in.Since) {
@@ -2588,6 +2603,9 @@ func (s *Service) ExportServiceState(ctx context.Context, in ExportServiceStateI
 			return nil, err
 		}
 		out.AuditEvents = items
+		if !in.IncludeSecrets {
+			out.AuditEvents = redactAuditEventsForExport(s.dataRoot, out.AuditEvents)
+		}
 	}
 	return out, nil
 }
@@ -2971,7 +2989,13 @@ func (s *Service) ImportServiceState(ctx context.Context, in ImportServiceStateR
 		}
 	}
 	for _, exportedUser := range data.Users {
+		currentAppConfig := corelib.AppConfig{}
 		if _, err := s.store.GetUser(exportedUser.User.TenantID, exportedUser.User.ID); err == nil {
+			if currentConfig, cfgErr := s.getOrLoadUserConfig(exportedUser.User.TenantID, exportedUser.User.ID); cfgErr == nil {
+				currentAppConfig = currentConfig.AppConfig
+			} else if cfgErr != ErrUserConfigNotFound {
+				return nil, cfgErr
+			}
 			if err := s.deleteUserStateForImport(exportedUser.User.TenantID, exportedUser.User.ID); err != nil {
 				return nil, err
 			}
@@ -2991,6 +3015,7 @@ func (s *Service) ImportServiceState(ctx context.Context, in ImportServiceStateR
 			cfg := *exportedUser.Config
 			cfg.TenantID = exportedUser.User.TenantID
 			cfg.UserID = exportedUser.User.ID
+			cfg.AppConfig = mergeSecretPreserving(currentAppConfig, cloneAppConfig(cfg.AppConfig))
 			if err := s.store.SaveUserConfig(cfg); err != nil {
 				return nil, err
 			}
@@ -3104,10 +3129,8 @@ func (s *Service) assessImportState(data ExportServiceStateOutput, out *ImportSe
 			appendImportPlan(out, "user", exportedUser.User.TenantID+"/"+exportedUser.User.ID, "create", "user would be imported")
 		}
 		out.Users++
-		if exportedUser.Config != nil {
-			if strings.TrimSpace(exportedUser.Config.AppConfig.MaclawLLMKey) == "******" {
-				out.Warnings = append(out.Warnings, fmt.Sprintf("user %s/%s config contains masked secrets and may need manual repair", exportedUser.User.TenantID, exportedUser.User.ID))
-			}
+		if exportedUser.Config != nil && appConfigContainsMaskedSecrets(exportedUser.Config.AppConfig) {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("user %s/%s config contains masked secrets and may need manual repair", exportedUser.User.TenantID, exportedUser.User.ID))
 		}
 		for _, cred := range exportedUser.Credentials {
 			storedCred, err := importCredential(exportedUser.User.TenantID, exportedUser.User.ID, cred)
@@ -3686,7 +3709,13 @@ func (s *Service) buildInstanceReadiness(inst Instance) InstanceReadiness {
 	return readiness
 }
 
-var safePathPart = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+var (
+	auditExportSecretKeyPattern    = auditExportSecretKeyRegexpPattern()
+	safePathPart                   = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+	auditExportInlineSecretPattern = regexp.MustCompile(`(?i)(` + auditExportSecretKeyPattern + `)(\s*[:=]\s*)([^\s,;]+)`)
+	auditExportBearerPattern       = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+`)
+	auditExportJSONSecretPattern   = regexp.MustCompile(`(?i)("?(?:` + auditExportSecretKeyPattern + `)"?\s*:\s*)"[^"]*"`)
+)
 
 func slugID(v string) string { return safePathPart.ReplaceAllString(v, "_") }
 func cloneMap(in map[string]string) map[string]string {
@@ -3759,6 +3788,128 @@ func maskedAPIKey(cred Credential) string {
 	return prefix[:3] + "***"
 }
 
+func redactAuditEventsForExport(dataRoot string, events []AuditEvent) []AuditEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]AuditEvent, len(events))
+	for i, event := range events {
+		event.ResourceID = redactAuditExportValue(dataRoot, event.ResourceID)
+		if len(event.Metadata) > 0 {
+			event.Metadata = redactAuditExportMetadata(dataRoot, event.Metadata)
+		}
+		out[i] = event
+	}
+	return out
+}
+
+func redactAuditExportMetadata(dataRoot string, metadata map[string]string) map[string]string {
+	out := make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		if auditExportSensitiveKey(key) {
+			out[key] = "[redacted]"
+			continue
+		}
+		out[key] = redactAuditExportValue(dataRoot, value)
+	}
+	return out
+}
+
+func auditExportSensitiveKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	for _, marker := range auditExportSecretKeyMarkers() {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return auditExportAuthSecretKey(key)
+}
+
+func auditExportAuthSecretKey(key string) bool {
+	key = strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(key)))
+	switch key {
+	case "auth", "authentication", "auth_header", "authheader", "authentication_header":
+		return true
+	default:
+		return false
+	}
+}
+
+func auditExportSecretKeyMarkers() []string {
+	return auditExportSecretKeyMarkersList[:]
+}
+
+var auditExportSecretKeyMarkersList = [...]string{"secret", "token", "password", "passwd", "authorization", "cookie", "bearer", "private", "api_key", "api-key", "apikey", "api_secret", "api-secret", "apisecret"}
+
+func auditExportSecretKeyRegexpPattern() string {
+	parts := make([]string, 0, len(auditExportSecretKeyMarkersList)+3)
+	for _, marker := range auditExportSecretKeyMarkersList {
+		parts = append(parts, regexp.QuoteMeta(marker))
+	}
+	parts = append(parts, `api[-_\s]?key`, `api[-_\s]?secret`, `auth`)
+	sort.Slice(parts, func(i, j int) bool {
+		return len(parts[i]) > len(parts[j])
+	})
+	return strings.Join(parts, "|")
+}
+
+func redactAuditExportValue(dataRoot, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	value = redactAuditExportText(dataRoot, value)
+	if filepath.IsAbs(value) {
+		return filepath.Base(value)
+	}
+	return value
+}
+
+func redactAuditExportText(dataRoot, text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	if dataRoot = strings.TrimSpace(dataRoot); dataRoot != "" {
+		base := auditExportPathBase(dataRoot)
+		for _, variant := range auditExportPathRedactionVariants(dataRoot) {
+			text = strings.ReplaceAll(text, variant, base)
+		}
+	}
+	text = auditExportBearerPattern.ReplaceAllString(text, "Bearer [redacted]")
+	text = auditExportJSONSecretPattern.ReplaceAllString(text, `${1}"[redacted]"`)
+	return auditExportInlineSecretPattern.ReplaceAllString(text, `${1}${2}[redacted]`)
+}
+
+func auditExportPathBase(value string) string {
+	if value = strings.TrimSpace(value); value == "" {
+		return value
+	}
+	base := filepath.Base(value)
+	if base != value {
+		return base
+	}
+	return path.Base(strings.ReplaceAll(value, `\`, "/"))
+}
+
+func auditExportPathRedactionVariants(value string) []string {
+	seen := map[string]bool{}
+	variants := make([]string, 0, 6)
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			return
+		}
+		seen[v] = true
+		variants = append(variants, v)
+	}
+	add(value)
+	add(filepath.ToSlash(value))
+	add(filepath.FromSlash(value))
+	for _, v := range append([]string(nil), variants...) {
+		add(strings.ReplaceAll(v, `\`, `\\`))
+	}
+	return variants
+}
 func maskAPIKeyString(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {

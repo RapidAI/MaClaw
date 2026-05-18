@@ -2,8 +2,13 @@ package main
 
 import (
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 // --- Classify: transient server errors ---
@@ -319,6 +324,304 @@ func TestRecordFailure_DisablesAfterThreshold(t *testing.T) {
 	d := r.Decide("llm_request", FailureTransient, 0)
 	if d.Action != "disable" {
 		t.Errorf("expected disable, got %s", d.Action)
+	}
+}
+
+func TestRecordFailurePersistsMemoryTrace(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	r := NewAdaptiveRetry(nil)
+	r.SetMemoryStore(store)
+	r.RecordFailure("write_file", FailureArgs, RetryDecision{
+		Action:       RetryActionFix,
+		Attempt:      2,
+		ErrorContext: "adjust args before retry",
+	})
+
+	entries := store.SearchDirectByID("adaptive-retry-write_file-args")
+	if len(entries) != 1 {
+		t.Fatalf("expected one adaptive retry memory, got %d: %#v", len(entries), entries)
+	}
+	entry := entries[0]
+	if entry.SourceType != string(experienceTraceSourceToolUsage) || entry.SourceURL != "experience://adaptive_retry/write_file/args" {
+		t.Fatalf("unexpected adaptive retry metadata: %#v", entry)
+	}
+	for _, want := range []string{experienceTraceKindToolRecoveryPattern.String(), "adaptive_retry", "tool:write_file", "category:args", "action:fix"} {
+		if !hasTag(entry.Tags, want) {
+			t.Fatalf("adaptive retry memory missing tag %q: %#v", want, entry.Tags)
+		}
+	}
+	for _, want := range []string{"Failure count: 1", "adjust args before retry", "Safety: retry evidence only"} {
+		if !strings.Contains(entry.Content, want) {
+			t.Fatalf("adaptive retry memory missing %q: %s", want, entry.Content)
+		}
+	}
+
+	snapshot := buildExperienceLearningSnapshot(nil, store)
+	if snapshot.TraceKindCounts[experienceTraceKindToolMemory.String()] != 1 || snapshot.TraceSourceCounts[string(experienceTraceSourceToolUsage)] != 1 {
+		t.Fatalf("adaptive retry memory should surface as tool-memory trace: %#v/%#v", snapshot.TraceKindCounts, snapshot.TraceSourceCounts)
+	}
+}
+
+func TestRecordFailurePersistsProviderMetadata(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	r := NewAdaptiveRetry(nil)
+	r.SetMemoryStore(store)
+	r.RecordFailure("llm_request", FailureTransient, RetryDecision{
+		Action:       RetryActionRetry,
+		Attempt:      0,
+		ProviderName: " ChatFire ",
+		Model:        " gpt-5.1-codex-mini ",
+		WireAPI:      " responses ",
+	})
+
+	entries := store.SearchDirectByID("adaptive-retry-llm_request-transient")
+	if len(entries) != 1 {
+		t.Fatalf("expected provider-scoped retry memory, got %#v", entries)
+	}
+	entry := entries[0]
+	for _, want := range []string{"Provider: ChatFire", "Model: gpt-5.1-codex-mini", "Wire API: responses"} {
+		if !strings.Contains(entry.Content, want) {
+			t.Fatalf("provider retry memory missing %q: %s", want, entry.Content)
+		}
+	}
+	for _, want := range []string{"provider:chatfire", "model:gpt-5-1-codex-mini", "wire_api:responses"} {
+		if !hasTag(entry.Tags, want) {
+			t.Fatalf("provider retry memory missing tag %q: %#v", want, entry.Tags)
+		}
+	}
+
+	snapshot := buildExperienceLearningSnapshot(nil, store)
+	if len(snapshot.ToolRecoverySummaries) != 1 {
+		t.Fatalf("expected one tool recovery summary, got %#v", snapshot.ToolRecoverySummaries)
+	}
+	summary := snapshot.ToolRecoverySummaries[0]
+	if summary.ProviderName != "ChatFire" || summary.Model != "gpt-5.1-codex-mini" || summary.WireAPI != "responses" {
+		t.Fatalf("summary should expose provider metadata: %#v", summary)
+	}
+	app := &App{memoryStore: store}
+	result := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{})
+	if result.ProviderCounts["ChatFire"] != 1 || result.ModelCounts["gpt-5.1-codex-mini"] != 1 || result.WireAPICounts["responses"] != 1 {
+		t.Fatalf("provider/model/wire_api governance counts missing: %#v", result)
+	}
+}
+
+func TestRecordFailureUpdatesExistingMemoryTrace(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	r := NewAdaptiveRetry(nil)
+	r.SetMemoryStore(store)
+	r.RecordFailure("llm_request", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: 0})
+	initial := store.SearchDirectByID("adaptive-retry-llm_request-transient")
+	if len(initial) != 1 {
+		t.Fatalf("expected initial adaptive retry memory, got %#v", initial)
+	}
+	firstObserved := adaptiveRetryTestContentField(initial[0].Content, "First observed at")
+	if firstObserved == "" {
+		t.Fatalf("expected initial first observed timestamp: %s", initial[0].Content)
+	}
+	r.RecordFailure("llm_request", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: 1, Delay: 10 * time.Second})
+
+	entries := store.SearchDirectByID("adaptive-retry-llm_request-transient")
+	if len(entries) != 1 {
+		t.Fatalf("expected one updated adaptive retry memory, got %d: %#v", len(entries), entries)
+	}
+	if !strings.Contains(entries[0].Content, "Failure count: 2") || !strings.Contains(entries[0].Content, "Delay: 10s") {
+		t.Fatalf("expected updated retry evidence content, got: %s", entries[0].Content)
+	}
+	if field := adaptiveRetryTestContentField(entries[0].Content, "First observed at"); field != firstObserved {
+		t.Fatalf("expected first observed timestamp to be preserved, got %q want %q in %s", field, firstObserved, entries[0].Content)
+	}
+	if field := adaptiveRetryTestContentField(entries[0].Content, "Last observed at"); field == "" {
+		t.Fatalf("expected last observed timestamp in retry evidence: %s", entries[0].Content)
+	}
+}
+
+func adaptiveRetryTestContentField(content, name string) string {
+	prefix := "- " + name + ":"
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func TestAgentLoopToolFailurePersistsAdaptiveRetryMemory(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	retry := NewAdaptiveRetry(nil)
+	retry.SetMemoryStore(store)
+	handler := &IMMessageHandler{}
+	result := handler.executeAgentLoopToolCall(agentLoopToolExecutionOptions{
+		ToolCall: llm.ToolCall{
+			ID: "call_bad_args",
+			Function: llm.ToolCallFunction{
+				Name:      "write_file",
+				Arguments: `{"path":`,
+			},
+		},
+		AdaptiveRetry: retry,
+	})
+	if result.FailureKind != toolFailureArgumentParse {
+		t.Fatalf("expected argument parse failure, got kind=%q text=%q", result.FailureKind, result.Text)
+	}
+
+	entries := store.SearchDirectByID("adaptive-retry-write_file-args")
+	if len(entries) != 1 {
+		t.Fatalf("expected one adaptive retry memory for failed tool call, got %d: %#v", len(entries), entries)
+	}
+	entry := entries[0]
+	for _, want := range []string{experienceTraceKindToolRecoveryPattern.String(), "adaptive_retry", "tool:write_file", "category:args", "action:fix"} {
+		if !hasTag(entry.Tags, want) {
+			t.Fatalf("tool failure memory missing tag %q: %#v", want, entry.Tags)
+		}
+	}
+	for _, want := range []string{"Failure count: 1", "argument_parse", "unexpected end of JSON input", "Safety: retry evidence only"} {
+		if !strings.Contains(entry.Content, want) {
+			t.Fatalf("tool failure memory missing %q: %s", want, entry.Content)
+		}
+	}
+}
+
+func TestToolRecoveryReviewUsesConsecutiveCategoryStreak(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	retry := NewAdaptiveRetry(nil)
+	retry.maxFailures = 99
+	retry.SetMemoryStore(store)
+	retry.RecordFailure("network_tool", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: 0})
+	retry.RecordFailure("network_tool", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: 1})
+	retry.RecordFailure("network_tool", FailureArgs, RetryDecision{Action: RetryActionFix, Attempt: 2})
+	retry.RecordFailure("network_tool", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: 3})
+	retry.RecordFailure("network_tool", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: 4})
+
+	entries := store.SearchDirectByID("adaptive-retry-network_tool-transient")
+	if len(entries) != 1 {
+		t.Fatalf("expected transient adaptive retry memory, got %#v", entries)
+	}
+	if hasTag(entries[0].Tags, experienceReviewRequiredTag) || !hasTag(entries[0].Tags, "failure_count:2") {
+		t.Fatalf("interrupted transient failures should not require review yet: %#v", entries[0].Tags)
+	}
+
+	retry.RecordFailure("network_tool", FailureTransient, RetryDecision{Action: RetryActionRetry, Attempt: 5})
+	entries = store.SearchDirectByID("adaptive-retry-network_tool-transient")
+	if len(entries) != 1 {
+		t.Fatalf("expected transient adaptive retry memory after retry streak, got %#v", entries)
+	}
+	if hasTag(entries[0].Tags, experienceReviewRequiredTag) || !hasTag(entries[0].Tags, "failure_count:3") {
+		t.Fatalf("retryable transient failures should stay out of review while retrying: %#v", entries[0].Tags)
+	}
+
+	retry.RecordFailure("network_tool", FailureTransient, RetryDecision{Action: RetryActionSkip, Attempt: 6})
+	entries = store.SearchDirectByID("adaptive-retry-network_tool-transient")
+	if len(entries) != 1 {
+		t.Fatalf("expected transient adaptive retry memory after streak, got %#v", entries)
+	}
+	if !hasTag(entries[0].Tags, experienceReviewRequiredTag) || !hasTag(entries[0].Tags, "failure_count:4") {
+		t.Fatalf("terminal transient failure should require review: %#v", entries[0].Tags)
+	}
+}
+
+func TestReviewedToolRecoveryUsesFailureCountCooldown(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	retry := NewAdaptiveRetry(nil)
+	retry.SetMemoryStore(store)
+	for i := 0; i < adaptiveRetryReviewThreshold; i++ {
+		retry.RecordFailure("write_file", FailureArgs, RetryDecision{Action: RetryActionFix, Attempt: i})
+	}
+	app := &App{memoryStore: store}
+	if _, err := app.ReviewExperienceTrace("memory:adaptive-retry-write_file-args", ExperienceTraceReviewRequest{Outcome: "approved", Note: "known noisy args", Reviewer: "owner"}); err != nil {
+		t.Fatalf("ReviewExperienceTrace: %v", err)
+	}
+
+	retry.RecordFailure("write_file", FailureArgs, RetryDecision{Action: RetryActionFix, Attempt: 3})
+	entries := store.SearchDirectByID("adaptive-retry-write_file-args")
+	if len(entries) != 1 {
+		t.Fatalf("expected one adaptive retry memory, got %#v", entries)
+	}
+	if hasTag(entries[0].Tags, experienceReviewRequiredTag) || !hasTag(entries[0].Tags, experienceReviewResolvedTag) || !hasTag(entries[0].Tags, adaptiveRetryReviewedFailureCountPrefix+"3") {
+		t.Fatalf("reviewed recovery should stay resolved during cooldown: %#v", entries[0].Tags)
+	}
+	if !strings.Contains(entries[0].Content, "Experience review record:") || !strings.Contains(entries[0].Content, "known noisy args") {
+		t.Fatalf("review audit should be preserved across retry memory updates: %s", entries[0].Content)
+	}
+
+	retry.RecordFailure("write_file", FailureArgs, RetryDecision{Action: RetryActionFix, Attempt: 4})
+	retry.RecordFailure("write_file", FailureArgs, RetryDecision{Action: RetryActionFix, Attempt: 5})
+	entries = store.SearchDirectByID("adaptive-retry-write_file-args")
+	if len(entries) != 1 {
+		t.Fatalf("expected one adaptive retry memory after cooldown, got %#v", entries)
+	}
+	if !hasTag(entries[0].Tags, experienceReviewRequiredTag) || !hasTag(entries[0].Tags, "failure_count:6") || hasTag(entries[0].Tags, experienceReviewResolvedTag) {
+		t.Fatalf("repeated failures after cooldown should require fresh review: %#v", entries[0].Tags)
+	}
+}
+
+func TestRepeatedToolFailureRequiresRecoveryReview(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+
+	retry := NewAdaptiveRetry(nil)
+	retry.SetMemoryStore(store)
+	for i := 0; i < adaptiveRetryReviewThreshold; i++ {
+		retry.RecordFailure("write_file", FailureArgs, RetryDecision{Action: RetryActionFix, Attempt: i})
+	}
+
+	entries := store.SearchDirectByID("adaptive-retry-write_file-args")
+	if len(entries) != 1 {
+		t.Fatalf("expected one adaptive retry memory, got %d: %#v", len(entries), entries)
+	}
+	entry := entries[0]
+	if !hasTag(entry.Tags, experienceReviewRequiredTag) || !hasTag(entry.Tags, "failure_count:3") {
+		t.Fatalf("repeated recovery should require review and expose count tag: %#v", entry.Tags)
+	}
+
+	snapshot := buildExperienceLearningSnapshot(nil, store)
+	if snapshot.ReviewRequiredTraceCount != 1 || snapshot.TraceKindCounts[experienceTraceKindToolRecoveryPattern.String()] != 1 || snapshot.NextActionKindCounts[experienceGovernanceActionReviewSignal.String()] != 1 {
+		t.Fatalf("expected tool recovery review trace: %#v", snapshot)
+	}
+	found := false
+	for _, detail := range snapshot.TraceDetails {
+		if detail.Kind == experienceTraceKindToolRecoveryPattern.String() {
+			found = true
+			if !detail.ReviewRequired || !strings.Contains(detail.ReviewAction, "failure recovery") || !strings.Contains(detail.Impact, "needs review") {
+				t.Fatalf("unexpected tool recovery review detail: %#v", detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("tool recovery review detail missing: %#v", snapshot.TraceDetails)
 	}
 }
 

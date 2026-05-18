@@ -2,6 +2,8 @@ import type { AIAssistantInitStatus, CancelAIAssistantResult, ChatMessage } from
 import type { AgentView } from "./agentViewTypes";
 export type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./groupDiscussionTypes";
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
+import type { PendingHistoryDiscussionOpen, PendingProjectTabOpen } from "./usePendingAssistantTabOpen";
+import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
 
 /**
  * State fields provided by useAIAssistant hook.
@@ -40,7 +42,6 @@ export interface AIAssistantPanelAppState {
  * provide partial state without casting.
  */
 export interface AIAssistantPanelStateProps extends Partial<AIAssistantPanelHookState>, AIAssistantPanelAppState {
-    // Required fields that tests must always provide:
     messages: ChatMessage[];
     sending: boolean;
     streaming: boolean;
@@ -59,6 +60,7 @@ export interface AIAssistantPanelHookActions {
     sendBtwMessage: (query: string) => Promise<void>;
     sendMessageInBackground: (text: string) => Promise<void>;
     injectSupplementary: (text: string) => Promise<boolean>;
+    guideLaunchReference: (text: string, sessionKey?: string) => Promise<boolean>;
     clearHistory: () => Promise<void>;
     recordSubmittedPrompt: (text: string) => void;
     setDraftInputValue: (text: string) => void;
@@ -83,13 +85,7 @@ export interface AIAssistantPanelAppActions {
  * Backward-compatible: all hook actions become optional here so tests can
  * provide partial actions without casting.
  */
-export interface AIAssistantPanelActionProps extends Partial<AIAssistantPanelHookActions>, AIAssistantPanelAppActions {
-    // Required fields that tests must always provide:
-    sendMessage: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
-    clearHistory: () => Promise<void>;
-    executeAction: (command: string) => Promise<boolean | undefined | void>;
-    refreshNews: () => void;
-}
+export interface AIAssistantPanelActionProps extends Partial<AIAssistantPanelHookActions>, AIAssistantPanelAppActions {}
 
 export interface AIAssistantPanelWindowProps {
     inline?: boolean;
@@ -112,4 +108,12 @@ export interface AIAssistantPanelProps {
     audioOutputDeviceId?: string;
     petVoiceStartSeq?: number;
     petFocusInputSeq?: number;
+    pendingVEOpen?: VirtualEmployeeEntry | null;
+    onPendingVEOpenHandled?: () => void;
+    pendingHistoryDiscussionOpen?: PendingHistoryDiscussionOpen | null;
+    onPendingHistoryDiscussionOpenHandled?: () => void;
+    pendingProjectTabOpen?: PendingProjectTabOpen | null;
+    onPendingProjectTabOpenHandled?: () => void;
 }
+
+export type AIAssistantPanelCompatProps = AIAssistantPanelProps & AIAssistantPanelStateProps & AIAssistantPanelActionProps & AIAssistantPanelWindowProps;

@@ -138,6 +138,8 @@ export function GetRemoteToolLaunchProbe(arg1:string,arg2:string,arg3:boolean):P
 
 export function GetRemotePTYProbe():Promise<any>;
 
+export function GetProjectScene(arg1:string):Promise<main.ProjectSceneDetail>;
+
 export function SearchProjects(arg1:string,arg2:number):Promise<Array<main.ProjectSearchResult>>;
 
 export function CreateRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
@@ -145,6 +147,10 @@ export function CreateRecentTask(arg1:string):Promise<main.ProjectSearchResult>;
 export function ForkConversationToProject(arg1:string):Promise<void>;
 
 export function ResumeProject(arg1:string):Promise<string>;
+
+export function CheckVEApprovalCapabilityStatus(arg1:string):Promise<main.VEApprovalCapabilityStatus>;
+
+export function ValidateVEApproverAssignment(arg1:string):Promise<void>;
 
 export function LoadProjectContext(arg1:string):Promise<main.ProjectContextSummary>;
 
@@ -580,6 +586,10 @@ export function CancelAIAssistantSession():Promise<string>;
 
 export function InjectAIAssistantSupplementary(arg1:string):Promise<boolean>;
 
+export function InjectAIAssistantGuideReference(arg1:string):Promise<boolean>;
+
+export function InjectAIAssistantGuideReferenceForSession(arg1:string,arg2:string):Promise<boolean>;
+
 export function ResolveCriticalConfirm(arg1:string,arg2:boolean):Promise<void>;
 
 export function CancelAIAssistantTask(arg1:string):Promise<void>;
@@ -975,6 +985,10 @@ export function GetVEAllowedDirectories():Promise<Array<string>>;
 
 export function SetVEAllowedDirectories(arg1:Array<string>):Promise<void>;
 
+export function GetVEApprovalConfig():Promise<any>;
+
+export function SaveVEApprovalConfig(arg1:any):Promise<void>;
+
 export function ArchiveVESession(arg1:string):Promise<void>;
 
 export function ArchiveGroupSession(arg1:Array<string>):Promise<void>;
@@ -995,3 +1009,14 @@ export function CreateProjectTabSession(arg1:string, arg2:string):Promise<string
 export function CloseProjectTabSession(arg1:string):Promise<void>;
 
 export function SendMessageForTab(arg1:string, arg2:string, arg3:string):Promise<any>;
+
+
+// Workflow Directory bindings
+export function GetWorkflowDirectory(arg1:string, arg2:string):Promise<any>;
+
+// Knowledge Deep Crawl bindings
+export function KnowledgeDeepCrawl(arg1:any):Promise<any>;
+
+export function KnowledgeDeepCrawlPreview(arg1:any):Promise<any>;
+
+export function KnowledgeDeepCrawlCancel():Promise<any>;

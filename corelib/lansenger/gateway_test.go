@@ -33,6 +33,25 @@ func TestReconnectBackoffDelayCapsAtMax(t *testing.T) {
 	}
 }
 
+func TestLansengerConnectionAgeExceeded(t *testing.T) {
+	now := time.Now()
+	if lansengerConnectionAgeExceeded(time.Time{}, now) {
+		t.Fatal("zero connectedAt should not exceed max age")
+	}
+	if lansengerConnectionAgeExceeded(now.Add(time.Minute), now) {
+		t.Fatal("future connectedAt should not exceed max age")
+	}
+	if lansengerConnectionAgeExceeded(now.Add(-lansengerMaxConnAge+time.Second), now) {
+		t.Fatal("connection younger than max age should not exceed")
+	}
+	if !lansengerConnectionAgeExceeded(now.Add(-lansengerMaxConnAge), now) {
+		t.Fatal("connection at max age should exceed")
+	}
+	if !lansengerConnectionAgeExceeded(now.Add(-lansengerMaxConnAge-time.Second), now) {
+		t.Fatal("connection older than max age should exceed")
+	}
+}
+
 func TestGetWebSocketURLUsesConfiguredWebSocketFallback(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/ws/endpoint/create" {
@@ -83,6 +102,65 @@ func TestDoPostRetriesTransientHTTPError(t *testing.T) {
 	}
 }
 
+func TestGetAppTokenRetriesTransientHTTPError(t *testing.T) {
+	attempts := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "temporary", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errCode": 0,
+			"data": map[string]any{
+				"appToken":  "tok-1",
+				"expiresIn": 3600,
+			},
+		})
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{AppID: "app-1", AppSecret: "secret-1", ApiGatewayURL: api.URL}, nil)
+	tok, err := gw.getAppToken(context.Background())
+	if err != nil {
+		t.Fatalf("getAppToken: %v", err)
+	}
+	if tok != "tok-1" {
+		t.Fatalf("token = %q, want tok-1", tok)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
+func TestGetWebSocketURLRetriesTransientHTTPError(t *testing.T) {
+	attempts := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			http.Error(w, "temporary", http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"errCode": 0,
+			"data":    map[string]string{"wsEndpoint": "wss://ws.example.test/live"},
+		})
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{AppID: "app-1", AppSecret: "secret-1", ApiGatewayURL: api.URL}, nil)
+	got, err := gw.getWebSocketURL(context.Background())
+	if err != nil {
+		t.Fatalf("getWebSocketURL: %v", err)
+	}
+	if got != "wss://ws.example.test/live" {
+		t.Fatalf("getWebSocketURL() = %q", got)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestDoPostDoesNotRetryClientError(t *testing.T) {
 	attempts := 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +175,106 @@ func TestDoPostDoesNotRetryClientError(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+}
+
+func TestSendTextRefreshesExpiredTokenAndRetriesOnce(t *testing.T) {
+	tokenAttempts := 0
+	sendAttempts := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			tokenAttempts++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errCode": 0,
+				"data": map[string]any{
+					"appToken":  "tok-1",
+					"expiresIn": 3600,
+				},
+			})
+		case "/v1/bot/messages/create":
+			sendAttempts++
+			if sendAttempts == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 42001, "errMsg": "token expired"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{AppID: "app-1", AppSecret: "secret-1", ApiGatewayURL: api.URL}, nil)
+	if err := gw.SendText(context.Background(), OutgoingText{ToUserID: "user-1", Text: "hello"}); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	if tokenAttempts != 2 {
+		t.Fatalf("tokenAttempts = %d, want 2", tokenAttempts)
+	}
+	if sendAttempts != 2 {
+		t.Fatalf("sendAttempts = %d, want 2", sendAttempts)
+	}
+}
+
+func TestSendMediaRefreshesExpiredTokenDuringUploadAndRetriesOnce(t *testing.T) {
+	tokenAttempts := 0
+	uploadAttempts := 0
+	sendAttempts := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/apptoken/create":
+			tokenAttempts++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errCode": 0,
+				"data": map[string]any{
+					"appToken":  "tok-1",
+					"expiresIn": 3600,
+				},
+			})
+		case "/v1/medias/create":
+			uploadAttempts++
+			if uploadAttempts == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 42001, "errMsg": "token expired"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errCode": 0,
+				"data":    map[string]string{"mediaId": "media-1"},
+			})
+		case "/v1/bot/messages/create":
+			sendAttempts++
+			_ = json.NewEncoder(w).Encode(map[string]any{"errCode": 0})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	gw := NewGateway(Config{AppID: "app-1", AppSecret: "secret-1", ApiGatewayURL: api.URL}, nil)
+	if err := gw.SendMedia(context.Background(), OutgoingMedia{ToUserID: "user-1", FileData: []byte("png"), FileName: "a.png", MediaType: "image"}); err != nil {
+		t.Fatalf("SendMedia: %v", err)
+	}
+	if tokenAttempts != 2 {
+		t.Fatalf("tokenAttempts = %d, want 2", tokenAttempts)
+	}
+	if uploadAttempts != 2 {
+		t.Fatalf("uploadAttempts = %d, want 2", uploadAttempts)
+	}
+	if sendAttempts != 1 {
+		t.Fatalf("sendAttempts = %d, want 1", sendAttempts)
+	}
+}
+
+func TestIsLansengerTokenExpiredError(t *testing.T) {
+	if !isLansengerTokenExpiredError(&lansengerAPIError{Code: 42001, Msg: "expired"}) {
+		t.Fatal("expected 42001 to be treated as token expired")
+	}
+	if !isLansengerTokenExpiredError(&lansengerAPIError{Code: 123, Msg: "app token invalid"}) {
+		t.Fatal("expected token invalid message to be treated as token expired")
+	}
+	if isLansengerTokenExpiredError(&lansengerAPIError{Code: 123, Msg: "permission denied"}) {
+		t.Fatal("permission denied should not be treated as token expired")
 	}
 }
 

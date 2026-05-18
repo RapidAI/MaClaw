@@ -203,3 +203,47 @@ func TestProperty9_LoadProjectContext_FilePathTagsPopulateKeyArtifacts(t *testin
 		t.Errorf("KeyArtifacts = %v, want to contain file path %q or SourceURL", summary.KeyArtifacts, filePath)
 	}
 }
+
+func TestLoadProjectContextIncludesSceneRecentArtifacts(t *testing.T) {
+	app := newProjectContextTestApp(t)
+
+	projectPath := filepath.Join(t.TempDir(), "scene-context")
+	refPath := filepath.Join(app.GetDataDir(), "memory_refs", "workflow_output", "desktop-user", "2026-05", "design.md")
+	entry := memory.Entry{
+		Title:      "Scene Context Design",
+		Content:    "# Scene Context Design\nKeep full design content behind a source ref.",
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"workflow", "workflow:coding", projectPath},
+		SourceType: "workflow_output_ref",
+		SourceURL:  refPath,
+		Scope:      memory.ScopeProject,
+	}
+	if err := app.memoryStore.Save(entry); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	summary, err := app.LoadProjectContext(projectPath)
+	if err != nil {
+		t.Fatalf("LoadProjectContext error: %v", err)
+	}
+	if len(summary.RecentArtifacts) == 0 {
+		t.Fatalf("RecentArtifacts is empty: %#v", summary)
+	}
+	artifact := summary.RecentArtifacts[0]
+	if artifact.Title != "Scene Context Design" || artifact.SourceType != "workflow_output_ref" || artifact.SourceURL != refPath {
+		t.Fatalf("RecentArtifacts[0] = %#v, want source-backed scene artifact", artifact)
+	}
+	if artifact.SourceHint != "full: read_file" {
+		t.Fatalf("RecentArtifacts[0].SourceHint = %q, want full: read_file", artifact.SourceHint)
+	}
+	foundSource := false
+	for _, path := range summary.KeyArtifacts {
+		if path == refPath {
+			foundSource = true
+			break
+		}
+	}
+	if !foundSource {
+		t.Fatalf("KeyArtifacts = %#v, want source ref %q", summary.KeyArtifacts, refPath)
+	}
+}

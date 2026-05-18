@@ -160,6 +160,8 @@ func TestPreservation_AllRegisteredTemplatesDescribed(t *testing.T) {
 		WorkflowComplianceAudit,
 		WorkflowPatentAnalysis,
 		WorkflowOpsMaintenance,
+		WorkflowChangjiangScholar,
+		WorkflowChangjiangScholarReview,
 	}
 
 	for _, wt := range registeredTypes {

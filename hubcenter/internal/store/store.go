@@ -76,6 +76,7 @@ type HubInstance struct {
 type HubUserLink struct {
 	ID        string    `json:"id"`
 	HubID     string    `json:"hub_id"`
+	TenantID  string    `json:"tenant_id,omitempty"`
 	Email     string    `json:"email"`
 	IsDefault bool      `json:"is_default"`
 	CreatedAt time.Time `json:"created_at"`

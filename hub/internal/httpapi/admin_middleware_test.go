@@ -137,6 +137,7 @@ func newAdminRouterTestContext(t *testing.T) *hubAdminRouterTestServices {
 		"",
 		"/app",
 		"",
+		st.Tenants,
 	)
 	return &hubAdminRouterTestServices{
 		handler: router,
@@ -276,5 +277,65 @@ func TestAdminPromptCacheEntryDeleteHandlerAcceptsToken(t *testing.T) {
 	resp := doHubAdminJSONRequest(t, router, http.MethodDelete, "/api/admin/hub_llm_prompt_cache_entry?cache_key=test", nil, token)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestTenantAdminRoutesRequireGlobalAdminForTenantCreate(t *testing.T) {
+	ctx := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, ctx.handler)
+
+	createResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "acme",
+		"name":                   "Acme Corp",
+		"primary_domain":         "acme.com",
+		"initial_admin_username": "acme-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@acme.com",
+	}, token)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	loginResp := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/login", map[string]any{
+		"username": "acme-owner",
+		"password": "StrongPassword123!",
+	}, "")
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("tenant admin login status = %d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		AccessToken string `json:"access_token"`
+		Admin       struct {
+			Scope    string `json:"scope"`
+			Role     string `json:"role"`
+			TenantID string `json:"tenant_id"`
+		} `json:"admin"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode tenant admin login: %v", err)
+	}
+	if loginPayload.Admin.Scope != "tenant" || loginPayload.Admin.Role != "tenant_owner" || loginPayload.Admin.TenantID != "tenant_acme" {
+		t.Fatalf("unexpected tenant admin payload: %+v", loginPayload.Admin)
+	}
+
+	denied := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/tenants", map[string]any{
+		"slug":                   "other",
+		"name":                   "Other Corp",
+		"initial_admin_username": "other-owner",
+		"initial_admin_password": "StrongPassword123!",
+		"initial_admin_email":    "owner@other.com",
+	}, loginPayload.AccessToken)
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin create tenant status = %d body=%s", denied.Code, denied.Body.String())
+	}
+
+	centerUpdate := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/center/config", map[string]any{"base_url": "https://center.example.com"}, loginPayload.AccessToken)
+	if centerUpdate.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin center config status = %d body=%s", centerUpdate.Code, centerUpdate.Body.String())
+	}
+
+	centerRegister := doHubAdminJSONRequest(t, ctx.handler, http.MethodPost, "/api/admin/center/register", map[string]any{}, loginPayload.AccessToken)
+	if centerRegister.Code != http.StatusForbidden {
+		t.Fatalf("tenant admin center register status = %d body=%s", centerRegister.Code, centerRegister.Body.String())
 	}
 }

@@ -30,15 +30,15 @@ export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProje
     let content: React.ReactNode = null;
 
     if (activeTab.type === "ve" && activeTab.veId) {
+        // VE 1:1 tab: render VEConversationView without participant panel.
+        // Uses UnifiedVEGroupWrapper with no participants to share the same
+        // component type as group tabs, preventing React unmount on tab upgrade.
         content = (
-            <VETabWrapper
+            <UnifiedVEGroupWrapper
                 key={activeTab.id}
-                tabId={activeTab.id}
-                veId={activeTab.veId}
-                veName={activeTab.title}
+                tab={activeTab}
                 theme={theme}
                 lang={lang}
-                initialOnlineStatus={activeTab.onlineStatus}
                 getTabState={getTabState}
                 saveTabState={saveTabState}
             />
@@ -47,8 +47,11 @@ export function AssistantActiveTabContent({ activeTab, isLocalTabActive, isProje
         const isLiveGroup = !!activeTab.veId && Array.isArray(activeTab.participants) && activeTab.participants.length > 0;
 
         if (isLiveGroup) {
+            // Group tab: render VEConversationView with participant panel.
+            // Same component type as VE tab (UnifiedVEGroupWrapper) so React
+            // preserves the VEConversationView instance when upgrading from VE to group.
             content = (
-                <LiveGroupTabWrapper
+                <UnifiedVEGroupWrapper
                     key={activeTab.id}
                     tab={activeTab}
                     theme={theme}
@@ -114,49 +117,20 @@ function useVEStatePersistence(
     return veRef;
 }
 
-// --- VE Tab Wrapper ---
-// Manages the lifecycle of VEConversationView state persistence.
-// On unmount (tab switch), snapshots conversation state via ref and saves to tabStatesRef.
+// --- Unified VE/Group Tab Wrapper ---
+// CRITICAL DESIGN: Both VE 1:1 tabs and group tabs use the SAME component type.
+// This is the mechanism that prevents React from unmounting VEConversationView
+// when upgradeVETabToGroup changes tab.type from "ve" to "group".
+//
+// React reconciliation rule: same key + same component type means update, not unmount.
+// If we used two different components (VETabWrapper vs LiveGroupTabWrapper),
+// React would unmount the old and mount the new, destroying conversation state.
+//
+// By using one component for both modes, the tab type change only triggers a
+// re-render with updated props as participants are added,
+// and VEConversationView stays mounted with all its state intact.
 
-interface VETabWrapperProps {
-    tabId: string;
-    veId: string;
-    veName: string;
-    theme: any;
-    lang: string;
-    initialOnlineStatus?: "online" | "offline";
-    getTabState?: (tabId: string) => AITabState | undefined;
-    saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
-}
-
-function VETabWrapper({ tabId, veId, veName, theme, lang, initialOnlineStatus, getTabState, saveTabState }: VETabWrapperProps) {
-    const veRef = useVEStatePersistence(tabId, saveTabState);
-
-    const savedState = getTabState?.(tabId);
-    const savedMessages = savedState?.history as VEMessage[] | undefined;
-    const savedSessionId = savedState?.sessionId;
-    const savedInputText = savedState?.inputText;
-
-    return (
-        <VEConversationView
-            ref={veRef}
-            veId={veId}
-            veName={veName}
-            theme={theme}
-            lang={lang}
-            initialOnlineStatus={initialOnlineStatus}
-            existingSessionId={savedSessionId}
-            initialMessages={savedMessages}
-            initialInputText={savedInputText}
-        />
-    );
-}
-
-// --- Live Group Tab Wrapper ---
-// Renders a real-time group chat view (upgraded from VE 1:1 conversation).
-// Shows the VE conversation on the left and a participant panel on the right.
-
-interface LiveGroupTabWrapperProps {
+interface UnifiedVEGroupWrapperProps {
     tab: AITab;
     theme: any;
     lang: string;
@@ -164,13 +138,21 @@ interface LiveGroupTabWrapperProps {
     saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
 }
 
-function LiveGroupTabWrapper({ tab, theme, lang, getTabState, saveTabState }: LiveGroupTabWrapperProps) {
+function UnifiedVEGroupWrapper({ tab, theme, lang, getTabState, saveTabState }: UnifiedVEGroupWrapperProps) {
     const veRef = useVEStatePersistence(tab.id, saveTabState);
 
     const savedState = getTabState?.(tab.id);
     const savedMessages = savedState?.history as VEMessage[] | undefined;
     const savedSessionId = savedState?.sessionId || tab.discussionId;
     const savedInputText = savedState?.inputText;
+    const handleSessionIdChange = useCallback((sessionId: string) => {
+        const current = getTabState?.(tab.id);
+        if (current?.sessionId === sessionId) return;
+        saveTabState?.(tab.id, { ...current, sessionId });
+    }, [getTabState, saveTabState, tab.id]);
+
+    // Determine if we're in group mode (show participant panel)
+    const isGroupMode = Array.isArray(tab.participants) && tab.participants.length > 1;
 
     // External @mention insert state (triggered by right-click "Talk to" in participant panel)
     const [externalMentionInsert, setExternalMentionInsert] = useState<{ name: string; timestamp: number } | null>(null);
@@ -183,21 +165,22 @@ function LiveGroupTabWrapper({ tab, theme, lang, getTabState, saveTabState }: Li
         setExternalMentionInsert({ name: displayName, timestamp: Date.now() });
     }, [lang]);
 
-    // Memoize participant list to avoid unnecessary re-renders of GroupParticipantPanel.
-    // Only recompute when the participants array reference or tab title changes.
-    const participants: Participant[] = useMemo(() =>
+    // Memoize participant list for GroupParticipantPanel display
+    const panelParticipants: Participant[] = useMemo(() =>
         (tab.participants || []).map((pid) => ({
             id: pid,
             name: pid === "local-maclaw"
                 ? "" // GroupParticipantPanel uses isLocal flag for display name
                 : (pid === tab.veId ? tab.title : pid),
-            online: true, // Real-time status updated via ve:status_change events inside the panel
+            online: true,
             isLocal: pid === "local-maclaw",
         })),
         [tab.participants, tab.veId, tab.title]
     );
 
-    // Participants for @mention popover — needs display names for all participants
+    // Participants for @mention popover: all participants are mentionable.
+    // In group chat, the user (human operator) is the message sender, NOT a participant.
+    // Both remote VE and local AI are participants that can be @mentioned.
     const mentionParticipants = useMemo(() =>
         (tab.participants || []).map((pid) => ({
             id: pid,
@@ -209,6 +192,14 @@ function LiveGroupTabWrapper({ tab, theme, lang, getTabState, saveTabState }: Li
         [tab.participants, tab.veId, tab.title, lang]
     );
 
+    // CRITICAL: Always use the same DOM structure regardless of isGroupMode.
+    // If we conditionally wrap VEConversationView in different parent elements,
+    // React will unmount and remount it when isGroupMode changes (because the
+    // root element type changes from VEConversationView to div).
+    //
+    // Solution: Always render the flex row layout. In 1:1 mode, the participant
+    // panel is simply not rendered (display:none or conditional null).
+    // VEConversationView's position in the tree never changes.
     return (
         <div
             data-testid="live-group-tab"
@@ -219,7 +210,6 @@ function LiveGroupTabWrapper({ tab, theme, lang, getTabState, saveTabState }: Li
                 width: "100%",
             }}
         >
-            {/* Left: Conversation area */}
             <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                 <VEConversationView
                     ref={veRef}
@@ -231,18 +221,20 @@ function LiveGroupTabWrapper({ tab, theme, lang, getTabState, saveTabState }: Li
                     existingSessionId={savedSessionId}
                     initialMessages={savedMessages}
                     initialInputText={savedInputText}
-                    participants={mentionParticipants}
-                    externalMentionInsert={externalMentionInsert}
+                    participants={isGroupMode ? mentionParticipants : undefined}
+                    externalMentionInsert={isGroupMode ? externalMentionInsert : undefined}
+                    onSessionIdChange={handleSessionIdChange}
                 />
             </div>
-            {/* Right: Participant panel */}
-            <GroupParticipantPanel
-                participants={participants}
-                theme={theme}
-                lang={lang}
-                sessionId={savedSessionId}
-                onTalkTo={handleTalkTo}
-            />
+            {isGroupMode && (
+                <GroupParticipantPanel
+                    participants={panelParticipants}
+                    theme={theme}
+                    lang={lang}
+                    sessionId={savedSessionId}
+                    onTalkTo={handleTalkTo}
+                />
+            )}
         </div>
     );
 }

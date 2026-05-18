@@ -12,7 +12,7 @@ import (
 // GetVoiceprintConfigHandler returns the current voiceprint configuration.
 func GetVoiceprintConfigHandler(svc *voiceprint.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		cfg := svc.LoadConfig(r.Context())
+		cfg := svc.LoadConfig(voiceprint.WithTenant(r.Context(), RequestTenantID(r)))
 		writeJSON(w, http.StatusOK, cfg)
 	}
 }
@@ -26,11 +26,12 @@ func UpdateVoiceprintConfigHandler(svc *voiceprint.Service) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if err := svc.SaveConfig(r.Context(), cfg); err != nil {
+		ctx := voiceprint.WithTenant(r.Context(), RequestTenantID(r))
+		if err := svc.SaveConfig(ctx, cfg); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, svc.LoadConfig(r.Context()))
+		writeJSON(w, http.StatusOK, svc.LoadConfig(ctx))
 	}
 }
 
@@ -54,7 +55,8 @@ func VoiceprintEnrollHandler(svc *voiceprint.Service, users store.UserRepository
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "email is required"})
 			return
 		}
-		user, err := users.GetByEmail(r.Context(), email)
+		tenantID := RequestTenantID(r)
+		user, err := users.GetByTenantEmail(r.Context(), tenantID, email)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -77,7 +79,7 @@ func VoiceprintEnrollHandler(svc *voiceprint.Service, users store.UserRepository
 			return
 		}
 
-		vp, err := svc.Enroll(r.Context(), user.ID, email, label, wavData)
+		vp, err := svc.Enroll(voiceprint.WithTenant(r.Context(), tenantID), user.ID, email, label, wavData)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -116,7 +118,7 @@ func VoiceprintIdentifyHandler(svc *voiceprint.Service) http.HandlerFunc {
 			return
 		}
 
-		matches, err := svc.Identify(r.Context(), wavData)
+		matches, err := svc.Identify(voiceprint.WithTenant(r.Context(), RequestTenantID(r)), wavData)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -132,7 +134,7 @@ func VoiceprintIdentifyHandler(svc *voiceprint.Service) http.HandlerFunc {
 // ListVoiceprintsHandler lists all enrolled voiceprints.
 func ListVoiceprintsHandler(svc *voiceprint.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		all, err := svc.ListAll(r.Context())
+		all, err := svc.ListAll(voiceprint.WithTenant(r.Context(), RequestTenantID(r)))
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -169,7 +171,7 @@ func DeleteVoiceprintHandler(svc *voiceprint.Service) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 			return
 		}
-		if err := svc.Delete(r.Context(), id); err != nil {
+		if err := svc.Delete(voiceprint.WithTenant(r.Context(), RequestTenantID(r)), id); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}

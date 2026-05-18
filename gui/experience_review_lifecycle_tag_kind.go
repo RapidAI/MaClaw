@@ -7,14 +7,16 @@ const experienceReviewedAtTagPrefix = "reviewed_at:"
 type experienceReviewLifecycleTagKind string
 
 const (
-	experienceReviewLifecycleTagUnknown            experienceReviewLifecycleTagKind = ""
-	experienceReviewLifecycleTagDeferred           experienceReviewLifecycleTagKind = "review_deferred"
-	experienceReviewLifecycleTagRollbackReviewed   experienceReviewLifecycleTagKind = "rollback_reviewed"
-	experienceReviewLifecycleTagRollbackRejected   experienceReviewLifecycleTagKind = "rollback_rejected"
-	experienceReviewLifecycleTagConflictReviewed   experienceReviewLifecycleTagKind = "conflict_reviewed"
-	experienceReviewLifecycleTagConflictRejected   experienceReviewLifecycleTagKind = "conflict_rejected"
-	experienceReviewLifecycleTagSkillNudgeReviewed experienceReviewLifecycleTagKind = "skill_nudge_reviewed"
-	experienceReviewLifecycleTagSkillNudgeRejected experienceReviewLifecycleTagKind = "skill_nudge_rejected"
+	experienceReviewLifecycleTagUnknown              experienceReviewLifecycleTagKind = ""
+	experienceReviewLifecycleTagDeferred             experienceReviewLifecycleTagKind = "review_deferred"
+	experienceReviewLifecycleTagRollbackReviewed     experienceReviewLifecycleTagKind = "rollback_reviewed"
+	experienceReviewLifecycleTagRollbackRejected     experienceReviewLifecycleTagKind = "rollback_rejected"
+	experienceReviewLifecycleTagConflictReviewed     experienceReviewLifecycleTagKind = "conflict_reviewed"
+	experienceReviewLifecycleTagConflictRejected     experienceReviewLifecycleTagKind = "conflict_rejected"
+	experienceReviewLifecycleTagSkillNudgeReviewed   experienceReviewLifecycleTagKind = "skill_nudge_reviewed"
+	experienceReviewLifecycleTagSkillNudgeRejected   experienceReviewLifecycleTagKind = "skill_nudge_rejected"
+	experienceReviewLifecycleTagToolRecoveryReviewed experienceReviewLifecycleTagKind = "tool_recovery_reviewed"
+	experienceReviewLifecycleTagToolRecoveryRejected experienceReviewLifecycleTagKind = "tool_recovery_rejected"
 )
 
 func normalizeExperienceReviewLifecycleTagKind(tag string) experienceReviewLifecycleTagKind {
@@ -33,6 +35,10 @@ func normalizeExperienceReviewLifecycleTagKind(tag string) experienceReviewLifec
 		return experienceReviewLifecycleTagSkillNudgeReviewed
 	case experienceReviewLifecycleTagSkillNudgeRejected:
 		return experienceReviewLifecycleTagSkillNudgeRejected
+	case experienceReviewLifecycleTagToolRecoveryReviewed:
+		return experienceReviewLifecycleTagToolRecoveryReviewed
+	case experienceReviewLifecycleTagToolRecoveryRejected:
+		return experienceReviewLifecycleTagToolRecoveryRejected
 	default:
 		return experienceReviewLifecycleTagUnknown
 	}

@@ -5478,3 +5478,37 @@ Guards 防止误杀合法 session 交互：
 - 用户在 session 中说"用 React 开发前端"（UIC `coding` conf=0.85）→ 不 escape → 正常路由到 IUM
 - IUM LLM 仍然回复"无法访问" → contract breach → cancel session → fall through
 - 所有 150+ workflow 测试通过 + 3 个新增 contract breach 测试通过
+
+
+### 96. 同类型工作流重启时旧内容泄漏到新工作流面板
+
+**来源**：用户发送"设计一个庆祝布宝生日的ppt"，系统正确识别为 `presentation_design` 工作流并启动，但右侧文档预览面板显示的是上一次 PPT 工作流的产出物（"已确认最新 PPT 文件在这里！"），而不是新任务的第一阶段文档。
+
+**根因**（两个问题叠加）：
+
+1. **磁盘上的旧工作流文档未清理**：`{projectPath}/.maclaw/workflow/` 目录下保留着上一次 PPT 工作流的阶段文档文件（`audience_goal.md` 等）。`EmitDocUpdate` 中的 `readPersistedDoc` 可能读到旧文件。新工作流启动时没有任何代码清理这个目录。
+
+2. **对话历史污染**：新工作流启动时，对话历史中仍包含旧 PPT 工作流的完整对话（需求文档、确认消息、PPT 生成结果等）。LLM 在新工作流的第一阶段 agent loop 中看到旧上下文，输出了旧内容。`captureWorkflowDocAfterAgentLoop` 将这个包含旧内容的输出保存为新工作流的阶段产出物并发送到前端面板。
+
+**修复**：
+
+#### 1. 新工作流启动时清理持久化文档（`gui/workflow_adapter_persistence.go`）
+
+- 新增 `CleanPersistedWorkflowDocs()` 方法：删除 `.maclaw/workflow/` 目录下所有 `.md`/`.txt` 文件
+- 在 `handlePostStartWorkflow` 中调用，确保新工作流不会读到旧文件
+
+#### 2. 新工作流启动时清理对话历史（`gui/im_message_handler_workflow.go`）
+
+- `handlePostStartWorkflow` 中新增 `memory.Clear(userID)` 调用
+- 清空旧工作流的对话历史，防止 LLM 被旧上下文污染
+- 新工作流有自己的 phase prompt 提供所有必要指令
+
+**关键设计决策**：不调用 `clearPerUserSessionState`——它会调用 `cancelWorkflowForUser` 取消刚启动的新工作流。只清理 memory（对话历史）和磁盘文件，不清理工作流引擎状态。
+
+**验收标准**：
+- 完成一个 PPT 工作流后，发送新的 PPT 任务 → 右侧面板不显示旧内容
+- 新工作流的第一阶段 agent loop 中 LLM 不受旧对话历史影响
+- `.maclaw/workflow/` 目录在新工作流启动时被清理
+- 所有 TestWorkflow* 测试通过
+- corelib/workflow 所有测试通过
+- GUI go vet 通过

@@ -109,12 +109,12 @@ func (s *HTTPServer) handleKnowledgeImportFile(w http.ResponseWriter, r *http.Re
 				}
 			}
 		}
-		return result, nil
+		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), nil
 	})
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id":   job.ID,
-		"filename": header.Filename,
+		"filename": filepath.Base(header.Filename),
 		"status":   string(job.Status),
 	})
 }
@@ -130,7 +130,7 @@ func (s *HTTPServer) handleKnowledgeImportURL(w http.ResponseWriter, r *http.Req
 		Labels    string `json:"labels"`
 	}
 	if err := readJSONBody(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if strings.TrimSpace(req.URL) == "" {
@@ -150,7 +150,7 @@ func (s *HTTPServer) handleKnowledgeImportURL(w http.ResponseWriter, r *http.Req
 		Labels:    splitLabels(req.Labels),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to save URL: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("failed to save URL: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -172,7 +172,7 @@ func (s *HTTPServer) handleKnowledgeImportText(w http.ResponseWriter, r *http.Re
 		Labels    string `json:"labels"`
 	}
 	if err := readJSONBody(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if strings.TrimSpace(req.Text) == "" {
@@ -193,7 +193,7 @@ func (s *HTTPServer) handleKnowledgeImportText(w http.ResponseWriter, r *http.Re
 		Labels:    splitLabels(req.Labels),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to save text: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("failed to save text: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -213,7 +213,7 @@ func (s *HTTPServer) handleKnowledgeImportDirectory(w http.ResponseWriter, r *ht
 		Labels    string `json:"labels"`
 	}
 	if err := readJSONBody(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if strings.TrimSpace(req.Path) == "" {
@@ -227,7 +227,7 @@ func (s *HTTPServer) handleKnowledgeImportDirectory(w http.ResponseWriter, r *ht
 
 	job := s.jobs.createUserJob("knowledge_import_directory", p, func(ctx context.Context) (any, error) {
 		store := s.knowledgeMgr.Store()
-		return store.ImportDirectory(ctx, knowledge.DirectoryImportRequest{
+		result, err := store.ImportDirectory(ctx, knowledge.DirectoryImportRequest{
 			RootPath:  req.Path,
 			OwnerID:   p.UserID,
 			TenantID:  p.TenantID,
@@ -235,11 +235,12 @@ func (s *HTTPServer) handleKnowledgeImportDirectory(w http.ResponseWriter, r *ht
 			Labels:    splitLabels(req.Labels),
 			Recursive: true,
 		})
+		return sanitizeKnowledgeDirectoryImportResultForAPI(s.svc.DataRoot(), result), err
 	})
 
 	writeJSON(w, http.StatusAccepted, map[string]interface{}{
 		"job_id": job.ID,
-		"path":   req.Path,
+		"path":   redactSupportBundleValue(s.svc.DataRoot(), req.Path),
 		"status": string(job.Status),
 	})
 }
@@ -266,7 +267,7 @@ func (s *HTTPServer) handleKnowledgeSearch(w http.ResponseWriter, r *http.Reques
 	}
 	var req knowledge.SearchOptions
 	if err := readJSONBody(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if strings.TrimSpace(req.Query) == "" {
@@ -289,11 +290,11 @@ func (s *HTTPServer) handleKnowledgeSearch(w http.ResponseWriter, r *http.Reques
 
 	results, err := store.Search(ctx, req)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("search failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("search failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"results": results,
+		"results": sanitizeKnowledgeSearchResultsForAPI(s.svc.DataRoot(), results),
 		"total":   len(results),
 	})
 }
@@ -304,7 +305,7 @@ func (s *HTTPServer) handleKnowledgeContextPack(w http.ResponseWriter, r *http.R
 	}
 	var req knowledge.ContextPackOptions
 	if err := readJSONBody(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if strings.TrimSpace(req.Query) == "" {
@@ -320,10 +321,10 @@ func (s *HTTPServer) handleKnowledgeContextPack(w http.ResponseWriter, r *http.R
 
 	result, err := store.ContextPack(ctx, req)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("context pack failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("context pack failed: %v", err))})
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	writeJSON(w, http.StatusOK, sanitizeKnowledgeContextPackForAPI(s.svc.DataRoot(), result))
 }
 
 // --- Management endpoints ---
@@ -337,11 +338,11 @@ func (s *HTTPServer) handleKnowledgeListSources(w http.ResponseWriter, r *http.R
 
 	sources, err := s.listReadableKnowledgeSources(ctx, p)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("list sources failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("list sources failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"sources": sources,
+		"sources": sanitizeKnowledgeSourcesForAPI(s.svc.DataRoot(), sources),
 		"total":   len(sources),
 	})
 }
@@ -368,7 +369,7 @@ func (s *HTTPServer) handleKnowledgeGetSource(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "source not found"})
 		return
 	}
-	writeJSON(w, http.StatusOK, source)
+	writeJSON(w, http.StatusOK, sanitizeKnowledgeSourceForAPI(s.svc.DataRoot(), source))
 }
 
 func (s *HTTPServer) handleKnowledgeDeleteSource(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -394,7 +395,7 @@ func (s *HTTPServer) handleKnowledgeDeleteSource(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := store.DeleteSource(ctx, sourceID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("delete failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("delete failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -415,7 +416,7 @@ func (s *HTTPServer) handleKnowledgeUpdateSource(w http.ResponseWriter, r *http.
 		Labels    []string `json:"labels"`
 	}
 	if err := readJSONBody(r, &req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	store := s.knowledgeMgr.Store()
@@ -443,7 +444,7 @@ func (s *HTTPServer) handleKnowledgeUpdateSource(w http.ResponseWriter, r *http.
 		updateReq.Labels = req.Labels
 	}
 	if _, err := store.UpdateSourceMetadata(ctx, updateReq); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("update failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("update failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
@@ -472,7 +473,7 @@ func (s *HTTPServer) handleKnowledgeDisableSource(w http.ResponseWriter, r *http
 		return
 	}
 	if _, err := store.DisableSource(ctx, sourceID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("disable failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("disable failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "disabled"})
@@ -501,7 +502,7 @@ func (s *HTTPServer) handleKnowledgeEnableSource(w http.ResponseWriter, r *http.
 		return
 	}
 	if _, err := store.EnableSource(ctx, sourceID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("enable failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("enable failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "enabled"})
@@ -530,10 +531,115 @@ func (s *HTTPServer) handleKnowledgeRefreshSource(w http.ResponseWriter, r *http
 		return
 	}
 	if _, err := store.RefreshSource(ctx, sourceID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("refresh failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("refresh failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "refreshed"})
+}
+
+func sanitizeKnowledgeDirectoryImportResultForAPI(dataRoot string, result knowledge.DirectoryImportResult) knowledge.DirectoryImportResult {
+	result.RootPath = redactKnowledgePathForAPI(dataRoot, result.RootPath)
+	result.CurrentFile = redactKnowledgePathForAPI(dataRoot, result.CurrentFile)
+	for i := range result.Warnings {
+		result.Warnings[i] = redactSupportBundleText(dataRoot, result.Warnings[i])
+	}
+	for i := range result.Items {
+		result.Items[i].FilePath = redactKnowledgePathForAPI(dataRoot, result.Items[i].FilePath)
+		result.Items[i].RelativePath = redactKnowledgePathForAPI(dataRoot, result.Items[i].RelativePath)
+		result.Items[i].ErrorMessage = redactSupportBundleText(dataRoot, result.Items[i].ErrorMessage)
+	}
+	return result
+}
+
+func sanitizeKnowledgeSourceForAPI(dataRoot string, source knowledge.Source) knowledge.Source {
+	source.URI = redactKnowledgeURIForAPI(dataRoot, source.URI)
+	source.CanonicalURI = redactKnowledgeURIForAPI(dataRoot, source.CanonicalURI)
+	source.Title = redactKnowledgeDisplayTextForAPI(dataRoot, source.Title)
+	source.ProjectPath = redactKnowledgePathForAPI(dataRoot, source.ProjectPath)
+	source.RelativePath = redactKnowledgePathForAPI(dataRoot, source.RelativePath)
+	source.ErrorMessage = redactSupportBundleText(dataRoot, source.ErrorMessage)
+	return source
+}
+
+func sanitizeKnowledgeSourcesForAPI(dataRoot string, sources []knowledge.Source) []knowledge.Source {
+	out := make([]knowledge.Source, len(sources))
+	for i := range sources {
+		out[i] = sanitizeKnowledgeSourceForAPI(dataRoot, sources[i])
+	}
+	return out
+}
+
+func sanitizeKnowledgeSearchResultsForAPI(dataRoot string, results []knowledge.SearchResult) []knowledge.SearchResult {
+	out := make([]knowledge.SearchResult, len(results))
+	for i := range results {
+		out[i] = results[i]
+		out[i].Source = sanitizeKnowledgeSourceForAPI(dataRoot, results[i].Source)
+		out[i].NodeTitle = redactKnowledgeDisplayTextForAPI(dataRoot, out[i].NodeTitle)
+		out[i].CardTitle = redactKnowledgeDisplayTextForAPI(dataRoot, out[i].CardTitle)
+		out[i].Citation = redactKnowledgeDisplayTextForAPI(dataRoot, out[i].Citation)
+		out[i].Claim = redactSupportBundleText(dataRoot, out[i].Claim)
+		out[i].Summary = redactSupportBundleText(dataRoot, out[i].Summary)
+		out[i].Snippet = redactSupportBundleText(dataRoot, out[i].Snippet)
+	}
+	return out
+}
+
+func sanitizeKnowledgeContextPackForAPI(dataRoot string, result knowledge.ContextPackResult) knowledge.ContextPackResult {
+	for i := range result.Items {
+		result.Items[i].Title = redactKnowledgeDisplayTextForAPI(dataRoot, result.Items[i].Title)
+		result.Items[i].Citation = redactSupportBundleText(dataRoot, result.Items[i].Citation)
+	}
+	for i := range result.Citations {
+		result.Citations[i] = sanitizeKnowledgeCitationForAPI(dataRoot, result.Citations[i])
+	}
+	return result
+}
+
+func sanitizeKnowledgeCitationForAPI(dataRoot string, citation knowledge.Citation) knowledge.Citation {
+	citation.Label = redactSupportBundleText(dataRoot, citation.Label)
+	citation.SourceTitle = redactKnowledgeDisplayTextForAPI(dataRoot, citation.SourceTitle)
+	citation.URI = redactKnowledgeURIForAPI(dataRoot, citation.URI)
+	citation.RelativePath = redactKnowledgePathForAPI(dataRoot, citation.RelativePath)
+	citation.Snippet = redactSupportBundleText(dataRoot, citation.Snippet)
+	return citation
+}
+
+func redactKnowledgeDisplayTextForAPI(dataRoot, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	if strings.Contains(value, "://") {
+		return redactEndpointForAPI(dataRoot, value)
+	}
+	if supportBundleLooksAbsolutePath(value) {
+		return redactKnowledgePathForAPI(dataRoot, value)
+	}
+	return redactSupportBundleText(dataRoot, value)
+}
+
+func redactKnowledgeURIForAPI(dataRoot, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	if strings.Contains(value, "://") {
+		return redactEndpointForAPI(dataRoot, value)
+	}
+	return redactKnowledgePathForAPI(dataRoot, value)
+}
+
+func redactKnowledgePathForAPI(dataRoot, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return value
+	}
+	wasPath := supportBundleLooksAbsolutePath(value)
+	value = redactSupportBundleText(dataRoot, value)
+	if wasPath || supportBundleLooksAbsolutePath(value) {
+		return supportBundlePathBase(value)
+	}
+	return value
 }
 
 func (s *HTTPServer) canReadSource(ctx context.Context, source knowledge.Source, p agentservice.Principal) bool {
@@ -595,7 +701,7 @@ func (s *HTTPServer) handleKnowledgeStats(w http.ResponseWriter, r *http.Request
 
 	sources, err := s.listReadableKnowledgeSources(ctx, p)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("stats failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("stats failed: %v", err))})
 		return
 	}
 	stats := knowledgeStatsFromSources(sources)
@@ -685,7 +791,7 @@ func (s *HTTPServer) handleKnowledgeClearAll(w http.ResponseWriter, r *http.Requ
 		TenantID: p.TenantID,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("clear failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("clear failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"status": "cleared", "deleted": deleted})
@@ -703,7 +809,7 @@ func (s *HTTPServer) handleAdminKnowledgeStats(w http.ResponseWriter, r *http.Re
 
 	stats, err := store.Stats(ctx)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("stats failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("stats failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
@@ -720,11 +826,11 @@ func (s *HTTPServer) handleAdminKnowledgeListSources(w http.ResponseWriter, r *h
 	// Admin: no tenant/owner filter
 	sources, err := store.ListSources(ctx, knowledge.ListSourcesOptions{})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("list sources failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("list sources failed: %v", err))})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"sources": sources,
+		"sources": sanitizeKnowledgeSourcesForAPI(s.svc.DataRoot(), sources),
 		"total":   len(sources),
 	})
 }
@@ -737,7 +843,7 @@ func (s *HTTPServer) handleAdminKnowledgeClearTenant(w http.ResponseWriter, r *h
 		return
 	}
 	if err := requireDeleteConfirmation(r); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	tenantID := r.PathValue("tenantId")
@@ -753,7 +859,7 @@ func (s *HTTPServer) handleAdminKnowledgeClearTenant(w http.ResponseWriter, r *h
 		TenantID: tenantID,
 	})
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("clear tenant failed: %v", err)})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), fmt.Sprintf("clear tenant failed: %v", err))})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_tenant_cleared", "knowledge", tenantID, map[string]string{"tenant_id": tenantID, "deleted": fmt.Sprint(deleted), "remote_ip": requestClientIP(r)})

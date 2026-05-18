@@ -123,6 +123,43 @@ func TestSyncHubUserLinkReplacesPreviousUserBinding(t *testing.T) {
 	}
 }
 
+func TestSyncHubUserLinkIsTenantScoped(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	ctx := context.Background()
+	now := time.Now()
+
+	hubA := &store.HubInstance{ID: "hub_a", OwnerEmail: "owner-a@example.com", Name: "Hub A", BaseURL: "https://a.example.com", Status: "online", HubSecretHash: hashToken("secret-a"), CreatedAt: now, UpdatedAt: now}
+	hubB := &store.HubInstance{ID: "hub_b", OwnerEmail: "owner-b@example.com", Name: "Hub B", BaseURL: "https://b.example.com", Status: "online", HubSecretHash: hashToken("secret-b"), CreatedAt: now, UpdatedAt: now}
+	for _, hub := range []*store.HubInstance{hubA, hubB} {
+		if err := st.Hubs.Create(ctx, hub); err != nil {
+			t.Fatalf("create hub %s: %v", hub.ID, err)
+		}
+	}
+	if err := st.HubUserLinks.Upsert(ctx, &store.HubUserLink{ID: primaryUserLinkIDForTenant(hubA.ID, "tenant_a", "user@example.com"), HubID: hubA.ID, TenantID: "tenant_a", Email: "user@example.com", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("seed tenant a link: %v", err)
+	}
+
+	if err := svc.SyncHubUserLink(ctx, hubB.ID, "secret-b", "user@example.com", true, "tenant_b"); err != nil {
+		t.Fatalf("SyncHubUserLink tenant b: %v", err)
+	}
+	items, err := st.HubUserLinks.ListByEmail(ctx, "user@example.com")
+	if err != nil {
+		t.Fatalf("ListByEmail: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected tenant-scoped bindings to coexist, got %+v", items)
+	}
+	byTenant := map[string]string{}
+	for _, item := range items {
+		byTenant[item.TenantID] = item.HubID
+	}
+	if byTenant["tenant_a"] != hubA.ID || byTenant["tenant_b"] != hubB.ID {
+		t.Fatalf("unexpected bindings by tenant: %+v", byTenant)
+	}
+}
+
 func TestUpdateDigitalEmployeeAuthorizationOnlyIncreasesAndRenews(t *testing.T) {
 	provider := newTestStore(t)
 	st := sqlite.NewStore(provider)

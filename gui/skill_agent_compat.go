@@ -62,12 +62,12 @@ func normalizeImportedAgentSkillCommand(cmd string) string {
 
 // ExportAgentSkill converts an NLSkillEntry to Anthropic Agent Skills format,
 // writing SKILL.md and scripts/ to outputDir.
-func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string) error {
-	if err := scanAgentSkillExport(entry); err != nil {
+func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string, appOpt ...*App) error {
+	if err := scanAgentSkillExport(entry, appOpt...); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return fmt.Errorf("鍒涘缓杈撳嚭鐩綍澶辫触: %v", err)
+		return fmt.Errorf("閸掓稑缂撴潏鎾冲毉閻╊喖缍嶆径杈Е: %v", err)
 	}
 
 	// Build YAML frontmatter.
@@ -125,19 +125,25 @@ func ExportAgentSkill(entry corelib.NLSkillEntry, outputDir string) error {
 	content := fm.String() + body.String()
 	mdPath := filepath.Join(outputDir, "SKILL.md")
 	if err := os.WriteFile(mdPath, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("鍐欏叆 SKILL.md 澶辫触: %v", err)
+		return fmt.Errorf("閸愭瑥鍙?SKILL.md 婢惰精瑙? %v", err)
 	}
 
 	return nil
 }
 
-func scanAgentSkillExport(entry corelib.NLSkillEntry) error {
+func scanAgentSkillExport(entry corelib.NLSkillEntry, appOpt ...*App) error {
 	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), &entry, entry.SkillDir, nil)
 	if report == nil {
+		if app := firstSkillLifecycleApp(appOpt...); app != nil && !app.skillInstallMissingScanShouldBlock() {
+			return nil
+		}
 		return fmt.Errorf("agent skill export security scan produced no report")
 	}
-	if report.NeedsUserReview() {
-		return fmt.Errorf("agent skill export blocked by security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+	if app := firstSkillLifecycleApp(appOpt...); app != nil {
+		if app.skillInstallScanShouldBlock(report) {
+			return fmt.Errorf("agent skill export blocked by security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+		}
+		return nil
 	}
 	return nil
 }

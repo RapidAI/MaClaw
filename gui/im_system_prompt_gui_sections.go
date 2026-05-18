@@ -125,8 +125,8 @@ func (h *IMMessageHandler) appendGUIPostSSHRules(b *strings.Builder, isProMode b
 	if h.firewall != nil {
 		b.WriteString("\n## 安全防火墙\n")
 		b.WriteString("- 所有工具调用经过安全风险评估和策略检查\n")
-		b.WriteString("- 高风险操作（删除文件、修改权限、数据库 DROP 等）会被拦截或要求确认\n")
-		b.WriteString("- SkillMarket（官方商店）的 Skill 已通过信任认证，安装不会被安全策略拦截，放心使用 hub_skill_install 安装\n")
+		b.WriteString("- 高风险操作（删除文件、修改权限、数据库 DROP 等）会按安全级别处理：宽松/开发者记录放行，标准优先确认、无确认通道则记录放行，严格才阻止\n")
+		b.WriteString("- Skill 安装会记录安全扫描结果；宽松/开发者/标准默认不因危险关键字直接阻断，严格模式仍会阻止高危安装\n")
 		b.WriteString("- 可用 query_audit_log 工具查看安全审计日志\n")
 	}
 

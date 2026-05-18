@@ -32,7 +32,8 @@ func MarketplacePageHandler(product string) http.HandlerFunc {
 
 func CapabilityListHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := svc.List(r.Context(), r.URL.Query().Get("type"))
+		ctx := marketplaceRequestContext(r)
+		items, err := svc.List(ctx, r.URL.Query().Get("type"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_LIST_FAILED", err.Error())
 			return
@@ -43,12 +44,13 @@ func CapabilityListHandler(svc *capability.Service) http.HandlerFunc {
 
 func CapabilityDetailHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := marketplaceRequestContext(r)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY_ID", "capability id is required")
 			return
 		}
-		item, err := svc.Get(r.Context(), id)
+		item, err := svc.Get(ctx, id)
 		if errors.Is(err, capability.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "CAPABILITY_NOT_FOUND", "capability not found")
 			return
@@ -63,12 +65,13 @@ func CapabilityDetailHandler(svc *capability.Service) http.HandlerFunc {
 
 func CapabilityVersionsHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := marketplaceRequestContext(r)
 		id := r.PathValue("id")
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY_ID", "capability id is required")
 			return
 		}
-		items, err := svc.ListVersions(r.Context(), id)
+		items, err := svc.ListVersions(ctx, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_VERSIONS_LIST_FAILED", err.Error())
 			return
@@ -123,6 +126,7 @@ type capabilityUpsertRequest struct {
 
 func AdminCapabilityUpsertHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		var req capabilityUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
@@ -132,7 +136,7 @@ func AdminCapabilityUpsertHandler(svc *capability.Service) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_CAPABILITY", "capability_id and display_name are required")
 			return
 		}
-		item, err := svc.UpsertCapability(r.Context(), capability.UpsertCapabilityInput{
+		item, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
 			CapabilityType:    req.CapabilityType,
 			Publisher:         req.Publisher,
 			CapabilityID:      req.CapabilityID,
@@ -195,6 +199,7 @@ type adminMCPSecretRequirementSpec struct {
 
 func AdminMCPMarketplaceUpsertHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		var req adminMCPMarketplaceUpsertRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
@@ -231,7 +236,7 @@ func AdminMCPMarketplaceUpsertHandler(svc *capability.Service) http.HandlerFunc 
 			"description": req.Description,
 			"type":        corelib.CapabilityTypeMCP,
 		}
-		item, err := svc.UpsertCapability(r.Context(), capability.UpsertCapabilityInput{
+		item, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{
 			CapabilityType:    corelib.CapabilityTypeMCP,
 			Publisher:         req.Publisher,
 			CapabilityID:      req.CapabilityID,
@@ -261,7 +266,7 @@ func AdminMCPMarketplaceUpsertHandler(svc *capability.Service) http.HandlerFunc 
 			if spec.Required != nil {
 				required = *spec.Required
 			}
-			if _, err := svc.UpsertMCPSecretRequirement(r.Context(), capability.MCPSecretRequirementInput{CapabilityRef: item.ID, VersionKey: item.CurrentVersionKey, Name: spec.Name, Label: spec.Label, Scope: spec.Scope, StoragePolicy: spec.StoragePolicy, Required: required, HelpURL: spec.HelpURL, MetadataJSON: rawJSONOrDefault(spec.Metadata)}); err != nil {
+			if _, err := svc.UpsertMCPSecretRequirement(ctx, capability.MCPSecretRequirementInput{CapabilityRef: item.ID, VersionKey: item.CurrentVersionKey, Name: spec.Name, Label: spec.Label, Scope: spec.Scope, StoragePolicy: spec.StoragePolicy, Required: required, HelpURL: spec.HelpURL, MetadataJSON: rawJSONOrDefault(spec.Metadata)}); err != nil {
 				writeError(w, http.StatusInternalServerError, "MCP_SECRET_REQUIREMENT_SAVE_FAILED", err.Error())
 				return
 			}
@@ -272,6 +277,8 @@ func AdminMCPMarketplaceUpsertHandler(svc *capability.Service) http.HandlerFunc 
 
 func CapabilityInstallIntentHandler(svc *capability.Service, settings store.SystemSettingsRepository, centerStatuses ...capabilityMarketCenterStatusProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := marketplaceRequestContext(r)
+		settings = scopedSystemSettingsForTenant(capabilityTenantIDFromRequest(r), settings)
 		var req capabilityInstallIntentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
@@ -288,7 +295,7 @@ func CapabilityInstallIntentHandler(svc *capability.Service, settings store.Syst
 			}
 		}
 		var enterpriseItem *capability.CapabilitySummary
-		if item, err := findEnterpriseCapabilityForInstallIntent(r.Context(), svc, req); err == nil {
+		if item, err := findEnterpriseCapabilityForInstallIntent(ctx, svc, req); err == nil {
 			enterpriseItem = item
 		}
 		existsInEnterprise := enterpriseItem != nil && enterpriseItem.ID != ""
@@ -313,12 +320,12 @@ func CapabilityInstallIntentHandler(svc *capability.Service, settings store.Syst
 			if decision.Action == corelib.CapabilityInstallCreatePurchaseRequest {
 				kind = "purchase"
 			}
-			if existing := findOpenAcquisitionRequest(r.Context(), svc, req, kind); existing != nil {
+			if existing := findOpenAcquisitionRequest(ctx, svc, req, kind); existing != nil {
 				resp["request_id"] = existing.ID
 				writeJSON(w, http.StatusAccepted, resp)
 				return
 			}
-			requestID, err := svc.CreateAcquisitionRequest(r.Context(), capability.AcquisitionRequestInput{
+			requestID, err := svc.CreateAcquisitionRequest(ctx, capability.AcquisitionRequestInput{
 				CapabilityType:      req.CapabilityType,
 				Source:              req.Source,
 				SourceCapabilityKey: req.CapabilityID,
@@ -338,14 +345,14 @@ func CapabilityInstallIntentHandler(svc *capability.Service, settings store.Syst
 				if len(centerStatuses) > 0 {
 					centerStatus = centerStatuses[0]
 				}
-				created, err := importFreeHubCenterCapabilityForIntent(r.Context(), svc, centerStatus, req)
+				created, err := importFreeHubCenterCapabilityForIntent(ctx, svc, centerStatus, req)
 				if err != nil {
-					markAcquisitionImportFailed(r.Context(), svc, requestID, err)
+					markAcquisitionImportFailed(ctx, svc, requestID, err)
 					writeError(w, http.StatusBadGateway, "HUBCENTER_IMPORT_FAILED", err.Error())
 					return
 				}
 				if created != nil {
-					if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
+					if err := svc.CompleteAcquisitionRequest(ctx, requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
 						writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 						return
 					}
@@ -363,7 +370,7 @@ func CapabilityInstallIntentHandler(svc *capability.Service, settings store.Syst
 			if req.Source == corelib.CapabilitySourceHubCenter && len(centerStatuses) > 0 {
 				var centerStatus capabilityMarketCenterStatusProvider
 				centerStatus = centerStatuses[0]
-				created, err := importFreeHubCenterCapabilityForIntent(r.Context(), svc, centerStatus, req)
+				created, err := importFreeHubCenterCapabilityForIntent(ctx, svc, centerStatus, req)
 				if err != nil {
 					writeError(w, http.StatusBadGateway, "HUBCENTER_IMPORT_FAILED", err.Error())
 					return
@@ -453,7 +460,8 @@ func capabilityOriginMatchesInstallIntent(req capabilityInstallIntentRequest, me
 }
 func CapabilityManagedDeploymentsHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := svc.ListManagedDeployments(r.Context())
+		ctx := marketplaceRequestContext(r)
+		items, err := svc.ListManagedDeployments(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MANAGED_DEPLOYMENTS_LIST_FAILED", err.Error())
 			return
@@ -464,7 +472,8 @@ func CapabilityManagedDeploymentsHandler(svc *capability.Service) http.HandlerFu
 
 func CapabilityRecommendationsHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := svc.ListRecommendations(r.Context())
+		ctx := marketplaceRequestContext(r)
+		items, err := svc.ListRecommendations(ctx)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "RECOMMENDATIONS_LIST_FAILED", err.Error())
 			return
@@ -480,7 +489,8 @@ func UserCapabilityInventoryHandler(identity viewerAuthenticator, svc *capabilit
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		items, err := svc.ListUserCapabilityInventory(r.Context(), principal.Email)
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		items, err := svc.ListUserCapabilityInventory(ctx, principal.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_LIST_FAILED", err.Error())
 			return
@@ -496,6 +506,7 @@ func UserCapabilityInventoryUpsertHandler(identity viewerAuthenticator, svc *cap
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
 		type inventoryItemRequest struct {
 			CapabilityRef        string          `json:"capability_ref"`
 			CapabilityVersionKey string          `json:"capability_version_key,omitempty"`
@@ -522,7 +533,7 @@ func UserCapabilityInventoryUpsertHandler(identity viewerAuthenticator, svc *cap
 		}
 		items := req.Items
 		if len(items) == 0 && req.FullSnapshot && strings.TrimSpace(req.CapabilityRef) == "" {
-			if err := svc.MarkUserCapabilityInventoryMissingExcept(r.Context(), principal.Email, nil); err != nil {
+			if err := svc.MarkUserCapabilityInventoryMissingExcept(ctx, principal.Email, nil); err != nil {
 				writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_RECONCILE_FAILED", err.Error())
 				return
 			}
@@ -543,7 +554,7 @@ func UserCapabilityInventoryUpsertHandler(identity viewerAuthenticator, svc *cap
 			if entry.Installed != nil {
 				installed = *entry.Installed
 			}
-			item, err := svc.UpsertUserCapabilityInventory(r.Context(), capability.UserCapabilityInventoryInput{UserID: principal.UserID, UserEmail: principal.Email, CapabilityRef: entry.CapabilityRef, CapabilityVersionKey: entry.CapabilityVersionKey, CapabilityType: entry.CapabilityType, InstallStatus: entry.InstallStatus, Installed: installed, MetadataJSON: rawJSONOrDefault(entry.Metadata), LastSeenAt: entry.LastSeenAt})
+			item, err := svc.UpsertUserCapabilityInventory(ctx, capability.UserCapabilityInventoryInput{UserID: principal.UserID, UserEmail: principal.Email, CapabilityRef: entry.CapabilityRef, CapabilityVersionKey: entry.CapabilityVersionKey, CapabilityType: entry.CapabilityType, InstallStatus: entry.InstallStatus, Installed: installed, MetadataJSON: rawJSONOrDefault(entry.Metadata), LastSeenAt: entry.LastSeenAt})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, "CAPABILITY_INVENTORY_SAVE_FAILED", err.Error())
 				return
@@ -552,7 +563,7 @@ func UserCapabilityInventoryUpsertHandler(identity viewerAuthenticator, svc *cap
 			seenRefs = append(seenRefs, entry.CapabilityRef)
 		}
 		if req.FullSnapshot {
-			if err := svc.MarkUserCapabilityInventoryMissingExcept(r.Context(), principal.Email, seenRefs); err != nil {
+			if err := svc.MarkUserCapabilityInventoryMissingExcept(ctx, principal.Email, seenRefs); err != nil {
 				writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_RECONCILE_FAILED", err.Error())
 				return
 			}
@@ -567,7 +578,8 @@ func UserCapabilityInventoryUpsertHandler(identity viewerAuthenticator, svc *cap
 
 func AdminUserCapabilityInventoryHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := svc.ListUserCapabilityInventory(r.Context(), r.PathValue("email"))
+		ctx := capabilityAdminContext(r)
+		items, err := svc.ListUserCapabilityInventory(ctx, r.PathValue("email"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_LIST_FAILED", err.Error())
 			return
@@ -621,6 +633,7 @@ type adminCapabilityComplianceSummary struct {
 
 func AdminUserCapabilityEffectivePoliciesHandler(svc *capability.Service, groups userCapabilityGroupResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		email := strings.ToLower(strings.TrimSpace(r.PathValue("email")))
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_EMAIL", "email is required")
@@ -628,14 +641,14 @@ func AdminUserCapabilityEffectivePoliciesHandler(svc *capability.Service, groups
 		}
 		groupChain := []string{}
 		if groups != nil {
-			chain, err := groups.ResolveUserGroupChain(r.Context(), email)
+			chain, err := groups.ResolveUserGroupChain(ctx, email)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "GROUP_CHAIN_FAILED", err.Error())
 				return
 			}
 			groupChain = chain
 		}
-		items, err := effectiveCapabilityPoliciesFor(r.Context(), svc, email, groupChain)
+		items, err := effectiveCapabilityPoliciesFor(ctx, svc, email, groupChain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "EFFECTIVE_CAPABILITY_POLICIES_FAILED", err.Error())
 			return
@@ -646,6 +659,7 @@ func AdminUserCapabilityEffectivePoliciesHandler(svc *capability.Service, groups
 
 func AdminUserCapabilityComplianceHandler(svc *capability.Service, groups userCapabilityGroupResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		email := strings.ToLower(strings.TrimSpace(r.PathValue("email")))
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_EMAIL", "email is required")
@@ -653,19 +667,19 @@ func AdminUserCapabilityComplianceHandler(svc *capability.Service, groups userCa
 		}
 		groupChain := []string{}
 		if groups != nil {
-			chain, err := groups.ResolveUserGroupChain(r.Context(), email)
+			chain, err := groups.ResolveUserGroupChain(ctx, email)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "GROUP_CHAIN_FAILED", err.Error())
 				return
 			}
 			groupChain = chain
 		}
-		policies, err := effectiveCapabilityPoliciesFor(r.Context(), svc, email, groupChain)
+		policies, err := effectiveCapabilityPoliciesFor(ctx, svc, email, groupChain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "EFFECTIVE_CAPABILITY_POLICIES_FAILED", err.Error())
 			return
 		}
-		inventory, err := svc.ListUserCapabilityInventory(r.Context(), email)
+		inventory, err := svc.ListUserCapabilityInventory(ctx, email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_INVENTORY_LIST_FAILED", err.Error())
 			return
@@ -686,6 +700,7 @@ func AdminUserCapabilityComplianceHandler(svc *capability.Service, groups userCa
 
 func AdminGroupCapabilityEffectivePoliciesHandler(svc *capability.Service, groups capabilityGroupChainResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		groupID := strings.TrimSpace(r.PathValue("id"))
 		if groupID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_GROUP", "group id is required")
@@ -693,7 +708,7 @@ func AdminGroupCapabilityEffectivePoliciesHandler(svc *capability.Service, group
 		}
 		groupChain := []string{groupID}
 		if groups != nil {
-			chain, err := groups.ResolveGroupChain(r.Context(), groupID)
+			chain, err := groups.ResolveGroupChain(ctx, groupID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "GROUP_CHAIN_FAILED", err.Error())
 				return
@@ -702,7 +717,7 @@ func AdminGroupCapabilityEffectivePoliciesHandler(svc *capability.Service, group
 				groupChain = chain
 			}
 		}
-		items, err := effectiveCapabilityPoliciesFor(r.Context(), svc, "", groupChain)
+		items, err := effectiveCapabilityPoliciesFor(ctx, svc, "", groupChain)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "EFFECTIVE_CAPABILITY_POLICIES_FAILED", err.Error())
 			return
@@ -1046,7 +1061,8 @@ func markAcquisitionImportFailed(ctx context.Context, svc *capability.Service, r
 }
 func AdminCapabilityAcquisitionRequestsHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := svc.ListAcquisitionRequests(r.Context(), r.URL.Query().Get("status"))
+		ctx := capabilityAdminContext(r)
+		items, err := svc.ListAcquisitionRequests(ctx, r.URL.Query().Get("status"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "ACQUISITION_REQUESTS_LIST_FAILED", err.Error())
 			return
@@ -1057,7 +1073,8 @@ func AdminCapabilityAcquisitionRequestsHandler(svc *capability.Service) http.Han
 
 func AdminCapabilityAcquisitionRequestDetailHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		item, err := svc.GetAcquisitionRequest(r.Context(), r.PathValue("id"))
+		ctx := capabilityAdminContext(r)
+		item, err := svc.GetAcquisitionRequest(ctx, r.PathValue("id"))
 		if errors.Is(err, capability.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "ACQUISITION_REQUEST_NOT_FOUND", "acquisition request not found")
 			return
@@ -1072,12 +1089,13 @@ func AdminCapabilityAcquisitionRequestDetailHandler(svc *capability.Service) htt
 
 func AdminCapabilityApproveAcquisitionHandler(svc *capability.Service, deps ...any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		var req struct {
 			Approval json.RawMessage `json:"approval,omitempty"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		requestID := r.PathValue("id")
-		item, getErr := svc.GetAcquisitionRequest(r.Context(), requestID)
+		item, getErr := svc.GetAcquisitionRequest(ctx, requestID)
 		if getErr != nil && !errors.Is(getErr, capability.ErrNotFound) {
 			writeError(w, http.StatusInternalServerError, "ACQUISITION_GET_FAILED", getErr.Error())
 			return
@@ -1086,18 +1104,19 @@ func AdminCapabilityApproveAcquisitionHandler(svc *capability.Service, deps ...a
 			writeError(w, http.StatusConflict, "ACQUISITION_ALREADY_TERMINAL", "terminal acquisition requests cannot be approved")
 			return
 		}
-		if err := svc.ApproveAcquisitionRequest(r.Context(), requestID, "admin", rawJSONOrDefault(req.Approval)); err != nil {
+		if err := svc.ApproveAcquisitionRequest(ctx, requestID, "admin", rawJSONOrDefault(req.Approval)); err != nil {
 			writeError(w, acquisitionStatusCode(err), "ACQUISITION_APPROVE_FAILED", err.Error())
 			return
 		}
 		settings, centerStatus := capabilityApprovalDeps(deps...)
+		settings = scopedSystemSettingsForTenant(RequestTenantID(r), settings)
 		if item != nil && item.RequestKind == "purchase" && item.Source == corelib.CapabilitySourceHubCenter && strings.EqualFold(item.CapabilityType, corelib.CapabilityTypeMCP) && centerStatus != nil {
-			created, purchaseJSON, err := purchaseAndImportHubCenterMCPMarketplaceEntry(r.Context(), svc, settings, centerStatus, *item)
+			created, purchaseJSON, err := purchaseAndImportHubCenterMCPMarketplaceEntry(ctx, svc, settings, centerStatus, *item)
 			if err != nil {
 				writeError(w, http.StatusBadGateway, "HUBCENTER_PURCHASE_FAILED", err.Error())
 				return
 			}
-			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, purchaseJSON); err != nil {
+			if err := svc.CompleteAcquisitionRequest(ctx, requestID, created.ID, purchaseJSON); err != nil {
 				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 				return
 			}
@@ -1105,12 +1124,12 @@ func AdminCapabilityApproveAcquisitionHandler(svc *capability.Service, deps ...a
 			return
 		}
 		if item != nil && item.RequestKind == "purchase" && item.Source == corelib.CapabilitySourceHubCenter && strings.EqualFold(item.CapabilityType, corelib.CapabilityTypeSkill) && centerStatus != nil {
-			created, purchaseJSON, err := purchaseAndImportHubCenterSkillMarketplaceEntry(r.Context(), svc, settings, centerStatus, *item)
+			created, purchaseJSON, err := purchaseAndImportHubCenterSkillMarketplaceEntry(ctx, svc, settings, centerStatus, *item)
 			if err != nil {
 				writeError(w, http.StatusBadGateway, "HUBCENTER_PURCHASE_FAILED", err.Error())
 				return
 			}
-			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, purchaseJSON); err != nil {
+			if err := svc.CompleteAcquisitionRequest(ctx, requestID, created.ID, purchaseJSON); err != nil {
 				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 				return
 			}
@@ -1123,12 +1142,13 @@ func AdminCapabilityApproveAcquisitionHandler(svc *capability.Service, deps ...a
 
 func AdminCapabilityRejectAcquisitionHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		var req struct {
 			Approval json.RawMessage `json:"approval,omitempty"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		requestID := r.PathValue("id")
-		item, getErr := svc.GetAcquisitionRequest(r.Context(), requestID)
+		item, getErr := svc.GetAcquisitionRequest(ctx, requestID)
 		if getErr != nil && !errors.Is(getErr, capability.ErrNotFound) {
 			writeError(w, http.StatusInternalServerError, "ACQUISITION_GET_FAILED", getErr.Error())
 			return
@@ -1137,7 +1157,7 @@ func AdminCapabilityRejectAcquisitionHandler(svc *capability.Service) http.Handl
 			writeError(w, http.StatusConflict, "ACQUISITION_ALREADY_TERMINAL", "terminal acquisition requests cannot be rejected")
 			return
 		}
-		if err := svc.RejectAcquisitionRequest(r.Context(), requestID, "admin", rawJSONOrDefault(req.Approval)); err != nil {
+		if err := svc.RejectAcquisitionRequest(ctx, requestID, "admin", rawJSONOrDefault(req.Approval)); err != nil {
 			writeError(w, acquisitionStatusCode(err), "ACQUISITION_REJECT_FAILED", err.Error())
 			return
 		}
@@ -1160,6 +1180,7 @@ func acquisitionRequestStatusTerminal(status string) bool {
 }
 func AdminCapabilityCompleteAcquisitionHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		var req struct {
 			ResultCapabilityID string          `json:"result_capability_id"`
 			Purchase           json.RawMessage `json:"purchase,omitempty"`
@@ -1173,7 +1194,7 @@ func AdminCapabilityCompleteAcquisitionHandler(svc *capability.Service) http.Han
 			return
 		}
 		requestID := r.PathValue("id")
-		item, getErr := svc.GetAcquisitionRequest(r.Context(), requestID)
+		item, getErr := svc.GetAcquisitionRequest(ctx, requestID)
 		if getErr != nil && !errors.Is(getErr, capability.ErrNotFound) {
 			writeError(w, http.StatusInternalServerError, "ACQUISITION_GET_FAILED", getErr.Error())
 			return
@@ -1182,7 +1203,7 @@ func AdminCapabilityCompleteAcquisitionHandler(svc *capability.Service) http.Han
 			writeError(w, http.StatusConflict, "ACQUISITION_ALREADY_TERMINAL", "terminal acquisition requests cannot be completed")
 			return
 		}
-		if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, req.ResultCapabilityID, rawJSONOrDefault(req.Purchase)); err != nil {
+		if err := svc.CompleteAcquisitionRequest(ctx, requestID, req.ResultCapabilityID, rawJSONOrDefault(req.Purchase)); err != nil {
 			writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 			return
 		}
@@ -1192,6 +1213,7 @@ func AdminCapabilityCompleteAcquisitionHandler(svc *capability.Service) http.Han
 
 func AdminCapabilityManagedDeploymentCreateHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			CapabilityRef        string          `json:"capability_ref"`
@@ -1221,7 +1243,7 @@ func AdminCapabilityManagedDeploymentCreateHandler(svc *capability.Service, audi
 		adminUserID := adminAuditUserID(r)
 		scopeJSON := rawJSONOrDefault(req.Scope)
 		deploymentPolicy := capability.NormalizeManagedDeploymentPolicy(req.DeploymentPolicy)
-		id, err := svc.CreateManagedDeployment(r.Context(), capability.ManagedDeploymentInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, DeploymentPolicy: deploymentPolicy, ReinstallIfRemoved: reinstall, RetryIntervalMinutes: req.RetryIntervalMinutes, CreatedBy: adminUserID, Enabled: enabled})
+		id, err := svc.CreateManagedDeployment(ctx, capability.ManagedDeploymentInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, DeploymentPolicy: deploymentPolicy, ReinstallIfRemoved: reinstall, RetryIntervalMinutes: req.RetryIntervalMinutes, CreatedBy: adminUserID, Enabled: enabled})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MANAGED_DEPLOYMENT_CREATE_FAILED", err.Error())
 			return
@@ -1233,9 +1255,10 @@ func AdminCapabilityManagedDeploymentCreateHandler(svc *capability.Service, audi
 
 func AdminCapabilityManagedDeploymentDeleteHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		id := strings.TrimSpace(r.PathValue("id"))
-		if err := svc.DisableManagedDeployment(r.Context(), id); err != nil {
+		if err := svc.DisableManagedDeployment(ctx, id); err != nil {
 			if errors.Is(err, capability.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "MANAGED_DEPLOYMENT_NOT_FOUND", "managed deployment not found")
 				return
@@ -1250,6 +1273,7 @@ func AdminCapabilityManagedDeploymentDeleteHandler(svc *capability.Service, audi
 
 func AdminCapabilityRecommendationCreateHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		var req struct {
 			CapabilityRef        string          `json:"capability_ref"`
@@ -1277,7 +1301,7 @@ func AdminCapabilityRecommendationCreateHandler(svc *capability.Service, audits 
 		}
 		adminUserID := adminAuditUserID(r)
 		scopeJSON := rawJSONOrDefault(req.Scope)
-		id, err := svc.CreateRecommendation(r.Context(), capability.RecommendationInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, Reason: req.Reason, AllowUserDismiss: allowDismiss, CreatedBy: adminUserID, Enabled: enabled})
+		id, err := svc.CreateRecommendation(ctx, capability.RecommendationInput{CapabilityRef: req.CapabilityRef, CapabilityVersionKey: req.CapabilityVersionKey, ScopeJSON: scopeJSON, Reason: req.Reason, AllowUserDismiss: allowDismiss, CreatedBy: adminUserID, Enabled: enabled})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "RECOMMENDATION_CREATE_FAILED", err.Error())
 			return
@@ -1289,9 +1313,10 @@ func AdminCapabilityRecommendationCreateHandler(svc *capability.Service, audits 
 
 func AdminCapabilityRecommendationDeleteHandler(svc *capability.Service, audits ...store.AdminAuditRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		audit := firstAdminAuditRepo(audits...)
 		id := strings.TrimSpace(r.PathValue("id"))
-		if err := svc.DisableRecommendation(r.Context(), id); err != nil {
+		if err := svc.DisableRecommendation(ctx, id); err != nil {
 			if errors.Is(err, capability.ErrNotFound) {
 				writeError(w, http.StatusNotFound, "RECOMMENDATION_NOT_FOUND", "recommendation not found")
 				return
@@ -2133,6 +2158,8 @@ func importFreeHubCenterCapabilityForIntent(ctx context.Context, svc *capability
 }
 func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.SystemSettingsRepository, centerStatuses ...capabilityMarketCenterStatusProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
+		settings = scopedSystemSettingsForTenant(RequestTenantID(r), settings)
 		var req capabilityInstallIntentRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
@@ -2152,7 +2179,7 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 		adminSearchOnly := false
 		policy.EnterpriseOnlySearch = &adminSearchOnly
 		var enterpriseItem *capability.CapabilitySummary
-		if item, err := findEnterpriseCapabilityForInstallIntent(r.Context(), svc, req); err == nil {
+		if item, err := findEnterpriseCapabilityForInstallIntent(ctx, svc, req); err == nil {
 			enterpriseItem = item
 		}
 		decision := corelib.DecideCapabilityInstall(corelib.CapabilityInstallDecisionInput{
@@ -2175,11 +2202,11 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 		if decision.Action == corelib.CapabilityInstallCreatePurchaseRequest {
 			kind = "purchase"
 		}
-		if existing := findOpenAcquisitionRequest(r.Context(), svc, req, kind); existing != nil {
+		if existing := findOpenAcquisitionRequest(ctx, svc, req, kind); existing != nil {
 			writeJSON(w, http.StatusAccepted, map[string]any{"action": decision.Action, "reason": decision.Reason, "request_id": existing.ID})
 			return
 		}
-		requestID, err := svc.CreateAcquisitionRequest(r.Context(), capability.AcquisitionRequestInput{
+		requestID, err := svc.CreateAcquisitionRequest(ctx, capability.AcquisitionRequestInput{
 			RequesterUserID:     "admin",
 			CapabilityType:      req.CapabilityType,
 			Source:              req.Source,
@@ -2199,13 +2226,13 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 			if len(centerStatuses) > 0 {
 				centerStatus = centerStatuses[0]
 			}
-			created, err := importHubCenterMCPMarketplaceEntry(r.Context(), svc, centerStatus, req.CapabilityID)
+			created, err := importHubCenterMCPMarketplaceEntry(ctx, svc, centerStatus, req.CapabilityID)
 			if err != nil {
-				markAcquisitionImportFailed(r.Context(), svc, requestID, err)
+				markAcquisitionImportFailed(ctx, svc, requestID, err)
 				writeError(w, http.StatusBadGateway, "HUBCENTER_IMPORT_FAILED", err.Error())
 				return
 			}
-			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
+			if err := svc.CompleteAcquisitionRequest(ctx, requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
 				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 				return
 			}
@@ -2217,13 +2244,13 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 			if len(centerStatuses) > 0 {
 				centerStatus = centerStatuses[0]
 			}
-			created, err := importHubCenterSkillMarketplaceEntry(r.Context(), svc, centerStatus, req.CapabilityID)
+			created, err := importHubCenterSkillMarketplaceEntry(ctx, svc, centerStatus, req.CapabilityID)
 			if err != nil {
-				markAcquisitionImportFailed(r.Context(), svc, requestID, err)
+				markAcquisitionImportFailed(ctx, svc, requestID, err)
 				writeError(w, http.StatusBadGateway, "HUBCENTER_IMPORT_FAILED", err.Error())
 				return
 			}
-			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
+			if err := svc.CompleteAcquisitionRequest(ctx, requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": corelib.CapabilitySourceHubCenter})); err != nil {
 				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 				return
 			}
@@ -2231,13 +2258,13 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 			return
 		}
 		if (decision.Action == corelib.CapabilityInstallCreateImportRequest || decision.Action == corelib.CapabilityInstallExternalDirect) && strings.EqualFold(req.CapabilityType, corelib.CapabilityTypeSkill) && (req.Source == corelib.CapabilitySourceClawHub || req.Source == corelib.CapabilitySourceGitHub) {
-			created, err := importFreeExternalSkillCapability(r.Context(), svc, req)
+			created, err := importFreeExternalSkillCapability(ctx, svc, req)
 			if err != nil {
-				markAcquisitionImportFailed(r.Context(), svc, requestID, err)
+				markAcquisitionImportFailed(ctx, svc, requestID, err)
 				writeError(w, http.StatusBadGateway, "EXTERNAL_SKILL_IMPORT_FAILED", err.Error())
 				return
 			}
-			if err := svc.CompleteAcquisitionRequest(r.Context(), requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": req.Source})); err != nil {
+			if err := svc.CompleteAcquisitionRequest(ctx, requestID, created.ID, jsonObjectString(map[string]any{"mode": "free_import", "source": req.Source})); err != nil {
 				writeError(w, acquisitionStatusCode(err), "ACQUISITION_COMPLETE_FAILED", err.Error())
 				return
 			}
@@ -2250,6 +2277,7 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 
 func AdminCapabilityMarketPolicyGetHandler(settings store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		settings = scopedSystemSettingsForTenant(RequestTenantID(r), settings)
 		policy, err := loadCapabilityMarketPolicy(r, settings)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "CAPABILITY_MARKET_POLICY_GET_FAILED", err.Error())
@@ -2261,6 +2289,7 @@ func AdminCapabilityMarketPolicyGetHandler(settings store.SystemSettingsReposito
 
 func AdminCapabilityMarketPolicyUpdateHandler(settings store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		settings = scopedSystemSettingsForTenant(RequestTenantID(r), settings)
 		if settings == nil {
 			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "system settings repository is unavailable")
 			return
@@ -2292,7 +2321,8 @@ func AdminCapabilityMarketPolicyUpdateHandler(settings store.SystemSettingsRepos
 
 func MCPSecretRequirementsHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := svc.ListMCPSecretRequirements(r.Context(), r.PathValue("id"), r.URL.Query().Get("version_key"))
+		ctx := marketplaceRequestContext(r)
+		items, err := svc.ListMCPSecretRequirements(ctx, r.PathValue("id"), r.URL.Query().Get("version_key"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MCP_SECRET_REQUIREMENTS_LIST_FAILED", err.Error())
 			return
@@ -2308,7 +2338,8 @@ func MCPHubSecretsHandler(identity viewerAuthenticator, svc *capability.Service)
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		items, err := svc.ListMCPHubSecrets(r.Context(), principal.UserID, r.URL.Query().Get("mcp_server_id"))
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		items, err := svc.ListMCPHubSecrets(ctx, principal.UserID, r.URL.Query().Get("mcp_server_id"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MCP_HUB_SECRETS_LIST_FAILED", err.Error())
 			return
@@ -2324,6 +2355,7 @@ func MCPHubSecretUpsertHandler(identity viewerAuthenticator, svc *capability.Ser
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
 		var req struct {
 			MCPServerID     string          `json:"mcp_server_id"`
 			RequirementName string          `json:"requirement_name"`
@@ -2334,7 +2366,7 @@ func MCPHubSecretUpsertHandler(identity viewerAuthenticator, svc *capability.Ser
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
-		item, err := svc.UpsertMCPHubSecret(r.Context(), capability.MCPHubSecretInput{UserID: principal.UserID, MCPServerID: req.MCPServerID, RequirementName: req.RequirementName, SecretValue: req.SecretValue, MetadataJSON: rawJSONOrDefault(req.Metadata)})
+		item, err := svc.UpsertMCPHubSecret(ctx, capability.MCPHubSecretInput{UserID: principal.UserID, MCPServerID: req.MCPServerID, RequirementName: req.RequirementName, SecretValue: req.SecretValue, MetadataJSON: rawJSONOrDefault(req.Metadata)})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "MCP_HUB_SECRET_SAVE_FAILED", err.Error())
 			return
@@ -2350,7 +2382,8 @@ func MCPSecretBindingsHandler(identity viewerAuthenticator, svc *capability.Serv
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
-		items, err := svc.ListMCPSecretBindings(r.Context(), principal.UserID, r.URL.Query().Get("mcp_server_id"))
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		items, err := svc.ListMCPSecretBindings(ctx, principal.UserID, r.URL.Query().Get("mcp_server_id"))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MCP_SECRET_BINDINGS_LIST_FAILED", err.Error())
 			return
@@ -2366,6 +2399,7 @@ func MCPSecretBindingUpsertHandler(identity viewerAuthenticator, svc *capability
 			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
 			return
 		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
 		var req struct {
 			MCPServerID     string `json:"mcp_server_id"`
 			RequirementName string `json:"requirement_name"`
@@ -2379,7 +2413,7 @@ func MCPSecretBindingUpsertHandler(identity viewerAuthenticator, svc *capability
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "invalid request body")
 			return
 		}
-		item, err := svc.UpsertMCPSecretBinding(r.Context(), capability.MCPSecretBindingInput{UserID: principal.UserID, MCPServerID: req.MCPServerID, RequirementName: req.RequirementName, Storage: req.Storage, HubSecretRef: req.HubSecretRef, LocalSecretRef: req.LocalSecretRef, Status: req.Status, LastVerifiedAt: req.LastVerifiedAt})
+		item, err := svc.UpsertMCPSecretBinding(ctx, capability.MCPSecretBindingInput{UserID: principal.UserID, MCPServerID: req.MCPServerID, RequirementName: req.RequirementName, Storage: req.Storage, HubSecretRef: req.HubSecretRef, LocalSecretRef: req.LocalSecretRef, Status: req.Status, LastVerifiedAt: req.LastVerifiedAt})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "MCP_SECRET_BINDING_SAVE_FAILED", err.Error())
 			return
@@ -2390,6 +2424,7 @@ func MCPSecretBindingUpsertHandler(identity viewerAuthenticator, svc *capability
 
 func AdminMCPSecretRequirementUpsertHandler(svc *capability.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := capabilityAdminContext(r)
 		var req struct {
 			CapabilityRef string          `json:"capability_ref"`
 			VersionKey    string          `json:"version_key"`
@@ -2413,7 +2448,7 @@ func AdminMCPSecretRequirementUpsertHandler(svc *capability.Service) http.Handle
 		if req.Required != nil {
 			required = *req.Required
 		}
-		id, err := svc.UpsertMCPSecretRequirement(r.Context(), capability.MCPSecretRequirementInput{CapabilityRef: req.CapabilityRef, VersionKey: req.VersionKey, Name: req.Name, Label: req.Label, Scope: req.Scope, StoragePolicy: req.StoragePolicy, Required: required, HelpURL: req.HelpURL, MetadataJSON: rawJSONOrDefault(req.Metadata)})
+		id, err := svc.UpsertMCPSecretRequirement(ctx, capability.MCPSecretRequirementInput{CapabilityRef: req.CapabilityRef, VersionKey: req.VersionKey, Name: req.Name, Label: req.Label, Scope: req.Scope, StoragePolicy: req.StoragePolicy, Required: required, HelpURL: req.HelpURL, MetadataJSON: rawJSONOrDefault(req.Metadata)})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MCP_SECRET_REQUIREMENT_SAVE_FAILED", err.Error())
 			return
@@ -2423,8 +2458,9 @@ func AdminMCPSecretRequirementUpsertHandler(svc *capability.Service) http.Handle
 }
 
 type marketplaceViewerPrincipal struct {
-	UserID string
-	Email  string
+	TenantID string
+	UserID   string
+	Email    string
 }
 
 type viewerAuthenticator interface {
@@ -2443,7 +2479,25 @@ func authenticateMarketplaceViewer(r *http.Request, identity viewerAuthenticator
 	if err != nil {
 		return nil, err
 	}
-	return &marketplaceViewerPrincipal{UserID: principal.UserID, Email: principal.Email}, nil
+	return &marketplaceViewerPrincipal{TenantID: principal.TenantID, UserID: principal.UserID, Email: principal.Email}, nil
+}
+
+func capabilityTenantIDFromRequest(r *http.Request) string {
+	if r == nil {
+		return store.DefaultTenantID
+	}
+	if tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID")); tenantID != "" {
+		return tenantID
+	}
+	return RequestTenantID(r)
+}
+
+func marketplaceRequestContext(r *http.Request) context.Context {
+	return capability.WithTenant(r.Context(), capabilityTenantIDFromRequest(r))
+}
+
+func capabilityAdminContext(r *http.Request) context.Context {
+	return capability.WithTenant(r.Context(), RequestTenantID(r))
 }
 
 func loadCapabilityMarketPolicy(r *http.Request, settings store.SystemSettingsRepository) (corelib.CapabilityMarketPolicy, error) {

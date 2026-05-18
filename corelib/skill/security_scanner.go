@@ -63,7 +63,7 @@ func (s *SecurityScanner) ScanInstallStaged(
 
 // ScanStaged performs a security scan on a staged skill.
 // stagingDir is the directory where skill files have been extracted.
-// Always runs pattern scan first (hard floor), then optionally agent scan.
+// Always runs pattern scan first as the risk floor, then optionally agent scan.
 func (s *SecurityScanner) ScanStaged(
 	ctx context.Context,
 	entry *corelib.NLSkillEntry,
@@ -97,7 +97,7 @@ func (s *SecurityScanner) ScanStaged(
 		return invalidScanReport(fmt.Sprintf("skill security scan cancelled: %v", err))
 	}
 
-	// Step 1: pattern scan (always, hard floor).
+	// Step 1: pattern scan (always the risk floor).
 	sendStatus("Running skill security rule scan...")
 	patternAssessment := patternScan(entry, stagingDir)
 	if err := ctx.Err(); err != nil {
@@ -343,9 +343,9 @@ func RecommendationForLevel(level security.RiskLevel) string {
 	case security.RiskMedium:
 		return "Install with normal caution and review permissions if needed."
 	case security.RiskHigh:
-		return "Review carefully and require explicit user approval before install."
+		return "Review carefully; standard mode asks when confirmation is available, otherwise records and allows."
 	case security.RiskCritical:
-		return "Do not install. The skill should be rejected and recorded as a security event."
+		return "Critical risk detected; strict mode blocks, other modes record or request approval according to policy."
 	default:
 		return ""
 	}
@@ -362,9 +362,9 @@ func FormatScanReportForUser(report *ScanReport, skillName string) string {
 	case report.IsSafe():
 		sb.WriteString(fmt.Sprintf("Skill %s passed the security scan.\n", skillName))
 	case report.NeedsUserReview() && !report.IsDangerous():
-		sb.WriteString(fmt.Sprintf("Skill %s needs user approval before installation.\n", skillName))
+		sb.WriteString(fmt.Sprintf("Skill %s has high-risk findings. Current policy decides whether to ask, record, or block.\n", skillName))
 	case report.IsDangerous():
-		sb.WriteString(fmt.Sprintf("Skill %s was blocked by the security scan.\n", skillName))
+		sb.WriteString(fmt.Sprintf("Skill %s has critical findings. Strict mode blocks; non-strict modes record or ask according to policy.\n", skillName))
 	}
 
 	sb.WriteString(fmt.Sprintf("Summary: %s\n", report.Summary))

@@ -3,6 +3,7 @@ package agentservice
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -81,6 +82,25 @@ func TestRunQuotaEnforced(t *testing.T) {
 	}
 	if _, _, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "again"}); !errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("PostMessage two error = %v, want ErrQuotaExceeded", err)
+	}
+}
+
+func TestEchoExecutorDoesNotExposeDataDir(t *testing.T) {
+	svc, principal := quotaReadyService(t)
+	inst, err := svc.CreateInstance(context.Background(), principal, CreateInstanceInput{Name: "one"})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	sess, err := svc.CreateSession(context.Background(), principal, inst.ID, CreateSessionInput{Title: "s1"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	_, msg, err := svc.PostMessage(context.Background(), principal, inst.ID, sess.ID, PostMessageInput{Content: "hello"})
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	if strings.Contains(msg.Content, svc.DataRoot()) || strings.Contains(msg.Content, "data_dir=") {
+		t.Fatalf("echo response exposed data dir: %q", msg.Content)
 	}
 }
 

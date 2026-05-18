@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -441,7 +442,7 @@ func (s *HTTPServer) handleGetAdminReadiness(w http.ResponseWriter, r *http.Requ
 	if report.Status != "ready" {
 		status = http.StatusServiceUnavailable
 	}
-	writeJSON(w, status, report)
+	writeJSON(w, status, redactReadinessReport(report))
 }
 
 func buildReadinessReport(dataRoot, jobsFilePath string) readinessReport {
@@ -720,7 +721,7 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleGetAdminOverview(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetAdminOverview(r.Context())
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -728,7 +729,7 @@ func (s *HTTPServer) handleGetAdminOverview(w http.ResponseWriter, r *http.Reque
 func (s *HTTPServer) handleGetAdminDashboard(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetAdminDashboard(r.Context())
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	dashboard := redactAdminDashboardForAdminAPI(s.svc.DataRoot(), *out)
@@ -755,7 +756,7 @@ func (s *HTTPServer) handleGetAdminInsights(w http.ResponseWriter, r *http.Reque
 	}
 	out, err := s.svc.GetAdminInsights(r.Context(), agentservice.AdminInsightsInput{InactiveForDays: inactiveForDays, Limit: limit})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -800,10 +801,10 @@ func (s *HTTPServer) handleGetAdminAlerts(w http.ResponseWriter, r *http.Request
 		CredentialExpiryWindowDays: expiryWindowDays,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeAdminAlertsForAdminAPI(s.svc.DataRoot(), *out))
 }
 func (s *HTTPServer) handleAdminSecuritySummary(w http.ResponseWriter, r *http.Request) {
 	since, err := parseOptionalTimeQuery(r, "since")
@@ -822,7 +823,7 @@ func (s *HTTPServer) handleAdminSecuritySummary(w http.ResponseWriter, r *http.R
 	}
 	items, err := s.loadAdminRiskEvents(r.Context(), since, until)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	counts := countRiskEventsBySeverity(items)
@@ -882,7 +883,7 @@ func (s *HTTPServer) handleAdminSecurityRiskEvents(w http.ResponseWriter, r *htt
 	}
 	items, err := s.loadAdminRiskEvents(r.Context(), since, until)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	if severity != "" {
@@ -1060,7 +1061,7 @@ func (s *HTTPServer) handleListTenants(w http.ResponseWriter, r *http.Request) {
 		Name:   strings.TrimSpace(r.URL.Query().Get("name")),
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -1095,7 +1096,7 @@ func (s *HTTPServer) handleListAuditEvents(w http.ResponseWriter, r *http.Reques
 		Until:        until,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -1140,11 +1141,11 @@ func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Req
 		IncludeSecrets:  includeSecrets != nil && *includeSecrets,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.service_state_exported", "service_state", out.Scope, map[string]string{"tenant_id": out.TenantID, "user_id": out.UserID, "include_secrets": strconv.FormatBool(out.IncludeSecrets), "include_messages": strconv.FormatBool(out.IncludeMessages), "include_runs": strconv.FormatBool(out.IncludeRuns), "include_audit": strconv.FormatBool(out.IncludeAudit), "users": strconv.Itoa(len(out.Users)), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeExportServiceStateForAdminAPI(s.svc.DataRoot(), *out))
 }
 func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdminOwner(w, r) {
@@ -1174,11 +1175,11 @@ func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Req
 	}
 	out, err := s.svc.ImportServiceState(r.Context(), *in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.service_state_imported", "service_state", out.Scope, map[string]string{"tenant_id": out.TenantID, "user_id": out.UserID, "dry_run": strconv.FormatBool(out.DryRun), "overwrite": strconv.FormatBool(out.Overwrite), "tenants": strconv.Itoa(out.Tenants), "users": strconv.Itoa(out.Users), "credentials": strconv.Itoa(out.Credentials), "instances": strconv.Itoa(out.Instances), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeImportServiceStateOutputForAdminAPI(s.svc.DataRoot(), out))
 }
 
 func (s *HTTPServer) handleListServiceSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -1201,7 +1202,7 @@ func (s *HTTPServer) handleListServiceSnapshots(w http.ResponseWriter, r *http.R
 		Until:    until,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -1229,11 +1230,11 @@ func (s *HTTPServer) handleCreateServiceSnapshot(w http.ResponseWriter, r *http.
 	}
 	out, err := s.svc.CreateServiceSnapshot(r.Context(), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_created", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "include_secrets": strconv.FormatBool(out.Snapshot.IncludeSecrets), "include_messages": strconv.FormatBool(out.Snapshot.IncludeMessages), "include_runs": strconv.FormatBool(out.Snapshot.IncludeRuns), "include_audit": strconv.FormatBool(out.Snapshot.IncludeAudit), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusCreated, sanitizeServiceSnapshotEnvelopeForAdminAPI(out))
+	writeJSON(w, http.StatusCreated, sanitizeServiceSnapshotEnvelopeForAdminAPI(s.svc.DataRoot(), out))
 }
 
 func (s *HTTPServer) handlePruneServiceSnapshots(w http.ResponseWriter, r *http.Request) {
@@ -1272,7 +1273,7 @@ func (s *HTTPServer) handlePruneServiceSnapshots(w http.ResponseWriter, r *http.
 	}
 	out, err := s.svc.PruneServiceSnapshots(r.Context(), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, sanitizePruneServiceSnapshotsOutputForAdminAPI(out))
@@ -1280,13 +1281,13 @@ func (s *HTTPServer) handlePruneServiceSnapshots(w http.ResponseWriter, r *http.
 func (s *HTTPServer) handleGetServiceSnapshot(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetServiceSnapshot(r.Context(), r.PathValue("snapshotId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	if out.Snapshot.IncludeSecrets && !s.requireAdminOwner(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, sanitizeServiceSnapshotEnvelopeForAdminAPI(out))
+	writeJSON(w, http.StatusOK, sanitizeServiceSnapshotEnvelopeForAdminAPI(s.svc.DataRoot(), out))
 }
 
 func (s *HTTPServer) handleRestoreServiceSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -1317,11 +1318,11 @@ func (s *HTTPServer) handleRestoreServiceSnapshot(w http.ResponseWriter, r *http
 	}
 	out, err := s.svc.RestoreServiceSnapshot(r.Context(), r.PathValue("snapshotId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_restored", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "dry_run": strconv.FormatBool(in.DryRun), "overwrite": strconv.FormatBool(in.Overwrite), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, sanitizeRestoreServiceSnapshotOutputForAdminAPI(out))
+	writeJSON(w, http.StatusOK, sanitizeRestoreServiceSnapshotOutputForAdminAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleDeleteServiceSnapshot(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdminOwner(w, r) {
@@ -1333,7 +1334,7 @@ func (s *HTTPServer) handleDeleteServiceSnapshot(w http.ResponseWriter, r *http.
 	}
 	out, err := s.svc.DeleteServiceSnapshot(r.Context(), r.PathValue("snapshotId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, sanitizeServiceSnapshotForAdminAPI(*out))
@@ -1349,10 +1350,10 @@ func (s *HTTPServer) handleGetTenantRetirePlan(w http.ResponseWriter, r *http.Re
 	}
 	out, err := s.svc.GetTenantRetirePlan(r.Context(), r.PathValue("tenantId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeTenantRetirePlanForAdminAPI(s.svc.DataRoot(), *out))
 }
 
 func (s *HTTPServer) handleGetUserRetirePlan(w http.ResponseWriter, r *http.Request) {
@@ -1366,10 +1367,416 @@ func (s *HTTPServer) handleGetUserRetirePlan(w http.ResponseWriter, r *http.Requ
 	}
 	out, err := s.svc.GetUserRetirePlan(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeUserRetirePlanForAdminAPI(s.svc.DataRoot(), *out))
+}
+
+func sanitizeExportServiceStateForAdminAPI(dataRoot string, in agentservice.ExportServiceStateOutput) agentservice.ExportServiceStateOutput {
+	for ui := range in.Users {
+		for ii := range in.Users[ui].Instances {
+			in.Users[ui].Instances[ii].Instance = sanitizeInstanceForAdminAPI(dataRoot, in.Users[ui].Instances[ii].Instance)
+		}
+	}
+	in.AuditEvents = redactAuditEventsForAdminAPI(dataRoot, in.AuditEvents)
+	return in
+}
+
+func sanitizeAdminAlertsForAdminAPI(dataRoot string, in agentservice.AdminAlerts) agentservice.AdminAlerts {
+	for i := range in.UnreadyInstances {
+		in.UnreadyInstances[i] = sanitizeInstanceForAdminAPI(dataRoot, in.UnreadyInstances[i])
+	}
+	return in
+}
+
+func sanitizeTenantSummaryForAdminAPI(in agentservice.TenantSummary) agentservice.TenantSummary {
+	for i := range in.UserSummaries {
+		in.UserSummaries[i].DataDir = ""
+	}
+	return in
+}
+
+func sanitizeUsageSummaryForAPI(in *agentservice.UsageSummary) agentservice.UsageSummary {
+	if in == nil {
+		return agentservice.UsageSummary{}
+	}
+	out := *in
+	out.DataDir = ""
+	return out
+}
+
+func sanitizeInstanceForAPI(dataRoot string, inst *agentservice.Instance) agentservice.Instance {
+	if inst == nil {
+		return agentservice.Instance{}
+	}
+	return sanitizeInstanceForAdminAPI(dataRoot, *inst)
+}
+
+func sanitizeInstancesForAPI(dataRoot string, items []agentservice.Instance) []agentservice.Instance {
+	out := make([]agentservice.Instance, len(items))
+	for i := range items {
+		out[i] = sanitizeInstanceForAdminAPI(dataRoot, items[i])
+	}
+	return out
+}
+
+func sanitizeRunPtrForAPI(dataRoot string, run *agentservice.Run) agentservice.Run {
+	if run == nil {
+		return agentservice.Run{}
+	}
+	return sanitizeRunForAPI(dataRoot, *run)
+}
+
+func sanitizeRunForAPI(dataRoot string, run agentservice.Run) agentservice.Run {
+	run.Error = redactSupportBundleText(dataRoot, run.Error)
+	run.Metadata = redactSupportBundleMetadata(dataRoot, run.Metadata)
+	return run
+}
+
+func sanitizeRunsForAPI(dataRoot string, items []agentservice.Run) []agentservice.Run {
+	out := make([]agentservice.Run, len(items))
+	for i := range items {
+		out[i] = sanitizeRunForAPI(dataRoot, items[i])
+	}
+	return out
+}
+
+func sanitizeRunStreamSnapshotForAPI(dataRoot string, snapshot *runStreamSnapshot) *runStreamSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	out := *snapshot
+	if snapshot.Run != nil {
+		run := sanitizeRunPtrForAPI(dataRoot, snapshot.Run)
+		out.Run = &run
+	}
+	return &out
+}
+
+func sanitizeAgentCapabilitiesForAPI(dataRoot string, caps *agentservice.AgentCapabilities) agentservice.AgentCapabilities {
+	if caps == nil {
+		return agentservice.AgentCapabilities{}
+	}
+	out := *caps
+	if len(caps.Metadata) > 0 {
+		out.Metadata = make(map[string]string, len(caps.Metadata))
+		for key, value := range caps.Metadata {
+			if strings.EqualFold(key, "workspace_dir") {
+				continue
+			}
+			out.Metadata[key] = redactSupportBundleText(dataRoot, value)
+		}
+	}
+	return out
+}
+
+func sanitizeMCPServerViewForAPI(dataRoot string, in agentservice.MCPServerView) agentservice.MCPServerView {
+	in.EndpointURL = redactEndpointForAPI(dataRoot, in.EndpointURL)
+	in.Command = redactSupportBundleValue(dataRoot, in.Command)
+	for i := range in.Args {
+		in.Args[i] = redactSupportBundleText(dataRoot, in.Args[i])
+	}
+	return in
+}
+
+func sanitizeMCPServerViewsForAPI(dataRoot string, items []agentservice.MCPServerView) []agentservice.MCPServerView {
+	out := make([]agentservice.MCPServerView, len(items))
+	for i := range items {
+		out[i] = sanitizeMCPServerViewForAPI(dataRoot, items[i])
+	}
+	return out
+}
+
+func sanitizeMCPServerViewPtrForAPI(dataRoot string, in *agentservice.MCPServerView) agentservice.MCPServerView {
+	if in == nil {
+		return agentservice.MCPServerView{}
+	}
+	return sanitizeMCPServerViewForAPI(dataRoot, *in)
+}
+func sanitizeSkillEntryForAPI(dataRoot string, in corelib.NLSkillEntry) corelib.NLSkillEntry {
+	in.SkillDir = ""
+	in.Description = redactSupportBundleText(dataRoot, in.Description)
+	in.Content = redactSupportBundleText(dataRoot, in.Content)
+	in.SourceProject = redactEndpointForAPI(dataRoot, in.SourceProject)
+	in.LastError = redactSupportBundleText(dataRoot, in.LastError)
+	for i := range in.Triggers {
+		in.Triggers[i] = redactSupportBundleText(dataRoot, in.Triggers[i])
+	}
+	for i := range in.RequiredCredentialFiles {
+		in.RequiredCredentialFiles[i] = redactSupportBundleValue(dataRoot, in.RequiredCredentialFiles[i])
+	}
+	for i := range in.Steps {
+		in.Steps[i] = sanitizeSkillStepForAPI(dataRoot, in.Steps[i])
+	}
+	for i := range in.Operations {
+		in.Operations[i].Description = redactSupportBundleText(dataRoot, in.Operations[i].Description)
+	}
+	for i := range in.Params {
+		in.Params[i].Description = redactSupportBundleText(dataRoot, in.Params[i].Description)
+		in.Params[i].Default = redactSupportBundleText(dataRoot, in.Params[i].Default)
+	}
+	for i := range in.SolidificationCandidates {
+		in.SolidificationCandidates[i].ScriptPath = redactSupportBundleValue(dataRoot, in.SolidificationCandidates[i].ScriptPath)
+	}
+	for i := range in.RepairHistory {
+		in.RepairHistory[i].Explanation = redactSupportBundleText(dataRoot, in.RepairHistory[i].Explanation)
+	}
+	for i := range in.References {
+		in.References[i].Filename = redactSupportBundleValue(dataRoot, in.References[i].Filename)
+		in.References[i].Description = redactSupportBundleText(dataRoot, in.References[i].Description)
+	}
+	for i := range in.Pipeline {
+		in.Pipeline[i].Params = sanitizeStringMapForAPI(dataRoot, in.Pipeline[i].Params)
+		in.Pipeline[i].CheckpointMessage = redactSupportBundleText(dataRoot, in.Pipeline[i].CheckpointMessage)
+	}
+	return in
+}
+
+func sanitizeSkillEntryPtrForAPI(dataRoot string, in *corelib.NLSkillEntry) corelib.NLSkillEntry {
+	if in == nil {
+		return corelib.NLSkillEntry{}
+	}
+	return sanitizeSkillEntryForAPI(dataRoot, *in)
+}
+
+func sanitizeSkillEntriesForAPI(dataRoot string, items []corelib.NLSkillEntry) []corelib.NLSkillEntry {
+	out := make([]corelib.NLSkillEntry, len(items))
+	for i := range items {
+		out[i] = sanitizeSkillEntryForAPI(dataRoot, items[i])
+	}
+	return out
+}
+
+func sanitizeSkillStepForAPI(dataRoot string, in corelib.NLSkillStep) corelib.NLSkillStep {
+	in.Action = redactSupportBundleText(dataRoot, in.Action)
+	in.Params = sanitizeAnyMapForAPI(dataRoot, in.Params)
+	in.Name = redactSupportBundleText(dataRoot, in.Name)
+	in.When = redactSupportBundleText(dataRoot, in.When)
+	in.Capture = sanitizeStringMapForAPI(dataRoot, in.Capture)
+	if in.FallbackStep != nil {
+		fallback := sanitizeSkillStepForAPI(dataRoot, *in.FallbackStep)
+		in.FallbackStep = &fallback
+	}
+	return in
+}
+
+func sanitizeAnyMapForAPI(dataRoot string, in map[string]interface{}) map[string]interface{} {
+	if len(in) == 0 {
+		return in
+	}
+	out := make(map[string]interface{}, len(in))
+	for key, value := range in {
+		out[key] = sanitizeAnyValueForAPI(dataRoot, value)
+	}
+	return out
+}
+
+func sanitizeStringMapForAPI(dataRoot string, in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = redactSupportBundleText(dataRoot, value)
+	}
+	return out
+}
+
+func sanitizeAnyValueForAPI(dataRoot string, value interface{}) interface{} {
+	switch v := value.(type) {
+	case string:
+		return redactSupportBundleText(dataRoot, v)
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i := range v {
+			out[i] = sanitizeAnyValueForAPI(dataRoot, v[i])
+		}
+		return out
+	case map[string]interface{}:
+		return sanitizeAnyMapForAPI(dataRoot, v)
+	case map[string]string:
+		return sanitizeStringMapForAPI(dataRoot, v)
+	default:
+		return value
+	}
+}
+
+func sanitizeSkillSearchResultsForAPI(dataRoot string, items []agentservice.SkillSearchResult) []agentservice.SkillSearchResult {
+	out := make([]agentservice.SkillSearchResult, len(items))
+	for i := range items {
+		item := items[i]
+		item.Description = redactSupportBundleText(dataRoot, item.Description)
+		item.RepoURL = redactEndpointForAPI(dataRoot, item.RepoURL)
+		item.RawURL = redactEndpointForAPI(dataRoot, item.RawURL)
+		item.FilePath = redactSupportBundleValue(dataRoot, item.FilePath)
+		out[i] = item
+	}
+	return out
+}
+
+func sanitizeSkillValidateResultForAPI(dataRoot string, in *agentservice.SkillValidateResult) agentservice.SkillValidateResult {
+	if in == nil {
+		return agentservice.SkillValidateResult{}
+	}
+	out := *in
+	out.Report = sanitizePortabilityReportForAPI(dataRoot, out.Report)
+	out.SummaryText = redactSupportBundleText(dataRoot, out.SummaryText)
+	return out
+}
+
+func sanitizeSkillImproveResultForAPI(dataRoot string, in *agentservice.SkillImproveResult) agentservice.SkillImproveResult {
+	if in == nil {
+		return agentservice.SkillImproveResult{}
+	}
+	out := *in
+	out.ReportBefore = sanitizePortabilityReportForAPI(dataRoot, out.ReportBefore)
+	out.ReportAfter = sanitizePortabilityReportForAPI(dataRoot, out.ReportAfter)
+	out.SummaryText = redactSupportBundleText(dataRoot, out.SummaryText)
+	for i := range out.Changes {
+		out.Changes[i].File = redactSupportBundleValue(dataRoot, out.Changes[i].File)
+		out.Changes[i].Original = redactSupportBundleText(dataRoot, out.Changes[i].Original)
+		out.Changes[i].Replacement = redactSupportBundleText(dataRoot, out.Changes[i].Replacement)
+	}
+	return out
+}
+
+func sanitizePortabilityReportForAPI(dataRoot string, in *cskill.PortabilityReport) *cskill.PortabilityReport {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.SkillDir = ""
+	for i := range out.Issues {
+		out.Issues[i].Message = redactSupportBundleText(dataRoot, out.Issues[i].Message)
+		out.Issues[i].File = redactSupportBundleValue(dataRoot, out.Issues[i].File)
+		out.Issues[i].Suggestion = redactSupportBundleText(dataRoot, out.Issues[i].Suggestion)
+	}
+	return &out
+}
+
+func sanitizeSkillUploadResultForAPI(dataRoot string, in *agentservice.SkillUploadResult) agentservice.SkillUploadResult {
+	if in == nil {
+		return agentservice.SkillUploadResult{}
+	}
+	out := *in
+	out.SubmissionID = redactSupportBundleValue(dataRoot, out.SubmissionID)
+	out.Status = redactSupportBundleText(dataRoot, out.Status)
+	return out
+}
+
+func sanitizeSkillSubmissionStatusForAPI(dataRoot string, in *agentservice.SkillSubmissionStatus) agentservice.SkillSubmissionStatus {
+	if in == nil {
+		return agentservice.SkillSubmissionStatus{}
+	}
+	out := *in
+	out.Status = redactSupportBundleText(dataRoot, out.Status)
+	out.ErrorMsg = redactSupportBundleText(dataRoot, out.ErrorMsg)
+	return out
+}
+func sanitizeConfigValidationForAPI(dataRoot string, in agentservice.ConfigValidationResult) agentservice.ConfigValidationResult {
+	for i := range in.Issues {
+		in.Issues[i].Key = redactSupportBundleValue(dataRoot, in.Issues[i].Key)
+		in.Issues[i].Message = redactSupportBundleText(dataRoot, in.Issues[i].Message)
+	}
+	return in
+}
+
+func sanitizeConfigValidationPtrForAPI(dataRoot string, in *agentservice.ConfigValidationResult) agentservice.ConfigValidationResult {
+	if in == nil {
+		return agentservice.ConfigValidationResult{}
+	}
+	return sanitizeConfigValidationForAPI(dataRoot, *in)
+}
+
+func sanitizeConfigTestResultForAPI(dataRoot string, in *agentservice.ConfigTestResult) agentservice.ConfigTestResult {
+	if in == nil {
+		return agentservice.ConfigTestResult{}
+	}
+	out := *in
+	out.Message = redactSupportBundleText(dataRoot, out.Message)
+	out.Error = redactSupportBundleText(dataRoot, out.Error)
+	out.Endpoint = redactEndpointForAPI(dataRoot, out.Endpoint)
+	if out.Validation != nil {
+		validation := sanitizeConfigValidationForAPI(dataRoot, *out.Validation)
+		out.Validation = &validation
+	}
+	return out
+}
+
+func redactEndpointForAPI(dataRoot, endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" {
+		return endpoint
+	}
+	if dataRoot = strings.TrimSpace(dataRoot); dataRoot != "" {
+		base := supportBundlePathBase(dataRoot)
+		for _, variant := range supportBundlePathRedactionVariants(dataRoot) {
+			endpoint = strings.ReplaceAll(endpoint, variant, base)
+		}
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return redactSupportBundleValue(dataRoot, endpoint)
+	}
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), "[redacted]")
+		}
+	}
+	query := u.Query()
+	for key := range query {
+		if supportBundleSensitiveKey(key) {
+			query.Set(key, "[redacted]")
+		}
+	}
+	u.RawQuery = query.Encode()
+	return u.String()
+}
+
+func sanitizeInstanceForAdminAPI(dataRoot string, inst agentservice.Instance) agentservice.Instance {
+	inst.DataDir = ""
+	inst.RuntimeDir = ""
+	inst.Workspace = ""
+	inst.ReadyReason = redactSupportBundleText(dataRoot, inst.ReadyReason)
+	inst.Readiness.Reason = redactSupportBundleText(dataRoot, inst.Readiness.Reason)
+	inst.ConfigValidation = sanitizeConfigValidationForAPI(dataRoot, inst.ConfigValidation)
+	return inst
+}
+
+func sanitizeInstanceSummaryForAPI(dataRoot string, in *agentservice.InstanceSummary) agentservice.InstanceSummary {
+	if in == nil {
+		return agentservice.InstanceSummary{}
+	}
+	out := *in
+	out.ReadyReason = redactSupportBundleText(dataRoot, out.ReadyReason)
+	return out
+}
+
+func sanitizeInstanceBootstrapForAPI(dataRoot string, in *agentservice.InstanceBootstrap) agentservice.InstanceBootstrap {
+	if in == nil {
+		return agentservice.InstanceBootstrap{}
+	}
+	out := *in
+	out.DataDir = ""
+	out.RuntimeDir = ""
+	out.WorkspaceDir = ""
+	out.ConversationStorePath = ""
+	out.ConfirmationStorePath = ""
+	for key, value := range out.Metadata {
+		out.Metadata[key] = redactSupportBundleText(dataRoot, value)
+	}
+	return out
+}
+
+func sanitizeTenantRetirePlanForAdminAPI(dataRoot string, in agentservice.TenantRetirePlan) agentservice.TenantRetirePlan {
+	in.Export = sanitizeExportServiceStateForAdminAPI(dataRoot, in.Export)
+	return in
+}
+
+func sanitizeUserRetirePlanForAdminAPI(dataRoot string, in agentservice.UserRetirePlan) agentservice.UserRetirePlan {
+	in.Export = sanitizeExportServiceStateForAdminAPI(dataRoot, in.Export)
+	return in
 }
 func sanitizeServiceSnapshotForAdminAPI(snapshot agentservice.ServiceSnapshot) agentservice.ServiceSnapshot {
 	snapshot.Path = ""
@@ -1384,21 +1791,41 @@ func sanitizeServiceSnapshotsForAdminAPI(items []agentservice.ServiceSnapshot) [
 	return out
 }
 
-func sanitizeServiceSnapshotEnvelopeForAdminAPI(in *agentservice.ServiceSnapshotEnvelope) agentservice.ServiceSnapshotEnvelope {
+func sanitizeServiceSnapshotEnvelopeForAdminAPI(dataRoot string, in *agentservice.ServiceSnapshotEnvelope) agentservice.ServiceSnapshotEnvelope {
 	if in == nil {
 		return agentservice.ServiceSnapshotEnvelope{}
 	}
 	out := *in
 	out.Snapshot = sanitizeServiceSnapshotForAdminAPI(out.Snapshot)
+	out.Data = sanitizeExportServiceStateForAdminAPI(dataRoot, out.Data)
 	return out
 }
 
-func sanitizeRestoreServiceSnapshotOutputForAdminAPI(in *agentservice.RestoreServiceSnapshotOutput) agentservice.RestoreServiceSnapshotOutput {
+func sanitizeRestoreServiceSnapshotOutputForAdminAPI(dataRoot string, in *agentservice.RestoreServiceSnapshotOutput) agentservice.RestoreServiceSnapshotOutput {
 	if in == nil {
 		return agentservice.RestoreServiceSnapshotOutput{}
 	}
 	out := *in
 	out.Snapshot = sanitizeServiceSnapshotForAdminAPI(out.Snapshot)
+	out.Import = sanitizeImportServiceStateOutputForAdminAPI(dataRoot, &out.Import)
+	return out
+}
+
+func sanitizeImportServiceStateOutputForAdminAPI(dataRoot string, in *agentservice.ImportServiceStateOutput) agentservice.ImportServiceStateOutput {
+	if in == nil {
+		return agentservice.ImportServiceStateOutput{}
+	}
+	out := *in
+	for i := range out.Plan {
+		out.Plan[i].ResourceID = redactSupportBundleValue(dataRoot, out.Plan[i].ResourceID)
+		out.Plan[i].Message = redactSupportBundleText(dataRoot, out.Plan[i].Message)
+	}
+	for i := range out.Conflicts {
+		out.Conflicts[i] = redactSupportBundleText(dataRoot, out.Conflicts[i])
+	}
+	for i := range out.Warnings {
+		out.Warnings[i] = redactSupportBundleText(dataRoot, out.Warnings[i])
+	}
 	return out
 }
 
@@ -1421,7 +1848,7 @@ func (s *HTTPServer) handleCreateTenant(w http.ResponseWriter, r *http.Request) 
 	}
 	out, err := s.svc.CreateTenant(r.Context(), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.tenant_created", "tenant", out.ID, tenantAuditMetadata(r, out))
@@ -1468,7 +1895,7 @@ func credentialAuditMetadata(r *http.Request, cred *agentservice.Credential) map
 func (s *HTTPServer) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetTenant(r.Context(), r.PathValue("tenantId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1476,15 +1903,15 @@ func (s *HTTPServer) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleGetTenantSummary(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetTenantSummary(r.Context(), r.PathValue("tenantId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeTenantSummaryForAdminAPI(*out))
 }
 func (s *HTTPServer) handleGetTenantDeleteCheck(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetTenantDeleteCheck(r.Context(), r.PathValue("tenantId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1499,7 +1926,7 @@ func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) 
 	}
 	out, err := s.svc.UpdateTenant(r.Context(), r.PathValue("tenantId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.tenant_updated", "tenant", out.ID, tenantAuditMetadata(r, out))
@@ -1519,7 +1946,7 @@ func (s *HTTPServer) updateTenantLifecycleStatus(w http.ResponseWriter, r *http.
 	}
 	out, err := s.svc.UpdateTenant(r.Context(), r.PathValue("tenantId"), agentservice.UpdateTenantInput{Status: &status})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), action, "tenant", out.ID, map[string]string{"status": string(out.Status), "remote_ip": requestClientIP(r)})
@@ -1535,7 +1962,7 @@ func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) 
 	}
 	tenantID := r.PathValue("tenantId")
 	if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.tenant_deleted", "tenant", tenantID, map[string]string{"remote_ip": requestClientIP(r)})
@@ -1554,7 +1981,7 @@ func (s *HTTPServer) handleListAllUsers(w http.ResponseWriter, r *http.Request) 
 		Email:    strings.TrimSpace(r.URL.Query().Get("email")),
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -1578,7 +2005,7 @@ func (s *HTTPServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		Email:  strings.TrimSpace(r.URL.Query().Get("email")),
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -1600,7 +2027,7 @@ func (s *HTTPServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	in.TenantID = r.PathValue("tenantId")
 	out, err := s.svc.CreateUser(r.Context(), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.user_created", "user", out.ID, userAuditMetadata(r, out))
@@ -1609,7 +2036,7 @@ func (s *HTTPServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleGetUser(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1617,7 +2044,7 @@ func (s *HTTPServer) handleGetUser(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleGetUserDeleteCheck(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetUserDeleteCheck(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1632,7 +2059,7 @@ func (s *HTTPServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := s.svc.UpdateUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.user_updated", "user", out.ID, userAuditMetadata(r, out))
@@ -1652,7 +2079,7 @@ func (s *HTTPServer) updateUserLifecycleStatus(w http.ResponseWriter, r *http.Re
 	}
 	out, err := s.svc.UpdateUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), agentservice.UpdateUserInput{Status: &status})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), action, "user", out.ID, map[string]string{"tenant_id": out.TenantID, "status": string(out.Status), "remote_ip": requestClientIP(r)})
@@ -1669,7 +2096,7 @@ func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	tenantID := r.PathValue("tenantId")
 	userID := r.PathValue("userId")
 	if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.user_deleted", "user", userID, map[string]string{"tenant_id": tenantID, "remote_ip": requestClientIP(r)})
@@ -1678,7 +2105,7 @@ func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleListCredentials(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.ListCredentials(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	out, err = filterCredentialsByQuery(out, r)
@@ -1706,7 +2133,7 @@ func (s *HTTPServer) handleCreateCredential(w http.ResponseWriter, r *http.Reque
 	in.UserID = r.PathValue("userId")
 	out, err := s.svc.CreateCredential(r.Context(), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.credential_created", "credential", out.ID, credentialAuditMetadata(r, out))
@@ -1715,7 +2142,7 @@ func (s *HTTPServer) handleCreateCredential(w http.ResponseWriter, r *http.Reque
 func (s *HTTPServer) handleGetCredential(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1730,7 +2157,7 @@ func (s *HTTPServer) handleUpdateCredential(w http.ResponseWriter, r *http.Reque
 	}
 	out, err := s.svc.UpdateCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.credential_updated", "credential", out.ID, credentialAuditMetadata(r, out))
@@ -1746,7 +2173,7 @@ func (s *HTTPServer) handleRotateCredentialSecret(w http.ResponseWriter, r *http
 	}
 	out, err := s.svc.RotateCredentialSecret(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.credential_secret_rotated", "credential", out.ID, credentialAuditMetadata(r, out))
@@ -1762,7 +2189,7 @@ func (s *HTTPServer) handleRotateCredentialKey(w http.ResponseWriter, r *http.Re
 	}
 	out, err := s.svc.RotateCredentialAPIKey(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.credential_key_rotated", "credential", out.ID, credentialAuditMetadata(r, out))
@@ -1774,7 +2201,7 @@ func (s *HTTPServer) handleRevokeCredential(w http.ResponseWriter, r *http.Reque
 	}
 	out, err := s.svc.RevokeCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.credential_revoked", "credential", out.ID, credentialAuditMetadata(r, out))
@@ -1803,7 +2230,7 @@ func (s *HTTPServer) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	s.authLimiter.ResetFailures(limitKey)
@@ -1812,7 +2239,7 @@ func (s *HTTPServer) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleGetMe(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetMe(r.Context(), p)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1820,7 +2247,7 @@ func (s *HTTPServer) handleGetMe(w http.ResponseWriter, r *http.Request, p agent
 func (s *HTTPServer) handleGetConfigSchema(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetParameterDefinitions(r.Context(), p)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
@@ -1832,7 +2259,7 @@ func (s *HTTPServer) handleGetConfig(w http.ResponseWriter, r *http.Request, p a
 			writeJSON(w, http.StatusOK, map[string]any{"app_config": corelib.AppConfig{}})
 			return
 		}
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1849,7 +2276,7 @@ func (s *HTTPServer) handleUpdateConfig(w http.ResponseWriter, r *http.Request, 
 	}
 	out, err := s.svc.UpdateUserConfig(r.Context(), p, *inPtr)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1861,7 +2288,7 @@ func (s *HTTPServer) handleValidateConfig(w http.ResponseWriter, r *http.Request
 	}
 	out, err := s.svc.ValidateConfigCandidate(r.Context(), p, candidate)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -1873,23 +2300,23 @@ func (s *HTTPServer) handleTestConfig(w http.ResponseWriter, r *http.Request, p 
 	}
 	out, err := s.svc.TestConfigCandidate(r.Context(), p, candidate)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeConfigTestResultForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleGetUsageSummary(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetUsageSummary(r.Context(), p)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeUsageSummaryForAPI(out))
 }
 func (s *HTTPServer) handleListMCPServers(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ListMCPServers(r.Context(), p)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -1897,7 +2324,7 @@ func (s *HTTPServer) handleListMCPServers(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	items, meta := paginateMCPServers(out, page)
+	items, meta := paginateMCPServers(sanitizeMCPServerViewsForAPI(s.svc.DataRoot(), out), page)
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleCreateMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -1919,18 +2346,18 @@ func (s *HTTPServer) handleCreateMCPServer(w http.ResponseWriter, r *http.Reques
 	}
 	out, err := s.svc.CreateMCPServer(r.Context(), p, in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusCreated, out)
+	writeJSON(w, http.StatusCreated, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleGetMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetMCPServer(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleUpdateMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.MCPServerUpdateInput
@@ -1951,14 +2378,14 @@ func (s *HTTPServer) handleUpdateMCPServer(w http.ResponseWriter, r *http.Reques
 	}
 	out, err := s.svc.UpdateMCPServer(r.Context(), p, r.PathValue("serverId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleDeleteMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if err := s.svc.DeleteMCPServer(r.Context(), p, r.PathValue("serverId")); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -1978,10 +2405,10 @@ func (s *HTTPServer) handleStartMCPServer(w http.ResponseWriter, r *http.Request
 	}
 	out, err := s.svc.StartMCPServer(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleStopMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
@@ -1998,10 +2425,10 @@ func (s *HTTPServer) handleStopMCPServer(w http.ResponseWriter, r *http.Request,
 	}
 	out, err := s.svc.StopMCPServer(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleCheckMCPServer(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	asyncMode, err := parseRequiredBoolLikeQuery(r, "async")
@@ -2018,15 +2445,15 @@ func (s *HTTPServer) handleCheckMCPServer(w http.ResponseWriter, r *http.Request
 	}
 	out, err := s.svc.CheckMCPServer(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeMCPServerViewPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleGetMCPServerTools(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetMCPServerTools(r.Context(), p, r.PathValue("serverId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
@@ -2035,7 +2462,7 @@ func (s *HTTPServer) handleGetMCPServerTools(w http.ResponseWriter, r *http.Requ
 func (s *HTTPServer) handleListSkills(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ListSkills(r.Context(), p)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parseSkillPageQuery(r)
@@ -2043,20 +2470,20 @@ func (s *HTTPServer) handleListSkills(w http.ResponseWriter, r *http.Request, p 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	items, meta := paginateSkills(out, page)
+	items, meta := paginateSkills(sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out), page)
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleGetSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetSkill(r.Context(), p, r.PathValue("skillName"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeSkillEntryPtrForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleDeleteSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if err := s.svc.DeleteSkill(r.Context(), p, r.PathValue("skillName")); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -2068,10 +2495,10 @@ func (s *HTTPServer) handleSearchSkills(w http.ResponseWriter, r *http.Request, 
 	}
 	out, err := s.svc.SearchSkills(r.Context(), p, in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": out})
+	writeJSON(w, http.StatusOK, map[string]any{"items": sanitizeSkillSearchResultsForAPI(s.svc.DataRoot(), out)})
 }
 func (s *HTTPServer) handleInstallSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.SkillInstallInput
@@ -2089,17 +2516,17 @@ func (s *HTTPServer) handleInstallSkill(w http.ResponseWriter, r *http.Request, 
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"items": out}, nil
+			return map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)}, nil
 		})
 		writeJSON(w, http.StatusAccepted, job)
 		return
 	}
 	out, err := s.svc.InstallSkill(r.Context(), p, in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"items": out})
+	writeJSON(w, http.StatusCreated, map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)})
 }
 func (s *HTTPServer) handleImportSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.SkillImportInput
@@ -2117,22 +2544,22 @@ func (s *HTTPServer) handleImportSkill(w http.ResponseWriter, r *http.Request, p
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"items": out}, nil
+			return map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)}, nil
 		})
 		writeJSON(w, http.StatusAccepted, job)
 		return
 	}
 	out, err := s.svc.ImportSkillArchive(r.Context(), p, in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"items": out})
+	writeJSON(w, http.StatusCreated, map[string]any{"items": sanitizeSkillEntriesForAPI(s.svc.DataRoot(), out)})
 }
 func (s *HTTPServer) handleExportSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ExportSkill(r.Context(), p, r.PathValue("skillName"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -2140,10 +2567,10 @@ func (s *HTTPServer) handleExportSkill(w http.ResponseWriter, r *http.Request, p
 func (s *HTTPServer) handleValidateSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ValidateSkill(r.Context(), p, r.PathValue("skillName"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeSkillValidateResultForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleImproveSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.SkillImproveInput
@@ -2152,10 +2579,10 @@ func (s *HTTPServer) handleImproveSkill(w http.ResponseWriter, r *http.Request, 
 	}
 	out, err := s.svc.ImproveSkill(r.Context(), p, r.PathValue("skillName"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeSkillImproveResultForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleUploadSkill(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.SkillUploadInput
@@ -2169,17 +2596,21 @@ func (s *HTTPServer) handleUploadSkill(w http.ResponseWriter, r *http.Request, p
 	}
 	if asyncMode {
 		job := s.jobs.createUserJob("skill.upload", p, func(ctx context.Context) (any, error) {
-			return s.svc.UploadSkill(ctx, p, r.PathValue("skillName"), in)
+			out, err := s.svc.UploadSkill(ctx, p, r.PathValue("skillName"), in)
+			if err != nil {
+				return nil, err
+			}
+			return sanitizeSkillUploadResultForAPI(s.svc.DataRoot(), out), nil
 		})
 		writeJSON(w, http.StatusAccepted, job)
 		return
 	}
 	out, err := s.svc.UploadSkill(r.Context(), p, r.PathValue("skillName"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeSkillUploadResultForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleListAsyncJobs(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	page, err := parsePageQuery(r)
@@ -2269,7 +2700,7 @@ func (s *HTTPServer) handleListStructuredRecords(w http.ResponseWriter, r *http.
 		Before:     formatOptionalCursorTime(page.Before),
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	items, meta := recordsPageMeta(out, page)
@@ -2284,7 +2715,7 @@ func (s *HTTPServer) handleCreateStructuredRecord(w http.ResponseWriter, r *http
 	in.Collection = r.PathValue("collection")
 	out, err := s.svc.CreateStructuredRecord(r.Context(), p, in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
@@ -2293,7 +2724,7 @@ func (s *HTTPServer) handleCreateStructuredRecord(w http.ResponseWriter, r *http
 func (s *HTTPServer) handleGetStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -2306,7 +2737,7 @@ func (s *HTTPServer) handleUpdateStructuredRecord(w http.ResponseWriter, r *http
 	}
 	out, err := s.svc.UpdateStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -2314,7 +2745,7 @@ func (s *HTTPServer) handleUpdateStructuredRecord(w http.ResponseWriter, r *http
 
 func (s *HTTPServer) handleDeleteStructuredRecord(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if err := s.svc.DeleteStructuredRecord(r.Context(), p, r.PathValue("collection"), r.PathValue("recordId")); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -2323,15 +2754,15 @@ func (s *HTTPServer) handleDeleteStructuredRecord(w http.ResponseWriter, r *http
 func (s *HTTPServer) handleGetSkillUploadStatus(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetSkillUploadStatus(r.Context(), p, r.PathValue("submissionId"), strings.TrimSpace(r.URL.Query().Get("base_url")))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeSkillSubmissionStatusForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleGetSkillMarketAccount(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetSkillMarketAccount(r.Context(), p, strings.TrimSpace(r.URL.Query().Get("base_url")), strings.TrimSpace(r.URL.Query().Get("email")))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -2339,7 +2770,7 @@ func (s *HTTPServer) handleGetSkillMarketAccount(w http.ResponseWriter, r *http.
 func (s *HTTPServer) handleListInstances(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ListInstances(r.Context(), p)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -2347,7 +2778,7 @@ func (s *HTTPServer) handleListInstances(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	items, meta := paginateInstances(out, page)
+	items, meta := paginateInstances(sanitizeInstancesForAPI(s.svc.DataRoot(), out), page)
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleCreateInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
@@ -2360,22 +2791,22 @@ func (s *HTTPServer) handleCreateInstance(w http.ResponseWriter, r *http.Request
 		if errors.Is(err, agentservice.ErrInvalidConfig) {
 			validation, vErr := s.svc.ValidateUserConfig(r.Context(), p)
 			if vErr == nil {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "config_validation": validation})
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "config_validation": sanitizeConfigValidationPtrForAPI(s.svc.DataRoot(), validation)})
 				return
 			}
 		}
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusCreated, out)
+	writeJSON(w, http.StatusCreated, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleGetInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetInstance(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleUpdateInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.UpdateInstanceInput
@@ -2384,14 +2815,14 @@ func (s *HTTPServer) handleUpdateInstance(w http.ResponseWriter, r *http.Request
 	}
 	out, err := s.svc.UpdateInstance(r.Context(), p, r.PathValue("instanceId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleDeleteInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if err := s.svc.DeleteInstance(r.Context(), p, r.PathValue("instanceId")); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -2399,54 +2830,54 @@ func (s *HTTPServer) handleDeleteInstance(w http.ResponseWriter, r *http.Request
 func (s *HTTPServer) handleGetInstanceCapabilities(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetInstanceCapabilities(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeAgentCapabilitiesForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleStopInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.StopInstance(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleResumeInstance(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ResumeInstance(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
 		if errors.Is(err, agentservice.ErrInvalidConfig) && out != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "instance": out, "config_validation": out.ConfigValidation})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error()), "instance": sanitizeInstanceForAPI(s.svc.DataRoot(), out), "config_validation": sanitizeConfigValidationForAPI(s.svc.DataRoot(), out.ConfigValidation)})
 			return
 		}
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleRefreshInstanceReadiness(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.RefreshInstanceReadiness(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeInstanceForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleGetInstanceSummary(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetInstanceSummary(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeInstanceSummaryForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleGetInstanceBootstrap(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetInstanceBootstrap(r.Context(), p, r.PathValue("instanceId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeInstanceBootstrapForAPI(s.svc.DataRoot(), out))
 }
 func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	var in agentservice.SendMessageInput
@@ -2460,13 +2891,13 @@ func (s *HTTPServer) handleSendMessage(w http.ResponseWriter, r *http.Request, p
 			if run.Status == agentservice.RunStatusCancelled {
 				status = http.StatusConflict
 			}
-			writeJSON(w, status, map[string]any{"session": sess, "run": run, "message": msg, "error": err.Error()})
+			writeJSON(w, status, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg, "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 			return
 		}
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": run, "message": msg})
+	writeJSON(w, http.StatusOK, map[string]any{"session": sess, "run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg})
 }
 func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	includeArchived, err := parseOptionalBoolQuery(r, "include_archived")
@@ -2478,7 +2909,7 @@ func (s *HTTPServer) handleListSessions(w http.ResponseWriter, r *http.Request, 
 		IncludeArchived: includeArchived != nil && *includeArchived,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -2496,7 +2927,7 @@ func (s *HTTPServer) handleCreateSession(w http.ResponseWriter, r *http.Request,
 	}
 	out, err := s.svc.CreateSession(r.Context(), p, r.PathValue("instanceId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
@@ -2504,7 +2935,7 @@ func (s *HTTPServer) handleCreateSession(w http.ResponseWriter, r *http.Request,
 func (s *HTTPServer) handleGetSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -2516,14 +2947,14 @@ func (s *HTTPServer) handleUpdateSession(w http.ResponseWriter, r *http.Request,
 	}
 	out, err := s.svc.UpdateSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleDeleteSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	if err := s.svc.DeleteSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId")); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -2531,7 +2962,7 @@ func (s *HTTPServer) handleDeleteSession(w http.ResponseWriter, r *http.Request,
 func (s *HTTPServer) handleArchiveSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.ArchiveSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -2539,7 +2970,7 @@ func (s *HTTPServer) handleArchiveSession(w http.ResponseWriter, r *http.Request
 func (s *HTTPServer) handleRestoreSession(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.RestoreSession(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -2566,7 +2997,7 @@ func (s *HTTPServer) handleListMessages(w http.ResponseWriter, r *http.Request, 
 		Until: until,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -2585,21 +3016,21 @@ func (s *HTTPServer) handlePostMessage(w http.ResponseWriter, r *http.Request, p
 	run, msg, err := s.svc.PostMessage(r.Context(), p, r.PathValue("instanceId"), r.PathValue("sessionId"), in)
 	if err != nil {
 		if run != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]any{"run": run, "error": err.Error()})
+			writeJSON(w, http.StatusBadGateway, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 			return
 		}
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"run": run, "message": msg})
+	writeJSON(w, http.StatusOK, map[string]any{"run": sanitizeRunPtrForAPI(s.svc.DataRoot(), run), "message": msg})
 }
 func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.GetRun(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeRunPtrForAPI(s.svc.DataRoot(), out))
 }
 
 type runStreamSnapshot struct {
@@ -2655,7 +3086,7 @@ func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Reques
 
 	snapshot, err := s.loadRunStreamSnapshot(r.Context(), p, instanceID, runID)
 	if err != nil {
-		writeSSEError(w, flusher, err)
+		writeSSEError(w, flusher, err, s.svc.DataRoot())
 		return
 	}
 	if !sendSnapshot("snapshot", snapshot) {
@@ -2675,7 +3106,7 @@ func (s *HTTPServer) handleStreamRunEvents(w http.ResponseWriter, r *http.Reques
 		case <-ticker.C:
 			snapshot, err := s.loadRunStreamSnapshot(r.Context(), p, instanceID, runID)
 			if err != nil {
-				writeSSEError(w, flusher, err)
+				writeSSEError(w, flusher, err, s.svc.DataRoot())
 				return
 			}
 			if !sendSnapshot("snapshot", snapshot) {
@@ -2696,7 +3127,7 @@ func (s *HTTPServer) loadRunStreamSnapshot(ctx context.Context, p agentservice.P
 	}
 	snap := &runStreamSnapshot{Run: run}
 	if run == nil || strings.TrimSpace(run.SessionID) == "" {
-		return snap, nil
+		return sanitizeRunStreamSnapshotForAPI(s.svc.DataRoot(), snap), nil
 	}
 	sess, err := s.svc.GetSession(ctx, p, instanceID, run.SessionID)
 	if err != nil && !errors.Is(err, agentservice.ErrSessionNotFound) {
@@ -2706,7 +3137,7 @@ func (s *HTTPServer) loadRunStreamSnapshot(ctx context.Context, p agentservice.P
 		snap.Session = sess
 	}
 	if strings.TrimSpace(run.AssistantMessageID) == "" {
-		return snap, nil
+		return sanitizeRunStreamSnapshotForAPI(s.svc.DataRoot(), snap), nil
 	}
 	messages, err := s.svc.ListMessages(ctx, p, instanceID, run.SessionID, agentservice.ListMessagesInput{})
 	if err != nil {
@@ -2719,11 +3150,11 @@ func (s *HTTPServer) loadRunStreamSnapshot(ctx context.Context, p agentservice.P
 			break
 		}
 	}
-	return snap, nil
+	return sanitizeRunStreamSnapshotForAPI(s.svc.DataRoot(), snap), nil
 }
 
-func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error) {
-	payload, _ := json.Marshal(map[string]string{"error": err.Error()})
+func writeSSEError(w http.ResponseWriter, flusher http.Flusher, err error, dataRoot string) {
+	payload, _ := json.Marshal(map[string]string{"error": redactSupportBundleText(dataRoot, err.Error())})
 	_, _ = w.Write([]byte("event: error\n"))
 	_, _ = w.Write([]byte("data: "))
 	_, _ = w.Write(payload)
@@ -2753,7 +3184,7 @@ func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request, p ag
 		WaitingForUser: waitingForUser,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	page, err := parsePageQuery(r)
@@ -2762,15 +3193,15 @@ func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request, p ag
 		return
 	}
 	items, meta := paginateRuns(out, page)
-	writeJSON(w, http.StatusOK, listResponse(items, meta))
+	writeJSON(w, http.StatusOK, listResponse(sanitizeRunsForAPI(s.svc.DataRoot(), items), meta))
 }
 func (s *HTTPServer) handleCancelRun(w http.ResponseWriter, r *http.Request, p agentservice.Principal) {
 	out, err := s.svc.CancelRun(r.Context(), p, r.PathValue("instanceId"), r.PathValue("runId"))
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeRunPtrForAPI(s.svc.DataRoot(), out))
 }
 
 func (s *HTTPServer) withAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -2806,7 +3237,7 @@ func (s *HTTPServer) withPrincipal(next func(http.ResponseWriter, *http.Request,
 		}
 		p, err := s.svc.Authenticate(token)
 		if err != nil {
-			writeError(w, err)
+			writeRedactedError(w, err, s.svc.DataRoot())
 			return
 		}
 		next(w, r, *p)
@@ -3499,7 +3930,11 @@ func writeRateLimitError(w http.ResponseWriter, retryAfter time.Duration) {
 	})
 }
 
-func writeError(w http.ResponseWriter, err error) {
+func writeRedactedError(w http.ResponseWriter, err error, dataRoot string) {
+	writeJSON(w, errorStatusCode(err), map[string]string{"error": redactSupportBundleText(dataRoot, err.Error())})
+}
+
+func errorStatusCode(err error) int {
 	code := http.StatusBadRequest
 	switch {
 	case errors.Is(err, agentservice.ErrUnauthorized):
@@ -3513,7 +3948,7 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, agentservice.ErrQuotaExceeded):
 		code = http.StatusTooManyRequests
 	}
-	writeJSON(w, code, map[string]string{"error": err.Error()})
+	return code
 }
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

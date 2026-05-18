@@ -18,6 +18,8 @@ const SaveDigitalEmployeeSensitiveQueryPolicyMock = vi.fn();
 const SelectVEAllowedDirectoryMock = vi.fn();
 const GetVEAllowedDirectoriesMock = vi.fn();
 const SetVEAllowedDirectoriesMock = vi.fn();
+const GetVEApprovalConfigMock = vi.fn();
+const SaveVEApprovalConfigMock = vi.fn();
 
 vi.mock("../../../../wailsjs/go/main/App", () => ({
   RegisterVirtualEmployee: (...args: unknown[]) =>
@@ -34,6 +36,10 @@ vi.mock("../../../../wailsjs/go/main/App", () => ({
     GetVEAllowedDirectoriesMock(...args),
   SetVEAllowedDirectories: (...args: unknown[]) =>
     SetVEAllowedDirectoriesMock(...args),
+  GetVEApprovalConfig: (...args: unknown[]) =>
+    GetVEApprovalConfigMock(...args),
+  SaveVEApprovalConfig: (...args: unknown[]) =>
+    SaveVEApprovalConfigMock(...args),
 }));
 
 vi.mock("../../../../wailsjs/runtime", () => ({
@@ -51,6 +57,16 @@ beforeEach(() => {
   GetVEAllowedDirectoriesMock.mockResolvedValue([]);
   SelectVEAllowedDirectoryMock.mockResolvedValue("");
   SetVEAllowedDirectoriesMock.mockResolvedValue(undefined);
+  GetVEApprovalConfigMock.mockResolvedValue({
+    enabled: false,
+    acl: { mode: "whitelist", departments: [], roles: [], skills: [], entities: [] },
+    rules: { auto_reject: [], auto_approve: [], require_human: [] },
+    max_queue_size: 50,
+    timeout_hours: 24,
+    daily_quota: 100,
+    fallback_approver: "",
+  });
+  SaveVEApprovalConfigMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {

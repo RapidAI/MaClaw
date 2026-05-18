@@ -21,6 +21,11 @@ func DefaultParameterDefinitions() []ParameterDefinition {
 }
 
 func SanitizeAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	cfg.DefaultProxyPassword = maskSecret(cfg.DefaultProxyPassword)
+	cfg.RemoteMachineToken = maskSecret(cfg.RemoteMachineToken)
+	cfg.RemoteViewerToken = maskSecret(cfg.RemoteViewerToken)
+	cfg.SkillMarketSessionToken = maskSecret(cfg.SkillMarketSessionToken)
+	cfg.MISData.Token = maskSecret(cfg.MISData.Token)
 	cfg.MaclawLLMKey = maskSecret(cfg.MaclawLLMKey)
 	if len(cfg.MaclawLLMProviders) > 0 {
 		providers := make([]corelib.MaclawLLMProvider, len(cfg.MaclawLLMProviders))
@@ -32,6 +37,58 @@ func SanitizeAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
 		}
 		cfg.MaclawLLMProviders = providers
 	}
+	if len(cfg.WebSearchProviders) > 0 {
+		providers := make([]corelib.WebSearchProvider, len(cfg.WebSearchProviders))
+		copy(providers, cfg.WebSearchProviders)
+		for i := range providers {
+			providers[i].Key = maskSecret(providers[i].Key)
+		}
+		cfg.WebSearchProviders = providers
+	}
+	if len(cfg.MCPServers) > 0 {
+		servers := make([]corelib.MCPServerEntry, len(cfg.MCPServers))
+		copy(servers, cfg.MCPServers)
+		for i := range servers {
+			servers[i].AuthSecret = maskSecret(servers[i].AuthSecret)
+			servers[i].Headers = maskStringMapValues(servers[i].Headers)
+		}
+		cfg.MCPServers = servers
+	}
+	if len(cfg.LocalMCPServers) > 0 {
+		servers := make([]corelib.LocalMCPServerEntry, len(cfg.LocalMCPServers))
+		copy(servers, cfg.LocalMCPServers)
+		for i := range servers {
+			servers[i].Env = maskStringMapValues(servers[i].Env)
+		}
+		cfg.LocalMCPServers = servers
+	}
+	cfg.QQBotAppSecret = maskSecret(cfg.QQBotAppSecret)
+	cfg.TelegramBotToken = maskSecret(cfg.TelegramBotToken)
+	cfg.WeixinToken = maskSecret(cfg.WeixinToken)
+	cfg.LansengerAppSecret = maskSecret(cfg.LansengerAppSecret)
+	cfg.ThirdPartyGatewayToken = maskSecret(cfg.ThirdPartyGatewayToken)
+	cfg.AuxiliaryLLM.Key = maskSecret(cfg.AuxiliaryLLM.Key)
+	if len(cfg.ModelRoutes) > 0 {
+		routes := make(map[string]corelib.ModelRouteConfig, len(cfg.ModelRoutes))
+		for key, route := range cfg.ModelRoutes {
+			route.Key = maskSecret(route.Key)
+			routes[key] = route
+		}
+		cfg.ModelRoutes = routes
+	}
+	if len(cfg.ExtraToolConfigs) > 0 {
+		configs := make(map[string]corelib.ToolConfig, len(cfg.ExtraToolConfigs))
+		for key, toolCfg := range cfg.ExtraToolConfigs {
+			models := make([]corelib.ModelConfig, len(toolCfg.Models))
+			copy(models, toolCfg.Models)
+			for i := range models {
+				models[i].ApiKey = maskSecret(models[i].ApiKey)
+			}
+			toolCfg.Models = models
+			configs[key] = toolCfg
+		}
+		cfg.ExtraToolConfigs = configs
+	}
 	return cfg
 }
 
@@ -40,6 +97,72 @@ func maskSecret(v string) string {
 		return ""
 	}
 	return "******"
+}
+
+func maskStringMapValues(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = maskSecret(value)
+	}
+	return out
+}
+
+func appConfigContainsMaskedSecrets(cfg corelib.AppConfig) bool {
+	if maskedSecretPlaceholder(cfg.DefaultProxyPassword) || maskedSecretPlaceholder(cfg.RemoteMachineToken) || maskedSecretPlaceholder(cfg.RemoteViewerToken) || maskedSecretPlaceholder(cfg.SkillMarketSessionToken) || maskedSecretPlaceholder(cfg.MISData.Token) || maskedSecretPlaceholder(cfg.MaclawLLMKey) {
+		return true
+	}
+	for _, provider := range cfg.MaclawLLMProviders {
+		if maskedSecretPlaceholder(provider.Key) || maskedSecretPlaceholder(provider.OAuthAccessToken) || maskedSecretPlaceholder(provider.RefreshToken) {
+			return true
+		}
+	}
+	for _, provider := range cfg.WebSearchProviders {
+		if maskedSecretPlaceholder(provider.Key) {
+			return true
+		}
+	}
+	for _, server := range cfg.MCPServers {
+		if maskedSecretPlaceholder(server.AuthSecret) || stringMapContainsMaskedSecrets(server.Headers) {
+			return true
+		}
+	}
+	for _, server := range cfg.LocalMCPServers {
+		if stringMapContainsMaskedSecrets(server.Env) {
+			return true
+		}
+	}
+	if maskedSecretPlaceholder(cfg.QQBotAppSecret) || maskedSecretPlaceholder(cfg.TelegramBotToken) || maskedSecretPlaceholder(cfg.WeixinToken) || maskedSecretPlaceholder(cfg.LansengerAppSecret) || maskedSecretPlaceholder(cfg.ThirdPartyGatewayToken) || maskedSecretPlaceholder(cfg.AuxiliaryLLM.Key) {
+		return true
+	}
+	for _, route := range cfg.ModelRoutes {
+		if maskedSecretPlaceholder(route.Key) {
+			return true
+		}
+	}
+	for _, toolCfg := range cfg.ExtraToolConfigs {
+		for _, model := range toolCfg.Models {
+			if maskedSecretPlaceholder(model.ApiKey) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stringMapContainsMaskedSecrets(values map[string]string) bool {
+	for _, value := range values {
+		if maskedSecretPlaceholder(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func maskedSecretPlaceholder(value string) bool {
+	return strings.TrimSpace(value) == "******"
 }
 
 func ValidateAppConfig(cfg corelib.AppConfig) ConfigValidationResult {
@@ -175,44 +298,219 @@ func saveUserConfigToFile(path string, cfg UserConfig) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-func mergeSecretPreserving(current, next corelib.AppConfig) corelib.AppConfig {
-	if strings.TrimSpace(next.MaclawLLMKey) == "" || next.MaclawLLMKey == "******" {
-		next.MaclawLLMKey = current.MaclawLLMKey
+func cloneAppConfig(cfg corelib.AppConfig) corelib.AppConfig {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return cfg
 	}
-	if len(next.MaclawLLMProviders) == 0 {
+	var out corelib.AppConfig
+	if err := json.Unmarshal(data, &out); err != nil {
+		return cfg
+	}
+	return out
+}
+func mergeSecretPreserving(current, next corelib.AppConfig) corelib.AppConfig {
+	preserveMaskedSecretString(&next.DefaultProxyPassword, current.DefaultProxyPassword)
+	preserveMaskedSecretString(&next.RemoteMachineToken, current.RemoteMachineToken)
+	preserveMaskedSecretString(&next.RemoteViewerToken, current.RemoteViewerToken)
+	preserveMaskedSecretString(&next.SkillMarketSessionToken, current.SkillMarketSessionToken)
+	preserveMaskedSecretString(&next.MISData.Token, current.MISData.Token)
+	preserveSecretString(&next.MaclawLLMKey, current.MaclawLLMKey)
+	preserveMaclawLLMProviderSecrets(current.MaclawLLMProviders, next.MaclawLLMProviders)
+	preserveWebSearchProviderSecrets(current.WebSearchProviders, next.WebSearchProviders)
+	preserveMCPServerSecrets(current.MCPServers, next.MCPServers)
+	preserveLocalMCPServerSecrets(current.LocalMCPServers, next.LocalMCPServers)
+	preserveMaskedSecretString(&next.QQBotAppSecret, current.QQBotAppSecret)
+	preserveMaskedSecretString(&next.TelegramBotToken, current.TelegramBotToken)
+	preserveMaskedSecretString(&next.WeixinToken, current.WeixinToken)
+	preserveMaskedSecretString(&next.LansengerAppSecret, current.LansengerAppSecret)
+	preserveMaskedSecretString(&next.ThirdPartyGatewayToken, current.ThirdPartyGatewayToken)
+	preserveMaskedSecretString(&next.AuxiliaryLLM.Key, current.AuxiliaryLLM.Key)
+	preserveModelRouteSecrets(current.ModelRoutes, next.ModelRoutes)
+	preserveExtraToolConfigSecrets(current.ExtraToolConfigs, next.ExtraToolConfigs)
+	return next
+}
+
+func preserveSecretString(next *string, current string) {
+	if next == nil {
+		return
+	}
+	if secretPlaceholderOrEmpty(*next) {
+		*next = current
+	}
+}
+
+func preserveMaskedSecretString(next *string, current string) {
+	if next == nil {
+		return
+	}
+	if maskedSecretPlaceholder(*next) {
+		*next = current
+	}
+}
+
+func secretPlaceholderOrEmpty(value string) bool {
+	return strings.TrimSpace(value) == "" || maskedSecretPlaceholder(value)
+}
+
+func preserveMaclawLLMProviderSecrets(current, next []corelib.MaclawLLMProvider) {
+	if len(next) == 0 {
+		return
+	}
+	currentByKey := make(map[string]corelib.MaclawLLMProvider, len(current))
+	for i, provider := range current {
+		currentByKey[indexedSecretLookupKey(provider.Name, i)] = provider
+	}
+	for i := range next {
+		currentProvider := corelib.MaclawLLMProvider{}
+		if found, ok := currentByKey[indexedSecretLookupKey(next[i].Name, i)]; ok {
+			currentProvider = found
+		}
+		preserveSecretString(&next[i].Key, currentProvider.Key)
+		preserveMaskedSecretString(&next[i].OAuthAccessToken, currentProvider.OAuthAccessToken)
+		preserveMaskedSecretString(&next[i].RefreshToken, currentProvider.RefreshToken)
+	}
+}
+
+func preserveWebSearchProviderSecrets(current, next []corelib.WebSearchProvider) {
+	if len(next) == 0 {
+		return
+	}
+	currentByKey := make(map[string]corelib.WebSearchProvider, len(current))
+	for i, provider := range current {
+		currentByKey[indexedSecretLookupKey(provider.Name, i)] = provider
+	}
+	for i := range next {
+		currentProvider := corelib.WebSearchProvider{}
+		if found, ok := currentByKey[indexedSecretLookupKey(next[i].Name, i)]; ok {
+			currentProvider = found
+		}
+		preserveMaskedSecretString(&next[i].Key, currentProvider.Key)
+	}
+}
+
+func preserveMCPServerSecrets(current, next []corelib.MCPServerEntry) {
+	if len(next) == 0 {
+		return
+	}
+	currentByKey := make(map[string]corelib.MCPServerEntry, len(current))
+	for i, server := range current {
+		currentByKey[mcpSecretLookupKey(server.ID, server.Name, i)] = server
+	}
+	for i := range next {
+		currentServer := corelib.MCPServerEntry{}
+		if found, ok := currentByKey[mcpSecretLookupKey(next[i].ID, next[i].Name, i)]; ok {
+			currentServer = found
+		}
+		preserveMaskedSecretString(&next[i].AuthSecret, currentServer.AuthSecret)
+		next[i].Headers = preserveStringMapSecretValues(currentServer.Headers, next[i].Headers)
+	}
+}
+
+func preserveLocalMCPServerSecrets(current, next []corelib.LocalMCPServerEntry) {
+	if len(next) == 0 {
+		return
+	}
+	currentByKey := make(map[string]corelib.LocalMCPServerEntry, len(current))
+	for i, server := range current {
+		currentByKey[mcpSecretLookupKey(server.ID, server.Name, i)] = server
+	}
+	for i := range next {
+		currentServer := corelib.LocalMCPServerEntry{}
+		if found, ok := currentByKey[mcpSecretLookupKey(next[i].ID, next[i].Name, i)]; ok {
+			currentServer = found
+		}
+		next[i].Env = preserveStringMapSecretValues(currentServer.Env, next[i].Env)
+	}
+}
+
+func preserveModelRouteSecrets(current, next map[string]corelib.ModelRouteConfig) {
+	if len(next) == 0 {
+		return
+	}
+	for key, route := range next {
+		currentRoute := corelib.ModelRouteConfig{}
+		if found, ok := current[key]; ok {
+			currentRoute = found
+		}
+		preserveMaskedSecretString(&route.Key, currentRoute.Key)
+		next[key] = route
+	}
+}
+
+func preserveExtraToolConfigSecrets(current, next map[string]corelib.ToolConfig) {
+	if len(next) == 0 {
+		return
+	}
+	for key, toolCfg := range next {
+		currentCfg := corelib.ToolConfig{}
+		if found, ok := current[key]; ok {
+			currentCfg = found
+		}
+		currentByKey := make(map[string]corelib.ModelConfig, len(currentCfg.Models))
+		for i, model := range currentCfg.Models {
+			currentByKey[modelSecretLookupKey(model, i)] = model
+		}
+		for i := range toolCfg.Models {
+			currentModel := corelib.ModelConfig{}
+			if found, ok := currentByKey[modelSecretLookupKey(toolCfg.Models[i], i)]; ok {
+				currentModel = found
+			}
+			preserveMaskedSecretString(&toolCfg.Models[i].ApiKey, currentModel.ApiKey)
+		}
+		next[key] = toolCfg
+	}
+}
+
+func preserveStringMapSecretValues(current, next map[string]string) map[string]string {
+	if len(next) == 0 {
 		return next
 	}
-
-	currentByName := make(map[string]corelib.MaclawLLMProvider, len(current.MaclawLLMProviders))
-	for i, provider := range current.MaclawLLMProviders {
-		key := provider.Name
-		if strings.TrimSpace(key) == "" {
-			key = fmt.Sprintf("#%d", i)
-		}
-		currentByName[key] = provider
-	}
-
-	providers := make([]corelib.MaclawLLMProvider, len(next.MaclawLLMProviders))
-	copy(providers, next.MaclawLLMProviders)
-	for i := range providers {
-		lookupKey := providers[i].Name
-		if strings.TrimSpace(lookupKey) == "" {
-			lookupKey = fmt.Sprintf("#%d", i)
-		}
-		currentProvider, ok := currentByName[lookupKey]
-		if !ok {
+	out := make(map[string]string, len(next))
+	for key, value := range next {
+		if maskedSecretPlaceholder(value) {
+			if currentValue, ok := lookupStringMapValue(current, key); ok {
+				out[key] = currentValue
+				continue
+			}
+			out[key] = ""
 			continue
 		}
-		if strings.TrimSpace(providers[i].Key) == "" || providers[i].Key == "******" {
-			providers[i].Key = currentProvider.Key
-		}
-		if strings.TrimSpace(providers[i].OAuthAccessToken) == "" || providers[i].OAuthAccessToken == "******" {
-			providers[i].OAuthAccessToken = currentProvider.OAuthAccessToken
-		}
-		if strings.TrimSpace(providers[i].RefreshToken) == "" || providers[i].RefreshToken == "******" {
-			providers[i].RefreshToken = currentProvider.RefreshToken
+		out[key] = value
+	}
+	return out
+}
+
+func lookupStringMapValue(values map[string]string, key string) (string, bool) {
+	if value, ok := values[key]; ok {
+		return value, true
+	}
+	for currentKey, value := range values {
+		if strings.EqualFold(currentKey, key) {
+			return value, true
 		}
 	}
-	next.MaclawLLMProviders = providers
-	return next
+	return "", false
+}
+
+func indexedSecretLookupKey(name string, index int) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Sprintf("#%d", index)
+	}
+	return strings.ToLower(name)
+}
+
+func mcpSecretLookupKey(id, name string, index int) string {
+	if id = strings.TrimSpace(id); id != "" {
+		return "id:" + strings.ToLower(id)
+	}
+	return "name:" + indexedSecretLookupKey(name, index)
+}
+
+func modelSecretLookupKey(model corelib.ModelConfig, index int) string {
+	if id := strings.TrimSpace(model.ModelId); id != "" {
+		return "id:" + strings.ToLower(id)
+	}
+	return "name:" + indexedSecretLookupKey(model.ModelName, index)
 }

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 // Tool execution: dispatcher that routes tool calls to registered handlers.
 
@@ -25,6 +25,7 @@ type agentLoopToolExecutionOptions struct {
 	SendToolProgress func(string)
 	MilestoneTracker *progress.AgentProgressTracker
 	RecordToolCall   func(string, string, string)
+	AdaptiveRetry    *AdaptiveRetry
 }
 
 func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionOptions) toolExecutionResult {
@@ -73,6 +74,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 	if result.Text == "" {
 		result = h.executeToolDetailed(tc.Function.Name, tc.Function.Arguments, filteredToolProgressCallback(tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
+	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)
 
 	if opts.MilestoneTracker != nil {
 		opts.MilestoneTracker.RecordToolCall(tc.Function.Name, tc.Function.Arguments, true)
@@ -242,4 +244,38 @@ func (h *IMMessageHandler) preCheckToolArgsForAgentLoop(name, argsJSON string, i
 		}
 	}
 	return nil
+}
+
+func (h *IMMessageHandler) recordAdaptiveRetryToolFailure(adaptiveRetry *AdaptiveRetry, toolName string, execResult toolExecutionResult, attempt int) {
+	if adaptiveRetry == nil || !execResult.IsFailure() {
+		return
+	}
+	category := adaptiveRetryCategoryForToolFailure(execResult)
+	decision := adaptiveRetry.Decide(toolName, category, attempt)
+	context := adaptiveRetryToolFailureContext(execResult)
+	if decision.ErrorContext == "" {
+		decision.ErrorContext = context
+	} else if context != "" {
+		decision.ErrorContext += "; " + context
+	}
+	adaptiveRetry.RecordFailure(toolName, category, decision)
+}
+
+func adaptiveRetryCategoryForToolFailure(execResult toolExecutionResult) FailureCategory {
+	switch execResult.FailureKind {
+	case toolFailureArgumentParse, toolFailureMissingParameters, toolFailureValidation:
+		return FailureArgs
+	case toolFailureApprovalRequired, toolFailureFirewallRejected, toolFailurePolicyRejected:
+		return FailurePermission
+	case toolFailureUnknownTool, toolFailureTruncationBlocked:
+		return FailureLogic
+	}
+	return classifyAdaptiveRetryFailure(fmt.Errorf("%s", execResult.Text))
+}
+
+func adaptiveRetryToolFailureContext(execResult toolExecutionResult) string {
+	if execResult.FailureKind != toolFailureNone {
+		return fmt.Sprintf("tool failure kind=%s outcome=%s: %s", execResult.FailureKind, execResult.Outcome.String(), truncateRunes(execResult.Text, 240))
+	}
+	return fmt.Sprintf("tool outcome=%s: %s", execResult.Outcome.String(), truncateRunes(execResult.Text, 240))
 }

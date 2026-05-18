@@ -642,14 +642,21 @@ func (a *App) installManagedExternalSkill(ctx context.Context, item HubCapabilit
 		}
 	})
 	if report == nil {
-		cskill.CleanupStaging(stagingDir)
-		return false, fmt.Errorf("managed skill %s security scan produced no report", entry.Name)
+		if a.skillInstallMissingScanShouldBlock() {
+			cskill.CleanupStaging(stagingDir)
+			return false, fmt.Errorf("managed skill %s security scan produced no report", entry.Name)
+		}
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Managed capability skill scan did not produce a report; current policy allows installation.", nil)
+		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", security.RiskCritical, security.PolicyAudit, fmt.Sprintf("current policy allowed managed capability %s skill %s even though scan report was missing", item.ID, entry.Name))
 	}
-	if !report.IsSafe() {
+	if report != nil && a.skillInstallScanShouldBlock(report) {
 		cskill.CleanupStaging(stagingDir)
 		a.emitSkillInstallProgress(entry.Name, "blocked", "Managed capability skill blocked by pre-install security scan.", report)
 		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillReject, "managed_capability_skill_install", report.FinalLevel, security.PolicyDeny, fmt.Sprintf("managed capability %s rejected skill %s: %s", item.ID, entry.Name, report.Summary))
 		return false, fmt.Errorf("managed capability skill %s blocked by security scan: level=%s summary=%s", entry.Name, report.FinalLevel, report.Summary)
+	} else if report != nil && !report.IsSafe() {
+		a.emitSkillInstallProgress(entry.Name, "approved", "Managed capability skill scan recorded risk and allowed installation by current policy.", report)
+		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", report.FinalLevel, security.PolicyAudit, fmt.Sprintf("current policy allowed managed capability %s skill %s: %s", item.ID, entry.Name, report.Summary))
 	}
 	finalDir, err := cskill.CommitStaging(stagingDir, entry.Name)
 	if err != nil {
@@ -726,10 +733,14 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 		}
 	})
 	if report == nil {
-		cskill.CleanupStaging(stagingDir)
-		return false, fmt.Errorf("managed skill %s security scan produced no report", entry.Name)
+		if a.skillInstallMissingScanShouldBlock() {
+			cskill.CleanupStaging(stagingDir)
+			return false, fmt.Errorf("managed skill %s security scan produced no report", entry.Name)
+		}
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Managed capability skill scan did not produce a report; current policy allows installation.", nil)
+		a.logSkillInstallSecurityEvent(security.AuditActionHubSkillInstall, "managed_capability_skill_install", security.RiskCritical, security.PolicyAudit, fmt.Sprintf("current policy allowed managed capability %s skill %s even though scan report was missing", capabilityID, entry.Name))
 	}
-	if !report.IsSafe() {
+	if report != nil && a.skillInstallScanShouldBlock(report) {
 		cskill.CleanupStaging(stagingDir)
 		a.emitSkillInstallProgress(entry.Name, "blocked", "Managed capability skill blocked by pre-install security scan.", report)
 		a.logSkillInstallSecurityEvent(
@@ -740,6 +751,15 @@ func (a *App) installManagedHubSkill(ctx context.Context, skillID, hubURL, capab
 			fmt.Sprintf("managed capability %s rejected skill %s: %s", capabilityID, entry.Name, report.Summary),
 		)
 		return false, fmt.Errorf("managed capability skill %s blocked by security scan: level=%s summary=%s", entry.Name, report.FinalLevel, report.Summary)
+	} else if report != nil && !report.IsSafe() {
+		a.emitSkillInstallProgress(entry.Name, "approved", "Managed capability skill scan recorded risk and allowed installation by current policy.", report)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"managed_capability_skill_install",
+			report.FinalLevel,
+			security.PolicyAudit,
+			fmt.Sprintf("current policy allowed managed capability %s skill %s: %s", capabilityID, entry.Name, report.Summary),
+		)
 	}
 	finalDir, err := cskill.CommitStaging(stagingDir, entry.Name)
 	if err != nil {

@@ -53,6 +53,9 @@ func TestSyncUserRouteUsesStoredRegistration(t *testing.T) {
 		}
 		gotSecret, _ = payload["hub_secret"].(string)
 		gotEmail, _ = payload["email"].(string)
+		if tenantID, _ := payload["tenant_id"].(string); tenantID != "tenant_acme" {
+			t.Fatalf("tenant_id = %q, want tenant_acme", tenantID)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
@@ -74,7 +77,7 @@ func TestSyncUserRouteUsesStoredRegistration(t *testing.T) {
 		t.Fatalf("Set() error = %v", err)
 	}
 
-	if err := svc.SyncUserRoute(context.Background(), "User@Example.com"); err != nil {
+	if err := svc.SyncUserRoute(context.Background(), "User@Example.com", "tenant_acme"); err != nil {
 		t.Fatalf("SyncUserRoute() error = %v", err)
 	}
 	if gotPath != "/api/hubs/hub_sync/user-links/sync" {
@@ -561,6 +564,11 @@ func TestRegisterFallsBackToStoredAdminEmail(t *testing.T) {
 func TestStatusAndRegisterUseStoredVisibility(t *testing.T) {
 	var gotVisibility string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/heartbeat") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("Decode() error = %v", err)
@@ -622,6 +630,11 @@ func TestStatusFallsBackToConfiguredCorporateEmailDomain(t *testing.T) {
 func TestRegisterUsesNormalizedStoredCorporateEmailDomain(t *testing.T) {
 	var gotCorporateDomain string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/heartbeat") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
 		if r.URL.Path != "/api/hubs/register" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
@@ -665,6 +678,11 @@ func TestStatusAndRegisterUseLegacyStoredCorporateDomain(t *testing.T) {
 	var gotCorporateDomain string
 	var gotAcceptPublicSignup bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/heartbeat") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
 		if r.URL.Path != "/api/hubs/register" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}

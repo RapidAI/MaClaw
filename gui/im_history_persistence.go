@@ -75,9 +75,14 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 		// Memory sink for substantial dropped assistant messages (Phase 1 supplement).
 		if h.memoryStore != nil {
 			memorySink = func(content string, tags []string) {
+				preview := memoryRefPreview(content)
+				if preview == "" {
+					return
+				}
+
 				// Derive title from first meaningful line of the dropped content.
 				title := ""
-				for _, line := range strings.SplitN(content, "\n", 10) {
+				for _, line := range strings.SplitN(preview, "\n", 10) {
 					line = strings.TrimSpace(line)
 					if line != "" && !strings.HasPrefix(line, "#") {
 						if runes := []rune(line); len(runes) > 60 {
@@ -88,15 +93,28 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 						break
 					}
 				}
-				entry := memory.Entry{
-					Content:  content,
-					Title:    title,
-					Category: memory.CategoryTaskArtifact,
-					Tags:     tags,
-					Scope:    memory.ScopeProject,
-					OwnerID:  userID, // multi-tenant: associate with the user whose history is being trimmed
+
+				refPath, err := writeMemoryRefFile(h.memoryStore.Path(), userID, "conversation_trim", content, time.Now())
+				if err != nil {
+					log.Printf("[compaction] failed to write memory ref for user=%s: %v", userID, err)
 				}
-				_ = h.memoryStore.Save(entry)
+				entryTags := append([]string{}, tags...)
+				if refPath != "" {
+					entryTags = append(entryTags, "source_ref")
+				}
+				entry := memory.Entry{
+					Content:    preview,
+					Title:      title,
+					Category:   memory.CategoryTaskArtifact,
+					Tags:       entryTags,
+					Scope:      memory.ScopeProject,
+					OwnerID:    userID, // multi-tenant: associate with the user whose history is being trimmed
+					SourceType: "conversation_trim_ref",
+					SourceURL:  refPath,
+				}
+				if err := h.memoryStore.Save(entry); err == nil && h.app != nil {
+					h.app.triggerMemoryPipelineSoon(45 * time.Second)
+				}
 			}
 		}
 	}

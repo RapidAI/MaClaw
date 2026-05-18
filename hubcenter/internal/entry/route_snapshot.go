@@ -20,6 +20,7 @@ const (
 
 type snapshotCandidate struct {
 	hub           *store.HubInstance
+	tenantID      string
 	routeDomain   string
 	routePriority int
 	rank          int
@@ -125,9 +126,12 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 		if _, adminManaged := adminUserLinks[email]; adminManaged && !isAdminUserLink(link) {
 			continue
 		}
-		candidate := snapshotCandidate{hub: hub, rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink}
+		candidate := snapshotCandidate{hub: hub, tenantID: strings.TrimSpace(link.TenantID), rank: rankLinkedHub, routePriority: 0, ownerLink: ownerLink}
+		if candidate.tenantID == "" {
+			candidate.tenantID = tenantIDForHubEmail(hub, email)
+		}
 		snap.emailRoutes[email] = append(snap.emailRoutes[email], candidate)
-		if link.IsDefault {
+		if link.IsDefault && strings.TrimSpace(link.TenantID) == "" {
 			snap.defaultHubIDs[email] = link.HubID
 		}
 	}
@@ -137,7 +141,7 @@ func buildRouteSnapshot(ctx context.Context, hubs store.HubRepository, links sto
 				if email == "" {
 					continue
 				}
-				snap.emailRoutes[email] = append(snap.emailRoutes[email], snapshotCandidate{hub: hub, rank: rankLinkedHub, routePriority: 0})
+				snap.emailRoutes[email] = append(snap.emailRoutes[email], snapshotCandidate{hub: hub, tenantID: tenantIDForHubEmail(hub, email), rank: rankLinkedHub, routePriority: 0})
 			}
 		}
 	}
@@ -219,6 +223,48 @@ func hubInventoryEmails(hub *store.HubInstance) []string {
 		}
 		seen[email] = struct{}{}
 		out = append(out, email)
+	}
+	return out
+}
+
+func tenantIDForHubEmail(hub *store.HubInstance, email string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if hub == nil || email == "" || strings.TrimSpace(hub.CapabilitiesJSON) == "" {
+		return ""
+	}
+	var caps map[string]any
+	if err := json.Unmarshal([]byte(hub.CapabilitiesJSON), &caps); err != nil {
+		return ""
+	}
+	tenantEmails, ok := caps["tenant_user_emails"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	for rawTenantID, rawEmails := range tenantEmails {
+		tenantID := strings.TrimSpace(rawTenantID)
+		if tenantID == "" {
+			continue
+		}
+		for _, rawEmail := range capabilityStringList(rawEmails) {
+			if strings.TrimSpace(strings.ToLower(rawEmail)) == email {
+				return tenantID
+			}
+		}
+	}
+	return ""
+}
+
+func capabilityStringList(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		text := strings.TrimSpace(fmt.Sprint(item))
+		if text != "" {
+			out = append(out, text)
+		}
 	}
 	return out
 }
@@ -373,7 +419,7 @@ func (s *routeSnapshot) mergeCandidate(resultsByHub map[string]resolvedCandidate
 	}
 	current, ok := resultsByHub[candidate.hub.ID]
 	next := resolvedCandidate{
-		view:          hubToAccessView(candidate.hub, email, candidate.routeDomain),
+		view:          hubToAccessView(candidate.hub, email, candidate.routeDomain, candidate.tenantID),
 		routePriority: candidate.routePriority,
 		rank:          candidate.rank,
 	}

@@ -11,7 +11,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func TestBackupSkillsBlocksCriticalRiskBeforeWrite(t *testing.T) {
+func TestBackupSkillsAllowsCriticalRiskInStandardMode(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -30,15 +30,14 @@ func TestBackupSkillsBlocksCriticalRiskBeforeWrite(t *testing.T) {
 	}
 
 	zipPath := filepath.Join(t.TempDir(), "backup.zip")
-	err := executor.BackupSkills(zipPath)
-	if err == nil || !strings.Contains(err.Error(), "blocked by security scan") {
-		t.Fatalf("BackupSkills() error = %v, want security scan block", err)
+	if err := executor.BackupSkills(zipPath); err != nil {
+		t.Fatalf("BackupSkills() should allow critical risk in standard mode after recording scan, got %v", err)
 	}
-	if _, statErr := os.Stat(zipPath); !os.IsNotExist(statErr) {
-		t.Fatalf("BackupSkills() wrote archive despite block, stat err = %v", statErr)
+	if _, statErr := os.Stat(zipPath); statErr != nil {
+		t.Fatalf("BackupSkills() did not write archive, stat err = %v", statErr)
 	}
 }
-func TestBackupSkillsBlocksHighRiskBeforeWrite(t *testing.T) {
+func TestBackupSkillsAllowsHighRiskInStandardMode(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -57,12 +56,11 @@ func TestBackupSkillsBlocksHighRiskBeforeWrite(t *testing.T) {
 	}
 
 	zipPath := filepath.Join(t.TempDir(), "backup-high.zip")
-	err := executor.BackupSkills(zipPath)
-	if err == nil || !strings.Contains(err.Error(), "blocked by security scan") {
-		t.Fatalf("BackupSkills() error = %v, want high-risk security scan block", err)
+	if err := executor.BackupSkills(zipPath); err != nil {
+		t.Fatalf("BackupSkills() should allow high risk in standard mode after recording scan, got %v", err)
 	}
-	if _, statErr := os.Stat(zipPath); !os.IsNotExist(statErr) {
-		t.Fatalf("BackupSkills() wrote archive despite block, stat err = %v", statErr)
+	if _, statErr := os.Stat(zipPath); statErr != nil {
+		t.Fatalf("BackupSkills() did not write archive, stat err = %v", statErr)
 	}
 }
 func TestBackupSkillsReplacesExistingArchiveAtomically(t *testing.T) {
@@ -104,7 +102,7 @@ func TestExportLearnedSkillsZipBlocksCriticalRiskBeforeWrite(t *testing.T) {
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
 
-	executor := NewSkillExecutor(&App{testHomeDir: tempHome}, nil, nil)
+	executor := NewSkillExecutor(&App{testHomeDir: tempHome, policyEngine: NewPolicyEngineWithMode("strict")}, nil, nil)
 	if err := executor.Register(corelib.NLSkillEntry{
 		Name:        "export-danger",
 		Description: "dangerous learned skill",
@@ -126,7 +124,7 @@ func TestExportLearnedSkillsZipBlocksCriticalRiskBeforeWrite(t *testing.T) {
 		t.Fatalf("ExportLearnedSkillsZip() wrote archive despite block, stat err = %v", statErr)
 	}
 }
-func TestRestoreSkillsBlocksRiskySkill(t *testing.T) {
+func TestRestoreSkillsAllowsRiskySkillInStandardMode(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("USERPROFILE", tempHome)
@@ -146,14 +144,14 @@ func TestRestoreSkillsBlocksRiskySkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RestoreSkills() error = %v", err)
 	}
-	if report.Restored != 0 || report.Failed != 1 {
-		t.Fatalf("RestoreSkills() report = %+v, want 0 restored and 1 failed", report)
+	if report.Restored != 1 || report.Failed != 0 {
+		t.Fatalf("RestoreSkills() report = %+v, want 1 restored and 0 failed", report)
 	}
-	if len(executor.List()) != 0 {
-		t.Fatalf("RestoreSkills() persisted blocked skill: %+v", executor.List())
+	if len(executor.List()) != 1 {
+		t.Fatalf("RestoreSkills() did not persist restored skill: %+v", executor.List())
 	}
-	if got := strings.Join(report.Details, "\n"); !strings.Contains(got, "blocked by security scan") {
-		t.Fatalf("RestoreSkills() details = %q, want security scan block", got)
+	if got := strings.Join(report.Details, "\n"); !strings.Contains(got, "restored by current policy") {
+		t.Fatalf("RestoreSkills() details = %q, want risk recorded and restored", got)
 	}
 }
 

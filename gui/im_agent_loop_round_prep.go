@@ -73,6 +73,8 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		effectiveMax = cm
 		result.EffectiveMax = effectiveMax
 	}
+	effectiveMax = extendEffectiveMaxForPendingGuideReference(opts.Iteration, effectiveMax, h.hasPendingGuideReferenceInjection(opts.UserID))
+	result.EffectiveMax = effectiveMax
 	if shouldStopForAgentLoopIterationLimit(ctx, opts.Iteration, effectiveMax, opts.ChatFinalizeGrace) {
 		result.Stop = true
 		return result
@@ -165,4 +167,11 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		DirectModeToolsFiltered: directModeToolsFiltered,
 		PrepElapsed:             time.Since(prepStartedAt),
 	}
+}
+
+func extendEffectiveMaxForPendingGuideReference(iteration, effectiveMax int, hasPendingGuideReference bool) int {
+	if hasPendingGuideReference && iteration >= effectiveMax {
+		return iteration + 1
+	}
+	return effectiveMax
 }

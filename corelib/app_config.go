@@ -7,33 +7,33 @@ import (
 )
 
 type AppConfig struct {
-	Claude              ToolConfig      `json:"claude"`
-	Gemini              ToolConfig      `json:"gemini"`
-	Codex               ToolConfig      `json:"codex"`
-	Opencode            ToolConfig      `json:"opencode"`
-	CodeBuddy           ToolConfig      `json:"codebuddy"`
-	IFlow               ToolConfig      `json:"iflow"`
-	Kilo                ToolConfig      `json:"kilo"`
-	Cursor              ToolConfig      `json:"cursor"`
-	Projects            []ProjectConfig `json:"projects"`
-	CurrentProject      string          `json:"current_project"`
-	ActiveTool          string          `json:"active_tool"`
-	DefaultTool         string          `json:"default_tool"`
-	DefaultToolProvider string          `json:"default_tool_provider"`
-	HideStartupPopup    bool            `json:"hide_startup_popup"`
-	HideMaclawLLMPopup  bool            `json:"hide_maclaw_llm_popup"`
-	ShowGemini          bool            `json:"show_gemini"`
-	ShowCodex           bool            `json:"show_codex"`
-	ShowOpenCode        bool            `json:"show_opencode"`
-	ShowCodeBuddy       bool            `json:"show_codebuddy"`
-	ShowIFlow           bool            `json:"show_iflow"`
-	ShowKilo            bool            `json:"show_kilo"`
-	ShowCursor          bool            `json:"show_cursor"`
-	Language             string `json:"language"`
-	PowerOptimization    bool   `json:"power_optimization"`
-	ScreenDimTimeoutMin  int    `json:"screen_dim_timeout_min"`
-	WorkstationMode      bool   `json:"workstation_mode"`
-	CheckUpdateOnStartup bool   `json:"check_update_on_startup"`
+	Claude               ToolConfig      `json:"claude"`
+	Gemini               ToolConfig      `json:"gemini"`
+	Codex                ToolConfig      `json:"codex"`
+	Opencode             ToolConfig      `json:"opencode"`
+	CodeBuddy            ToolConfig      `json:"codebuddy"`
+	IFlow                ToolConfig      `json:"iflow"`
+	Kilo                 ToolConfig      `json:"kilo"`
+	Cursor               ToolConfig      `json:"cursor"`
+	Projects             []ProjectConfig `json:"projects"`
+	CurrentProject       string          `json:"current_project"`
+	ActiveTool           string          `json:"active_tool"`
+	DefaultTool          string          `json:"default_tool"`
+	DefaultToolProvider  string          `json:"default_tool_provider"`
+	HideStartupPopup     bool            `json:"hide_startup_popup"`
+	HideMaclawLLMPopup   bool            `json:"hide_maclaw_llm_popup"`
+	ShowGemini           bool            `json:"show_gemini"`
+	ShowCodex            bool            `json:"show_codex"`
+	ShowOpenCode         bool            `json:"show_opencode"`
+	ShowCodeBuddy        bool            `json:"show_codebuddy"`
+	ShowIFlow            bool            `json:"show_iflow"`
+	ShowKilo             bool            `json:"show_kilo"`
+	ShowCursor           bool            `json:"show_cursor"`
+	Language             string          `json:"language"`
+	PowerOptimization    bool            `json:"power_optimization"`
+	ScreenDimTimeoutMin  int             `json:"screen_dim_timeout_min"`
+	WorkstationMode      bool            `json:"workstation_mode"`
+	CheckUpdateOnStartup bool            `json:"check_update_on_startup"`
 	// Environment check settings
 	PauseEnvCheck    bool   `json:"pause_env_check"`
 	EnvCheckDone     bool   `json:"env_check_done"`
@@ -172,6 +172,21 @@ type AppConfig struct {
 	LLMTrajectoryLogging bool `json:"llm_trajectory_logging,omitempty"`
 	// Trial-and-Reflect setting.
 	TrialReflectEnabled bool `json:"trial_reflect_enabled,omitempty"`
+	// LocalNeedleEnabled enables the local Needle micro-router. Default false:
+	// MacLaw keeps using the existing LLM/rule paths unless explicitly enabled.
+	LocalNeedleEnabled bool `json:"local_needle_enabled,omitempty"`
+	// LocalNeedleLogEnabled records local, redacted micro-decision events for
+	// later Needle fine-tuning. Default false and local-only.
+	LocalNeedleLogEnabled bool `json:"local_needle_log_enabled,omitempty"`
+	// LocalNeedleTrainingExportEnabled allows exporting collected local Needle
+	// events into supervised training datasets. Default false.
+	LocalNeedleTrainingExportEnabled bool `json:"local_needle_training_export_enabled,omitempty"`
+	// LocalNeedleModelPath points to a local Needle model artifact. Empty means
+	// use the packaged/default location when the feature is enabled.
+	LocalNeedleModelPath string `json:"local_needle_model_path,omitempty"`
+	// LocalNeedleMinConfidence is the minimum confidence required before a local
+	// Needle decision can replace the LLM classifier. Zero uses the runtime default.
+	LocalNeedleMinConfidence float64 `json:"local_needle_min_confidence,omitempty"`
 	// LLM token usage statistics.
 	LLMTokenUsage map[string]*TokenUsageStat `json:"llm_token_usage,omitempty"`
 	// Onboarding completion flag.
@@ -258,6 +273,9 @@ type AppConfig struct {
 	// that the VE is authorized to access for file operations (list, read, send).
 	// Machine-specific, not synced to Hub.
 	VEAllowedDirectories []string `json:"ve_allowed_directories,omitempty"`
+	// VEApprovalConfigJSON stores the VE approval capability configuration as raw JSON.
+	// Parsed by the gui package into VEApprovalConfig struct.
+	VEApprovalConfigJSON string `json:"ve_approval_config,omitempty"`
 }
 
 // CapabilityMarketPolicy controls enterprise capability discovery and install behavior.
@@ -478,8 +496,8 @@ func (c *AppConfig) UnmarshalJSON(data []byte) error {
 	type appConfigAlias AppConfig
 	type rawAppConfig struct {
 		appConfigAlias
-		ShowAssistantEntry          *bool                  `json:"show_assistant_entry"`
-		GroupDiscussion             *GroupDiscussionConfig `json:"group_discussion,omitempty"`
+		ShowAssistantEntry *bool                  `json:"show_assistant_entry"`
+		GroupDiscussion    *GroupDiscussionConfig `json:"group_discussion,omitempty"`
 	}
 
 	var raw rawAppConfig

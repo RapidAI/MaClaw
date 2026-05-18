@@ -96,14 +96,45 @@ func (m *mockUserRepo) GetByEmail(_ context.Context, email string) (*store.User,
 	return nil, nil
 }
 
+func (m *mockUserRepo) GetByTenantEmail(_ context.Context, tenantID, email string) (*store.User, error) {
+	for _, user := range m.items {
+		if user != nil && strings.EqualFold(user.TenantID, tenantID) && strings.EqualFold(user.Email, email) {
+			return user, nil
+		}
+	}
+	return nil, nil
+}
+
 func (m *mockUserRepo) List(_ context.Context) ([]*store.User, error) {
 	return m.items, nil
+}
+
+func (m *mockUserRepo) ListByTenant(_ context.Context, tenantID string) ([]*store.User, error) {
+	var out []*store.User
+	for _, user := range m.items {
+		if user != nil && strings.EqualFold(user.TenantID, tenantID) {
+			out = append(out, user)
+		}
+	}
+	return out, nil
 }
 
 func (m *mockUserRepo) DeleteByEmail(_ context.Context, email string) error {
 	var next []*store.User
 	for _, user := range m.items {
 		if user == nil || strings.EqualFold(user.Email, email) {
+			continue
+		}
+		next = append(next, user)
+	}
+	m.items = next
+	return nil
+}
+
+func (m *mockUserRepo) DeleteByTenantEmail(_ context.Context, tenantID, email string) error {
+	var next []*store.User
+	for _, user := range m.items {
+		if user == nil || (strings.EqualFold(user.TenantID, tenantID) && strings.EqualFold(user.Email, email)) {
 			continue
 		}
 		next = append(next, user)

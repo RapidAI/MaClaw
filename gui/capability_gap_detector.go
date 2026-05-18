@@ -114,8 +114,7 @@ func (d *CapabilityGapDetector) Resolve(
 	conversationHistory []map[string]interface{},
 	sendStatus func(string),
 ) (skillName string, result string, err error) {
-	// Developer mode: skip all security reviews in this function.
-	isDeveloper := d.app != nil && d.app.policyEngine != nil && d.app.policyEngine.IsDeveloperMode()
+	// Developer mode still records scan findings; policy helpers suppress blocking.
 
 	// Step 1: Extract capability query from user message.
 	query := d.extractCapabilityQuery(ctx, userMessage, conversationHistory)
@@ -156,32 +155,34 @@ func (d *CapabilityGapDetector) Resolve(
 			return "", "", nil
 		}
 
-		// Security review: pattern scan (hard floor) + agent scan (upgrade only).
-		// Developer mode: skip security review entirely.
+		// Security review: pattern scan plus optional agent scan; policy decides whether findings block.
+		// Developer mode records scan findings but never blocks installation.
 		var githubScanReport *cskill.ScanReport
-		if !isDeveloper {
+		{
 			scanner := NewSkillSecurityScanner(d.app, nil)
 			scanReport := scanner.ScanInstallStaged(ctx, imported, imported.SkillDir, sendStatus)
 			githubScanReport = scanReport
-			if scanReport.IsDangerous() {
+			if d.app != nil && d.app.skillInstallScanShouldBlock(scanReport) {
 				if d.auditLog != nil {
 					_ = d.auditLog.Log(security.AuditEntry{
 						Timestamp:    time.Now(),
 						Action:       security.AuditActionHubSkillReject,
 						ToolName:     "github_skill_install",
-						RiskLevel:    security.RiskCritical,
+						RiskLevel:    scanReport.FinalLevel,
 						PolicyAction: security.PolicyDeny,
-						Result:       fmt.Sprintf("pre-install policy rejected critical github skill %s: %s", imported.Name, scanReport.Summary),
+						Result:       fmt.Sprintf("pre-install policy blocked github skill %s: %s", imported.Name, scanReport.Summary),
 					})
 				}
-				return "", "", fmt.Errorf("GitHub Skill security scan rejected critical risk before installation")
+				return "", "", fmt.Errorf("GitHub Skill security scan blocked installation by current policy")
 			}
-			if scanReport.NeedsUserReview() {
+			if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(scanReport) {
 				riskDetails := FormatScanReportForUser(scanReport, imported.Name)
-				confirmed := false
+				confirmed := d.confirmCallback == nil
 				if d.confirmCallback != nil {
-					sendStatus(fmt.Sprintf("⚠️ 安全警告: %s", scanReport.Summary))
+					sendStatus(fmt.Sprintf("鈿狅笍 瀹夊叏璀﹀憡: %s", scanReport.Summary))
 					confirmed = d.confirmCallback(imported.Name, riskDetails)
+				} else {
+					sendStatus(fmt.Sprintf("No confirmation channel available; current policy records and allows Skill %s.", imported.Name))
 				}
 				if !confirmed {
 					if d.auditLog != nil {
@@ -228,8 +229,10 @@ func (d *CapabilityGapDetector) Resolve(
 			policyAction := security.PolicyAllow
 			if githubScanReport != nil {
 				riskLevel = githubScanReport.FinalLevel
-				if githubScanReport.NeedsUserReview() {
+				if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(githubScanReport) {
 					policyAction = security.PolicyUserOverride
+				} else if githubScanReport.NeedsUserReview() {
+					policyAction = security.PolicyAudit
 				}
 			}
 			_ = d.auditLog.Log(security.AuditEntry{
@@ -264,32 +267,34 @@ func (d *CapabilityGapDetector) Resolve(
 		return "", "", fmt.Errorf("install skill: %w", err)
 	}
 
-	// Step 5: Security review: pattern scan (hard floor) + agent scan (upgrade only).
-	// Developer mode: skip security review entirely.
+	// Step 5: Security review: pattern scan plus optional agent scan; policy decides whether findings block.
+	// Developer mode records scan findings but never blocks installation.
 	var scanReport *cskill.ScanReport
-	if !isDeveloper {
+	{
 		scanner := NewSkillSecurityScanner(d.app, nil)
 		scanReport = scanner.ScanInstallStaged(ctx, skill, stagingDir, sendStatus)
-		if scanReport.IsDangerous() {
+		if d.app != nil && d.app.skillInstallScanShouldBlock(scanReport) {
 			cskill.CleanupStaging(stagingDir)
 			if d.auditLog != nil {
 				_ = d.auditLog.Log(security.AuditEntry{
 					Timestamp:    time.Now(),
 					Action:       security.AuditActionHubSkillReject,
 					ToolName:     "hub_skill_install",
-					RiskLevel:    security.RiskCritical,
+					RiskLevel:    scanReport.FinalLevel,
 					PolicyAction: security.PolicyDeny,
-					Result:       fmt.Sprintf("pre-install policy rejected critical skill %s: %s", chosen.Name, scanReport.Summary),
+					Result:       fmt.Sprintf("pre-install policy blocked skill %s: %s", chosen.Name, scanReport.Summary),
 				})
 			}
-			return "", "", fmt.Errorf("Skill security scan rejected critical risk before installation")
+			return "", "", fmt.Errorf("Skill security scan blocked installation by current policy")
 		}
-		if scanReport.NeedsUserReview() {
+		if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(scanReport) {
 			riskDetails := FormatScanReportForUser(scanReport, chosen.Name)
-			confirmed := false
+			confirmed := d.confirmCallback == nil
 			if d.confirmCallback != nil {
-				sendStatus(fmt.Sprintf("⚠️ 安全警告: %s", scanReport.Summary))
+				sendStatus(fmt.Sprintf("鈿狅笍 瀹夊叏璀﹀憡: %s", scanReport.Summary))
 				confirmed = d.confirmCallback(chosen.Name, riskDetails)
+			} else {
+				sendStatus(fmt.Sprintf("No confirmation channel available; current policy records and allows Skill %s.", chosen.Name))
 			}
 			if !confirmed {
 				cskill.CleanupStaging(stagingDir)
@@ -368,8 +373,10 @@ func (d *CapabilityGapDetector) Resolve(
 		policyAction := security.PolicyAllow
 		if scanReport != nil {
 			riskLevel = scanReport.FinalLevel
-			if scanReport.NeedsUserReview() {
+			if d.app != nil && d.app.skillInstallReviewNeedsConfirmation(scanReport) {
 				policyAction = security.PolicyUserOverride
+			} else if scanReport.NeedsUserReview() {
+				policyAction = security.PolicyAudit
 			}
 		}
 		_ = d.auditLog.Log(security.AuditEntry{
@@ -588,16 +595,28 @@ func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry core
 	skillDir := d.localSkillDir(entry.Name)
 	files := d.packageLocalFilesFromDir(skillDir)
 
-	// Auto-publish has no interactive approval channel, so fail closed for
-	// high/critical reports before the skill is propagated to other machines.
+	// Auto-publish has no interactive approval channel. Strict mode blocks
+	// high/critical reports; other modes record the finding and allow publish.
 	scanEntry := entry
 	scanEntry.SkillDir = skillDir
 	scanner := NewSkillSecurityScanner(d.app, nil)
 	report := scanner.ScanInstallStaged(ctx, &scanEntry, skillDir, sendStatus)
 	if report == nil {
-		return fmt.Errorf("skill auto-publish security scan produced no report")
-	}
-	if report.NeedsUserReview() {
+		if d.app != nil && !d.app.skillInstallMissingScanShouldBlock() {
+			if d.auditLog != nil {
+				_ = d.auditLog.Log(security.AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       security.AuditActionHubSkillInstall,
+					ToolName:     "skill_auto_publish",
+					RiskLevel:    security.RiskCritical,
+					PolicyAction: security.PolicyAudit,
+					Result:       fmt.Sprintf("auto-publish allowed skill %s even though pre-publish scan report was missing", entry.Name),
+				})
+			}
+		} else {
+			return fmt.Errorf("skill auto-publish security scan produced no report")
+		}
+	} else if d.app != nil && d.app.skillInstallScanShouldBlock(report) {
 		if d.auditLog != nil {
 			_ = d.auditLog.Log(security.AuditEntry{
 				Timestamp:    time.Now(),
@@ -609,6 +628,15 @@ func (d *CapabilityGapDetector) AutoPublishSkill(ctx context.Context, entry core
 			})
 		}
 		return fmt.Errorf("skill auto-publish blocked by security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+	} else if report != nil && report.NeedsUserReview() && d.auditLog != nil {
+		_ = d.auditLog.Log(security.AuditEntry{
+			Timestamp:    time.Now(),
+			Action:       security.AuditActionHubSkillInstall,
+			ToolName:     "skill_auto_publish",
+			RiskLevel:    report.FinalLevel,
+			PolicyAction: security.PolicyAudit,
+			Result:       fmt.Sprintf("auto-publish recorded risk for skill %s and allowed by current policy: %s", entry.Name, report.Summary),
+		})
 	}
 
 	full := hubSkillFull{

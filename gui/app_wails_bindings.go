@@ -64,7 +64,7 @@ func isVisibleAIAssistantProgressText(text string) bool {
 	}
 
 	lower := strings.ToLower(trimmed)
-	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing", "先搜索"}
+	blockedMarkers := []string{"search", "thinking", "thought", "search first", "running tool", "preparing", "正在执行工具", "先搜索"}
 
 	for _, marker := range blockedMarkers {
 		if strings.Contains(lower, strings.ToLower(marker)) {
@@ -1890,14 +1890,72 @@ func (a *App) InjectAIAssistantSupplementary(text string) (bool, error) {
 		return false, fmt.Errorf("AI assistant not initialized")
 	}
 	handler := hubClient.ensureIMHandler()
-	// Use the currently active loop's userID (h.lastUserID) rather than
-	// hardcoding desktopUserID. This ensures injection works for project tabs
-	// whose userID is "desktop-user:{path}".
-	targetUserID := handler.lastUserID
-	if targetUserID == "" {
-		targetUserID = desktopUserID
+	return handler.InjectSupplementary(activeAIAssistantLoopUserID(handler), text), nil
+}
+
+// InjectAIAssistantGuideReference injects input-buffer guide-launch text as
+// background reference for the next agent loop iteration. It is not treated as
+// a new user turn and should not make the current session finalize by itself.
+func (a *App) InjectAIAssistantGuideReference(text string) (bool, error) {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return false, fmt.Errorf("AI assistant not initialized")
 	}
-	return handler.InjectSupplementary(targetUserID, text), nil
+	handler := hubClient.ensureIMHandler()
+	return handler.InjectGuideReference(activeAIAssistantLoopUserID(handler), text), nil
+}
+
+// InjectAIAssistantGuideReferenceForSession injects guide-launch reference text
+// into the explicitly selected desktop/project session. This avoids routing a
+// buffer fire to whichever loop most recently updated lastUserID when multiple
+// tabs are running concurrently.
+func (a *App) InjectAIAssistantGuideReferenceForSession(text string, userID string) (bool, error) {
+	a.ensureInteractionInfra()
+	hubClient := a.hubClient()
+	if hubClient == nil {
+		return false, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	targetUserID, err := normalizeAIAssistantSessionUserID(userID)
+	if err != nil {
+		return false, err
+	}
+	if targetUserID == "" {
+		targetUserID = activeAIAssistantLoopUserID(handler)
+	}
+	return handler.InjectGuideReference(targetUserID, text), nil
+}
+
+func normalizeAIAssistantSessionUserID(userID string) (string, error) {
+	trimmed := strings.TrimSpace(userID)
+	if trimmed == "" {
+		return "", nil
+	}
+	if trimmed == desktopUserID {
+		return desktopUserID, nil
+	}
+	prefix := desktopUserID + ":"
+	if strings.HasPrefix(trimmed, prefix) {
+		projectPart := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		if projectPart != "" {
+			return prefix + projectPart, nil
+		}
+	}
+	return "", fmt.Errorf("invalid AI assistant session userID: %q", userID)
+}
+
+func activeAIAssistantLoopUserID(handler *IMMessageHandler) string {
+	if handler == nil {
+		return desktopUserID
+	}
+	handler.globalLoopMu.RLock()
+	userID := handler.lastUserID
+	handler.globalLoopMu.RUnlock()
+	if normalized, err := normalizeAIAssistantSessionUserID(userID); err == nil && normalized != "" {
+		return normalized
+	}
+	return desktopUserID
 }
 
 // ResolveCriticalConfirm is called by the desktop frontend when the user
@@ -2087,7 +2145,7 @@ func (a *App) ExportAgentSkillDir(skillName string, outputDir string) error {
 	skills := a.skillExecutor.loadSkills()
 	for _, s := range skills {
 		if s.Name == skillName {
-			return ExportAgentSkill(s, outputDir)
+			return ExportAgentSkill(s, outputDir, a)
 		}
 	}
 	return fmt.Errorf("skill %q not found", skillName)

@@ -15,6 +15,123 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 )
 
+func TestSanitizeKnowledgeDirectoryImportResultForAPIRedactsPaths(t *testing.T) {
+	dataRoot := t.TempDir()
+	localDoc := filepath.Join(dataRoot, "imports", "secret-import.md")
+	result := knowledge.DirectoryImportResult{
+		RootPath:    filepath.Dir(localDoc),
+		CurrentFile: localDoc,
+		Warnings:    []string{"failed token=warning-secret path=" + dataRoot},
+		Items: []knowledge.ImportItem{{
+			FilePath:     localDoc,
+			RelativePath: localDoc,
+			ErrorMessage: "failed token=item-secret path=" + dataRoot,
+		}},
+	}
+
+	got := sanitizeKnowledgeDirectoryImportResultForAPI(dataRoot, result)
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal import result: %v", err)
+	}
+	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "warning-secret", "item-secret"} {
+		if strings.Contains(string(body), leaked) {
+			t.Fatalf("expected import result to redact %q, got %s", leaked, body)
+		}
+	}
+	if got.CurrentFile != filepath.Base(localDoc) || got.Items[0].FilePath != filepath.Base(localDoc) || got.Items[0].RelativePath != filepath.Base(localDoc) {
+		t.Fatalf("expected import paths to use basename, got %#v", got)
+	}
+}
+
+func TestSanitizeKnowledgeSourceForAPIRedactsLocalPathsAndSecrets(t *testing.T) {
+	dataRoot := t.TempDir()
+	localDoc := filepath.Join(dataRoot, "imports", "secret-doc.md")
+	source := knowledge.Source{
+		URI:          localDoc,
+		CanonicalURI: "https://example.test/doc?api_key=source-secret&trace=ok",
+		Title:        localDoc,
+		ProjectPath:  filepath.Join(dataRoot, "project", "alpha"),
+		RelativePath: localDoc,
+		ErrorMessage: "failed token=error-secret path=" + dataRoot,
+	}
+	got := sanitizeKnowledgeSourceForAPI(dataRoot, source)
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal source: %v", err)
+	}
+	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "source-secret", "error-secret"} {
+		if strings.Contains(string(body), leaked) {
+			t.Fatalf("expected knowledge source to redact %q, got %s", leaked, body)
+		}
+	}
+	if got.URI != filepath.Base(localDoc) || got.Title != filepath.Base(localDoc) || got.RelativePath != filepath.Base(localDoc) {
+		t.Fatalf("expected local path fields to use basename, got %#v", got)
+	}
+	if !strings.Contains(got.CanonicalURI, "trace=ok") {
+		t.Fatalf("expected benign URL query to remain, got %#v", got)
+	}
+}
+func TestSanitizeKnowledgeSearchResultsForAPIRedactsResultFields(t *testing.T) {
+	dataRoot := t.TempDir()
+	localDoc := filepath.Join(dataRoot, "imports", "secret-search.md")
+	results := []knowledge.SearchResult{{
+		Source:    knowledge.Source{URI: localDoc, Title: localDoc, RelativePath: localDoc},
+		NodeTitle: localDoc,
+		CardTitle: localDoc,
+		Citation:  localDoc,
+		Claim:     "claim token=claim-secret path=" + dataRoot,
+		Summary:   "summary token=summary-secret path=" + dataRoot,
+		Snippet:   "snippet token=snippet-secret path=" + dataRoot,
+	}}
+
+	got := sanitizeKnowledgeSearchResultsForAPI(dataRoot, results)
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal search results: %v", err)
+	}
+	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "claim-secret", "summary-secret", "snippet-secret"} {
+		if strings.Contains(string(body), leaked) {
+			t.Fatalf("expected search result to redact %q, got %s", leaked, body)
+		}
+	}
+	if got[0].NodeTitle != filepath.Base(localDoc) || got[0].CardTitle != filepath.Base(localDoc) || got[0].Citation != filepath.Base(localDoc) {
+		t.Fatalf("expected result path fields to use basename, got %#v", got[0])
+	}
+}
+
+func TestSanitizeKnowledgeContextPackForAPIRedactsCitations(t *testing.T) {
+	dataRoot := t.TempDir()
+	localDoc := filepath.Join(dataRoot, "imports", "secret-pack.md")
+	result := knowledge.ContextPackResult{
+		Items: []knowledge.ContextPackItem{{
+			Title:    "from " + localDoc,
+			Citation: "see " + localDoc + " token=item-secret",
+		}},
+		Citations: []knowledge.Citation{{
+			Label:        "path " + localDoc,
+			SourceTitle:  "source " + localDoc,
+			URI:          localDoc,
+			RelativePath: localDoc,
+			Snippet:      "snippet token=snippet-secret path=" + dataRoot,
+		}},
+	}
+
+	got := sanitizeKnowledgeContextPackForAPI(dataRoot, result)
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal context pack: %v", err)
+	}
+	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "item-secret", "snippet-secret"} {
+		if strings.Contains(string(body), leaked) {
+			t.Fatalf("expected context pack to redact %q, got %s", leaked, body)
+		}
+	}
+	if got.Citations[0].URI != filepath.Base(localDoc) || got.Citations[0].RelativePath != filepath.Base(localDoc) {
+		t.Fatalf("expected citation paths to use basename, got %#v", got.Citations[0])
+	}
+}
+
 func TestMultiKnowledgeStoreDefaultsToOwnScopeAndCanReadConfiguredSameTenantScopes(t *testing.T) {
 	ctx := context.Background()
 	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))

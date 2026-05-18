@@ -64,6 +64,7 @@ func ListUserDashboardHandler(service *hubs.Service) http.HandlerFunc {
 }
 
 type UpdateDigitalEmployeeAuthorizationRequest struct {
+	TenantID  string `json:"tenant_id,omitempty"`
 	Quota     int    `json:"quota"`
 	Years     int    `json:"years"`
 	Enabled   *bool  `json:"enabled,omitempty"`
@@ -100,7 +101,7 @@ func UpdateDigitalEmployeeAuthorizationHandler(service *hubs.Service) http.Handl
 				return
 			}
 		}
-		auth, err := service.UpdateDigitalEmployeeAuthorization(r.Context(), hubID, hubs.DigitalEmployeeAuthorizationUpdate{Quota: req.Quota, Years: req.Years, Enabled: req.Enabled, StartDate: req.StartDate})
+		auth, err := service.UpdateDigitalEmployeeAuthorization(r.Context(), hubID, hubs.DigitalEmployeeAuthorizationUpdate{TenantID: strings.TrimSpace(req.TenantID), Quota: req.Quota, Years: req.Years, Enabled: req.Enabled, StartDate: req.StartDate})
 		if err != nil {
 			if errors.Is(err, hubs.ErrDigitalEmployeeQuotaDecrease) {
 				writeError(w, http.StatusBadRequest, "DIGITAL_EMPLOYEE_QUOTA_DECREASE", "Digital employee authorization count can only increase")

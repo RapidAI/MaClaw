@@ -61,6 +61,7 @@ type agentLoopToolPathOptions struct {
 	RecordToolCall             func(string, string, string)
 	RecordToolResult           func(string, interface{})
 	RecordSystemMessages       func(int, []interface{})
+	AdaptiveRetry              *AdaptiveRetry
 	Debug                      bool
 	StreamDone                 bool
 	LastCompressionSummary     *string
@@ -124,6 +125,7 @@ func (h *IMMessageHandler) handleAgentLoopToolPath(opts agentLoopToolPathOptions
 		RecordToolCall:             opts.RecordToolCall,
 		RecordToolResult:           opts.RecordToolResult,
 		RecordSystemMessages:       opts.RecordSystemMessages,
+		AdaptiveRetry:              opts.AdaptiveRetry,
 		Debug:                      opts.Debug,
 		StreamDone:                 opts.StreamDone,
 	})
@@ -198,6 +200,7 @@ type agentLoopToolCallsOptions struct {
 	RecordToolCall             func(string, string, string)
 	RecordToolResult           func(string, interface{})
 	RecordSystemMessages       func(int, []interface{})
+	AdaptiveRetry              *AdaptiveRetry
 	Debug                      bool
 	StreamDone                 bool
 }
@@ -242,6 +245,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCalls(opts agentLoopToolCallsOpti
 			SendToolProgress: opts.SendToolProgress,
 			MilestoneTracker: opts.MilestoneTracker,
 			RecordToolCall:   opts.RecordToolCall,
+			AdaptiveRetry:    opts.AdaptiveRetry,
 		})
 		rawResult := execResult.Text
 		if opts.VisibleArtifacts != nil && opts.VisibleArtifacts.QRCodeURL == "" {

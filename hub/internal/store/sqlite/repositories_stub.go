@@ -11,6 +11,10 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 )
 
+type tenantRepo struct {
+	db, readDB *sql.DB
+	batch      *writeBatcher
+}
 type adminRepo struct {
 	db, readDB *sql.DB
 	batch      *writeBatcher
@@ -74,6 +78,7 @@ type llmPromptCacheRepo struct {
 
 func NewStore(p *Provider) *store.Store {
 	return &store.Store{
+		Tenants:         &tenantRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		Admins:          &adminRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		System:          &systemRepo{db: p.Write, readDB: p.Read, batch: p.batch},
 		AdminAudit:      &adminAuditRepo{db: p.Write, readDB: p.Read, batch: p.batch},
@@ -93,6 +98,32 @@ func NewStore(p *Provider) *store.Store {
 	}
 }
 
+func normalizeAdminScope(scope string) string {
+	if strings.TrimSpace(scope) == "tenant" {
+		return "tenant"
+	}
+	return "global"
+}
+
+func normalizeAdminRole(scope string, role string) string {
+	role = strings.TrimSpace(role)
+	if role != "" {
+		return role
+	}
+	if normalizeAdminScope(scope) == "tenant" {
+		return "tenant_owner"
+	}
+	return "global_owner"
+}
+
+func normalizeTenantID(tenantID string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return store.DefaultTenantID
+	}
+	return tenantID
+}
+
 func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query string, args ...any) error {
 	if batch != nil {
 		return batch.ExecContext(ctx, query, args...)
@@ -104,12 +135,16 @@ func execWrite(ctx context.Context, batch *writeBatcher, db *sql.DB, query strin
 func (r *adminRepo) Create(ctx context.Context, admin *store.AdminUser) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO admin_users (id, username, password_hash, email, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO admin_users (id, username, password_hash, email, scope, role, tenant_id, display_name, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		admin.ID,
 		admin.Username,
 		admin.PasswordHash,
 		admin.Email,
+		normalizeAdminScope(admin.Scope),
+		normalizeAdminRole(admin.Scope, admin.Role),
+		admin.TenantID,
+		admin.DisplayName,
 		admin.Status,
 		admin.CreatedAt.Format(time.RFC3339),
 		admin.UpdatedAt.Format(time.RFC3339),
@@ -120,7 +155,7 @@ func (r *adminRepo) Create(ctx context.Context, admin *store.AdminUser) error {
 func (r *adminRepo) GetByUsername(ctx context.Context, username string) (*store.AdminUser, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, username, password_hash, email, status, created_at, updated_at
+		`SELECT id, username, password_hash, email, scope, role, tenant_id, display_name, status, created_at, updated_at
 		 FROM admin_users WHERE username = ?`,
 		username,
 	)
@@ -134,6 +169,10 @@ func (r *adminRepo) GetByUsername(ctx context.Context, username string) (*store.
 		&admin.Username,
 		&admin.PasswordHash,
 		&admin.Email,
+		&admin.Scope,
+		&admin.Role,
+		&admin.TenantID,
+		&admin.DisplayName,
 		&admin.Status,
 		&createdAt,
 		&updatedAt,
@@ -272,9 +311,10 @@ func (r *adminAuditRepo) List(ctx context.Context, filter store.AdminAuditLogFil
 func (r *userRepo) Create(ctx context.Context, user *store.User) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO users (id, email, sn, status, enrollment_status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO users (id, tenant_id, email, sn, status, enrollment_status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		user.ID,
+		normalizeTenantID(user.TenantID),
 		user.Email,
 		user.SN,
 		user.Status,
@@ -288,7 +328,7 @@ func (r *userRepo) Create(ctx context.Context, user *store.User) error {
 func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
 		 FROM users WHERE id = ?`,
 		id,
 	)
@@ -300,6 +340,7 @@ func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) 
 	)
 	if err := row.Scan(
 		&user.ID,
+		&user.TenantID,
 		&user.Email,
 		&user.SN,
 		&user.Status,
@@ -321,11 +362,25 @@ func (r *userRepo) GetByID(ctx context.Context, id string) (*store.User, error) 
 }
 
 func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, error) {
+	return r.GetByTenantEmail(ctx, store.DefaultTenantID, email)
+}
+
+func (r *userRepo) GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.User, error) {
+	return r.getByEmail(ctx, normalizeTenantID(tenantID), email)
+}
+
+func (r *userRepo) getByEmail(ctx context.Context, tenantID, email string) (*store.User, error) {
+	where := `email = ?`
+	args := []any{email}
+	if tenantID != "" {
+		where = `tenant_id = ? AND email = ?`
+		args = []any{tenantID, email}
+	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
-		 FROM users WHERE email = ?`,
-		email,
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
+		 FROM users WHERE `+where,
+		args...,
 	)
 
 	var (
@@ -335,6 +390,7 @@ func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, e
 	)
 	if err := row.Scan(
 		&user.ID,
+		&user.TenantID,
 		&user.Email,
 		&user.SN,
 		&user.Status,
@@ -356,11 +412,26 @@ func (r *userRepo) GetByEmail(ctx context.Context, email string) (*store.User, e
 }
 
 func (r *userRepo) List(ctx context.Context) ([]*store.User, error) {
+	return r.list(ctx, "")
+}
+
+func (r *userRepo) ListByTenant(ctx context.Context, tenantID string) ([]*store.User, error) {
+	return r.list(ctx, normalizeTenantID(tenantID))
+}
+
+func (r *userRepo) list(ctx context.Context, tenantID string) ([]*store.User, error) {
+	where := ""
+	args := []any{}
+	if tenantID != "" {
+		where = "WHERE tenant_id = ?"
+		args = append(args, tenantID)
+	}
 	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
-		 FROM users
+		`SELECT id, tenant_id, email, sn, status, enrollment_status, smart_route, created_at, updated_at
+		 FROM users `+where+`
 		 ORDER BY updated_at DESC, email ASC`,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -376,6 +447,7 @@ func (r *userRepo) List(ctx context.Context) ([]*store.User, error) {
 		)
 		if err := rows.Scan(
 			&user.ID,
+			&user.TenantID,
 			&user.Email,
 			&user.SN,
 			&user.Status,
@@ -395,7 +467,11 @@ func (r *userRepo) List(ctx context.Context) ([]*store.User, error) {
 }
 
 func (r *userRepo) DeleteByEmail(ctx context.Context, email string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE email = ?`, email)
+	return r.DeleteByTenantEmail(ctx, store.DefaultTenantID, email)
+}
+
+func (r *userRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM users WHERE tenant_id = ? AND email = ?`, normalizeTenantID(tenantID), email)
 	return err
 }
 
@@ -411,9 +487,10 @@ func (r *userRepo) UpdateSmartRoute(ctx context.Context, userID string, enabled 
 func (r *enrollmentRepo) Create(ctx context.Context, item *store.UserEnrollment) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO user_enrollments (id, email, mobile, status, note, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO user_enrollments (id, tenant_id, email, mobile, status, note, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID,
+		normalizeTenantID(item.TenantID),
 		item.Email,
 		item.Mobile,
 		item.Status,
@@ -425,16 +502,23 @@ func (r *enrollmentRepo) Create(ctx context.Context, item *store.UserEnrollment)
 }
 
 func (r *enrollmentRepo) GetPendingByEmail(ctx context.Context, email string) (*store.UserEnrollment, error) {
+	return r.getPendingByEmailQuery(ctx, `email = ?`, email)
+}
+
+func (r *enrollmentRepo) GetPendingByTenantEmail(ctx context.Context, tenantID string, email string) (*store.UserEnrollment, error) {
+	return r.getPendingByEmailQuery(ctx, `tenant_id = ? AND email = ?`, normalizeTenantID(tenantID), email)
+}
+
+func (r *enrollmentRepo) getPendingByEmailQuery(ctx context.Context, where string, args ...any) (*store.UserEnrollment, error) {
+	queryArgs := append(args, "pending")
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, mobile, status, note, created_at, updated_at
-		 FROM user_enrollments WHERE email = ? AND status = 'pending'
-		 ORDER BY created_at DESC LIMIT 1`,
-		email,
+		`SELECT id, tenant_id, email, mobile, status, note, created_at, updated_at FROM user_enrollments WHERE `+where+` AND status = ? ORDER BY created_at DESC LIMIT 1`,
+		queryArgs...,
 	)
 	var item store.UserEnrollment
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -446,28 +530,24 @@ func (r *enrollmentRepo) GetPendingByEmail(ctx context.Context, email string) (*
 }
 
 func (r *enrollmentRepo) ListPending(ctx context.Context) ([]*store.UserEnrollment, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, mobile, status, note, created_at, updated_at FROM user_enrollments WHERE status = 'pending' ORDER BY created_at ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+	return r.listEnrollments(ctx, `status = ?`, "pending")
 
-	var items []*store.UserEnrollment
-	for rows.Next() {
-		var item store.UserEnrollment
-		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
-			return nil, err
-		}
-		item.CreatedAt = mustParseTime(createdAt)
-		item.UpdatedAt = mustParseTime(updatedAt)
-		items = append(items, &item)
-	}
-	return items, rows.Err()
+}
+
+func (r *enrollmentRepo) ListPendingByTenant(ctx context.Context, tenantID string) ([]*store.UserEnrollment, error) {
+	return r.listEnrollments(ctx, `tenant_id = ? AND status = ?`, normalizeTenantID(tenantID), "pending")
 }
 
 func (r *enrollmentRepo) ListAll(ctx context.Context) ([]*store.UserEnrollment, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, mobile, status, note, created_at, updated_at FROM user_enrollments ORDER BY created_at DESC`)
+	return r.listEnrollments(ctx, `1 = 1`)
+}
+
+func (r *enrollmentRepo) ListAllByTenant(ctx context.Context, tenantID string) ([]*store.UserEnrollment, error) {
+	return r.listEnrollments(ctx, `tenant_id = ?`, normalizeTenantID(tenantID))
+}
+
+func (r *enrollmentRepo) listEnrollments(ctx context.Context, where string, args ...any) ([]*store.UserEnrollment, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, email, mobile, status, note, created_at, updated_at FROM user_enrollments WHERE `+where+` ORDER BY created_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +557,7 @@ func (r *enrollmentRepo) ListAll(ctx context.Context) ([]*store.UserEnrollment, 
 	for rows.Next() {
 		var item store.UserEnrollment
 		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = mustParseTime(createdAt)
@@ -505,14 +585,14 @@ func (r *enrollmentRepo) UpdateMobile(ctx context.Context, id string, mobile str
 func (r *enrollmentRepo) GetByMobile(ctx context.Context, mobile string) (*store.UserEnrollment, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, mobile, status, note, created_at, updated_at
+		`SELECT id, tenant_id, email, mobile, status, note, created_at, updated_at
 		 FROM user_enrollments WHERE mobile = ?
 		 ORDER BY created_at DESC LIMIT 1`,
 		mobile,
 	)
 	var item store.UserEnrollment
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Email, &item.Mobile, &item.Status, &item.Note, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -526,10 +606,11 @@ func (r *enrollmentRepo) GetByMobile(ctx context.Context, mobile string) (*store
 func (r *emailBlockRepo) Create(ctx context.Context, item *store.EmailBlockItem) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO email_blocklist (id, email, reason, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`,
+		`INSERT INTO email_blocklist (id, tenant_id, email, reason, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(tenant_id, email) DO UPDATE SET reason = excluded.reason, updated_at = excluded.updated_at`,
 		item.ID,
+		normalizeTenantID(item.TenantID),
 		item.Email,
 		item.Reason,
 		item.CreatedAt.Format(time.RFC3339),
@@ -539,15 +620,27 @@ func (r *emailBlockRepo) Create(ctx context.Context, item *store.EmailBlockItem)
 }
 
 func (r *emailBlockRepo) DeleteByEmail(ctx context.Context, email string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM email_blocklist WHERE email = ?`, email)
+	return r.DeleteByTenantEmail(ctx, store.DefaultTenantID, email)
+}
+
+func (r *emailBlockRepo) DeleteByTenantEmail(ctx context.Context, tenantID string, email string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM email_blocklist WHERE tenant_id = ? AND email = ?`, normalizeTenantID(tenantID), email)
 	return err
 }
 
 func (r *emailBlockRepo) GetByEmail(ctx context.Context, email string) (*store.EmailBlockItem, error) {
-	row := r.readDB.QueryRowContext(ctx, `SELECT id, email, reason, created_at, updated_at FROM email_blocklist WHERE email = ?`, email)
+	return r.GetByTenantEmail(ctx, store.DefaultTenantID, email)
+}
+
+func (r *emailBlockRepo) GetByTenantEmail(ctx context.Context, tenantID string, email string) (*store.EmailBlockItem, error) {
+	return r.getEmailBlock(ctx, `tenant_id = ? AND email = ?`, normalizeTenantID(tenantID), email)
+}
+
+func (r *emailBlockRepo) getEmailBlock(ctx context.Context, where string, args ...any) (*store.EmailBlockItem, error) {
+	row := r.readDB.QueryRowContext(ctx, `SELECT id, tenant_id, email, reason, created_at, updated_at FROM email_blocklist WHERE `+where, args...)
 	var item store.EmailBlockItem
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.Email, &item.Reason, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Email, &item.Reason, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -559,7 +652,15 @@ func (r *emailBlockRepo) GetByEmail(ctx context.Context, email string) (*store.E
 }
 
 func (r *emailBlockRepo) List(ctx context.Context) ([]*store.EmailBlockItem, error) {
-	rows, err := r.readDB.QueryContext(ctx, `SELECT id, email, reason, created_at, updated_at FROM email_blocklist ORDER BY email ASC`)
+	return r.listEmailBlocks(ctx, `1 = 1`)
+}
+
+func (r *emailBlockRepo) ListByTenant(ctx context.Context, tenantID string) ([]*store.EmailBlockItem, error) {
+	return r.listEmailBlocks(ctx, `tenant_id = ?`, normalizeTenantID(tenantID))
+}
+
+func (r *emailBlockRepo) listEmailBlocks(ctx context.Context, where string, args ...any) ([]*store.EmailBlockItem, error) {
+	rows, err := r.readDB.QueryContext(ctx, `SELECT id, tenant_id, email, reason, created_at, updated_at FROM email_blocklist WHERE `+where+` ORDER BY email ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -569,7 +670,7 @@ func (r *emailBlockRepo) List(ctx context.Context) ([]*store.EmailBlockItem, err
 	for rows.Next() {
 		var item store.EmailBlockItem
 		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.Email, &item.Reason, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Email, &item.Reason, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		item.CreatedAt = mustParseTime(createdAt)
@@ -586,9 +687,10 @@ func (r *machineRepo) Create(ctx context.Context, machine *store.Machine) error 
 	}
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO machines (id, user_id, client_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO machines (id, tenant_id, user_id, client_id, name, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		machine.ID,
+		normalizeTenantID(machine.TenantID),
 		machine.UserID,
 		machine.ClientID,
 		machine.Name,
@@ -609,7 +711,7 @@ func (r *machineRepo) Create(ctx context.Context, machine *store.Machine) error 
 func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE id = ?`,
 		id,
 	)
@@ -620,6 +722,7 @@ func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, e
 	)
 	if err := row.Scan(
 		&machine.ID,
+		&machine.TenantID,
 		&machine.UserID,
 		&machine.Name,
 		&machine.Alias,
@@ -656,7 +759,7 @@ func (r *machineRepo) GetByID(ctx context.Context, id string) (*store.Machine, e
 func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error) {
 	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE user_id = ? ORDER BY updated_at DESC`,
 		userID,
 	)
@@ -673,6 +776,7 @@ func (r *machineRepo) ListByUserID(ctx context.Context, userID string) ([]*store
 		)
 		if err := rows.Scan(
 			&machine.ID,
+			&machine.TenantID,
 			&machine.UserID,
 			&machine.Name,
 			&machine.Alias,
@@ -755,7 +859,7 @@ func (r *machineRepo) UpdateHeartbeat(ctx context.Context, machineID string, at 
 func (r *machineRepo) GetByUserAndClientID(ctx context.Context, userID, clientID string) (*store.Machine, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
 		 FROM machines WHERE user_id = ? AND client_id = ?`,
 		userID, clientID,
 	)
@@ -766,6 +870,7 @@ func (r *machineRepo) GetByUserAndClientID(ctx context.Context, userID, clientID
 	)
 	if err := row.Scan(
 		&machine.ID,
+		&machine.TenantID,
 		&machine.UserID,
 		&machine.Name,
 		&machine.Alias,
@@ -825,10 +930,25 @@ func (r *machineRepo) UpdateAlias(ctx context.Context, machineID string, alias s
 }
 
 func (r *machineRepo) ListAll(ctx context.Context) ([]*store.Machine, error) {
+	return r.listMachines(ctx, "")
+}
+
+func (r *machineRepo) ListByTenant(ctx context.Context, tenantID string) ([]*store.Machine, error) {
+	return r.listMachines(ctx, normalizeTenantID(tenantID))
+}
+
+func (r *machineRepo) listMachines(ctx context.Context, tenantID string) ([]*store.Machine, error) {
+	where := ""
+	args := []any{}
+	if tenantID != "" {
+		where = "WHERE tenant_id = ?"
+		args = append(args, tenantID)
+	}
 	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
-		 FROM machines ORDER BY updated_at DESC`,
+		`SELECT id, tenant_id, user_id, name, alias, platform, hostname, arch, app_version, heartbeat_sec, machine_token_hash, status, last_seen_at, created_at, updated_at
+		 FROM machines `+where+` ORDER BY updated_at DESC`,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -843,6 +963,7 @@ func (r *machineRepo) ListAll(ctx context.Context) ([]*store.Machine, error) {
 		)
 		if err := rows.Scan(
 			&machine.ID,
+			&machine.TenantID,
 			&machine.UserID,
 			&machine.Name,
 			&machine.Alias,
@@ -902,6 +1023,14 @@ func (r *machineRepo) DeleteOffline(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+func (r *machineRepo) DeleteOfflineByTenant(ctx context.Context, tenantID string) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE tenant_id = ? AND status != 'online'`, normalizeTenantID(tenantID))
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *machineRepo) DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error) {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM machines WHERE user_id = ? AND status != 'online'`, userID)
 	if err != nil {
@@ -925,9 +1054,10 @@ func (r *viewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) 
 	}
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO viewer_tokens (id, user_id, token_hash, expires_at, created_at, revoked_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO viewer_tokens (id, tenant_id, user_id, token_hash, expires_at, created_at, revoked_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		token.ID,
+		normalizeTenantID(token.TenantID),
 		token.UserID,
 		token.TokenHash,
 		token.ExpiresAt.Format(time.RFC3339),
@@ -940,7 +1070,7 @@ func (r *viewerTokenRepo) Create(ctx context.Context, token *store.ViewerToken) 
 func (r *viewerTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) (*store.ViewerToken, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, user_id, token_hash, expires_at, created_at, revoked_at
+		`SELECT id, tenant_id, user_id, token_hash, expires_at, created_at, revoked_at
 		 FROM viewer_tokens WHERE token_hash = ?`,
 		tokenHash,
 	)
@@ -951,6 +1081,7 @@ func (r *viewerTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) 
 	)
 	if err := row.Scan(
 		&token.ID,
+		&token.TenantID,
 		&token.UserID,
 		&token.TokenHash,
 		&expiresAt,
@@ -993,9 +1124,10 @@ func (r *loginTokenRepo) Create(ctx context.Context, token *store.LoginToken) er
 	}
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO login_tokens (id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO login_tokens (id, tenant_id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		token.ID,
+		normalizeTenantID(token.TenantID),
 		token.Email,
 		token.TokenHash,
 		token.PollTokenHash,
@@ -1010,7 +1142,7 @@ func (r *loginTokenRepo) Create(ctx context.Context, token *store.LoginToken) er
 func (r *loginTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) (*store.LoginToken, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
+		`SELECT id, tenant_id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
 		 FROM login_tokens WHERE token_hash = ?`,
 		tokenHash,
 	)
@@ -1021,6 +1153,7 @@ func (r *loginTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) (
 	)
 	if err := row.Scan(
 		&token.ID,
+		&token.TenantID,
 		&token.Email,
 		&token.TokenHash,
 		&token.PollTokenHash,
@@ -1051,7 +1184,7 @@ func (r *loginTokenRepo) GetByTokenHash(ctx context.Context, tokenHash string) (
 func (r *loginTokenRepo) GetByPollTokenHash(ctx context.Context, pollTokenHash string) (*store.LoginToken, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
+		`SELECT id, tenant_id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
 		 FROM login_tokens WHERE poll_token_hash = ?`,
 		pollTokenHash,
 	)
@@ -1062,6 +1195,7 @@ func (r *loginTokenRepo) GetByPollTokenHash(ctx context.Context, pollTokenHash s
 	)
 	if err := row.Scan(
 		&token.ID,
+		&token.TenantID,
 		&token.Email,
 		&token.TokenHash,
 		&token.PollTokenHash,
@@ -1100,14 +1234,27 @@ func (r *loginTokenRepo) Consume(ctx context.Context, tokenID string, consumedAt
 }
 
 func (r *loginTokenRepo) GetPendingByEmail(ctx context.Context, email string) (*store.LoginToken, error) {
+	return r.getPendingByEmail(ctx, "", email)
+}
+
+func (r *loginTokenRepo) GetPendingByTenantEmail(ctx context.Context, tenantID string, email string) (*store.LoginToken, error) {
+	return r.getPendingByEmail(ctx, normalizeTenantID(tenantID), email)
+}
+
+func (r *loginTokenRepo) getPendingByEmail(ctx context.Context, tenantID string, email string) (*store.LoginToken, error) {
+	where := `email = ? AND consumed_at IS NULL AND expires_at > ?`
+	args := []any{email, time.Now().Format(time.RFC3339)}
+	if tenantID != "" {
+		where = `tenant_id = ? AND email = ? AND consumed_at IS NULL AND expires_at > ?`
+		args = []any{tenantID, email, time.Now().Format(time.RFC3339)}
+	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
+		`SELECT id, tenant_id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
 		 FROM login_tokens
-		 WHERE email = ? AND consumed_at IS NULL AND expires_at > ?
+		 WHERE `+where+`
 		 ORDER BY created_at DESC LIMIT 1`,
-		email,
-		time.Now().Format(time.RFC3339),
+		args...,
 	)
 
 	var (
@@ -1116,6 +1263,7 @@ func (r *loginTokenRepo) GetPendingByEmail(ctx context.Context, email string) (*
 	)
 	if err := row.Scan(
 		&token.ID,
+		&token.TenantID,
 		&token.Email,
 		&token.TokenHash,
 		&token.PollTokenHash,
@@ -1144,13 +1292,21 @@ func (r *loginTokenRepo) GetPendingByEmail(ctx context.Context, email string) (*
 }
 
 func (r *loginTokenRepo) ListPending(ctx context.Context) ([]*store.LoginToken, error) {
+	return r.listPending(ctx, `consumed_at IS NULL AND expires_at > ?`, time.Now().Format(time.RFC3339))
+}
+
+func (r *loginTokenRepo) ListPendingByTenant(ctx context.Context, tenantID string) ([]*store.LoginToken, error) {
+	return r.listPending(ctx, `tenant_id = ? AND consumed_at IS NULL AND expires_at > ?`, normalizeTenantID(tenantID), time.Now().Format(time.RFC3339))
+}
+
+func (r *loginTokenRepo) listPending(ctx context.Context, where string, args ...any) ([]*store.LoginToken, error) {
 	rows, err := r.readDB.QueryContext(
 		ctx,
-		`SELECT id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
+		`SELECT id, tenant_id, email, token_hash, poll_token_hash, purpose, expires_at, consumed_at, created_at
 		 FROM login_tokens
-		 WHERE consumed_at IS NULL AND expires_at > ?
+		 WHERE `+where+`
 		 ORDER BY created_at DESC`,
-		time.Now().Format(time.RFC3339),
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -1165,6 +1321,7 @@ func (r *loginTokenRepo) ListPending(ctx context.Context) ([]*store.LoginToken, 
 		)
 		if err := rows.Scan(
 			&token.ID,
+			&token.TenantID,
 			&token.Email,
 			&token.TokenHash,
 			&token.PollTokenHash,
@@ -1208,9 +1365,10 @@ func (r *sessionRepo) Create(ctx context.Context, session *store.Session) error 
 	}
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO sessions (id, machine_id, user_id, tool, title, project_path, status, summary_json, preview_text, output_seq, host_online, started_at, updated_at, ended_at, exit_code)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (id, tenant_id, machine_id, user_id, tool, title, project_path, status, summary_json, preview_text, output_seq, host_online, started_at, updated_at, ended_at, exit_code)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID,
+		normalizeTenantID(session.TenantID),
 		session.MachineID,
 		session.UserID,
 		session.Tool,
@@ -1283,9 +1441,10 @@ func (r *sessionRepo) Close(ctx context.Context, sessionID string, exitCode *int
 func (r *invitationCodeRepo) Create(ctx context.Context, item *store.InvitationCode) error {
 	_, err := r.db.ExecContext(
 		ctx,
-		`INSERT INTO invitation_codes (id, code, status, used_by_email, used_at, validity_days, vip, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO invitation_codes (id, tenant_id, code, status, used_by_email, used_at, validity_days, vip, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID,
+		normalizeTenantID(item.TenantID),
 		item.Code,
 		item.Status,
 		item.UsedByEmail,
@@ -1300,7 +1459,7 @@ func (r *invitationCodeRepo) Create(ctx context.Context, item *store.InvitationC
 func (r *invitationCodeRepo) GetByID(ctx context.Context, id string) (*store.InvitationCode, error) {
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
+		`SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
 		 FROM invitation_codes WHERE id = ?`,
 		id,
 	)
@@ -1308,7 +1467,7 @@ func (r *invitationCodeRepo) GetByID(ctx context.Context, id string) (*store.Inv
 	var usedAt sql.NullString
 	var createdAt string
 	var exported, vip int
-	if err := row.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1325,17 +1484,31 @@ func (r *invitationCodeRepo) GetByID(ctx context.Context, id string) (*store.Inv
 }
 
 func (r *invitationCodeRepo) GetByCode(ctx context.Context, code string) (*store.InvitationCode, error) {
+	return r.getByCode(ctx, "", code)
+}
+
+func (r *invitationCodeRepo) GetByTenantCode(ctx context.Context, tenantID, code string) (*store.InvitationCode, error) {
+	return r.getByCode(ctx, normalizeTenantID(tenantID), code)
+}
+
+func (r *invitationCodeRepo) getByCode(ctx context.Context, tenantID, code string) (*store.InvitationCode, error) {
+	where := `code = ?`
+	args := []any{code}
+	if tenantID != "" {
+		where = `tenant_id = ? AND code = ?`
+		args = []any{tenantID, code}
+	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
-		 FROM invitation_codes WHERE code = ?`,
-		code,
+		`SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
+		 FROM invitation_codes WHERE `+where,
+		args...,
 	)
 	var item store.InvitationCode
 	var usedAt sql.NullString
 	var createdAt string
 	var exported, vip int
-	if err := row.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1352,7 +1525,7 @@ func (r *invitationCodeRepo) GetByCode(ctx context.Context, code string) (*store
 }
 
 func (r *invitationCodeRepo) List(ctx context.Context, status string, search string) ([]*store.InvitationCode, error) {
-	query := `SELECT id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes`
+	query := `SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes`
 	var conditions []string
 	var args []any
 
@@ -1385,7 +1558,7 @@ func (r *invitationCodeRepo) List(ctx context.Context, status string, search str
 		var usedAt sql.NullString
 		var createdAt string
 		var exported, vip int
-		if err := rows.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
 			return nil, err
 		}
 		if usedAt.Valid {
@@ -1401,9 +1574,21 @@ func (r *invitationCodeRepo) List(ctx context.Context, status string, search str
 }
 
 func (r *invitationCodeRepo) ListPaged(ctx context.Context, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
+	return r.listPaged(ctx, "", status, search, offset, limit)
+}
+
+func (r *invitationCodeRepo) ListPagedByTenant(ctx context.Context, tenantID string, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
+	return r.listPaged(ctx, normalizeTenantID(tenantID), status, search, offset, limit)
+}
+
+func (r *invitationCodeRepo) listPaged(ctx context.Context, tenantID string, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
 	baseWhere := ""
 	var conditions []string
 	var args []any
+	if tenantID != "" {
+		conditions = append(conditions, "tenant_id = ?")
+		args = append(args, tenantID)
+	}
 
 	if status != "" {
 		conditions = append(conditions, "status = ?")
@@ -1428,7 +1613,7 @@ func (r *invitationCodeRepo) ListPaged(ctx context.Context, status string, searc
 	}
 
 	// Fetch page
-	query := `SELECT id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes` + baseWhere + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
+	query := `SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes` + baseWhere + ` ORDER BY created_at DESC LIMIT ? OFFSET ?`
 	pageArgs := append(append([]any{}, args...), limit, offset)
 	rows, err := r.readDB.QueryContext(ctx, query, pageArgs...)
 	if err != nil {
@@ -1442,7 +1627,7 @@ func (r *invitationCodeRepo) ListPaged(ctx context.Context, status string, searc
 		var usedAt sql.NullString
 		var createdAt string
 		var exported, vip int
-		if err := rows.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
 			return nil, 0, err
 		}
 		if usedAt.Valid {
@@ -1494,8 +1679,34 @@ func (r *invitationCodeRepo) DeleteByEmail(ctx context.Context, email string) (i
 	return res.RowsAffected()
 }
 
+func (r *invitationCodeRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) (int64, error) {
+	res, err := r.db.ExecContext(
+		ctx,
+		`DELETE FROM invitation_codes WHERE tenant_id = ? AND used_by_email = ? AND status = 'used'`,
+		normalizeTenantID(tenantID),
+		email,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *invitationCodeRepo) ListUnused(ctx context.Context, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
-	query := `SELECT id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes WHERE status = 'unused'`
+	return r.listUnused(ctx, "", exportedFilter, vipOnly...)
+}
+
+func (r *invitationCodeRepo) ListUnusedByTenant(ctx context.Context, tenantID, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
+	return r.listUnused(ctx, normalizeTenantID(tenantID), exportedFilter, vipOnly...)
+}
+
+func (r *invitationCodeRepo) listUnused(ctx context.Context, tenantID, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
+	query := `SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at FROM invitation_codes WHERE status = 'unused'`
+	args := []any{}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
 	switch exportedFilter {
 	case "exported":
 		query += ` AND exported = 1`
@@ -1510,7 +1721,7 @@ func (r *invitationCodeRepo) ListUnused(ctx context.Context, exportedFilter stri
 	}
 	query += ` ORDER BY created_at DESC`
 
-	rows, err := r.readDB.QueryContext(ctx, query)
+	rows, err := r.readDB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1522,7 +1733,7 @@ func (r *invitationCodeRepo) ListUnused(ctx context.Context, exportedFilter stri
 		var usedAt sql.NullString
 		var createdAt string
 		var exported, vip int
-		if err := rows.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
 			return nil, err
 		}
 		if usedAt.Valid {
@@ -1553,18 +1764,32 @@ func (r *invitationCodeRepo) MarkExported(ctx context.Context, ids []string) err
 }
 
 func (r *invitationCodeRepo) GetByEmail(ctx context.Context, email string) (*store.InvitationCode, error) {
+	return r.getByEmail(ctx, "", email)
+}
+
+func (r *invitationCodeRepo) GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.InvitationCode, error) {
+	return r.getByEmail(ctx, normalizeTenantID(tenantID), email)
+}
+
+func (r *invitationCodeRepo) getByEmail(ctx context.Context, tenantID, email string) (*store.InvitationCode, error) {
+	where := `used_by_email = ? AND status = 'used'`
+	args := []any{email}
+	if tenantID != "" {
+		where = `tenant_id = ? AND used_by_email = ? AND status = 'used'`
+		args = []any{tenantID, email}
+	}
 	row := r.readDB.QueryRowContext(
 		ctx,
-		`SELECT id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
-		 FROM invitation_codes WHERE used_by_email = ? AND status = 'used'
+		`SELECT id, tenant_id, code, status, used_by_email, used_at, validity_days, exported, vip, created_at
+		 FROM invitation_codes WHERE `+where+`
 		 ORDER BY used_at DESC LIMIT 1`,
-		email,
+		args...,
 	)
 	var item store.InvitationCode
 	var usedAt sql.NullString
 	var createdAt string
 	var exported, vip int
-	if err := row.Scan(&item.ID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
+	if err := row.Scan(&item.ID, &item.TenantID, &item.Code, &item.Status, &item.UsedByEmail, &usedAt, &item.ValidityDays, &exported, &vip, &createdAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}

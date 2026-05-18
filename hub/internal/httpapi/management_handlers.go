@@ -123,7 +123,7 @@ func ManualBindHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
-		user, err := identity.ManualBind(r.Context(), req.Email)
+		user, err := identity.ManualBindForTenant(r.Context(), RequestTenantID(r), req.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "MANUAL_BIND_FAILED", err.Error())
 			return
@@ -158,12 +158,8 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 			return
 		}
 
-		user, err := identity.LookupUserByEmail(r.Context(), email)
+		user, err := identity.UsersRepo().GetByTenantEmail(r.Context(), RequestTenantID(r), email)
 		if err != nil {
-			if err == auth.ErrInvalidEmail {
-				writeError(w, http.StatusBadRequest, "INVALID_EMAIL", err.Error())
-				return
-			}
 			writeError(w, http.StatusInternalServerError, "LOOKUP_USER_FAILED", err.Error())
 			return
 		}
@@ -182,7 +178,7 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 		}
 		var deletedCodes int64
 		if invitationSvc != nil {
-			deletedCodes, err = invitationSvc.DeleteCodeByEmail(r.Context(), user.Email)
+			deletedCodes, err = invitationSvc.DeleteCodeByTenantEmail(r.Context(), user.TenantID, user.Email)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "DELETE_USER_INVITES_FAILED", err.Error())
 				return
@@ -196,7 +192,7 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 				cleaner.RemoveBindingByEmail(user.Email)
 			}
 		}
-		if err := identity.UsersRepo().DeleteByEmail(r.Context(), user.Email); err != nil {
+		if err := identity.UsersRepo().DeleteByTenantEmail(r.Context(), user.TenantID, user.Email); err != nil {
 			writeError(w, http.StatusInternalServerError, "DELETE_USER_FAILED", err.Error())
 			return
 		}
@@ -205,7 +201,7 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, deviceSvc *device.Se
 }
 func ListBlockedEmailsHandler(identity *auth.IdentityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := identity.ListBlockedEmails(r.Context())
+		items, err := identity.ListBlockedEmails(auth.WithTenant(r.Context(), RequestTenantID(r)))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_BLOCKED_EMAILS_FAILED", err.Error())
 			return
@@ -226,7 +222,7 @@ func AddBlockedEmailHandler(identity *auth.IdentityService) http.HandlerFunc {
 			return
 		}
 
-		if err := identity.AddBlockedEmail(r.Context(), req.Email, req.Reason); err != nil {
+		if err := identity.AddBlockedEmail(auth.WithTenant(r.Context(), RequestTenantID(r)), req.Email, req.Reason); err != nil {
 			writeError(w, http.StatusInternalServerError, "ADD_BLOCKED_EMAIL_FAILED", err.Error())
 			return
 		}
@@ -242,7 +238,7 @@ func RemoveBlockedEmailHandler(identity *auth.IdentityService) http.HandlerFunc 
 			return
 		}
 
-		if err := identity.RemoveBlockedEmail(r.Context(), email); err != nil {
+		if err := identity.RemoveBlockedEmail(auth.WithTenant(r.Context(), RequestTenantID(r)), email); err != nil {
 			writeError(w, http.StatusInternalServerError, "REMOVE_BLOCKED_EMAIL_FAILED", err.Error())
 			return
 		}
@@ -271,9 +267,9 @@ func LookupUserHandler(identity *auth.IdentityService) http.HandlerFunc {
 
 		switch {
 		case mobile != "":
-			user, err = identity.LookupUserByMobile(r.Context(), mobile)
+			user, err = identity.LookupUserByMobile(auth.WithTenant(r.Context(), RequestTenantID(r)), mobile)
 		case email != "":
-			user, err = identity.LookupUserByEmail(r.Context(), email)
+			user, err = identity.LookupUserByEmail(auth.WithTenant(r.Context(), RequestTenantID(r)), email)
 		default:
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "Email or mobile is required")
 			return
@@ -294,10 +290,11 @@ func LookupUserHandler(identity *auth.IdentityService) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"user": map[string]any{
-				"id":     user.ID,
-				"email":  user.Email,
-				"sn":     user.SN,
-				"status": user.Status,
+				"id":        user.ID,
+				"tenant_id": user.TenantID,
+				"email":     user.Email,
+				"sn":        user.SN,
+				"status":    user.Status,
 			},
 		})
 	}
@@ -305,7 +302,15 @@ func LookupUserHandler(identity *auth.IdentityService) http.HandlerFunc {
 
 func ListUsersHandler(identity *auth.IdentityService, system store.SystemSettingsRepository, securitySvc *security.SecurityService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items, err := identity.ListUsers(r.Context())
+		var (
+			items []*store.User
+			err   error
+		)
+		if IsGlobalAdmin(r.Context()) && strings.TrimSpace(r.URL.Query().Get("tenant_id")) == "" {
+			items, err = identity.ListUsers(r.Context())
+		} else {
+			items, err = identity.ListUsersForTenant(r.Context(), RequestTenantID(r))
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_USERS_FAILED", err.Error())
 			return
@@ -350,12 +355,16 @@ func GetCenterStatusHandler(centerSvc *center.Service) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "CENTER_STATUS_FAILED", err.Error())
 			return
 		}
+		filterCenterStatusForTenantAdmin(r, status)
 		writeJSON(w, http.StatusOK, status)
 	}
 }
 
 func UpdateCenterConfigHandler(centerSvc *center.Service, identity *auth.IdentityService, onPublicBaseURLChanged ...func(string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireGlobalAdminForHubCenter(w, r) {
+			return
+		}
 		var req CenterConfigRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -437,6 +446,9 @@ func UpdateCenterConfigHandler(centerSvc *center.Service, identity *auth.Identit
 
 func RegisterCenterHandler(centerSvc *center.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireGlobalAdminForHubCenter(w, r) {
+			return
+		}
 		admin := AdminFromContext(r.Context())
 		if admin == nil {
 			writeError(w, http.StatusUnauthorized, "ADMIN_UNAUTHORIZED", "Admin authorization required")
@@ -450,6 +462,27 @@ func RegisterCenterHandler(centerSvc *center.Service) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, status)
 	}
+}
+
+func filterCenterStatusForTenantAdmin(r *http.Request, status *center.RegistrationState) {
+	if r == nil || status == nil || AdminFromContext(r.Context()) == nil || IsGlobalAdmin(r.Context()) {
+		return
+	}
+	tenantID := AdminTenantID(r.Context())
+	if status.DigitalEmployeeAuthorizations != nil {
+		if authz := status.DigitalEmployeeAuthorizations[tenantID]; authz != nil {
+			status.DigitalEmployeeAuthorization = authz
+		}
+	}
+	status.DigitalEmployeeAuthorizations = nil
+}
+
+func requireGlobalAdminForHubCenter(w http.ResponseWriter, r *http.Request) bool {
+	if r == nil || AdminFromContext(r.Context()) == nil || IsGlobalAdmin(r.Context()) {
+		return true
+	}
+	writeError(w, http.StatusForbidden, "GLOBAL_ADMIN_REQUIRED", "Hub Center registration is managed by the Hub global administrator")
+	return false
 }
 
 // --- Smart Route permission handlers ---

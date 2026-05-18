@@ -61,7 +61,7 @@ func newPreservationTestIdentity(t *testing.T) (*auth.IdentityService, *store.St
 // stubInvitationValidator implements auth.InvitationCodeValidator for testing
 // invitation-code-related error paths.
 type stubInvitationValidator struct {
-	required bool
+	required   bool
 	consumeErr error
 }
 
@@ -76,13 +76,21 @@ func (s *stubInvitationValidator) ValidateAndConsume(_ context.Context, code str
 	return nil
 }
 
+func (s *stubInvitationValidator) ValidateAndConsumeForTenant(ctx context.Context, tenantID string, code string, email string) error {
+	return s.ValidateAndConsume(ctx, code, email)
+}
+
 func (s *stubInvitationValidator) CheckExpiry(_ context.Context, email string) (bool, *time.Time, error) {
 	return false, nil, nil
 }
 
+func (s *stubInvitationValidator) CheckExpiryForTenant(ctx context.Context, tenantID string, email string) (bool, *time.Time, error) {
+	return s.CheckExpiry(ctx, email)
+}
+
 type countingInvitationRepo struct {
-	mu        sync.Mutex
-	item      *store.InvitationCode
+	mu              sync.Mutex
+	item            *store.InvitationCode
 	getByEmailCalls int
 }
 
@@ -113,6 +121,10 @@ func (r *countingInvitationRepo) GetByCode(_ context.Context, code string) (*sto
 	return nil, nil
 }
 
+func (r *countingInvitationRepo) GetByTenantCode(ctx context.Context, tenantID, code string) (*store.InvitationCode, error) {
+	return r.GetByCode(ctx, code)
+}
+
 func (r *countingInvitationRepo) GetByEmail(_ context.Context, email string) (*store.InvitationCode, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -124,12 +136,20 @@ func (r *countingInvitationRepo) GetByEmail(_ context.Context, email string) (*s
 	return nil, nil
 }
 
+func (r *countingInvitationRepo) GetByTenantEmail(ctx context.Context, tenantID, email string) (*store.InvitationCode, error) {
+	return r.GetByEmail(ctx, email)
+}
+
 func (r *countingInvitationRepo) List(_ context.Context, status string, search string) ([]*store.InvitationCode, error) {
 	return nil, nil
 }
 
 func (r *countingInvitationRepo) ListPaged(_ context.Context, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
 	return nil, 0, nil
+}
+
+func (r *countingInvitationRepo) ListPagedByTenant(ctx context.Context, tenantID string, status string, search string, offset, limit int) ([]*store.InvitationCode, int, error) {
+	return r.ListPaged(ctx, status, search, offset, limit)
 }
 
 func (r *countingInvitationRepo) MarkUsed(_ context.Context, id string, email string, usedAt time.Time) error {
@@ -148,8 +168,16 @@ func (r *countingInvitationRepo) DeleteByEmail(_ context.Context, email string) 
 	return 0, nil
 }
 
+func (r *countingInvitationRepo) DeleteByTenantEmail(ctx context.Context, tenantID, email string) (int64, error) {
+	return r.DeleteByEmail(ctx, email)
+}
+
 func (r *countingInvitationRepo) ListUnused(_ context.Context, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
 	return nil, nil
+}
+
+func (r *countingInvitationRepo) ListUnusedByTenant(ctx context.Context, tenantID, exportedFilter string, vipOnly ...bool) ([]*store.InvitationCode, error) {
+	return r.ListUnused(ctx, exportedFilter, vipOnly...)
 }
 
 func (r *countingInvitationRepo) MarkExported(_ context.Context, ids []string) error {
@@ -167,38 +195,38 @@ func (r *countingInvitationRepo) callCount() int {
 // shapes for all non-feishu code paths. These tests MUST PASS on unfixed code.
 func TestEnrollStartHandler_Preservation_TableDriven(t *testing.T) {
 	tests := []struct {
-		name           string
-		body           string
+		name            string
+		body            string
 		setupBlockEmail string // if non-empty, block this email before the request
-		invValidator   auth.InvitationCodeValidator
-		wantHTTPStatus int
-		wantOK         *bool   // nil = don't check "ok" field
-		wantCode       string  // expected "code" field in error responses
-		wantStatus     string  // expected "status" field in success responses
+		invValidator    auth.InvitationCodeValidator
+		wantHTTPStatus  int
+		wantOK          *bool  // nil = don't check "ok" field
+		wantCode        string // expected "code" field in error responses
+		wantStatus      string // expected "status" field in success responses
 	}{
 		{
-			name: "normal enrollment - email valid, no feishu",
-			body: `{"email":"alice@example.com","machine_name":"test","platform":"darwin","client_id":"c1"}`,
+			name:           "normal enrollment - email valid, no feishu",
+			body:           `{"email":"alice@example.com","machine_name":"test","platform":"darwin","client_id":"c1"}`,
 			wantHTTPStatus: http.StatusOK,
 			wantStatus:     "approved",
 		},
 		{
-			name: "empty body / invalid JSON",
-			body: `{invalid json`,
+			name:           "empty body / invalid JSON",
+			body:           `{invalid json`,
 			wantHTTPStatus: http.StatusBadRequest,
 			wantOK:         boolPtr(false),
 			wantCode:       "INVALID_JSON",
 		},
 		{
-			name: "missing email",
-			body: `{"machine_name":"test","platform":"darwin","client_id":"c1"}`,
+			name:           "missing email",
+			body:           `{"machine_name":"test","platform":"darwin","client_id":"c1"}`,
 			wantHTTPStatus: http.StatusBadRequest,
 			wantOK:         boolPtr(false),
 			wantCode:       "INVALID_INPUT",
 		},
 		{
-			name: "empty email",
-			body: `{"email":"","machine_name":"test","platform":"darwin","client_id":"c1"}`,
+			name:           "empty email",
+			body:           `{"email":"","machine_name":"test","platform":"darwin","client_id":"c1"}`,
 			wantHTTPStatus: http.StatusBadRequest,
 			wantOK:         boolPtr(false),
 			wantCode:       "INVALID_INPUT",

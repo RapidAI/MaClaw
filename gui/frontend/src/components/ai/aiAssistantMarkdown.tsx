@@ -3,6 +3,7 @@ import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/ma
 import { BrowserOpenURL } from "../../../wailsjs/runtime";
 import type { ChatAction, ChatConfirmation, ChatMessage, ChatUnfinishedSlot } from "./useAIAssistant";
 import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
+import { normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
 
 export interface Theme {
     text: string;
@@ -366,23 +367,6 @@ function renderTable(tableLines: string[], key: string, t: Theme): React.ReactNo
     );
 }
 
-/**
- * Insert newline before list markers that appear mid-line, but only outside
- * fenced code blocks. Prevents corrupting code content (e.g., YAML lists).
- */
-function normalizeInlineListMarkers(content: string): string {
-    // Split by code fence boundaries, process only non-code segments.
-    const parts = content.split(/(```[\s\S]*?```|```[\s\S]*$)/);
-    for (let i = 0; i < parts.length; i++) {
-        // Odd indices are code blocks (matched by the capture group) — skip them.
-        if (i % 2 === 1) continue;
-        parts[i] = parts[i]
-            .replace(/([^\n\s])(- (?:[\p{Emoji_Presentation}\p{So}]|[*]{2}|\p{L}))/gu, "$1\n$2")
-            .replace(/([^\n\s])(\d+[.)]\s+)/g, "$1\n$2");
-    }
-    return parts.join("");
-}
-
 export function renderContentWithCodeBlocks(content: string, t: Theme): React.ReactNode[] {
     const elements: React.ReactNode[] = [];
     // Normalize: insert newline before list markers that appear mid-line (outside code blocks).
@@ -565,6 +549,13 @@ function renderConfirmationCard(
     const revisionHints = confirmation.revisionHints || [];
     const taskType = confirmation.taskType?.trim() || '';
     const status = confirmation.status?.trim() || '';
+    const labels = confirmation.labels;
+    const titleLabel = labels?.title || "\u6267\u884c\u524d\u786e\u8ba4";
+    const statusLabel = labels?.status || "\u72b6\u6001";
+    const targetPathsLabel = labels?.target_paths || "\u76ee\u6807\u8def\u5f84";
+    const plannedActionsLabel = labels?.planned_actions || "\u8ba1\u5212\u64cd\u4f5c";
+    const riskFlagsLabel = labels?.risk_flags || "\u98ce\u9669\u6807\u8bb0";
+    const revisionHintsLabel = labels?.revision_hints || "\u4fee\u8ba2\u63d0\u793a";
     return (
         <div
             data-testid="confirmation-card"
@@ -577,20 +568,20 @@ function renderConfirmationCard(
             }}
         >
             <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
-                {taskType ? `\u6267\u884c\u524d\u786e\u8ba4 - ${taskType}` : "\u6267\u884c\u524d\u786e\u8ba4"}
+                {taskType ? `${titleLabel} - ${taskType}` : titleLabel}
             </div>
             {status && (
                 <div data-testid="confirmation-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
-                    {"\u72b6\u6001"}: {status}
+                    {statusLabel}: {status}
                 </div>
             )}
             <div data-testid="confirmation-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
                 {renderContentWithCodeBlocks(confirmation.summary, t)}
             </div>
-            {renderConfirmationList("confirmation-target-paths", "\u76ee\u6807\u8def\u5f84", targetPaths, t)}
-            {renderConfirmationList("confirmation-planned-actions", "\u8ba1\u5212\u64cd\u4f5c", plannedActions, t)}
-            {renderConfirmationList("confirmation-risk-flags", "\u98ce\u9669\u6807\u8bb0", riskFlags, t)}
-            {renderConfirmationList("confirmation-revision-hints", "\u4fee\u8ba2\u63d0\u793a", revisionHints, t)}
+            {renderConfirmationList("confirmation-target-paths", targetPathsLabel, targetPaths, t)}
+            {renderConfirmationList("confirmation-planned-actions", plannedActionsLabel, plannedActions, t)}
+            {renderConfirmationList("confirmation-risk-flags", riskFlagsLabel, riskFlags, t)}
+            {renderConfirmationList("confirmation-revision-hints", revisionHintsLabel, revisionHints, t)}
             {actions && actions.length > 0 && renderActions(actions, executeAction, t)}
         </div>
     );

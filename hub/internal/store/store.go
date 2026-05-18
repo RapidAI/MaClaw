@@ -5,11 +5,30 @@ import (
 	"time"
 )
 
+const DefaultTenantID = "tenant_default"
+
+type Tenant struct {
+	ID               string
+	Slug             string
+	Name             string
+	Status           string
+	PrimaryDomain    string
+	SettingsJSON     string
+	CreatedByAdminID string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	DeletedAt        *time.Time
+}
+
 type AdminUser struct {
 	ID           string
 	Username     string
 	PasswordHash string
 	Email        string
+	Scope        string
+	Role         string
+	TenantID     string
+	DisplayName  string
 	Status       string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
@@ -52,6 +71,7 @@ type FailureEventLogFilter struct {
 
 type User struct {
 	ID               string
+	TenantID         string
 	Email            string
 	SN               string
 	Status           string
@@ -63,6 +83,7 @@ type User struct {
 
 type UserEnrollment struct {
 	ID        string
+	TenantID  string
 	Email     string
 	Mobile    string
 	Status    string
@@ -73,6 +94,7 @@ type UserEnrollment struct {
 
 type EmailBlockItem struct {
 	ID        string
+	TenantID  string
 	Email     string
 	Reason    string
 	CreatedAt time.Time
@@ -81,6 +103,7 @@ type EmailBlockItem struct {
 
 type InvitationCode struct {
 	ID           string
+	TenantID     string
 	Code         string
 	Status       string // "unused" | "used"
 	UsedByEmail  string
@@ -93,6 +116,7 @@ type InvitationCode struct {
 
 type EmailInvite struct {
 	ID        string
+	TenantID  string
 	Email     string
 	Role      string
 	Status    string
@@ -102,6 +126,7 @@ type EmailInvite struct {
 
 type Machine struct {
 	ID               string
+	TenantID         string
 	UserID           string
 	ClientID         string
 	Name             string
@@ -129,6 +154,7 @@ type MachineMetadata struct {
 
 type ViewerToken struct {
 	ID        string
+	TenantID  string
 	UserID    string
 	TokenHash string
 	ExpiresAt time.Time
@@ -138,6 +164,7 @@ type ViewerToken struct {
 
 type LoginToken struct {
 	ID            string
+	TenantID      string
 	Email         string
 	TokenHash     string
 	PollTokenHash string
@@ -149,6 +176,7 @@ type LoginToken struct {
 
 type Session struct {
 	ID          string
+	TenantID    string
 	MachineID   string
 	UserID      string
 	Tool        string
@@ -165,6 +193,13 @@ type Session struct {
 	ExitCode    *int
 }
 
+type TenantRepository interface {
+	Create(ctx context.Context, tenant *Tenant) error
+	GetByID(ctx context.Context, id string) (*Tenant, error)
+	GetBySlug(ctx context.Context, slug string) (*Tenant, error)
+	List(ctx context.Context) ([]*Tenant, error)
+	EnsureDefault(ctx context.Context) (*Tenant, error)
+}
 type AdminUserRepository interface {
 	Create(ctx context.Context, admin *AdminUser) error
 	GetByUsername(ctx context.Context, username string) (*AdminUser, error)
@@ -193,16 +228,22 @@ type UserRepository interface {
 	Create(ctx context.Context, user *User) error
 	GetByID(ctx context.Context, id string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
+	GetByTenantEmail(ctx context.Context, tenantID, email string) (*User, error)
 	List(ctx context.Context) ([]*User, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]*User, error)
 	DeleteByEmail(ctx context.Context, email string) error
+	DeleteByTenantEmail(ctx context.Context, tenantID, email string) error
 	UpdateSmartRoute(ctx context.Context, userID string, enabled bool) error
 }
 
 type EnrollmentRepository interface {
 	Create(ctx context.Context, item *UserEnrollment) error
 	GetPendingByEmail(ctx context.Context, email string) (*UserEnrollment, error)
+	GetPendingByTenantEmail(ctx context.Context, tenantID string, email string) (*UserEnrollment, error)
 	ListPending(ctx context.Context) ([]*UserEnrollment, error)
+	ListPendingByTenant(ctx context.Context, tenantID string) ([]*UserEnrollment, error)
 	ListAll(ctx context.Context) ([]*UserEnrollment, error)
+	ListAllByTenant(ctx context.Context, tenantID string) ([]*UserEnrollment, error)
 	Approve(ctx context.Context, id string, updatedAt time.Time) error
 	Reject(ctx context.Context, id string, updatedAt time.Time) error
 	UpdateMobile(ctx context.Context, id string, mobile string) error
@@ -212,22 +253,30 @@ type EnrollmentRepository interface {
 type EmailBlocklistRepository interface {
 	Create(ctx context.Context, item *EmailBlockItem) error
 	DeleteByEmail(ctx context.Context, email string) error
+	DeleteByTenantEmail(ctx context.Context, tenantID string, email string) error
 	GetByEmail(ctx context.Context, email string) (*EmailBlockItem, error)
+	GetByTenantEmail(ctx context.Context, tenantID string, email string) (*EmailBlockItem, error)
 	List(ctx context.Context) ([]*EmailBlockItem, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]*EmailBlockItem, error)
 }
 
 type InvitationCodeRepository interface {
 	Create(ctx context.Context, item *InvitationCode) error
 	GetByID(ctx context.Context, id string) (*InvitationCode, error)
 	GetByCode(ctx context.Context, code string) (*InvitationCode, error)
+	GetByTenantCode(ctx context.Context, tenantID, code string) (*InvitationCode, error)
 	GetByEmail(ctx context.Context, email string) (*InvitationCode, error)
+	GetByTenantEmail(ctx context.Context, tenantID, email string) (*InvitationCode, error)
 	List(ctx context.Context, status string, search string) ([]*InvitationCode, error)
 	ListPaged(ctx context.Context, status string, search string, offset, limit int) ([]*InvitationCode, int, error)
+	ListPagedByTenant(ctx context.Context, tenantID string, status string, search string, offset, limit int) ([]*InvitationCode, int, error)
 	MarkUsed(ctx context.Context, id string, email string, usedAt time.Time) error
 	Unbind(ctx context.Context, id string) error
 	DeleteByID(ctx context.Context, id string) error
 	DeleteByEmail(ctx context.Context, email string) (int64, error)
+	DeleteByTenantEmail(ctx context.Context, tenantID, email string) (int64, error)
 	ListUnused(ctx context.Context, exportedFilter string, vipOnly ...bool) ([]*InvitationCode, error)
+	ListUnusedByTenant(ctx context.Context, tenantID, exportedFilter string, vipOnly ...bool) ([]*InvitationCode, error)
 	MarkExported(ctx context.Context, ids []string) error
 }
 
@@ -243,11 +292,13 @@ type MachineRepository interface {
 	GetByID(ctx context.Context, id string) (*Machine, error)
 	GetByUserAndClientID(ctx context.Context, userID, clientID string) (*Machine, error)
 	ListByUserID(ctx context.Context, userID string) ([]*Machine, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]*Machine, error)
 	ListAll(ctx context.Context) ([]*Machine, error)
 	Delete(ctx context.Context, machineID string) error
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 	ForceDeleteByUserID(ctx context.Context, userID string) (int64, error)
 	DeleteOffline(ctx context.Context) (int64, error)
+	DeleteOfflineByTenant(ctx context.Context, tenantID string) (int64, error)
 	DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error)
 	UpdateMetadata(ctx context.Context, machineID string, metadata MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
@@ -271,7 +322,9 @@ type LoginTokenRepository interface {
 	GetByTokenHash(ctx context.Context, tokenHash string) (*LoginToken, error)
 	GetByPollTokenHash(ctx context.Context, pollTokenHash string) (*LoginToken, error)
 	GetPendingByEmail(ctx context.Context, email string) (*LoginToken, error)
+	GetPendingByTenantEmail(ctx context.Context, tenantID string, email string) (*LoginToken, error)
 	ListPending(ctx context.Context) ([]*LoginToken, error)
+	ListPendingByTenant(ctx context.Context, tenantID string) ([]*LoginToken, error)
 	RefreshToken(ctx context.Context, tokenID string, tokenHash string, pollTokenHash string) error
 	Consume(ctx context.Context, tokenID string, consumedAt time.Time) error
 }
@@ -287,6 +340,7 @@ type SessionRepository interface {
 // Voiceprint stores a speaker embedding vector for a user.
 type Voiceprint struct {
 	ID        string
+	TenantID  string
 	UserID    string
 	Email     string
 	Label     string    // e.g. "enrollment-1"
@@ -298,7 +352,9 @@ type VoiceprintRepository interface {
 	Create(ctx context.Context, vp *Voiceprint) error
 	ListByUserID(ctx context.Context, userID string) ([]*Voiceprint, error)
 	ListAll(ctx context.Context) ([]*Voiceprint, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]*Voiceprint, error)
 	Delete(ctx context.Context, id string) error
+	DeleteByTenantID(ctx context.Context, tenantID string, id string) error
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 }
 
@@ -379,6 +435,7 @@ type LLMPromptCacheRepository interface {
 }
 
 type Store struct {
+	Tenants         TenantRepository
 	Admins          AdminUserRepository
 	System          SystemSettingsRepository
 	AdminAudit      AdminAuditRepository

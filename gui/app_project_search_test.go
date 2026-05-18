@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 func newProjectSearchTestApp(t *testing.T) *App {
@@ -20,6 +23,77 @@ func newProjectSearchTestApp(t *testing.T) *App {
 		}
 	})
 	return app
+}
+
+func TestEnsureMemoryStoreDefaultsToSQLite(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.ensureMemoryStore()
+	if app.memoryStore == nil {
+		t.Fatal("memory store was not initialized")
+	}
+	dbPath := filepath.Join(app.getMaclawBaseDir(), "memory.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected SQLite memory database at %s: %v", dbPath, err)
+	}
+}
+
+func TestProjectIndexChangeTriggersDebouncedMemoryPipeline(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.memoryPipelineDebounce = 10 * time.Millisecond
+	app.ensureMemoryStore()
+	if app.memPipeline == nil {
+		t.Fatal("memory pipeline was not initialized")
+	}
+	app.memPipeline.Stop()
+	app.memPipeline = memory.NewPipeline(app.memoryStore, nil, nil, nil, nil)
+	app.memPipeline.Start()
+
+	_, lastRun, _ := app.memPipeline.Status()
+	if lastRun.IsZero() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			_, lastRun, _ = app.memPipeline.Status()
+			if !lastRun.IsZero() {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if lastRun.IsZero() {
+		t.Fatal("memory pipeline did not complete its initial run")
+	}
+
+	taskDir := filepath.Join(app.GetDataDir(), "tasks", "pipeline-trigger-smoke")
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", taskDir, err)
+	}
+	taskFile := filepath.Join(taskDir, "task.md")
+	if err := os.WriteFile(taskFile, []byte("# Pipeline trigger smoke\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q): %v", taskFile, err)
+	}
+	now := time.Now()
+	if err := app.memoryStore.Save(memory.Entry{
+		Title:      "Pipeline trigger smoke",
+		Content:    "# Pipeline trigger smoke\n",
+		Category:   memory.CategoryTaskArtifact,
+		Tags:       []string{"manual_task", "recent_task"},
+		SourceURL:  taskFile,
+		SourceType: "manual",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatalf("Save(memory.Entry): %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, nextRun, _ := app.memPipeline.Status()
+		if nextRun.After(lastRun) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("project index change did not trigger a debounced memory pipeline run")
 }
 
 func TestCreateRecentTaskAddsSearchableRecentTask(t *testing.T) {

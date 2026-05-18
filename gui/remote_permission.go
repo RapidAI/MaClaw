@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/RapidAI/CodeClaw/corelib/security"
 	"fmt"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 	"sync"
 	"time"
 )
@@ -24,10 +24,10 @@ const (
 type PermissionDecision string
 
 const (
-	PermissionApproved          PermissionDecision = "approved"
+	PermissionApproved           PermissionDecision = "approved"
 	PermissionApprovedForSession PermissionDecision = "approved_for_session"
-	PermissionDenied            PermissionDecision = "denied"
-	PermissionAborted           PermissionDecision = "abort"
+	PermissionDenied             PermissionDecision = "denied"
+	PermissionAborted            PermissionDecision = "abort"
 )
 
 // PermissionRequest represents a pending tool-use permission request.
@@ -53,12 +53,12 @@ type PermissionCompletion struct {
 // Design inspired by hapi's CodexPermissionHandler which centralizes
 // permission logic with configurable auto-approve policies.
 //
-// v2: Integrates the full security chain — RiskAssessor → PolicyEngine →
-// [LLMSecurityReview] → AuditLog → Decision — in default mode.
+// v2: Integrates the full security chain: RiskAssessor -> PolicyEngine ->
+// [LLMSecurityReview] -> AuditLog -> Decision in default mode.
 type PermissionHandler struct {
-	mu       sync.Mutex
-	mode     PermissionMode
-	pending  map[string]*pendingPermission
+	mu         sync.Mutex
+	mode       PermissionMode
+	pending    map[string]*pendingPermission
 	onRequest  func(req PermissionRequest)
 	onComplete func(comp PermissionCompletion)
 
@@ -137,7 +137,8 @@ func (h *PermissionHandler) Mode() PermissionMode {
 // request that must be resolved via Resolve().
 //
 // In default mode with security chain configured, the flow is:
-//   RiskAssessor.Assess → PolicyEngine.Evaluate → [LLMSecurityReview] → AuditLog.Log → Decision
+//
+//	RiskAssessor.Assess -> PolicyEngine.Evaluate -> [LLMSecurityReview] -> AuditLog.Log -> Decision
 //
 // Returns the decision synchronously for auto-resolved requests, or
 // blocks until Resolve() is called for pending requests.
@@ -220,23 +221,35 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 
 		// Step 2: Policy evaluation.
 		policyAction := pe.Evaluate(req.ToolName, args, assessment.Level)
+		policyMode := pe.Mode()
 
 		// Step 3: LLM security review for high/critical risk.
 		var llmVerdict LLMSecurityVerdict
 		var llmExplanation string
 		if llm != nil && (assessment.Level == security.RiskHigh || assessment.Level == security.RiskCritical) {
 			llmVerdict, llmExplanation, _ = llm.Review(riskCtx, assessment)
-			// If LLM says dangerous, override policy to deny.
 			if llmVerdict == VerdictDangerous {
-				policyAction = security.PolicyDeny
+				switch policyMode {
+				case "developer", "relaxed":
+					policyAction = security.PolicyAllow
+				case "strict":
+					policyAction = security.PolicyDeny
+				default:
+					policyAction = security.PolicyAsk
+				}
 			}
+		}
+		if policyAction == security.PolicyDeny && (policyMode == "developer" || policyMode == "relaxed") {
+			policyAction = security.PolicyAllow
+		} else if policyAction == security.PolicyDeny && policyMode == "standard" {
+			policyAction = security.PolicyAsk
 		}
 
 		// Step 4: Audit log.
 		if al != nil {
 			result := string(policyAction)
 			if llmExplanation != "" {
-				result = fmt.Sprintf("%s (llm: %s — %s)", policyAction, llmVerdict, llmExplanation)
+				result = fmt.Sprintf("%s (llm: %s - %s)", policyAction, llmVerdict, llmExplanation)
 			}
 			_ = al.Log(security.AuditEntry{
 				Timestamp:    time.Now(),
@@ -265,7 +278,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 		case security.PolicyDeny:
 			reason := fmt.Sprintf("denied: risk=%s, policy=deny", assessment.Level)
 			if llmVerdict == VerdictDangerous {
-				reason = fmt.Sprintf("denied: risk=%s, llm=dangerous — %s", assessment.Level, llmExplanation)
+				reason = fmt.Sprintf("denied: risk=%s, llm=dangerous - %s", assessment.Level, llmExplanation)
 			}
 			comp := PermissionCompletion{
 				RequestID: req.RequestID,
@@ -297,7 +310,7 @@ func (h *PermissionHandler) HandleRequest(req PermissionRequest) PermissionCompl
 	}
 
 	// If there is no onRequest callback, nobody can resolve the pending
-	// request — blocking here would freeze the SDK output loop forever.
+	// request - blocking here would freeze the SDK output loop forever.
 	// Auto-approve to prevent the session from hanging.
 	if h.onRequest == nil {
 		h.mu.Unlock()

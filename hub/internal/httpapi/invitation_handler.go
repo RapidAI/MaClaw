@@ -38,6 +38,7 @@ type invitationCodeResponse struct {
 	BoundAt      *string `json:"bound_at"`
 	Exported     bool    `json:"exported"`
 	VIP          bool    `json:"vip"`
+	TenantID     string  `json:"tenant_id"`
 	CreatedAt    string  `json:"created_at"`
 }
 
@@ -49,7 +50,7 @@ func GenerateInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
 			return
 		}
 
-		codes, err := svc.GenerateCodes(r.Context(), req.Count, req.ValidityDays, req.VIP)
+		codes, err := svc.GenerateCodesForTenant(r.Context(), RequestTenantID(r), req.Count, req.ValidityDays, req.VIP)
 		if err != nil {
 			if errors.Is(err, invitation.ErrInvalidCount) {
 				writeError(w, http.StatusBadRequest, "INVALID_INPUT", err.Error())
@@ -83,7 +84,7 @@ func ListInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
 			pageSize = 20
 		}
 
-		codes, total, err := svc.ListCodesPaged(r.Context(), status, search, page, pageSize)
+		codes, total, err := svc.ListCodesPagedForTenant(r.Context(), RequestTenantID(r), status, search, page, pageSize)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LIST_FAILED", err.Error())
 			return
@@ -146,7 +147,7 @@ func ExportInvitationCodesHandler(svc *invitation.Service) http.HandlerFunc {
 
 		vipOnly := r.URL.Query().Get("vip") == "true"
 
-		codes, err := svc.ExportUnusedCodes(r.Context(), exportedFilter, vipOnly)
+		codes, err := svc.ExportUnusedCodesForTenant(r.Context(), RequestTenantID(r), exportedFilter, vipOnly)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "EXPORT_FAILED", err.Error())
 			return
@@ -193,7 +194,7 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 		// If the code was bound to an email, clean up all associated data.
 		if email != "" {
 			if identity != nil {
-				user, lookupErr := identity.LookupUserByEmail(r.Context(), email)
+				user, lookupErr := identity.UsersRepo().GetByTenantEmail(r.Context(), code.TenantID, email)
 				if lookupErr != nil {
 					log.Printf("[admin-unbind] lookup user %s failed: %v", email, lookupErr)
 				}
@@ -208,7 +209,7 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 			}
 
 			// Remove all invitation codes bound to this email.
-			codesDeleted, delErr := svc.DeleteCodeByEmail(r.Context(), email)
+			codesDeleted, delErr := svc.DeleteCodeByTenantEmail(r.Context(), code.TenantID, email)
 			if delErr != nil {
 				log.Printf("[admin-unbind] delete codes for %s failed: %v", email, delErr)
 			} else if codesDeleted > 0 {
@@ -228,7 +229,7 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 			// Delete the user record so bind-query returns unbound.
 			if identity != nil {
 				if repo := identity.UsersRepo(); repo != nil {
-					if delErr := repo.DeleteByEmail(r.Context(), email); delErr != nil {
+					if delErr := repo.DeleteByTenantEmail(r.Context(), code.TenantID, email); delErr != nil {
 						log.Printf("[admin-unbind] delete user record for %s failed: %v", email, delErr)
 					}
 				}
@@ -252,6 +253,7 @@ func UnbindInvitationCodeHandler(svc *invitation.Service, identity *auth.Identit
 func toInvitationCodeResponse(c *store.InvitationCode) invitationCodeResponse {
 	resp := invitationCodeResponse{
 		ID:           c.ID,
+		TenantID:     c.TenantID,
 		Code:         c.Code,
 		Status:       c.Status,
 		UsedByEmail:  c.UsedByEmail,

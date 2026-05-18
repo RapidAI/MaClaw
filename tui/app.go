@@ -4,10 +4,10 @@ package main
 //
 // Architecture: The TUI is an independent binary (CGO_ENABLED=0) for headless
 // environments. It shares ALL agent logic with the GUI via corelib/agent/:
-//   - corelib/agent.RunLoop — shared agent loop
-//   - corelib/agent.BuildSystemPrompt — shared system prompt
-//   - corelib/agent.CoreToolRegistry — shared tool registry (definition + handler bound)
-//   - corelib/agent/sshtool — shared SSH tool
+//   - corelib/agent.RunLoop 鈥?shared agent loop
+//   - corelib/agent.BuildSystemPrompt 鈥?shared system prompt
+//   - corelib/agent.CoreToolRegistry 鈥?shared tool registry (definition + handler bound)
+//   - corelib/agent/sshtool 鈥?shared SSH tool
 //
 // On Windows, the TUI reads the existing maclaw GUI config from ~/.maclaw/config.json
 // so it works out of the box if the GUI has already been configured.
@@ -33,6 +33,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/needleruntime"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -87,9 +88,8 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		fmt.Fprintf(os.Stderr, "warning: cannot open log file: %v\n", err)
 	}
 	// Redirect stderr (fd 2) to the log file BEFORE entering Bubble Tea's
-	// alt-screen. This is the mechanism-level fix: every write to stderr —
-	// whether from Go's log package, fmt.Fprintf(os.Stderr,...), corelib
-	// packages, or even C libraries — goes to the log file instead of
+	// alt-screen. This is the mechanism-level fix: every write to stderr 鈥?	// whether from Go's log package, fmt.Fprintf(os.Stderr,...), corelib
+	// packages, or even C libraries 鈥?goes to the log file instead of
 	// corrupting the terminal. See redirect_stderr_{unix,windows}.go.
 	if lf := logger.LogFile(); lf != nil {
 		redirectStderr(lf)
@@ -115,7 +115,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		fmt.Fprintln(os.Stderr, tuiFormat(tuiConfigLang(appCfg), "incompleteRemoteActivate", strings.ToLower(brand.Current().DisplayName)))
 	}
 
-	// Initialize memory store (shared with GUI — same ~/.maclaw/memory/).
+	// Initialize memory store (shared with GUI 鈥?same ~/.maclaw/memory/).
 	memoryDir := filepath.Join(dataDir, "memory")
 	os.MkdirAll(memoryDir, 0755)
 	memStore, err := memory.NewStore(memoryDir)
@@ -126,7 +126,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	// Initialize SSH manager.
 	sshMgr := remote.NewSSHSessionManager(nil)
 
-	// Initialize steering store (shared with GUI — same ~/.maclaw/steering/).
+	// Initialize steering store (shared with GUI 鈥?same ~/.maclaw/steering/).
 	home, _ := os.UserHomeDir()
 	steeringDir := filepath.Join(home, ".maclaw", "steering")
 	steeringStore := steering.NewStore(steeringDir, "")
@@ -146,7 +146,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 
 	// Build the TUI app.
 	// HubCenter failover uses the shared singleton cache and persister from
-	// tui/commands/skill_search_api.go — no need to create local instances.
+	// tui/commands/skill_search_api.go 鈥?no need to create local instances.
 	app := &TUIApp{
 		logger:        logger,
 		llmConfig:     llmCfg,
@@ -171,7 +171,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	// Initialize workflow engine (19 templates, same as GUI).
 	app.workflowEngine = app.initWorkflowEngine()
 
-	// Initialize knowledge store (shared with GUI — same ~/.maclaw/knowledge.db).
+	// Initialize knowledge store (shared with GUI 鈥?same ~/.maclaw/knowledge.db).
 	app.initKnowledgeStore(dataDir)
 
 	// Initialize WeChat gateway (runs in background if configured).
@@ -194,7 +194,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		ExtraHandlers: map[string]agent.ToolHandler{
 			"manage_skill":           newManageSkillHandler(app),
 			"manage_schedule":        newManageScheduleHandler(app),
-			"tts":                   newTTSHandler(app),
+			"tts":                    newTTSHandler(app),
 			"knowledge_search":       app.toolKnowledgeSearch,
 			"knowledge_context_pack": app.toolKnowledgeContextPack,
 			"knowledge_save_text":    app.toolKnowledgeSaveText,
@@ -220,7 +220,20 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 			return agent.ToolWebSearch(provider, args)
 		},
 		WebFetchHandler: func(args map[string]interface{}) string {
-			return agent.ToolWebFetch(args)
+			// Use the same provider as web_search for enhanced fetch (e.g. TinyFish).
+			var provider corelib.WebSearchProvider
+			if len(app.appConfig.WebSearchProviders) > 0 {
+				for _, p := range app.appConfig.WebSearchProviders {
+					if p.Name == app.appConfig.WebSearchCurrentProvider {
+						provider = p
+						break
+					}
+				}
+				if provider.Name == "" {
+					provider = app.appConfig.WebSearchProviders[0]
+				}
+			}
+			return agent.ToolWebFetchWithProvider(args, provider)
 		},
 	})
 
@@ -390,12 +403,12 @@ type TUIApp struct {
 	toolRegistry   *agent.CoreToolRegistry
 	ttsManager     *tts.Manager
 	// HubCenter failover uses the shared singleton cache and persister from
-	// tui/commands/skill_search_api.go — no fields needed here.
+	// tui/commands/skill_search_api.go 鈥?no fields needed here.
 
-	// Scheduled task manager — background ticker fires due tasks.
+	// Scheduled task manager 鈥?background ticker fires due tasks.
 	scheduledTaskManager *scheduler.Manager
 
-	// WeChat gateway — runs in background, receives/sends WeChat messages.
+	// WeChat gateway 鈥?runs in background, receives/sends WeChat messages.
 	weixinGateway *tuiWeixinGateway
 
 	// Workflow engine integration (Fix #6).
@@ -405,9 +418,11 @@ type TUIApp struct {
 	// concurrent access between the Bubble Tea main goroutine (which sets
 	// them in handleWorkflowInterception) and the agent loop goroutine
 	// (which reads and clears them in handleChatSend).
-	workflowMu         sync.Mutex
-	pendingPhasePrompt string // stashed phase prompt for the next agent loop
-	workflowAgentLoop  bool   // true when the agent loop runs on behalf of the workflow
+	workflowMu           sync.Mutex
+	pendingPhasePrompt   string // stashed phase prompt for the next agent loop
+	workflowAgentLoop    bool   // true when the agent loop runs on behalf of the workflow
+	pendingWorkflowStart *tuiPendingWorkflowStart
+	needleRuntime        *needleruntime.Runtime
 }
 
 // initKnowledgeStore opens the knowledge DB if it exists.
@@ -415,7 +430,7 @@ type TUIApp struct {
 func (app *TUIApp) initKnowledgeStore(dataDir string) {
 	dbPath := filepath.Join(dataDir, "knowledge.db")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return // graceful skip — DB doesn't exist yet
+		return // graceful skip 鈥?DB doesn't exist yet
 	}
 	store, err := knowledge.NewSQLiteStore(dbPath)
 	if err != nil {
@@ -674,7 +689,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Esc while waiting: cancel the running agent loop.
-		// But if Help is visible, let Esc close Help instead (handled by root→help).
+		// But if Help is visible, let Esc close Help instead (handled by root鈫抙elp).
 		if msg.String() == "esc" && m.activeCb != nil && !m.root.Help.IsVisible() {
 			m.cancelActiveLoop()
 			m.root.Chat.AppendSystemMessage(tuiText(m.uiLang(), "cancelled"))
@@ -684,7 +699,7 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case views.ChatSendMsg:
 		// Handle slash commands locally.
 		if strings.HasPrefix(strings.TrimSpace(msg.Text), "/") {
-			// /btw and /loop require an async agent loop — route through handleChatSend.
+			// /btw and /loop require an async agent loop 鈥?route through handleChatSend.
 			trimmedCmd := strings.TrimSpace(msg.Text)
 			if trimmedCmd == "/btw" || strings.HasPrefix(trimmedCmd, "/btw ") {
 				if m.llmMissing() {
@@ -704,14 +719,14 @@ func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.routeMissingLLMFromChat()
 		}
 		// Start the agent loop directly. The user message was already added
-		// to ChatModel.messages and rendered in the previous Update→View cycle
+		// to ChatModel.messages and rendered in the previous Update鈫扸iew cycle
 		// (ChatModel.Update handles the Enter key, adds the message, and
-		// returns ChatSendMsg as a Cmd — Bubble Tea renders View() between
+		// returns ChatSendMsg as a Cmd 鈥?Bubble Tea renders View() between
 		// that Update and this one). No artificial delay needed.
 		return m, m.handleChatSend(msg.Text)
 
 	case views.ChatQueueFireMsg:
-		// 预输入队列自动发射或手动发射——与 ChatSendMsg 相同处理。
+		// Pre-input queue auto-fire or manual fire follows the same path as ChatSendMsg.
 		if m.llmMissing() {
 			return m, m.routeMissingLLMFromChat()
 		}
@@ -982,7 +997,7 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 		if m.app.workflowEngine != nil {
 			_ = m.app.workflowEngine.CancelWorkflow("tui-user")
 			if understanding := m.app.workflowEngine.GetUnderstanding(); understanding != nil && understanding.HasActiveSession("tui-user") {
-				_, _, _, _, _ = understanding.HandleInput("tui-user", "取消")
+				understanding.CancelSession("tui-user")
 			}
 		}
 		m.app.workflowMu.Lock()
@@ -1298,7 +1313,7 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 			// NOTE: /btw results are NOT appended to the main conversation
 			// history. The result is displayed in the chat UI via ChatResponseMsg
 			// but does not become part of the LLM's context for future turns.
-			// This is by design — /btw is a side query, not part of the main task.
+			// This is by design 鈥?/btw is a side query, not part of the main task.
 
 			return views.ChatResponseMsg{Text: responseText}
 		}
@@ -1352,8 +1367,13 @@ func (m *tuiModel) handleChatSend(text string) tea.Cmd {
 			// save the output as the phase document.
 			if cb.phasePromptOverride != "" {
 				if engine := app.workflowEngine; engine != nil {
-					if phaseID := engine.SavePhaseOutput("tui-user", result.Text); phaseID != "" {
+					if phaseID, advResp, err := engine.SavePhaseOutputAndMaybeAdvance("tui-user", result.Text); err != nil {
+						log.Printf("[TUI-workflow] save phase output failed: %v", err)
+					} else if phaseID != "" {
 						log.Printf("[TUI-workflow] saved phase output: phase=%s len=%d", phaseID, len(result.Text))
+						if autoText := app.applyWorkflowAutoAdvanceTUI("tui-user", advResp); strings.TrimSpace(autoText) != "" {
+							result.Text = strings.TrimSpace(result.Text + "\n\n" + autoText)
+						}
 					}
 				}
 			}
@@ -1527,7 +1547,7 @@ func (m *tuiModel) addLocalMCP(entry corelib.LocalMCPServerEntry) tea.Cmd {
 		if err := store.SaveConfig(cfg); err != nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: false, Message: tuiFormat(lang, "configSaveFailedPlain", err.Error())}
 		}
-		// Return success — the main loop will refresh data via ToolRefreshMsg.
+		// Return success 鈥?the main loop will refresh data via ToolRefreshMsg.
 		return views.ToolOperationResultMsg{Tab: views.ToolSubMCP, Success: true, Message: tuiFormat(lang, "added", entry.Name)}
 	}
 }
@@ -1804,7 +1824,7 @@ func (m *tuiModel) saveOnboardingLanguage(lang string) tea.Cmd {
 }
 
 const (
-	tuiHubServiceProviderName = "MaClaw官方"
+	tuiHubServiceProviderName = "MaClaw瀹樻柟"
 	tuiHubServiceAutoModel    = "auto"
 )
 
@@ -2121,7 +2141,7 @@ func (c *tuiCallbacks) ShouldStop() bool {
 // ---------------------------------------------------------------------------
 // tuiBtwCallbacks implements agent.LoopCallbacks for /btw side queries.
 // Minimal tool set: web_search, web_fetch, read_file, memory (recall only).
-// Independent conversation — does not pollute the main chat history.
+// Independent conversation 鈥?does not pollute the main chat history.
 // ---------------------------------------------------------------------------
 
 var tuiBtwToolNames = map[string]bool{
@@ -2163,13 +2183,13 @@ func (c *tuiBtwCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
 }
 
 func (c *tuiBtwCallbacks) GetMaxIterations() int {
-	// Use MinAgentIterations (30) — EffectiveMaxIterations enforces a floor
+	// Use MinAgentIterations (30) 鈥?EffectiveMaxIterations enforces a floor
 	// of 30. Side queries typically finish in 3-5 iterations.
 	return config.EffectiveMaxIterations(config.MinAgentIterations)
 }
 
 func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
-	// Build a focused system prompt for /btw — identity + memory recall only.
+	// Build a focused system prompt for /btw 鈥?identity + memory recall only.
 	// Does NOT call agent.BuildSystemPrompt (which injects coding workflow,
 	// memory management guide, and other multi-turn noise).
 	return buildTuiBtwSystemPrompt(c.app, userText)
@@ -2198,13 +2218,13 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 		if lang == "en" {
 			fmt.Fprintf(&b, "Your self-understanding (from memory): %s\nYour underlying system name is %s.\n", selfIdentity, roleName)
 		} else {
-			fmt.Fprintf(&b, "你的自我认知（来自记忆）：%s\n你的底层系统名为 %s。\n", selfIdentity, roleName)
+			fmt.Fprintf(&b, "Your self-understanding (from memory): %s\nYour underlying system name is %s.\n", selfIdentity, roleName)
 		}
 	} else {
 		if lang == "en" {
 			fmt.Fprintf(&b, "You are %s, %s.\n", roleName, roleDesc)
 		} else {
-			fmt.Fprintf(&b, "你是 %s，%s。\n", roleName, roleDesc)
+			fmt.Fprintf(&b, "You are %s, %s.\n", roleName, roleDesc)
 		}
 	}
 
@@ -2244,7 +2264,7 @@ func buildTuiBtwSystemPrompt(app *TUIApp, userText string) string {
 				}
 				runes := []rune(text)
 				if len(runes) > 200 {
-					text = string(runes[:200]) + "…"
+					text = string(runes[:200]) + "..."
 				}
 				fmt.Fprintf(&b, "- [%s] %s\n", e.Category, text)
 			}
@@ -2328,7 +2348,7 @@ func tuiBtwSectionFormat(lang, key string) string {
 			return "\n## User Information\n%s\n"
 		}
 	}
-	return "\n## 用户信息\n%s\n"
+	return "\n## 鐢ㄦ埛淇℃伅\n%s\n"
 }
 
 func tuiBtwSectionHeader(lang, key string) string {
@@ -2337,7 +2357,7 @@ func tuiBtwSectionHeader(lang, key string) string {
 			return "\n## Relevant Memory (Auto-recalled)\n"
 		}
 	}
-	return "\n## 相关记忆（自动召回）\n"
+	return "\n## 鐩稿叧璁板繂锛堣嚜鍔ㄥ彫鍥烇級\n"
 }
 
 func tuiBtwSuffixForLang(lang string) string {
@@ -2356,7 +2376,7 @@ Rules:
 1. If the user asks about task progress or runtime status, use the agent_status tool first.
 2. Use web_search for fresh information, then web_fetch for details.
 3. If the question involves local project files, use read_file.
-4. If the question involves previous conversation or memory, use memory(action=\"recall\").
+4. If the question involves previous conversation or memory, use memory(action="recall").
 5. Keep the answer concise, structured, and direct.
 6. Include URLs when citing web sources.
 7. This is read-only: do not modify files.
@@ -2364,27 +2384,27 @@ Rules:
 `
 
 const tuiBtwSuffix = `
-## /btw 侧查询模式（当前生效）
+## /btw side query mode
 
-你正在处理一个 /btw 侧查询。这是一个独立的单轮快速查询，不是主任务的一部分。
+You are handling a /btw side query. This is an independent, single-turn quick query, not part of the main task.
 
-规则：
-1. 如果用户询问任务进度、运行状态等问题，优先使用 agent_status 工具查询实际运行时状态
-2. 使用 web_search 搜索最新信息，然后用 web_fetch 获取详细内容
-3. 如果问题涉及本地项目文件，使用 read_file 查看
-4. 如果问题涉及之前的对话或记忆，使用 memory(action="recall") 召回
-5. 回答要简洁、结构化，直接给出关键信息
-6. 引用网络来源时附上 URL
-7. 这是一个只读查询——不要修改任何文件
-8. 尽量在 2-3 轮工具调用内完成查询，不要过度搜索
+Rules:
+1. If the user asks about task progress or runtime status, use the agent_status tool first.
+2. Use web_search for fresh information, then web_fetch for details.
+3. If the question involves local project files, use read_file.
+4. If the question involves previous conversation or memory, use memory(action="recall").
+5. Keep the answer concise, structured, and direct.
+6. Include URLs when citing web sources.
+7. This is read-only: do not modify files.
+8. Try to finish within 2-3 tool turns.
 `
 
 // tuiAgentStatusToolDef is the inline tool definition for agent_status in TUI.
 // Defined once, used in both the registry path and the fallback path.
 var tuiAgentStatusToolDef_ = tuiBtwToolDef("agent_status",
-	"查询主 Agent 的运行时状态，包括 SSH 连接等。当用户询问任务进度、后台任务状态时使用此工具。",
+	"Query runtime agent status, including SSH sessions. Use when the user asks about task progress or background activity.",
 	map[string]interface{}{
-		"category": map[string]string{"type": "string", "description": "查询类别: all（全部状态）、ssh_sessions（SSH 连接）。默认 all"},
+		"category": map[string]string{"type": "string", "description": "Query category: all or ssh_sessions. Default: all"},
 	}, nil)
 
 func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
@@ -2411,26 +2431,26 @@ func buildTuiBtwToolDefinitions(app *TUIApp) []map[string]interface{} {
 
 	// Fallback: inline definitions (same as GUI btw_subagent.go).
 	return []map[string]interface{}{
-		tuiBtwToolDef("web_search", "搜索互联网获取最新信息",
+		tuiBtwToolDef("web_search", "Search the web for fresh information",
 			map[string]interface{}{
-				"query":       map[string]string{"type": "string", "description": "搜索关键词"},
-				"max_results": map[string]string{"type": "integer", "description": "最大结果数（默认 8）"},
+				"query":       map[string]string{"type": "string", "description": "Search keywords"},
+				"max_results": map[string]string{"type": "integer", "description": "Maximum result count; default 8"},
 			}, []string{"query"}),
-		tuiBtwToolDef("web_fetch", "抓取指定 URL 的网页内容并提取正文",
+		tuiBtwToolDef("web_fetch", "Fetch a URL and extract readable page content",
 			map[string]interface{}{
-				"url":       map[string]string{"type": "string", "description": "要抓取的 URL"},
-				"max_chars": map[string]string{"type": "integer", "description": "最多返回字符数（可选）"},
+				"url":       map[string]string{"type": "string", "description": "URL to fetch"},
+				"max_chars": map[string]string{"type": "integer", "description": "Maximum returned characters"},
 			}, []string{"url"}),
-		tuiBtwToolDef("read_file", "读取本地文件内容",
+		tuiBtwToolDef("read_file", "Read a local file",
 			map[string]interface{}{
-				"path":   map[string]string{"type": "string", "description": "文件路径"},
-				"lines":  map[string]string{"type": "integer", "description": "读取行数（可选）"},
-				"offset": map[string]string{"type": "integer", "description": "从末尾倒数行数开始读取（可选）"},
+				"path":   map[string]string{"type": "string", "description": "File path"},
+				"lines":  map[string]string{"type": "integer", "description": "Line count"},
+				"offset": map[string]string{"type": "integer", "description": "Offset from end"},
 			}, []string{"path"}),
-		tuiBtwToolDef("memory", "查询长期记忆",
+		tuiBtwToolDef("memory", "Query long-term memory",
 			map[string]interface{}{
-				"action": map[string]string{"type": "string", "description": "操作: recall"},
-				"query":  map[string]string{"type": "string", "description": "查询关键词"},
+				"action": map[string]string{"type": "string", "description": "Action: recall"},
+				"query":  map[string]string{"type": "string", "description": "Query keywords"},
 			}, []string{"action"}),
 		tuiAgentStatusToolDef_,
 	}

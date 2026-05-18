@@ -28,7 +28,7 @@ func TestDefaultPolicyRules_SortedByPriority(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Evaluate — basic risk-level routing
+// Evaluate - basic risk-level routing
 // ---------------------------------------------------------------------------
 
 func TestEvaluate_LowRisk_Allow(t *testing.T) {
@@ -55,12 +55,12 @@ func TestEvaluate_HighRisk_Ask(t *testing.T) {
 	}
 }
 
-func TestEvaluate_CriticalRisk_WithDangerousArgs_Deny(t *testing.T) {
+func TestEvaluate_CriticalRisk_WithDangerousArgs_Ask(t *testing.T) {
 	pe := NewPolicyEngine()
 	args := map[string]interface{}{"command": "sudo rm -rf /"}
 	action := pe.Evaluate("Bash", args, security.RiskCritical)
-	if action != security.PolicyDeny {
-		t.Errorf("expected deny for critical risk with dangerous args, got %s", action)
+	if action != security.PolicyAsk {
+		t.Errorf("expected ask for critical risk with dangerous args, got %s", action)
 	}
 }
 
@@ -73,8 +73,23 @@ func TestEvaluate_CriticalRisk_WithoutDangerousArgs_Ask(t *testing.T) {
 	}
 }
 
+func TestPolicyEngineModeNormalization(t *testing.T) {
+	pe := NewPolicyEngineWithMode(" RELAXED ")
+	if pe.Mode() != "relaxed" {
+		t.Fatalf("Mode() = %q, want relaxed", pe.Mode())
+	}
+	pe.SetMode("permissive")
+	if pe.Mode() != "relaxed" {
+		t.Fatalf("Mode() after permissive = %q, want relaxed", pe.Mode())
+	}
+	pe.SetMode("unknown")
+	if pe.Mode() != "standard" {
+		t.Fatalf("Mode() after unknown = %q, want standard", pe.Mode())
+	}
+}
+
 // ---------------------------------------------------------------------------
-// Evaluate — glob tool pattern matching
+// Evaluate - glob tool pattern matching
 // ---------------------------------------------------------------------------
 
 func TestEvaluate_ToolPatternGlob(t *testing.T) {
@@ -101,7 +116,7 @@ func TestEvaluate_ToolPatternGlob(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Evaluate — regex args pattern matching
+// Evaluate - regex args pattern matching
 // ---------------------------------------------------------------------------
 
 func TestEvaluate_ArgsPatternRegex(t *testing.T) {
@@ -130,7 +145,7 @@ func TestEvaluate_ArgsPatternRegex(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Evaluate — priority ordering (first match wins)
+// Evaluate - priority ordering (first match wins)
 // ---------------------------------------------------------------------------
 
 func TestEvaluate_PriorityOrdering(t *testing.T) {
@@ -153,7 +168,7 @@ func TestEvaluate_PriorityOrdering(t *testing.T) {
 		},
 	}
 	// Rules should be evaluated in priority order after sorting.
-	// But we intentionally inserted them out of order — Evaluate walks the
+	// But we intentionally inserted them out of order -Evaluate walks the
 	// slice as-is, so the caller (or LoadRules/DefaultPolicyRules) must sort.
 	// Let's sort and re-check.
 	sortRulesByPriority(pe.rules)

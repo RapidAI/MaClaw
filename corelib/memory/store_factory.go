@@ -179,9 +179,10 @@ func newStoreFromEntries(dir string, entries []Entry) (*Store, error) {
 	}
 	s.archive = archive
 
-	// Note: persistLoop is NOT started here. In SQLite mode, persistence is
-	// handled by the backend on each SaveEntry/UpdateEntry/DeleteEntry call.
-	// The persistLoop is only needed for JSON backend mode.
+	// SQLite stores still use the Store-level dirty/debounce loop for
+	// maintenance paths that update several entries at once. flush() routes
+	// dirty state through the configured backend instead of JSON files.
+	go s.persistLoop()
 
 	return s, nil
 }

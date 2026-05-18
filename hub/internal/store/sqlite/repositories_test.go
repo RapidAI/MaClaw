@@ -45,6 +45,8 @@ func TestAdminUserRepositoryRoundTrip(t *testing.T) {
 		Username:     "admin",
 		PasswordHash: "hash",
 		Email:        "admin@example.com",
+		Scope:        "global",
+		Role:         "global_owner",
 		Status:       "active",
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -57,7 +59,7 @@ func TestAdminUserRepositoryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get admin: %v", err)
 	}
-	if got == nil || got.Email != admin.Email {
+	if got == nil || got.Email != admin.Email || got.Scope != "global" || got.Role != "global_owner" {
 		t.Fatalf("unexpected admin: %#v", got)
 	}
 
@@ -79,6 +81,43 @@ func TestAdminUserRepositoryRoundTrip(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("count after delete = %d, want 0", count)
+	}
+}
+
+func TestTenantRepositoryEnsureDefaultAndRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+
+	defaultTenant, err := st.Tenants.EnsureDefault(ctx)
+	if err != nil {
+		t.Fatalf("ensure default tenant: %v", err)
+	}
+	if defaultTenant == nil || defaultTenant.ID != store.DefaultTenantID || defaultTenant.Slug != "default" {
+		t.Fatalf("unexpected default tenant: %#v", defaultTenant)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	tenant := &store.Tenant{
+		ID:               "tenant_acme",
+		Slug:             "acme",
+		Name:             "Acme Corp",
+		Status:           "active",
+		PrimaryDomain:    "acme.com",
+		SettingsJSON:     `{"work_mode":"approval"}`,
+		CreatedByAdminID: "adm_1",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := st.Tenants.Create(ctx, tenant); err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	got, err := st.Tenants.GetBySlug(ctx, "acme")
+	if err != nil {
+		t.Fatalf("get tenant by slug: %v", err)
+	}
+	if got == nil || got.ID != tenant.ID || got.PrimaryDomain != tenant.PrimaryDomain {
+		t.Fatalf("unexpected tenant: %#v", got)
 	}
 }
 
@@ -106,6 +145,7 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 
 	user := &store.User{
 		ID:               "u_1",
+		TenantID:         "tenant_acme",
 		Email:            "user@example.com",
 		SN:               "SN-2026-000001",
 		Status:           "active",
@@ -117,16 +157,17 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	gotUser, err := st.Users.GetByEmail(ctx, user.Email)
+	gotUser, err := st.Users.GetByTenantEmail(ctx, user.TenantID, user.Email)
 	if err != nil {
 		t.Fatalf("get user by email: %v", err)
 	}
-	if gotUser == nil || gotUser.SN != user.SN {
+	if gotUser == nil || gotUser.SN != user.SN || gotUser.TenantID != user.TenantID {
 		t.Fatalf("unexpected user: %#v", gotUser)
 	}
 
 	machine := &store.Machine{
 		ID:               "m_1",
+		TenantID:         user.TenantID,
 		UserID:           user.ID,
 		Name:             "office-pc",
 		Platform:         "windows",
@@ -149,7 +190,7 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get machine: %v", err)
 	}
-	if gotMachine == nil || gotMachine.Status != "online" {
+	if gotMachine == nil || gotMachine.Status != "online" || gotMachine.TenantID != user.TenantID {
 		t.Fatalf("unexpected machine: %#v", gotMachine)
 	}
 
@@ -163,6 +204,7 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 
 	session := &store.Session{
 		ID:          "s_1",
+		TenantID:    user.TenantID,
 		MachineID:   machine.ID,
 		UserID:      user.ID,
 		Tool:        "claude",
@@ -191,6 +233,62 @@ func TestUserMachineAndSessionRepositoriesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUsersAllowSameEmailAcrossTenants(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	users := []*store.User{
+		{ID: "u_tenant_a", TenantID: "tenant_a", Email: "shared@example.com", SN: "SN-SHARED-A", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+		{ID: "u_tenant_b", TenantID: "tenant_b", Email: "shared@example.com", SN: "SN-SHARED-B", Status: "active", EnrollmentStatus: "approved", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, user := range users {
+		if err := st.Users.Create(ctx, user); err != nil {
+			t.Fatalf("create user %s: %v", user.ID, err)
+		}
+	}
+
+	gotA, err := st.Users.GetByTenantEmail(ctx, "tenant_a", "shared@example.com")
+	if err != nil {
+		t.Fatalf("get tenant a user: %v", err)
+	}
+	gotB, err := st.Users.GetByTenantEmail(ctx, "tenant_b", "shared@example.com")
+	if err != nil {
+		t.Fatalf("get tenant b user: %v", err)
+	}
+	if gotA == nil || gotA.ID != "u_tenant_a" || gotB == nil || gotB.ID != "u_tenant_b" {
+		t.Fatalf("unexpected tenant users: a=%#v b=%#v", gotA, gotB)
+	}
+}
+
+func TestEmailBlocklistAllowSameEmailAcrossTenants(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	items := []*store.EmailBlockItem{
+		{ID: "blk_a", TenantID: "tenant_a", Email: "blocked@example.com", Reason: "a", CreatedAt: now, UpdatedAt: now},
+		{ID: "blk_b", TenantID: "tenant_b", Email: "blocked@example.com", Reason: "b", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, item := range items {
+		if err := st.EmailBlocks.Create(ctx, item); err != nil {
+			t.Fatalf("create block %s: %v", item.ID, err)
+		}
+	}
+
+	gotA, err := st.EmailBlocks.GetByTenantEmail(ctx, "tenant_a", "blocked@example.com")
+	if err != nil {
+		t.Fatalf("get tenant a block: %v", err)
+	}
+	gotB, err := st.EmailBlocks.GetByTenantEmail(ctx, "tenant_b", "blocked@example.com")
+	if err != nil {
+		t.Fatalf("get tenant b block: %v", err)
+	}
+	if gotA == nil || gotA.Reason != "a" || gotB == nil || gotB.Reason != "b" {
+		t.Fatalf("unexpected tenant blocks: a=%#v b=%#v", gotA, gotB)
+	}
+}
+
 func TestViewerAndLoginTokenRepositoriesRoundTrip(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -198,6 +296,7 @@ func TestViewerAndLoginTokenRepositoriesRoundTrip(t *testing.T) {
 
 	user := &store.User{
 		ID:               "u_2",
+		TenantID:         "tenant_acme",
 		Email:            "viewer@example.com",
 		SN:               "SN-2026-000002",
 		Status:           "active",
@@ -211,6 +310,7 @@ func TestViewerAndLoginTokenRepositoriesRoundTrip(t *testing.T) {
 
 	viewerToken := &store.ViewerToken{
 		ID:        "vt_1",
+		TenantID:  user.TenantID,
 		UserID:    user.ID,
 		TokenHash: "viewer-hash",
 		ExpiresAt: now.Add(24 * time.Hour),
@@ -224,12 +324,13 @@ func TestViewerAndLoginTokenRepositoriesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get viewer token: %v", err)
 	}
-	if gotViewer == nil || gotViewer.UserID != user.ID {
+	if gotViewer == nil || gotViewer.UserID != user.ID || gotViewer.TenantID != user.TenantID {
 		t.Fatalf("unexpected viewer token: %#v", gotViewer)
 	}
 
 	loginToken := &store.LoginToken{
 		ID:        "lt_1",
+		TenantID:  user.TenantID,
 		Email:     user.Email,
 		TokenHash: "login-hash",
 		Purpose:   "login",
@@ -244,7 +345,7 @@ func TestViewerAndLoginTokenRepositoriesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get login token: %v", err)
 	}
-	if gotLogin == nil || gotLogin.Email != user.Email {
+	if gotLogin == nil || gotLogin.Email != user.Email || gotLogin.TenantID != user.TenantID {
 		t.Fatalf("unexpected login token: %#v", gotLogin)
 	}
 

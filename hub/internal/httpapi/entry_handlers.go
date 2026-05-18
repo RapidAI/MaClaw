@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/auth"
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 )
 
@@ -19,7 +20,7 @@ func EntryProbeHandler(service *entry.Service) http.HandlerFunc {
 			return
 		}
 
-		resp, err := service.ProbeByEmail(r.Context(), req.Email)
+		resp, err := service.ProbeByEmail(auth.WithTenant(r.Context(), tenantIDFromClientHint(r)), req.Email)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "ENTRY_PROBE_FAILED", err.Error())
 			return

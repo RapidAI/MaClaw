@@ -27,7 +27,7 @@ func RunPolicy(args []string, dataDir string) error {
 
 func policyList(dataDir string, args []string) error {
 	fs := flag.NewFlagSet("policy list", flag.ExitOnError)
-	mode := fs.String("mode", "standard", "安全策略模式 (standard/strict/relaxed)")
+	mode := fs.String("mode", "standard", "安全策略模式 (standard/relaxed/strict/developer)")
 	jsonOut := fs.Bool("json", false, "JSON 格式输出")
 	fs.Parse(args)
 

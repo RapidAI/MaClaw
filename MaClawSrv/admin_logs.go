@@ -79,7 +79,7 @@ type adminLogRotateResponse struct {
 }
 
 func (s *HTTPServer) handleAdminLogSources(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"items": adminLogSources(s.svc.DataRoot())})
+	writeJSON(w, http.StatusOK, map[string]any{"items": redactAdminLogSourcesForAdminAPI(s.svc.DataRoot(), adminLogSources(s.svc.DataRoot()))})
 }
 
 func (s *HTTPServer) handleAdminRecentLogErrors(w http.ResponseWriter, r *http.Request) {
@@ -139,11 +139,11 @@ func (s *HTTPServer) handleAdminLogSearch(w http.ResponseWriter, r *http.Request
 	}
 	items, sourceIDs, err := searchAdminLogLines(s.svc.DataRoot(), in.Sources, tail, limit, level, query)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.logs_search", "log_source", "all", map[string]string{"sources": strings.Join(sourceIDs, ","), "tail": strconv.Itoa(tail), "limit": strconv.Itoa(limit), "level": level, "q": redactShort(query), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, adminLogSearchResponse{GeneratedAt: time.Now().UTC(), Sources: sourceIDs, Level: level, Query: query, Tail: tail, Limit: limit, Items: items})
+	writeJSON(w, http.StatusOK, adminLogSearchResponse{GeneratedAt: time.Now().UTC(), Sources: sourceIDs, Level: level, Query: redactShort(query), Tail: tail, Limit: limit, Items: items})
 }
 func (s *HTTPServer) handleAdminLogDownload(w http.ResponseWriter, r *http.Request) {
 	sourceID := strings.TrimSpace(r.PathValue("sourceId"))
@@ -161,7 +161,7 @@ func (s *HTTPServer) handleAdminLogDownload(w http.ResponseWriter, r *http.Reque
 		if os.IsNotExist(err) {
 			lines = []adminLogLine{}
 		} else {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 			return
 		}
 	}
@@ -176,7 +176,7 @@ func (s *HTTPServer) handleAdminLogRotate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := requireAdminConfirmation(r, "log rotation"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	sourceID := strings.TrimSpace(r.PathValue("sourceId"))
@@ -187,11 +187,11 @@ func (s *HTTPServer) handleAdminLogRotate(w http.ResponseWriter, r *http.Request
 	}
 	out, err := rotateAdminLogSource(source)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.logs_rotate", "log_source", source.ID, map[string]string{"rotated": strconv.FormatBool(out.Rotated), "rotated_to": filepath.Base(out.RotatedTo), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, redactAdminLogRotateResponseForAdminAPI(s.svc.DataRoot(), out))
 }
 
 func (s *HTTPServer) handleAdminLogRead(w http.ResponseWriter, r *http.Request) {
@@ -208,16 +208,34 @@ func (s *HTTPServer) handleAdminLogRead(w http.ResponseWriter, r *http.Request) 
 	lines, truncated, err := readAdminLogLines(source.Path, tail, level, query)
 	if err != nil {
 		if os.IsNotExist(err) {
-			writeJSON(w, http.StatusOK, adminLogReadResponse{Source: source, Tail: tail, Level: level, Query: query, Lines: []adminLogLine{}})
+			writeJSON(w, http.StatusOK, adminLogReadResponse{Source: redactAdminLogSourceForAdminAPI(s.svc.DataRoot(), source), Tail: tail, Level: level, Query: redactShort(query), Lines: []adminLogLine{}})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.logs_read", "log_source", source.ID, map[string]string{"tail": strconv.Itoa(tail), "level": level, "q": redactShort(query), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, adminLogReadResponse{Source: source, Tail: tail, Level: level, Query: query, Lines: lines, Truncated: truncated})
+	writeJSON(w, http.StatusOK, adminLogReadResponse{Source: redactAdminLogSourceForAdminAPI(s.svc.DataRoot(), source), Tail: tail, Level: level, Query: redactShort(query), Lines: lines, Truncated: truncated})
 }
 
+func redactAdminLogSourceForAdminAPI(dataRoot string, source adminLogSource) adminLogSource {
+	source.Path = redactSupportBundleValue(dataRoot, source.Path)
+	return source
+}
+
+func redactAdminLogSourcesForAdminAPI(dataRoot string, sources []adminLogSource) []adminLogSource {
+	out := make([]adminLogSource, 0, len(sources))
+	for _, source := range sources {
+		out = append(out, redactAdminLogSourceForAdminAPI(dataRoot, source))
+	}
+	return out
+}
+
+func redactAdminLogRotateResponseForAdminAPI(dataRoot string, in adminLogRotateResponse) adminLogRotateResponse {
+	in.Source = redactAdminLogSourceForAdminAPI(dataRoot, in.Source)
+	in.RotatedTo = redactSupportBundleValue(dataRoot, in.RotatedTo)
+	return in
+}
 func rotateAdminLogSource(source adminLogSource) (adminLogRotateResponse, error) {
 	if source.Path == "" {
 		return adminLogRotateResponse{}, fmt.Errorf("log source path is empty")
@@ -469,6 +487,9 @@ func classifyLogLine(line string) string {
 }
 
 func redactLogLine(line string) string {
+	line = supportBundleBearerPattern.ReplaceAllString(line, "Bearer <redacted>")
+	line = supportBundleJSONSecretPattern.ReplaceAllString(line, `${1}"<redacted>"`)
+	line = supportBundleInlineSecretPattern.ReplaceAllString(line, `${1}${2}<redacted>`)
 	fields := strings.Fields(line)
 	redactNext := false
 	for i, field := range fields {
@@ -494,7 +515,7 @@ func redactLogLine(line string) string {
 }
 
 func isSensitiveLogField(lower string) bool {
-	for _, key := range []string{"secret", "token", "password", "passwd", "api_key", "apikey", "api-secret", "api_secret", "apisecret", "authorization", "auth"} {
+	for _, key := range adminSecretKeyMarkers() {
 		if strings.Contains(lower, key) {
 			return true
 		}

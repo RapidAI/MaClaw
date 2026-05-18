@@ -6,8 +6,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,6 +81,82 @@ func TestAsyncImportSkillJobFailure(t *testing.T) {
 	final := waitForAsyncJob(t, server, token, job.ID)
 	if final.Status != asyncJobStatusFailed || final.Error == "" {
 		t.Fatalf("expected failed job, got %#v", final)
+	}
+}
+
+func TestAsyncJobRedactsResultAndError(t *testing.T) {
+	dataRoot := t.TempDir()
+	m := newAsyncJobManager(dataRoot)
+	p := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	jsonEscapedRoot, _ := json.Marshal(dataRoot)
+	job := m.createUserJob("test.success", p, func(context.Context) (any, error) {
+		return map[string]string{
+			"message":      "token=secret-token path=" + dataRoot,
+			"escaped_path": string(jsonEscapedRoot),
+			"endpoint_url": "https://user:pass@example.test/api?api_key=url-secret&trace=ok",
+			"author":       "visible-author",
+		}, nil
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, ok := m.getUserJob(job.ID, p)
+		if !ok {
+			t.Fatalf("job not found")
+		}
+		if got.Status == asyncJobStatusSucceeded {
+			text := string(got.Result)
+			if strings.Contains(text, "secret-token") || strings.Contains(text, "url-secret") || strings.Contains(text, "user:pass") || strings.Contains(text, dataRoot) || strings.Contains(text, filepath.ToSlash(dataRoot)) || strings.Contains(text, string(jsonEscapedRoot)) {
+				t.Fatalf("expected redacted async result, got %s", text)
+			}
+			if !strings.Contains(text, "trace=ok") {
+				t.Fatalf("expected benign URL query to remain visible, got %s", text)
+			}
+			if !strings.Contains(text, "visible-author") {
+				t.Fatalf("expected benign field to remain visible, got %s", text)
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	failed := m.createUserJob("test.failure", p, func(context.Context) (any, error) {
+		return nil, errors.New("api_secret=secret-value path=" + dataRoot)
+	})
+	for time.Now().Before(deadline) {
+		got, ok := m.getUserJob(failed.ID, p)
+		if !ok {
+			t.Fatalf("failed job not found")
+		}
+		if got.Status == asyncJobStatusFailed {
+			if strings.Contains(got.Error, "secret-value") || strings.Contains(got.Error, dataRoot) || strings.Contains(got.Error, filepath.ToSlash(dataRoot)) {
+				t.Fatalf("expected redacted async error, got %q", got.Error)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for async redaction jobs")
+}
+
+func TestAsyncJobSnapshotRedactsLegacyPersistedPayload(t *testing.T) {
+	dataRoot := t.TempDir()
+	m := newAsyncJobManager(dataRoot)
+	p := agentservice.Principal{TenantID: "tenant", UserID: "user"}
+	outsidePath := filepath.Join(filepath.Dir(dataRoot), "outside-secret", "legacy-job.md")
+	payload, err := json.Marshal(map[string]any{"message": "token=legacy-token path=" + dataRoot, "file_path": outsidePath, "nested": map[string]string{"root_path": outsidePath}})
+	if err != nil {
+		t.Fatalf("marshal legacy payload: %v", err)
+	}
+	job := &asyncJobRecord{asyncJobView: asyncJobView{ID: "job_legacy", Kind: "legacy", Status: asyncJobStatusSucceeded, TenantID: p.TenantID, UserID: p.UserID, Result: payload, Error: "api_secret=legacy-secret path=" + dataRoot}}
+	got := m.snapshot(job)
+	text := string(got.Result) + " " + got.Error
+	for _, leaked := range []string{"legacy-token", "legacy-secret", dataRoot, filepath.ToSlash(dataRoot), filepath.Dir(outsidePath), filepath.ToSlash(filepath.Dir(outsidePath))} {
+		if strings.Contains(text, leaked) {
+			t.Fatalf("expected legacy snapshot redaction for %q, got %s", leaked, text)
+		}
+	}
+	if !strings.Contains(string(got.Result), filepath.Base(outsidePath)) {
+		t.Fatalf("expected path basename to remain for diagnostics, got %s", got.Result)
 	}
 }
 

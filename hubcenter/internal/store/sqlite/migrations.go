@@ -49,6 +49,7 @@ func RunMigrations(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS hub_user_links (
 			id TEXT PRIMARY KEY,
 			hub_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL DEFAULT '',
 			email TEXT NOT NULL,
 			is_default INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
@@ -166,6 +167,12 @@ func RunMigrations(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_user_links_email_default ON hub_user_links(email, is_default, updated_at DESC)`); err != nil {
 		return fmt.Errorf("create hub_user_links email/default index: %w", err)
 	}
+	if err := ensureHubUserLinksTenantIDColumn(db); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_user_links_email_tenant_default ON hub_user_links(email, tenant_id, is_default, updated_at DESC)`); err != nil {
+		return fmt.Errorf("create hub_user_links email/tenant/default index: %w", err)
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hub_user_links_hub_id ON hub_user_links(hub_id)`); err != nil {
 		return fmt.Errorf("create hub_user_links hub_id index: %w", err)
 	}
@@ -270,6 +277,38 @@ func ensureHubInstallationIDColumn(db *sql.DB) error {
 
 	if _, err := db.Exec(`ALTER TABLE hub_instances ADD COLUMN installation_id TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add hub installation_id column: %w", err)
+	}
+	return nil
+}
+
+func ensureHubUserLinksTenantIDColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(hub_user_links)`)
+	if err != nil {
+		return fmt.Errorf("inspect hub_user_links columns: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			columnType string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultVal, &pk); err != nil {
+			return fmt.Errorf("scan hub_user_links column: %w", err)
+		}
+		if name == "tenant_id" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate hub_user_links columns: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE hub_user_links ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add hub_user_links tenant_id: %w", err)
 	}
 	return nil
 }

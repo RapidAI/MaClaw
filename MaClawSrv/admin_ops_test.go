@@ -125,7 +125,8 @@ func TestAdminSandboxStartupDiagnoseWhenEnabled(t *testing.T) {
 	}
 }
 func TestAdminSandboxConfigCanSwitchRuntimeMode(t *testing.T) {
-	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -140,7 +141,11 @@ func TestAdminSandboxConfigCanSwitchRuntimeMode(t *testing.T) {
 		t.Fatalf("unsafe sandbox mode without confirm status = %d body = %s", w.Code, w.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPut, "/api/v1/admin/sandbox/config", bytes.NewBufferString(`{"mode":"none","strict":true,"confirm_unsafe":true,"reason":"debug sandbox failure"}`))
+	updateBody, err := json.Marshal(map[string]any{"mode": "none", "strict": true, "confirm_unsafe": true, "reason": "debug sandbox failure token=secret-token path=" + dataRoot})
+	if err != nil {
+		t.Fatalf("marshal update body: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/admin/sandbox/config", bytes.NewReader(updateBody))
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -157,6 +162,31 @@ func TestAdminSandboxConfigCanSwitchRuntimeMode(t *testing.T) {
 	}
 	if out.Config.Mode.Value != "none" || out.Config.Mode.Source != "runtime_config" || out.Status.Mode != "none" || !out.Status.Strict {
 		t.Fatalf("unexpected sandbox config update: %#v", out)
+	}
+	if strings.Contains(out.Config.Reason, "secret-token") || strings.Contains(out.Config.Reason, dataRoot) || strings.Contains(out.Config.Reason, filepath.ToSlash(dataRoot)) {
+		t.Fatalf("expected redacted sandbox config update reason, got %q", out.Config.Reason)
+	}
+	savedCfg, err := loadAdminRuntimeConfig(dataRoot)
+	if err != nil {
+		t.Fatalf("load runtime config: %v", err)
+	}
+	if strings.Contains(savedCfg.Reason, "secret-token") || strings.Contains(savedCfg.Reason, dataRoot) || strings.Contains(savedCfg.Reason, filepath.ToSlash(dataRoot)) {
+		t.Fatalf("expected saved sandbox config reason to be redacted, got %q", savedCfg.Reason)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/sandbox/config", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get sandbox config status = %d body = %s", w.Code, w.Body.String())
+	}
+	var getOut adminSandboxConfigResponse
+	if err := json.NewDecoder(w.Body).Decode(&getOut); err != nil {
+		t.Fatalf("decode get sandbox config: %v", err)
+	}
+	if strings.Contains(getOut.Reason, "secret-token") || strings.Contains(getOut.Reason, dataRoot) || strings.Contains(getOut.Reason, filepath.ToSlash(dataRoot)) {
+		t.Fatalf("expected redacted sandbox config get reason, got %q", getOut.Reason)
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/sandbox/switch", bytes.NewBufferString(`{"mode":"auto","reason":"switch back"}`))
@@ -186,15 +216,11 @@ func TestAdminSandboxConfigCanSwitchRuntimeMode(t *testing.T) {
 		t.Fatalf("expected sandbox switch audit event")
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/sandbox/config", nil)
-	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
-	w = httptest.NewRecorder()
-	server.Handler().ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("get sandbox config status = %d body = %s", w.Code, w.Body.String())
+	rollbackBody, err := json.Marshal(map[string]any{"reason": "rollback sandbox config api_key=rollback-secret path=" + dataRoot})
+	if err != nil {
+		t.Fatalf("marshal rollback body: %v", err)
 	}
-
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/sandbox/rollback", bytes.NewBufferString(`{"reason":"rollback sandbox config"}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/sandbox/rollback", bytes.NewReader(rollbackBody))
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -208,8 +234,10 @@ func TestAdminSandboxConfigCanSwitchRuntimeMode(t *testing.T) {
 	if out.Config.Mode.Source == "runtime_config" || out.Status.Mode == "none" || out.Status.ModeSource == "runtime_config" || out.Status.Strict {
 		t.Fatalf("unexpected rollback sandbox config: %#v", out)
 	}
+	if strings.Contains(out.Config.Reason, "rollback-secret") || strings.Contains(out.Config.Reason, dataRoot) || strings.Contains(out.Config.Reason, filepath.ToSlash(dataRoot)) {
+		t.Fatalf("expected redacted sandbox rollback reason, got %q", out.Config.Reason)
+	}
 }
-
 func TestAdminSandboxDiagnosePersistsReport(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -239,6 +267,30 @@ func TestAdminSandboxDiagnosePersistsReport(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("get report status = %d body = %s", w.Code, w.Body.String())
+	}
+	var gotReport sandboxDiagnoseReport
+	if err := json.NewDecoder(w.Body).Decode(&gotReport); err != nil {
+		t.Fatalf("decode persisted report: %v", err)
+	}
+	if gotReport.Raw != nil {
+		t.Fatalf("admin persisted sandbox report should redact raw diagnostics: %#v", gotReport.Raw)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/sandbox/reports", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list reports status = %d body = %s", w.Code, w.Body.String())
+	}
+	var listedReports struct {
+		Items []sandboxDiagnoseReport
+	}
+	if err := json.NewDecoder(w.Body).Decode(&listedReports); err != nil {
+		t.Fatalf("decode listed reports: %v", err)
+	}
+	if len(listedReports.Items) == 0 || listedReports.Items[0].Raw != nil {
+		t.Fatalf("admin sandbox report list should redact raw diagnostics: %#v", listedReports.Items)
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/sandbox/reports/"+report.ReportID, nil)
@@ -511,12 +563,25 @@ func TestAdminSandboxSupportBundleIncludesTroubleshootingData(t *testing.T) {
 		t.Fatalf("expected support bundle audit event")
 	}
 }
+
+func TestRedactShortRedactsSecretsAndKeepsBenignAuthorship(t *testing.T) {
+	out := redactShort(`token=secret-token API Key = display-key {"api_secret":"json-secret"} author=visible-author`)
+	for _, secret := range []string{"secret-token", "display-key", "json-secret"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("expected %q to be redacted in %q", secret, out)
+		}
+	}
+	if !strings.Contains(out, "author=visible-author") {
+		t.Fatalf("expected benign author field to remain visible, got %q", out)
+	}
+}
+
 func TestAdminSandboxEventsFiltersSandboxAudit(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "admin.sandbox_diagnose_completed", ResourceType: "sandbox_report", ResourceID: "sandbox_report_1", Metadata: map[string]string{"status": "pass", "effective_backend": "bwrap"}}); err != nil {
+	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "admin.sandbox_diagnose_completed", ResourceType: "sandbox_report", ResourceID: filepath.Join(svc.DataRoot(), "sandbox_report_1"), Metadata: map[string]string{"status": "pass", "effective_backend": "bwrap", "token": "sandbox-event-token", "path": svc.DataRoot()}}); err != nil {
 		t.Fatalf("RecordAuditEvent sandbox: %v", err)
 	}
 	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "admin.logs_read", ResourceType: "log_source", ResourceID: "service"}); err != nil {
@@ -540,6 +605,9 @@ func TestAdminSandboxEventsFiltersSandboxAudit(t *testing.T) {
 	if len(out.Items) != 1 || out.Items[0].Action != "admin.sandbox_diagnose_completed" {
 		t.Fatalf("unexpected sandbox events: %#v", out.Items)
 	}
+	if out.Items[0].Metadata["token"] != "[redacted]" || strings.Contains(out.Items[0].Metadata["path"], svc.DataRoot()) || strings.Contains(out.Items[0].ResourceID, svc.DataRoot()) {
+		t.Fatalf("expected redacted sandbox event payload: %#v", out.Items[0])
+	}
 }
 
 func TestValidateSandboxProfileNormalizesCaseAndWarnings(t *testing.T) {
@@ -561,7 +629,9 @@ func TestAdminSandboxProfilesCanValidateAndPersist(t *testing.T) {
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
 
-	body := `{"backend":"bwrap","network":"disabled","readonly_paths":["/usr"],"writable_paths":["/tmp"],"env_allowlist":["PATH"]}`
+	readOnlyPath := filepath.Join(svc.DataRoot(), "readonly")
+	writablePath := filepath.Join(svc.DataRoot(), "writable")
+	body := `{"backend":"bwrap","network":"disabled","readonly_paths":["` + filepath.ToSlash(readOnlyPath) + `"],"writable_paths":["` + filepath.ToSlash(writablePath) + `"],"env_allowlist":["PATH"]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/sandbox/profiles/local/validate", bytes.NewBufferString(body))
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
 	req.Header.Set("Content-Type", "application/json")
@@ -586,6 +656,9 @@ func TestAdminSandboxProfilesCanValidateAndPersist(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("put profile status = %d body = %s", w.Code, w.Body.String())
 	}
+	if strings.Contains(w.Body.String(), svc.DataRoot()) || strings.Contains(w.Body.String(), filepath.ToSlash(svc.DataRoot())) {
+		t.Fatalf("expected redacted profile update response, got %s", w.Body.String())
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/sandbox/profiles/local", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -593,6 +666,20 @@ func TestAdminSandboxProfilesCanValidateAndPersist(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "bwrap") {
 		t.Fatalf("get profile status = %d body = %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), svc.DataRoot()) || strings.Contains(w.Body.String(), filepath.ToSlash(svc.DataRoot())) {
+		t.Fatalf("expected redacted profile get response, got %s", w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/sandbox/profiles", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list profile status = %d body = %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), svc.DataRoot()) || strings.Contains(w.Body.String(), filepath.ToSlash(svc.DataRoot())) {
+		t.Fatalf("expected redacted profile list response, got %s", w.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/sandbox/profiles/local", nil)
@@ -632,7 +719,6 @@ func TestAdminSandboxProfilesCanValidateAndPersist(t *testing.T) {
 		t.Fatalf("bad profile status = %d body = %s", w.Code, w.Body.String())
 	}
 }
-
 func TestAdminSecurityRiskEvents(t *testing.T) {
 	t.Setenv("MACLAW_ALLOW_INSECURE_HTTP", "true")
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})

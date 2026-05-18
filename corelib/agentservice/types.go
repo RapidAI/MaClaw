@@ -296,6 +296,8 @@ type ListAuditEventsInput struct {
 	ResourceType string     `json:"resource_type,omitempty"`
 	ResourceID   string     `json:"resource_id,omitempty"`
 	ActorType    string     `json:"actor_type,omitempty"`
+	ActorTenant  string     `json:"actor_tenant_id,omitempty"`
+	ActorUser    string     `json:"actor_user_id,omitempty"`
 	Since        *time.Time `json:"since,omitempty"`
 	Until        *time.Time `json:"until,omitempty"`
 }

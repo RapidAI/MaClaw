@@ -440,7 +440,7 @@ func (p *Plugin) ResolveUser(ctx context.Context, platformUID string) (string, e
 	if !ok || email == "" {
 		return "", fmt.Errorf("wecom: user %s not bound, please send your email to bind", platformUID)
 	}
-	user, err := p.users.GetByEmail(ctx, email)
+	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		return "", fmt.Errorf("wecom: no hub user found for email %s", email)
 	}
@@ -1505,7 +1505,7 @@ func (p *Plugin) handleEmailSubmit(userID, email string) {
 	defer cancel()
 	email = strings.TrimSpace(strings.ToLower(email))
 
-	user, err := p.users.GetByEmail(ctx, email)
+	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		_ = p.sendMarkdown(userID,
 			fmt.Sprintf("❌ 未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))

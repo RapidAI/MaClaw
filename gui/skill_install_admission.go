@@ -87,16 +87,52 @@ func (a *App) logSkillInstallSecurityEvent(action security.AuditAction, toolName
 	})
 }
 
+func (a *App) isSecurityDeveloperMode() bool {
+	return a != nil && a.policyEngine != nil && a.policyEngine.IsDeveloperMode()
+}
+
+func (a *App) securityPolicyMode() string {
+	if a != nil && a.policyEngine != nil {
+		return a.policyEngine.Mode()
+	}
+	return "standard"
+}
+
+func (a *App) skillInstallReviewNeedsConfirmation(report *cskill.ScanReport) bool {
+	if report == nil || report.IsSafe() || a.isSecurityDeveloperMode() {
+		return false
+	}
+	switch a.securityPolicyMode() {
+	case "standard":
+		return report.IsDangerous()
+	case "strict":
+		return report.IsDangerous() || report.NeedsUserReview()
+	default:
+		return false
+	}
+}
+
+func (a *App) skillInstallScanShouldBlock(report *cskill.ScanReport) bool {
+	if report == nil || report.IsSafe() || a.isSecurityDeveloperMode() {
+		return false
+	}
+	return a.securityPolicyMode() == "strict" && (report.IsDangerous() || report.NeedsUserReview())
+}
+
+func (a *App) skillInstallMissingScanShouldBlock() bool {
+	return a.securityPolicyMode() == "strict"
+}
+
 func (a *App) confirmManualSkillInstall(ctx context.Context, skillName, source string, level security.RiskLevel, factors []string) bool {
 	if a == nil {
 		return false
 	}
 	if a.ctx == nil {
-		if strings.TrimSpace(a.testHomeDir) != "" {
-			log.Printf("[skill-install-confirm] no UI context for skill %q; allowing high-risk install in test harness", skillName)
+		if strings.TrimSpace(a.testHomeDir) != "" || a.securityPolicyMode() != "strict" {
+			log.Printf("[skill-install-confirm] no UI context for skill %q; allowing install under %s mode", skillName, a.securityPolicyMode())
 			return true
 		}
-		log.Printf("[skill-install-confirm] no UI context for skill %q; rejecting high-risk install", skillName)
+		log.Printf("[skill-install-confirm] no UI context for skill %q; rejecting high-risk install in strict mode", skillName)
 		return false
 	}
 	if ctx == nil {
@@ -170,7 +206,41 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 	if entry == nil {
 		return fmt.Errorf("skill entry is required")
 	}
+	if a.isSecurityDeveloperMode() {
+		status := "Developer mode enabled; security scan will not block installation."
+		phase := "scan-complete"
+		level := security.RiskLow
+		summary := "no scan report recorded"
+		if report != nil {
+			level = report.FinalLevel
+			summary = report.Summary
+			if report.IsDangerous() || report.NeedsUserReview() {
+				status = "Developer mode enabled; high-risk scan result allowed."
+				phase = "approved"
+			}
+		}
+		a.emitSkillInstallProgress(entry.Name, phase, status, report)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"manual_skill_install",
+			level,
+			security.PolicyAllow,
+			fmt.Sprintf("developer mode allowed skill %s after pre-install scan: %s", entry.Name, summary),
+		)
+		return nil
+	}
 	if report == nil {
+		if !a.skillInstallMissingScanShouldBlock() {
+			a.emitSkillInstallProgress(entry.Name, "scan-complete", "Security scan did not produce a report; current policy allows installation.", nil)
+			a.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillInstall,
+				"manual_skill_install",
+				security.RiskCritical,
+				security.PolicyAudit,
+				fmt.Sprintf("current policy allowed skill %s even though pre-install scan report was missing", entry.Name),
+			)
+			return nil
+		}
 		a.emitSkillInstallProgress(entry.Name, "blocked", "Security scan did not produce a report. Installation blocked by policy.", nil)
 		a.logSkillInstallSecurityEvent(
 			security.AuditActionHubSkillReject,
@@ -194,7 +264,7 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 	}
 
 	factors := skillInstallRiskFactors(report)
-	if report.IsDangerous() || report.NeedsUserReview() {
+	if a.skillInstallReviewNeedsConfirmation(report) {
 		statusMsg := "High risk found. Waiting for your allow or reject decision."
 		if report.IsDangerous() {
 			statusMsg = "Critical risk found. Waiting for your allow or reject decision."
@@ -219,6 +289,16 @@ func (a *App) admitManualSkillInstall(ctx context.Context, entry *corelib.NLSkil
 			report.FinalLevel,
 			security.PolicyUserOverride,
 			fmt.Sprintf("user allowed skill %s after pre-install scan, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
+		)
+	}
+	if report.NeedsUserReview() {
+		a.emitSkillInstallProgress(entry.Name, "scan-complete", "Security scan recorded risk and allowed installation by current policy.", report)
+		a.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillInstall,
+			"manual_skill_install",
+			report.FinalLevel,
+			security.PolicyAudit,
+			fmt.Sprintf("pre-install scan allowed skill %s by current policy, scanned_by=%s, level=%s", entry.Name, report.ScannedBy, report.FinalLevel),
 		)
 	}
 	return nil

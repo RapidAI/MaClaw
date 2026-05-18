@@ -7,6 +7,7 @@ import (
 
 // SecurityGroup 用户组
 type SecurityGroup struct {
+	TenantID  string    `json:"tenant_id,omitempty"`
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	ParentID  string    `json:"parent_id"`
@@ -16,6 +17,7 @@ type SecurityGroup struct {
 
 // GroupTreeNode 树形节点（API 返回用）
 type GroupTreeNode struct {
+	TenantID    string           `json:"tenant_id,omitempty"`
 	ID          string           `json:"id"`
 	Name        string           `json:"name"`
 	ParentID    string           `json:"parent_id"`
@@ -26,6 +28,7 @@ type GroupTreeNode struct {
 
 // PolicyGroupPathItem describes one node in a root-to-leaf policy path.
 type PolicyGroupPathItem struct {
+	TenantID string `json:"tenant_id,omitempty"`
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	ParentID string `json:"parent_id"`

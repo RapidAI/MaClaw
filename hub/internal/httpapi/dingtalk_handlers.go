@@ -19,6 +19,7 @@ type DingTalkConfigState struct {
 
 func GetDingTalkConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		raw, err := system.Get(r.Context(), dingtalkConfigKey)
 		if err != nil || raw == "" {
 			writeJSON(w, http.StatusOK, DingTalkConfigState{})
@@ -38,6 +39,7 @@ func GetDingTalkConfigHandler(system store.SystemSettingsRepository) http.Handle
 
 func UpdateDingTalkConfigHandler(system store.SystemSettingsRepository, plugin *dingtalk.Plugin) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var cfg DingTalkConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")

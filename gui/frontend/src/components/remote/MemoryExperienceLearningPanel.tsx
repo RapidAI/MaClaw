@@ -135,7 +135,10 @@ type GovernanceFocus = {
 type GovernanceFocusContext = {
     priority_trace_id?: string;
     priority_trace_title?: string;
+    recommended_trace_id?: string;
+    recommended_title?: string;
     reason?: string;
+    [key: string]: any;
 };
 
 function experienceTriggeredRollbackDetail(detail: TraceDetail | null | undefined): boolean {
@@ -328,8 +331,8 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
     const governancePriorityTrace = useMemo(() => {
         if (!displayedGovernanceSummary) return { id: "", title: "", reason: "" };
         const backendContext = asRecord(displayedGovernanceSummary.recommended_focus_context);
-        const contextTraceID = String(backendContext.priority_trace_id || "").trim();
-        const contextTraceTitle = String(backendContext.priority_trace_title || "").trim();
+        const contextTraceID = String(backendContext.priority_trace_id || backendContext.recommended_trace_id || "").trim();
+        const contextTraceTitle = String(backendContext.priority_trace_title || backendContext.recommended_title || "").trim();
         const contextReason = String(backendContext.reason || "").trim();
         if (contextTraceID || contextTraceTitle || contextReason) {
             return { id: contextTraceID, title: contextTraceTitle || contextTraceID, reason: contextReason };
@@ -545,7 +548,7 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
     const focusGovernanceAction = (action: string, focus?: GovernanceFocus, reason?: string, focusContext?: GovernanceFocusContext | null) => {
         const normalized = action.trim();
         const backendContext = asRecord(focusContext);
-        const backendTraceId = String(backendContext.priority_trace_id || "").trim();
+        const backendTraceId = String(backendContext.priority_trace_id || backendContext.recommended_trace_id || "").trim();
         const backendReason = String(backendContext.reason || "").trim();
         const focusFilter = String(focus?.trace_filter || "").trim();
         const focusReviewStatus = String(focus?.review_status || "").trim();
@@ -622,6 +625,12 @@ export function ExperienceLearningPanel({ t, learning, error, focusTrace, onRevi
             case "review_routing_candidates":
             case "inspect_routing_signals":
             case "inspect_skill_nudge_candidates":
+            case "inspect_tool_recovery_governance":
+                if (governancePriorityTraceId) {
+                    setPriorityTraceId(governancePriorityTraceId);
+                    setSelectedTraceId(governancePriorityTraceId);
+                }
+                setPriorityTraceReason(governancePriorityReason);
                 setTraceFilter("tools");
                 return;
             case "build_memory_maintenance_draft":
@@ -929,6 +938,10 @@ function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewAct
     const a2aFocusContext = formatGovernanceFocusContext(asRecord(a2a.recommended_focus_context));
     const a2aRecommendedToolCall = formatGovernanceRecommendedToolCall(asRecord(a2a.recommended_tool_call));
     const routingQuery = asRecord(routing.query);
+    const toolRecoveryGovernance = asRecord(routing.tool_recovery_governance);
+    const toolRecoveryCount = toSafeCount(toolRecoveryGovernance.count, 0);
+    const toolRecoveryReviewCount = toSafeCount(toolRecoveryGovernance.review_required_count, 0);
+    const toolRecoveryDisabledCount = toSafeCount(toolRecoveryGovernance.disabled_count, 0);
     const routingCandidates = Array.isArray(routing.tool_candidates) ? routing.tool_candidates : [];
     const routingRecommendation = String(routing.recommendation || routing.routing_recommendation || "").trim();
     const routingBoundary = String(routing.non_executing_boundary || "").trim();
@@ -953,8 +966,12 @@ function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewAct
                 { label: t("Skills", "\u6280\u80fd", "\u6280\u80fd"), value: routing.skill_nudge_count },
                 { label: t("Recoveries", "\u6062\u590d", "\u6062\u5fa9"), value: routing.recovery_pattern_count },
                 { label: t("Usage", "\u7528\u6cd5", "\u7528\u6cd5"), value: routing.usage_pattern_count },
+                { label: t("Failures", "\u5931\u8d25", "\u5931\u6557"), value: toolRecoveryCount },
+                { label: t("Review", "\u8bc4\u5ba1", "\u8a55\u5be9"), value: toolRecoveryReviewCount },
             ]),
-            detail: t("Self-evolution evidence remains review-gated.", "\u81ea\u8fdb\u5316\u8bc1\u636e\u4ecd\u7531\u8bc4\u5ba1\u95e8\u63a7\u3002", "\u81ea\u9032\u5316\u8b49\u64da\u4ecd\u7531\u8a55\u5be9\u95dc\u5361\u3002"),
+            detail: toolRecoveryCount > 0
+                ? t("Tool recovery windows are visible without changing routing or retry policy.", "\u5de5\u5177\u6062\u590d\u7a97\u53e3\u53ef\u89c1\uff0c\u4e0d\u4f1a\u6539\u53d8\u8def\u7531\u6216\u91cd\u8bd5\u7b56\u7565\u3002", "\u5de5\u5177\u6062\u5fa9\u7a97\u53e3\u53ef\u898b\uff0c\u4e0d\u6703\u6539\u8b8a\u8def\u7531\u6216\u91cd\u8a66\u7b56\u7565\u3002")
+                : t("Self-evolution evidence remains review-gated.", "\u81ea\u8fdb\u5316\u8bc1\u636e\u4ecd\u7531\u8bc4\u5ba1\u95e8\u63a7\u3002", "\u81ea\u9032\u5316\u8b49\u64da\u4ecd\u7531\u8a55\u5be9\u95dc\u5361\u3002"),
         },
         {
             title: "A2A",
@@ -1014,6 +1031,15 @@ function GovernanceSummaryNotice({ t, summary, taskType, query, tool, previewAct
                             <span>{recommendedTraceReason}</span>
                         </div>
                     )}
+                </div>
+            )}
+            {toolRecoveryCount > 0 && (
+                <div style={maintenanceMetaStyle}>
+                    {t("Tool recovery governance", "\u5de5\u5177\u6062\u590d\u6cbb\u7406", "\u5de5\u5177\u6062\u5fa9\u6cbb\u7406")}: {governanceTrackLine([
+                        { label: t("Windows", "\u7a97\u53e3", "\u7a97\u53e3"), value: toolRecoveryCount },
+                        { label: t("Review", "\u8bc4\u5ba1", "\u8a55\u5be9"), value: toolRecoveryReviewCount },
+                        { label: t("Disabled", "\u7981\u7528", "\u505c\u7528"), value: toolRecoveryDisabledCount },
+                    ])}
                 </div>
             )}
             {triggeredRollbackReview && (
@@ -1984,8 +2010,8 @@ function formatGovernanceFocusContext(context: Record<string, any>): string {
     if (Object.keys(context).length === 0) return "";
     try {
         const lines: string[] = [];
-        const traceId = String(context.priority_trace_id || "").trim();
-        const traceTitle = String(context.priority_trace_title || "").trim();
+        const traceId = String(context.priority_trace_id || context.recommended_trace_id || "").trim();
+        const traceTitle = String(context.priority_trace_title || context.recommended_title || "").trim();
         const reason = String(context.reason || "").trim();
         if (traceTitle) lines.push("优先轨迹: " + traceTitle);
         else if (traceId) lines.push("优先轨迹: " + traceId);
@@ -1993,7 +2019,7 @@ function formatGovernanceFocusContext(context: Record<string, any>): string {
         if (reason) lines.push("原因: " + reason);
         // Fallback for any other keys not covered above
         for (const [key, value] of Object.entries(context)) {
-            if (["priority_trace_id", "priority_trace_title", "reason"].includes(key)) continue;
+            if (["priority_trace_id", "priority_trace_title", "recommended_trace_id", "recommended_title", "reason"].includes(key)) continue;
             if (value === undefined || value === null || value === "") continue;
             if (typeof value === "object" && !Array.isArray(value)) {
                 // Flatten one level of nested objects
@@ -2026,6 +2052,7 @@ function fallbackGovernanceTraceFilter(action: string): TraceFilter | undefined 
         case "review_routing_candidates":
         case "inspect_routing_signals":
         case "inspect_skill_nudge_candidates":
+        case "inspect_tool_recovery_governance":
             return "tools";
         case "inspect_memory_candidates":
         case "build_memory_maintenance_draft":

@@ -689,6 +689,12 @@ func (rt *userMCPRuntime) localTools(serverID string) ([]MCPToolView, error) {
 
 func (rt *userMCPRuntime) checkRemote(entry corelib.MCPServerEntry) error {
 	client := &http.Client{Timeout: 30 * time.Second}
+	return rt.checkRemoteWithClient(client, entry)
+}
+
+// checkRemoteWithClient performs a health probe using the provided HTTP client.
+// The client's Timeout controls the maximum duration of the probe.
+func (rt *userMCPRuntime) checkRemoteWithClient(client *http.Client, entry corelib.MCPServerEntry) error {
 	if err := rt.ensureRemoteSession(client, entry); err != nil {
 		return err
 	}

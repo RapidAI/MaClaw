@@ -210,6 +210,13 @@ describe("VEConversationView", () => {
             expect(initiate).toHaveBeenCalledWith("ve-1");
         });
 
+        it("notifies parent when a session id is established", async () => {
+            const onSessionIdChange = vi.fn();
+            renderConversation({ onSessionIdChange });
+            await act(async () => { await vi.runAllTimersAsync(); });
+            expect(onSessionIdChange).toHaveBeenCalledWith("test-session-1");
+        });
+
         it("shows error banner on session creation failure", async () => {
             const initiate = vi.fn().mockRejectedValue(new Error("offline"));
             renderConversation({ initiateConversation: initiate });

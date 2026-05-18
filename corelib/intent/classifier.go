@@ -183,6 +183,7 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 			bestResult := ClassificationResult{
 				Primary:      top.Label,
 				Confidence:   top.Score,
+				Secondary:    secondaryTreeLabels(candidates),
 				Layer:        3,
 				Reason:       fmt.Sprintf("tree-only: %s (%.3f)", top.Label, top.Score),
 				WorkflowType: top.WorkflowType,
@@ -210,6 +211,26 @@ func (u *UnifiedIntentClassifier) Classify(msg MessageContext) ClassificationRes
 	}
 	u.cacheAndLog(cacheKey, msg.Text, &result)
 	return result
+}
+
+func secondaryTreeLabels(candidates []TreeCandidate) []IntentLabel {
+	if len(candidates) < 2 {
+		return nil
+	}
+	topScore := candidates[0].Score
+	seen := map[IntentLabel]bool{candidates[0].Label: true}
+	var secondary []IntentLabel
+	for _, candidate := range candidates[1:] {
+		if candidate.Label == LabelUnknown || candidate.Label == LabelAmbiguous || seen[candidate.Label] {
+			continue
+		}
+		if candidate.Score < 0.70 || topScore-candidate.Score > 0.20 {
+			continue
+		}
+		seen[candidate.Label] = true
+		secondary = append(secondary, candidate.Label)
+	}
+	return secondary
 }
 
 // InvalidateCache clears the per-message cache. Called once per message

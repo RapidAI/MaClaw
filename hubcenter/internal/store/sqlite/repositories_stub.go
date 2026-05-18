@@ -168,11 +168,13 @@ func scanHubInstance(scanner interface{ Scan(dest ...any) error }) (*store.HubIn
 func scanHubUserLink(scanner interface{ Scan(dest ...any) error }) (*store.HubUserLink, error) {
 	var item store.HubUserLink
 	var isDefault int
+	var tenantID sql.NullString
 	var createdAt string
 	var updatedAt string
-	if err := scanner.Scan(&item.ID, &item.HubID, &item.Email, &isDefault, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&item.ID, &item.HubID, &tenantID, &item.Email, &isDefault, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
+	item.TenantID = tenantID.String
 	item.IsDefault = isDefault == 1
 	item.CreatedAt = mustParseTime(createdAt)
 	item.UpdatedAt = mustParseTime(updatedAt)
@@ -548,7 +550,7 @@ func (r *hubRepo) DeleteByID(ctx context.Context, hubID string) error {
 
 func (r *hubUserLinkRepo) ListByEmail(ctx context.Context, email string) ([]*store.HubUserLink, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
-		SELECT id, hub_id, email, is_default, created_at, updated_at
+		SELECT id, hub_id, tenant_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		WHERE email = ?
 		ORDER BY is_default DESC, updated_at DESC
@@ -571,7 +573,7 @@ func (r *hubUserLinkRepo) ListByEmail(ctx context.Context, email string) ([]*sto
 
 func (r *hubUserLinkRepo) ListAll(ctx context.Context) ([]*store.HubUserLink, error) {
 	rows, err := r.readDB.QueryContext(ctx, `
-		SELECT id, hub_id, email, is_default, created_at, updated_at
+		SELECT id, hub_id, tenant_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		ORDER BY updated_at DESC, id ASC
 	`)
@@ -593,11 +595,12 @@ func (r *hubUserLinkRepo) ListAll(ctx context.Context) ([]*store.HubUserLink, er
 
 func (r *hubUserLinkRepo) Create(ctx context.Context, link *store.HubUserLink) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO hub_user_links (id, hub_id, tenant_id, email, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`,
 		link.ID,
 		link.HubID,
+		link.TenantID,
 		link.Email,
 		boolToInt(link.IsDefault),
 		link.CreatedAt.Format(time.RFC3339),
@@ -608,16 +611,18 @@ func (r *hubUserLinkRepo) Create(ctx context.Context, link *store.HubUserLink) e
 
 func (r *hubUserLinkRepo) Upsert(ctx context.Context, link *store.HubUserLink) error {
 	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO hub_user_links (id, hub_id, tenant_id, email, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			hub_id = excluded.hub_id,
+			tenant_id = excluded.tenant_id,
 			email = excluded.email,
 			is_default = excluded.is_default,
 			updated_at = excluded.updated_at
 	`,
 		link.ID,
 		link.HubID,
+		link.TenantID,
 		link.Email,
 		boolToInt(link.IsDefault),
 		link.CreatedAt.Format(time.RFC3339),
@@ -628,7 +633,7 @@ func (r *hubUserLinkRepo) Upsert(ctx context.Context, link *store.HubUserLink) e
 
 func (r *hubUserLinkRepo) GetDefaultByEmail(ctx context.Context, email string) (*store.HubUserLink, error) {
 	row := r.readDB.QueryRowContext(ctx, `
-		SELECT id, hub_id, email, is_default, created_at, updated_at
+		SELECT id, hub_id, tenant_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		WHERE email = ? AND is_default = 1
 		LIMIT 1
@@ -673,7 +678,7 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 	}()
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, hub_id, email, is_default, created_at, updated_at
+		SELECT id, hub_id, tenant_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		WHERE email = ?
 		ORDER BY is_default DESC, updated_at DESC
@@ -714,14 +719,15 @@ func (r *hubUserLinkRepo) MigrateEmailToHub(ctx context.Context, email, fromHubI
 	var upserted *store.HubUserLink
 	if !targetExists || len(remove) > 0 {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
+			INSERT INTO hub_user_links (id, hub_id, tenant_id, email, is_default, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				hub_id = excluded.hub_id,
+				tenant_id = excluded.tenant_id,
 				email = excluded.email,
 				is_default = excluded.is_default,
 				updated_at = excluded.updated_at
-		`, link.ID, link.HubID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
+		`, link.ID, link.HubID, link.TenantID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
 			return nil, nil, err
 		}
 		upserted = link
@@ -751,7 +757,7 @@ func (r *hubUserLinkRepo) MigrateEmailPatternToHub(ctx context.Context, pattern,
 	}()
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, hub_id, email, is_default, created_at, updated_at
+		SELECT id, hub_id, tenant_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		ORDER BY email ASC, is_default DESC, updated_at DESC
 	`)
@@ -789,14 +795,15 @@ func (r *hubUserLinkRepo) MigrateEmailPatternToHub(ctx context.Context, pattern,
 	for email := range matchedEmails {
 		link := &store.HubUserLink{ID: adminStoreUserLinkID(email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET
-				hub_id = excluded.hub_id,
-				email = excluded.email,
+		INSERT INTO hub_user_links (id, hub_id, tenant_id, email, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			hub_id = excluded.hub_id,
+			tenant_id = excluded.tenant_id,
+			email = excluded.email,
 				is_default = excluded.is_default,
 				updated_at = excluded.updated_at
-		`, link.ID, link.HubID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
+		`, link.ID, link.HubID, link.TenantID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
 			return nil, nil, err
 		}
 		upserted = append(upserted, link)
@@ -992,7 +999,7 @@ func (r *hubDomainRouteRepo) MigrateDomainAndEmailPatternToHub(ctx context.Conte
 	}
 
 	linkRows, err := tx.QueryContext(ctx, `
-		SELECT id, hub_id, email, is_default, created_at, updated_at
+		SELECT id, hub_id, tenant_id, email, is_default, created_at, updated_at
 		FROM hub_user_links
 		ORDER BY email ASC, is_default DESC, updated_at DESC
 	`)
@@ -1044,14 +1051,15 @@ func (r *hubDomainRouteRepo) MigrateDomainAndEmailPatternToHub(ctx context.Conte
 	for email := range matchedEmails {
 		link := &store.HubUserLink{ID: adminStoreUserLinkID(email), HubID: toHubID, Email: email, IsDefault: true, CreatedAt: now, UpdatedAt: now}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO hub_user_links (id, hub_id, email, is_default, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET
-				hub_id = excluded.hub_id,
-				email = excluded.email,
+		INSERT INTO hub_user_links (id, hub_id, tenant_id, email, is_default, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			hub_id = excluded.hub_id,
+			tenant_id = excluded.tenant_id,
+			email = excluded.email,
 				is_default = excluded.is_default,
 				updated_at = excluded.updated_at
-		`, link.ID, link.HubID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
+		`, link.ID, link.HubID, link.TenantID, link.Email, boolToInt(link.IsDefault), link.CreatedAt.Format(time.RFC3339), link.UpdatedAt.Format(time.RFC3339)); err != nil {
 			return nil, nil, nil, err
 		}
 		upsertedLinks = append(upsertedLinks, link)

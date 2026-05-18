@@ -151,7 +151,7 @@ func TestSkillScanCacheDoesNotHidePostScanContentMutation(t *testing.T) {
 	}
 }
 
-func TestSkillScanCacheNeverAllowsCriticalReport(t *testing.T) {
+func TestSkillScanCacheAllowsCriticalReportWhenPolicyAllows(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# demo\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -165,8 +165,8 @@ func TestSkillScanCacheNeverAllowsCriticalReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readSkillScanCache() error = %v", err)
 	}
-	if rec.Status != skillScanCacheStatusBlocked {
-		t.Fatalf("critical report cache status = %q, want blocked", rec.Status)
+	if rec.Status != skillScanCacheStatusAllowed {
+		t.Fatalf("critical report cache status = %q, want allowed", rec.Status)
 	}
 }
 
@@ -242,7 +242,7 @@ func TestWriteSkillScanCacheForInstalledZipUsesPerSkillReport(t *testing.T) {
 	}
 }
 
-func TestEnsureSkillSecurityScannedBlocksTamperedCriticalCache(t *testing.T) {
+func TestEnsureSkillSecurityScannedRecordsTamperedCriticalCacheInStandardMode(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "skill.md"), []byte("# demo\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -266,8 +266,12 @@ func TestEnsureSkillSecurityScannedBlocksTamperedCriticalCache(t *testing.T) {
 	}
 
 	runner := &SkillRunner{executor: &SkillExecutor{app: &App{}}}
-	if err := runner.ensureSkillSecurityScanned(entry); err == nil {
-		t.Fatal("ensureSkillSecurityScanned() allowed tampered critical cache, want error")
+	if err := runner.ensureSkillSecurityScanned(entry); err != nil {
+		t.Fatalf("standard mode should rescan tampered critical cache without blocking, got %v", err)
+	}
+	strictRunner := &SkillRunner{executor: &SkillExecutor{app: &App{policyEngine: NewPolicyEngineWithMode("strict")}}}
+	if err := strictRunner.ensureSkillSecurityScanned(entry); err == nil {
+		t.Fatal("strict mode should block refreshed critical cache")
 	}
 }
 
@@ -345,15 +349,19 @@ func TestEnsureSkillSecurityScannedIgnoresUnsignedAllowedCache(t *testing.T) {
 	}
 
 	runner := &SkillRunner{executor: &SkillExecutor{app: &App{}}}
-	if err := runner.ensureSkillSecurityScanned(entry); err == nil {
-		t.Fatal("ensureSkillSecurityScanned() allowed unsigned forged cache, want runtime rescan block")
+	if err := runner.ensureSkillSecurityScanned(entry); err != nil {
+		t.Fatalf("standard mode should rescan unsigned forged cache without blocking, got %v", err)
 	}
 	rec, err := readSkillScanCache(dir, entry.Name)
 	if err != nil {
 		t.Fatalf("readSkillScanCache() error = %v", err)
 	}
 	if rec.Status != skillScanCacheStatusBlocked || rec.Level != string(security.RiskCritical) || rec.Signature == "" {
-		t.Fatalf("refreshed cache = status %q level %q signature %q, want signed blocked critical", rec.Status, rec.Level, rec.Signature)
+		t.Fatalf("refreshed cache = status %q level %q signature %q, want signed recorded critical", rec.Status, rec.Level, rec.Signature)
+	}
+	strictRunner := &SkillRunner{executor: &SkillExecutor{app: &App{policyEngine: NewPolicyEngineWithMode("strict")}}}
+	if err := strictRunner.ensureSkillSecurityScanned(entry); err == nil {
+		t.Fatal("strict mode should block signed critical cache")
 	}
 }
 
@@ -443,15 +451,19 @@ func TestEnsureSkillSecurityScannedIgnoresClaimedTrustedLevelOnFallback(t *testi
 	}
 
 	runner := &SkillRunner{executor: &SkillExecutor{app: &App{}}}
-	if err := runner.ensureSkillSecurityScanned(entry); err == nil {
-		t.Fatal("ensureSkillSecurityScanned() allowed claimed trusted critical skill, want error")
+	if err := runner.ensureSkillSecurityScanned(entry); err != nil {
+		t.Fatalf("standard mode should record claimed trusted critical skill without blocking runtime, got %v", err)
 	}
 	rec, err := readSkillScanCache(dir, entry.Name)
 	if err != nil {
 		t.Fatalf("readSkillScanCache() error = %v", err)
 	}
 	if rec.Status != skillScanCacheStatusBlocked || rec.Level != string(security.RiskCritical) {
-		t.Fatalf("fallback cache = status %q level %q, want blocked critical", rec.Status, rec.Level)
+		t.Fatalf("fallback cache = status %q level %q, want recorded blocked critical", rec.Status, rec.Level)
+	}
+	strictRunner := &SkillRunner{executor: &SkillExecutor{app: &App{policyEngine: NewPolicyEngineWithMode("strict")}}}
+	if err := strictRunner.ensureSkillSecurityScanned(entry); err == nil {
+		t.Fatal("strict mode should block claimed trusted critical skill")
 	}
 	if entry.TrustLevel != security.TrustLevelTrusted {
 		t.Fatalf("ensureSkillSecurityScanned mutated trust level to %q", entry.TrustLevel)
@@ -486,11 +498,58 @@ func TestScanAndAdmitSkillBeforeRegisterIgnoresClaimedTrustedLevel(t *testing.T)
 	}
 }
 
-func TestAdmitManualSkillInstallFailsClosedOnMissingReport(t *testing.T) {
-	app := &App{testHomeDir: t.TempDir()}
+func TestScanAndAdmitSkillBeforeRegisterAllowsMissingReportInDeveloperMode(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("developer")}
+	entry := &corelib.NLSkillEntry{Name: "dev-mode-missing-report"}
+	if err := app.admitManualSkillInstall(context.Background(), entry, "unit test", nil); err != nil {
+		t.Fatalf("developer mode should allow missing scan report, got %v", err)
+	}
+}
+
+func TestAdmitManualSkillInstallAllowsMissingReportInRelaxedMode(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("relaxed")}
+	entry := &corelib.NLSkillEntry{Name: "relaxed-missing-report"}
+	if err := app.admitManualSkillInstall(context.Background(), entry, "unit test", nil); err != nil {
+		t.Fatalf("relaxed mode should allow missing scan report, got %v", err)
+	}
+}
+
+func TestSkillInstallReviewNeedsConfirmationByMode(t *testing.T) {
+	highReport := &cskill.ScanReport{FinalLevel: security.RiskHigh, Summary: "high", ScannedBy: "pattern"}
+	for _, mode := range []string{"standard", "relaxed"} {
+		app := &App{policyEngine: NewPolicyEngineWithMode(mode)}
+		if app.skillInstallReviewNeedsConfirmation(highReport) || app.skillInstallScanShouldBlock(highReport) {
+			t.Fatalf("%s mode should record high-risk skill scan without blocking", mode)
+		}
+	}
+	criticalReport := &cskill.ScanReport{FinalLevel: security.RiskCritical, Summary: "critical", ScannedBy: "pattern"}
+	if !(&App{policyEngine: NewPolicyEngineWithMode("standard")}).skillInstallReviewNeedsConfirmation(criticalReport) {
+		t.Fatal("standard mode should require confirmation for critical skill risk")
+	}
+	if (&App{policyEngine: NewPolicyEngineWithMode("relaxed")}).skillInstallReviewNeedsConfirmation(criticalReport) {
+		t.Fatal("relaxed mode should record critical skill risk without confirmation")
+	}
+	if !(&App{policyEngine: NewPolicyEngineWithMode("strict")}).skillInstallScanShouldBlock(criticalReport) {
+		t.Fatal("strict mode should block critical skill risk")
+	}
+	if (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallReviewNeedsConfirmation(criticalReport) || (&App{policyEngine: NewPolicyEngineWithMode("developer")}).skillInstallScanShouldBlock(criticalReport) {
+		t.Fatal("developer mode should only record critical skill risk")
+	}
+}
+
+func TestAdmitManualSkillInstallAllowsMissingReportOutsideStrictMode(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("standard")}
+	entry := &corelib.NLSkillEntry{Name: "missing-report"}
+	if err := app.admitManualSkillInstall(context.Background(), entry, "unit test", nil); err != nil {
+		t.Fatalf("admitManualSkillInstall() error = %v", err)
+	}
+}
+
+func TestAdmitManualSkillInstallBlocksMissingReportInStrictMode(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir(), policyEngine: NewPolicyEngineWithMode("strict")}
 	entry := &corelib.NLSkillEntry{Name: "missing-report"}
 	if err := app.admitManualSkillInstall(context.Background(), entry, "unit test", nil); err == nil {
-		t.Fatal("admitManualSkillInstall() allowed missing report, want rejection")
+		t.Fatal("admitManualSkillInstall() allowed missing report in strict mode, want rejection")
 	}
 }
 

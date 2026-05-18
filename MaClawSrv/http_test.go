@@ -678,7 +678,8 @@ func TestGetAdminAlerts(t *testing.T) {
 	}
 	unreadyInst.Status = agentservice.InstanceStatusStopped
 	unreadyInst.Ready = false
-	unreadyInst.ReadyReason = "config validation failed"
+	unreadyInst.ReadyReason = "config validation failed path=" + svc.DataRoot()
+	unreadyInst.Readiness.Reason = "missing runtime path=" + svc.DataRoot()
 	unreadyInst.UpdatedAt = time.Now().UTC()
 	if err := store.SaveInstance(*unreadyInst); err != nil {
 		t.Fatalf("SaveInstance unready: %v", err)
@@ -741,6 +742,28 @@ func TestGetAdminAlerts(t *testing.T) {
 	}
 	if alerts.GeneratedAt.IsZero() {
 		t.Fatalf("expected generated_at: %#v", alerts)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/alerts?kind=unready_instance", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unready alerts status = %d body = %s", w.Code, w.Body.String())
+	}
+	alerts = agentservice.AdminAlerts{}
+	if err := json.NewDecoder(w.Body).Decode(&alerts); err != nil {
+		t.Fatalf("decode unready alerts: %v", err)
+	}
+	if len(alerts.UnreadyInstances) != 1 {
+		t.Fatalf("expected one unready instance, got %#v", alerts.UnreadyInstances)
+	}
+	instJSON, err := json.Marshal(alerts.UnreadyInstances[0])
+	if err != nil {
+		t.Fatalf("marshal unready instance: %v", err)
+	}
+	if strings.Contains(string(instJSON), svc.DataRoot()) || alerts.UnreadyInstances[0].DataDir != "" || alerts.UnreadyInstances[0].RuntimeDir != "" || alerts.UnreadyInstances[0].Workspace != "" {
+		t.Fatalf("expected admin alert instance paths to be redacted, got %s", instJSON)
 	}
 }
 
@@ -2658,7 +2681,8 @@ func TestAdminCanListAuditEvents(t *testing.T) {
 
 func TestListRunsFiltersByStatus(t *testing.T) {
 	store := agentservice.NewMemoryStore()
-	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, store, agentservice.EchoExecutor{})
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test"}, store, agentservice.EchoExecutor{})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -2680,7 +2704,7 @@ func TestListRunsFiltersByStatus(t *testing.T) {
 		t.Fatalf("CreateInstance: %v", err)
 	}
 	now := time.Now().UTC()
-	if err := store.SaveRun(agentservice.Run{ID: "run_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: "sess_1", Status: agentservice.RunStatusFailed, StartedAt: now.Add(1 * time.Minute)}); err != nil {
+	if err := store.SaveRun(agentservice.Run{ID: "run_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: "sess_1", Status: agentservice.RunStatusFailed, Error: "failed token=run-secret path=" + filepath.Join(dataRoot, "runs", "run_1.log"), Metadata: map[string]string{"api_secret": "run-meta-secret", "path": filepath.Join(dataRoot, "runs", "meta.json")}, StartedAt: now.Add(1 * time.Minute)}); err != nil {
 		t.Fatalf("SaveRun failed: %v", err)
 	}
 	if err := store.SaveRun(agentservice.Run{ID: "run_2", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, SessionID: "sess_2", Status: agentservice.RunStatusSucceeded, StartedAt: now.Add(2 * time.Minute)}); err != nil {
@@ -2699,14 +2723,34 @@ func TestListRunsFiltersByStatus(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("list runs status = %d body = %s", w.Code, w.Body.String())
 	}
+	body := w.Body.String()
+	for _, leaked := range []string{"run-secret", "run-meta-secret", dataRoot} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("expected list runs response to redact %q, got %s", leaked, body)
+		}
+	}
 	var runs struct {
 		Items []agentservice.Run `json:"items"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&runs); err != nil {
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&runs); err != nil {
 		t.Fatalf("decode runs: %v", err)
 	}
 	if len(runs.Items) != 1 || runs.Items[0].ID != "run_1" || runs.Items[0].Status != agentservice.RunStatusFailed {
 		t.Fatalf("runs = %#v", runs.Items)
+	}
+
+	req = httptest.NewRequest("GET", "/api/v1/instances/"+inst.ID+"/runs/run_1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get run status = %d body = %s", w.Code, w.Body.String())
+	}
+	body = w.Body.String()
+	for _, leaked := range []string{"run-secret", "run-meta-secret", dataRoot} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("expected get run response to redact %q, got %s", leaked, body)
+		}
 	}
 }
 
@@ -2823,6 +2867,35 @@ func TestListMessagesFiltersByRoleAndSince(t *testing.T) {
 	}
 }
 
+func TestSanitizeConfigTestResultRedactsEndpointSecrets(t *testing.T) {
+	dataRoot := t.TempDir()
+	result := &agentservice.ConfigTestResult{
+		Success:    false,
+		Endpoint:   "https://user:pass@example.test/v1?api_key=secret-key&trace=ok",
+		Error:      "failed with token=secret-token path=" + dataRoot,
+		Message:    "see " + dataRoot,
+		Validation: &agentservice.ConfigValidationResult{Issues: []agentservice.ConfigValidationIssue{{Key: dataRoot, Message: "api_secret=secret-validation path=" + dataRoot}}},
+	}
+	got := sanitizeConfigTestResultForAPI(dataRoot, result)
+	body := fmt.Sprintf("%#v", got)
+	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "secret-key", "secret-token", "secret-validation", "pass"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("expected config test result to redact %q, got %s", leaked, body)
+		}
+	}
+	if !strings.Contains(got.Endpoint, "trace=ok") {
+		t.Fatalf("expected benign endpoint query to remain, got %q", got.Endpoint)
+	}
+}
+func TestSanitizeConfigValidationRedactsPathsAndSecrets(t *testing.T) {
+	dataRoot := t.TempDir()
+	validation := agentservice.ConfigValidationResult{Issues: []agentservice.ConfigValidationIssue{{Key: dataRoot, Message: "api_key=secret-value path=" + dataRoot}}}
+	got := sanitizeConfigValidationForAPI(dataRoot, validation)
+	body := fmt.Sprintf("%#v", got)
+	if strings.Contains(body, dataRoot) || strings.Contains(body, "secret-value") {
+		t.Fatalf("expected config validation to be redacted, got %s", body)
+	}
+}
 func TestGetInstanceSummary(t *testing.T) {
 	store := agentservice.NewMemoryStore()
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
@@ -2844,6 +2917,10 @@ func TestGetInstanceSummary(t *testing.T) {
 	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance"})
 	if err != nil {
 		t.Fatalf("CreateInstance: %v", err)
+	}
+	inst.ReadyReason = "runtime path=" + svc.DataRoot()
+	if err := store.SaveInstance(*inst); err != nil {
+		t.Fatalf("SaveInstance readiness reason: %v", err)
 	}
 	now := time.Now().UTC()
 	sess1 := agentservice.Session{ID: "sess_1", TenantID: tenant.ID, UserID: user.ID, InstanceID: inst.ID, AgentID: "default", Metadata: map[string]string{"pending_ask_user": "true"}, CreatedAt: now, UpdatedAt: now}
@@ -2896,6 +2973,53 @@ func TestGetInstanceSummary(t *testing.T) {
 	}
 	if summary.LastActivityAt == nil {
 		t.Fatalf("expected last activity")
+	}
+	if strings.Contains(summary.ReadyReason, svc.DataRoot()) {
+		t.Fatalf("expected summary ready_reason to be redacted: %#v", summary)
+	}
+}
+
+func TestGetInstanceBootstrapRedactsLocalPaths(t *testing.T) {
+	store := agentservice.NewMemoryStore()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, store, agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	principal := agentservice.Principal{TenantID: tenant.ID, UserID: user.ID}
+	if _, err := svc.UpdateUserConfig(context.Background(), principal, testLLMConfig()); err != nil {
+		t.Fatalf("UpdateUserConfig: %v", err)
+	}
+	inst, err := svc.CreateInstance(context.Background(), principal, agentservice.CreateInstanceInput{Name: "Instance", Metadata: map[string]string{"note": "path=" + svc.DataRoot()}})
+	if err != nil {
+		t.Fatalf("CreateInstance: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(principal)
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/instances/"+inst.ID+"/bootstrap", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("bootstrap status = %d body = %s", w.Code, w.Body.String())
+	}
+	var bootstrap agentservice.InstanceBootstrap
+	if err := json.NewDecoder(w.Body).Decode(&bootstrap); err != nil {
+		t.Fatalf("decode bootstrap: %v", err)
+	}
+	body := w.Body.String()
+	if bootstrap.DataDir != "" || bootstrap.RuntimeDir != "" || bootstrap.WorkspaceDir != "" || bootstrap.ConversationStorePath != "" || bootstrap.ConfirmationStorePath != "" || strings.Contains(body, svc.DataRoot()) {
+		t.Fatalf("expected bootstrap paths to be redacted, got %s", body)
 	}
 }
 
@@ -3039,6 +3163,11 @@ func TestGetTenantSummary(t *testing.T) {
 	}
 	if len(summary.UserSummaries) != 2 || summary.LastActivityAt == nil {
 		t.Fatalf("unexpected user breakdown: %#v", summary)
+	}
+	for _, userSummary := range summary.UserSummaries {
+		if userSummary.DataDir != "" || strings.Contains(userSummary.DataDir, svc.DataRoot()) {
+			t.Fatalf("expected tenant summary user data_dir to be redacted: %#v", userSummary)
+		}
 	}
 	if summary.Quota.MaxInstances != 5 || summary.QuotaUsage.Instances.Limit != 5 || summary.QuotaUsage.Instances.Used != 2 {
 		t.Fatalf("unexpected tenant quota snapshot: %#v", summary.QuotaUsage)
@@ -3215,6 +3344,9 @@ func TestGetUsageSummary(t *testing.T) {
 	}
 	if summary.QuotaUsage.Runs.Remaining == nil || *summary.QuotaUsage.Runs.Remaining != 5 {
 		t.Fatalf("unexpected usage run remaining: %#v", summary.QuotaUsage.Runs)
+	}
+	if summary.DataDir != "" || strings.Contains(summary.DataDir, svc.DataRoot()) {
+		t.Fatalf("expected usage summary data_dir to be redacted: %#v", summary)
 	}
 }
 
@@ -3401,6 +3533,9 @@ func TestGetInstanceCapabilities(t *testing.T) {
 	if len(caps.Tools) == 0 {
 		t.Fatalf("expected tools in capabilities")
 	}
+	if _, ok := caps.Metadata["workspace_dir"]; ok || strings.Contains(fmt.Sprintf("%#v", caps.Metadata), svc.DataRoot()) {
+		t.Fatalf("expected capabilities metadata paths to be redacted: %#v", caps.Metadata)
+	}
 }
 
 func TestListSkillsSupportsNameCursorPagination(t *testing.T) {
@@ -3456,6 +3591,13 @@ func TestListSkillsSupportsNameCursorPagination(t *testing.T) {
 	if len(page.Items) != 2 || page.Items[0].Name != "bravo" || page.Items[1].Name != "charlie" {
 		t.Fatalf("unexpected skills page items: %#v", page.Items)
 	}
+	pageJSON, err := json.Marshal(page)
+	if err != nil {
+		t.Fatalf("marshal skills page: %v", err)
+	}
+	if strings.Contains(string(pageJSON), dataRoot) || strings.Contains(string(pageJSON), "skill_dir") {
+		t.Fatalf("expected skill list to redact local skill dirs, got %s", pageJSON)
+	}
 
 	var tail struct {
 		Items      []corelib.NLSkillEntry `json:"items"`
@@ -3478,6 +3620,57 @@ func TestListSkillsSupportsNameCursorPagination(t *testing.T) {
 	}
 }
 
+func TestGetSkillAndValidationRedactLocalPaths(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token, _, err := agentservice.NewTokenManager("test-token-secret-0123456789012345", time.Hour).Issue(agentservice.Principal{TenantID: tenant.ID, UserID: user.ID})
+	if err != nil {
+		t.Fatalf("Issue token: %v", err)
+	}
+	skillDir := filepath.Join(dataRoot, "tenants", tenant.ID, "users", user.ID, "skills", "secret-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll skill: %v", err)
+	}
+	knowledge := "# secret skill\n\nUse token=skill-secret-token inside " + dataRoot + "\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(knowledge), 0o644); err != nil {
+		t.Fatalf("WriteFile knowledge: %v", err)
+	}
+
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	for _, target := range []struct {
+		method string
+		path   string
+		leaks  []string
+	}{
+		{method: http.MethodGet, path: "/api/v1/skills/secret-skill", leaks: []string{dataRoot, filepath.ToSlash(dataRoot), "skill-secret-token", "skill_dir"}},
+		{method: http.MethodPost, path: "/api/v1/skills/secret-skill/validate", leaks: []string{dataRoot, filepath.ToSlash(dataRoot), "skill-secret-token"}},
+	} {
+		req := httptest.NewRequest(target.method, target.path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s %s status = %d body = %s", target.method, target.path, w.Code, w.Body.String())
+		}
+		body := w.Body.String()
+		for _, leaked := range target.leaks {
+			if strings.Contains(body, leaked) {
+				t.Fatalf("expected %s to redact %q, got %s", target.path, leaked, body)
+			}
+		}
+	}
+}
 func TestMCPRemoteServerCRUDAndTools(t *testing.T) {
 	tenantID, userID, token, server := newMCPAuthenticatedServer(t)
 	_ = tenantID
@@ -3571,6 +3764,49 @@ func TestMCPRemoteServerCRUDAndTools(t *testing.T) {
 	}
 }
 
+func TestMCPServerViewsRedactLocalPathsAndSecrets(t *testing.T) {
+	_, _, token, server := newMCPAuthenticatedServer(t)
+	localRoot := t.TempDir()
+	remoteEndpoint := "https://mcp.example.test/api?api_key=remote-query-secret&trace=ok"
+	remoteBody := fmt.Sprintf(`{"kind":"remote","name":"Secret Remote","endpoint_url":%q,"auth_type":"bearer","auth_secret":"remote-auth-secret"}`, remoteEndpoint)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers", bytes.NewBufferString(remoteBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create remote MCP status = %d body = %s", w.Code, w.Body.String())
+	}
+	var remoteView agentservice.MCPServerView
+	if err := json.NewDecoder(w.Body).Decode(&remoteView); err != nil {
+		t.Fatalf("decode remote MCP view: %v", err)
+	}
+	if strings.Contains(remoteView.EndpointURL, "remote-query-secret") || !strings.Contains(remoteView.EndpointURL, "trace=ok") {
+		t.Fatalf("expected redacted endpoint URL with benign query retained: %#v", remoteView)
+	}
+
+	localCommand := filepath.Join(localRoot, "bin", "local-mcp")
+	localBody := fmt.Sprintf(`{"kind":"local","name":"Secret Local","command":%q,"args":["--token=local-arg-secret","--path=%s"],"env":{"LOCAL_MCP_TOKEN":"env-secret"}}`, localCommand, filepath.ToSlash(localRoot))
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/mcp/servers", bytes.NewBufferString(localBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create local MCP status = %d body = %s", w.Code, w.Body.String())
+	}
+	var localView agentservice.MCPServerView
+	if err := json.NewDecoder(w.Body).Decode(&localView); err != nil {
+		t.Fatalf("decode local MCP view: %v", err)
+	}
+	body := w.Body.String()
+	for _, leaked := range []string{localRoot, filepath.ToSlash(localRoot), "local-arg-secret", "env-secret"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("expected MCP local view to redact %q, got %s", leaked, body)
+		}
+	}
+	if localView.Command != filepath.Base(localCommand) {
+		t.Fatalf("expected local command path basename, got %#v", localView)
+	}
+}
 func TestListMCPServersSupportsPagination(t *testing.T) {
 	_, _, token, server := newMCPAuthenticatedServer(t)
 
@@ -3652,7 +3888,7 @@ func TestMCPLocalServerStartAndStop(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
 		t.Fatalf("decode local MCP server: %v", err)
 	}
-	if created.Kind != "local" || created.Command != cmd {
+	if created.Kind != "local" || created.Command != filepath.Base(cmd) {
 		t.Fatalf("unexpected local MCP create result: %#v", created)
 	}
 
@@ -3898,6 +4134,9 @@ func TestUpdateInstanceEndpoint(t *testing.T) {
 	}
 	if len(updated.Metadata) != 2 || updated.Metadata["tier"] != "prod" || updated.Metadata["region"] != "cn" {
 		t.Fatalf("unexpected metadata: %#v", updated.Metadata)
+	}
+	if updated.DataDir != "" || updated.RuntimeDir != "" || updated.Workspace != "" || strings.Contains(fmt.Sprintf("%#v", updated), svc.DataRoot()) {
+		t.Fatalf("expected updated instance paths to be redacted: %#v", updated)
 	}
 }
 

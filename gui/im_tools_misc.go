@@ -316,9 +316,9 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 
 	var installScanReport *cskill.ScanReport
 
-	// Security review: pattern scan (hard floor) + agent scan (upgrade only).
-	// Developer mode: skip entirely.
-	if !h.isSecurityDeveloperMode() {
+	// Security review: pattern scan plus optional agent scan; policy decides whether findings block.
+	// Developer mode records scan findings but never blocks installation.
+	{
 		// Determine the directory to scan: staging dir if available, else entry.SkillDir.
 		scanDir := stagingDir
 		if scanDir == "" {
@@ -331,22 +331,22 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		})
 		installScanReport = scanReport
 
-		if scanReport.IsDangerous() {
+		if h.app != nil && h.app.skillInstallScanShouldBlock(scanReport) {
 			cskill.CleanupStaging(stagingDir)
 			if h.getAuditLog() != nil {
 				_ = h.getAuditLog().Log(security.AuditEntry{
 					Timestamp:    time.Now(),
 					Action:       security.AuditActionHubSkillReject,
 					ToolName:     "hub_skill_install",
-					RiskLevel:    security.RiskCritical,
+					RiskLevel:    scanReport.FinalLevel,
 					PolicyAction: security.PolicyDeny,
-					Result:       fmt.Sprintf("pre-install policy rejected critical skill %s: %s", entry.Name, scanReport.Summary),
+					Result:       fmt.Sprintf("pre-install policy blocked skill %s: %s", entry.Name, scanReport.Summary),
 				})
 			}
 			return FormatScanReportForUser(scanReport, entry.Name) +
-				fmt.Sprintf("\nSkill %q was rejected by security policy before installation.", entry.Name)
+				fmt.Sprintf("\nSkill %q was blocked by current security policy before installation.", entry.Name)
 		}
-		if scanReport.NeedsUserReview() {
+		if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(scanReport) {
 			platform := ""
 			if h.currentLoopCtx != nil {
 				platform = h.currentLoopCtx.Platform
@@ -452,8 +452,10 @@ func (h *IMMessageHandler) toolInstallSkillHub(args map[string]interface{}) stri
 		policyAction := security.PolicyAllow
 		if installScanReport != nil {
 			riskLevel = installScanReport.FinalLevel
-			if installScanReport.NeedsUserReview() {
+			if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(installScanReport) {
 				policyAction = security.PolicyUserOverride
+			} else if installScanReport.NeedsUserReview() {
+				policyAction = security.PolicyAudit
 			}
 		}
 		_ = h.getAuditLog().Log(security.AuditEntry{
@@ -1030,9 +1032,19 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 		}
 	})
 	if report == nil {
+		if h != nil && h.app != nil && !h.app.skillInstallMissingScanShouldBlock() {
+			h.app.logSkillInstallSecurityEvent(
+				security.AuditActionHubSkillUpdate,
+				"manage_skill_autofix",
+				security.RiskCritical,
+				security.PolicyAudit,
+				fmt.Sprintf("skill autofix writeback allowed for %s even though scan report was missing", entry.Name),
+			)
+			return nil
+		}
 		return fmt.Errorf("security scan produced no report")
 	}
-	if report.IsDangerous() || report.NeedsUserReview() {
+	if h != nil && h.app != nil && h.app.skillInstallScanShouldBlock(report) {
 		if h != nil && h.app != nil {
 			h.app.logSkillInstallSecurityEvent(
 				security.AuditActionHubSkillReject,
@@ -1043,6 +1055,15 @@ func (h *IMMessageHandler) scanManagedSkillWriteback(skillDir, skillName string)
 			)
 		}
 		return fmt.Errorf("level=%s summary=%s", report.FinalLevel, report.Summary)
+	}
+	if h != nil && h.app != nil && report.NeedsUserReview() {
+		h.app.logSkillInstallSecurityEvent(
+			security.AuditActionHubSkillUpdate,
+			"manage_skill_autofix",
+			report.FinalLevel,
+			security.PolicyAudit,
+			fmt.Sprintf("skill autofix writeback allowed for %s by current policy: %s", entry.Name, report.Summary),
+		)
 	}
 	if err := writeSkillScanCacheForInstalledEntry(entry, report); err != nil {
 		return fmt.Errorf("write skill scan cache: %w", err)
@@ -1288,6 +1309,40 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		}
 		return b.String()
 
+	case memoryToolActionScenes:
+		limit := intArg(args, "limit", 10)
+		scenes := h.memoryStore.SceneIndex(limit)
+		if len(scenes) == 0 {
+			return "No project scenes found."
+		}
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("Scene index: %d project(s)\n", len(scenes)))
+		for i, scene := range scenes {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, firstNonEmpty(scene.Name, scene.ProjectPath)))
+			b.WriteString(fmt.Sprintf("   project: %s entries=%d\n", scene.ProjectPath, scene.EntryCount))
+			if len(scene.WorkflowTypes) > 0 {
+				b.WriteString(fmt.Sprintf("   workflows: %s\n", strings.Join(scene.WorkflowTypes, ", ")))
+			}
+			if scene.Preview != "" {
+				b.WriteString(fmt.Sprintf("   latest: %s\n", scene.Preview))
+			}
+			for _, artifact := range scene.RecentArtifacts {
+				b.WriteString(fmt.Sprintf("   artifact: %s [%s]", firstNonEmpty(artifact.Title, artifact.Preview), artifact.SourceType))
+				if artifact.SourceURL != "" {
+					b.WriteString(fmt.Sprintf(" source=%s", artifact.SourceURL))
+				}
+				b.WriteByte('\n')
+			}
+		}
+		return b.String()
+
+	case memoryToolActionTrace:
+		formatted := corememory.FormatRecallTraceForTool(h.memoryStore.LastRecallTrace())
+		if formatted == "" {
+			return "No recall trace available."
+		}
+		return formatted
+
 	case memoryToolActionRecall:
 		query := stringVal(args, "query")
 		if query == "" {
@@ -1330,6 +1385,11 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		}
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf("召回 %d 条相关记忆:\n", len(entries)))
+		if debug {
+			if trace := h.memoryStore.LastRecallTrace(); trace.Query == query {
+				b.WriteString(corememory.FormatRecallTraceForTool(trace))
+			}
+		}
 		if debug && plan != nil {
 			b.WriteString(fmt.Sprintf("Adaptive plan: complexity=%s fallback=%v themes=%d expanded=%d\n",
 				plan.Complexity, plan.Fallback, len(plan.SelectedThemes), len(plan.ExpandedEntryIDs)))
@@ -1363,7 +1423,8 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 			}
 		}
 		for _, e := range entries {
-			b.WriteString(fmt.Sprintf("- [%s] %s\n", string(e.Category), e.Content))
+			b.WriteString(corememory.FormatRecallEntryForTool(e))
+			b.WriteString("\n")
 		}
 		// Touch access counts.
 		ids := make([]string, len(entries))
@@ -1409,6 +1470,9 @@ func (h *IMMessageHandler) toolMemory(args map[string]interface{}) string {
 		contextHint := h.buildMemoryContextHint()
 		if err := h.memoryStore.SaveWithContext(entry, contextHint); err != nil {
 			return fmt.Sprintf("保存记忆失败: %s", err.Error())
+		}
+		if h.app != nil {
+			h.app.triggerMemoryPipelineSoon(45 * time.Second)
 		}
 		summary := content
 		if len(summary) > 50 {
@@ -2212,7 +2276,6 @@ func (h *IMMessageHandler) toolUpdateScheduledTask(args map[string]interface{}) 
 	return "✅ 定时任务已更新"
 }
 
-
 func (h *IMMessageHandler) toolQueryAuditLog(args map[string]interface{}) string {
 	if h.app == nil {
 		return "审计日志未初始化"
@@ -2339,7 +2402,22 @@ func (h *IMMessageHandler) toolWebFetch(args map[string]interface{}) string {
 		opts.TimeoutS = intArg(args, "timeout", 30)
 	}
 
-	result, err := websearch.Fetch(rawURL, opts)
+	// Use provider-aware fetch: TinyFish has better content extraction.
+	// FetchWithProvider handles TinyFish routing, offset/maxChars windowing, and fallback.
+	var fetchProvider corelib.WebSearchProvider
+	if opts.SavePath == "" {
+		searchCfg := h.app.GetWebSearchProviders()
+		if searchCfg.Current == "tinyfish" {
+			for _, p := range searchCfg.Providers {
+				if p.Type == "tinyfish" && p.Key != "" {
+					fetchProvider = p
+					break
+				}
+			}
+		}
+	}
+
+	result, err := websearch.FetchWithProvider(rawURL, opts, fetchProvider)
 	if err != nil {
 		return fmt.Sprintf("抓取失败: %s", err.Error())
 	}

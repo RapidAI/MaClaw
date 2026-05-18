@@ -55,7 +55,7 @@ func TestPermissionHandler_DefaultMode_LowRisk(t *testing.T) {
 	comp := h.HandleRequest(PermissionRequest{
 		RequestID: "r1",
 		SessionID: "s1",
-		ToolName:  "Read", // read-only tool → low risk → security.PolicyAllow
+		ToolName:  "Read", // read-only tool 闁?low risk 闁?security.PolicyAllow
 	})
 	if comp.Decision != PermissionApproved {
 		t.Fatalf("expected approved for low-risk read, got %s: %s", comp.Decision, comp.Reason)
@@ -77,7 +77,7 @@ func TestPermissionHandler_DefaultMode_MediumRisk_Audit(t *testing.T) {
 	comp := h.HandleRequest(PermissionRequest{
 		RequestID: "r1",
 		SessionID: "s1",
-		ToolName:  "Write", // write tool → medium risk → security.PolicyAudit
+		ToolName:  "Write", // write tool 闁?medium risk 闁?security.PolicyAudit
 		Input:     map[string]interface{}{"path": "/tmp/test.txt"},
 	})
 	if comp.Decision != PermissionApproved {
@@ -97,8 +97,9 @@ func TestPermissionHandler_DefaultMode_MediumRisk_Audit(t *testing.T) {
 	}
 }
 
-// TestPermissionHandler_DefaultMode_CriticalRisk_Deny verifies critical+dangerous-keyword ops are denied.
-func TestPermissionHandler_DefaultMode_CriticalRisk_Deny(t *testing.T) {
+// TestPermissionHandler_DefaultMode_CriticalRisk_AllowsWithoutUI verifies standard mode
+// records critical risk but does not block when no permission UI is configured.
+func TestPermissionHandler_DefaultMode_CriticalRisk_AllowsWithoutUI(t *testing.T) {
 	h := NewPermissionHandler(PermissionModeDefault, nil, nil)
 	h.SetSecurityChain(&RiskAssessor{}, NewPolicyEngine(), nil, nil)
 
@@ -108,8 +109,23 @@ func TestPermissionHandler_DefaultMode_CriticalRisk_Deny(t *testing.T) {
 		ToolName:  "Bash",
 		Input:     map[string]interface{}{"command": "sudo rm -rf /"},
 	})
+	if comp.Decision != PermissionApproved {
+		t.Fatalf("expected approved for standard critical risk without UI, got %s: %s", comp.Decision, comp.Reason)
+	}
+}
+
+func TestPermissionHandler_StrictMode_CriticalRisk_Deny(t *testing.T) {
+	h := NewPermissionHandler(PermissionModeDefault, nil, nil)
+	h.SetSecurityChain(&RiskAssessor{}, NewPolicyEngineWithMode("strict"), nil, nil)
+
+	comp := h.HandleRequest(PermissionRequest{
+		RequestID: "r1",
+		SessionID: "s1",
+		ToolName:  "Bash",
+		Input:     map[string]interface{}{"command": "sudo rm -rf /"},
+	})
 	if comp.Decision != PermissionDenied {
-		t.Fatalf("expected denied for critical+dangerous, got %s: %s", comp.Decision, comp.Reason)
+		t.Fatalf("expected denied for strict critical risk, got %s: %s", comp.Decision, comp.Reason)
 	}
 }
 
@@ -130,7 +146,7 @@ func TestPermissionHandler_DefaultMode_HighRisk_Ask(t *testing.T) {
 		comp = h.HandleRequest(PermissionRequest{
 			RequestID: "r1",
 			SessionID: "s1",
-			ToolName:  "Write", // write + system dir → high risk → security.PolicyAsk
+			ToolName:  "Write", // write + system dir 闁?high risk 闁?security.PolicyAsk
 			Input:     map[string]interface{}{"path": "/etc/config/test"},
 		})
 	}()
@@ -162,7 +178,7 @@ func TestPermissionHandler_NoSecurityChain(t *testing.T) {
 	h := NewPermissionHandler(PermissionModeDefault, func(req PermissionRequest) {
 		requestReceived = true
 	}, nil)
-	// No SetSecurityChain call — fields remain nil.
+	// No SetSecurityChain call 闁?fields remain nil.
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -188,7 +204,7 @@ func TestPermissionHandler_CallCountTracking(t *testing.T) {
 	h := NewPermissionHandler(PermissionModeDefault, nil, nil)
 	h.SetSecurityChain(&RiskAssessor{}, NewPolicyEngine(), nil, nil)
 
-	// Call a read tool multiple times — should all be low risk / auto-approved.
+	// Call a read tool multiple times 闁?should all be low risk / auto-approved.
 	for i := 0; i < 5; i++ {
 		comp := h.HandleRequest(PermissionRequest{
 			RequestID: "r" + string(rune('0'+i)),
@@ -297,11 +313,11 @@ func TestPermissionHandler_AuditLogIntegration(t *testing.T) {
 	h := NewPermissionHandler(PermissionModeDefault, nil, nil)
 	h.SetSecurityChain(&RiskAssessor{}, NewPolicyEngine(), nil, al)
 
-	// Low risk → allow
+	// Low risk 闁?allow
 	h.HandleRequest(PermissionRequest{
 		RequestID: "r1", SessionID: "s1", ToolName: "Read",
 	})
-	// Medium risk → audit
+	// Medium risk 闁?audit
 	h.HandleRequest(PermissionRequest{
 		RequestID: "r2", SessionID: "s1", ToolName: "Write",
 		Input: map[string]interface{}{"path": "/tmp/x"},

@@ -20,7 +20,7 @@ func (s *HTTPServer) handleAdminKnowledgeAccessGetCrossTenant(w http.ResponseWri
 	}
 	cfg, err := s.knowledgeMgr.Access().GetCrossTenant(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	writeJSON(w, http.StatusOK, cfg)
@@ -35,11 +35,11 @@ func (s *HTTPServer) handleAdminKnowledgeAccessSetCrossTenant(w http.ResponseWri
 	}
 	var cfg knowledgeCrossTenantConfig
 	if err := readJSONBody(r, &cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if err := s.knowledgeMgr.Access().SetCrossTenant(r.Context(), cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_access_cross_tenant_updated", "knowledge_access", "cross_tenant", map[string]string{
@@ -57,7 +57,7 @@ func (s *HTTPServer) handleAdminKnowledgeAccessGetUser(w http.ResponseWriter, r 
 	userID := r.PathValue("userId")
 	cfg, err := s.knowledgeMgr.Access().GetUser(r.Context(), tenantID, userID)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if cfg == nil {
@@ -77,11 +77,11 @@ func (s *HTTPServer) handleAdminKnowledgeAccessSetUser(w http.ResponseWriter, r 
 	userID := r.PathValue("userId")
 	var cfg knowledgeAccessConfig
 	if err := readJSONBody(r, &cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if err := s.knowledgeMgr.Access().SetUser(r.Context(), tenantID, userID, &cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_access_user_updated", "knowledge_access", tenantID+"/"+userID, map[string]string{
@@ -105,7 +105,7 @@ func (s *HTTPServer) handleAdminKnowledgeAccessDeleteUser(w http.ResponseWriter,
 	tenantID := r.PathValue("tenantId")
 	userID := r.PathValue("userId")
 	if err := s.knowledgeMgr.Access().DeleteUser(r.Context(), tenantID, userID); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.knowledge_access_user_deleted", "knowledge_access", tenantID+"/"+userID, map[string]string{

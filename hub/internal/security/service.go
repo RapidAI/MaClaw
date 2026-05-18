@@ -93,6 +93,7 @@ func (s *SecurityService) CreateGroup(ctx context.Context, name, parentID string
 
 	now := time.Now().UTC()
 	group := &SecurityGroup{
+		TenantID:  tenantIDFromContext(ctx),
 		ID:        uuid.New().String(),
 		Name:      name,
 		ParentID:  parentID,
@@ -203,6 +204,7 @@ func (s *SecurityService) GetGroupTree(ctx context.Context) (*GroupTreeNode, err
 	nodeMap := make(map[string]*GroupTreeNode, len(groups))
 	for _, g := range groups {
 		nodeMap[g.ID] = &GroupTreeNode{
+			TenantID:    g.TenantID,
 			ID:          g.ID,
 			Name:        g.Name,
 			ParentID:    g.ParentID,
@@ -247,6 +249,7 @@ func (s *SecurityService) GetRootGroupNode(ctx context.Context) (*GroupTreeNode,
 		return nil, nil
 	}
 	return &GroupTreeNode{
+		TenantID:    root.TenantID,
 		ID:          root.ID,
 		Name:        root.Name,
 		ParentID:    root.ParentID,
@@ -261,6 +264,7 @@ func cloneGroupTreeNode(node *GroupTreeNode) *GroupTreeNode {
 		return nil
 	}
 	cloned := &GroupTreeNode{
+		TenantID:    node.TenantID,
 		ID:          node.ID,
 		Name:        node.Name,
 		ParentID:    node.ParentID,
@@ -428,6 +432,7 @@ func (s *SecurityService) GetGroupChildren(ctx context.Context, parentID string)
 				}
 			}
 			children = append(children, &GroupTreeNode{
+				TenantID:    g.TenantID,
 				ID:          g.ID,
 				Name:        g.Name,
 				ParentID:    g.ParentID,
@@ -595,7 +600,7 @@ func (s *SecurityService) getGroupPathItems(ctx context.Context, groupID string)
 			items = append(items, PolicyGroupPathItem{ID: id})
 			continue
 		}
-		items = append(items, PolicyGroupPathItem{ID: group.ID, Name: group.Name, ParentID: group.ParentID})
+		items = append(items, PolicyGroupPathItem{TenantID: group.TenantID, ID: group.ID, Name: group.Name, ParentID: group.ParentID})
 	}
 	return items, nil
 }
@@ -789,6 +794,9 @@ func policyToMap(p EffectivePolicy) map[string]interface{} {
 
 // GetSettings reads the security settings from the system settings store.
 func (s *SecurityService) GetSettings(ctx context.Context) (*SecuritySettings, error) {
+	if tenantIDFromContext(ctx) != store.DefaultTenantID {
+		return s.getSettingsUncached(ctx)
+	}
 	now := time.Now()
 	s.settingsMu.RLock()
 	if s.settingsCached != nil && now.Before(s.settingsCachedUntil) {
@@ -798,18 +806,27 @@ func (s *SecurityService) GetSettings(ctx context.Context) (*SecuritySettings, e
 	}
 	s.settingsMu.RUnlock()
 
+	settings, err := s.getSettingsUncached(ctx)
+	if err != nil {
+		return nil, err
+	}
+	settingsCopy := *settings
+	s.cacheSettings(&settingsCopy)
+	return settings, nil
+}
+
+func (s *SecurityService) getSettingsUncached(ctx context.Context) (*SecuritySettings, error) {
+	if s.system == nil {
+		return &SecuritySettings{}, nil
+	}
 	raw, err := s.system.Get(ctx, settingsKey)
 	if err != nil || raw == "" {
-		settings := &SecuritySettings{}
-		s.cacheSettings(settings)
-		return settings, nil
+		return &SecuritySettings{}, nil
 	}
 	var settings SecuritySettings
 	if err := json.Unmarshal([]byte(raw), &settings); err != nil {
 		return nil, fmt.Errorf("unmarshal security settings: %w", err)
 	}
-	settingsCopy := settings
-	s.cacheSettings(&settingsCopy)
 	return &settings, nil
 }
 
@@ -1052,11 +1069,7 @@ func (s *SecurityService) IsCentralizedEnabled(ctx context.Context) (bool, error
 // resolveUserTenantID looks up the user's security group ID (tenant).
 // Returns empty string if the user has no group assignment.
 func (s *SecurityService) resolveUserTenantID(ctx context.Context, email string) string {
-	groupID, err := s.store.GetUserGroup(ctx, email)
-	if err != nil || groupID == "" {
-		return ""
-	}
-	return groupID
+	return tenantIDFromContext(ctx)
 }
 
 // intersectSources computes the intersection of two allowed-sources lists.

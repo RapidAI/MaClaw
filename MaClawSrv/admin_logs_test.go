@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,9 @@ func TestAdminLogSourcesAndRead(t *testing.T) {
 	}
 	foundService := false
 	for _, item := range sources.Items {
+		if strings.Contains(item.Path, dataRoot) {
+			t.Fatalf("admin log source path should be redacted: %#v", item)
+		}
 		if item.ID == "service" && item.Exists {
 			foundService = true
 		}
@@ -65,6 +69,9 @@ func TestAdminLogSourcesAndRead(t *testing.T) {
 	}
 	if len(out.Lines) != 1 || out.Lines[0].Level != "error" || out.Lines[0].Text == "" {
 		t.Fatalf("unexpected log lines: %#v", out)
+	}
+	if strings.Contains(out.Source.Path, dataRoot) {
+		t.Fatalf("admin log read source path should be redacted: %#v", out.Source)
 	}
 	if out.Lines[0].Text == "2026-01-01 ERROR failed token=secret-value" || !containsString(out.Lines[0].Text, "token=<redacted>") {
 		t.Fatalf("expected redacted token, got %q", out.Lines[0].Text)
@@ -166,10 +173,14 @@ func TestRedactLogLineCoversAuthorizationVariants(t *testing.T) {
 		`warn Authorization: Bearer abc.def token=plain-secret {"api_key":"json-secret"}`,
 		`warn authorization=Bearer secret-token api_secret=secret-value`,
 		`warn auth: Bearer other-token password:secret-value`,
+		`warn apikey=compact-key apisecret:compact-secret`,
+		`warn token = spaced-token Authorization : Bearer spaced-bearer`,
+		`warn "api_secret" : "spaced-json-secret"`,
+		`warn API Key = display-key API Secret: display-secret`,
 	}
 	for _, tc := range cases {
 		got := redactLogLine(tc)
-		for _, secret := range []string{"abc.def", "plain-secret", "json-secret", "secret-token", "secret-value", "other-token"} {
+		for _, secret := range []string{"abc.def", "plain-secret", "json-secret", "secret-token", "secret-value", "other-token", "compact-key", "compact-secret", "spaced-token", "spaced-bearer", "spaced-json-secret", "display-key", "display-secret"} {
 			if strings.Contains(got, secret) {
 				t.Fatalf("expected %q to be redacted from %q, got %q", secret, tc, got)
 			}
@@ -323,6 +334,9 @@ func TestAdminLogRotateRequiresConfirmAndCreatesFreshFile(t *testing.T) {
 	if !out.Rotated || !out.CreatedNew || out.RotatedTo == "" {
 		t.Fatalf("unexpected rotate response: %#v", out)
 	}
+	if strings.Contains(out.RotatedTo, dataRoot) || strings.Contains(out.Source.Path, dataRoot) {
+		t.Fatalf("admin rotate response should redact local paths: %#v", out)
+	}
 	fresh, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read fresh log: %v", err)
@@ -330,7 +344,11 @@ func TestAdminLogRotateRequiresConfirmAndCreatesFreshFile(t *testing.T) {
 	if len(fresh) != 0 {
 		t.Fatalf("expected fresh empty log, got %q", string(fresh))
 	}
-	rotated, err := os.ReadFile(out.RotatedTo)
+	matches, err := filepath.Glob(logPath + ".*")
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("find rotated log: matches=%#v err=%v", matches, err)
+	}
+	rotated, err := os.ReadFile(matches[0])
 	if err != nil {
 		t.Fatalf("read rotated log: %v", err)
 	}
@@ -403,6 +421,57 @@ func TestAdminLogSearchAcrossSources(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing source search status = %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminLogSearchDoesNotMatchOnlyRawSecret(t *testing.T) {
+	dataRoot := t.TempDir()
+	serviceLog := filepath.Join(dataRoot, "logs", "maclaw_srv.log")
+	if err := os.MkdirAll(filepath.Dir(serviceLog), 0o700); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(serviceLog, []byte("error api_key=leaked-value failed\n"), 0o600); err != nil {
+		t.Fatalf("write service log: %v", err)
+	}
+	t.Setenv("MACLAW_LOG_FILE", serviceLog)
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/logs/search", strings.NewReader(`{"q":"api_key=leaked-value","limit":10}`))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("log search status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out adminLogSearchResponse
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode log search: %v", err)
+	}
+	if strings.Contains(out.Query, "leaked-value") {
+		t.Fatalf("expected redacted query echo, got %q", out.Query)
+	}
+	if len(out.Items) != 0 {
+		t.Fatalf("expected raw-secret query not to reveal matching log lines: %#v", out)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/logs/service?q="+url.QueryEscape("api_key=leaked-value"), nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("log read status = %d body = %s", w.Code, w.Body.String())
+	}
+	var readOut adminLogReadResponse
+	if err := json.NewDecoder(w.Body).Decode(&readOut); err != nil {
+		t.Fatalf("decode log read: %v", err)
+	}
+	if strings.Contains(readOut.Query, "leaked-value") || len(readOut.Lines) != 0 {
+		t.Fatalf("expected raw-secret read query not to reveal matching log lines: %#v", readOut)
 	}
 }
 

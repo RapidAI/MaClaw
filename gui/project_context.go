@@ -11,10 +11,22 @@ import (
 // ProjectContextSummary holds the structured project context loaded from
 // long-term memory when a Project Tab is first opened.
 type ProjectContextSummary struct {
-	ProjectName    string   `json:"project_name"`
-	RecentProgress string   `json:"recent_progress"`
-	KeyArtifacts   []string `json:"key_artifacts"`
-	ActiveWorkflow string   `json:"active_workflow"`
+	ProjectName     string                   `json:"project_name"`
+	RecentProgress  string                   `json:"recent_progress"`
+	KeyArtifacts    []string                 `json:"key_artifacts"`
+	RecentArtifacts []ProjectContextArtifact `json:"recent_artifacts,omitempty"`
+	ActiveWorkflow  string                   `json:"active_workflow"`
+}
+
+// ProjectContextArtifact is a compact, source-backed artifact summary for
+// project tab context injection. Full content stays behind SourceURL.
+type ProjectContextArtifact struct {
+	Title      string `json:"title,omitempty"`
+	SourceType string `json:"source_type,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	SourceHint string `json:"source_hint,omitempty"`
+	Preview    string `json:"preview,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
 }
 
 // LoadProjectContext recalls project-specific knowledge from long-term memory
@@ -64,21 +76,44 @@ func (a *App) LoadProjectContext(projectPath string) (*ProjectContextSummary, er
 		summary.RecentProgress = strings.Join(progressParts, "\n")
 	}
 
-	// Extract key artifact paths from tags and content of both entry sets.
+	// Extract key artifact paths from tags, SourceURL fields, and the scene index.
 	pathSet := make(map[string]bool)
+	addArtifactPath := func(path string) {
+		if path == "" || !looksLikeFilePathForContext(path) || pathSet[path] {
+			return
+		}
+		pathSet[path] = true
+		summary.KeyArtifacts = append(summary.KeyArtifacts, path)
+	}
+
 	allEntries := append(taskArtifacts, projectKnowledge...)
 	for _, entry := range allEntries {
-		// Check tags for file paths.
 		for _, tag := range entry.Tags {
-			if looksLikeFilePathForContext(tag) && !pathSet[tag] {
-				pathSet[tag] = true
-				summary.KeyArtifacts = append(summary.KeyArtifacts, tag)
-			}
+			addArtifactPath(tag)
 		}
-		// Check SourceURL for file paths.
-		if entry.SourceURL != "" && looksLikeFilePathForContext(entry.SourceURL) && !pathSet[entry.SourceURL] {
-			pathSet[entry.SourceURL] = true
-			summary.KeyArtifacts = append(summary.KeyArtifacts, entry.SourceURL)
+		addArtifactPath(entry.SourceURL)
+	}
+
+	if scene, ok := projectSceneMap(a.memoryStore.SceneIndex(20))[projectPath]; ok {
+		for _, sourceURL := range scene.SourceURLs {
+			addArtifactPath(sourceURL)
+		}
+		for _, artifact := range scene.RecentArtifacts {
+			item := ProjectContextArtifact{
+				Title:      artifact.Title,
+				SourceType: artifact.SourceType,
+				SourceURL:  artifact.SourceURL,
+				SourceHint: projectTabSourceHint(artifact.SourceURL),
+				Preview:    artifact.Preview,
+			}
+			if !artifact.UpdatedAt.IsZero() {
+				item.UpdatedAt = artifact.UpdatedAt.Format("2006-01-02T15:04:05Z07:00")
+			}
+			summary.RecentArtifacts = append(summary.RecentArtifacts, item)
+			addArtifactPath(artifact.SourceURL)
+			if len(summary.RecentArtifacts) >= 5 {
+				break
+			}
 		}
 	}
 
@@ -129,4 +164,3 @@ func looksLikeFilePathForContext(s string) bool {
 	}
 	return false
 }
-

@@ -6,14 +6,14 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 var (
 	screenDimUser32      = syscall.NewLazyDLL("user32.dll")
-	screenDimKernel32    = syscall.NewLazyDLL("kernel32.dll")
 	procGetLastInputInfo = screenDimUser32.NewProc("GetLastInputInfo")
 	procSendMessageW     = screenDimUser32.NewProc("SendMessageW")
-	procGetTickCount64   = screenDimKernel32.NewProc("GetTickCount64")
 )
 
 func init() {
@@ -34,11 +34,18 @@ func getIdleDurationWindows() time.Duration {
 	if r == 0 {
 		return 0
 	}
-	// GetTickCount64 returns milliseconds since boot as uint64,
-	// avoids the 49-day wrap-around of 32-bit GetTickCount.
-	tick, _, _ := procGetTickCount64.Call()
-	idleMs := uint64(tick) - uint64(lii.DwTime)
+	uptimeMs := uint64(windows.DurationSinceBoot() / time.Millisecond)
+	idleMs := idleMillisecondsFromWindowsTicks(uptimeMs, lii.DwTime)
 	return time.Duration(idleMs) * time.Millisecond
+}
+
+func idleMillisecondsFromWindowsTicks(now64 uint64, lastInput32 uint32) uint32 {
+	// GetLastInputInfo returns a 32-bit tick value compatible with GetTickCount,
+	// so it wraps roughly every 49.7 days. Compare it against the low 32 bits of
+	// GetTickCount64 and let unsigned subtraction handle the wrap. Subtracting the
+	// 32-bit value from the full 64-bit uptime makes long-running PCs look idle
+	// forever, which turns the display off even while the user is typing.
+	return uint32(now64) - lastInput32
 }
 
 func dimDisplayWindows() {

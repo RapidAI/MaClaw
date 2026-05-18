@@ -75,7 +75,7 @@ type adminSchedulerStatus struct {
 }
 
 func (s *HTTPServer) handleAdminRuntimeStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, buildAdminRuntimeStatus(s))
+	writeJSON(w, http.StatusOK, redactAdminRuntimeStatusForAdminAPI(s.svc.DataRoot(), buildAdminRuntimeStatus(s)))
 }
 
 func (s *HTTPServer) handleAdminRuntimeGC(w http.ResponseWriter, r *http.Request) {
@@ -110,7 +110,7 @@ func (s *HTTPServer) handleAdminRuntimeGoroutines(w http.ResponseWriter, r *http
 	}
 	var buf bytes.Buffer
 	if err := pprof.Lookup("goroutine").WriteTo(&buf, debugLevel); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	body := redactMultilineRuntimeDump(buf.String())
@@ -165,7 +165,7 @@ func (s *HTTPServer) handleAdminRuntimeProfile(w http.ResponseWriter, r *http.Re
 	}
 	var buf bytes.Buffer
 	if err := profile.WriteTo(&buf, debugLevel); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	body := redactMultilineRuntimeDump(buf.String())
@@ -187,7 +187,7 @@ func isAllowedRuntimeProfile(name string) bool {
 	}
 }
 func (s *HTTPServer) handleAdminSchedulerStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, buildAdminSchedulerStatus(s.svc.DataRoot(), true))
+	writeJSON(w, http.StatusOK, redactAdminSchedulerStatusForAdminAPI(s.svc.DataRoot(), buildAdminSchedulerStatus(s.svc.DataRoot(), true)))
 }
 
 func (s *HTTPServer) handleAdminJobs(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +231,31 @@ func (s *HTTPServer) handleAdminCancelJob(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, job)
 }
 
+func redactAdminRuntimeStatusForAdminAPI(dataRoot string, status adminRuntimeStatus) adminRuntimeStatus {
+	status.DataRoot = filepath.Base(status.DataRoot)
+	status.RuntimeConfigDir = filepath.Base(status.RuntimeConfigDir)
+	status.Readiness = redactReadinessReport(status.Readiness)
+	status.Scheduler = redactAdminSchedulerStatusForAdminAPI(dataRoot, status.Scheduler)
+	status.Sandbox = redactSandboxStatusForSupportBundle(dataRoot, status.Sandbox)
+	status.LogSources = redactAdminLogSourcesForAdminAPI(dataRoot, status.LogSources)
+	if status.LastSandboxReport != nil {
+		reports := redactSandboxReportsForAdminAPI(dataRoot, []sandboxDiagnoseReport{*status.LastSandboxReport})
+		status.LastSandboxReport = &reports[0]
+	}
+	return status
+}
+
+func redactAdminSchedulerStatusForAdminAPI(dataRoot string, status adminSchedulerStatus) adminSchedulerStatus {
+	status.Path = redactSupportBundleValue(dataRoot, status.Path)
+	status.LastError = redactSupportBundleText(dataRoot, status.LastError)
+	for i := range status.RecentTasks {
+		status.RecentTasks[i].Name = redactSupportBundleText(dataRoot, status.RecentTasks[i].Name)
+		status.RecentTasks[i].Action = redactSupportBundleText(dataRoot, status.RecentTasks[i].Action)
+		status.RecentTasks[i].LastResult = redactSupportBundleText(dataRoot, status.RecentTasks[i].LastResult)
+		status.RecentTasks[i].LastError = redactSupportBundleText(dataRoot, status.RecentTasks[i].LastError)
+	}
+	return status
+}
 func buildAdminRuntimeStatus(s *HTTPServer) adminRuntimeStatus {
 
 	buildMainPath := ""

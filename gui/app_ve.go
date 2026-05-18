@@ -246,6 +246,17 @@ func (a *App) InitiateGroupConversation(veIDs []string) (*VESessionInfo, error) 
 // directly to the local agent (zero network latency) while asynchronously syncing
 // to Hub for history consistency. Otherwise, the message goes through Hub normally.
 func (a *App) SendVEMessage(sessionID, content string) error {
+	// Delegate to SendVEGroupMessage with no explicit mentions (broadcast to all)
+	return a.SendVEGroupMessage(sessionID, content, nil)
+}
+
+// SendVEGroupMessage sends a message in a VE group conversation with @mention-based routing.
+// mentionedIds controls which participants receive and respond to the message:
+//   - nil or empty: broadcast to ALL participants (both local AI and remote VE respond)
+//   - contains "local-maclaw": route to local AI executor only
+//   - contains remote VE id: route to remote VE via Hub only
+//   - contains both: broadcast to all (same as empty)
+func (a *App) SendVEGroupMessage(sessionID, content string, mentionedIds []string) error {
 	if strings.TrimSpace(content) == "" {
 		return fmt.Errorf("message content is empty")
 	}
@@ -259,18 +270,49 @@ func (a *App) SendVEMessage(sessionID, content string) error {
 		CreatedAt: time.Now(),
 	}
 
-	// Local dispatch shortcut: when local maclaw is the executor for this session,
-	// dispatch directly to the local agent without waiting for Hub round-trip.
-	if a.tryLocalExecutorDispatch(sessionID, msg) {
-		// Async sync to Hub for history consistency (non-blocking)
-		go func() {
-			_ = a.GroupDiscussionSendMessage(sessionID, msg)
-		}()
+	// Determine routing based on @mentions
+	mentionLocal := false
+	mentionRemote := false
+	for _, id := range mentionedIds {
+		if id == "local-maclaw" {
+			mentionLocal = true
+		} else {
+			mentionRemote = true
+		}
+	}
+
+	// No explicit mentions → use priority-based routing (original SendVEMessage semantics).
+	// Priority: local AI executor first (zero latency), fallback to remote VE via Hub.
+	// Only ONE participant responds per message — prevents duplicate/conflicting replies.
+	if len(mentionedIds) == 0 || (mentionLocal && mentionRemote) {
+		if a.tryLocalExecutorDispatch(sessionID, msg) {
+			// Local AI handled it. Async sync to Hub for history consistency.
+			go func() {
+				_ = a.GroupDiscussionSendMessage(sessionID, msg)
+			}()
+			return nil
+		}
+		// Local AI not available — route to remote VE via Hub
+		return a.GroupDiscussionSendMessage(sessionID, msg)
+	}
+
+	if mentionLocal && !mentionRemote {
+		// @本机AI only → route exclusively to local dispatcher.
+		// Do NOT send to Hub — this prevents the remote VE from receiving and responding.
+		// The local AI's response will be synced to Hub via the dispatcher's hubSyncCh,
+		// maintaining conversation continuity for other participants.
+		if !a.tryLocalExecutorDispatch(sessionID, msg) {
+			return fmt.Errorf("本机AI 未就绪，请确认已添加到群聊")
+		}
 		return nil
 	}
 
-	// Default path: send through Hub (for remote digital employees)
-	return a.GroupDiscussionSendMessage(sessionID, msg)
+	if mentionRemote && !mentionLocal {
+		// @远程VE only → route exclusively to Hub, skip local dispatcher
+		return a.GroupDiscussionSendMessage(sessionID, msg)
+	}
+
+	return nil
 }
 
 // tryLocalExecutorDispatch checks if local maclaw is the executor for this session
@@ -486,17 +528,43 @@ func (a *App) GetVEAllowedDirectories() ([]string, error) {
 // SetVEAllowedDirectories persists the updated allowed directories list to the
 // local config file. Paths that do not exist on the filesystem are still accepted
 // (the owner may add directories for drives not currently connected — Requirement 2.6).
+// Duplicate paths are silently removed (case-insensitive on Windows, Requirement 1.6).
 func (a *App) SetVEAllowedDirectories(dirs []string) error {
 	// Reload the latest config to avoid overwriting concurrent changes.
 	cfg, err := a.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	cfg.VEAllowedDirectories = dirs
+	// Backend deduplication: defense-in-depth against bypassed frontend checks
+	// or direct config.json edits. Case-insensitive on Windows, slash-normalized.
+	cfg.VEAllowedDirectories = deduplicateVEDirs(dirs)
 	if err := a.SaveConfig(cfg); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
 	return nil
+}
+
+// deduplicateVEDirs removes duplicate directory paths from the list.
+// Comparison is case-insensitive and slash-normalized (forward/backward slashes
+// treated as equivalent) to match Windows filesystem behavior.
+func deduplicateVEDirs(dirs []string) []string {
+	seen := make(map[string]bool, len(dirs))
+	result := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		// Normalize for comparison: lowercase + forward slashes
+		key := strings.ToLower(strings.ReplaceAll(d, "\\", "/"))
+		// Also trim trailing slash for consistent comparison
+		key = strings.TrimRight(key, "/")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		result = append(result, d) // preserve original casing/format
+	}
+	return result
 }
 
 // --- Hub HTTP helpers ---

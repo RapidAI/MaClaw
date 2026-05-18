@@ -18,36 +18,36 @@ const SECURITY_MODES: { value: SecurityPolicyMode; labelZh: string; labelZhHant:
         labelZh: "宽松",
         labelZhHant: "寬鬆",
         labelEn: "Relaxed",
-        descZh: "low/medium/high 放行，critical 需要确认",
-        descZhHant: "low/medium/high 放行，critical 需要確認",
-        descEn: "low/medium/high allowed, critical requires confirmation",
+        descZh: "所有风险等级放行；风险扫描仅记录，不阻断 skill 安装/执行",
+        descZhHant: "所有風險等級放行；風險掃描僅記錄，不阻斷 skill 安裝/執行",
+        descEn: "all risk levels allowed; scan findings are recorded and do not block skill install/run",
     },
     {
         value: "standard",
         labelZh: "标准",
         labelZhHant: "標準",
         labelEn: "Standard",
-        descZh: "low 放行，medium 记录，high/critical 需要确认",
-        descZhHant: "low 放行，medium 記錄，high/critical 需要確認",
-        descEn: "low allowed, medium audited, high/critical requires confirmation",
+        descZh: "low 放行，medium 记录；high/critical 有确认通道则确认，否则记录后放行",
+        descZhHant: "low 放行，medium 記錄；high/critical 有確認通道則確認，否則記錄後放行",
+        descEn: "low allowed, medium audited; high/critical asks when a confirmation channel exists, otherwise records and allows",
     },
     {
         value: "strict",
         labelZh: "严格",
         labelZhHant: "嚴格",
         labelEn: "Strict",
-        descZh: "low 放行，medium 及以上均需要确认，critical 拒绝",
-        descZhHant: "low 放行，medium 及以上均需要確認，critical 拒絕",
-        descEn: "low allowed, medium+ requires confirmation, critical denied",
+        descZh: "low 放行，medium/high 需要确认，critical 与危险命令直接阻止",
+        descZhHant: "low 放行，medium/high 需要確認，critical 與危險命令直接阻止",
+        descEn: "low allowed, medium/high require confirmation, critical and dangerous commands are blocked",
     },
     {
         value: "developer",
         labelZh: "开发者",
         labelZhHant: "開發者",
         labelEn: "Developer",
-        descZh: "⚠️ 所有操作直接放行，不拦截任何风险等级。仅供安全研究人员使用",
-        descZhHant: "⚠️ 所有操作直接放行，不攔截任何風險等級。僅供安全研究人員使用",
-        descEn: "⚠️ All operations allowed. No deny, no confirmation. For security researchers only",
+        descZh: "⚠️ 所有操作放行；仅记录审计，不弹确认、不阻止。仅供开发和安全研究使用",
+        descZhHant: "⚠️ 所有操作放行；僅記錄審計，不彈確認、不阻止。僅供開發和安全研究使用",
+        descEn: "⚠️ All operations allowed; audit only, no confirmation or blocking. For development and security research only",
     },
 ];
 
@@ -171,21 +171,21 @@ export function SecurityPolicyPanel({ config, saveRemoteConfigField, lang }: Pro
                         {[
                             { levelEn: "Low", levelZh: "低", levelZhHant: "低", relaxed: "Allow", standard: "Allow", strict: "Allow" },
                             { levelEn: "Medium", levelZh: "中", levelZhHant: "中", relaxed: "Allow", standard: "Audit", strict: "Confirm" },
-                            { levelEn: "High", levelZh: "高", levelZhHant: "高", relaxed: "Allow", standard: "Confirm", strict: "Confirm" },
-                            { levelEn: "Critical", levelZh: "危险", levelZhHant: "危險", relaxed: "Confirm", standard: "Confirm", strict: "Deny" },
+                            { levelEn: "High", levelZh: "高", levelZhHant: "高", relaxed: "Allow", standard: "Confirm*", strict: "Confirm" },
+                            { levelEn: "Critical", levelZh: "危险", levelZhHant: "危險", relaxed: "Allow", standard: "Confirm*", strict: "Deny" },
                         ].map((row) => (
                             <tr key={row.levelEn} style={{ borderBottom: `1px solid ${colors.borderLight}` }}>
                                 <td style={{ padding: "3px 6px" }}>{t(row.levelEn, row.levelZh, row.levelZhHant)}</td>
                                 <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed, row.relaxed === "Allow" ? "放行" : row.relaxed)}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.standard, row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "记录" : row.standard === "Confirm" ? "确认" : "拒绝", row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "記錄" : row.standard === "Confirm" ? "確認" : "拒絕")}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.strict, row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "记录" : row.strict === "Confirm" ? "确认" : "拒绝", row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "記錄" : row.strict === "Confirm" ? "確認" : "拒絕")}</td>
-                                <td style={{ textAlign: "center", padding: "3px 6px", color: "#f59e0b" }}>{t("Allow", "放行", "放行")}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.standard, row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "记录" : row.standard.startsWith("Confirm") ? "确认*" : "拒绝", row.standard === "Allow" ? "放行" : row.standard === "Audit" ? "記錄" : row.standard.startsWith("Confirm") ? "確認*" : "拒絕")}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px" }}>{t(row.strict, row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "记录" : row.strict.startsWith("Confirm") ? "确认" : "拒绝", row.strict === "Allow" ? "放行" : row.strict === "Audit" ? "記錄" : row.strict.startsWith("Confirm") ? "確認" : "拒絕")}</td>
+                                <td style={{ textAlign: "center", padding: "3px 6px", color: "#f59e0b" }}>{t("Audit+Allow", "记录放行", "記錄放行")}</td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
                 <div style={{ fontSize: "0.7rem", color: colors.textMuted, marginTop: "6px" }}>
-                    {t("Allow = directly allowed, Audit = recorded, Confirm = user confirmation required, Deny = blocked", "放行 = 直接允许，记录 = 仅审计，确认 = 需要用户确认，拒绝 = 直接阻止", "放行 = 直接允許，記錄 = 僅審計，確認 = 需要用戶確認，拒絕 = 直接阻止")}
+                    {t("Allow = directly allowed, Audit = recorded, Confirm* = ask when UI is available; otherwise record and allow, Deny = blocked", "放行 = 直接允许，记录 = 仅审计，确认* = 有确认界面时询问，否则记录后放行，拒绝 = 直接阻止", "放行 = 直接允許，記錄 = 僅審計，確認* = 有確認介面時詢問，否則記錄後放行，拒絕 = 直接阻止")}
                 </div>
             </div>
 

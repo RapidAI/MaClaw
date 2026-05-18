@@ -65,9 +65,9 @@ func (s *Store) ApplyThemeMaintenancePlan(issueLimit int, actionLimit int) Theme
 		}
 	}
 
-	s.mu.Lock()
-	s.rebuildThemeLayerLocked()
-	s.mu.Unlock()
+	entries := s.List("", "")
+	s.themeManager.MarkDirty()
+	s.themeManager.EnsureUpToDate(entries, nil)
 	result.RebuiltThemes = true
 	result.AppliedActions = append(result.AppliedActions, "rebuild_theme_layer")
 	result.After = s.ThemeHealth()

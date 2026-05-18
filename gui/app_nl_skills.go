@@ -2681,7 +2681,7 @@ func (a *App) packageSkillForMarketWithDirOptions(skillName string, strictOutbou
 		return "", "", err
 	}
 
-	_, report, err := prepareSkillDirForMarket(tmpDir, true)
+	_, report, err := prepareSkillDirForMarket(tmpDir, true, a)
 	if err != nil {
 		os.RemoveAll(tmpDir)
 		return "", "", fmt.Errorf("prepare skill package for market: %w", err)
@@ -2697,7 +2697,7 @@ func (a *App) packageSkillForMarketWithDirOptions(skillName string, strictOutbou
 		return "", "", fmt.Errorf("skill quality gate blocked upload: score=%d reasons=%s", quality.Score, strings.Join(quality.Reasons, "; "))
 	}
 	if strictOutbound {
-		if err := scanSkillDirForOutboundPackage(tmpDir); err != nil {
+		if err := scanSkillDirForOutboundPackage(tmpDir, a); err != nil {
 			os.RemoveAll(tmpDir)
 			return "", "", err
 		}

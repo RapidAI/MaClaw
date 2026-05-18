@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,6 +27,8 @@ const (
 	lansengerReadWait     = 180 * time.Second
 	lansengerPingInterval = 15 * time.Second
 	lansengerPingWait     = 15 * time.Second
+	lansengerPongWait     = 45 * time.Second
+	lansengerMaxConnAge   = 12 * time.Hour
 	lansengerMaxBackoff   = 30 * time.Second
 	lansengerAPIMaxRetry  = 3
 )
@@ -132,6 +136,13 @@ func (tc *tokenCache) set(token string, expiresIn int) {
 		margin = 30 * time.Second
 	}
 	tc.expiresAt = time.Now().Add(ttl - margin)
+}
+
+func (tc *tokenCache) clear() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.token = ""
+	tc.expiresAt = time.Time{}
 }
 
 // ---------------------------------------------------------------------------
@@ -351,10 +362,13 @@ func (g *Gateway) finishConnectLoop(ctx context.Context) {
 }
 
 func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
+	loopStart := time.Now()
 	// Start heartbeat.
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	defer hbCancel()
-	go g.heartbeatLoop(hbCtx, conn)
+	var lastPongUnixNano atomic.Int64
+	lastPongUnixNano.Store(time.Now().UnixNano())
+	go g.heartbeatLoop(hbCtx, conn, &lastPongUnixNano, loopStart)
 	contextClosed := make(chan struct{})
 	go func() {
 		select {
@@ -367,10 +381,10 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 
 	msgCount := 0
 	lastMsgAt := time.Now()
-	loopStart := time.Now()
 
 	// Set Pong handler to reset read deadline when server responds to our Ping.
 	conn.SetPongHandler(func(appData string) error {
+		lastPongUnixNano.Store(time.Now().UnixNano())
 		_ = conn.SetReadDeadline(time.Now().Add(lansengerReadWait))
 		return nil
 	})
@@ -428,7 +442,7 @@ func (g *Gateway) readLoop(ctx context.Context, conn *websocket.Conn) {
 	}
 }
 
-func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
+func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn, lastPongUnixNano *atomic.Int64, connectedAt time.Time) {
 	ticker := time.NewTicker(lansengerPingInterval)
 	defer ticker.Stop()
 	pingCount := 0
@@ -443,6 +457,19 @@ func (g *Gateway) heartbeatLoop(ctx context.Context, conn *websocket.Conn) {
 			g.mu.Unlock()
 			if ws != conn {
 				log.Printf("[lansenger] warning: heartbeat stopped: connection replaced (sent %d pings)", pingCount)
+				return
+			}
+			lastPong := time.Unix(0, lastPongUnixNano.Load())
+			if !lastPong.IsZero() && time.Since(lastPong) > lansengerPongWait {
+				log.Printf("[lansenger] error: heartbeat watchdog closing stale connection: no pong for %v (sent %d pings)",
+					time.Since(lastPong).Truncate(time.Second), pingCount)
+				_ = conn.Close()
+				return
+			}
+			if lansengerConnectionAgeExceeded(connectedAt, time.Now()) {
+				log.Printf("[lansenger] warning: refreshing long-lived connection after %v (sent %d pings)",
+					time.Since(connectedAt).Truncate(time.Second), pingCount)
+				_ = conn.Close()
 				return
 			}
 			pingStart := time.Now()
@@ -484,6 +511,13 @@ func reconnectBackoffDelay(attempt int) time.Duration {
 		delay = lansengerMaxBackoff
 	}
 	return delay
+}
+
+func lansengerConnectionAgeExceeded(connectedAt, now time.Time) bool {
+	if connectedAt.IsZero() || now.Before(connectedAt) {
+		return false
+	}
+	return now.Sub(connectedAt) >= lansengerMaxConnAge
 }
 
 // ---------------------------------------------------------------------------
@@ -662,46 +696,75 @@ func (g *Gateway) getAppToken(ctx context.Context) (string, error) {
 		g.config.AppSecret,
 	)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 1; attempt <= lansengerAPIMaxRetry; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	reqStart := time.Now()
-	resp, err := g.client.Do(req)
-	reqDuration := time.Since(reqStart)
-	if err != nil {
-		return "", fmt.Errorf("token request failed (took %v): %w", reqDuration, err)
-	}
-	defer resp.Body.Close()
+		reqStart := time.Now()
+		resp, err := g.client.Do(req)
+		reqDuration := time.Since(reqStart)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			lastErr = fmt.Errorf("token request failed (took %v): %w", reqDuration, err)
+			log.Printf("[lansenger] error: token request failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, err)
+			if attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return "", lastErr
+		}
 
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("token HTTP error %d (took %v): %s", resp.StatusCode, reqDuration, string(body))
-	}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("token body read failed (took %v): %w", reqDuration, readErr)
+			log.Printf("[lansenger] error: token body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, readErr)
+			if attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return "", lastErr
+		}
 
-	var result struct {
-		ErrCode int    `json:"errCode"`
-		ErrMsg  string `json:"errMsg"`
-		Data    struct {
-			AppToken  string `json:"appToken"`
-			ExpiresIn int    `json:"expiresIn"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("token decode error: %w", err)
-	}
-	if result.ErrCode != 0 {
-		return "", fmt.Errorf("token API error %d: %s", result.ErrCode, result.ErrMsg)
-	}
-	if result.Data.AppToken == "" {
-		return "", fmt.Errorf("token API returned empty appToken")
-	}
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("token HTTP error %d (took %v): %s", resp.StatusCode, reqDuration, string(body))
+			log.Printf("[lansenger] error: token HTTP %d (attempt %d/%d, took %v): %s", resp.StatusCode, attempt, lansengerAPIMaxRetry, reqDuration, string(body))
+			if isRetryableHTTPStatus(resp.StatusCode) && attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return "", lastErr
+		}
 
-	log.Printf("[lansenger] app token refreshed (took %v, expires_in=%ds)", reqDuration, result.Data.ExpiresIn)
-	g.tokens.set(result.Data.AppToken, result.Data.ExpiresIn)
-	return result.Data.AppToken, nil
+		var result struct {
+			ErrCode int    `json:"errCode"`
+			ErrMsg  string `json:"errMsg"`
+			Data    struct {
+				AppToken  string `json:"appToken"`
+				ExpiresIn int    `json:"expiresIn"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &result); err != nil {
+			return "", fmt.Errorf("token decode error: %w", err)
+		}
+		if result.ErrCode != 0 {
+			return "", fmt.Errorf("token API error %d: %s", result.ErrCode, result.ErrMsg)
+		}
+		if result.Data.AppToken == "" {
+			return "", fmt.Errorf("token API returned empty appToken")
+		}
+
+		log.Printf("[lansenger] app token refreshed (took %v, expires_in=%ds)", reqDuration, result.Data.ExpiresIn)
+		g.tokens.set(result.Data.AppToken, result.Data.ExpiresIn)
+		return result.Data.AppToken, nil
+	}
+	return "", lastErr
 }
 
 // getWebSocketURL creates a WebSocket endpoint via the API.
@@ -714,41 +777,70 @@ func (g *Gateway) getWebSocketURL(ctx context.Context) (string, error) {
 		"secret": g.config.AppSecret,
 	})
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
+	var lastErr error
+	for attempt := 1; attempt <= lansengerAPIMaxRetry; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
 
-	reqStart := time.Now()
-	resp, err := g.client.Do(req)
-	reqDuration := time.Since(reqStart)
-	if err != nil {
-		return "", fmt.Errorf("ws endpoint request failed (took %v): %w", reqDuration, err)
-	}
-	defer resp.Body.Close()
+		reqStart := time.Now()
+		resp, err := g.client.Do(req)
+		reqDuration := time.Since(reqStart)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			lastErr = fmt.Errorf("ws endpoint request failed (took %v): %w", reqDuration, err)
+			log.Printf("[lansenger] error: ws endpoint request failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, err)
+			if attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return "", lastErr
+		}
 
-	if resp.StatusCode != 200 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("ws endpoint HTTP error %d (took %v): %s", resp.StatusCode, reqDuration, string(respBody))
-	}
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("ws endpoint body read failed (took %v): %w", reqDuration, readErr)
+			log.Printf("[lansenger] error: ws endpoint body read failed (attempt %d/%d, took %v): %v", attempt, lansengerAPIMaxRetry, reqDuration, readErr)
+			if attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return "", lastErr
+		}
 
-	var result struct {
-		ErrCode int    `json:"errCode"`
-		ErrMsg  string `json:"errMsg"`
-		Data    struct {
-			WsEndpoint string `json:"wsEndpoint"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-	if result.ErrCode != 0 {
-		return "", fmt.Errorf("ws endpoint error %d (took %v): %s", result.ErrCode, reqDuration, result.ErrMsg)
-	}
-	if result.Data.WsEndpoint != "" {
-		log.Printf("[lansenger] got WS endpoint (took %v): %s", reqDuration, result.Data.WsEndpoint)
-		return result.Data.WsEndpoint, nil
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("ws endpoint HTTP error %d (took %v): %s", resp.StatusCode, reqDuration, string(respBody))
+			log.Printf("[lansenger] error: ws endpoint HTTP %d (attempt %d/%d, took %v): %s", resp.StatusCode, attempt, lansengerAPIMaxRetry, reqDuration, string(respBody))
+			if isRetryableHTTPStatus(resp.StatusCode) && attempt < lansengerAPIMaxRetry {
+				apiRetryBackoff(ctx, attempt)
+				continue
+			}
+			return "", lastErr
+		}
+
+		var result struct {
+			ErrCode int    `json:"errCode"`
+			ErrMsg  string `json:"errMsg"`
+			Data    struct {
+				WsEndpoint string `json:"wsEndpoint"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return "", err
+		}
+		if result.ErrCode != 0 {
+			return "", fmt.Errorf("ws endpoint error %d (took %v): %s", result.ErrCode, reqDuration, result.ErrMsg)
+		}
+		if result.Data.WsEndpoint != "" {
+			log.Printf("[lansenger] got WS endpoint (took %v): %s", reqDuration, result.Data.WsEndpoint)
+			return result.Data.WsEndpoint, nil
+		}
+		break
 	}
 
 	// Fallback: construct from a dedicated WebSocket gateway when configured,
@@ -780,6 +872,33 @@ func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 		return err
 	}
 
+	send := func(tok string) error {
+		if msg.IsGroup {
+			return g.sendGroupMessage(ctx, tok, msg.ToUserID, "formatText", map[string]any{
+				"formatText": map[string]any{"formatType": 1, "text": msg.Text},
+			})
+		}
+		return g.sendPrivateMessage(ctx, tok, msg.ToUserID, "formatText", map[string]any{
+			"formatText": map[string]any{"formatType": 1, "text": msg.Text},
+		})
+	}
+
+	if err := send(token); err != nil {
+		if isLansengerTokenExpiredError(err) {
+			log.Printf("[lansenger] token expired while sending text, refreshing and retrying once")
+			g.tokens.clear()
+			freshToken, tokenErr := g.getAppToken(ctx)
+			if tokenErr != nil {
+				return tokenErr
+			}
+			return send(freshToken)
+		}
+		return err
+	}
+	return nil
+}
+
+func (g *Gateway) sendTextWithToken(ctx context.Context, token string, msg OutgoingText) error {
 	if msg.IsGroup {
 		return g.sendGroupMessage(ctx, token, msg.ToUserID, "formatText", map[string]any{
 			"formatText": map[string]any{"formatType": 1, "text": msg.Text},
@@ -788,6 +907,31 @@ func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 	return g.sendPrivateMessage(ctx, token, msg.ToUserID, "formatText", map[string]any{
 		"formatText": map[string]any{"formatType": 1, "text": msg.Text},
 	})
+}
+
+type lansengerAPIError struct {
+	Code int
+	Msg  string
+}
+
+func (e *lansengerAPIError) Error() string {
+	return fmt.Sprintf("lansenger API error %d: %s", e.Code, e.Msg)
+}
+
+func isLansengerTokenExpiredError(err error) bool {
+	var apiErr *lansengerAPIError
+	if errors.As(err, &apiErr) {
+		msg := strings.ToLower(apiErr.Msg)
+		if strings.Contains(msg, "token") && (strings.Contains(msg, "expired") || strings.Contains(msg, "invalid") || strings.Contains(msg, "expire")) {
+			return true
+		}
+		switch apiErr.Code {
+		case 40001, 40014, 42001:
+			return true
+		}
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "token") && (strings.Contains(lower, "expired") || strings.Contains(lower, "invalid") || strings.Contains(lower, "expire"))
 }
 
 // SendMedia uploads media to Lansenger and sends it as a text message with
@@ -803,31 +947,47 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		return err
 	}
 
-	fileName := msg.FileName
-	if fileName == "" {
+	if msg.FileName == "" {
 		switch msg.MediaType {
 		case "image":
-			fileName = "image.png"
+			msg.FileName = "image.png"
 		case "video":
-			fileName = "video.mp4"
+			msg.FileName = "video.mp4"
 		default:
-			fileName = "file.bin"
+			msg.FileName = "file.bin"
 		}
 	}
 
-	// Upload media to get mediaId.
-	mediaID, err := g.uploadMedia(ctx, token, msg.FileData, fileName, msg.MediaType)
+	if err := g.sendMediaWithToken(ctx, token, msg); err != nil {
+		if isLansengerTokenExpiredError(err) {
+			log.Printf("[lansenger] token expired while sending media, refreshing and retrying once")
+			g.tokens.clear()
+			freshToken, tokenErr := g.getAppToken(ctx)
+			if tokenErr != nil {
+				return tokenErr
+			}
+			return g.sendMediaWithToken(ctx, freshToken, msg)
+		}
+		return err
+	}
+	return nil
+}
+
+func (g *Gateway) sendMediaWithToken(ctx context.Context, token string, msg OutgoingMedia) error {
+	mediaID, err := g.uploadMedia(ctx, token, msg.FileData, msg.FileName, msg.MediaType)
 	if err != nil {
 		log.Printf("[lansenger] media upload failed: %v, sending text fallback", err)
+		if isLansengerTokenExpiredError(err) {
+			return err
+		}
 		return g.SendText(ctx, OutgoingText{
 			ToUserID: msg.ToUserID,
-			Text:     fmt.Sprintf("[%s: %s — 上传失败]", msg.MediaType, fileName),
+			Text:     fmt.Sprintf("[%s: %s upload failed]", msg.MediaType, msg.FileName),
 			IsGroup:  msg.IsGroup,
 		})
 	}
 
-	// Map media type to Lansenger's mediaType int: 1=video, 2=image, 3=file
-	mediaTypeInt := 3 // file
+	mediaTypeInt := 3
 	switch msg.MediaType {
 	case "image":
 		mediaTypeInt = 2
@@ -835,10 +995,9 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 		mediaTypeInt = 1
 	}
 
-	// Send as msgType="text" with mediaType + mediaIds per official docs.
 	msgData := map[string]any{
 		"text": map[string]any{
-			"content":   fileName,
+			"content":   msg.FileName,
 			"mediaType": mediaTypeInt,
 			"mediaIds":  []string{mediaID},
 		},
@@ -921,7 +1080,7 @@ func (g *Gateway) uploadMedia(ctx context.Context, appToken string, data []byte,
 		return "", fmt.Errorf("upload decode: %w", err)
 	}
 	if result.ErrCode != 0 {
-		return "", fmt.Errorf("upload API error %d: %s", result.ErrCode, result.ErrMsg)
+		return "", &lansengerAPIError{Code: result.ErrCode, Msg: result.ErrMsg}
 	}
 	if result.Data.MediaID == "" {
 		return "", fmt.Errorf("upload returned empty mediaId")
@@ -1008,7 +1167,7 @@ func (g *Gateway) doPost(ctx context.Context, url string, body []byte) error {
 		}
 		if result.ErrCode != 0 {
 			log.Printf("[lansenger] error: API POST errCode=%d: %s (took %v)", result.ErrCode, result.ErrMsg, time.Since(reqStart))
-			return fmt.Errorf("lansenger API error %d: %s", result.ErrCode, result.ErrMsg)
+			return &lansengerAPIError{Code: result.ErrCode, Msg: result.ErrMsg}
 		}
 		return nil
 	}

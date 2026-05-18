@@ -25,7 +25,6 @@ export interface UseBufferQueueReturn {
     removeEntry: (id: string) => void;
     updateEntry: (id: string, text: string, attachments: AttachmentInfo[]) => void;
     reorderEntry: (fromIndex: number, toIndex: number) => void;
-    mergeAndFire: () => { mergedText: string; allFilePaths: string[] } | null;
     /** Extract a single entry from the queue by id, removing it. Returns null if not found. */
     extractEntry: (id: string) => BufferEntry | null;
     clearQueue: () => void;
@@ -157,18 +156,6 @@ export function useBufferQueue(): UseBufferQueueReturn {
         commitQueue(next);
     }, [commitQueue]);
 
-    const mergeAndFire = useCallback(() => {
-        const current = queueRef.current;
-        if (current.length === 0) return null;
-
-        const result = {
-            mergedText: current.map(e => e.text).join("\n\n---\n\n"),
-            allFilePaths: current.flatMap(e => e.attachments.map(a => a.filePath)),
-        };
-        commitQueue([]);
-        return result;
-    }, [commitQueue]);
-
     const clearQueue = useCallback(() => {
         commitQueue([]);
     }, [commitQueue]);
@@ -219,7 +206,6 @@ export function useBufferQueue(): UseBufferQueueReturn {
         removeEntry,
         updateEntry,
         reorderEntry,
-        mergeAndFire,
         extractEntry,
         clearQueue,
         restoreQueue,

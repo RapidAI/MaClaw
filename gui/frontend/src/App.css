@@ -1282,7 +1282,12 @@ body {
 }
 
 .ve-list-item-text {
+    flex: 1;
     color: var(--theme-text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
 }
 
 .ve-form-actions {
@@ -1338,6 +1343,25 @@ body {
 
 .ve-btn--ghost:hover {
     color: var(--theme-danger, #dc2626);
+}
+
+.ve-btn--link {
+    background: transparent;
+    border: none;
+    color: var(--theme-accent, #6366f1);
+    padding: 0;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.ve-btn--link:hover {
+    text-decoration: underline;
+}
+
+.ve-dirs-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
 }
 
 .pet-settings-panel {

@@ -415,6 +415,9 @@ func NewIMMessageHandler(app *App, manager *RemoteSessionManager) *IMMessageHand
 		unifiedClassifier: app.unifiedClassifier,
 		steeringStore:     app.steeringStore,
 	}
+	if app != nil {
+		app.imHandler = h
+	}
 	h.interruptHandler = newIMInterruptHandler(h)
 	// Initialize ToolRegistry and register builtin tools.
 	h.registry = NewToolRegistry()
@@ -542,6 +545,9 @@ func (h *IMMessageHandler) SetConfigManager(cm *ConfigManager) {
 // SetMemoryStore configures the long-term memory store.
 func (h *IMMessageHandler) SetMemoryStore(ms *memory.Store) {
 	h.memoryStore = ms
+	if h.adaptiveRetry != nil {
+		h.adaptiveRetry.SetMemoryStore(ms)
+	}
 
 	// Initialize session-start memory extractor (Codex-inspired improvement #5).
 	// Uses the same LLM adapter pattern as ConversationArchiver.
@@ -615,6 +621,9 @@ func (h *IMMessageHandler) SetHarnessProgressTracker(pt *HarnessProgressTracker)
 // SetAdaptiveRetry configures the adaptive retry module for the agent loop.
 func (h *IMMessageHandler) SetAdaptiveRetry(ar *AdaptiveRetry) {
 	h.adaptiveRetry = ar
+	if h.adaptiveRetry != nil {
+		h.adaptiveRetry.SetMemoryStore(h.memoryStore)
+	}
 }
 
 func (h *IMMessageHandler) SetTrajectoryRecorderFactory(factory func() *TrajectoryRecorder) {

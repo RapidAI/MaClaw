@@ -48,6 +48,9 @@ type signedAdminTokenPayload struct {
 	Username       string `json:"username"`
 	IssuedAt       int64  `json:"issued_at"`
 	AdminSignature string `json:"admin_signature"`
+	Scope          string `json:"scope"`
+	Role           string `json:"role"`
+	TenantID       string `json:"tenant_id,omitempty"`
 	Nonce          string `json:"nonce"`
 }
 
@@ -83,6 +86,8 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 		Username:     strings.TrimSpace(username),
 		PasswordHash: string(passwordHash),
 		Email:        email,
+		Scope:        "global",
+		Role:         "global_owner",
 		Status:       "active",
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -111,6 +116,52 @@ func (s *AdminService) SetupInitialAdmin(ctx context.Context, username, password
 	return nil
 }
 
+func (s *AdminService) CreateTenantAdmin(ctx context.Context, tenantID, username, password, email, displayName, role string) (*store.AdminUser, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant id is required")
+	}
+	username = strings.TrimSpace(username)
+	if username == "" || strings.TrimSpace(password) == "" {
+		return nil, fmt.Errorf("username and password are required")
+	}
+	email = normalizeEmail(email)
+	if email == "" {
+		return nil, fmt.Errorf("admin email is required")
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	admin := &store.AdminUser{
+		ID:           newID("adm"),
+		Username:     username,
+		PasswordHash: string(passwordHash),
+		Email:        email,
+		Scope:        "tenant",
+		Role:         normalizedTenantAdminRole(role),
+		TenantID:     tenantID,
+		DisplayName:  strings.TrimSpace(displayName),
+		Status:       "active",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := s.admins.Create(ctx, admin); err != nil {
+		return nil, err
+	}
+	if s.audit != nil {
+		_ = s.audit.Create(ctx, &store.AdminAuditLog{
+			ID:          newID("aa"),
+			AdminUserID: admin.ID,
+			Action:      "tenant_admin.created",
+			PayloadJSON: mustJSON(map[string]any{"username": admin.Username, "email": admin.Email, "tenant_id": admin.TenantID, "role": admin.Role}),
+			CreatedAt:   now,
+		})
+	}
+	return admin, nil
+}
+
 func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, password string) error {
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -123,6 +174,8 @@ func (s *AdminService) ResetAdminCredentials(ctx context.Context, username, pass
 		Username:     strings.TrimSpace(username),
 		PasswordHash: string(passwordHash),
 		Email:        synthesizeAdminEmail(username),
+		Scope:        "global",
+		Role:         "global_owner",
 		Status:       "active",
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -343,6 +396,9 @@ func (s *AdminService) issueToken(ctx context.Context, admin *store.AdminUser) (
 		Username:       admin.Username,
 		IssuedAt:       time.Now().Unix(),
 		AdminSignature: adminTokenSignature(admin),
+		Scope:          normalizedAdminScope(admin),
+		Role:           normalizedAdminRole(admin),
+		TenantID:       strings.TrimSpace(admin.TenantID),
 		Nonce:          nonce,
 	}
 	rawPayload, err := json.Marshal(payload)
@@ -414,8 +470,34 @@ func (s *AdminService) tokenSecret(ctx context.Context) (string, error) {
 	return secret, nil
 }
 
+func normalizedAdminScope(admin *store.AdminUser) string {
+	if admin != nil && strings.TrimSpace(admin.Scope) == "tenant" {
+		return "tenant"
+	}
+	return "global"
+}
+
+func normalizedAdminRole(admin *store.AdminUser) string {
+	if admin != nil && strings.TrimSpace(admin.Role) != "" {
+		return strings.TrimSpace(admin.Role)
+	}
+	if normalizedAdminScope(admin) == "tenant" {
+		return "tenant_owner"
+	}
+	return "global_owner"
+}
+
+func normalizedTenantAdminRole(role string) string {
+	switch strings.TrimSpace(role) {
+	case "tenant_operator", "tenant_viewer":
+		return strings.TrimSpace(role)
+	default:
+		return "tenant_owner"
+	}
+}
+
 func adminTokenSignature(admin *store.AdminUser) string {
-	sum := sha256.Sum256([]byte(admin.PasswordHash + "|" + admin.Status + "|" + normalizeEmail(admin.Email)))
+	sum := sha256.Sum256([]byte(admin.PasswordHash + "|" + admin.Status + "|" + normalizeEmail(admin.Email) + "|" + normalizedAdminScope(admin) + "|" + normalizedAdminRole(admin) + "|" + strings.TrimSpace(admin.TenantID)))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 

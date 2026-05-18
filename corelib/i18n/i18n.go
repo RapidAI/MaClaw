@@ -1,4 +1,4 @@
-﻿// Package i18n provides lightweight internationalisation for user-facing
+// Package i18n provides lightweight internationalisation for user-facing
 // progress and status messages across IM channels (WeChat, Telegram, QQ, Feishu).
 //
 // Usage:
@@ -212,59 +212,64 @@ const (
 	MsgTUIConfigTabSecurity = "msg.tui_config_tab_security"
 	MsgTUIConfigTabAdvanced = "msg.tui_config_tab_advanced"
 	// New config field descriptions
-	MsgTUIConfigDescWorkDirProfile     = "msg.tui_config_desc_work_dir_profile"
-	MsgTUIConfigDescWorkDir            = "msg.tui_config_desc_work_dir"
-	MsgTUIConfigDescLanguage           = "msg.tui_config_desc_language"
-	MsgTUIConfigDescCheckUpdate        = "msg.tui_config_desc_check_update"
-	MsgTUIConfigDescAuxLLMProfile      = "msg.tui_config_desc_aux_llm_profile"
-	MsgTUIConfigDescAuxLLMURL          = "msg.tui_config_desc_aux_llm_url"
-	MsgTUIConfigDescAuxLLMKey          = "msg.tui_config_desc_aux_llm_key"
-	MsgTUIConfigDescAuxLLMModel        = "msg.tui_config_desc_aux_llm_model"
-	MsgTUIConfigDescAuxLLMProtocol     = "msg.tui_config_desc_aux_llm_protocol"
-	MsgTUIConfigDescWeixinEnabled      = "msg.tui_config_desc_weixin_enabled"
-	MsgTUIConfigDescWeixinToken        = "msg.tui_config_desc_weixin_token"
-	MsgTUIConfigDescWeixinBaseURL      = "msg.tui_config_desc_weixin_base_url"
-	MsgTUIConfigDescLansengerEnabled   = "msg.tui_config_desc_lansenger_enabled"
-	MsgTUIConfigDescLansengerAppID     = "msg.tui_config_desc_lansenger_app_id"
-	MsgTUIConfigDescLansengerAppSecret = "msg.tui_config_desc_lansenger_app_secret"
-	MsgTUIConfigDescLansengerGateway   = "msg.tui_config_desc_lansenger_gateway"
-	MsgTUIConfigDescProxyEnabled       = "msg.tui_config_desc_proxy_enabled"
-	MsgTUIConfigDescProxyProfile       = "msg.tui_config_desc_proxy_profile"
-	MsgTUIConfigDescProxyProtocol      = "msg.tui_config_desc_proxy_protocol"
-	MsgTUIConfigDescProxyHost          = "msg.tui_config_desc_proxy_host"
-	MsgTUIConfigDescProxyPort          = "msg.tui_config_desc_proxy_port"
-	MsgTUIConfigDescProxyUser          = "msg.tui_config_desc_proxy_user"
-	MsgTUIConfigDescProxyPass          = "msg.tui_config_desc_proxy_pass"
-	MsgTUIConfigDescProxyScopeLLM      = "msg.tui_config_desc_proxy_scope_llm"
-	MsgTUIConfigDescProxyScopeAgent    = "msg.tui_config_desc_proxy_scope_agent"
-	MsgTUIConfigDescSecurityProfile    = "msg.tui_config_desc_security_profile"
-	MsgTUIConfigDescSecurityMode       = "msg.tui_config_desc_security_mode"
-	MsgTUIConfigDescSandbox            = "msg.tui_config_desc_sandbox"
-	MsgTUIConfigDescNetworkLevel       = "msg.tui_config_desc_network_level"
-	MsgTUIConfigDescYoloMode           = "msg.tui_config_desc_yolo_mode"
-	MsgTUIConfigDescFileOutbound       = "msg.tui_config_desc_file_outbound"
-	MsgTUIConfigDescImageOutbound      = "msg.tui_config_desc_image_outbound"
-	MsgTUIConfigDescUIMode             = "msg.tui_config_desc_ui_mode"
-	MsgTUIConfigDescMemoryCompress     = "msg.tui_config_desc_memory_compress"
-	MsgTUIConfigDescLogDetail          = "msg.tui_config_desc_log_detail"
-	MsgTUIConfigDescTrajectory         = "msg.tui_config_desc_trajectory"
-	MsgTUIConfigDescDebugTools         = "msg.tui_config_desc_debug_tools"
-	MsgTUIConfigDescGossip             = "msg.tui_config_desc_gossip"
-	MsgTUIConfigDescTrialReflect       = "msg.tui_config_desc_trial_reflect"
-	MsgTUIAgentLoadConfigFailed        = "msg.tui_agent_load_config_failed"
-	MsgTUIAgentLLMCallFailed           = "msg.tui_agent_llm_call_failed"
-	MsgTUIAgentNoValidReply            = "msg.tui_agent_no_valid_reply"
-	MsgTUIAgentTruncated               = "msg.tui_agent_truncated"
-	MsgTUIAgentMaxRoundsReached        = "msg.tui_agent_max_rounds_reached"
+	MsgTUIConfigDescWorkDirProfile           = "msg.tui_config_desc_work_dir_profile"
+	MsgTUIConfigDescWorkDir                  = "msg.tui_config_desc_work_dir"
+	MsgTUIConfigDescLanguage                 = "msg.tui_config_desc_language"
+	MsgTUIConfigDescCheckUpdate              = "msg.tui_config_desc_check_update"
+	MsgTUIConfigDescAuxLLMProfile            = "msg.tui_config_desc_aux_llm_profile"
+	MsgTUIConfigDescAuxLLMURL                = "msg.tui_config_desc_aux_llm_url"
+	MsgTUIConfigDescAuxLLMKey                = "msg.tui_config_desc_aux_llm_key"
+	MsgTUIConfigDescAuxLLMModel              = "msg.tui_config_desc_aux_llm_model"
+	MsgTUIConfigDescAuxLLMProtocol           = "msg.tui_config_desc_aux_llm_protocol"
+	MsgTUIConfigDescWeixinEnabled            = "msg.tui_config_desc_weixin_enabled"
+	MsgTUIConfigDescWeixinToken              = "msg.tui_config_desc_weixin_token"
+	MsgTUIConfigDescWeixinBaseURL            = "msg.tui_config_desc_weixin_base_url"
+	MsgTUIConfigDescLansengerEnabled         = "msg.tui_config_desc_lansenger_enabled"
+	MsgTUIConfigDescLansengerAppID           = "msg.tui_config_desc_lansenger_app_id"
+	MsgTUIConfigDescLansengerAppSecret       = "msg.tui_config_desc_lansenger_app_secret"
+	MsgTUIConfigDescLansengerGateway         = "msg.tui_config_desc_lansenger_gateway"
+	MsgTUIConfigDescProxyEnabled             = "msg.tui_config_desc_proxy_enabled"
+	MsgTUIConfigDescProxyProfile             = "msg.tui_config_desc_proxy_profile"
+	MsgTUIConfigDescProxyProtocol            = "msg.tui_config_desc_proxy_protocol"
+	MsgTUIConfigDescProxyHost                = "msg.tui_config_desc_proxy_host"
+	MsgTUIConfigDescProxyPort                = "msg.tui_config_desc_proxy_port"
+	MsgTUIConfigDescProxyUser                = "msg.tui_config_desc_proxy_user"
+	MsgTUIConfigDescProxyPass                = "msg.tui_config_desc_proxy_pass"
+	MsgTUIConfigDescProxyScopeLLM            = "msg.tui_config_desc_proxy_scope_llm"
+	MsgTUIConfigDescProxyScopeAgent          = "msg.tui_config_desc_proxy_scope_agent"
+	MsgTUIConfigDescSecurityProfile          = "msg.tui_config_desc_security_profile"
+	MsgTUIConfigDescSecurityMode             = "msg.tui_config_desc_security_mode"
+	MsgTUIConfigDescSandbox                  = "msg.tui_config_desc_sandbox"
+	MsgTUIConfigDescNetworkLevel             = "msg.tui_config_desc_network_level"
+	MsgTUIConfigDescYoloMode                 = "msg.tui_config_desc_yolo_mode"
+	MsgTUIConfigDescFileOutbound             = "msg.tui_config_desc_file_outbound"
+	MsgTUIConfigDescImageOutbound            = "msg.tui_config_desc_image_outbound"
+	MsgTUIConfigDescUIMode                   = "msg.tui_config_desc_ui_mode"
+	MsgTUIConfigDescMemoryCompress           = "msg.tui_config_desc_memory_compress"
+	MsgTUIConfigDescLogDetail                = "msg.tui_config_desc_log_detail"
+	MsgTUIConfigDescTrajectory               = "msg.tui_config_desc_trajectory"
+	MsgTUIConfigDescDebugTools               = "msg.tui_config_desc_debug_tools"
+	MsgTUIConfigDescGossip                   = "msg.tui_config_desc_gossip"
+	MsgTUIConfigDescTrialReflect             = "msg.tui_config_desc_trial_reflect"
+	MsgTUIConfigDescLocalNeedleEnabled       = "msg.tui_config_desc_local_needle_enabled"
+	MsgTUIConfigDescLocalNeedleLog           = "msg.tui_config_desc_local_needle_log"
+	MsgTUIConfigDescLocalNeedleExport        = "msg.tui_config_desc_local_needle_export"
+	MsgTUIConfigDescLocalNeedleModel         = "msg.tui_config_desc_local_needle_model"
+	MsgTUIConfigDescLocalNeedleMinConfidence = "msg.tui_config_desc_local_needle_min_confidence"
+	MsgTUIAgentLoadConfigFailed              = "msg.tui_agent_load_config_failed"
+	MsgTUIAgentLLMCallFailed                 = "msg.tui_agent_llm_call_failed"
+	MsgTUIAgentNoValidReply                  = "msg.tui_agent_no_valid_reply"
+	MsgTUIAgentTruncated                     = "msg.tui_agent_truncated"
+	MsgTUIAgentMaxRoundsReached              = "msg.tui_agent_max_rounds_reached"
 
 	// Workflow engine – user-facing messages
-	MsgWorkflowStarted         = "msg.workflow_started"           // %s type, %s phase
-	MsgWorkflowInputRequired   = "msg.workflow_input_required"    // %s description
-	MsgWorkflowInputFormats    = "msg.workflow_input_formats"     // %s formats
+	MsgWorkflowStarted         = "msg.workflow_started"        // %s type, %s phase
+	MsgWorkflowInputRequired   = "msg.workflow_input_required" // %s description
+	MsgWorkflowInputFormats    = "msg.workflow_input_formats"  // %s formats
 	MsgWorkflowInputPasteHint  = "msg.workflow_input_paste_hint"
-	MsgWorkflowCompleted       = "msg.workflow_completed"         // %d phase count
-	MsgWorkflowPhaseAdvance    = "msg.workflow_phase_advance"     // %d current, %d total, %s name
-	MsgWorkflowInputWaiting    = "msg.workflow_input_waiting"     // %s hint
+	MsgWorkflowCompleted       = "msg.workflow_completed"     // %d phase count
+	MsgWorkflowPhaseAdvance    = "msg.workflow_phase_advance" // %d current, %d total, %s name
+	MsgWorkflowInputWaiting    = "msg.workflow_input_waiting" // %s hint
 	MsgWorkflowInputPasteAlt   = "msg.workflow_input_paste_alt"
 	MsgWorkflowCancelled       = "msg.workflow_cancelled"
 	MsgWorkflowPhaseCannotSkip = "msg.workflow_phase_cannot_skip" // %s phase name
@@ -273,6 +278,48 @@ const (
 	MsgWorkflowHandleError     = "msg.workflow_handle_error"      // %v error
 	MsgWorkflowStartError      = "msg.workflow_start_error"       // %v error
 	MsgWorkflowUnderstandError = "msg.workflow_understand_error"
+
+	// Workflow confirmation UI – pre-start confirmation panel
+	MsgWorkflowConfirmText      = "msg.workflow_confirm_text"
+	MsgWorkflowConfirmNilText   = "msg.workflow_confirm_nil_text"
+	MsgWorkflowConfirmBtnStart  = "msg.workflow_confirm_btn_start"
+	MsgWorkflowConfirmBtnDirect = "msg.workflow_confirm_btn_direct"
+	MsgWorkflowConfirmSummary   = "msg.workflow_confirm_summary" // %s type, %s task
+	MsgWorkflowConfirmAction1   = "msg.workflow_confirm_action1"
+	MsgWorkflowConfirmAction2   = "msg.workflow_confirm_action2"
+	MsgWorkflowConfirmAction3   = "msg.workflow_confirm_action3"
+	MsgWorkflowConfirmRisk1     = "msg.workflow_confirm_risk1"
+	MsgWorkflowConfirmRevision1 = "msg.workflow_confirm_revision1"
+	MsgWorkflowConfirmRevision2 = "msg.workflow_confirm_revision2"
+
+	// Confirmation card – section labels (shared by all confirmation types)
+	MsgConfirmLabelTitle          = "msg.confirm_label_title"
+	MsgConfirmLabelStatus         = "msg.confirm_label_status"
+	MsgConfirmLabelTargetPaths    = "msg.confirm_label_target_paths"
+	MsgConfirmLabelPlannedActions = "msg.confirm_label_planned_actions"
+	MsgConfirmLabelRiskFlags      = "msg.confirm_label_risk_flags"
+	MsgConfirmLabelRevisionHints  = "msg.confirm_label_revision_hints"
+
+	// Execution confirmation gate – non-workflow task confirmation
+	MsgExecConfirmText       = "msg.exec_confirm_text"
+	MsgExecConfirmNilText    = "msg.exec_confirm_nil_text"
+	MsgExecConfirmBtnConfirm = "msg.exec_confirm_btn_confirm"
+	MsgExecConfirmBtnCancel  = "msg.exec_confirm_btn_cancel"
+	MsgExecConfirmCancelled  = "msg.exec_confirm_cancelled"
+	MsgExecConfirmExpired    = "msg.exec_confirm_expired"
+
+	// Execution confirmation – planned actions by intent type
+	MsgExecPlanCoding1  = "msg.exec_plan_coding_1"
+	MsgExecPlanCoding2  = "msg.exec_plan_coding_2"
+	MsgExecPlanCoding3  = "msg.exec_plan_coding_3"
+	MsgExecPlanSSH1     = "msg.exec_plan_ssh_1"
+	MsgExecPlanSSH2     = "msg.exec_plan_ssh_2"
+	MsgExecPlanSSH3     = "msg.exec_plan_ssh_3"
+	MsgExecPlanAmbig1   = "msg.exec_plan_ambig_1"
+	MsgExecPlanAmbig2   = "msg.exec_plan_ambig_2"
+	MsgExecPlanAmbig3   = "msg.exec_plan_ambig_3"
+	MsgExecPlanDefault1 = "msg.exec_plan_default_1"
+	MsgExecPlanDefault2 = "msg.exec_plan_default_2"
 )
 
 // defaultLang is the fallback language when lang is empty or unknown.
@@ -476,50 +523,55 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigTabSecurity: "安全",
 		MsgTUIConfigTabAdvanced: "高级",
 		// New config field descriptions
-		MsgTUIConfigDescWorkDirProfile:     "工作目录方案：优先选择默认工作区、当前目录或用户目录；自定义时再填写路径",
-		MsgTUIConfigDescWorkDir:            "自定义工作目录路径",
-		MsgTUIConfigDescLanguage:           "界面语言",
-		MsgTUIConfigDescCheckUpdate:        "启动时检查更新",
-		MsgTUIConfigDescAuxLLMProfile:      "辅助 LLM 方案：默认关闭，可一键跟随主 LLM；只有自定义时才需要填写细项",
-		MsgTUIConfigDescAuxLLMURL:          "辅助 LLM API 地址",
-		MsgTUIConfigDescAuxLLMKey:          "辅助 LLM API 密钥",
-		MsgTUIConfigDescAuxLLMModel:        "辅助 LLM 模型名称",
-		MsgTUIConfigDescAuxLLMProtocol:     "辅助 LLM 协议",
-		MsgTUIConfigDescWeixinEnabled:      "启用微信",
-		MsgTUIConfigDescWeixinToken:        "微信 Token",
-		MsgTUIConfigDescWeixinBaseURL:      "微信 API 地址",
-		MsgTUIConfigDescLansengerEnabled:   "启用蓝信",
-		MsgTUIConfigDescLansengerAppID:     "蓝信 AppID",
-		MsgTUIConfigDescLansengerAppSecret: "蓝信 AppSecret",
-		MsgTUIConfigDescLansengerGateway:   "蓝信网关地址",
-		MsgTUIConfigDescProxyEnabled:       "启用代理",
-		MsgTUIConfigDescProxyProfile:       "一键应用常见本地代理方案；自定义代理可继续调整下面的主机、端口和范围",
-		MsgTUIConfigDescProxyProtocol:      "代理协议",
-		MsgTUIConfigDescProxyHost:          "代理主机",
-		MsgTUIConfigDescProxyPort:          "代理端口",
-		MsgTUIConfigDescProxyUser:          "代理用户名",
-		MsgTUIConfigDescProxyPass:          "代理密码",
-		MsgTUIConfigDescProxyScopeLLM:      "代理范围: LLM 请求",
-		MsgTUIConfigDescProxyScopeAgent:    "代理范围: Agent 网络",
-		MsgTUIConfigDescSecurityProfile:    "一键选择安全方案；自定义时才展开策略、沙箱和网络细项",
-		MsgTUIConfigDescSecurityMode:       "安全策略模式",
-		MsgTUIConfigDescSandbox:            "沙箱模式",
-		MsgTUIConfigDescNetworkLevel:       "网络访问级别",
-		MsgTUIConfigDescYoloMode:           "允许 YOLO 模式",
-		MsgTUIConfigDescFileOutbound:       "允许文件外发",
-		MsgTUIConfigDescImageOutbound:      "允许图片外发",
-		MsgTUIConfigDescUIMode:             "界面复杂度：简洁适合日常使用，专业显示更多调试选项",
-		MsgTUIConfigDescMemoryCompress:     "记忆自动压缩",
-		MsgTUIConfigDescLogDetail:          "详细日志",
-		MsgTUIConfigDescTrajectory:         "LLM 轨迹记录",
-		MsgTUIConfigDescDebugTools:         "调试工具调用",
-		MsgTUIConfigDescGossip:             "启用 Gossip",
-		MsgTUIConfigDescTrialReflect:       "启用试错反思",
-		MsgTUIAgentLoadConfigFailed:        "加载 LLM 配置失败: %v",
-		MsgTUIAgentLLMCallFailed:           "LLM 调用失败: %v",
-		MsgTUIAgentNoValidReply:            "LLM 未返回有效回复",
-		MsgTUIAgentTruncated:               "\n...(已截断)",
-		MsgTUIAgentMaxRoundsReached:        "(已达到最大推理轮次)",
+		MsgTUIConfigDescWorkDirProfile:           "工作目录方案：优先选择默认工作区、当前目录或用户目录；自定义时再填写路径",
+		MsgTUIConfigDescWorkDir:                  "自定义工作目录路径",
+		MsgTUIConfigDescLanguage:                 "界面语言",
+		MsgTUIConfigDescCheckUpdate:              "启动时检查更新",
+		MsgTUIConfigDescAuxLLMProfile:            "辅助 LLM 方案：默认关闭，可一键跟随主 LLM；只有自定义时才需要填写细项",
+		MsgTUIConfigDescAuxLLMURL:                "辅助 LLM API 地址",
+		MsgTUIConfigDescAuxLLMKey:                "辅助 LLM API 密钥",
+		MsgTUIConfigDescAuxLLMModel:              "辅助 LLM 模型名称",
+		MsgTUIConfigDescAuxLLMProtocol:           "辅助 LLM 协议",
+		MsgTUIConfigDescWeixinEnabled:            "启用微信",
+		MsgTUIConfigDescWeixinToken:              "微信 Token",
+		MsgTUIConfigDescWeixinBaseURL:            "微信 API 地址",
+		MsgTUIConfigDescLansengerEnabled:         "启用蓝信",
+		MsgTUIConfigDescLansengerAppID:           "蓝信 AppID",
+		MsgTUIConfigDescLansengerAppSecret:       "蓝信 AppSecret",
+		MsgTUIConfigDescLansengerGateway:         "蓝信网关地址",
+		MsgTUIConfigDescProxyEnabled:             "启用代理",
+		MsgTUIConfigDescProxyProfile:             "一键应用常见本地代理方案；自定义代理可继续调整下面的主机、端口和范围",
+		MsgTUIConfigDescProxyProtocol:            "代理协议",
+		MsgTUIConfigDescProxyHost:                "代理主机",
+		MsgTUIConfigDescProxyPort:                "代理端口",
+		MsgTUIConfigDescProxyUser:                "代理用户名",
+		MsgTUIConfigDescProxyPass:                "代理密码",
+		MsgTUIConfigDescProxyScopeLLM:            "代理范围: LLM 请求",
+		MsgTUIConfigDescProxyScopeAgent:          "代理范围: Agent 网络",
+		MsgTUIConfigDescSecurityProfile:          "一键选择安全方案；自定义时才展开策略、沙箱和网络细项",
+		MsgTUIConfigDescSecurityMode:             "安全策略模式：宽松/开发者仅记录不阻断；标准无确认通道时记录放行；严格会阻断危险操作",
+		MsgTUIConfigDescSandbox:                  "沙箱模式",
+		MsgTUIConfigDescNetworkLevel:             "网络访问级别",
+		MsgTUIConfigDescYoloMode:                 "允许 YOLO 模式",
+		MsgTUIConfigDescFileOutbound:             "允许文件外发",
+		MsgTUIConfigDescImageOutbound:            "允许图片外发",
+		MsgTUIConfigDescUIMode:                   "界面复杂度：简洁适合日常使用，专业显示更多调试选项",
+		MsgTUIConfigDescMemoryCompress:           "记忆自动压缩",
+		MsgTUIConfigDescLogDetail:                "详细日志",
+		MsgTUIConfigDescTrajectory:               "LLM 轨迹记录",
+		MsgTUIConfigDescDebugTools:               "调试工具调用",
+		MsgTUIConfigDescGossip:                   "启用 Gossip",
+		MsgTUIConfigDescTrialReflect:             "启用试错反思",
+		MsgTUIConfigDescLocalNeedleEnabled:       "启用本地 Needle 微路由器，默认关闭；开启后仅用于低风险微决策并保留回退",
+		MsgTUIConfigDescLocalNeedleLog:           "记录本地 Needle 微决策日志，用于后续微调；默认关闭且只写本机",
+		MsgTUIConfigDescLocalNeedleExport:        "允许把本地 Needle 日志导出为训练集；默认关闭",
+		MsgTUIConfigDescLocalNeedleModel:         "本地 Needle 模型文件路径，留空时使用默认模型位置",
+		MsgTUIConfigDescLocalNeedleMinConfidence: "Needle 本地决策最小置信度，0~1；留空或 0 使用默认 0.78",
+		MsgTUIAgentLoadConfigFailed:              "加载 LLM 配置失败: %v",
+		MsgTUIAgentLLMCallFailed:                 "LLM 调用失败: %v",
+		MsgTUIAgentNoValidReply:                  "LLM 未返回有效回复",
+		MsgTUIAgentTruncated:                     "\n...(已截断)",
+		MsgTUIAgentMaxRoundsReached:              "(已达到最大推理轮次)",
 		// Workflow
 		MsgWorkflowStarted:         "🚀 工作流已启动：%s\n📋 当前阶段：%s",
 		MsgWorkflowInputRequired:   "\n\n📎 需要输入：%s",
@@ -536,6 +588,43 @@ var translations = map[string]map[string]string{
 		MsgWorkflowHandleError:     "⚠️ 工作流处理出错: %v",
 		MsgWorkflowStartError:      "⚠️ 启动工作流失败: %v",
 		MsgWorkflowUnderstandError: "⚠️ 内部理解步骤临时失败，请再发一次补充，或直接说「开工」继续当前任务。",
+		// Workflow confirmation UI
+		MsgWorkflowConfirmText:      "该请求匹配到工作流模式。可以启动工作流进行分阶段执行，或选择直接执行。",
+		MsgWorkflowConfirmNilText:   "请确认是否启动工作流。",
+		MsgWorkflowConfirmBtnStart:  "启动工作流",
+		MsgWorkflowConfirmBtnDirect: "直接执行",
+		MsgWorkflowConfirmSummary:   "匹配工作流 %s：%s",
+		MsgWorkflowConfirmAction1:   "启动匹配的多阶段工作流",
+		MsgWorkflowConfirmAction2:   "生成并审阅各阶段产出文档",
+		MsgWorkflowConfirmAction3:   "简单任务可选择直接执行",
+		MsgWorkflowConfirmRisk1:     "工作流模式会增加规划/审阅阶段，简单任务可能不需要",
+		MsgWorkflowConfirmRevision1: "简单任务建议选择直接执行",
+		MsgWorkflowConfirmRevision2: "如果匹配的工作流类型不对，可以回复调整",
+		// Confirmation card labels
+		MsgConfirmLabelTitle:          "执行前确认",
+		MsgConfirmLabelStatus:         "状态",
+		MsgConfirmLabelTargetPaths:    "目标路径",
+		MsgConfirmLabelPlannedActions: "计划操作",
+		MsgConfirmLabelRiskFlags:      "风险标记",
+		MsgConfirmLabelRevisionHints:  "修订提示",
+		// Execution confirmation gate
+		MsgExecConfirmText:       "请确认我的理解是否正确。确认后开始执行；如有偏差，请回复修正后的目录、目标或前提。",
+		MsgExecConfirmNilText:    "请确认后继续。",
+		MsgExecConfirmBtnConfirm: "确认并开始",
+		MsgExecConfirmBtnCancel:  "取消",
+		MsgExecConfirmCancelled:  "已取消待确认的任务。",
+		MsgExecConfirmExpired:    "确认已过期，请重新发起。",
+		MsgExecPlanCoding1:       "确认项目目录",
+		MsgExecPlanCoding2:       "确认任务目标",
+		MsgExecPlanCoding3:       "确认后开始修改代码",
+		MsgExecPlanSSH1:          "确认目标服务器或目录",
+		MsgExecPlanSSH2:          "确认诊断目标",
+		MsgExecPlanSSH3:          "确认后执行远程操作",
+		MsgExecPlanAmbig1:        "确认是代码工作还是远程操作",
+		MsgExecPlanAmbig2:        "确认工作区或目标环境",
+		MsgExecPlanAmbig3:        "确认后执行",
+		MsgExecPlanDefault1:      "确认任务理解",
+		MsgExecPlanDefault2:      "确认后开始执行",
 	},
 	"en": {
 		MsgAckProcessing:                      "⏳ Processing, please wait...",
@@ -728,50 +817,55 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigTabSecurity: "Security",
 		MsgTUIConfigTabAdvanced: "Advanced",
 		// New config field descriptions
-		MsgTUIConfigDescWorkDirProfile:     "Working directory profile: choose default workspace, current directory, or home; custom expands the path field",
-		MsgTUIConfigDescWorkDir:            "Custom working directory path",
-		MsgTUIConfigDescLanguage:           "Interface language",
-		MsgTUIConfigDescCheckUpdate:        "Check for updates on startup",
-		MsgTUIConfigDescAuxLLMProfile:      "Auxiliary LLM profile: off by default, can follow the primary LLM; custom expands manual fields",
-		MsgTUIConfigDescAuxLLMURL:          "Auxiliary LLM API URL",
-		MsgTUIConfigDescAuxLLMKey:          "Auxiliary LLM API key",
-		MsgTUIConfigDescAuxLLMModel:        "Auxiliary LLM model name",
-		MsgTUIConfigDescAuxLLMProtocol:     "Auxiliary LLM protocol",
-		MsgTUIConfigDescWeixinEnabled:      "Enable WeChat",
-		MsgTUIConfigDescWeixinToken:        "WeChat Token",
-		MsgTUIConfigDescWeixinBaseURL:      "WeChat API URL",
-		MsgTUIConfigDescLansengerEnabled:   "Enable Lansenger",
-		MsgTUIConfigDescLansengerAppID:     "Lansenger AppID",
-		MsgTUIConfigDescLansengerAppSecret: "Lansenger AppSecret",
-		MsgTUIConfigDescLansengerGateway:   "Lansenger gateway URL",
-		MsgTUIConfigDescProxyEnabled:       "Enable proxy",
-		MsgTUIConfigDescProxyProfile:       "Apply a common local proxy profile; adjust host, port, and scope below for custom proxy setup",
-		MsgTUIConfigDescProxyProtocol:      "Proxy protocol",
-		MsgTUIConfigDescProxyHost:          "Proxy host",
-		MsgTUIConfigDescProxyPort:          "Proxy port",
-		MsgTUIConfigDescProxyUser:          "Proxy username",
-		MsgTUIConfigDescProxyPass:          "Proxy password",
-		MsgTUIConfigDescProxyScopeLLM:      "Proxy scope: LLM requests",
-		MsgTUIConfigDescProxyScopeAgent:    "Proxy scope: Agent network",
-		MsgTUIConfigDescSecurityProfile:    "Choose a security profile; custom expands policy, sandbox, and network fields",
-		MsgTUIConfigDescSecurityMode:       "Security policy mode",
-		MsgTUIConfigDescSandbox:            "Sandbox mode",
-		MsgTUIConfigDescNetworkLevel:       "Network access level",
-		MsgTUIConfigDescYoloMode:           "Allow YOLO mode",
-		MsgTUIConfigDescFileOutbound:       "Allow file outbound",
-		MsgTUIConfigDescImageOutbound:      "Allow image outbound",
-		MsgTUIConfigDescUIMode:             "UI complexity: Lite for daily use, Pro shows more diagnostics",
-		MsgTUIConfigDescMemoryCompress:     "Auto-compress memory",
-		MsgTUIConfigDescLogDetail:          "Detailed logging",
-		MsgTUIConfigDescTrajectory:         "LLM trajectory logging",
-		MsgTUIConfigDescDebugTools:         "Debug tool calls",
-		MsgTUIConfigDescGossip:             "Enable Gossip",
-		MsgTUIConfigDescTrialReflect:       "Enable trial-and-reflect",
-		MsgTUIAgentLoadConfigFailed:        "Failed to load LLM config: %v",
-		MsgTUIAgentLLMCallFailed:           "LLM call failed: %v",
-		MsgTUIAgentNoValidReply:            "LLM returned no valid reply",
-		MsgTUIAgentTruncated:               "\n...(truncated)",
-		MsgTUIAgentMaxRoundsReached:        "(maximum reasoning rounds reached)",
+		MsgTUIConfigDescWorkDirProfile:           "Working directory profile: choose default workspace, current directory, or home; custom expands the path field",
+		MsgTUIConfigDescWorkDir:                  "Custom working directory path",
+		MsgTUIConfigDescLanguage:                 "Interface language",
+		MsgTUIConfigDescCheckUpdate:              "Check for updates on startup",
+		MsgTUIConfigDescAuxLLMProfile:            "Auxiliary LLM profile: off by default, can follow the primary LLM; custom expands manual fields",
+		MsgTUIConfigDescAuxLLMURL:                "Auxiliary LLM API URL",
+		MsgTUIConfigDescAuxLLMKey:                "Auxiliary LLM API key",
+		MsgTUIConfigDescAuxLLMModel:              "Auxiliary LLM model name",
+		MsgTUIConfigDescAuxLLMProtocol:           "Auxiliary LLM protocol",
+		MsgTUIConfigDescWeixinEnabled:            "Enable WeChat",
+		MsgTUIConfigDescWeixinToken:              "WeChat Token",
+		MsgTUIConfigDescWeixinBaseURL:            "WeChat API URL",
+		MsgTUIConfigDescLansengerEnabled:         "Enable Lansenger",
+		MsgTUIConfigDescLansengerAppID:           "Lansenger AppID",
+		MsgTUIConfigDescLansengerAppSecret:       "Lansenger AppSecret",
+		MsgTUIConfigDescLansengerGateway:         "Lansenger gateway URL",
+		MsgTUIConfigDescProxyEnabled:             "Enable proxy",
+		MsgTUIConfigDescProxyProfile:             "Apply a common local proxy profile; adjust host, port, and scope below for custom proxy setup",
+		MsgTUIConfigDescProxyProtocol:            "Proxy protocol",
+		MsgTUIConfigDescProxyHost:                "Proxy host",
+		MsgTUIConfigDescProxyPort:                "Proxy port",
+		MsgTUIConfigDescProxyUser:                "Proxy username",
+		MsgTUIConfigDescProxyPass:                "Proxy password",
+		MsgTUIConfigDescProxyScopeLLM:            "Proxy scope: LLM requests",
+		MsgTUIConfigDescProxyScopeAgent:          "Proxy scope: Agent network",
+		MsgTUIConfigDescSecurityProfile:          "Choose a security profile; custom expands policy, sandbox, and network fields",
+		MsgTUIConfigDescSecurityMode:             "Security policy mode: relaxed/developer audit without blocking; standard records and allows without a confirmation channel; strict blocks dangerous operations",
+		MsgTUIConfigDescSandbox:                  "Sandbox mode",
+		MsgTUIConfigDescNetworkLevel:             "Network access level",
+		MsgTUIConfigDescYoloMode:                 "Allow YOLO mode",
+		MsgTUIConfigDescFileOutbound:             "Allow file outbound",
+		MsgTUIConfigDescImageOutbound:            "Allow image outbound",
+		MsgTUIConfigDescUIMode:                   "UI complexity: Lite for daily use, Pro shows more diagnostics",
+		MsgTUIConfigDescMemoryCompress:           "Auto-compress memory",
+		MsgTUIConfigDescLogDetail:                "Detailed logging",
+		MsgTUIConfigDescTrajectory:               "LLM trajectory logging",
+		MsgTUIConfigDescDebugTools:               "Debug tool calls",
+		MsgTUIConfigDescGossip:                   "Enable Gossip",
+		MsgTUIConfigDescTrialReflect:             "Enable trial-and-reflect",
+		MsgTUIConfigDescLocalNeedleEnabled:       "Enable the local Needle micro-router. Off by default; low-risk decisions keep fallback paths.",
+		MsgTUIConfigDescLocalNeedleLog:           "Record local Needle micro-decision logs for fine-tuning. Off by default and local-only.",
+		MsgTUIConfigDescLocalNeedleExport:        "Allow exporting local Needle logs as training data. Off by default.",
+		MsgTUIConfigDescLocalNeedleModel:         "Local Needle model artifact path. Empty uses the default model location.",
+		MsgTUIConfigDescLocalNeedleMinConfidence: "Minimum confidence for local Needle decisions, 0-1. Empty or 0 uses the default 0.78.",
+		MsgTUIAgentLoadConfigFailed:              "Failed to load LLM config: %v",
+		MsgTUIAgentLLMCallFailed:                 "LLM call failed: %v",
+		MsgTUIAgentNoValidReply:                  "LLM returned no valid reply",
+		MsgTUIAgentTruncated:                     "\n...(truncated)",
+		MsgTUIAgentMaxRoundsReached:              "(maximum reasoning rounds reached)",
 		// Workflow
 		MsgWorkflowStarted:         "🚀 Workflow started: %s\n📋 Current phase: %s",
 		MsgWorkflowInputRequired:   "\n\n📎 Input required: %s",
@@ -788,6 +882,43 @@ var translations = map[string]map[string]string{
 		MsgWorkflowHandleError:     "⚠️ Workflow error: %v",
 		MsgWorkflowStartError:      "⚠️ Failed to start workflow: %v",
 		MsgWorkflowUnderstandError: "⚠️ Internal understanding step failed temporarily. Please resend your input, or say \"start\" to continue.",
+		// Workflow confirmation UI
+		MsgWorkflowConfirmText:      "This request matches workflow mode. Start the workflow for staged execution, or choose direct execution for a simple agent loop.",
+		MsgWorkflowConfirmNilText:   "Please confirm whether to start the workflow.",
+		MsgWorkflowConfirmBtnStart:  "Start workflow",
+		MsgWorkflowConfirmBtnDirect: "Direct execution",
+		MsgWorkflowConfirmSummary:   "Matched workflow %s for: %s",
+		MsgWorkflowConfirmAction1:   "Start the matched multi-phase workflow",
+		MsgWorkflowConfirmAction2:   "Generate and review workflow phase outputs",
+		MsgWorkflowConfirmAction3:   "Use direct execution for simple one-shot tasks",
+		MsgWorkflowConfirmRisk1:     "Workflow mode may add planning/review phases that are unnecessary for simple tasks",
+		MsgWorkflowConfirmRevision1: "Choose direct execution for a simple task",
+		MsgWorkflowConfirmRevision2: "Reply with adjustments if the matched workflow type is wrong",
+		// Confirmation card labels
+		MsgConfirmLabelTitle:          "Pre-execution confirmation",
+		MsgConfirmLabelStatus:         "Status",
+		MsgConfirmLabelTargetPaths:    "Target paths",
+		MsgConfirmLabelPlannedActions: "Planned actions",
+		MsgConfirmLabelRiskFlags:      "Risk flags",
+		MsgConfirmLabelRevisionHints:  "Revision hints",
+		// Execution confirmation gate
+		MsgExecConfirmText:       "Please confirm whether my understanding is correct. After confirmation I will start execution; if anything is off, reply with the corrected directory, goal, or premise.",
+		MsgExecConfirmNilText:    "Please confirm before continuing.",
+		MsgExecConfirmBtnConfirm: "Confirm and start",
+		MsgExecConfirmBtnCancel:  "Cancel",
+		MsgExecConfirmCancelled:  "Cancelled pending confirmation.",
+		MsgExecConfirmExpired:    "Confirmation expired; please start again.",
+		MsgExecPlanCoding1:       "Confirm project directory",
+		MsgExecPlanCoding2:       "Confirm task goal",
+		MsgExecPlanCoding3:       "Start code changes after confirmation",
+		MsgExecPlanSSH1:          "Confirm target server or directory",
+		MsgExecPlanSSH2:          "Confirm diagnosis goal",
+		MsgExecPlanSSH3:          "Run remote operation after confirmation",
+		MsgExecPlanAmbig1:        "Confirm whether this is code work or remote work",
+		MsgExecPlanAmbig2:        "Confirm workspace or target environment",
+		MsgExecPlanAmbig3:        "Execute after confirmation",
+		MsgExecPlanDefault1:      "Confirm task understanding",
+		MsgExecPlanDefault2:      "Start execution after confirmation",
 	},
 }
 

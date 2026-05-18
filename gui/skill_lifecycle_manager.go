@@ -64,7 +64,7 @@ func (m *SkillLifecycleManager) NormalizeInstalled(entry *corelib.NLSkillEntry) 
 	if m == nil || m.app == nil {
 		return entry
 	}
-	return normalizeInstalledSkillEntry(entry)
+	return normalizeInstalledSkillEntry(entry, m.app)
 }
 
 func (m *SkillLifecycleManager) EnqueueUpload(ctx context.Context, skillName, skillDir, reason string, requireRuntimeProof bool, processNow bool) (*SkillUploadQueueItem, error) {
@@ -98,7 +98,7 @@ func (m *SkillLifecycleManager) EnqueueUpload(ctx context.Context, skillName, sk
 	}
 	var quality skillQualityReport
 	if strings.TrimSpace(skillDir) != "" {
-		_, report, prepErr := prepareSkillDirForMarket(skillDir, true)
+		_, report, prepErr := prepareSkillDirForMarket(skillDir, true, m.app)
 		if prepErr != nil {
 			item := m.recordBlocked(skillName, skillDir, reason, localHash, requireRuntimeProof, "portability preparation failed: "+prepErr.Error(), 0)
 			return item, prepErr
@@ -227,7 +227,7 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 		return "", fmt.Errorf("skill market client not initialized")
 	}
 
-	_, report, err := prepareSkillDirForMarket(skillDir, true)
+	_, report, err := prepareSkillDirForMarket(skillDir, true, m.app)
 	if err != nil {
 		return "", fmt.Errorf("prepare skill dir: %w", err)
 	}
@@ -281,7 +281,7 @@ func (m *SkillLifecycleManager) UploadDirNow(ctx context.Context, skillName, ski
 		msg := fmt.Sprintf("upload blocked by package quality gate: score=%d reasons=%s", packageQuality.Score, strings.Join(packageQuality.Reasons, "; "))
 		return "", &skillUploadBlockedError{Message: msg, Score: packageQuality.Score}
 	}
-	if err := scanSkillDirForOutboundPackage(tmpDir); err != nil {
+	if err := scanSkillDirForOutboundPackage(tmpDir, m.app); err != nil {
 		return "", err
 	}
 	if err := writeSkillPackageManifest(tmpDir, entry, packageQuality, reasonStage(reason), requireRuntimeProof); err != nil {
@@ -360,7 +360,7 @@ func (m *SkillLifecycleManager) EvaluateInstalledSkills(requireRuntimeProof bool
 			statuses = append(statuses, buildSkillQualityStatus("", entry, quality, "audit", requireRuntimeProof))
 			continue
 		}
-		_, report, err := prepareSkillDirForMarket(entry.SkillDir, true)
+		_, report, err := prepareSkillDirForMarket(entry.SkillDir, true, m.app)
 		if err != nil {
 			quality := skillQualityReport{Score: 0, MarketReady: false, Reasons: []string{"portability preparation failed: " + err.Error()}}
 			writeSkillQualityStatus(entry.SkillDir, entry, quality, "audit", requireRuntimeProof)
@@ -424,7 +424,7 @@ func (m *SkillLifecycleManager) RetryBlocked(skillName string) error {
 }
 
 func (m *SkillLifecycleManager) reevaluateBlockedUploadItem(item SkillUploadQueueItem, now string) (SkillUploadQueueItem, bool) {
-	_, report, err := prepareSkillDirForMarket(item.SkillDir, true)
+	_, report, err := prepareSkillDirForMarket(item.SkillDir, true, m.app)
 	if err != nil {
 		item.LastError = "portability preparation failed: " + err.Error()
 		item.QualityScore = 0

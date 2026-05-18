@@ -13,6 +13,7 @@ const (
 	experienceGovernanceActionInspectFollowUpActions            experienceGovernanceActionKind = "inspect_follow_up_actions"
 	experienceGovernanceActionReviewRoutingCandidates           experienceGovernanceActionKind = "review_routing_candidates"
 	experienceGovernanceActionInspectRoutingSignals             experienceGovernanceActionKind = "inspect_routing_signals"
+	experienceGovernanceActionInspectToolRecoveryGovernance     experienceGovernanceActionKind = "inspect_tool_recovery_governance"
 	experienceGovernanceActionInspectSkillNudgeCandidates       experienceGovernanceActionKind = "inspect_skill_nudge_candidates"
 	experienceGovernanceActionBuildMemoryMaintenanceDraft       experienceGovernanceActionKind = "build_memory_maintenance_draft"
 	experienceGovernanceActionInspectMemoryCandidates           experienceGovernanceActionKind = "inspect_memory_candidates"
@@ -46,6 +47,8 @@ func normalizeExperienceGovernanceActionKind(action string) experienceGovernance
 		return experienceGovernanceActionReviewRoutingCandidates
 	case experienceGovernanceActionInspectRoutingSignals:
 		return experienceGovernanceActionInspectRoutingSignals
+	case experienceGovernanceActionInspectToolRecoveryGovernance:
+		return experienceGovernanceActionInspectToolRecoveryGovernance
 	case experienceGovernanceActionInspectSkillNudgeCandidates:
 		return experienceGovernanceActionInspectSkillNudgeCandidates
 	case experienceGovernanceActionBuildMemoryMaintenanceDraft:

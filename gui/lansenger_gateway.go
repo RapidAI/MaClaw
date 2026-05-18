@@ -23,30 +23,43 @@ import (
 //   - Hub / 多机 mode (LansengerLocalMode=false): forwards messages to Hub
 //     via im.gateway_message, receives replies via im.gateway_reply.
 type lansengerGatewayManager struct {
-	app       *App
-	mu        sync.Mutex
-	gateway   *lansenger.Gateway
-	status    gatewayConnectionStatus
-	lastToken string
+	app          *App
+	mu           sync.Mutex
+	gateway      *lansenger.Gateway
+	status       gatewayConnectionStatus
+	statusSince  time.Time
+	lastRestart  time.Time
+	lastToken    string
+	healthCancel context.CancelFunc
 
 	localHandler *IMMessageHandler
 }
 
 func newLansengerGatewayManager(app *App) *lansengerGatewayManager {
 	return &lansengerGatewayManager{
-		app:    app,
-		status: gatewayConnectionStatusDisconnected,
+		app:         app,
+		status:      gatewayConnectionStatusDisconnected,
+		statusSince: time.Now(),
 	}
 }
 
 // SyncFromConfig reads the current AppConfig and starts or stops the gateway.
 func (m *lansengerGatewayManager) SyncFromConfig() {
+	m.syncFromConfig(false)
+}
+
+// Restart forcefully tears down the current gateway and starts a fresh
+// connection from the current AppConfig.
+func (m *lansengerGatewayManager) Restart() {
+	m.syncFromConfig(true)
+}
+
+func (m *lansengerGatewayManager) syncFromConfig(forceRestart bool) {
 	cfg, err := m.app.LoadConfig()
 	if err != nil {
 		return
 	}
 
-	// Three simple fields: AppID, AppSecret, Gateway URL (with default).
 	appID := strings.TrimSpace(cfg.LansengerAppID)
 	appSecret := strings.TrimSpace(cfg.LansengerAppSecret)
 	gwURL := cfg.LansengerApiGatewayURL()
@@ -55,34 +68,34 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 	m.mu.Lock()
 	if !cfg.LansengerEnabled || appID == "" || appSecret == "" {
 		gw := m.gateway
+		healthCancel := m.healthCancel
+		m.gateway = nil
+		m.status = gatewayConnectionStatusDisconnected
+		m.statusSince = time.Now()
+		m.lastToken = ""
+		m.healthCancel = nil
+		m.mu.Unlock()
+		if healthCancel != nil {
+			healthCancel()
+		}
 		if gw != nil {
-			m.gateway = nil
-			m.status = gatewayConnectionStatusDisconnected
-			m.mu.Unlock()
 			_ = gw.Stop()
-		} else {
-			m.mu.Unlock()
 		}
 		if hubClient := m.app.hubClient(); hubClient != nil && hubClient.IsConnected() {
 			_ = hubClient.SendIMGatewayUnclaim(imGatewayPlatformLansenger)
 		}
-		if gw != nil {
-			m.emitStatusEvent()
-		}
+		m.emitStatusEvent()
 		return
 	}
 
-	// Compose a cache key from all credential fields so any change triggers reconnect.
 	cacheKey := appID + "|" + appSecret + "|" + gwURL + "|" + wssURL
-
-	if m.gateway != nil && m.lastToken == cacheKey {
+	if m.gateway != nil && m.lastToken == cacheKey && !forceRestart && m.gateway.IsRunning() && m.status != gatewayConnectionStatusDisconnected && m.status != gatewayConnectionStatusError {
 		m.mu.Unlock()
 		return
 	}
 
 	oldGw := m.gateway
 	m.mu.Unlock()
-
 	if oldGw != nil {
 		_ = oldGw.Stop()
 	}
@@ -93,14 +106,16 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		ApiGatewayURL:    gwURL,
 		WebSocketBaseURL: wssURL,
 	}
-
 	gw := lansenger.NewGateway(gwCfg, m.onIncomingMessage)
-	gw.SetStatusCallback(m.onStatusChange)
+	gw.SetStatusCallback(func(status string) {
+		m.onGatewayStatusChange(gw, status)
+	})
 
 	m.mu.Lock()
 	m.gateway = gw
 	m.lastToken = cacheKey
 	m.mu.Unlock()
+	m.ensureHealthMonitor()
 
 	if err := gw.Start(context.Background()); err != nil {
 		log.Printf("[lansenger-mgr] start failed: %v", err)
@@ -108,6 +123,7 @@ func (m *lansengerGatewayManager) SyncFromConfig() {
 		m.gateway = nil
 		m.lastToken = ""
 		m.status = gatewayConnectionStatusError
+		m.statusSince = time.Now()
 		m.mu.Unlock()
 		m.emitStatusEvent()
 		return
@@ -120,10 +136,16 @@ func (m *lansengerGatewayManager) Stop() {
 	gw := m.gateway
 	m.gateway = nil
 	m.status = gatewayConnectionStatusDisconnected
+	m.statusSince = time.Now()
 	m.lastToken = ""
+	healthCancel := m.healthCancel
+	m.healthCancel = nil
 	lh := m.localHandler
 	m.localHandler = nil
 	m.mu.Unlock()
+	if healthCancel != nil {
+		healthCancel()
+	}
 	if lh != nil {
 		lh.memory.Stop()
 	}
@@ -140,9 +162,81 @@ func (m *lansengerGatewayManager) Status() string {
 	return m.status.String()
 }
 
-func (m *lansengerGatewayManager) onStatusChange(status string) {
+func (m *lansengerGatewayManager) ensureHealthMonitor() {
 	m.mu.Lock()
+	if m.healthCancel != nil {
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.healthCancel = cancel
+	m.mu.Unlock()
+
+	go m.healthMonitorLoop(ctx)
+}
+
+func (m *lansengerGatewayManager) healthMonitorLoop(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.mu.Lock()
+			gw := m.gateway
+			status := m.status
+			statusSince := m.statusSince
+			lastRestart := m.lastRestart
+			m.mu.Unlock()
+
+			if lansengerRestartInCooldown(lastRestart, time.Now()) {
+				continue
+			}
+
+			if status == gatewayConnectionStatusError || (gw != nil && !gw.IsRunning()) {
+				running := gw != nil && gw.IsRunning()
+				log.Printf("[lansenger-mgr] health monitor restarting gateway: status=%s running=%v", status, running)
+				m.restartFromHealthMonitor("not_running_or_error")
+				continue
+			}
+			if gw == nil || status == gatewayConnectionStatusDisconnected {
+				continue
+			}
+			if lansengerStatusNeedsWatchdogRestart(status) && time.Since(statusSince) > 5*time.Minute {
+				log.Printf("[lansenger-mgr] health monitor restarting stale gateway status: status=%s since=%v", status, statusSince.Format(time.RFC3339))
+				m.restartFromHealthMonitor("stale_status_" + status.String())
+				continue
+			}
+		}
+	}
+}
+
+func lansengerStatusNeedsWatchdogRestart(status gatewayConnectionStatus) bool {
+	switch status {
+	case gatewayConnectionStatusConnecting, gatewayConnectionStatusReconnecting, gatewayConnectionStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func lansengerRestartInCooldown(lastRestart, now time.Time) bool {
+	return !lastRestart.IsZero() && now.Sub(lastRestart) < time.Minute
+}
+
+func (m *lansengerGatewayManager) onGatewayStatusChange(gw *lansenger.Gateway, status string) {
+	m.mu.Lock()
+	if m.gateway != gw {
+		m.mu.Unlock()
+		log.Printf("[lansenger-mgr] ignoring stale gateway status: %s", status)
+		return
+	}
 	normalized := normalizeGatewayConnectionStatus(status)
+	if normalized != m.status {
+		m.statusSince = time.Now()
+	}
 	m.status = normalized
 	if normalized == gatewayConnectionStatusError {
 		// Clear gateway reference so SyncFromConfig can retry on next call.
@@ -161,6 +255,18 @@ func (m *lansengerGatewayManager) onStatusChange(status string) {
 			hubClient.SendIMGatewayClaim(imGatewayPlatformLansenger)
 		}
 	}
+}
+
+func (m *lansengerGatewayManager) restartFromHealthMonitor(reason string) {
+	m.mu.Lock()
+	if lansengerRestartInCooldown(m.lastRestart, time.Now()) {
+		m.mu.Unlock()
+		return
+	}
+	m.lastRestart = time.Now()
+	m.mu.Unlock()
+	m.app.emitEvent("lansenger-auto-restarting", reason)
+	m.Restart()
 }
 
 func (m *lansengerGatewayManager) emitStatusEvent() {
@@ -643,6 +749,7 @@ func (a *App) RestartLansenger() string {
 	if a.lansengerGateway == nil {
 		return "disconnected"
 	}
+	a.lansengerGateway.Restart()
 	return a.lansengerGateway.Status()
 }
 

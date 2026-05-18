@@ -24,7 +24,7 @@ func (s *HTTPServer) handleSkillSourcesAvailable(w http.ResponseWriter, r *http.
 func (s *HTTPServer) handleSkillSourcesGetGlobal(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.skillSourceSvc.GetGlobal(r.Context())
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	if cfg == nil {
@@ -43,7 +43,7 @@ func (s *HTTPServer) handleSkillSourcesSetGlobal(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := s.skillSourceSvc.SetGlobal(r.Context(), &cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_global_updated", "skill_source_policy", "global", skillSourceAuditMetadata(r, &cfg, ""))
@@ -54,7 +54,7 @@ func (s *HTTPServer) handleSkillSourcesGetTenant(w http.ResponseWriter, r *http.
 	id := r.PathValue("id")
 	cfg, err := s.skillSourceSvc.GetTenant(r.Context(), id)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	if cfg == nil {
@@ -74,7 +74,7 @@ func (s *HTTPServer) handleSkillSourcesSetTenant(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := s.skillSourceSvc.SetTenant(r.Context(), id, &cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_tenant_updated", "skill_source_policy", id, skillSourceAuditMetadata(r, &cfg, id))
@@ -87,7 +87,7 @@ func (s *HTTPServer) handleSkillSourcesDeleteTenant(w http.ResponseWriter, r *ht
 	}
 	id := r.PathValue("id")
 	if err := s.skillSourceSvc.DeleteTenant(r.Context(), id); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_tenant_deleted", "skill_source_policy", id, map[string]string{"tenant_id": id, "remote_ip": requestClientIP(r)})
@@ -98,7 +98,7 @@ func (s *HTTPServer) handleSkillSourcesGetUser(w http.ResponseWriter, r *http.Re
 	email := decodeEmail(r)
 	cfg, err := s.skillSourceSvc.GetUser(r.Context(), email)
 	if err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	if cfg == nil {
@@ -118,7 +118,7 @@ func (s *HTTPServer) handleSkillSourcesSetUser(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err := s.skillSourceSvc.SetUser(r.Context(), email, &cfg); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_user_updated", "skill_source_policy", email, skillSourceAuditMetadata(r, &cfg, email))
@@ -131,7 +131,7 @@ func (s *HTTPServer) handleSkillSourcesDeleteUser(w http.ResponseWriter, r *http
 	}
 	email := decodeEmail(r)
 	if err := s.skillSourceSvc.DeleteUser(r.Context(), email); err != nil {
-		writeError(w, err)
+		writeRedactedError(w, err, s.svc.DataRoot())
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.skill_sources_user_deleted", "skill_source_policy", email, map[string]string{"email": email, "remote_ip": requestClientIP(r)})

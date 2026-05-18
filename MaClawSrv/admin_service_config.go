@@ -81,25 +81,25 @@ type adminServiceConfigEnvPlanItem struct {
 func (s *HTTPServer) handleAdminServiceConfigDiff(w http.ResponseWriter, r *http.Request) {
 	draft, err := loadAdminServiceConfigDraft(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	validation := validateAdminServiceConfigValues(draft.Values)
 	if !validation.Valid {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []adminServiceConfigDiffItem{}, "changed": 0, "validation": validation, "generated_at": time.Now().UTC()})
+		writeJSON(w, http.StatusOK, map[string]any{"items": []adminServiceConfigDiffItem{}, "changed": 0, "validation": redactServiceConfigValidationForAdminAPI(s.svc.DataRoot(), validation), "generated_at": time.Now().UTC()})
 		return
 	}
-	items := buildAdminServiceConfigDiff(validation)
+	items := buildAdminServiceConfigDiff(s.svc.DataRoot(), validation)
 	changed := 0
 	for _, item := range items {
 		if item.Changed {
 			changed++
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "changed": changed, "total": len(items), "validation": validation, "generated_at": time.Now().UTC()})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "changed": changed, "total": len(items), "validation": redactServiceConfigValidationForAdminAPI(s.svc.DataRoot(), validation), "generated_at": time.Now().UTC()})
 }
 func (s *HTTPServer) handleAdminServiceConfigEnvironment(w http.ResponseWriter, r *http.Request) {
-	items := buildAdminServiceConfigEnvironment()
+	items := buildAdminServiceConfigEnvironment(s.svc.DataRoot())
 	configured := 0
 	for _, item := range items {
 		if item.Configured {
@@ -115,11 +115,11 @@ func (s *HTTPServer) handleAdminServiceConfigSchema(w http.ResponseWriter, r *ht
 func (s *HTTPServer) handleAdminServiceConfigDraft(w http.ResponseWriter, r *http.Request) {
 	draft, err := loadAdminServiceConfigDraft(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	validation := validateAdminServiceConfigValues(draft.Values)
-	writeJSON(w, http.StatusOK, map[string]any{"draft": draft, "validation": validation})
+	writeJSON(w, http.StatusOK, map[string]any{"draft": redactServiceConfigDraftForAdminAPI(s.svc.DataRoot(), draft), "validation": redactServiceConfigValidationForAdminAPI(s.svc.DataRoot(), validation)})
 }
 
 func (s *HTTPServer) handleUpdateAdminServiceConfigDraft(w http.ResponseWriter, r *http.Request) {
@@ -130,18 +130,23 @@ func (s *HTTPServer) handleUpdateAdminServiceConfigDraft(w http.ResponseWriter, 
 	if !decodeJSON(w, r, &in) {
 		return
 	}
-	validation := validateAdminServiceConfigValues(in.Values)
-	if !validation.Valid {
-		writeJSON(w, http.StatusBadRequest, validation)
+	values, err := resolveAdminServiceConfigRequestValues(s.svc.DataRoot(), in.Values)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
-	draft := adminServiceConfigDraft{Values: validation.Normalized, UpdatedAt: time.Now().UTC(), UpdatedBy: adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret")), Reason: trimMax(in.Reason, 500)}
+	validation := validateAdminServiceConfigValues(values)
+	if !validation.Valid {
+		writeJSON(w, http.StatusBadRequest, redactServiceConfigValidationForAdminAPI(s.svc.DataRoot(), validation))
+		return
+	}
+	draft := adminServiceConfigDraft{Values: validation.Normalized, UpdatedAt: time.Now().UTC(), UpdatedBy: adminActorLabel(s.svc.DataRoot(), r.Header.Get("X-MaClaw-Admin-Secret")), Reason: redactSupportBundleText(s.svc.DataRoot(), trimMax(in.Reason, 500))}
 	if err := saveAdminServiceConfigDraft(s.svc.DataRoot(), draft); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.service_config_draft_updated", "service_config", "draft", map[string]string{"keys": strings.Join(sortedAnyKeys(draft.Values), ","), "reason": draft.Reason, "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, map[string]any{"draft": draft, "validation": validation})
+	writeJSON(w, http.StatusOK, map[string]any{"draft": redactServiceConfigDraftForAdminAPI(s.svc.DataRoot(), draft), "validation": redactServiceConfigValidationForAdminAPI(s.svc.DataRoot(), validation)})
 }
 
 func (s *HTTPServer) handleClearAdminServiceConfigDraft(w http.ResponseWriter, r *http.Request) {
@@ -149,12 +154,12 @@ func (s *HTTPServer) handleClearAdminServiceConfigDraft(w http.ResponseWriter, r
 		return
 	}
 	if err := requireAdminConfirmation(r, "service config draft clear"); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	path := adminServiceConfigDraftPath(s.svc.DataRoot())
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.service_config_draft_cleared", "service_config", "draft", map[string]string{"remote_ip": requestClientIP(r)})
@@ -165,16 +170,12 @@ func (s *HTTPServer) handleValidateAdminServiceConfig(w http.ResponseWriter, r *
 	if !decodeOptionalJSON(w, r, &in) {
 		return
 	}
-	values := in.Values
-	if values == nil {
-		draft, err := loadAdminServiceConfigDraft(s.svc.DataRoot())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		values = draft.Values
+	values, err := resolveAdminServiceConfigRequestValues(s.svc.DataRoot(), in.Values)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
 	}
-	writeJSON(w, http.StatusOK, validateAdminServiceConfigValues(values))
+	writeJSON(w, http.StatusOK, redactServiceConfigValidationForAdminAPI(s.svc.DataRoot(), validateAdminServiceConfigValues(values)))
 }
 
 func adminServiceConfigSchema() []adminServiceConfigSchemaField {
@@ -224,7 +225,7 @@ func validateAdminServiceConfigValues(values map[string]any) adminServiceConfigV
 		normalized, err := normalizeAdminServiceConfigValue(field, value)
 		if err != nil {
 			result.Valid = false
-			result.Errors = append(result.Errors, err.Error())
+			result.Errors = append(result.Errors, redactSupportBundleText("", err.Error()))
 			continue
 		}
 		result.Normalized[key] = normalized
@@ -255,7 +256,7 @@ func validateAdminServiceConfigValues(values map[string]any) adminServiceConfigV
 	return result
 }
 
-func buildAdminServiceConfigDiff(validation adminServiceConfigValidationResult) []adminServiceConfigDiffItem {
+func buildAdminServiceConfigDiff(dataRoot string, validation adminServiceConfigValidationResult) []adminServiceConfigDiffItem {
 	fields := adminServiceConfigFieldMap()
 	items := make([]adminServiceConfigDiffItem, 0, len(validation.EnvPlan))
 	for _, plan := range validation.EnvPlan {
@@ -267,6 +268,9 @@ func buildAdminServiceConfigDiff(validation adminServiceConfigValidationResult) 
 		if field.Sensitive {
 			current = maskConfigured(currentRaw)
 			desired = maskConfigured(desiredRaw)
+		} else if adminServiceConfigPathField(field.Key) {
+			current = redactSupportBundleValue(dataRoot, currentRaw)
+			desired = redactSupportBundleValue(dataRoot, desiredRaw)
 		}
 		items = append(items, adminServiceConfigDiffItem{
 			Key:              plan.Key,
@@ -284,7 +288,7 @@ func buildAdminServiceConfigDiff(validation adminServiceConfigValidationResult) 
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
 	return items
 }
-func buildAdminServiceConfigEnvironment() []adminServiceConfigEnvironmentItem {
+func buildAdminServiceConfigEnvironment(dataRoot string) []adminServiceConfigEnvironmentItem {
 	fields := adminServiceConfigSchema()
 	items := make([]adminServiceConfigEnvironmentItem, 0, len(fields))
 	for _, field := range fields {
@@ -303,6 +307,8 @@ func buildAdminServiceConfigEnvironment() []adminServiceConfigEnvironmentItem {
 		if configured {
 			if field.Sensitive {
 				out.Value = maskConfigured(value)
+			} else if adminServiceConfigPathField(field.Key) {
+				out.Value = redactSupportBundleValue(dataRoot, value)
 			} else {
 				out.Value = value
 			}
@@ -311,6 +317,15 @@ func buildAdminServiceConfigEnvironment() []adminServiceConfigEnvironmentItem {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
 	return items
+}
+
+func adminServiceConfigPathField(key string) bool {
+	switch key {
+	case "tls_cert_file", "tls_key_file", "log_file":
+		return true
+	default:
+		return false
+	}
 }
 func adminServiceConfigFieldMap() map[string]adminServiceConfigSchemaField {
 	out := map[string]adminServiceConfigSchemaField{}
@@ -442,21 +457,17 @@ func (s *HTTPServer) handleExportAdminServiceConfigPlan(w http.ResponseWriter, r
 	if !decodeOptionalJSON(w, r, &in) {
 		return
 	}
-	values := in.Values
-	if values == nil {
-		draft, err := loadAdminServiceConfigDraft(s.svc.DataRoot())
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		values = draft.Values
+	values, err := resolveAdminServiceConfigRequestValues(s.svc.DataRoot(), in.Values)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
+		return
 	}
 	validation := validateAdminServiceConfigValues(values)
 	if !validation.Valid {
-		writeJSON(w, http.StatusBadRequest, validation)
+		writeJSON(w, http.StatusBadRequest, redactServiceConfigValidationForAdminAPI(s.svc.DataRoot(), validation))
 		return
 	}
-	plan := buildAdminServiceConfigExportPlan(validation)
+	plan := redactServiceConfigExportPlanForAdminAPI(s.svc.DataRoot(), buildAdminServiceConfigExportPlan(validation))
 	_ = s.recordAdminAudit(r.Context(), "admin.service_config_export_plan", "service_config", "draft", map[string]string{"keys": strings.Join(sortedAnyKeys(validation.Normalized), ","), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, plan)
 }
@@ -525,6 +536,134 @@ func rawPlanValue(item adminServiceConfigEnvPlanItem) any {
 		return "<redacted>"
 	}
 	return item.Value
+}
+
+func resolveAdminServiceConfigRequestValues(dataRoot string, values map[string]any) (map[string]any, error) {
+	if values == nil {
+		draft, err := loadAdminServiceConfigDraft(dataRoot)
+		if err != nil {
+			return nil, err
+		}
+		return draft.Values, nil
+	}
+	fields := adminServiceConfigFieldMap()
+	merged := make(map[string]any, len(values))
+	var existing map[string]any
+	loadExistingDraft := func() (map[string]any, error) {
+		if existing != nil {
+			return existing, nil
+		}
+		draft, err := loadAdminServiceConfigDraft(dataRoot)
+		if err != nil {
+			return nil, err
+		}
+		existing = draft.Values
+		return existing, nil
+	}
+	for key, value := range values {
+		field, ok := fields[key]
+		if ok && field.Sensitive && strings.TrimSpace(stringAny(value)) == "[redacted]" {
+			existingValues, err := loadExistingDraft()
+			if err != nil {
+				return nil, err
+			}
+			if current, ok := existingValues[key]; ok && strings.TrimSpace(stringAny(current)) != "" {
+				merged[key] = current
+				continue
+			}
+			return nil, fmt.Errorf("%s cannot use a redacted placeholder without an existing draft value", key)
+		}
+		if ok && adminServiceConfigPathField(field.Key) {
+			submitted := strings.TrimSpace(stringAny(value))
+			if envValue := strings.TrimSpace(os.Getenv(field.EnvKey)); envValue != "" && submitted == redactSupportBundleValue(dataRoot, envValue) {
+				merged[key] = envValue
+				continue
+			}
+			if submitted != "" && submitted == redactSupportBundleValue(dataRoot, submitted) {
+				existingValues, err := loadExistingDraft()
+				if err != nil {
+					return nil, err
+				}
+				if current, ok := existingValues[key]; ok && strings.TrimSpace(stringAny(current)) != "" && submitted == redactSupportBundleValue(dataRoot, stringAny(current)) {
+					merged[key] = current
+					continue
+				}
+			}
+		}
+		merged[key] = value
+	}
+	return merged, nil
+}
+
+func redactServiceConfigDraftForAdminAPI(dataRoot string, draft adminServiceConfigDraft) adminServiceConfigDraft {
+	out := draft
+	out.Values = redactServiceConfigValuesForAdminAPI(dataRoot, draft.Values)
+	out.Reason = redactSupportBundleText(dataRoot, draft.Reason)
+	return out
+}
+
+func redactServiceConfigValidationForAdminAPI(dataRoot string, validation adminServiceConfigValidationResult) adminServiceConfigValidationResult {
+	out := validation
+	out.Normalized = redactServiceConfigValuesForAdminAPI(dataRoot, validation.Normalized)
+	if len(validation.EnvPlan) > 0 {
+		out.EnvPlan = make([]adminServiceConfigEnvPlanItem, len(validation.EnvPlan))
+		copy(out.EnvPlan, validation.EnvPlan)
+		fields := adminServiceConfigFieldMap()
+		for i := range out.EnvPlan {
+			if out.EnvPlan[i].Sensitive {
+				out.EnvPlan[i].Value = "[redacted]"
+				continue
+			}
+			if field, ok := fields[out.EnvPlan[i].Key]; ok && adminServiceConfigPathField(field.Key) {
+				out.EnvPlan[i].Value = redactSupportBundleValue(dataRoot, stringAny(out.EnvPlan[i].Value))
+			}
+		}
+	}
+	return out
+}
+
+func redactServiceConfigExportPlanForAdminAPI(dataRoot string, plan adminServiceConfigExportPlan) adminServiceConfigExportPlan {
+	plan.DotEnvContent = redactSupportBundleText(dataRoot, plan.DotEnvContent)
+	plan.SystemdDropInContent = redactSupportBundleText(dataRoot, plan.SystemdDropInContent)
+	if len(plan.Env) > 0 {
+		env := make([]adminServiceConfigEnvPlanItem, len(plan.Env))
+		copy(env, plan.Env)
+		fields := adminServiceConfigFieldMap()
+		for i := range env {
+			if env[i].Sensitive {
+				env[i].Value = "[redacted]"
+				continue
+			}
+			if field, ok := fields[env[i].Key]; ok && adminServiceConfigPathField(field.Key) {
+				env[i].Value = redactSupportBundleValue(dataRoot, stringAny(env[i].Value))
+			}
+		}
+		plan.Env = env
+	}
+	plan.Validation = redactServiceConfigValidationForAdminAPI(dataRoot, plan.Validation)
+	return plan
+}
+
+func redactServiceConfigValuesForAdminAPI(dataRoot string, values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return map[string]any{}
+	}
+	fields := adminServiceConfigFieldMap()
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		if field, ok := fields[key]; ok {
+			if field.Sensitive {
+				out[key] = "[redacted]"
+				continue
+			}
+			if adminServiceConfigPathField(field.Key) {
+				out[key] = redactSupportBundleValue(dataRoot, stringAny(value))
+				continue
+			}
+		}
+		out[key] = value
+	}
+	return out
 }
 
 func dotEnvQuote(value string) string {

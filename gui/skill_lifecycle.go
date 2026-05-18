@@ -231,7 +231,7 @@ func validateSkillYAMLWritePath(yamlPath string) error {
 	return nil
 }
 
-func prepareSkillDirForMarket(skillDir string, autoFix bool) ([]cskill.PortabilityChange, *cskill.PortabilityReport, error) {
+func prepareSkillDirForMarket(skillDir string, autoFix bool, appOpt ...*App) ([]cskill.PortabilityChange, *cskill.PortabilityReport, error) {
 	if strings.TrimSpace(skillDir) == "" {
 		return nil, nil, fmt.Errorf("skill directory is empty")
 	}
@@ -247,15 +247,28 @@ func prepareSkillDirForMarket(skillDir string, autoFix bool) ([]cskill.Portabili
 	if err != nil {
 		return changes, nil, err
 	}
+	app := firstSkillLifecycleApp(appOpt...)
 	if scanReport, scanErr := scanSkillDirForWriteback(skillDir); scanErr != nil {
+		if app != nil && !app.skillInstallMissingScanShouldBlock() {
+			return changes, report, nil
+		}
 		return changes, nil, scanErr
-	} else if scanReport.IsDangerous() {
+	} else if app != nil && app.skillInstallScanShouldBlock(scanReport) {
 		return changes, nil, fmt.Errorf("skill package blocked by security scan: level=%s summary=%s", scanReport.FinalLevel, scanReport.Summary)
 	}
 	return changes, report, nil
 }
 
-func scanSkillDirForOutboundPackage(skillDir string) error {
+func firstSkillLifecycleApp(appOpt ...*App) *App {
+	for _, app := range appOpt {
+		if app != nil {
+			return app
+		}
+	}
+	return nil
+}
+
+func scanSkillDirForOutboundPackage(skillDir string, appOpt ...*App) error {
 	entry, err := loadImportedSkillEntry(skillDir)
 	if err != nil {
 		return fmt.Errorf("reload skill for outbound security scan: %w", err)
@@ -263,10 +276,16 @@ func scanSkillDirForOutboundPackage(skillDir string) error {
 	entry.SkillDir = skillDir
 	report := cskill.NewSecurityScanner(nil).ScanInstallStaged(context.Background(), entry, skillDir, nil)
 	if report == nil {
+		if app := firstSkillLifecycleApp(appOpt...); app != nil && !app.skillInstallMissingScanShouldBlock() {
+			return nil
+		}
 		return fmt.Errorf("skill package outbound security scan produced no report")
 	}
-	if report.NeedsUserReview() {
-		return fmt.Errorf("skill package blocked by outbound security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+	if app := firstSkillLifecycleApp(appOpt...); app != nil {
+		if app.skillInstallScanShouldBlock(report) {
+			return fmt.Errorf("skill package blocked by outbound security scan: level=%s summary=%s", report.FinalLevel, report.Summary)
+		}
+		return nil
 	}
 	return nil
 }
@@ -966,11 +985,11 @@ func writeSkillQualityStatus(skillDir string, entry *corelib.NLSkillEntry, quali
 	}
 }
 
-func normalizeInstalledSkillEntry(entry *corelib.NLSkillEntry) *corelib.NLSkillEntry {
+func normalizeInstalledSkillEntry(entry *corelib.NLSkillEntry, appOpt ...*App) *corelib.NLSkillEntry {
 	if entry == nil || strings.TrimSpace(entry.SkillDir) == "" {
 		return entry
 	}
-	changes, report, err := prepareSkillDirForMarket(entry.SkillDir, true)
+	changes, report, err := prepareSkillDirForMarket(entry.SkillDir, true, appOpt...)
 	if err != nil {
 		log.Printf("[skill-lifecycle] normalize %s failed: %v", entry.Name, err)
 		return entry
@@ -1005,5 +1024,5 @@ func (a *App) normalizeInstalledSkill(entry *corelib.NLSkillEntry) *corelib.NLSk
 			return a.skillLifecycle.NormalizeInstalled(entry)
 		}
 	}
-	return normalizeInstalledSkillEntry(entry)
+	return normalizeInstalledSkillEntry(entry, a)
 }

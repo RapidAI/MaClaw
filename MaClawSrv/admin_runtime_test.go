@@ -18,7 +18,7 @@ import (
 func TestAdminRuntimeStatusAndSchedulerStatus(t *testing.T) {
 	dataRoot := t.TempDir()
 	next := time.Now().UTC().Add(time.Hour)
-	schedulerPayload := `[{"id":"task-1","name":"Task","action":"Do it","hour":1,"minute":2,"day_of_week":-1,"day_of_month":-1,"status":"active","created_at":"` + next.Add(-time.Hour).Format(time.RFC3339Nano) + `","next_run_at":"` + next.Format(time.RFC3339Nano) + `","run_count":0}]`
+	schedulerPayload := `[{"id":"task-1","name":"Task","action":"Do it path=` + filepath.ToSlash(dataRoot) + ` token=scheduler-action-secret","hour":1,"minute":2,"day_of_week":-1,"day_of_month":-1,"status":"active","created_at":"` + next.Add(-time.Hour).Format(time.RFC3339Nano) + `","last_run_at":"` + next.Add(-30*time.Minute).Format(time.RFC3339Nano) + `","next_run_at":"` + next.Format(time.RFC3339Nano) + `","run_count":1,"last_result":"wrote ` + filepath.ToSlash(dataRoot) + ` api_key=scheduler-result-secret","last_error":"failed in ` + filepath.ToSlash(dataRoot) + ` token=scheduler-error-secret"}]`
 	if err := os.WriteFile(filepath.Join(dataRoot, "scheduled_tasks.json"), []byte(schedulerPayload), 0o600); err != nil {
 		t.Fatalf("write scheduled tasks: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestAdminRuntimeStatusAndSchedulerStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if err := saveSandboxReport(dataRoot, sandboxDiagnoseReport{ReportID: "sandbox_report_runtime", Status: "pass", Summary: "runtime report", GeneratedAt: time.Now().UTC(), EffectiveBackend: "bwrap"}); err != nil {
+	if err := saveSandboxReport(dataRoot, sandboxDiagnoseReport{ReportID: "sandbox_report_runtime", Status: "pass", Summary: "runtime report", GeneratedAt: time.Now().UTC(), EffectiveBackend: "bwrap", Raw: map[string]interface{}{"path": dataRoot}}); err != nil {
 		t.Fatalf("save sandbox report: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
@@ -50,6 +50,22 @@ func TestAdminRuntimeStatusAndSchedulerStatus(t *testing.T) {
 	if runtimeStatus.LastSandboxReport == nil || runtimeStatus.LastSandboxReport.ReportID != "sandbox_report_runtime" {
 		t.Fatalf("expected latest sandbox report in runtime status: %#v", runtimeStatus.LastSandboxReport)
 	}
+	if strings.Contains(runtimeStatus.DataRoot, dataRoot) || strings.Contains(runtimeStatus.RuntimeConfigDir, dataRoot) || strings.Contains(runtimeStatus.Scheduler.Path, dataRoot) {
+		t.Fatalf("runtime status should redact local paths: %#v", runtimeStatus)
+	}
+	if runtimeStatus.LastSandboxReport.Raw != nil {
+		t.Fatalf("runtime status should redact sandbox report raw diagnostics: %#v", runtimeStatus.LastSandboxReport.Raw)
+	}
+	for _, check := range runtimeStatus.Readiness.Checks {
+		if strings.Contains(check.Path, dataRoot) {
+			t.Fatalf("runtime readiness check path should be redacted: %#v", check)
+		}
+	}
+	for _, source := range runtimeStatus.LogSources {
+		if strings.Contains(source.Path, dataRoot) {
+			t.Fatalf("runtime log source path should be redacted: %#v", source)
+		}
+	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/status", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -64,6 +80,38 @@ func TestAdminRuntimeStatusAndSchedulerStatus(t *testing.T) {
 	}
 	if schedulerStatus.TaskCount != 1 || len(schedulerStatus.RecentTasks) != 1 || schedulerStatus.ByStatus["active"] != 1 {
 		t.Fatalf("unexpected scheduler status: %#v", schedulerStatus)
+	}
+	if strings.Contains(schedulerStatus.Path, dataRoot) {
+		t.Fatalf("scheduler status path should be redacted: %#v", schedulerStatus)
+	}
+	schedulerJSON, err := json.Marshal(schedulerStatus)
+	if err != nil {
+		t.Fatalf("marshal scheduler status: %v", err)
+	}
+	for _, leaked := range []string{dataRoot, filepath.ToSlash(dataRoot), "scheduler-action-secret", "scheduler-result-secret", "scheduler-error-secret"} {
+		if strings.Contains(string(schedulerJSON), leaked) {
+			t.Fatalf("scheduler recent tasks should redact %q, got %s", leaked, schedulerJSON)
+		}
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/readiness", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin readiness status = %d body = %s", w.Code, w.Body.String())
+	}
+	var readiness readinessReport
+	if err := json.NewDecoder(w.Body).Decode(&readiness); err != nil {
+		t.Fatalf("decode admin readiness: %v", err)
+	}
+	if strings.Contains(readiness.DataRoot, dataRoot) {
+		t.Fatalf("admin readiness data root should be redacted: %#v", readiness)
+	}
+	for _, check := range readiness.Checks {
+		if strings.Contains(check.Path, dataRoot) {
+			t.Fatalf("admin readiness check path should be redacted: %#v", check)
+		}
 	}
 }
 
@@ -229,10 +277,10 @@ func TestAdminSupportBundleIncludesRedactedServiceDiagnostics(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dataRoot, "logs"), 0o700); err != nil {
 		t.Fatalf("mkdir logs: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dataRoot, "logs", "maclaw_srv.log"), []byte("ERROR token=super-secret Authorization: Bearer abc.def {\"api_key\":\"json-secret\"} path="+dataRoot+" slash_path="+filepath.ToSlash(dataRoot)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dataRoot, "logs", "maclaw_srv.log"), []byte("ERROR token=super-secret Authorization: Bearer abc.def {\"api_key\":\"json-secret\",\"apikey\":\"json-compact-key\",\"apisecret\":\"json-compact-secret\"} apikey=compact-key apisecret:compact-secret path="+dataRoot+" slash_path="+filepath.ToSlash(dataRoot)+"\n"), 0o600); err != nil {
 		t.Fatalf("write service log: %v", err)
 	}
-	if err := saveAdminServiceConfigDraft(dataRoot, adminServiceConfigDraft{Values: map[string]any{"tls_key_file": "super-key.pem", "sandbox_mode": "bwrap"}}); err != nil {
+	if err := saveAdminServiceConfigDraft(dataRoot, adminServiceConfigDraft{Values: map[string]any{"tls_key_file": "super-key.pem", "tls_cert_file": filepath.Join(dataRoot, "certs", "server.pem"), "log_file": filepath.Join(dataRoot, "logs", "maclaw_srv.log"), "sandbox_mode": "bwrap"}}); err != nil {
 		t.Fatalf("save draft: %v", err)
 	}
 	baseAuditTime := time.Now().UTC().Add(-time.Hour)
@@ -241,7 +289,7 @@ func TestAdminSupportBundleIncludesRedactedServiceDiagnostics(t *testing.T) {
 			t.Fatalf("RecordAuditEvent noise %d: %v", i, err)
 		}
 	}
-	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "auth.token_failed", ResourceType: "credential", ResourceID: "cred-1", CreatedAt: baseAuditTime.Add(2 * time.Hour), Metadata: map[string]string{"token": "super-secret", "path": dataRoot, "slash_path": filepath.ToSlash(dataRoot)}}); err != nil {
+	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "auth.token_failed", ResourceType: "credential", ResourceID: "cred-1", CreatedAt: baseAuditTime.Add(2 * time.Hour), Metadata: map[string]string{"token": "super-secret", "auth_header": "support-auth-token", "author": "visible-author", "path": dataRoot, "slash_path": filepath.ToSlash(dataRoot)}}); err != nil {
 		t.Fatalf("RecordAuditEvent: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
@@ -275,6 +323,12 @@ func TestAdminSupportBundleIncludesRedactedServiceDiagnostics(t *testing.T) {
 	if got := bundle.RecentAuditEvents[0].Metadata["token"]; got != "[redacted]" {
 		t.Fatalf("expected redacted audit token, got %#v", bundle.RecentAuditEvents[0].Metadata)
 	}
+	if got := bundle.RecentAuditEvents[0].Metadata["auth_header"]; got != "[redacted]" {
+		t.Fatalf("expected redacted audit auth_header, got %#v", bundle.RecentAuditEvents[0].Metadata)
+	}
+	if got := bundle.RecentAuditEvents[0].Metadata["author"]; got != "visible-author" {
+		t.Fatalf("expected benign author metadata to remain visible, got %#v", bundle.RecentAuditEvents[0].Metadata)
+	}
 	if got := bundle.RecentAuditEvents[0].Metadata["path"]; strings.Contains(got, dataRoot) {
 		t.Fatalf("expected redacted audit path, got %q", got)
 	}
@@ -289,12 +343,23 @@ func TestAdminSupportBundleIncludesRedactedServiceDiagnostics(t *testing.T) {
 	if !ok || values["tls_key_file"] != "[redacted]" {
 		t.Fatalf("expected redacted sensitive service draft, got %#v", serviceDraft)
 	}
+	if values["tls_cert_file"] != filepath.Join(filepath.Base(dataRoot), "certs", "server.pem") || values["log_file"] != filepath.Join(filepath.Base(dataRoot), "logs", "maclaw_srv.log") {
+		t.Fatalf("expected redacted service draft paths, got %#v", values)
+	}
+	serviceValidation, ok := bundle.ServiceConfig["validation"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected service validation map, got %#v", bundle.ServiceConfig["validation"])
+	}
+	validationNormalized, ok := serviceValidation["normalized"].(map[string]any)
+	if !ok || validationNormalized["tls_cert_file"] != filepath.Join(filepath.Base(dataRoot), "certs", "server.pem") || validationNormalized["log_file"] != filepath.Join(filepath.Base(dataRoot), "logs", "maclaw_srv.log") {
+		t.Fatalf("expected redacted service validation paths, got %#v", serviceValidation)
+	}
 	encodedBundle, err := json.Marshal(bundle)
 	if err != nil {
 		t.Fatalf("marshal support bundle: %v", err)
 	}
 	encodedText := string(encodedBundle)
-	for _, sensitive := range []string{dataRoot, filepath.ToSlash(dataRoot), "super-secret", "abc.def", "json-secret", "super-key.pem"} {
+	for _, sensitive := range []string{dataRoot, filepath.ToSlash(dataRoot), "super-secret", "support-auth-token", "abc.def", "json-secret", "json-compact-key", "json-compact-secret", "compact-key", "compact-secret", "super-key.pem"} {
 		if strings.Contains(encodedText, sensitive) {
 			t.Fatalf("support bundle still contains sensitive value %q: %s", sensitive, encodedText)
 		}

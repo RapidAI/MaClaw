@@ -595,6 +595,11 @@ type URLSaveRequest struct {
 	AutoLabels  bool     `json:"auto_labels,omitempty"`
 	MaxBytes    int64    `json:"max_bytes,omitempty"`
 	TimeoutSec  int      `json:"timeout_sec,omitempty"`
+
+	// PrefetchedHTML allows callers (e.g. deep crawl) to supply already-fetched HTML content.
+	// When non-empty, SaveURL skips the HTTP fetch and uses this content directly.
+	// The URL field is still required for metadata (canonical URI, domain, title extraction).
+	PrefetchedHTML string `json:"-"`
 }
 
 type URLBatchSaveRequest struct {

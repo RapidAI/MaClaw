@@ -160,7 +160,7 @@ func (p *RemoteGatewayPlugin) ResolveUser(ctx context.Context, platformUID strin
 	if !ok || email == "" {
 		return "", fmt.Errorf("%s: user %s not bound", p.platform, platformUID)
 	}
-	user, err := p.users.GetByEmail(ctx, email)
+	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		return "", fmt.Errorf("%s: no hub user for email %s", p.platform, email)
 	}
@@ -478,7 +478,7 @@ func (p *RemoteGatewayPlugin) handleEmailSubmit(platformUID, email string) {
 	}
 
 	// Verify email exists in Hub
-	user, err := p.users.GetByEmail(context.Background(), email)
+	user, err := p.users.GetByTenantEmail(context.Background(), store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		_ = p.SendText(context.Background(), UserTarget{PlatformUID: platformUID},
 			"该邮箱未在 Hub 注册，请检查后重试。")

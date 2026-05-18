@@ -77,6 +77,7 @@ const (
 // VEAdminListHandler handles GET /api/ve/list.
 func VEAdminListHandler(system store.SystemSettingsRepository, ownerLookups ...veOwnerLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := veSystemSettingsForRequest(r, system)
 		cfg := loadVEGroupConfig(r.Context(), system)
 		registry := loadVERegistry(r.Context(), system)
 		enrichVERegistryOwners(r.Context(), &registry, firstVEOwnerLookup(ownerLookups...))
@@ -98,6 +99,7 @@ func VEAdminListHandler(system store.SystemSettingsRepository, ownerLookups ...v
 // VEAdminConfigHandler handles GET/PUT /api/ve/config.
 func VEAdminConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := veSystemSettingsForRequest(r, system)
 		switch r.Method {
 		case http.MethodGet:
 			cfg := loadVEGroupConfig(r.Context(), system)
@@ -132,6 +134,7 @@ func VERegisterHandler(system store.SystemSettingsRepository, authenticator veMa
 		if !ok {
 			return
 		}
+		system := veSystemSettingsForMachine(system, principal)
 		if !requireVEDigitalEmployeeAuthorization(w, r, system) {
 			return
 		}
@@ -182,6 +185,7 @@ func VESettingsHandler(system store.SystemSettingsRepository, authenticator veMa
 		if !ok {
 			return
 		}
+		system := veSystemSettingsForMachine(system, principal)
 		if !requireVEDigitalEmployeeAuthorization(w, r, system) {
 			return
 		}
@@ -224,6 +228,7 @@ func VEStatusHandler(system store.SystemSettingsRepository, authenticator veMach
 		if !ok {
 			return
 		}
+		system := veSystemSettingsForMachine(system, principal)
 		authz := loadVEDigitalEmployeeAuthorization(r.Context(), system)
 		if !veAuthorizationActive(authz) {
 			writeJSON(w, http.StatusOK, map[string]any{"registered": false, "authorization": authz})
@@ -246,6 +251,7 @@ func VEDiscoverableHandler(system store.SystemSettingsRepository, authenticator 
 		if !ok {
 			return
 		}
+		system := veSystemSettingsForMachine(system, principal)
 		cfg := loadVEGroupConfig(r.Context(), system)
 		if !veAuthorizationActive(loadVEDigitalEmployeeAuthorization(r.Context(), system)) {
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -288,6 +294,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 			writeError(w, http.StatusInternalServerError, "GROUP_DISCUSSION_UNAVAILABLE", "group discussion service is unavailable")
 			return
 		}
+		system := veSystemSettingsForMachine(system, principal)
 		if !requireVEDigitalEmployeeAuthorization(w, r, system) {
 			return
 		}
@@ -344,6 +351,7 @@ func VEInitiateHandler(system store.SystemSettingsRepository, groupSvc *GroupDis
 }
 func VEAdminActionHandler(system store.SystemSettingsRepository, action string, senders ...veMachineEventSender) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := veSystemSettingsForRequest(r, system)
 		veID := strings.TrimSpace(r.PathValue("id"))
 		if veID == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "id is required")
@@ -401,6 +409,7 @@ func VEAdminActionHandler(system store.SystemSettingsRepository, action string, 
 // VEHistorySearchHandler handles GET /api/ve/history/search for admin review.
 func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookups ...veOwnerLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := veSystemSettingsForRequest(r, system)
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 			return
@@ -454,6 +463,7 @@ func VEHistorySearchHandler(system store.SystemSettingsRepository, groupSvc *Gro
 // VEHistoryHandler handles GET /api/ve/{id}/history for admin review.
 func VEHistoryHandler(system store.SystemSettingsRepository, groupSvc *GroupDiscussionService, ownerLookups ...veOwnerLookup) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := veSystemSettingsForRequest(r, system)
 		if r.Method != http.MethodGet {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "use GET")
 			return
@@ -556,6 +566,17 @@ func authenticateVEMachine(w http.ResponseWriter, r *http.Request, authenticator
 
 func loadVEDigitalEmployeeAuthorization(ctx context.Context, system store.SystemSettingsRepository) *corelib.DigitalEmployeeAuthorization {
 	return center.LoadDigitalEmployeeAuthorization(ctx, system)
+}
+
+func veSystemSettingsForRequest(r *http.Request, system store.SystemSettingsRepository) store.SystemSettingsRepository {
+	return scopedSystemSettingsForRequest(r, system)
+}
+
+func veSystemSettingsForMachine(system store.SystemSettingsRepository, principal *auth.MachinePrincipal) store.SystemSettingsRepository {
+	if principal == nil {
+		return system
+	}
+	return scopedSystemSettingsForTenant(principal.TenantID, system)
 }
 
 func requireVEDigitalEmployeeAuthorization(w http.ResponseWriter, r *http.Request, system store.SystemSettingsRepository) bool {

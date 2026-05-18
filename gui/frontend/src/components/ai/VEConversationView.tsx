@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { MessageContentRenderer } from "./MessageContentRenderer";
 import type { Theme } from "./aiAssistantPanelTheme";
+import type { MentionParticipant } from "./MentionPopover";
 
 // --- Types ---
 
@@ -71,6 +72,12 @@ export interface VEConversationViewProps {
     sendMessage?: (sessionId: string, content: string) => Promise<void>;
     sendMessageWithAttachments?: (sessionId: string, content: string, filePaths: string[]) => Promise<void>;
     closeSession?: (sessionId: string) => Promise<void>;
+    /** Group chat participants for @mention (empty array = no mention support) */
+    participants?: MentionParticipant[];
+    /** External @mention insert trigger (from right-click "Talk to" in participant panel) */
+    externalMentionInsert?: { name: string; timestamp: number } | null;
+    /** Notifies the parent as soon as a backend session is known. */
+    onSessionIdChange?: (sessionId: string) => void;
 }
 
 /**
@@ -122,6 +129,7 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     sendMessage,
     sendMessageWithAttachments,
     closeSession,
+    onSessionIdChange,
 }, ref) {
     const [state, setState] = useState<VEConversationState>({
         sessionId: existingSessionId || null,
@@ -165,7 +173,8 @@ export const VEConversationView = forwardRef<VEConversationHandle, VEConversatio
     // Keep sessionIdRef in sync
     useEffect(() => {
         sessionIdRef.current = state.sessionId;
-    }, [state.sessionId]);
+        if (state.sessionId) onSessionIdChange?.(state.sessionId);
+    }, [onSessionIdChange, state.sessionId]);
 
 
     // Keep reconnectAttemptRef in sync with state resets (e.g. successful session init)

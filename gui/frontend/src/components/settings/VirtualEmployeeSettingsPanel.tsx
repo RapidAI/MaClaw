@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { EventsOn, EventsOff, BrowserOpenURL } from "../../../wailsjs/runtime";
 import {
   RegisterVirtualEmployee,
   UpdateVESettings,
@@ -9,7 +9,9 @@ import {
   SelectVEAllowedDirectory,
   GetVEAllowedDirectories,
   SetVEAllowedDirectories,
+  LoadConfig,
 } from "../../../wailsjs/go/main/App";
+import { VEApprovalCapabilitySection } from "./VEApprovalCapabilitySection";
 
 type VEStatusResponse = {
   registered: boolean;
@@ -714,19 +716,17 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
 
         {/* 允许访问目录 section (Requirements 1.1-1.8, 2.2) */}
         <div data-testid="ve-allowed-dirs-section" className="ve-form-group">
-          <div className="ve-form-row">
+          <div className="ve-dirs-header">
             <label className="ve-form-label">
               {textForLang(lang, "Allowed Access Directories", "允许访问目录", "允許存取目錄")}
             </label>
-            <div className="ve-form-field">
-              <button
-                className="ve-btn ve-btn--secondary"
-                onClick={handleAddDirectory}
-                data-testid="ve-add-dir-btn"
-              >
-                {textForLang(lang, "Add Directory", "添加目录", "新增目錄")}
-              </button>
-            </div>
+            <button
+              className="ve-btn ve-btn--link"
+              onClick={handleAddDirectory}
+              data-testid="ve-add-dir-btn"
+            >
+              {textForLang(lang, "Add Directory", "添加目录", "新增目錄")}
+            </button>
           </div>
           {dirDuplicateWarning && (
             <div
@@ -740,15 +740,16 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
           )}
           {allowedDirs.length > 0 && (
             <ul data-testid="ve-allowed-dirs-list" className="ve-list-items">
-              {allowedDirs.map((dir) => (
+              {allowedDirs.map((dir, idx) => (
                 <li key={dir} className="ve-list-item">
                   <span className="ve-list-item-text" title={dir}>{dir}</span>
                   <button
                     className="ve-btn ve-btn--ghost"
                     onClick={() => handleRemoveDirectory(dir)}
-                    data-testid={`ve-remove-dir-${dir}`}
+                    data-testid={`ve-remove-dir-${idx}`}
+                    aria-label={textForLang(lang, `Remove ${dir}`, `删除 ${dir}`, `刪除 ${dir}`)}
                   >
-                    {textForLang(lang, "Remove", "移除", "移除")}
+                    ✕
                   </button>
                 </li>
               ))}
@@ -764,6 +765,45 @@ export function VirtualEmployeeSettingsPanel({ remoteMachineId, lang }: Props) {
               )}
             </p>
           )}
+        </div>
+
+        {/* Approval Capability Section (Requirements 3.1, 3.4, 3.5, 3.6, 3.7) */}
+        <VEApprovalCapabilitySection lang={lang} />
+
+        {/* Approval Workflow Design Button (Requirement 1.1) */}
+        <div data-testid="ve-approval-workflow-design-section" className="ve-form-group">
+          <div className="ve-form-row">
+            <label className="ve-form-label">
+              {textForLang(lang, "Approval Workflow", "审批工作流", "審批工作流")}
+            </label>
+            <div className="ve-form-field">
+              <button
+                className="ve-btn ve-btn--secondary"
+                data-testid="ve-approval-workflow-design-btn"
+                onClick={async () => {
+                  try {
+                    const cfg = await LoadConfig() as { remote_hub_url?: string } | null;
+                    const hubUrl = (cfg?.remote_hub_url || "").replace(/\/+$/, "");
+                    if (hubUrl) {
+                      BrowserOpenURL(`${hubUrl}/approval_workflow`);
+                    }
+                  } catch {
+                    // Config load failed — ignore silently
+                  }
+                }}
+              >
+                {textForLang(lang, "Approval Workflow Design", "审批工作流设计", "審批工作流設計")}
+              </button>
+              <p className="ve-form-hint">
+                {textForLang(
+                  lang,
+                  "Open the visual workflow designer on Hub to create and edit approval workflows.",
+                  "打开 Hub 上的可视化工作流设计器，创建和编辑审批工作流。",
+                  "開啟 Hub 上的視覺化工作流設計器，建立和編輯審批工作流。",
+                )}
+              </p>
+            </div>
+          </div>
         </div>
 
         {showListEditor && !formDisabled && (

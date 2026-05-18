@@ -15,6 +15,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/session"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/go-lark/lark/v2"
 )
 
@@ -311,7 +312,7 @@ func (n *Notifier) resolveUserID(openID string) string {
 	if email == "" {
 		return ""
 	}
-	user, err := n.users.GetByEmail(context.Background(), email)
+	user, err := n.users.GetByTenantEmail(context.Background(), store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		return ""
 	}
@@ -708,7 +709,6 @@ func handleInfo(n *Notifier, openID string) {
 	replyText(n, openID, sb.String())
 }
 
-
 func handleScreenshot(n *Notifier, openID string, args []string) {
 	// Determine which session to screenshot.
 	// If user has an active session context, the first arg (if any) is treated
@@ -856,7 +856,7 @@ func handleEmailSubmit(n *Notifier, openID, email string) {
 	}
 
 	// Verify the email exists in Hub.
-	user, err := n.users.GetByEmail(context.Background(), email)
+	user, err := n.users.GetByTenantEmail(context.Background(), store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		replyText(n, openID, "未找到该邮箱对应的 Hub 用户，请确认邮箱是否正确。\nNo Hub user found for this email.")
 		return

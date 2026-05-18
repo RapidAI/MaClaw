@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 // makeDynamicTool creates a tool definition with the given name and description.
@@ -233,6 +235,9 @@ func TestToolRouter_NonCoreBuiltinCompetes(t *testing.T) {
 func TestToolRouter_PDFWorkflowKeepsDocumentDeliveryTools(t *testing.T) {
 	allTools := makeAllTools(20)
 	router := NewToolRouter(nil)
+	router.SetUnifiedClassifier(intent.New(intent.Config{LLMFunc: func(systemPrompt, userText string) (string, error) {
+		return `{"top":[{"skill":"search","score":0.94},{"skill":"document_delivery","score":0.88},{"skill":"non_coding","score":0.72}]}`, nil
+	}}))
 	result := router.Route("搜索 huggingface daily papers，生成每日论文综述，生成pdf发我", allTools)
 
 	resultNames := make(map[string]bool)

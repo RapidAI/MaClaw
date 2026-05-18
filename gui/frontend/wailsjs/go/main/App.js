@@ -283,6 +283,10 @@ export function GetRemotePTYProbe() {
   return window['go']['main']['App']['GetRemotePTYProbe']();
 }
 
+export function GetProjectScene(arg1) {
+  return window['go']['main']['App']['GetProjectScene'](arg1);
+}
+
 export function SearchProjects(arg1, arg2) {
   return window['go']['main']['App']['SearchProjects'](arg1, arg2);
 }
@@ -297,6 +301,14 @@ export function ForkConversationToProject(arg1) {
 
 export function ResumeProject(arg1) {
   return window['go']['main']['App']['ResumeProject'](arg1);
+}
+
+export function CheckVEApprovalCapabilityStatus(arg1) {
+  return window['go']['main']['App']['CheckVEApprovalCapabilityStatus'](arg1);
+}
+
+export function ValidateVEApproverAssignment(arg1) {
+  return window['go']['main']['App']['ValidateVEApproverAssignment'](arg1);
 }
 
 export function LoadProjectContext(arg1) {
@@ -1125,6 +1137,14 @@ export function InjectAIAssistantSupplementary(arg1) {
   return window['go']['main']['App']['InjectAIAssistantSupplementary'](arg1);
 }
 
+export function InjectAIAssistantGuideReference(arg1) {
+  return window['go']['main']['App']['InjectAIAssistantGuideReference'](arg1);
+}
+
+export function InjectAIAssistantGuideReferenceForSession(arg1, arg2) {
+  return window['go']['main']['App']['InjectAIAssistantGuideReferenceForSession'](arg1, arg2);
+}
+
 export function ResolveCriticalConfirm(arg1, arg2) {
   return window['go']['main']['App']['ResolveCriticalConfirm'](arg1, arg2);
 }
@@ -1929,6 +1949,14 @@ export function SetVEAllowedDirectories(arg1) {
   return window['go']['main']['App']['SetVEAllowedDirectories'](arg1);
 }
 
+export function GetVEApprovalConfig() {
+  return window['go']['main']['App']['GetVEApprovalConfig']();
+}
+
+export function SaveVEApprovalConfig(arg1) {
+  return window['go']['main']['App']['SaveVEApprovalConfig'](arg1);
+}
+
 export function ArchiveVESession(arg1) {
   return window['go']['main']['App']['ArchiveVESession'](arg1);
 }
@@ -1963,4 +1991,22 @@ export function CloseProjectTabSession(arg1) {
 
 export function SendMessageForTab(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendMessageForTab'](arg1, arg2, arg3);
+}
+
+
+export function GetWorkflowDirectory(arg1, arg2) {
+  return window['go']['main']['App']['GetWorkflowDirectory'](arg1, arg2);
+}
+
+// Knowledge Deep Crawl bindings
+export function KnowledgeDeepCrawl(arg1) {
+  return window['go']['main']['App']['KnowledgeDeepCrawl'](arg1);
+}
+
+export function KnowledgeDeepCrawlPreview(arg1) {
+  return window['go']['main']['App']['KnowledgeDeepCrawlPreview'](arg1);
+}
+
+export function KnowledgeDeepCrawlCancel() {
+  return window['go']['main']['App']['KnowledgeDeepCrawlCancel']();
 }

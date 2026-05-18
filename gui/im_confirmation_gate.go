@@ -10,6 +10,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/i18n"
 )
 
 const (
@@ -129,7 +130,7 @@ func (h *IMMessageHandler) handleExecutionConfirmationGate(freshTask bool, msg I
 	if h.confirmationStore != nil {
 		h.confirmationStore.set(item)
 	}
-	return buildConfirmationResponse(item), true
+	return buildConfirmationResponse(item, h.getWorkflowLang()), true
 }
 
 func confirmationTaskLabel(intent taskIntent) string {
@@ -145,16 +146,16 @@ func confirmationTaskLabel(intent taskIntent) string {
 	}
 }
 
-func confirmationPlannedActions(intent taskIntent) []string {
+func confirmationPlannedActions(intent taskIntent, lang string) []string {
 	switch intent {
 	case intentCoding:
-		return []string{"Confirm project directory", "Confirm task goal", "Start code changes after confirmation"}
+		return []string{i18n.T(i18n.MsgExecPlanCoding1, lang), i18n.T(i18n.MsgExecPlanCoding2, lang), i18n.T(i18n.MsgExecPlanCoding3, lang)}
 	case intentSSH:
-		return []string{"Confirm target server or directory", "Confirm diagnosis goal", "Run remote operation after confirmation"}
+		return []string{i18n.T(i18n.MsgExecPlanSSH1, lang), i18n.T(i18n.MsgExecPlanSSH2, lang), i18n.T(i18n.MsgExecPlanSSH3, lang)}
 	case intentAmbiguous:
-		return []string{"Confirm whether this is code work or remote work", "Confirm workspace or target environment", "Execute after confirmation"}
+		return []string{i18n.T(i18n.MsgExecPlanAmbig1, lang), i18n.T(i18n.MsgExecPlanAmbig2, lang), i18n.T(i18n.MsgExecPlanAmbig3, lang)}
 	default:
-		return []string{"Confirm task understanding", "Start execution after confirmation"}
+		return []string{i18n.T(i18n.MsgExecPlanDefault1, lang), i18n.T(i18n.MsgExecPlanDefault2, lang)}
 	}
 }
 
@@ -182,8 +183,8 @@ func confirmationRevisionHints(intent taskIntent) []string {
 
 func buildPendingConfirmation(app *App, userID, text string, result taskIntentResult, understanding *taskUnderstandingResult) *pendingConfirmation {
 	now := time.Now()
-	// The confirmation panel's "榛樿宸ヤ綔鐩綍" must reflect the agent's actual
-	// default working directory 鈥?i.e. where bash, craft_tool, and other
+	// The confirmation panel target path must reflect the agent's actual
+	// default working directory, i.e. where bash, craft_tool, and other
 	// general-purpose tools execute by default. This is the user-configured
 	// working directory (AppConfig.WorkingDirectory) if set, otherwise
 	// ~/.maclaw/workspace. Using EffectiveWorkspaceDir() aligns the
@@ -217,12 +218,16 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 		}
 		if reason := strings.TrimSpace(result.Reason); reason != "" {
 			summary += fmt.Sprintf(" (reason: %s)", reason)
-		} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" && ev != "鏈懡涓壒寰佽瘝" {
+		} else if ev := strings.TrimSpace(formatIntentEvidence(result)); ev != "" {
 			summary += fmt.Sprintf(" (evidence: %s)", ev)
 		}
 	}
 
-	plannedActions := confirmationPlannedActions(result.Intent)
+	lang := ""
+	if app != nil {
+		lang = app.CurrentLanguage
+	}
+	plannedActions := confirmationPlannedActions(result.Intent, lang)
 	if understanding != nil && len(understanding.ExecutionPlan) > 0 {
 		plannedActions = understanding.ExecutionPlan
 	}
@@ -247,7 +252,7 @@ func buildPendingConfirmation(app *App, userID, text string, result taskIntentRe
 	}
 }
 
-func buildConfirmationPayload(item *pendingConfirmation) *IMResponseConfirmation {
+func buildConfirmationPayload(item *pendingConfirmation, lang string) *IMResponseConfirmation {
 	if item == nil {
 		return nil
 	}
@@ -260,22 +265,34 @@ func buildConfirmationPayload(item *pendingConfirmation) *IMResponseConfirmation
 		RiskFlags:      append([]string(nil), item.RiskFlags...),
 		RevisionHints:  append([]string(nil), item.RevisionHints...),
 		Status:         item.Status.String(),
+		Labels:         buildConfirmationLabels(lang),
 	}
 }
 
-func buildConfirmationResponse(item *pendingConfirmation) *IMAgentResponse {
-	if item == nil {
-		return &IMAgentResponse{Text: "Please confirm before continuing."}
+// buildConfirmationLabels returns localized section titles for the
+// confirmation card. This is the single source of truth for all
+// confirmation panel labels; the frontend renders these directly.
+func buildConfirmationLabels(lang string) *IMResponseConfirmLabels {
+	return &IMResponseConfirmLabels{
+		Title:          i18n.T(i18n.MsgConfirmLabelTitle, lang),
+		Status:         i18n.T(i18n.MsgConfirmLabelStatus, lang),
+		TargetPaths:    i18n.T(i18n.MsgConfirmLabelTargetPaths, lang),
+		PlannedActions: i18n.T(i18n.MsgConfirmLabelPlannedActions, lang),
+		RiskFlags:      i18n.T(i18n.MsgConfirmLabelRiskFlags, lang),
+		RevisionHints:  i18n.T(i18n.MsgConfirmLabelRevisionHints, lang),
 	}
-	// Summary is already shown inside the Confirmation card 鈥?only keep the
-	// action prompt here to avoid repeating the same content twice.
-	text := "Please confirm whether my understanding is correct. After confirmation I will start execution; if anything is off, reply with the corrected directory, goal, or premise."
+}
+
+func buildConfirmationResponse(item *pendingConfirmation, lang string) *IMAgentResponse {
+	if item == nil {
+		return &IMAgentResponse{Text: i18n.T(i18n.MsgExecConfirmNilText, lang)}
+	}
 	return &IMAgentResponse{
-		Text:         text,
-		Confirmation: buildConfirmationPayload(item),
+		Text:         i18n.T(i18n.MsgExecConfirmText, lang),
+		Confirmation: buildConfirmationPayload(item, lang),
 		Actions: []IMResponseAction{
-			{Label: "Confirm and start", Command: buildConfirmationActionCommand(confirmationActionConfirm, item.ID), Style: "primary"},
-			{Label: "Cancel", Command: buildConfirmationActionCommand(confirmationActionCancel, item.ID), Style: "secondary"},
+			{Label: i18n.T(i18n.MsgExecConfirmBtnConfirm, lang), Command: buildConfirmationActionCommand(confirmationActionConfirm, item.ID), Style: "primary"},
+			{Label: i18n.T(i18n.MsgExecConfirmBtnCancel, lang), Command: buildConfirmationActionCommand(confirmationActionCancel, item.ID), Style: "secondary"},
 		},
 	}
 }
@@ -296,9 +313,10 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 	}
 	action, confirmationID, hasConfirmationAction := parseConfirmationActionCommand(*trimmed)
 	pending := h.confirmationStore.get(msg.UserID)
+	lang := h.getWorkflowLang()
 	if pending == nil {
 		if hasConfirmationAction {
-			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Confirmation expired; please start again."}}
+			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: i18n.T(i18n.MsgExecConfirmExpired, lang)}}
 		}
 		return pendingExecutionConfirmationResult{}
 	}
@@ -320,13 +338,13 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 	approve := func() pendingExecutionConfirmationResult {
 		h.confirmationStore.clear(msg.UserID)
 		if isWorkflowConfirmation {
-			return h.approvePendingWorkflowConfirmation(msg.UserID, pending)
+			return h.approvePendingWorkflowConfirmation(msg.UserID, pending, msg.Platform)
 		}
 		msg.Text = confirmationApprovedText(pending)
 		*trimmed = strings.TrimSpace(msg.Text)
 		result := pendingExecutionConfirmationResult{ConfirmedResume: true}
 		if h.getWorkflowEngine() != nil && !msg.IsBackground {
-			if wfResp := h.handleWorkflowInterception(msg.UserID, *trimmed); wfResp != nil {
+			if wfResp := h.handleWorkflowInterception(msg.UserID, *trimmed, msg.Platform); wfResp != nil {
 				h.pendingAskUser.Delete(msg.UserID)
 				result.Handled = true
 				result.Response = wfResp
@@ -342,7 +360,7 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 	switch {
 	case hasConfirmationAction:
 		if confirmationID != pending.ID {
-			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Confirmation expired; please start again."}}
+			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: i18n.T(i18n.MsgExecConfirmExpired, lang)}}
 		}
 		if action == confirmationActionConfirm {
 			return approve()
@@ -354,8 +372,24 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 			return pendingExecutionConfirmationResult{SkipWorkflowOnce: true, SkipExecutionConfirm: true}
 		}
 		saveCancelContext()
-		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Cancelled pending confirmation."}}
+		return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: i18n.T(i18n.MsgExecConfirmCancelled, lang)}}
 	case !msg.IsBackground:
+		if isWorkflowConfirmation {
+			switch classifyWorkflowConfirmationReply(*trimmed) {
+			case confirmationIntentConfirm:
+				return approve()
+			case confirmationIntentCancel:
+				h.confirmationStore.clear(msg.UserID)
+				msg.Text = firstNonEmptyTraceText(pending.ResumeText, pending.OriginalText)
+				*trimmed = strings.TrimSpace(msg.Text)
+				return pendingExecutionConfirmationResult{SkipWorkflowOnce: true, SkipExecutionConfirm: true}
+			default:
+				h.confirmationStore.clear(msg.UserID)
+				msg.Text = strings.TrimSpace(firstNonEmptyTraceText(pending.ResumeText, pending.OriginalText) + "\n\nUser clarification: " + *trimmed)
+				*trimmed = strings.TrimSpace(msg.Text)
+				return pendingExecutionConfirmationResult{ReprocessAsFreshTask: true, SkipExecutionConfirm: true}
+			}
+		}
 		llmIntent := h.classifyConfirmationIntent(msg.UserID, *trimmed, pending)
 		switch llmIntent {
 		case confirmationIntentConfirm:
@@ -368,7 +402,7 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 				return pendingExecutionConfirmationResult{SkipWorkflowOnce: true, SkipExecutionConfirm: true}
 			}
 			saveCancelContext()
-			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: "Cancelled pending confirmation."}}
+			return pendingExecutionConfirmationResult{Handled: true, Response: &IMAgentResponse{Text: i18n.T(i18n.MsgExecConfirmCancelled, lang)}}
 		default:
 			if isWorkflowConfirmation {
 				h.confirmationStore.clear(msg.UserID)
@@ -378,7 +412,7 @@ func (h *IMMessageHandler) handlePendingExecutionConfirmation(msg *IMUserMessage
 			}
 			updated := applyConfirmationRevision(pending, *trimmed)
 			h.confirmationStore.set(updated)
-			return pendingExecutionConfirmationResult{Handled: true, Response: buildConfirmationResponse(updated)}
+			return pendingExecutionConfirmationResult{Handled: true, Response: buildConfirmationResponse(updated, h.getWorkflowLang())}
 		}
 	}
 
@@ -398,7 +432,7 @@ func applyConfirmationRevision(item *pendingConfirmation, revision string) *pend
 	clone.Summary = item.Summary + "\nUser supplement/correction: " + revision
 	clone.RevisionHints = append([]string(nil), item.RevisionHints...)
 	clone.UpdatedAt = time.Now()
-	// Clear enhanced fields 鈥?the revision changes the task, so the LLM
+	// Clear enhanced fields; the revision changes the task, so the LLM
 	// understanding is stale. confirmationApprovedText will fall back to
 	// ResumeText (which includes the revision).
 	clone.EnhancedSummary = ""
@@ -410,17 +444,13 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 	if item == nil {
 		return ""
 	}
-	// Prefer the LLM-generated enhanced instruction over the raw user text.
-	// The enhanced instruction is a structured, actionable rewrite that gives
-	// the agent a clearer directive than the user's conversational input.
-	// When using the enhanced instruction, append the original text as
-	// reference so the agent can cross-check if the LLM missed any details.
-	base := ""
+
+	var base string
 	if ei := strings.TrimSpace(item.EnhancedInstruction); ei != "" {
 		original := strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
 		base = ei
 		if original != "" && original != ei {
-			base += "\n\n[用户原始请求]\n" + original
+			base += "\n\n[\u7528\u6237\u539f\u59cb\u8bf7\u6c42]\n" + original
 		}
 	} else {
 		base = strings.TrimSpace(firstNonEmptyTraceText(item.ResumeText, item.OriginalText))
@@ -429,60 +459,51 @@ func confirmationApprovedText(item *pendingConfirmation) string {
 		return ""
 	}
 
-	// Extract "鈿狅笍 寰呯‘璁? items from the confirmation summary/constraints.
-	// When the LLM task understanding marked items as pending confirmation
-	// (e.g. SSH credentials, deployment path), the user clicking "纭骞跺紑濮?
-	// confirms the PLAN but does NOT provide the missing information.
-	// We must tell the agent to ask the user for these items before executing.
 	pendingItems := extractPendingConfirmItems(item)
 	if len(pendingItems) > 0 {
 		var pendingSection strings.Builder
-		pendingSection.WriteString("\n\n[执行上下文]\n用户已确认执行计划，但以下信息尚未提供，必须先获取后再执行：\n")
+		pendingSection.WriteString("\n\n[\u6267\u884c\u4e0a\u4e0b\u6587]\n\u7528\u6237\u5df2\u786e\u8ba4\u6267\u884c\u8ba1\u5212\uff0c\u4f46\u4ee5\u4e0b\u4fe1\u606f\u5c1a\u672a\u63d0\u4f9b\uff0c\u5fc5\u987b\u5148\u83b7\u53d6\u540e\u518d\u6267\u884c\uff1a\n")
 		for _, pi := range pendingItems {
 			pendingSection.WriteString("- " + pi + "\n")
 		}
-		pendingSection.WriteString("先尝试使用 memory(action=recall) 查找这些值；如果记忆中没有，请向用户询问。所有必需信息齐备后再开始执行。")
+		pendingSection.WriteString("\u5148\u5c1d\u8bd5\u4f7f\u7528 memory(action=recall) \u67e5\u627e\u8fd9\u4e9b\u503c\uff1b\u5982\u679c\u8bb0\u5fc6\u4e2d\u6ca1\u6709\uff0c\u8bf7\u5411\u7528\u6237\u8be2\u95ee\u3002\u6240\u6709\u5fc5\u9700\u4fe1\u606f\u9f50\u5907\u540e\u518d\u5f00\u59cb\u6267\u884c\u3002")
 		return strings.TrimSpace(base + pendingSection.String())
 	}
 
-	return strings.TrimSpace(base + "\n\n[执行上下文]\n用户已确认当前计划。直接开始执行，不要再次请求确认。如果还没有最终交付物，请说明当前动作或下一步。")
+	return strings.TrimSpace(base + "\n\n[\u6267\u884c\u4e0a\u4e0b\u6587]\n\u7528\u6237\u5df2\u786e\u8ba4\u5f53\u524d\u8ba1\u5212\u3002\u76f4\u63a5\u5f00\u59cb\u6267\u884c\uff0c\u4e0d\u8981\u518d\u6b21\u8bf7\u6c42\u786e\u8ba4\u3002\u5982\u679c\u8fd8\u6ca1\u6709\u6700\u7ec8\u4ea4\u4ed8\u7269\uff0c\u8bf7\u8bf4\u660e\u5f53\u524d\u52a8\u4f5c\u6216\u4e0b\u4e00\u6b65\u3002")
 }
 
-// extractPendingConfirmItems scans the confirmation's Summary and Constraints
-// for "鈿狅笍 寰呯‘璁? markers. These indicate information the LLM flagged as
-// missing during task understanding. The user confirmed the plan but did NOT
-// provide these values 鈥?the agent must ask for them before executing.
 func extractPendingConfirmItems(item *pendingConfirmation) []string {
 	if item == nil {
 		return nil
 	}
+	seen := map[string]bool{}
 	var items []string
-	seen := make(map[string]bool)
 
-	// Scan all text sources for pending confirmation markers.
-	// Only scan Summary and EnhancedSummary (user-facing display text).
-	// EnhancedInstruction is the execution directive 鈥?scanning it would
-	// cause false positives if it mentions "寰呯‘璁? in a different context.
 	sources := []string{item.Summary, item.EnhancedSummary}
 	for _, c := range item.RiskFlags {
 		sources = append(sources, c)
 	}
+	for _, c := range item.RevisionHints {
+		sources = append(sources, c)
+	}
 
+	markers := []string{
+		"\u26a0\ufe0f \u5f85\u786e\u8ba4\uff1a",
+		"\u26a0\ufe0f \u5f85\u786e\u8ba4:",
+		"\u5f85\u786e\u8ba4\uff1a",
+		"\u5f85\u786e\u8ba4:",
+	}
 	for _, src := range sources {
 		for _, line := range strings.Split(src, "\n") {
 			line = strings.TrimSpace(line)
-			// Match "鈿狅笍 寰呯‘璁わ細xxx" or "寰呯‘璁わ細xxx" at meaningful positions.
-			// Require "寰呯‘璁? to be preceded by start-of-line, bullet, or 鈿狅笍
-			// to avoid matching "纭寰呯‘璁ら」" or similar false positives.
-			for _, sep := range []string{"⚠️ 待确认：", "⚠️ 待确认:", "待确认：", "待确认:", "鈿狅笍 寰呯‘璁わ細", "鈿狅笍 寰呯‘璁?", "寰呯‘璁わ細", "寰呯‘璁?"} {
-				if pos := strings.Index(line, sep); pos >= 0 {
-					extracted := strings.TrimSpace(line[pos+len(sep):])
-					// Strip trailing parenthetical notes like "锛堝缓璁?..锛?
+			for _, marker := range markers {
+				if pos := strings.Index(line, marker); pos >= 0 {
+					extracted := strings.TrimSpace(line[pos+len(marker):])
 					if extracted != "" && !seen[extracted] {
 						seen[extracted] = true
 						items = append(items, extracted)
 					}
-					break // only extract once per line
 				}
 			}
 		}

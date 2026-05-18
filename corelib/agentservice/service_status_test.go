@@ -203,15 +203,15 @@ func createStatusTestUser(t *testing.T, svc *Service) (*Tenant, *User) {
 	return tenant, user
 }
 
-func TestCreateCredentialReturnsPlaintextKeyOnceButListsMasked(t *testing.T) {
+func TestCreateCredentialDoesNotEchoProvidedSecretsAndListsMasked(t *testing.T) {
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
 	cred, err := svc.CreateCredential(context.Background(), CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "plain-key-123", APISecret: "secret"})
 	if err != nil {
 		t.Fatalf("CreateCredential: %v", err)
 	}
-	if cred.APIKey != "plain-key-123" {
-		t.Fatalf("CreateCredential should return plaintext api_key once, got %#v", cred.APIKey)
+	if cred.APIKey == "plain-key-123" || cred.APIKey == "" || cred.APISecret != "" {
+		t.Fatalf("CreateCredential should not echo provided api_key/api_secret, got %#v", cred)
 	}
 	if cred.APIKeyHash != "" {
 		t.Fatalf("CreateCredential response should not expose api_key_hash, got %#v", cred.APIKeyHash)
@@ -228,6 +228,25 @@ func TestCreateCredentialReturnsPlaintextKeyOnceButListsMasked(t *testing.T) {
 	}
 	if items[0].APIKeyHash != "" {
 		t.Fatalf("ListCredentials should not expose api_key_hash, got %#v", items[0].APIKeyHash)
+	}
+}
+
+func TestCreateCredentialReturnsGeneratedKeyAndSecretOnce(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	cred, err := svc.CreateCredential(context.Background(), CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "Generated"})
+	if err != nil {
+		t.Fatalf("CreateCredential generated: %v", err)
+	}
+	if cred.APIKey == "" || cred.APISecret == "" || cred.APIKeyHash != "" || cred.SecretDigest != "" {
+		t.Fatalf("generated credential response should expose only one-time key and secret: %#v", cred)
+	}
+	fetched, err := svc.GetCredential(context.Background(), tenant.ID, user.ID, cred.ID)
+	if err != nil {
+		t.Fatalf("GetCredential: %v", err)
+	}
+	if fetched.APIKey == cred.APIKey || fetched.APISecret != "" || fetched.APIKeyHash != "" || fetched.SecretDigest != "" {
+		t.Fatalf("stored credential response should be sanitized: %#v", fetched)
 	}
 }
 

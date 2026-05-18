@@ -10,6 +10,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -26,10 +27,10 @@ func (a *taskContextLLMAdapter) Classify(systemPrompt, userMessage string, timeo
 		return "", fmt.Errorf("handler not initialized")
 	}
 	result, err := a.handler.LLMClassify(context.Background(), LLMClassifyRequest{
-		SystemPrompt:    systemPrompt,
-		UserMessage:     userMessage,
-		TimeoutSec:      timeoutSec,
-		Tag:             "task-context",
+		SystemPrompt:      systemPrompt,
+		UserMessage:       userMessage,
+		TimeoutSec:        timeoutSec,
+		Tag:               "task-context",
 		PreferLightweight: true,
 	})
 	if err != nil {
@@ -132,10 +133,12 @@ func (h *IMMessageHandler) archiveCurrentTask(userID string, history []agent.Con
 	// Also save to long-term memory store if available.
 	if h.memoryStore != nil {
 		if summary := buildQuickSummary(history); summary != "" {
-			_ = h.memoryStore.Save(memory.Entry{
+			if err := h.memoryStore.Save(memory.Entry{
 				Content:  summary,
 				Category: "conversation_summary",
-			})
+			}); err == nil && h.app != nil {
+				h.app.triggerMemoryPipelineSoon(45 * time.Second)
+			}
 		}
 	}
 

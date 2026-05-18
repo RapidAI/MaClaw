@@ -163,16 +163,16 @@ func (s *HTTPServer) handleAdminBootstrapInitialize(w http.ResponseWriter, r *ht
 	}
 	username := normalizeAdminUsername(in.Username)
 	if err := validateAdminUsername(username); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if err := validateAdminPassword(in.Password); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	users, err := loadAdminUsers(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if len(users) > 0 {
@@ -186,12 +186,12 @@ func (s *HTTPServer) handleAdminBootstrapInitialize(w http.ResponseWriter, r *ht
 	}
 	user := adminUserRecord{ID: newAdminID("admin_user"), Username: username, DisplayName: strings.TrimSpace(in.DisplayName), Role: "owner", Status: "active", Locale: normalizeAdminLocale(in.Locale), PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}
 	if err := saveAdminUsers(s.svc.DataRoot(), []adminUserRecord{user}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	state := adminBootstrapState{Version: adminBootstrapVersion, Initialized: true, InitializedAt: now, InitializedBy: user.ID}
 	if err := saveAdminBootstrapState(s.svc.DataRoot(), state); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	s.authLimiter.ResetFailures(limitKey)
@@ -231,12 +231,12 @@ func (s *HTTPServer) handleAdminAuthLogin(w http.ResponseWriter, r *http.Request
 	}
 	sessions, err := loadAdminSessions(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	sessions = pruneAdminSessions(append(sessions, session), user.ID, now)
 	if err := saveAdminSessions(s.svc.DataRoot(), sessions); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	for i := range users {
@@ -291,7 +291,7 @@ func (s *HTTPServer) handleAdminAuthChangePassword(w http.ResponseWriter, r *htt
 		return
 	}
 	if err := validateAdminPassword(in.NewPassword); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if in.OldPassword == in.NewPassword {
@@ -305,7 +305,7 @@ func (s *HTTPServer) handleAdminAuthChangePassword(w http.ResponseWriter, r *htt
 	}
 	users, err := loadAdminUsers(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	updated := false
@@ -324,13 +324,13 @@ func (s *HTTPServer) handleAdminAuthChangePassword(w http.ResponseWriter, r *htt
 		return
 	}
 	if err := saveAdminUsers(s.svc.DataRoot(), users); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	passwordChanged := true
 	revoked, err := revokeAdminUserSessionsExcept(s.svc.DataRoot(), user.ID, session.ID, now)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.password_changed", "admin_user", user.ID, map[string]string{"username": user.Username, "revoked_sessions": strconv.Itoa(revoked), "password_changed": strconv.FormatBool(passwordChanged), "remote_ip": requestClientIP(r)})
@@ -719,11 +719,11 @@ func (s *HTTPServer) handleAdminAuthCreateUser(w http.ResponseWriter, r *http.Re
 	}
 	username := normalizeAdminUsername(in.Username)
 	if err := validateAdminUsername(username); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if err := validateAdminPassword(in.Password); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	role := normalizeAdminRole(in.Role)
@@ -733,7 +733,7 @@ func (s *HTTPServer) handleAdminAuthCreateUser(w http.ResponseWriter, r *http.Re
 	}
 	users, err := loadAdminUsers(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	for _, user := range users {
@@ -751,7 +751,7 @@ func (s *HTTPServer) handleAdminAuthCreateUser(w http.ResponseWriter, r *http.Re
 	user := adminUserRecord{ID: newAdminID("admin_user"), Username: username, DisplayName: trimMax(in.DisplayName, 120), Role: role, Status: "active", Locale: normalizeAdminLocale(in.Locale), PasswordHash: string(hash), CreatedAt: now, UpdatedAt: now}
 	users = append(users, user)
 	if err := saveAdminUsers(s.svc.DataRoot(), users); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.user_created", "admin_user", user.ID, map[string]string{"username": user.Username, "role": user.Role, "remote_ip": requestClientIP(r)})
@@ -763,7 +763,7 @@ func (s *HTTPServer) handleAdminAuthUsers(w http.ResponseWriter, r *http.Request
 	}
 	users, err := loadAdminUsers(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	items := make([]adminUserPublic, 0, len(users))
@@ -785,7 +785,7 @@ func (s *HTTPServer) handleAdminAuthUpdateUser(w http.ResponseWriter, r *http.Re
 	userID := r.PathValue("adminUserId")
 	users, err := loadAdminUsers(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	idx := -1
@@ -821,7 +821,7 @@ func (s *HTTPServer) handleAdminAuthUpdateUser(w http.ResponseWriter, r *http.Re
 	passwordChanged := false
 	if in.NewPassword != nil {
 		if err := validateAdminPassword(*in.NewPassword); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 			return
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(*in.NewPassword), bcrypt.DefaultCost)
@@ -834,14 +834,14 @@ func (s *HTTPServer) handleAdminAuthUpdateUser(w http.ResponseWriter, r *http.Re
 	}
 	users[idx].UpdatedAt = time.Now().UTC()
 	if err := saveAdminUsers(s.svc.DataRoot(), users); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	revoked := 0
 	if (oldStatus == "active" && users[idx].Status != "active") || passwordChanged {
 		revoked, err = revokeAdminUserSessionsExcept(s.svc.DataRoot(), users[idx].ID, "", time.Now().UTC())
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 			return
 		}
 	}
@@ -856,7 +856,7 @@ func (s *HTTPServer) handleAdminAuthSessions(w http.ResponseWriter, r *http.Requ
 	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
 	sessions, err := loadAdminSessions(s.svc.DataRoot())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	now := time.Now().UTC()
@@ -877,7 +877,7 @@ func (s *HTTPServer) handleAdminAuthRevokeSession(w http.ResponseWriter, r *http
 	}
 	confirm, err := parseOptionalBoolQuery(r, "confirm")
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": redactSupportBundleText(s.svc.DataRoot(), err.Error())})
 		return
 	}
 	if confirm == nil || !*confirm {

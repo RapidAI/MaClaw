@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,11 +53,12 @@ type asyncJobSnapshot struct {
 type asyncJobManager struct {
 	mu       sync.RWMutex
 	jobs     map[string]*asyncJobRecord
+	dataRoot string
 	filePath string
 }
 
 func newAsyncJobManager(dataRoot string) *asyncJobManager {
-	m := &asyncJobManager{jobs: map[string]*asyncJobRecord{}}
+	m := &asyncJobManager{jobs: map[string]*asyncJobRecord{}, dataRoot: dataRoot}
 	root := filepath.Clean(filepath.Join(dataRoot, "state"))
 	if stringsTrim(dataRoot) == "" {
 		return m
@@ -119,19 +121,19 @@ func (m *asyncJobManager) execute(ctx context.Context, jobID string, run func(co
 			return
 		}
 		job.Status = asyncJobStatusFailed
-		job.Error = err.Error()
+		job.Error = redactAsyncJobText(m.dataRoot, err.Error())
 		m.persistLocked()
 		return
 	}
 	payload, marshalErr := json.Marshal(result)
 	if marshalErr != nil {
 		job.Status = asyncJobStatusFailed
-		job.Error = marshalErr.Error()
+		job.Error = redactAsyncJobText(m.dataRoot, marshalErr.Error())
 		m.persistLocked()
 		return
 	}
 	job.Status = asyncJobStatusSucceeded
-	job.Result = payload
+	job.Result = redactAsyncJobRawMessage(m.dataRoot, payload)
 	job.Error = ""
 	m.persistLocked()
 }
@@ -340,10 +342,85 @@ func (m *asyncJobManager) snapshot(job *asyncJobRecord) *asyncJobRecord {
 	}
 	copy := *job
 	copy.cancel = nil
+	copy.Error = redactAsyncJobText(m.dataRoot, copy.Error)
 	if job.Result != nil {
-		copy.Result = append(json.RawMessage(nil), job.Result...)
+		copy.Result = redactAsyncJobRawMessage(m.dataRoot, append(json.RawMessage(nil), job.Result...))
 	}
 	return &copy
+}
+
+func redactAsyncJobText(dataRoot, text string) string {
+	return redactSupportBundleText(dataRoot, stringsTrim(text))
+}
+
+func redactAsyncJobRawMessage(dataRoot string, payload json.RawMessage) json.RawMessage {
+	if len(payload) == 0 {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		redacted := []byte(redactSupportBundleText(dataRoot, string(payload)))
+		if !json.Valid(redacted) {
+			return json.RawMessage(`{"redacted":true}`)
+		}
+		return json.RawMessage(redacted)
+	}
+	redacted, err := json.Marshal(redactAsyncJobValue(dataRoot, "", value))
+	if err != nil || !json.Valid(redacted) {
+		return json.RawMessage(`{"redacted":true}`)
+	}
+	return json.RawMessage(redacted)
+}
+
+func redactAsyncJobValue(dataRoot, key string, value any) any {
+	switch v := value.(type) {
+	case string:
+		if asyncJobPathLikeKey(key) || supportBundleLooksAbsolutePath(v) {
+			return redactSupportBundleValue(dataRoot, v)
+		}
+		if asyncJobEndpointLikeKey(key) || strings.Contains(v, "://") {
+			return redactEndpointForAPI(dataRoot, v)
+		}
+		return redactSupportBundleText(dataRoot, v)
+	case []any:
+		out := make([]any, len(v))
+		for i := range v {
+			out[i] = redactAsyncJobValue(dataRoot, key, v[i])
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for childKey, childValue := range v {
+			out[childKey] = redactAsyncJobValue(dataRoot, childKey, childValue)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func asyncJobPathLikeKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	switch key {
+	case "path", "root_path", "file_path", "current_file", "relative_path", "data_dir", "runtime_dir", "workspace", "workspace_dir", "skill_dir", "project_path":
+		return true
+	}
+	return strings.HasSuffix(key, "_path") || strings.HasSuffix(key, "_dir")
+}
+
+func asyncJobEndpointLikeKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	switch key {
+	case "url", "uri", "endpoint", "endpoint_url", "base_url", "raw_url", "repo_url", "canonical_uri":
+		return true
+	}
+	return strings.HasSuffix(key, "_url") || strings.HasSuffix(key, "_uri") || strings.HasSuffix(key, "_endpoint")
 }
 
 func stringsTrim(v string) string {

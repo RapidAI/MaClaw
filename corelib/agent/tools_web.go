@@ -52,6 +52,14 @@ func ToolWebSearch(provider corelib.WebSearchProvider, args map[string]interface
 
 // ToolWebFetch fetches content from a URL.
 func ToolWebFetch(args map[string]interface{}) string {
+	return ToolWebFetchWithProvider(args, corelib.WebSearchProvider{})
+}
+
+// ToolWebFetchWithProvider fetches content from a URL using a provider-aware
+// fetch. When the provider has enhanced fetch capabilities (e.g. TinyFish),
+// it uses the provider's API for better content extraction, falling back to
+// standard fetch on failure.
+func ToolWebFetchWithProvider(args map[string]interface{}, provider corelib.WebSearchProvider) string {
 	rawURL := StringArg(args, "url")
 	if rawURL == "" {
 		return "缺少 url 参数"
@@ -77,7 +85,7 @@ func ToolWebFetch(args map[string]interface{}) string {
 		opts.MaxChars = int(v)
 	}
 
-	result, err := websearch.Fetch(rawURL, opts)
+	result, err := websearch.FetchWithProvider(rawURL, opts, provider)
 	if err != nil {
 		return fmt.Sprintf("抓取失败: %v", err)
 	}

@@ -329,15 +329,33 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 	}
 	stagingDir := skillStagingDir(skill.SkillDir)
 
-	// Security review: staging + intelligent scan.
-	// Developer mode: skip security review entirely.
+	// Security review: staging scan; policy decides whether findings block.
+	// Developer mode records scan findings but never blocks installation.
 	var installScanReport *cskill.ScanReport
-	if !h.isSecurityDeveloperMode() {
+	{
 		scanner := NewSkillSecurityScanner(h.app, nil)
 		scanReport := scanner.ScanInstallStaged(ctx, skill, skill.SkillDir, sendStatus)
 		installScanReport = scanReport
 
-		if scanReport.IsDangerous() || scanReport.NeedsUserReview() {
+		if h.app != nil && h.app.skillInstallScanShouldBlock(scanReport) {
+			cskill.CleanupStaging(stagingDir)
+			if h.getAuditLog() != nil {
+				_ = h.getAuditLog().Log(security.AuditEntry{
+					Timestamp:    time.Now(),
+					Action:       security.AuditActionHubSkillReject,
+					ToolName:     source + "_skill_install",
+					RiskLevel:    scanReport.FinalLevel,
+					PolicyAction: security.PolicyDeny,
+					Result:       fmt.Sprintf("policy blocked %s-risk skill %s: %s", scanReport.FinalLevel, displayName, scanReport.Summary),
+				})
+			}
+			return skillInstallExecutionResult{
+				Text:          FormatScanReportForUser(scanReport, displayName) + fmt.Sprintf("\nSkill %s was blocked by current security policy and not installed.", displayName),
+				SilentFailure: true,
+			}
+		}
+
+		if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(scanReport) {
 			confirmed := h.confirmRiskSkillInstall(
 				ctx, displayName, source, scanReport.FinalLevel, scanReport.PatternAssessment.Factors, platform, userID,
 			)
@@ -420,8 +438,10 @@ func (h *IMMessageHandler) registerAndExecuteSkill(ctx context.Context, skill *c
 		policyAction := security.PolicyAllow
 		if installScanReport != nil {
 			riskLevel = installScanReport.FinalLevel
-			if installScanReport.NeedsUserReview() {
+			if h.app != nil && h.app.skillInstallReviewNeedsConfirmation(installScanReport) {
 				policyAction = security.PolicyUserOverride
+			} else if installScanReport.NeedsUserReview() {
+				policyAction = security.PolicyAudit
 			}
 		}
 		_ = h.getAuditLog().Log(security.AuditEntry{

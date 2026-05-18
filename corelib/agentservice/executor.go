@@ -26,7 +26,7 @@ func (EchoExecutor) DescribeCapabilities(ctx context.Context, req ExecuteRequest
 
 func (EchoExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
 	_ = ctx
-	content := fmt.Sprintf("instance=%s data_dir=%s\nmaclaw executor adapter is not wired yet.\nreceived: %s", req.Instance.ID, req.DataDir, req.Message.Content)
+	content := fmt.Sprintf("instance=%s\nmaclaw executor adapter is not wired yet.\nreceived: %s", req.Instance.ID, req.Message.Content)
 	return &ExecuteResult{Content: content, OutputType: "text/plain", Metadata: map[string]string{"agent_id": req.Session.AgentID}}, nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -20,13 +21,13 @@ import (
 // change external state.
 var sideEffectTools = map[string]bool{
 	"write_file": true, "edit_file": true, "bash": true,
-	"ssh":            true,
-	"generate_pdf":   true, "send_file": true,
-	"manage_skill":   true, "run_skill": true,
+	"ssh":          true,
+	"generate_pdf": true, "send_file": true,
+	"manage_skill": true, "run_skill": true,
 	"create_session": true, "send_and_observe": true,
-	"browser":        true,
+	"browser":         true,
 	"manage_schedule": true, "manage_template": true,
-	"async_wait":     true,
+	"async_wait": true,
 }
 
 // sedimentTaskEntry saves a lightweight project_knowledge entry when the
@@ -134,6 +135,8 @@ func (h *IMMessageHandler) sedimentTaskEntry(userID string, history []agent.Conv
 	}
 	if err := h.memoryStore.Save(entry); err != nil {
 		log.Printf("[task_sediment] save failed: %v", err)
+	} else if h.app != nil {
+		h.app.triggerMemoryPipelineSoon(45 * time.Second)
 	}
 }
 

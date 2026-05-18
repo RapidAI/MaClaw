@@ -42,34 +42,48 @@ type MCPToolEntry struct {
 // existing MCP runtime infrastructure. It reads the user's config and runtime
 // state on every call, ensuring newly installed MCP servers are immediately
 // visible to the agent.
+//
+// The bridge owns an MCPReadinessManager that guarantees MCP servers are in a
+// ready state before tools are listed. This eliminates the lifecycle gap where
+// servers are configured but not started/probed.
 type MCPToolBridge struct {
-	svc    *Service
-	client *http.Client
+	svc       *Service
+	client    *http.Client
+	readiness *MCPReadinessManager
 }
 
 // NewMCPToolBridge creates a bridge that connects the CoreAgentExecutor to
 // the Service's MCP runtime.
 func NewMCPToolBridge(svc *Service) *MCPToolBridge {
 	return &MCPToolBridge{
-		svc:    svc,
-		client: &http.Client{Timeout: 30 * time.Second},
+		svc:       svc,
+		client:    &http.Client{Timeout: 30 * time.Second},
+		readiness: NewMCPReadinessManager(svc),
 	}
 }
 
 // ListAvailableTools reads the user's MCP config and runtime state, returning
 // tools from all healthy/running servers.
+//
+// Before reading state, it calls EnsureReady to guarantee that:
+// - Local servers with AutoStart=true are running (started or restarted)
+// - Remote servers have an async health probe in flight (non-blocking)
+//
+// This eliminates the lifecycle gap where servers are configured but the
+// runtime has no state (e.g. after process restart).
 func (b *MCPToolBridge) ListAvailableTools(ctx context.Context, p Principal) []MCPToolEntry {
-	_ = ctx
-	cfg, err := b.svc.getOrLoadUserConfig(p.TenantID, p.UserID)
-	if err != nil {
+	// Reconcile runtime state. Returns the config for reuse (avoids double-load).
+	appCfg, ok := b.readiness.EnsureReady(ctx, p)
+	if !ok {
 		return nil
 	}
+
 	runtime := runtimeForService(b.svc).user(composite(p.TenantID, p.UserID))
 	var entries []MCPToolEntry
 
 	// Remote MCP servers: only include healthy ones with cached tools.
-	// Remote servers in config are always enabled (no Disabled field).
-	for _, srv := range cfg.AppConfig.MCPServers {
+	// Remote MCP servers: only include healthy ones with cached tools.
+	for _, srv := range appCfg.MCPServers {
 		state := runtime.remoteState(srv.ID)
 		if state == nil || state.healthStatus != MCPHealthHealthy {
 			continue
@@ -86,7 +100,7 @@ func (b *MCPToolBridge) ListAvailableTools(ctx context.Context, p Principal) []M
 	}
 
 	// Local MCP servers: only include running ones.
-	for _, srv := range cfg.AppConfig.LocalMCPServers {
+	for _, srv := range appCfg.LocalMCPServers {
 		if srv.Disabled {
 			continue
 		}

@@ -27,6 +27,9 @@ func TestBugCondition_Section4_DefaultInput_CodingRequirements(t *testing.T) {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 
+	// Skip the form (if InputSchema is set) to reach the default branch.
+	engine.SkipPhaseForm("u_bug1")
+
 	// No phase output exists — this is a fresh workflow at requirements phase.
 	// Send an unrelated message that should reach section 4.
 	resp, err := engine.HandleInput("u_bug1", "check server status")
@@ -55,6 +58,9 @@ func TestBugCondition_Section4_DefaultInput_CodingChinese(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
+
+	// Skip the form (if InputSchema is set) to reach the default branch.
+	engine.SkipPhaseForm("u_bug2")
 
 	resp, err := engine.HandleInput("u_bug2", "开工")
 	if err != nil {
@@ -159,6 +165,9 @@ func TestBugCondition_Section4_DefaultInput_Property(t *testing.T) {
 			t.Logf("StartWorkflow(%s) failed: %v", wt, err)
 			return false
 		}
+
+		// Skip the form (if InputSchema is set) to reach the default branch.
+		engine.SkipPhaseForm(userID)
 
 		// No phase output — first phase, fresh workflow.
 		resp, err := engine.HandleInput(userID, input)

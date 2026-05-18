@@ -184,6 +184,47 @@ func TestReviewExperienceTraceDefersConflictMemory(t *testing.T) {
 	}
 }
 
+func TestReviewExperienceTraceApprovesToolRecoveryMemory(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	t.Cleanup(store.Stop)
+	if err := store.Save(memory.Entry{
+		ID:         "adaptive-retry-write_file-args",
+		Title:      "Adaptive retry: write_file / args",
+		Content:    "Adaptive retry failure evidence\n- Tool: write_file\n- Failure category: args\n- Failure count: 3",
+		Category:   memory.CategoryProjectKnowledge,
+		Tags:       []string{experienceTraceKindToolRecoveryPattern.String(), "adaptive_retry", "tool:write_file", "category:args", experienceReviewRequiredTag},
+		SourceType: string(experienceTraceSourceToolUsage),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	snapshot := buildExperienceLearningSnapshot(nil, store)
+	if snapshot.ReviewRequiredTraceCount != 1 || !hasExperienceTraceKind(snapshot.TraceDetails, experienceTraceKindToolRecoveryPattern.String()) {
+		t.Fatalf("expected pending tool recovery review trace: %#v", snapshot)
+	}
+	app := &App{memoryStore: store}
+	record, err := app.ReviewExperienceTrace("memory:adaptive-retry-write_file-args", ExperienceTraceReviewRequest{Outcome: "approved", Note: "safe as context only", Reviewer: "operator"})
+	if err != nil {
+		t.Fatalf("ReviewExperienceTrace: %v", err)
+	}
+	if record.Outcome != experienceReviewOutcomeApproved || record.Kind != experienceReviewKindToolRecovery.String() {
+		t.Fatalf("unexpected review record: %#v", record)
+	}
+	updated := store.SearchDirectByID("adaptive-retry-write_file-args")
+	if len(updated) != 1 {
+		t.Fatalf("expected updated memory entry, got %#v", updated)
+	}
+	if hasTag(updated[0].Tags, experienceReviewRequiredTag) || !hasTag(updated[0].Tags, experienceReviewResolvedTag) || !hasTag(updated[0].Tags, experienceReviewLifecycleTagToolRecoveryReviewed.String()) {
+		t.Fatalf("unexpected tool recovery review tags: %#v", updated[0].Tags)
+	}
+	if !strings.Contains(updated[0].Content, "Experience review record:") || !strings.Contains(updated[0].Content, "no skill, rollback, routing, or policy change") {
+		t.Fatalf("review audit missing: %s", updated[0].Content)
+	}
+}
+
 func TestReviewExperienceTraceApprovesSkillNudgeMemory(t *testing.T) {
 	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
 	if err != nil {

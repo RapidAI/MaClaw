@@ -6,10 +6,21 @@
  * These tests validate universal correctness properties of the tab system
  * using fast-check for property-based testing.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import fc from "fast-check";
 import { useAITabManager } from "../useAITabManager";
+
+vi.mock("../../../../wailsjs/runtime", () => ({
+    EventsOn: vi.fn(() => vi.fn()),
+    EventsOff: vi.fn(),
+}));
+
+vi.mock("../../../../wailsjs/go/main/App", () => ({
+    LoadProjectTabIndex: vi.fn().mockResolvedValue([]),
+    CloseProjectTabSession: vi.fn().mockResolvedValue(undefined),
+    CreateProjectTabSession: vi.fn().mockResolvedValue(undefined),
+}));
 
 // Arbitrary for generating valid project paths (non-empty strings)
 const projectPathArb = fc.string({ minLength: 1, maxLength: 200 }).filter(s => s.trim().length > 0);

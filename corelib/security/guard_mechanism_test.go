@@ -267,14 +267,14 @@ func TestPolicyEngine_DeveloperMode_AllowsEverything(t *testing.T) {
 	}
 }
 
-func TestPolicyEngine_StandardMode_DeniesRmRf(t *testing.T) {
+func TestPolicyEngine_StandardMode_AsksRmRf(t *testing.T) {
 	pe := NewPolicyEngineWithMode("standard")
 	if pe.IsDeveloperMode() {
 		t.Fatal("standard mode should not be developer mode")
 	}
 	action := pe.Evaluate("bash", map[string]interface{}{"command": "rm -rf /"}, RiskCritical)
-	if action != PolicyDeny {
-		t.Errorf("standard mode: got %s, want deny for rm -rf", action)
+	if action != PolicyAsk {
+		t.Errorf("standard mode: got %s, want ask for rm -rf", action)
 	}
 }
 
@@ -304,14 +304,14 @@ func TestFirewall_DeveloperMode_BypassesCheck(t *testing.T) {
 	}
 }
 
-func TestFirewall_StandardMode_DeniesRmRf(t *testing.T) {
+func TestFirewall_StandardMode_DeniesRmRfWithoutConfirmationChannel(t *testing.T) {
 	analyzer := NewRiskAnalyzer()
 	policy := NewPolicyEngineWithMode("standard")
 	fw := NewFirewall(analyzer, policy, nil)
 
 	allowed, reason := fw.Check("bash", map[string]interface{}{"command": "rm -rf /"}, nil)
 	if allowed {
-		t.Errorf("standard mode firewall should deny rm -rf /, reason=%q", reason)
+		t.Errorf("standard mode firewall should deny rm -rf / without confirmation channel, reason=%q", reason)
 	}
 }
 

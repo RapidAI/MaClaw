@@ -9,7 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
-func TestExportAgentSkillBlocksCriticalRiskBeforeWrite(t *testing.T) {
+func TestExportAgentSkillAllowsCriticalRiskByDefault(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "agent-export")
 	err := ExportAgentSkill(corelib.NLSkillEntry{
 		Name:        "dangerous-export",
@@ -19,14 +19,14 @@ func TestExportAgentSkillBlocksCriticalRiskBeforeWrite(t *testing.T) {
 			Params: map[string]interface{}{"command": "rm -rf $HOME/.ssh"},
 		}},
 	}, outDir)
-	if err == nil || !strings.Contains(err.Error(), "blocked by security scan") {
-		t.Fatalf("ExportAgentSkill() error = %v, want security scan block", err)
+	if err != nil {
+		t.Fatalf("ExportAgentSkill() error = %v, want allow", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(outDir, "SKILL.md")); !os.IsNotExist(statErr) {
-		t.Fatalf("ExportAgentSkill() wrote SKILL.md despite block, stat err = %v", statErr)
+	if _, statErr := os.Stat(filepath.Join(outDir, "SKILL.md")); statErr != nil {
+		t.Fatalf("ExportAgentSkill() did not write SKILL.md: %v", statErr)
 	}
 }
-func TestExportAgentSkillBlocksHighRiskBeforeWrite(t *testing.T) {
+func TestExportAgentSkillAllowsHighRiskByDefault(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "agent-export-high")
 	err := ExportAgentSkill(corelib.NLSkillEntry{
 		Name:        "high-risk-export",
@@ -36,11 +36,11 @@ func TestExportAgentSkillBlocksHighRiskBeforeWrite(t *testing.T) {
 			Params: map[string]interface{}{"command": "chmod 777 /tmp/maclaw-test"},
 		}},
 	}, outDir)
-	if err == nil || !strings.Contains(err.Error(), "blocked by security scan") {
-		t.Fatalf("ExportAgentSkill() error = %v, want high-risk security scan block", err)
+	if err != nil {
+		t.Fatalf("ExportAgentSkill() error = %v, want allow", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(outDir, "SKILL.md")); !os.IsNotExist(statErr) {
-		t.Fatalf("ExportAgentSkill() wrote SKILL.md despite block, stat err = %v", statErr)
+	if _, statErr := os.Stat(filepath.Join(outDir, "SKILL.md")); statErr != nil {
+		t.Fatalf("ExportAgentSkill() did not write SKILL.md: %v", statErr)
 	}
 }
 func TestImportAgentSkill_UsesCraftToolWhenNoScripts(t *testing.T) {
@@ -100,7 +100,7 @@ func TestImportAgentSkill_UsesScriptsAsBashSteps(t *testing.T) {
 	if got := entry.Steps[1].Params["command"]; got != wantNodeCommand {
 		t.Fatalf("step 1 command = %#v, want %q", got, wantNodeCommand)
 	}
-	if strings.Contains(entry.Steps[1].Params["command"].(string), "/path/in.md") || strings.Contains(entry.Steps[1].Params["command"].(string), "/绝对路径/输入.md") {
+	if strings.Contains(entry.Steps[1].Params["command"].(string), "/path/in.md") || strings.Contains(entry.Steps[1].Params["command"].(string), "/缂佹繂顕捄顖氱窞/鏉堟挸鍙?md") {
 		t.Fatalf("step 1 command still contains example placeholders: %#v", entry.Steps[1].Params["command"])
 	}
 	for i, step := range entry.Steps {

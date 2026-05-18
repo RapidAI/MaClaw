@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { KnowledgeImportDialog } from './KnowledgeImportDialog';
 import { ConfirmDialog } from '../modals/ConfirmDialog';
+import { DeepCrawlPanel } from './DeepCrawlPanel';
+import type { DeepCrawlConfig, DeepCrawlPreviewResult } from './DeepCrawlPanel';
 import {
     KnowledgeCapabilities,
     KnowledgeBackfillSourceAutoLabels,
@@ -82,6 +84,8 @@ import {
     KnowledgeUpdateURLDomainPolicies,
     KnowledgeUpdateSourceMetadata,
     KnowledgeUpdateSourceLabels,
+    KnowledgeDeepCrawl,
+    KnowledgeDeepCrawlPreview,
     SelectKnowledgeDirectory,
     SelectKnowledgeFiles,
 } from '../../../wailsjs/go/main/App';
@@ -1170,11 +1174,49 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
     const [qualityOptions, setQualityOptions] = useState({ policy: 'balanced', dryRun: true, distillMode: '', maxSourcesPerAction: 100, allowSensitiveDisable: false, allowDuplicateSuppression: true });
     const [showImportDialog, setShowImportDialog] = useState(false);
     const [confirmDialog, setConfirmDialog] = useState<{ show: boolean; title: string; message: string; onConfirm: () => void }>({ show: false, title: '', message: '', onConfirm: () => {} });
+    const [deepCrawlBusy, setDeepCrawlBusy] = useState(false);
 
     const confirmT = (key: string) => {
         const map: Record<string, string> = { cancel: lang.startsWith('zh') ? '取消' : 'Cancel', confirm: lang.startsWith('zh') ? '确认' : 'Confirm' };
         return map[key] || key;
     };
+
+    /** Map camelCase DeepCrawlConfig to snake_case Go struct for Wails bindings */
+    const mapConfigToRequest = useCallback((config: DeepCrawlConfig) => ({
+        seed_url: config.seedURL,
+        max_depth: config.maxDepth,
+        same_domain_only: config.sameDomainOnly,
+        save_scope: config.saveScope || '',
+        topic_hint: config.topicHint || '',
+        labels: config.labels || [],
+    }), []);
+
+    const handleDeepCrawlPreview = useCallback(async (config: DeepCrawlConfig): Promise<DeepCrawlPreviewResult | void> => {
+        setDeepCrawlBusy(true);
+        setError('');
+        try {
+            const result = await KnowledgeDeepCrawlPreview(mapConfigToRequest(config));
+            if (result && result.by_depth) {
+                return result as DeepCrawlPreviewResult;
+            }
+        } catch (err: any) {
+            setError(err?.message || String(err));
+        } finally {
+            setDeepCrawlBusy(false);
+        }
+    }, [mapConfigToRequest]);
+
+    const handleDeepCrawlStart = useCallback(async (config: DeepCrawlConfig): Promise<void> => {
+        setDeepCrawlBusy(true);
+        setError('');
+        try {
+            await KnowledgeDeepCrawl(mapConfigToRequest(config));
+        } catch (err: any) {
+            setError(err?.message || String(err));
+        } finally {
+            setDeepCrawlBusy(false);
+        }
+    }, [mapConfigToRequest]);
 
     const refresh = async () => {
         setLoading(true);
@@ -1562,6 +1604,7 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
             )}
 
             {activeTab === 'ingest' && (
+                <>
                 <div style={twoColumnStyle}>
                     <PanelBlock title={t('Save Text', '保存文本')}>
                         <input style={inputStyle} value={textForm.title} onChange={event => setTextForm({ ...textForm, title: event.target.value })} placeholder={t('Title', '标题')} />
@@ -1587,6 +1630,13 @@ export function KnowledgeSettingsPanel({ lang }: Props) {
                         )}
                     </PanelBlock>
                 </div>
+                <DeepCrawlPanel
+                    lang={lang === 'zh-Hans' || lang === 'zh-Hant' ? undefined : 'en'}
+                    onPreview={handleDeepCrawlPreview}
+                    onStartCrawl={handleDeepCrawlStart}
+                    busy={deepCrawlBusy}
+                />
+                </>
             )}
 
             {activeTab === 'search' && (

@@ -67,17 +67,19 @@ func (f *Firewall) Check(toolName string, args map[string]interface{}, ctx *Call
 		return true, ""
 	}
 
-	// Developer mode: bypass all security checks unconditionally.
-	// Risk assessment is skipped entirely — no deny, no ask, no audit.
-	if f.policy != nil && f.policy.IsDeveloperMode() {
-		return true, ""
-	}
-
 	risk := f.analyzer.Assess(toolName, args, ctx)
+	mode := "standard"
+	if f.policy != nil {
+		mode = f.policy.Mode()
+	}
 
 	sessionID := ""
 	if ctx != nil {
 		sessionID = ctx.SessionID
+	}
+	if mode == "developer" {
+		f.recordAudit(toolName, args, risk, PolicyAllow, "developer_mode_allowed", sessionID)
+		return true, ""
 	}
 
 	// Check enhanced session allowlist (category-aware)
@@ -109,7 +111,7 @@ func (f *Firewall) Check(toolName string, args map[string]interface{}, ctx *Call
 	case PolicyAllow, PolicyAudit:
 		return true, ""
 	case PolicyDeny:
-		return false, fmt.Sprintf("⛔ 安全策略拒绝: %s (风险等级: %s, 原因: %s)", toolName, risk.Level, risk.Reason)
+		return false, fmt.Sprintf("security policy denied: %s (risk level: %s, reason: %s)", toolName, risk.Level, risk.Reason)
 	case PolicyAsk:
 		return f.handleAskAction(toolName, args, risk, sessionID)
 	default:
@@ -120,7 +122,7 @@ func (f *Firewall) Check(toolName string, args map[string]interface{}, ctx *Call
 // handleAskAction processes the PolicyAsk action with Smart Approval bypass
 // and enhanced approval flow.
 func (f *Firewall) handleAskAction(toolName string, args map[string]interface{}, risk RiskAssessment, sessionID string) (bool, string) {
-	// Step 1: Try Smart Approval — let LLM determine if this is a false positive
+	// Step 1: Try Smart Approval and let LLM determine if this is a false positive.
 	if f.smartApproval != nil && f.smartApproval.IsConfigured() {
 		result := f.smartApproval.Evaluate(toolName, args, risk)
 		switch result.Verdict {
@@ -141,18 +143,18 @@ func (f *Firewall) handleAskAction(toolName string, args map[string]interface{},
 
 	// Step 2: Try sync onAsk callback (CLI/GUI).
 	// In sync mode we only record tool-level approval (not category),
-	// because the CLI/GUI prompt is per-invocation — the user approves
+	// because the CLI/GUI prompt is per-invocation: the user approves
 	// this specific tool, not a whole category.
 	if f.onAsk != nil {
 		approved, err := f.onAsk(toolName, risk)
 		if err != nil {
-			return false, fmt.Sprintf("⛔ 用户确认失败: %v", err)
+			return false, fmt.Sprintf("user confirmation failed: %v", err)
 		}
 		if approved {
 			f.recordSessionApproval(sessionID, toolName, risk)
 			return true, ""
 		}
-		return false, fmt.Sprintf("⛔ 用户拒绝执行: %s", toolName)
+		return false, fmt.Sprintf("user denied execution: %s", toolName)
 	}
 
 	// Step 3: Try async approval manager (IM scenarios)
@@ -170,19 +172,20 @@ func (f *Firewall) handleAskAction(toolName string, args map[string]interface{},
 		}
 		resp, err := f.approvalMgr.RequestApproval(req)
 		if err != nil {
-			return false, fmt.Sprintf("⛔ IM 审批失败: %v", err)
+			return false, fmt.Sprintf("IM approval failed: %v", err)
 		}
 		if resp.Approved {
 			f.applyApprovalScope(sessionID, toolName, risk, resp.ApproveScope)
 			return true, ""
 		}
-		return false, fmt.Sprintf("⛔ 用户拒绝执行: %s", toolName)
+		return false, fmt.Sprintf("user denied execution: %s", toolName)
 	}
 
 	// No confirmation channel available
 	if risk.Level == RiskHigh || risk.Level == RiskCritical {
-		return false, fmt.Sprintf("⚠️ 高风险操作需要确认但无确认通道: %s (风险: %s, 原因: %s)", toolName, risk.Level, risk.Reason)
+		return false, fmt.Sprintf("high-risk operation requires confirmation but no confirmation channel is available: %s (risk: %s, reason: %s)", toolName, risk.Level, risk.Reason)
 	}
+	f.recordAudit(toolName, args, risk, PolicyAudit, "allowed_without_confirmation_channel", sessionID)
 	return true, ""
 }
 

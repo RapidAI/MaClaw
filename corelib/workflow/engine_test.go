@@ -28,14 +28,15 @@ func TestEngine_NewCommandClearsWorkflowState(t *testing.T) {
 func TestEngine_CancelWorkflow(t *testing.T) {
 	engine, _ := newTestEngine()
 	intent := StructuredIntent{Category: WorkflowCoding, Summary: "test"}
-	state, err := engine.StartWorkflow("u1", intent)
+	_, err := engine.StartWorkflow("u1", intent)
 	if err != nil {
 		t.Fatalf("StartWorkflow failed: %v", err)
 	}
 
-	// Add some phase outputs
+	// Add some phase outputs to the engine-owned state; StartWorkflow returns a snapshot.
 	engine.mu.Lock()
-	state.PhaseOutputs["requirements"] = "需求文档内容"
+	ownedState := engine.workflows["u1"]
+	ownedState.PhaseOutputs["requirements"] = "需求文档内容"
 	engine.mu.Unlock()
 
 	err = engine.CancelWorkflow("u1")
@@ -46,10 +47,10 @@ func TestEngine_CancelWorkflow(t *testing.T) {
 	if engine.HasActiveWorkflow("u1") {
 		t.Error("workflow should not be active after cancel")
 	}
-	if state.Status != WorkflowCancelled {
-		t.Errorf("expected cancelled status, got %s", state.Status)
+	if ownedState.Status != WorkflowCancelled {
+		t.Errorf("expected cancelled status, got %s", ownedState.Status)
 	}
-	if state.PhaseOutputs["requirements"] != "需求文档内容" {
+	if ownedState.PhaseOutputs["requirements"] != "需求文档内容" {
 		t.Error("phase outputs should be preserved after cancel")
 	}
 }
@@ -120,11 +121,15 @@ func TestEngine_CompleteWorkflowLifecycle(t *testing.T) {
 				t.Errorf("phase %d: classified confirm should advance NeedsConfirm phase", i)
 			}
 		} else {
-			// Non-NeedsConfirm phase (e.g., implementation): advance via advancePhase directly
+			// Non-NeedsConfirm phase (e.g., implementation): advance via the engine-owned state.
 			// In real usage, the GUI/TUI caller decides when to advance.
 			engine.mu.Lock()
-			engine.advancePhase("u1", ws, tmpl)
+			owned := engine.workflows["u1"]
+			_, err := engine.advancePhase("u1", owned, tmpl)
 			engine.mu.Unlock()
+			if err != nil {
+				t.Fatalf("advancePhase at phase %d failed: %v", i, err)
+			}
 		}
 	}
 
@@ -235,7 +240,9 @@ func TestEngine_SQLiteUnavailableDegradation(t *testing.T) {
 	}
 
 	// CleanupExpired with NullStore should be no-op
-	engine.CleanupExpired() // should not panic
+	if err := engine.CleanupExpired(); err != nil {
+		t.Errorf("CleanupExpired with NullStore should not error: %v", err)
+	}
 }
 
 func TestEngine_HandleInputNoActiveWorkflow(t *testing.T) {
@@ -279,6 +286,29 @@ func TestEngine_GetPhaseToolFilterNoWorkflow(t *testing.T) {
 	}
 }
 
+func setWorkflowPhaseForTest(t *testing.T, engine *WorkflowEngine, userID, phaseID string) *WorkflowState {
+	t.Helper()
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	state := engine.workflows[userID]
+	if state == nil {
+		t.Fatalf("workflow not found for %s", userID)
+	}
+	tmpl := engine.GetRegistry().Match(state.Type)
+	if tmpl == nil {
+		t.Fatalf("template not found for %s", state.Type)
+	}
+	for i := range tmpl.Phases {
+		if tmpl.Phases[i].ID == phaseID {
+			state.PhaseIndex = i
+			state.CurrentPhase = phaseID
+			return state
+		}
+	}
+	t.Fatalf("phase %q not found for %s", phaseID, state.Type)
+	return nil
+}
+
 func TestEngine_GetOpsApprovedCommandsFromRiskPolicyOutput(t *testing.T) {
 	registry := NewWorkflowRegistry()
 	RegisterBuiltinTemplates(registry)
@@ -287,7 +317,7 @@ func TestEngine_GetOpsApprovedCommandsFromRiskPolicyOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
 	}
-	state.CurrentPhase = "controlled_execution"
+	state = setWorkflowPhaseForTest(t, engine, state.UserID, "controlled_execution")
 	state.PhaseOutputs["risk_policy"] = `
 decision: approval_required
 risk_level: L2
@@ -313,7 +343,7 @@ func TestEngine_GetOpsApprovedCommandsOnlyDuringControlledExecution(t *testing.T
 	if err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
 	}
-	state.CurrentPhase = "risk_policy"
+	state = setWorkflowPhaseForTest(t, engine, state.UserID, "risk_policy")
 	state.PhaseOutputs["risk_policy"] = `
 decision: approval_required
 risk_level: L2
@@ -325,7 +355,7 @@ allowed_commands:
 	if got := engine.GetOpsApprovedCommands("u_ops_manifest_before_execution"); len(got) != 0 {
 		t.Fatalf("risk policy output should not expose approved commands before controlled_execution: %#v", got)
 	}
-	state.CurrentPhase = "controlled_execution"
+	state = setWorkflowPhaseForTest(t, engine, state.UserID, "controlled_execution")
 	if got := engine.GetOpsApprovedCommands("u_ops_manifest_before_execution"); len(got) != 1 {
 		t.Fatalf("controlled_execution should expose approved commands, got %#v", got)
 	}
@@ -339,7 +369,7 @@ func TestEngine_GetOpsApprovedCommandsIgnoresDeniedRiskPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
 	}
-	state.CurrentPhase = "controlled_execution"
+	state = setWorkflowPhaseForTest(t, engine, state.UserID, "controlled_execution")
 	state.PhaseOutputs["risk_policy"] = `
 decision: deny
 risk_level: L4
@@ -361,7 +391,7 @@ func TestEngine_GetOpsApprovedCommandsPreservesPolicyStrengthMetadata(t *testing
 	if err != nil {
 		t.Fatalf("StartWorkflow: %v", err)
 	}
-	state.CurrentPhase = "controlled_execution"
+	state = setWorkflowPhaseForTest(t, engine, state.UserID, "controlled_execution")
 	state.PhaseOutputs["risk_policy"] = `
 decision: approval_required
 risk_level: L3

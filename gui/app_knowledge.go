@@ -1294,3 +1294,142 @@ func (a *App) normalizeKnowledgeScopePath(projectPath string) string {
 	}
 	return ""
 }
+
+// ---------------------------------------------------------------------------
+// Deep Crawl Wails Bindings
+// ---------------------------------------------------------------------------
+
+// KnowledgeDeepCrawl 启动深度检索（完整抓取模式）
+func (a *App) KnowledgeDeepCrawl(req knowledge.DeepCrawlRequest) (knowledge.DeepCrawlResult, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return knowledge.DeepCrawlResult{}, err
+	}
+	defer store.Close()
+
+	// Create a cancellable context with session timeout handled by the engine
+	ctx, cancel := context.WithCancel(a.knowledgeContext())
+
+	// Store the cancel func for KnowledgeDeepCrawlCancel
+	a.deepCrawlMu.Lock()
+	// Cancel any previously active crawl
+	if a.deepCrawlCancel != nil {
+		a.deepCrawlCancel()
+	}
+	a.deepCrawlCancel = cancel
+	a.deepCrawlCtx = ctx
+	a.deepCrawlMu.Unlock()
+
+	// Clear the cancel func when done (only if we're still the active crawl)
+	defer func() {
+		a.deepCrawlMu.Lock()
+		if a.deepCrawlCtx == ctx {
+			a.deepCrawlCancel = nil
+			a.deepCrawlCtx = nil
+		}
+		a.deepCrawlMu.Unlock()
+		cancel()
+	}()
+
+	// Create onProgress callback that emits Wails events
+	onProgress := func(progress knowledge.DeepCrawlProgress) {
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", progress)
+		}
+	}
+
+	engine := knowledge.NewDeepCrawlEngine(store, onProgress)
+	result, err := engine.StartCrawl(ctx, req)
+
+	// Emit final status event
+	if a.ctx != nil {
+		finalStatus := "completed"
+		if err != nil {
+			finalStatus = "failed"
+		} else if result.Status != "" {
+			finalStatus = result.Status
+		}
+		runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", knowledge.DeepCrawlProgress{
+			JobID:           result.JobID,
+			Status:          finalStatus,
+			TotalDiscovered: result.TotalSaved + result.Duplicates + result.Failed + result.Skipped,
+			Completed:       result.TotalSaved,
+			Failed:          result.Failed,
+			Skipped:         result.Skipped,
+		})
+	}
+
+	return result, err
+}
+
+// KnowledgeDeepCrawlPreview 预览模式（仅发现链接，不保存内容）
+func (a *App) KnowledgeDeepCrawlPreview(req knowledge.DeepCrawlRequest) (knowledge.DeepCrawlResult, error) {
+	store, err := a.openKnowledgeStore()
+	if err != nil {
+		return knowledge.DeepCrawlResult{}, err
+	}
+	defer store.Close()
+
+	// Create a cancellable context
+	ctx, cancel := context.WithCancel(a.knowledgeContext())
+
+	// Store the cancel func for KnowledgeDeepCrawlCancel
+	a.deepCrawlMu.Lock()
+	if a.deepCrawlCancel != nil {
+		a.deepCrawlCancel()
+	}
+	a.deepCrawlCancel = cancel
+	a.deepCrawlCtx = ctx
+	a.deepCrawlMu.Unlock()
+
+	// Clear the cancel func when done (only if we're still the active crawl)
+	defer func() {
+		a.deepCrawlMu.Lock()
+		if a.deepCrawlCtx == ctx {
+			a.deepCrawlCancel = nil
+			a.deepCrawlCtx = nil
+		}
+		a.deepCrawlMu.Unlock()
+		cancel()
+	}()
+
+	// Create onProgress callback that emits Wails events
+	onProgress := func(progress knowledge.DeepCrawlProgress) {
+		if a.ctx != nil {
+			runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", progress)
+		}
+	}
+
+	engine := knowledge.NewDeepCrawlEngine(store, onProgress)
+	result, err := engine.Preview(ctx, req)
+
+	// Emit final status event
+	if a.ctx != nil {
+		finalStatus := "completed"
+		if err != nil {
+			finalStatus = "failed"
+		} else if result.Status != "" {
+			finalStatus = result.Status
+		}
+		runtime.EventsEmit(a.ctx, "knowledge:deep-crawl-progress", knowledge.DeepCrawlProgress{
+			Status:          finalStatus,
+			TotalDiscovered: len(result.Items),
+		})
+	}
+
+	return result, err
+}
+
+// KnowledgeDeepCrawlCancel 取消正在进行的深度检索
+func (a *App) KnowledgeDeepCrawlCancel() error {
+	a.deepCrawlMu.Lock()
+	cancel := a.deepCrawlCancel
+	a.deepCrawlMu.Unlock()
+
+	if cancel == nil {
+		return fmt.Errorf("no active deep crawl to cancel")
+	}
+
+	cancel()
+	return nil
+}

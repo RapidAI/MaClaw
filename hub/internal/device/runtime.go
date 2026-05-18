@@ -19,11 +19,13 @@ type MachineRepository interface {
 	Create(ctx context.Context, machine *store.Machine) error
 	GetByID(ctx context.Context, id string) (*store.Machine, error)
 	ListByUserID(ctx context.Context, userID string) ([]*store.Machine, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]*store.Machine, error)
 	ListAll(ctx context.Context) ([]*store.Machine, error)
 	Delete(ctx context.Context, machineID string) error
 	DeleteByUserID(ctx context.Context, userID string) (int64, error)
 	ForceDeleteByUserID(ctx context.Context, userID string) (int64, error)
 	DeleteOffline(ctx context.Context) (int64, error)
+	DeleteOfflineByTenant(ctx context.Context, tenantID string) (int64, error)
 	DeleteOfflineByUserID(ctx context.Context, userID string) (int64, error)
 	UpdateMetadata(ctx context.Context, machineID string, metadata store.MachineMetadata) error
 	UpdateStatus(ctx context.Context, machineID string, status string) error
@@ -63,6 +65,7 @@ func (s *Service) IsMachineOnline(machineID string) bool {
 
 type MachineRuntimeInfo struct {
 	MachineID            string     `json:"machine_id"`
+	TenantID             string     `json:"tenant_id,omitempty"`
 	UserID               string     `json:"user_id,omitempty"`
 	Name                 string     `json:"name,omitempty"`
 	Alias                string     `json:"alias,omitempty"`
@@ -514,6 +517,9 @@ func (s *Service) ImportMachines(ctx context.Context, userID string, machines []
 		}
 		copy := *machine
 		copy.UserID = strings.TrimSpace(userID)
+		if strings.TrimSpace(copy.TenantID) == "" {
+			copy.TenantID = store.DefaultTenantID
+		}
 		copy.Status = "offline"
 		if copy.CreatedAt.IsZero() {
 			copy.CreatedAt = time.Now()
@@ -587,9 +593,74 @@ func (s *Service) ListAllMachines(ctx context.Context) ([]MachineRuntimeInfo, er
 	return out, nil
 }
 
+func (s *Service) ListMachinesByTenant(ctx context.Context, tenantID string) ([]MachineRuntimeInfo, error) {
+	if s.repo == nil {
+		return s.ListOnlineMachines(), nil
+	}
+	items, err := s.repo.ListByTenant(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	s.runtime.mu.RLock()
+	defer s.runtime.mu.RUnlock()
+	out := make([]MachineRuntimeInfo, 0, len(items))
+	seenUsers := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		out = append(out, s.mergeMachineInfo(item))
+		seenUsers[item.UserID] = struct{}{}
+	}
+	for machineID, conn := range s.runtime.desktopsByMachine {
+		if conn == nil || conn.UserID == "" {
+			continue
+		}
+		if _, ok := seenUsers[conn.UserID]; !ok {
+			continue
+		}
+		if _, exists := findMachineInfo(out, machineID); exists {
+			continue
+		}
+		out = append(out, s.runtimeOnlyMachineInfo(machineID, conn))
+	}
+	return out, nil
+}
+
+func (s *Service) GetMachineInfo(ctx context.Context, machineID string) (*MachineRuntimeInfo, error) {
+	machineID = strings.TrimSpace(machineID)
+	if machineID == "" {
+		return nil, nil
+	}
+	if s.repo == nil {
+		s.runtime.mu.RLock()
+		defer s.runtime.mu.RUnlock()
+		if conn := s.runtime.desktopsByMachine[machineID]; conn != nil {
+			info := s.runtimeOnlyMachineInfo(machineID, conn)
+			return &info, nil
+		}
+		return nil, nil
+	}
+	item, err := s.repo.GetByID(ctx, machineID)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		s.runtime.mu.RLock()
+		defer s.runtime.mu.RUnlock()
+		if conn := s.runtime.desktopsByMachine[machineID]; conn != nil {
+			info := s.runtimeOnlyMachineInfo(machineID, conn)
+			return &info, nil
+		}
+		return nil, nil
+	}
+	s.runtime.mu.RLock()
+	defer s.runtime.mu.RUnlock()
+	info := s.mergeMachineInfo(item)
+	return &info, nil
+}
+
 func (s *Service) mergeMachineInfo(item *store.Machine) MachineRuntimeInfo {
 	info := MachineRuntimeInfo{
 		MachineID:            item.ID,
+		TenantID:             item.TenantID,
 		UserID:               item.UserID,
 		Name:                 item.Name,
 		Alias:                item.Alias,
@@ -648,6 +719,15 @@ func (s *Service) mergeMachineInfo(item *store.Machine) MachineRuntimeInfo {
 		log.Printf("[device] mergeMachineInfo: machine_id=%s -> OFFLINE (db_status=%s)", item.ID, item.Status)
 	}
 	return info
+}
+
+func findMachineInfo(items []MachineRuntimeInfo, machineID string) (MachineRuntimeInfo, bool) {
+	for _, item := range items {
+		if item.MachineID == machineID {
+			return item, true
+		}
+	}
+	return MachineRuntimeInfo{}, false
 }
 
 func (s *Service) runtimeOnlyMachineInfo(machineID string, conn *ws.ConnContext) MachineRuntimeInfo {
@@ -756,6 +836,13 @@ func (s *Service) ClearOfflineMachines(ctx context.Context) (int64, error) {
 		return 0, errors.New("no repository configured")
 	}
 	return s.repo.DeleteOffline(ctx)
+}
+
+func (s *Service) ClearOfflineMachinesByTenant(ctx context.Context, tenantID string) (int64, error) {
+	if s.repo == nil {
+		return 0, errors.New("no repository configured")
+	}
+	return s.repo.DeleteOfflineByTenant(ctx, tenantID)
 }
 
 func (s *Service) ClearOfflineMachinesByUser(ctx context.Context, userID string) (int64, error) {

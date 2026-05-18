@@ -78,7 +78,7 @@ func (h *IMMessageHandler) runAgentLoop(ctx *LoopContext, userID, systemPrompt s
 
 	inFlightLifecycle := h.newInFlightLifecycle(userID, userText)
 	defer inFlightLifecycle.Cleanup()
-	defer h.persistCompressionSummaryOnExit(&runState.LastCompressionSummary)
+	defer h.persistCompressionSummaryOnExit(userID, &runState.LastCompressionSummary)
 
 	mainIterations := h.runAgentLoopMainIterations(agentLoopMainIterationsOptions{
 		Context:                       ctx,

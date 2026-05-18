@@ -591,7 +591,10 @@ func (pi *ProjectIndex) scoreRecord(rec *ProjectRecord, queryLower string, query
 // inferProjectPath extracts a project path from an entry's metadata.
 // Priority: SourceURL directory > Tags containing path-like values > empty.
 func inferProjectPath(e *Entry) string {
-	// 1. SourceURL: if it looks like a file path, use its directory.
+	// 1. SourceURL: if it looks like a file path, use its directory. For
+	// generated memory_refs files, prefer explicit project path tags below so
+	// the navigation scene points at the real project instead of the cache dir.
+	deferredSourceDir := ""
 	if e.SourceURL != "" {
 		if LooksLikeFilePath(e.SourceURL) {
 			// Normalize to forward slashes for consistent Dir() behavior
@@ -599,7 +602,11 @@ func inferProjectPath(e *Entry) string {
 			fwd := toForwardSlash(e.SourceURL)
 			dir := pathDir(fwd)
 			if dir != "." && dir != "" && looksLikeProjectPath(dir) {
-				return normalizeProjectPath(dir)
+				if strings.Contains(fwd, "/memory_refs/") {
+					deferredSourceDir = normalizeProjectPath(dir)
+				} else {
+					return normalizeProjectPath(dir)
+				}
 			}
 		}
 	}
@@ -612,7 +619,7 @@ func inferProjectPath(e *Entry) string {
 		}
 	}
 
-	return ""
+	return deferredSourceDir
 }
 
 // toForwardSlash replaces all backslashes with forward slashes.

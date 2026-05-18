@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
@@ -37,9 +38,20 @@ func (s *workflowArtifactSaver) SaveArtifact(title, content string, tags []strin
 
 // SaveArtifactForUser is like SaveArtifact but sets OwnerID for multi-tenant isolation.
 func (s *workflowArtifactSaver) SaveArtifactForUser(title, content string, tags []string, sourceURL string, ownerID string) error {
-	if s.store == nil || strings.TrimSpace(content) == "" {
+	return s.SaveArtifactFullForUser(title, content, content, tags, sourceURL, ownerID)
+}
+
+// SaveArtifactFull persists a compact workflow phase summary while preserving
+// the full phase output behind SourceURL when the caller has no source file.
+func (s *workflowArtifactSaver) SaveArtifactFull(title, summary, fullContent string, tags []string, sourceURL string) error {
+	return s.SaveArtifactFullForUser(title, summary, fullContent, tags, sourceURL, "")
+}
+
+func (s *workflowArtifactSaver) SaveArtifactFullForUser(title, summary, fullContent string, tags []string, sourceURL string, ownerID string) error {
+	if s.store == nil || strings.TrimSpace(summary) == "" {
 		return nil
 	}
+	summary = memoryRefPreview(summary)
 
 	// Extract phaseTag: the second tag (after "workflow") that isn't a path.
 	// Convention: tags = ["workflow", phaseID, workflowType, ...projectPath]
@@ -53,23 +65,33 @@ func (s *workflowArtifactSaver) SaveArtifactForUser(title, content string, tags 
 		s.mu.Unlock()
 
 		if existingID != "" {
-			if err := s.store.Update(existingID, content, memory.CategoryTaskArtifact, tags); err != nil {
-				log.Printf("[artifact_saver] failed to update task_artifact %s: %v", existingID, err)
-				// Fall through to save as new entry.
+			if err := s.store.Delete(existingID); err != nil {
+				log.Printf("[artifact_saver] failed to replace task_artifact %s: %v", existingID, err)
 			} else {
-				log.Printf("[artifact_saver] updated task_artifact %s for phase %q", existingID, phaseTag)
-				return nil
+				log.Printf("[artifact_saver] replacing task_artifact %s for phase %q", existingID, phaseTag)
 			}
 		}
 	}
 
+	sourceType := "workflow_output"
+	sourceURL = strings.TrimSpace(sourceURL)
+	if sourceURL == "" {
+		if refPath, err := writeMemoryRefFile(s.store.Path(), ownerID, "workflow_output", fullContent, time.Now()); err != nil {
+			log.Printf("[artifact_saver] failed to write workflow ref for owner=%s phase=%q: %v", ownerID, phaseTag, err)
+		} else {
+			sourceURL = refPath
+			sourceType = "workflow_output_ref"
+			tags = append(append([]string{}, tags...), "source_ref")
+		}
+	}
+
 	entry := memory.Entry{
-		Content:    content,
+		Content:    summary,
 		Title:      title,
 		Category:   memory.CategoryTaskArtifact,
 		Tags:       tags,
 		Scope:      memory.ScopeProject,
-		SourceType: "workflow_output",
+		SourceType: sourceType,
 		SourceURL:  sourceURL,
 		OwnerID:    ownerID, // multi-tenant: associate with the user who ran this workflow
 	}
@@ -82,7 +104,7 @@ func (s *workflowArtifactSaver) SaveArtifactForUser(title, content string, tags 
 	if phaseTag != "" {
 		// Find the entry by content hash (unique, stable identifier).
 		// Do Store read BEFORE acquiring s.mu to avoid nested locking.
-		h := sha256.Sum256([]byte(content))
+		h := sha256.Sum256([]byte(summary))
 		contentHash := hex.EncodeToString(h[:])
 		var entryID string
 		s.store.RLock()
@@ -104,7 +126,7 @@ func (s *workflowArtifactSaver) SaveArtifactForUser(title, content string, tags 
 		}
 	}
 
-	log.Printf("[artifact_saver] saved task_artifact for phase %q (%d runes)", phaseTag, len([]rune(content)))
+	log.Printf("[artifact_saver] saved task_artifact for phase %q (%d runes)", phaseTag, len([]rune(summary)))
 	return nil
 }
 
@@ -121,9 +143,9 @@ func extractPhaseTag(tags []string) string {
 // deferredArtifactSaver lazily resolves the memory store on first use.
 // Thread-safe: uses sync.Once for initialization.
 type deferredArtifactSaver struct {
-	app       *App
-	once      sync.Once
-	inner     *workflowArtifactSaver
+	app   *App
+	once  sync.Once
+	inner *workflowArtifactSaver
 
 	// currentUserID is set by the agent loop caller before SavePhaseOutput.
 	// Must be set before each workflow phase save because runAgentLoop's
@@ -136,6 +158,10 @@ func (d *deferredArtifactSaver) SetCurrentUserID(userID string) {
 }
 
 func (d *deferredArtifactSaver) SaveArtifact(title, content string, tags []string, sourceURL string) error {
+	return d.SaveArtifactFull(title, content, content, tags, sourceURL)
+}
+
+func (d *deferredArtifactSaver) SaveArtifactFull(title, summary, fullContent string, tags []string, sourceURL string) error {
 	d.once.Do(func() {
 		d.app.ensureMemoryStore()
 		if d.app.memoryStore != nil {
@@ -146,5 +172,9 @@ func (d *deferredArtifactSaver) SaveArtifact(title, content string, tags []strin
 		return nil
 	}
 	ownerID, _ := d.currentUserID.Load().(string)
-	return d.inner.SaveArtifactForUser(title, content, tags, sourceURL, ownerID)
+	if err := d.inner.SaveArtifactFullForUser(title, summary, fullContent, tags, sourceURL, ownerID); err != nil {
+		return err
+	}
+	d.app.triggerMemoryPipelineSoon(45 * time.Second)
+	return nil
 }

@@ -19,6 +19,7 @@ type QQBotConfigState struct {
 
 func GetQQBotConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		raw, err := system.Get(r.Context(), qqbotConfigKey)
 		if err != nil || raw == "" {
 			writeJSON(w, http.StatusOK, QQBotConfigState{})
@@ -38,6 +39,7 @@ func GetQQBotConfigHandler(system store.SystemSettingsRepository) http.HandlerFu
 
 func UpdateQQBotConfigHandler(system store.SystemSettingsRepository, plugin *qqbot.Plugin) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var cfg QQBotConfigState
 		if err := json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")

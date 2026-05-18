@@ -324,7 +324,7 @@ func (p *Plugin) ResolveUser(ctx context.Context, platformUID string) (string, e
 	if !ok || email == "" {
 		return "", fmt.Errorf("qqbot: user %s not bound, please send your email to bind", platformUID)
 	}
-	user, err := p.users.GetByEmail(ctx, email)
+	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		return "", fmt.Errorf("qqbot: no hub user found for email %s", email)
 	}
@@ -637,6 +637,7 @@ func (p *Plugin) doUploadMedia(ctx context.Context, token, uploadURL string, pay
 	}
 	return uploadResult.FileInfo, nil
 }
+
 // ---------------------------------------------------------------------------
 // WebSocket Gateway — connects to QQ Bot gateway for real-time events
 // Protocol: Hello(op=10) → Identify(op=2) → Ready(op=0) → Heartbeat(op=1)
@@ -1290,7 +1291,7 @@ func (p *Plugin) handleEmailSubmit(openID, email string) {
 	defer cancel()
 	email = strings.TrimSpace(strings.ToLower(email))
 
-	user, err := p.users.GetByEmail(ctx, email)
+	user, err := p.users.GetByTenantEmail(ctx, store.DefaultTenantID, email)
 	if err != nil || user == nil {
 		_ = p.sendC2CMessage(ctx, openID,
 			fmt.Sprintf("❌ 未找到邮箱 %s 对应的 Hub 用户，请确认邮箱是否正确。", email))

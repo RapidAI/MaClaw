@@ -2,15 +2,19 @@ package main
 
 import (
 	"log"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-func (h *IMMessageHandler) persistCompressionSummaryOnExit(summary *string) {
+func (h *IMMessageHandler) persistCompressionSummaryOnExit(userID string, summary *string) {
 	if h == nil || h.memoryStore == nil || summary == nil || *summary == "" {
 		return
 	}
-	persistLastCompressionSummary(h.memoryStore, *summary)
+	persistLastCompressionSummary(h.memoryStore, userID, *summary)
+	if h.app != nil {
+		h.app.triggerMemoryPipelineSoon(45 * time.Second)
+	}
 }
 
 func (h *IMMessageHandler) applyPendingContextCompression(userID string, history []agent.ConversationEntry, lastSummary *string) []agent.ConversationEntry {

@@ -216,8 +216,8 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 第二步：检查跳过确认信号。用户说“直接做”“不用问了”“全力推进”“just do it”“go ahead”等时，跳过三个确认阶段和剩余确认阶段，但仍在内部完成规划并直接执行。
 第三步：需求确认。生成需求文档并等待用户明确确认后才进入下一阶段；内容必须包括需求背景与目标、功能需求列表、非功能需求、约束与假设。若 PDF 生成失败，发送 Markdown 纯文本并说明 PDF 生成失败。
 第四步：技术设计。基于确认的需求文档生成设计文档，内容必须包括架构设计、接口设计、数据模型变更、实现方案概述。
-第五步：任务拆解。基于确认的需求和设计文档生成编号的任务列表、任务的描述和涉及的文件、TDD 验收测试用例。
-第六步：执行。只有在确认任务列表或收到跳过确认信号后才调用 create_session / send_and_observe；向执行会话传入需求和设计上下文。
+第五步：任务分解（任务拆分）。基于确认的需求和设计文档生成编号的任务列表、任务的描述和涉及的文件、TDD 验收测试用例。
+第六步：任务执行。只有在确认任务列表或收到跳过确认信号后才调用 create_session / send_and_observe；向执行会话传入需求和设计上下文。
 
 ## 文档交付契约
 - 需求文档、设计文档、任务列表优先生成 PDF，可使用 craft_tool、bash、pandoc、wkhtmltopdf 或等价工具。
@@ -227,6 +227,7 @@ func appendCodingWorkflowContract(b *strings.Builder) {
 - 用户提出修改时，更新文档、重新生成 PDF，并把修订后使用最新版本作为后续阶段输入。
 - 收到“回退到需求阶段”或“回到需求阶段”等请求时，告知用户回退信息，并重新生成所有后续阶段文档。
 
+第七步：完成验收。所有任务结束后运行验证并形成验收报告，明确总任务数、成功/失败数、全量测试结果和剩余风险。
 ## 执行验证与止损契约
 - 每个任务完成后运行对应 TDD 测试；失败时最多 3 次重试，仍失败则记录原因并跳到下一个任务。
 - 进度格式要能区分完成 ✅ 和失败 ❌。
@@ -475,18 +476,17 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string,
 		b.WriteString("\n")
 	}
 
+	if sceneNav := h.buildSceneNavigation(strictProject, projectPath); sceneNav != "" {
+		b.WriteString("\n[Scene Index]\n")
+		b.WriteString(sceneNav)
+		b.WriteString("\n")
+	}
+
 	if len(relevant) > 0 {
 		b.WriteString("\n相关记忆（自动召回）:\n")
 		for _, e := range relevant {
-			text := e.CompactForm
-			if text == "" {
-				text = e.Content
-			}
-			runes := []rune(text)
-			if len(runes) > 200 {
-				text = string(runes[:200]) + "…"
-			}
-			b.WriteString(fmt.Sprintf("- [%s] %s\n", e.Category, text))
+			b.WriteString(corememory.FormatRecallEntryForPrompt(e, 200))
+			b.WriteString("\n")
 		}
 		log.Printf("[proactive_recall] injected %d entries (with index) into system prompt", len(relevant))
 		b.WriteString("（⚠️ 以上记忆是根据当前消息实时召回的最新结果。即使你在之前的对话中说过「没找到」或「记忆库为空」，现在已经找到了，请直接使用以上信息，不要重复之前的错误判断。）\n")
@@ -511,6 +511,23 @@ func (h *IMMessageHandler) appendProactiveRecall(b *strings.Builder, msg string,
 	if totalRecallElapsed > 200*time.Millisecond {
 		log.Printf("[proactive_recall] total_elapsed=%v (primary_recall=%v)", totalRecallElapsed, primaryRecallElapsed)
 	}
+}
+
+func (h *IMMessageHandler) buildSceneNavigation(strictProject bool, projectPath string) string {
+	if h.memoryStore == nil {
+		return ""
+	}
+	scenes := h.memoryStore.SceneIndex(5)
+	if strictProject && projectPath != "" {
+		filtered := scenes[:0]
+		for _, scene := range scenes {
+			if strings.EqualFold(scene.ProjectPath, projectPath) {
+				filtered = append(filtered, scene)
+			}
+		}
+		scenes = filtered
+	}
+	return corememory.FormatSceneIndexForPrompt(scenes, 3, 2)
 }
 
 // buildMemoryIndex creates a compact one-line index of the FULL memory store,

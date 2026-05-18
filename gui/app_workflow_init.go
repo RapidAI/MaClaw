@@ -72,7 +72,9 @@ func workflowCleanupLoop(engine *workflow.WorkflowEngine, understanding *workflo
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 	for range ticker.C {
-		engine.CleanupExpired()
+		if err := engine.CleanupExpired(); err != nil {
+			log.Printf("[WorkflowEngine] cleanup expired: %v", err)
+		}
 		if understanding != nil {
 			understanding.CleanupExpired()
 		}

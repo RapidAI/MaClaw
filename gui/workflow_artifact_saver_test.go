@@ -170,6 +170,81 @@ func TestArtifactSaver_SavePhaseOutputIntegration(t *testing.T) {
 	}
 }
 
+func TestArtifactSaver_SaveArtifactFullWritesSourceRef(t *testing.T) {
+	ms := newTestMemoryStore(t)
+	saver := &workflowArtifactSaver{store: ms}
+
+	summary := strings.Repeat("phase summary ", 90)
+	fullContent := summary + "\nFULL_WORKFLOW_SENTINEL"
+	err := saver.SaveArtifactFullForUser("Phase", summary, fullContent, []string{"workflow", "requirements", "coding"}, "", "user/A")
+	if err != nil {
+		t.Fatalf("SaveArtifactFullForUser failed: %v", err)
+	}
+
+	entries := ms.List(memory.CategoryTaskArtifact, "")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	entry := entries[0]
+	if entry.SourceType != "workflow_output_ref" || entry.SourceURL == "" {
+		t.Fatalf("expected workflow output source ref, got type=%q url=%q", entry.SourceType, entry.SourceURL)
+	}
+	if entry.OwnerID != "user/A" {
+		t.Fatalf("OwnerID = %q, want user/A", entry.OwnerID)
+	}
+	if len([]rune(entry.Content)) > memoryRefPreviewRunes {
+		t.Fatalf("entry content was not preview-limited: %d runes", len([]rune(entry.Content)))
+	}
+	data, err := os.ReadFile(entry.SourceURL)
+	if err != nil {
+		t.Fatalf("read source ref: %v", err)
+	}
+	if !strings.Contains(string(data), "FULL_WORKFLOW_SENTINEL") {
+		t.Fatalf("source ref did not preserve full workflow output")
+	}
+	if !artifactSaverContainsString(entry.Tags, "source_ref") {
+		t.Fatalf("expected source_ref tag, got %#v", entry.Tags)
+	}
+}
+
+func TestArtifactSaver_ReplacesPhaseSourceRefOnUpdate(t *testing.T) {
+	ms := newTestMemoryStore(t)
+	saver := &workflowArtifactSaver{store: ms}
+	tags := []string{"workflow", "requirements", "coding"}
+
+	if err := saver.SaveArtifactFull("Phase", "summary v1", "full v1", tags, ""); err != nil {
+		t.Fatalf("save v1: %v", err)
+	}
+	first := ms.List(memory.CategoryTaskArtifact, "")[0]
+
+	if err := saver.SaveArtifactFull("Phase", "summary v2", "full v2 SENTINEL_V2", tags, ""); err != nil {
+		t.Fatalf("save v2: %v", err)
+	}
+	entries := ms.List(memory.CategoryTaskArtifact, "")
+	if len(entries) != 1 {
+		t.Fatalf("expected one replaced phase entry, got %d", len(entries))
+	}
+	if entries[0].SourceURL == first.SourceURL {
+		t.Fatalf("expected replacement to refresh SourceURL")
+	}
+	data, err := os.ReadFile(entries[0].SourceURL)
+	if err != nil {
+		t.Fatalf("read source ref: %v", err)
+	}
+	if !strings.Contains(string(data), "SENTINEL_V2") {
+		t.Fatalf("replacement source ref did not contain v2 content")
+	}
+}
+
+func artifactSaverContainsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 // min returns the smaller of a and b.
 func min(a, b int) int {
 	if a < b {

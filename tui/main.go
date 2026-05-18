@@ -21,7 +21,7 @@ var version = "dev"
 
 func init() {
 	// Security policy bridge functions for the commands package.
-	// In standalone TUI mode, these default to permissive.
+	// In standalone TUI mode, these default to relaxed.
 	// When running as `maclaw tui` (GUI binary), the App sets stricter policies.
 	commands.GossipGuardFn = func() error { return nil }
 	commands.SecurityReadOnlyFn = func() bool { return false }
@@ -223,12 +223,12 @@ func buildKernelOptions(logger corelib.Logger, emitter corelib.EventEmitter) cor
 	}
 
 	return corelib.KernelOptions{
-		DataDir:         dataDir,
-		HubURL:          os.Getenv("MACLAW_HUB_URL"),
-		HubToken:        os.Getenv("MACLAW_TOKEN"),
-		MachineID:       os.Getenv("MACLAW_MACHINE_ID"),
-		Logger:          logger,
-		EventEmitter:    emitter,
+		DataDir:      dataDir,
+		HubURL:       os.Getenv("MACLAW_HUB_URL"),
+		HubToken:     os.Getenv("MACLAW_TOKEN"),
+		MachineID:    os.Getenv("MACLAW_MACHINE_ID"),
+		Logger:       logger,
+		EventEmitter: emitter,
 	}
 }
 

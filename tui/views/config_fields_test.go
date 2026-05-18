@@ -130,6 +130,28 @@ func TestConfigFields_ApplyAndLoad(t *testing.T) {
 	}
 }
 
+func TestConfigFields_LocalNeedleMinConfidence(t *testing.T) {
+	cfg := corelib.AppConfig{}
+	ApplyConfigValue(&cfg, "local_needle_min_confidence", "0.9")
+	if cfg.LocalNeedleMinConfidence != 0.9 {
+		t.Fatalf("LocalNeedleMinConfidence = %v, want 0.9", cfg.LocalNeedleMinConfidence)
+	}
+	got, ok := LoadConfigValue(&cfg, "local_needle_min_confidence")
+	if !ok || got != "0.9" {
+		t.Fatalf("LoadConfigValue = %q ok=%v, want 0.9 true", got, ok)
+	}
+
+	ApplyConfigValue(&cfg, "local_needle_min_confidence", "1.8")
+	if cfg.LocalNeedleMinConfidence != 1 {
+		t.Fatalf("LocalNeedleMinConfidence should clamp to 1, got %v", cfg.LocalNeedleMinConfidence)
+	}
+
+	ApplyConfigValue(&cfg, "local_needle_min_confidence", "bad")
+	if cfg.LocalNeedleMinConfidence != 0 {
+		t.Fatalf("invalid confidence should reset to runtime default sentinel 0, got %v", cfg.LocalNeedleMinConfidence)
+	}
+}
+
 // TestConfigFields_UIEntriesMatchDefs verifies that NewConfigModel produces
 // entries that exactly match allConfigFields — no entries are lost or added
 // outside the single source of truth.

@@ -760,10 +760,26 @@ func buildURLSourceAndNodes(req URLSaveRequest, existing Source) (Source, []Docu
 	if timeoutSec > 120 {
 		timeoutSec = 120
 	}
-	client := newPublicHTTPClient(time.Duration(timeoutSec) * time.Second)
-	result, err := websearch.FetchWithClient(u.String(), &websearch.FetchOptions{MaxBytes: maxBytes, TimeoutS: timeoutSec}, client)
-	if err != nil {
-		return Source{}, nil, err
+
+	var result *websearch.FetchResult
+	if req.PrefetchedHTML != "" {
+		// Use pre-fetched content (e.g. from deep crawl) — skip HTTP fetch entirely.
+		// Extract title from HTML if possible, use hostname as fallback.
+		title := extractTitleFromHTML(req.PrefetchedHTML)
+		if title == "" {
+			title = u.Hostname()
+		}
+		result = &websearch.FetchResult{
+			URL:     u.String(),
+			Title:   title,
+			Content: req.PrefetchedHTML,
+		}
+	} else {
+		client := newPublicHTTPClient(time.Duration(timeoutSec) * time.Second)
+		result, err = websearch.FetchWithClient(u.String(), &websearch.FetchOptions{MaxBytes: maxBytes, TimeoutS: timeoutSec}, client)
+		if err != nil {
+			return Source{}, nil, err
+		}
 	}
 	finalURL, err := ValidatePublicHTTPURL(result.URL)
 	if err != nil {

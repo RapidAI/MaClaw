@@ -26,41 +26,28 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 			}
 		})
 
-		// Deactivate orchestrator after all tasks are done.
-		// NOTE: Deactivate is called AFTER integration and AdvancePhase
-		// because those operations need the orchestrator's task state
-		// (HasPassedTasks, BuildIntegrationPrompt, ProjectPath, etc.).
+		// Deactivate orchestrator after all workflow integration and state updates
+		// because these operations still need task state and collected outputs.
 		defer taskOrch.Deactivate()
 
-		// --- Fix #1: Save implementation phase output and advance workflow ---
-		// Previously, SubAgent completion only deactivated the orchestrator
-		// without updating the workflow engine. This left the workflow stuck
-		// in the "implementation" phase forever 鈥?the integration and review
-		// phases were never reached.
-		//
-		// Now we:
-		// 1. Save the execution report as the implementation phase output
-		// 2. Run the integration phase (BuildIntegrationPrompt) if all tasks passed
-		// 3. Advance the workflow to the review phase
 		if engine := h.getWorkflowEngine(); engine != nil {
-			// Inject OwnerID for multi-tenant artifact saving.
 			if h.app != nil && h.app.workflowArtifactSaver != nil {
 				h.app.workflowArtifactSaver.SetCurrentUserID(msg.UserID)
 			}
-			// Save implementation phase output so the engine knows it's done.
-			engine.SavePhaseOutput(msg.UserID, report)
 
-			// Run integration phase if there are completed tasks to integrate.
+			// Run integration before saving the implementation deliverable. The engine
+			// should persist the final phase artifact, not an intermediate report that
+			// is missing integration output.
 			if taskOrch.HasPassedTasks() && !loopCtx.IsCancelled() {
 				integrationPrompt := taskOrch.BuildIntegrationPrompt()
 				if integrationPrompt != "" {
 					if onProgress != nil {
-						onProgress("馃敆 鍚姩闆嗘垚鑱旇皟闃舵...")
+						onProgress("Starting integration phase...")
 					}
 					integrationResult := RunTaskWithSubAgent(
 						h, cfg, httpClient,
 						&TaskItem{
-							Title:       "闆嗘垚鑱旇皟",
+							Title:       "Integration",
 							Description: integrationPrompt,
 						},
 						taskOrch.ProjectPath,
@@ -74,38 +61,29 @@ func (h *IMMessageHandler) routeSubAgentExecution(msg IMUserMessage, httpClient 
 							}
 						},
 					)
-					report += "\n\n## 闆嗘垚鑱旇皟\n\n" + integrationResult.Summary
+					report += "\n\n## Integration\n\n" + integrationResult.Summary
 				}
 			}
 
-			// Advance from implementation to review phase.
-			// Skip if the user cancelled 鈥?don't advance to review when
-			// the implementation was interrupted.
-			if !loopCtx.IsCancelled() {
-				advResp, advErr := engine.AdvancePhase(msg.UserID)
-				if advErr != nil {
-					log.Printf("[subagent-intercept] AdvancePhase error after SubAgent: %v", advErr)
-				} else if advResp != nil {
-					if advResp.Text != "" {
-						report += "\n\n---\n" + advResp.Text
-					}
-					// If the review phase needs the agent loop, stash the prompt
-					// so the next user message triggers it.
-					if advResp.RunAgentLoop && advResp.PhasePrompt != "" {
-						h.stashedPhasePrompt.Store(msg.UserID, advResp.PhasePrompt)
-						h.workflowAgentLoopMarker.Store(msg.UserID, true)
-					}
-					if advResp.Complete {
-						if adapter, ok := engine.GetCallbacks().(*GUIWorkflowAdapter); ok {
-							adapter.ResetSuggestMaximize(msg.UserID)
-						}
-					}
+			// Use the same phase-completion transition as the main agent loop. A
+			// cancelled SubAgent run is conversation evidence, not a durable phase
+			// deliverable, so it must not mutate workflow output/review state.
+			if loopCtx.IsCancelled() {
+				log.Printf("[WorkflowEngine] subagent phase output not saved after cancellation: user=%s", msg.UserID)
+			} else {
+				_, advResp, err := engine.SavePhaseOutputAndMaybeAdvance(msg.UserID, report)
+				if err != nil {
+					log.Printf("[WorkflowEngine] subagent phase output save failed: user=%s err=%v", msg.UserID, err)
+				}
+				h.applyWorkflowAutoAdvanceResponse(msg.UserID, advResp, msg.Platform)
+				if advResp != nil && advResp.Text != "" {
+					report += "\n\n---\n" + advResp.Text
 				}
 			}
 		}
 
-		// Preserve SubAgent execution context in conversation history so the
-		// LLM has context for follow-up messages ("鏀逛竴涓?Player 鐨勮烦璺冮€昏緫").
+		// Preserve SubAgent execution context in conversation history so the LLM has
+		// context for follow-up messages about the implementation.
 		history = append(history, agent.ConversationEntry{
 			Role:    "assistant",
 			Content: report,

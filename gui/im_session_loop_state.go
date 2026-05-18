@@ -37,3 +37,13 @@ func (h *IMMessageHandler) hasActiveLoopForUser(userID string) bool {
 	ctx := h.getSessionLoopCtx(userID)
 	return ctx != nil && !ctx.IsCancelled()
 }
+
+func (h *IMMessageHandler) setSessionLoopCtx(userID string, ctx *LoopContext) {
+	if h == nil {
+		return
+	}
+	state := h.getSessionLoop(userID)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	state.loopCtx = ctx
+}

@@ -49,11 +49,14 @@ type Pipeline struct {
 	profiler     *ProfileConsolidator
 	emitter      corelib.EventEmitter
 
-	mu         sync.Mutex
-	running    bool
-	cancelFn   context.CancelFunc
-	lastRun    time.Time
-	lastResult *PipelineResult
+	mu           sync.Mutex
+	runMu        sync.Mutex
+	running      bool
+	ctx          context.Context
+	cancelFn     context.CancelFunc
+	triggerTimer *time.Timer
+	lastRun      time.Time
+	lastResult   *PipelineResult
 }
 
 // NewPipeline creates a Pipeline. Any component can be nil (skipped).
@@ -77,6 +80,8 @@ func (p *Pipeline) SetSynthesizer(s *Synthesizer) {
 
 // RunOnce executes one full maintenance cycle synchronously.
 func (p *Pipeline) RunOnce(ctx context.Context) *PipelineResult {
+	p.runMu.Lock()
+	defer p.runMu.Unlock()
 	start := time.Now()
 	result := &PipelineResult{}
 
@@ -234,6 +239,7 @@ func (p *Pipeline) Start() {
 	}
 	p.running = true
 	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
 	p.cancelFn = cancel
 	go p.loop(ctx)
 }
@@ -245,8 +251,40 @@ func (p *Pipeline) Stop() {
 	if !p.running {
 		return
 	}
+	if p.triggerTimer != nil {
+		p.triggerTimer.Stop()
+		p.triggerTimer = nil
+	}
 	p.cancelFn()
 	p.running = false
+	p.ctx = nil
+}
+
+// TriggerSoon schedules one maintenance cycle after an idle debounce window.
+// Repeated calls reset the timer, so bursts of memory writes collapse into a
+// single background pass.
+func (p *Pipeline) TriggerSoon(delay time.Duration) {
+	if p == nil {
+		return
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	p.mu.Lock()
+	if p.triggerTimer != nil {
+		p.triggerTimer.Stop()
+	}
+	p.triggerTimer = time.AfterFunc(delay, func() {
+		p.mu.Lock()
+		ctx := p.ctx
+		p.triggerTimer = nil
+		p.mu.Unlock()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		p.RunOnce(ctx)
+	})
+	p.mu.Unlock()
 }
 
 func (p *Pipeline) loop(ctx context.Context) {

@@ -36,8 +36,17 @@ import (
 //  4. For each allowedDir, resolve to canonical form and check prefix containment
 //  5. If no match, return error
 func ValidateVEFilePath(requestedPath string, allowedDirs []string) (string, error) {
+	canonicalPath, _, err := ValidateVEFilePathWithInfo(requestedPath, allowedDirs)
+	return canonicalPath, err
+}
+
+// ValidateVEFilePathWithInfo is like ValidateVEFilePath but also returns the
+// os.FileInfo from the validation stat call. This eliminates the need for
+// callers to stat the file again (e.g., for size checks), avoiding both a
+// redundant syscall and a TOCTOU window.
+func ValidateVEFilePathWithInfo(requestedPath string, allowedDirs []string) (string, os.FileInfo, error) {
 	if strings.TrimSpace(requestedPath) == "" {
-		return "", fmt.Errorf("[error] path 参数不能为空")
+		return "", nil, fmt.Errorf("[error] path 参数不能为空")
 	}
 
 	// Resolve to canonical absolute path (resolves symlinks and .. segments)
@@ -45,29 +54,29 @@ func ValidateVEFilePath(requestedPath string, allowedDirs []string) (string, err
 	if err != nil {
 		// If EvalSymlinks fails, the file likely doesn't exist or path is invalid
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("[error] 文件不存在: %s", requestedPath)
+			return "", nil, fmt.Errorf("[error] 文件不存在: %s", requestedPath)
 		}
-		return "", fmt.Errorf("[error] 无法解析文件路径: %v", err)
+		return "", nil, fmt.Errorf("[error] 无法解析文件路径: %v", err)
 	}
 
 	// Check file exists and is not a directory
 	info, err := os.Stat(canonicalPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("[error] 文件不存在: %s", requestedPath)
+			return "", nil, fmt.Errorf("[error] 文件不存在: %s", requestedPath)
 		}
-		return "", fmt.Errorf("[error] 无法解析文件路径: %v", err)
+		return "", nil, fmt.Errorf("[error] 无法解析文件路径: %v", err)
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("[error] 路径是目录，请使用 list_directory")
+		return "", nil, fmt.Errorf("[error] 路径是目录，请使用 list_directory")
 	}
 
 	// Check containment within allowed directories
 	if !isPathWithinDirs(canonicalPath, allowedDirs) {
-		return "", fmt.Errorf("[error] 文件不在允许访问的目录中")
+		return "", nil, fmt.Errorf("[error] 文件不在允许访问的目录中")
 	}
 
-	return canonicalPath, nil
+	return canonicalPath, info, nil
 }
 
 // IsWithinAllowedDirs checks directory containment without requiring the file

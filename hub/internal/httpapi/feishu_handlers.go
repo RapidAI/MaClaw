@@ -21,6 +21,7 @@ type FeishuConfigState struct {
 
 func GetFeishuConfigHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		raw, err := system.Get(r.Context(), feishuConfigKey)
 		if err != nil || raw == "" {
 			writeJSON(w, http.StatusOK, FeishuConfigState{})
@@ -41,6 +42,7 @@ func GetFeishuConfigHandler(system store.SystemSettingsRepository) http.HandlerF
 
 func UpdateFeishuConfigHandler(system store.SystemSettingsRepository, notifier *feishu.Notifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var cfg FeishuConfigState
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -185,6 +187,7 @@ func loadFeishuConfig(r *http.Request, system store.SystemSettingsRepository) Fe
 // GetFeishuAutoEnrollHandler returns the current auto-enroll setting.
 func GetFeishuAutoEnrollHandler(system store.SystemSettingsRepository) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		cfg := feishu.LoadAutoEnrollSetting(r.Context(), system)
 		writeJSON(w, http.StatusOK, cfg)
 	}
@@ -194,6 +197,7 @@ func GetFeishuAutoEnrollHandler(system store.SystemSettingsRepository) http.Hand
 // hot-reloads the AutoEnroller on the notifier.
 func UpdateFeishuAutoEnrollHandler(system store.SystemSettingsRepository, notifier *feishu.Notifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		system := scopedSystemSettingsForRequest(r, system)
 		var req feishu.AutoEnrollConfig
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")

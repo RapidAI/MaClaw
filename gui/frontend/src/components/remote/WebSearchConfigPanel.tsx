@@ -140,6 +140,7 @@ export function WebSearchConfigPanel({ lang }: Props) {
                             <div style={{ fontSize: "0.75rem", color: colors.textSecondary, marginBottom: 16, lineHeight: 1.6 }}>
                                 {currentProvider.type === "brave" && t("Uses Brave Search API. Without an API key, runtime falls back to the default direct web search.", "使用 Brave Search API。未填写 API Key 时，运行时将回退到默认联网搜索。")}
                                 {currentProvider.type === "serper" && t("Uses Serper Search API. Without an API key, runtime falls back to the default direct web search.", "使用 Serper Search API。未填写 API Key 时，运行时将回退到默认联网搜索。")}
+                                {currentProvider.type === "tinyfish" && t("Uses TinyFish Search & Fetch API. Provides web search and intelligent content extraction. Without an API key, runtime falls back to the default direct web search.", "使用 TinyFish Search & Fetch API。提供网页搜索和智能内容提取。未填写 API Key 时，运行时将回退到默认联网搜索。")}
                                 {currentProvider.type === "duckduckgo" && t("DuckDuckGo is the free option and uses its own provider implementation with no API key required.", "DuckDuckGo 为免费选项，采用独立 provider 实现，无需 API Key。")}
                             </div>
 

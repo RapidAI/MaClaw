@@ -92,7 +92,6 @@ func findToolDef(tools []map[string]interface{}, name string) map[string]interfa
 	return nil
 }
 
-
 // stripInjectionPrefix removes the system-added injection prefix from text
 // before passing it to tool routing. The prefix is one of:
 //   - "[用户要求修改——必须立即执行] "
@@ -103,7 +102,9 @@ func findToolDef(tools []map[string]interface{}, name string) map[string]interfa
 // for LLM instruction-following purposes. They must be stripped before intent
 // classification to avoid polluting the signal.
 func stripInjectionPrefix(text string) string {
-	// All injection prefixes follow the pattern: "[...] " (brackets + space).
+	text = stripGuideLaunchReferenceWrappers(text)
+
+	// All legacy injection prefixes follow the pattern: "[...] " (brackets + space).
 	// Find the first "] " and strip everything up to and including it.
 	if len(text) > 0 && text[0] == '[' {
 		idx := strings.Index(text, "] ")
@@ -112,4 +113,21 @@ func stripInjectionPrefix(text string) string {
 		}
 	}
 	return text
+}
+
+func stripGuideLaunchReferenceWrappers(text string) string {
+	if !strings.Contains(text, guideLaunchReferenceMarker) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimSpace(lines[i])
+		if line == guideLaunchReferenceMarker && i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == guideLaunchReferenceInstruction {
+			i++
+			continue
+		}
+		kept = append(kept, lines[i])
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }

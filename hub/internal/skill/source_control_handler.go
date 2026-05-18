@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 )
+
+type TenantAccessResolver func(r *http.Request) (tenantID string, global bool)
 
 // RegisterRoutes registers the skill source control REST API routes.
 // All routes require admin authentication (caller wraps with RequireAdmin).
@@ -21,17 +24,21 @@ import (
 //	PUT    /api/admin/skill-sources/user/{email}       — set user config
 //	DELETE /api/admin/skill-sources/user/{email}       — delete user config
 //	GET    /api/admin/skill-sources/resolve/{email}    — resolve effective sources for user
-func RegisterRoutes(mux *http.ServeMux, svc *SourceControlService, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
+func RegisterRoutes(mux *http.ServeMux, svc *SourceControlService, adminWrap func(http.HandlerFunc) http.HandlerFunc, accessOpt ...TenantAccessResolver) {
+	var access TenantAccessResolver
+	if len(accessOpt) > 0 {
+		access = accessOpt[0]
+	}
 	mux.HandleFunc("GET /api/admin/skill-sources/available", adminWrap(handleAvailableSources()))
-	mux.HandleFunc("GET /api/admin/skill-sources/global", adminWrap(handleGetGlobal(svc)))
-	mux.HandleFunc("PUT /api/admin/skill-sources/global", adminWrap(handleSetGlobal(svc)))
-	mux.HandleFunc("GET /api/admin/skill-sources/tenant/{id}", adminWrap(handleGetTenant(svc)))
-	mux.HandleFunc("PUT /api/admin/skill-sources/tenant/{id}", adminWrap(handleSetTenant(svc)))
-	mux.HandleFunc("DELETE /api/admin/skill-sources/tenant/{id}", adminWrap(handleDeleteTenant(svc)))
-	mux.HandleFunc("GET /api/admin/skill-sources/user/{email...}", adminWrap(handleGetUser(svc)))
-	mux.HandleFunc("PUT /api/admin/skill-sources/user/{email...}", adminWrap(handleSetUser(svc)))
-	mux.HandleFunc("DELETE /api/admin/skill-sources/user/{email...}", adminWrap(handleDeleteUser(svc)))
-	mux.HandleFunc("GET /api/admin/skill-sources/resolve/{email...}", adminWrap(handleResolve(svc)))
+	mux.HandleFunc("GET /api/admin/skill-sources/global", adminWrap(handleGetGlobal(svc, access)))
+	mux.HandleFunc("PUT /api/admin/skill-sources/global", adminWrap(handleSetGlobal(svc, access)))
+	mux.HandleFunc("GET /api/admin/skill-sources/tenant/{id}", adminWrap(handleGetTenant(svc, access)))
+	mux.HandleFunc("PUT /api/admin/skill-sources/tenant/{id}", adminWrap(handleSetTenant(svc, access)))
+	mux.HandleFunc("DELETE /api/admin/skill-sources/tenant/{id}", adminWrap(handleDeleteTenant(svc, access)))
+	mux.HandleFunc("GET /api/admin/skill-sources/user/{email...}", adminWrap(handleGetUser(svc, access)))
+	mux.HandleFunc("PUT /api/admin/skill-sources/user/{email...}", adminWrap(handleSetUser(svc, access)))
+	mux.HandleFunc("DELETE /api/admin/skill-sources/user/{email...}", adminWrap(handleDeleteUser(svc, access)))
+	mux.HandleFunc("GET /api/admin/skill-sources/resolve/{email...}", adminWrap(handleResolve(svc, access)))
 }
 
 // --- Handlers ---
@@ -49,8 +56,12 @@ func handleAvailableSources() http.HandlerFunc {
 	}
 }
 
-func handleGetGlobal(svc *SourceControlService) http.HandlerFunc {
+func handleGetGlobal(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if _, global := resolveTenantAccess(r, access); !global {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "global skill source config requires global admin")
+			return
+		}
 		cfg, err := svc.GetGlobal(r.Context())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LOAD_FAILED", err.Error())
@@ -63,8 +74,12 @@ func handleGetGlobal(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleSetGlobal(svc *SourceControlService) http.HandlerFunc {
+func handleSetGlobal(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if _, global := resolveTenantAccess(r, access); !global {
+			writeError(w, http.StatusForbidden, "FORBIDDEN", "global skill source config requires global admin")
+			return
+		}
 		var cfg SourceControlConfig
 		if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
@@ -78,9 +93,12 @@ func handleSetGlobal(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleGetTenant(svc *SourceControlService) http.HandlerFunc {
+func handleGetTenant(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
+		id, ok := tenantIDFromPathOrAccess(w, r, access)
+		if !ok {
+			return
+		}
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "tenant id is required")
 			return
@@ -97,9 +115,12 @@ func handleGetTenant(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleSetTenant(svc *SourceControlService) http.HandlerFunc {
+func handleSetTenant(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
+		id, ok := tenantIDFromPathOrAccess(w, r, access)
+		if !ok {
+			return
+		}
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "tenant id is required")
 			return
@@ -117,9 +138,12 @@ func handleSetTenant(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleDeleteTenant(svc *SourceControlService) http.HandlerFunc {
+func handleDeleteTenant(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
+		id, ok := tenantIDFromPathOrAccess(w, r, access)
+		if !ok {
+			return
+		}
 		if id == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "tenant id is required")
 			return
@@ -132,14 +156,21 @@ func handleDeleteTenant(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleGetUser(svc *SourceControlService) http.HandlerFunc {
+func handleGetUser(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID, global := resolveTenantAccess(r, access)
 		email := decodePathEmail(r)
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return
 		}
-		cfg, err := svc.GetUser(r.Context(), email)
+		var cfg *SourceControlConfig
+		var err error
+		if global {
+			cfg, err = svc.GetUser(r.Context(), email)
+		} else {
+			cfg, err = svc.GetTenantUser(r.Context(), tenantID, email)
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "LOAD_FAILED", err.Error())
 			return
@@ -151,8 +182,9 @@ func handleGetUser(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleSetUser(svc *SourceControlService) http.HandlerFunc {
+func handleSetUser(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID, global := resolveTenantAccess(r, access)
 		email := decodePathEmail(r)
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
@@ -163,7 +195,13 @@ func handleSetUser(svc *SourceControlService) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if err := svc.SetUser(r.Context(), email, &cfg); err != nil {
+		var err error
+		if global {
+			err = svc.SetUser(r.Context(), email, &cfg)
+		} else {
+			err = svc.SetTenantUser(r.Context(), tenantID, email, &cfg)
+		}
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "SET_FAILED", err.Error())
 			return
 		}
@@ -171,14 +209,21 @@ func handleSetUser(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleDeleteUser(svc *SourceControlService) http.HandlerFunc {
+func handleDeleteUser(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID, global := resolveTenantAccess(r, access)
 		email := decodePathEmail(r)
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return
 		}
-		if err := svc.DeleteUser(r.Context(), email); err != nil {
+		var err error
+		if global {
+			err = svc.DeleteUser(r.Context(), email)
+		} else {
+			err = svc.DeleteTenantUser(r.Context(), tenantID, email)
+		}
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, "DELETE_FAILED", err.Error())
 			return
 		}
@@ -186,14 +231,18 @@ func handleDeleteUser(svc *SourceControlService) http.HandlerFunc {
 	}
 }
 
-func handleResolve(svc *SourceControlService) http.HandlerFunc {
+func handleResolve(svc *SourceControlService, access TenantAccessResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		defaultTenantID, global := resolveTenantAccess(r, access)
 		email := decodePathEmail(r)
 		if email == "" {
 			writeError(w, http.StatusBadRequest, "INVALID_INPUT", "email is required")
 			return
 		}
 		tenantID := r.URL.Query().Get("tenant_id")
+		if !global || strings.TrimSpace(tenantID) == "" {
+			tenantID = defaultTenantID
+		}
 		resolved := svc.ResolveForUser(r.Context(), email, tenantID)
 		if resolved == nil {
 			resolved = AllSources // explicit "all" for API clarity
@@ -207,6 +256,28 @@ func handleResolve(svc *SourceControlService) http.HandlerFunc {
 }
 
 // --- Helpers ---
+
+func resolveTenantAccess(r *http.Request, access TenantAccessResolver) (string, bool) {
+	if access == nil {
+		return "", true
+	}
+	tenantID, global := access(r)
+	return strings.TrimSpace(tenantID), global
+
+}
+
+func tenantIDFromPathOrAccess(w http.ResponseWriter, r *http.Request, access TenantAccessResolver) (string, bool) {
+	pathTenantID := strings.TrimSpace(r.PathValue("id"))
+	tenantID, global := resolveTenantAccess(r, access)
+	if global {
+		return pathTenantID, true
+	}
+	if pathTenantID != "" && pathTenantID != tenantID {
+		writeError(w, http.StatusForbidden, "FORBIDDEN", "tenant admin can only manage own tenant")
+		return "", false
+	}
+	return tenantID, true
+}
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

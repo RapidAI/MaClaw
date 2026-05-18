@@ -15,8 +15,10 @@ import (
 )
 
 const (
-	defaultBraveSearchURL  = "https://api.search.brave.com/res/v1/web/search"
-	defaultSerperSearchURL = "https://google.serper.dev/search"
+	defaultBraveSearchURL    = "https://api.search.brave.com/res/v1/web/search"
+	defaultSerperSearchURL   = "https://google.serper.dev/search"
+	defaultTinyFishSearchURL = "https://api.search.tinyfish.ai"
+	defaultTinyFishFetchURL  = "https://api.fetch.tinyfish.ai"
 )
 
 var defaultLegacySearchURL = "https://html.duckduckgo.com/html/"
@@ -63,6 +65,11 @@ func SearchWithProvider(query string, maxResults int, provider corelib.WebSearch
 			return searchDirectLegacy(ctx, query, maxResults)
 		}
 		return searchSerper(ctx, provider, query, maxResults)
+	case "tinyfish":
+		if provider.Key == "" {
+			return searchDirectLegacy(ctx, query, maxResults)
+		}
+		return searchTinyFish(ctx, provider, query, maxResults)
 	case "duckduckgo":
 		return searchDuckDuckGo(ctx, provider, query, maxResults)
 	default:
@@ -220,6 +227,263 @@ func searchSerper(ctx context.Context, provider corelib.WebSearchProvider, query
 		}
 	}
 	return results, nil
+}
+
+func searchTinyFish(ctx context.Context, provider corelib.WebSearchProvider, query string, maxResults int) ([]SearchResult, error) {
+	baseURL := provider.BaseURL
+	if baseURL == "" {
+		baseURL = defaultTinyFishSearchURL
+	}
+	searchURL := baseURL + "?query=" + url.QueryEscape(query)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", pickUserAgent())
+	req.Header.Set("X-API-Key", provider.Key)
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("TinyFish returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	// TinyFish search API may return either:
+	//   {"results": [{title, url, content, snippet}]}
+	// or a bare array:
+	//   [{title, url, content, snippet}]
+	type tfSearchItem struct {
+		Title   string `json:"title"`
+		URL     string `json:"url"`
+		Content string `json:"content"`
+		Snippet string `json:"snippet"`
+	}
+
+	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	rawBody = bytes.TrimSpace(rawBody)
+
+	var items []tfSearchItem
+	if len(rawBody) > 0 && rawBody[0] == '[' {
+		if err := json.Unmarshal(rawBody, &items); err != nil {
+			return nil, fmt.Errorf("TinyFish: failed to parse array response: %w", err)
+		}
+	} else {
+		var wrapped struct {
+			Results []tfSearchItem `json:"results"`
+		}
+		if err := json.Unmarshal(rawBody, &wrapped); err != nil {
+			return nil, fmt.Errorf("TinyFish: failed to parse response: %w", err)
+		}
+		items = wrapped.Results
+	}
+
+	results := make([]SearchResult, 0, len(items))
+	for _, item := range items {
+		if item.URL == "" {
+			continue
+		}
+		title := item.Title
+		if title == "" {
+			title = item.URL
+		}
+		snippet := item.Snippet
+		if snippet == "" {
+			snippet = item.Content
+		}
+		if len([]rune(snippet)) > 300 {
+			snippet = string([]rune(snippet)[:300]) + "…"
+		}
+		results = append(results, SearchResult{Title: title, URL: item.URL, Snippet: snippet})
+		if len(results) >= maxResults {
+			break
+		}
+	}
+	return results, nil
+}
+
+// FetchWithProvider performs a provider-aware fetch. When the provider has
+// enhanced fetch capabilities (e.g. TinyFish), it uses the provider's API
+// for better content extraction, falling back to standard Fetch on failure.
+// Pass a zero-value provider to use standard fetch directly.
+func FetchWithProvider(rawURL string, opts *FetchOptions, provider corelib.WebSearchProvider) (*FetchResult, error) {
+	provider = normalizeProvider(provider)
+
+	// TinyFish has its own fetch API with better content extraction.
+	if provider.Type == "tinyfish" && provider.Key != "" && opts != nil && opts.SavePath == "" {
+		fetchURL := deriveTinyFishFetchURL(provider.BaseURL)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		result, err := FetchWithTinyFish(ctx, rawURL, provider.Key, fetchURL)
+		if err == nil && result != nil && result.Content != "" {
+			// Apply offset + maxChars windowing on full content
+			applyFetchWindowing(result, opts.Offset, opts.MaxChars)
+			return result, nil
+		}
+		// TinyFish failed — fall through to standard fetch
+	}
+
+	return Fetch(rawURL, opts)
+}
+
+// deriveTinyFishFetchURL derives the fetch endpoint from the search base URL.
+func deriveTinyFishFetchURL(searchBaseURL string) string {
+	if searchBaseURL == "" || searchBaseURL == defaultTinyFishSearchURL {
+		return defaultTinyFishFetchURL
+	}
+	// Custom base URL (e.g. proxy): try replacing "search" with "fetch"
+	fetched := strings.Replace(searchBaseURL, "search", "fetch", 1)
+	if fetched == searchBaseURL {
+		return defaultTinyFishFetchURL // no "search" in URL, use default
+	}
+	return fetched
+}
+
+// applyFetchWindowing applies offset and maxChars windowing to a FetchResult.
+func applyFetchWindowing(result *FetchResult, offset int, maxChars int) {
+	totalChars := len([]rune(result.Content))
+	result.TotalChars = totalChars
+
+	// Fast path: no windowing needed
+	if offset <= 0 && maxChars <= 0 {
+		result.Truncated = false
+		result.HasMore = false
+		result.NextOffset = totalChars
+		return
+	}
+
+	runes := []rune(result.Content)
+
+	// Apply offset
+	if offset > 0 {
+		if offset >= totalChars {
+			result.Content = ""
+			result.Truncated = false
+			result.HasMore = false
+			result.NextOffset = totalChars
+			return
+		}
+		runes = runes[offset:]
+	}
+
+	// Apply maxChars
+	if maxChars > 0 && len(runes) > maxChars {
+		runes = runes[:maxChars]
+		result.Content = string(runes)
+		result.Truncated = true
+		result.HasMore = true
+		result.NextOffset = offset + maxChars
+	} else if offset > 0 {
+		// Only convert back if we actually sliced
+		result.Content = string(runes)
+		result.Truncated = false
+		result.HasMore = false
+		result.NextOffset = totalChars
+	} else {
+		result.Truncated = false
+		result.HasMore = false
+		result.NextOffset = totalChars
+	}
+}
+
+// FetchWithTinyFish uses TinyFish's fetch API to extract content from URLs.
+// fetchURL allows the caller to override the endpoint (e.g. via proxy).
+// Pass "" to use the default endpoint.
+// Returns the extracted content or an error. The caller should fall back to
+// the standard Fetch() if this fails.
+func FetchWithTinyFish(ctx context.Context, rawURL string, apiKey string, fetchURL string) (*FetchResult, error) {
+	if fetchURL == "" {
+		fetchURL = defaultTinyFishFetchURL
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"urls": []string{rawURL},
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fetchURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("TinyFish fetch returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	// TinyFish fetch API may return either:
+	//   {"results": [{url, title, content, error}]}
+	// or a bare array:
+	//   [{url, title, content, error}]
+	type tfItem struct {
+		URL     string `json:"url"`
+		Title   string `json:"title"`
+		Content string `json:"content"`
+		Error   string `json:"error"`
+	}
+
+	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
+	if err != nil {
+		return nil, err
+	}
+	rawBody = bytes.TrimSpace(rawBody)
+
+	var items []tfItem
+	if len(rawBody) > 0 && rawBody[0] == '[' {
+		// Bare array format
+		if err := json.Unmarshal(rawBody, &items); err != nil {
+			return nil, fmt.Errorf("TinyFish fetch: failed to parse array response: %w", err)
+		}
+	} else {
+		// Wrapped format {"results": [...]}
+		var wrapped struct {
+			Results []tfItem `json:"results"`
+		}
+		if err := json.Unmarshal(rawBody, &wrapped); err != nil {
+			return nil, fmt.Errorf("TinyFish fetch: failed to parse response: %w", err)
+		}
+		items = wrapped.Results
+	}
+
+	if len(items) == 0 {
+		return nil, fmt.Errorf("TinyFish fetch returned no results")
+	}
+	item := items[0]
+	if item.Error != "" {
+		return nil, fmt.Errorf("TinyFish fetch error: %s", item.Error)
+	}
+	if item.Content == "" {
+		return nil, fmt.Errorf("TinyFish fetch returned empty content")
+	}
+
+	content := item.Content
+	totalChars := len([]rune(content))
+	return &FetchResult{
+		URL:         rawURL,
+		Title:       item.Title,
+		ContentType: "text/html",
+		Content:     content,
+		BytesRead:   len(content),
+		TotalChars:  totalChars,
+		Truncated:   false,
+		HasMore:     false,
+		NextOffset:  totalChars,
+	}, nil
 }
 
 // searchDirectLegacy scrapes DuckDuckGo HTML lite for search results.

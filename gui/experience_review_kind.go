@@ -5,10 +5,11 @@ import "strings"
 type experienceReviewKind string
 
 const (
-	experienceReviewKindUnknown    experienceReviewKind = ""
-	experienceReviewKindRollback   experienceReviewKind = "rollback"
-	experienceReviewKindConflict   experienceReviewKind = "conflict"
-	experienceReviewKindSkillNudge experienceReviewKind = "skill_nudge"
+	experienceReviewKindUnknown      experienceReviewKind = ""
+	experienceReviewKindRollback     experienceReviewKind = "rollback"
+	experienceReviewKindConflict     experienceReviewKind = "conflict"
+	experienceReviewKindSkillNudge   experienceReviewKind = "skill_nudge"
+	experienceReviewKindToolRecovery experienceReviewKind = "tool_recovery"
 )
 
 func normalizeExperienceReviewKind(kind string) experienceReviewKind {
@@ -19,6 +20,8 @@ func normalizeExperienceReviewKind(kind string) experienceReviewKind {
 		return experienceReviewKindConflict
 	case experienceReviewKindSkillNudge:
 		return experienceReviewKindSkillNudge
+	case experienceReviewKindToolRecovery:
+		return experienceReviewKindToolRecovery
 	default:
 		return experienceReviewKindUnknown
 	}

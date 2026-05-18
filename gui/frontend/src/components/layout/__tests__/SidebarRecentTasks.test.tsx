@@ -3,6 +3,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { SidebarRecentTasks } from '../SidebarRecentTasks';
 import type { ComponentProps } from 'react';
+import { GetProjectScene, OpenFileOrShowInFolder } from '../../../../wailsjs/go/main/App';
+
+const { getProjectSceneMock, openFileOrShowInFolderMock } = vi.hoisted(() => ({
+    getProjectSceneMock: vi.fn(),
+    openFileOrShowInFolderMock: vi.fn(),
+}));
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    GetProjectScene: getProjectSceneMock,
+    OpenFileOrShowInFolder: openFileOrShowInFolderMock,
+}));
 
 const baseProject = {
     id: 'task-1',
@@ -58,6 +69,25 @@ describe('SidebarRecentTasks', () => {
 
         expect(resumeRecentProject).not.toHaveBeenCalled();
         expect(onRecentTaskSwitchBlocked).toHaveBeenCalledTimes(1);
+    });
+
+
+    it('opens source-backed evidence from the sidebar task row', async () => {
+        getProjectSceneMock.mockResolvedValue({
+            project_path: baseProject.project_path,
+            name: baseProject.name,
+            entry_count: 3,
+            recent_artifacts: [{ title: 'Design decision', source_url: 'D:/refs/design.md', source_hint: 'full: read_file' }],
+        });
+        renderRecentTasks();
+
+        fireEvent.click(screen.getByLabelText('Scene details'));
+
+        expect(await screen.findByText('Design decision')).toBeTruthy();
+        expect(GetProjectScene).toHaveBeenCalledWith(baseProject.project_path);
+
+        fireEvent.click(screen.getByLabelText('Open artifact source'));
+        expect(OpenFileOrShowInFolder).toHaveBeenCalledWith('D:/refs/design.md');
     });
 
     it('creates a task from the header add button', () => {

@@ -320,6 +320,7 @@ func TestUploadSkillBlocksHighRiskBeforeSubmit(t *testing.T) {
 		t.Fatalf("UploadSkill() error = %v, want high-risk security scan block", err)
 	}
 }
+
 func TestImproveSkillAutoFixScansAndRollsBackRiskySkill(t *testing.T) {
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
@@ -444,8 +445,8 @@ func TestInstallSkillHonorsCanceledContextBeforePersist(t *testing.T) {
 	cancel()
 
 	_, err := svc.InstallSkill(ctx, principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(archive)})
-	if err == nil || !strings.Contains(err.Error(), "security scan blocked installation") {
-		t.Fatalf("InstallSkill() error = %v, want security scan cancellation block", err)
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("InstallSkill() error = %v, want context canceled", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(svc.userSkillsRoot(tenant.ID, user.ID), "cancel-install")); !os.IsNotExist(statErr) {
 		t.Fatalf("canceled install should not persist skill, stat err = %v", statErr)

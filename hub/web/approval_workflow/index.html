@@ -1,0 +1,602 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Approval Workflow Designer</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #303541;
+      --muted: #707684;
+      --accent: #0f4fd6;
+      --accent-soft: rgba(15, 79, 214, 0.08);
+      --line: rgba(0, 0, 0, 0.08);
+      --radius: 12px;
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+    body {
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .workflow-app {
+      display: grid;
+      grid-template-columns: 240px 1fr auto;
+      grid-template-rows: 48px 1fr;
+      height: 100vh;
+      gap: 0;
+    }
+    /* Header */
+    .workflow-header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      z-index: 10;
+    }
+    .workflow-header h1 {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .header-actions button {
+      padding: 7px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .header-actions button:hover { border-color: var(--accent); color: var(--accent); }
+    .header-actions .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .header-actions .btn-primary:hover { opacity: 0.9; color: #fff; }
+    .version-badge {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .version-badge.draft { background: #e8f0fe; color: #1a73e8; }
+    .version-badge.pending_review { background: #fef3e0; color: #e65100; }
+    .version-badge.published { background: #e6f4ea; color: #137333; }
+    .version-badge.rejected { background: #fce8e6; color: #c5221f; }
+
+    /* Sidebar - Node Palette */
+    .node-palette {
+      background: var(--panel);
+      border-right: 1px solid var(--line);
+      padding: 12px;
+      overflow-y: auto;
+    }
+    .palette-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .palette-node {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      margin-bottom: 8px;
+      cursor: grab;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+    .palette-node:hover {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      box-shadow: var(--shadow);
+    }
+    .palette-node:active { cursor: grabbing; transform: scale(0.97); }
+    .palette-node-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+    .palette-node-icon.trigger { background: #e8f5e9; color: #2e7d32; }
+    .palette-node-icon.form { background: #e3f2fd; color: #1565c0; }
+    .palette-node-icon.approval { background: #fff3e0; color: #e65100; }
+    .palette-node-icon.condition { background: #f3e5f5; color: #6a1b9a; }
+    .palette-node-icon.action { background: #e0f2f1; color: #00695c; }
+    .palette-node-icon.notification { background: #fce4ec; color: #c62828; }
+    .palette-node-icon.subprocess { background: #ede7f6; color: #4527a0; }
+    .palette-node-icon.terminal { background: #efebe9; color: #4e342e; }
+    .palette-node-info {
+      min-width: 0;
+    }
+    .palette-node-info strong {
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .palette-node-info span {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.3;
+      margin-top: 2px;
+    }
+
+    /* Canvas */
+    .canvas-container {
+      position: relative;
+      background: var(--bg);
+      overflow: hidden;
+    }
+    .canvas-area {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+    .canvas-grid {
+      position: absolute;
+      inset: 0;
+      background-image:
+        radial-gradient(circle, rgba(0,0,0,0.08) 1px, transparent 1px);
+      background-size: 20px 20px;
+      pointer-events: none;
+    }
+    .canvas-nodes {
+      position: absolute;
+      inset: 0;
+    }
+    .canvas-node {
+      position: absolute;
+      min-width: 160px;
+      padding: 12px 16px;
+      border-radius: var(--radius);
+      background: var(--panel);
+      border: 2px solid var(--line);
+      box-shadow: var(--shadow);
+      cursor: move;
+      user-select: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .canvas-node:hover { border-color: var(--accent); }
+    .canvas-node.selected {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 79, 214, 0.15), var(--shadow);
+    }
+    .canvas-node-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .canvas-node-type {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .canvas-node-label {
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .canvas-drop-indicator {
+      position: absolute;
+      width: 160px;
+      height: 60px;
+      border: 2px dashed var(--accent);
+      border-radius: var(--radius);
+      background: rgba(15, 79, 214, 0.05);
+      pointer-events: none;
+      display: none;
+    }
+    .canvas-drop-indicator.visible { display: block; }
+
+    /* Edges SVG */
+    .canvas-edges {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 0;
+    }
+    .canvas-edges svg {
+      width: 100%;
+      height: 100%;
+    }
+    .edge-path {
+      fill: none;
+      stroke: #94a3b8;
+      stroke-width: 2;
+      pointer-events: stroke;
+      cursor: pointer;
+    }
+    .edge-path:hover { stroke: var(--accent); stroke-width: 3; }
+
+    /* Config Panel */
+    .config-panel {
+      width: 320px;
+      background: var(--panel);
+      border-left: 1px solid var(--line);
+      padding: 16px;
+      overflow-y: auto;
+      display: none;
+    }
+    .config-panel.visible { display: block; }
+    .config-panel-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .config-panel-close {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .config-panel-close:hover { background: #f5f5f5; }
+    .config-field {
+      margin-bottom: 14px;
+    }
+    .config-field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .config-field input,
+    .config-field select,
+    .config-field textarea {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+      font-size: 13px;
+      background: #f9fafb;
+      color: var(--text);
+      outline: none;
+    }
+    .config-field input:focus,
+    .config-field select:focus,
+    .config-field textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 79, 214, 0.08);
+    }
+    .config-field textarea { min-height: 80px; resize: vertical; }
+
+    /* Empty state */
+    .canvas-empty {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      color: var(--muted);
+      pointer-events: none;
+    }
+    .canvas-empty h2 { font-size: 18px; margin-bottom: 8px; color: var(--text); }
+    .canvas-empty p { font-size: 13px; line-height: 1.5; }
+
+    /* Terminal Node Config Panel Styles */
+    .terminal-warning {
+      background: #fff8e1;
+      border: 1px solid #ffcc02;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: #6d4c00;
+    }
+    .terminal-warning-icon { font-size: 14px; flex-shrink: 0; }
+    .terminal-section {
+      margin-bottom: 18px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .terminal-section:last-child { border-bottom: none; }
+    .terminal-section-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .terminal-section-desc {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .terminal-user-search {
+      position: relative;
+      margin-bottom: 10px;
+    }
+    .terminal-user-search input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font: inherit;
+      font-size: 13px;
+      background: #f9fafb;
+      outline: none;
+    }
+    .terminal-user-search input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(15, 79, 214, 0.08);
+    }
+    .terminal-search-results {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      z-index: 100;
+      max-height: 160px;
+      overflow-y: auto;
+      display: none;
+    }
+    .terminal-search-result-item {
+      padding: 8px 12px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+    .terminal-search-result-item:hover { background: var(--accent-soft); }
+    .terminal-search-result-name { font-weight: 600; }
+    .terminal-search-result-id { font-size: 11px; color: var(--muted); }
+    .terminal-search-empty {
+      padding: 10px 12px;
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .terminal-user-list { }
+    .terminal-empty-list {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      padding: 12px;
+      background: #f9fafb;
+      border-radius: 8px;
+      border: 1px dashed var(--line);
+    }
+    .terminal-user-item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      background: #fafbfc;
+    }
+    .terminal-user-item-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .terminal-user-name {
+      font-size: 13px;
+      font-weight: 700;
+      flex: 1;
+    }
+    .terminal-user-id {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .terminal-remove-btn {
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      border: 1px solid rgba(193,62,53,0.2);
+      background: rgba(193,62,53,0.06);
+      color: #c5221f;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .terminal-remove-btn:hover { background: rgba(193,62,53,0.12); }
+    .terminal-user-item-fields {
+      display: flex;
+      gap: 10px;
+    }
+    .terminal-inline-field {
+      flex: 1;
+    }
+    .terminal-inline-field label {
+      display: block;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .terminal-inline-field input {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font: inherit;
+      font-size: 12px;
+      background: #fff;
+      outline: none;
+    }
+    .terminal-inline-field input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(15, 79, 214, 0.08);
+    }
+    .terminal-inline-field input.terminal-field-invalid {
+      border-color: #c5221f;
+      box-shadow: 0 0 0 2px rgba(193, 62, 53, 0.08);
+    }
+    .terminal-field-hint {
+      display: block;
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .terminal-field-error {
+      display: block;
+      font-size: 10px;
+      color: #c5221f;
+      margin-top: 2px;
+      min-height: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="workflow-app">
+      <!-- Header -->
+      <header class="workflow-header">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <h1>Approval Workflow Designer</h1>
+          <span class="version-badge draft" id="versionBadge">DRAFT</span>
+        </div>
+        <div class="header-actions">
+          <button id="btnValidate">Validate</button>
+          <button id="btnSave">Save</button>
+          <button id="btnSubmit" class="btn-primary">Submit for Review</button>
+        </div>
+      </header>
+
+      <!-- Node Palette (Left Sidebar) -->
+      <aside class="node-palette">
+        <div class="palette-title">Node Types</div>
+        <div class="palette-node" draggable="true" data-node-type="trigger">
+          <div class="palette-node-icon trigger">&#9654;</div>
+          <div class="palette-node-info">
+            <strong>Trigger</strong>
+            <span>Workflow entry point</span>
+          </div>
+        </div>
+        <div class="palette-node" draggable="true" data-node-type="form">
+          <div class="palette-node-icon form">&#9998;</div>
+          <div class="palette-node-info">
+            <strong>Form</strong>
+            <span>Collect input data</span>
+          </div>
+        </div>
+        <div class="palette-node" draggable="true" data-node-type="approval">
+          <div class="palette-node-icon approval">&#10003;</div>
+          <div class="palette-node-info">
+            <strong>Approval</strong>
+            <span>VE approval decision</span>
+          </div>
+        </div>
+        <div class="palette-node" draggable="true" data-node-type="condition_branch">
+          <div class="palette-node-icon condition">&#9830;</div>
+          <div class="palette-node-info">
+            <strong>Condition Branch</strong>
+            <span>Route by conditions</span>
+          </div>
+        </div>
+        <div class="palette-node" draggable="true" data-node-type="action">
+          <div class="palette-node-icon action">&#9881;</div>
+          <div class="palette-node-info">
+            <strong>Action</strong>
+            <span>Execute automated task</span>
+          </div>
+        </div>
+        <div class="palette-node" draggable="true" data-node-type="notification">
+          <div class="palette-node-icon notification">&#9993;</div>
+          <div class="palette-node-info">
+            <strong>Notification</strong>
+            <span>Send notifications</span>
+          </div>
+        </div>
+        <div class="palette-node" draggable="true" data-node-type="sub_process">
+          <div class="palette-node-icon subprocess">&#8644;</div>
+          <div class="palette-node-info">
+            <strong>Sub-Process</strong>
+            <span>Invoke nested workflow</span>
+          </div>
+        </div>
+        <div class="palette-node" draggable="true" data-node-type="terminal">
+          <div class="palette-node-icon terminal">&#9632;</div>
+          <div class="palette-node-info">
+            <strong>Terminal</strong>
+            <span>Workflow end point</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Canvas -->
+      <main class="canvas-container" id="canvasContainer">
+        <div class="canvas-area" id="canvasArea">
+          <div class="canvas-grid"></div>
+          <div class="canvas-edges" id="canvasEdges">
+            <svg></svg>
+          </div>
+          <div class="canvas-nodes" id="canvasNodes"></div>
+          <div class="canvas-drop-indicator" id="dropIndicator"></div>
+          <div class="canvas-empty" id="canvasEmpty">
+            <h2>Design Your Workflow</h2>
+            <p>Drag nodes from the left panel onto the canvas<br>to start building your approval workflow.</p>
+          </div>
+        </div>
+      </main>
+
+      <!-- Config Panel (Right) -->
+      <aside class="config-panel" id="configPanel">
+        <div class="config-panel-title">
+          <span id="configPanelTitle">Node Configuration</span>
+          <button class="config-panel-close" id="configPanelClose">&times;</button>
+        </div>
+        <div id="configPanelBody"></div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/approval_workflow/terminal-node-config.js"></script>
+  <script src="/approval_workflow/workflow-editor.js"></script>
+</body>
+</html>

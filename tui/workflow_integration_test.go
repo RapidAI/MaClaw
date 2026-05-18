@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,8 +10,10 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/needledata"
 	"github.com/RapidAI/CodeClaw/corelib/tooldef"
 	"github.com/RapidAI/CodeClaw/corelib/workflow"
+	"github.com/RapidAI/CodeClaw/tui/commands"
 )
 
 type tuiWorkflowTestLLM struct {
@@ -94,6 +97,43 @@ func TestTUIWorkflowStartsAfterIntentUnderstandingReady(t *testing.T) {
 	}
 }
 
+func TestTUIWorkflowPendingStartAcceptsChineseControls(t *testing.T) {
+	firstLLM := &tuiWorkflowTestLLM{
+		response: `{"intent":{"category":"contract_review","summary":"review contract","goals":["find risks"],"confidence":0.9,"ready":true},"reply":"Please confirm starting contract review.","ready":true}`,
+	}
+	app := newWorkflowTestApp(firstLLM)
+
+	first := app.handleWorkflowInterception("review this contract")
+	if !strings.Contains(first, "Please confirm starting contract review.") {
+		t.Fatalf("first response = %q, want understanding reply", first)
+	}
+
+	started := app.handleWorkflowInterception("\u5f00\u59cb")
+	if started == "" {
+		t.Fatal("Chinese start command should start the pending workflow")
+	}
+	if !app.workflowEngine.HasActiveWorkflow("tui-user") {
+		t.Fatal("Chinese start command did not start workflow")
+	}
+
+	cancelApp := newWorkflowTestApp(&tuiWorkflowTestLLM{
+		response: `{"intent":{"category":"contract_review","summary":"review contract","goals":["find risks"],"confidence":0.9,"ready":true},"reply":"Please confirm starting contract review.","ready":true}`,
+	})
+	_ = cancelApp.handleWorkflowInterception("review this contract")
+	cancelled := cancelApp.handleWorkflowInterception("\u53d6\u6d88")
+	if cancelled == "" {
+		t.Fatal("Chinese cancel command should return a cancellation response")
+	}
+	if cancelApp.workflowEngine.HasActiveWorkflow("tui-user") {
+		t.Fatal("Chinese cancel command should not start workflow")
+	}
+	cancelApp.workflowMu.Lock()
+	pending := cancelApp.pendingWorkflowStart
+	cancelApp.workflowMu.Unlock()
+	if pending != nil {
+		t.Fatal("Chinese cancel command should clear pending workflow start")
+	}
+}
 func TestTUIWorkflowAttachmentPathExpansion(t *testing.T) {
 	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
 	state, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
@@ -114,8 +154,119 @@ func TestTUIWorkflowAttachmentPathExpansion(t *testing.T) {
 	}
 
 	expanded := app.expandWorkflowAttachmentInput("tui-user", "review \""+path+"\"")
-	if !strings.Contains(expanded, "本地文件路径") || !strings.Contains(expanded, path) {
+	if !strings.Contains(expanded, "local file path") || !strings.Contains(expanded, path) {
 		t.Fatalf("expanded input = %q, want explicit attachment path context", expanded)
+	}
+}
+
+func TestNeedleWorkflowReviewLogging(t *testing.T) {
+	t.Setenv("MACLAW_DATA_DIR", t.TempDir())
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	app.appConfig.LocalNeedleEnabled = true
+	app.appConfig.LocalNeedleLogEnabled = true
+	app.initNeedleRuntime()
+	state, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
+		Category: workflow.WorkflowContractReview,
+		Summary:  "contract review",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseOutputs[state.CurrentPhase] = "draft output"
+	state.PendingReviewPhaseID = state.CurrentPhase
+
+	_ = app.handleWorkflowReviewTUI("tui-user", "looks good, continue")
+
+	logDir := needledata.DefaultLogDir(commands.ResolveDataDir())
+	files, err := filepath.Glob(filepath.Join(logDir, "*.jsonl"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("expected needle event log in %s: files=%v err=%v", logDir, files, err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatalf("read needle log: %v", err)
+	}
+	var event needledata.Event
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &event); err != nil {
+		t.Fatalf("parse needle event: %v", err)
+	}
+	if event.Type != needledata.EventWorkflowReview || event.FinalDecision.Name == "" || !event.Privacy.Redacted {
+		t.Fatalf("unexpected event: %#v", event)
+	}
+}
+
+func TestNeedleWorkflowReviewCanBypassLLM(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	app.appConfig.LocalNeedleEnabled = true
+	app.initNeedleRuntime()
+	app.llmConfig = corelib.MaclawLLMConfig{}
+	state, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
+		Category: workflow.WorkflowContractReview,
+		Summary:  "contract review",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	state.PhaseOutputs[state.CurrentPhase] = strings.Repeat("draft output ", 20)
+	state.PendingReviewPhaseID = state.CurrentPhase
+
+	_ = app.handleWorkflowReviewTUI("tui-user", "looks good, continue")
+
+	updated := app.workflowEngine.GetActiveWorkflow("tui-user")
+	if updated == nil || updated.PendingReviewPhaseID != "" {
+		t.Fatalf("Needle confirm should clear pending review, got %#v", updated)
+	}
+}
+
+func TestLocalNeedleModelPathUsesActiveDataDirArtifact(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	activePath := needledata.DefaultModelDir(dataDir)
+	if err := os.MkdirAll(activePath, 0o755); err != nil {
+		t.Fatalf("mkdir active path: %v", err)
+	}
+	if got := (&TUIApp{}).localNeedleModelPath(); got != "" {
+		t.Fatalf("localNeedleModelPath without manifest = %q, want empty", got)
+	}
+	if err := os.WriteFile(filepath.Join(activePath, "manifest.json"), []byte(`{"format":"maclaw-needle"}`), 0o644); err != nil {
+		t.Fatalf("write active manifest: %v", err)
+	}
+	app := &TUIApp{}
+	if got := app.localNeedleModelPath(); got != activePath {
+		t.Fatalf("localNeedleModelPath = %q, want %q", got, activePath)
+	}
+	app.appConfig.LocalNeedleModelPath = filepath.Join(dataDir, "custom")
+	if got := app.localNeedleModelPath(); got != app.appConfig.LocalNeedleModelPath {
+		t.Fatalf("localNeedleModelPath custom = %q, want %q", got, app.appConfig.LocalNeedleModelPath)
+	}
+}
+
+func TestLocalNeedleModelPathUsesCollectionRoot(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("MACLAW_DATA_DIR", dataDir)
+	activePath := needledata.DefaultModelDir(dataDir)
+	workflowPath := filepath.Join(activePath, needledata.EventWorkflowReview)
+	if err := os.MkdirAll(workflowPath, 0o755); err != nil {
+		t.Fatalf("mkdir workflow artifact: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workflowPath, "manifest.json"), []byte(`{"format":"maclaw-needle"}`), 0o644); err != nil {
+		t.Fatalf("write workflow manifest: %v", err)
+	}
+	collection := map[string]any{
+		"format": "maclaw-needle-collection",
+		"tasks": map[string]any{
+			needledata.EventWorkflowReview: map[string]any{"path": needledata.EventWorkflowReview},
+		},
+	}
+	data, err := json.Marshal(collection)
+	if err != nil {
+		t.Fatalf("marshal collection: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(activePath, "collection.json"), data, 0o644); err != nil {
+		t.Fatalf("write collection: %v", err)
+	}
+	if got := (&TUIApp{}).localNeedleModelPath(); got != activePath {
+		t.Fatalf("localNeedleModelPath collection = %q, want %q", got, activePath)
 	}
 }
 
@@ -260,5 +411,83 @@ allowed_commands:
 	allowed, reason = (&tuiCallbacks{app: app}).IsToolCallAllowed("ssh", `{"action":"upload","session_id":"staging-session","local_path":"apply.sh","remote_path":"/tmp/apply.sh"}`)
 	if allowed {
 		t.Fatal("expected ssh upload to wrong target to be rejected")
+	}
+}
+
+func TestTUIWorkflowTextOnlyInputSchemaWaitsForUserDetails(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{
+		response: `{"intent":{"category":"coding","summary":"build app","goals":["build app"],"confidence":0.9,"ready":true},"reply":"Please confirm starting coding workflow.","ready":true}`,
+	})
+
+	first := app.handleWorkflowInterception("build an app")
+	if !strings.Contains(first, "Please confirm starting coding workflow.") {
+		t.Fatalf("first response = %q, want confirmation prompt", first)
+	}
+	started := app.handleWorkflowInterception("start")
+	if !strings.Contains(started, "1.") || !strings.Contains(strings.ToLower(started), "required") {
+		t.Fatalf("start response should ask for numbered text input, got %q", started)
+	}
+	app.workflowMu.Lock()
+	loopReady := app.workflowAgentLoop || app.pendingPhasePrompt != ""
+	app.workflowMu.Unlock()
+	if loopReady {
+		t.Fatal("TUI should wait for text input before starting the first phase agent loop")
+	}
+
+	got := app.handleWorkflowInterception("1. Build a Go CLI\n2. Windows and Linux\n3. Include tests")
+	if got != "" {
+		t.Fatalf("text input should fall through to agent loop, got %q", got)
+	}
+	app.workflowMu.Lock()
+	defer app.workflowMu.Unlock()
+	if !app.workflowAgentLoop || strings.TrimSpace(app.pendingPhasePrompt) == "" {
+		t.Fatalf("text input should arm workflow agent loop, loop=%v prompt=%q", app.workflowAgentLoop, app.pendingPhasePrompt)
+	}
+}
+
+func TestTUIWorkflowAutoAdvanceIntoFormReturnsGuidance(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{})
+	_, err := app.workflowEngine.StartWorkflow("tui-user", workflow.StructuredIntent{
+		Category: workflow.WorkflowCoding,
+		Summary:  "build app",
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflow failed: %v", err)
+	}
+	guidance := app.applyWorkflowAutoAdvanceTUI("tui-user", &workflow.WorkflowResponse{
+		Text:     "Advanced to input collection",
+		ShowForm: true,
+		FormSchema: &workflow.PhaseInputSchema{
+			Title:  "Collect details",
+			Fields: []workflow.PhaseInputField{{Name: "scope", Label: "Scope", Type: "text", Required: true}},
+		},
+	})
+	if !strings.Contains(guidance, "Advanced to input collection") || !strings.Contains(guidance, "1.") {
+		t.Fatalf("auto-advance into form should return visible text guidance, got %q", guidance)
+	}
+	app.workflowMu.Lock()
+	defer app.workflowMu.Unlock()
+	if app.workflowAgentLoop || strings.TrimSpace(app.pendingPhasePrompt) != "" {
+		t.Fatalf("form-gated auto-advance must not arm agent loop, loop=%v prompt=%q", app.workflowAgentLoop, app.pendingPhasePrompt)
+	}
+}
+
+func TestTUIWorkflowInputRequiredDoesNotArmPhaseLoopBeforeInput(t *testing.T) {
+	app := newWorkflowTestApp(&tuiWorkflowTestLLM{
+		response: `{"intent":{"category":"contract_review","summary":"review contract","goals":["review contract"],"confidence":0.9,"ready":true},"reply":"Please confirm starting contract review.","ready":true}`,
+	})
+
+	_ = app.handleWorkflowInterception("review this contract")
+	started := app.handleWorkflowInterception("start")
+	if !strings.Contains(started, "Please confirm starting contract review.") {
+		t.Fatalf("start response missing confirmation prefix: %q", started)
+	}
+	if !app.workflowEngine.HasActiveWorkflow("tui-user") {
+		t.Fatal("workflow should start and wait for required input")
+	}
+	app.workflowMu.Lock()
+	defer app.workflowMu.Unlock()
+	if app.workflowAgentLoop || strings.TrimSpace(app.pendingPhasePrompt) != "" {
+		t.Fatalf("input-required workflow must not arm phase loop before input, loop=%v prompt=%q", app.workflowAgentLoop, app.pendingPhasePrompt)
 	}
 }

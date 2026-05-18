@@ -11,16 +11,18 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	experience "github.com/RapidAI/CodeClaw/corelib/experience"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/security"
 	cskill "github.com/RapidAI/CodeClaw/corelib/skill"
 )
 
 // ExperienceExtractor adapts GUI remote sessions to the corelib experience pipeline.
 type ExperienceExtractor struct {
-	llmConfig corelib.MaclawLLMConfig
-	client    *http.Client
-	core      *experience.Extractor
-	audit     *experience.AuditTrail
+	llmConfig   corelib.MaclawLLMConfig
+	client      *http.Client
+	core        *experience.Extractor
+	audit       *experience.AuditTrail
+	memoryStore *corememory.Store
 }
 
 // ExperienceAuditEntry is the Wails-facing audit record for one experience extraction run.
@@ -32,6 +34,9 @@ func NewExperienceExtractor(app *App, skillExecutor *SkillExecutor, cfg corelib.
 		llmConfig: cfg,
 		client:    &http.Client{Timeout: 30 * time.Second},
 		audit:     experience.NewAuditTrail(50),
+	}
+	if app != nil {
+		e.memoryStore = app.memoryStore
 	}
 	e.core = experience.NewExtractor(experienceLLMClient{cfg: cfg, client: e.client}, experienceSkillStore{executor: skillExecutor})
 	return e
@@ -102,24 +107,115 @@ func (e *ExperienceExtractor) recordAuditError(session *RemoteSession, snapshot 
 	if e == nil || session == nil || err == nil {
 		return
 	}
-	e.ensureAuditTrail().RecordError(experience.AuditContext{
+	ctx := experience.AuditContext{
 		SessionID:  session.ID,
 		Snapshot:   snapshot,
 		DurationMS: duration.Milliseconds(),
-	}, err)
+	}
+	e.ensureAuditTrail().RecordError(ctx, err)
+	e.persistAuditMemory(experience.NewErrorAuditEntry(ctx, err, experience.AuditOptions{}))
 }
 
 func (e *ExperienceExtractor) recordAudit(session *RemoteSession, snapshot experience.SessionSnapshot, result experience.Result, duration time.Duration) {
 	if e == nil || session == nil {
 		return
 	}
-	e.ensureAuditTrail().RecordResult(experience.AuditContext{
+	ctx := experience.AuditContext{
 		SessionID:  session.ID,
 		Snapshot:   snapshot,
 		DurationMS: duration.Milliseconds(),
-	}, result)
+	}
+	e.ensureAuditTrail().RecordResult(ctx, result)
+	e.persistAuditMemory(experience.NewResultAuditEntry(ctx, result, experience.AuditOptions{}))
 }
 
+func (e *ExperienceExtractor) persistAuditMemory(audit ExperienceAuditEntry) {
+	if e == nil || e.memoryStore == nil || strings.TrimSpace(audit.SessionID) == "" {
+		return
+	}
+	content := formatExperienceAuditMemoryContent(audit)
+	if content == "" {
+		return
+	}
+	now := time.Now().UTC()
+	tags := []string{experienceTraceKindToolMemory.String(), "experience_extraction", "status:" + audit.Status.String()}
+	if tool := strings.TrimSpace(audit.Tool); tool != "" {
+		tags = append(tags, "tool:"+tool)
+	}
+	if project := strings.TrimSpace(audit.ProjectPath); project != "" {
+		tags = append(tags, project)
+	}
+	entry := corememory.Entry{
+		ID:         "experience-audit-" + strings.TrimSpace(audit.SessionID),
+		Title:      firstNonEmptyExperienceString("Experience extraction: "+strings.TrimSpace(audit.Title), "Experience extraction audit"),
+		Content:    content,
+		Category:   corememory.CategoryProjectKnowledge,
+		Tags:       tags,
+		SourceType: string(experienceTraceSourceToolUsage),
+		SourceURL:  "experience://extraction/" + strings.TrimSpace(audit.SessionID),
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := e.memoryStore.Save(entry); err != nil {
+		log.Printf("[experience] failed to persist extraction audit memory: %v", err)
+	}
+}
+
+func formatExperienceAuditMemoryContent(audit ExperienceAuditEntry) string {
+	if strings.TrimSpace(audit.SessionID) == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Experience extraction audit")
+	writeExperienceAuditMemoryLine(&b, "Session", audit.SessionID)
+	writeExperienceAuditMemoryLine(&b, "Tool", audit.Tool)
+	writeExperienceAuditMemoryLine(&b, "Title", audit.Title)
+	writeExperienceAuditMemoryLine(&b, "Project", audit.ProjectPath)
+	writeExperienceAuditMemoryLine(&b, "Status", audit.Status.String())
+	if audit.DurationMS > 0 {
+		writeExperienceAuditMemoryLine(&b, "Duration ms", fmt.Sprintf("%d", audit.DurationMS))
+	}
+	writeExperienceAuditMemoryLine(&b, "Candidates", fmt.Sprintf("%d", audit.Summary.TotalCandidates))
+	writeExperienceAuditMemoryLine(&b, "Registered", fmt.Sprintf("%d", audit.Summary.Registered))
+	writeExperienceAuditMemoryLine(&b, "Updated", fmt.Sprintf("%d", audit.Summary.Updated))
+	writeExperienceAuditMemoryLine(&b, "Skipped", fmt.Sprintf("%d", audit.Summary.Skipped))
+	if len(audit.Upserted) > 0 {
+		writeExperienceAuditMemoryLine(&b, "Upserted skills", strings.Join(audit.Upserted, ", "))
+	}
+	if audit.Error != "" {
+		writeExperienceAuditMemoryLine(&b, "Error", audit.Error)
+	}
+	for i, decision := range audit.Decisions {
+		if i >= 8 {
+			break
+		}
+		line := strings.TrimSpace(decision.PatternName)
+		if line == "" {
+			line = "unnamed pattern"
+		}
+		line += " => " + string(decision.Action)
+		if decision.Reason != "" {
+			line += " (" + decision.Reason + ")"
+		}
+		writeExperienceAuditMemoryLine(&b, "Decision", line)
+	}
+	b.WriteString("\nSafety: audit evidence only; this memory records what the extraction learned or skipped and does not execute tools, install skills, rewrite routing, or authorize follow-up action.")
+	return strings.TrimSpace(b.String())
+}
+
+func writeExperienceAuditMemoryLine(b *strings.Builder, label, value string) {
+	if b == nil {
+		return
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	b.WriteString("\n- ")
+	b.WriteString(label)
+	b.WriteString(": ")
+	b.WriteString(experience.AuditText(value, 500))
+}
 func (e *ExperienceExtractor) appendAudit(entry ExperienceAuditEntry) {
 	if e == nil {
 		return
@@ -226,11 +322,6 @@ func (s experienceSkillStore) scanBeforePersist(entry *corelib.NLSkillEntry, ope
 	}
 	cp := *entry
 	cp.TrustLevel = security.TrustLevelAgentCreated
-	scanner := cskill.NewSecurityScanner(nil)
-	report := scanner.ScanStaged(context.Background(), &cp, cp.SkillDir, nil)
-	if report == nil {
-		return nil, fmt.Errorf("experience skill %s security scan produced no report", operation)
-	}
 	app := (*App)(nil)
 	if s.executor != nil {
 		app = s.executor.app
@@ -239,7 +330,22 @@ func (s experienceSkillStore) scanBeforePersist(entry *corelib.NLSkillEntry, ope
 	if operation == "update" {
 		auditAction = security.AuditActionHubSkillUpdate
 	}
-	if report.IsDangerous() || report.NeedsUserReview() {
+	scanner := cskill.NewSecurityScanner(nil)
+	report := scanner.ScanStaged(context.Background(), &cp, cp.SkillDir, nil)
+	if report == nil {
+		if app != nil && !app.skillInstallMissingScanShouldBlock() {
+			app.logSkillInstallSecurityEvent(
+				auditAction,
+				"experience_skill_"+operation,
+				security.RiskCritical,
+				security.PolicyAudit,
+				fmt.Sprintf("experience skill %s allowed before persist even though scan report was missing", cp.Name),
+			)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("experience skill %s security scan produced no report", operation)
+	}
+	if app != nil && app.skillInstallScanShouldBlock(report) {
 		if app != nil {
 			app.logSkillInstallSecurityEvent(
 				security.AuditActionHubSkillReject,
@@ -252,11 +358,15 @@ func (s experienceSkillStore) scanBeforePersist(entry *corelib.NLSkillEntry, ope
 		return report, fmt.Errorf("experience skill security scan rejected %s for %q: level=%s summary=%s", operation, cp.Name, report.FinalLevel, report.Summary)
 	}
 	if app != nil {
+		policyAction := security.PolicyAllow
+		if report.NeedsUserReview() {
+			policyAction = security.PolicyAudit
+		}
 		app.logSkillInstallSecurityEvent(
 			auditAction,
 			"experience_skill_"+operation,
 			report.FinalLevel,
-			security.PolicyAllow,
+			policyAction,
 			fmt.Sprintf("experience skill %s allowed before persist, scanned_by=%s, level=%s", cp.Name, report.ScannedBy, report.FinalLevel),
 		)
 	}

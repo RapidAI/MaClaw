@@ -637,6 +637,9 @@ func TestExperienceLearningToolSchemaIncludesDraftReviewEvidence(t *testing.T) {
 		"snapshot pointing to governance_summary",
 		"governance_summary.memory carrying the memory maintenance",
 		"governance_summary.routing_self_evolution carrying the routing_signals",
+		"tool_recovery provider/model/wire_api filters",
+		"tool_recovery_governance",
+		"recovery_governance",
 		"governance_summary.a2a_discussion carrying read-only A2A trace inspection handoffs",
 		"trace_details exposing read-only non_executing_boundary",
 		"recommended_focus_context",
@@ -652,7 +655,7 @@ func TestExperienceLearningToolSchemaIncludesDraftReviewEvidence(t *testing.T) {
 	if tool.Description == "" {
 		t.Fatalf("experience_learning description should describe draft review boundary: %s", tool.Description)
 	}
-	for _, name := range []string{"draft_kind", "trace_id", "source_trace_id", "draft_markdown", "non_executing_boundary", "status", "note", "actor", "query", "q"} {
+	for _, name := range []string{"action", "draft_kind", "trace_id", "source_trace_id", "draft_markdown", "non_executing_boundary", "status", "note", "actor", "query", "q", "tool", "category", "provider", "model", "wire_api", "review_only", "limit"} {
 		if _, ok := tool.InputSchema[name]; !ok {
 			t.Fatalf("experience_learning schema missing %s: %#v", name, tool.InputSchema)
 		}

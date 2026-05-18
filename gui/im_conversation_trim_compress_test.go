@@ -2,10 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	agent "github.com/RapidAI/CodeClaw/corelib/agent"
+	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 // --- Tests for compressToolResultSemantic ---
@@ -256,18 +259,18 @@ func TestApplyHistoryCompression_GroupAligned_NeverOrphansToolMessages(t *testin
 	}
 
 	history := []agent.ConversationEntry{
-		{Role: "user", Content: "Build a game"},                                                // [0]
-		{Role: "assistant", Content: "Step 1."},                                                // [1]
-		{Role: "assistant", Content: "Step 2."},                                                // [2]
-		{Role: "assistant", Content: "Step 3."},                                                // [3]
-		{Role: "assistant", Content: "Step 4."},                                                // [4]
-		{Role: "assistant", Content: "Checking file size.", ToolCalls: bashToolCalls},           // [5]
-		{Role: "tool", Content: "743.6KB", ToolCallID: "call_A"},                               // [6]
-		{Role: "assistant", Content: "PDF done!"},                                              // [7]
-		{Role: "assistant", Content: "Let me compress.", ToolCalls: compressToolCalls},          // [8]
-		{Role: "tool", Content: "Compression queued.", ToolCallID: "call_B"},                   // [9]
-		{Role: "assistant", Content: "Compressed."},                                            // [10]
-		{Role: "assistant", Content: "Waiting for input."},                                     // [11]
+		{Role: "user", Content: "Build a game"},                                        // [0]
+		{Role: "assistant", Content: "Step 1."},                                        // [1]
+		{Role: "assistant", Content: "Step 2."},                                        // [2]
+		{Role: "assistant", Content: "Step 3."},                                        // [3]
+		{Role: "assistant", Content: "Step 4."},                                        // [4]
+		{Role: "assistant", Content: "Checking file size.", ToolCalls: bashToolCalls},  // [5]
+		{Role: "tool", Content: "743.6KB", ToolCallID: "call_A"},                       // [6]
+		{Role: "assistant", Content: "PDF done!"},                                      // [7]
+		{Role: "assistant", Content: "Let me compress.", ToolCalls: compressToolCalls}, // [8]
+		{Role: "tool", Content: "Compression queued.", ToolCallID: "call_B"},           // [9]
+		{Role: "assistant", Content: "Compressed."},                                    // [10]
+		{Role: "assistant", Content: "Waiting for input."},                             // [11]
 	}
 
 	req := &contextCompressionRequest{
@@ -387,5 +390,38 @@ func TestApplyHistoryCompression_PreserveLast4_ExactBugScenario(t *testing.T) {
 			tcid = fmt.Sprintf(" [tcid=%s]", e.ToolCallID)
 		}
 		t.Logf("  [%d] role=%s%s%s", i, e.Role, tc, tcid)
+	}
+}
+
+func TestPersistLastCompressionSummaryWritesSourceRef(t *testing.T) {
+	store, err := corememory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer store.Stop()
+
+	summary := strings.Repeat("checkpoint detail ", 90) + "COMPRESS_SENTINEL_AT_END"
+	persistLastCompressionSummary(store, "user/A", summary)
+
+	entries := store.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 memory entry, got %d", len(entries))
+	}
+	entry := entries[0]
+	if entry.SourceType != "context_checkpoint_ref" || entry.SourceURL == "" {
+		t.Fatalf("expected context checkpoint source ref, got type=%q url=%q", entry.SourceType, entry.SourceURL)
+	}
+	if entry.OwnerID != "user/A" {
+		t.Fatalf("OwnerID = %q, want user/A", entry.OwnerID)
+	}
+	if len([]rune(entry.Content)) > memoryRefPreviewRunes {
+		t.Fatalf("entry content was not preview-limited: %d runes", len([]rune(entry.Content)))
+	}
+	data, err := os.ReadFile(entry.SourceURL)
+	if err != nil {
+		t.Fatalf("read source ref: %v", err)
+	}
+	if !strings.Contains(string(data), "COMPRESS_SENTINEL_AT_END") {
+		t.Fatalf("source ref did not preserve full summary")
 	}
 }

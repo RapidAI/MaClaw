@@ -29,6 +29,7 @@ type HeartbeatConfigPayload struct {
 type ConnContext struct {
 	Conn        *websocket.Conn
 	Role        string
+	TenantID    string
 	UserID      string
 	MachineID   string
 	MachineName string // populated by handleMachineHello
@@ -606,12 +607,13 @@ func (g *Gateway) handleMachineAuth(ctx *ConnContext, msg Envelope) error {
 		return fmt.Errorf("machine auth failed: %w", err)
 	}
 	ctx.Role = "machine"
+	ctx.TenantID = principal.TenantID
 	ctx.UserID = principal.UserID
 	ctx.MachineID = principal.MachineID
 	log.Printf("[ws] handleMachineAuth: auth OK machine_id=%s user_id=%s, calling BindDesktop", principal.MachineID, principal.UserID)
 	g.Devices.BindDesktop(principal.MachineID, ctx)
 
-	authPayload := map[string]any{"role": "machine", "machine_id": principal.MachineID}
+	authPayload := map[string]any{"role": "machine", "machine_id": principal.MachineID, "tenant_id": principal.TenantID}
 
 	// Always issue a fresh viewer token on connect. The client persists it
 	// and uses it for LLM service API calls (redeem, status, chat completions).
@@ -639,9 +641,10 @@ func (g *Gateway) handleViewerAuth(ctx *ConnContext, msg Envelope) error {
 		return writeWSError(ctx.Conn, "UNAUTHORIZED", "Viewer authentication failed")
 	}
 	ctx.Role = "viewer"
+	ctx.TenantID = principal.TenantID
 	ctx.UserID = principal.UserID
 	ctx.ViewerID = principal.Email
-	return writeWSJSON(ctx.Conn, map[string]any{"type": "auth.ok", "payload": map[string]any{"role": "viewer", "email": principal.Email}})
+	return writeWSJSON(ctx.Conn, map[string]any{"type": "auth.ok", "payload": map[string]any{"role": "viewer", "email": principal.Email, "tenant_id": principal.TenantID}})
 }
 
 func (g *Gateway) handleViewerSubscribeSession(ctx *ConnContext, msg Envelope) error {
@@ -940,6 +943,9 @@ func (g *Gateway) handleSessionCreated(ctx *ConnContext, msg Envelope) error {
 	var payload map[string]any
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return writeWSError(ctx.Conn, "INVALID_MESSAGE", "Invalid session.created payload")
+	}
+	if ctx.TenantID != "" {
+		payload["tenant_id"] = ctx.TenantID
 	}
 	if err := g.Sessions.OnSessionCreated(context.Background(), ctx.MachineID, ctx.UserID, msg.SessionID, payload); err != nil {
 		return writeWSError(ctx.Conn, "INTERNAL_ERROR", err.Error())

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -33,21 +34,65 @@ func (h *IMMessageHandler) CancelCurrentSession() (string, error) {
 // InjectSupplementary stores a supplementary message for the running agent
 // loop to consume at the start of its next iteration. Returns true if a loop
 // is currently active (injection accepted), false otherwise.
-//
-// This is the mechanism behind the desktop panel's "fire" (鍙戝皠) button:
-// the user's buffered message is injected as supplementary context without
-// cancelling the ongoing task. The agent loop picks it up via
-// pendingInjection.LoadAndDelete at the top of each iteration.
-//
-// Multiple rapid injections are accumulated (newline-separated) rather than
-// overwriting each other, so consecutive fire clicks don't lose messages.
 func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
-	if !h.hasActiveLoopForUser(userID) {
+	text = strings.TrimSpace(text)
+	if text == "" || !h.hasActiveLoopForUser(userID) {
 		return false
 	}
 	h.accumulateInjection(userID, "[用户补充] "+text)
 	log.Printf("[inject-supplementary] user=%s text=%s", userID, truncateForLog(text, 60))
 	return true
+}
+
+// InjectGuideReference stores input-buffer guide-launch text as background
+// reference for the next agent loop iteration. Unlike a normal supplementary
+// message, this must influence reasoning without becoming a new user turn or
+// causing the current session to finalize by itself.
+func (h *IMMessageHandler) InjectGuideReference(userID, text string) bool {
+	injection := buildGuideLaunchInjection(text)
+	if injection == "" || !h.hasActiveLoopForUser(userID) {
+		return false
+	}
+	h.accumulateInjection(userID, injection)
+	log.Printf("[inject-guide-reference] user=%s text=%s", userID, truncateForLog(text, 60))
+	return true
+}
+
+const guideLaunchReferenceMarker = "[Guide launch reference]"
+
+const guideLaunchReferenceInstruction = "The following text was fired from the input buffer by the user using the Enter icon/button. Use it as background reference context in the next agent loop iteration to influence reasoning and decisions. Do not treat it as a new user turn, and do not end the current session or produce a final answer solely because of it."
+
+func buildGuideLaunchInjection(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return guideLaunchReferenceMarker + "\n" + guideLaunchReferenceInstruction + "\n" + text
+}
+
+func isGuideLaunchReferenceInjection(text string) bool {
+	if !strings.Contains(text, guideLaunchReferenceMarker) {
+		return false
+	}
+	lines := strings.Split(text, "\n")
+	for i := 0; i+1 < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == guideLaunchReferenceMarker && strings.TrimSpace(lines[i+1]) == guideLaunchReferenceInstruction {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *IMMessageHandler) hasPendingGuideReferenceInjection(userID string) bool {
+	if h == nil || userID == "" {
+		return false
+	}
+	pending, ok := h.pendingInjection.Load(userID)
+	if !ok {
+		return false
+	}
+	text, _ := pending.(string)
+	return isGuideLaunchReferenceInjection(text)
 }
 
 // accumulateInjection appends text to the pending injection for the given
@@ -59,6 +104,9 @@ func (h *IMMessageHandler) InjectSupplementary(userID, text string) bool {
 // (InjectSupplementary, interrupt handler Merge, HandleCorrection Merge)
 // must use this method instead of calling pendingInjection.Store directly.
 func (h *IMMessageHandler) accumulateInjection(userID, prefixedText string) {
+	if strings.TrimSpace(prefixedText) == "" {
+		return
+	}
 	for {
 		existing, loaded := h.pendingInjection.Load(userID)
 		if !loaded {

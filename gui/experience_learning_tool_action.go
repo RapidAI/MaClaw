@@ -11,6 +11,7 @@ const (
 	experienceLearningToolActionQueues                      experienceLearningToolAction = "queues"
 	experienceLearningToolActionFollowUpActions             experienceLearningToolAction = "follow_up_actions"
 	experienceLearningToolActionRoutingSignals              experienceLearningToolAction = "routing_signals"
+	experienceLearningToolActionToolRecovery                experienceLearningToolAction = "tool_recovery"
 	experienceLearningToolActionBuildRoutingAdjustmentDraft experienceLearningToolAction = "build_routing_adjustment_draft"
 	experienceLearningToolActionMemoryCandidates            experienceLearningToolAction = "memory_candidates"
 	experienceLearningToolActionBuildMemoryMaintenanceDraft experienceLearningToolAction = "build_memory_maintenance_draft"
@@ -40,6 +41,8 @@ func normalizeExperienceLearningToolAction(value string) experienceLearningToolA
 		return experienceLearningToolActionFollowUpActions
 	case string(experienceLearningToolActionRoutingSignals):
 		return experienceLearningToolActionRoutingSignals
+	case string(experienceLearningToolActionToolRecovery), "inspect_tool_recovery_governance", "recovery_governance", "tool_recovery_governance":
+		return experienceLearningToolActionToolRecovery
 	case string(experienceLearningToolActionBuildRoutingAdjustmentDraft):
 		return experienceLearningToolActionBuildRoutingAdjustmentDraft
 	case string(experienceLearningToolActionMemoryCandidates):

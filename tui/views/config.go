@@ -391,9 +391,9 @@ func configOptionDisplay(key, value, lang string) string {
 				return "Strict"
 			}
 			return "严格"
-		case "permissive":
+		case "relaxed", "permissive":
 			if lang == "en" {
-				return "Permissive"
+				return "Relaxed"
 			}
 			return "宽松"
 		case "developer":

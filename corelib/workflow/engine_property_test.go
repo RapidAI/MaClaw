@@ -257,8 +257,11 @@ func TestProperty11_LastPhaseAdvanceMarksCompleted(t *testing.T) {
 			// This is by design — non-NeedsConfirm phases advance via external caller.
 			// We test this by directly verifying the advancePhase logic.
 			engine.mu.Lock()
-			resp := engine.advancePhase(userID, ws, tmpl)
+			resp, err := engine.advancePhase(userID, ws, tmpl)
 			engine.mu.Unlock()
+			if err != nil {
+				t.Fatalf("%s: advancePhase failed: %v", wt, err)
+			}
 			if !resp.Complete {
 				t.Errorf("%s: expected Complete=true from advancePhase at last phase", wt)
 			}

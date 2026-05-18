@@ -33,9 +33,9 @@ func decodeEmbedding(data []byte) []float32 {
 
 func (r *voiceprintRepo) Create(ctx context.Context, vp *store.Voiceprint) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO voiceprints (id, user_id, email, label, embedding, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		vp.ID, vp.UserID, vp.Email, vp.Label,
+		`INSERT INTO voiceprints (id, tenant_id, user_id, email, label, embedding, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		vp.ID, normalizeTenantID(vp.TenantID), vp.UserID, vp.Email, vp.Label,
 		encodeEmbedding(vp.Embedding),
 		vp.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	)
@@ -44,7 +44,7 @@ func (r *voiceprintRepo) Create(ctx context.Context, vp *store.Voiceprint) error
 
 func (r *voiceprintRepo) ListByUserID(ctx context.Context, userID string) ([]*store.Voiceprint, error) {
 	rows, err := r.readDB.QueryContext(ctx,
-		`SELECT id, user_id, email, label, embedding, created_at FROM voiceprints WHERE user_id = ? ORDER BY created_at`,
+		`SELECT id, tenant_id, user_id, email, label, embedding, created_at FROM voiceprints WHERE user_id = ? ORDER BY created_at`,
 		userID)
 	if err != nil {
 		return nil, err
@@ -55,7 +55,18 @@ func (r *voiceprintRepo) ListByUserID(ctx context.Context, userID string) ([]*st
 
 func (r *voiceprintRepo) ListAll(ctx context.Context) ([]*store.Voiceprint, error) {
 	rows, err := r.readDB.QueryContext(ctx,
-		`SELECT id, user_id, email, label, embedding, created_at FROM voiceprints ORDER BY email, created_at`)
+		`SELECT id, tenant_id, user_id, email, label, embedding, created_at FROM voiceprints ORDER BY email, created_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVoiceprints(rows)
+}
+
+func (r *voiceprintRepo) ListByTenant(ctx context.Context, tenantID string) ([]*store.Voiceprint, error) {
+	rows, err := r.readDB.QueryContext(ctx,
+		`SELECT id, tenant_id, user_id, email, label, embedding, created_at FROM voiceprints WHERE tenant_id = ? ORDER BY email, created_at`,
+		normalizeTenantID(tenantID))
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +76,11 @@ func (r *voiceprintRepo) ListAll(ctx context.Context) ([]*store.Voiceprint, erro
 
 func (r *voiceprintRepo) Delete(ctx context.Context, id string) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM voiceprints WHERE id = ?`, id)
+	return err
+}
+
+func (r *voiceprintRepo) DeleteByTenantID(ctx context.Context, tenantID string, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM voiceprints WHERE tenant_id = ? AND id = ?`, normalizeTenantID(tenantID), id)
 	return err
 }
 
@@ -82,7 +98,7 @@ func scanVoiceprints(rows *sql.Rows) ([]*store.Voiceprint, error) {
 		var vp store.Voiceprint
 		var embBlob []byte
 		var createdAt string
-		if err := rows.Scan(&vp.ID, &vp.UserID, &vp.Email, &vp.Label, &embBlob, &createdAt); err != nil {
+		if err := rows.Scan(&vp.ID, &vp.TenantID, &vp.UserID, &vp.Email, &vp.Label, &embBlob, &createdAt); err != nil {
 			return nil, err
 		}
 		vp.Embedding = decodeEmbedding(embBlob)

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -311,5 +312,68 @@ func TestSQLiteBackend_MultipleInstances_SharedDB(t *testing.T) {
 	}
 	if modified[0].Content != "written by instance 1" {
 		t.Errorf("content mismatch: %q", modified[0].Content)
+	}
+}
+
+func TestSQLiteBackend_FTSSearchCJKFallback(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	now := time.Now().UTC()
+
+	entry := Entry{
+		ID: "fts-cjk", Content: "证据导航面板可以打开最近产物来源并回查全文",
+		Category: CategoryTaskArtifact, Tags: []string{"证据导航"}, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := b.SaveEntry(&entry); err != nil {
+		t.Fatalf("SaveEntry: %v", err)
+	}
+
+	ids, err := b.SearchTextIDs("证据导航", 10)
+	if err != nil {
+		t.Fatalf("SearchTextIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "fts-cjk" {
+		t.Fatalf("expected fts-cjk hit, got %v", ids)
+	}
+
+	if err := b.DeleteEntry("fts-cjk"); err != nil {
+		t.Fatalf("DeleteEntry: %v", err)
+	}
+	ids, err = b.SearchTextIDs("证据导航", 10)
+	if err != nil {
+		t.Fatalf("SearchTextIDs after delete: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("deleted entry should be removed from FTS index, got %v", ids)
+	}
+}
+
+func TestSQLiteBackend_FilteredFTSSearch(t *testing.T) {
+	b := newTestSQLiteBackend(t)
+	now := time.Now().UTC()
+	entries := []Entry{
+		{ID: "filtered-keep", Content: "evidence navigation read_file source", Category: CategoryProjectKnowledge, OwnerID: "owner-a", Tags: []string{"D:/workprj/project-a"}, SourceURL: "file://D:/workprj/project-a/artifact.md", CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+		{ID: "filtered-owner", Content: "evidence navigation read_file source", Category: CategoryProjectKnowledge, OwnerID: "owner-b", Tags: []string{"D:/workprj/project-a"}, SourceURL: "file://D:/workprj/project-a/artifact.md", CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+		{ID: "filtered-category", Content: "evidence navigation read_file source", Category: CategoryInstruction, OwnerID: "owner-a", Tags: []string{"D:/workprj/project-a"}, SourceURL: "file://D:/workprj/project-a/artifact.md", CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+		{ID: "filtered-project", Content: "evidence navigation read_file source", Category: CategoryProjectKnowledge, OwnerID: "owner-a", Tags: []string{"D:/workprj/project-b"}, SourceURL: "file://D:/workprj/project-b/artifact.md", CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
+		{ID: "filtered-old", Content: "evidence navigation read_file source", Category: CategoryProjectKnowledge, OwnerID: "owner-a", Tags: []string{"D:/workprj/project-a"}, SourceURL: "file://D:/workprj/project-a/artifact.md", CreatedAt: now.Add(-48 * time.Hour), UpdatedAt: now},
+	}
+	for i := range entries {
+		if err := b.SaveEntry(&entries[i]); err != nil {
+			t.Fatalf("SaveEntry %s: %v", entries[i].ID, err)
+		}
+	}
+	ids, err := b.SearchTextIDsFiltered("evidence navigation", sqliteTextFilter{OwnerID: "owner-a", Category: CategoryProjectKnowledge, ProjectPath: "D:/workprj/project-a", Since: now.Add(-24 * time.Hour)}, 10)
+	if err != nil {
+		t.Fatalf("SearchTextIDsFiltered: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "filtered-keep" {
+		t.Fatalf("expected only filtered-keep, got %v", ids)
+	}
+}
+
+func TestSQLiteFTSQueryQuotesTokens(t *testing.T) {
+	query := sqliteFTSQuery(`alpha "quoted" evidence navigation`)
+	if !strings.Contains(query, `"alpha ""quoted"" evidence navigation"`) || !strings.Contains(query, `"navigation"`) {
+		t.Fatalf("unexpected fts query: %s", query)
 	}
 }
