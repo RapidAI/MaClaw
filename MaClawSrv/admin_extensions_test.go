@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,6 +231,9 @@ func TestAdminExportServiceState(t *testing.T) {
 	if _, _, err := svc.PostMessage(ctx, principal, inst.ID, sess.ID, agentservice.PostMessageInput{Content: "hello export"}); err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
+	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "export.secret.audit", ResourceType: "test", ResourceID: svc.DataRoot(), Metadata: map[string]string{"token": "export-audit-token", "api_key": "export-audit-api-key", "path": svc.DataRoot()}}); err != nil {
+		t.Fatalf("RecordAuditEvent secret: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID, nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -259,6 +263,13 @@ func TestAdminExportServiceState(t *testing.T) {
 	}
 	if len(out.AuditEvents) == 0 {
 		t.Fatalf("expected audit events in export")
+	}
+	exportAuditJSON, err := json.Marshal(out.AuditEvents)
+	if err != nil {
+		t.Fatalf("marshal export audits: %v", err)
+	}
+	if strings.Contains(string(exportAuditJSON), "export-audit-token") || strings.Contains(string(exportAuditJSON), "export-audit-api-key") || strings.Contains(string(exportAuditJSON), svc.DataRoot()) {
+		t.Fatalf("expected non-secret export audit events to be redacted, got %s", exportAuditJSON)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/export?tenant_id="+tenant.ID+"&user_id="+user.ID+"&include_secrets=true&include_messages=false&include_runs=false&include_audit=false", nil)
@@ -599,6 +610,9 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	if created.Snapshot.ID == "" || created.Snapshot.Scope != "tenant" || created.Snapshot.TenantID != tenant.ID || created.Snapshot.SizeBytes <= 0 {
 		t.Fatalf("unexpected created snapshot: %#v", created.Snapshot)
 	}
+	if created.Snapshot.Path != "" {
+		t.Fatalf("admin snapshot create response should redact local path: %#v", created.Snapshot)
+	}
 	if len(created.Data.Tenants) != 1 || len(created.Data.Users) != 1 {
 		t.Fatalf("unexpected snapshot export payload: %#v", created.Data)
 	}
@@ -625,6 +639,9 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	}
 	if len(listed.Items) != 1 || listed.Items[0].ID != created.Snapshot.ID {
 		t.Fatalf("unexpected listed snapshots: %#v", listed.Items)
+	}
+	if listed.Items[0].Path != "" {
+		t.Fatalf("admin snapshot list response should redact local path: %#v", listed.Items[0])
 	}
 	since := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
 	until := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
@@ -680,6 +697,9 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	if got.Snapshot.ID != created.Snapshot.ID || got.Data.Scope != "tenant" {
 		t.Fatalf("unexpected got snapshot: %#v", got)
 	}
+	if got.Snapshot.Path != "" {
+		t.Fatalf("admin snapshot get response should redact local path: %#v", got.Snapshot)
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/"+created.Snapshot.ID+"/restore", bytes.NewBufferString(`{"dry_run":true}`))
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -724,6 +744,9 @@ func TestAdminServiceSnapshots(t *testing.T) {
 	}
 	if restored.Snapshot.ID != created.Snapshot.ID || restored.Import.Users != 1 || restored.Import.Credentials != 1 {
 		t.Fatalf("unexpected restore output: %#v", restored)
+	}
+	if restored.Snapshot.Path != "" {
+		t.Fatalf("admin snapshot restore response should redact local path: %#v", restored.Snapshot)
 	}
 	restoreEvents, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: "admin.snapshot_restored"})
 	if err != nil {
@@ -798,6 +821,11 @@ func TestAdminPruneServiceSnapshots(t *testing.T) {
 	if !dryRun.DryRun || dryRun.Deleted != 0 || len(dryRun.Snapshots) != 2 || len(dryRun.KeptSnapshots) != 1 {
 		t.Fatalf("unexpected dry run prune output: %#v", dryRun)
 	}
+	for _, snapshot := range append(dryRun.Snapshots, dryRun.KeptSnapshots...) {
+		if snapshot.Path != "" {
+			t.Fatalf("admin dry-run prune response should redact local path: %#v", snapshot)
+		}
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/snapshots/prune?tenant_id="+tenant.ID+"&user_id="+user.ID+"&older_than="+future+"&keep_latest=1", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -812,6 +840,11 @@ func TestAdminPruneServiceSnapshots(t *testing.T) {
 	}
 	if pruned.Deleted != 2 || len(pruned.Snapshots) != 2 || pruned.FreedBytes <= 0 {
 		t.Fatalf("unexpected prune output: %#v", pruned)
+	}
+	for _, snapshot := range pruned.Snapshots {
+		if snapshot.Path != "" {
+			t.Fatalf("admin prune response should redact local path: %#v", snapshot)
+		}
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/snapshots?tenant_id="+tenant.ID+"&user_id="+user.ID, nil)

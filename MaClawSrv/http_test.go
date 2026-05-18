@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -188,12 +189,18 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected GET audit-events operation")
 	}
+	auditDescription, _ := getAuditEvents["description"].(string)
+	if !strings.Contains(auditDescription, "redacted") || !strings.Contains(auditDescription, "filters are applied before redaction") {
+		t.Fatalf("expected audit-events description to document redaction: %#v", getAuditEvents)
+	}
 	auditParams, ok := getAuditEvents["parameters"].([]any)
 	if !ok {
 		t.Fatalf("expected audit-events parameters")
 	}
 	foundResourceID := false
 	foundActorType := false
+	foundActorTenant := false
+	foundActorUser := false
 	foundAuditSince := false
 	foundAuditUntil := false
 	for _, item := range auditParams {
@@ -208,6 +215,10 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 			foundResourceID = true
 		case "actor_type":
 			foundActorType = true
+		case "actor_tenant_id":
+			foundActorTenant = true
+		case "actor_user_id":
+			foundActorUser = true
 		case "since":
 			if schema["format"] == "date-time" {
 				foundAuditSince = true
@@ -218,8 +229,8 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 			}
 		}
 	}
-	if !foundResourceID || !foundActorType || !foundAuditSince || !foundAuditUntil {
-		t.Fatalf("expected audit resource/time filters in OpenAPI: %#v", auditParams)
+	if !foundResourceID || !foundActorType || !foundActorTenant || !foundActorUser || !foundAuditSince || !foundAuditUntil {
+		t.Fatalf("expected audit resource/actor/time filters in OpenAPI: %#v", auditParams)
 	}
 	riskPath, ok := doc.Paths["/api/v1/admin/security/risk-events"].(map[string]any)
 	if !ok {
@@ -230,8 +241,8 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 		t.Fatalf("expected GET risk-events operation")
 	}
 	riskDescription, _ := getRiskEvents["description"].(string)
-	if !strings.Contains(riskDescription, "generated_at") || !strings.Contains(riskDescription, "applied filters") {
-		t.Fatalf("expected risk-events description to mention generated_at and filters: %#v", getRiskEvents)
+	if !strings.Contains(riskDescription, "generated_at") || !strings.Contains(riskDescription, "applied filters") || !strings.Contains(riskDescription, "redact sensitive metadata") {
+		t.Fatalf("expected risk-events description to mention generated_at, filters, and redaction: %#v", getRiskEvents)
 	}
 	riskParams, ok := getRiskEvents["parameters"].([]any)
 	if !ok {
@@ -266,6 +277,39 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 	if !foundRiskSeverity || !foundRiskKindDescription || !foundRiskTimeDescription {
 		t.Fatalf("expected risk severity/kind/time filters in OpenAPI: %#v", riskParams)
+	}
+	ownerSandboxPath, ok := doc.Paths["/api/v1/admin/sandbox/config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sandbox config path object")
+	}
+	ownerSandboxPut, ok := ownerSandboxPath["put"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected PUT sandbox config operation")
+	}
+	if role, _ := ownerSandboxPut["x-maclaw-admin-role"].(string); role != "owner" {
+		t.Fatalf("expected sandbox config PUT to require owner role: %#v", ownerSandboxPut)
+	}
+	ownerDescription, _ := ownerSandboxPut["description"].(string)
+	if !strings.Contains(ownerDescription, "owner role") || !strings.Contains(ownerDescription, "root admin secret") {
+		t.Fatalf("expected owner role description on sandbox config PUT: %#v", ownerSandboxPut)
+	}
+	ownerResponses, ok := ownerSandboxPut["responses"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected owner route responses object")
+	}
+	if _, ok := ownerResponses["403"]; !ok {
+		t.Fatalf("expected owner route to document 403: %#v", ownerResponses)
+	}
+	operatorSandboxPath, ok := doc.Paths["/api/v1/admin/sandbox/status"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected sandbox status path object")
+	}
+	operatorSandboxGet, ok := operatorSandboxPath["get"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected GET sandbox status operation")
+	}
+	if role, _ := operatorSandboxGet["x-maclaw-admin-role"].(string); role != "operator" {
+		t.Fatalf("expected sandbox status GET to allow operator role: %#v", operatorSandboxGet)
 	}
 	recordsPath, ok := doc.Paths["/api/v1/records/{collection}"].(map[string]any)
 	if !ok {
@@ -339,6 +383,156 @@ func TestOpenAPIDocumentIsAvailable(t *testing.T) {
 	}
 }
 
+func TestOpenAPICoversRegisteredAdminRoutes(t *testing.T) {
+	source, err := os.ReadFile("http.go")
+	if err != nil {
+		t.Fatalf("read http.go: %v", err)
+	}
+	registered := map[string]bool{}
+	re := regexp.MustCompile(`s\.mux\.HandleFunc\("([A-Z]+) ([^"]+)"`)
+	for _, match := range re.FindAllStringSubmatch(string(source), -1) {
+		method, path := match[1], match[2]
+		if strings.HasPrefix(path, "/api/v1/admin/") {
+			registered[method+" "+path] = true
+		}
+	}
+	if len(registered) == 0 {
+		t.Fatalf("expected registered admin routes in http.go")
+	}
+	documented := map[string]bool{}
+	for _, route := range openAPIRoutes {
+		if strings.HasPrefix(route.Path, "/api/v1/admin/") {
+			documented[route.Method+" "+route.Path] = true
+		}
+	}
+	for route := range registered {
+		if !documented[route] {
+			t.Fatalf("registered admin route missing from OpenAPI: %s", route)
+		}
+	}
+	for route := range documented {
+		if !registered[route] {
+			t.Fatalf("OpenAPI admin route is not registered: %s", route)
+		}
+	}
+}
+func TestOpenAPIAdminMutationsAreOwnerOnlyUnlessExplicitlyAllowed(t *testing.T) {
+	allowedOperatorOrPublic := map[string]bool{
+		http.MethodPost + " /api/v1/admin/bootstrap/initialize":                    true,
+		http.MethodPost + " /api/v1/admin/auth/login":                              true,
+		http.MethodPost + " /api/v1/admin/auth/logout":                             true,
+		http.MethodPost + " /api/v1/admin/auth/change-password":                    true,
+		http.MethodPost + " /api/v1/admin/logs/search":                             true,
+		http.MethodPost + " /api/v1/admin/service-config/validate":                 true,
+		http.MethodPost + " /api/v1/admin/sandbox/detect":                          true,
+		http.MethodPost + " /api/v1/admin/sandbox/smoke-test":                      true,
+		http.MethodPost + " /api/v1/admin/sandbox/diagnose":                        true,
+		http.MethodPost + " /api/v1/admin/sandbox/profiles/{profileName}/validate": true,
+	}
+	for _, route := range openAPIRoutes {
+		if !strings.HasPrefix(route.Path, "/api/v1/admin/") {
+			continue
+		}
+		switch route.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		default:
+			continue
+		}
+		key := route.Method + " " + route.Path
+		role := routeOpenAPIAdminRole(route)
+		if allowedOperatorOrPublic[key] {
+			if role == "owner" {
+				t.Fatalf("explicitly allowed admin mutation should not be owner-only by default: %s", key)
+			}
+			continue
+		}
+		if role != "owner" {
+			t.Fatalf("admin mutation must be owner-only unless explicitly allowed: %s role=%q", key, role)
+		}
+	}
+}
+func TestOpenAPIAdminRoleAnnotationsCoverCriticalRoutes(t *testing.T) {
+	doc := buildOpenAPISpec()
+	paths, ok := doc["paths"].(map[string]map[string]any)
+	if !ok {
+		t.Fatalf("expected typed OpenAPI paths map")
+	}
+	checks := []struct {
+		method string
+		path   string
+		role   string
+	}{
+		{http.MethodGet, "/api/v1/admin/runtime/status", "operator"},
+		{http.MethodPost, "/api/v1/admin/runtime/gc", "owner"},
+		{http.MethodPost, "/api/v1/admin/jobs/{jobId}/cancel", "owner"},
+		{http.MethodPost, "/api/v1/admin/logs/{sourceId}/rotate", "owner"},
+		{http.MethodPatch, "/api/v1/admin/service-config/draft", "owner"},
+		{http.MethodDelete, "/api/v1/admin/service-config/draft", "owner"},
+		{http.MethodPost, "/api/v1/admin/service-config/validate", "operator"},
+		{http.MethodPost, "/api/v1/admin/service-config/export-plan", "owner"},
+		{http.MethodPut, "/api/v1/admin/sandbox/config", "owner"},
+		{http.MethodPost, "/api/v1/admin/sandbox/rollback", "owner"},
+		{http.MethodPost, "/api/v1/admin/sandbox/switch", "owner"},
+		{http.MethodPost, "/api/v1/admin/sandbox/detect", "operator"},
+		{http.MethodPost, "/api/v1/admin/sandbox/diagnose", "operator"},
+		{http.MethodPut, "/api/v1/admin/sandbox/profiles/{profileName}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/sandbox/profiles/{profileName}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/sandbox/reports/{reportId}", "owner"},
+		{http.MethodPost, "/api/v1/admin/sandbox/install", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants", "owner"},
+		{http.MethodPatch, "/api/v1/admin/tenants/{tenantId}", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/pause", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/resume", "owner"},
+		{http.MethodDelete, "/api/v1/admin/tenants/{tenantId}", "owner"},
+		{http.MethodGet, "/api/v1/admin/users", "operator"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users", "owner"},
+		{http.MethodPatch, "/api/v1/admin/tenants/{tenantId}/users/{userId}", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/pause", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/resume", "owner"},
+		{http.MethodDelete, "/api/v1/admin/tenants/{tenantId}/users/{userId}", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", "owner"},
+		{http.MethodPatch, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-secret", "owner"},
+		{http.MethodPost, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}/rotate-key", "owner"},
+		{http.MethodDelete, "/api/v1/admin/tenants/{tenantId}/users/{userId}/credentials/{credentialId}", "owner"},
+		{http.MethodGet, "/api/v1/admin/export", "operator"},
+		{http.MethodPost, "/api/v1/admin/import", "owner"},
+		{http.MethodPost, "/api/v1/admin/snapshots", "owner"},
+		{http.MethodPost, "/api/v1/admin/snapshots/prune", "owner"},
+		{http.MethodPost, "/api/v1/admin/snapshots/{snapshotId}/restore", "owner"},
+		{http.MethodDelete, "/api/v1/admin/snapshots/{snapshotId}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/tenants/{tenantId}/knowledge", "owner"},
+		{http.MethodPut, "/api/v1/admin/knowledge-access/cross-tenant", "owner"},
+		{http.MethodPut, "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/knowledge-access/tenants/{tenantId}/users/{userId}", "owner"},
+		{http.MethodPut, "/api/v1/admin/skill-sources/global", "owner"},
+		{http.MethodPut, "/api/v1/admin/skill-sources/tenant/{id}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/skill-sources/tenant/{id}", "owner"},
+		{http.MethodPut, "/api/v1/admin/skill-sources/user/{email...}", "owner"},
+		{http.MethodDelete, "/api/v1/admin/skill-sources/user/{email...}", "owner"},
+	}
+	for _, tc := range checks {
+		pathItem, ok := paths[tc.path]
+		if !ok {
+			t.Fatalf("missing OpenAPI path %s", tc.path)
+		}
+		op, ok := pathItem[strings.ToLower(tc.method)].(map[string]any)
+		if !ok {
+			t.Fatalf("missing OpenAPI operation %s %s", tc.method, tc.path)
+		}
+		if role, _ := op["x-maclaw-admin-role"].(string); role != tc.role {
+			t.Fatalf("%s %s role = %q, want %q", tc.method, tc.path, role, tc.role)
+		}
+		responses, _ := op["responses"].(map[string]any)
+		_, hasForbidden := responses["403"]
+		if tc.role == "owner" && !hasForbidden {
+			t.Fatalf("%s %s owner route missing 403 response", tc.method, tc.path)
+		}
+		if tc.role != "owner" && hasForbidden {
+			t.Fatalf("%s %s non-owner route should not document owner-only 403", tc.method, tc.path)
+		}
+	}
+}
 func TestStructuredRecordsCRUDAndFiltering(t *testing.T) {
 	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
 	if err != nil {
@@ -590,6 +784,9 @@ func TestGetAdminDashboard(t *testing.T) {
 	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_dash_1", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "dashboard.opened", ResourceType: "system", ResourceID: "dashboard", CreatedAt: now.Add(-30 * time.Minute)}); err != nil {
 		t.Fatalf("SaveAuditEvent: %v", err)
 	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_dash_secret", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "dashboard.secret", ResourceType: "system", ResourceID: svc.DataRoot(), Metadata: map[string]string{"token": "dashboard-secret", "path": svc.DataRoot()}, CreatedAt: now.Add(-20 * time.Minute)}); err != nil {
+		t.Fatalf("SaveAuditEvent secret: %v", err)
+	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -614,6 +811,13 @@ func TestGetAdminDashboard(t *testing.T) {
 	}
 	if len(dashboard.RecentAuditEvents) == 0 || !foundDashboardAudit {
 		t.Fatalf("unexpected recent audits: %#v", dashboard.RecentAuditEvents)
+	}
+	dashboardAuditJSON, err := json.Marshal(dashboard.RecentAuditEvents)
+	if err != nil {
+		t.Fatalf("marshal dashboard audits: %v", err)
+	}
+	if strings.Contains(string(dashboardAuditJSON), "dashboard-secret") || strings.Contains(string(dashboardAuditJSON), svc.DataRoot()) {
+		t.Fatalf("dashboard recent audit events should be redacted, got %s", dashboardAuditJSON)
 	}
 	if len(dashboard.Last24Hours) != 24 || len(dashboard.Last7Days) != 7 {
 		t.Fatalf("unexpected trend lengths: %#v", dashboard)
@@ -1695,6 +1899,21 @@ func TestMetricsEndpoint(t *testing.T) {
 	if err := svc.RecordTokenRateLimit(context.Background(), "metric-key", "203.0.113.10"); err != nil {
 		t.Fatalf("RecordTokenRateLimit: %v", err)
 	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_admin_auth_failed_metric", ActorType: "admin", Action: "admin.auth_failed", ResourceType: "admin_auth", ResourceID: "/api/v1/admin/runtime/status", CreatedAt: now.Add(4 * time.Second)}); err != nil {
+		t.Fatalf("SaveAuditEvent admin.auth_failed: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_admin_owner_denied_metric", ActorType: "admin", Action: "admin.owner_required_failed", ResourceType: "admin_authorization", ResourceID: "/api/v1/admin/sandbox/switch", CreatedAt: now.Add(5 * time.Second)}); err != nil {
+		t.Fatalf("SaveAuditEvent admin.owner_required_failed: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_admin_login_failed_metric", ActorType: "admin", Action: "admin.login_failed", ResourceType: "admin_user", ResourceID: "admin", CreatedAt: now.Add(6 * time.Second)}); err != nil {
+		t.Fatalf("SaveAuditEvent admin.login_failed: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_admin_login_rate_limited_metric", ActorType: "admin", Action: "admin.login_rate_limited", ResourceType: "admin_user", ResourceID: "admin", CreatedAt: now.Add(7 * time.Second)}); err != nil {
+		t.Fatalf("SaveAuditEvent admin.login_rate_limited: %v", err)
+	}
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_admin_password_change_failed_metric", ActorType: "admin", Action: "admin.password_change_failed", ResourceType: "admin_user", ResourceID: "admin", CreatedAt: now.Add(8 * time.Second)}); err != nil {
+		t.Fatalf("SaveAuditEvent admin.password_change_failed: %v", err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -1715,6 +1934,11 @@ func TestMetricsEndpoint(t *testing.T) {
 		!strings.Contains(body, "maclaw_instances_unready_total 1") ||
 		!strings.Contains(body, "maclaw_auth_token_failed_total 1") ||
 		!strings.Contains(body, "maclaw_auth_token_rate_limited_total 1") ||
+		!strings.Contains(body, "maclaw_admin_auth_failed_total 1") ||
+		!strings.Contains(body, "maclaw_admin_owner_denied_total 1") ||
+		!strings.Contains(body, "maclaw_admin_login_failed_total 1") ||
+		!strings.Contains(body, "maclaw_admin_login_rate_limited_total 1") ||
+		!strings.Contains(body, "maclaw_admin_password_change_failed_total 1") ||
 		!strings.Contains(body, "maclaw_runs_waiting_for_user_total 1") ||
 		!strings.Contains(body, "maclaw_runs_failed_total 1") ||
 		!strings.Contains(body, "maclaw_run_succeeded_events_total 1") ||
@@ -2116,6 +2340,24 @@ func TestAdminCanListAndRevokeCredentials(t *testing.T) {
 	if _, err := svc.IssueToken(context.Background(), agentservice.IssueTokenInput{APIKey: "key-2", APISecret: "secret-2"}); err == nil {
 		t.Fatalf("expected suspended credential to reject token issuance")
 	}
+	for _, tc := range []struct {
+		action       string
+		credentialID string
+	}{
+		{action: "admin.credential_revoked", credentialID: cred.ID},
+		{action: "admin.credential_updated", credentialID: otherCred.ID},
+	} {
+		events, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{TenantID: tenant.ID, UserID: user.ID, Action: tc.action, ResourceType: "credential", ResourceID: tc.credentialID})
+		if err != nil {
+			t.Fatalf("ListAuditEvents %s: %v", tc.action, err)
+		}
+		if len(events) != 1 {
+			t.Fatalf("expected one %s audit event, got %#v", tc.action, events)
+		}
+		if events[0].Metadata["tenant_id"] != tenant.ID || events[0].Metadata["user_id"] != user.ID || events[0].Metadata["api_key_prefix"] == "" {
+			t.Fatalf("unexpected credential audit metadata: %#v", events[0].Metadata)
+		}
+	}
 }
 
 func TestAdminCredentialExpireViaPatch(t *testing.T) {
@@ -2314,6 +2556,10 @@ func TestAdminCanListAuditEvents(t *testing.T) {
 		t.Fatalf("CreateUser: %v", err)
 	}
 
+	if err := store.SaveAuditEvent(agentservice.AuditEvent{ID: "audit_secret", TenantID: tenant.ID, UserID: user.ID, ActorType: "admin", Action: "secret.audit", ResourceType: "test", ResourceID: svc.DataRoot(), Metadata: map[string]string{"token": "audit-secret", "api_key": "audit-api-key", "path": svc.DataRoot()}, CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveAuditEvent secret: %v", err)
+	}
+
 	server := NewHTTPServer(svc, "admin-secret", nil)
 	req := httptest.NewRequest("GET", "/api/v1/admin/audit-events?tenant_id="+tenant.ID+"&action=user.created", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -2333,6 +2579,26 @@ func TestAdminCanListAuditEvents(t *testing.T) {
 	}
 	if events.Items[0].ActorType != "admin" || events.Items[0].ResourceType != "user" {
 		t.Fatalf("unexpected audit event = %#v", events.Items[0])
+	}
+	req = httptest.NewRequest("GET", "/api/v1/admin/audit-events?action=secret.audit", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list secret audit events status = %d body = %s", w.Code, w.Body.String())
+	}
+	var secretEvents struct {
+		Items []agentservice.AuditEvent `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&secretEvents); err != nil {
+		t.Fatalf("decode secret audit events: %v", err)
+	}
+	secretAuditJSON, err := json.Marshal(secretEvents.Items)
+	if err != nil {
+		t.Fatalf("marshal secret audit events: %v", err)
+	}
+	if len(secretEvents.Items) != 1 || strings.Contains(string(secretAuditJSON), "audit-secret") || strings.Contains(string(secretAuditJSON), "audit-api-key") || strings.Contains(string(secretAuditJSON), svc.DataRoot()) {
+		t.Fatalf("expected redacted secret audit event, got %s", secretAuditJSON)
 	}
 	cred, err := svc.CreateCredential(context.Background(), agentservice.CreateCredentialInput{TenantID: tenant.ID, UserID: user.ID, Name: "API", APIKey: "audit-filter-key", APISecret: "secret"})
 	if err != nil {
@@ -4278,5 +4544,206 @@ func TestInstallSkillRejectsInvalidAsyncFlag(t *testing.T) {
 	server.Handler().ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAdminTenantAndUserPauseResumeRoutes(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	tenant, err := svc.CreateTenant(context.Background(), agentservice.CreateTenantInput{Name: "Tenant"})
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	user, err := svc.CreateUser(context.Background(), agentservice.CreateUserInput{TenantID: tenant.ID, Name: "User"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	for _, tc := range []struct {
+		path   string
+		status string
+	}{
+		{"/api/v1/admin/tenants/" + tenant.ID + "/pause", "disabled"},
+		{"/api/v1/admin/tenants/" + tenant.ID + "/resume", "active"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("tenant lifecycle %s status = %d body = %s", tc.path, w.Code, w.Body.String())
+		}
+		var out agentservice.Tenant
+		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+			t.Fatalf("decode tenant lifecycle: %v", err)
+		}
+		if string(out.Status) != tc.status {
+			t.Fatalf("tenant status = %s, want %s", out.Status, tc.status)
+		}
+	}
+
+	for _, tc := range []struct {
+		path   string
+		status string
+	}{
+		{"/api/v1/admin/tenants/" + tenant.ID + "/users/" + user.ID + "/pause", "disabled"},
+		{"/api/v1/admin/tenants/" + tenant.ID + "/users/" + user.ID + "/resume", "active"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.path, nil)
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("user lifecycle %s status = %d body = %s", tc.path, w.Code, w.Body.String())
+		}
+		var out agentservice.User
+		if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+			t.Fatalf("decode user lifecycle: %v", err)
+		}
+		if string(out.Status) != tc.status {
+			t.Fatalf("user status = %s, want %s", out.Status, tc.status)
+		}
+	}
+
+	for _, action := range []string{"admin.tenant_paused", "admin.tenant_resumed", "admin.user_paused", "admin.user_resumed"} {
+		events, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: action})
+		if err != nil {
+			t.Fatalf("ListAuditEvents %s: %v", action, err)
+		}
+		if len(events) == 0 {
+			t.Fatalf("expected audit event %s", action)
+		}
+	}
+}
+
+func TestAdminTenantAndUserCRUDAuditRoutes(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+	doAdmin := func(method, path, body string, want int) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		w := httptest.NewRecorder()
+		server.Handler().ServeHTTP(w, req)
+		if w.Code != want {
+			t.Fatalf("%s %s status = %d, want %d body = %s", method, path, w.Code, want, w.Body.String())
+		}
+		return w
+	}
+
+	var tenant agentservice.Tenant
+	if err := json.NewDecoder(doAdmin(http.MethodPost, "/api/v1/admin/tenants", `{"name":"Audit Tenant","delete_protected":false}`, http.StatusCreated).Body).Decode(&tenant); err != nil {
+		t.Fatalf("decode tenant: %v", err)
+	}
+	doAdmin(http.MethodPatch, "/api/v1/admin/tenants/"+tenant.ID, `{"name":"Audit Tenant Updated"}`, http.StatusOK)
+
+	var user agentservice.User
+	if err := json.NewDecoder(doAdmin(http.MethodPost, "/api/v1/admin/tenants/"+tenant.ID+"/users", `{"name":"Audit User","email":"audit@example.test"}`, http.StatusCreated).Body).Decode(&user); err != nil {
+		t.Fatalf("decode user: %v", err)
+	}
+	doAdmin(http.MethodPatch, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID, `{"name":"Audit User Updated"}`, http.StatusOK)
+	doAdmin(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"/users/"+user.ID+"?confirm=true", "", http.StatusOK)
+	doAdmin(http.MethodDelete, "/api/v1/admin/tenants/"+tenant.ID+"?confirm=true", "", http.StatusOK)
+
+	for _, action := range []string{"admin.tenant_created", "admin.tenant_updated", "admin.tenant_deleted", "admin.user_created", "admin.user_updated", "admin.user_deleted"} {
+		events, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{TenantID: tenant.ID, Action: action})
+		if err != nil {
+			t.Fatalf("ListAuditEvents %s: %v", action, err)
+		}
+		if len(events) == 0 {
+			t.Fatalf("expected tenant-scoped audit event %s", action)
+		}
+	}
+	for _, action := range []string{"admin.user_created", "admin.user_updated", "admin.user_deleted"} {
+		events, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{TenantID: tenant.ID, UserID: user.ID, Action: action})
+		if err != nil {
+			t.Fatalf("ListAuditEvents user scoped %s: %v", action, err)
+		}
+		if len(events) == 0 {
+			t.Fatalf("expected user-scoped audit event %s", action)
+		}
+	}
+}
+
+func TestAdminSessionActorRecordedOnAdminAudit(t *testing.T) {
+	t.Setenv("MACLAW_ADMIN_SETUP_TOKEN", "")
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/bootstrap/initialize", bytes.NewBufferString(`{"username":"owner","password":"owner-password-123"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("bootstrap status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/auth/login", bytes.NewBufferString(`{"username":"owner","password":"owner-password-123"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login status = %d body = %s", w.Code, w.Body.String())
+	}
+	var login struct {
+		Token string `json:"token"`
+		Admin struct {
+			ID       string `json:"id"`
+			Username string `json:"username"`
+		} `json:"admin"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&login); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/tenants", bytes.NewBufferString(`{"name":"Session Audited Tenant"}`))
+	req.Header.Set("X-MaClaw-Admin-Secret", login.Token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create tenant status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	events, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: "admin.tenant_created"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatalf("expected admin tenant create audit event")
+	}
+	got := events[0]
+	if got.ActorUser != login.Admin.ID {
+		t.Fatalf("actor_user = %q, want %q", got.ActorUser, login.Admin.ID)
+	}
+	if got.Metadata["auth_type"] != "admin_session" || got.Metadata["admin_username"] != login.Admin.Username {
+		t.Fatalf("unexpected admin audit metadata: %#v", got.Metadata)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/audit-events?action=admin.tenant_created&actor_user_id="+url.QueryEscape(login.Admin.ID), nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", login.Token)
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list actor audit status = %d body = %s", w.Code, w.Body.String())
+	}
+	var actorEvents struct {
+		Items []agentservice.AuditEvent `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&actorEvents); err != nil {
+		t.Fatalf("decode actor audit events: %v", err)
+	}
+	if len(actorEvents.Items) != 1 || actorEvents.Items[0].ActorUser != login.Admin.ID {
+		t.Fatalf("unexpected actor audit events = %#v", actorEvents.Items)
 	}
 }

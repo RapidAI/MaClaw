@@ -34,6 +34,9 @@ func (s *HTTPServer) handleSkillSourcesGetGlobal(w http.ResponseWriter, r *http.
 }
 
 func (s *HTTPServer) handleSkillSourcesSetGlobal(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var cfg cskill.SourceControlConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
@@ -61,6 +64,9 @@ func (s *HTTPServer) handleSkillSourcesGetTenant(w http.ResponseWriter, r *http.
 }
 
 func (s *HTTPServer) handleSkillSourcesSetTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	var cfg cskill.SourceControlConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
@@ -76,6 +82,9 @@ func (s *HTTPServer) handleSkillSourcesSetTenant(w http.ResponseWriter, r *http.
 }
 
 func (s *HTTPServer) handleSkillSourcesDeleteTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	id := r.PathValue("id")
 	if err := s.skillSourceSvc.DeleteTenant(r.Context(), id); err != nil {
 		writeError(w, err)
@@ -99,6 +108,9 @@ func (s *HTTPServer) handleSkillSourcesGetUser(w http.ResponseWriter, r *http.Re
 }
 
 func (s *HTTPServer) handleSkillSourcesSetUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	email := decodeEmail(r)
 	var cfg cskill.SourceControlConfig
 	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
@@ -114,6 +126,9 @@ func (s *HTTPServer) handleSkillSourcesSetUser(w http.ResponseWriter, r *http.Re
 }
 
 func (s *HTTPServer) handleSkillSourcesDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	email := decodeEmail(r)
 	if err := s.skillSourceSvc.DeleteUser(r.Context(), email); err != nil {
 		writeError(w, err)

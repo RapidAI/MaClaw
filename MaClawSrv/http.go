@@ -220,6 +220,7 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/system/readiness", s.withAdmin(s.handleGetAdminReadiness))
 	s.mux.HandleFunc("GET /api/v1/admin/overview", s.withAdmin(s.handleGetAdminOverview))
 	s.mux.HandleFunc("GET /api/v1/admin/dashboard", s.withAdmin(s.handleGetAdminDashboard))
+	s.mux.HandleFunc("GET /api/v1/admin/support-bundle", s.withAdmin(s.handleAdminSupportBundle))
 	s.mux.HandleFunc("GET /api/v1/admin/insights", s.withAdmin(s.handleGetAdminInsights))
 	s.mux.HandleFunc("GET /api/v1/admin/alerts", s.withAdmin(s.handleGetAdminAlerts))
 	s.mux.HandleFunc("GET /api/v1/admin/security/summary", s.withAdmin(s.handleAdminSecuritySummary))
@@ -241,8 +242,10 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/service-config/effective", s.withAdmin(s.handleGetAdminServiceConfigEffective))
 	s.mux.HandleFunc("GET /api/v1/admin/service-config/schema", s.withAdmin(s.handleAdminServiceConfigSchema))
 	s.mux.HandleFunc("GET /api/v1/admin/service-config/environment", s.withAdmin(s.handleAdminServiceConfigEnvironment))
+	s.mux.HandleFunc("GET /api/v1/admin/service-config/diff", s.withAdmin(s.handleAdminServiceConfigDiff))
 	s.mux.HandleFunc("GET /api/v1/admin/service-config/draft", s.withAdmin(s.handleAdminServiceConfigDraft))
 	s.mux.HandleFunc("PATCH /api/v1/admin/service-config/draft", s.withAdmin(s.handleUpdateAdminServiceConfigDraft))
+	s.mux.HandleFunc("DELETE /api/v1/admin/service-config/draft", s.withAdmin(s.handleClearAdminServiceConfigDraft))
 	s.mux.HandleFunc("POST /api/v1/admin/service-config/validate", s.withAdmin(s.handleValidateAdminServiceConfig))
 	s.mux.HandleFunc("POST /api/v1/admin/service-config/export-plan", s.withAdmin(s.handleExportAdminServiceConfigPlan))
 	s.mux.HandleFunc("GET /api/v1/admin/i18n/locales", s.withAdmin(s.handleAdminI18NLocales))
@@ -284,6 +287,8 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/summary", s.withAdmin(s.handleGetTenantSummary))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/delete-check", s.withAdmin(s.handleGetTenantDeleteCheck))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleUpdateTenant))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/pause", s.withAdmin(s.handlePauseTenant))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/resume", s.withAdmin(s.handleResumeTenant))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}", s.withAdmin(s.handleDeleteTenant))
 	s.mux.HandleFunc("GET /api/v1/admin/users", s.withAdmin(s.handleListAllUsers))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users", s.withAdmin(s.handleListUsers))
@@ -291,6 +296,8 @@ func (s *HTTPServer) routes() {
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleGetUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/delete-check", s.withAdmin(s.handleGetUserDeleteCheck))
 	s.mux.HandleFunc("PATCH /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleUpdateUser))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/pause", s.withAdmin(s.handlePauseUser))
+	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/resume", s.withAdmin(s.handleResumeUser))
 	s.mux.HandleFunc("DELETE /api/v1/admin/tenants/{tenantId}/users/{userId}", s.withAdmin(s.handleDeleteUser))
 	s.mux.HandleFunc("GET /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", s.withAdmin(s.handleListCredentials))
 	s.mux.HandleFunc("POST /api/v1/admin/tenants/{tenantId}/users/{userId}/credentials", s.withAdmin(s.handleCreateCredential))
@@ -527,47 +534,65 @@ func checkDirectoryWritable(name, target string) readinessCheck {
 func (s *HTTPServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"version": serviceVersion, "commit": serviceCommit, "built_at": serviceBuiltAt})
 }
+func writeMetricsUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+}
 func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	overview, err := s.svc.GetAdminOverview(r.Context())
 	if err != nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		writeMetricsUnavailable(w)
 		return
 	}
 	authFailed, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "auth.token_failed"})
 	if err != nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		writeMetricsUnavailable(w)
 		return
 	}
 	rateLimited, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "auth.token_rate_limited"})
 	if err != nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		writeMetricsUnavailable(w)
+		return
+	}
+	adminAuthFailed, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "admin.auth_failed"})
+	if err != nil {
+		writeMetricsUnavailable(w)
+		return
+	}
+	adminOwnerDenied, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "admin.owner_required_failed"})
+	if err != nil {
+		writeMetricsUnavailable(w)
+		return
+	}
+	adminLoginFailed, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "admin.login_failed"})
+	if err != nil {
+		writeMetricsUnavailable(w)
+		return
+	}
+	adminLoginRateLimited, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "admin.login_rate_limited"})
+	if err != nil {
+		writeMetricsUnavailable(w)
+		return
+	}
+	adminPasswordChangeFailed, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "admin.password_change_failed"})
+	if err != nil {
+		writeMetricsUnavailable(w)
 		return
 	}
 	runSucceeded, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "run.succeeded"})
 	if err != nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		writeMetricsUnavailable(w)
 		return
 	}
 	runFailed, err := s.svc.ListAuditEvents(r.Context(), agentservice.ListAuditEventsInput{Action: "run.failed"})
 	if err != nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		writeMetricsUnavailable(w)
 		return
 	}
 	alerts, err := s.svc.GetAdminAlerts(r.Context(), agentservice.AdminAlertsInput{})
 	if err != nil {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = w.Write([]byte("# MaClawSrv metrics unavailable\n# TYPE maclaw_metrics_up gauge\nmaclaw_metrics_up 0\n"))
+		writeMetricsUnavailable(w)
 		return
 	}
 	jobCounts := s.jobs.snapshotCounts()
@@ -639,6 +664,26 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("# TYPE maclaw_auth_token_rate_limited_total counter\n")
 	b.WriteString("maclaw_auth_token_rate_limited_total ")
 	b.WriteString(strconv.FormatInt(int64(len(rateLimited)), 10))
+	b.WriteString("\n# HELP maclaw_admin_auth_failed_total Number of failed Admin API authentications recorded in audit events\n")
+	b.WriteString("# TYPE maclaw_admin_auth_failed_total counter\n")
+	b.WriteString("maclaw_admin_auth_failed_total ")
+	b.WriteString(strconv.FormatInt(int64(len(adminAuthFailed)), 10))
+	b.WriteString("\n# HELP maclaw_admin_owner_denied_total Number of Admin API owner-only authorization denials recorded in audit events\n")
+	b.WriteString("# TYPE maclaw_admin_owner_denied_total counter\n")
+	b.WriteString("maclaw_admin_owner_denied_total ")
+	b.WriteString(strconv.FormatInt(int64(len(adminOwnerDenied)), 10))
+	b.WriteString("\n# HELP maclaw_admin_login_failed_total Number of failed Admin Web logins recorded in audit events\n")
+	b.WriteString("# TYPE maclaw_admin_login_failed_total counter\n")
+	b.WriteString("maclaw_admin_login_failed_total ")
+	b.WriteString(strconv.FormatInt(int64(len(adminLoginFailed)), 10))
+	b.WriteString("\n# HELP maclaw_admin_login_rate_limited_total Number of rate-limited Admin Web logins recorded in audit events\n")
+	b.WriteString("# TYPE maclaw_admin_login_rate_limited_total counter\n")
+	b.WriteString("maclaw_admin_login_rate_limited_total ")
+	b.WriteString(strconv.FormatInt(int64(len(adminLoginRateLimited)), 10))
+	b.WriteString("\n# HELP maclaw_admin_password_change_failed_total Number of failed Admin Web password changes recorded in audit events\n")
+	b.WriteString("# TYPE maclaw_admin_password_change_failed_total counter\n")
+	b.WriteString("maclaw_admin_password_change_failed_total ")
+	b.WriteString(strconv.FormatInt(int64(len(adminPasswordChangeFailed)), 10))
 	b.WriteString("\n# HELP maclaw_instances_unready_total Number of instances currently not ready\n")
 	b.WriteString("# TYPE maclaw_instances_unready_total gauge\n")
 	b.WriteString("maclaw_instances_unready_total ")
@@ -686,7 +731,8 @@ func (s *HTTPServer) handleGetAdminDashboard(w http.ResponseWriter, r *http.Requ
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	dashboard := redactAdminDashboardForAdminAPI(s.svc.DataRoot(), *out)
+	writeJSON(w, http.StatusOK, dashboard)
 }
 func (s *HTTPServer) handleGetAdminInsights(w http.ResponseWriter, r *http.Request) {
 	limit := 0
@@ -908,22 +954,24 @@ func buildAdminRiskEvents(dataRoot string, audit []agentservice.AuditEvent) []ad
 		items = append(items, adminRiskEvent{ID: "config:http:insecure", Severity: "high", Kind: "insecure_http", Summary: "Non-loopback plaintext HTTP is allowed by service config.", ResourceType: "service_config", ResourceID: "allow_insecure_http", CreatedAt: now})
 	}
 	for _, event := range audit {
-		if risk, ok := riskEventFromAudit(event); ok {
+		if risk, ok := riskEventFromAudit(dataRoot, event); ok {
 			items = append(items, risk)
 		}
 	}
 	return items
 }
 
-func riskEventFromAudit(event agentservice.AuditEvent) (adminRiskEvent, bool) {
+func riskEventFromAudit(dataRoot string, event agentservice.AuditEvent) (adminRiskEvent, bool) {
 	severity := ""
 	kind := ""
 	summary := ""
 	switch event.Action {
 	case "auth.token_rate_limited", "admin.login_rate_limited":
 		severity, kind, summary = "high", "auth_rate_limited", "Authentication rate limit was triggered."
-	case "auth.token_failed", "admin.login_failed", "admin.bootstrap_failed", "admin.password_change_failed":
+	case "auth.token_failed", "admin.auth_failed", "admin.login_failed", "admin.bootstrap_failed", "admin.password_change_failed":
 		severity, kind, summary = "medium", "auth_failed", "Authentication or admin credential validation failed."
+	case "admin.owner_required_failed":
+		severity, kind, summary = "medium", "admin_authorization_denied", "An Admin Web operator attempted an owner-only operation."
 	case "admin.sandbox_diagnose_failed", "admin.sandbox_startup_diagnose_failed", "admin.sandbox_smoke_test_failed":
 		severity, kind, summary = "high", "sandbox_failed", "Sandbox verification failed."
 	case "admin.sandbox_install_failed":
@@ -952,11 +1000,37 @@ func riskEventFromAudit(event agentservice.AuditEvent) (adminRiskEvent, bool) {
 		} else {
 			severity, kind, summary = "high", "snapshot_restored", "A service snapshot was restored."
 		}
+	case "admin.credential_created":
+		severity, kind, summary = "high", "credential_created", "An admin credential was created and one-time secrets may have been returned."
+	case "admin.credential_key_rotated", "admin.credential_secret_rotated":
+		severity, kind, summary = "high", "credential_rotated", "An admin credential key or secret was rotated."
+	case "admin.credential_updated":
+		severity, kind, summary = "medium", "credential_updated", "An admin credential was updated."
+	case "admin.credential_revoked":
+		severity, kind, summary = "medium", "credential_revoked", "An admin credential was revoked."
+	case "admin.sandbox_config_updated", "admin.sandbox_config_rolled_back", "admin.sandbox_profile_updated", "admin.sandbox_profile_deleted", "admin.sandbox_report_deleted":
+		severity, kind, summary = "medium", "sandbox_admin_changed", "Sandbox admin configuration or diagnostics were changed."
+	case "admin.sandbox_install_started", "admin.sandbox_install_succeeded":
+		severity, kind, summary = "high", "sandbox_install_changed", "Sandbox installation was requested or completed from Admin Web."
+	case "admin.service_config_draft_updated", "admin.service_config_draft_cleared", "admin.service_config_export_plan":
+		severity, kind, summary = "medium", "service_config_changed", "Service configuration draft or export plan was changed."
+	case "admin.knowledge_access_cross_tenant_updated", "admin.knowledge_access_user_updated", "admin.knowledge_access_user_deleted", "admin.knowledge_tenant_cleared":
+		severity, kind, summary = "medium", "knowledge_policy_changed", "Knowledge access policy or tenant knowledge data was changed."
+	case "admin.skill_sources_global_updated", "admin.skill_sources_tenant_updated", "admin.skill_sources_tenant_deleted", "admin.skill_sources_user_updated", "admin.skill_sources_user_deleted":
+		severity, kind, summary = "medium", "skill_source_policy_changed", "Skill source policy was changed."
+	case "admin.support_bundle_downloaded", "admin.sandbox_support_bundle_downloaded":
+		severity, kind, summary = "medium", "diagnostics_bundle_downloaded", "An admin downloaded a troubleshooting bundle."
+	case "admin.logs_rotate":
+		severity, kind, summary = "medium", "log_rotated", "An admin log source was rotated."
+	case "admin.job_cancel":
+		severity, kind, summary = "medium", "job_canceled", "An admin canceled a background job."
+	case "admin.runtime_gc":
+		severity, kind, summary = "low", "runtime_gc", "An admin triggered runtime garbage collection."
 	}
 	if severity == "" {
 		return adminRiskEvent{}, false
 	}
-	return adminRiskEvent{ID: event.ID, Severity: severity, Kind: kind, Summary: summary, Action: event.Action, ResourceType: event.ResourceType, ResourceID: event.ResourceID, Metadata: event.Metadata, CreatedAt: event.CreatedAt}, true
+	return adminRiskEvent{ID: event.ID, Severity: severity, Kind: kind, Summary: summary, Action: event.Action, ResourceType: event.ResourceType, ResourceID: redactSupportBundleValue(dataRoot, event.ResourceID), Metadata: redactSupportBundleMetadata(dataRoot, event.Metadata), CreatedAt: event.CreatedAt}, true
 }
 
 func countRiskEventsBySeverity(items []adminRiskEvent) map[string]int {
@@ -1015,6 +1089,8 @@ func (s *HTTPServer) handleListAuditEvents(w http.ResponseWriter, r *http.Reques
 		ResourceType: strings.TrimSpace(r.URL.Query().Get("resource_type")),
 		ResourceID:   strings.TrimSpace(r.URL.Query().Get("resource_id")),
 		ActorType:    strings.TrimSpace(r.URL.Query().Get("actor_type")),
+		ActorTenant:  strings.TrimSpace(r.URL.Query().Get("actor_tenant_id")),
+		ActorUser:    strings.TrimSpace(r.URL.Query().Get("actor_user_id")),
 		Since:        since,
 		Until:        until,
 	})
@@ -1028,6 +1104,7 @@ func (s *HTTPServer) handleListAuditEvents(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	items, meta := paginateAuditEvents(out, page)
+	items = redactAuditEventsForAdminAPI(s.svc.DataRoot(), items)
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Request) {
@@ -1051,11 +1128,8 @@ func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if includeSecrets != nil && *includeSecrets {
-		if err := requireAdminConfirmation(r, "secret export operations"); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
+	if !s.requireSecretExportAccess(w, r, includeSecrets != nil && *includeSecrets) {
+		return
 	}
 	out, err := s.svc.ExportServiceState(r.Context(), agentservice.ExportServiceStateInput{
 		TenantID:        strings.TrimSpace(r.URL.Query().Get("tenant_id")),
@@ -1073,6 +1147,9 @@ func (s *HTTPServer) handleExportServiceState(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleImportServiceState(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	in, ok := decodeImportStateRequest(w, r)
 	if !ok {
 		return
@@ -1133,10 +1210,13 @@ func (s *HTTPServer) handleListServiceSnapshots(w http.ResponseWriter, r *http.R
 		return
 	}
 	window, meta := paginateServiceSnapshots(items, page)
-	writeJSON(w, http.StatusOK, listResponse(window, meta))
+	writeJSON(w, http.StatusOK, listResponse(sanitizeServiceSnapshotsForAdminAPI(window), meta))
 }
 
 func (s *HTTPServer) handleCreateServiceSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.CreateServiceSnapshotInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1153,10 +1233,13 @@ func (s *HTTPServer) handleCreateServiceSnapshot(w http.ResponseWriter, r *http.
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_created", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "include_secrets": strconv.FormatBool(out.Snapshot.IncludeSecrets), "include_messages": strconv.FormatBool(out.Snapshot.IncludeMessages), "include_runs": strconv.FormatBool(out.Snapshot.IncludeRuns), "include_audit": strconv.FormatBool(out.Snapshot.IncludeAudit), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusCreated, out)
+	writeJSON(w, http.StatusCreated, sanitizeServiceSnapshotEnvelopeForAdminAPI(out))
 }
 
 func (s *HTTPServer) handlePruneServiceSnapshots(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.PruneServiceSnapshotsInput
 	if !decodeOptionalJSON(w, r, &in) {
 		return
@@ -1192,7 +1275,7 @@ func (s *HTTPServer) handlePruneServiceSnapshots(w http.ResponseWriter, r *http.
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizePruneServiceSnapshotsOutputForAdminAPI(out))
 }
 func (s *HTTPServer) handleGetServiceSnapshot(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetServiceSnapshot(r.Context(), r.PathValue("snapshotId"))
@@ -1200,10 +1283,16 @@ func (s *HTTPServer) handleGetServiceSnapshot(w http.ResponseWriter, r *http.Req
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	if out.Snapshot.IncludeSecrets && !s.requireAdminOwner(w, r) {
+		return
+	}
+	writeJSON(w, http.StatusOK, sanitizeServiceSnapshotEnvelopeForAdminAPI(out))
 }
 
 func (s *HTTPServer) handleRestoreServiceSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.RestoreServiceSnapshotInput
 	if !decodeOptionalJSON(w, r, &in) {
 		return
@@ -1232,9 +1321,12 @@ func (s *HTTPServer) handleRestoreServiceSnapshot(w http.ResponseWriter, r *http
 		return
 	}
 	_ = s.recordAdminAudit(r.Context(), "admin.snapshot_restored", "snapshot", out.Snapshot.ID, map[string]string{"scope": out.Snapshot.Scope, "tenant_id": out.Snapshot.TenantID, "user_id": out.Snapshot.UserID, "dry_run": strconv.FormatBool(in.DryRun), "overwrite": strconv.FormatBool(in.Overwrite), "remote_ip": requestClientIP(r)})
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeRestoreServiceSnapshotOutputForAdminAPI(out))
 }
 func (s *HTTPServer) handleDeleteServiceSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if err := requireDeleteConfirmation(r); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -1244,12 +1336,15 @@ func (s *HTTPServer) handleDeleteServiceSnapshot(w http.ResponseWriter, r *http.
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, sanitizeServiceSnapshotForAdminAPI(*out))
 }
 func (s *HTTPServer) handleGetTenantRetirePlan(w http.ResponseWriter, r *http.Request) {
 	in, err := parseExportServiceStateInput(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if !s.requireSecretExportAccess(w, r, in.IncludeSecrets) {
 		return
 	}
 	out, err := s.svc.GetTenantRetirePlan(r.Context(), r.PathValue("tenantId"), in)
@@ -1266,6 +1361,9 @@ func (s *HTTPServer) handleGetUserRetirePlan(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if !s.requireSecretExportAccess(w, r, in.IncludeSecrets) {
+		return
+	}
 	out, err := s.svc.GetUserRetirePlan(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), in)
 	if err != nil {
 		writeError(w, err)
@@ -1273,7 +1371,50 @@ func (s *HTTPServer) handleGetUserRetirePlan(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, out)
 }
+func sanitizeServiceSnapshotForAdminAPI(snapshot agentservice.ServiceSnapshot) agentservice.ServiceSnapshot {
+	snapshot.Path = ""
+	return snapshot
+}
+
+func sanitizeServiceSnapshotsForAdminAPI(items []agentservice.ServiceSnapshot) []agentservice.ServiceSnapshot {
+	out := make([]agentservice.ServiceSnapshot, len(items))
+	for i, item := range items {
+		out[i] = sanitizeServiceSnapshotForAdminAPI(item)
+	}
+	return out
+}
+
+func sanitizeServiceSnapshotEnvelopeForAdminAPI(in *agentservice.ServiceSnapshotEnvelope) agentservice.ServiceSnapshotEnvelope {
+	if in == nil {
+		return agentservice.ServiceSnapshotEnvelope{}
+	}
+	out := *in
+	out.Snapshot = sanitizeServiceSnapshotForAdminAPI(out.Snapshot)
+	return out
+}
+
+func sanitizeRestoreServiceSnapshotOutputForAdminAPI(in *agentservice.RestoreServiceSnapshotOutput) agentservice.RestoreServiceSnapshotOutput {
+	if in == nil {
+		return agentservice.RestoreServiceSnapshotOutput{}
+	}
+	out := *in
+	out.Snapshot = sanitizeServiceSnapshotForAdminAPI(out.Snapshot)
+	return out
+}
+
+func sanitizePruneServiceSnapshotsOutputForAdminAPI(in *agentservice.PruneServiceSnapshotsOutput) agentservice.PruneServiceSnapshotsOutput {
+	if in == nil {
+		return agentservice.PruneServiceSnapshotsOutput{}
+	}
+	out := *in
+	out.KeptSnapshots = sanitizeServiceSnapshotsForAdminAPI(out.KeptSnapshots)
+	out.Snapshots = sanitizeServiceSnapshotsForAdminAPI(out.Snapshots)
+	return out
+}
 func (s *HTTPServer) handleCreateTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.CreateTenantInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1283,7 +1424,46 @@ func (s *HTTPServer) handleCreateTenant(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.tenant_created", "tenant", out.ID, tenantAuditMetadata(r, out))
 	writeJSON(w, http.StatusCreated, out)
+}
+func tenantAuditMetadata(r *http.Request, tenant *agentservice.Tenant) map[string]string {
+	return map[string]string{
+		"name":             tenant.Name,
+		"status":           string(tenant.Status),
+		"delete_protected": strconv.FormatBool(tenant.DeleteProtected),
+		"remote_ip":        requestClientIP(r),
+	}
+}
+
+func userAuditMetadata(r *http.Request, user *agentservice.User) map[string]string {
+	return map[string]string{
+		"tenant_id":        user.TenantID,
+		"name":             user.Name,
+		"email":            user.Email,
+		"status":           string(user.Status),
+		"delete_protected": strconv.FormatBool(user.DeleteProtected),
+		"remote_ip":        requestClientIP(r),
+	}
+}
+
+func credentialAuditMetadata(r *http.Request, cred *agentservice.Credential) map[string]string {
+	metadata := map[string]string{
+		"tenant_id":           cred.TenantID,
+		"user_id":             cred.UserID,
+		"name":                cred.Name,
+		"status":              string(cred.Status),
+		"api_key_prefix":      cred.APIKeyPrefix,
+		"token_version":       strconv.Itoa(cred.TokenVersion),
+		"has_expires_at":      strconv.FormatBool(cred.ExpiresAt != nil),
+		"returned_api_key":    strconv.FormatBool(cred.APIKey != ""),
+		"returned_api_secret": strconv.FormatBool(cred.APISecret != ""),
+		"remote_ip":           requestClientIP(r),
+	}
+	if cred.ExpiresAt != nil {
+		metadata["expires_at"] = cred.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	return metadata
 }
 func (s *HTTPServer) handleGetTenant(w http.ResponseWriter, r *http.Request) {
 	out, err := s.svc.GetTenant(r.Context(), r.PathValue("tenantId"))
@@ -1310,6 +1490,9 @@ func (s *HTTPServer) handleGetTenantDeleteCheck(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.UpdateTenantInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1319,17 +1502,43 @@ func (s *HTTPServer) handleUpdateTenant(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.tenant_updated", "tenant", out.ID, tenantAuditMetadata(r, out))
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handlePauseTenant(w http.ResponseWriter, r *http.Request) {
+	s.updateTenantLifecycleStatus(w, r, agentservice.TenantStatusDisabled, "admin.tenant_paused")
+}
+
+func (s *HTTPServer) handleResumeTenant(w http.ResponseWriter, r *http.Request) {
+	s.updateTenantLifecycleStatus(w, r, agentservice.TenantStatusActive, "admin.tenant_resumed")
+}
+
+func (s *HTTPServer) updateTenantLifecycleStatus(w http.ResponseWriter, r *http.Request, status agentservice.TenantStatus, action string) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	out, err := s.svc.UpdateTenant(r.Context(), r.PathValue("tenantId"), agentservice.UpdateTenantInput{Status: &status})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), action, "tenant", out.ID, map[string]string{"status": string(out.Status), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleDeleteTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if err := requireDeleteConfirmation(r); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := s.svc.DeleteTenant(r.Context(), r.PathValue("tenantId")); err != nil {
+	tenantID := r.PathValue("tenantId")
+	if err := s.svc.DeleteTenant(r.Context(), tenantID); err != nil {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.tenant_deleted", "tenant", tenantID, map[string]string{"remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 func (s *HTTPServer) handleListAllUsers(w http.ResponseWriter, r *http.Request) {
@@ -1381,6 +1590,9 @@ func (s *HTTPServer) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.CreateUserInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1391,6 +1603,7 @@ func (s *HTTPServer) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.user_created", "user", out.ID, userAuditMetadata(r, out))
 	writeJSON(w, http.StatusCreated, out)
 }
 func (s *HTTPServer) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -1410,6 +1623,9 @@ func (s *HTTPServer) handleGetUserDeleteCheck(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.UpdateUserInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1419,17 +1635,44 @@ func (s *HTTPServer) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.user_updated", "user", out.ID, userAuditMetadata(r, out))
+	writeJSON(w, http.StatusOK, out)
+}
+func (s *HTTPServer) handlePauseUser(w http.ResponseWriter, r *http.Request) {
+	s.updateUserLifecycleStatus(w, r, agentservice.UserStatusDisabled, "admin.user_paused")
+}
+
+func (s *HTTPServer) handleResumeUser(w http.ResponseWriter, r *http.Request) {
+	s.updateUserLifecycleStatus(w, r, agentservice.UserStatusActive, "admin.user_resumed")
+}
+
+func (s *HTTPServer) updateUserLifecycleStatus(w http.ResponseWriter, r *http.Request, status agentservice.UserStatus, action string) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	out, err := s.svc.UpdateUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), agentservice.UpdateUserInput{Status: &status})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), action, "user", out.ID, map[string]string{"tenant_id": out.TenantID, "status": string(out.Status), "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if err := requireDeleteConfirmation(r); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := s.svc.DeleteUser(r.Context(), r.PathValue("tenantId"), r.PathValue("userId")); err != nil {
+	tenantID := r.PathValue("tenantId")
+	userID := r.PathValue("userId")
+	if err := s.svc.DeleteUser(r.Context(), tenantID, userID); err != nil {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.user_deleted", "user", userID, map[string]string{"tenant_id": tenantID, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 func (s *HTTPServer) handleListCredentials(w http.ResponseWriter, r *http.Request) {
@@ -1452,6 +1695,9 @@ func (s *HTTPServer) handleListCredentials(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, listResponse(items, meta))
 }
 func (s *HTTPServer) handleCreateCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.CreateCredentialInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1463,6 +1709,7 @@ func (s *HTTPServer) handleCreateCredential(w http.ResponseWriter, r *http.Reque
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.credential_created", "credential", out.ID, credentialAuditMetadata(r, out))
 	writeJSON(w, http.StatusCreated, out)
 }
 func (s *HTTPServer) handleGetCredential(w http.ResponseWriter, r *http.Request) {
@@ -1474,6 +1721,9 @@ func (s *HTTPServer) handleGetCredential(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleUpdateCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.UpdateCredentialInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1483,9 +1733,13 @@ func (s *HTTPServer) handleUpdateCredential(w http.ResponseWriter, r *http.Reque
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.credential_updated", "credential", out.ID, credentialAuditMetadata(r, out))
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleRotateCredentialSecret(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.RotateCredentialSecretInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1495,9 +1749,13 @@ func (s *HTTPServer) handleRotateCredentialSecret(w http.ResponseWriter, r *http
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.credential_secret_rotated", "credential", out.ID, credentialAuditMetadata(r, out))
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleRotateCredentialKey(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in agentservice.RotateCredentialKeyInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -1507,14 +1765,19 @@ func (s *HTTPServer) handleRotateCredentialKey(w http.ResponseWriter, r *http.Re
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.credential_key_rotated", "credential", out.ID, credentialAuditMetadata(r, out))
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleRevokeCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	out, err := s.svc.RevokeCredential(r.Context(), r.PathValue("tenantId"), r.PathValue("userId"), r.PathValue("credentialId"))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.credential_revoked", "credential", out.ID, credentialAuditMetadata(r, out))
 	writeJSON(w, http.StatusOK, out)
 }
 func (s *HTTPServer) handleIssueToken(w http.ResponseWriter, r *http.Request) {
@@ -2514,11 +2777,19 @@ func (s *HTTPServer) withAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setAdminSecurityHeaders(w)
 		provided := r.Header.Get("X-MaClaw-Admin-Secret")
-		if !s.adminSecretAuthorized(provided) && !s.adminSessionAuthorized(provided) {
+		if s.adminSecretAuthorized(provided) {
+			ctx := contextWithAdminAuditIdentity(r.Context(), adminAuditIdentity{AuthType: "admin_secret"})
+			next(w, r.WithContext(ctx))
+			return
+		}
+		session, user, err := getAdminSessionUser(s.svc.DataRoot(), provided, time.Now().UTC())
+		if err != nil {
+			_ = s.recordAdminAudit(r.Context(), "admin.auth_failed", "admin_auth", strings.TrimSpace(r.URL.Path), map[string]string{"method": r.Method, "remote_ip": requestClientIP(r)})
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid admin secret"})
 			return
 		}
-		next(w, r)
+		ctx := contextWithAdminAuditIdentity(r.Context(), adminAuditIdentity{AuthType: "admin_session", SessionID: session.ID, UserID: user.ID, Username: user.Username, Role: user.Role})
+		next(w, r.WithContext(ctx))
 	}
 }
 func (s *HTTPServer) withPrincipal(next func(http.ResponseWriter, *http.Request, agentservice.Principal)) http.HandlerFunc {
@@ -2579,6 +2850,20 @@ func decodeOptionalJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	}
 	return true
 }
+func (s *HTTPServer) requireSecretExportAccess(w http.ResponseWriter, r *http.Request, includeSecrets bool) bool {
+	if !includeSecrets {
+		return true
+	}
+	if !s.requireAdminOwner(w, r) {
+		return false
+	}
+	if err := requireAdminConfirmation(r, "secret export operations"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return false
+	}
+	return true
+}
+
 func parseExportServiceStateInput(r *http.Request) (agentservice.ExportServiceStateInput, error) {
 	includeMessages, err := parseOptionalBoolQuery(r, "include_messages")
 	if err != nil {

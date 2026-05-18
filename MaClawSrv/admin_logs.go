@@ -172,6 +172,9 @@ func (s *HTTPServer) handleAdminLogDownload(w http.ResponseWriter, r *http.Reque
 	_, _ = io.WriteString(w, formatAdminLogLinesText(source, lines))
 }
 func (s *HTTPServer) handleAdminLogRotate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if err := requireAdminConfirmation(r, "log rotation"); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -472,7 +475,7 @@ func redactLogLine(line string) string {
 		lower := strings.ToLower(strings.Trim(field, "\"'"))
 		if redactNext {
 			fields[i] = "<redacted>"
-			redactNext = false
+			redactNext = lower == "bearer"
 			continue
 		}
 		if lower == "bearer" || strings.HasPrefix(lower, "bearer:") || strings.HasPrefix(lower, "bearer=") {

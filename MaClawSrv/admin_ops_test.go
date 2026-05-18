@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -422,10 +423,13 @@ func TestAdminSandboxSupportBundleIncludesTroubleshootingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
+	if err := saveAdminRuntimeConfig(dataRoot, adminRuntimeConfig{SandboxMode: "bwrap", Reason: "debug token=super-secret path=" + dataRoot}); err != nil {
+		t.Fatalf("save runtime config: %v", err)
+	}
 	if err := saveSandboxReport(dataRoot, sandboxDiagnoseReport{ReportID: "sandbox_report_bundle", Status: "warn", GeneratedAt: time.Now().UTC(), EffectiveBackend: "bwrap"}); err != nil {
 		t.Fatalf("save report: %v", err)
 	}
-	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "admin.sandbox_diagnose_completed", ResourceType: "sandbox_report", ResourceID: "sandbox_report_bundle", Metadata: map[string]string{"status": "warn", "effective_backend": "bwrap"}}); err != nil {
+	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "admin.sandbox_diagnose_completed", ResourceType: "sandbox_report", ResourceID: "sandbox_report_bundle", Metadata: map[string]string{"status": "warn", "effective_backend": "bwrap", "token": "super-secret", "path": dataRoot}}); err != nil {
 		t.Fatalf("RecordAuditEvent sandbox: %v", err)
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
@@ -438,9 +442,10 @@ func TestAdminSandboxSupportBundleIncludesTroubleshootingData(t *testing.T) {
 		t.Fatalf("support bundle status = %d body = %s", w.Code, w.Body.String())
 	}
 	var out struct {
-		Reports       []sandboxDiagnoseReport   `json:"reports"`
-		Events        []agentservice.AuditEvent `json:"events"`
-		InstallPlan   sandboxInstallPlan        `json:"install_plan"`
+		Reports       []sandboxDiagnoseReport    `json:"reports"`
+		Events        []agentservice.AuditEvent  `json:"events"`
+		Config        adminSandboxConfigResponse `json:"config"`
+		InstallPlan   sandboxInstallPlan         `json:"install_plan"`
 		SecurityRisks struct {
 			GeneratedAt time.Time        `json:"generated_at"`
 			Filters     map[string]any   `json:"filters"`
@@ -464,6 +469,12 @@ func TestAdminSandboxSupportBundleIncludesTroubleshootingData(t *testing.T) {
 	}
 	if out.DataRoot != "" || !out.DataRootRedacted || out.DataRootName == "" || len(out.Redactions) == 0 || out.Redactions[0] != "data_root" || out.ReportCount == 0 || len(out.Reports) == 0 || out.Reports[0].ReportID != "sandbox_report_bundle" || out.EventCount == 0 || len(out.Events) == 0 || out.InstallPlan.Backend == "" || out.SecurityRisks.GeneratedAt.IsZero() || out.SecurityRisks.Filters["source"] != "sandbox_support_bundle" || out.SecurityRisks.Filters["limit"].(float64) != 10 || out.SecurityRisks.Total == 0 || out.SecurityRisks.KindCounts["sandbox_not_strict"] == 0 || len(out.LogSources) == 0 {
 		t.Fatalf("unexpected support bundle: %#v", out)
+	}
+	if out.Events[0].Metadata["token"] != "[redacted]" || strings.Contains(out.Events[0].Metadata["path"], dataRoot) {
+		t.Fatalf("expected redacted sandbox event metadata: %#v", out.Events[0].Metadata)
+	}
+	if strings.Contains(out.Config.Reason, "super-secret") || strings.Contains(out.Config.Reason, dataRoot) {
+		t.Fatalf("expected redacted sandbox config reason, got %q", out.Config.Reason)
 	}
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/sandbox/support-bundle?download=true", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
@@ -630,7 +641,7 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 	}
 	server := NewHTTPServer(svc, "admin-secret", nil)
 	ctx := context.Background()
-	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "admin", Action: "auth.token_failed", ResourceType: "credential", ResourceID: "cred-1"}); err != nil {
+	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "admin", Action: "auth.token_failed", ResourceType: "credential", ResourceID: filepath.Join(svc.DataRoot(), "cred-1"), Metadata: map[string]string{"token": "secret-token", "path": svc.DataRoot(), "api_key": "secret-api-key"}}); err != nil {
 		t.Fatalf("RecordAuditEvent auth failure: %v", err)
 	}
 	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "admin", Action: "admin.sandbox_diagnose_failed", ResourceType: "sandbox_report", ResourceID: "report-1", Metadata: map[string]string{"status": "fail"}}); err != nil {
@@ -644,6 +655,23 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 	}
 	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "admin", Action: "admin.service_state_imported", ResourceType: "service_state", ResourceID: "service", Metadata: map[string]string{"dry_run": "false"}}); err != nil {
 		t.Fatalf("RecordAuditEvent import risk: %v", err)
+	}
+	for _, event := range []agentservice.AuditEvent{
+		{ActorType: "admin", Action: "admin.credential_created", ResourceType: "credential", ResourceID: "cred-created"},
+		{ActorType: "admin", Action: "admin.credential_secret_rotated", ResourceType: "credential", ResourceID: "cred-rotated"},
+		{ActorType: "admin", Action: "admin.sandbox_config_updated", ResourceType: "sandbox", ResourceID: "bwrap"},
+		{ActorType: "admin", Action: "admin.service_config_draft_updated", ResourceType: "service_config", ResourceID: "draft"},
+		{ActorType: "admin", Action: "admin.knowledge_access_cross_tenant_updated", ResourceType: "knowledge_access", ResourceID: "cross_tenant"},
+		{ActorType: "admin", Action: "admin.skill_sources_global_updated", ResourceType: "skill_source_policy", ResourceID: "global"},
+		{ActorType: "admin", Action: "admin.support_bundle_downloaded", ResourceType: "support_bundle", ResourceID: "service"},
+		{ActorType: "admin", Action: "admin.logs_rotate", ResourceType: "log_source", ResourceID: "service"},
+		{ActorType: "admin", Action: "admin.job_cancel", ResourceType: "job", ResourceID: "job-1"},
+		{ActorType: "admin", Action: "admin.runtime_gc", ResourceType: "runtime", ResourceID: "process"},
+		{ActorType: "admin", Action: "admin.owner_required_failed", ResourceType: "admin_authorization", ResourceID: "/api/v1/admin/sandbox/switch"},
+	} {
+		if err := svc.RecordAuditEvent(ctx, event); err != nil {
+			t.Fatalf("RecordAuditEvent %s: %v", event.Action, err)
+		}
 	}
 	if err := svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "admin", Action: "admin.logs_read", ResourceType: "log_source", ResourceID: "service"}); err != nil {
 		t.Fatalf("RecordAuditEvent unrelated: %v", err)
@@ -767,6 +795,13 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 	if kindFiltered.Filters["kind"] != "auth_failed" || kindFiltered.Total == 0 || len(kindFiltered.Items) == 0 || kindFiltered.KindCounts["auth_failed"] == 0 {
 		t.Fatalf("expected auth_failed risk events and kind counts, got %#v", kindFiltered)
 	}
+	joinedKindFiltered, err := json.Marshal(kindFiltered.Items)
+	if err != nil {
+		t.Fatalf("marshal kind-filtered risk events: %v", err)
+	}
+	if strings.Contains(string(joinedKindFiltered), "secret-token") || strings.Contains(string(joinedKindFiltered), "secret-api-key") || strings.Contains(string(joinedKindFiltered), svc.DataRoot()) {
+		t.Fatalf("expected risk event metadata and paths to be redacted, got %s", joinedKindFiltered)
+	}
 	for _, item := range kindFiltered.Items {
 		if item.Kind != "auth_failed" {
 			t.Fatalf("kind filter returned wrong risk event: %#v", item)
@@ -786,17 +821,17 @@ func TestAdminSecurityRiskEvents(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&all); err != nil {
 		t.Fatalf("decode all risk events: %v", err)
 	}
-	seenAuthFailure := false
+	seenKinds := map[string]bool{}
 	for _, item := range all.Items {
-		if item.Kind == "auth_failed" {
-			seenAuthFailure = true
-		}
+		seenKinds[item.Kind] = true
 		if item.Action == "admin.logs_read" {
 			t.Fatalf("unrelated audit event should not become a risk event: %#v", item)
 		}
 	}
-	if !seenAuthFailure {
-		t.Fatalf("expected auth failure risk in unfiltered list, got %#v", all.Items)
+	for _, kind := range []string{"auth_failed", "admin_authorization_denied", "credential_created", "credential_rotated", "sandbox_admin_changed", "service_config_changed", "knowledge_policy_changed", "skill_source_policy_changed", "diagnostics_bundle_downloaded", "log_rotated", "job_canceled", "runtime_gc"} {
+		if !seenKinds[kind] {
+			t.Fatalf("expected %s risk in unfiltered list, got %#v", kind, all.Items)
+		}
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/security/summary", nil)

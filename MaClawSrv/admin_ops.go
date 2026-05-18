@@ -277,6 +277,9 @@ func (s *HTTPServer) handleSwitchAdminSandbox(w http.ResponseWriter, r *http.Req
 }
 
 func (s *HTTPServer) updateAdminSandboxConfig(w http.ResponseWriter, r *http.Request, switchMode bool) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in updateAdminSandboxConfigRequest
 	if !decodeJSON(w, r, &in) {
 		return
@@ -337,6 +340,9 @@ func (s *HTTPServer) updateAdminSandboxConfig(w http.ResponseWriter, r *http.Req
 }
 
 func (s *HTTPServer) handleRollbackAdminSandboxConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in rollbackAdminSandboxConfigRequest
 	if !decodeOptionalJSON(w, r, &in) {
 		return
@@ -433,10 +439,11 @@ func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *h
 		writeError(w, err)
 		return
 	}
+	sortAuditEventsDesc(events)
 	sandboxEvents := make([]agentservice.AuditEvent, 0, 20)
 	for _, event := range events {
 		if isSandboxAuditEvent(event.Action, event.ResourceType) {
-			sandboxEvents = append(sandboxEvents, event)
+			sandboxEvents = append(sandboxEvents, redactSupportBundleAuditEvents(s.svc.DataRoot(), []agentservice.AuditEvent{event}, 1)[0])
 			if len(sandboxEvents) >= 20 {
 				break
 			}
@@ -444,10 +451,7 @@ func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *h
 	}
 	riskItems := buildAdminRiskEvents(s.svc.DataRoot(), events)
 	sort.Slice(riskItems, func(i, j int) bool { return riskItems[i].CreatedAt.After(riskItems[j].CreatedAt) })
-	riskRecent := riskItems
-	if len(riskRecent) > 10 {
-		riskRecent = riskRecent[:10]
-	}
+	riskRecent := redactSupportBundleRiskEvents(s.svc.DataRoot(), riskItems, 10)
 	backend := status.EffectiveBackend
 	if backend == "" || backend == "none" {
 		backend = status.Mode
@@ -458,14 +462,14 @@ func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *h
 	generatedAt := time.Now().UTC()
 	bundle := map[string]any{
 		"generated_at":      generatedAt,
-		"status":            status,
-		"config":            buildAdminSandboxConfigResponse(cfg),
-		"reports":           reports,
+		"status":            redactSandboxStatusForSupportBundle(s.svc.DataRoot(), status),
+		"config":            redactAdminSandboxConfigForSupportBundle(s.svc.DataRoot(), buildAdminSandboxConfigResponse(cfg)),
+		"reports":           redactSandboxReportsForSupportBundle(s.svc.DataRoot(), reports),
 		"events":            sandboxEvents,
-		"profiles":          profileItems,
+		"profiles":          redactSandboxProfilesForSupportBundle(s.svc.DataRoot(), profileItems),
 		"install_plan":      buildSandboxInstallPlan(backend),
-		"log_sources":       adminLogSources(s.svc.DataRoot()),
-		"recent_log_errors": recentAdminLogErrors(s.svc.DataRoot(), 20, true),
+		"log_sources":       redactSupportBundleLogSources(s.svc.DataRoot(), adminLogSources(s.svc.DataRoot())),
+		"recent_log_errors": redactSupportBundleLogLines(s.svc.DataRoot(), recentAdminLogErrors(s.svc.DataRoot(), 20, true)),
 		"security_risks": map[string]any{
 			"generated_at": generatedAt,
 			"filters":      map[string]any{"source": "sandbox_support_bundle", "limit": 10},
@@ -476,7 +480,7 @@ func (s *HTTPServer) handleAdminSandboxSupportBundle(w http.ResponseWriter, r *h
 		},
 		"data_root_name":     filepath.Base(s.svc.DataRoot()),
 		"data_root_redacted": true,
-		"redactions":         []string{"data_root"},
+		"redactions":         []string{"data_root", "audit_metadata", "log_line_secrets", "sandbox_report_raw", "profile_paths"},
 		"report_count":       len(reports),
 		"event_count":        len(sandboxEvents),
 		"profile_count":      len(profileItems),
@@ -569,6 +573,9 @@ func (s *HTTPServer) handleAdminSandboxProfile(w http.ResponseWriter, r *http.Re
 }
 
 func (s *HTTPServer) handleUpdateAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	name := strings.TrimSpace(r.PathValue("profileName"))
 	if !isSafeID(name) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid profile name"})
@@ -615,6 +622,9 @@ func (s *HTTPServer) handleValidateAdminSandboxProfile(w http.ResponseWriter, r 
 }
 
 func (s *HTTPServer) handleDeleteAdminSandboxProfile(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	confirm, err := parseOptionalBoolQuery(r, "confirm")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -658,6 +668,9 @@ func (s *HTTPServer) handleAdminSandboxReport(w http.ResponseWriter, r *http.Req
 }
 
 func (s *HTTPServer) handleDeleteAdminSandboxReport(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	confirm, err := parseOptionalBoolQuery(r, "confirm")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

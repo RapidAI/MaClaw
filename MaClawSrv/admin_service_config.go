@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -45,6 +46,18 @@ type adminServiceConfigValidationResult struct {
 	Fields          map[string]adminServiceConfigSchemaField `json:"fields,omitempty"`
 }
 
+type adminServiceConfigDiffItem struct {
+	Key              string `json:"key"`
+	EnvKey           string `json:"env_key"`
+	Current          any    `json:"current,omitempty"`
+	Desired          any    `json:"desired,omitempty"`
+	Configured       bool   `json:"configured"`
+	Changed          bool   `json:"changed"`
+	Sensitive        bool   `json:"sensitive"`
+	RestartRequired  bool   `json:"restart_required"`
+	MutableAtRuntime bool   `json:"mutable_at_runtime"`
+	Action           string `json:"action"`
+}
 type adminServiceConfigEnvironmentItem struct {
 	Key              string `json:"key"`
 	EnvKey           string `json:"env_key"`
@@ -65,6 +78,26 @@ type adminServiceConfigEnvPlanItem struct {
 	Action    string `json:"action"`
 }
 
+func (s *HTTPServer) handleAdminServiceConfigDiff(w http.ResponseWriter, r *http.Request) {
+	draft, err := loadAdminServiceConfigDraft(s.svc.DataRoot())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	validation := validateAdminServiceConfigValues(draft.Values)
+	if !validation.Valid {
+		writeJSON(w, http.StatusOK, map[string]any{"items": []adminServiceConfigDiffItem{}, "changed": 0, "validation": validation, "generated_at": time.Now().UTC()})
+		return
+	}
+	items := buildAdminServiceConfigDiff(validation)
+	changed := 0
+	for _, item := range items {
+		if item.Changed {
+			changed++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "changed": changed, "total": len(items), "validation": validation, "generated_at": time.Now().UTC()})
+}
 func (s *HTTPServer) handleAdminServiceConfigEnvironment(w http.ResponseWriter, r *http.Request) {
 	items := buildAdminServiceConfigEnvironment()
 	configured := 0
@@ -90,6 +123,9 @@ func (s *HTTPServer) handleAdminServiceConfigDraft(w http.ResponseWriter, r *htt
 }
 
 func (s *HTTPServer) handleUpdateAdminServiceConfigDraft(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in adminServiceConfigDraftRequest
 	if !decodeJSON(w, r, &in) {
 		return
@@ -108,6 +144,22 @@ func (s *HTTPServer) handleUpdateAdminServiceConfigDraft(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, map[string]any{"draft": draft, "validation": validation})
 }
 
+func (s *HTTPServer) handleClearAdminServiceConfigDraft(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
+	if err := requireAdminConfirmation(r, "service config draft clear"); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	path := adminServiceConfigDraftPath(s.svc.DataRoot())
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = s.recordAdminAudit(r.Context(), "admin.service_config_draft_cleared", "service_config", "draft", map[string]string{"remote_ip": requestClientIP(r)})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "cleared", "draft": adminServiceConfigDraft{Values: map[string]any{}}, "validation": validateAdminServiceConfigValues(map[string]any{})})
+}
 func (s *HTTPServer) handleValidateAdminServiceConfig(w http.ResponseWriter, r *http.Request) {
 	var in adminServiceConfigDraftRequest
 	if !decodeOptionalJSON(w, r, &in) {
@@ -203,6 +255,35 @@ func validateAdminServiceConfigValues(values map[string]any) adminServiceConfigV
 	return result
 }
 
+func buildAdminServiceConfigDiff(validation adminServiceConfigValidationResult) []adminServiceConfigDiffItem {
+	fields := adminServiceConfigFieldMap()
+	items := make([]adminServiceConfigDiffItem, 0, len(validation.EnvPlan))
+	for _, plan := range validation.EnvPlan {
+		field := fields[plan.Key]
+		currentRaw, configured := os.LookupEnv(plan.EnvKey)
+		desiredRaw := stringAny(validation.Normalized[plan.Key])
+		current := any(currentRaw)
+		desired := any(validation.Normalized[plan.Key])
+		if field.Sensitive {
+			current = maskConfigured(currentRaw)
+			desired = maskConfigured(desiredRaw)
+		}
+		items = append(items, adminServiceConfigDiffItem{
+			Key:              plan.Key,
+			EnvKey:           plan.EnvKey,
+			Current:          current,
+			Desired:          desired,
+			Configured:       configured,
+			Changed:          !configured || currentRaw != desiredRaw,
+			Sensitive:        field.Sensitive,
+			RestartRequired:  field.RestartRequired,
+			MutableAtRuntime: field.MutableAtRuntime,
+			Action:           plan.Action,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
+	return items
+}
 func buildAdminServiceConfigEnvironment() []adminServiceConfigEnvironmentItem {
 	fields := adminServiceConfigSchema()
 	items := make([]adminServiceConfigEnvironmentItem, 0, len(fields))
@@ -282,6 +363,9 @@ func maskSensitivePlanValue(field adminServiceConfigSchemaField, value any) any 
 	return value
 }
 
+func adminServiceConfigDraftPath(dataRoot string) string {
+	return filepath.Join(adminStateDir(dataRoot), "admin_service_config_draft.json")
+}
 func loadAdminServiceConfigDraft(dataRoot string) (adminServiceConfigDraft, error) {
 	var draft adminServiceConfigDraft
 	if err := readAdminJSON(dataRoot, "admin_service_config_draft.json", &draft); err != nil {
@@ -351,6 +435,9 @@ type adminServiceConfigExportPlan struct {
 }
 
 func (s *HTTPServer) handleExportAdminServiceConfigPlan(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	var in adminServiceConfigDraftRequest
 	if !decodeOptionalJSON(w, r, &in) {
 		return

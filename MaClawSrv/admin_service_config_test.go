@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -189,5 +190,122 @@ func TestAdminServiceConfigEnvironmentIsRedacted(t *testing.T) {
 	}
 	if !foundHTTP || !foundSecret {
 		t.Fatalf("expected redacted managed environment items: %#v", out.Items)
+	}
+}
+func TestAdminServiceConfigDiffComparesDraftToEnvironment(t *testing.T) {
+	t.Setenv("MACLAW_HTTP_ADDR", "127.0.0.1:18080")
+	t.Setenv("MACLAW_TLS_KEY_FILE", "old-secret.pem")
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	body := `{"values":{"http_addr":"127.0.0.1:19090","tls_key_file":"new-secret.pem"}}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/service-config/draft", bytes.NewBufferString(body))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update draft status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/service-config/diff", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("diff status = %d body = %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Items   []adminServiceConfigDiffItem       `json:"items"`
+		Changed int                                `json:"changed"`
+		Total   int                                `json:"total"`
+		Valid   adminServiceConfigValidationResult `json:"validation"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&out); err != nil {
+		t.Fatalf("decode diff: %v", err)
+	}
+	if out.Changed != 2 || out.Total != 2 || !out.Valid.Valid {
+		t.Fatalf("unexpected diff counts: %#v", out)
+	}
+	for _, item := range out.Items {
+		if !item.Changed {
+			t.Fatalf("expected changed item: %#v", item)
+		}
+		if item.Key == "tls_key_file" && (item.Current == "old-secret.pem" || item.Desired == "new-secret.pem") {
+			t.Fatalf("expected redacted sensitive diff: %#v", item)
+		}
+	}
+}
+
+func TestAdminServiceConfigDraftCanBeCleared(t *testing.T) {
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: t.TempDir(), TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	body := `{"values":{"http_addr":"127.0.0.1:19090","sandbox_mode":"bwrap"},"reason":"temporary debug"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/admin/service-config/draft", bytes.NewBufferString(body))
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update draft status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/service-config/draft", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("clear without confirm status = %d body = %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/service-config/draft?confirm=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear draft status = %d body = %s", w.Code, w.Body.String())
+	}
+	var cleared struct {
+		Status     string                             `json:"status"`
+		Draft      adminServiceConfigDraft            `json:"draft"`
+		Validation adminServiceConfigValidationResult `json:"validation"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&cleared); err != nil {
+		t.Fatalf("decode clear draft: %v", err)
+	}
+	if cleared.Status != "cleared" || len(cleared.Draft.Values) != 0 || !cleared.Validation.Valid {
+		t.Fatalf("unexpected clear response: %#v", cleared)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/service-config/draft", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get draft status = %d body = %s", w.Code, w.Body.String())
+	}
+	var current struct {
+		Draft adminServiceConfigDraft `json:"draft"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&current); err != nil {
+		t.Fatalf("decode current draft: %v", err)
+	}
+	if len(current.Draft.Values) != 0 {
+		t.Fatalf("expected empty draft after clear: %#v", current.Draft.Values)
+	}
+
+	events, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: "admin.service_config_draft_cleared"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents draft clear: %v", err)
+	}
+	if len(events) == 0 || events[0].ResourceType != "service_config" || events[0].ResourceID != "draft" {
+		t.Fatalf("expected draft clear audit event, got %#v", events)
 	}
 }

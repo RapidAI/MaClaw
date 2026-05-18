@@ -730,6 +730,9 @@ func (s *HTTPServer) handleAdminKnowledgeListSources(w http.ResponseWriter, r *h
 }
 
 func (s *HTTPServer) handleAdminKnowledgeClearTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if !s.requireKnowledge(w) {
 		return
 	}

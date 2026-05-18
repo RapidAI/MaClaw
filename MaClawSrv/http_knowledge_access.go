@@ -27,6 +27,9 @@ func (s *HTTPServer) handleAdminKnowledgeAccessGetCrossTenant(w http.ResponseWri
 }
 
 func (s *HTTPServer) handleAdminKnowledgeAccessSetCrossTenant(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if !s.requireKnowledge(w) {
 		return
 	}
@@ -64,6 +67,9 @@ func (s *HTTPServer) handleAdminKnowledgeAccessGetUser(w http.ResponseWriter, r 
 }
 
 func (s *HTTPServer) handleAdminKnowledgeAccessSetUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if !s.requireKnowledge(w) {
 		return
 	}
@@ -90,6 +96,9 @@ func (s *HTTPServer) handleAdminKnowledgeAccessSetUser(w http.ResponseWriter, r 
 }
 
 func (s *HTTPServer) handleAdminKnowledgeAccessDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	if !s.requireKnowledge(w) {
 		return
 	}

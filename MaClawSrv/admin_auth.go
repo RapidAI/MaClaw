@@ -31,6 +31,25 @@ const (
 	adminBootstrapSetupTokenEnv = "MACLAW_ADMIN_SETUP_TOKEN"
 )
 
+type adminAuditIdentity struct {
+	AuthType  string
+	SessionID string
+	UserID    string
+	Username  string
+	Role      string
+}
+
+type adminAuditIdentityContextKey struct{}
+
+func contextWithAdminAuditIdentity(ctx context.Context, identity adminAuditIdentity) context.Context {
+	return context.WithValue(ctx, adminAuditIdentityContextKey{}, identity)
+}
+
+func adminAuditIdentityFromContext(ctx context.Context) (adminAuditIdentity, bool) {
+	identity, ok := ctx.Value(adminAuditIdentityContextKey{}).(adminAuditIdentity)
+	return identity, ok
+}
+
 type adminBootstrapState struct {
 	Version       int       `json:"version"`
 	Initialized   bool      `json:"initialized"`
@@ -328,7 +347,40 @@ func (s *HTTPServer) adminSessionAuthorized(provided string) bool {
 }
 
 func (s *HTTPServer) recordAdminAudit(ctx context.Context, action, resourceType, resourceID string, metadata map[string]string) error {
-	return s.svc.RecordAuditEvent(ctx, agentservice.AuditEvent{ActorType: "admin", Action: action, ResourceType: resourceType, ResourceID: resourceID, Metadata: metadata})
+	meta := make(map[string]string, len(metadata)+5)
+	for k, v := range metadata {
+		meta[k] = v
+	}
+	event := agentservice.AuditEvent{ActorType: "admin", Action: action, ResourceType: resourceType, ResourceID: resourceID, Metadata: meta}
+	if identity, ok := adminAuditIdentityFromContext(ctx); ok {
+		meta["auth_type"] = identity.AuthType
+		if identity.SessionID != "" {
+			meta["admin_session_id"] = identity.SessionID
+		}
+		if identity.UserID != "" {
+			meta["admin_user_id"] = identity.UserID
+			event.ActorUser = identity.UserID
+		}
+		if identity.Username != "" {
+			meta["admin_username"] = identity.Username
+		}
+		if identity.Role != "" {
+			meta["admin_role"] = identity.Role
+		}
+	}
+	event.TenantID = strings.TrimSpace(meta["tenant_id"])
+	event.UserID = strings.TrimSpace(meta["user_id"])
+	switch resourceType {
+	case "tenant":
+		if event.TenantID == "" {
+			event.TenantID = resourceID
+		}
+	case "user":
+		if event.UserID == "" {
+			event.UserID = resourceID
+		}
+	}
+	return s.svc.RecordAuditEvent(ctx, event)
 }
 
 func adminBootstrapInitialized(dataRoot string) bool {
@@ -850,6 +902,7 @@ func (s *HTTPServer) requireAdminOwner(w http.ResponseWriter, r *http.Request) b
 	if err == nil && user != nil && user.Role == "owner" && user.Status == "active" {
 		return true
 	}
+	_ = s.recordAdminAudit(r.Context(), "admin.owner_required_failed", "admin_authorization", strings.TrimSpace(r.URL.Path), map[string]string{"method": r.Method, "remote_ip": requestClientIP(r)})
 	writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin owner is required"})
 	return false
 }

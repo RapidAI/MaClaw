@@ -79,6 +79,9 @@ func (s *HTTPServer) handleAdminRuntimeStatus(w http.ResponseWriter, r *http.Req
 }
 
 func (s *HTTPServer) handleAdminRuntimeGC(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	before := readAdminMemoryStatus()
 	goruntime.GC()
 	debug.FreeOSMemory()
@@ -216,6 +219,9 @@ func (s *HTTPServer) handleAdminJobs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleAdminCancelJob(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdminOwner(w, r) {
+		return
+	}
 	job, ok := s.jobs.cancelAnyJob(r.PathValue("jobId"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})

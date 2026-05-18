@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -216,5 +217,101 @@ func TestAdminCanListAndCancelAsyncJobsAcrossTenants(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("job did not finish after unblock")
+	}
+}
+
+func TestAdminSupportBundleIncludesRedactedServiceDiagnostics(t *testing.T) {
+	dataRoot := t.TempDir()
+	svc, err := agentservice.NewService(agentservice.Config{DataRoot: dataRoot, TokenSecret: "test-token-secret-0123456789012345"}, agentservice.NewMemoryStore(), agentservice.EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataRoot, "logs"), 0o700); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "logs", "maclaw_srv.log"), []byte("ERROR token=super-secret Authorization: Bearer abc.def {\"api_key\":\"json-secret\"} path="+dataRoot+" slash_path="+filepath.ToSlash(dataRoot)+"\n"), 0o600); err != nil {
+		t.Fatalf("write service log: %v", err)
+	}
+	if err := saveAdminServiceConfigDraft(dataRoot, adminServiceConfigDraft{Values: map[string]any{"tls_key_file": "super-key.pem", "sandbox_mode": "bwrap"}}); err != nil {
+		t.Fatalf("save draft: %v", err)
+	}
+	baseAuditTime := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 25; i++ {
+		if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "admin.owner_required_failed", ResourceType: "admin_authorization", ResourceID: fmt.Sprintf("/api/v1/admin/noise/%02d", i), CreatedAt: baseAuditTime.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatalf("RecordAuditEvent noise %d: %v", i, err)
+		}
+	}
+	if err := svc.RecordAuditEvent(context.Background(), agentservice.AuditEvent{ActorType: "admin", Action: "auth.token_failed", ResourceType: "credential", ResourceID: "cred-1", CreatedAt: baseAuditTime.Add(2 * time.Hour), Metadata: map[string]string{"token": "super-secret", "path": dataRoot, "slash_path": filepath.ToSlash(dataRoot)}}); err != nil {
+		t.Fatalf("RecordAuditEvent: %v", err)
+	}
+	server := NewHTTPServer(svc, "admin-secret", nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/support-bundle?download=true", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("support bundle status = %d body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Disposition"); !strings.Contains(got, "maclawsrv-support-bundle-") || !strings.Contains(got, ".json") {
+		t.Fatalf("Content-Disposition = %q", got)
+	}
+	var bundle adminSupportBundle
+	if err := json.NewDecoder(w.Body).Decode(&bundle); err != nil {
+		t.Fatalf("decode support bundle: %v", err)
+	}
+	if bundle.GeneratedAt.IsZero() || bundle.Runtime.Process.PID == 0 || bundle.Dashboard.GeneratedAt.IsZero() {
+		t.Fatalf("unexpected support bundle basics: %#v", bundle)
+	}
+	if bundle.DataRootName == "" || !bundle.DataRootRedacted || strings.Contains(bundle.Runtime.DataRoot, dataRoot) || strings.Contains(bundle.Runtime.Readiness.DataRoot, dataRoot) {
+		t.Fatalf("expected redacted data root in support bundle: %#v", bundle)
+	}
+	if len(bundle.Redactions) == 0 || bundle.ServiceConfig["environment"] == nil || bundle.SecurityRisks["recent"] == nil {
+		t.Fatalf("expected support diagnostics sections: %#v", bundle)
+	}
+	if bundle.SecurityRisks["total"].(float64) <= float64(len(bundle.SecurityRisks["recent"].([]any))) || bundle.Counts["risk_events"] <= len(bundle.SecurityRisks["recent"].([]any)) {
+		t.Fatalf("expected support risk totals to include events beyond recent limit: %#v counts=%#v", bundle.SecurityRisks, bundle.Counts)
+	}
+	if got := bundle.RecentAuditEvents[0].Metadata["token"]; got != "[redacted]" {
+		t.Fatalf("expected redacted audit token, got %#v", bundle.RecentAuditEvents[0].Metadata)
+	}
+	if got := bundle.RecentAuditEvents[0].Metadata["path"]; strings.Contains(got, dataRoot) {
+		t.Fatalf("expected redacted audit path, got %q", got)
+	}
+	if strings.Contains(bundle.RecentLogErrors[0].Line.Text, "super-secret") || strings.Contains(bundle.RecentLogErrors[0].Line.Text, "abc.def") || strings.Contains(bundle.RecentLogErrors[0].Line.Text, "json-secret") || strings.Contains(bundle.RecentLogErrors[0].Line.Text, dataRoot) {
+		t.Fatalf("expected redacted log line, got %q", bundle.RecentLogErrors[0].Line.Text)
+	}
+	serviceDraft, ok := bundle.ServiceConfig["draft"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected service draft map, got %#v", bundle.ServiceConfig["draft"])
+	}
+	values, ok := serviceDraft["values"].(map[string]any)
+	if !ok || values["tls_key_file"] != "[redacted]" {
+		t.Fatalf("expected redacted sensitive service draft, got %#v", serviceDraft)
+	}
+	encodedBundle, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal support bundle: %v", err)
+	}
+	encodedText := string(encodedBundle)
+	for _, sensitive := range []string{dataRoot, filepath.ToSlash(dataRoot), "super-secret", "abc.def", "json-secret", "super-key.pem"} {
+		if strings.Contains(encodedText, sensitive) {
+			t.Fatalf("support bundle still contains sensitive value %q: %s", sensitive, encodedText)
+		}
+	}
+	events, err := svc.ListAuditEvents(context.Background(), agentservice.ListAuditEventsInput{Action: "admin.support_bundle_downloaded"})
+	if err != nil {
+		t.Fatalf("ListAuditEvents support bundle: %v", err)
+	}
+	if len(events) == 0 || events[0].Metadata["download"] != "true" {
+		t.Fatalf("expected support bundle audit event, got %#v", events)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/support-bundle?download=maybe", nil)
+	req.Header.Set("X-MaClaw-Admin-Secret", "admin-secret")
+	w = httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid support bundle download status = %d body = %s", w.Code, w.Body.String())
 	}
 }

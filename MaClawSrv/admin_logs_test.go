@@ -161,6 +161,25 @@ func TestAdminLogReadValidationCapAndRedaction(t *testing.T) {
 	}
 }
 
+func TestRedactLogLineCoversAuthorizationVariants(t *testing.T) {
+	cases := []string{
+		`warn Authorization: Bearer abc.def token=plain-secret {"api_key":"json-secret"}`,
+		`warn authorization=Bearer secret-token api_secret=secret-value`,
+		`warn auth: Bearer other-token password:secret-value`,
+	}
+	for _, tc := range cases {
+		got := redactLogLine(tc)
+		for _, secret := range []string{"abc.def", "plain-secret", "json-secret", "secret-token", "secret-value", "other-token"} {
+			if strings.Contains(got, secret) {
+				t.Fatalf("expected %q to be redacted from %q, got %q", secret, tc, got)
+			}
+		}
+		if !strings.Contains(got, "<redacted>") {
+			t.Fatalf("expected redaction marker for %q, got %q", tc, got)
+		}
+	}
+}
+
 func TestAdminRecentLogErrorsAcrossSources(t *testing.T) {
 	dataRoot := t.TempDir()
 	serviceLog := filepath.Join(dataRoot, "logs", "maclaw_srv.log")
